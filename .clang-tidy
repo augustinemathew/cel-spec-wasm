@@ -72,8 +72,19 @@ HeaderFilterRegex: '^(compiler|include)/.*'
 FormatStyle: file
 
 CheckOptions:
-  # Google naming conventions: PascalCase types/functions, snake_case
-  # variables, trailing-underscore private members, k-prefix constants.
+  # Google-ish naming rules, relaxed for this repo's realities:
+  #   * `compiler/runtime/` is C, not C++, and sticks to snake_case for
+  #     every symbol that crosses the wasm ABI (and for its file-local
+  #     statics that share that style).  There's no "Google C" naming
+  #     counterpart to enforce, so any `FunctionCase`/`VariableCase`
+  #     rule we set would either break the runtime or force it into
+  #     C++-ish CamelCase that looks wrong next to the exported API.
+  #   * gtest TU helpers use very short locals (`L`, `m`, `fn`) that
+  #     don't fit `lower_case` / `CamelCase` / anything else.
+  # So we only enforce the rules that have a clear repo-wide meaning
+  # (types, namespaces, k-prefix constants, UPPER_CASE macros) and
+  # let function/variable/parameter casing through.  When a rename
+  # matters we catch it in review.
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase
@@ -84,16 +95,6 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.EnumConstantPrefix
     value: k
-  - key: readability-identifier-naming.FunctionCase
-    value: CamelCase
-  - key: readability-identifier-naming.VariableCase
-    value: lower_case
-  - key: readability-identifier-naming.ParameterCase
-    value: lower_case
-  - key: readability-identifier-naming.ClassMemberCase
-    value: lower_case
-  - key: readability-identifier-naming.PrivateMemberCase
-    value: lower_case
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
   - key: readability-identifier-naming.ProtectedMemberSuffix

@@ -14,8 +14,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 | check | count |
 |---|---|
-| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 57 |
-| `readability-identifier-naming` | 41 |
+| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 60 |
 | `google-readability-braces-around-statements` | 23 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
@@ -23,27 +22,27 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `readability-avoid-nested-conditional-operator` | 9 |
 | `cppcoreguidelines-no-malloc` | 6 |
 | `readability-isolate-declaration` | 6 |
-| `modernize-use-auto` | 6 |
+| `modernize-use-auto` | 4 |
+| `modernize-raw-string-literal` | 3 |
 | `bugprone-unchecked-optional-access` | 2 |
 | `misc-unused-using-decls` | 2 |
-| `bugprone-exception-escape` | 1 |
-| `bugprone-branch-clone` | 1 |
-| `cppcoreguidelines-pro-type-member-init` | 1 |
 | `bugprone-argument-comment` | 1 |
+| `bugprone-branch-clone` | 1 |
+| `bugprone-casting-through-void` | 1 |
+| `bugprone-exception-escape` | 1 |
+| `clang-analyzer-optin.core.EnumCastOutOfRange` | 1 |
+| `cppcoreguidelines-pro-type-member-init` | 1 |
+| `performance-move-const-arg` | 1 |
 | `performance-no-int-to-ptr` | 1 |
 | `performance-unnecessary-value-param` | 1 |
 | `readability-math-missing-parentheses` | 1 |
-| `performance-move-const-arg` | 1 |
-| `modernize-raw-string-literal` | 1 |
 | `readability-use-concise-preprocessor-directives` | 1 |
-| `bugprone-casting-through-void` | 1 |
 
-**Total unique warnings:** 206
+**Total unique warnings:** 169
 
 ## Notes for triage
 
 - `readability-function-size` — split the offending functions.  `LowerCall` in `compiler/codegen/expr_lower.cc` is the largest offender; it needs per-family helpers (arithmetic / comparison / logical / ternary / member).
-- `readability-identifier-naming` — most hits are gtest `TEST` fixture / case names and the `raw()` accessor; decide per case whether to rename or NOLINT.
 - `google-readability-braces-around-statements` — mechanical; run `clang-tidy --fix` under review.
 - `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` — noisy on `operator[]` / `data()[i]`; consider adding to the disabled list if we decide the existing idioms are fine.
 - `bugprone-throwing-static-initialization` — flags our file-scope `std::string` constants (gtest names, expected error messages).  Low priority.
@@ -51,115 +50,75 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 ## Per-file detail
 
-### `compiler/codegen/expr_lower.cc` — 52 warnings
+### `compiler/codegen/expr_lower.cc` — 50 warnings
 
 **`google-readability-braces-around-statements`** (20)
 
-- L311: statement should be inside braces
-- L313: statement should be inside braces
-- L315: statement should be inside braces
-- L318: statement should be inside braces
-- L320: statement should be inside braces
-- L322: statement should be inside braces
-- L325: statement should be inside braces
-- L327: statement should be inside braces
-- L329: statement should be inside braces
-- L332: statement should be inside braces
-- L334: statement should be inside braces
-- L336: statement should be inside braces
-- L338: statement should be inside braces
+- L319: statement should be inside braces
+- L321: statement should be inside braces
+- L323: statement should be inside braces
+- L326: statement should be inside braces
+- L328: statement should be inside braces
+- L330: statement should be inside braces
+- L333: statement should be inside braces
+- L335: statement should be inside braces
+- L337: statement should be inside braces
+- L340: statement should be inside braces
 - L342: statement should be inside braces
 - L344: statement should be inside braces
 - L346: statement should be inside braces
-- L438: statement should be inside braces
-- L440: statement should be inside braces
-- L442: statement should be inside braces
-- L444: statement should be inside braces
+- L350: statement should be inside braces
+- L352: statement should be inside braces
+- L354: statement should be inside braces
+- L446: statement should be inside braces
+- L448: statement should be inside braces
+- L450: statement should be inside braces
+- L452: statement should be inside braces
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (15)
 
-- L211: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L459: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L491: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L502: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L504: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L524: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L526: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L528: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L539: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L541: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L559: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L561: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L573: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L575: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L577: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L215: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L467: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L499: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L510: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L512: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L532: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L534: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L536: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L547: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L549: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L567: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L569: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L583: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L585: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L587: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
 **`readability-avoid-nested-conditional-operator`** (9)
 
-- L401: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L402: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L403: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L408: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
 - L409: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
 - L410: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L415: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
+- L411: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
 - L416: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
 - L417: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
+- L418: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
+- L423: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
+- L424: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
+- L425: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
 
 **`readability-function-size`** (4)
 
-- L294: function 'LowerArithmetic' exceeds recommended size/complexity thresholds
-- L355: function 'LowerComparison' exceeds recommended size/complexity thresholds
-- L466: function 'LowerCall' exceeds recommended size/complexity thresholds
-- L650: function 'LowerToEvalFunction' exceeds recommended size/complexity thresholds
-
-**`modernize-use-auto`** (3)
-
-- L181: use auto when initializing with a cast to avoid duplicating the type name
-- L211: use auto when initializing with a cast to avoid duplicating the type name
-- L685: use auto when initializing with a cast to avoid duplicating the type name
+- L300: function 'LowerArithmetic' exceeds recommended size/complexity thresholds
+- L363: function 'LowerComparison' exceeds recommended size/complexity thresholds
+- L474: function 'LowerCall' exceeds recommended size/complexity thresholds
+- L660: function 'LowerToEvalFunction' exceeds recommended size/complexity thresholds
 
 **`bugprone-branch-clone`** (1)
 
-- L636: switch has 2 consecutive identical branches
+- L646: switch has 2 consecutive identical branches
 
-### `compiler/codegen/expr_lower_test.cc` — 36 warnings
+**`modernize-use-auto`** (1)
 
-**`readability-identifier-naming`** (30)
-
-- L45: invalid case style for variable 'L'
-- L52: invalid case style for variable 'L'
-- L59: invalid case style for variable 'L'
-- L66: invalid case style for variable 'L'
-- L79: invalid case style for variable 'L'
-- L90: invalid case style for variable 'L'
-- L98: invalid case style for variable 'L'
-- L110: invalid case style for variable 'L'
-- L120: invalid case style for variable 'L'
-- L130: invalid case style for variable 'L'
-- L140: invalid case style for variable 'L'
-- L149: invalid case style for variable 'L'
-- L165: invalid case style for variable 'L'
-- L175: invalid case style for variable 'L'
-- L183: invalid case style for variable 'L'
-- L193: invalid case style for variable 'L'
-- L231: invalid case style for variable 'L'
-- L244: invalid case style for variable 'L'
-- L255: invalid case style for variable 'L'
-- L268: invalid case style for variable 'L'
-- _(+10 more)_
-
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (5)
-
-- L323: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L338: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L360: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L361: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L386: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
-**`cppcoreguidelines-pro-type-member-init`** (1)
-
-- L25: constructor does not initialize these fields: fn
+- L695: use auto when initializing with a cast to avoid duplicating the type name
 
 ### `compiler/cli/celwasmc_main.cc` — 34 warnings
 
@@ -209,34 +168,6 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L196: an exception may be thrown in function 'main' which should not throw exceptions
 
-### `compiler/runtime/cel_runtime.c` — 14 warnings
-
-**`readability-identifier-naming`** (9)
-
-- L69: invalid case style for function 'align_up'
-- L73: invalid case style for function 'cv_at'
-- L77: invalid case style for function 'write_cv'
-- L81: invalid case style for function 'ensure_initialized'
-- L158: invalid case style for function 'alloc_cv'
-- L199: invalid case style for function 'make_span'
-- L215: invalid case style for function 'make_span_view'
-- L330: invalid case style for function 'span_eq'
-- L423: invalid case style for function 'string_span_pair'
-
-**`readability-isolate-declaration`** (3)
-
-- L441: multiple declarations in a single statement reduces readability
-- L451: multiple declarations in a single statement reduces readability
-- L461: multiple declarations in a single statement reduces readability
-
-**`readability-use-concise-preprocessor-directives`** (1)
-
-- L8: preprocessor condition can be written more concisely using '#ifdef'
-
-**`bugprone-casting-through-void`** (1)
-
-- L74: do not cast 'uint8_t *' (aka 'unsigned char *') to 'CelValue *' (aka 'struct CelValue *') through 'void *'; use reinterpret_cast instead
-
 ### `compiler/codegen/module_test.cc` — 11 warnings
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (8)
@@ -262,6 +193,23 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L107: argument name 'max' in comment does not match parameter name 'max_slots'
 
+### `compiler/ir/annotations_test.cc` — 9 warnings
+
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (8)
+
+- L42: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L45: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L56: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L64: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L65: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L66: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L77: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L78: possibly unsafe 'operator[]', consider bounds-safe alternatives
+
+**`clang-analyzer-optin.core.EnumCastOutOfRange`** (1)
+
+- L37: The value '250' provided to the cast expression is not in the valid range of values for 'Repr'
+
 ### `compiler/ir/typed_ast_test.cc` — 9 warnings
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (9)
@@ -275,6 +223,31 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 - L185: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L196: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L198: possibly unsafe 'operator[]', consider bounds-safe alternatives
+
+### `compiler/e2e/eval_test.cc` — 8 warnings
+
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (3)
+
+- L586: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L587: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L588: possibly unsafe 'operator[]', consider bounds-safe alternatives
+
+**`modernize-raw-string-literal`** (2)
+
+- L582: escaped string literal can be written as a raw string literal
+- L622: escaped string literal can be written as a raw string literal
+
+**`performance-unnecessary-value-param`** (1)
+
+- L73: the parameter 'args' of type 'std::vector<wasmtime_val_t>' is copied for each invocation but only used as a const reference
+
+**`readability-math-missing-parentheses`** (1)
+
+- L140: '*' has higher precedence than '+'; add parentheses to explicitly specify the order of operations
+
+**`modernize-use-auto`** (1)
+
+- L352: use auto when initializing with a cast to avoid duplicating the type name
 
 ### `compiler/frontend/parse_and_check.cc` — 8 warnings
 
@@ -298,19 +271,6 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L215: std::move of the expression of the trivially-copyable type 'cel::Type' has no effect; remove std::move()
 
-### `compiler/ir/annotations_test.cc` — 8 warnings
-
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (8)
-
-- L42: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L45: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L56: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L64: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L65: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L66: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L77: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L78: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
 ### `compiler/codegen/abi_test.cc` — 7 warnings
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (4)
@@ -329,6 +289,20 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L39: function 'FindCustomSection' exceeds recommended size/complexity thresholds
 
+### `compiler/codegen/expr_lower_test.cc` — 6 warnings
+
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (5)
+
+- L325: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L340: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L362: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L363: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L388: possibly unsafe 'operator[]', consider bounds-safe alternatives
+
+**`cppcoreguidelines-pro-type-member-init`** (1)
+
+- L25: constructor does not initialize these fields: fn
+
 ### `compiler/codegen/module.cc` — 5 warnings
 
 **`cppcoreguidelines-no-malloc`** (4)
@@ -342,33 +316,21 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L38: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
-### `compiler/e2e/cel_refs_e2e_test.cc` — 3 warnings
+### `compiler/runtime/cel_runtime.c` — 5 warnings
 
-**`readability-isolate-declaration`** (1)
+**`readability-isolate-declaration`** (3)
 
-- L81: multiple declarations in a single statement reduces readability
+- L452: multiple declarations in a single statement reduces readability
+- L462: multiple declarations in a single statement reduces readability
+- L472: multiple declarations in a single statement reduces readability
 
-**`readability-identifier-naming`** (1)
+**`readability-use-concise-preprocessor-directives`** (1)
 
-- L98: invalid case style for variable 'kHostPayload'
+- L8: preprocessor condition can be written more concisely using '#ifdef'
 
-**`performance-no-int-to-ptr`** (1)
+**`bugprone-casting-through-void`** (1)
 
-- L99: integer to pointer cast pessimizes optimization opportunities
-
-### `compiler/e2e/eval_test.cc` — 3 warnings
-
-**`performance-unnecessary-value-param`** (1)
-
-- L73: the parameter 'args' of type 'std::vector<wasmtime_val_t>' (aka 'std::vector<struct wasmtime_val>') is copied for each invocation but only used as a const reference; consider ma...
-
-**`readability-math-missing-parentheses`** (1)
-
-- L140: '*' has higher precedence than '+'; add parentheses to explicitly specify the order of operations
-
-**`modernize-use-auto`** (1)
-
-- L352: use auto when initializing with a cast to avoid duplicating the type name
+- L74: do not cast 'uint8_t *' (aka 'unsigned char *') to 'CelValue *' through 'void *'; use reinterpret_cast instead
 
 ### `compiler/frontend/parse_and_check_test.cc` — 3 warnings
 
@@ -391,15 +353,15 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 - L60: do not manage memory manually; use RAII
 - L61: do not manage memory manually; use RAII
 
-### `compiler/host/host_loader.cc` — 2 warnings
+### `compiler/e2e/cel_refs_e2e_test.cc` — 2 warnings
 
-**`readability-function-size`** (1)
+**`readability-isolate-declaration`** (1)
 
-- L222: function 'LoadEval' exceeds recommended size/complexity thresholds
+- L81: multiple declarations in a single statement reduces readability
 
-**`readability-identifier-naming`** (1)
+**`performance-no-int-to-ptr`** (1)
 
-- L264: invalid case style for variable 'kCelNs'
+- L99: integer to pointer cast pessimizes optimization opportunities
 
 ### `compiler/ir/static_subset.cc` — 2 warnings
 
@@ -440,9 +402,14 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L84: multiple declarations in a single statement reduces readability
 
+### `compiler/host/host_loader.cc` — 1 warnings
+
+**`readability-function-size`** (1)
+
+- L222: function 'LoadEval' exceeds recommended size/complexity thresholds
+
 ### `compiler/ir/typed_ast.cc` — 1 warnings
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (1)
 
 - L119: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
