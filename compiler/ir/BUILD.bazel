@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
@@ -32,5 +32,39 @@ cc_library(
         "@cel-cpp//common:expr",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "annotations_test",
+    srcs = ["annotations_test.cc"],
+    deps = [
+        ":annotations",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "typed_ast_test",
+    srcs = ["typed_ast_test.cc"],
+    deps = [
+        ":annotations",
+        ":typed_ast",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:expr",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "static_subset_test",
+    srcs = ["static_subset_test.cc"],
+    deps = [
+        ":static_subset",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
     ],
 )

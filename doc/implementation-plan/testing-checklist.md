@@ -15,67 +15,75 @@ Conventions:
 For every type T, we need a positive test and at least one negative test in
 each stage of the pipeline where T can appear.
 
+`checker` = `parse_and_check_test.cc` accepts an expression that produces
+the type. `annotations` = `typed_ast_test::ReprOfTest` maps the TypeSpec
+variant to the right `Repr`. `RejectDyn` tests live in
+`static_subset_test.cc`.
+
 | Type            | parser | checker | annotations | RejectDyn | codegen | e2e eval |
 | --------------- | :----: | :-----: | :---------: | :-------: | :-----: | :------: |
-| `bool`          | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `int`           | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `uint`          | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `double`        | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `string`        | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `bytes`         | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `null_type`     | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `timestamp`     | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `duration`      | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `list<T>`       | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `map<K,V>`      | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| proto message   | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
+| `bool`          | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `int`           | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `uint`          | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `double`        | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `string`        | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `bytes`         | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `null_type`     | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `timestamp`     | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `duration`      | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `list<T>`       | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `map<K,V>`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| proto message   | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | enum            | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| wrapper (Int64Value …) | [ ] | [ ]  | [ ]         | [ ]       | [ ]     | [ ]      |
-| `any`           | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| `dyn` (rejected)| —      | —       | —           | [ ]       | —       | —        |
-| `error`         | —      | —       | —           | [ ]       | —       | —        |
+| wrapper (Int64Value …) | [ ] | [ ]  | [x]         | [ ]       | [ ]     | [ ]      |
+| `any`           | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
+| `dyn` (rejected)| —      | —       | —           | [x]       | —       | —        |
+| `error`         | —      | —       | —           | [x]       | —       | —        |
 
 ## Per `ExprKindCase`
 
 | Variant             | parser | checker | annotations | RejectDyn | codegen | e2e |
 | ------------------- | :----: | :-----: | :---------: | :-------: | :-----: | :-: |
-| `kConstant`         | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
-| `kIdentExpr`        | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
-| `kSelectExpr` (field) | [ ]  | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
+| `kConstant`         | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kSelectExpr` (`test_only`, from `has()`) | [ ] | [ ] | [ ]  | [ ] | [ ] | [ ] |
-| `kCallExpr` (global) | [ ]   | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
-| `kCallExpr` (member) | [ ]   | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
+| `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| `kListExpr` (empty + non-empty) | [ ] | [ ] | [ ]  | [ ]       | [ ]     | [ ] |
-| `kStructExpr` (proto ctor) | [ ] | [ ] | [ ]      | [ ]       | [ ]     | [ ] |
-| `kMapExpr`          | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ] |
-| `kComprehensionExpr` (exists) | [ ] | [ ] | [ ]  | [ ]       | [ ]     | [ ] |
-| `kComprehensionExpr` (all)    | [ ] | [ ] | [ ]  | [ ]       | [ ]     | [ ] |
-| `kComprehensionExpr` (filter) | [ ] | [ ] | [ ]  | [ ]       | [ ]     | [ ] |
-| `kComprehensionExpr` (map)    | [ ] | [ ] | [ ]  | [ ]       | [ ]     | [ ] |
+| `kListExpr` (empty + non-empty) | [x] | [x] | [x]  | [x]       | [ ]     | [ ] |
+| `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [ ] |
+| `kMapExpr`          | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kComprehensionExpr` (exists) | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
+| `kComprehensionExpr` (all)    | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
+| `kComprehensionExpr` (filter) | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
+| `kComprehensionExpr` (map)    | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
 | nested comprehensions with shadowing | [ ] | [ ] | [ ] | [ ]   | [ ]     | [ ] |
 
 ## Front-end helpers
 
 ### Variable-spec parser (`compiler/frontend/parse_and_check.cc`)
 
-- [ ] Every primitive by name (`bool`, `int`, `uint`, `double`, `string`,
-      `bytes`, `null_type`).
-- [ ] Every well-known (`timestamp`, `duration`, `any`).
-- [ ] `list<T>` with primitive, message, and nested-list `T`.
-- [ ] `map<K,V>` with every permissible key type; reject `list<>` or message
-      keys per spec.
-- [ ] Proto message by FQN, incl. nested packages.
-- [ ] Errors: missing `:`, empty name, unknown type, unbalanced `<>`,
+- [x] Every primitive by name (`bool`, `int`, `uint`, `double`, `string`,
+      `bytes`, `null_type`).  (`parse_and_check_test::PrimitiveVariableSpecs`)
+- [x] Every well-known (`timestamp`, `duration`, `any`).
+- [x] `list<T>` with primitive and nested-list `T`.
+      *(message-element list pending until schema fixture lands.)*
+- [x] `map<K,V>` with string key, int value.  *(Full key-type matrix still
+      pending — `map<list<int>,int>` rejection not yet asserted.)*
+- [x] Proto message by FQN (`google.protobuf.Empty` from the generated
+      pool).  *(Custom-schema FQNs pending until e2e fixtures land.)*
+- [x] Errors: missing `:`, empty name, unknown type, unbalanced `<>`,
       trailing garbage after the type.
 
 ### `RejectDyn`
 
-- [ ] DYN at root (missing root type).
-- [ ] DYN nested inside each `ExprKindCase`.
-- [ ] `ErrorTypeSpec`, `FunctionTypeSpec`, `ParamTypeSpec`, `UnsetTypeSpec`
+- [x] DYN at root (missing root type).
+- [x] DYN nested inside call, select, list, struct, map, comprehension
+      subtrees.
+- [x] `ErrorTypeSpec`, `FunctionTypeSpec`, `ParamTypeSpec`, `UnsetTypeSpec`
       each rejected with the correct label.
-- [ ] Checked expression with no DYN returns OK.
+- [x] Checked expression with no DYN returns OK.
 
 ## Runtime (native-compiled for unit tests)
 

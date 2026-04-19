@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
@@ -24,5 +24,18 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "parse_and_check_test",
+    srcs = ["parse_and_check_test.cc"],
+    deps = [
+        ":parse_and_check",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
     ],
 )

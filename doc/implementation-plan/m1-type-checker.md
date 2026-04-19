@@ -44,12 +44,36 @@ side-map used by codegen.
 - [x] Negative: `1 + "abc"`, undeclared ident, missing proto field,
       `x + 1` with `x:dyn` → `--reject_dyn` catches it.
 
-## Outstanding obligations rolled into M2 / the testing checklist
+## gtest backfill (landed during M2)
 
-- [ ] Write `cc_test` equivalents for every smoke test above (M2 requires
-      gtest infra; the first test targets land with M2).
-- [ ] Cover every primitive type declaration path in `ParseVariableSpec`
-      (see `testing-checklist.md §Variable-spec parser`).
-- [ ] Cover every `ExprKindCase` in `RejectDyn` including nested
-      comprehensions with shadowing (expr ids may repeat across scopes —
-      verify the walker visits each instance).
+Once M2 pulled googletest into the module, we wrote the full test suite
+for M1 code:
+
+- [x] `compiler/ir/annotations_test.cc` — `ReprName` row per enumerator
+      plus `WasmAnnotations` map round-trip (positive/negative ids,
+      default-creation semantics).
+- [x] `compiler/ir/typed_ast_test.cc` — `ReprOf` exercised on every
+      `TypeSpec` variant (primitives × 6, wrappers × 6, well-knowns × 3,
+      null, list, map, message, type, dyn, error, function, param, unset,
+      abstract).  Also covers `PopulateAnnotations` seeding and
+      `TypedAst` move semantics.
+- [x] `compiler/ir/static_subset_test.cc` — `RejectDyn` across every
+      `ExprKindCase` with both all-typed and DYN-child configurations,
+      plus each rejected `TypeSpec` variant (Dyn / Error / Function /
+      Param / Unset) and a multi-violation message assertion.
+- [x] `compiler/frontend/parse_and_check_test.cc` — every primitive +
+      well-known + parameterized type spec, nested `list<list<int>>`,
+      `google.protobuf.Empty` from the generated pool, whitespace
+      tolerance, trailing-garbage / missing-colon / empty-name /
+      unknown-type / unbalanced `<>` rejections, schema-not-found, parse
+      errors, undeclared-variable and type-mismatch rejections.
+
+## Still outstanding (tracked in testing-checklist.md)
+
+- [ ] `kSelectExpr(test_only)` coverage via `has(msg.field)`.
+- [ ] `kCallExpr(short-circuit)` coverage via `&&`/`||`/`?:`.
+- [ ] Comprehension positive coverage in parser/checker/annotations (the
+      RejectDyn walker is already proven).
+- [ ] Nested comprehensions with shadowing.
+- [ ] Enum and message-wrapper declaration paths in `ParseVariableSpec`.
+- [ ] Map-key-type matrix (reject `list<>` and message keys per spec).
