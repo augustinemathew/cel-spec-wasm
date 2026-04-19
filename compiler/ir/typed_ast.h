@@ -2,10 +2,13 @@
 #define CELWASM_COMPILER_IR_TYPED_AST_H_
 
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "common/ast.h"
 #include "common/ast/metadata.h"
+#include "common/type.h"
 #include "compiler/ir/annotations.h"
 
 namespace celwasm {
@@ -13,6 +16,23 @@ namespace celwasm {
 // Maps a `cel::TypeSpec` (as stored in a checked `cel::Ast`) to the ABI
 // representation used by our WASM codegen.
 Repr ReprOf(const cel::TypeSpec& type);
+
+// Maps a `cel::Type` (as produced by the checker's type parser) to our ABI
+// representation.  Returns `Repr::kUnknown` for types that have no scalar
+// ABI encoding in the static subset (dyn, type-param, function, ...).
+Repr ReprOf(const cel::Type& type);
+
+// One user-declared variable, captured in the order it appeared in
+// `CheckOptions::variable_specs`.  Codegen binds each entry to a function
+// parameter at the corresponding index: the first declared variable is the
+// eval function's first parameter, and so on.  Storing the Repr here — as
+// opposed to re-deriving it from the AST's `type_map` — lets codegen shape
+// the function signature even for variables the expression doesn't
+// reference (which never appear in `type_map`).
+struct Variable {
+  std::string name;
+  Repr repr = Repr::kUnknown;
+};
 
 // Owned bundle of a type-checked `cel::Ast` plus a side-map of per-node
 // `NodeAnnotation`s keyed by `cel::ExprId`.
@@ -27,8 +47,11 @@ class TypedAst {
  public:
   TypedAst() = default;
 
-  TypedAst(std::unique_ptr<cel::Ast> ast, WasmAnnotations annotations)
-      : ast_(std::move(ast)), annotations_(std::move(annotations)) {}
+  TypedAst(std::unique_ptr<cel::Ast> ast, WasmAnnotations annotations,
+           std::vector<Variable> variables = {})
+      : ast_(std::move(ast)),
+        annotations_(std::move(annotations)),
+        variables_(std::move(variables)) {}
 
   TypedAst(TypedAst&&) = default;
   TypedAst& operator=(TypedAst&&) = default;
@@ -44,9 +67,13 @@ class TypedAst {
   const WasmAnnotations& annotations() const { return annotations_; }
   WasmAnnotations& mutable_annotations() { return annotations_; }
 
+  // Variables declared in `CheckOptions::variable_specs`, in order.
+  const std::vector<Variable>& variables() const { return variables_; }
+
  private:
   std::unique_ptr<cel::Ast> ast_;
   WasmAnnotations annotations_;
+  std::vector<Variable> variables_;
 };
 
 // Seeds `annotations` with a `Repr` for every node that appears in

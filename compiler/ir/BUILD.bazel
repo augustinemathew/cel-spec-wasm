@@ -19,6 +19,8 @@ cc_library(
     deps = [
         ":annotations",
         "@cel-cpp//common:ast",
+        "@cel-cpp//common:type",
+        "@cel-cpp//common:type_kind",
         "@com_google_absl//absl/types:variant",
     ],
 )

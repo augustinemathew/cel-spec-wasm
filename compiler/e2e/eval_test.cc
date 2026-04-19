@@ -19,6 +19,8 @@
 // semantically; this test catches that.
 
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -58,6 +60,38 @@ absl::StatusOr<wasmtime_val_t> Evaluate(absl::string_view cel_source) {
   if (!loaded.ok()) return loaded.status();
   return loaded->CallNullaryEval();
 }
+
+// Same as Evaluate, but declares variables via `variable_specs` and
+// passes `args` through to the eval function.  The caller is
+// responsible for packing args in the same order as specs and using a
+// `wasmtime_val_t` whose `kind` matches each variable's ABI (i64 for
+// int/uint, i32 for bool, f64 for double, etc.).
+absl::StatusOr<wasmtime_val_t> EvaluateWithVars(
+    absl::string_view cel_source,
+    std::vector<std::string> variable_specs,
+    std::vector<wasmtime_val_t> args) {
+  CheckOptions opts;
+  opts.variable_specs = std::move(variable_specs);
+  auto typed = ParseAndCheck(cel_source, opts);
+  if (!typed.ok()) return typed.status();
+
+  WasmModule mod;
+  auto fn = LowerToEvalFunction(*typed, "eval", mod);
+  if (!fn.ok()) return fn.status();
+  mod.ExportFunction("eval", "eval");
+  if (auto s = mod.Validate(); !s.ok()) return s;
+
+  auto bytes = mod.Serialize();
+  if (!bytes.ok()) return bytes.status();
+
+  auto loaded = LoadEval(*bytes);
+  if (!loaded.ok()) return loaded.status();
+  return loaded->CallEval(args);
+}
+
+wasmtime_val_t I64(int64_t v) { return wasmtime_val_t{WASMTIME_I64, {.i64 = v}}; }
+wasmtime_val_t I32(int32_t v) { return wasmtime_val_t{WASMTIME_I32, {.i32 = v}}; }
+wasmtime_val_t F64(double v)  { return wasmtime_val_t{WASMTIME_F64, {.f64 = v}}; }
 
 TEST(EvalE2ETest, IntConstant) {
   auto r = Evaluate("42");
@@ -202,6 +236,66 @@ TEST(EvalE2ETest, IntModulo) {
   auto r = Evaluate("10 % 3");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 1);
+}
+
+TEST(EvalE2ETest, IntVariableIsReadFromFirstParam) {
+  // `x + 1` with x=41 exercises the full ident path: parse+check assigns
+  // `x:int` an i64 Repr, codegen lays it out as param 0, and the runtime
+  // call hands `41` in.  If the param-index assignment or the
+  // `local.get` type ever drift, this test catches it.
+  auto r = EvaluateWithVars("x + 1", {"x:int"}, {I64(41)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, 42);
+}
+
+TEST(EvalE2ETest, BoolVariableInTernary) {
+  auto r = EvaluateWithVars("flag ? 7 : 9", {"flag:bool"}, {I32(1)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 7);
+  auto r2 = EvaluateWithVars("flag ? 7 : 9", {"flag:bool"}, {I32(0)});
+  ASSERT_THAT(r2.status(), IsOk());
+  EXPECT_EQ(r2->of.i64, 9);
+}
+
+TEST(EvalE2ETest, DoubleVariableArithmetic) {
+  auto r = EvaluateWithVars("x * 2.0", {"x:double"}, {F64(1.5)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_F64);
+  EXPECT_DOUBLE_EQ(r->of.f64, 3.0);
+}
+
+TEST(EvalE2ETest, UintVariableUnsignedComparison) {
+  // Signed-vs-unsigned matters here: if the compare opcode leaks in
+  // signed, 2^63 would read as negative and this comparison would
+  // flip.
+  uint64_t big = 1ULL << 63;
+  auto r = EvaluateWithVars("x > 1u", {"x:uint"},
+                            {I64(static_cast<int64_t>(big))});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, TwoVariablesReadInDeclarationOrder) {
+  // `x:int, y:int` then expr `x - y`.  With x=10, y=3 the result is 7.
+  // If the codegen ever swapped the param indices, this would return
+  // -7 (because `y - x`), which is a very visible regression.
+  auto r = EvaluateWithVars("x - y", {"x:int", "y:int"},
+                            {I64(10), I64(3)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 7);
+}
+
+TEST(EvalE2ETest, UnreferencedVariableStillOccupiesParamSlot) {
+  // Declaring `y` but referring only to `x` must still produce a
+  // 2-param signature so the host ABI is deterministic.  Passing a
+  // dummy value for `y` exercises the slot; the expression value
+  // shouldn't depend on it.
+  auto r = EvaluateWithVars("x + 1", {"x:int", "y:int"},
+                            {I64(5), I64(999)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 6);
 }
 
 TEST(EvalE2ETest, StringLiteralReturnsCelValueOffset) {

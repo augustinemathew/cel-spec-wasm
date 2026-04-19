@@ -189,10 +189,11 @@ wasmtime_context_t* LoadedEval::context() const {
   return store_ == nullptr ? nullptr : wasmtime_store_context(store_);
 }
 
-absl::StatusOr<wasmtime_val_t> LoadedEval::CallNullaryEval() {
+absl::StatusOr<wasmtime_val_t> LoadedEval::CallEval(
+    absl::Span<const wasmtime_val_t> args) {
   if (!has_instances_) {
     return absl::FailedPreconditionError(
-        "LoadedEval::CallNullaryEval on an uninitialised instance "
+        "LoadedEval::CallEval on an uninitialised instance "
         "(did LoadEval() fail or was the object moved-from?)");
   }
   wasmtime_context_t* ctx = wasmtime_store_context(store_);
@@ -208,12 +209,15 @@ absl::StatusOr<wasmtime_val_t> LoadedEval::CallNullaryEval() {
 
   wasmtime_val_t result{};
   absl::Span<wasmtime_val_t> results(&result, 1);
-  if (auto s = CallInstanceFn(ctx, eval_instance_, "eval", /*args=*/{},
-                              results);
+  if (auto s = CallInstanceFn(ctx, eval_instance_, "eval", args, results);
       !s.ok()) {
     return s;
   }
   return result;
+}
+
+absl::StatusOr<wasmtime_val_t> LoadedEval::CallNullaryEval() {
+  return CallEval(/*args=*/{});
 }
 
 absl::StatusOr<LoadedEval> LoadEval(

@@ -56,6 +56,15 @@ class LoadedEval {
   // "stateless evaluation" contract.
   ABSL_MUST_USE_RESULT absl::StatusOr<wasmtime_val_t> CallNullaryEval();
 
+  // Invokes the eval module's `eval` export with caller-supplied `args`
+  // and expects exactly one scalar result.  `args` must match the eval
+  // function's param signature (produced by `LowerToEvalFunction` from
+  // `TypedAst::variables()`): one `wasmtime_val_t` per declared
+  // variable, in declaration order.  Calls `cel_reset` on the runtime
+  // before invoking eval, same as `CallNullaryEval`.
+  ABSL_MUST_USE_RESULT absl::StatusOr<wasmtime_val_t> CallEval(
+      absl::Span<const wasmtime_val_t> args);
+
   // Raw handle accessors for tests that need to poke beyond
   // CallNullaryEval — e.g. to inspect the runtime's linear memory
   // directly or to walk a returned CelValue offset.

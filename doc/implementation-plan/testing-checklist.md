@@ -39,8 +39,10 @@ block is the triage view a reviewer can read in ten seconds.
     strings into one generic blurb fails
     (`expr_lower_test::{ListExprIsUnimplementedWithListRepr,
     MapExprIsUnimplementedWithMapRepr,
-    StringConstantIsUnimplementedWithStringRepr,
-    IdentifierIsUnimplementedWithKindAndId}`).
+    UnsupportedVariableReprFailsWithSpecName}`).  The
+    `StringConstantIsUnimplementedWithStringRepr` and
+    `IdentifierIsUnimplementedWithKindAndId` entries from M2 are gone —
+    both surfaces ship positive lowerings as of M3 slices A and C.
   - Per-op e2e comparison coverage for `uint` and `double`, plus
     `double` negate (`eval_test::{UintComparisons, DoubleComparisons,
     DoubleNegate}`).
@@ -83,6 +85,26 @@ block is the triage view a reviewer can read in ten seconds.
     `function_set`; `types` / `attributes` / `patterns` /
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
+
+**M3 slice C (2026-04-19): `kIdentExpr` reads scalar variables.**
+Variables declared in `CheckOptions::variable_specs` now become typed
+parameters on the eval function, in declaration order.  `kIdentExpr`
+lowers to `local.get N` against that parameter slot.  `TypedAst::
+variables()` carries each `{name, Repr}` pair so codegen can size the
+signature even for variables the expression doesn't reference (the
+host's ABI signature must be deterministic).  `LoadedEval::CallEval`
+generalises the old `CallNullaryEval` to accept per-variable
+`wasmtime_val_t` args.  Declaring a variable whose Repr has no scalar
+ABI (list/map/message) fails loudly in codegen with the variable name
+in the diagnostic.  Coverage:
+`expr_lower_test::{IntIdentLowersToLocalGetWithI64Param,
+MultipleVarsGetParamsInDeclarationOrder, IdentsOfAllScalarReprs,
+UnsupportedVariableReprFailsWithSpecName}` and
+`eval_test::{IntVariableIsReadFromFirstParam, BoolVariableInTernary,
+DoubleVariableArithmetic, UintVariableUnsignedComparison,
+TwoVariablesReadInDeclarationOrder,
+UnreferencedVariableStillOccupiesParamSlot}`.  The `kIdentExpr` row's
+`codegen` and `e2e` cells flip to `[x]`.
 
 **M3 slice A+B (2026-04-19): string literals execute end-to-end.**
 String constants now lower to a block that calls `cel_alloc`, stores
@@ -172,7 +194,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | Variant             | parser | checker | annotations | RejectDyn | codegen | e2e |
 | ------------------- | :----: | :-----: | :---------: | :-------: | :-----: | :-: |
 | `kConstant`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
-| `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kSelectExpr` (`test_only`, from `has()`) | [x] | [x] | [x]  | [x] | [ ] | [ ] |
 | `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |

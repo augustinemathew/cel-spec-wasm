@@ -93,11 +93,17 @@ The design doc §12 fixes these; M3 is where we first implement them.
 
 ### Codegen
 
-- [ ] `kIdentExpr` — lookup against the eval function's parameter
-      list.  The parameter list is derived from the `cel.abi`
-      attribute table (design §7).  An `x: int` var shows up as an
-      `i64` parameter; an `x: message(T)` var shows up as an
-      `externref` parameter.
+- [x] `kIdentExpr` — lookup against the eval function's parameter
+      list.  Slice C (2026-04-19) wires variables declared in
+      `CheckOptions::variable_specs` as typed params on the eval
+      function in declaration order; `kIdentExpr` lowers to
+      `local.get N` against that slot.  Scalar-ABI variables (bool,
+      int, uint, double, string, bytes as offsets) are supported.
+      `message(T)` → externref still pending and gated on the
+      externref-bearing codegen that lands alongside proto field
+      reads.  The `cel.abi` table's role is still just to encode the
+      final ABI — codegen derives the param layout straight from
+      `TypedAst::variables()` at lowering time.
 - [ ] `kSelectExpr` (operand, field, not test_only) — lowers to a
       `cel_host.get_field` call followed by whatever unwrap or
       constructor is needed to match the checked field type.

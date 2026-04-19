@@ -181,7 +181,12 @@ struct TypeParser {
   }
 };
 
-absl::StatusOr<cel::VariableDecl> ParseVariableSpec(
+struct ParsedSpec {
+  cel::VariableDecl decl;
+  Repr repr;
+};
+
+absl::StatusOr<ParsedSpec> ParseVariableSpec(
     absl::string_view spec, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
   const size_t colon = spec.find(':');
@@ -206,7 +211,8 @@ absl::StatusOr<cel::VariableDecl> ParseVariableSpec(
         absl::StrCat("trailing garbage in type spec: '",
                      type_src.substr(parser.pos), "'"));
   }
-  return cel::MakeVariableDecl(name, std::move(*type));
+  Repr repr = ReprOf(*type);
+  return ParsedSpec{cel::MakeVariableDecl(name, std::move(*type)), repr};
 }
 
 }  // namespace
@@ -228,11 +234,19 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
     (*builder)->set_container(opts.container);
   }
 
-  // 3. Parse user variable decls using the builder's arena.
+  // 3. Parse user variable decls using the builder's arena.  Retain the
+  // (name, Repr) pair alongside the checker's decl so downstream codegen
+  // can lay out eval-function parameters in declaration order without
+  // re-parsing the user's type strings.
+  std::vector<Variable> variables;
+  variables.reserve(opts.variable_specs.size());
   for (const auto& spec : opts.variable_specs) {
-    auto decl = ParseVariableSpec(spec, (*builder)->arena(), pool_bundle->pool);
-    if (!decl.ok()) return decl.status();
-    if (auto s = (*builder)->AddVariable(*decl); !s.ok()) return s;
+    auto parsed =
+        ParseVariableSpec(spec, (*builder)->arena(), pool_bundle->pool);
+    if (!parsed.ok()) return parsed.status();
+    std::string name = parsed->decl.name();
+    if (auto s = (*builder)->AddVariable(parsed->decl); !s.ok()) return s;
+    variables.push_back(Variable{std::move(name), parsed->repr});
   }
 
   // 4. Build the checker.
@@ -262,7 +276,8 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   WasmAnnotations annotations;
   PopulateAnnotations(**checked_ast, annotations);
 
-  return TypedAst(std::move(*checked_ast), std::move(annotations));
+  return TypedAst(std::move(*checked_ast), std::move(annotations),
+                  std::move(variables));
 }
 
 }  // namespace celwasm

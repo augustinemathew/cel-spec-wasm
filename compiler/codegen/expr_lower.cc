@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -23,11 +24,23 @@ namespace {
 
 namespace op = ::google::api::expr::common;
 
-// Per-eval-function lowering state.  Holds scratch locals the body
-// needs — for example, the string-constant lowering allocates one
-// i32 per literal to hold the `cel_alloc` result across the
-// subsequent `i32.store8` chain.  Local indices are `num_params +
-// position in local_types`; M2 has zero params.
+// Per-eval-function lowering state.  Holds the parameter layout (one
+// WASM param per user-declared variable, in spec order) and any scratch
+// locals the body accumulates — for example, the string-constant
+// lowering allocates one i32 per literal to hold the `cel_alloc` result
+// across the subsequent `i32.store8` chain.
+//
+// Local indexing in WebAssembly: parameters come first (0..num_params),
+// then local variables (num_params..num_params+local_types.size()).
+// `AddLocal` returns the absolute index in that single space.
+//
+// `idents` maps declared variable name → param index; `kIdentExpr`
+// lowers to `local.get idents[name]`.  Misses surface as an
+// `InvalidArgument` status, which is stronger than a lookup miss:
+// the checker already rejects unknown identifiers, so a miss here
+// indicates either a bug in the frontend (a var used in the
+// expression wasn't declared) or a downstream caller that passed an
+// `TypedAst` whose `variables()` list is out of sync with the AST.
 //
 // The context does NOT track which runtime imports have been
 // declared: we always link eval modules fully against the runtime
@@ -36,6 +49,7 @@ struct LoweringContext {
   WasmModule& mod;
   uint32_t num_params = 0;
   std::vector<BinaryenType> local_types;
+  absl::flat_hash_map<std::string, BinaryenIndex> idents;
 
   BinaryenIndex AddLocal(BinaryenType type) {
     local_types.push_back(type);
@@ -186,6 +200,32 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
                        children.data(),
                        static_cast<BinaryenIndex>(children.size()),
                        /*type=*/BinaryenTypeInt32());
+}
+
+// Lowers an `IdentExpr` to a `local.get` against the param slot the
+// variable was assigned in `LowerToEvalFunction`.  The node's Repr
+// annotation drives the result type — it must match the param's
+// declared BinaryenType (both are derived from the same user-supplied
+// type string upstream, so agreement is by construction).
+absl::StatusOr<BinaryenExpressionRef> LowerIdent(LoweringContext& ctx,
+                                                 const TypedAst& ast,
+                                                 const cel::Expr& expr) {
+  const std::string& name = expr.ident_expr().name();
+  auto it = ctx.idents.find(name);
+  if (it == ctx.idents.end()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "expr_lower: identifier `", name, "` was not declared in "
+        "CheckOptions::variable_specs (expr id ", expr.id(), ")"));
+  }
+  auto repr = ReprOf(ast, expr);
+  if (!repr.ok()) return repr.status();
+  BinaryenType t = WasmTypeFor(*repr);
+  if (t == BinaryenTypeNone()) {
+    return absl::UnimplementedError(absl::StrCat(
+        "expr_lower: identifier `", name, "` has Repr `", ReprName(*repr),
+        "` which has no scalar ABI lowering (expr id ", expr.id(), ")"));
+  }
+  return BinaryenLocalGet(ctx.mod.raw(), it->second, t);
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
@@ -428,7 +468,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
     case cel::ExprKindCase::kCallExpr:
       return LowerCall(ctx, ast, expr);
     case cel::ExprKindCase::kIdentExpr:
-      return UnimplementedKind("IdentExpr", expr.id());
+      return LowerIdent(ctx, ast, expr);
     case cel::ExprKindCase::kSelectExpr:
       return UnimplementedKind("SelectExpr", expr.id());
     case cel::ExprKindCase::kListExpr:
@@ -491,10 +531,37 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
         "` has no scalar ABI lowering in M2"));
   }
   if (auto s = DeclareRuntimeImports(mod); !s.ok()) return s;
+
+  // Build the parameter list from the declared variables.  Each user
+  // variable becomes one WASM param whose type is the ABI encoding of
+  // its Repr.  Variables whose Repr has no scalar encoding (list, map,
+  // message, dyn) fail cleanly here — their support lives in later
+  // milestones.  Duplicate names would be a checker bug (the decl-
+  // builder would have refused to add the second one) but are worth
+  // flagging here too since ctx.idents silently overwrites on collision.
+  std::vector<BinaryenType> params;
+  params.reserve(ast.variables().size());
   LoweringContext ctx{mod};
+  for (const Variable& v : ast.variables()) {
+    BinaryenType pt = WasmTypeFor(v.repr);
+    if (pt == BinaryenTypeNone()) {
+      return absl::UnimplementedError(absl::StrCat(
+          "expr_lower: variable `", v.name, "` has Repr `",
+          ReprName(v.repr), "` which has no scalar ABI lowering in M3"));
+    }
+    BinaryenIndex idx = static_cast<BinaryenIndex>(params.size());
+    params.push_back(pt);
+    auto [it, inserted] = ctx.idents.emplace(v.name, idx);
+    if (!inserted) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "expr_lower: duplicate variable name `", v.name, "` in specs"));
+    }
+  }
+  ctx.num_params = static_cast<uint32_t>(params.size());
+
   auto body = LowerExpr(ctx, ast, root);
   if (!body.ok()) return body.status();
-  mod.AddFunction(func_name, /*params=*/{}, result_type,
+  mod.AddFunction(func_name, params, result_type,
                   /*local_types=*/ctx.local_types, *body);
   BinaryenFunctionRef fn =
       BinaryenGetFunction(mod.raw(), std::string(func_name).c_str());

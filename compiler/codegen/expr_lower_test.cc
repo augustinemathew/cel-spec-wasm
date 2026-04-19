@@ -288,22 +288,118 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
   }
 }
 
-TEST(ExprLowerTest, IdentifierIsUnimplementedWithKindAndId) {
+// Helper: parse + check `expr` under `variable_specs`, lower it as
+// `eval`, and hand back the module.  Mirrors `LowerOk` but threads
+// variables through so ident-using cases can assert against the
+// emitted function signature.
+Lowered LowerOkWithVars(absl::string_view expr,
+                        std::vector<std::string> specs) {
   CheckOptions opts;
-  opts.variable_specs.push_back("x:int");
-  auto typed = ParseAndCheck("x + 1", opts);
+  opts.variable_specs = std::move(specs);
+  auto typed = ParseAndCheck(expr, opts);
+  CHECK_OK(typed.status()) << "ParseAndCheck failed for: " << expr;
+  Lowered out;
+  out.mod = WasmModule();
+  auto fn_or = LowerToEvalFunction(*typed, "eval", out.mod);
+  CHECK_OK(fn_or.status()) << "LowerToEvalFunction failed for: " << expr;
+  out.fn = *fn_or;
+  out.mod.ExportFunction("eval", "eval");
+  return out;
+}
+
+// Binaryen surfaces the function's parameter list as a single
+// `BinaryenType` — a tuple for >1 params, a single type for 1, or
+// `None` for 0.  `ParamTypes` normalises that into the vector shape
+// the tests want to assert against.
+std::vector<BinaryenType> ParamTypes(BinaryenFunctionRef fn) {
+  BinaryenType packed = BinaryenFunctionGetParams(fn);
+  uint32_t n = BinaryenTypeArity(packed);
+  std::vector<BinaryenType> out(n);
+  if (n == 1) {
+    out[0] = packed;
+  } else if (n > 1) {
+    BinaryenTypeExpand(packed, out.data());
+  }
+  return out;
+}
+
+TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
+  auto L = LowerOkWithVars("x + 1", {"x:int"});
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  ASSERT_NE(fn, nullptr);
+  // One i64 param for `x`; no scratch locals (arithmetic needs none).
+  auto params = ParamTypes(fn);
+  ASSERT_EQ(params.size(), 1u);
+  EXPECT_EQ(params[0], BinaryenTypeInt64());
+  EXPECT_EQ(BinaryenFunctionGetNumVars(fn), 0u);
+
+  // Body shape: `x + 1` → Binary(i64.add, LocalGet(0, i64), Const(1)).
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
+  BinaryenExpressionRef lhs = BinaryenBinaryGetLeft(body);
+  ASSERT_EQ(BinaryenExpressionGetId(lhs), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenLocalGetGetIndex(lhs), 0u);
+  EXPECT_EQ(BinaryenExpressionGetType(lhs), BinaryenTypeInt64());
+}
+
+TEST(ExprLowerTest, MultipleVarsGetParamsInDeclarationOrder) {
+  // Whether or not `y` is referenced, it must claim param slot 1 so
+  // the emitted function signature is deterministic for the host.  We
+  // therefore use an expression that names only `x` and verify that
+  // `y`'s param slot still exists.
+  auto L = LowerOkWithVars("x * 2", {"x:int", "y:double"});
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  auto params = ParamTypes(fn);
+  ASSERT_EQ(params.size(), 2u);
+  EXPECT_EQ(params[0], BinaryenTypeInt64());
+  EXPECT_EQ(params[1], BinaryenTypeFloat64());
+}
+
+TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
+  // One positive case per WASM-scalar-bearing Repr to guard against a
+  // regression where WasmTypeFor and LoweredIdent disagree on the type
+  // of a `local.get`.  (Binaryen's validator would catch the mismatch,
+  // but it's worth nailing down the intended mapping in a test.)
+  struct Case { const char* spec; BinaryenType want; };
+  for (const auto& c : {
+           Case{"b:bool",   BinaryenTypeInt32()},
+           Case{"i:int",    BinaryenTypeInt64()},
+           Case{"u:uint",   BinaryenTypeInt64()},
+           Case{"d:double", BinaryenTypeFloat64()},
+       }) {
+    SCOPED_TRACE(c.spec);
+    std::string name(c.spec, 1);  // first char is the var name.
+    auto L = LowerOkWithVars(name, {c.spec});
+    EXPECT_THAT(L.mod.Validate(), IsOk());
+    BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+    auto params = ParamTypes(fn);
+    ASSERT_EQ(params.size(), 1u);
+    EXPECT_EQ(params[0], c.want);
+    BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+    ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
+    EXPECT_EQ(BinaryenExpressionGetType(body), c.want);
+  }
+}
+
+TEST(ExprLowerTest, UnsupportedVariableReprFailsWithSpecName) {
+  // `list<int>` has no scalar ABI in M3, so declaring such a variable
+  // — even before the body touches it — must fail loudly at
+  // LowerToEvalFunction with the variable name in the message.  The
+  // alternative (accepting the decl, then choking inside the body if
+  // `xs` is referenced) would be silently broken for never-referenced
+  // vars and confusing for referenced ones.
+  CheckOptions opts;
+  opts.variable_specs = {"xs:list<int>"};
+  auto typed = ParseAndCheck("1 + 2", opts);
   ASSERT_THAT(typed.status(), IsOk());
-  // Root is a `_+_` CallExpr with int Repr, so the early root-Repr check
-  // passes.  The failure must come from `LowerExpr` descending into the
-  // identifier subtree and hitting the IdentExpr arm.
   WasmModule mod;
   auto s = LowerToEvalFunction(*typed, "eval", mod).status();
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kUnimplemented));
-  EXPECT_THAT(std::string(s.message()), HasSubstr("IdentExpr"));
-  EXPECT_THAT(std::string(s.message()), HasSubstr("not yet supported"));
-  // The id of the identifier node is surfaced so users can locate the
-  // offending subexpression in the parsed source.
-  EXPECT_THAT(std::string(s.message()), HasSubstr("expr id"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("xs"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("list"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("no scalar ABI"));
 }
 
 TEST(ExprLowerTest, WasmTypeForScalars) {
