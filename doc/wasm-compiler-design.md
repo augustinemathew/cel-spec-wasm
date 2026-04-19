@@ -1225,25 +1225,78 @@ Hosts MUST read and verify this section before instantiation.
 
 ## Appendix B: minimal host worked example
 
+Scenario: evaluate `request.user.name + "!" == greeting` under the
+static subset, where `request` is a proto message the host already
+owns, `greeting` is a host-provided `string`, and the expression was
+compiled to `expr.wasm` by `celwasmc --emit_wasm`.
+
+The host loads **two** modules: the shared `runtime.wasm` (one instance
+per process, reused across every eval module) and the per-expression
+`expr.wasm`.  The runtime's exports are rebound under the module
+namespace `"cel"` via a linker before the eval module is instantiated —
+`expr.wasm`'s imports name `(cel, cel_alloc)`, `(cel, memory)`,
+`(cel, cel_string_concat)`, and so on, and the linker resolves them
+against the runtime instance.  The C++ helper at
+`compiler/host/host_loader.{h,cc}` (wasmtime) owns this dance; hosts in
+other languages follow the same shape.
+
 ```c
-// Pseudocode — any host language that can instantiate a WASM module works.
-WasmInstance m = instantiate("expr.wasm", host_imports);
+// Pseudocode — any wasm runtime with a linker and externref support works.
 
-// Pass the top-level proto message as an externref directly — no copy,
-// no interning step on the host side.
-ExternRef user_request_ref = make_externref(user_request);
+// ---- One-time: instantiate the runtime and set up a linker. -------------
+WasmEngine   engine = make_engine();
+WasmStore    store  = make_store(engine);
+WasmModule   rt_mod = compile(engine, load_file("runtime.wasm"));
+WasmInstance rt     = instantiate(store, rt_mod, /*imports=*/{});
+WasmLinker   linker = make_linker(engine);
+linker.define_instance("cel", rt);          // re-export runtime under "cel"
+linker.define_func("cel_host", "get_field",    host_get_field);
+linker.define_func("cel_host", "has_field",    host_has_field);
+linker.define_func("cel_host", "message_eq",   host_message_eq);
 
-// Evaluate.  `eval` takes externref(s) for message inputs and i32
-// (CelValue*) for scalar inputs, per the static signature emitted in
-// the cel.abi custom section.
-uint32_t result = m.call("eval", user_request_ref, /*other args*/);
+// ---- Per-expression: instantiate the eval module against the linker. ----
+WasmModule   ev_mod = compile(engine, load_file("expr.wasm"));
+WasmInstance ev     = linker.instantiate(store, ev_mod);
 
-// Read the CelValue struct directly from linear memory.
-CelValueView v = read_value(m.memory, result);
+// Runtime exports, reached through the eval instance's imports or
+// directly through `rt`.  Grabbed once and reused across evals.
+Func cel_alloc            = rt.get_func("cel_alloc");
+Func cel_mem_base         = rt.get_func("cel_mem_base");
+Func cel_string_view      = rt.get_func("cel_string_view");
+Func cel_unwrap_message   = rt.get_func("cel_unwrap_message");
+Func cel_reset            = rt.get_func("cel_reset");
+Memory mem                = rt.get_memory("memory");
+Func eval                 = ev.get_func("eval");
+
+// ---- Build inputs.  The eval signature is mixed, per Repr:
+//        (param externref)        -- request      : message
+//        (param i32)              -- greeting     : string (CelValue*)
+//      bool -> i32, int/uint -> i64, double -> f64, string/bytes -> i32,
+//      message -> externref.  See cel.abi.MemoryLayout for the per-param
+//      mapping; numeric scalars travel as their native wasm type, not
+//      as CelValue*.
+ExternRef request_ref = make_externref(user_request);       // zero-copy
+
+// Strings DO need a CelValue.  Allocate arena space, translate the
+// g_memory-relative offset to an absolute linear-memory address via
+// cel_mem_base(), write the UTF-8 bytes, then build a view whose ptr
+// field is the ORIGINAL arena-relative offset (see §7.1, §7.4).
+const char*  g     = "hello!";
+uint32_t     g_len = strlen(g);
+uint32_t     rel   = cel_alloc.call(g_len);                 // arena-relative
+uint32_t     abs_  = cel_mem_base.call() + rel;             // absolute
+memcpy(mem.data() + abs_, g, g_len);
+uint32_t     greeting_cv = cel_string_view.call(rel, g_len);// CelValue*
+
+// ---- Evaluate. ----------------------------------------------------------
+uint32_t result = eval.call(request_ref, greeting_cv);      // i32 CelValue*
+
+// Result is also arena-relative: translate before reading.
+CelValueView v = read_value(mem.data() + cel_mem_base.call(), result);
 switch (v.kind) {
   case CEL_BOOL:    return v.b;
   case CEL_MESSAGE: {
-      ExternRef msg = m.call("cel_unwrap_message", result);
+      ExternRef msg = cel_unwrap_message.call(result);
       // msg is the original (or a derived) host message.
       break;
   }
@@ -1253,7 +1306,9 @@ switch (v.kind) {
 }
 
 // Reclaim arena (and rewind the ref-table free list) for the next eval.
-m.call("cel_reset");
+// Invalidates every CelValue*, string payload, and ref slot — do any
+// further reads from `v` BEFORE this call.
+cel_reset.call();
 ```
 
 ## Open questions
