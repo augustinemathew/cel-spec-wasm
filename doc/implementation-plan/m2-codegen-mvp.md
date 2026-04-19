@@ -104,9 +104,20 @@ Out of scope for M2 (later milestones pick these up):
       `cel_make_*` constructor (singletons + per-kind payload), and
       string/bytes equality on empty/equal/differing-length/differing-
       content/cross-kind/zero-offset inputs.
-- [ ] End-to-end: `compiler/e2e/eval_test.cc` instantiates the generated
-      module with a WASM runtime (wasmtime C API) and evaluates each
-      smoke-test expression, comparing the result against a literal.
+- [x] End-to-end: `compiler/e2e/eval_test.cc` — 17 tests that instantiate
+      each generated module under the wasmtime C API, call the exported
+      `eval` function, and compare the returned `wasmtime_val_t` against a
+      literal.  Covers int/uint/double constants, arithmetic (with
+      precedence + unary negate + modulo), unsigned division, all six
+      comparison ops on ints (including negative-operand signed check) and
+      doubles, bool literals, `&&` / `||` / `!`, ternary, and a mixed
+      expression.  This is the first place in the test suite that proves
+      the emitted `.wasm` actually executes correctly — validator passes
+      + inspected IR shape (what `expr_lower_test` / `module_test` check)
+      only prove the module is well-formed, not that it means what we
+      think it means.  Wasmtime v43.0.1 is pinned in `MODULE.bazel` as a
+      prebuilt darwin-arm64 archive under `@wasmtime_darwin_arm64`; other
+      platforms can gain a matching archive + `select()` later.
 
 ## Toolchain notes
 

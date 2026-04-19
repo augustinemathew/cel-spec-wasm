@@ -22,10 +22,10 @@ variant to the right `Repr`. `RejectDyn` tests live in
 
 | Type            | parser | checker | annotations | RejectDyn | codegen | e2e eval |
 | --------------- | :----: | :-----: | :---------: | :-------: | :-----: | :------: |
-| `bool`          | [x]    | [x]     | [x]         | [x]       | [x]     | [ ]      |
-| `int`           | [x]    | [x]     | [x]         | [x]       | [x]     | [ ]      |
-| `uint`          | [x]    | [x]     | [x]         | [ ]       | [x]     | [ ]      |
-| `double`        | [x]    | [x]     | [x]         | [ ]       | [x]     | [ ]      |
+| `bool`          | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
+| `int`           | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
+| `uint`          | [x]    | [x]     | [x]         | [ ]       | [x]     | [x]      |
+| `double`        | [x]    | [x]     | [x]         | [ ]       | [x]     | [x]      |
 | `string`        | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
 | `bytes`         | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
 | `null_type`     | [x]    | [x]     | [x]         | [ ]       | [ ]     | [ ]      |
@@ -44,13 +44,13 @@ variant to the right `Repr`. `RejectDyn` tests live in
 
 | Variant             | parser | checker | annotations | RejectDyn | codegen | e2e |
 | ------------------- | :----: | :-----: | :---------: | :-------: | :-----: | :-: |
-| `kConstant`         | [x]    | [x]     | [x]         | [x]       | [x]     | [ ] |
+| `kConstant`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kSelectExpr` (`test_only`, from `has()`) | [ ] | [ ] | [ ]  | [ ] | [ ] | [ ] |
-| `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [ ] |
+| `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |
-| `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [x] | [ ] |
+| `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [x] | [x] |
 | `kListExpr` (empty + non-empty) | [x] | [x] | [x]  | [x]       | [ ]     | [ ] |
 | `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [ ] |
 | `kMapExpr`          | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |

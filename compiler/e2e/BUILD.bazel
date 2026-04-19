@@ -1,0 +1,26 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+# End-to-end test: runs the full pipeline (parse → check → lower →
+# serialize) and then executes the resulting .wasm under wasmtime.
+# Only buildable on darwin-arm64 because that's the only platform for
+# which we currently vendor a wasmtime C API archive (see MODULE.bazel);
+# gaining a Linux / x86_64 build is a matter of adding another
+# `http_archive` + flipping the dep to a `select()`.
+cc_test(
+    name = "eval_test",
+    srcs = ["eval_test.cc"],
+    deps = [
+        "//compiler/codegen:expr_lower",
+        "//compiler/codegen:module",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:typed_ast",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)

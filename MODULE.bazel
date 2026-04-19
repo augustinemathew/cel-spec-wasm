@@ -42,6 +42,22 @@ http_archive(
     ],
 )
 
+# wasmtime — prebuilt C API release tarball used only by the e2e
+# eval test (instantiates a compiler-emitted .wasm module and checks
+# the call returns the expected literal).  We pin the darwin-arm64
+# tarball because that's the only platform this repo currently builds
+# on (see CLAUDE.md); other platforms can gain a matching archive when
+# they're brought online.  libwasmtime.a is the ~30 MiB static lib.
+http_archive(
+    name = "wasmtime_darwin_arm64",
+    build_file = "//third_party/wasmtime:BUILD.external.bazel",
+    sha256 = "6e5c423f69d50d2c3fd6ad6a5e0953c299a4db1eae27fb727bf7b6f4f83d51ce",
+    strip_prefix = "wasmtime-v43.0.1-aarch64-macos-c-api",
+    urls = [
+        "https://github.com/bytecodealliance/wasmtime/releases/download/v43.0.1/wasmtime-v43.0.1-aarch64-macos-c-api.tar.xz",
+    ],
+)
+
 # C++ CEL compiler dependencies.
 bazel_dep(
     name = "abseil-cpp",

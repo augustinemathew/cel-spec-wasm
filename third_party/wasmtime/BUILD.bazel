@@ -1,0 +1,6 @@
+# Marker package so `//third_party/wasmtime:BUILD.external.bazel` is
+# visible to the `http_archive(build_file = …)` call in MODULE.bazel.
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["BUILD.external.bazel"])
