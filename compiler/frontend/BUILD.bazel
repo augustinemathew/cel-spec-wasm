@@ -1,0 +1,28 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+cc_library(
+    name = "parse_and_check",
+    srcs = ["parse_and_check.cc"],
+    hdrs = ["parse_and_check.h"],
+    deps = [
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "//proto/cel/expr:syntax_cc_proto",
+        "@cel-cpp//checker:standard_library",
+        "@cel-cpp//checker:type_checker",
+        "@cel-cpp//checker:type_checker_builder",
+        "@cel-cpp//checker:type_checker_builder_factory",
+        "@cel-cpp//checker:validation_result",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_proto",
+        "@cel-cpp//common:decl",
+        "@cel-cpp//common:type",
+        "@cel-cpp//parser",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

@@ -13,12 +13,27 @@ bazel_dep(
 )
 bazel_dep(
     name = "protobuf",
-    version = "27.1",
+    version = "33.4",
     repo_name = "com_google_protobuf",
 )
 bazel_dep(
     name = "rules_cc",
     version = "0.0.17",
+)
+
+# C++ CEL compiler dependencies.
+bazel_dep(
+    name = "abseil-cpp",
+    version = "20260107.0",
+    repo_name = "com_google_absl",
+)
+bazel_dep(
+    name = "cel-cpp",
+    version = "0.0.0",
+)
+local_path_override(
+    module_name = "cel-cpp",
+    path = "third_party/cel-cpp",
 )
 bazel_dep(
     name = "rules_go",

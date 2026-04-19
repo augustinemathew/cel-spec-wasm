@@ -1,0 +1,36 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+cc_library(
+    name = "annotations",
+    srcs = ["annotations.cc"],
+    hdrs = ["annotations.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "typed_ast",
+    srcs = ["typed_ast.cc"],
+    hdrs = ["typed_ast.h"],
+    deps = [
+        ":annotations",
+        "@cel-cpp//common:ast",
+        "@com_google_absl//absl/types:variant",
+    ],
+)
+
+cc_library(
+    name = "static_subset",
+    srcs = ["static_subset.cc"],
+    hdrs = ["static_subset.h"],
+    deps = [
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)

@@ -1,2 +1,6 @@
 bazel-*
 MODULE.bazel.lock
+
+# cel-cpp is vendored via third_party/fetch_cel_cpp.sh against the pinned SHA
+# in third_party/cel-cpp.sha.  We do not check it in.
+third_party/cel-cpp/
