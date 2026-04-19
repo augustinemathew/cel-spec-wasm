@@ -1327,3 +1327,49 @@ cel_reset.call();
 - **Memory growth**: the allocator calls `memory.grow` when the arena fills.
   We budget an initial 64 KiB page and grow as needed; the host can request
   a larger initial size via the `cel.abi.layout` section.
+- **Unified symbol table (decide before M4).** Today name/type/scope
+  information is split across three partial structures with no shared
+  owner:
+    1. Frontend — `CheckOptions::variable_specs` holds user-provided
+       `"name:Type"` strings that cel-cpp parses into `VariableDecl`s;
+       only cel-cpp's internal scope stack is live, and only during
+       checking.
+    2. IR — `TypedAst::variables()` carries a flat
+       `std::vector<Variable{name, Repr}>` for top-level params, and
+       `WasmAnnotations` keeps a per-node `Repr` keyed by `expr_id`.
+       The type info is a lossy projection of `cel::CheckedExpr`'s
+       `type_map`, and the name list covers only the top-level frame.
+    3. Codegen — `LoweringContext.idents`
+       (`compiler/codegen/expr_lower.cc`) is a
+       `flat_hash_map<string, BinaryenIndex>` rebuilt per compile,
+       with no scope stack (`ComprehensionExpr` returns
+       `UnimplementedKind`).
+  .
+  This is fine for the static subset we lower today (scalars, string
+  ops, top-level idents) because everything resolves against the
+  single top-level frame.  It stops being fine the moment
+  comprehensions land in M4, because every macro-expanded
+  `kComprehensionExpr` binds `iter_var` / `iter_var2` / accumulator in
+  an inner scope that the codegen has to mirror exactly the way the
+  checker did — and again in M6 when user functions introduce param
+  frames, and again if we add a leading-dot rewrite pass (§5.4) that
+  needs to see the checker's binding graph.
+  .
+  Two viable shapes, to be chosen **before the first M4 slice ships**:
+    - **Option A — promote to a proper `SymbolTable` on `TypedAst`.**
+      Built once during IR construction; carries `Repr`, wasm-local
+      index, and scope parent per binding; codegen becomes a pure
+      walker that never does string lookup.  More code up-front, but
+      room for our own passes (leading-dot rewrite, attribute
+      interning) without patching cel-cpp.
+    - **Option B — side-table keyed off cel-cpp's `reference_map`.**
+      For each `expr_id` that references a decl, store a
+      `WasmBinding{repr, local_index}` entry; scopes become implicit
+      in the AST because the checker already resolved every name.
+      Less code, tighter coupling to cel-cpp's resolution model;
+      makes our own passes harder.
+  .
+  Decision owner: whoever picks up M4 Slice A.  The design doc §10.3
+  `ScopeFrame` sketch is Option A; if we take Option B, §10.3 needs a
+  rewrite.  See also the checker-integration bullet in
+  `doc/implementation-plan/m4-collections-and-comprehensions.md`.

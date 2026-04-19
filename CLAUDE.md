@@ -69,6 +69,25 @@ When a bug is fixed, add a regression test *in the same commit*.
   - Apple clang does **not** have a wasm32 target.  Cross-compilation uses
     brew's `llvm` + `binaryen` (already installed on this machine).
 
+## Unresolved design debt to keep front-of-mind
+
+Track these while working; raise them to the user when a change touches
+the surrounding code, and update / close them when a decision ships.
+
+- **Unified symbol table (decide before M4 Slice A).** Name / type /
+  scope info is currently split three ways: `CheckOptions::variable_specs`
+  (frontend), `TypedAst::variables()` + `WasmAnnotations` (IR), and
+  `LoweringContext.idents` in `compiler/codegen/expr_lower.cc`
+  (codegen).  Works for today's flat, scope-free subset; breaks the
+  moment comprehensions (M4), user functions (M6), or a leading-dot
+  rewrite pass need nested scopes.  Two options in the design doc's
+  "Open questions" section: (A) promote to a `SymbolTable` on
+  `TypedAst`, (B) side-table off cel-cpp's `reference_map`.  **If you
+  are about to add comprehension lowering, a new IR pass, or a second
+  binding frame, flag this to the user and ask which option to take
+  before writing code.**  Close this bullet in both files when the
+  decision ships.
+
 ## What not to do
 
   - Don't reimplement the CEL parser or type checker.  Reuse
