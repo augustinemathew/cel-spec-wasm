@@ -38,15 +38,18 @@ Out of scope for M2 (later milestones pick these up):
 
 ### Codegen (Binaryen C API — see design §10)
 
-- [ ] `third_party/fetch_binaryen.sh` + `third_party/binaryen.sha` —
-      bootstraps a pinned Binaryen release tarball under
-      `third_party/binaryen/`.  Mirrors the cel-cpp vendoring pattern.
-- [ ] `third_party/binaryen/BUILD.bazel` — `cmake()` rule (via
-      `rules_foreign_cc`) that drives Binaryen's own CMakeLists.txt and
-      exports a `cc_library` with `libbinaryen.a` + `binaryen-c.h`.
-- [ ] `compiler/codegen/module.{h,cc}` — thin wrapper over
-      `BinaryenModuleRef` holding the `$cel_refs` table, the imports
-      table (`cel_host.*`, `cel_fn.*`), and the `eval` export.
+- [x] Binaryen vendoring via `MODULE.bazel` `http_archive` pinned to
+      version_129 (SHA256 verified) + `third_party/binaryen/BUILD.external.bazel`
+      `cmake()` rule (via `rules_foreign_cc`) driving Binaryen's own
+      CMakeLists.txt.  Exposes `@binaryen//:binaryen` with `libbinaryen.a`
+      + `binaryen-c.h`.
+- [x] `compiler/codegen/module.{h,cc}` — thin RAII wrapper over
+      `BinaryenModuleRef` holding memory + `$cel_refs` externref table
+      + imports + exports + functions + validate + serialize.
+      `BinaryenModuleSetFeatures` turns on reference-types, multivalue,
+      bulk-memory, sign-ext, mutable-globals, and GC (the last only to
+      allow `ref.null externref` table initializers; we emit no GC
+      instructions).
 - [ ] `compiler/codegen/expr_lower.{h,cc}` — dispatches on
       `cel::ExprKindCase` and `Repr` to emit expression WASM.
 - [ ] `compiler/codegen/abi.{h,cc}` — emits the `cel.abi` custom section
@@ -66,14 +69,18 @@ Out of scope for M2 (later milestones pick these up):
 - [ ] `compiler/frontend/parse_and_check_test.cc` — one test per primitive,
       list, map, and message spec parse; negative cases for bad spec, bad
       type name, trailing garbage.
-- [ ] `compiler/codegen/binaryen_smoke_test.cc` — proves the Binaryen
+- [x] `compiler/codegen/binaryen_smoke_test.cc` — proves the Binaryen
       integration is reachable from Bazel: `BinaryenModuleCreate`,
-      add a function returning `i32.const 0`, `BinaryenModuleWrite`,
+      add a function returning `i32.const 42`, `BinaryenModuleAllocateAndWrite`,
       assert bytes start with `\0asm\x01\x00\x00\x00` and that
       `BinaryenModuleValidate` reports OK.
-- [ ] `compiler/codegen/module_test.cc` — `cc_library` wrapper builds
-      the expected shape of a real eval module (memory + cel_refs
-      table + imports + exports) and `BinaryenModuleValidate` is OK.
+- [x] `compiler/codegen/module_test.cc` — 16 tests: empty-module
+      preamble, move construct/assign, SetMemory (export, twice-fails,
+      max<initial), AddCelRefsTable (externref type, max<initial),
+      function import is callable, locals declared, Export
+      Function/Table, full eval-module shape validates; plus 3 cases
+      on the `TupleType` helper (empty → None, single → passthrough,
+      N → interned tuple).
 - [ ] `compiler/codegen/expr_lower_test.cc` — per-`ExprKindCase`
       emission tests: each lowered function round-trips through
       `BinaryenModuleValidate`, and instruction shapes match a
