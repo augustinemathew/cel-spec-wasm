@@ -341,13 +341,35 @@ profiling justifies it.
 ├────────────────────────────────┤ data_end
 │ static globals                 │  g_arena, singletons (null, true, false),
 │                                │  ref-table free list head
-├────────────────────────────────┤ static_end
-│ bump arena                     │  grows upward until limit
-│       ↓                        │  host may call cel_reset between evals
-├────────────────────────────────┤ g_arena.limit
+├────────────────────────────────┤ ← cel_mem_base()  (== &g_memory[0])
+│ g_memory[0]                    │  runtime arena, addressed by the rest of
+│   reserved null sentinel       │  the runtime via offsets RELATIVE to
+│   static singletons            │  g_memory.  `cel_alloc` returns one of
+│   bump arena ↓                 │  these relative offsets; all CelValue
+│ g_memory[limit]                │  sub-pointers (CelSpan.ptr, CelArray.ptr,
+├────────────────────────────────┤  etc.) are relative to g_memory too.
 │ unused                         │  memory.grow if allocator exhausts
 └────────────────────────────────┘
 ```
+
+**Offsets are g_memory-relative, not linear-memory-absolute.**  The
+runtime internally reconstructs absolute linear-memory addresses as
+`g_memory + rel_offset`; for the C code this is free because
+`g_memory` is a `uint8_t[]` symbol the compiler has already resolved
+to its absolute offset.  External callers (host code reading a
+`CelValue*`, or the eval module computing an `i32.store8` address)
+must do the same translation by hand: call the exported
+`cel_mem_base() → i32` once and add it to every offset before
+dereferencing via linear memory.  Rationale: the native host tests
+link `cel_runtime.c` directly and use `g_memory + off` pointer math,
+so an ABI that returned absolute wasm offsets would require a
+separate native-vs-wasm code path inside the runtime itself.  Keeping
+offsets arena-relative and pushing the translation to the (single)
+external caller — the eval module — keeps the runtime single-sourced.
+
+The eval-module codegen caches `cel_mem_base() + scratch` once per
+string literal and reuses it for the byte-store loop; see
+§10.1.
 
 Alongside linear memory, the module declares a private externref table
 (`$cel_refs`) with a small free-list. Slot 0 is reserved as the null
@@ -424,7 +446,9 @@ struct CelValue {
 ```
 
 Every sub-pointer (`CelSpan.ptr`, `CelArray.ptr`, `CelMap.pairs_ptr`,
-`CelOptional.opt`, etc.) is a linear-memory offset from 0.
+`CelOptional.opt`, etc.) is an offset **relative to `g_memory`**, not
+to linear-memory base 0.  See §7.1's "Offsets are g_memory-relative"
+note for the translation rule and its rationale.
 
 ### 7.3 Auxiliary structs
 
@@ -455,9 +479,19 @@ extern Arena g_arena;
 // Exported to the host.
 uint32_t cel_alloc(uint32_t n);   // 8-byte-aligned bump alloc
 void     cel_reset(void);         // rewind arena between evals
+uint32_t cel_mem_base(void);      // absolute linear-memory address of g_memory[0]
 ```
 
 No `cel_free`. Hosts call `cel_reset()` after every `eval` to reclaim.
+
+`cel_alloc` returns an offset **relative to `g_memory`**. External callers
+that want to write through linear memory (eval module codegen, host
+embedders, tests) must add `cel_mem_base()` to the result before doing
+any `i32.store*` / memcpy. The view constructors (`cel_string_view`,
+`cel_bytes_copy`, …) continue to take the arena-relative offset — the
+runtime reconstructs `g_memory + rel` internally on every dereference,
+which is what lets the same C sources link into both wasm32 and
+native-host builds.
 
 ### 7.5 Constructors
 
@@ -569,6 +603,7 @@ directly via the module's exported `memory`.
 
 (func (export "cel_alloc") (param i32) (result i32))
 (func (export "cel_reset"))
+(func (export "cel_mem_base") (result i32))  ;; §7.1: absolute address of g_memory[0]
 
 ;; Constructors the host needs to build inputs or fill field values.
 (func (export "cel_null")           (result i32))
@@ -599,12 +634,17 @@ directly via the module's exported `memory`.
       (param $arg_msg externref) (param $arg_scalar i32) ... (result i32))
 ```
 
-Host-to-module flow for scalar inputs: host calls `cel_alloc`, writes bytes
-directly into `memory`, then `cel_string_view(ptr, len)`. For message
-inputs the host passes its `externref` straight into `eval`; the compiler
-emits a `cel_wrap_message` inside `eval` before the first use. Return is
-always `CelValue*` (i32), which the host reads from linear memory and —
-when `kind == CEL_MESSAGE` — unwraps via `cel_unwrap_message`.
+Host-to-module flow for scalar inputs: host calls `cel_alloc` to reserve
+`len` bytes in the arena, translates the returned arena offset to an
+absolute linear-memory address via the exported `cel_mem_base()` (see
+§7.1), writes the payload bytes there, and then calls
+`cel_string_view(rel_offset, len)` — the view constructor takes the
+**arena-relative** offset, not the absolute one. For message inputs the
+host passes its `externref` straight into `eval`; the compiler emits a
+`cel_wrap_message` inside `eval` before the first use. Return is always
+`CelValue*` (i32, arena-relative), which the host translates through
+`cel_mem_base` before reading from linear memory and — when
+`kind == CEL_MESSAGE` — unwraps via `cel_unwrap_message`.
 
 ### 8.2 Imports (module satisfies from host)
 
@@ -813,7 +853,7 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 
 | CEL expression        | Emitted IR                                                                        |
 | --------------------- | --------------------------------------------------------------------------------- |
-| Literal               | `cel_<kind>(const)` for scalars; `cel_string_view(ptr, len)` for interned strings |
+| Literal               | `cel_<kind>(const)` for scalars; for strings/bytes: `cel_alloc(len)` → cache `cel_mem_base() + rel` in a local, store literal bytes through that absolute pointer, then `cel_string_view(rel, len)` (view takes the arena-relative offset) |
 | Variable              | `local.get $argN`                                                                 |
 | `e.f` (scalar field)  | `cel_host.get_scalar_field(unwrap(e), type_id, field_id)`                          |
 | `e.f` (message field) | `(tag, ref, detail) = cel_host.get_message_field(unwrap(e), ...); if tag==0 cel_wrap_message(ref) else detail` |
