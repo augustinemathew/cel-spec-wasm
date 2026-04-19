@@ -50,8 +50,16 @@ Out of scope for M2 (later milestones pick these up):
       bulk-memory, sign-ext, mutable-globals, and GC (the last only to
       allow `ref.null externref` table initializers; we emit no GC
       instructions).
-- [ ] `compiler/codegen/expr_lower.{h,cc}` — dispatches on
-      `cel::ExprKindCase` and `Repr` to emit expression WASM.
+- [x] `compiler/codegen/expr_lower.{h,cc}` — MVP: lowers constants
+      (int/uint/double/bool), arithmetic (`+ - * / %`), unary negate,
+      logical (`&& || !`), comparisons (`== != < <= > >=`), and the
+      ternary `_?_:_` to Binaryen expressions on the scalar Reprs
+      {bool, int, uint, double}.  `LowerToEvalFunction` emits a
+      nullary function whose return type is the root expression's
+      scalar ABI lowering.  Identifiers, selects, lists, maps,
+      structs, comprehensions, strings, bytes return `Unimplemented`.
+      Error-propagation semantics (overflow, divide-by-zero, NaN,
+      unknown) deferred to M5.
 - [ ] `compiler/codegen/abi.{h,cc}` — emits the `cel.abi` custom section
       (type-id / attribute-id / pattern-id interning).
 - [ ] CLI: `celwasmc --emit-wasm out.wasm -e "<expr>" [--check …]` writes a
@@ -81,10 +89,16 @@ Out of scope for M2 (later milestones pick these up):
       Function/Table, full eval-module shape validates; plus 3 cases
       on the `TupleType` helper (empty → None, single → passthrough,
       N → interned tuple).
-- [ ] `compiler/codegen/expr_lower_test.cc` — per-`ExprKindCase`
-      emission tests: each lowered function round-trips through
-      `BinaryenModuleValidate`, and instruction shapes match a
-      hand-written golden (via `BinaryenModulePrint` textproto).
+- [x] `compiler/codegen/expr_lower_test.cc` — 23 tests covering:
+      constants (int/uint/double/bool) return the right `BinaryenType`
+      and the validator accepts; arithmetic for int (signed),
+      uint (unsigned opcodes), double; unary negate for int (`0 - x`
+      shape) and double (`f64.neg`); logical not (`i32.eqz`);
+      comparisons that pick signed vs unsigned vs f64 opcodes; `&&`
+      and `||` lower to `BinaryenIf` short-circuit shape; `?:` lowers
+      to `BinaryenIf`; a mixed expression; and negative tests that
+      ListExpr, MapExpr, string constants, and IdentExpr all cleanly
+      return `Unimplemented`.  Plus `WasmTypeFor` scalar coverage.
 - [x] `compiler/runtime/cel_runtime_test.cc` — 38 gtest cases covering
       struct size invariant, allocator alignment / reset / OOM, every
       `cel_make_*` constructor (singletons + per-kind payload), and

@@ -36,3 +36,40 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+cc_library(
+    name = "expr_lower",
+    srcs = ["expr_lower.cc"],
+    hdrs = ["expr_lower.h"],
+    deps = [
+        ":module",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "@binaryen//:binaryen",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:constant",
+        "@cel-cpp//common:expr",
+        "@cel-cpp//common:operators",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "expr_lower_test",
+    srcs = ["expr_lower_test.cc"],
+    deps = [
+        ":expr_lower",
+        ":module",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
