@@ -30,10 +30,8 @@ BinaryenModuleRef ReadRuntime() {
   std::string buf(reinterpret_cast<const char*>(kCelRuntimeWasmBytes),
                   kCelRuntimeWasmBytesSize);
   BinaryenFeatures features =
-      BinaryenFeatureReferenceTypes() |
-      BinaryenFeatureBulkMemory() |
-      BinaryenFeatureSignExt() |
-      BinaryenFeatureMutableGlobals() |
+      BinaryenFeatureReferenceTypes() | BinaryenFeatureBulkMemory() |
+      BinaryenFeatureSignExt() | BinaryenFeatureMutableGlobals() |
       BinaryenFeatureMultivalue();
   return BinaryenModuleReadWithFeatures(buf.data(), buf.size(), features);
 }
@@ -131,10 +129,8 @@ TEST_F(RuntimeLinkTest, RoundTripsThroughBinaryen) {
   ASSERT_GT(out.binaryBytes, 0u);
 
   BinaryenFeatures features =
-      BinaryenFeatureReferenceTypes() |
-      BinaryenFeatureBulkMemory() |
-      BinaryenFeatureSignExt() |
-      BinaryenFeatureMutableGlobals() |
+      BinaryenFeatureReferenceTypes() | BinaryenFeatureBulkMemory() |
+      BinaryenFeatureSignExt() | BinaryenFeatureMutableGlobals() |
       BinaryenFeatureMultivalue();
   BinaryenModuleRef roundtrip = BinaryenModuleReadWithFeatures(
       reinterpret_cast<char*>(out.binary), out.binaryBytes, features);

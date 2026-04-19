@@ -69,7 +69,9 @@ class LoadedEval {
   // CallNullaryEval — e.g. to inspect the runtime's linear memory
   // directly or to walk a returned CelValue offset.
   wasmtime_context_t* absl_nullable context() const;
-  const wasmtime_instance_t& eval_instance() const { return eval_instance_; }
+  const wasmtime_instance_t& eval_instance() const {
+    return eval_instance_;
+  }
   const wasmtime_instance_t& runtime_instance() const {
     return runtime_instance_;
   }

@@ -105,9 +105,10 @@ TEST(RejectDynTest, TestOnlySelectExprIsAcceptedWhenOperandTyped) {
   // walker must recurse into the operand but otherwise treat it like any
   // other select.
   AstBuilder b;
-  b.AddType(1, cel::TypeSpec{cel::MapTypeSpec(
-                    std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kString),
-                    std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kInt64))});
+  b.AddType(1,
+            cel::TypeSpec{cel::MapTypeSpec(
+                std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kString),
+                std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kInt64))});
   b.AddType(2, cel::TypeSpec{cel::PrimitiveType::kBool});  // has() → bool
   cel::Expr root;
   root.set_id(2);
@@ -213,7 +214,8 @@ TEST(RejectDynTest, MapExprIsAcceptedWithTypedEntries) {
 
 TEST(RejectDynTest, ComprehensionExprIsAcceptedWhenAllSubtreesTyped) {
   AstBuilder b;
-  for (int64_t id : {1, 2, 3, 4, 5, 6}) b.AddOkType(id);
+  for (int64_t id : {1, 2, 3, 4, 5, 6})
+    b.AddOkType(id);
   cel::Expr root;
   root.set_id(6);
   auto& c = root.mutable_comprehension_expr();
@@ -264,16 +266,14 @@ TEST(RejectDynTest, FunctionTypeSpecIsRejected) {
       std::vector<cel::TypeSpec>{});
   b.AddType(1, cel::TypeSpec{std::move(fn)});
   b.SetRoot(MakeConst(1));
-  EXPECT_THAT(RejectDyn(b.ast),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(RejectDyn(b.ast), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(RejectDynTest, ParamTypeSpecIsRejected) {
   AstBuilder b;
   b.AddType(1, cel::TypeSpec{cel::ParamTypeSpec("T")});
   b.SetRoot(MakeConst(1));
-  EXPECT_THAT(RejectDyn(b.ast),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(RejectDyn(b.ast), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(RejectDynTest, UnsetTypeSpecIsRejected) {
@@ -400,14 +400,17 @@ TEST(RejectDynTest, DynInComprehensionAccuInitIsRejected) {
 // would fail the matching row here rather than silently skipping.
 
 TEST(RejectDynTest, AcceptsEveryPrimitiveAtRoot) {
-  struct Row { const char* name; cel::PrimitiveType p; };
+  struct Row {
+    const char* name;
+    cel::PrimitiveType p;
+  };
   const Row rows[] = {
-      {"bool",   cel::PrimitiveType::kBool},
-      {"int",    cel::PrimitiveType::kInt64},
-      {"uint",   cel::PrimitiveType::kUint64},
+      {"bool", cel::PrimitiveType::kBool},
+      {"int", cel::PrimitiveType::kInt64},
+      {"uint", cel::PrimitiveType::kUint64},
       {"double", cel::PrimitiveType::kDouble},
       {"string", cel::PrimitiveType::kString},
-      {"bytes",  cel::PrimitiveType::kBytes},
+      {"bytes", cel::PrimitiveType::kBytes},
   };
   for (const auto& row : rows) {
     AstBuilder b;
@@ -418,14 +421,17 @@ TEST(RejectDynTest, AcceptsEveryPrimitiveAtRoot) {
 }
 
 TEST(RejectDynTest, AcceptsEveryPrimitiveWrapperAtRoot) {
-  struct Row { const char* name; cel::PrimitiveType p; };
+  struct Row {
+    const char* name;
+    cel::PrimitiveType p;
+  };
   const Row rows[] = {
-      {"BoolValue",   cel::PrimitiveType::kBool},
-      {"Int64Value",  cel::PrimitiveType::kInt64},
+      {"BoolValue", cel::PrimitiveType::kBool},
+      {"Int64Value", cel::PrimitiveType::kInt64},
       {"UInt64Value", cel::PrimitiveType::kUint64},
       {"DoubleValue", cel::PrimitiveType::kDouble},
       {"StringValue", cel::PrimitiveType::kString},
-      {"BytesValue",  cel::PrimitiveType::kBytes},
+      {"BytesValue", cel::PrimitiveType::kBytes},
   };
   for (const auto& row : rows) {
     AstBuilder b;
@@ -436,12 +442,15 @@ TEST(RejectDynTest, AcceptsEveryPrimitiveWrapperAtRoot) {
 }
 
 TEST(RejectDynTest, AcceptsNullTimestampDurationAny) {
-  struct Row { const char* name; cel::TypeSpec spec; };
+  struct Row {
+    const char* name;
+    cel::TypeSpec spec;
+  };
   Row rows[] = {
       {"null_type", cel::TypeSpec{cel::NullTypeSpec{}}},
       {"timestamp", cel::TypeSpec{cel::WellKnownTypeSpec::kTimestamp}},
-      {"duration",  cel::TypeSpec{cel::WellKnownTypeSpec::kDuration}},
-      {"any",       cel::TypeSpec{cel::WellKnownTypeSpec::kAny}},
+      {"duration", cel::TypeSpec{cel::WellKnownTypeSpec::kDuration}},
+      {"any", cel::TypeSpec{cel::WellKnownTypeSpec::kAny}},
   };
   for (auto& row : rows) {
     AstBuilder b;

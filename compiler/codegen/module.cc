@@ -21,14 +21,15 @@ namespace {
 // Binaryen's C API uses `BinaryenIndex` (uint32) for table / memory
 // maxima and encodes "no maximum" as (uint32_t)-1.  This constant
 // documents the convention at the one place where we rely on it.
-constexpr BinaryenIndex kNoMaximum =
-    std::numeric_limits<BinaryenIndex>::max();
+constexpr BinaryenIndex kNoMaximum = std::numeric_limits<BinaryenIndex>::max();
 
 // Convenience: many Binaryen entry points take `const char*` and we
 // hold `absl::string_view`.  Passing `.data()` directly is unsafe
 // because string_view is not null-terminated; copy through std::string
 // instead.
-std::string Cstr(absl::string_view s) { return std::string(s); }
+std::string Cstr(absl::string_view s) {
+  return std::string(s);
+}
 
 }  // namespace
 
@@ -38,8 +39,7 @@ BinaryenType TupleType(absl::Span<const BinaryenType> parts) {
   // BinaryenTypeCreate takes a non-const pointer but does not mutate;
   // copy to a local buffer to keep the span's constness honest.
   std::vector<BinaryenType> buf(parts.begin(), parts.end());
-  return BinaryenTypeCreate(buf.data(),
-                            static_cast<BinaryenIndex>(buf.size()));
+  return BinaryenTypeCreate(buf.data(), static_cast<BinaryenIndex>(buf.size()));
 }
 
 WasmModule::WasmModule() : module_(BinaryenModuleCreate()) {
@@ -50,13 +50,10 @@ WasmModule::WasmModule() : module_(BinaryenModuleCreate()) {
   // tuples would fail BinaryenModuleValidate.  GC is enabled only to
   // satisfy Binaryen's "tables with initializer expressions require
   // --enable-gc" check; we never emit GC instructions.
-  BinaryenModuleSetFeatures(module_,
-                            BinaryenFeatureReferenceTypes() |
-                                BinaryenFeatureMultivalue() |
-                                BinaryenFeatureBulkMemory() |
-                                BinaryenFeatureSignExt() |
-                                BinaryenFeatureMutableGlobals() |
-                                BinaryenFeatureGC());
+  BinaryenModuleSetFeatures(
+      module_, BinaryenFeatureReferenceTypes() | BinaryenFeatureMultivalue() |
+                   BinaryenFeatureBulkMemory() | BinaryenFeatureSignExt() |
+                   BinaryenFeatureMutableGlobals() | BinaryenFeatureGC());
 }
 
 WasmModule::~WasmModule() {
@@ -85,13 +82,12 @@ absl::Status WasmModule::SetMemory(uint32_t initial_pages,
         "single memory per module.");
   }
   if (max_pages.has_value() && *max_pages < initial_pages) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("memory max (", *max_pages,
-                     ") is less than initial (", initial_pages, ")"));
+    return absl::InvalidArgumentError(absl::StrCat("memory max (", *max_pages,
+                                                   ") is less than initial (",
+                                                   initial_pages, ")"));
   }
   const std::string export_c(export_name);
-  BinaryenSetMemory(module_,
-                    static_cast<BinaryenIndex>(initial_pages),
+  BinaryenSetMemory(module_, static_cast<BinaryenIndex>(initial_pages),
                     max_pages.has_value()
                         ? static_cast<BinaryenIndex>(*max_pages)
                         : kNoMaximum,
@@ -108,14 +104,13 @@ absl::Status WasmModule::SetMemory(uint32_t initial_pages,
   return absl::OkStatus();
 }
 
-absl::Status WasmModule::AddCelRefsTable(
-    absl::string_view name,
-    uint32_t initial_slots,
-    std::optional<uint32_t> max_slots) {
+absl::Status WasmModule::AddCelRefsTable(absl::string_view name,
+                                         uint32_t initial_slots,
+                                         std::optional<uint32_t> max_slots) {
   if (max_slots.has_value() && *max_slots < initial_slots) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("table max (", *max_slots,
-                     ") is less than initial (", initial_slots, ")"));
+    return absl::InvalidArgumentError(absl::StrCat("table max (", *max_slots,
+                                                   ") is less than initial (",
+                                                   initial_slots, ")"));
   }
   // Binaryen's `BinaryenAddTable` takes an initializer expression that
   // is used for every slot.  `ref.null externref` is the natural
@@ -123,14 +118,11 @@ absl::Status WasmModule::AddCelRefsTable(
   BinaryenExpressionRef init =
       BinaryenRefNull(module_, BinaryenTypeExternref());
   const std::string name_c(name);
-  BinaryenAddTable(module_,
-                   name_c.c_str(),
-                   static_cast<BinaryenIndex>(initial_slots),
-                   max_slots.has_value()
-                       ? static_cast<BinaryenIndex>(*max_slots)
-                       : kNoMaximum,
-                   BinaryenTypeExternref(),
-                   init);
+  BinaryenAddTable(
+      module_, name_c.c_str(), static_cast<BinaryenIndex>(initial_slots),
+      max_slots.has_value() ? static_cast<BinaryenIndex>(*max_slots)
+                            : kNoMaximum,
+      BinaryenTypeExternref(), init);
   return absl::OkStatus();
 }
 
@@ -155,8 +147,7 @@ absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
   // against binaryen 129 with a direct module dump.
   const std::string ext_mod_c = Cstr(external_module);
   const std::string ext_base_c = Cstr(external_base);
-  BinaryenSetMemory(module_,
-                    static_cast<BinaryenIndex>(initial_pages),
+  BinaryenSetMemory(module_, static_cast<BinaryenIndex>(initial_pages),
                     max_pages.has_value()
                         ? static_cast<BinaryenIndex>(*max_pages)
                         : kNoMaximum,
@@ -171,8 +162,7 @@ absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
                     /*memory64=*/false,
                     /*name=*/"memory");
   BinaryenAddMemoryImport(module_,
-                          /*internalName=*/"memory",
-                          ext_mod_c.c_str(),
+                          /*internalName=*/"memory", ext_mod_c.c_str(),
                           ext_base_c.c_str(),
                           /*shared=*/0);
   return absl::OkStatus();
@@ -186,12 +176,8 @@ void WasmModule::AddFunctionImport(absl::string_view internal_name,
   const std::string internal_c = Cstr(internal_name);
   const std::string ext_mod_c = Cstr(external_module);
   const std::string ext_base_c = Cstr(external_base);
-  BinaryenAddFunctionImport(module_,
-                            internal_c.c_str(),
-                            ext_mod_c.c_str(),
-                            ext_base_c.c_str(),
-                            TupleType(params),
-                            result);
+  BinaryenAddFunctionImport(module_, internal_c.c_str(), ext_mod_c.c_str(),
+                            ext_base_c.c_str(), TupleType(params), result);
 }
 
 void WasmModule::AddFunction(absl::string_view internal_name,
@@ -201,13 +187,9 @@ void WasmModule::AddFunction(absl::string_view internal_name,
                              BinaryenExpressionRef body) {
   const std::string internal_c = Cstr(internal_name);
   std::vector<BinaryenType> var_buf(local_types.begin(), local_types.end());
-  BinaryenAddFunction(module_,
-                      internal_c.c_str(),
-                      TupleType(params),
-                      result,
+  BinaryenAddFunction(module_, internal_c.c_str(), TupleType(params), result,
                       var_buf.empty() ? nullptr : var_buf.data(),
-                      static_cast<BinaryenIndex>(var_buf.size()),
-                      body);
+                      static_cast<BinaryenIndex>(var_buf.size()), body);
 }
 
 void WasmModule::ExportFunction(absl::string_view internal_name,
@@ -255,6 +237,8 @@ absl::StatusOr<std::vector<uint8_t>> WasmModule::Serialize() const {
   return out;
 }
 
-void WasmModule::PrintToStderr() const { BinaryenModulePrint(module_); }
+void WasmModule::PrintToStderr() const {
+  BinaryenModulePrint(module_);
+}
 
 }  // namespace celwasm

@@ -16,21 +16,21 @@ namespace celwasm {
 // whether a value travels as an immediate scalar, a (ptr,len) pair into linear
 // memory, or an externref slot.
 enum class Repr : uint8_t {
-  kUnknown = 0,    // type checker left the node as DYN
-  kNull,           // null_type
-  kBool,           // i32 {0, 1}
-  kInt,            // i64 signed
-  kUint,           // i64 unsigned
-  kDouble,         // f64
-  kString,         // linear memory (char*, i32 len)
-  kBytes,          // linear memory (uint8_t*, i32 len)
-  kList,           // linear memory CelList header
-  kMap,            // linear memory CelMap header
-  kMessage,        // externref slot (i32 index into $cel_refs table)
-  kEnum,           // i64 (widened, signed)
-  kDuration,       // i64 nanoseconds
-  kTimestamp,      // i64 microseconds since unix epoch
-  kType,           // i32 interned type id
+  kUnknown = 0,  // type checker left the node as DYN
+  kNull,         // null_type
+  kBool,         // i32 {0, 1}
+  kInt,          // i64 signed
+  kUint,         // i64 unsigned
+  kDouble,       // f64
+  kString,       // linear memory (char*, i32 len)
+  kBytes,        // linear memory (uint8_t*, i32 len)
+  kList,         // linear memory CelList header
+  kMap,          // linear memory CelMap header
+  kMessage,      // externref slot (i32 index into $cel_refs table)
+  kEnum,         // i64 (widened, signed)
+  kDuration,     // i64 nanoseconds
+  kTimestamp,    // i64 microseconds since unix epoch
+  kType,         // i32 interned type id
 };
 
 absl::string_view ReprName(Repr r);
@@ -50,7 +50,9 @@ struct NodeAnnotation {
 // Side map keyed by expression id (`cel::ExprId`).
 class WasmAnnotations {
  public:
-  NodeAnnotation& operator[](int64_t expr_id) { return nodes_[expr_id]; }
+  NodeAnnotation& operator[](int64_t expr_id) {
+    return nodes_[expr_id];
+  }
 
   const NodeAnnotation* Find(int64_t expr_id) const {
     auto it = nodes_.find(expr_id);

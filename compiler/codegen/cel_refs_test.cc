@@ -16,9 +16,8 @@ using ::absl_testing::StatusIs;
 
 TEST(CelRefsTest, AddCelRefsTableAndHelpersValidates) {
   WasmModule m;
-  ASSERT_THAT(
-      AddCelRefsTableAndHelpers(m, "$cel_refs", /*initial_slots=*/8),
-      IsOk());
+  ASSERT_THAT(AddCelRefsTableAndHelpers(m, "$cel_refs", /*initial_slots=*/8),
+              IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -59,7 +58,8 @@ TEST(CelRefsTest, EmitsInternGetAndResetFunctions) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType exref = BinaryenTypeExternref();
 
-  BinaryenFunctionRef intern_fn = BinaryenGetFunction(m.raw(), "cel_ref_intern");
+  BinaryenFunctionRef intern_fn =
+      BinaryenGetFunction(m.raw(), "cel_ref_intern");
   ASSERT_NE(intern_fn, nullptr);
   EXPECT_EQ(BinaryenFunctionGetParams(intern_fn), exref);
   EXPECT_EQ(BinaryenFunctionGetResults(intern_fn), i32);

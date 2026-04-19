@@ -52,9 +52,8 @@ wasm_engine_t* NewEngineWithRefTypes() {
 
 TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   WasmModule mod;
-  ASSERT_THAT(
-      AddCelRefsTableAndHelpers(mod, "$cel_refs", /*initial_slots=*/16),
-      IsOk());
+  ASSERT_THAT(AddCelRefsTableAndHelpers(mod, "$cel_refs", /*initial_slots=*/16),
+              IsOk());
   ASSERT_THAT(mod.Validate(), IsOk());
   auto bytes = mod.Serialize();
   ASSERT_THAT(bytes, IsOk());
@@ -80,14 +79,14 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   }
 
   wasmtime_extern_t intern_ext, get_ext, reset_ext;
-  ASSERT_TRUE(wasmtime_instance_export_get(
-      ctx, &instance, "cel_ref_intern", std::strlen("cel_ref_intern"),
-      &intern_ext));
+  ASSERT_TRUE(wasmtime_instance_export_get(ctx, &instance, "cel_ref_intern",
+                                           std::strlen("cel_ref_intern"),
+                                           &intern_ext));
   ASSERT_TRUE(wasmtime_instance_export_get(
       ctx, &instance, "cel_ref_get", std::strlen("cel_ref_get"), &get_ext));
-  ASSERT_TRUE(wasmtime_instance_export_get(
-      ctx, &instance, "cel_refs_reset", std::strlen("cel_refs_reset"),
-      &reset_ext));
+  ASSERT_TRUE(wasmtime_instance_export_get(ctx, &instance, "cel_refs_reset",
+                                           std::strlen("cel_refs_reset"),
+                                           &reset_ext));
   ASSERT_EQ(intern_ext.kind, WASMTIME_EXTERN_FUNC);
   ASSERT_EQ(get_ext.kind, WASMTIME_EXTERN_FUNC);
   ASSERT_EQ(reset_ext.kind, WASMTIME_EXTERN_FUNC);
@@ -96,8 +95,8 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   // recognise.  Using `(void*)0xCAFE` rather than a real allocation
   // keeps the test hermetic — wasmtime never dereferences the data,
   // just hands it back via `wasmtime_externref_data`.
-  void* const kHostPayload = reinterpret_cast<void*>(
-      static_cast<uintptr_t>(0xCAFEuL));
+  void* const kHostPayload =
+      reinterpret_cast<void*>(static_cast<uintptr_t>(0xCAFEuL));
   wasmtime_val_t ref_in{};
   ref_in.kind = WASMTIME_EXTERNREF;
   ASSERT_TRUE(wasmtime_externref_new(ctx, kHostPayload, /*finalizer=*/nullptr,
@@ -106,9 +105,8 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   // intern(ref) -> i32 slot.
   wasmtime_val_t slot{};
   {
-    wasmtime_error_t* err =
-        wasmtime_func_call(ctx, &intern_ext.of.func, &ref_in, 1, &slot, 1,
-                           &trap);
+    wasmtime_error_t* err = wasmtime_func_call(ctx, &intern_ext.of.func,
+                                               &ref_in, 1, &slot, 1, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -119,8 +117,8 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   // get(slot) -> externref, then verify data() round-trips.
   wasmtime_val_t ref_out{};
   {
-    wasmtime_error_t* err = wasmtime_func_call(ctx, &get_ext.of.func, &slot,
-                                               1, &ref_out, 1, &trap);
+    wasmtime_error_t* err =
+        wasmtime_func_call(ctx, &get_ext.of.func, &slot, 1, &ref_out, 1, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -135,9 +133,8 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
                                      &ref_in2.of.externref));
   wasmtime_val_t slot2{};
   {
-    wasmtime_error_t* err =
-        wasmtime_func_call(ctx, &intern_ext.of.func, &ref_in2, 1, &slot2, 1,
-                           &trap);
+    wasmtime_error_t* err = wasmtime_func_call(ctx, &intern_ext.of.func,
+                                               &ref_in2, 1, &slot2, 1, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -146,9 +143,9 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
   // After reset, the allocator rewinds to 1.
   wasmtime_val_t reset_result{};  // void return.
   {
-    wasmtime_error_t* err = wasmtime_func_call(
-        ctx, &reset_ext.of.func, /*args=*/nullptr, /*nargs=*/0,
-        &reset_result, /*nresults=*/0, &trap);
+    wasmtime_error_t* err =
+        wasmtime_func_call(ctx, &reset_ext.of.func, /*args=*/nullptr,
+                           /*nargs=*/0, &reset_result, /*nresults=*/0, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -158,9 +155,8 @@ TEST(CelRefsE2ETest, InternAndGetRoundTripRestoresHostPointer) {
                                      &ref_in3.of.externref));
   wasmtime_val_t slot3{};
   {
-    wasmtime_error_t* err =
-        wasmtime_func_call(ctx, &intern_ext.of.func, &ref_in3, 1, &slot3, 1,
-                           &trap);
+    wasmtime_error_t* err = wasmtime_func_call(ctx, &intern_ext.of.func,
+                                               &ref_in3, 1, &slot3, 1, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -199,8 +195,8 @@ TEST(CelRefsE2ETest, SlotZeroIsNullSentinel) {
   wasmtime_instance_t instance;
   wasm_trap_t* trap = nullptr;
   {
-    wasmtime_error_t* err = wasmtime_instance_new(ctx, wmod, nullptr, 0,
-                                                  &instance, &trap);
+    wasmtime_error_t* err =
+        wasmtime_instance_new(ctx, wmod, nullptr, 0, &instance, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }
@@ -214,8 +210,8 @@ TEST(CelRefsE2ETest, SlotZeroIsNullSentinel) {
   slot0.of.i32 = 0;
   wasmtime_val_t out{};
   {
-    wasmtime_error_t* err = wasmtime_func_call(ctx, &get_ext.of.func, &slot0,
-                                               1, &out, 1, &trap);
+    wasmtime_error_t* err =
+        wasmtime_func_call(ctx, &get_ext.of.func, &slot0, 1, &out, 1, &trap);
     ASSERT_EQ(err, nullptr) << ErrorMessage(err);
     ASSERT_EQ(trap, nullptr);
   }

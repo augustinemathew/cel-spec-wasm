@@ -11,30 +11,24 @@ TEST(ReprNameTest, CoversEveryEnumerator) {
   // Each entry pairs a Repr value with the exact string ReprName must return.
   // Any new Repr must add a row here; a fall-through silently mapping to "?"
   // would hide a missing switch arm and is caught by EXPECT_NE below.
-  struct Row { Repr r; const char* name; };
+  struct Row {
+    Repr r;
+    const char* name;
+  };
   const Row rows[] = {
-      {Repr::kUnknown,   "unknown"},
-      {Repr::kNull,      "null"},
-      {Repr::kBool,      "bool"},
-      {Repr::kInt,       "int"},
-      {Repr::kUint,      "uint"},
-      {Repr::kDouble,    "double"},
-      {Repr::kString,    "string"},
-      {Repr::kBytes,     "bytes"},
-      {Repr::kList,      "list"},
-      {Repr::kMap,       "map"},
-      {Repr::kMessage,   "message"},
-      {Repr::kEnum,      "enum"},
-      {Repr::kDuration,  "duration"},
-      {Repr::kTimestamp, "timestamp"},
-      {Repr::kType,      "type"},
+      {Repr::kUnknown, "unknown"},   {Repr::kNull, "null"},
+      {Repr::kBool, "bool"},         {Repr::kInt, "int"},
+      {Repr::kUint, "uint"},         {Repr::kDouble, "double"},
+      {Repr::kString, "string"},     {Repr::kBytes, "bytes"},
+      {Repr::kList, "list"},         {Repr::kMap, "map"},
+      {Repr::kMessage, "message"},   {Repr::kEnum, "enum"},
+      {Repr::kDuration, "duration"}, {Repr::kTimestamp, "timestamp"},
+      {Repr::kType, "type"},
   };
   for (const auto& row : rows) {
-    EXPECT_EQ(ReprName(row.r), row.name)
-        << "repr=" << static_cast<int>(row.r);
+    EXPECT_EQ(ReprName(row.r), row.name) << "repr=" << static_cast<int>(row.r);
     EXPECT_NE(ReprName(row.r), "?")
-        << "repr=" << static_cast<int>(row.r)
-        << " fell through the switch";
+        << "repr=" << static_cast<int>(row.r) << " fell through the switch";
   }
 }
 

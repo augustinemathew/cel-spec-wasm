@@ -67,8 +67,8 @@ std::optional<std::vector<uint8_t>> FindCustomSection(
         nshift += 7;
       }
       if (p + name_len > section_end) return std::nullopt;
-      const absl::string_view this_name(
-          reinterpret_cast<const char*>(&wasm[p]), name_len);
+      const absl::string_view this_name(reinterpret_cast<const char*>(&wasm[p]),
+                                        name_len);
       p += name_len;
       if (this_name == section_name) {
         return std::vector<uint8_t>(wasm.begin() + p,

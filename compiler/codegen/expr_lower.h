@@ -46,9 +46,7 @@ struct LoweredFunction {
 // described at the top of this file, or when it uses a Repr that has
 // no scalar WASM lowering in M2.
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
-    const TypedAst& ast,
-    absl::string_view func_name,
-    WasmModule& mod);
+    const TypedAst& ast, absl::string_view func_name, WasmModule& mod);
 
 }  // namespace celwasm
 

@@ -65,24 +65,26 @@ absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
 
   google::protobuf::FileDescriptorSet fds;
   if (!fds.ParseFromString(bytes)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("schema file is not a valid FileDescriptorSet: ",
-                     schema_path));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "schema file is not a valid FileDescriptorSet: ", schema_path));
   }
 
-  bundle.schema_db = std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
+  bundle.schema_db =
+      std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
   for (const auto& file : fds.file()) {
     if (!bundle.schema_db->Add(file)) {
       return absl::InvalidArgumentError(
           absl::StrCat("duplicate file in FileDescriptorSet: ", file.name()));
     }
   }
-  bundle.generated_db = std::make_unique<google::protobuf::DescriptorPoolDatabase>(
-      *google::protobuf::DescriptorPool::generated_pool());
-  bundle.merged_db = std::make_unique<google::protobuf::MergedDescriptorDatabase>(
-      bundle.schema_db.get(), bundle.generated_db.get());
-  bundle.owned_pool =
-      std::make_unique<google::protobuf::DescriptorPool>(bundle.merged_db.get());
+  bundle.generated_db =
+      std::make_unique<google::protobuf::DescriptorPoolDatabase>(
+          *google::protobuf::DescriptorPool::generated_pool());
+  bundle.merged_db =
+      std::make_unique<google::protobuf::MergedDescriptorDatabase>(
+          bundle.schema_db.get(), bundle.generated_db.get());
+  bundle.owned_pool = std::make_unique<google::protobuf::DescriptorPool>(
+      bundle.merged_db.get());
   bundle.pool = bundle.owned_pool.get();
   return bundle;
 }
@@ -96,7 +98,8 @@ struct TypeParser {
   const google::protobuf::DescriptorPool* pool;
 
   void SkipWhitespace() {
-    while (pos < src.size() && absl::ascii_isspace(src[pos])) ++pos;
+    while (pos < src.size() && absl::ascii_isspace(src[pos]))
+      ++pos;
   }
 
   bool Consume(char c) {
@@ -111,15 +114,13 @@ struct TypeParser {
   absl::StatusOr<std::string> ParseIdent() {
     SkipWhitespace();
     const size_t start = pos;
-    while (pos < src.size() &&
-           (absl::ascii_isalnum(src[pos]) || src[pos] == '_' ||
-            src[pos] == '.')) {
+    while (pos < src.size() && (absl::ascii_isalnum(src[pos]) ||
+                                src[pos] == '_' || src[pos] == '.')) {
       ++pos;
     }
     if (pos == start) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("expected identifier at offset ", start,
-                       " in type spec: ", src));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "expected identifier at offset ", start, " in type spec: ", src));
     }
     return std::string(src.substr(start, pos - start));
   }
@@ -130,17 +131,17 @@ struct TypeParser {
     if (!name.ok()) return name.status();
 
     // Primitives and well-knowns by bare name.
-    if (*name == "bool")      return cel::Type(cel::BoolType{});
-    if (*name == "int")       return cel::Type(cel::IntType{});
-    if (*name == "uint")      return cel::Type(cel::UintType{});
-    if (*name == "double")    return cel::Type(cel::DoubleType{});
-    if (*name == "string")    return cel::Type(cel::StringType{});
-    if (*name == "bytes")     return cel::Type(cel::BytesType{});
+    if (*name == "bool") return cel::Type(cel::BoolType{});
+    if (*name == "int") return cel::Type(cel::IntType{});
+    if (*name == "uint") return cel::Type(cel::UintType{});
+    if (*name == "double") return cel::Type(cel::DoubleType{});
+    if (*name == "string") return cel::Type(cel::StringType{});
+    if (*name == "bytes") return cel::Type(cel::BytesType{});
     if (*name == "null_type") return cel::Type(cel::NullType{});
     if (*name == "timestamp") return cel::Type(cel::TimestampType{});
-    if (*name == "duration")  return cel::Type(cel::DurationType{});
-    if (*name == "any")       return cel::Type(cel::AnyType{});
-    if (*name == "dyn")       return cel::Type(cel::DynType{});
+    if (*name == "duration") return cel::Type(cel::DurationType{});
+    if (*name == "any") return cel::Type(cel::AnyType{});
+    if (*name == "dyn") return cel::Type(cel::DynType{});
 
     if (*name == "list") {
       if (!Consume('<')) {
@@ -207,9 +208,8 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
   if (!type.ok()) return type.status();
   parser.SkipWhitespace();
   if (parser.pos != type_src.size()) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("trailing garbage in type spec: '",
-                     type_src.substr(parser.pos), "'"));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "trailing garbage in type spec: '", type_src.substr(parser.pos), "'"));
   }
   Repr repr = ReprOf(*type);
   return ParsedSpec{cel::MakeVariableDecl(name, std::move(*type)), repr};
@@ -254,8 +254,7 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   if (!checker.ok()) return checker.status();
 
   // 5. Parse source.
-  auto parsed =
-      google::api::expr::parser::Parse(expression, opts.description);
+  auto parsed = google::api::expr::parser::Parse(expression, opts.description);
   if (!parsed.ok()) return parsed.status();
 
   // 6. Convert to runtime AST.
@@ -266,8 +265,8 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   auto result = (*checker)->Check(std::move(*ast));
   if (!result.ok()) return result.status();
   if (!result->IsValid()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "type check failed:\n", result->FormatError()));
+    return absl::InvalidArgumentError(
+        absl::StrCat("type check failed:\n", result->FormatError()));
   }
   auto checked_ast = result->ReleaseAst();
   if (!checked_ast.ok()) return checked_ast.status();

@@ -1,0 +1,53 @@
+# celwasmc clang-format config.
+#
+# google3 style. cel-cpp ships no .clang-format of its own, so we derive
+# from the stock Google preset and keep overrides minimal. Apply with:
+#   clang-format -i compiler/**/*.{cc,h,c}
+#
+# third_party/ is excluded via .clang-format-ignore (see that file).
+Language: Cpp
+BasedOnStyle: Google
+
+# 80 columns, matching cel-cpp's wrapping.
+ColumnLimit: 80
+
+# Keep #include blocks grouped in Google's canonical order:
+#   own header | C system | C++ system | other libs | project.
+# The sort stays on (Google default) so reordered blocks remain stable.
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive
+
+# Pointer/reference alignment: `int* p`, `int& r` — Google default.
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Don't reflow comments; codegen files have carefully-wrapped block
+# comments describing emitted WASM which we don't want clang-format
+# second-guessing.
+ReflowComments: false
+
+# Two-space indent, no tabs — Google default, kept explicit.
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+
+# Braces: Google (attached).
+BreakBeforeBraces: Attach
+
+# Function signatures: allow packing when they fit under the column
+# limit; otherwise one-arg-per-line (Google default).
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackParameters: true
+BinPackArguments: true
+
+# Short functions / lambdas / loops: match google3 / cel-cpp. Google
+# default allows `Empty` functions (e.g. `int foo() {}`) and `Empty`
+# lambdas on one line but forces multi-statement bodies to wrap.
+# For `if`, Google's default (`WithoutElse`) lets
+# `if (cond) return s;` stay one line — the cel-cpp code does this
+# pervasively, so we keep it.
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false

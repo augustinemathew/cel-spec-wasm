@@ -46,8 +46,7 @@
 ABSL_FLAG(std::string, e, "", "CEL expression to compile");
 ABSL_FLAG(std::string, description, "<input>",
           "Source description used in parser/checker diagnostics");
-ABSL_FLAG(bool, check, false,
-          "Run the type checker in addition to the parser");
+ABSL_FLAG(bool, check, false, "Run the type checker in addition to the parser");
 ABSL_FLAG(bool, reject_dyn, true,
           "When --check is set, reject expressions with any DYN-typed nodes");
 ABSL_FLAG(std::string, schema, "",
@@ -70,8 +69,7 @@ ABSL_FLAG(std::string, emit_wasm, "",
 namespace {
 
 int ParseOnly(absl::string_view expression, absl::string_view description) {
-  auto parsed =
-      google::api::expr::parser::Parse(expression, description);
+  auto parsed = google::api::expr::parser::Parse(expression, description);
   if (!parsed.ok()) {
     std::fprintf(stderr, "parse error: %s\n",
                  std::string(parsed.status().message()).c_str());
@@ -98,14 +96,11 @@ void PrintAnnotationSummary(const celwasm::TypedAst& typed) {
 // `out_path`.  Honours `reject_dyn` the same way `CheckAndPrint` does.
 // On success prints a one-line "wrote N bytes to <path>" summary to
 // stdout; on any failure prints a diagnostic to stderr and returns 1.
-int EmitWasm(absl::string_view expression,
-             const celwasm::CheckOptions& opts,
-             bool reject_dyn,
-             const std::string& out_path) {
+int EmitWasm(absl::string_view expression, const celwasm::CheckOptions& opts,
+             bool reject_dyn, const std::string& out_path) {
   auto typed = celwasm::ParseAndCheck(expression, opts);
   if (!typed.ok()) {
-    std::fprintf(stderr, "%s\n",
-                 std::string(typed.status().message()).c_str());
+    std::fprintf(stderr, "%s\n", std::string(typed.status().message()).c_str());
     return 1;
   }
   if (reject_dyn) {
@@ -172,8 +167,7 @@ int CheckAndPrint(absl::string_view expression,
                   const celwasm::CheckOptions& opts, bool reject_dyn) {
   auto typed = celwasm::ParseAndCheck(expression, opts);
   if (!typed.ok()) {
-    std::fprintf(stderr, "%s\n",
-                 std::string(typed.status().message()).c_str());
+    std::fprintf(stderr, "%s\n", std::string(typed.status().message()).c_str());
     return 1;
   }
 

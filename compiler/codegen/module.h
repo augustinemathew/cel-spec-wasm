@@ -51,25 +51,25 @@ class WasmModule {
   // Raw handle for callers that need APIs not yet surfaced here — in
   // particular, expression builders (`BinaryenConst`, `BinaryenCall`,
   // etc.) need the module ref to allocate expressions.
-  BinaryenModuleRef absl_nonnull raw() const { return module_; }
+  BinaryenModuleRef absl_nonnull raw() const {
+    return module_;
+  }
 
   // Declares the module's (only) memory.  `export_name` is empty to
   // keep the memory module-private; otherwise the memory is exported
   // under that name.  Failure modes surface as `FailedPrecondition`
   // (a memory has already been declared) or `InvalidArgument`
   // (max < initial).
-  ABSL_MUST_USE_RESULT absl::Status SetMemory(
-      uint32_t initial_pages,
-      std::optional<uint32_t> max_pages,
-      absl::string_view export_name);
+  ABSL_MUST_USE_RESULT absl::Status SetMemory(uint32_t initial_pages,
+                                              std::optional<uint32_t> max_pages,
+                                              absl::string_view export_name);
 
   // Adds an externref table under `name` with `initial_slots` entries.
   // The table is initialized to `ref.null externref` at every slot.
   // Typed as externref regardless of initial — this is the `$cel_refs`
   // table from the design doc §7.1.
   ABSL_MUST_USE_RESULT absl::Status AddCelRefsTable(
-      absl::string_view name,
-      uint32_t initial_slots,
+      absl::string_view name, uint32_t initial_slots,
       std::optional<uint32_t> max_slots);
 
   // Registers an imported function.  `internal_name` is the identifier
@@ -88,17 +88,14 @@ class WasmModule {
   // address space.  Fails (FailedPrecondition) if a memory has already
   // been set or imported.
   ABSL_MUST_USE_RESULT absl::Status AddMemoryImport(
-      absl::string_view external_module,
-      absl::string_view external_base,
-      uint32_t initial_pages,
-      std::optional<uint32_t> max_pages);
+      absl::string_view external_module, absl::string_view external_base,
+      uint32_t initial_pages, std::optional<uint32_t> max_pages);
 
   // Adds a function definition.  Binaryen takes ownership of `body` —
   // the caller must not reuse or dispose of the expression after this
   // call.
   void AddFunction(absl::string_view internal_name,
-                   absl::Span<const BinaryenType> params,
-                   BinaryenType result,
+                   absl::Span<const BinaryenType> params, BinaryenType result,
                    absl::Span<const BinaryenType> local_types,
                    BinaryenExpressionRef absl_nonnull body);
 

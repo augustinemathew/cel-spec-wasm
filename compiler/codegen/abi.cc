@@ -42,8 +42,7 @@ absl::StatusOr<CelAbi> BuildCelAbi(const TypedAst& typed,
 absl::Status AttachCelAbiSection(WasmModule& mod, const CelAbi& abi) {
   std::string bytes;
   if (!abi.SerializeToString(&bytes)) {
-    return absl::InternalError(
-        "CelAbi::SerializeToString returned false");
+    return absl::InternalError("CelAbi::SerializeToString returned false");
   }
   // Binaryen copies the bytes internally, so stack-allocated
   // storage is fine.  The name is likewise copied.

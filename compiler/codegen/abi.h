@@ -65,7 +65,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<CelAbi> BuildCelAbi(
 // to serialize (which for M2 payloads should be impossible — there
 // are no required fields).
 ABSL_MUST_USE_RESULT absl::Status AttachCelAbiSection(WasmModule& mod,
-                                                     const CelAbi& abi);
+                                                      const CelAbi& abi);
 
 }  // namespace celwasm
 

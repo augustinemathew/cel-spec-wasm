@@ -66,8 +66,7 @@ TEST(WasmModuleTest, MoveAssignDisposesPrevious) {
 
 TEST(WasmModuleTest, SetMemoryExportsUnderGivenName) {
   WasmModule m;
-  ASSERT_THAT(m.SetMemory(/*initial_pages=*/1, std::nullopt, "memory"),
-              IsOk());
+  ASSERT_THAT(m.SetMemory(/*initial_pages=*/1, std::nullopt, "memory"), IsOk());
   EXPECT_TRUE(BinaryenHasMemory(m.raw()));
   EXPECT_THAT(m.Validate(), IsOk());
   // Exported under the configured name.  Binaryen enumerates exports
@@ -122,8 +121,8 @@ TEST(WasmModuleTest, FunctionImportIsCallableFromAFunction) {
       BinaryenConst(m.raw(), BinaryenLiteralInt32(40)),
       BinaryenConst(m.raw(), BinaryenLiteralInt32(2)),
   };
-  BinaryenExpressionRef body = BinaryenCall(m.raw(), "host_add",
-                                            operands, 2, i32);
+  BinaryenExpressionRef body =
+      BinaryenCall(m.raw(), "host_add", operands, 2, i32);
   m.AddFunction("sum_of_consts", {}, i32, {}, body);
   m.ExportFunction("sum_of_consts", "sum_of_consts");
 
@@ -140,8 +139,8 @@ TEST(WasmModuleTest, AddFunctionDeclaresLocals) {
       m.raw(), 0, BinaryenConst(m.raw(), BinaryenLiteralInt32(7)));
   BinaryenExpressionRef get = BinaryenLocalGet(m.raw(), 0, i32);
   BinaryenExpressionRef block_children[2] = {set, get};
-  BinaryenExpressionRef body = BinaryenBlock(
-      m.raw(), /*name=*/nullptr, block_children, 2, i32);
+  BinaryenExpressionRef body =
+      BinaryenBlock(m.raw(), /*name=*/nullptr, block_children, 2, i32);
 
   m.AddFunction("f", {}, i32, locals, body);
 
@@ -156,8 +155,7 @@ TEST(WasmModuleTest, AddFunctionDeclaresLocals) {
 TEST(WasmModuleTest, ExportFunctionRegistersExternalName) {
   WasmModule m;
   const BinaryenType i32 = BinaryenTypeInt32();
-  BinaryenExpressionRef body =
-      BinaryenConst(m.raw(), BinaryenLiteralInt32(0));
+  BinaryenExpressionRef body = BinaryenConst(m.raw(), BinaryenLiteralInt32(0));
   m.AddFunction("internal_name", {}, i32, {}, body);
   m.ExportFunction("internal_name", "publicly_visible");
 
@@ -192,15 +190,14 @@ TEST(WasmModuleTest, FullEvalModuleShapeValidates) {
 
   // Scalar-field accessor: (externref, i32, i32) -> i32.
   const BinaryenType get_scalar_params[3] = {exref, i32, i32};
-  m.AddFunctionImport("cel_host.get_scalar_field",
-                      "cel_host", "get_scalar_field",
-                      get_scalar_params, i32);
+  m.AddFunctionImport("cel_host.get_scalar_field", "cel_host",
+                      "get_scalar_field", get_scalar_params, i32);
 
   // Runtime allocator (mirrors compiler/runtime/cel_runtime.c's
   // cel_alloc): i32 -> i32.
   const BinaryenType alloc_params[1] = {i32};
-  m.AddFunctionImport("cel_alloc", "cel_runtime", "cel_alloc",
-                      alloc_params, i32);
+  m.AddFunctionImport("cel_alloc", "cel_runtime", "cel_alloc", alloc_params,
+                      i32);
 
   // eval(msg: externref, type_id: i32, field_id: i32) -> i32 =
   //   cel_host.get_scalar_field(msg, type_id, field_id)
@@ -210,8 +207,8 @@ TEST(WasmModuleTest, FullEvalModuleShapeValidates) {
       BinaryenLocalGet(m.raw(), 1, i32),
       BinaryenLocalGet(m.raw(), 2, i32),
   };
-  BinaryenExpressionRef eval_body = BinaryenCall(
-      m.raw(), "cel_host.get_scalar_field", args, 3, i32);
+  BinaryenExpressionRef eval_body =
+      BinaryenCall(m.raw(), "cel_host.get_scalar_field", args, 3, i32);
   m.AddFunction("eval", eval_params, i32, {}, eval_body);
   m.ExportFunction("eval", "eval");
 

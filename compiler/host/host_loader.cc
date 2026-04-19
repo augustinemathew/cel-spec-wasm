@@ -65,8 +65,7 @@ wasm_engine_t* NewEngine() {
 // LoadedEval::Reset() (on the out-param) clean up on failure.
 absl::Status CompileModule(wasm_engine_t* engine,
                            absl::Span<const uint8_t> bytes,
-                           absl::string_view label,
-                           wasmtime_module_t** out) {
+                           absl::string_view label, wasmtime_module_t** out) {
   wasmtime_error_t* err =
       wasmtime_module_new(engine, bytes.data(), bytes.size(), out);
   if (err != nullptr) {
@@ -76,21 +75,19 @@ absl::Status CompileModule(wasm_engine_t* engine,
   return absl::OkStatus();
 }
 
-absl::Status InstantiateBare(wasmtime_context_t* ctx,
-                             wasmtime_module_t* module,
+absl::Status InstantiateBare(wasmtime_context_t* ctx, wasmtime_module_t* module,
                              absl::string_view label,
                              wasmtime_instance_t* out) {
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err =
-      wasmtime_instance_new(ctx, module, /*imports=*/nullptr, /*nimports=*/0,
-                            out, &trap);
+  wasmtime_error_t* err = wasmtime_instance_new(
+      ctx, module, /*imports=*/nullptr, /*nimports=*/0, out, &trap);
   if (err != nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "wasmtime_instance_new(", label, "): ", ErrorMessage(err)));
+    return absl::InternalError(absl::StrCat("wasmtime_instance_new(", label,
+                                            "): ", ErrorMessage(err)));
   }
   if (trap != nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "start-function trap in ", label, ": ", TrapMessage(trap)));
+    return absl::InternalError(absl::StrCat("start-function trap in ", label,
+                                            ": ", TrapMessage(trap)));
   }
   return absl::OkStatus();
 }
@@ -115,9 +112,9 @@ absl::Status CallInstanceFn(wasmtime_context_t* ctx,
         absl::StrCat("export `", name, "` is not a function"));
   }
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err = wasmtime_func_call(
-      ctx, &ext.of.func, args.data(), args.size(), results.data(),
-      results.size(), &trap);
+  wasmtime_error_t* err =
+      wasmtime_func_call(ctx, &ext.of.func, args.data(), args.size(),
+                         results.data(), results.size(), &trap);
   if (err != nullptr) {
     return absl::InternalError(
         absl::StrCat("wasmtime_func_call(", name, "): ", ErrorMessage(err)));
@@ -157,7 +154,9 @@ void LoadedEval::Reset() noexcept {
   eval_instance_ = {};
 }
 
-LoadedEval::~LoadedEval() { Reset(); }
+LoadedEval::~LoadedEval() {
+  Reset();
+}
 
 LoadedEval::LoadedEval(LoadedEval&& other) noexcept {
   *this = std::move(other);
@@ -220,8 +219,7 @@ absl::StatusOr<wasmtime_val_t> LoadedEval::CallNullaryEval() {
   return CallEval(/*args=*/{});
 }
 
-absl::StatusOr<LoadedEval> LoadEval(
-    absl::Span<const uint8_t> eval_wasm_bytes) {
+absl::StatusOr<LoadedEval> LoadEval(absl::Span<const uint8_t> eval_wasm_bytes) {
   LoadedEval out;
   out.engine_ = NewEngine();
   if (out.engine_ == nullptr) {
@@ -235,15 +233,15 @@ absl::StatusOr<LoadedEval> LoadEval(
   wasmtime_context_t* ctx = wasmtime_store_context(out.store_);
 
   // Compile both modules up front.
-  const absl::Span<const uint8_t> runtime_bytes(
-      kCelRuntimeWasmBytes, kCelRuntimeWasmBytesSize);
+  const absl::Span<const uint8_t> runtime_bytes(kCelRuntimeWasmBytes,
+                                                kCelRuntimeWasmBytesSize);
   if (auto s = CompileModule(out.engine_, runtime_bytes, "runtime",
                              &out.runtime_mod_);
       !s.ok()) {
     return s;
   }
-  if (auto s = CompileModule(out.engine_, eval_wasm_bytes, "eval",
-                             &out.eval_mod_);
+  if (auto s =
+          CompileModule(out.engine_, eval_wasm_bytes, "eval", &out.eval_mod_);
       !s.ok()) {
     return s;
   }

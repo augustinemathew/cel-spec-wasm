@@ -31,13 +31,11 @@ TEST(BinaryenSmokeTest, BuildValidateAndSerializeEmptyModule) {
   BinaryenType results = BinaryenTypeInt32();
 
   // Body: return i32.const 42.
-  BinaryenExpressionRef body =
-      BinaryenConst(module, BinaryenLiteralInt32(42));
+  BinaryenExpressionRef body = BinaryenConst(module, BinaryenLiteralInt32(42));
 
   BinaryenAddFunction(module, "answer", params, results,
                       /*varTypes=*/nullptr,
-                      /*numVarTypes=*/0,
-                      body);
+                      /*numVarTypes=*/0, body);
   BinaryenAddFunctionExport(module, "answer", "answer");
 
   EXPECT_TRUE(BinaryenModuleValidate(module))

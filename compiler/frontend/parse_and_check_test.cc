@@ -85,15 +85,16 @@ TEST(ParseAndCheckTest, ComparisonProducesBool) {
 // ---- Variable specs: every primitive ---------------------------------------
 
 TEST(ParseAndCheckTest, PrimitiveVariableSpecs) {
-  struct Row { const char* spec; const char* expr; Repr expected; };
+  struct Row {
+    const char* spec;
+    const char* expr;
+    Repr expected;
+  };
   const Row rows[] = {
-      {"b:bool",      "b",   Repr::kBool},
-      {"i:int",       "i",   Repr::kInt},
-      {"u:uint",      "u",   Repr::kUint},
-      {"d:double",    "d",   Repr::kDouble},
-      {"s:string",    "s",   Repr::kString},
-      {"by:bytes",    "by",  Repr::kBytes},
-      {"n:null_type", "n",   Repr::kNull},
+      {"b:bool", "b", Repr::kBool},      {"i:int", "i", Repr::kInt},
+      {"u:uint", "u", Repr::kUint},      {"d:double", "d", Repr::kDouble},
+      {"s:string", "s", Repr::kString},  {"by:bytes", "by", Repr::kBytes},
+      {"n:null_type", "n", Repr::kNull},
   };
   for (const auto& row : rows) {
     CheckOptions opts;
@@ -321,8 +322,7 @@ TEST(ParseAndCheckTest, RejectsUnknownTypeName) {
   opts.variable_specs = {"x:NotAType"};
   auto s = ParseAndCheck("1", opts);
   ASSERT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_NE(s.status().message().find("unknown type"),
-            absl::string_view::npos);
+  EXPECT_NE(s.status().message().find("unknown type"), absl::string_view::npos);
 }
 
 TEST(ParseAndCheckTest, RejectsUnbalancedList) {
@@ -351,8 +351,7 @@ TEST(ParseAndCheckTest, RejectsTrailingGarbageInSpec) {
 TEST(ParseAndCheckTest, RejectsSchemaNotFound) {
   CheckOptions opts;
   opts.schema_path = "/does/not/exist.fds";
-  EXPECT_THAT(ParseAndCheck("1", opts),
-              StatusIs(absl::StatusCode::kNotFound));
+  EXPECT_THAT(ParseAndCheck("1", opts), StatusIs(absl::StatusCode::kNotFound));
 }
 
 // ---- Negative: expression-level failures -----------------------------------

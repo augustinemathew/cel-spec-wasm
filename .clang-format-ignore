@@ -1,0 +1,4 @@
+# Vendored dependencies — never reformat.
+third_party/**
+# Bazel output symlinks.
+bazel-*/**

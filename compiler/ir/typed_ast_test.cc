@@ -16,14 +16,17 @@ namespace {
 // ---- ReprOf coverage: every TypeSpec variant --------------------------------
 
 TEST(ReprOfTest, PrimitivesMapToScalarReprs) {
-  struct Row { cel::PrimitiveType p; Repr expected; };
+  struct Row {
+    cel::PrimitiveType p;
+    Repr expected;
+  };
   const Row rows[] = {
-      {cel::PrimitiveType::kBool,   Repr::kBool},
-      {cel::PrimitiveType::kInt64,  Repr::kInt},
+      {cel::PrimitiveType::kBool, Repr::kBool},
+      {cel::PrimitiveType::kInt64, Repr::kInt},
       {cel::PrimitiveType::kUint64, Repr::kUint},
       {cel::PrimitiveType::kDouble, Repr::kDouble},
       {cel::PrimitiveType::kString, Repr::kString},
-      {cel::PrimitiveType::kBytes,  Repr::kBytes},
+      {cel::PrimitiveType::kBytes, Repr::kBytes},
   };
   for (const auto& row : rows) {
     cel::TypeSpec spec{row.p};
@@ -40,14 +43,17 @@ TEST(ReprOfTest, UnspecifiedPrimitiveIsUnknown) {
 TEST(ReprOfTest, WrappersReuseUnderlyingPrimitiveRepr) {
   // Wrapper is a nullable-primitive spec — the ABI is still the scalar repr
   // of the wrapped primitive; nullness is tracked elsewhere.
-  struct Row { cel::PrimitiveType p; Repr expected; };
+  struct Row {
+    cel::PrimitiveType p;
+    Repr expected;
+  };
   const Row rows[] = {
-      {cel::PrimitiveType::kBool,   Repr::kBool},
-      {cel::PrimitiveType::kInt64,  Repr::kInt},
+      {cel::PrimitiveType::kBool, Repr::kBool},
+      {cel::PrimitiveType::kInt64, Repr::kInt},
       {cel::PrimitiveType::kUint64, Repr::kUint},
       {cel::PrimitiveType::kDouble, Repr::kDouble},
       {cel::PrimitiveType::kString, Repr::kString},
-      {cel::PrimitiveType::kBytes,  Repr::kBytes},
+      {cel::PrimitiveType::kBytes, Repr::kBytes},
   };
   for (const auto& row : rows) {
     cel::TypeSpec spec{cel::PrimitiveTypeWrapper(row.p)};
@@ -65,9 +71,9 @@ TEST(ReprOfTest, WellKnownsMapCorrectly) {
   // the same as for concrete message types.
   EXPECT_EQ(ReprOf(cel::TypeSpec{cel::WellKnownTypeSpec::kAny}),
             Repr::kMessage);
-  EXPECT_EQ(ReprOf(cel::TypeSpec{
-                cel::WellKnownTypeSpec::kWellKnownTypeUnspecified}),
-            Repr::kUnknown);
+  EXPECT_EQ(
+      ReprOf(cel::TypeSpec{cel::WellKnownTypeSpec::kWellKnownTypeUnspecified}),
+      Repr::kUnknown);
 }
 
 TEST(ReprOfTest, NullTypeSpec) {
@@ -104,8 +110,7 @@ TEST(ReprOfTest, DynIsUnknownSoValidatorCanReject) {
 }
 
 TEST(ReprOfTest, ErrorTypeIsUnknown) {
-  EXPECT_EQ(ReprOf(cel::TypeSpec{cel::ErrorTypeSpec::kValue}),
-            Repr::kUnknown);
+  EXPECT_EQ(ReprOf(cel::TypeSpec{cel::ErrorTypeSpec::kValue}), Repr::kUnknown);
 }
 
 TEST(ReprOfTest, FunctionTypeIsUnknown) {

@@ -59,16 +59,28 @@ class TypedAst {
   TypedAst(const TypedAst&) = delete;
   TypedAst& operator=(const TypedAst&) = delete;
 
-  bool has_ast() const { return ast_ != nullptr; }
+  bool has_ast() const {
+    return ast_ != nullptr;
+  }
 
-  const cel::Ast& ast() const { return *ast_; }
-  cel::Ast& mutable_ast() { return *ast_; }
+  const cel::Ast& ast() const {
+    return *ast_;
+  }
+  cel::Ast& mutable_ast() {
+    return *ast_;
+  }
 
-  const WasmAnnotations& annotations() const { return annotations_; }
-  WasmAnnotations& mutable_annotations() { return annotations_; }
+  const WasmAnnotations& annotations() const {
+    return annotations_;
+  }
+  WasmAnnotations& mutable_annotations() {
+    return annotations_;
+  }
 
   // Variables declared in `CheckOptions::variable_specs`, in order.
-  const std::vector<Variable>& variables() const { return variables_; }
+  const std::vector<Variable>& variables() const {
+    return variables_;
+  }
 
  private:
   std::unique_ptr<cel::Ast> ast_;

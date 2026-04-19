@@ -59,15 +59,14 @@ absl::Status AddCelRefsTableAndHelpers(WasmModule& mod,
     const BinaryenType intern_params[1] = {externref};
     const BinaryenType intern_locals[1] = {i32};
 
-    BinaryenExpressionRef load_next =
-        BinaryenGlobalGet(m, kNextGlobal, i32);
+    BinaryenExpressionRef load_next = BinaryenGlobalGet(m, kNextGlobal, i32);
     BinaryenExpressionRef set_slot =
         BinaryenLocalSet(m, /*index=*/1, load_next);
 
-    BinaryenExpressionRef write_ref = BinaryenTableSet(
-        m, table_c.c_str(),
-        /*index=*/BinaryenLocalGet(m, /*index=*/1, i32),
-        /*value=*/BinaryenLocalGet(m, /*index=*/0, externref));
+    BinaryenExpressionRef write_ref =
+        BinaryenTableSet(m, table_c.c_str(),
+                         /*index=*/BinaryenLocalGet(m, /*index=*/1, i32),
+                         /*value=*/BinaryenLocalGet(m, /*index=*/0, externref));
 
     BinaryenExpressionRef bump = BinaryenGlobalSet(
         m, kNextGlobal,
@@ -91,10 +90,10 @@ absl::Status AddCelRefsTableAndHelpers(WasmModule& mod,
     const std::string table_c(table_name);
     const BinaryenType get_params[1] = {i32};
 
-    BinaryenExpressionRef body = BinaryenTableGet(
-        m, table_c.c_str(),
-        /*index=*/BinaryenLocalGet(m, /*index=*/0, i32),
-        /*type=*/externref);
+    BinaryenExpressionRef body =
+        BinaryenTableGet(m, table_c.c_str(),
+                         /*index=*/BinaryenLocalGet(m, /*index=*/0, i32),
+                         /*type=*/externref);
 
     mod.AddFunction(kGetFn, get_params, externref, {}, body);
     mod.ExportFunction(kGetFn, kGetFn);

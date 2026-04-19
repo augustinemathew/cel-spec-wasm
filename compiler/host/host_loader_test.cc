@@ -7,8 +7,8 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "binaryen-c.h"
 #include "absl/types/span.h"
+#include "binaryen-c.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
@@ -114,7 +114,8 @@ TEST(HostLoaderTest, RejectsEvalModuleWithUnsatisfiedImports) {
   mod.AddFunctionImport("foo", "unknown", "foo",
                         absl::Span<const BinaryenType>(&p, 1),
                         BinaryenTypeInt32());
-  BinaryenExpressionRef body = BinaryenConst(mod.raw(), BinaryenLiteralInt32(0));
+  BinaryenExpressionRef body =
+      BinaryenConst(mod.raw(), BinaryenLiteralInt32(0));
   mod.AddFunction("eval", /*params=*/{}, BinaryenTypeInt32(),
                   /*local_types=*/{}, body);
   mod.ExportFunction("eval", "eval");

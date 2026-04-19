@@ -58,9 +58,7 @@ namespace celwasm {
 // `cel_refs_reset`.  The table itself is also exported under
 // `table_name`.
 ABSL_MUST_USE_RESULT absl::Status AddCelRefsTableAndHelpers(
-    WasmModule& mod,
-    absl::string_view table_name,
-    uint32_t initial_slots);
+    WasmModule& mod, absl::string_view table_name, uint32_t initial_slots);
 
 }  // namespace celwasm
 

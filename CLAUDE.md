@@ -39,6 +39,33 @@ reference — when in doubt, copy its conventions verbatim.  In particular:
     (`cc_library` per header).
   - Close namespaces with `}  // namespace celwasm`.
 
+## Lint & format (mandatory before every commit)
+
+Formatter and linter are authoritative.  The configs live at the repo
+root (`.clang-format`, `.clang-tidy`) and mirror google3 / cel-cpp
+conventions.  `third_party/` is excluded from both.
+
+Before every commit run, in order:
+
+  1. `scripts/lint.sh` — `clang-format -i` + `clang-tidy` on the files
+     you touched (diffed against `origin/master`).  Non-zero exit on any
+     clang-tidy warning.  Run `scripts/refresh_compile_db.sh` first if
+     `compile_commands.json` is stale or missing; analysis without it is
+     partial.
+  2. `bazel test //compiler/...`.
+  3. Update `doc/implementation-plan/testing-checklist.md` and the
+     active milestone doc (see "Authoritative docs" above).
+
+**Function-size gate.**  `readability-function-size` is on with tight
+thresholds (60 lines / 40 statements / 15 branches / 6 params / 5
+nesting levels).  Functions do ONE thing and are short enough to
+review without scrolling.  When the linter flags a function, split
+it — do not `// NOLINT` around it.  Known exceedances are tracked in
+`doc/implementation-plan/lint-backlog.md`; clear them before adding
+new code in the same file.
+
+Full workflow and install steps are in `doc/contributing.md`.
+
 ## Testing is mandatory
 
 Compilers fail silently.  **Every type and every AST variant must have both
