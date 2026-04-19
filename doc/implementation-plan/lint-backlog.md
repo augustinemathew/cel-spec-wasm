@@ -14,7 +14,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 | check | count |
 |---|---|
-| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 60 |
+| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 61 |
 | `google-readability-braces-around-statements` | 23 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
@@ -38,7 +38,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `readability-math-missing-parentheses` | 1 |
 | `readability-use-concise-preprocessor-directives` | 1 |
 
-**Total unique warnings:** 169
+**Total unique warnings:** 170
 
 ## Notes for triage
 
@@ -289,15 +289,16 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L39: function 'FindCustomSection' exceeds recommended size/complexity thresholds
 
-### `compiler/codegen/expr_lower_test.cc` — 6 warnings
+### `compiler/codegen/expr_lower_test.cc` — 7 warnings
 
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (5)
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (6)
 
 - L325: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L340: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L362: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L363: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L388: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L412: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
 **`cppcoreguidelines-pro-type-member-init`** (1)
 
@@ -394,7 +395,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 **`readability-function-size`** (1)
 
-- L27: function 'AddCelRefsTableAndHelpers' exceeds recommended size/complexity thresholds
+- L37: function 'AddCelRefsTableAndHelpers' exceeds recommended size/complexity thresholds
 
 ### `compiler/codegen/cel_refs_test.cc` — 1 warnings
 

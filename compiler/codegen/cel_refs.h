@@ -7,10 +7,10 @@
 // table: a monotonic slot allocator plus a lookup function plus a
 // reset hook the host uses between evaluations.
 //
-// Scope (M2): slot-table plumbing only.  The `CelValue`-shaped helpers
-// `cel_wrap_message` / `cel_unwrap_message` land with the runtime
-// wasm32 cross-compile (deliverable #3 of M2) because they need
-// `cel_alloc` in the same module.
+// The `CelValue`-shaped wrappers `cel_wrap_message` / `cel_unwrap_message`
+// are exposed separately via `AddMessageWrapHelpers` — they depend on
+// the runtime's `cel_make_message` and `cel_mem_base` imports, so the
+// caller declares those first (typically via `DeclareRuntimeImports`).
 //
 // Emitted WAT for reference:
 //
@@ -59,6 +59,31 @@ namespace celwasm {
 // `table_name`.
 ABSL_MUST_USE_RESULT absl::Status AddCelRefsTableAndHelpers(
     WasmModule& mod, absl::string_view table_name, uint32_t initial_slots);
+
+// Declares the two CelValue-shaped wrappers over an externref:
+//   cel_wrap_message(externref)  -> i32   — arena-relative CelValue* of
+//                                           kind CEL_MESSAGE whose
+//                                           payload.msg_slot is the
+//                                           interned table slot.
+//   cel_unwrap_message(i32 cv)   -> externref
+//
+// These are the bridge between the externref table and linear-memory
+// CelValues; codegen uses `cel_wrap_message` whenever a message value
+// needs to flow through a CelValue*-taking runtime helper (equality,
+// host calls returning messages, etc.), and `cel_unwrap_message` to
+// recover the externref before calling into the host ABI.
+//
+// Prerequisites the caller must wire before calling this:
+//   - `AddCelRefsTableAndHelpers` has been called with the same
+//     `table_name` (for the `$cel_refs` table + `cel_ref_intern` /
+//     `cel_ref_get`).
+//   - `cel_make_message(i32) -> i32` and `cel_mem_base() -> i32` are
+//     imported from the runtime (typically via
+//     `DeclareRuntimeImports`).
+//
+// Emitted function exports: `cel_wrap_message`, `cel_unwrap_message`.
+ABSL_MUST_USE_RESULT absl::Status AddMessageWrapHelpers(
+    WasmModule& mod, absl::string_view table_name);
 
 }  // namespace celwasm
 

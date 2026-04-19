@@ -64,11 +64,17 @@ block is the triage view a reviewer can read in ten seconds.
     `cel_make_*` + `memory` export-set check + Allocate-and-Write
     round-trip).  Both genrules and the test are tagged `manual`
     because `/opt/homebrew/opt/llvm/bin/clang` is non-hermetic.
-  - `cel_unwrap_message` / `cel_wrap_message` — still open.  The
-    cross-compile target exists now, but these two helpers live on
-    top of both the externref table *and* `cel_alloc`, so they need
-    the runtime+eval **merge** step (deferred to M3) before they
-    can be emitted.
+  - `cel_unwrap_message` / `cel_wrap_message` — **closed by M3
+    slice G1 (2026-04-19)**.  Emitted as Binaryen IR in
+    `compiler/codegen/cel_refs.cc::AddMessageWrapHelpers` (not WAT —
+    externref has no wasm32-C source representation).  Pulled into
+    every eval module that declares a `Repr::kMessage` variable.
+    Covered by `cel_refs_test::{AddMessageWrapHelpersValidates,
+    EmitsWrapAndUnwrapMessageFunctions, ExportsWrapAndUnwrapMessage}`
+    and by the "needs the table" check in
+    `expr_lower_test::MessageVariablePullsInCelRefsTableAndWrappers`.
+    Full runtime round-trip deferred to G2 where `cel_host.get_field`
+    is the first caller that actually interns a host externref.
   - List / map growth + iteration runtime tests — still open.  The
     wasm32 cross-compile is in place but no codegen caller
     constructs a list or map yet (first caller lands in M4).  When
@@ -85,6 +91,35 @@ block is the triage view a reviewer can read in ten seconds.
     `function_set`; `types` / `attributes` / `patterns` /
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
+
+**M3 slice G1 (2026-04-19): message params as externref.**
+`Repr::kMessage` variables now lower to an `externref` param on the
+eval function.  `WasmTypeFor(kMessage)` is `BinaryenTypeExternref()`.
+When the eval module declares at least one message variable,
+`LowerToEvalFunction` pulls in the private `$cel_refs` externref
+table (16 initial slots, slot 0 reserved as the null sentinel) plus
+the helper functions `cel_ref_intern` / `cel_ref_get` /
+`cel_refs_reset` via `AddCelRefsTableAndHelpers`, and the CelValue-
+shaped wrappers `cel_wrap_message(externref) → i32` /
+`cel_unwrap_message(i32) → externref` via `AddMessageWrapHelpers`.
+The wrap/unwrap pair is emitted from `compiler/codegen/cel_refs.cc`
+(not WAT) because externref has no wasm32-C representation; it
+depends on the runtime's `cel_make_message` import (new in this
+slice) and the existing `cel_mem_base` export.  `kMsgSlotOffset = 8`
+is the `payload.msg_slot` byte offset inside `CelValue`, pinned by a
+`_Static_assert` in `cel_runtime.h`.  Codegen-only at G1 — full
+runtime+wasmtime e2e deferred to slice G2, where `cel_host.get_field`
+becomes the first caller that actually interns a host externref.
+The "proto message" row of the per-type grid and the `kSelectExpr`
+rows remain `[ ]` in the codegen/e2e columns because nothing reads a
+field yet; the table/wrapper plumbing is the prerequisite, not the
+feature.  Coverage:
+`expr_lower_test::{MessageVariableLowersAsExternrefParam,
+MessageVariablePullsInCelRefsTableAndWrappers,
+NoMessageVariableMeansNoCelRefsTable}`;
+`cel_refs_test::{AddMessageWrapHelpersValidates,
+EmitsWrapAndUnwrapMessageFunctions,
+ExportsWrapAndUnwrapMessage}`.
 
 **M3 slice F (2026-04-19): bytes constants + operators end-to-end.**
 `b'...'` literals lower through a generalised `LowerSpanLiteral` that

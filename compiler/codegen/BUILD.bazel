@@ -44,6 +44,7 @@ cc_library(
     srcs = ["expr_lower.cc"],
     hdrs = ["expr_lower.h"],
     deps = [
+        ":cel_refs",
         ":module",
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",

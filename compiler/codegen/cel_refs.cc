@@ -22,6 +22,16 @@ constexpr const char* kInternFn = "cel_ref_intern";
 constexpr const char* kGetFn = "cel_ref_get";
 constexpr const char* kResetFn = "cel_refs_reset";
 
+constexpr const char* kWrapMessageFn = "cel_wrap_message";
+constexpr const char* kUnwrapMessageFn = "cel_unwrap_message";
+
+// Byte offset of `payload.msg_slot` within a `CelValue`.  The layout is
+// `{ uint32_t kind; uint32_t _pad; union payload; }` and `msg_slot` is
+// the first variant of the union, so it sits at offset 8.  The runtime
+// pins the struct at 24 bytes via a `_Static_assert` in
+// `cel_runtime.h`, so this is stable.
+constexpr uint32_t kMsgSlotOffset = 8;
+
 }  // namespace
 
 absl::Status AddCelRefsTableAndHelpers(WasmModule& mod,
@@ -117,6 +127,77 @@ absl::Status AddCelRefsTableAndHelpers(WasmModule& mod,
   }
 
   mod.ExportTable(table_name, table_name);
+  return absl::OkStatus();
+}
+
+// cel_wrap_message(ref: externref) -> i32
+//   return cel_make_message(cel_ref_intern(ref))
+//
+// This is a one-liner: `cel_ref_intern` is defined locally by
+// `AddCelRefsTableAndHelpers`, and `cel_make_message` is a runtime
+// import that already knows how to write `{kind=CEL_MESSAGE, msg_slot}`
+// into a freshly-allocated `CelValue`.  Composing them keeps layout
+// knowledge in the runtime where it belongs.
+//
+// cel_unwrap_message(cv: i32) -> externref
+//   slot = i32.load offset=8 (cel_mem_base() + cv)
+//   return cel_ref_get(slot)
+//
+// We do the load inline rather than call a runtime helper because it
+// is a single i32 load at a fixed offset; adding a `cel_msg_slot(cv)`
+// accessor to the runtime for one caller would be noise.  The offset
+// is pinned by `kMsgSlotOffset` above and guarded by a static_assert
+// on the C side.
+absl::Status AddMessageWrapHelpers(WasmModule& mod,
+                                   absl::string_view table_name) {
+  // The table name isn't referenced directly — the helpers call
+  // `cel_ref_intern` / `cel_ref_get` by function name, and those
+  // already know which table they're bound to.  The parameter is
+  // retained for symmetry with `AddCelRefsTableAndHelpers` and as
+  // forward-compatibility for a future assertion that the caller
+  // declared the expected table.
+  (void)table_name;
+  BinaryenModuleRef m = mod.raw();
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType externref = BinaryenTypeExternref();
+
+  // cel_wrap_message(externref) -> i32.
+  {
+    const BinaryenType params[1] = {externref};
+
+    BinaryenExpressionRef ref_arg = BinaryenLocalGet(m, /*index=*/0, externref);
+    BinaryenExpressionRef intern_call =
+        BinaryenCall(m, kInternFn, &ref_arg, 1, i32);
+    BinaryenExpressionRef body =
+        BinaryenCall(m, "cel_make_message", &intern_call, 1, i32);
+
+    mod.AddFunction(kWrapMessageFn, params, i32, {}, body);
+    mod.ExportFunction(kWrapMessageFn, kWrapMessageFn);
+  }
+
+  // cel_unwrap_message(i32) -> externref.
+  {
+    const BinaryenType params[1] = {i32};
+
+    // abs = cel_mem_base() + cv  (arena-relative -> absolute, same
+    // translation as LowerSpanLiteral).
+    BinaryenExpressionRef base_call = BinaryenCall(
+        m, "cel_mem_base", /*operands=*/nullptr, /*numOperands=*/0, i32);
+    BinaryenExpressionRef cv_arg = BinaryenLocalGet(m, /*index=*/0, i32);
+    BinaryenExpressionRef abs =
+        BinaryenBinary(m, BinaryenAddInt32(), base_call, cv_arg);
+
+    BinaryenExpressionRef slot =
+        BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false,
+                     /*offset=*/kMsgSlotOffset, /*align=*/4, i32, abs,
+                     /*memoryName=*/"memory");
+
+    BinaryenExpressionRef body = BinaryenCall(m, kGetFn, &slot, 1, externref);
+
+    mod.AddFunction(kUnwrapMessageFn, params, externref, {}, body);
+    mod.ExportFunction(kUnwrapMessageFn, kUnwrapMessageFn);
+  }
+
   return absl::OkStatus();
 }
 

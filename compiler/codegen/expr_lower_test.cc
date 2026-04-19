@@ -392,6 +392,45 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
   }
 }
 
+// Message-valued variables travel as externref params and bring along
+// the `$cel_refs` table + `cel_wrap_message` / `cel_unwrap_message`
+// helpers — the plumbing a later slice will rely on to lower field
+// reads.  Without a message-typed variable, none of that machinery
+// should appear.
+TEST(ExprLowerTest, MessageVariableLowersAsExternrefParam) {
+  // `google.protobuf.Empty` is always in the generated pool so no
+  // schema file is needed; the body is the bare ident which forces
+  // the param layout to be inspected.
+  auto L = LowerOkWithVars("m", {"m:google.protobuf.Empty"});
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  EXPECT_EQ(L.fn.result_repr, Repr::kMessage);
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeExternref());
+
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  auto params = ParamTypes(fn);
+  ASSERT_EQ(params.size(), 1u);
+  EXPECT_EQ(params[0], BinaryenTypeExternref());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenExpressionGetType(body), BinaryenTypeExternref());
+}
+
+TEST(ExprLowerTest, MessageVariablePullsInCelRefsTableAndWrappers) {
+  auto L = LowerOkWithVars("m", {"m:google.protobuf.Empty"});
+  EXPECT_NE(BinaryenGetTable(L.mod.raw(), "$cel_refs"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_ref_intern"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_ref_get"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_wrap_message"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_unwrap_message"), nullptr);
+}
+
+TEST(ExprLowerTest, NoMessageVariableMeansNoCelRefsTable) {
+  auto L = LowerOk("1 + 2");
+  EXPECT_EQ(BinaryenGetTable(L.mod.raw(), "$cel_refs"), nullptr);
+  EXPECT_EQ(BinaryenGetFunction(L.mod.raw(), "cel_wrap_message"), nullptr);
+  EXPECT_EQ(BinaryenGetFunction(L.mod.raw(), "cel_unwrap_message"), nullptr);
+}
+
 TEST(ExprLowerTest, UnsupportedVariableReprFailsWithSpecName) {
   // `list<int>` has no scalar ABI in M3, so declaring such a variable
   // — even before the body touches it — must fail loudly at
@@ -585,9 +624,10 @@ TEST(ExprLowerTest, WasmTypeForScalars) {
   // runtime's shared memory).
   EXPECT_EQ(WasmTypeFor(Repr::kString), BinaryenTypeInt32());
   EXPECT_EQ(WasmTypeFor(Repr::kBytes), BinaryenTypeInt32());
+  // Messages travel as externref (host-owned proto handle).
+  EXPECT_EQ(WasmTypeFor(Repr::kMessage), BinaryenTypeExternref());
   EXPECT_EQ(WasmTypeFor(Repr::kList), BinaryenTypeNone());
   EXPECT_EQ(WasmTypeFor(Repr::kMap), BinaryenTypeNone());
-  EXPECT_EQ(WasmTypeFor(Repr::kMessage), BinaryenTypeNone());
   EXPECT_EQ(WasmTypeFor(Repr::kNull), BinaryenTypeNone());
   EXPECT_EQ(WasmTypeFor(Repr::kUnknown), BinaryenTypeNone());
 }

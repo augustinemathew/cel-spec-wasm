@@ -16,6 +16,7 @@
 #include "common/constant.h"
 #include "common/expr.h"
 #include "common/operators.h"
+#include "compiler/codegen/cel_refs.h"
 #include "compiler/codegen/module.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
@@ -103,6 +104,10 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   import1("cel_alloc", i32, i32);
   import2("cel_make_string_view", i32, i32, i32);
   import2("cel_make_bytes_view", i32, i32, i32);
+  // Message-value construction (M3 slice G): wraps an interned `$cel_refs`
+  // slot into a heap-allocated CelValue whose kind is CEL_MESSAGE.  Used
+  // by `cel_wrap_message` in the eval module.
+  import1("cel_make_message", i32, i32);
   // `cel_mem_base` returns the absolute linear-memory offset at which
   // the runtime's arena (`g_memory`) begins.  The eval module needs
   // this to translate arena-relative offsets returned by `cel_alloc`
@@ -652,6 +657,13 @@ BinaryenType WasmTypeFor(Repr r) {
     case Repr::kString:
     case Repr::kBytes:
       return BinaryenTypeInt32();
+    // Messages travel as `externref`: the host owns the underlying
+    // proto object and hands it to the module as an opaque reference.
+    // When codegen needs to thread the value through a CelValue* API
+    // (equality, size, host calls that return a message), it goes
+    // through `cel_wrap_message` — see `compiler/codegen/cel_refs.cc`.
+    case Repr::kMessage:
+      return BinaryenTypeExternref();
     default:
       return BinaryenTypeNone();
   }
@@ -678,13 +690,14 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
   // Build the parameter list from the declared variables.  Each user
   // variable becomes one WASM param whose type is the ABI encoding of
   // its Repr.  Variables whose Repr has no scalar encoding (list, map,
-  // message, dyn) fail cleanly here — their support lives in later
-  // milestones.  Duplicate names would be a checker bug (the decl-
-  // builder would have refused to add the second one) but are worth
-  // flagging here too since ctx.idents silently overwrites on collision.
+  // dyn) fail cleanly here — their support lives in later milestones.
+  // Duplicate names would be a checker bug (the decl-builder would
+  // have refused to add the second one) but are worth flagging here
+  // too since ctx.idents silently overwrites on collision.
   std::vector<BinaryenType> params;
   params.reserve(ast.variables().size());
   LoweringContext ctx{mod};
+  bool has_message_param = false;
   for (const Variable& v : ast.variables()) {
     BinaryenType pt = WasmTypeFor(v.repr);
     if (pt == BinaryenTypeNone()) {
@@ -692,6 +705,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
           "expr_lower: variable `", v.name, "` has Repr `", ReprName(v.repr),
           "` which has no scalar ABI lowering in M3"));
     }
+    if (v.repr == Repr::kMessage) has_message_param = true;
     BinaryenIndex idx = static_cast<BinaryenIndex>(params.size());
     params.push_back(pt);
     auto [it, inserted] = ctx.idents.emplace(v.name, idx);
@@ -701,6 +715,22 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
     }
   }
   ctx.num_params = static_cast<uint32_t>(params.size());
+
+  // Any message-valued variable drags in the externref table + the
+  // wrap/unwrap helpers.  We emit the table with 16 initial slots:
+  // a single evaluation never pins more than a handful of messages
+  // (one per `kIdentExpr`, plus transient wraps for field reads), so
+  // 16 is a comfortable ceiling that still keeps the table's root
+  // set small for wasmtime.  Slot 0 is the null sentinel, slot 1 is
+  // the first allocatable slot.
+  if (has_message_param) {
+    if (auto s = AddCelRefsTableAndHelpers(mod, "$cel_refs",
+                                           /*initial_slots=*/16);
+        !s.ok()) {
+      return s;
+    }
+    if (auto s = AddMessageWrapHelpers(mod, "$cel_refs"); !s.ok()) return s;
+  }
 
   auto body = LowerExpr(ctx, ast, root);
   if (!body.ok()) return body.status();

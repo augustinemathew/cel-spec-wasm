@@ -34,14 +34,51 @@ sliced thin to land incremental e2e coverage:
   lowers to a new `cel_bytes_size` (byte count per CEL §1110, not
   code-point count).  Bytes equality already worked via the existing
   `Repr::kBytes` branch of `LowerComparison` → `cel_bytes_eq`.
+- **Slice G1** (2026-04-19, landed) — message params as externref
+  + externref-table plumbing.  `Repr::kMessage` variables now lower
+  to an `externref` param on the eval function (`WasmTypeFor(kMessage)
+  == BinaryenTypeExternref()`).  When the eval module has at least
+  one message variable, `LowerToEvalFunction` pulls in the
+  `$cel_refs` table (16 initial slots, slot 0 reserved as null) and
+  the three helper functions via `AddCelRefsTableAndHelpers`, plus
+  `cel_wrap_message(externref) → i32` and
+  `cel_unwrap_message(i32) → externref` via `AddMessageWrapHelpers`.
+  The wrap/unwrap pair lives in `cel_refs.cc` so all externref-bearing
+  IR is colocated; it takes a runtime-import dependency on
+  `cel_make_message` and `cel_mem_base` (declared via
+  `DeclareRuntimeImports` — `cel_make_message` added in this slice).
+  The `kMsgSlotOffset = 8` byte offset of `payload.msg_slot` inside
+  `CelValue` is pinned by a `_Static_assert` in the runtime, so
+  `cel_unwrap_message` can do the load inline without a dedicated
+  accessor.  Codegen coverage only at G1 — full e2e round-trip is
+  deferred to G2 where `cel_host.get_field` is the first caller that
+  actually exercises wrap/unwrap through a wasmtime instantiation.
+  Coverage: `expr_lower_test::{MessageVariableLowersAsExternrefParam,
+  MessageVariablePullsInCelRefsTableAndWrappers,
+  NoMessageVariableMeansNoCelRefsTable}`;
+  `cel_refs_test::{AddMessageWrapHelpersValidates,
+  EmitsWrapAndUnwrapMessageFunctions, ExportsWrapAndUnwrapMessage}`.
 
 Remaining slices before M3 closes:
-- **Proto field reads** — `kSelectExpr` (including `test_only` from
-  `has()`) lowering, `cel_host.get_field` / `has_field` /
-  `message_eq` import declarations, nested-message select, codegen
-  for message externref params.  This is the M3 feature that
-  forces the `externref` bits of the ABI to be exercised for the
-  first time.
+- **Slice G2** — `kSelectExpr` (scalar + span fields) lowering via a
+  unified `cel_host.get_field(externref msg, i32 field_number,
+  i32 out_cv) → void` import.  Codegen pre-allocates a 24-byte
+  `CelValue` in the arena via `cel_alloc(24)`, passes the
+  arena-relative offset to the host as an out-param, and the host
+  writes `{kind, payload}` in place.  For string/bytes fields, the
+  host additionally allocates the span payload bytes via an
+  imported-back `cel_alloc(len)` and fills
+  `payload.s.{ptr,len}`; for message fields the host writes
+  `kind=CEL_MESSAGE` + an interned slot into `payload.msg_slot`.
+  `CEL_UNKNOWN` and `CEL_ERROR` travel through the same slot.
+  Proto field numbers are emitted as codegen immediates (no new
+  interning table — the externref already carries the descriptor).
+  See "Open design questions" §1 for the rationale.
+- **Slice G3** — `kSelectExpr` with `test_only = true` lowers to a
+  separate `cel_host.has_field(externref, i32) → i32` import.
+- **Slice G4** — nested-message select (compose G2 with
+  `cel_unwrap_message`) + `_==_` on `Repr::kMessage` dispatching to
+  `cel_host.message_eq(externref, externref) → i32`.
 - **Checker integration** — pass a `--schema` file on the CLI,
   round-trip through a proto fixture under `compiler/e2e/testdata/`.
 
@@ -103,11 +140,17 @@ Out of scope (later milestones):
 
 ### Runtime (externref side, WAT / Binaryen)
 
-- [ ] `cel_refs.wat` — the three helpers `cel_wrap_message`,
+- [x] `cel_refs.wat` — the three helpers `cel_wrap_message`,
       `cel_unwrap_message`, `cel_ref_intern` against the private
-      `$cel_refs` externref table.  This is technically an M2 carryover
-      (see m2-codegen-mvp.md §Remaining for M2); repeated here because
-      field reads can't happen without it.
+      `$cel_refs` externref table.  Landed as Binaryen-IR emitters
+      in `compiler/codegen/cel_refs.{h,cc}` (not WAT — `externref` has
+      no C-source representation via the wasm32 cross-compile path).
+      `AddCelRefsTableAndHelpers` emits the table plus
+      `cel_ref_intern` / `cel_ref_get` / `cel_refs_reset`;
+      `AddMessageWrapHelpers` emits `cel_wrap_message` /
+      `cel_unwrap_message` on top.  Pulled in by `LowerToEvalFunction`
+      only when the expression has at least one message variable
+      (Slice G1).
 
 ### Host imports (declared by the module, implemented by the host)
 
@@ -141,11 +184,11 @@ The design doc §12 fixes these; M3 is where we first implement them.
       function in declaration order; `kIdentExpr` lowers to
       `local.get N` against that slot.  Scalar-ABI variables (bool,
       int, uint, double, string, bytes as offsets) are supported.
-      `message(T)` → externref still pending and gated on the
-      externref-bearing codegen that lands alongside proto field
-      reads.  The `cel.abi` table's role is still just to encode the
-      final ABI — codegen derives the param layout straight from
-      `TypedAst::variables()` at lowering time.
+      Slice G1 (2026-04-19) extends this to `message(T) → externref`
+      params; reading a message ident is just `local.get N` at the
+      `externref` type.  The `cel.abi` table's role is still just to
+      encode the final ABI — codegen derives the param layout
+      straight from `TypedAst::variables()` at lowering time.
 - [ ] `kSelectExpr` (operand, field, not test_only) — lowers to a
       `cel_host.get_field` call followed by whatever unwrap or
       constructor is needed to match the checked field type.
@@ -248,10 +291,33 @@ Negative tests that must land:
 
 ## Open design questions
 
-1. **Scalar field return ABI.** Host returns the scalar, module
-   wraps into a `CelValue` — OR — host allocates a `CelValue` via
-   imported `cel_alloc` and returns the pointer.  Current lean:
-   former.  Decide before authoring `cel_host.get_field`.
+1. **Scalar field return ABI.** **Decided 2026-04-19 (ahead of
+   Slice G2).**  Neither of the two original options.  Converged on
+   a uniform out-parameter shape:
+     - The module pre-allocates a 24-byte `CelValue` in the arena
+       via `cel_alloc(24)` and passes its arena-relative offset
+       (`out_cv: i32`) to `cel_host.get_field(externref msg,
+       i32 field_number, i32 out_cv) → void`.
+     - The host writes `kind` + the appropriate `payload` bytes
+       in place.  For string/bytes fields the host additionally
+       allocates the span payload bytes via an imported-back
+       `cel_alloc(len)` and fills `payload.s.{ptr,len}`.  For
+       message fields the host writes
+       `{kind=CEL_MESSAGE, payload.msg_slot = intern(ref)}` into
+       the slot and the module pulls the externref back out via
+       `cel_unwrap_message`.
+     - UNKNOWN and ERROR propagate through the same slot by
+       writing `kind=CEL_UNKNOWN` / `CEL_ERROR`.  This is the
+       **reason** neither of the original options works: both
+       assumed the return shape is known statically from the field
+       type, but unknown / error must be reachable at every field
+       read.
+     - Field numbers are emitted as codegen immediates; no new
+       interning table (the externref carries the descriptor
+       pool).  `has_field` and `message_eq` remain separate
+       imports (slices G3 and G4).
+   Design doc §8.2 still describes the pre-decision split ABI;
+   that rewrite lands with Slice G2.
 2. **Interned string pool layout.** All string constants live in the
    `data` segment, but the layout that makes `size()` cheap (a
    leading u32 length) costs a byte per unique string vs. passing
