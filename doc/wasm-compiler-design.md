@@ -1026,17 +1026,22 @@ This repo and cel-cpp are both Bazel-native; we stay on Bazel (bzlmod).
 
 ## 15. Milestones
 
-| M   | Scope                                                                      |
-| --- | -------------------------------------------------------------------------- |
-| M0  | Build cel-cpp parser + checker through CMake; `celwasmc` prints CheckedExpr |
-| M1  | `cel_runtime.{c,h}` compiles to `.wasm`; ref-table helpers authored in WAT/Binaryen and linked in; unit tests for constructors, ops, and ref round-trips |
-| M2  | Codegen of pure-primitive expressions (`1 + 2 * 3`, `&&`, `||`, `?:`)      |
-| M3  | Proto field reads (`cel_host.get_field`, `has_field`), string ops         |
-| M4  | Lists, maps, comprehensions                                                |
-| M5  | Partial eval: attribute interning, UnknownSet, `cel_status_either`        |
-| M6  | Custom functions: `.celfn` IDL, `celfnc`, `cel_fn.*` emission             |
-| M7  | Stdlib completeness: timestamps, durations, regex, bytes                  |
-| M8  | Conformance run against `tests/simple/testdata/` (static subset)          |
+Each row has a matching implementation-plan file under
+`implementation-plan/`; that file holds the authoritative deliverable
+list + testing obligations.  This table is a one-line summary for
+orientation only.
+
+| M   | Plan file                                  | Status       | Scope                                                                      |
+| --- | ------------------------------------------ | ------------ | -------------------------------------------------------------------------- |
+| M0  | `m0-parser-cli.md`                         | DONE         | Build cel-cpp parser + checker through Bazel; `celwasmc` prints CheckedExpr |
+| M1  | `m1-type-checker.md`                       | DONE         | `cel_runtime.{c,h}` + constructors + type-checker integration + Repr IR |
+| M2  | `m2-codegen-mvp.md`                        | IN PROGRESS  | Codegen of pure-primitive expressions (`1 + 2 * 3`, `&&`, `||`, `?:`); still open: `cel_refs.wat`, wasm32 cross-compile, `cel.abi` custom section |
+| M3  | `m3-proto-and-strings.md`                  | PLANNED      | Proto field reads (`cel_host.get_field`, `has_field`), `has()`, string constants / equality / concat / size |
+| M4  | `m4-collections-and-comprehensions.md`     | PLANNED      | List, map, struct literals + every comprehension macro + nested-shadowing scoping (§5.4) |
+| M5  | `m5-three-valued.md`                       | PLANNED      | Partial eval: attribute interning, UnknownSet, overflow / div-by-zero / NaN → ERROR, `cel_status_either` |
+| M6  | `m6-custom-fns.md`                         | PLANNED      | User functions: `.celfn` IDL + `FunctionSet` proto, `celfnc` stub gen, `cel_fn.*` host imports |
+| M7  | `m7-stdlib.md`                             | PLANNED      | Stdlib completeness: timestamps, durations, regex, bytes, string ext, format directives, proto ext |
+| M8  | `m8-conformance.md`                        | PLANNED      | Conformance run against `tests/simple/testdata/` (static subset) — the release gate |
 
 ## Appendix A: the `cel.abi` custom section
 

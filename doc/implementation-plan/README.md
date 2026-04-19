@@ -32,13 +32,44 @@ Companion documents (do not duplicate — link):
 
 ## Files
 
-  - `m0-parser-cli.md`       — DONE.
-  - `m1-type-checker.md`     — DONE.
-  - `m2-codegen-mvp.md`      — IN PROGRESS.
-  - `m3-comprehensions.md`   — planned.
-  - `m4-string-ops.md`       — planned.
-  - `m5-three-valued.md`     — planned.
-  - `m6-custom-fns.md`       — planned.
-  - `m7-partial-eval.md`     — planned.
-  - `m8-conformance.md`      — planned.
+  - `m0-parser-cli.md`       — DONE.  CLI can parse + check + emit ABI.
+  - `m1-type-checker.md`     — DONE.  Runtime struct + constructors landed.
+  - `m2-codegen-mvp.md`      — **IN PROGRESS.**  Scalar slice executes
+                                end-to-end via wasmtime.  Remaining:
+                                `cel_refs.wat`, wasm32 cross-compile,
+                                `cel.abi` custom section, a handful of
+                                test-grid gaps.  See the *Remaining for
+                                M2* section in that file.
+  - `m3-proto-and-strings.md` — **planned.**  Proto field reads
+                                (`cel_host.get_field`, `has_field`,
+                                `SelectExpr`, `has()`) + string equality
+                                and length + string constants through
+                                linear memory.  Note: the milestone
+                                chart in `../wasm-compiler-design.md` §15
+                                calls this "M3 Proto field reads /
+                                string ops" — this doc is the canonical
+                                scope.  Renamed locally from
+                                `m3-comprehensions.md` after the design
+                                doc was settled (comprehensions moved to
+                                M4 alongside collections).
+  - `m4-collections-and-comprehensions.md` — **planned.**  List, map,
+                                struct literals + the comprehension
+                                macros (`all`, `exists`, `exists_one`,
+                                `map`, `filter`, nested shadowing).
+  - `m5-three-valued.md`     — **planned.**  Overflow → ERROR,
+                                divide-by-zero, NaN-unordered compares,
+                                `UnknownSet`, `cel_status_either`, and
+                                the commutativity of `unknown && false`.
+  - `m6-custom-fns.md`       — **planned.**  `.celfn` IDL, `celfnc`
+                                stub generator, `cel_fn.*` emission.
+  - `m7-stdlib.md`           — **planned.**  Timestamps, durations,
+                                regex, bytes; format directives; extras
+                                under `../extensions/`.
+  - `m8-conformance.md`      — **planned.**  Run against
+                                `tests/simple/testdata/` (the static
+                                subset only) as a gate for declaring
+                                the compiler production-ready.
   - `testing-checklist.md`   — CEL type × AST-variant coverage grid.
+                                Has a top-of-file **Gap summary** that
+                                calls out what's open in the active
+                                milestone vs. deferred.

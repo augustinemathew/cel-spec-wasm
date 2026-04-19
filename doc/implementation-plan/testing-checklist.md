@@ -10,6 +10,52 @@ Conventions:
   - End-to-end (wasm-executing) tests live under `compiler/e2e/`.
   - Each box is `[ ]` when pending, `[x]` when a committed test covers it.
 
+## Gap summary (updated 2026-04-18)
+
+The detailed grids below have the authoritative per-cell state; this
+block is the triage view a reviewer can read in ten seconds.
+
+**Closed by M2:**
+  - `kConstant` + `kCallExpr` (global) across parser / checker /
+    annotations / RejectDyn / codegen / e2e for `bool` / `int` /
+    `uint` / `double`.
+  - Short-circuit `&&` / `||` / `?:` — codegen + e2e.
+  - Runtime allocator + every scalar `cel_make_*` constructor.
+  - The CLI (`--emit_wasm` positive + negative).
+
+**Still open inside M2** (the gating items for calling M2 done):
+  - `RejectDyn` rows for `uint`, `double`, `string`, `bytes`,
+    `null_type`, `timestamp`, `duration`, wrappers — the code rejects
+    them correctly today, the test just doesn't enumerate.  Cheap
+    backfill; track in `static_subset_test.cc`.
+  - `kSelectExpr` (`test_only`, from `has()`) — no stage has a test.
+  - `cel_ref_intern` / `cel_unwrap_message` — waiting on
+    `compiler/runtime/cel_refs.wat` to exist.
+  - List / map growth + iteration runtime tests — waiting on the
+    wasm32 cross-compile rule and the first codegen caller.
+  - Negative tests today only assert the status code, not the
+    message.  Add `HasSubstr` assertions so a regression that
+    collapses distinct diagnostics into one generic string fails.
+  - `cel.abi` custom section — neither the writer nor the reader
+    exists; add `compiler/codegen/abi_test.cc` + a golden
+    round-trip when it lands.
+
+**Waiting on later milestones** (don't try to close in M2):
+  - `kIdentExpr`, `kSelectExpr` (field), `kListExpr`, `kMapExpr`,
+    `kStructExpr` — codegen + e2e rows all `[ ]`.  Unblocked by M3
+    (proto fields + strings) and M4 (collections).
+  - `kComprehensionExpr` × 4 variants + nested shadowing — M3/M4.
+  - Arithmetic-overflow / divide-by-zero / NaN-unordered / string
+    coercion / unknown-propagation e2e — M5 (three-valued logic).
+  - Partial-eval commutativity for `unknown && false → false` — M5.
+  - Enum and `Any`-unwrap rejection — M7 stdlib or earlier if a
+    user expression forces the question.
+  - Conformance suite from `tests/simple/testdata/` — M8.
+
+A bullet in "Still open inside M2" should NEVER outlive M2.  A bullet
+in "Waiting on later milestones" SHOULD outlive M2 and flip during
+the milestone that introduces the feature.
+
 ## Per CEL type
 
 For every type T, we need a positive test and at least one negative test in

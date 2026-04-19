@@ -1,6 +1,9 @@
 # M2 — WASM codegen MVP
 
-Status: **in progress** (started 2026-04).
+Status: **in progress** (started 2026-04).  The scalar slice is green
+end-to-end; the module still lacks non-scalar payload plumbing, the ABI
+custom section, and the wasm32 cross-compile target.  See
+[Remaining for M2](#remaining-for-m2) below for the exact punch list.
 
 ## Scope
 
@@ -78,16 +81,21 @@ Out of scope for M2 (later milestones pick these up):
 
 ### Tests (google-style `cc_test`)
 
-- [ ] `compiler/ir/annotations_test.cc` — one test per `Repr` value +
-      `ReprName` coverage.
-- [ ] `compiler/ir/typed_ast_test.cc` — cover every `TypeSpec` variant in
+- [x] `compiler/ir/annotations_test.cc` — one test per `Repr` value +
+      `ReprName` coverage.  *(M1 backfill — landed before M2 started
+      but the box here was stale; flipped 2026-04.)*
+- [x] `compiler/ir/typed_ast_test.cc` — covers every `TypeSpec` variant in
       `ReprOf()` (primitive × 6, wrapper × 6, well-known × 3, null, list,
-      map, message, type, dyn, error).
-- [ ] `compiler/ir/static_subset_test.cc` — cover every `ExprKindCase` in
-      both "all typed" and "some node DYN" configurations.
-- [ ] `compiler/frontend/parse_and_check_test.cc` — one test per primitive,
+      map, message, type, dyn, error).  *(M1 backfill — see note above.)*
+- [x] `compiler/ir/static_subset_test.cc` — covers every `ExprKindCase` in
+      both "all typed" and "some node DYN" configurations.  *(M1 backfill.)*
+- [x] `compiler/frontend/parse_and_check_test.cc` — one test per primitive,
       list, map, and message spec parse; negative cases for bad spec, bad
-      type name, trailing garbage.
+      type name, trailing garbage.  *(M1 backfill.)*
+- [x] `compiler/cli/emit_wasm_test.sh` — sh_test for the CLI's
+      `--emit_wasm` flag (positive: int + bool expressions produce a
+      file with the `\0asm\x01` preamble; negative: string-constant
+      root surfaces a `codegen error:` on stderr with no output file).
 - [x] `compiler/codegen/binaryen_smoke_test.cc` — proves the Binaryen
       integration is reachable from Bazel: `BinaryenModuleCreate`,
       add a function returning `i32.const 42`, `BinaryenModuleAllocateAndWrite`,
@@ -129,6 +137,103 @@ Out of scope for M2 (later milestones pick these up):
       think it means.  Wasmtime v43.0.1 is pinned in `MODULE.bazel` as a
       prebuilt darwin-arm64 archive under `@wasmtime_darwin_arm64`; other
       platforms can gain a matching archive + `select()` later.
+
+## Remaining for M2
+
+The three unchecked boxes above are the closing work for M2; none of them
+is a blocker for scalar e2e but all three gate the start of M3.
+
+1. **`compiler/runtime/cel_refs.wat`** — the module-owned `$cel_refs`
+   externref table and its three helpers (`cel_wrap_message`,
+   `cel_unwrap_message`, `cel_ref_intern`) are the load-bearing piece
+   that lets a proto message cross the host boundary without a copy.
+   Today `WasmModule::AddCelRefsTable` declares the table; no function
+   has been authored that actually reads or writes it.  Authoring plan:
+     - Write the three helpers in WAT, link them into the emitted module
+       the same way the C runtime will be (currently both sides only
+       exist on the host — no cross-compile yet).
+     - Tests: positive — `cel_wrap_message(ref)` + `cel_unwrap_message`
+       round-trip returns the identity externref; `cel_ref_intern` on
+       two equal refs returns the same slot id (pointer-equality
+       dedup).  Negative — intern-table overflow returns a sentinel,
+       `cel_unwrap_message` on the null slot traps (or returns the
+       null externref, TBD — document whichever we pick).
+     - Every box in the "Runtime" gap list of
+       `testing-checklist.md` that mentions `cel_ref_intern` /
+       `cel_unwrap_message` flips off the back of this deliverable.
+
+2. **wasm32 cross-compile rule for the C runtime.** Apple clang ships
+   without the `wasm32-wasi` target, so the Bazel target
+   `//compiler/runtime:cel_runtime_wasm` has to drive brew's `llvm`.
+   Today only the native `cc_library` exists, which is enough for
+   `cel_runtime_test` to run on the host but doesn't put any runtime
+   bytes in the `.wasm` the compiler emits.  The generated module
+   therefore has *no* dependency on the runtime yet — that changes as
+   soon as `expr_lower` starts constructing `CelValue`s (first use is
+   string constants in M3).  Authoring plan:
+     - `genrule` or `rules_cc` toolchain that invokes
+       `clang --target=wasm32-wasi -O2 -nostartfiles -Wl,--no-entry -c`
+       over `cel_runtime.c`, producing `cel_runtime.wasm`.
+     - `expr_lower` or a new `codegen/link.{h,cc}` merges the runtime
+       module with the per-expression module via Binaryen's
+       `BinaryenModuleAddFunctionImport` + symbol rewiring, OR we
+       embed the runtime as a Binaryen-authored module built from the
+       C-translated IR.  *(The merge strategy is one of the open
+       design questions that needs a decision before M3.)*
+     - Tests: the e2e test gains a case where the root expression
+       constructs a non-trivial `CelValue` (e.g. a string constant) and
+       asserts the returned pointer reads back as the expected kind +
+       payload from linear memory.  This is a completely new class of
+       e2e assertion — today's scalar tests only inspect
+       `wasmtime_val_t.of.i64` etc.
+
+3. **`compiler/codegen/abi.{h,cc}`** — emits the `cel.abi` custom
+   section (design §9, appendix A) holding the serialized
+   `CheckedExpr`, the type / attribute / pattern interning tables, and
+   `MemoryLayout`.  Hosts MUST read this before instantiation so the
+   custom section is on the critical path for every production host,
+   but the e2e test today just looks at the `eval` return value and
+   doesn't care about metadata.  Authoring plan:
+     - A `CelAbi` proto message (mirror of appendix A).  Serialize it
+       and call `BinaryenAddCustomSection(mod.raw(), "cel.abi", …)`.
+     - The CLI grows a `--dump-abi` companion flag that pretty-prints
+       the parsed `CelAbi` from a module.
+     - Tests: `abi_test.cc` builds a module with interned types and
+       attributes, reads the custom section back out, round-trips it,
+       and asserts byte equality with a golden proto.  E2E gains a
+       test that host-side `wasmtime_module_imports` / custom-section
+       lookup finds `cel.abi` and it decodes without error.
+
+### Testing gaps still open in M2
+
+Even for the scalar slice that is "done", the coverage checklist has
+unchecked boxes that a vigilant reader should close before calling M2
+complete:
+
+- **`RejectDyn`**: `uint`, `double`, `string`, `bytes`, `null_type`,
+  `timestamp`, `duration`, wrapper rows in the per-type matrix are all
+  `[ ]`.  The rejection logic in `static_subset.cc` is the same for
+  every type — the tests just don't enumerate them.  Cheap backfill.
+- **`kSelectExpr` (test_only from `has()`)**: no stage has a test row.
+  Once M3 starts, at least one checker/annotation test per stage must
+  land before codegen lowering is added.
+- **`e2e` column for comparisons, negate, and `!`**: the rows exist in
+  `testing-checklist.md` but the `e2e` box for `uint/double` specific
+  comparisons is still `[ ]` — `IntComparisons` covers int; double
+  covers `<` and `==`; `uint` has only `10u/3u` as a witness.  Add
+  per-op cases to close the matrix.
+- **Negative codegen tests with a good-message assertion**: the
+  current negative tests in `expr_lower_test` only check the status
+  code, not the error message.  CLAUDE.md is explicit: "rejected with
+  a good message."  Add `testing::HasSubstr` assertions on the status
+  `.message()` for each Unimplemented path so a future refactor that
+  collapses distinct error strings into one generic one can't pass.
+- **Custom-section / ABI**: not written yet, so no tests either.  M2
+  deliverable #3 above closes this.
+
+These are listed here (and not in `testing-checklist.md`) because they
+belong to the "M2 is *really* done" bar rather than to ongoing
+coverage.  Once closed, flip them in both places.
 
 ## Toolchain notes
 
