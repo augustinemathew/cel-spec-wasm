@@ -6,6 +6,8 @@ cc_binary(
     name = "celwasmc",
     srcs = ["celwasmc_main.cc"],
     deps = [
+        "//compiler/codegen:expr_lower",
+        "//compiler/codegen:module",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:annotations",
         "//compiler/ir:static_subset",
@@ -20,4 +22,10 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
+)
+
+sh_test(
+    name = "emit_wasm_test",
+    srcs = ["emit_wasm_test.sh"],
+    data = [":celwasmc"],
 )

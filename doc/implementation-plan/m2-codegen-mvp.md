@@ -62,8 +62,19 @@ Out of scope for M2 (later milestones pick these up):
       unknown) deferred to M5.
 - [ ] `compiler/codegen/abi.{h,cc}` — emits the `cel.abi` custom section
       (type-id / attribute-id / pattern-id interning).
-- [ ] CLI: `celwasmc --emit-wasm out.wasm -e "<expr>" [--check …]` writes a
-      complete module.
+- [x] CLI: `celwasmc -e "<expr>" --emit_wasm=out.wasm [--check …]`
+      writes a complete module.  The flag implies `--check` (lowering a
+      ParsedExpr is meaningless without type info) and reuses the same
+      pipeline as the e2e test: `ParseAndCheck → LowerToEvalFunction →
+      Validate → Serialize → write`.  Non-scalar root expressions
+      surface as a `codegen error: …` diagnostic on stderr with exit
+      status 1; no partial output file is written.  The flag uses an
+      underscore (`--emit_wasm`) because absl::ParseCommandLine's
+      default name resolution only accepts the underscore form.
+      Coverage: `compiler/cli/emit_wasm_test.sh` (sh_test) — positive
+      case (int expr produces a `\0asm\x01` file, boolean expr does
+      too), negative case (string constant fails with a codegen
+      diagnostic and writes no output file).
 
 ### Tests (google-style `cc_test`)
 

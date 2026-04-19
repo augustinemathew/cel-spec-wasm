@@ -7,9 +7,19 @@
 // and --var name:Type, the CLI injects a descriptor pool + variable decls into
 // the checker, then prints the CheckedExpr plus a summary of the static-subset
 // ABI annotations we compute for codegen.
+//
+// M2: add --emit-wasm <path> to lower the checked expression through
+// Binaryen and write a complete .wasm module to `path`.  The module
+// exports a nullary `eval` function whose return type is the scalar
+// ABI lowering of the expression's root Repr (bool → i32,
+// int/uint → i64, double → f64).  Non-scalar Reprs (strings, lists,
+// maps, messages, …) are out of scope for M2 and will return an
+// error from the codegen layer.
 
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <ios>
 #include <map>
 #include <string>
 #include <vector>
@@ -24,6 +34,8 @@
 #include "cel/expr/checked.pb.h"
 #include "cel/expr/syntax.pb.h"
 #include "common/ast_proto.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/static_subset.h"
@@ -48,6 +60,11 @@ ABSL_FLAG(std::string, var, "",
           "inside type specs; use ';' to separate multiple vars.");
 ABSL_FLAG(std::string, container, "",
           "Name resolution container (like CEL-Go's container option)");
+ABSL_FLAG(std::string, emit_wasm, "",
+          "If set, lower the checked expression through codegen and write a "
+          ".wasm module to the given path.  Implies --check.  The module "
+          "exports a nullary `eval` function whose return type is the scalar "
+          "ABI lowering of the expression's root Repr.");
 
 namespace {
 
@@ -74,6 +91,64 @@ void PrintAnnotationSummary(const celwasm::TypedAst& typed) {
     std::fprintf(stdout, "#   %6lld  %s\n", static_cast<long long>(id),
                  std::string(celwasm::ReprName(repr)).c_str());
   }
+}
+
+// Runs parse + check + codegen and writes the serialized module to
+// `out_path`.  Honours `reject_dyn` the same way `CheckAndPrint` does.
+// On success prints a one-line "wrote N bytes to <path>" summary to
+// stdout; on any failure prints a diagnostic to stderr and returns 1.
+int EmitWasm(absl::string_view expression,
+             const celwasm::CheckOptions& opts,
+             bool reject_dyn,
+             const std::string& out_path) {
+  auto typed = celwasm::ParseAndCheck(expression, opts);
+  if (!typed.ok()) {
+    std::fprintf(stderr, "%s\n",
+                 std::string(typed.status().message()).c_str());
+    return 1;
+  }
+  if (reject_dyn) {
+    if (auto s = celwasm::RejectDyn(typed->ast()); !s.ok()) {
+      std::fprintf(stderr, "%s\n", std::string(s.message()).c_str());
+      return 1;
+    }
+  }
+
+  celwasm::WasmModule mod;
+  auto fn = celwasm::LowerToEvalFunction(*typed, "eval", mod);
+  if (!fn.ok()) {
+    std::fprintf(stderr, "codegen error: %s\n",
+                 std::string(fn.status().message()).c_str());
+    return 1;
+  }
+  mod.ExportFunction("eval", "eval");
+  if (auto s = mod.Validate(); !s.ok()) {
+    std::fprintf(stderr, "validator error: %s\n",
+                 std::string(s.message()).c_str());
+    return 1;
+  }
+
+  auto bytes = mod.Serialize();
+  if (!bytes.ok()) {
+    std::fprintf(stderr, "serialize error: %s\n",
+                 std::string(bytes.status().message()).c_str());
+    return 1;
+  }
+
+  std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    std::fprintf(stderr, "failed to open %s for writing\n", out_path.c_str());
+    return 1;
+  }
+  out.write(reinterpret_cast<const char*>(bytes->data()),
+            static_cast<std::streamsize>(bytes->size()));
+  if (!out) {
+    std::fprintf(stderr, "failed to write to %s\n", out_path.c_str());
+    return 1;
+  }
+  std::fprintf(stdout, "wrote %zu bytes to %s\n", bytes->size(),
+               out_path.c_str());
+  return 0;
 }
 
 int CheckAndPrint(absl::string_view expression,
@@ -115,13 +190,16 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: celwasmc -e \"<cel expression>\" "
                  "[--check [--schema=<fds.pb.bin>] [--var=name:Type ...] "
-                 "[--container=<pkg>]]\n");
+                 "[--container=<pkg>]] [--emit-wasm=<out.wasm>]\n");
     return 2;
   }
 
   const std::string& description = absl::GetFlag(FLAGS_description);
+  const std::string& emit_wasm_path = absl::GetFlag(FLAGS_emit_wasm);
 
-  if (!absl::GetFlag(FLAGS_check)) {
+  // --emit-wasm implies --check; lowering a ParsedExpr isn't meaningful
+  // without type info.  We don't require the user to pass --check too.
+  if (!absl::GetFlag(FLAGS_check) && emit_wasm_path.empty()) {
     return ParseOnly(expression, description);
   }
 
@@ -136,5 +214,10 @@ int main(int argc, char** argv) {
   }
   opts.container = absl::GetFlag(FLAGS_container);
   opts.description = description;
+
+  if (!emit_wasm_path.empty()) {
+    return EmitWasm(expression, opts, absl::GetFlag(FLAGS_reject_dyn),
+                    emit_wasm_path);
+  }
   return CheckAndPrint(expression, opts, absl::GetFlag(FLAGS_reject_dyn));
 }
