@@ -19,22 +19,22 @@ extern "C" {
 #endif
 
 typedef enum {
-  CEL_NULL      = 0,
-  CEL_BOOL      = 1,
-  CEL_INT       = 2,
-  CEL_UINT      = 3,
-  CEL_DOUBLE    = 4,
-  CEL_STRING    = 5,
-  CEL_BYTES     = 6,
-  CEL_LIST      = 7,
-  CEL_MAP       = 8,
-  CEL_MESSAGE   = 9,
-  CEL_TYPE      = 10,
-  CEL_DURATION  = 11,
+  CEL_NULL = 0,
+  CEL_BOOL = 1,
+  CEL_INT = 2,
+  CEL_UINT = 3,
+  CEL_DOUBLE = 4,
+  CEL_STRING = 5,
+  CEL_BYTES = 6,
+  CEL_LIST = 7,
+  CEL_MAP = 8,
+  CEL_MESSAGE = 9,
+  CEL_TYPE = 10,
+  CEL_DURATION = 11,
   CEL_TIMESTAMP = 12,
-  CEL_OPTIONAL  = 13,
-  CEL_UNKNOWN   = 14,
-  CEL_ERROR     = 15,
+  CEL_OPTIONAL = 13,
+  CEL_UNKNOWN = 14,
+  CEL_ERROR = 15,
 } CelKind;
 
 typedef struct {
@@ -63,14 +63,14 @@ struct CelValue {
   uint32_t kind;
   uint32_t _pad;
   union {
-    int32_t  b;
-    int64_t  i;
+    int32_t b;
+    int64_t i;
     uint64_t u;
-    double   d;
-    CelSpan  s;
-    CelSpan  bytes;
+    double d;
+    CelSpan s;
+    CelSpan bytes;
     CelArray list;
-    CelMap   map;
+    CelMap map;
     uint32_t msg_slot;
     uint32_t type_id;
     CelDurTs dur;
@@ -94,7 +94,7 @@ uint8_t* cel_mem_base(void);
 uint32_t cel_mem_size(void);
 
 uint32_t cel_alloc(uint32_t n);
-void     cel_reset(void);
+void cel_reset(void);
 
 // Offset-to-pointer helper. Returns NULL when off == 0 so callers can treat
 // a zero offset uniformly as "absent". Not valid after a cel_reset().
@@ -149,6 +149,16 @@ int64_t cel_string_size(uint32_t s);
 // caller is the lowered has() path where the enclosing codegen already
 // guarantees the result is bool.
 int32_t cel_bool_from_value(uint32_t v);
+
+// String member-call helpers (CEL §9 string extension): all three take
+// two CEL_STRING operands and return 0/1 as an i32, matching how
+// `cel_string_eq` speaks ABI.  Semantics follow the spec: the empty
+// string is a prefix/suffix/substring of every string; a longer
+// needle than haystack is never found.  Returns 0 on type mismatch
+// (non-string, zero offset) so a codegen bug never forges `true`.
+int32_t cel_string_starts_with(uint32_t s, uint32_t prefix);
+int32_t cel_string_ends_with(uint32_t s, uint32_t suffix);
+int32_t cel_string_contains(uint32_t s, uint32_t needle);
 
 #ifdef __cplusplus
 }

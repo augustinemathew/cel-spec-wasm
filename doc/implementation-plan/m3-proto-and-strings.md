@@ -21,10 +21,13 @@ sliced thin to land incremental e2e coverage:
   arena-relative offset ABI in `doc/wasm-compiler-design.md` §7.1 /
   §7.4 / §8.1 / §10.1 / Appendix B.
 
+- **Slice E** (2026-04-19, landed) — string member calls routed to
+  three new runtime helpers (`cel_string_starts_with`, `…_ends_with`,
+  `…_contains`); new `LowerStringMemberCall` isolates the member-call
+  dispatch from `LowerCall`.  Spec edge cases enforced runtime-side.
+
 Remaining slices before M3 closes:
 
-- **Slice E** — string member calls (`startsWith`, `endsWith`,
-  `contains`) and any bytes-member equivalents.
 - **Slice F** — bytes constants end-to-end (flip the bytes row in
   `testing-checklist.md`; reuse slice-D code paths where possible).
 - **Proto field reads** — `kSelectExpr` (including `test_only` from
@@ -144,13 +147,16 @@ The design doc §12 fixes these; M3 is where we first implement them.
       `cel_host.has_field`.  Macro expansion already turned
       `has(x.y)` into this shape during parsing (cel-cpp), so the
       checker sees exactly the right AST here.
-- [x] `kCallExpr` for string operators (slice D, 2026-04-19):
+- [x] `kCallExpr` for string operators (slices D + E, 2026-04-19):
       - `_+_` on string (concat) — `cel_string_concat`.
       - `size(string)` — `cel_string_size`.
       - `_==_` / `_!=_` on string — `cel_string_eq` (inverted with
         `i32.eqz` for `_!=_`).
       - `_.startsWith(_)`, `_.endsWith(_)`, `_.contains(_)` — member
-        calls; deferred to slice E.
+        calls, routed to `cel_string_starts_with` /
+        `cel_string_ends_with` / `cel_string_contains` via the new
+        `LowerStringMemberCall` helper.  Empty-needle / longer-needle
+        edge cases enforced runtime-side.
 - [ ] `kConstant` for **string** and **bytes** constants — emit a
       data segment entry + a `cel_make_string_view` (or
       `cel_make_bytes_view`) call against the interned offset and

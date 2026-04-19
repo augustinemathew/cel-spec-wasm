@@ -69,8 +69,7 @@ absl::StatusOr<wasmtime_val_t> Evaluate(absl::string_view cel_source) {
 // `wasmtime_val_t` whose `kind` matches each variable's ABI (i64 for
 // int/uint, i32 for bool, f64 for double, etc.).
 absl::StatusOr<wasmtime_val_t> EvaluateWithVars(
-    absl::string_view cel_source,
-    std::vector<std::string> variable_specs,
+    absl::string_view cel_source, std::vector<std::string> variable_specs,
     std::vector<wasmtime_val_t> args) {
   CheckOptions opts;
   opts.variable_specs = std::move(variable_specs);
@@ -91,9 +90,15 @@ absl::StatusOr<wasmtime_val_t> EvaluateWithVars(
   return loaded->CallEval(args);
 }
 
-wasmtime_val_t I64(int64_t v) { return wasmtime_val_t{WASMTIME_I64, {.i64 = v}}; }
-wasmtime_val_t I32(int32_t v) { return wasmtime_val_t{WASMTIME_I32, {.i32 = v}}; }
-wasmtime_val_t F64(double v)  { return wasmtime_val_t{WASMTIME_F64, {.f64 = v}}; }
+wasmtime_val_t I64(int64_t v) {
+  return wasmtime_val_t{WASMTIME_I64, {.i64 = v}};
+}
+wasmtime_val_t I32(int32_t v) {
+  return wasmtime_val_t{WASMTIME_I32, {.i32 = v}};
+}
+wasmtime_val_t F64(double v) {
+  return wasmtime_val_t{WASMTIME_F64, {.f64 = v}};
+}
 
 TEST(EvalE2ETest, IntConstant) {
   auto r = Evaluate("42");
@@ -272,8 +277,8 @@ TEST(EvalE2ETest, UintVariableUnsignedComparison) {
   // signed, 2^63 would read as negative and this comparison would
   // flip.
   uint64_t big = 1ULL << 63;
-  auto r = EvaluateWithVars("x > 1u", {"x:uint"},
-                            {I64(static_cast<int64_t>(big))});
+  auto r =
+      EvaluateWithVars("x > 1u", {"x:uint"}, {I64(static_cast<int64_t>(big))});
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_I32);
   EXPECT_EQ(r->of.i32, 1);
@@ -283,8 +288,7 @@ TEST(EvalE2ETest, TwoVariablesReadInDeclarationOrder) {
   // `x:int, y:int` then expr `x - y`.  With x=10, y=3 the result is 7.
   // If the codegen ever swapped the param indices, this would return
   // -7 (because `y - x`), which is a very visible regression.
-  auto r = EvaluateWithVars("x - y", {"x:int", "y:int"},
-                            {I64(10), I64(3)});
+  auto r = EvaluateWithVars("x - y", {"x:int", "y:int"}, {I64(10), I64(3)});
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 7);
 }
@@ -294,8 +298,7 @@ TEST(EvalE2ETest, UnreferencedVariableStillOccupiesParamSlot) {
   // 2-param signature so the host ABI is deterministic.  Passing a
   // dummy value for `y` exercises the slot; the expression value
   // shouldn't depend on it.
-  auto r = EvaluateWithVars("x + 1", {"x:int", "y:int"},
-                            {I64(5), I64(999)});
+  auto r = EvaluateWithVars("x + 1", {"x:int", "y:int"}, {I64(5), I64(999)});
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 6);
 }
@@ -317,8 +320,8 @@ absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
                                              int32_t offset) {
   wasmtime_context_t* ctx = loaded.context();
   wasmtime_extern_t mem_ext;
-  if (!wasmtime_instance_export_get(ctx, &loaded.runtime_instance(),
-                                    "memory", 6, &mem_ext)) {
+  if (!wasmtime_instance_export_get(ctx, &loaded.runtime_instance(), "memory",
+                                    6, &mem_ext)) {
     return absl::InternalError("runtime does not export `memory`");
   }
   if (mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
@@ -332,8 +335,7 @@ absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
   // runtime where g_memory lives and translate.
   wasmtime_extern_t mem_base_ext;
   if (!wasmtime_instance_export_get(ctx, &loaded.runtime_instance(),
-                                    "cel_mem_base",
-                                    std::strlen("cel_mem_base"),
+                                    "cel_mem_base", std::strlen("cel_mem_base"),
                                     &mem_base_ext)) {
     return absl::InternalError("runtime does not export `cel_mem_base`");
   }
@@ -348,8 +350,8 @@ absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
     }
   }
   const uint32_t mem_base = static_cast<uint32_t>(base_off.of.i32);
-  const uint64_t abs_cv = static_cast<uint64_t>(mem_base) +
-                          static_cast<uint64_t>(offset);
+  const uint64_t abs_cv =
+      static_cast<uint64_t>(mem_base) + static_cast<uint64_t>(offset);
   if (offset <= 0 || abs_cv + sizeof(CelValue) > size) {
     return absl::OutOfRangeError("CelValue offset is outside memory bounds");
   }
@@ -360,8 +362,8 @@ absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
   const uint32_t ptr = v.payload.s.ptr;
   const uint32_t len = v.payload.s.len;
   if (len > 0) {
-    const uint64_t abs_bytes = static_cast<uint64_t>(mem_base) +
-                               static_cast<uint64_t>(ptr);
+    const uint64_t abs_bytes =
+        static_cast<uint64_t>(mem_base) + static_cast<uint64_t>(ptr);
     if (abs_bytes + len > size) {
       return absl::OutOfRangeError(
           "string payload span falls outside runtime memory");
@@ -494,6 +496,59 @@ TEST(EvalE2ETest, SizeOfConcatenatedString) {
   auto r = Evaluate("size('hi' + 'there')");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 7);
+}
+
+// M3 slice E: string member calls.  All three helpers are i32-returning
+// runtime imports; these tests confirm the eval module lowers the CEL
+// method syntax into a runtime call that honors the spec's edge cases
+// (empty needle is true, longer needle than haystack is false).
+
+TEST(EvalE2ETest, StartsWithPositiveAndNegative) {
+  EXPECT_EQ(Evaluate("'hello'.startsWith('he')")->of.i32, 1);
+  EXPECT_EQ(Evaluate("'hello'.startsWith('lo')")->of.i32, 0);
+}
+
+TEST(EvalE2ETest, StartsWithEmptyPrefixIsTrue) {
+  // CEL §9: every string starts with the empty string.  The runtime's
+  // la=0 early-return guards this; a regression that dropped the guard
+  // would memcmp zero bytes and still return 1, but if the zero-length
+  // guard moved around after the allocation check the wrong branch
+  // could return 0.
+  EXPECT_EQ(Evaluate("'hello'.startsWith('')")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, StartsWithLongerPrefixIsFalse) {
+  EXPECT_EQ(Evaluate("'hi'.startsWith('hello')")->of.i32, 0);
+}
+
+TEST(EvalE2ETest, EndsWithPositiveAndNegative) {
+  EXPECT_EQ(Evaluate("'hello'.endsWith('lo')")->of.i32, 1);
+  EXPECT_EQ(Evaluate("'hello'.endsWith('he')")->of.i32, 0);
+}
+
+TEST(EvalE2ETest, EndsWithEmptySuffixIsTrue) {
+  EXPECT_EQ(Evaluate("'hello'.endsWith('')")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, ContainsPositivePrefixMiddleSuffix) {
+  // Three cases exercise the three search positions so a regression in
+  // the search-loop bounds (off-by-one on the `last` computation)
+  // surfaces in at least one assertion.
+  EXPECT_EQ(Evaluate("'hello'.contains('he')")->of.i32, 1);
+  EXPECT_EQ(Evaluate("'hello'.contains('ell')")->of.i32, 1);
+  EXPECT_EQ(Evaluate("'hello'.contains('lo')")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, ContainsNegative) {
+  EXPECT_EQ(Evaluate("'hello'.contains('xyz')")->of.i32, 0);
+}
+
+TEST(EvalE2ETest, ContainsEmptyNeedleIsTrue) {
+  EXPECT_EQ(Evaluate("'hello'.contains('')")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, ContainsLongerNeedleIsFalse) {
+  EXPECT_EQ(Evaluate("'hi'.contains('hello')")->of.i32, 0);
 }
 
 }  // namespace

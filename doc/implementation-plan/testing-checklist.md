@@ -86,6 +86,31 @@ block is the triage view a reviewer can read in ten seconds.
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
 
+**M3 slice E (2026-04-19): string member calls end-to-end.**
+`'x'.startsWith('y')`, `'x'.endsWith('y')`, and `'x'.contains('y')` now
+lower to calls to new runtime helpers `cel_string_starts_with` /
+`cel_string_ends_with` / `cel_string_contains`.  The checker hands
+codegen a `CallExpr` with `target` set, `function` being the bare
+method name, and a single arg; a new `LowerStringMemberCall` helper
+factors out the dispatch so `LowerCall` stays within review size.
+Each helper returns i32 0/1 per the existing
+`cel_string_eq`-style ABI; spec edge cases (empty needle / prefix /
+suffix is always true; a longer needle than haystack is false) are
+enforced in the runtime rather than codegen, which keeps the emitted
+eval modules a single call each.  Coverage:
+`expr_lower_test::{StartsWithLowersToRuntimeCall,
+EndsWithLowersToRuntimeCall, ContainsLowersToRuntimeCall}`;
+`cel_runtime_test::{StartsWith{True,False,EmptyPrefixIsTrue,
+LongerPrefixIsFalse,FullMatch,RejectsZeroOffsets,RejectsNonString},
+EndsWith{True,False,EmptySuffixIsTrue,LongerSuffixIsFalse,FullMatch,
+RejectsZeroOffsets}, Contains{TrueMiddle,TruePrefix,TrueSuffix,False,
+EmptyNeedleIsTrue,LongerNeedleIsFalse,FullMatch,RejectsZeroOffsets,
+RejectsNonString}}`; `eval_test::{StartsWithPositiveAndNegative,
+StartsWithEmptyPrefixIsTrue,StartsWithLongerPrefixIsFalse,
+EndsWithPositiveAndNegative,EndsWithEmptySuffixIsTrue,
+ContainsPositivePrefixMiddleSuffix,ContainsNegative,
+ContainsEmptyNeedleIsTrue,ContainsLongerNeedleIsFalse}`.
+
 **M3 slice D (2026-04-19): string operators end-to-end.**
 `'a' + 'b'`, `'a' == 'b'`, `'a' != 'b'`, and `size('a')` now lower to
 calls to the runtime helpers `cel_string_concat`, `cel_string_eq`, and

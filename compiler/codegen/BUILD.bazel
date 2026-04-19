@@ -48,6 +48,7 @@ cc_library(
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",
         "@binaryen//:binaryen",
+        "@cel-cpp//base:builtins",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:constant",
         "@cel-cpp//common:expr",

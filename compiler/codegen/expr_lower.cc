@@ -10,6 +10,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "base/builtins.h"
 #include "binaryen-c.h"
 #include "common/ast.h"
 #include "common/constant.h"
@@ -53,8 +54,7 @@ struct LoweringContext {
 
   BinaryenIndex AddLocal(BinaryenType type) {
     local_types.push_back(type);
-    return static_cast<BinaryenIndex>(
-        num_params + local_types.size() - 1);
+    return static_cast<BinaryenIndex>(num_params + local_types.size() - 1);
   }
 };
 
@@ -91,8 +91,8 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
                           /*external_base=*/name,
                           absl::Span<const BinaryenType>(&p0, 1), result);
   };
-  auto import2 = [&](absl::string_view name, BinaryenType p0,
-                     BinaryenType p1, BinaryenType result) {
+  auto import2 = [&](absl::string_view name, BinaryenType p0, BinaryenType p1,
+                     BinaryenType result) {
     BinaryenType params[2] = {p0, p1};
     mod.AddFunctionImport(name, /*external_module=*/"cel",
                           /*external_base=*/name,
@@ -116,13 +116,16 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   import2("cel_string_concat", i32, i32, i32);
   import1("cel_string_size", i32, i64);
   import1("cel_bool_from_value", i32, i32);
+  // Member-call helpers (slice E).  Each returns i32 0/1.
+  import2("cel_string_starts_with", i32, i32, i32);
+  import2("cel_string_ends_with", i32, i32, i32);
+  import2("cel_string_contains", i32, i32, i32);
   return absl::OkStatus();
 }
 
 absl::Status UnimplementedKind(absl::string_view kind, int64_t id) {
-  return absl::UnimplementedError(
-      absl::StrCat("expr_lower: ", kind,
-                   " is not yet supported (expr id ", id, ")"));
+  return absl::UnimplementedError(absl::StrCat(
+      "expr_lower: ", kind, " is not yet supported (expr id ", id, ")"));
 }
 
 absl::Status UnimplementedRepr(absl::string_view op_name, Repr r, int64_t id) {
@@ -137,9 +140,9 @@ absl::Status UnimplementedRepr(absl::string_view op_name, Repr r, int64_t id) {
 absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
   const NodeAnnotation* a = ast.annotations().Find(e.id());
   if (a == nullptr || a->repr == Repr::kUnknown) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "expr_lower: missing Repr annotation for expr id ", e.id(),
-        " — was PopulateAnnotations run? did RejectDyn pass?"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("expr_lower: missing Repr annotation for expr id ", e.id(),
+                     " — was PopulateAnnotations run? did RejectDyn pass?"));
   }
   return a->repr;
 }
@@ -186,19 +189,19 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
   {
     BinaryenExpressionRef alloc_arg =
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(len)));
-    BinaryenExpressionRef alloc_call = BinaryenCall(
-        m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
+    BinaryenExpressionRef alloc_call =
+        BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
     children.push_back(BinaryenLocalSet(m, scratch, alloc_call));
   }
 
   // local.set $abs (i32.add (call $cel_mem_base) (local.get $scratch))
   {
-    BinaryenExpressionRef base_call = BinaryenCall(
-        m, "cel_mem_base", /*operands=*/nullptr, /*numOperands=*/0,
-        BinaryenTypeInt32());
-    BinaryenExpressionRef sum = BinaryenBinary(
-        m, BinaryenAddInt32(), base_call,
-        BinaryenLocalGet(m, scratch, BinaryenTypeInt32()));
+    BinaryenExpressionRef base_call =
+        BinaryenCall(m, "cel_mem_base", /*operands=*/nullptr, /*numOperands=*/0,
+                     BinaryenTypeInt32());
+    BinaryenExpressionRef sum =
+        BinaryenBinary(m, BinaryenAddInt32(), base_call,
+                       BinaryenLocalGet(m, scratch, BinaryenTypeInt32()));
     children.push_back(BinaryenLocalSet(m, abs, sum));
   }
 
@@ -206,16 +209,13 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
   // separate add for each position.
   for (uint32_t i = 0; i < len; ++i) {
     const uint8_t byte = static_cast<uint8_t>(bytes[i]);
-    BinaryenExpressionRef ptr =
-        BinaryenLocalGet(m, abs, BinaryenTypeInt32());
+    BinaryenExpressionRef ptr = BinaryenLocalGet(m, abs, BinaryenTypeInt32());
     BinaryenExpressionRef value =
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(byte)));
     children.push_back(BinaryenStore(m,
                                      /*bytes=*/1,
                                      /*offset=*/i,
-                                     /*align=*/1,
-                                     ptr,
-                                     value,
+                                     /*align=*/1, ptr, value,
                                      /*type=*/BinaryenTypeInt32(),
                                      /*memoryName=*/"memory"));
   }
@@ -226,13 +226,12 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
         BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(len))),
     };
-    children.push_back(BinaryenCall(m, "cel_make_string_view", args, 2,
-                                    BinaryenTypeInt32()));
+    children.push_back(
+        BinaryenCall(m, "cel_make_string_view", args, 2, BinaryenTypeInt32()));
   }
 
   return BinaryenBlock(m,
-                       /*name=*/nullptr,
-                       children.data(),
+                       /*name=*/nullptr, children.data(),
                        static_cast<BinaryenIndex>(children.size()),
                        /*type=*/BinaryenTypeInt32());
 }
@@ -248,9 +247,11 @@ absl::StatusOr<BinaryenExpressionRef> LowerIdent(LoweringContext& ctx,
   const std::string& name = expr.ident_expr().name();
   auto it = ctx.idents.find(name);
   if (it == ctx.idents.end()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "expr_lower: identifier `", name, "` was not declared in "
-        "CheckOptions::variable_specs (expr id ", expr.id(), ")"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("expr_lower: identifier `", name,
+                     "` was not declared in "
+                     "CheckOptions::variable_specs (expr id ",
+                     expr.id(), ")"));
   }
   auto repr = ReprOf(ast, expr);
   if (!repr.ok()) return repr.status();
@@ -274,8 +275,8 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
     case cel::ConstantKindCase::kInt:
       return BinaryenConst(m, BinaryenLiteralInt64(c.int_value()));
     case cel::ConstantKindCase::kUint:
-      return BinaryenConst(m, BinaryenLiteralInt64(
-                                  static_cast<int64_t>(c.uint_value())));
+      return BinaryenConst(
+          m, BinaryenLiteralInt64(static_cast<int64_t>(c.uint_value())));
     case cel::ConstantKindCase::kDouble:
       return BinaryenConst(m, BinaryenLiteralFloat64(c.double_value()));
     case cel::ConstantKindCase::kString:
@@ -290,9 +291,11 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
 
 // Binary arithmetic.  Dispatch on the Repr of the first operand (the
 // checker guarantees both operands share a type for these overloads).
-absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(
-    absl::string_view name, Repr r, BinaryenExpressionRef lhs,
-    BinaryenExpressionRef rhs, WasmModule& mod) {
+absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(absl::string_view name,
+                                                      Repr r,
+                                                      BinaryenExpressionRef lhs,
+                                                      BinaryenExpressionRef rhs,
+                                                      WasmModule& mod) {
   BinaryenModuleRef m = mod.raw();
   // String concatenation is the only non-numeric `_+_` overload the
   // checker accepts; it lowers to a runtime call instead of a binary
@@ -301,32 +304,47 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(
   // with the rest of bytes support in a later slice.)
   if (name == op::CelOperator::ADD && r == Repr::kString) {
     BinaryenExpressionRef args[2] = {lhs, rhs};
-    return BinaryenCall(m, "cel_string_concat", args, 2,
-                        BinaryenTypeInt32());
+    return BinaryenCall(m, "cel_string_concat", args, 2, BinaryenTypeInt32());
   }
   BinaryenOp bop;
   if (name == op::CelOperator::ADD) {
-    if (r == Repr::kInt || r == Repr::kUint) bop = BinaryenAddInt64();
-    else if (r == Repr::kDouble) bop = BinaryenAddFloat64();
-    else return UnimplementedRepr(name, r, /*id=*/0);
+    if (r == Repr::kInt || r == Repr::kUint)
+      bop = BinaryenAddInt64();
+    else if (r == Repr::kDouble)
+      bop = BinaryenAddFloat64();
+    else
+      return UnimplementedRepr(name, r, /*id=*/0);
   } else if (name == op::CelOperator::SUBTRACT) {
-    if (r == Repr::kInt || r == Repr::kUint) bop = BinaryenSubInt64();
-    else if (r == Repr::kDouble) bop = BinaryenSubFloat64();
-    else return UnimplementedRepr(name, r, 0);
+    if (r == Repr::kInt || r == Repr::kUint)
+      bop = BinaryenSubInt64();
+    else if (r == Repr::kDouble)
+      bop = BinaryenSubFloat64();
+    else
+      return UnimplementedRepr(name, r, 0);
   } else if (name == op::CelOperator::MULTIPLY) {
-    if (r == Repr::kInt || r == Repr::kUint) bop = BinaryenMulInt64();
-    else if (r == Repr::kDouble) bop = BinaryenMulFloat64();
-    else return UnimplementedRepr(name, r, 0);
+    if (r == Repr::kInt || r == Repr::kUint)
+      bop = BinaryenMulInt64();
+    else if (r == Repr::kDouble)
+      bop = BinaryenMulFloat64();
+    else
+      return UnimplementedRepr(name, r, 0);
   } else if (name == op::CelOperator::DIVIDE) {
-    if (r == Repr::kInt) bop = BinaryenDivSInt64();
-    else if (r == Repr::kUint) bop = BinaryenDivUInt64();
-    else if (r == Repr::kDouble) bop = BinaryenDivFloat64();
-    else return UnimplementedRepr(name, r, 0);
+    if (r == Repr::kInt)
+      bop = BinaryenDivSInt64();
+    else if (r == Repr::kUint)
+      bop = BinaryenDivUInt64();
+    else if (r == Repr::kDouble)
+      bop = BinaryenDivFloat64();
+    else
+      return UnimplementedRepr(name, r, 0);
   } else if (name == op::CelOperator::MODULO) {
     // CEL has no % for double; checker rejects it.
-    if (r == Repr::kInt) bop = BinaryenRemSInt64();
-    else if (r == Repr::kUint) bop = BinaryenRemUInt64();
-    else return UnimplementedRepr(name, r, 0);
+    if (r == Repr::kInt)
+      bop = BinaryenRemSInt64();
+    else if (r == Repr::kUint)
+      bop = BinaryenRemUInt64();
+    else
+      return UnimplementedRepr(name, r, 0);
   } else {
     return absl::InternalError(
         absl::StrCat("LowerArithmetic: unhandled op `", name, "`"));
@@ -334,9 +352,11 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(
   return BinaryenBinary(m, bop, lhs, rhs);
 }
 
-absl::StatusOr<BinaryenExpressionRef> LowerComparison(
-    absl::string_view name, Repr arg_r, BinaryenExpressionRef lhs,
-    BinaryenExpressionRef rhs, WasmModule& mod) {
+absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
+                                                      Repr arg_r,
+                                                      BinaryenExpressionRef lhs,
+                                                      BinaryenExpressionRef rhs,
+                                                      WasmModule& mod) {
   BinaryenModuleRef m = mod.raw();
   BinaryenOp bop;
   const bool eq = (name == op::CelOperator::EQUALS);
@@ -377,30 +397,70 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(
   const bool ge = (name == op::CelOperator::GREATER_EQUALS);
   switch (arg_r) {
     case Repr::kInt:
-      bop = lt ? BinaryenLtSInt64()
-          : le ? BinaryenLeSInt64()
-          : gt ? BinaryenGtSInt64()
-          : ge ? BinaryenGeSInt64()
-               : BinaryenEqInt64();
+      bop = lt   ? BinaryenLtSInt64()
+            : le ? BinaryenLeSInt64()
+            : gt ? BinaryenGtSInt64()
+            : ge ? BinaryenGeSInt64()
+                 : BinaryenEqInt64();
       break;
     case Repr::kUint:
-      bop = lt ? BinaryenLtUInt64()
-          : le ? BinaryenLeUInt64()
-          : gt ? BinaryenGtUInt64()
-          : ge ? BinaryenGeUInt64()
-               : BinaryenEqInt64();
+      bop = lt   ? BinaryenLtUInt64()
+            : le ? BinaryenLeUInt64()
+            : gt ? BinaryenGtUInt64()
+            : ge ? BinaryenGeUInt64()
+                 : BinaryenEqInt64();
       break;
     case Repr::kDouble:
-      bop = lt ? BinaryenLtFloat64()
-          : le ? BinaryenLeFloat64()
-          : gt ? BinaryenGtFloat64()
-          : ge ? BinaryenGeFloat64()
-               : BinaryenEqFloat64();
+      bop = lt   ? BinaryenLtFloat64()
+            : le ? BinaryenLeFloat64()
+            : gt ? BinaryenGtFloat64()
+            : ge ? BinaryenGeFloat64()
+                 : BinaryenEqFloat64();
       break;
     default:
       return UnimplementedRepr(name, arg_r, 0);
   }
   return BinaryenBinary(m, bop, lhs, rhs);
+}
+
+// Member-call dispatch for the string extension methods (§9):
+// `.startsWith`, `.endsWith`, `.contains`.  All three share the same
+// shape: lower the receiver + arg and call a runtime helper returning
+// i32 0/1.  Returns `std::nullopt` if `fn` is not one of the three
+// string methods; the caller then falls through to the generic
+// "member call not implemented" error.
+absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerStringMemberCall(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
+    int64_t expr_id) {
+  namespace b = ::cel::builtin;
+  const std::string& fn = call.function();
+  const char* helper = nullptr;
+  if (fn == b::kStringStartsWith)
+    helper = "cel_string_starts_with";
+  else if (fn == b::kStringEndsWith)
+    helper = "cel_string_ends_with";
+  else if (fn == b::kStringContains)
+    helper = "cel_string_contains";
+  else
+    return std::optional<BinaryenExpressionRef>{};
+
+  if (call.args().size() != 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`", fn, "` takes 1 argument, got ", call.args().size(),
+                     " (expr id ", expr_id, ")"));
+  }
+  auto recv_r = ReprOf(ast, call.target());
+  if (!recv_r.ok()) return recv_r.status();
+  if (*recv_r != Repr::kString) {
+    return UnimplementedRepr(fn, *recv_r, expr_id);
+  }
+  auto recv = LowerExpr(ctx, ast, call.target());
+  if (!recv.ok()) return recv.status();
+  auto arg = LowerExpr(ctx, ast, call.args()[0]);
+  if (!arg.ok()) return arg.status();
+  BinaryenExpressionRef args[2] = {*recv, *arg};
+  return std::optional<BinaryenExpressionRef>(
+      BinaryenCall(ctx.mod.raw(), helper, args, 2, BinaryenTypeInt32()));
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
@@ -411,11 +471,15 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
   WasmModule& mod = ctx.mod;
   BinaryenModuleRef m = mod.raw();
 
-  // Member form (x.f(...)) is only relevant for things like method
-  // calls, which the MVP doesn't support.
+  // Member form (x.f(...)).  The only ones supported today are the three
+  // string extension methods; anything else returns UnimplementedKind so
+  // a future method (bytes.startsWith, etc.) is forced to add a case
+  // rather than silently resolving to a generic no-op.
   if (call.has_target()) {
-    return UnimplementedKind(absl::StrCat("method call `", fn, "`"),
-                             expr.id());
+    auto member = LowerStringMemberCall(ctx, ast, call, expr.id());
+    if (!member.ok()) return member.status();
+    if (member->has_value()) return **member;
+    return UnimplementedKind(absl::StrCat("method call `", fn, "`"), expr.id());
   }
 
   // Unary: logical not.
@@ -442,9 +506,8 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
     switch (*arg_r) {
       case Repr::kInt:
         // 0 - x preserves i64 signedness; CEL also rejects negating uint.
-        return BinaryenBinary(
-            m, BinaryenSubInt64(),
-            BinaryenConst(m, BinaryenLiteralInt64(0)), *v);
+        return BinaryenBinary(m, BinaryenSubInt64(),
+                              BinaryenConst(m, BinaryenLiteralInt64(0)), *v);
       case Repr::kDouble:
         return BinaryenUnary(m, BinaryenNegFloat64(), *v);
       default:
@@ -468,12 +531,10 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
   }
 
   // Short-circuit logical: _&&_ and _||_.
-  if (fn == op::CelOperator::LOGICAL_AND ||
-      fn == op::CelOperator::LOGICAL_OR) {
+  if (fn == op::CelOperator::LOGICAL_AND || fn == op::CelOperator::LOGICAL_OR) {
     if (call.args().size() != 2) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("`", fn, "` takes 2 arguments, got ",
-                       call.args().size()));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "`", fn, "` takes 2 arguments, got ", call.args().size()));
     }
     auto l = LowerExpr(ctx, ast, call.args()[0]);
     if (!l.ok()) return l.status();
@@ -482,12 +543,10 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
     // a && b  ->  if (a) b else 0
     // a || b  ->  if (a) 1 else b
     const bool is_and = (fn == op::CelOperator::LOGICAL_AND);
-    BinaryenExpressionRef if_true = is_and ? *r
-                                           : BinaryenConst(m,
-                                                 BinaryenLiteralInt32(1));
-    BinaryenExpressionRef if_false = is_and ? BinaryenConst(m,
-                                                  BinaryenLiteralInt32(0))
-                                            : *r;
+    BinaryenExpressionRef if_true =
+        is_and ? *r : BinaryenConst(m, BinaryenLiteralInt32(1));
+    BinaryenExpressionRef if_false =
+        is_and ? BinaryenConst(m, BinaryenLiteralInt32(0)) : *r;
     return BinaryenIf(m, *l, if_true, if_false);
   }
 
@@ -503,8 +562,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
     if (!arg.ok()) return arg.status();
     if (*arg_r == Repr::kString) {
       BinaryenExpressionRef a = *arg;
-      return BinaryenCall(m, "cel_string_size", &a, 1,
-                          BinaryenTypeInt64());
+      return BinaryenCall(m, "cel_string_size", &a, 1, BinaryenTypeInt64());
     }
     return UnimplementedRepr(fn, *arg_r, expr.id());
   }
@@ -590,8 +648,8 @@ BinaryenType WasmTypeFor(Repr r) {
 }
 
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
-                                                   absl::string_view func_name,
-                                                   WasmModule& mod) {
+                                                    absl::string_view func_name,
+                                                    WasmModule& mod) {
   if (!ast.has_ast()) {
     return absl::InvalidArgumentError(
         "LowerToEvalFunction: TypedAst has no underlying cel::Ast");
@@ -601,9 +659,9 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
   if (!root_r.ok()) return root_r.status();
   BinaryenType result_type = WasmTypeFor(*root_r);
   if (result_type == BinaryenTypeNone()) {
-    return absl::UnimplementedError(absl::StrCat(
-        "expr_lower: root Repr `", ReprName(*root_r),
-        "` has no scalar ABI lowering in M2"));
+    return absl::UnimplementedError(
+        absl::StrCat("expr_lower: root Repr `", ReprName(*root_r),
+                     "` has no scalar ABI lowering in M2"));
   }
   if (auto s = DeclareRuntimeImports(mod); !s.ok()) return s;
 
@@ -621,8 +679,8 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
     BinaryenType pt = WasmTypeFor(v.repr);
     if (pt == BinaryenTypeNone()) {
       return absl::UnimplementedError(absl::StrCat(
-          "expr_lower: variable `", v.name, "` has Repr `",
-          ReprName(v.repr), "` which has no scalar ABI lowering in M3"));
+          "expr_lower: variable `", v.name, "` has Repr `", ReprName(v.repr),
+          "` which has no scalar ABI lowering in M3"));
     }
     BinaryenIndex idx = static_cast<BinaryenIndex>(params.size());
     params.push_back(pt);
@@ -641,9 +699,9 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
   BinaryenFunctionRef fn =
       BinaryenGetFunction(mod.raw(), std::string(func_name).c_str());
   if (fn == nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "expr_lower: BinaryenGetFunction returned null for `", func_name,
-        "` immediately after AddFunction"));
+    return absl::InternalError(
+        absl::StrCat("expr_lower: BinaryenGetFunction returned null for `",
+                     func_name, "` immediately after AddFunction"));
   }
   return LoweredFunction{fn, result_type, *root_r};
 }

@@ -13,12 +13,14 @@
 static void* memcpy(void* dst, const void* src, size_t n) {
   unsigned char* d = (unsigned char*)dst;
   const unsigned char* s = (const unsigned char*)src;
-  for (size_t i = 0; i < n; ++i) d[i] = s[i];
+  for (size_t i = 0; i < n; ++i)
+    d[i] = s[i];
   return dst;
 }
 static void* memset(void* dst, int v, size_t n) {
   unsigned char* d = (unsigned char*)dst;
-  for (size_t i = 0; i < n; ++i) d[i] = (unsigned char)v;
+  for (size_t i = 0; i < n; ++i)
+    d[i] = (unsigned char)v;
   return dst;
 }
 static int memcmp(const void* a, const void* b, size_t n) {
@@ -126,7 +128,9 @@ uint8_t* cel_mem_base(void) {
   return g_memory;
 }
 
-uint32_t cel_mem_size(void) { return (uint32_t)sizeof(g_memory); }
+uint32_t cel_mem_size(void) {
+  return (uint32_t)sizeof(g_memory);
+}
 
 uint32_t cel_alloc(uint32_t n) {
   ensure_initialized();
@@ -330,8 +334,7 @@ static int32_t span_eq(uint32_t a, uint32_t b, uint32_t expected_kind) {
   if (va->kind != expected_kind || vb->kind != expected_kind) return 0;
   if (va->payload.s.len != vb->payload.s.len) return 0;
   if (va->payload.s.len == 0) return 1;
-  return memcmp(g_memory + va->payload.s.ptr,
-                g_memory + vb->payload.s.ptr,
+  return memcmp(g_memory + va->payload.s.ptr, g_memory + vb->payload.s.ptr,
                 va->payload.s.len) == 0
              ? 1
              : 0;
@@ -410,4 +413,61 @@ int32_t cel_bool_from_value(uint32_t v) {
   const CelValue* cv = cv_at(v);
   if (cv->kind != (uint32_t)CEL_BOOL) return 0;
   return cv->payload.b ? 1 : 0;
+}
+
+// Shared type-check shape for the three string member-call helpers.  On
+// type error (either side zero / non-string) returns a sentinel via the
+// out-param and `false`; the caller propagates 0 (matches cel_string_eq
+// behavior, and keeps these helpers total-functions-returning-i32 which
+// is what Binaryen imports want).
+static int string_span_pair(uint32_t a, uint32_t b, const uint8_t** pa,
+                            uint32_t* la, const uint8_t** pb, uint32_t* lb) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_STRING || vb->kind != (uint32_t)CEL_STRING) {
+    return 0;
+  }
+  *pa = g_memory + va->payload.s.ptr;
+  *la = va->payload.s.len;
+  *pb = g_memory + vb->payload.s.ptr;
+  *lb = vb->payload.s.len;
+  return 1;
+}
+
+int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
+  const uint8_t* sp;
+  const uint8_t* pp;
+  uint32_t sl, pl;
+  if (!string_span_pair(s, prefix, &sp, &sl, &pp, &pl)) return 0;
+  if (pl == 0) return 1;
+  if (pl > sl) return 0;
+  return memcmp(sp, pp, pl) == 0 ? 1 : 0;
+}
+
+int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
+  const uint8_t* sp;
+  const uint8_t* xp;
+  uint32_t sl, xl;
+  if (!string_span_pair(s, suffix, &sp, &sl, &xp, &xl)) return 0;
+  if (xl == 0) return 1;
+  if (xl > sl) return 0;
+  return memcmp(sp + (sl - xl), xp, xl) == 0 ? 1 : 0;
+}
+
+int32_t cel_string_contains(uint32_t s, uint32_t needle) {
+  const uint8_t* sp;
+  const uint8_t* np;
+  uint32_t sl, nl;
+  if (!string_span_pair(s, needle, &sp, &sl, &np, &nl)) return 0;
+  if (nl == 0) return 1;
+  if (nl > sl) return 0;
+  // Naive byte search.  CEL strings are short enough in practice that the
+  // O(n*m) worst case is fine; swap to Boyer-Moore if profiling ever
+  // flags it.
+  const uint32_t last = sl - nl;
+  for (uint32_t i = 0; i <= last; ++i) {
+    if (memcmp(sp + i, np, nl) == 0) return 1;
+  }
+  return 0;
 }

@@ -15,7 +15,9 @@ class RuntimeTest : public ::testing::Test {
   // Every test starts from a rewound arena so ordering between tests never
   // affects allocator state. Singletons live in the static region and
   // survive the reset.
-  void SetUp() override { cel_reset(); }
+  void SetUp() override {
+    cel_reset();
+  }
 };
 
 TEST_F(RuntimeTest, CelValueIsTwentyFourBytes) {
@@ -124,7 +126,9 @@ TEST_F(RuntimeTest, BoolIsSingleton) {
 }
 
 TEST_F(RuntimeTest, MakeIntRoundTrips) {
-  struct Case { int64_t in; };
+  struct Case {
+    int64_t in;
+  };
   std::vector<Case> cases{{0}, {1}, {-1}, {INT64_MAX}, {INT64_MIN}, {12345678}};
   for (const auto& c : cases) {
     uint32_t off = cel_make_int(c.in);
@@ -136,8 +140,8 @@ TEST_F(RuntimeTest, MakeIntRoundTrips) {
 }
 
 TEST_F(RuntimeTest, MakeUintRoundTrips) {
-  for (uint64_t u : {uint64_t{0}, uint64_t{1}, uint64_t{0xFFFFFFFFu},
-                     UINT64_MAX}) {
+  for (uint64_t u :
+       {uint64_t{0}, uint64_t{1}, uint64_t{0xFFFFFFFFu}, UINT64_MAX}) {
     uint32_t off = cel_make_uint(u);
     ASSERT_NE(off, 0u);
     CelValue* v = cel_value_at(off);
@@ -198,8 +202,7 @@ TEST_F(RuntimeTest, MakeBytesCopiesBytes) {
   CelValue* v = cel_value_at(off);
   EXPECT_EQ(v->kind, (uint32_t)CEL_BYTES);
   EXPECT_EQ(v->payload.bytes.len, 3u);
-  EXPECT_EQ(
-      std::memcmp(cel_mem_base() + v->payload.bytes.ptr, src, 3), 0);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.bytes.ptr, src, 3), 0);
 }
 
 TEST_F(RuntimeTest, MakeBytesViewAliases) {
@@ -273,14 +276,13 @@ TEST_F(RuntimeTest, MakeUnknownCarriesAttributeId) {
   CelValue* v = cel_value_at(off);
   EXPECT_EQ(v->kind, (uint32_t)CEL_UNKNOWN);
   ASSERT_NE(v->payload.unk, 0u);
-  const uint32_t* set = reinterpret_cast<const uint32_t*>(
-      cel_mem_base() + v->payload.unk);
+  const uint32_t* set =
+      reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.unk);
   uint32_t ids_ptr = set[0];
   uint32_t ids_len = set[1];
   EXPECT_EQ(ids_len, 1u);
   ASSERT_NE(ids_ptr, 0u);
-  EXPECT_EQ(*reinterpret_cast<const uint32_t*>(cel_mem_base() + ids_ptr),
-            42u);
+  EXPECT_EQ(*reinterpret_cast<const uint32_t*>(cel_mem_base() + ids_ptr), 42u);
 }
 
 TEST_F(RuntimeTest, MakeErrorCarriesCodeAndMessage) {
@@ -293,8 +295,8 @@ TEST_F(RuntimeTest, MakeErrorCarriesCodeAndMessage) {
   CelValue* v = cel_value_at(off);
   EXPECT_EQ(v->kind, (uint32_t)CEL_ERROR);
   ASSERT_NE(v->payload.err, 0u);
-  const uint32_t* err = reinterpret_cast<const uint32_t*>(
-      cel_mem_base() + v->payload.err);
+  const uint32_t* err =
+      reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.err);
   EXPECT_EQ(err[0], 7u);
   EXPECT_EQ(err[1], msg_ptr);
   EXPECT_EQ(err[2], 4u);
@@ -483,6 +485,141 @@ TEST_F(RuntimeTest, StringSizeRejectsNonString) {
   EXPECT_EQ(cel_string_size(b), -1);
   uint32_t i = cel_make_int(9);
   EXPECT_EQ(cel_string_size(i), -1);
+}
+
+// ---- cel_string_starts_with / ends_with / contains -------------------------
+
+TEST_F(RuntimeTest, StartsWithTrue) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t p = cel_make_string("he", 2);
+  EXPECT_EQ(cel_string_starts_with(s, p), 1);
+}
+
+TEST_F(RuntimeTest, StartsWithFalse) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t p = cel_make_string("xy", 2);
+  EXPECT_EQ(cel_string_starts_with(s, p), 0);
+}
+
+TEST_F(RuntimeTest, StartsWithEmptyPrefixIsTrue) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t p = cel_make_string("", 0);
+  EXPECT_EQ(cel_string_starts_with(s, p), 1);
+}
+
+TEST_F(RuntimeTest, StartsWithLongerPrefixIsFalse) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t p = cel_make_string("hello", 5);
+  EXPECT_EQ(cel_string_starts_with(s, p), 0);
+}
+
+TEST_F(RuntimeTest, StartsWithFullMatch) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t p = cel_make_string("hi", 2);
+  EXPECT_EQ(cel_string_starts_with(s, p), 1);
+}
+
+TEST_F(RuntimeTest, StartsWithRejectsZeroOffsets) {
+  uint32_t s = cel_make_string("x", 1);
+  EXPECT_EQ(cel_string_starts_with(0, s), 0);
+  EXPECT_EQ(cel_string_starts_with(s, 0), 0);
+}
+
+TEST_F(RuntimeTest, StartsWithRejectsNonString) {
+  uint32_t s = cel_make_string("x", 1);
+  uint32_t b = cel_make_bytes("x", 1);
+  EXPECT_EQ(cel_string_starts_with(s, b), 0);
+  EXPECT_EQ(cel_string_starts_with(b, s), 0);
+}
+
+TEST_F(RuntimeTest, EndsWithTrue) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t x = cel_make_string("lo", 2);
+  EXPECT_EQ(cel_string_ends_with(s, x), 1);
+}
+
+TEST_F(RuntimeTest, EndsWithFalse) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t x = cel_make_string("lx", 2);
+  EXPECT_EQ(cel_string_ends_with(s, x), 0);
+}
+
+TEST_F(RuntimeTest, EndsWithEmptySuffixIsTrue) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t x = cel_make_string("", 0);
+  EXPECT_EQ(cel_string_ends_with(s, x), 1);
+}
+
+TEST_F(RuntimeTest, EndsWithLongerSuffixIsFalse) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t x = cel_make_string("hello", 5);
+  EXPECT_EQ(cel_string_ends_with(s, x), 0);
+}
+
+TEST_F(RuntimeTest, EndsWithFullMatch) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t x = cel_make_string("hi", 2);
+  EXPECT_EQ(cel_string_ends_with(s, x), 1);
+}
+
+TEST_F(RuntimeTest, EndsWithRejectsZeroOffsets) {
+  uint32_t s = cel_make_string("x", 1);
+  EXPECT_EQ(cel_string_ends_with(0, s), 0);
+  EXPECT_EQ(cel_string_ends_with(s, 0), 0);
+}
+
+TEST_F(RuntimeTest, ContainsTrueMiddle) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t n = cel_make_string("ell", 3);
+  EXPECT_EQ(cel_string_contains(s, n), 1);
+}
+
+TEST_F(RuntimeTest, ContainsTruePrefix) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t n = cel_make_string("he", 2);
+  EXPECT_EQ(cel_string_contains(s, n), 1);
+}
+
+TEST_F(RuntimeTest, ContainsTrueSuffix) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t n = cel_make_string("lo", 2);
+  EXPECT_EQ(cel_string_contains(s, n), 1);
+}
+
+TEST_F(RuntimeTest, ContainsFalse) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t n = cel_make_string("xyz", 3);
+  EXPECT_EQ(cel_string_contains(s, n), 0);
+}
+
+TEST_F(RuntimeTest, ContainsEmptyNeedleIsTrue) {
+  uint32_t s = cel_make_string("hello", 5);
+  uint32_t n = cel_make_string("", 0);
+  EXPECT_EQ(cel_string_contains(s, n), 1);
+}
+
+TEST_F(RuntimeTest, ContainsLongerNeedleIsFalse) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t n = cel_make_string("hello", 5);
+  EXPECT_EQ(cel_string_contains(s, n), 0);
+}
+
+TEST_F(RuntimeTest, ContainsFullMatch) {
+  uint32_t s = cel_make_string("hi", 2);
+  uint32_t n = cel_make_string("hi", 2);
+  EXPECT_EQ(cel_string_contains(s, n), 1);
+}
+
+TEST_F(RuntimeTest, ContainsRejectsZeroOffsets) {
+  uint32_t s = cel_make_string("x", 1);
+  EXPECT_EQ(cel_string_contains(0, s), 0);
+  EXPECT_EQ(cel_string_contains(s, 0), 0);
+}
+
+TEST_F(RuntimeTest, ContainsRejectsNonString) {
+  uint32_t s = cel_make_string("x", 1);
+  uint32_t b = cel_make_bytes("x", 1);
+  EXPECT_EQ(cel_string_contains(s, b), 0);
 }
 
 // ---- cel_bool_from_value ---------------------------------------------------

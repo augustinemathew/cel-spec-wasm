@@ -284,6 +284,9 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
            "cel_string_concat",
            "cel_string_size",
            "cel_bool_from_value",
+           "cel_string_starts_with",
+           "cel_string_ends_with",
+           "cel_string_contains",
        }) {
     EXPECT_EQ(seen.count(name), 1u) << "missing import: " << name;
   }
@@ -363,11 +366,14 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
   // regression where WasmTypeFor and LoweredIdent disagree on the type
   // of a `local.get`.  (Binaryen's validator would catch the mismatch,
   // but it's worth nailing down the intended mapping in a test.)
-  struct Case { const char* spec; BinaryenType want; };
+  struct Case {
+    const char* spec;
+    BinaryenType want;
+  };
   for (const auto& c : {
-           Case{"b:bool",   BinaryenTypeInt32()},
-           Case{"i:int",    BinaryenTypeInt64()},
-           Case{"u:uint",   BinaryenTypeInt64()},
+           Case{"b:bool", BinaryenTypeInt32()},
+           Case{"i:int", BinaryenTypeInt64()},
+           Case{"u:uint", BinaryenTypeInt64()},
            Case{"d:double", BinaryenTypeFloat64()},
        }) {
     SCOPED_TRACE(c.spec);
@@ -446,6 +452,43 @@ TEST(ExprLowerTest, StringInequalityInvertsEqualityCall) {
   BinaryenExpressionRef inner = BinaryenUnaryGetValue(body);
   ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_string_eq");
+}
+
+// String member calls (M3 slice E).  The checker lowers
+// `'x'.startsWith('y')` to a CallExpr with `target='x'`, `function='startsWith'`,
+// `args=['y']`; codegen must dispatch on the function-name string and
+// emit a call to the matching runtime helper.  Same shape for
+// endsWith / contains.
+
+TEST(ExprLowerTest, StartsWithLowersToRuntimeCall) {
+  auto L = LowerOk("'hello'.startsWith('he')");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_starts_with");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
+}
+
+TEST(ExprLowerTest, EndsWithLowersToRuntimeCall) {
+  auto L = LowerOk("'hello'.endsWith('lo')");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_ends_with");
+}
+
+TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
+  auto L = LowerOk("'hello'.contains('ell')");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_contains");
 }
 
 TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
