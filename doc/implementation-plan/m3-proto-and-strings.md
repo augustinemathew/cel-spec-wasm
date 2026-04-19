@@ -111,13 +111,13 @@ The design doc §12 fixes these; M3 is where we first implement them.
       `cel_host.has_field`.  Macro expansion already turned
       `has(x.y)` into this shape during parsing (cel-cpp), so the
       checker sees exactly the right AST here.
-- [ ] `kCallExpr` for string operators:
+- [x] `kCallExpr` for string operators (slice D, 2026-04-19):
       - `_+_` on string (concat) — `cel_string_concat`.
       - `size(string)` — `cel_string_size`.
-      - `_==_` / `_!=_` on string (already partially wired — add the
-        non-scalar path through `cel_string_eq`).
+      - `_==_` / `_!=_` on string — `cel_string_eq` (inverted with
+        `i32.eqz` for `_!=_`).
       - `_.startsWith(_)`, `_.endsWith(_)`, `_.contains(_)` — member
-        calls; runtime helpers.
+        calls; deferred to slice E.
 - [ ] `kConstant` for **string** and **bytes** constants — emit a
       data segment entry + a `cel_make_string_view` (or
       `cel_make_bytes_view`) call against the interned offset and

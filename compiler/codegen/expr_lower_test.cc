@@ -276,6 +276,7 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
   }
   for (const char* name : {
            "cel_alloc",
+           "cel_mem_base",
            "cel_make_string_view",
            "cel_make_bytes_view",
            "cel_string_eq",
@@ -400,6 +401,64 @@ TEST(ExprLowerTest, UnsupportedVariableReprFailsWithSpecName) {
   EXPECT_THAT(std::string(s.message()), HasSubstr("xs"));
   EXPECT_THAT(std::string(s.message()), HasSubstr("list"));
   EXPECT_THAT(std::string(s.message()), HasSubstr("no scalar ABI"));
+}
+
+// String operators (M3 slice D).  Shape-only assertions here: the e2e
+// test exercises semantic correctness against the runtime.  We verify
+// that each CEL string op routes through the correct runtime import
+// because a silent miswire (e.g. dropping into the numeric arithmetic
+// path) would still produce a validated module that returns nonsense.
+
+TEST(ExprLowerTest, StringConcatLowersToRuntimeCall) {
+  auto L = LowerOk("'hi' + 'there'");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kString);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  ASSERT_NE(fn, nullptr);
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_concat");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
+}
+
+TEST(ExprLowerTest, StringEqualityLowersToRuntimeCall) {
+  auto L = LowerOk("'a' == 'b'");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_eq");
+}
+
+TEST(ExprLowerTest, StringInequalityInvertsEqualityCall) {
+  // `_!=_` on strings is `i32.eqz(cel_string_eq(...))`.  We can't
+  // reuse the numeric `ne` opcode because the helper returns i32 0/1,
+  // so we must invert explicitly.  The validator would accept either
+  // shape but only this one is semantically correct.
+  auto L = LowerOk("'a' != 'b'");
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
+  EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenEqZInt32());
+  BinaryenExpressionRef inner = BinaryenUnaryGetValue(body);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_string_eq");
+}
+
+TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
+  auto L = LowerOk("size('abc')");
+  // CEL's `size()` returns int, which is i64 in our ABI.
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_repr, Repr::kInt);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_size");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
 }
 
 TEST(ExprLowerTest, WasmTypeForScalars) {

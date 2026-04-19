@@ -17,6 +17,7 @@ cc_test(
         "//compiler/frontend:parse_and_check",
         "//compiler/host:host_loader",
         "//compiler/ir:typed_ast",
+        "//compiler/runtime:cel_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",

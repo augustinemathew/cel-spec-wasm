@@ -86,6 +86,35 @@ block is the triage view a reviewer can read in ten seconds.
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
 
+**M3 slice D (2026-04-19): string operators end-to-end.**
+`'a' + 'b'`, `'a' == 'b'`, `'a' != 'b'`, and `size('a')` now lower to
+calls to the runtime helpers `cel_string_concat`, `cel_string_eq`, and
+`cel_string_size` that M3 slice A already pre-declared as imports.
+`_!=_` wraps the equality call in `i32.eqz` rather than reusing a
+native `ne` opcode because the helper returns an i32 0/1 sentinel.
+Along the way this slice fixed a latent bug in `LowerStringLiteral`:
+`cel_alloc` returns an offset relative to the runtime's `g_memory`
+array but `i32.store8` expects an absolute linear-memory offset, so
+the previous code wrote literal bytes into an unrelated stretch of
+the data section.  The fix imports the existing `cel_mem_base` runtime
+export and caches `base + scratch` in a local used for every store;
+`cel_make_string_view` still takes the arena-relative offset.  The
+old `StringLiteralReturnsCelValueOffset` e2e test passed only because
+it asserted `offset > 0` without decoding the bytes — the new
+`StringLiteralRoundTripsThroughMemory` test pulls the `CelValue` plus
+its span back out of wasmtime memory (via `cel_mem_base`) and verifies
+the bytes match.  Coverage:
+`expr_lower_test::{StringConcatLowersToRuntimeCall,
+StringEqualityLowersToRuntimeCall,
+StringInequalityInvertsEqualityCall,
+SizeStringLowersToRuntimeCall}` and
+`eval_test::{StringLiteralRoundTripsThroughMemory,
+EmptyStringRoundTrips, StringConcatenationProducesJoinedBytes,
+StringConcatenationEmptyLhs, StringEqualityPositiveAndNegative,
+StringInequalityInvertsEquality, SizeOfAsciiStringIsByteCount,
+SizeOfEmptyStringIsZero, SizeOfUtf8StringCountsCodepointsNotBytes,
+SizeOfConcatenatedString}`.
+
 **M3 slice C (2026-04-19): `kIdentExpr` reads scalar variables.**
 Variables declared in `CheckOptions::variable_specs` now become typed
 parameters on the eval function, in declaration order.  `kIdentExpr`

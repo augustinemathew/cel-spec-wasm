@@ -19,6 +19,7 @@
 // semantically; this test catches that.
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,6 +33,7 @@
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/host/host_loader.h"
 #include "compiler/ir/typed_ast.h"
+#include "compiler/runtime/cel_runtime.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -298,6 +300,104 @@ TEST(EvalE2ETest, UnreferencedVariableStillOccupiesParamSlot) {
   EXPECT_EQ(r->of.i64, 6);
 }
 
+// Reads a string `CelValue` back out of the runtime's linear memory.
+// The eval function returns an i32 offset into the shared memory; we
+// need to pull the 24-byte CelValue header and the span's bytes from
+// wasmtime to assert on the semantic result, not just the offset.
+//
+// Keeps the test coupled to the on-wire layout (the struct defined in
+// cel_runtime.h) on purpose: a layout bump would break this read in a
+// visible way, which is what we want — a layout change that silently
+// works on the host but not in the runtime would be much worse.
+struct DecodedString {
+  uint32_t kind = 0;
+  std::string payload;
+};
+absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
+                                             int32_t offset) {
+  wasmtime_context_t* ctx = loaded.context();
+  wasmtime_extern_t mem_ext;
+  if (!wasmtime_instance_export_get(ctx, &loaded.runtime_instance(),
+                                    "memory", 6, &mem_ext)) {
+    return absl::InternalError("runtime does not export `memory`");
+  }
+  if (mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
+    return absl::InternalError("`memory` export is not a memory");
+  }
+  const uint8_t* base = wasmtime_memory_data(ctx, &mem_ext.of.memory);
+  size_t size = wasmtime_memory_data_size(ctx, &mem_ext.of.memory);
+
+  // CelValue offsets returned by the runtime are relative to the
+  // runtime's `g_memory` array, not to wasm linear memory.  Ask the
+  // runtime where g_memory lives and translate.
+  wasmtime_extern_t mem_base_ext;
+  if (!wasmtime_instance_export_get(ctx, &loaded.runtime_instance(),
+                                    "cel_mem_base",
+                                    std::strlen("cel_mem_base"),
+                                    &mem_base_ext)) {
+    return absl::InternalError("runtime does not export `cel_mem_base`");
+  }
+  wasmtime_val_t base_off{};
+  {
+    wasm_trap_t* trap = nullptr;
+    wasmtime_error_t* err = wasmtime_func_call(
+        ctx, &mem_base_ext.of.func, /*args=*/nullptr, /*nargs=*/0, &base_off,
+        /*nresults=*/1, &trap);
+    if (err != nullptr || trap != nullptr) {
+      return absl::InternalError("cel_mem_base call failed");
+    }
+  }
+  const uint32_t mem_base = static_cast<uint32_t>(base_off.of.i32);
+  const uint64_t abs_cv = static_cast<uint64_t>(mem_base) +
+                          static_cast<uint64_t>(offset);
+  if (offset <= 0 || abs_cv + sizeof(CelValue) > size) {
+    return absl::OutOfRangeError("CelValue offset is outside memory bounds");
+  }
+  CelValue v;
+  std::memcpy(&v, base + abs_cv, sizeof(v));
+  DecodedString out;
+  out.kind = v.kind;
+  const uint32_t ptr = v.payload.s.ptr;
+  const uint32_t len = v.payload.s.len;
+  if (len > 0) {
+    const uint64_t abs_bytes = static_cast<uint64_t>(mem_base) +
+                               static_cast<uint64_t>(ptr);
+    if (abs_bytes + len > size) {
+      return absl::OutOfRangeError(
+          "string payload span falls outside runtime memory");
+    }
+    out.payload.assign(reinterpret_cast<const char*>(base + abs_bytes), len);
+  }
+  return out;
+}
+
+// Runs `cel_source` through the full pipeline, invokes `eval`, decodes
+// the resulting i32 offset as a CEL string, and hands the decoded
+// {kind, bytes} pair back.  The `kind` lives on the struct so callers
+// can assert `CEL_STRING` (a codegen regression that returned a bool
+// or an int offset would otherwise surface as surprising but passing
+// bytes comparisons — better to pin the kind explicitly).
+absl::StatusOr<DecodedString> EvaluateToString(absl::string_view cel_source) {
+  auto typed = ParseAndCheck(cel_source, CheckOptions{});
+  if (!typed.ok()) return typed.status();
+  WasmModule mod;
+  auto fn = LowerToEvalFunction(*typed, "eval", mod);
+  if (!fn.ok()) return fn.status();
+  mod.ExportFunction("eval", "eval");
+  if (auto s = mod.Validate(); !s.ok()) return s;
+  auto bytes = mod.Serialize();
+  if (!bytes.ok()) return bytes.status();
+  auto loaded = LoadEval(*bytes);
+  if (!loaded.ok()) return loaded.status();
+  auto result = loaded->CallNullaryEval();
+  if (!result.ok()) return result.status();
+  if (result->kind != WASMTIME_I32) {
+    return absl::InternalError(
+        "expected eval to return an i32 CelValue offset");
+  }
+  return DecodeStringAt(*loaded, result->of.i32);
+}
+
 TEST(EvalE2ETest, StringLiteralReturnsCelValueOffset) {
   // Strings travel as i32 offsets of CelValues in the runtime's arena.
   // The runtime instantiation populates the static singletons below
@@ -309,6 +409,91 @@ TEST(EvalE2ETest, StringLiteralReturnsCelValueOffset) {
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_I32);
   EXPECT_GT(r->of.i32, 0);
+}
+
+TEST(EvalE2ETest, StringLiteralRoundTripsThroughMemory) {
+  // The strongest literal-path assertion: a string constant survives
+  // the `cel_alloc` + `i32.store8` + `cel_make_string_view` chain and
+  // can be read back byte-identical via the runtime's shared memory.
+  auto r = EvaluateToString("'hello'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(r->payload, "hello");
+}
+
+TEST(EvalE2ETest, EmptyStringRoundTrips) {
+  // cel_alloc(0), zero store8s, cel_make_string_view(ptr, 0).  Must
+  // produce a valid CelValue whose span is len=0.  Regressions where
+  // the empty-path returns 0 (null offset) or the wrong kind would
+  // cause DecodeStringAt to fail cleanly rather than silently pass.
+  auto r = EvaluateToString("''");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(r->payload, "");
+}
+
+TEST(EvalE2ETest, StringConcatenationProducesJoinedBytes) {
+  auto r = EvaluateToString("'hi' + 'there'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(r->payload, "hithere");
+}
+
+TEST(EvalE2ETest, StringConcatenationEmptyLhs) {
+  // cel_string_concat's la=0 branch is the one that would regress if
+  // someone reordered the memcpy guards.  Exercise it explicitly.
+  auto r = EvaluateToString("'' + 'xy'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->payload, "xy");
+}
+
+TEST(EvalE2ETest, StringEqualityPositiveAndNegative) {
+  EXPECT_EQ(Evaluate("'hi' == 'hi'")->of.i32, 1);
+  EXPECT_EQ(Evaluate("'hi' == 'bye'")->of.i32, 0);
+  // Length-different operands hit the early-exit branch in span_eq;
+  // same-length-different-bytes hits the memcmp branch.  Cover both.
+  EXPECT_EQ(Evaluate("'ab' == 'abc'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("'ab' == 'ac'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("'' == ''")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, StringInequalityInvertsEquality) {
+  EXPECT_EQ(Evaluate("'hi' != 'hi'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("'hi' != 'bye'")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SizeOfAsciiStringIsByteCount) {
+  // For ASCII, code-point count == byte count, so the observable
+  // answer is the same.  The UTF-8 test below is where the codepoint
+  // semantics actually matter.
+  auto r = Evaluate("size('hello')");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, 5);
+}
+
+TEST(EvalE2ETest, SizeOfEmptyStringIsZero) {
+  EXPECT_EQ(Evaluate("size('')")->of.i64, 0);
+}
+
+TEST(EvalE2ETest, SizeOfUtf8StringCountsCodepointsNotBytes) {
+  // "héllo" is 6 bytes (`é` encodes as C3 A9) but 5 code points.
+  // cel_string_size is defined to count code points (CEL §1110); a
+  // regression that counted bytes instead would return 6 here.
+  auto r = Evaluate("size('h\\u00e9llo')");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 5);
+}
+
+TEST(EvalE2ETest, SizeOfConcatenatedString) {
+  // End-to-end compose: concat(...) must produce a CEL_STRING whose
+  // size the runtime can subsequently compute.  Exercises the path
+  // that consumes a freshly-allocated concat result — a regression
+  // that stashed the concat result in the wrong arena slot would
+  // surface here as a wrong count or a trap.
+  auto r = Evaluate("size('hi' + 'there')");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 7);
 }
 
 }  // namespace

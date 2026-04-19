@@ -80,6 +80,11 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType i64 = BinaryenTypeInt64();
 
+  auto import0 = [&](absl::string_view name, BinaryenType result) {
+    mod.AddFunctionImport(name, /*external_module=*/"cel",
+                          /*external_base=*/name,
+                          absl::Span<const BinaryenType>(), result);
+  };
   auto import1 = [&](absl::string_view name, BinaryenType p0,
                      BinaryenType result) {
     mod.AddFunctionImport(name, /*external_module=*/"cel",
@@ -98,6 +103,12 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   import1("cel_alloc", i32, i32);
   import2("cel_make_string_view", i32, i32, i32);
   import2("cel_make_bytes_view", i32, i32, i32);
+  // `cel_mem_base` returns the absolute linear-memory offset at which
+  // the runtime's arena (`g_memory`) begins.  The eval module needs
+  // this to translate arena-relative offsets returned by `cel_alloc`
+  // into absolute offsets usable with `i32.store8` (see
+  // LowerStringLiteral for the translation).
+  import0("cel_mem_base", i32);
   // String/bytes helpers expected to land in M3 — pre-declaring them
   // keeps the import list stable once those lowerings arrive.
   import2("cel_string_eq", i32, i32, i32);
@@ -136,7 +147,9 @@ absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
 // Lowers a string literal as:
 //   (block (result i32)
 //     (local.set $scratch (call $cel_alloc (i32.const len)))
-//     (i32.store8 offset=0 (local.get $scratch) (i32.const b0))
+//     (local.set $abs    (i32.add (call $cel_mem_base)
+//                                 (local.get $scratch)))
+//     (i32.store8 offset=0 (local.get $abs) (i32.const b0))
 //     ... one i32.store8 per byte ...
 //     (call $cel_make_string_view (local.get $scratch) (i32.const len)))
 //
@@ -146,6 +159,16 @@ absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
 // that doesn't alias the runtime's own static data / bump arena.  That
 // coordination is brittle; using `cel_alloc` at instantiation time
 // simply rents a fresh, never-aliasing region from the runtime itself.
+//
+// `cel_alloc` returns an offset relative to the runtime's `g_memory`
+// array, not an absolute linear-memory offset; `i32.store8` wants an
+// absolute offset.  We translate once per literal by adding
+// `cel_mem_base()` (the absolute linear-memory address of `g_memory`).
+// `cel_make_string_view` still takes the arena-relative offset — the
+// runtime internally reconstructs the absolute address as
+// `g_memory + ptr` on every access, so its CelValue payloads stay
+// arena-relative for portability with the native-host tests.
+//
 // The store-per-byte expansion is verbose but is only emitted per
 // literal (once), and the resulting code is trivial for wasmtime's
 // baseline compiler.
@@ -154,9 +177,10 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
   BinaryenModuleRef m = ctx.mod.raw();
   const uint32_t len = static_cast<uint32_t>(bytes.size());
   const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
+  const BinaryenIndex abs = ctx.AddLocal(BinaryenTypeInt32());
 
   std::vector<BinaryenExpressionRef> children;
-  children.reserve(2 + bytes.size());
+  children.reserve(3 + bytes.size());
 
   // local.set $scratch (call $cel_alloc len)
   {
@@ -167,12 +191,23 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
     children.push_back(BinaryenLocalSet(m, scratch, alloc_call));
   }
 
+  // local.set $abs (i32.add (call $cel_mem_base) (local.get $scratch))
+  {
+    BinaryenExpressionRef base_call = BinaryenCall(
+        m, "cel_mem_base", /*operands=*/nullptr, /*numOperands=*/0,
+        BinaryenTypeInt32());
+    BinaryenExpressionRef sum = BinaryenBinary(
+        m, BinaryenAddInt32(), base_call,
+        BinaryenLocalGet(m, scratch, BinaryenTypeInt32()));
+    children.push_back(BinaryenLocalSet(m, abs, sum));
+  }
+
   // One i32.store8 per byte, using `offset=i` to avoid emitting a
   // separate add for each position.
   for (uint32_t i = 0; i < len; ++i) {
     const uint8_t byte = static_cast<uint8_t>(bytes[i]);
     BinaryenExpressionRef ptr =
-        BinaryenLocalGet(m, scratch, BinaryenTypeInt32());
+        BinaryenLocalGet(m, abs, BinaryenTypeInt32());
     BinaryenExpressionRef value =
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(byte)));
     children.push_back(BinaryenStore(m,
@@ -259,6 +294,16 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(
     absl::string_view name, Repr r, BinaryenExpressionRef lhs,
     BinaryenExpressionRef rhs, WasmModule& mod) {
   BinaryenModuleRef m = mod.raw();
+  // String concatenation is the only non-numeric `_+_` overload the
+  // checker accepts; it lowers to a runtime call instead of a binary
+  // opcode because the result requires allocating a new CelValue in the
+  // runtime's arena.  (Bytes concatenation exists in CEL too but lands
+  // with the rest of bytes support in a later slice.)
+  if (name == op::CelOperator::ADD && r == Repr::kString) {
+    BinaryenExpressionRef args[2] = {lhs, rhs};
+    return BinaryenCall(m, "cel_string_concat", args, 2,
+                        BinaryenTypeInt32());
+  }
   BinaryenOp bop;
   if (name == op::CelOperator::ADD) {
     if (r == Repr::kInt || r == Repr::kUint) bop = BinaryenAddInt64();
@@ -297,6 +342,18 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(
   const bool eq = (name == op::CelOperator::EQUALS);
   const bool ne = (name == op::CelOperator::NOT_EQUALS);
   if (eq || ne) {
+    // String / bytes equality can't be a single opcode — both operands
+    // are i32 offsets to CelValues, and the payload compare must walk
+    // the bytes in linear memory.  Delegate to the runtime helper and,
+    // for `_!=_`, invert with `i32.eqz`.
+    if (arg_r == Repr::kString || arg_r == Repr::kBytes) {
+      const char* helper =
+          (arg_r == Repr::kString) ? "cel_string_eq" : "cel_bytes_eq";
+      BinaryenExpressionRef args[2] = {lhs, rhs};
+      BinaryenExpressionRef call =
+          BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
+      return ne ? BinaryenUnary(m, BinaryenEqZInt32(), call) : call;
+    }
     switch (arg_r) {
       case Repr::kBool:
         bop = eq ? BinaryenEqInt32() : BinaryenNeInt32();
@@ -432,6 +489,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
                                                   BinaryenLiteralInt32(0))
                                             : *r;
     return BinaryenIf(m, *l, if_true, if_false);
+  }
+
+  // `size(x)` — the checker resolves the overload to the exact
+  // container kind, but the function-name string in the AST is still
+  // `"size"` regardless of overload.  Dispatch on the argument Repr
+  // and emit a call to the matching runtime helper.  List / map sizes
+  // land in later milestones alongside the container Reprs themselves.
+  if (fn == "size" && call.args().size() == 1) {
+    auto arg_r = ReprOf(ast, call.args()[0]);
+    if (!arg_r.ok()) return arg_r.status();
+    auto arg = LowerExpr(ctx, ast, call.args()[0]);
+    if (!arg.ok()) return arg.status();
+    if (*arg_r == Repr::kString) {
+      BinaryenExpressionRef a = *arg;
+      return BinaryenCall(m, "cel_string_size", &a, 1,
+                          BinaryenTypeInt64());
+    }
+    return UnimplementedRepr(fn, *arg_r, expr.id());
   }
 
   // Binary arithmetic and comparisons: both operands share a Repr;
