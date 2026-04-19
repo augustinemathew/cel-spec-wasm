@@ -79,9 +79,13 @@ each stage of the pipeline where T can appear.
 
 ## Runtime (native-compiled for unit tests)
 
-- [ ] Bump allocator: alignment, reset semantics, out-of-memory.
-- [ ] `cel_make_*` constructors populate the right tag + payload.
-- [ ] `cel_string_eq` / `cel_bytes_eq` on empty, equal, unequal-length,
+- [x] Bump allocator: alignment, reset semantics, out-of-memory.
+      (`compiler/runtime/cel_runtime_test.cc`)
+- [x] `cel_make_*` constructors populate the right tag + payload.
+      (covers null/bool singletons, int/uint/double, string/bytes copy +
+       view, message, type, duration, timestamp, optional some/none,
+       unknown, error)
+- [x] `cel_string_eq` / `cel_bytes_eq` on empty, equal, unequal-length,
       different-content inputs.
 - [ ] List / map growth, iteration.
 - [ ] `cel_ref_intern` dedup + `cel_unwrap_message` round-trip.

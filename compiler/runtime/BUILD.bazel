@@ -1,0 +1,27 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+# Native-host build of the runtime, used by the unit tests and eventually
+# by codegen to import the same layout constants. A separate wasm32 target
+# will be added once the Binaryen wiring in M2 lands.
+cc_library(
+    name = "cel_runtime",
+    srcs = ["cel_runtime.c"],
+    hdrs = ["cel_runtime.h"],
+    copts = [
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+)
+
+cc_test(
+    name = "cel_runtime_test",
+    srcs = ["cel_runtime_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

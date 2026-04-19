@@ -21,23 +21,20 @@ Out of scope for M2 (later milestones pick these up):
 
 ### Runtime (authored in C, compiled to a wasm object)
 
-- [ ] `compiler/runtime/cel_runtime.h` — `CelValue` 24-byte tagged union,
-      `CelKind` enum (`CEL_NULL`, `CEL_BOOL`, `CEL_INT`, `CEL_UINT`,
-      `CEL_DOUBLE`, `CEL_STRING`, `CEL_BYTES`, `CEL_LIST`, `CEL_MAP`,
-      `CEL_MESSAGE`, `CEL_TIMESTAMP`, `CEL_DURATION`, `CEL_TYPE`,
-      `CEL_UNKNOWN`, `CEL_ERROR`).  `CelString { const uint8_t* data; i32
-      len; }`, `CelList { CelValue* items; i32 len; i32 cap; }`, `CelMap {
-      CelValue* keys; CelValue* vals; i32 len; i32 cap; }`.  Constructor
-      helpers: `cel_make_{null,bool,int,uint,double,string,bytes,message,
-      unknown,error}`.
-- [ ] `compiler/runtime/cel_runtime.c` — bump allocator (`cel_alloc`,
-      `cel_reset`), constructors, `cel_string_eq`, `cel_bytes_eq`, all
-      pure-linear-memory ops.
+- [x] `compiler/runtime/cel_runtime.h` — `CelKind` enum, 24-byte
+      `CelValue` tagged union (static-asserted), `CelSpan`/`CelArray`/
+      `CelMap`/`CelDurTs` payload layouts, full set of `cel_make_*`
+      constructors.
+- [x] `compiler/runtime/cel_runtime.c` — bump allocator (`cel_alloc`,
+      `cel_reset`) over a 64 KiB static-backed linear-memory buffer,
+      singleton storage for null/true/false/optional-none, all
+      constructors, `cel_string_eq` + `cel_bytes_eq`.
 - [ ] `compiler/runtime/cel_refs.wat` — module-owned `$cel_refs` externref
       table + `cel_wrap_message`, `cel_unwrap_message`, `cel_ref_intern`.
 - [ ] Build rule that cross-compiles the C to wasm32 via brew's `clang`
       (Apple clang has no wasm32 target).  Hermetic wrapper lives at
-      `compiler/runtime/BUILD.bazel`.
+      `compiler/runtime/BUILD.bazel`.  *(Host `cc_library` is already
+      wired up; wasm32 target follows once codegen starts consuming it.)*
 
 ### Codegen (Binaryen C++ API)
 
@@ -65,9 +62,11 @@ Out of scope for M2 (later milestones pick these up):
       type name, trailing garbage.
 - [ ] `compiler/codegen/expr_lower_test.cc` — per-`ExprKindCase` emission
       tests using Binaryen's module validator.
-- [ ] `compiler/runtime/cel_runtime_test.cc` — native C++ tests linking
-      `cel_runtime.c` as a host library (separate from the wasm32 build)
-      to unit-test the allocator + constructors.
+- [x] `compiler/runtime/cel_runtime_test.cc` — 38 gtest cases covering
+      struct size invariant, allocator alignment / reset / OOM, every
+      `cel_make_*` constructor (singletons + per-kind payload), and
+      string/bytes equality on empty/equal/differing-length/differing-
+      content/cross-kind/zero-offset inputs.
 - [ ] End-to-end: `compiler/e2e/eval_test.cc` instantiates the generated
       module with a WASM runtime (wasmtime C API) and evaluates each
       smoke-test expression, comparing the result against a literal.
