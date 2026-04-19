@@ -89,7 +89,7 @@ supported by all major engines (Wasmtime, V8, SpiderMonkey, JSC, wasmer).
              ▼
         [lower to IR] ──▶ typed SSA-ish tree carrying (CelKind, WasmType)
              │
-             ▼  (Binaryen C++ API)
+             ▼  (Binaryen C API, linked as libbinaryen.a)
         [codegen]
              │  module =
              │    runtime/cel_runtime.wasm      ← compiled once from C
@@ -660,14 +660,29 @@ CelValue* cel_status_either(CelValue* a, CelValue* b) {
 
 ## 10. Code generation
 
-Binaryen's C++ API. The compiler:
+Codegen uses **Binaryen's C API** (`binaryen-c.h`) — the officially
+stable public surface that Binaryen's own CMake `install` target
+exports.  Binaryen itself is built through its own CMakeLists.txt
+inside Bazel via `rules_foreign_cc`, using a tarball vendored at
+`third_party/binaryen/` and pinned in `third_party/binaryen.sha`.
+The result is a single `cc_library` exposing `libbinaryen.a` +
+`binaryen-c.h`, which `compiler/codegen/*` links against.
 
-1. Loads the pre-compiled `cel_runtime.wasm` as a starting `Module` (Binaryen
-   parses it and populates function/global/memory tables).
+The C API is preferred over the C++ API because (a) it is the
+interface Binaryen commits to keeping stable across versions, (b) it
+is what `cmake --install` emits publicly, and (c) it is the surface
+that third-party tooling (Emscripten, wasm-opt users, etc.) already
+drives — so version bumps are low-risk.
+
+The compiler:
+
+1. Loads the pre-compiled `cel_runtime.wasm` as a starting `BinaryenModuleRef`
+   via `BinaryenModuleRead`.
 2. Emits interned literal blobs (strings, regex patterns, error messages,
    type/attribute tables, `cel.abi` proto) into fresh data segments.
-3. Appends generated helper functions and the exported `eval`.
-4. Serialises the merged module to `.wasm`.
+3. Appends generated helper functions and the exported `eval` via
+   `BinaryenAddFunction` / `BinaryenAddFunctionExport` / etc.
+4. Serialises the merged module to `.wasm` with `BinaryenModuleWrite`.
 
 ### 10.1 Lowering per expression kind
 
@@ -987,10 +1002,13 @@ This repo and cel-cpp are both Bazel-native; we stay on Bazel (bzlmod).
   `@cel-cpp//checker:...`, `@com_google_absl//...`,
   `@com_google_protobuf//:protobuf`, and `@com_googlesource_code_re2//:re2`.
   All of these arrive transitively through cel-cpp's `MODULE.bazel`.
-- Binaryen: vendored under `third_party/binaryen` with a hand-written
-  `compiler/third_party/binaryen/BUILD.bazel` that compiles the C++ source
-  set we use (`src/wasm/`, `src/wasm-builder.h`, `src/passes/`). We avoid
-  their CMake build.
+- Binaryen: vendored as a pinned tarball under `third_party/binaryen/`
+  (bootstrapped by `third_party/fetch_binaryen.sh`, SHA pinned in
+  `third_party/binaryen.sha`) and built through its own CMakeLists.txt
+  via `rules_foreign_cc`'s `cmake` rule.  We consume the installed
+  `libbinaryen.a` + `binaryen-c.h`.  We do not hand-write a Bazel BUILD
+  over Binaryen's source tree (avoids tracking its internal source-set
+  churn) and we do not vendor a second codegen library.
 - C++ toolchain: C++20, `compilation_mode=opt` for releases.
 - Targets:
   - `//compiler/cli:celwasmc` — the compiler binary.

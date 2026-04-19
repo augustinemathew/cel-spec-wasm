@@ -1,0 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+cc_test(
+    name = "binaryen_smoke_test",
+    srcs = ["binaryen_smoke_test.cc"],
+    deps = [
+        "@binaryen//:binaryen",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

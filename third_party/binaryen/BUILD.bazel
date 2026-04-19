@@ -1,0 +1,11 @@
+# This package exists only to hold BUILD.external.bazel, which is
+# injected into the @binaryen repository by the http_archive rule in
+# MODULE.bazel.  The Binaryen source tree itself is not checked in;
+# Bazel fetches and verifies a pinned GitHub release tarball.
+#
+# There are no build targets in this package on purpose — everything
+# about Binaryen lives at @binaryen//:binaryen.
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["BUILD.external.bazel"])

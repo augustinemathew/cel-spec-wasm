@@ -1,0 +1,35 @@
+# Injected into the @binaryen repository (the extracted Binaryen release
+# tarball) by MODULE.bazel's http_archive(build_file = ...).  Drives
+# Binaryen's own CMakeLists.txt through rules_foreign_cc and exposes a
+# single cc_library for celwasmc codegen to link against.
+#
+# We consume only the officially stable C API (binaryen-c.h).  The C++
+# API is not part of the cmake install target and its internals churn
+# between Binaryen releases, so the C API is the safer long-term bet.
+
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
+
+filegroup(
+    name = "all_srcs",
+    srcs = glob(
+        include = ["**"],
+        exclude = ["bazel-*/**"],
+    ),
+)
+
+cmake(
+    name = "binaryen",
+    cache_entries = {
+        "BUILD_TESTS": "OFF",
+        "BUILD_TOOLS": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        # Binaryen's CMakeLists drops a shared lib by default; we only
+        # want the static archive so cc_library links are hermetic.
+        "BUILD_STATIC_LIB": "ON",
+    },
+    lib_source = ":all_srcs",
+    out_static_libs = ["libbinaryen.a"],
+    # The CMake install target places binaryen-c.h under include/.
+    # rules_foreign_cc picks that up automatically via out_include_dir.
+    visibility = ["//visibility:public"],
+)
