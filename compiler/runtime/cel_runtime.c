@@ -348,24 +348,20 @@ int32_t cel_bytes_eq(uint32_t a, uint32_t b) {
   return span_eq(a, b, (uint32_t)CEL_BYTES);
 }
 
-uint32_t cel_string_concat(uint32_t a, uint32_t b) {
+// String and bytes concat share everything except the kind tag.  Factor
+// out so the per-kind wrapper stays a single forwarding line and the
+// allocation / copy sequence has one home.  Snapshots the source
+// pointers before allocating — `cel_alloc` may bump-advance into pages
+// that happen to alias an input, but the source offsets themselves are
+// stable so caching them pre-alloc is enough.
+static uint32_t span_concat(uint32_t a, uint32_t b, uint32_t expected_kind) {
   if (a == 0 || b == 0) return 0;
   const CelValue* va = cv_at(a);
   const CelValue* vb = cv_at(b);
-  if (va->kind != (uint32_t)CEL_STRING || vb->kind != (uint32_t)CEL_STRING) {
-    return 0;
-  }
+  if (va->kind != expected_kind || vb->kind != expected_kind) return 0;
   uint32_t la = va->payload.s.len;
   uint32_t lb = vb->payload.s.len;
   uint32_t total = la + lb;
-
-  // Snapshot the source pointers before allocating: the allocation may
-  // advance the bump pointer into pages that *happen* to alias either
-  // input, but for views the source offsets themselves are stable.  The
-  // `va` / `vb` CelValue headers are in the arena too and must be reread
-  // if we want to be strict, but since we only read their span payload
-  // here and the payload is an immutable copy made at construction, the
-  // snapshot is what matters.
   uint32_t a_ptr = va->payload.s.ptr;
   uint32_t b_ptr = vb->payload.s.ptr;
 
@@ -383,10 +379,18 @@ uint32_t cel_string_concat(uint32_t a, uint32_t b) {
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
-  v->kind = (uint32_t)CEL_STRING;
+  v->kind = expected_kind;
   v->payload.s.ptr = data_off;
   v->payload.s.len = total;
   return off;
+}
+
+uint32_t cel_string_concat(uint32_t a, uint32_t b) {
+  return span_concat(a, b, (uint32_t)CEL_STRING);
+}
+
+uint32_t cel_bytes_concat(uint32_t a, uint32_t b) {
+  return span_concat(a, b, (uint32_t)CEL_BYTES);
 }
 
 int64_t cel_string_size(uint32_t s) {
@@ -406,6 +410,13 @@ int64_t cel_string_size(uint32_t s) {
     }
   }
   return codepoints;
+}
+
+int64_t cel_bytes_size(uint32_t b) {
+  if (b == 0) return -1;
+  const CelValue* v = cv_at(b);
+  if (v->kind != (uint32_t)CEL_BYTES) return -1;
+  return (int64_t)v->payload.s.len;
 }
 
 int32_t cel_bool_from_value(uint32_t v) {

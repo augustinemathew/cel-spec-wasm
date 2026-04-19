@@ -86,6 +86,35 @@ block is the triage view a reviewer can read in ten seconds.
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
 
+**M3 slice F (2026-04-19): bytes constants + operators end-to-end.**
+`b'...'` literals lower through a generalised `LowerSpanLiteral` that
+takes the constructor helper name, so the string path routes through
+`cel_make_string_view` and the bytes path through `cel_make_bytes_view`
+with no duplicated store-per-byte loop.  `Repr::kBytes + ADD` routes
+to a new `cel_bytes_concat` runtime helper; `size(bytes)` routes to a
+new `cel_bytes_size` helper.  `cel_bytes_size` is a direct payload-
+length read (not a code-point count) — `size(bytes)` is byte count
+per CEL §1110, and swapping the two dispatches would return the wrong
+answer for multi-byte UTF-8 sequences.  The runtime side factors
+`cel_string_concat` and `cel_bytes_concat` through a shared
+`span_concat(kind)` so the allocation + copy logic has one home.
+Bytes equality already worked via the `Repr::kBytes` branch of
+`LowerComparison` → `cel_bytes_eq`, so slice F just added e2e
+coverage for it rather than changing codegen.  The `bytes` row in the
+per-type grid flips to `[x]` in the codegen and e2e columns.
+Coverage: `expr_lower_test::{BytesConstantReturnsI32, EmptyBytesLowers,
+BytesConcatLowersToRuntimeCall, BytesEqualityLowersToRuntimeCall,
+SizeBytesLowersToRuntimeCall}` plus the two new imports added to
+`EvalModuleDeclaresRuntimeFunctionImports`;
+`cel_runtime_test::{BytesConcat{JoinsPayloads,LeftEmpty,RightEmpty,
+BothEmpty,RejectsZeroOffsets,RejectsNonBytesOperands},
+BytesSize{CountsBytes,Empty,RejectsZeroOffset,RejectsNonBytes}}`;
+`eval_test::{BytesLiteralRoundTripsThroughMemory,EmptyBytesRoundTrips,
+BytesLiteralPreservesHighBits,BytesConcatenationProducesJoinedBytes,
+BytesConcatenationEmptyLhs,BytesEqualityPositiveAndNegative,
+BytesInequalityInvertsEquality,SizeOfBytesIsByteCount,
+SizeOfEmptyBytesIsZero,SizeOfConcatenatedBytes}`.
+
 **M3 slice E (2026-04-19): string member calls end-to-end.**
 `'x'.startsWith('y')`, `'x'.endsWith('y')`, and `'x'.contains('y')` now
 lower to calls to new runtime helpers `cel_string_starts_with` /
@@ -230,7 +259,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `uint`          | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | `double`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | `string`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
-| `bytes`         | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `bytes`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | `null_type`     | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `timestamp`     | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `duration`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |

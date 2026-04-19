@@ -25,11 +25,17 @@ sliced thin to land incremental e2e coverage:
   three new runtime helpers (`cel_string_starts_with`, `…_ends_with`,
   `…_contains`); new `LowerStringMemberCall` isolates the member-call
   dispatch from `LowerCall`.  Spec edge cases enforced runtime-side.
+- **Slice F** (2026-04-19, landed) — bytes constants + operators end
+  to end.  `LowerStringLiteral` renamed to `LowerSpanLiteral` and now
+  takes the constructor helper name; `LowerConstant` routes
+  `ConstantKindCase::kBytes` through `cel_make_bytes_view`.  Bytes `+`
+  lowers to a new `cel_bytes_concat` (the runtime helper factors out
+  of `cel_string_concat` via a shared `span_concat`); `size(bytes)`
+  lowers to a new `cel_bytes_size` (byte count per CEL §1110, not
+  code-point count).  Bytes equality already worked via the existing
+  `Repr::kBytes` branch of `LowerComparison` → `cel_bytes_eq`.
 
 Remaining slices before M3 closes:
-
-- **Slice F** — bytes constants end-to-end (flip the bytes row in
-  `testing-checklist.md`; reuse slice-D code paths where possible).
 - **Proto field reads** — `kSelectExpr` (including `test_only` from
   `has()`) lowering, `cel_host.get_field` / `has_field` /
   `message_eq` import declarations, nested-message select, codegen

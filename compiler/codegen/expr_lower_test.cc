@@ -282,7 +282,9 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
            "cel_string_eq",
            "cel_bytes_eq",
            "cel_string_concat",
+           "cel_bytes_concat",
            "cel_string_size",
+           "cel_bytes_size",
            "cel_bool_from_value",
            "cel_string_starts_with",
            "cel_string_ends_with",
@@ -501,6 +503,72 @@ TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_size");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
+}
+
+// Bytes operators (M3 slice F).  Mirrors the string shape-checks above.
+// The bytes literal lowering reuses `LowerSpanLiteral` with the bytes
+// constructor, so the body is a block ending in `cel_make_bytes_view`;
+// concat and size route through the dedicated bytes runtime helpers.
+
+TEST(ExprLowerTest, BytesConstantReturnsI32) {
+  auto L = LowerOk("b'hi'");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  ASSERT_NE(fn, nullptr);
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  // Last child of the block is the ctor call — walk to it and verify
+  // it targets the bytes constructor rather than the string one.  A
+  // silent miswire would still validate but produce a CEL_STRING at
+  // runtime, which the rest of the pipeline would then misinterpret.
+  BinaryenIndex n = BinaryenBlockGetNumChildren(body);
+  ASSERT_GT(n, 0u);
+  BinaryenExpressionRef last = BinaryenBlockGetChildAt(body, n - 1);
+  ASSERT_EQ(BinaryenExpressionGetId(last), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(last), "cel_make_bytes_view");
+}
+
+TEST(ExprLowerTest, EmptyBytesLowers) {
+  auto L = LowerOk("b''");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+}
+
+TEST(ExprLowerTest, BytesConcatLowersToRuntimeCall) {
+  auto L = LowerOk("b'ab' + b'cd'");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_concat");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
+}
+
+TEST(ExprLowerTest, BytesEqualityLowersToRuntimeCall) {
+  auto L = LowerOk("b'a' == b'b'");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_eq");
+}
+
+TEST(ExprLowerTest, SizeBytesLowersToRuntimeCall) {
+  auto L = LowerOk("size(b'abc')");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_repr, Repr::kInt);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_size");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
 }
 

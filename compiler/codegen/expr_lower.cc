@@ -107,14 +107,16 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   // the runtime's arena (`g_memory`) begins.  The eval module needs
   // this to translate arena-relative offsets returned by `cel_alloc`
   // into absolute offsets usable with `i32.store8` (see
-  // LowerStringLiteral for the translation).
+  // LowerSpanLiteral for the translation).
   import0("cel_mem_base", i32);
   // String/bytes helpers expected to land in M3 — pre-declaring them
   // keeps the import list stable once those lowerings arrive.
   import2("cel_string_eq", i32, i32, i32);
   import2("cel_bytes_eq", i32, i32, i32);
   import2("cel_string_concat", i32, i32, i32);
+  import2("cel_bytes_concat", i32, i32, i32);
   import1("cel_string_size", i32, i64);
+  import1("cel_bytes_size", i32, i64);
   import1("cel_bool_from_value", i32, i32);
   // Member-call helpers (slice E).  Each returns i32 0/1.
   import2("cel_string_starts_with", i32, i32, i32);
@@ -147,14 +149,14 @@ absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
   return a->repr;
 }
 
-// Lowers a string literal as:
+// Lowers a span literal (string or bytes) as:
 //   (block (result i32)
 //     (local.set $scratch (call $cel_alloc (i32.const len)))
 //     (local.set $abs    (i32.add (call $cel_mem_base)
 //                                 (local.get $scratch)))
 //     (i32.store8 offset=0 (local.get $abs) (i32.const b0))
 //     ... one i32.store8 per byte ...
-//     (call $cel_make_string_view (local.get $scratch) (i32.const len)))
+//     (call $ctor_helper (local.get $scratch) (i32.const len)))
 //
 // Rationale: we deliberately do NOT use a wasm data segment.  The eval
 // module and the runtime module share the runtime's linear memory, and
@@ -167,18 +169,20 @@ absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
 // array, not an absolute linear-memory offset; `i32.store8` wants an
 // absolute offset.  We translate once per literal by adding
 // `cel_mem_base()` (the absolute linear-memory address of `g_memory`).
-// `cel_make_string_view` still takes the arena-relative offset — the
+// The constructor helper still takes the arena-relative offset — the
 // runtime internally reconstructs the absolute address as
 // `g_memory + ptr` on every access, so its CelValue payloads stay
 // arena-relative for portability with the native-host tests.
 //
 // The store-per-byte expansion is verbose but is only emitted per
 // literal (once), and the resulting code is trivial for wasmtime's
-// baseline compiler.
-absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
-    LoweringContext& ctx, absl::string_view bytes) {
+// baseline compiler.  String vs. bytes differ only in the constructor
+// helper (`cel_make_string_view` vs. `cel_make_bytes_view`), so the
+// helper is parameterised on the function name.
+absl::StatusOr<BinaryenExpressionRef> LowerSpanLiteral(
+    LoweringContext& ctx, absl::string_view bytes, const char* ctor_helper) {
   BinaryenModuleRef m = ctx.mod.raw();
-  const uint32_t len = static_cast<uint32_t>(bytes.size());
+  const auto len = static_cast<uint32_t>(bytes.size());
   const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
   const BinaryenIndex abs = ctx.AddLocal(BinaryenTypeInt32());
 
@@ -208,7 +212,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
   // One i32.store8 per byte, using `offset=i` to avoid emitting a
   // separate add for each position.
   for (uint32_t i = 0; i < len; ++i) {
-    const uint8_t byte = static_cast<uint8_t>(bytes[i]);
+    const auto byte = static_cast<uint8_t>(bytes[i]);
     BinaryenExpressionRef ptr = BinaryenLocalGet(m, abs, BinaryenTypeInt32());
     BinaryenExpressionRef value =
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(byte)));
@@ -227,7 +231,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(len))),
     };
     children.push_back(
-        BinaryenCall(m, "cel_make_string_view", args, 2, BinaryenTypeInt32()));
+        BinaryenCall(m, ctor_helper, args, 2, BinaryenTypeInt32()));
   }
 
   return BinaryenBlock(m,
@@ -280,7 +284,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
     case cel::ConstantKindCase::kDouble:
       return BinaryenConst(m, BinaryenLiteralFloat64(c.double_value()));
     case cel::ConstantKindCase::kString:
-      return LowerStringLiteral(ctx, c.string_value());
+      return LowerSpanLiteral(ctx, c.string_value(), "cel_make_string_view");
+    case cel::ConstantKindCase::kBytes:
+      return LowerSpanLiteral(ctx, c.bytes_value(), "cel_make_bytes_view");
     default:
       return absl::UnimplementedError(absl::StrCat(
           "expr_lower: constant kind ", static_cast<int>(c.kind_case()),
@@ -297,14 +303,16 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(absl::string_view name,
                                                       BinaryenExpressionRef rhs,
                                                       WasmModule& mod) {
   BinaryenModuleRef m = mod.raw();
-  // String concatenation is the only non-numeric `_+_` overload the
-  // checker accepts; it lowers to a runtime call instead of a binary
-  // opcode because the result requires allocating a new CelValue in the
-  // runtime's arena.  (Bytes concatenation exists in CEL too but lands
-  // with the rest of bytes support in a later slice.)
-  if (name == op::CelOperator::ADD && r == Repr::kString) {
+  // Non-numeric `_+_` overloads that the checker accepts: string and
+  // bytes concatenation.  Both lower to a runtime call (not a binary
+  // opcode) because each result requires allocating a new CelValue in
+  // the runtime's arena.
+  if (name == op::CelOperator::ADD &&
+      (r == Repr::kString || r == Repr::kBytes)) {
+    const char* helper =
+        (r == Repr::kString) ? "cel_string_concat" : "cel_bytes_concat";
     BinaryenExpressionRef args[2] = {lhs, rhs};
-    return BinaryenCall(m, "cel_string_concat", args, 2, BinaryenTypeInt32());
+    return BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
   }
   BinaryenOp bop;
   if (name == op::CelOperator::ADD) {
@@ -560,9 +568,11 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
     if (!arg_r.ok()) return arg_r.status();
     auto arg = LowerExpr(ctx, ast, call.args()[0]);
     if (!arg.ok()) return arg.status();
-    if (*arg_r == Repr::kString) {
+    if (*arg_r == Repr::kString || *arg_r == Repr::kBytes) {
+      const char* helper =
+          (*arg_r == Repr::kString) ? "cel_string_size" : "cel_bytes_size";
       BinaryenExpressionRef a = *arg;
-      return BinaryenCall(m, "cel_string_size", &a, 1, BinaryenTypeInt64());
+      return BinaryenCall(m, helper, &a, 1, BinaryenTypeInt64());
     }
     return UnimplementedRepr(fn, *arg_r, expr.id());
   }
@@ -638,7 +648,7 @@ BinaryenType WasmTypeFor(Repr r) {
     // Strings and bytes travel as i32 offsets into the shared linear
     // memory — each is a pointer to a `CelValue` owned by the runtime's
     // arena.  The codegen materialises the offset via `cel_alloc` +
-    // `cel_make_string_view` (see LowerStringLiteral).
+    // `cel_make_string_view` (see LowerSpanLiteral).
     case Repr::kString:
     case Repr::kBytes:
       return BinaryenTypeInt32();

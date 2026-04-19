@@ -551,5 +551,94 @@ TEST(EvalE2ETest, ContainsLongerNeedleIsFalse) {
   EXPECT_EQ(Evaluate("'hi'.contains('hello')")->of.i32, 0);
 }
 
+// M3 slice F: bytes literals and operators.  The `DecodedString` helper
+// reads out the CelValue regardless of kind, so bytes tests reuse the
+// same decode path and assert `kind == CEL_BYTES` explicitly so a
+// regression that swapped the span constructor would surface as a
+// mismatched kind rather than silently-passing byte comparisons.  CEL
+// bytes literals use the `b''` prefix; concatenation uses `+` like
+// strings, and `size()` is a byte count (not a codepoint count).
+
+TEST(EvalE2ETest, BytesLiteralRoundTripsThroughMemory) {
+  auto r = EvaluateToString("b'hi'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
+  EXPECT_EQ(r->payload, "hi");
+}
+
+TEST(EvalE2ETest, EmptyBytesRoundTrips) {
+  auto r = EvaluateToString("b''");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
+  EXPECT_EQ(r->payload, "");
+}
+
+TEST(EvalE2ETest, BytesLiteralPreservesHighBits) {
+  // `b'\xff\x00\xfe'` — non-ASCII + an embedded NUL.  The store-per-byte
+  // loop's `i32.const byte` must survive the sign-extension dance in
+  // Binaryen; a regression that let a u8 get sign-extended through i32
+  // would surface as a mismatched byte here (0xff would become -1 and
+  // then zero-extend differently on the other side).
+  auto r = EvaluateToString("b'\\xff\\x00\\xfe'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
+  ASSERT_EQ(r->payload.size(), 3u);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload[0]), 0xffu);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload[1]), 0x00u);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload[2]), 0xfeu);
+}
+
+TEST(EvalE2ETest, BytesConcatenationProducesJoinedBytes) {
+  auto r = EvaluateToString("b'ab' + b'cd'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
+  EXPECT_EQ(r->payload, "abcd");
+}
+
+TEST(EvalE2ETest, BytesConcatenationEmptyLhs) {
+  auto r = EvaluateToString("b'' + b'xy'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
+  EXPECT_EQ(r->payload, "xy");
+}
+
+TEST(EvalE2ETest, BytesEqualityPositiveAndNegative) {
+  EXPECT_EQ(Evaluate("b'hi' == b'hi'")->of.i32, 1);
+  EXPECT_EQ(Evaluate("b'hi' == b'bye'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("b'ab' == b'abc'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("b'' == b''")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, BytesInequalityInvertsEquality) {
+  EXPECT_EQ(Evaluate("b'hi' != b'hi'")->of.i32, 0);
+  EXPECT_EQ(Evaluate("b'hi' != b'bye'")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SizeOfBytesIsByteCount) {
+  // The same 4-byte UTF-8 sequence whose string size is 1 codepoint
+  // must report 4 here — `size(bytes)` is byte count per CEL §1110.
+  // This is the semantic difference between `cel_string_size` and
+  // `cel_bytes_size` that the codegen dispatch must honour.
+  auto r = Evaluate("size(b'\\xf0\\x9f\\x98\\x80')");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, 4);
+}
+
+TEST(EvalE2ETest, SizeOfEmptyBytesIsZero) {
+  EXPECT_EQ(Evaluate("size(b'')")->of.i64, 0);
+}
+
+TEST(EvalE2ETest, SizeOfConcatenatedBytes) {
+  // Mirror SizeOfConcatenatedString: the concat result's CelValue must
+  // be usable as an input to size() in the same eval.  A regression
+  // where the concat output landed in an arena slot that `cel_bytes_size`
+  // couldn't read (stale `g_memory` pointer, for instance) would trap
+  // here rather than return the wrong count.
+  auto r = Evaluate("size(b'hi' + b'there')");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 7);
+}
+
 }  // namespace
 }  // namespace celwasm

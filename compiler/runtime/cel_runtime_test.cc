@@ -622,6 +622,94 @@ TEST_F(RuntimeTest, ContainsRejectsNonString) {
   EXPECT_EQ(cel_string_contains(s, b), 0);
 }
 
+// ---- cel_bytes_concat ------------------------------------------------------
+
+TEST_F(RuntimeTest, BytesConcatJoinsPayloads) {
+  uint32_t a = cel_make_bytes("\x01\x02", 2);
+  uint32_t b = cel_make_bytes("\x03\xff", 2);
+  uint32_t r = cel_bytes_concat(a, b);
+  ASSERT_NE(r, 0u);
+  CelValue* v = cel_value_at(r);
+  ASSERT_NE(v, nullptr);
+  EXPECT_EQ(v->kind, (uint32_t)CEL_BYTES);
+  EXPECT_EQ(v->payload.s.len, 4u);
+  EXPECT_EQ(
+      std::memcmp(cel_mem_base() + v->payload.s.ptr, "\x01\x02\x03\xff", 4), 0);
+}
+
+TEST_F(RuntimeTest, BytesConcatLeftEmpty) {
+  uint32_t a = cel_make_bytes("", 0);
+  uint32_t b = cel_make_bytes("\xaa\xbb", 2);
+  uint32_t r = cel_bytes_concat(a, b);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 2u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "\xaa\xbb", 2), 0);
+}
+
+TEST_F(RuntimeTest, BytesConcatRightEmpty) {
+  uint32_t a = cel_make_bytes("\xaa\xbb", 2);
+  uint32_t b = cel_make_bytes("", 0);
+  uint32_t r = cel_bytes_concat(a, b);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 2u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "\xaa\xbb", 2), 0);
+}
+
+TEST_F(RuntimeTest, BytesConcatBothEmpty) {
+  uint32_t a = cel_make_bytes("", 0);
+  uint32_t b = cel_make_bytes("", 0);
+  uint32_t r = cel_bytes_concat(a, b);
+  ASSERT_NE(r, 0u);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 0u);
+  EXPECT_EQ(v->payload.s.ptr, 0u);
+}
+
+TEST_F(RuntimeTest, BytesConcatRejectsZeroOffsets) {
+  uint32_t a = cel_make_bytes("x", 1);
+  EXPECT_EQ(cel_bytes_concat(0, a), 0u);
+  EXPECT_EQ(cel_bytes_concat(a, 0), 0u);
+  EXPECT_EQ(cel_bytes_concat(0, 0), 0u);
+}
+
+TEST_F(RuntimeTest, BytesConcatRejectsNonBytesOperands) {
+  // Bytes-specific so a codegen bug that feeds a string through
+  // `cel_bytes_concat` never produces a CEL_BYTES result whose payload
+  // contains UTF-8 the rest of the pipeline will misinterpret.
+  uint32_t bts = cel_make_bytes("y", 1);
+  uint32_t s = cel_make_string("x", 1);
+  uint32_t i = cel_make_int(7);
+  EXPECT_EQ(cel_bytes_concat(s, bts), 0u);
+  EXPECT_EQ(cel_bytes_concat(bts, s), 0u);
+  EXPECT_EQ(cel_bytes_concat(bts, i), 0u);
+}
+
+// ---- cel_bytes_size --------------------------------------------------------
+
+TEST_F(RuntimeTest, BytesSizeCountsBytes) {
+  // size(bytes) is byte count per CEL §1110 — the multi-byte UTF-8
+  // sequence that counts as one code point for `cel_string_size` must
+  // count as four bytes here.
+  uint32_t b = cel_make_bytes("\xF0\x9F\x98\x80", 4);
+  EXPECT_EQ(cel_bytes_size(b), 4);
+}
+
+TEST_F(RuntimeTest, BytesSizeEmpty) {
+  uint32_t b = cel_make_bytes("", 0);
+  EXPECT_EQ(cel_bytes_size(b), 0);
+}
+
+TEST_F(RuntimeTest, BytesSizeRejectsZeroOffset) {
+  EXPECT_EQ(cel_bytes_size(0), -1);
+}
+
+TEST_F(RuntimeTest, BytesSizeRejectsNonBytes) {
+  uint32_t s = cel_make_string("xyz", 3);
+  EXPECT_EQ(cel_bytes_size(s), -1);
+  uint32_t i = cel_make_int(9);
+  EXPECT_EQ(cel_bytes_size(i), -1);
+}
+
 // ---- cel_bool_from_value ---------------------------------------------------
 
 TEST_F(RuntimeTest, BoolFromValueTrue) {

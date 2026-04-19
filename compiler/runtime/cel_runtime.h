@@ -136,12 +136,25 @@ int32_t cel_bytes_eq(uint32_t a, uint32_t b);
 // views that will not survive a cel_reset()).
 uint32_t cel_string_concat(uint32_t a, uint32_t b);
 
+// Bytes-side concat counterpart.  Same semantics as `cel_string_concat`
+// but gated on CEL_BYTES kind — the payload is an opaque byte span and
+// there is no UTF-8 story, so the implementation shares every step with
+// the string version except the kind tag.
+uint32_t cel_bytes_concat(uint32_t a, uint32_t b);
+
 // Returns the number of UTF-8 code points in a CEL_STRING.  Returns -1 on
 // type error (non-string or zero offset) so the caller can distinguish
 // "string of length 0" from "not a string".  CEL §1110 defines size(string)
 // as code-point count, NOT byte count; counting continuation bytes
 // (0b10xxxxxx) is the portable way to do that without a full decoder.
 int64_t cel_string_size(uint32_t s);
+
+// Returns the number of bytes in a CEL_BYTES value.  CEL §1110 defines
+// size(bytes) as byte count (no UTF-8 interpretation), so unlike
+// cel_string_size this is a direct payload-length read.  Returns -1 on
+// type error so callers can distinguish "bytes of length 0" from "not
+// bytes".
+int64_t cel_bytes_size(uint32_t b);
 
 // Extracts the i32 bool payload from a CelValue*.  Returns 0 for a
 // non-bool / zero-offset input; callers that need to distinguish
