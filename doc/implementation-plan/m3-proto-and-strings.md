@@ -60,46 +60,60 @@ sliced thin to land incremental e2e coverage:
   EmitsWrapAndUnwrapMessageFunctions, ExportsWrapAndUnwrapMessage}`.
 
 Remaining slices before M3 closes:
-- **Slice G2** — `kSelectExpr` (scalar + span fields) lowering via a
-  unified `cel_host.get_field(externref msg, i32 field_number,
-  i32 out_cv) → void` import.  Codegen pre-allocates a 24-byte
-  `CelValue` in the arena via `cel_alloc(24)`, passes the
-  arena-relative offset to the host as an out-param, and the host
-  writes `{kind, payload}` in place.  **First G2 implementation
-  decision (open):** how does codegen resolve a `SelectExpr`'s field
-  *name* to a proto *field number* at lower time?  Research
-  (2026-04-19): cel-cpp's `ast.reference_map()` only populates entries
-  for `IdentExpr` / `CallExpr` / `StructExpr` — `SelectExpr` is
-  **not** in the map, so the field number is not reachable from the
-  checked AST alone.  The descriptor pool is loaded by
-  `parse_and_check.cc::LoadDescriptorPool` but is currently *dropped*
-  when `ParseAndCheck` returns (the `DescriptorPoolBundle` goes out
-  of scope).  Three viable shapes:
-    - **A. Retain the bundle in `TypedAst`.** Codegen gets a
-      `const DescriptorPool*` accessor and does
-      `pool->FindMessageTypeByName(fqn)->FindFieldByName(name)->number()`
-      per SelectExpr.  Minimal change to existing APIs; pool is
-      already computed.  Requires `TypedAst` to own the pool so its
-      lifetime matches the AST.
-    - **B. Pre-compute `{expr_id -> field_number}` during annotation
-      seeding.** Walk `SelectExpr`s in `PopulateAnnotations`, resolve
-      each through the pool while the pool is live, store in
-      `NodeAnnotation` alongside `repr`.  Codegen becomes a pure
-      lookup.  Matches the TODO at `annotations.h:41–45`
-      (`attribute_id` / `pattern_id`).
-    - **C. Thread the pool through `LowerToEvalFunction`.**
-      Requires signature changes at every call site.
-  Pick one before writing codegen.  Leaning B (scales naturally to
-  attribute_id interning later), but A is the smaller step if G2
-  needs to land fast.  For string/bytes fields, the
-  host additionally allocates the span payload bytes via an
-  imported-back `cel_alloc(len)` and fills
-  `payload.s.{ptr,len}`; for message fields the host writes
-  `kind=CEL_MESSAGE` + an interned slot into `payload.msg_slot`.
-  `CEL_UNKNOWN` and `CEL_ERROR` travel through the same slot.
-  Proto field numbers are emitted as codegen immediates (no new
-  interning table — the externref already carries the descriptor).
-  See "Open design questions" §1 for the rationale.
+- **Slice G2 — field-number plumbing (2026-04-19, landed).**  Option B
+  from the decision below shipped: `PopulateAnnotations` now walks
+  every `SelectExpr` in `compiler/ir/typed_ast.cc::FieldNumberVisitor`
+  and writes the resolved proto field number into
+  `NodeAnnotation::field_number` while the descriptor pool is still
+  live.  `ParseAndCheck` passes its `DescriptorPoolBundle::pool` into
+  `PopulateAnnotations` (`compiler/frontend/parse_and_check.cc:279`)
+  so the resolver runs on the real generated+user-schema pool before
+  the bundle goes out of scope.  Field-number 0 is the sentinel for
+  "not a SelectExpr" / "could not be resolved" (proto field numbers
+  start at 1).  Codegen becomes a pure lookup: `annotations.at(id)
+  .field_number`.  Coverage:
+    - `typed_ast_test::G2ResolvesEveryProtoFieldKind` — table-driven
+      unit test on a synthetic `celwasm.testg2.G2Msg` descriptor
+      covering every proto wire type (int64, bool, string, int32,
+      message, uint32, float, double, bytes, uint64, sint32,
+      fixed32, repeated_int32, enum, fixed64, sfixed32, sfixed64,
+      sint64).  Field numbers are deliberately non-contiguous so an
+      off-by-one bug in the resolver cannot silently pass.
+    - `typed_ast_test` edge cases: `test_only` SelectExprs still get
+      numbered; unknown field leaves zero; unknown message type
+      leaves zero; non-message operand (map) leaves zero; nested
+      chain numbers every hop; null pool leaves every annotation at
+      zero.
+    - `parse_and_check_test::{SelectExprAnnotationCarriesFieldNumber,
+      NestedSelectExprResolvesEachHop, HasMacroSelectExprCarriesFieldNumber,
+      RepeatedFieldSelectResolvesFieldNumber,
+      HasOnMapKeyLeavesFieldNumberZero,
+      RejectsSelectOfUnknownFieldAtCheckTime}` —
+      integration tests driving the real parser + checker +
+      `PopulateAnnotations` against `google.protobuf.DescriptorProto`
+      from the generated pool, so the table-driven unit coverage is
+      matched by a round-trip through the production pipeline.
+
+  **Coverage gap intentionally deferred:** no e2e (wasmtime) test yet,
+  because the caller of `field_number` is slice G2's `cel_host.get_field`
+  codegen, which has not landed.  When that codegen ships, add eval-
+  level coverage that evaluates `msg.scalar_field == literal` under a
+  wasmtime host stub; the field-number plumbing only becomes visibly
+  correct / incorrect at eval time, so the e2e is the real end of the
+  slice.
+
+- **Slice G2 — `kSelectExpr` codegen (next, remaining).**  With
+  field numbers in `NodeAnnotation`, codegen lowers a non-`test_only`
+  `SelectExpr` to `cel_alloc(24)` + `cel_host.get_field(msg,
+  field_number, out_cv) → void` + a branch on `out_cv->kind`.
+  The host writes `{kind, payload}` in place.  For string/bytes fields
+  the host additionally allocates the span payload bytes via an
+  imported-back `cel_alloc(len)` and fills `payload.s.{ptr,len}`; for
+  message fields the host writes `kind=CEL_MESSAGE` + an interned slot
+  into `payload.msg_slot`.  `CEL_UNKNOWN` and `CEL_ERROR` travel
+  through the same slot.  Proto field numbers are emitted as codegen
+  immediates (no new interning table — the externref already carries
+  the descriptor).  See "Open design questions" §1 for the rationale.
 - **Slice G3** — `kSelectExpr` with `test_only = true` lowers to a
   separate `cel_host.has_field(externref, i32) → i32` import.
 - **Slice G4** — nested-message select (compose G2 with

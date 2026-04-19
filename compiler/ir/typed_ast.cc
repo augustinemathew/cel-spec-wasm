@@ -3,9 +3,13 @@
 #include "absl/types/variant.h"
 #include "common/ast.h"
 #include "common/ast/metadata.h"
+#include "common/ast_traverse.h"
+#include "common/ast_visitor_base.h"
+#include "common/expr.h"
 #include "common/type.h"
 #include "common/type_kind.h"
 #include "compiler/ir/annotations.h"
+#include "google/protobuf/descriptor.h"
 
 namespace celwasm {
 
@@ -114,9 +118,60 @@ Repr ReprOf(const cel::Type& type) {
   }
 }
 
-void PopulateAnnotations(const cel::Ast& ast, WasmAnnotations& annotations) {
+namespace {
+
+// Walks every `SelectExpr` and writes the resolved proto field number into
+// its `NodeAnnotation`.  cel-cpp's `reference_map` only records entries for
+// `IdentExpr` / `CallExpr` / `StructExpr`, so the field number is not in the
+// checked AST — we re-resolve it here while the descriptor pool is still
+// live.  Unresolvable nodes keep `field_number = 0`; codegen treats zero as
+// "no info" and falls back to an error path.
+class FieldNumberVisitor : public cel::AstVisitorBase {
+ public:
+  FieldNumberVisitor(const cel::Ast::TypeMap& type_map,
+                     const google::protobuf::DescriptorPool* absl_nonnull pool,
+                     WasmAnnotations& annotations)
+      : type_map_(type_map), pool_(pool), annotations_(annotations) {}
+
+  // `AstVisitorBase` leaves the expr-level hooks abstract; we have no use
+  // for them, so define no-op overrides to keep the class instantiable.
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PreVisitSelect(const cel::Expr& expr,
+                      const cel::SelectExpr& select) override {
+    auto it = type_map_.find(select.operand().id());
+    if (it == type_map_.end()) return;
+    const cel::TypeSpec& operand_type = it->second;
+    if (!operand_type.has_message_type()) return;
+    const std::string& fqn = operand_type.message_type().type();
+    const google::protobuf::Descriptor* descriptor =
+        pool_->FindMessageTypeByName(fqn);
+    if (descriptor == nullptr) return;
+    const google::protobuf::FieldDescriptor* field =
+        descriptor->FindFieldByName(select.field());
+    if (field == nullptr) return;
+    annotations_[expr.id()].field_number =
+        static_cast<uint32_t>(field->number());
+  }
+
+ private:
+  const cel::Ast::TypeMap& type_map_;
+  const google::protobuf::DescriptorPool* absl_nonnull pool_;
+  WasmAnnotations& annotations_;
+};
+
+}  // namespace
+
+void PopulateAnnotations(const cel::Ast& ast,
+                         const google::protobuf::DescriptorPool* pool,
+                         WasmAnnotations& annotations) {
   for (const auto& [expr_id, type] : ast.type_map()) {
     annotations[expr_id].repr = ReprOf(type);
+  }
+  if (pool != nullptr) {
+    FieldNumberVisitor visitor(ast.type_map(), pool, annotations);
+    cel::AstTraverse(ast.root_expr(), visitor);
   }
 }
 

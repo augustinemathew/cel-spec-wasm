@@ -285,6 +285,133 @@ TEST(ParseAndCheckTest, HasMacroLowersToTestOnlySelectExpr) {
   EXPECT_EQ(RootRepr(*r), Repr::kBool);
 }
 
+// ---- G2: SelectExpr field-number resolution (Option B) ----------------------
+//
+// `PopulateAnnotations` walks every `SelectExpr` while the descriptor
+// pool is still live and writes the resolved proto field number into
+// `NodeAnnotation::field_number`.  The unit tests in
+// `typed_ast_test.cc` cover the visitor directly with a hand-built
+// pool.  The tests here exercise the *real* plumbing — LoadDescriptorPool
+// through ParseAndCheck — against the generated pool.  A regression
+// where the pool is dropped before annotation seeding, or where a future
+// IR rewrite renumbers expr ids without re-running the visitor, shows up
+// here rather than as a silent `field_number = 0` at codegen time.
+//
+// We lean on `google.protobuf.DescriptorProto` (already present in the
+// generated pool): its `name` field is number 1 and its `options` field
+// is number 7 of type `google.protobuf.MessageOptions`, whose
+// `deprecated` field is number 3.  That gives us a real nested-select
+// chain without introducing a test-only .proto.
+
+TEST(ParseAndCheckTest, SelectExprAnnotationCarriesFieldNumber) {
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  auto r = ParseAndCheck("d.name", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  const NodeAnnotation* ann = r->annotations().Find(root.id());
+  ASSERT_NE(ann, nullptr);
+  EXPECT_EQ(ann->repr, Repr::kString);
+  // `DescriptorProto.name` is proto field number 1.
+  EXPECT_EQ(ann->field_number, 1u);
+}
+
+TEST(ParseAndCheckTest, NestedSelectExprResolvesEachHop) {
+  // `d.options.deprecated` — inner select is `d.options`, outer is
+  // `<inner>.deprecated`.  Both must carry a populated field_number.
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  auto r = ParseAndCheck("d.options.deprecated", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_EQ(root.select_expr().field(), "deprecated");
+
+  const NodeAnnotation* outer_ann = r->annotations().Find(root.id());
+  ASSERT_NE(outer_ann, nullptr);
+  EXPECT_EQ(outer_ann->repr, Repr::kBool);
+  // `MessageOptions.deprecated` is proto field number 3.
+  EXPECT_EQ(outer_ann->field_number, 3u);
+
+  const auto& inner = root.select_expr().operand();
+  ASSERT_EQ(inner.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_EQ(inner.select_expr().field(), "options");
+  const NodeAnnotation* inner_ann = r->annotations().Find(inner.id());
+  ASSERT_NE(inner_ann, nullptr);
+  // `DescriptorProto.options` is proto field number 7.
+  EXPECT_EQ(inner_ann->field_number, 7u);
+}
+
+TEST(ParseAndCheckTest, HasMacroSelectExprCarriesFieldNumber) {
+  // `has(d.name)` on a proto message — test_only select must still have
+  // `field_number` populated; G3 codegen will need it for `has_field`.
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  auto r = ParseAndCheck("has(d.name)", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_TRUE(root.select_expr().test_only());
+
+  const NodeAnnotation* ann = r->annotations().Find(root.id());
+  ASSERT_NE(ann, nullptr);
+  EXPECT_EQ(ann->field_number, 1u);
+}
+
+TEST(ParseAndCheckTest, RepeatedFieldSelectResolvesFieldNumber) {
+  // Selecting a `repeated` field yields a SelectExpr whose type is
+  // `list<T>`.  M3 codegen will reject this as unsupported-in-slice, but
+  // the annotation resolver must still populate `field_number` — else
+  // the eventual codegen error can't cite the specific field.
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  auto r = ParseAndCheck("d.field", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  const NodeAnnotation* ann = r->annotations().Find(root.id());
+  ASSERT_NE(ann, nullptr);
+  EXPECT_EQ(ann->repr, Repr::kList);
+  // `DescriptorProto.field` is proto field number 2.
+  EXPECT_EQ(ann->field_number, 2u);
+}
+
+TEST(ParseAndCheckTest, HasOnMapKeyLeavesFieldNumberZero) {
+  // `has(m.k)` on a `map<string,int>` compiles to a SelectExpr whose
+  // operand type is a map, not a message.  The visitor must skip it and
+  // leave `field_number` at 0 — codegen for G3 will special-case the
+  // map-presence path.
+  CheckOptions opts;
+  opts.variable_specs = {"m:map<string,int>"};
+  auto r = ParseAndCheck("has(m.k)", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_TRUE(root.select_expr().test_only());
+
+  const NodeAnnotation* ann = r->annotations().Find(root.id());
+  ASSERT_NE(ann, nullptr);
+  EXPECT_EQ(ann->field_number, 0u);
+}
+
+TEST(ParseAndCheckTest, RejectsSelectOfUnknownFieldAtCheckTime) {
+  // Negative: the checker rejects selects against unknown field names
+  // before codegen ever runs.  This pins the invariant that
+  // `PopulateAnnotations` never sees an unresolvable proto field in the
+  // success path — so the only way `field_number` comes out 0 is via
+  // non-message operand or an intentionally-unresolvable map operand.
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  EXPECT_THAT(ParseAndCheck("d.does_not_exist", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
 // ---- Annotations contract --------------------------------------------------
 
 TEST(ParseAndCheckTest, AnnotationsAreSeededForEveryTypedNode) {

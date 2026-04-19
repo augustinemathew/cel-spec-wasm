@@ -92,6 +92,55 @@ block is the triage view a reviewer can read in ten seconds.
     `error_msgs` fill in as M3–M5 introduce features that
     reference them.
 
+**M3 slice G2 (2026-04-19): field-number resolution.**
+`SelectExpr` nodes now carry their resolved proto field number in
+`NodeAnnotation::field_number`.  Resolution happens during
+`PopulateAnnotations` in `compiler/ir/typed_ast.cc`: a
+`FieldNumberVisitor` walks every `SelectExpr`, looks up its operand's
+message type in the descriptor pool, and writes the field number into
+the node annotation.  `ParseAndCheck` passes the still-live descriptor
+pool through so the resolver runs on the real generated + user-schema
+pool before the bundle goes out of scope.  Zero is the sentinel for
+"not a SelectExpr" / "could not be resolved" — proto field numbers
+start at 1, so no legitimate value collides with it.  This is Option B
+from `m3-proto-and-strings.md` (chosen over A and C for
+side-table-by-expr-id shape that matches the planned `attribute_id` /
+`pattern_id` interning in `annotations.h`).  Coverage:
+  - `typed_ast_test::G2ResolvesEveryProtoFieldKind` — a single
+    table-driven test over a synthetic `celwasm.testg2.G2Msg`
+    descriptor whose fields span every proto wire type (int64 / bool
+    / string / int32 / message / uint32 / float / double / bytes /
+    uint64 / sint32 / fixed32 / repeated_int32 / enum / fixed64 /
+    sfixed32 / sfixed64 / sint64) with deliberately non-contiguous
+    numbers so an off-by-one bug can't pass.  The G2PoolFixture is
+    split into `AddKindEnum` / `AddScalarFields` / `AddKindField`
+    helpers so the constructor stays below the function-size gate.
+  - `typed_ast_test::{TestOnlySelectAlsoResolvesFieldNumber,
+    UnknownFieldLeavesAnnotationAtZero,
+    UnknownMessageTypeLeavesAnnotationAtZero,
+    NonMessageOperandLeavesAnnotationAtZero,
+    NestedSelectChainResolvesEachHop,
+    NullPoolSkipsFieldNumberResolution}` — edge cases.
+  - `parse_and_check_test::{SelectExprAnnotationCarriesFieldNumber,
+    NestedSelectExprResolvesEachHop,
+    HasMacroSelectExprCarriesFieldNumber,
+    RepeatedFieldSelectResolvesFieldNumber,
+    HasOnMapKeyLeavesFieldNumberZero,
+    RejectsSelectOfUnknownFieldAtCheckTime}` — integration tests
+    driving the real parser + checker + `PopulateAnnotations` against
+    `google.protobuf.DescriptorProto` from the generated pool.
+
+**Coverage gap intentionally deferred.**  No e2e (wasmtime) row for
+`kSelectExpr` flips yet: the *consumer* of `field_number` is the
+`cel_host.get_field` codegen path which has not landed.  When that
+codegen ships, close the e2e gap by adding `eval_test` cases that
+evaluate `msg.scalar_field == literal` (and nested-hop variants)
+under a wasmtime host stub — field-number plumbing only becomes
+end-to-end correct / incorrect at eval time, so that is the real
+end of the slice.  Until then, the `kSelectExpr (field)` and
+`kSelectExpr (test_only)` rows stay `[ ]` in the codegen and e2e
+columns.
+
 **M3 slice G1 (2026-04-19): message params as externref.**
 `Repr::kMessage` variables now lower to an `externref` param on the
 eval function.  `WasmTypeFor(kMessage)` is `BinaryenTypeExternref()`.

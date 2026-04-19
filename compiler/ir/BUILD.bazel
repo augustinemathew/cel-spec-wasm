@@ -19,9 +19,13 @@ cc_library(
     deps = [
         ":annotations",
         "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_traverse",
+        "@cel-cpp//common:ast_visitor_base",
+        "@cel-cpp//common:expr",
         "@cel-cpp//common:type",
         "@cel-cpp//common:type_kind",
         "@com_google_absl//absl/types:variant",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -54,7 +58,10 @@ cc_test(
         ":typed_ast",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:expr",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 

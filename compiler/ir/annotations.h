@@ -38,13 +38,22 @@ absl::string_view ReprName(Repr r);
 // Per-node annotation derived from the CheckedExpr AST plus the compiler's own
 // analysis.  Side-mapped by `cel::ExprId`.
 //
-// M1 populates `repr` only.  Later milestones add:
+// M1 populates `repr` only.  M3 Slice G2 adds `field_number` for `SelectExpr`
+// nodes (see `doc/implementation-plan/m3-proto-and-strings.md`, Option B).
+// Later milestones add:
 //   uint32_t attribute_id;   // §8 host ABI interning
 //   uint32_t pattern_id;     // §12 custom fn pattern interning
 //   uint32_t scope_depth;    // §5.4 comprehension scoping
 //   std::string local_name;  // freshened iter_var for codegen
 struct NodeAnnotation {
   Repr repr = Repr::kUnknown;
+
+  // Proto field number resolved for `SelectExpr` nodes.  Zero means "not a
+  // SelectExpr" or "could not be resolved" — proto field numbers start at 1,
+  // so zero is an unambiguous sentinel.  Populated in `PopulateAnnotations`
+  // while the descriptor pool is still live; codegen consumes it as a pure
+  // lookup when lowering `kSelectExpr` to `cel_host.get_field`.
+  uint32_t field_number = 0;
 };
 
 // Side map keyed by expression id (`cel::ExprId`).

@@ -271,9 +271,12 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   auto checked_ast = result->ReleaseAst();
   if (!checked_ast.ok()) return checked_ast.status();
 
-  // 8. Seed annotations.
+  // 8. Seed annotations.  The descriptor pool is still live (owned by
+  // `pool_bundle`), so `PopulateAnnotations` can resolve proto field numbers
+  // for every `SelectExpr` into the node annotations — codegen later relies
+  // on that mapping for `cel_host.get_field`.
   WasmAnnotations annotations;
-  PopulateAnnotations(**checked_ast, annotations);
+  PopulateAnnotations(**checked_ast, pool_bundle->pool, annotations);
 
   return TypedAst(std::move(*checked_ast), std::move(annotations),
                   std::move(variables));

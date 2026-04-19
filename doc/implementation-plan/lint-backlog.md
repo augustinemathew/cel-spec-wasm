@@ -14,7 +14,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 | check | count |
 |---|---|
-| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 61 |
+| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 77 |
 | `google-readability-braces-around-statements` | 23 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
@@ -38,7 +38,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `readability-math-missing-parentheses` | 1 |
 | `readability-use-concise-preprocessor-directives` | 1 |
 
-**Total unique warnings:** 170
+**Total unique warnings:** 186
 
 ## Notes for triage
 
@@ -210,19 +210,34 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L37: The value '250' provided to the cast expression is not in the valid range of values for 'Repr'
 
-### `compiler/ir/typed_ast_test.cc` — 9 warnings
+### `compiler/ir/typed_ast_test.cc` — 24 warnings
 
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (9)
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (24)
 
-- L140: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L141: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L142: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L155: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L168: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L183: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L185: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L196: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L198: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L146: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L147: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L148: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L161: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L174: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L189: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L191: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L202: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L204: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L396: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L419: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L421: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L438: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L455: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L457: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L472: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L474: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L491: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L492: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L519: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L521: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L523: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L537: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L539: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
 ### `compiler/e2e/eval_test.cc` — 8 warnings
 
@@ -409,8 +424,9 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L222: function 'LoadEval' exceeds recommended size/complexity thresholds
 
-### `compiler/ir/typed_ast.cc` — 1 warnings
+### `compiler/ir/typed_ast.cc` — 2 warnings
 
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (1)
+**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (2)
 
-- L119: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L154: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L170: possibly unsafe 'operator[]', consider bounds-safe alternatives

@@ -10,6 +10,7 @@
 #include "common/ast/metadata.h"
 #include "common/type.h"
 #include "compiler/ir/annotations.h"
+#include "google/protobuf/descriptor.h"
 
 namespace celwasm {
 
@@ -91,7 +92,18 @@ class TypedAst {
 // Seeds `annotations` with a `Repr` for every node that appears in
 // `ast.type_map()`.  DYN nodes (absent from the map) are intentionally left
 // unannotated; the static-subset validator rejects them.
-void PopulateAnnotations(const cel::Ast& ast, WasmAnnotations& annotations);
+//
+// When `pool` is non-null, every `SelectExpr` node is also walked and its
+// resolved proto field number is written to
+// `NodeAnnotation::field_number` — cel-cpp's `reference_map` does not carry
+// field numbers, so codegen cannot recover them from the checked AST alone
+// (see `doc/implementation-plan/m3-proto-and-strings.md`, Slice G2,
+// Option B).  Nodes whose operand type is not a message, or whose field
+// name does not resolve through `pool`, are left with `field_number = 0`.
+// A null `pool` skips SelectExpr resolution entirely.
+void PopulateAnnotations(const cel::Ast& ast,
+                         const google::protobuf::DescriptorPool* pool,
+                         WasmAnnotations& annotations);
 
 }  // namespace celwasm
 
