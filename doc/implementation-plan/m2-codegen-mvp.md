@@ -1,9 +1,16 @@
 # M2 — WASM codegen MVP
 
-Status: **in progress** (started 2026-04).  The scalar slice is green
-end-to-end; the module still lacks non-scalar payload plumbing, the ABI
-custom section, and the wasm32 cross-compile target.  See
-[Remaining for M2](#remaining-for-m2) below for the exact punch list.
+Status: **done*** (closed 2026-04-19).  The three remaining punch-list
+items — `cel_refs` codegen, wasm32 cross-compile of the C runtime, and
+the `cel.abi` custom section — all landed between 2026-04-18 and
+2026-04-19.  Scalar expressions emit, validate, and round-trip through
+wasmtime; the runtime is cross-compiled and embedded as a byte array;
+every emitted module carries a `cel.abi` section.  *Asterisk: the
+wasm32 genrule still hardcodes the darwin-arm64 brew path, so the Linux
+CI portability work in [Testing gaps](#testing-gaps-still-open-in-m2)
+remains open.  It is not a blocker for M3 progress (codegen is
+platform-independent) but must close before the two-module runtime
+becomes a hard dependency of every CI run.
 
 ## Scope
 

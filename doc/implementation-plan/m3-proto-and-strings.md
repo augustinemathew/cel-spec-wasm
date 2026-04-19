@@ -1,7 +1,40 @@
 # M3 — Proto field reads + string ops
 
-Status: **planned.**  Unblocked by M2 closing (`cel_refs.wat`, wasm32
-cross-compile, `cel.abi` custom section).
+Status: **in progress** (started 2026-04-19; M2 closed).  Work is
+sliced thin to land incremental e2e coverage:
+
+- **Slice A+B** (2026-04-19, landed) — two-module host loader
+  (`compiler/host/host_loader.{h,cc}`) + eval-module-side import
+  declarations for the runtime's exports + string literals + string
+  equality.
+- **Slice C** (2026-04-19, landed) — scalar `kIdentExpr` lowering
+  against typed `eval()` params; variable declaration via
+  `CheckOptions::variable_specs` wired end-to-end; codegen reads
+  `TypedAst::variables()` at lowering time.
+- **Slice D** (2026-04-19, landed) — string operators: `_+_` on string
+  routes to `cel_string_concat`; `_==_` / `_!=_` route to
+  `cel_string_eq` / `cel_bytes_eq`; `size(string)` routes to
+  `cel_string_size` (UTF-8 codepoint count per spec §1110).  Also
+  fixed a latent string-literal bug (bytes were being written at
+  arena-relative offsets treated as absolute); the fix introduced
+  `cel_mem_base` as a runtime export and documented the
+  arena-relative offset ABI in `doc/wasm-compiler-design.md` §7.1 /
+  §7.4 / §8.1 / §10.1 / Appendix B.
+
+Remaining slices before M3 closes:
+
+- **Slice E** — string member calls (`startsWith`, `endsWith`,
+  `contains`) and any bytes-member equivalents.
+- **Slice F** — bytes constants end-to-end (flip the bytes row in
+  `testing-checklist.md`; reuse slice-D code paths where possible).
+- **Proto field reads** — `kSelectExpr` (including `test_only` from
+  `has()`) lowering, `cel_host.get_field` / `has_field` /
+  `message_eq` import declarations, nested-message select, codegen
+  for message externref params.  This is the M3 feature that
+  forces the `externref` bits of the ABI to be exercised for the
+  first time.
+- **Checker integration** — pass a `--schema` file on the CLI,
+  round-trip through a proto fixture under `compiler/e2e/testdata/`.
 
 ## Scope
 
