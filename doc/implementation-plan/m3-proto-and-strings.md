@@ -65,7 +65,33 @@ Remaining slices before M3 closes:
   i32 out_cv) → void` import.  Codegen pre-allocates a 24-byte
   `CelValue` in the arena via `cel_alloc(24)`, passes the
   arena-relative offset to the host as an out-param, and the host
-  writes `{kind, payload}` in place.  For string/bytes fields, the
+  writes `{kind, payload}` in place.  **First G2 implementation
+  decision (open):** how does codegen resolve a `SelectExpr`'s field
+  *name* to a proto *field number* at lower time?  Research
+  (2026-04-19): cel-cpp's `ast.reference_map()` only populates entries
+  for `IdentExpr` / `CallExpr` / `StructExpr` — `SelectExpr` is
+  **not** in the map, so the field number is not reachable from the
+  checked AST alone.  The descriptor pool is loaded by
+  `parse_and_check.cc::LoadDescriptorPool` but is currently *dropped*
+  when `ParseAndCheck` returns (the `DescriptorPoolBundle` goes out
+  of scope).  Three viable shapes:
+    - **A. Retain the bundle in `TypedAst`.** Codegen gets a
+      `const DescriptorPool*` accessor and does
+      `pool->FindMessageTypeByName(fqn)->FindFieldByName(name)->number()`
+      per SelectExpr.  Minimal change to existing APIs; pool is
+      already computed.  Requires `TypedAst` to own the pool so its
+      lifetime matches the AST.
+    - **B. Pre-compute `{expr_id -> field_number}` during annotation
+      seeding.** Walk `SelectExpr`s in `PopulateAnnotations`, resolve
+      each through the pool while the pool is live, store in
+      `NodeAnnotation` alongside `repr`.  Codegen becomes a pure
+      lookup.  Matches the TODO at `annotations.h:41–45`
+      (`attribute_id` / `pattern_id`).
+    - **C. Thread the pool through `LowerToEvalFunction`.**
+      Requires signature changes at every call site.
+  Pick one before writing codegen.  Leaning B (scales naturally to
+  attribute_id interning later), but A is the smaller step if G2
+  needs to land fast.  For string/bytes fields, the
   host additionally allocates the span payload bytes via an
   imported-back `cel_alloc(len)` and fills
   `payload.s.{ptr,len}`; for message fields the host writes
