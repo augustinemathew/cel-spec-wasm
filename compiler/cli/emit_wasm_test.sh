@@ -32,18 +32,30 @@ OUT2="${TEST_TMPDIR}/bool.wasm"
 MAGIC2=$(xxd -p -l 8 "${OUT2}")
 [[ "${MAGIC2}" == "0061736d01000000" ]] || die "bool bad magic: ${MAGIC2}"
 
-# 3. Negative case: a string constant is outside the M2 MVP subset.
-#    Codegen should fail with a diagnostic and exit non-zero; no
-#    output file should be produced.
+# 3. Positive case: a string constant also round-trips.  Since M3 slice
+#    A, string literals lower to a block that allocates via the runtime
+#    and calls `cel_make_string_view`; the eval module declares the
+#    runtime imports, and the two-module loader (compiler/host) wires
+#    them.  We only check the file here; round-trip execution lives in
+#    //compiler/host:host_loader_test and //compiler/e2e:eval_test.
 OUT3="${TEST_TMPDIR}/string.wasm"
+"${CLI}" -e '"hi"' --emit_wasm="${OUT3}" > /dev/null
+[[ -s "${OUT3}" ]] || die "string .wasm is empty"
+MAGIC3=$(xxd -p -l 8 "${OUT3}")
+[[ "${MAGIC3}" == "0061736d01000000" ]] || die "string bad magic: ${MAGIC3}"
+
+# 4. Negative case: a list expression is still outside the MVP subset.
+#    Codegen should fail with a diagnostic and exit non-zero; no output
+#    file should be produced.
+OUT4="${TEST_TMPDIR}/list.wasm"
 set +e
-"${CLI}" -e '"hi"' --emit_wasm="${OUT3}" > "${TEST_TMPDIR}/str_stdout" \
-                                          2> "${TEST_TMPDIR}/str_stderr"
+"${CLI}" -e '[1, 2, 3]' --emit_wasm="${OUT4}" > "${TEST_TMPDIR}/list_stdout" \
+                                               2> "${TEST_TMPDIR}/list_stderr"
 STATUS=$?
 set -e
-[[ ${STATUS} -ne 0 ]] || die "string expr should have failed"
-[[ ! -s "${OUT3}" ]] || die "string expr should not produce output"
-grep -q "codegen error" "${TEST_TMPDIR}/str_stderr" \
+[[ ${STATUS} -ne 0 ]] || die "list expr should have failed"
+[[ ! -s "${OUT4}" ]] || die "list expr should not produce output"
+grep -q "codegen error" "${TEST_TMPDIR}/list_stderr" \
   || die "missing 'codegen error' diagnostic in stderr"
 
 echo "PASS"

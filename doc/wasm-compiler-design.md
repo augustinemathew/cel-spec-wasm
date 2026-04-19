@@ -91,11 +91,22 @@ supported by all major engines (Wasmtime, V8, SpiderMonkey, JSC, wasmer).
              │
              ▼  (Binaryen C API, linked as libbinaryen.a)
         [codegen]
-             │  module =
-             │    runtime/cel_runtime.wasm      ← compiled once from C
-             │  + generated eval(...)           ← per expression
+             │  emits a standalone per-expression module whose only
+             │  dependencies are imports from the shared runtime:
+             │    (import "cel" "memory"     (memory …))
+             │    (import "cel" "cel_refs"   (table  … externref))
+             │    (import "cel" "cel_alloc"  (func   …))
+             │    (import "cel" "cel_make_*" (func   …))
+             │    …
+             │    (func $eval …) (export "eval" (func $eval))
+             │    (custom section "cel.abi" …)
              ▼
-         .wasm  (+ optional .wat for debugging)
+   runtime.wasm      ← cross-compiled once from C, shipped with the host
+   expression.wasm   ← compiled per expression, tiny (only imports + eval + cel.abi)
+
+The host is responsible for instantiating `runtime.wasm` once and
+wiring its exports as imports to every `expression.wasm` it loads.
+See §7 and §10 for the specifics.
 ```
 
 ## 5. Front-end
@@ -209,8 +220,9 @@ set the reference to the root declaration).
 
 ## 7. Runtime layout (linear memory)
 
-Every generated module embeds a **runtime support library** compiled once
-from C (`compiler/runtime/cel_runtime.c`). It provides:
+The **runtime support library** is a standalone wasm module compiled
+once from C (`compiler/runtime/cel_runtime.c`) and cross-compiled to
+`runtime.wasm`. It provides:
 
 - A bump allocator over a monotonically-growing region of linear memory.
 - The `CelValue` struct type.
@@ -219,10 +231,106 @@ from C (`compiler/runtime/cel_runtime.c`). It provides:
 - `string` / `bytes` / `list` / `map` operations.
 - Three-valued-logic helpers (`cel_and`, `cel_or`, `cel_not`,
   `cel_status_either`, `cel_unknown_merge`).
+- The `$cel_refs` externref table plus its three helpers
+  (`cel_ref_intern`, `cel_ref_get`, `cel_refs_reset`).  (See §7.1.
+  Authoring them inside the runtime rather than per eval module
+  means every compiled expression shares one table, so interned
+  refs are reusable across expressions within one host instance.)
 
-The runtime is linked into every emitted module — the compiler loads the
-pre-built `cel_runtime.wasm` as a starting Binaryen `Module`, then appends
-the generated `eval` function and any per-expression constants.
+### 7.0 Two-module architecture
+
+Emitted expressions do **not** embed the runtime.  Every per-expression
+module declares imports from a single module namespace named `"cel"`:
+
+```wat
+(module
+  (import "cel" "memory"    (memory 1))
+  (import "cel" "cel_refs"  (table  16 externref))
+  (import "cel" "cel_alloc" (func (param i32) (result i32)))
+  (import "cel" "cel_make_int" (func (param i64) (result i32)))
+  ;; …one import per runtime function eval actually calls…
+  (func $eval (result i64) …)
+  (export "eval" (func $eval))
+)
+```
+
+The host instantiates `runtime.wasm` once, collects its exports, and
+passes them as the `"cel"` imports when instantiating each
+`expression.wasm`.  This gives us:
+
+- **Shared state by construction.**  Linear memory and the externref
+  table are single-sourced from the runtime instance; eval modules
+  load/store against the imported memory, and arena offsets stay
+  valid across calls without any host-side marshalling.
+- **Tiny per-expression modules.**  A scalar expression is hundreds
+  of bytes (imports header + eval body + `cel.abi` custom section).
+  Deployments with N expressions ship `runtime.wasm` + N × tiny
+  modules instead of N copies of the ~2 KB runtime.
+- **No merge step in codegen.**  The alternative — reading the
+  runtime back in via `BinaryenModuleRead` and appending eval on
+  top — would force a per-compile cost and drag the runtime bytes
+  into every compiled module.  With imports we just emit the
+  imports header and call; no Binaryen-level merge ever happens.
+
+The tradeoff is that hosts now instantiate two modules and wire
+imports.  This is one extra call on the host side
+(`wasmtime_linker_define_instance` in C, similar in other runtimes)
+and is boilerplate we own in `compiler/runtime/host_loader.{h,cc}`
+so embedders don't reinvent it.  See §10 for the codegen pipeline
+and §7.0.1 for the single-threaded concurrency contract.
+
+### 7.0.1 Concurrency contract
+
+A runtime instance is **single-threaded**.  Embedders that want
+parallel CEL evaluation must instantiate one runtime per worker
+thread.  This is a normative contract, not a recommendation — the
+runtime is not thread-safe and the compiler makes no effort to
+make it so.
+
+The sharp edges if this rule is broken:
+
+- **Bump allocator.**  `g_cel_arena.bump` is a plain `uint32_t` in
+  linear memory, read-modify-written by every `cel_alloc` call.
+  Two threads hitting it concurrently will both observe the same
+  bump pointer, both write back `bump + n`, and receive
+  overlapping offsets — silent memory corruption, not a crash.
+- **`cel_refs_next` global.**  Same race, one slot number handed
+  out to two `cel_ref_intern` callers.  The second `table.set`
+  wins and the first `externref` is leaked (or aliased, worse).
+- **`cel_reset`.**  Rewinding the arena on one thread invalidates
+  every `CelValue*` the *other* thread is holding.  Use-after-reset
+  is undefined and typically presents as a `CelKind` tag reading
+  back as garbage.
+- **Singletons (null, true, false, optional-none) and interned
+  data segments** are read-only and therefore safe across threads
+  — but they are the only such region.
+
+What the recommended pattern costs: a runtime instance is ~2 KB
+of code + a 64 KiB default arena = **~66 KiB per worker**.  The
+compiled eval modules themselves are stateless and can be
+instantiated against any runtime instance, so the `.wasm` files
+are shareable; only the runtime instance is per-worker.
+Workloads that evaluate the same expression over many inputs
+should keep one eval instance per runtime (instance creation is
+cheap but not free) and use `cel_reset` between calls.
+
+What it would take to lift the single-threaded contract (not on
+any roadmap — noted so a future workload can cost-estimate the
+change rather than rediscover it):
+
+- Compile against wasm's threads proposal (shared memory +
+  `i32.atomic.*` ops) and turn on the `threads` feature in
+  `BinaryenModuleSetFeatures`.
+- Replace the bump allocator with a CAS loop on the bump pointer,
+  or a per-thread arena chunk with CAS-for-grow.
+- Replace `cel_reset`'s bulk rewind with per-call arena frames so
+  one thread's rewind doesn't stomp another's in-flight values.
+- Partition or lock-free-allocate the `$cel_refs` externref table.
+
+A simpler incremental option — per-expression sub-arenas within
+one thread (to bound peak memory across many small evaluations) —
+does not require wasm threads and can land as an M5+ feature if
+profiling justifies it.
 
 ### 7.1 Memory map
 
@@ -676,13 +784,27 @@ drives — so version bumps are low-risk.
 
 The compiler:
 
-1. Loads the pre-compiled `cel_runtime.wasm` as a starting `BinaryenModuleRef`
-   via `BinaryenModuleRead`.
-2. Emits interned literal blobs (strings, regex patterns, error messages,
-   type/attribute tables, `cel.abi` proto) into fresh data segments.
-3. Appends generated helper functions and the exported `eval` via
+1. Creates a fresh `BinaryenModuleRef` via `BinaryenModuleCreate`.
+2. Emits imports against the `"cel"` namespace for every runtime
+   entity the per-expression lowering references: memory, the
+   `$cel_refs` externref table, and the subset of `cel_*`
+   functions this expression actually calls (walk the IR once and
+   record them — no reason to import all 24 constructors if the
+   expression is `1 + 2`).
+3. Emits interned literal blobs (strings, regex patterns, error
+   messages, type/attribute tables, `cel.abi` proto) into fresh
+   data segments on the imported memory.  The data-segment offsets
+   must be coordinated with the runtime's static region — the
+   runtime reserves `[0, static_end)` and exports `static_end` as
+   a global so codegen can place its interned blobs right after.
+4. Appends generated helper functions and the exported `eval` via
    `BinaryenAddFunction` / `BinaryenAddFunctionExport` / etc.
-4. Serialises the merged module to `.wasm` with `BinaryenModuleWrite`.
+5. Attaches the `cel.abi` custom section (per-expression metadata).
+6. Serialises the module to `.wasm` with `BinaryenModuleWrite`.
+
+No merge step: the runtime never enters the compiler's memory as a
+Binaryen module.  The runtime `.wasm` is an artefact of the build
+system (`compiler/runtime/BUILD.bazel`), not of the codegen path.
 
 ### 10.1 Lowering per expression kind
 

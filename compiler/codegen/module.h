@@ -82,6 +82,17 @@ class WasmModule {
                          absl::Span<const BinaryenType> params,
                          BinaryenType result);
 
+  // Imports a memory from another module.  Every eval module has exactly
+  // one memory — the runtime's — imported under the name "cel"/"memory"
+  // so every string / bytes offset is interpretable against the same
+  // address space.  Fails (FailedPrecondition) if a memory has already
+  // been set or imported.
+  ABSL_MUST_USE_RESULT absl::Status AddMemoryImport(
+      absl::string_view external_module,
+      absl::string_view external_base,
+      uint32_t initial_pages,
+      std::optional<uint32_t> max_pages);
+
   // Adds a function definition.  Binaryen takes ownership of `body` —
   // the caller must not reuse or dispose of the expression after this
   // call.

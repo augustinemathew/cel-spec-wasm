@@ -32,11 +32,24 @@ Out of scope (later milestones):
 
 ### Runtime (linear-memory side, wasm32-compiled C)
 
-- [ ] Promote `compiler/runtime/cel_runtime.c` from a host-only
-      `cc_library` to a `.wasm` object that gets linked into every
-      emitted module.  The wasm32 cross-compile rule is M2's pending
-      item and lands first; this deliverable wires the output into the
-      codegen pipeline.
+- [ ] Wire the wasm32-cross-compiled `cel_runtime.wasm` (landed in
+      M2) into the **two-module runtime/eval architecture** decided
+      2026-04-19 (see `doc/wasm-compiler-design.md` §7.0).  The
+      runtime is **not** merged into per-expression modules; it is
+      instantiated once by the host and its exports become imports
+      of every eval module under the `"cel"` namespace.  Scope of
+      this deliverable:
+        - Codegen emits `BinaryenAddFunctionImport` /
+          `BinaryenAddMemoryImport` / `BinaryenAddTableImport`
+          calls for exactly the runtime surface the expression
+          uses (walk the IR once, dedupe, emit).
+        - A host loader in `compiler/runtime/host_loader.{h,cc}`
+          that owns the wasmtime-specific "instantiate runtime,
+          hand exports to linker, instantiate eval" sequence so
+          embedders get a one-call API.
+        - The e2e harness in `compiler/e2e/` switches from
+          "instantiate one module" to "instantiate runtime + eval
+          against a shared linker".
 - [ ] String / bytes constructors + equality are already authored;
       add **concatenation** (`cel_string_concat`) and **length**
       (`cel_string_size` — UTF-8 code-point count, per spec §1110

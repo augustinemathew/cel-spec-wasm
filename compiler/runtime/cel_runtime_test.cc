@@ -372,5 +372,144 @@ TEST_F(RuntimeTest, BytesEqRejectsNonBytes) {
   EXPECT_EQ(cel_bytes_eq(a, b), 0);
 }
 
+// ---- cel_string_concat -----------------------------------------------------
+
+TEST_F(RuntimeTest, StringConcatJoinsPayloads) {
+  uint32_t a = cel_make_string("foo", 3);
+  uint32_t b = cel_make_string("bar", 3);
+  uint32_t r = cel_string_concat(a, b);
+  ASSERT_NE(r, 0u);
+  CelValue* v = cel_value_at(r);
+  ASSERT_NE(v, nullptr);
+  EXPECT_EQ(v->kind, (uint32_t)CEL_STRING);
+  EXPECT_EQ(v->payload.s.len, 6u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "foobar", 6), 0);
+}
+
+TEST_F(RuntimeTest, StringConcatLeftEmpty) {
+  uint32_t a = cel_make_string("", 0);
+  uint32_t b = cel_make_string("abc", 3);
+  uint32_t r = cel_string_concat(a, b);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 3u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "abc", 3), 0);
+}
+
+TEST_F(RuntimeTest, StringConcatRightEmpty) {
+  uint32_t a = cel_make_string("abc", 3);
+  uint32_t b = cel_make_string("", 0);
+  uint32_t r = cel_string_concat(a, b);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 3u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "abc", 3), 0);
+}
+
+TEST_F(RuntimeTest, StringConcatBothEmpty) {
+  uint32_t a = cel_make_string("", 0);
+  uint32_t b = cel_make_string("", 0);
+  uint32_t r = cel_string_concat(a, b);
+  ASSERT_NE(r, 0u);
+  CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 0u);
+  EXPECT_EQ(v->payload.s.ptr, 0u);
+}
+
+TEST_F(RuntimeTest, StringConcatResultIndependentOfInputs) {
+  // Concat must copy into a fresh region so resetting after a subsequent
+  // allocation that overwrote the inputs' data would not invalidate the
+  // result.  We simulate that by checking that the result's data pointer
+  // differs from either input's data pointer.
+  uint32_t a = cel_make_string("aaa", 3);
+  uint32_t b = cel_make_string("bbb", 3);
+  uint32_t r = cel_string_concat(a, b);
+  const CelValue* va = cel_value_at(a);
+  const CelValue* vb = cel_value_at(b);
+  const CelValue* vr = cel_value_at(r);
+  EXPECT_NE(vr->payload.s.ptr, va->payload.s.ptr);
+  EXPECT_NE(vr->payload.s.ptr, vb->payload.s.ptr);
+}
+
+TEST_F(RuntimeTest, StringConcatRejectsZeroOffsets) {
+  uint32_t a = cel_make_string("x", 1);
+  EXPECT_EQ(cel_string_concat(0, a), 0u);
+  EXPECT_EQ(cel_string_concat(a, 0), 0u);
+  EXPECT_EQ(cel_string_concat(0, 0), 0u);
+}
+
+TEST_F(RuntimeTest, StringConcatRejectsNonStringOperands) {
+  // Concat must be strict about type to catch a codegen bug where an int or
+  // bytes operand sneaks past the checker's type rules.
+  uint32_t s = cel_make_string("x", 1);
+  uint32_t bts = cel_make_bytes("y", 1);
+  uint32_t i = cel_make_int(7);
+  EXPECT_EQ(cel_string_concat(s, bts), 0u);
+  EXPECT_EQ(cel_string_concat(bts, s), 0u);
+  EXPECT_EQ(cel_string_concat(s, i), 0u);
+}
+
+// ---- cel_string_size -------------------------------------------------------
+
+TEST_F(RuntimeTest, StringSizeAscii) {
+  uint32_t s = cel_make_string("hello", 5);
+  EXPECT_EQ(cel_string_size(s), 5);
+}
+
+TEST_F(RuntimeTest, StringSizeEmpty) {
+  uint32_t s = cel_make_string("", 0);
+  EXPECT_EQ(cel_string_size(s), 0);
+}
+
+TEST_F(RuntimeTest, StringSizeCountsCodepointsNotBytes) {
+  // "héllo" in UTF-8: h (1) é (0xC3 0xA9, 2 bytes) l l o — 6 bytes, 5 cps.
+  const char* src = "h\xC3\xA9llo";
+  uint32_t s = cel_make_string(src, 6);
+  EXPECT_EQ(cel_string_size(s), 5);
+}
+
+TEST_F(RuntimeTest, StringSizeCountsSurrogatePair) {
+  // U+1F600 (grinning face) encodes as 4 UTF-8 bytes: F0 9F 98 80. That's
+  // one code point even though it occupies four bytes.
+  const char* src = "\xF0\x9F\x98\x80";
+  uint32_t s = cel_make_string(src, 4);
+  EXPECT_EQ(cel_string_size(s), 1);
+}
+
+TEST_F(RuntimeTest, StringSizeRejectsZeroOffset) {
+  EXPECT_EQ(cel_string_size(0), -1);
+}
+
+TEST_F(RuntimeTest, StringSizeRejectsNonString) {
+  uint32_t b = cel_make_bytes("x", 1);
+  EXPECT_EQ(cel_string_size(b), -1);
+  uint32_t i = cel_make_int(9);
+  EXPECT_EQ(cel_string_size(i), -1);
+}
+
+// ---- cel_bool_from_value ---------------------------------------------------
+
+TEST_F(RuntimeTest, BoolFromValueTrue) {
+  uint32_t v = cel_make_bool(1);
+  EXPECT_EQ(cel_bool_from_value(v), 1);
+}
+
+TEST_F(RuntimeTest, BoolFromValueFalse) {
+  uint32_t v = cel_make_bool(0);
+  EXPECT_EQ(cel_bool_from_value(v), 0);
+}
+
+TEST_F(RuntimeTest, BoolFromValueRejectsZeroOffset) {
+  EXPECT_EQ(cel_bool_from_value(0), 0);
+}
+
+TEST_F(RuntimeTest, BoolFromValueRejectsNonBool) {
+  uint32_t i = cel_make_int(1);
+  // A non-bool must return 0 rather than, say, sign-extending the int
+  // payload's low bit — otherwise a codegen bug that forgot to unwrap
+  // via has() would silently produce "1 is true" on every integer.
+  EXPECT_EQ(cel_bool_from_value(i), 0);
+  uint32_t s = cel_make_string("true", 4);
+  EXPECT_EQ(cel_bool_from_value(s), 0);
+}
+
 }  // namespace
 }  // namespace celwasm

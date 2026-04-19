@@ -15,10 +15,26 @@ cc_test(
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:module",
         "//compiler/frontend:parse_and_check",
+        "//compiler/host:host_loader",
         "//compiler/ir:typed_ast",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# End-to-end round-trip for the cel_refs externref helpers.
+cc_test(
+    name = "cel_refs_e2e_test",
+    srcs = ["cel_refs_e2e_test.cc"],
+    deps = [
+        "//compiler/codegen:cel_refs",
+        "//compiler/codegen:module",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
         "@wasmtime_darwin_arm64//:wasmtime",

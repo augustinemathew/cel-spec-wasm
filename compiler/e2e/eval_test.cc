@@ -1,4 +1,4 @@
-// End-to-end evaluation test for the M2 codegen MVP.
+// End-to-end evaluation test for the codegen MVP.
 //
 // Pipeline exercised:
 //
@@ -6,26 +6,29 @@
 //       → ParseAndCheck   (compiler/frontend)
 //       → LowerToEvalFunction + WasmModule::Serialize
 //                         (compiler/codegen)
-//       → wasmtime: load, instantiate, call "eval", inspect return
+//       → LoadEval        (compiler/host)  — instantiates runtime
+//                           + eval under a shared wasmtime linker
+//                           (two-module architecture, design §7.0)
+//       → CallNullaryEval — invokes the `eval` export and returns
+//                           the scalar result
 //
 // This is the only test in the repo that actually executes WASM the
-// compiler emits.  Everything upstream (Binaryen's validator,
-// instruction-shape assertions in expr_lower_test) can still pass
-// while the module means nothing semantically; this test catches that.
+// compiler emits against a real runtime.  Everything upstream
+// (Binaryen's validator, instruction-shape assertions in
+// expr_lower_test) can still pass while the module means nothing
+// semantically; this test catches that.
 
 #include <cstdint>
-#include <cstring>
-#include <string>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
+#include "compiler/host/host_loader.h"
 #include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
@@ -36,29 +39,8 @@ namespace {
 
 using ::absl_testing::IsOk;
 
-// Pulls a printable message out of a `wasmtime_error_t` (error from
-// the host API) or `wasm_trap_t` (runtime trap), and frees it.
-std::string ErrorMessage(wasmtime_error_t* absl_nonnull err) {
-  wasm_byte_vec_t msg;
-  wasmtime_error_message(err, &msg);
-  std::string out(msg.data, msg.size);
-  wasm_byte_vec_delete(&msg);
-  wasmtime_error_delete(err);
-  return out;
-}
-
-std::string TrapMessage(wasm_trap_t* absl_nonnull trap) {
-  wasm_message_t msg;
-  wasm_trap_message(trap, &msg);
-  std::string out(msg.data, msg.size);
-  wasm_byte_vec_delete(&msg);
-  wasm_trap_delete(trap);
-  return out;
-}
-
 // Runs `cel_source` through the full pipeline and returns the single
-// scalar that `eval()` produced.  Keeps the caller's surface small —
-// the tests only need to look at the `wasmtime_val_t`.
+// scalar that `eval()` produced.
 absl::StatusOr<wasmtime_val_t> Evaluate(absl::string_view cel_source) {
   auto typed = ParseAndCheck(cel_source, CheckOptions{});
   if (!typed.ok()) return typed.status();
@@ -72,83 +54,9 @@ absl::StatusOr<wasmtime_val_t> Evaluate(absl::string_view cel_source) {
   auto bytes = mod.Serialize();
   if (!bytes.ok()) return bytes.status();
 
-  wasm_engine_t* engine = wasm_engine_new();
-  wasmtime_store_t* store = wasmtime_store_new(engine, nullptr, nullptr);
-  wasmtime_context_t* ctx = wasmtime_store_context(store);
-
-  wasmtime_module_t* wmod = nullptr;
-  if (wasmtime_error_t* err =
-          wasmtime_module_new(engine, bytes->data(), bytes->size(), &wmod)) {
-    auto s = absl::InternalError(
-        absl::StrCat("wasmtime_module_new: ", ErrorMessage(err)));
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return s;
-  }
-
-  wasmtime_instance_t instance;
-  wasm_trap_t* trap = nullptr;
-  if (wasmtime_error_t* err = wasmtime_instance_new(
-          ctx, wmod, /*imports=*/nullptr, /*nimports=*/0, &instance, &trap)) {
-    auto s = absl::InternalError(
-        absl::StrCat("wasmtime_instance_new: ", ErrorMessage(err)));
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return s;
-  }
-  if (trap != nullptr) {
-    auto s = absl::InternalError(
-        absl::StrCat("instantiation trap: ", TrapMessage(trap)));
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return s;
-  }
-
-  wasmtime_extern_t ext;
-  const char kEvalName[] = "eval";
-  if (!wasmtime_instance_export_get(ctx, &instance, kEvalName,
-                                    std::strlen(kEvalName), &ext)) {
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return absl::NotFoundError(
-        "instance has no export named `eval` — codegen bug");
-  }
-  if (ext.kind != WASMTIME_EXTERN_FUNC) {
-    wasmtime_extern_delete(&ext);
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return absl::FailedPreconditionError(
-        "export `eval` is not a function");
-  }
-
-  wasmtime_val_t result{};
-  if (wasmtime_error_t* err = wasmtime_func_call(
-          ctx, &ext.of.func, /*args=*/nullptr, /*nargs=*/0,
-          /*results=*/&result, /*nresults=*/1, &trap)) {
-    auto s = absl::InternalError(
-        absl::StrCat("wasmtime_func_call: ", ErrorMessage(err)));
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return s;
-  }
-  if (trap != nullptr) {
-    auto s = absl::InternalError(
-        absl::StrCat("eval() trapped: ", TrapMessage(trap)));
-    wasmtime_module_delete(wmod);
-    wasmtime_store_delete(store);
-    wasm_engine_delete(engine);
-    return s;
-  }
-
-  wasmtime_module_delete(wmod);
-  wasmtime_store_delete(store);
-  wasm_engine_delete(engine);
-  return result;  // scalar — no unroot needed.
+  auto loaded = LoadEval(*bytes);
+  if (!loaded.ok()) return loaded.status();
+  return loaded->CallNullaryEval();
 }
 
 TEST(EvalE2ETest, IntConstant) {
@@ -241,8 +149,41 @@ TEST(EvalE2ETest, SignedIntComparisonTreatsNegativeCorrectly) {
 }
 
 TEST(EvalE2ETest, DoubleComparisons) {
+  // Per-op coverage mirroring IntComparisons.  A regression that used
+  // int opcodes on f64 operands would produce either validator failure
+  // or numerically wrong results on the ordered ops.
   EXPECT_EQ(Evaluate("1.0 < 2.0")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2.0 < 2.0")->of.i32, 0);
+  EXPECT_EQ(Evaluate("2.0 <= 2.0")->of.i32, 1);
+  EXPECT_EQ(Evaluate("3.0 > 2.0")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2.0 >= 3.0")->of.i32, 0);
   EXPECT_EQ(Evaluate("1.0 == 1.0")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2.0 != 2.0")->of.i32, 0);
+}
+
+TEST(EvalE2ETest, UintComparisons) {
+  // The important row is the ordered compares: if codegen used the signed
+  // opcode, the answer for a very large uint would flip.  Using a value
+  // above `INT64_MAX` makes that lurking bug visible.
+  EXPECT_EQ(Evaluate("1u < 2u")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2u < 2u")->of.i32, 0);
+  EXPECT_EQ(Evaluate("2u <= 2u")->of.i32, 1);
+  EXPECT_EQ(Evaluate("3u > 2u")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2u >= 3u")->of.i32, 0);
+  EXPECT_EQ(Evaluate("2u == 2u")->of.i32, 1);
+  EXPECT_EQ(Evaluate("2u != 2u")->of.i32, 0);
+  // 18446744073709551615u == 2^64 - 1; would be read as -1 if signed
+  // compares leaked in.
+  EXPECT_EQ(Evaluate("18446744073709551615u > 1u")->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DoubleNegate) {
+  // `-(x + y)` forces a non-constant negate so constant folding in the
+  // parser can't short-circuit the codegen path.
+  auto r = Evaluate("-(1.5 + 2.25)");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_F64);
+  EXPECT_DOUBLE_EQ(r->of.f64, -(1.5 + 2.25));
 }
 
 TEST(EvalE2ETest, Ternary) {
@@ -261,6 +202,19 @@ TEST(EvalE2ETest, IntModulo) {
   auto r = Evaluate("10 % 3");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 1);
+}
+
+TEST(EvalE2ETest, StringLiteralReturnsCelValueOffset) {
+  // Strings travel as i32 offsets of CelValues in the runtime's arena.
+  // The runtime instantiation populates the static singletons below
+  // offset kStaticStart+4*sizeof(CelValue); our string's CelValue will
+  // land beyond that.  Just assert positivity here — the
+  // runtime-level semantics (offsets point to a CEL_STRING CelValue
+  // whose bytes are "hello") are covered by compiler/runtime tests.
+  auto r = Evaluate("'hello'");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_GT(r->of.i32, 0);
 }
 
 }  // namespace

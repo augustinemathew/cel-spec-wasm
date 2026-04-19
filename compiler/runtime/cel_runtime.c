@@ -1,6 +1,37 @@
 #include "compiler/runtime/cel_runtime.h"
 
+// The host build has a real libc; the wasm32 cross-compile build is
+// freestanding and does not.  `<string.h>` is one of the hosted-only
+// headers, so for wasm we declare the two functions we actually use
+// and let clang lower them to LLVM intrinsics (wasm-ld resolves the
+// intrinsics to compiler-rt's own `memcpy` / `memset`).
+#if defined(__wasm__)
+// Freestanding wasm32 build: no libc.  Provide trivial byte-loop
+// implementations of the three `<string.h>` functions we use.  They
+// are not perf-critical (runtime calls are per-CelValue, not per
+// byte) and keeping them in-tree avoids pulling in compiler-rt.
+static void* memcpy(void* dst, const void* src, size_t n) {
+  unsigned char* d = (unsigned char*)dst;
+  const unsigned char* s = (const unsigned char*)src;
+  for (size_t i = 0; i < n; ++i) d[i] = s[i];
+  return dst;
+}
+static void* memset(void* dst, int v, size_t n) {
+  unsigned char* d = (unsigned char*)dst;
+  for (size_t i = 0; i < n; ++i) d[i] = (unsigned char)v;
+  return dst;
+}
+static int memcmp(const void* a, const void* b, size_t n) {
+  const unsigned char* x = (const unsigned char*)a;
+  const unsigned char* y = (const unsigned char*)b;
+  for (size_t i = 0; i < n; ++i) {
+    if (x[i] != y[i]) return (int)x[i] - (int)y[i];
+  }
+  return 0;
+}
+#else
 #include <string.h>
+#endif
 
 #ifndef CELWASM_ARENA_BYTES
 #define CELWASM_ARENA_BYTES (64u * 1024u)
@@ -312,4 +343,71 @@ int32_t cel_string_eq(uint32_t a, uint32_t b) {
 
 int32_t cel_bytes_eq(uint32_t a, uint32_t b) {
   return span_eq(a, b, (uint32_t)CEL_BYTES);
+}
+
+uint32_t cel_string_concat(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_STRING || vb->kind != (uint32_t)CEL_STRING) {
+    return 0;
+  }
+  uint32_t la = va->payload.s.len;
+  uint32_t lb = vb->payload.s.len;
+  uint32_t total = la + lb;
+
+  // Snapshot the source pointers before allocating: the allocation may
+  // advance the bump pointer into pages that *happen* to alias either
+  // input, but for views the source offsets themselves are stable.  The
+  // `va` / `vb` CelValue headers are in the arena too and must be reread
+  // if we want to be strict, but since we only read their span payload
+  // here and the payload is an immutable copy made at construction, the
+  // snapshot is what matters.
+  uint32_t a_ptr = va->payload.s.ptr;
+  uint32_t b_ptr = vb->payload.s.ptr;
+
+  uint32_t data_off = 0;
+  if (total > 0) {
+    data_off = cel_alloc(total);
+    if (data_off == 0) return 0;
+    if (la > 0) {
+      memcpy(g_memory + data_off, g_memory + a_ptr, la);
+    }
+    if (lb > 0) {
+      memcpy(g_memory + data_off + la, g_memory + b_ptr, lb);
+    }
+  }
+  uint32_t off = alloc_cv();
+  if (off == 0) return 0;
+  CelValue* v = cv_at(off);
+  v->kind = (uint32_t)CEL_STRING;
+  v->payload.s.ptr = data_off;
+  v->payload.s.len = total;
+  return off;
+}
+
+int64_t cel_string_size(uint32_t s) {
+  if (s == 0) return -1;
+  const CelValue* v = cv_at(s);
+  if (v->kind != (uint32_t)CEL_STRING) return -1;
+  uint32_t len = v->payload.s.len;
+  if (len == 0) return 0;
+  const uint8_t* p = g_memory + v->payload.s.ptr;
+  int64_t codepoints = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    // Count any byte that is NOT a UTF-8 continuation byte.  Continuations
+    // match 0b10xxxxxx; everything else (ASCII 0b0xxxxxxx or a lead byte
+    // 0b11xxxxxx) begins a new code point.
+    if ((p[i] & 0xC0u) != 0x80u) {
+      ++codepoints;
+    }
+  }
+  return codepoints;
+}
+
+int32_t cel_bool_from_value(uint32_t v) {
+  if (v == 0) return 0;
+  const CelValue* cv = cv_at(v);
+  if (cv->kind != (uint32_t)CEL_BOOL) return 0;
+  return cv->payload.b ? 1 : 0;
 }

@@ -6,6 +6,7 @@ cc_binary(
     name = "celwasmc",
     srcs = ["celwasmc_main.cc"],
     deps = [
+        "//compiler/codegen:abi",
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:module",
         "//compiler/frontend:parse_and_check",

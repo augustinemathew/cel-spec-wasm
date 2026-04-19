@@ -1,0 +1,106 @@
+// Schema of the `cel.abi` WASM custom section emitted by celwasmc.
+//
+// Contract (see `doc/wasm-compiler-design.md` Appendix A and §7):
+//   - Every `.wasm` the compiler emits carries one `cel.abi` custom
+//     section whose payload is a serialized `CelAbi` message.
+//   - Hosts MUST parse and verify this section before instantiating
+//     the module; it is the only place the compiler records which
+//     host callbacks it relies on, how type / attribute / regex IDs
+//     map to their source-level identities, and what memory layout
+//     the emitted runtime expects.
+//
+// Design decisions worth knowing when extending this schema:
+//   - Field numbers mirror the design-doc appendix so the two can
+//     be cross-referenced at a glance.  Do not renumber.
+//   - `cel.expr.CheckedExpr` is embedded whole rather than
+//     re-serialized: this lets the host do its own RejectDyn /
+//     analysis passes without a second parse/check pipeline.
+//   - Tables (types / attributes / patterns / error_msgs) are kept
+//     as `repeated` messages with explicit ID fields.  This lets
+//     the compiler allocate IDs densely from zero but the host
+//     does not have to assume contiguous numbering.
+//   - `MemoryLayout` is emitted even for M2 modules with no
+//     non-trivial allocations: downstream tooling reads it
+//     unconditionally, so making it optional would add a branch
+//     at every reader.
+
+syntax = "proto3";
+
+package celwasm;
+
+import "cel/expr/checked.proto";
+
+// One row of the type-id → FQN table.  `id` is the integer the
+// emitted WASM uses in calls like `cel_host.get_scalar_field(msg,
+// type_id, field_id)`; `fqn` is the protobuf fully-qualified name
+// that the host resolves against its descriptor pool.
+message TypeIdEntry {
+  uint32 id = 1;
+  string fqn = 2;
+}
+
+// One row of the attribute-id table.  Attributes are rooted paths
+// used by partial-eval (design §4.3): `variable` is the ident at the
+// root, `path` is the dotted/indexed suffix applied to it.
+message AttributeEntry {
+  uint32 id = 1;
+  string variable = 2;
+  string path = 3;
+}
+
+// One row of the regex pattern table.  `source` is the original
+// regex string as written in CEL source; the host compiles it to
+// whatever DFA its `cel_host.string_matches` implementation uses.
+message PatternEntry {
+  uint32 id = 1;
+  string source = 2;
+}
+
+// One row of the interned error-message table.  `text` is the human-
+// readable diagnostic the runtime references by ID when it
+// constructs a CEL_ERROR value.
+message ErrorMessage {
+  uint32 id = 1;
+  string text = 2;
+}
+
+// Which host callbacks the emitted module actually relies on.  The
+// host is free to reject a module whose `FunctionSet` names an
+// entry point it does not implement.  Kept as a flat set of names
+// so future additions do not bump a schema version.
+message FunctionSet {
+  repeated string required_imports = 1;
+}
+
+// Memory-layout hints.  The compiler can pre-reserve space for
+// interned literals / tables and communicates that to the host via
+// `initial_pages`; the host may also impose a cap through
+// `max_pages` at instantiation time (0 = no cap).
+message MemoryLayout {
+  uint32 initial_pages = 1;
+  uint32 max_pages = 2;
+}
+
+// Top-level payload of the `cel.abi` custom section.
+message CelAbi {
+  // Format version for the whole schema.  Bump on any field removal
+  // or semantics change; additive changes keep version the same.
+  uint32 version = 1;
+
+  // The exact CEL source string the compiler read.  Kept for
+  // diagnostics; hosts that want a canonicalized form should
+  // re-render from `checked` rather than parse this.
+  string cel_source = 2;
+
+  // The fully type-checked AST.  Every `Expr` here has a matching
+  // entry in `CheckedExpr.type_map` and, for unchecked nodes that
+  // cel-cpp inserted during macro expansion, a `source_info` entry.
+  cel.expr.CheckedExpr checked = 3;
+
+  repeated TypeIdEntry   types      = 4;
+  repeated AttributeEntry attributes = 5;
+  repeated PatternEntry  patterns   = 6;
+  repeated ErrorMessage  error_msgs = 7;
+  FunctionSet            function_set = 8;
+  MemoryLayout           layout     = 9;
+}

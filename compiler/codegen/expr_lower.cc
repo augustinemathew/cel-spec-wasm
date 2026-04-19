@@ -1,8 +1,9 @@
 #include "compiler/codegen/expr_lower.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
-#include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -22,10 +23,76 @@ namespace {
 
 namespace op = ::google::api::expr::common;
 
-// Forward decl: the node dispatcher.
-absl::StatusOr<BinaryenExpressionRef> LowerExpr(const TypedAst& ast,
-                                                const cel::Expr& expr,
-                                                WasmModule& mod);
+// Per-eval-function lowering state.  Holds scratch locals the body
+// needs — for example, the string-constant lowering allocates one
+// i32 per literal to hold the `cel_alloc` result across the
+// subsequent `i32.store8` chain.  Local indices are `num_params +
+// position in local_types`; M2 has zero params.
+//
+// The context does NOT track which runtime imports have been
+// declared: we always link eval modules fully against the runtime
+// (see DeclareRuntimeImports), so there is nothing to gate on.
+struct LoweringContext {
+  WasmModule& mod;
+  uint32_t num_params = 0;
+  std::vector<BinaryenType> local_types;
+
+  BinaryenIndex AddLocal(BinaryenType type) {
+    local_types.push_back(type);
+    return static_cast<BinaryenIndex>(
+        num_params + local_types.size() - 1);
+  }
+};
+
+absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
+                                                const TypedAst& ast,
+                                                const cel::Expr& expr);
+
+// Declares every import the eval module may reference, up front.  Each
+// eval module is always linked against the runtime at instantiation
+// time, so declaring imports the current AST happens not to use is
+// harmless — wasmtime accepts unused imports as long as they resolve.
+// Keeping the set fixed here avoids per-subtree "is this declared yet?"
+// bookkeeping and mirrors the design doc's two-module layout.
+absl::Status DeclareRuntimeImports(WasmModule& mod) {
+  // Shared linear memory — every CelValue offset the codegen emits
+  // is interpreted against the runtime's arena.  One page minimum.
+  auto s = mod.AddMemoryImport(/*external_module=*/"cel",
+                               /*external_base=*/"memory",
+                               /*initial_pages=*/1,
+                               /*max_pages=*/std::nullopt);
+  if (!s.ok()) return s;
+
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType i64 = BinaryenTypeInt64();
+
+  auto import1 = [&](absl::string_view name, BinaryenType p0,
+                     BinaryenType result) {
+    mod.AddFunctionImport(name, /*external_module=*/"cel",
+                          /*external_base=*/name,
+                          absl::Span<const BinaryenType>(&p0, 1), result);
+  };
+  auto import2 = [&](absl::string_view name, BinaryenType p0,
+                     BinaryenType p1, BinaryenType result) {
+    BinaryenType params[2] = {p0, p1};
+    mod.AddFunctionImport(name, /*external_module=*/"cel",
+                          /*external_base=*/name,
+                          absl::Span<const BinaryenType>(params, 2), result);
+  };
+
+  // Allocation + string/bytes construction (M3 slice A).
+  import1("cel_alloc", i32, i32);
+  import2("cel_make_string_view", i32, i32, i32);
+  import2("cel_make_bytes_view", i32, i32, i32);
+  // String/bytes helpers expected to land in M3 — pre-declaring them
+  // keeps the import list stable once those lowerings arrive.
+  import2("cel_string_eq", i32, i32, i32);
+  import2("cel_bytes_eq", i32, i32, i32);
+  import2("cel_string_concat", i32, i32, i32);
+  import1("cel_string_size", i32, i64);
+  import1("cel_bool_from_value", i32, i32);
+  return absl::OkStatus();
+}
 
 absl::Status UnimplementedKind(absl::string_view kind, int64_t id) {
   return absl::UnimplementedError(
@@ -52,11 +119,80 @@ absl::StatusOr<Repr> ReprOf(const TypedAst& ast, const cel::Expr& e) {
   return a->repr;
 }
 
-absl::StatusOr<BinaryenExpressionRef> LowerConstant(const TypedAst& ast,
-                                                    const cel::Expr& expr,
-                                                    WasmModule& mod) {
+// Lowers a string literal as:
+//   (block (result i32)
+//     (local.set $scratch (call $cel_alloc (i32.const len)))
+//     (i32.store8 offset=0 (local.get $scratch) (i32.const b0))
+//     ... one i32.store8 per byte ...
+//     (call $cel_make_string_view (local.get $scratch) (i32.const len)))
+//
+// Rationale: we deliberately do NOT use a wasm data segment.  The eval
+// module and the runtime module share the runtime's linear memory, and
+// a data segment in the eval module would need to agree on a byte range
+// that doesn't alias the runtime's own static data / bump arena.  That
+// coordination is brittle; using `cel_alloc` at instantiation time
+// simply rents a fresh, never-aliasing region from the runtime itself.
+// The store-per-byte expansion is verbose but is only emitted per
+// literal (once), and the resulting code is trivial for wasmtime's
+// baseline compiler.
+absl::StatusOr<BinaryenExpressionRef> LowerStringLiteral(
+    LoweringContext& ctx, absl::string_view bytes) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  const uint32_t len = static_cast<uint32_t>(bytes.size());
+  const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
+
+  std::vector<BinaryenExpressionRef> children;
+  children.reserve(2 + bytes.size());
+
+  // local.set $scratch (call $cel_alloc len)
+  {
+    BinaryenExpressionRef alloc_arg =
+        BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(len)));
+    BinaryenExpressionRef alloc_call = BinaryenCall(
+        m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
+    children.push_back(BinaryenLocalSet(m, scratch, alloc_call));
+  }
+
+  // One i32.store8 per byte, using `offset=i` to avoid emitting a
+  // separate add for each position.
+  for (uint32_t i = 0; i < len; ++i) {
+    const uint8_t byte = static_cast<uint8_t>(bytes[i]);
+    BinaryenExpressionRef ptr =
+        BinaryenLocalGet(m, scratch, BinaryenTypeInt32());
+    BinaryenExpressionRef value =
+        BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(byte)));
+    children.push_back(BinaryenStore(m,
+                                     /*bytes=*/1,
+                                     /*offset=*/i,
+                                     /*align=*/1,
+                                     ptr,
+                                     value,
+                                     /*type=*/BinaryenTypeInt32(),
+                                     /*memoryName=*/"memory"));
+  }
+
+  // Trailing call that produces the block's i32 result.
+  {
+    BinaryenExpressionRef args[2] = {
+        BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
+        BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(len))),
+    };
+    children.push_back(BinaryenCall(m, "cel_make_string_view", args, 2,
+                                    BinaryenTypeInt32()));
+  }
+
+  return BinaryenBlock(m,
+                       /*name=*/nullptr,
+                       children.data(),
+                       static_cast<BinaryenIndex>(children.size()),
+                       /*type=*/BinaryenTypeInt32());
+}
+
+absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
+                                                    const TypedAst& ast,
+                                                    const cel::Expr& expr) {
   const cel::Constant& c = expr.const_expr();
-  BinaryenModuleRef m = mod.raw();
+  BinaryenModuleRef m = ctx.mod.raw();
   switch (c.kind_case()) {
     case cel::ConstantKindCase::kBool:
       return BinaryenConst(m, BinaryenLiteralInt32(c.bool_value() ? 1 : 0));
@@ -67,6 +203,8 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(const TypedAst& ast,
                                   static_cast<int64_t>(c.uint_value())));
     case cel::ConstantKindCase::kDouble:
       return BinaryenConst(m, BinaryenLiteralFloat64(c.double_value()));
+    case cel::ConstantKindCase::kString:
+      return LowerStringLiteral(ctx, c.string_value());
     default:
       return absl::UnimplementedError(absl::StrCat(
           "expr_lower: constant kind ", static_cast<int>(c.kind_case()),
@@ -168,11 +306,12 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(
   return BinaryenBinary(m, bop, lhs, rhs);
 }
 
-absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
-                                                const cel::Expr& expr,
-                                                WasmModule& mod) {
+absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
+                                                const TypedAst& ast,
+                                                const cel::Expr& expr) {
   const cel::CallExpr& call = expr.call_expr();
   const std::string& fn = call.function();
+  WasmModule& mod = ctx.mod;
   BinaryenModuleRef m = mod.raw();
 
   // Member form (x.f(...)) is only relevant for things like method
@@ -188,7 +327,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
       return absl::InvalidArgumentError(
           absl::StrCat("`!_` takes 1 argument, got ", call.args().size()));
     }
-    auto v = LowerExpr(ast, call.args()[0], mod);
+    auto v = LowerExpr(ctx, ast, call.args()[0]);
     if (!v.ok()) return v.status();
     return BinaryenUnary(m, BinaryenEqZInt32(), *v);
   }
@@ -199,7 +338,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
       return absl::InvalidArgumentError(
           absl::StrCat("`-_` takes 1 argument, got ", call.args().size()));
     }
-    auto v = LowerExpr(ast, call.args()[0], mod);
+    auto v = LowerExpr(ctx, ast, call.args()[0]);
     if (!v.ok()) return v.status();
     auto arg_r = ReprOf(ast, call.args()[0]);
     if (!arg_r.ok()) return arg_r.status();
@@ -222,11 +361,11 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
       return absl::InvalidArgumentError(
           absl::StrCat("`_?_:_` takes 3 arguments, got ", call.args().size()));
     }
-    auto cond = LowerExpr(ast, call.args()[0], mod);
+    auto cond = LowerExpr(ctx, ast, call.args()[0]);
     if (!cond.ok()) return cond.status();
-    auto t = LowerExpr(ast, call.args()[1], mod);
+    auto t = LowerExpr(ctx, ast, call.args()[1]);
     if (!t.ok()) return t.status();
-    auto f = LowerExpr(ast, call.args()[2], mod);
+    auto f = LowerExpr(ctx, ast, call.args()[2]);
     if (!f.ok()) return f.status();
     return BinaryenIf(m, *cond, *t, *f);
   }
@@ -239,9 +378,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
           absl::StrCat("`", fn, "` takes 2 arguments, got ",
                        call.args().size()));
     }
-    auto l = LowerExpr(ast, call.args()[0], mod);
+    auto l = LowerExpr(ctx, ast, call.args()[0]);
     if (!l.ok()) return l.status();
-    auto r = LowerExpr(ast, call.args()[1], mod);
+    auto r = LowerExpr(ctx, ast, call.args()[1]);
     if (!r.ok()) return r.status();
     // a && b  ->  if (a) b else 0
     // a || b  ->  if (a) 1 else b
@@ -260,9 +399,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
   if (call.args().size() == 2) {
     auto arg_r = ReprOf(ast, call.args()[0]);
     if (!arg_r.ok()) return arg_r.status();
-    auto l = LowerExpr(ast, call.args()[0], mod);
+    auto l = LowerExpr(ctx, ast, call.args()[0]);
     if (!l.ok()) return l.status();
-    auto r = LowerExpr(ast, call.args()[1], mod);
+    auto r = LowerExpr(ctx, ast, call.args()[1]);
     if (!r.ok()) return r.status();
     if (fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
         fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
@@ -280,14 +419,14 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(const TypedAst& ast,
   return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr.id());
 }
 
-absl::StatusOr<BinaryenExpressionRef> LowerExpr(const TypedAst& ast,
-                                                const cel::Expr& expr,
-                                                WasmModule& mod) {
+absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
+                                                const TypedAst& ast,
+                                                const cel::Expr& expr) {
   switch (expr.kind_case()) {
     case cel::ExprKindCase::kConstant:
-      return LowerConstant(ast, expr, mod);
+      return LowerConstant(ctx, ast, expr);
     case cel::ExprKindCase::kCallExpr:
-      return LowerCall(ast, expr, mod);
+      return LowerCall(ctx, ast, expr);
     case cel::ExprKindCase::kIdentExpr:
       return UnimplementedKind("IdentExpr", expr.id());
     case cel::ExprKindCase::kSelectExpr:
@@ -323,6 +462,13 @@ BinaryenType WasmTypeFor(Repr r) {
       return BinaryenTypeFloat64();
     case Repr::kType:
       return BinaryenTypeInt32();
+    // Strings and bytes travel as i32 offsets into the shared linear
+    // memory — each is a pointer to a `CelValue` owned by the runtime's
+    // arena.  The codegen materialises the offset via `cel_alloc` +
+    // `cel_make_string_view` (see LowerStringLiteral).
+    case Repr::kString:
+    case Repr::kBytes:
+      return BinaryenTypeInt32();
     default:
       return BinaryenTypeNone();
   }
@@ -344,10 +490,12 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
         "expr_lower: root Repr `", ReprName(*root_r),
         "` has no scalar ABI lowering in M2"));
   }
-  auto body = LowerExpr(ast, root, mod);
+  if (auto s = DeclareRuntimeImports(mod); !s.ok()) return s;
+  LoweringContext ctx{mod};
+  auto body = LowerExpr(ctx, ast, root);
   if (!body.ok()) return body.status();
-  mod.AddFunction(func_name, /*params=*/{}, result_type, /*local_types=*/{},
-                  *body);
+  mod.AddFunction(func_name, /*params=*/{}, result_type,
+                  /*local_types=*/ctx.local_types, *body);
   BinaryenFunctionRef fn =
       BinaryenGetFunction(mod.raw(), std::string(func_name).c_str());
   if (fn == nullptr) {

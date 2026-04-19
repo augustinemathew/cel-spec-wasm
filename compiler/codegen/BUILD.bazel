@@ -1,4 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
@@ -54,6 +56,93 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "cel_refs",
+    srcs = ["cel_refs.cc"],
+    hdrs = ["cel_refs.h"],
+    deps = [
+        ":module",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cel_refs_test",
+    srcs = ["cel_refs_test.cc"],
+    deps = [
+        ":cel_refs",
+        ":module",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+proto_library(
+    name = "cel_abi_proto",
+    srcs = ["cel_abi.proto"],
+    deps = [
+        "//proto/cel/expr:checked_proto",
+    ],
+)
+
+cc_proto_library(
+    name = "cel_abi_cc_proto",
+    deps = [":cel_abi_proto"],
+)
+
+cc_library(
+    name = "abi",
+    srcs = ["abi.cc"],
+    hdrs = ["abi.h"],
+    deps = [
+        ":cel_abi_cc_proto",
+        ":module",
+        "//compiler/ir:typed_ast",
+        "//proto/cel/expr:checked_cc_proto",
+        "@binaryen//:binaryen",
+        "@cel-cpp//common:ast_proto",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "abi_test",
+    srcs = ["abi_test.cc"],
+    deps = [
+        ":abi",
+        ":cel_abi_cc_proto",
+        ":module",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:typed_ast",
+        "//proto/cel/expr:checked_cc_proto",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "runtime_link_test",
+    srcs = ["runtime_link_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler/runtime:cel_runtime_wasm_bytes",
+        "@binaryen//:binaryen",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

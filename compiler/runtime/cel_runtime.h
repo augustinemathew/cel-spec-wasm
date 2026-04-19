@@ -129,6 +129,27 @@ uint32_t cel_make_error(uint32_t code, uint32_t msg_ptr, uint32_t msg_len);
 int32_t cel_string_eq(uint32_t a, uint32_t b);
 int32_t cel_bytes_eq(uint32_t a, uint32_t b);
 
+// Concatenates two CEL_STRING values and returns a new CelValue* offset.
+// Returns 0 if either operand is zero-offset or not a CEL_STRING, or if the
+// arena is out of memory.  The result copies both payloads into the arena so
+// it is independent of the inputs' storage (their spans may be arena-resident
+// views that will not survive a cel_reset()).
+uint32_t cel_string_concat(uint32_t a, uint32_t b);
+
+// Returns the number of UTF-8 code points in a CEL_STRING.  Returns -1 on
+// type error (non-string or zero offset) so the caller can distinguish
+// "string of length 0" from "not a string".  CEL §1110 defines size(string)
+// as code-point count, NOT byte count; counting continuation bytes
+// (0b10xxxxxx) is the portable way to do that without a full decoder.
+int64_t cel_string_size(uint32_t s);
+
+// Extracts the i32 bool payload from a CelValue*.  Returns 0 for a
+// non-bool / zero-offset input; callers that need to distinguish
+// false-from-not-a-bool must check the kind themselves.  The common
+// caller is the lowered has() path where the enclosing codegen already
+// guarantees the result is bool.
+int32_t cel_bool_from_value(uint32_t v);
+
 #ifdef __cplusplus
 }
 #endif

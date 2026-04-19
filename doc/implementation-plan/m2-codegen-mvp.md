@@ -32,12 +32,40 @@ Out of scope for M2 (later milestones pick these up):
       `cel_reset`) over a 64 KiB static-backed linear-memory buffer,
       singleton storage for null/true/false/optional-none, all
       constructors, `cel_string_eq` + `cel_bytes_eq`.
-- [ ] `compiler/runtime/cel_refs.wat` — module-owned `$cel_refs` externref
-      table + `cel_wrap_message`, `cel_unwrap_message`, `cel_ref_intern`.
-- [ ] Build rule that cross-compiles the C to wasm32 via brew's `clang`
-      (Apple clang has no wasm32 target).  Hermetic wrapper lives at
-      `compiler/runtime/BUILD.bazel`.  *(Host `cc_library` is already
-      wired up; wasm32 target follows once codegen starts consuming it.)*
+- [x] `compiler/codegen/cel_refs.{h,cc}` — emits an externref table
+      + the three pure ref-table helpers (`cel_ref_intern`,
+      `cel_ref_get`, `cel_refs_reset`) via the Binaryen C API.
+      Authored as a standalone module for M2 unit + e2e coverage
+      (`compiler/codegen/cel_refs_test.cc` — validator + export
+      shape + i32 next-slot global init; `compiler/e2e/cel_refs_e2e_test.cc`
+      — wasmtime round-trip: intern → get returns the host payload,
+      slot numbers increment, `cel_refs_reset` rewinds, slot 0 is
+      the null sentinel).  **M3 relocates this logic into the
+      runtime module** (see `doc/wasm-compiler-design.md` §7.0 —
+      runtime owns memory + `$cel_refs` table + helpers; eval
+      modules import them).  The emitter and its tests stay
+      useful either as-is or as a reference for how to author the
+      same shape in C against clang's `__externref_t` extension.
+      `cel_wrap_message` / `cel_unwrap_message` still defer until
+      M3 because they need `cel_alloc`.
+- [x] Build rule that cross-compiles the C to wasm32 via brew's `clang`
+      (Apple clang has no wasm32 target).  Genrule in
+      `compiler/runtime/BUILD.bazel` drives `/opt/homebrew/opt/llvm/bin/clang`
+      with `--target=wasm32 -ffreestanding -nostdlib -Wl,--no-entry
+      -Wl,--export-all`; a second genrule embeds the resulting
+      `cel_runtime.wasm` as a C++ byte array
+      (`//compiler/runtime:cel_runtime_wasm_bytes`).  Coverage:
+      `compiler/codegen/runtime_link_test.cc` loads the bytes through
+      `BinaryenModuleReadWithFeatures`, validates, asserts every
+      `cel_*` export is present, and round-trips through
+      `BinaryenModuleAllocateAndWrite`.  The codegen-side merge onto
+      the eval module is deferred to M3: the scalar slice has no
+      runtime dependency yet and the first caller will be string
+      constants.  Freestanding wasm has no libc, so the C source
+      conditionally provides inline `memcpy` / `memset` / `memcmp`
+      behind `#if defined(__wasm__)`.  Both the genrule and the
+      embedded-bytes target are tagged `manual` because they depend on
+      absolute brew paths (non-darwin machines won't have them).
 
 ### Codegen (Binaryen C API — see design §10)
 
@@ -63,8 +91,15 @@ Out of scope for M2 (later milestones pick these up):
       structs, comprehensions, strings, bytes return `Unimplemented`.
       Error-propagation semantics (overflow, divide-by-zero, NaN,
       unknown) deferred to M5.
-- [ ] `compiler/codegen/abi.{h,cc}` — emits the `cel.abi` custom section
-      (type-id / attribute-id / pattern-id interning).
+- [x] `compiler/codegen/abi.{h,cc}` + `cel_abi.proto` — writer for the
+      `cel.abi` custom section.  Uses cel-cpp's `AstToCheckedExpr` to
+      embed a full `cel.expr.CheckedExpr`; M2 leaves the interning
+      tables (`types` / `attributes` / `patterns` / `error_msgs`)
+      empty because the codegen MVP never emits references to them.
+      The CLI attaches the section on every `--emit_wasm` invocation.
+      Coverage: `abi_test.cc` round-trips the payload through a
+      serialized `.wasm` by walking the wasm section list directly
+      (no Binaryen reader dependency).
 - [x] CLI: `celwasmc -e "<expr>" --emit_wasm=out.wasm [--check …]`
       writes a complete module.  The flag implies `--check` (lowering a
       ParsedExpr is meaningless without type info) and reuses the same
@@ -140,69 +175,100 @@ Out of scope for M2 (later milestones pick these up):
 
 ## Remaining for M2
 
-The three unchecked boxes above are the closing work for M2; none of them
-is a blocker for scalar e2e but all three gate the start of M3.
+The remaining unchecked boxes above are the closing work for M2; none
+of them is a blocker for scalar e2e but all three gate the start of M3.
 
-1. **`compiler/runtime/cel_refs.wat`** — the module-owned `$cel_refs`
-   externref table and its three helpers (`cel_wrap_message`,
-   `cel_unwrap_message`, `cel_ref_intern`) are the load-bearing piece
-   that lets a proto message cross the host boundary without a copy.
-   Today `WasmModule::AddCelRefsTable` declares the table; no function
-   has been authored that actually reads or writes it.  Authoring plan:
-     - Write the three helpers in WAT, link them into the emitted module
-       the same way the C runtime will be (currently both sides only
-       exist on the host — no cross-compile yet).
-     - Tests: positive — `cel_wrap_message(ref)` + `cel_unwrap_message`
-       round-trip returns the identity externref; `cel_ref_intern` on
-       two equal refs returns the same slot id (pointer-equality
-       dedup).  Negative — intern-table overflow returns a sentinel,
-       `cel_unwrap_message` on the null slot traps (or returns the
-       null externref, TBD — document whichever we pick).
-     - Every box in the "Runtime" gap list of
-       `testing-checklist.md` that mentions `cel_ref_intern` /
-       `cel_unwrap_message` flips off the back of this deliverable.
+1. **`compiler/codegen/cel_refs.{h,cc}`** ✅ *landed 2026-04-18.*
+   Emits the `$cel_refs` externref table plus the three helper
+   functions (`cel_ref_intern`, `cel_ref_get`, `cel_refs_reset`) and
+   exports them under their internal names.  A mutable i32 global
+   `cel_refs_next` starts at 1 (slot 0 is the null sentinel) and
+   grows monotonically; `cel_refs_reset` rewinds it to 1.  Release-
+   per-slot is out of scope for M2 — the expression's externref
+   lifetime matches the arena's.  The `CelValue*`-shaped helpers
+   (`cel_wrap_message`, `cel_unwrap_message`) still need
+   `cel_alloc`, so they land with the wasm32 cross-compile step
+   below.  Coverage: `compiler/codegen/cel_refs_test.cc` (validator,
+   global init, export shape) + `compiler/e2e/cel_refs_e2e_test.cc`
+   (wasmtime round-trip: intern→get returns host payload, slot
+   numbers increment, reset rewinds, slot 0 returns null).
 
-2. **wasm32 cross-compile rule for the C runtime.** Apple clang ships
-   without the `wasm32-wasi` target, so the Bazel target
-   `//compiler/runtime:cel_runtime_wasm` has to drive brew's `llvm`.
-   Today only the native `cc_library` exists, which is enough for
-   `cel_runtime_test` to run on the host but doesn't put any runtime
-   bytes in the `.wasm` the compiler emits.  The generated module
-   therefore has *no* dependency on the runtime yet — that changes as
-   soon as `expr_lower` starts constructing `CelValue`s (first use is
-   string constants in M3).  Authoring plan:
-     - `genrule` or `rules_cc` toolchain that invokes
-       `clang --target=wasm32-wasi -O2 -nostartfiles -Wl,--no-entry -c`
-       over `cel_runtime.c`, producing `cel_runtime.wasm`.
-     - `expr_lower` or a new `codegen/link.{h,cc}` merges the runtime
-       module with the per-expression module via Binaryen's
-       `BinaryenModuleAddFunctionImport` + symbol rewiring, OR we
-       embed the runtime as a Binaryen-authored module built from the
-       C-translated IR.  *(The merge strategy is one of the open
-       design questions that needs a decision before M3.)*
-     - Tests: the e2e test gains a case where the root expression
-       constructs a non-trivial `CelValue` (e.g. a string constant) and
-       asserts the returned pointer reads back as the expected kind +
-       payload from linear memory.  This is a completely new class of
-       e2e assertion — today's scalar tests only inspect
-       `wasmtime_val_t.of.i64` etc.
+   Non-obvious wasmtime fact worth keeping visible: the module
+   Binaryen emits declares the `$cel_refs` table with a typed
+   `(ref.null externref)` slot initializer, which only parses under
+   wasmtime when `wasm_reference_types` + `wasm_function_references`
+   + `wasm_gc` are all enabled in the engine config.  The e2e test
+   sets all three.
 
-3. **`compiler/codegen/abi.{h,cc}`** — emits the `cel.abi` custom
-   section (design §9, appendix A) holding the serialized
-   `CheckedExpr`, the type / attribute / pattern interning tables, and
-   `MemoryLayout`.  Hosts MUST read this before instantiation so the
-   custom section is on the critical path for every production host,
-   but the e2e test today just looks at the `eval` return value and
-   doesn't care about metadata.  Authoring plan:
-     - A `CelAbi` proto message (mirror of appendix A).  Serialize it
-       and call `BinaryenAddCustomSection(mod.raw(), "cel.abi", …)`.
-     - The CLI grows a `--dump-abi` companion flag that pretty-prints
-       the parsed `CelAbi` from a module.
-     - Tests: `abi_test.cc` builds a module with interned types and
-       attributes, reads the custom section back out, round-trips it,
-       and asserts byte equality with a golden proto.  E2E gains a
-       test that host-side `wasmtime_module_imports` / custom-section
-       lookup finds `cel.abi` and it decodes without error.
+2. **wasm32 cross-compile rule for the C runtime.** ✅ *landed 2026-04-19.*
+   Apple clang ships without a wasm32 backend, so
+   `//compiler/runtime:cel_runtime_wasm_file` is a `genrule` that shells
+   out to `/opt/homebrew/opt/llvm/bin/clang` (brew's 22.x) with
+   `--target=wasm32 -ffreestanding -nostdlib -O2 -Wl,--no-entry
+   -Wl,--export-all`.  A second genrule
+   (`:cel_runtime_wasm_bytes_cc`) converts the resulting module into a
+   C++ byte array via `od -An -tu1 -v`; a tiny `cc_library`
+   (`:cel_runtime_wasm_bytes`) exposes `kCelRuntimeWasmBytes` +
+   `kCelRuntimeWasmBytesSize` to codegen.  Both targets are tagged
+   `manual` because the absolute brew path is non-hermetic — CI on a
+   darwin-arm64 box with brew `llvm` + `lld` installed runs them
+   explicitly, other machines skip them.
+   -
+   Freestanding wasm has no libc, so `cel_runtime.c` conditionally
+   supplies inline `memcpy` / `memset` / `memcmp` behind
+   `#if defined(__wasm__)` — without this wasm-ld reports unresolved
+   symbols that clang autogenerated from struct copies.  The native
+   build (`cc_library :cel_runtime`) still includes `<string.h>`
+   through the same preprocessor switch.
+   -
+   Coverage: `compiler/codegen/runtime_link_test.cc`
+   `BinaryenModuleReadWithFeatures`-es the embedded bytes, runs the
+   validator, walks `BinaryenGetExportByIndex` and asserts every
+   `cel_*` constructor + `memory` is present, then serializes via
+   `BinaryenModuleAllocateAndWrite` and re-reads the output to
+   confirm round-trip equivalence.  Failure mode the test targets:
+   a clang dead-strip or link flag change that silently drops a
+   constructor export.
+   -
+   The codegen path does **not** merge the runtime into the eval
+   module.  Instead (decided 2026-04-19 — see
+   `doc/wasm-compiler-design.md` §7.0) every eval module declares
+   imports from a `"cel"` namespace and the host wires those
+   imports to the runtime's exports at instantiation time.  The
+   cross-compile artefact above is what the host instantiates; the
+   codegen-side work lands in M3 as "emit imports against the
+   expected runtime shape, not `BinaryenModuleRead` + append".
+   Concretely, M3 adds:
+     - A walk over the IR that collects the set of `cel_*`
+       functions the expression actually calls (don't import the
+       full 24-constructor surface for `1 + 2`).
+     - `BinaryenAddFunctionImport` + `BinaryenAddMemoryImport` +
+       `BinaryenAddTableImport` calls in `expr_lower` so the eval
+       module's imports header is well-formed.
+     - A host loader in `compiler/runtime/host_loader.{h,cc}` that
+       owns the instantiate-runtime-once / wire-imports dance so
+       embedders (and the e2e tests) don't reinvent it.
+     - An e2e test where the root expression is a string constant
+       that constructs a `CelValue` via `cel_make_string` and
+       asserts the returned `i32` pointer reads back as the
+       expected kind + payload from the runtime's linear memory
+       — a completely new class of e2e assertion.
+
+3. **`compiler/codegen/abi.{h,cc}` + `cel_abi.proto`** ✅ *landed 2026-04-18.*
+   Emits the `cel.abi` custom section holding a serialized
+   `celwasm.CelAbi` proto.  For M2 the payload is `version` /
+   `cel_source` / `checked` (full `cel.expr.CheckedExpr` via
+   cel-cpp's `AstToCheckedExpr`) / empty `function_set` / `layout`
+   = {initial_pages=1, max_pages=0}.  The interning tables
+   (`types` / `attributes` / `patterns` / `error_msgs`) stay empty
+   because the codegen MVP never references them; they populate as
+   M3 (proto fields, strings), M4 (collections), and M5
+   (three-valued logic) introduce features that need them.  The
+   CLI's `--emit_wasm` flow attaches the section on every emitted
+   module.  Round-trip coverage in `abi_test.cc` walks the wasm
+   section list directly (small hand-rolled parser — Binaryen
+   lacks a section reader) so a schema drift or an accidental
+   section-name typo fires the test.
 
 ### Testing gaps still open in M2
 
@@ -210,26 +276,52 @@ Even for the scalar slice that is "done", the coverage checklist has
 unchecked boxes that a vigilant reader should close before calling M2
 complete:
 
-- **`RejectDyn`**: `uint`, `double`, `string`, `bytes`, `null_type`,
-  `timestamp`, `duration`, wrapper rows in the per-type matrix are all
-  `[ ]`.  The rejection logic in `static_subset.cc` is the same for
-  every type — the tests just don't enumerate them.  Cheap backfill.
-- **`kSelectExpr` (test_only from `has()`)**: no stage has a test row.
-  Once M3 starts, at least one checker/annotation test per stage must
-  land before codegen lowering is added.
-- **`e2e` column for comparisons, negate, and `!`**: the rows exist in
-  `testing-checklist.md` but the `e2e` box for `uint/double` specific
-  comparisons is still `[ ]` — `IntComparisons` covers int; double
-  covers `<` and `==`; `uint` has only `10u/3u` as a witness.  Add
-  per-op cases to close the matrix.
-- **Negative codegen tests with a good-message assertion**: the
-  current negative tests in `expr_lower_test` only check the status
-  code, not the error message.  CLAUDE.md is explicit: "rejected with
-  a good message."  Add `testing::HasSubstr` assertions on the status
-  `.message()` for each Unimplemented path so a future refactor that
-  collapses distinct error strings into one generic one can't pass.
+- ~~**`RejectDyn`** per-type backfill~~ — closed 2026-04-18 by
+  `static_subset_test::{AcceptsEveryPrimitiveAtRoot,
+  AcceptsEveryPrimitiveWrapperAtRoot, AcceptsNullTimestampDurationAny}`.
+- ~~**`kSelectExpr` (test_only from `has()`)**~~ — parser / checker /
+  annotations / RejectDyn rows closed 2026-04-18 via
+  `parse_and_check_test::HasMacroLowersToTestOnlySelectExpr` and
+  `static_subset_test::{TestOnlySelectExprIsAcceptedWhenOperandTyped,
+  DynOperandInTestOnlySelectIsRejected}`.  Codegen + e2e intentionally
+  remain deferred until M3 wires up proto-field reads and strings.
+- ~~**`e2e` column for uint/double per-op comparisons + double
+  negate**~~ — closed 2026-04-18 by `eval_test::{UintComparisons,
+  DoubleComparisons, DoubleNegate}`.
+- ~~**Negative codegen tests with a good-message assertion**~~ —
+  closed 2026-04-18; `expr_lower_test::{ListExprIsUnimplementedWithListRepr,
+  MapExprIsUnimplementedWithMapRepr,
+  StringConstantIsUnimplementedWithStringRepr,
+  IdentifierIsUnimplementedWithKindAndId}` all assert `HasSubstr` on
+  the diagnostic so a future refactor that collapses distinct strings
+  into one generic blurb will trip these tests.
 - **Custom-section / ABI**: not written yet, so no tests either.  M2
   deliverable #3 above closes this.
+- **Linux build portability**: the wasm32 cross-compile genrule in
+  `compiler/runtime/BUILD.bazel` hardcodes the darwin-arm64 brew path
+  `/opt/homebrew/opt/llvm/bin/clang`, so `bazel build
+  //compiler/runtime:cel_runtime_wasm_file` fails on Linux (and on
+  intel macs where brew lives at `/usr/local/opt/llvm`).  The test
+  `//compiler/codegen:runtime_link_test` and the embedded-bytes
+  `cc_library` are both tagged `manual` today, but any machine that
+  wants to exercise the runtime on top of codegen — i.e. any CI box
+  from M3 onward — needs a working cross-compile.  Authoring plan:
+    - Detect the toolchain via a `select()` on `@platforms//os`
+      (darwin → `/opt/homebrew/opt/llvm/bin/clang` *or*
+      `/usr/local/opt/llvm/bin/clang`; linux → `/usr/bin/clang-17`
+      from apt's `llvm-17` package, plus the matching `lld`), or
+      register a proper `cc_toolchain` for wasm32 so the rule no
+      longer shells out at all.
+    - Drop `--export-all` in favour of an explicit `--export=cel_*`
+      whitelist so a toolchain that auto-inserts synthetic symbols
+      does not leak them into the emitted module.
+    - CI: add a linux job that runs
+      `bazel build //compiler/runtime:cel_runtime_wasm_file &&
+       bazel test //compiler/codegen:runtime_link_test` so the
+      cross-compile path is covered on both platforms.  Do *not*
+      ship M3 until this is green on Linux — the merge step will
+      make the cross-compile a hard dependency of every emitted
+      module, not the opt-in it is today.
 
 These are listed here (and not in `testing-checklist.md`) because they
 belong to the "M2 is *really* done" bar rather than to ongoing
@@ -243,6 +335,9 @@ coverage.  Once closed, flip them in both places.
   consume `libbinaryen.a` + `binaryen-c.h` — the officially stable
   public surface.  Neither Binaryen's C++ headers nor wasm-opt are
   linked into the compiler; the C API covers everything codegen needs.
-- Cross-compilation uses brew `llvm`'s `clang --target=wasm32-wasi -O2
-  -nostartfiles -Wl,--no-entry`.
+- Cross-compilation uses brew `llvm`'s `clang --target=wasm32
+  -ffreestanding -nostdlib -O2 -Wl,--no-entry -Wl,--export-all`
+  (freestanding; the runtime is a pure-C library, not a WASI
+  command).  `wasm-ld` is shipped in brew's separate `lld` formula,
+  not bundled with `llvm`, so both are required on the build host.
 - Wasmtime C API pulled in as a Bazel dep for e2e tests.

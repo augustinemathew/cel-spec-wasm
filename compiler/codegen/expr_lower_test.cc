@@ -1,5 +1,6 @@
 #include "compiler/codegen/expr_lower.h"
 
+#include <set>
 #include <string>
 
 #include "absl/log/check.h"
@@ -17,6 +18,7 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+using ::testing::HasSubstr;
 
 // End-to-end helper: parse + check `expr`, lower it as `eval`, export
 // it, and hand back the module so callers can inspect the result.
@@ -196,40 +198,112 @@ TEST(ExprLowerTest, MixedExpressionValidates) {
 // Negative cases: outside-MVP kinds return Unimplemented cleanly (no crash,
 // no invalid module).
 
-TEST(ExprLowerTest, ListExprIsUnimplemented) {
+// Negative tests assert both the status code *and* that the diagnostic
+// mentions the specific Repr or kind that failed.  A regression that
+// collapses every Unimplemented path into a single generic string would
+// keep the status code but flunk the substring check — which is exactly
+// what CLAUDE.md's "rejected with a good message" rule asks for.
+
+TEST(ExprLowerTest, ListExprIsUnimplementedWithListRepr) {
   auto typed = ParseAndCheck("[1, 2, 3]", CheckOptions{});
   ASSERT_THAT(typed.status(), IsOk());
   WasmModule mod;
-  EXPECT_THAT(LowerToEvalFunction(*typed, "eval", mod).status(),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto s = LowerToEvalFunction(*typed, "eval", mod).status();
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("list"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("no scalar ABI lowering"));
 }
 
-TEST(ExprLowerTest, MapExprIsUnimplemented) {
+TEST(ExprLowerTest, MapExprIsUnimplementedWithMapRepr) {
   auto typed = ParseAndCheck("{'a': 1}", CheckOptions{});
   ASSERT_THAT(typed.status(), IsOk());
   WasmModule mod;
-  EXPECT_THAT(LowerToEvalFunction(*typed, "eval", mod).status(),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto s = LowerToEvalFunction(*typed, "eval", mod).status();
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("map"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("no scalar ABI lowering"));
 }
 
-TEST(ExprLowerTest, StringConstantIsUnimplemented) {
-  // Strings travel through linear memory; codegen in M2 MVP does
-  // not wire that up yet.
-  auto typed = ParseAndCheck("'hello'", CheckOptions{});
-  ASSERT_THAT(typed.status(), IsOk());
-  WasmModule mod;
-  EXPECT_THAT(LowerToEvalFunction(*typed, "eval", mod).status(),
-              StatusIs(absl::StatusCode::kUnimplemented));
+TEST(ExprLowerTest, StringConstantReturnsI32) {
+  // A CEL string lowers to the i32 offset of a CelValue the runtime
+  // hands back from cel_make_string_view.  The body shape is a block
+  // that allocates, stores each byte, and calls the runtime helper.
+  auto L = LowerOk("'hello'");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kString);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
+  ASSERT_NE(fn, nullptr);
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
 }
 
-TEST(ExprLowerTest, IdentifierIsUnimplemented) {
+TEST(ExprLowerTest, EmptyStringLowers) {
+  // The store-per-byte loop must be empty-safe; cel_alloc(0) still
+  // returns a valid offset and cel_make_string_view accepts len=0.
+  auto L = LowerOk("''");
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_repr, Repr::kString);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+}
+
+TEST(ExprLowerTest, EvalModuleImportsSharedMemoryFromRuntime) {
+  // The eval module shares linear memory with the runtime by importing
+  // `cel`/`memory`.  Without this import every `i32.store8` the string
+  // path emits would be reading a private uninitialised memory and the
+  // offset we hand back would be meaningless to the runtime.
+  auto L = LowerOk("'x'");
+  BinaryenModuleRef m = L.mod.raw();
+  ASSERT_TRUE(BinaryenHasMemory(m));
+  EXPECT_STREQ(BinaryenMemoryImportGetModule(m, "memory"), "cel");
+  EXPECT_STREQ(BinaryenMemoryImportGetBase(m, "memory"), "memory");
+}
+
+TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
+  // Even for pure-scalar expressions we declare the full cel_* import
+  // set up front; the module is always linked against the runtime and
+  // unused imports are harmless.  Binaryen has no dedicated function-
+  // import iterator, so walk all functions and keep the ones whose
+  // import module is set.
+  auto L = LowerOk("1 + 2");
+  BinaryenModuleRef m = L.mod.raw();
+  std::set<std::string> seen;
+  for (BinaryenIndex i = 0; i < BinaryenGetNumFunctions(m); ++i) {
+    BinaryenFunctionRef f = BinaryenGetFunctionByIndex(m, i);
+    if (BinaryenFunctionImportGetModule(f) != nullptr) {
+      seen.insert(BinaryenFunctionGetName(f));
+    }
+  }
+  for (const char* name : {
+           "cel_alloc",
+           "cel_make_string_view",
+           "cel_make_bytes_view",
+           "cel_string_eq",
+           "cel_bytes_eq",
+           "cel_string_concat",
+           "cel_string_size",
+           "cel_bool_from_value",
+       }) {
+    EXPECT_EQ(seen.count(name), 1u) << "missing import: " << name;
+  }
+}
+
+TEST(ExprLowerTest, IdentifierIsUnimplementedWithKindAndId) {
   CheckOptions opts;
   opts.variable_specs.push_back("x:int");
   auto typed = ParseAndCheck("x + 1", opts);
   ASSERT_THAT(typed.status(), IsOk());
+  // Root is a `_+_` CallExpr with int Repr, so the early root-Repr check
+  // passes.  The failure must come from `LowerExpr` descending into the
+  // identifier subtree and hitting the IdentExpr arm.
   WasmModule mod;
-  EXPECT_THAT(LowerToEvalFunction(*typed, "eval", mod).status(),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto s = LowerToEvalFunction(*typed, "eval", mod).status();
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("IdentExpr"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("not yet supported"));
+  // The id of the identifier node is surfaced so users can locate the
+  // offending subexpression in the parsed source.
+  EXPECT_THAT(std::string(s.message()), HasSubstr("expr id"));
 }
 
 TEST(ExprLowerTest, WasmTypeForScalars) {
@@ -241,8 +315,10 @@ TEST(ExprLowerTest, WasmTypeForScalars) {
   EXPECT_EQ(WasmTypeFor(Repr::kTimestamp), BinaryenTypeInt64());
   EXPECT_EQ(WasmTypeFor(Repr::kEnum), BinaryenTypeInt64());
   EXPECT_EQ(WasmTypeFor(Repr::kType), BinaryenTypeInt32());
-  EXPECT_EQ(WasmTypeFor(Repr::kString), BinaryenTypeNone());
-  EXPECT_EQ(WasmTypeFor(Repr::kBytes), BinaryenTypeNone());
+  // Strings and bytes both travel as i32 offsets (a CelValue* in the
+  // runtime's shared memory).
+  EXPECT_EQ(WasmTypeFor(Repr::kString), BinaryenTypeInt32());
+  EXPECT_EQ(WasmTypeFor(Repr::kBytes), BinaryenTypeInt32());
   EXPECT_EQ(WasmTypeFor(Repr::kList), BinaryenTypeNone());
   EXPECT_EQ(WasmTypeFor(Repr::kMap), BinaryenTypeNone());
   EXPECT_EQ(WasmTypeFor(Repr::kMessage), BinaryenTypeNone());

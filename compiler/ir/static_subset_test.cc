@@ -100,6 +100,43 @@ TEST(RejectDynTest, SelectExprIsAcceptedWhenTyped) {
   EXPECT_THAT(RejectDyn(b.ast), IsOk());
 }
 
+TEST(RejectDynTest, TestOnlySelectExprIsAcceptedWhenOperandTyped) {
+  // The `has(x.f)` macro lowers to a SelectExpr with test_only=true.  The
+  // walker must recurse into the operand but otherwise treat it like any
+  // other select.
+  AstBuilder b;
+  b.AddType(1, cel::TypeSpec{cel::MapTypeSpec(
+                    std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kString),
+                    std::make_unique<cel::TypeSpec>(cel::PrimitiveType::kInt64))});
+  b.AddType(2, cel::TypeSpec{cel::PrimitiveType::kBool});  // has() → bool
+  cel::Expr root;
+  root.set_id(2);
+  auto& sel = root.mutable_select_expr();
+  sel.set_field("k");
+  sel.set_test_only(true);
+  sel.mutable_operand() = MakeIdent(1, "m");
+  b.SetRoot(std::move(root));
+  EXPECT_THAT(RejectDyn(b.ast), IsOk());
+}
+
+TEST(RejectDynTest, DynOperandInTestOnlySelectIsRejected) {
+  // Even with test_only=true, a DYN operand must still be flagged — the
+  // presence test produces `bool`, but the thing being probed is DYN.
+  AstBuilder b;
+  // id 1 (operand) missing → DYN.
+  b.AddType(2, cel::TypeSpec{cel::PrimitiveType::kBool});
+  cel::Expr root;
+  root.set_id(2);
+  auto& sel = root.mutable_select_expr();
+  sel.set_field("k");
+  sel.set_test_only(true);
+  sel.mutable_operand() = MakeIdent(1, "m");
+  b.SetRoot(std::move(root));
+  auto s = RejectDyn(b.ast);
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_NE(s.message().find("id=1"), absl::string_view::npos);
+}
+
 TEST(RejectDynTest, CallExprIsAcceptedWithTypedArgs) {
   AstBuilder b;
   b.AddOkType(1);
@@ -353,6 +390,65 @@ TEST(RejectDynTest, DynInComprehensionAccuInitIsRejected) {
   auto st = RejectDyn(b.ast);
   EXPECT_THAT(st, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_NE(st.message().find("id=2"), absl::string_view::npos);
+}
+
+// ---- Per-type acceptance: every concrete CEL type passes RejectDyn --------
+//
+// The per-type column of `testing-checklist.md` needs a positive witness that
+// a node typed T is not flagged as DYN.  A parameterized table keeps the
+// coverage explicit; a future regression that special-cases one primitive
+// would fail the matching row here rather than silently skipping.
+
+TEST(RejectDynTest, AcceptsEveryPrimitiveAtRoot) {
+  struct Row { const char* name; cel::PrimitiveType p; };
+  const Row rows[] = {
+      {"bool",   cel::PrimitiveType::kBool},
+      {"int",    cel::PrimitiveType::kInt64},
+      {"uint",   cel::PrimitiveType::kUint64},
+      {"double", cel::PrimitiveType::kDouble},
+      {"string", cel::PrimitiveType::kString},
+      {"bytes",  cel::PrimitiveType::kBytes},
+  };
+  for (const auto& row : rows) {
+    AstBuilder b;
+    b.AddType(1, cel::TypeSpec{row.p});
+    b.SetRoot(MakeConst(1));
+    EXPECT_THAT(RejectDyn(b.ast), IsOk()) << "primitive=" << row.name;
+  }
+}
+
+TEST(RejectDynTest, AcceptsEveryPrimitiveWrapperAtRoot) {
+  struct Row { const char* name; cel::PrimitiveType p; };
+  const Row rows[] = {
+      {"BoolValue",   cel::PrimitiveType::kBool},
+      {"Int64Value",  cel::PrimitiveType::kInt64},
+      {"UInt64Value", cel::PrimitiveType::kUint64},
+      {"DoubleValue", cel::PrimitiveType::kDouble},
+      {"StringValue", cel::PrimitiveType::kString},
+      {"BytesValue",  cel::PrimitiveType::kBytes},
+  };
+  for (const auto& row : rows) {
+    AstBuilder b;
+    b.AddType(1, cel::TypeSpec{cel::PrimitiveTypeWrapper(row.p)});
+    b.SetRoot(MakeConst(1));
+    EXPECT_THAT(RejectDyn(b.ast), IsOk()) << "wrapper=" << row.name;
+  }
+}
+
+TEST(RejectDynTest, AcceptsNullTimestampDurationAny) {
+  struct Row { const char* name; cel::TypeSpec spec; };
+  Row rows[] = {
+      {"null_type", cel::TypeSpec{cel::NullTypeSpec{}}},
+      {"timestamp", cel::TypeSpec{cel::WellKnownTypeSpec::kTimestamp}},
+      {"duration",  cel::TypeSpec{cel::WellKnownTypeSpec::kDuration}},
+      {"any",       cel::TypeSpec{cel::WellKnownTypeSpec::kAny}},
+  };
+  for (auto& row : rows) {
+    AstBuilder b;
+    b.AddType(1, std::move(row.spec));
+    b.SetRoot(MakeConst(1));
+    EXPECT_THAT(RejectDyn(b.ast), IsOk()) << "type=" << row.name;
+  }
 }
 
 TEST(RejectDynTest, ReportsAllViolationsInOneMessage) {

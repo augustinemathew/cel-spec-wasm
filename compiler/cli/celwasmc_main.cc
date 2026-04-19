@@ -34,6 +34,7 @@
 #include "cel/expr/checked.pb.h"
 #include "cel/expr/syntax.pb.h"
 #include "common/ast_proto.h"
+#include "compiler/codegen/abi.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
@@ -122,6 +123,22 @@ int EmitWasm(absl::string_view expression,
     return 1;
   }
   mod.ExportFunction("eval", "eval");
+
+  // Attach the `cel.abi` custom section.  Every emitted module
+  // carries this so hosts have a single entry point for static
+  // metadata (see doc/wasm-compiler-design.md Appendix A).
+  auto abi = celwasm::BuildCelAbi(*typed, expression);
+  if (!abi.ok()) {
+    std::fprintf(stderr, "cel.abi build error: %s\n",
+                 std::string(abi.status().message()).c_str());
+    return 1;
+  }
+  if (auto s = celwasm::AttachCelAbiSection(mod, *abi); !s.ok()) {
+    std::fprintf(stderr, "cel.abi attach error: %s\n",
+                 std::string(s.message()).c_str());
+    return 1;
+  }
+
   if (auto s = mod.Validate(); !s.ok()) {
     std::fprintf(stderr, "validator error: %s\n",
                  std::string(s.message()).c_str());

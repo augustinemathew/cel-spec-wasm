@@ -134,6 +134,50 @@ absl::Status WasmModule::AddCelRefsTable(
   return absl::OkStatus();
 }
 
+absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
+                                         absl::string_view external_base,
+                                         uint32_t initial_pages,
+                                         std::optional<uint32_t> max_pages) {
+  if (BinaryenHasMemory(module_)) {
+    return absl::FailedPreconditionError(
+        "WasmModule::AddMemoryImport: module already has a memory "
+        "(either a prior SetMemory() or AddMemoryImport()).");
+  }
+  if (max_pages.has_value() && *max_pages < initial_pages) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("memory import max (", *max_pages,
+                     ") is less than initial (", initial_pages, ")"));
+  }
+  // Order matters: `BinaryenSetMemory` wipes any preexisting import
+  // info on the memory with the matching internal name, so we install
+  // the memory shape first and *then* mark it as imported.  Reversing
+  // these two calls silently emits a non-imported memory — confirmed
+  // against binaryen 129 with a direct module dump.
+  const std::string ext_mod_c = Cstr(external_module);
+  const std::string ext_base_c = Cstr(external_base);
+  BinaryenSetMemory(module_,
+                    static_cast<BinaryenIndex>(initial_pages),
+                    max_pages.has_value()
+                        ? static_cast<BinaryenIndex>(*max_pages)
+                        : kNoMaximum,
+                    /*exportName=*/nullptr,
+                    /*segmentNames=*/nullptr,
+                    /*segmentDatas=*/nullptr,
+                    /*segmentPassives=*/nullptr,
+                    /*segmentOffsets=*/nullptr,
+                    /*segmentSizes=*/nullptr,
+                    /*numSegments=*/0,
+                    /*shared=*/false,
+                    /*memory64=*/false,
+                    /*name=*/"memory");
+  BinaryenAddMemoryImport(module_,
+                          /*internalName=*/"memory",
+                          ext_mod_c.c_str(),
+                          ext_base_c.c_str(),
+                          /*shared=*/0);
+  return absl::OkStatus();
+}
+
 void WasmModule::AddFunctionImport(absl::string_view internal_name,
                                    absl::string_view external_module,
                                    absl::string_view external_base,

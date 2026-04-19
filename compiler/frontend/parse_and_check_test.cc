@@ -4,6 +4,8 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "common/ast.h"
+#include "common/expr.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
@@ -191,6 +193,95 @@ TEST(ParseAndCheckTest, MessageVariableUsesGeneratedDescriptorPool) {
   auto r = ParseAndCheck("e", opts);
   ASSERT_THAT(r, IsOk());
   EXPECT_EQ(RootRepr(*r), Repr::kMessage);
+}
+
+// ---- AST-shape pins for each ExprKindCase (M3 entry) -----------------------
+//
+// The per-ExprKindCase grid in testing-checklist.md claims parser /
+// checker / annotations coverage for kIdentExpr, kSelectExpr (field),
+// and kCallExpr (member).  The claims were previously implicit — every
+// variable-spec test incidentally produces an IdentExpr root, and every
+// `size(xs)` produces a global CallExpr — but no test actually asserts
+// the AST *shape*.  M3's codegen will descend into these variants for
+// the first time, so we pin the shape here before adding the codegen
+// that relies on it.  A regression in the vendored cel-cpp parser that
+// changed e.g. `msg.field` from a SelectExpr into a CallExpr would be
+// caught here rather than manifesting as a confusing codegen ICE.
+
+TEST(ParseAndCheckTest, IdentExprParsesToIdentNode) {
+  CheckOptions opts;
+  opts.variable_specs = {"x:int"};
+  auto r = ParseAndCheck("x", opts);
+  ASSERT_THAT(r, IsOk());
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kIdentExpr);
+  EXPECT_EQ(root.ident_expr().name(), "x");
+  EXPECT_EQ(RootRepr(*r), Repr::kInt);
+}
+
+TEST(ParseAndCheckTest, SelectExprParsesToFieldAccessOnProtoMessage) {
+  // `google.protobuf.DescriptorProto` is in the generated pool and has a
+  // plain `string name` field — no well-known semantics get in the way.
+  CheckOptions opts;
+  opts.variable_specs = {"d:google.protobuf.DescriptorProto"};
+  auto r = ParseAndCheck("d.name", opts);
+  ASSERT_THAT(r, IsOk());
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_FALSE(root.select_expr().test_only());
+  EXPECT_EQ(root.select_expr().field(), "name");
+  ASSERT_EQ(root.select_expr().operand().kind_case(),
+            cel::ExprKindCase::kIdentExpr);
+  EXPECT_EQ(root.select_expr().operand().ident_expr().name(), "d");
+  // The selected field is `string`, so the annotation at the root must
+  // be kString — otherwise the annotator skipped the MessageTypeSpec
+  // field-type resolution path.
+  EXPECT_EQ(RootRepr(*r), Repr::kString);
+}
+
+TEST(ParseAndCheckTest, MemberCallExprParsesWithTarget) {
+  // A string member-call — the lean-on case for M3's
+  // `_.startsWith(_)` / `_.endsWith(_)` / `_.contains(_)` lowering.
+  // No variable spec needed: the receiver is a literal.
+  auto r = ParseAndCheck("\"hi\".startsWith(\"h\")", {});
+  ASSERT_THAT(r, IsOk());
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kCallExpr);
+  EXPECT_TRUE(root.call_expr().has_target())
+      << "member-call form must round-trip with a non-empty target; a bare "
+         "CallExpr would mean the parser collapsed the receiver into the "
+         "first positional argument";
+  EXPECT_EQ(root.call_expr().function(), "startsWith");
+  ASSERT_EQ(root.call_expr().target().kind_case(),
+            cel::ExprKindCase::kConstant);
+  ASSERT_EQ(root.call_expr().args().size(), 1u);
+  EXPECT_EQ(root.call_expr().args()[0].kind_case(),
+            cel::ExprKindCase::kConstant);
+  EXPECT_EQ(RootRepr(*r), Repr::kBool);
+}
+
+// ---- has() macro produces a test_only SelectExpr ---------------------------
+
+TEST(ParseAndCheckTest, HasMacroLowersToTestOnlySelectExpr) {
+  // The `has(m.k)` macro lowers (in cel-cpp's parser) to a
+  // `SelectExpr{operand: m, field: "k", test_only: true}`. The checker
+  // types the whole expression as `bool`.
+  CheckOptions opts;
+  opts.variable_specs = {"m:map<string,int>"};
+  auto r = ParseAndCheck("has(m.k)", opts);
+  ASSERT_THAT(r, IsOk());
+
+  const auto& root = r->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  EXPECT_TRUE(root.select_expr().test_only());
+  EXPECT_EQ(root.select_expr().field(), "k");
+  ASSERT_EQ(root.select_expr().operand().kind_case(),
+            cel::ExprKindCase::kIdentExpr);
+  EXPECT_EQ(root.select_expr().operand().ident_expr().name(), "m");
+
+  // The annotation at the test_only node must be `bool` — anything else
+  // means the annotator skipped the presence-test path.
+  EXPECT_EQ(RootRepr(*r), Repr::kBool);
 }
 
 // ---- Annotations contract --------------------------------------------------

@@ -1,0 +1,41 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+# Two-module loader.  Only buildable on darwin-arm64 today — the same
+# constraint as //compiler/e2e:* — because we vendor wasmtime only for
+# that triple.  If another triple is added to MODULE.bazel, flip the
+# wasmtime dep to a `select()`.
+cc_library(
+    name = "host_loader",
+    srcs = ["host_loader.cc"],
+    hdrs = ["host_loader.h"],
+    deps = [
+        "//compiler/runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "host_loader_test",
+    srcs = ["host_loader_test.cc"],
+    deps = [
+        ":host_loader",
+        "//compiler/codegen:expr_lower",
+        "//compiler/codegen:module",
+        "//compiler/frontend:parse_and_check",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
