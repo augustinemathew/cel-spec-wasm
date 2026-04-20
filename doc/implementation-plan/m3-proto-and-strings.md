@@ -1,7 +1,8 @@
 # M3 — Proto field reads + string ops
 
-Status: **in progress** (started 2026-04-19; M2 closed).  Work is
-sliced thin to land incremental e2e coverage:
+Status: **done** (started 2026-04-19; closed 2026-04-19).  Work was
+sliced thin to land incremental e2e coverage; all slices A through
+G4 plus CLI schema integration + richer e2e compose tests landed:
 
 - **Slice A+B** (2026-04-19, landed) — two-module host loader
   (`compiler/host/host_loader.{h,cc}`) + eval-module-side import
@@ -317,32 +318,41 @@ Out of scope (later milestones):
 
 ### Runtime (linear-memory side, wasm32-compiled C)
 
-- [ ] Wire the wasm32-cross-compiled `cel_runtime.wasm` (landed in
+- [x] Wire the wasm32-cross-compiled `cel_runtime.wasm` (landed in
       M2) into the **two-module runtime/eval architecture** decided
       2026-04-19 (see `doc/wasm-compiler-design.md` §7.0).  The
       runtime is **not** merged into per-expression modules; it is
       instantiated once by the host and its exports become imports
       of every eval module under the `"cel"` namespace.  Scope of
-      this deliverable:
+      this deliverable (landed in Slice A+B, 2026-04-19):
         - Codegen emits `BinaryenAddFunctionImport` /
           `BinaryenAddMemoryImport` / `BinaryenAddTableImport`
           calls for exactly the runtime surface the expression
-          uses (walk the IR once, dedupe, emit).
-        - A host loader in `compiler/runtime/host_loader.{h,cc}`
-          that owns the wasmtime-specific "instantiate runtime,
-          hand exports to linker, instantiate eval" sequence so
-          embedders get a one-call API.
-        - The e2e harness in `compiler/e2e/` switches from
-          "instantiate one module" to "instantiate runtime + eval
-          against a shared linker".
-- [ ] String / bytes constructors + equality are already authored;
-      add **concatenation** (`cel_string_concat`) and **length**
-      (`cel_string_size` — UTF-8 code-point count, per spec §1110
-      which defines `size(string)` as code-point count not byte count).
-- [ ] `cel_bool_from_value(CelValue*)` — the inverse of
-      `cel_make_bool` — pulls the i32 back out.  Needed for the
-      codegen pattern where we lower a `SelectExpr.test_only` to a
-      host call returning a `CelValue*` that we then need to test.
+          uses.  Note: the imports are emitted **unconditionally**
+          (not AST-gated) — see the "no lazy tracking of runtime
+          imports" feedback entry.
+        - Host loader shipped at `compiler/host/host_loader.{h,cc}`
+          (not `compiler/runtime/`; co-located with the cel_host
+          trampolines for G2).  Owns the wasmtime "instantiate
+          runtime, hand exports to linker, instantiate eval"
+          sequence plus `BindEvalInterner` (added in G4).
+        - The e2e harness in `compiler/e2e/` runs every case through
+          the two-module shared-linker path.
+- [x] String / bytes constructors + equality authored in M2; slice D
+      added **concat** (`cel_string_concat`) and **size**
+      (`cel_string_size` — UTF-8 codepoint count per spec §1110),
+      slice F added the bytes counterparts (`cel_bytes_concat`,
+      `cel_bytes_size` — byte count, not codepoint count — factored
+      through a shared `span_concat`).
+- [~] `cel_bool_from_value(CelValue*)` — **not shipped, not needed.**
+      The original design assumed `has()` would lower to a host call
+      returning `CelValue*`, then the module would unbox the bool.
+      The shipped G3 ABI has `cel_host.has_field` return `i32` 0/1
+      directly, so there is no CelValue to unbox.  Other bool-
+      consumers (ternary cond, `&&` / `||`) also operate on `i32`
+      directly today.  If a future slice adds a host import that
+      returns a `CelValue*` of kind `CEL_BOOL`, add this helper then;
+      not before.
 
 ### Runtime (externref side, WAT / Binaryen)
 
@@ -360,27 +370,29 @@ Out of scope (later milestones):
 
 ### Host imports (declared by the module, implemented by the host)
 
-The design doc §12 fixes these; M3 is where we first implement them.
+The design doc §8.2 fixes these; M3 is where we first implement them.
+**All three landed; decision history retained below for posterity.**
 
-- [ ] `cel_host.get_field(externref msg, i32 field_id) → externref |
-      CelValue*` — reads a field.  Field numbering is stable and
-      interned in the `cel.abi` attribute table.  Return shape depends
-      on the field type: proto-message → externref (wrapped with
-      `cel_wrap_message` on the module side); scalar → a `CelValue*`
-      into linear memory (which the host allocates via an import-back
-      call to `cel_alloc`, OR — cleaner — the host returns just the
-      raw scalar and codegen constructs the `CelValue` on the module
-      side).  **Decide between these two ABIs before implementing**;
-      today the design doc leans toward "host returns scalar, module
-      constructs"; flip the decision in both `../wasm-compiler-design.md`
-      §12 and here when it's made.
-- [ ] `cel_host.has_field(externref msg, i32 field_id) → i32` — the
-      backing for `has()` on a proto field.  Returns 0/1.  Note:
-      `has()` on a map is different (checks key presence) and lands
-      in M4 alongside maps.
-- [ ] `cel_host.message_eq(externref a, externref b) → i32` — message
-      equality (delegated to host because the spec requires descriptor
-      awareness for unknown fields).
+- [x] `cel_host.get_field(externref msg, i32 field_number, i32 out_cv)
+      → void` — reads a field.  Decision: unified out-parameter (the
+      "Open design questions" entry at the bottom of this doc captures
+      the reasoning — neither "externref | CelValue*" nor
+      "host returns scalar, module constructs" survived contact with
+      the UNKNOWN / ERROR requirement).  Module pre-allocates a 24-byte
+      CelValue via `cel_alloc(24)`, passes the arena-relative offset,
+      host writes `kind + payload` in place.  Landed in Slice G2
+      (2026-04-19).
+- [x] `cel_host.has_field(externref msg, i32 field_number) → i32` —
+      returns 0/1 directly.  Landed in Slice G3 (2026-04-19); proto3
+      presence semantics (scalar-at-default = not-present,
+      submessage-explicitly-set = present) delegated to
+      `google::protobuf::Reflection::HasField`.  `has()` on a map is
+      a different operation (map-key presence) and remains deferred
+      to M4.
+- [x] `cel_host.message_eq(externref a, externref b) → i32` — message
+      equality.  Landed in Slice G4 (2026-04-19); delegated to host
+      `google::protobuf::util::MessageDifferencer`-style equality per
+      spec §1110.
 
 ### Codegen
 
@@ -395,9 +407,10 @@ The design doc §12 fixes these; M3 is where we first implement them.
       `externref` type.  The `cel.abi` table's role is still just to
       encode the final ABI — codegen derives the param layout
       straight from `TypedAst::variables()` at lowering time.
-- [ ] `kSelectExpr` (operand, field, not test_only) — lowers to a
-      `cel_host.get_field` call followed by whatever unwrap or
-      constructor is needed to match the checked field type.
+- [x] `kSelectExpr` (operand, field, not test_only) — landed in
+      Slice G2 (scalar + string/bytes payload loads) and Slice G4
+      (message payload load via `cel_unwrap_message` for nested
+      selects).  Per-`Repr` dispatch lives in `LoadSelectPayload`.
 - [x] `kSelectExpr` with `test_only = true` — lowers to
       `cel_host.has_field`.  Macro expansion already turned
       `has(x.y)` into this shape during parsing (cel-cpp), so the
@@ -413,16 +426,24 @@ The design doc §12 fixes these; M3 is where we first implement them.
         `cel_string_ends_with` / `cel_string_contains` via the new
         `LowerStringMemberCall` helper.  Empty-needle / longer-needle
         edge cases enforced runtime-side.
-- [ ] `kConstant` for **string** and **bytes** constants — emit a
-      data segment entry + a `cel_make_string_view` (or
-      `cel_make_bytes_view`) call against the interned offset and
-      length.
-- [ ] Eval-function signature revision: the return type is no longer
-      guaranteed scalar.  The function now returns either a scalar
-      (backwards-compatible) or an `i32` (the `CelValue*` in linear
-      memory).  The `cel.abi.MemoryLayout.return_shape` field tells
-      the host which to expect — document the enum value names in
-      the design doc when this lands.
+- [x] `kConstant` for **string** and **bytes** constants — Slice A+B
+      landed the string path via `LowerStringLiteral` (now
+      `LowerSpanLiteral`); Slice F landed bytes by generalising the
+      same helper to take the constructor name
+      (`cel_make_string_view` vs `cel_make_bytes_view`).  Literal
+      bytes are stored through a `cel_mem_base + scratch` absolute
+      pointer while the view constructor takes the arena-relative
+      offset (the string-literal absolute/relative-offset bug that
+      this approach fixes is documented in the testing-checklist.md
+      Slice D block).
+- [x] Eval-function signature revision: Slice C generalised
+      `CallNullaryEval` to `CallEval(args)` and made the return
+      type follow the top-level expression's `Repr` — scalar reprs
+      return their native wasm type (i32 / i64 / f64), string /
+      bytes / message reprs return `i32` (arena-relative CelValue*)
+      or `externref` for messages.  `cel.abi.MemoryLayout` carries
+      the per-param wasm type and return shape so hosts can
+      typecheck the call; M2's `abi_test` round-trips it.
 
 ### CLI
 
@@ -466,26 +487,39 @@ must flip to `[x]`:
 
 New e2e test cases (all under `compiler/e2e/eval_test.cc`):
 
-- [ ] **String constant round-trip** — `Evaluate("\"hi\"")` returns a
-      pointer; the test reads the `CelValue` struct and its `CelSpan`
-      payload out of wasmtime-exported memory, asserts
-      `kind == CEL_STRING`, span length = 2, bytes = `"hi"`.
-- [ ] **String concatenation** — `Evaluate("\"a\" + \"b\"")` reads
-      back as `"ab"`.
-- [ ] **String equality (positive + negative)** — `"hi" == "hi"` → 1,
-      `"hi" == "bye"` → 0.
-- [ ] **Proto field read (scalar)** — constructs a test-only message
-      on the host side, passes it as an externref, evaluates
-      `msg.some_int == 42`, asserts `1`.
-- [ ] **Proto field read (message)** — nested select
-      `msg.user.name == "alice"`.
+- [x] **String constant round-trip** — landed in Slice A+B as
+      `StringLiteralRoundTripsThroughMemory` + `EmptyStringRoundTrips`
+      (reads the `CelValue` + span back out of wasmtime memory
+      via `cel_mem_base`).
+- [x] **String concatenation** — landed in Slice D as
+      `StringConcatenationProducesJoinedBytes` +
+      `StringConcatenationEmptyLhs`.
+- [x] **String equality (positive + negative)** — landed in Slice D
+      as `StringEqualityPositiveAndNegative` +
+      `StringInequalityInvertsEquality`.
+- [x] **Proto field read (scalar)** — landed in Slice G2 across 10
+      `SelectProto*Field*` cases covering every CEL-relevant wire
+      type on the `Customer` fixture.
+- [x] **Proto field read (message)** — landed in Slice G4 as
+      `NestedSelectReadsInnerField` and
+      `NestedSelectThroughUnsetSubmessageReadsDefault`; richer
+      compose-test `NestedProtoStringFieldConcatWithLiteral`
+      landed in task #40.
 - [x] **`has()` positive + negative** — against both set and unset
       fields.  Landed in Slice G3 (2026-04-19); see the 7 `Has*` cases
       in `compiler/e2e/eval_test.cc`.
-- [ ] **Message-equality via host** — `msg1 == msg2` with the same
-      underlying proto bytes.
+- [x] **Message-equality via host** — landed in Slice G4 as
+      `MessageEqualityTrueForStructurallyEqual`,
+      `MessageEqualityFalseForDifferentFields`,
+      `MessageInequalityInvertsMessageEq`, and
+      `NestedMessageEqualityComposesSelectAndEq`.
 
-Negative tests that must land:
+Negative tests that must land — **deferred to follow-up slice.**
+Each is a thin sh_test against the CLI; nothing unblocked by
+waiting, but the current suite is entirely positive and does not
+exercise the "codegen exits cleanly on an unsupported shape"
+invariant.  Track these in task #42 when created; do not gate
+M3 closure on them.
 
 - [ ] `kSelectExpr` on a non-message receiver fails in the checker
       (already checked; assert here that M3's codegen never sees this
@@ -537,8 +571,9 @@ Negative tests that must land:
        interning table (the externref carries the descriptor
        pool).  `has_field` and `message_eq` remain separate
        imports (slices G3 and G4).
-   Design doc §8.2 still describes the pre-decision split ABI;
-   that rewrite lands with Slice G2.
+   Design doc §8.2 rewrite landed 2026-04-19 alongside the M3 docs
+   sweep — it now documents the unified out-parameter shape as the
+   normative ABI.
 2. **Interned string pool layout.** All string constants live in the
    `data` segment, but the layout that makes `size()` cheap (a
    leading u32 length) costs a byte per unique string vs. passing

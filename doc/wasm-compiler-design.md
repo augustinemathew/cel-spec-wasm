@@ -91,13 +91,15 @@ supported by all major engines (Wasmtime, V8, SpiderMonkey, JSC, wasmer).
              │
              ▼  (Binaryen C API, linked as libbinaryen.a)
         [codegen]
-             │  emits a standalone per-expression module whose only
-             │  dependencies are imports from the shared runtime:
+             │  emits a per-expression module that imports
+             │  everything it needs from the shared runtime instance
+             │  and defines its own private externref table:
              │    (import "cel" "memory"     (memory …))
-             │    (import "cel" "cel_refs"   (table  … externref))
              │    (import "cel" "cel_alloc"  (func   …))
              │    (import "cel" "cel_make_*" (func   …))
              │    …
+             │    (table  $cel_refs 16 externref)  ;; per-eval-module
+             │    (func $cel_ref_intern …) (func $cel_unwrap_message …)
              │    (func $eval …) (export "eval" (func $eval))
              │    (custom section "cel.abi" …)
              ▼
@@ -231,11 +233,25 @@ once from C (`compiler/runtime/cel_runtime.c`) and cross-compiled to
 - `string` / `bytes` / `list` / `map` operations.
 - Three-valued-logic helpers (`cel_and`, `cel_or`, `cel_not`,
   `cel_status_either`, `cel_unknown_merge`).
-- The `$cel_refs` externref table plus its three helpers
-  (`cel_ref_intern`, `cel_ref_get`, `cel_refs_reset`).  (See §7.1.
-  Authoring them inside the runtime rather than per eval module
-  means every compiled expression shares one table, so interned
-  refs are reusable across expressions within one host instance.)
+
+The `$cel_refs` externref table and its helpers (`cel_ref_intern`,
+`cel_ref_get`, `cel_refs_reset`, plus `cel_wrap_message` /
+`cel_unwrap_message`) are **not** exported from the runtime.
+Per-eval-module tables are emitted as Binaryen IR during codegen
+(`compiler/codegen/cel_refs.{h,cc}`) into each expression module
+that references a proto message.  This differs from the
+original design sketch — which imagined one shared table in the
+runtime — because `externref` is an opaque-host-reference type
+with no direct WAT / C representation.  The only way to emit
+`table.set` / `table.get` on `externref` is through Binaryen's IR
+API at codegen time; the wasm32 cross-compile path the runtime
+uses can't author these helpers.  Per-module tables also give us
+`cel_refs_reset` semantics that match the module's own
+`cel_reset` (rewinding module-local state at the same instant)
+without cross-module coordination.  The trade-off — interned
+refs are not reusable across eval modules within one runtime
+instance — is fine for the current workload (one eval per
+expression; the table is wiped on `cel_reset` anyway).
 
 ### 7.0 Two-module architecture
 
@@ -245,10 +261,18 @@ module declares imports from a single module namespace named `"cel"`:
 ```wat
 (module
   (import "cel" "memory"    (memory 1))
-  (import "cel" "cel_refs"  (table  16 externref))
   (import "cel" "cel_alloc" (func (param i32) (result i32)))
   (import "cel" "cel_make_int" (func (param i64) (result i32)))
   ;; …one import per runtime function eval actually calls…
+
+  ;; Per-eval-module externref table, emitted by codegen when the
+  ;; expression has at least one message variable.  Slot 0 is the
+  ;; null sentinel.  See §7.1 for why this is module-local rather
+  ;; than imported from the runtime.
+  (table  $cel_refs 16 externref)
+  (func   $cel_ref_intern (param externref) (result i32) …)
+  (func   $cel_unwrap_message (param i32) (result externref) …)
+
   (func $eval (result i64) …)
   (export "eval" (func $eval))
 )
@@ -372,17 +396,26 @@ string literal and reuses it for the byte-store loop; see
 §10.1.
 
 Alongside linear memory, the module declares a private externref table
-(`$cel_refs`) with a small free-list. Slot 0 is reserved as the null
-sentinel:
+(`$cel_refs`) with a **bump allocator** — slots are handed out
+monotonically via a `cel_refs_next` module global, slot 0 reserved as
+the null sentinel:
 
 ```wat
-(table $cel_refs <initial> externref)
+(table  $cel_refs <initial> externref)
+(global $cel_refs_next (mut i32) (i32.const 1))
 ```
 
-The free-list is a `uint32_t[]` in linear memory holding the indices of
-released slots; the head is a module global. `cel_reset` also rewinds the
-free-list to "all slots free except 0" so that ref-table lifetime matches
-arena lifetime.
+`cel_ref_intern` reads `cel_refs_next`, `table.set`s the externref into
+that slot, increments the global, and returns the slot index.
+`cel_refs_reset` resets `cel_refs_next` back to 1 so the ref-table
+lifetime matches the arena lifetime and is wiped in lockstep with
+`cel_reset`.  The earlier design sketched a free-list over released
+slots; that's overkill for the current workload (expressions evaluate
+against one input per call, then `cel_reset` wipes everything) and was
+not shipped.  If a future workload holds CelValues across resets or
+evaluates over long-lived message graphs, replace the bump with a
+proper free-list here — at that point the global becomes the free-list
+head and the release path does a LIFO push.
 
 ### 7.2 The `CelValue` struct
 
@@ -520,18 +553,22 @@ void      cel_list_append(CelValue* l, CelValue* e);
 CelValue* cel_map_new(uint32_t cap);
 void      cel_map_put(CelValue* m, CelValue* k, CelValue* v);
 
-// Written in hand-emitted WAT/Binaryen (C can't portably execute table.set).
-// Stashes the externref in a free $cel_refs slot and wraps it in a CelValue.
+// Emitted per-eval-module by codegen via compiler/codegen/cel_refs.{h,cc}
+// (not in the runtime — C can't author externref table.set/.get, and
+// the table itself is module-local, see §7.1).  Stashes the externref
+// in a free $cel_refs slot and wraps it in a CelValue.
 CelValue* cel_wrap_message(externref msg);
 
-// Inverse: extracts the externref for a CEL_MESSAGE value, e.g. when we
-// need to pass it back to a host import that expects externref.
+// Inverse: extracts the externref for a CEL_MESSAGE value.  Takes the
+// arena-relative CelValue offset (not the msg_slot) and performs the
+// cel_mem_base + cv + 8 load + table.get internally.  Callers hand it
+// the scratch offset directly.
 externref cel_unwrap_message(CelValue* v);
 
-// Low-level ref-table helpers (also WAT/Binaryen-authored).
+// Low-level ref-table helpers (same emitter, module-local).
 uint32_t  cel_ref_intern(externref r);   // returns slot index
 externref cel_ref_get(uint32_t slot);
-void      cel_ref_release(uint32_t slot); // push onto free list
+void      cel_refs_reset(void);          // wipe all slots on cel_reset
 CelValue* cel_type(uint32_t type_id);
 CelValue* cel_duration(int64_t seconds, int32_t nanos);
 CelValue* cel_timestamp(int64_t seconds, int32_t nanos);
@@ -621,15 +658,20 @@ directly via the module's exported `memory`.
 (func (export "cel_unknown")        (param i32) (result i32))
 (func (export "cel_error")          (param i32 i32 i32) (result i32))
 
-;; Message (externref) helpers — cross linear memory and the ref table.
-(func (export "cel_wrap_message")   (param externref) (result i32))
-(func (export "cel_unwrap_message") (param i32)       (result externref))
-(func (export "cel_ref_intern")     (param externref) (result i32))
-(func (export "cel_ref_get")        (param i32)       (result externref))
+;; Message (externref) helpers.  These are NOT runtime exports — they
+;; are emitted per-eval-module by codegen (see §7.0 / §7.1).  Listed
+;; here only because the host SDK reaches them through the eval
+;; module when unwrapping a CEL_MESSAGE return value.
+;;   (func (export "cel_ref_intern")     (param externref) (result i32))
+;;   (func (export "cel_ref_get")        (param i32)       (result externref))
+;;   (func (export "cel_wrap_message")   (param externref) (result i32))
+;;   (func (export "cel_unwrap_message") (param i32)       (result externref))
 
 ;; The compiled expression.  $arg_msg is an externref for a top-level
 ;; host-owned message input; the compiler emits one param per input,
-;; matching each input's static type.
+;; matching each input's static type.  Return shape follows the top-level
+;; expression's Repr: i64 for int, f64 for double, i32 for bool /
+;; string* / bytes* / CelValue*, externref for message.
 (func (export "eval")
       (param $arg_msg externref) (param $arg_scalar i32) ... (result i32))
 ```
@@ -649,81 +691,62 @@ host passes its `externref` straight into `eval`; the compiler emits a
 ### 8.2 Imports (module satisfies from host)
 
 Imports that take or return a host-owned message use `externref` directly.
-Everything else speaks `i32` (usually a `CelValue*` in linear memory). When
-a field read can yield UNKNOWN / ERROR in addition to a message, the import
-uses `multi-value` to return the status alongside the externref.
+Everything else speaks `i32` (either a `CelValue*` in linear memory or a
+field number / interned id).
+
+The core shape is a **unified out-parameter**: the module pre-allocates a
+24-byte `CelValue` in the arena via `cel_alloc(24)` and hands its
+arena-relative offset to the host.  The host writes `kind` and the
+appropriate `payload` bytes in place — including `CEL_UNKNOWN` or
+`CEL_ERROR` if resolution fails.  This sidesteps the
+static-return-shape problem that split `get_scalar_field` /
+`get_message_field` had (unknown / error is reachable at every field
+read, regardless of the field's static type).
+
+The M3 surface — what codegen emits today — is three imports under the
+`"cel_host"` namespace:
 
 ```wat
-;; Scalar field access: host allocates a CelValue in our arena (via exported
-;; constructors) and returns its pointer.
-;;   params: (parent_msg, type_id, field_id)
-(import "cel_host" "get_scalar_field"
-        (func (param externref i32 i32) (result i32)))
+;; Field read.  Writes the payload + kind into *out_cv in place.
+;; For string / bytes the host also calls cel_alloc(len) to reserve
+;; span storage and populates payload.s.{ptr,len}.  For message fields
+;; the host writes kind=CEL_MESSAGE and payload.msg_slot = intern(ref).
+;; UNKNOWN and ERROR propagate via kind=CEL_UNKNOWN / CEL_ERROR.
+(import "cel_host" "get_field"
+        (func (param externref i32 i32)))     ;; (msg, field_number, out_cv)
 
+;; Presence test.  Host dispatches on proto3 presence rules (submessage
+;; explicit-set, scalar-non-default) via google::protobuf::Reflection.
 (import "cel_host" "has_field"
-        (func (param externref i32 i32) (result i32)))
+        (func (param externref i32) (result i32)))
 
-;; Message-typed field access. The host returns one of:
-;;   - (0, <ref>, 0)                → OK, <ref> is the message
-;;   - (1, null_ref, <CelValue*>)   → UNKNOWN, detail in linear memory
-;;   - (2, null_ref, <CelValue*>)   → ERROR,   detail in linear memory
-(import "cel_host" "get_message_field"
-        (func (param externref i32 i32) (result i32 externref i32)))
-
-;; Repeated & map access.
-(import "cel_host" "repeated_len"
-        (func (param externref i32 i32) (result i32)))
-
-;; Returns CelValue* for scalar element types.
-(import "cel_host" "repeated_get_scalar"
-        (func (param externref i32 i32 i32) (result i32)))
-
-;; Returns (tag, element_ref, detail_cv_ptr) for message element types.
-(import "cel_host" "repeated_get_message"
-        (func (param externref i32 i32 i32) (result i32 externref i32)))
-
-(import "cel_host" "map_keys_count"
-        (func (param externref i32 i32) (result i32)))
-
-;; Scalar map values: (parent, type, field, key_cv_ptr) → CelValue*.
-(import "cel_host" "map_get_scalar"
-        (func (param externref i32 i32 i32) (result i32)))
-
-;; Message map values: (parent, type, field, key_cv_ptr)
-;;                        → (tag, value_ref, detail_cv_ptr).
-(import "cel_host" "map_get_message"
-        (func (param externref i32 i32 i32) (result i32 externref i32)))
-
-(import "cel_host" "map_iter"
-        (func (param externref i32 i32) (result i32)))
-(import "cel_host" "map_iter_next"
-        (func (param i32) (result i32)))
-                                     ;; returns a CelValue of kind CEL_LIST
-                                     ;; wrapping {key, val} or CEL_NULL when done
-
-;; Message equality (delegates to protobuf equality, incl. unknown-field
-;; byte equality per spec §1110).
+;; Message equality (delegates to descriptor-aware protobuf equality —
+;; per spec §1110 this is the unknown-fields-byte-equality variant that
+;; can't be done module-side).
 (import "cel_host" "message_eq"
         (func (param externref externref) (result i32)))
-
-;; Type of a host-owned message (returns interned type_id).
-(import "cel_host" "message_type_of"
-        (func (param externref) (result i32)))
-
-;; Regex (pattern_id pre-assigned at compile time).
-(import "cel_host" "string_matches"
-        (func (param i32 i32) (result i32)))                  ;; (cv_str, pattern_id) → CelValue*
-
-;; String ops that are too expensive or spec-subtle to inline.
-(import "cel_host" "string_normalize"
-        (func (param i32) (result i32)))                      ;; future use
 ```
 
-Split rationale: scalar fields are small and cheaply wrapped into CelValue
-host-side, so one `i32` return is enough. Message fields need to preserve
-externref identity, and the three-valued status would otherwise require
-allocating a CelValue just to report UNKNOWN/ERROR — the multi-value path
-keeps the hot path allocation-free.
+Field numbers are emitted as codegen immediates (the externref already
+carries the descriptor pool, so no interning table is needed).  The
+imports are declared unconditionally on every eval module — the "don't
+gate `cel_host.*` imports on AST inspection" rule avoids a class of
+bugs where a host provides a linker that doesn't know about imports
+the module didn't happen to call.
+
+The M3 surface does **not** cover repeated fields, maps, regex, or
+type-of-message — those land with the collections milestones:
+
+- `repeated_len` / `repeated_get_*` — **M4** (list codegen).
+- `map_keys_count` / `map_get_*` / `map_iter` — **M4** (map codegen).
+- `string_matches(cv, pattern_id)` — **M7** (regex stdlib).
+- `message_type_of(ref) → type_id` — **M7** (type reflection).
+
+When they land, extend this section with the new imports under the
+same out-parameter convention (hand the host a pre-allocated CelValue
+to write into, rather than multi-value returning status + ref + cv).
+The pattern ID and type ID immediates wire through `cel.abi.patterns`
+and `cel.abi.types` respectively (Appendix A).
 
 ### 8.3 Custom functions
 
@@ -855,9 +878,9 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 | --------------------- | --------------------------------------------------------------------------------- |
 | Literal               | `cel_<kind>(const)` for scalars; for strings/bytes: `cel_alloc(len)` → cache `cel_mem_base() + rel` in a local, store literal bytes through that absolute pointer, then `cel_string_view(rel, len)` (view takes the arena-relative offset) |
 | Variable              | `local.get $argN`                                                                 |
-| `e.f` (scalar field)  | `cel_host.get_scalar_field(unwrap(e), type_id, field_id)`                          |
-| `e.f` (message field) | `(tag, ref, detail) = cel_host.get_message_field(unwrap(e), ...); if tag==0 cel_wrap_message(ref) else detail` |
-| `has(e.f)`            | `cel_host.has_field(...)`                                                         |
+| `e.f` (any field)     | `scratch = cel_alloc(24); cel_host.get_field(unwrap(e), field_number, scratch);` then a per-`Repr` payload load from `cel_mem_base() + scratch + 8` — scalars load inline, strings/bytes become a `cel_make_*_view` over `payload.s.{ptr,len}`, messages call `cel_unwrap_message(scratch)` to re-hydrate the externref |
+| `has(e.f)`            | `cel_host.has_field(unwrap(e), field_number)` — returns i32 0/1 directly; no scratch CelValue needed |
+| `e1 == e2` (message)  | `cel_host.message_eq(unwrap(e1), unwrap(e2))` — wrapped in `i32.eqz` for `!=` |
 | `m[k]` (list)         | `cel_list_get(m, k)`                                                              |
 | `m[k]` (map)          | `cel_map_get(m, k)`                                                               |
 | `a OP b` (arith)      | `cel_int_add(a, b)` (etc.) — op emits error on overflow                           |
@@ -1198,7 +1221,7 @@ orientation only.
 | M0  | `m0-parser-cli.md`                         | DONE         | Build cel-cpp parser + checker through Bazel; `celwasmc` prints CheckedExpr |
 | M1  | `m1-type-checker.md`                       | DONE         | `cel_runtime.{c,h}` + constructors + type-checker integration + Repr IR |
 | M2  | `m2-codegen-mvp.md`                        | DONE*        | Codegen of pure-primitive expressions (`1 + 2 * 3`, `&&`, `||`, `?:`); `cel_refs`, wasm32 cross-compile, and `cel.abi` custom section all landed 2026-04-18/19. *Asterisk: Linux cross-compile portability is still gated on the darwin-only brew path — tracked under the M2 "testing gaps" list, must close before the runtime becomes a hard CI dep.* |
-| M3  | `m3-proto-and-strings.md`                  | IN PROGRESS  | Proto field reads (`cel_host.get_field`, `has_field`), `has()`, string constants / equality / concat / size. Slices A+B (runtime wiring, host loader, string literals + equality), C (scalar `kIdentExpr`), D (`+`/`==`/`!=`/`size` on string), E (`startsWith`/`endsWith`/`contains`), F (bytes constants + operators), G1 (message params as externref + `$cel_refs` table / wrappers), G2 (`kSelectExpr` → `cel_host.get_field` with scalar payload loads + realistic `Customer` proto e2e fixture), G3 (`has(msg.field)` → `cel_host.has_field` via the `test_only` branch of `LowerSelect`, sharing field-number + operand validation with G2 through `LowerSelectOperand`), G4 (nested-message select via a `Repr::kMessage` arm in `LoadSelectPayload` calling `cel_unwrap_message` + `_==_` on `Repr::kMessage` dispatching to `cel_host.message_eq`; host-side `BindEvalInterner` now runs after eval instantiation so `get_field` can intern submessages), CLI schema integration (`--schema <file.proto>` parses textual proto source in-process via `google::protobuf::compiler::Parser`; new `--schema_descriptorset <file.pb>` accepts a pre-compiled `FileDescriptorSet`; flags are mutually exclusive, both land in the same `DescriptorPool`) all landed 2026-04-18/19. M3 now has no remaining slices — polish + richer e2e tracking in task #40. |
+| M3  | `m3-proto-and-strings.md`                  | DONE         | Proto field reads (`cel_host.get_field`, `has_field`), `has()`, string constants / equality / concat / size. Slices A+B (runtime wiring, host loader, string literals + equality), C (scalar `kIdentExpr`), D (`+`/`==`/`!=`/`size` on string), E (`startsWith`/`endsWith`/`contains`), F (bytes constants + operators), G1 (message params as externref + `$cel_refs` table / wrappers), G2 (`kSelectExpr` → `cel_host.get_field` with scalar payload loads + realistic `Customer` proto e2e fixture), G3 (`has(msg.field)` → `cel_host.has_field` via the `test_only` branch of `LowerSelect`, sharing field-number + operand validation with G2 through `LowerSelectOperand`), G4 (nested-message select via a `Repr::kMessage` arm in `LoadSelectPayload` calling `cel_unwrap_message` + `_==_` on `Repr::kMessage` dispatching to `cel_host.message_eq`; host-side `BindEvalInterner` now runs after eval instantiation so `get_field` can intern submessages), CLI schema integration (`--schema <file.proto>` parses textual proto source in-process via `google::protobuf::compiler::Parser`; new `--schema_descriptorset <file.pb>` accepts a pre-compiled `FileDescriptorSet`; flags are mutually exclusive, both land in the same `DescriptorPool`), and a richer e2e compose-test suite (seven cases spanning multi-param + mixed-stage shapes) all landed 2026-04-19. |
 | M4  | `m4-collections-and-comprehensions.md`     | PLANNED      | List, map, struct literals + every comprehension macro + nested-shadowing scoping (§5.4) |
 | M5  | `m5-three-valued.md`                       | PLANNED      | Partial eval: attribute interning, UnknownSet, overflow / div-by-zero / NaN → ERROR, `cel_status_either` |
 | M6  | `m6-custom-fns.md`                         | PLANNED      | User functions: `.celfn` IDL + `FunctionSet` proto, `celfnc` stub gen, `cel_fn.*` host imports |
