@@ -153,6 +153,33 @@ BytesFieldRoundTrips}` — 10 wasmtime-backed scenarios flipping the
 The `test_only` e2e row is still `[ ]` — deferred to G3, which lowers
 `has(msg.field)` to `cel_host.has_field`.
 
+**M3 slice G3 (2026-04-19): `has(msg.field)` codegen + e2e.**  The
+`test_only=true` branch of `SelectExpr` (what `has(msg.field)` parses
+to after cel-cpp macro expansion) now lowers to a direct
+`cel_host.has_field(externref, i32) → i32` call instead of the G2
+`get_field → payload-load` dance.  The `has_field` trampoline was
+already registered in G2; G3 is pure codegen.  `LowerSelect` now
+dispatches on `test_only` and factors out `LowerSelectOperand` so
+field-number resolution, operand `Repr::kMessage` check, and operand
+lowering stay shared — each leg clears the function-size gate
+independently.  Proto3 presence semantics (scalar-default = not
+present, submessage explicit-set = present) are delegated to the host
+via `google::protobuf::Reflection::HasField` in
+`compiler/host/cel_host.cc`.  Coverage:
+`eval_test::{HasProtoStringFieldSetAndUnset,
+HasProtoInt32FieldSetAndUnset, HasProtoBoolFieldSetToFalseIsFalse,
+HasProtoBytesFieldEmptyIsFalse,
+HasProtoMessageFieldRespectsExplicitPresence,
+HasComposesWithLogicalNot, HasAndFieldCompareTernary}` — seven
+wasmtime-backed scenarios flipping the `kSelectExpr (test_only)` row
+across codegen and e2e columns.  `HasProtoBoolFieldSetToFalseIsFalse`
+specifically pins the proto3 "scalar at default value isn't present"
+surprise; `HasProtoMessageFieldRespectsExplicitPresence` pins the
+complementary "submessage explicitly set is present even if empty"
+rule; `HasAndFieldCompareTernary` composes a G2 field read and a G3
+`has()` in a single ternary to catch scratch-local aliasing between
+the two select paths.
+
 **M3 slice G1 (2026-04-19): message params as externref.**
 `Repr::kMessage` variables now lower to an `externref` param on the
 eval function.  `WasmTypeFor(kMessage)` is `BinaryenTypeExternref()`.
@@ -375,7 +402,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kConstant`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [x]     | [x] |
-| `kSelectExpr` (`test_only`, from `has()`) | [x] | [x] | [x]  | [x] | [ ] | [ ] |
+| `kSelectExpr` (`test_only`, from `has()`) | [x] | [x] | [x]  | [x] | [x] | [x] |
 | `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [x] | [x] |

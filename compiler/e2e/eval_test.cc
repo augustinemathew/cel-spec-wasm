@@ -891,5 +891,171 @@ TEST(EvalE2ETest, SelectProtoBytesFieldRoundTrips) {
   EXPECT_EQ(bytes[2], 0x01u);
 }
 
+// ---- has(msg.field) — M3 Slice G3 ------------------------------------------
+//
+// `has(x.f)` lowers to a `SelectExpr` with `test_only=true` and must
+// compile to a single `cel_host.has_field(msg, field_number) → i32`
+// call (no cel_alloc, no scratch CelValue).  The CEL semantics of
+// proto3 default that these tests pin are:
+//
+//   - singular scalar set to a non-default value    → has() is true
+//   - singular scalar at its default (0, "", false) → has() is false
+//   - singular submessage unset                      → has() is false
+//   - singular submessage set (even if all fields at
+//     their default)                                → has() is true
+//
+// The runtime equivalent is `FieldDescriptor::HasField()` on the
+// operand; the per-wire-type behaviour is an implementation detail of
+// `cel_host::HasField` and is also covered by `cel_host_test`.  The
+// tests below are the end-of-slice e2e pin: the full codegen +
+// wasmtime pipeline hands back the right 0/1 for each scenario.
+
+TEST(EvalE2ETest, HasProtoStringFieldSetAndUnset) {
+  auto loaded = LoadCompiled("has(c.name)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_name("Ada");
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->kind, WASMTIME_I32);
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;  // default: name is unset.
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, HasProtoInt32FieldSetAndUnset) {
+  // Proto3 scalar presence: any non-default value reads as has()=true;
+  // the zero default reads as has()=false.  A regression that used the
+  // CelValue kind as the has() signal (instead of asking the host
+  // `FieldDescriptor::HasField`) would flip this assertion.
+  auto loaded = LoadCompiled("has(c.age)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_age(30);
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, HasProtoBoolFieldSetToFalseIsFalse) {
+  // Singular bool at its zero-default is unset in proto3, regardless
+  // of whether the user explicitly called set_is_premium(false).  This
+  // is the single scalar case most likely to surprise callers — pin
+  // it.
+  auto loaded = LoadCompiled("has(c.is_premium)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_is_premium(false);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2ETest, HasProtoBytesFieldEmptyIsFalse) {
+  auto loaded =
+      LoadCompiled("has(c.session_token)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_session_token("\x01");
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;  // empty default.
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, HasProtoMessageFieldRespectsExplicitPresence) {
+  // Singular message has explicit presence in proto3 — set/unset is
+  // observable even if the submessage is at its own default.  The host
+  // call path goes through `Reflection::HasField` on a message field
+  // descriptor, which is a distinct code path from the scalar branch.
+  auto loaded =
+      LoadCompiled("has(c.billing_address)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.mutable_billing_address();  // explicit default-construct.
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;  // submessage unset.
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, HasComposesWithLogicalNot) {
+  // `!has(x.f)` exercises the G3 `has_field` path through the existing
+  // bool-result wiring (`!_` lowers to `i32.eqz`).  A regression that
+  // returned a non-i32 from has_field would either fail validation or
+  // produce the wrong answer here.
+  auto loaded = LoadCompiled("!has(c.name)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;  // name unset.
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, HasAndFieldCompareTernary) {
+  // End-to-end: composition of G2 (field read) + G3 (has()) through
+  // the ternary lowering — `has(c.name) ? c.name == "Ada" : false`.
+  // Pins that the two slices coexist in a single eval body without
+  // local-index aliasing (both use scratch locals allocated from the
+  // same LoweringContext).
+  auto loaded = LoadCompiled("has(c.name) ? c.name == \"Ada\" : false",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_name("Ada");
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer
+        msg;  // name unset → has() false → ternary false.
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
 }  // namespace
 }  // namespace celwasm

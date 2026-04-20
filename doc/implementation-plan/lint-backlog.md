@@ -110,15 +110,15 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 - L300: function 'LowerArithmetic' exceeds recommended size/complexity thresholds
 - L363: function 'LowerComparison' exceeds recommended size/complexity thresholds
 - L474: function 'LowerCall' exceeds recommended size/complexity thresholds
-- L660: function 'LowerToEvalFunction' exceeds recommended size/complexity thresholds
+- L851: function 'LowerToEvalFunction' exceeds recommended size/complexity thresholds
 
 **`bugprone-branch-clone`** (1)
 
-- L646: switch has 2 consecutive identical branches
+- L830: switch has 2 consecutive identical branches
 
 **`modernize-use-auto`** (1)
 
-- L695: use auto when initializing with a cast to avoid duplicating the type name
+- L889: use auto when initializing with a cast to avoid duplicating the type name
 
 ### `compiler/cli/celwasmc_main.cc` — 34 warnings
 
@@ -243,26 +243,26 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 **`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (3)
 
-- L586: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L587: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L588: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L589: possibly unsafe 'operator[]', consider bounds-safe alternatives
+- L590: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
 **`modernize-raw-string-literal`** (2)
 
-- L582: escaped string literal can be written as a raw string literal
-- L622: escaped string literal can be written as a raw string literal
+- L584: escaped string literal can be written as a raw string literal
+- L624: escaped string literal can be written as a raw string literal
 
 **`performance-unnecessary-value-param`** (1)
 
-- L73: the parameter 'args' of type 'std::vector<wasmtime_val_t>' is copied for each invocation but only used as a const reference
+- L75: the parameter 'args' of type 'std::vector<wasmtime_val_t>' is copied for each invocation but only used as a const reference
 
 **`readability-math-missing-parentheses`** (1)
 
-- L140: '*' has higher precedence than '+'; add parentheses to explicitly specify the order of operations
+- L142: '*' has higher precedence than '+'; add parentheses to explicitly specify the order of operations
 
 **`modernize-use-auto`** (1)
 
-- L352: use auto when initializing with a cast to avoid duplicating the type name
+- L354: use auto when initializing with a cast to avoid duplicating the type name
 
 ### `compiler/frontend/parse_and_check.cc` — 8 warnings
 

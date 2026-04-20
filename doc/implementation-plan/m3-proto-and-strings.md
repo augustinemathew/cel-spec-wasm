@@ -151,8 +151,39 @@ Remaining slices before M3 closes:
       `SelectProtoBytesFieldRoundTrips`.  Nested-message select and
       `CEL_MESSAGE` payload dispatch are deferred to G4 — LowerSelect
       rejects non-`kMessage` operands with `Unimplemented` today.
-- **Slice G3** — `kSelectExpr` with `test_only = true` lowers to a
-  separate `cel_host.has_field(externref, i32) → i32` import.
+- **Slice G3 — `has(msg.field)` codegen (2026-04-19, landed).**  CEL
+  macro expansion lowers `has(msg.field)` to a `SelectExpr` with
+  `test_only = true`; codegen now routes that to
+  `cel_host.has_field(externref, i32) → i32` instead of the
+  `get_field`/payload-load sequence used for plain field reads.
+  `LowerSelect` in `compiler/codegen/expr_lower.cc` dispatches on
+  `test_only`: the `true` branch emits a direct `has_field` call, the
+  `false` branch keeps the G2 3-child block.  Both paths share a
+  `LowerSelectOperand` helper for field-number resolution, operand
+  `Repr::kMessage` check, and operand lowering — the refactor keeps
+  each leg under the function-size gate without duplicating the
+  validation.  The `has_field` trampoline was already registered by
+  `cel_host_wasmtime.cc` during G2; G3 is pure codegen + tests.
+  Proto3 presence semantics are delegated to the host
+  (`google::protobuf::Reflection::HasField` for submessages;
+  scalar-non-default for singular scalars).
+  **Coverage landed in this slice:**
+    - `compiler/e2e/eval_test.cc` — 7 new `has()` cases against
+      `Customer`:
+      `HasProtoStringFieldSetAndUnset`,
+      `HasProtoInt32FieldSetAndUnset`,
+      `HasProtoBoolFieldSetToFalseIsFalse` (pins the proto3
+      scalar-at-default = not-present surprise),
+      `HasProtoBytesFieldEmptyIsFalse`,
+      `HasProtoMessageFieldRespectsExplicitPresence` (distinguishes
+      submessage explicit-presence from scalar default),
+      `HasComposesWithLogicalNot`,
+      `HasAndFieldCompareTernary` (composes G2 field read + G3 has()
+      through the ternary lowering to catch scratch-local aliasing
+      between the two select paths).
+    - `compiler/host/cel_host_test.cc` — existing `HasField*` table
+      coverage still applies; no new unit tests needed because G3 is
+      a codegen-only addition over an already-tested host primitive.
 - **Slice G4** — nested-message select (compose G2 with
   `cel_unwrap_message`) + `_==_` on `Repr::kMessage` dispatching to
   `cel_host.message_eq(externref, externref) → i32`.
@@ -269,10 +300,11 @@ The design doc §12 fixes these; M3 is where we first implement them.
 - [ ] `kSelectExpr` (operand, field, not test_only) — lowers to a
       `cel_host.get_field` call followed by whatever unwrap or
       constructor is needed to match the checked field type.
-- [ ] `kSelectExpr` with `test_only = true` — lowers to
+- [x] `kSelectExpr` with `test_only = true` — lowers to
       `cel_host.has_field`.  Macro expansion already turned
       `has(x.y)` into this shape during parsing (cel-cpp), so the
-      checker sees exactly the right AST here.
+      checker sees exactly the right AST here.  Landed in Slice G3
+      (2026-04-19).
 - [x] `kCallExpr` for string operators (slices D + E, 2026-04-19):
       - `_+_` on string (concat) — `cel_string_concat`.
       - `size(string)` — `cel_string_size`.
@@ -336,8 +368,9 @@ New e2e test cases (all under `compiler/e2e/eval_test.cc`):
       `msg.some_int == 42`, asserts `1`.
 - [ ] **Proto field read (message)** — nested select
       `msg.user.name == "alice"`.
-- [ ] **`has()` positive + negative** — against both set and unset
-      fields.
+- [x] **`has()` positive + negative** — against both set and unset
+      fields.  Landed in Slice G3 (2026-04-19); see the 7 `Has*` cases
+      in `compiler/e2e/eval_test.cc`.
 - [ ] **Message-equality via host** — `msg1 == msg2` with the same
       underlying proto bytes.
 

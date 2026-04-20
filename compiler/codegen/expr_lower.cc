@@ -684,6 +684,60 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
   }
 }
 
+// Bundles the two pieces both `LowerSelectField` and `LowerSelectTestOnly`
+// need from the operand side: the lowered operand expression and the
+// pre-resolved proto field number.
+struct SelectOperand {
+  BinaryenExpressionRef operand;
+  int32_t field_number;
+};
+
+// Validates the shared preconditions for a lowered `SelectExpr` (field
+// number resolved, operand is a message) and lowers the operand.  Both
+// the field-read and `has()` paths go through this so a single error
+// message covers the "operand is not a message" and "field not found"
+// cases regardless of which path the user wrote.
+absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
+                                                 const TypedAst& ast,
+                                                 const cel::SelectExpr& select,
+                                                 int64_t expr_id) {
+  const NodeAnnotation* a = ast.annotations().Find(expr_id);
+  if (a == nullptr || a->field_number == 0) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "expr_lower: SelectExpr at id ", expr_id,
+        " has no resolved field_number — was PopulateAnnotations run "
+        "with a descriptor pool, and does the operand type have a "
+        "field named `",
+        select.field(), "`?"));
+  }
+  auto operand_r = ReprOf(ast, select.operand());
+  if (!operand_r.ok()) return operand_r.status();
+  if (*operand_r != Repr::kMessage) {
+    return UnimplementedRepr("SelectExpr operand", *operand_r, expr_id);
+  }
+  auto operand = LowerExpr(ctx, ast, select.operand());
+  if (!operand.ok()) return operand.status();
+  return SelectOperand{*operand, static_cast<int32_t>(a->field_number)};
+}
+
+// Lowers `has(operand.field)` — a `SelectExpr` with `test_only=true` —
+// to a single `cel_host.has_field(operand, field_number) → i32` call.
+// No scratch CelValue is needed; the host returns 0/1 directly.  The
+// checker guarantees the result is a CEL bool (`Repr::kBool`), which
+// maps to i32 in the ABI, so the raw call expression is the block's
+// result as-is.
+absl::StatusOr<BinaryenExpressionRef> LowerSelectTestOnly(
+    LoweringContext& ctx, const TypedAst& ast, const cel::Expr& expr) {
+  auto op = LowerSelectOperand(ctx, ast, expr.select_expr(), expr.id());
+  if (!op.ok()) return op.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef args[2] = {
+      op->operand,
+      BinaryenConst(m, BinaryenLiteralInt32(op->field_number)),
+  };
+  return BinaryenCall(m, "has_field", args, 2, BinaryenTypeInt32());
+}
+
 // Lowers `operand.field` to a three-step block:
 //   1. scratch = cel_alloc(24)
 //   2. cel_host.get_field(operand, field_number, scratch)
@@ -694,30 +748,11 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
 // returning a message — need the host to intern the submessage into
 // `$cel_refs` and hand codegen back an externref; that path lands in
 // G4 together with `message_eq`.
-absl::StatusOr<BinaryenExpressionRef> LowerSelect(LoweringContext& ctx,
-                                                  const TypedAst& ast,
-                                                  const cel::Expr& expr) {
-  const cel::SelectExpr& select = expr.select_expr();
-  if (select.test_only()) {
-    // `has(x.f)` — G3.
-    return UnimplementedKind("SelectExpr (test_only)", expr.id());
-  }
-  const NodeAnnotation* a = ast.annotations().Find(expr.id());
-  if (a == nullptr || a->field_number == 0) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "expr_lower: SelectExpr at id ", expr.id(),
-        " has no resolved field_number — was PopulateAnnotations run "
-        "with a descriptor pool, and does the operand type have a "
-        "field named `",
-        select.field(), "`?"));
-  }
-  auto operand_r = ReprOf(ast, select.operand());
-  if (!operand_r.ok()) return operand_r.status();
-  if (*operand_r != Repr::kMessage) {
-    return UnimplementedRepr("SelectExpr operand", *operand_r, expr.id());
-  }
-  auto operand = LowerExpr(ctx, ast, select.operand());
-  if (!operand.ok()) return operand.status();
+absl::StatusOr<BinaryenExpressionRef> LowerSelectField(LoweringContext& ctx,
+                                                       const TypedAst& ast,
+                                                       const cel::Expr& expr) {
+  auto op = LowerSelectOperand(ctx, ast, expr.select_expr(), expr.id());
+  if (!op.ok()) return op.status();
   auto result_r = ReprOf(ast, expr);
   if (!result_r.ok()) return result_r.status();
 
@@ -728,9 +763,8 @@ absl::StatusOr<BinaryenExpressionRef> LowerSelect(LoweringContext& ctx,
       BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
   BinaryenExpressionRef set_scratch = BinaryenLocalSet(m, scratch, alloc_call);
   BinaryenExpressionRef args[3] = {
-      *operand,
-      BinaryenConst(
-          m, BinaryenLiteralInt32(static_cast<int32_t>(a->field_number))),
+      op->operand,
+      BinaryenConst(m, BinaryenLiteralInt32(op->field_number)),
       BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
   };
   BinaryenExpressionRef get_field_call =
@@ -741,6 +775,15 @@ absl::StatusOr<BinaryenExpressionRef> LowerSelect(LoweringContext& ctx,
   BinaryenExpressionRef children[3] = {set_scratch, get_field_call, *load};
   return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
                        result_type);
+}
+
+absl::StatusOr<BinaryenExpressionRef> LowerSelect(LoweringContext& ctx,
+                                                  const TypedAst& ast,
+                                                  const cel::Expr& expr) {
+  if (expr.select_expr().test_only()) {
+    return LowerSelectTestOnly(ctx, ast, expr);
+  }
+  return LowerSelectField(ctx, ast, expr);
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
