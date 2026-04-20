@@ -1092,10 +1092,10 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 | `e1 == e2` (message)  | `cel_host.message_eq(unwrap(e1), unwrap(e2))` — wrapped in `i32.eqz` for `!=` |
 | `m[k]` (list)         | `cel_list_get(m, k)`                                                              |
 | `m[k]` (map)          | `cel_map_get(m, k)`                                                               |
-| `a OP b` (arith)      | `cel_int_add(a, b)` (etc.) — op emits error on overflow                           |
-| `a OP b` (relation)   | `cel_num_lt(a, b)` (etc.)                                                         |
-| `a && b`              | evaluate both; `cel_and(a, b)`                                                    |
-| `a ? t : e`           | evaluate `a`; if non-OK return it; else branch on `cel_truthy(a)`                 |
+| `a OP b` (arith)      | `cel_int_add_at_ii(scratch, a, b)` (and `_at_uu` for uint; `cel_int_neg_at_i` for unary `-`) — sret helper writes CEL_INT / CEL_UINT on success, CEL_ERROR on overflow / div0 / mod0 |
+| `a OP b` (relation)   | `cel_num_lt(a, b)` (etc.) — returns i32 0/1; wrap in `cel_make_bool` to produce a CelValue offset |
+| `a && b`              | evaluate both as CelValue offsets; `cel_and(a, b)` (similarly `cel_or`, `cel_not`) |
+| `a ? t : e`           | `cel_bool_from_value(a)` (stopgap; see §10.2.1) drives an `if` that evaluates either arm |
 | Call (stdlib inline)  | inlined sequence of runtime calls                                                 |
 | Call (host stdlib)    | import call in `cel_host`                                                         |
 | Call (user fn)        | import call in `cel_fn.<overload_id>`                                             |
@@ -1104,62 +1104,114 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 | Message literal       | host constructor import (`cel_host.message_new_<type_id>`)                        |
 | Comprehension         | WASM `loop` over list/map; accu written to a local `CelValue*`                    |
 
-For non-absorbing operators, the propagation is a two-instruction guard
-inlined at each call site:
+For non-absorbing operators, the propagation shape depends on the op's
+ABI:
 
-```wat
-call $cel_sub_a              ;; leaves CelValue* on the stack
-local.tee $a
-call $cel_is_ok              ;; returns i32
-i32.eqz
-if (result i32)
-  local.get $a               ;; propagate as-is (kind is UNKNOWN or ERROR)
-else
-  call $cel_sub_b
-  local.tee $b
-  call $cel_is_ok
-  i32.eqz
-  if (result i32)
-    local.get $b
-  else
-    local.get $a
-    local.get $b
-    call $cel_int_add        ;; actual op
-  end
-end
-```
+  - **Arithmetic (sret helpers).**  The scratch slot's `kind` byte is
+    inspected after the helper returns; on ERROR the lowering copies
+    the scratch CelValue into the caller's sret slot via
+    `cel_copy_celvalue_at` and `return`s.  See §10.2.
+  - **Boxed operands (CelValue offsets).**  For ops that take and
+    return CelValue offsets (`cel_and` / `cel_or` / `cel_not`,
+    comparisons, string ops), the callee absorbs UNKNOWN / ERROR
+    per 3VL rules — no caller-side guard needed.  `&&` / `||` short-
+    circuit semantics live entirely inside `cel_and` / `cel_or`.
 
-Binaryen optimizes these away when a branch is a constant.
+Binaryen optimizes constant-branch guards away.
 
 ### 10.2 Overflow handling
 
-`cel_int_add_ii` / `_sub_ii` / `_mul_ii` / `_div_ii` / `_mod_ii` and their
-`_uu` uint counterparts implement the spec's checked arithmetic internally
-and return a boxed `CelValue*` that is either OK(int/uint) or an ERROR with
-`code=OVERFLOW` / `DIVIDE_BY_ZERO` / `MODULUS_BY_ZERO`.  Codegen never
-inlines raw `i64.add` for CEL ints — it always calls the runtime op, which
-inlines at the WASM level but keeps the error path correct.
+Checked arithmetic uses the scratch-slot (sret) ABI: each runtime helper
+writes a 24-byte CelValue into a caller-provided slot rather than
+bump-allocating a fresh boxed value per op.  Codegen calls the scalar-
+arg variants — `cel_int_add_at_ii(out, i64, i64)` and its siblings for
+int/uint add / sub / mul / div / mod, plus `cel_int_neg_at_i(out, i64)`
+— from straight-line wasm so neither side re-boxes scalars that are
+already in wasm locals.
 
-**Current trap-on-ERROR stopgap (M4 Slice B, 2026-04-19).**  The helpers
-return CEL_ERROR values correctly, but the codegen for an arithmetic node
-currently emits
+Each helper always writes a well-formed CelValue (the "total function"
+guarantee documented in `compiler/runtime/cel_runtime.h`):
+
+  - Happy path: `CEL_INT{r}` or `CEL_UINT{r}`.
+  - Arithmetic error: `CEL_ERROR{code}` with code one of
+    `CEL_ERR_OVERFLOW` / `CEL_ERR_DIVIDE_BY_ZERO` /
+    `CEL_ERR_MODULUS_BY_ZERO`.  `INT64_MIN / -1` overflows; `-INT64_MIN`
+    overflows; `INT64_MIN % -1` is defined as 0 (matching cel-go).
+
+Codegen reserves **one** 24-byte scratch slot per `$eval` invocation —
+lazily allocated at the function prologue via `cel_alloc(24)` when any
+checked-arithmetic helper actually needs it (`LoweringContext::
+GetScratchSlotLocal` + `WithScratchSlotPrologue`).  One slot is enough
+because straight-line tree evaluation loads the payload out of the slot
+into a wasm local before the next helper call overwrites it.
+
+**3b1 (2026-04-20): observable CEL_ERROR, not wasm trap.**  On a helper
+writing a CEL_ERROR into the scratch slot, codegen now emits
 
 ```
 Block(
-  LocalSet($tmp, Call(cel_int_add_ii, …)),     ;; boxed CelValue*
-  If(i32.load8_u offset=0 ($tmp) == CEL_ERROR,  ;; kind byte
-     Unreachable),                              ;; trap
-  i64.load offset=8 ($tmp))                    ;; unbox the scalar payload
+  Call(cel_<op>_at_ii, local.get $scratch, lhs, rhs),
+  If(i32.load8_u offset=0 ($scratch) == CEL_ERROR,
+     Block(Call(cel_copy_celvalue_at, local.get $sret, local.get $scratch),
+           Return)),
+  i64.load offset=8 ($scratch))
 ```
 
-so on ERROR the module traps and wasmtime surfaces it as
-`absl::InternalError("... trapped: ...")`.  That is observable at the host
-(the testing-checklist row is closed) but it is **not** the spec-correct
-three-valued behaviour: `1/0 || true` should short-circuit to `true`, not
-trap, and the 3VL retrofit in slices C+ of M4 needs every arithmetic node
-to hand back a real `CelValue*` that `cel_and` / `cel_or` / `?:` can
-absorb.  The gap is tracked as an open question at the end of this
-document ("Trap-vs-observable-CEL_ERROR").
+— on ERROR the helper-allocated CelValue gets memcpy'd into the eval
+function's sret slot and the function early-returns; on OK, codegen
+unboxes the payload and continues.  The host decodes the sret slot and
+surfaces CEL_ERROR as `absl::InternalError("... result is ERROR")`,
+which is composable with the 3VL logical operators below (see §10.2.1)
+and does not trap the wasm instance.
+
+The NaN-unordered double-compare guard follows the same pattern: on a
+NaN operand (`a != a | b != b`), `LowerDoubleOrderedCompare` emits
+`Call(cel_set_error_at, $sret, CEL_ERR_TYPE_MISMATCH); Return;` instead
+of the earlier `BinaryenUnreachable`.  Equality (`f64.eq` / `f64.ne`)
+already returns false/true for any NaN input per IEEE 754, so no guard
+is needed there.
+
+### 10.2.1 Three-valued `&&` / `||` / `!` (3b2)
+
+Boolean values travel through codegen as CelValue offsets, not raw i32
+truth values.  `Repr::kBool`'s wasm ABI type is still i32, but the i32
+is semantically an arena offset to a CelValue whose kind is
+`CEL_BOOL` / `CEL_UNKNOWN` / `CEL_ERROR` — so every boolean carries its
+three-valued status with it, and the 3VL helpers can consume the value
+directly without a boxing conversion at every call site.
+
+  - Bool literals lower through `cel_make_bool(i32) → offset` instead
+    of emitting a raw i32 constant.
+  - Every bool-producing site — `has(msg.f)`, `starts_with` /
+    `ends_with` / `contains`, ordered/equality comparisons — wraps its
+    raw i32 result in `cel_make_bool` before handing it to a consumer,
+    so the consumer always sees a CelValue offset.
+  - Raw-i32 bool parameters on `$eval` are auto-boxed into CelValue
+    locals at function entry.  Binaryen's param type stays i32 for
+    host-ABI compatibility; at `$eval` entry, codegen emits a
+    prologue-setup `local.set $boxed (call cel_make_bool (local.get
+    $raw_param))` for each bool param and rebinds the ident name to
+    `$boxed`.  Subsequent `local.get` ident reads land on the boxed
+    CelValue offset, not the raw truth value.
+
+With bool values carrying their kind byte, `&&` / `||` / `!` dispatch
+straight to the 3VL helpers:
+
+  - `a && b` → `cel_and(a, b)` — short-circuits past OK(false) regardless
+    of the other side's status; ERROR dominates UNKNOWN otherwise.
+  - `a || b` → `cel_or(a, b)` — symmetric (short-circuits past OK(true)).
+  - `!a` → `cel_not(a)` — bool flip on OK; passthrough on ERROR/UNKNOWN.
+
+Sret-roots whose Repr is already a CelValue offset (`kBool`, `kString`,
+`kBytes`, wrapped message) all share a single write path —
+`cel_copy_celvalue_at($sret, $offset)` — so the earlier scalar-repr
+`cel_box_bool` helper is removed.
+
+The ternary `?:` still unboxes its condition through
+`cel_bool_from_value(offset) → i32` and dispatches on the result.
+Making `?:` itself three-valued (condition=UNKNOWN → result=UNKNOWN;
+condition=ERROR → result=ERROR) is deferred — the stopgap is
+documented at the call site in `LowerConditional`.
 
 ### 10.3 Comprehension lowering and scope management
 
@@ -1297,10 +1349,10 @@ struct StdlibEntry {
 };
 ```
 
-Every inlineable op is a runtime function (`cel_int_add`, `cel_string_eq`,
-…). Regex and protobuf equality go to host imports (`cel_host.string_matches`,
-`cel_host.message_eq`). Macros are handled in the checker / parser — never
-reach codegen as calls.
+Every inlineable op is a runtime function (`cel_int_add_at_ii`,
+`cel_string_eq`, …). Regex and protobuf equality go to host imports
+(`cel_host.string_matches`, `cel_host.message_eq`). Macros are handled
+in the checker / parser — never reach codegen as calls.
 
 ## 12. Custom functions
 
@@ -1629,80 +1681,22 @@ cel_reset.call();
   rewrite.  See also the checker-integration bullet in
   `doc/implementation-plan/m5-collections-and-comprehensions.md`.
 
-- **Trap-vs-observable-CEL_ERROR for checked arithmetic (decide in
-  M4 Slice C).**  Today the checked-arithmetic helpers return boxed
-  `CelValue*` with a CEL_ERROR tag on overflow / div0 / mod0 (see
-  §10.2), but the arithmetic codegen unboxes immediately: it traps
-  (`BinaryenUnreachable`) on ERROR and then loads the `i64` payload so
-  the rest of the emitted expression can consume a scalar.  The trap
-  is observable at the host (wasmtime surfaces it as
-  `absl::InternalError("... trapped: ...")`, which is good enough to
-  close the testing-checklist row for "INT_MAX + 1") but it violates
-  the 3VL propagation rules the spec actually requires:
-    - `1/0 || true` must short-circuit to `true`, not trap.
-    - `(1/0) == 0 ? "a" : "b"` must return the ternary's else-branch
-      under the spec's "ERROR propagates through non-absorbing ops"
-      rule, not trap at the divide.
-    - Comprehension aggregators (`all` / `exists_one`) need to
-      *inspect* an inner ERROR to decide whether to short-circuit.
-  .
-  The trap is a deliberate stopgap because today's arithmetic subtrees
-  hand i64 / f64 scalars up to their parent op — there is no status
-  channel in that ABI.  The fix is to give every arithmetic result
-  room to carry a `kind` byte alongside its payload so `cel_and` /
-  `cel_or` / `?:` / comprehension steps can absorb a CEL_ERROR
-  without trapping.  Three ways to close the gap, in order of
-  runtime cost:
-    - **Option A — arena-boxed `CelValue*` (i32 offset).**  Every
-      checked helper returns an i32 offset into the arena; every
-      consumer of arithmetic (comparisons, `&&`, `||`, `?:`,
-      comprehension bodies, calls) unboxes.  Uniform, matches the
-      rest of the runtime ABI, but bumps the arena per op — even
-      when the checker has proved the operands definite.  Mitigated
-      by a checker-driven fast-path: when the parent already accepts
-      a boxed value (like `cel_and`) skip the unbox; when two
-      arithmetic ops compose with both operands definite, call a
-      `_scalar` variant (`cel_int_add_scalar`) that returns a plain
-      `i64` and traps on overflow (the M4 slice B retrofit already
-      left room for this shape).
-    - **Option B — sret / linear-memory "stack" CelValue.**  Helpers
-      stay written in C; the caller reserves 24 bytes in the software
-      stack frame described in §7.4.2 (decrement `$cel_stack_ptr`,
-      compute an i32 offset), passes the offset as a hidden first
-      argument, and the callee writes the
-      CelValue through it.  This is clang's native wasm32 C ABI for
-      struct returns, so no exotic toolchain dance is needed — the
-      helper signature is just
-      `void cel_int_add(CelValue* out, CelValue a, CelValue b)`
-      (with `a` / `b` themselves passed by sret-style hidden ptr,
-      since clang also passes 24-byte structs by indirect ref on
-      wasm32).  No arena bump, lifetime ends with the `eval` call,
-      one memory round-trip per op.
-    - **Option C — true WASM multi-value on the value stack.**
-      Helpers return `(i32 kind, i64 payload)` — or `(i32, i64, i64)`
-      when ERROR metadata needs a second payload slot — directly
-      via WASM's multi-value return.  Zero memory traffic for
-      arithmetic chains: values stay in WASM locals / the value
-      stack.  Catch: **clang's wasm32 C ABI does not emit multi-value
-      returns for structs** — it always lowers struct returns to sret.
-      Reaching Option C means either writing the checked helpers in
-      hand-WAT, or emitting them directly via Binaryen's C API the
-      same way codegen emits `$eval` today.  Both are buildable
-      (wasmtime and every major engine enable multi-value by default,
-      Binaryen's `BinaryenAddFunction` accepts tuple result types),
-      but they move the runtime out of C.
-  .
-  Decision (2026-04-19): **Option B — sret with a per-`$eval` software
-  stack frame.**  Rationale: frame-local lifetime matches arithmetic
-  temporaries exactly, avoids arena pressure, and M5 comprehensions
-  will want the same stack for accumulator spills anyway — so we pay
-  the "carve a stack out of linear memory" cost once and amortise.
-  The storage-tier rules and stack-pointer protocol are written up in
-  §7.4.2 / §7.5.  Option C (true WASM multi-value) stays on the shelf
-  unless benchmarking later shows the sret memory round-trip dominates.
-  .
-  When Slice C ships, §10.2 needs a rewrite that drops the "trap on
-  ERROR" paragraph.
+- **Trap-vs-observable-CEL_ERROR for checked arithmetic —
+  RESOLVED (M4 Slice C, 2026-04-20).**  Shipped as the sret ABI
+  described in §10.2 / §10.2.1.  Every checked helper is now
+  `void cel_int_<op>_at_ii(i32 out, i64 a, i64 b)` (and `_at_uu`,
+  `_neg_at_i`) — totals that always write a well-formed 24-byte
+  CelValue, ERROR included.  `$eval` reserves one 24-byte scratch
+  slot via `cel_alloc(24)` at prologue, reuses it across every
+  arithmetic op, and on ERROR copies the scratch CelValue into the
+  caller's sret slot via `cel_copy_celvalue_at` + early `return`
+  (no `BinaryenUnreachable`).  The 3VL boolean plumbing in Slice C
+  commit 3b2 consumes that observable ERROR end-to-end: bool values
+  travel as CelValue offsets, `&&`/`||`/`!` dispatch to
+  `cel_and`/`cel_or`/`cel_not`, and `?:` unboxes via
+  `cel_bool_from_value`.  Option C (true WASM multi-value) stays on
+  the shelf unless benchmarking later shows the sret memory
+  round-trip dominates.
 
 - **compiler-rt / wasi-sdk cross-platform strategy for the runtime
   wasm32 build (revisit when the next runtime dep appears).**  The

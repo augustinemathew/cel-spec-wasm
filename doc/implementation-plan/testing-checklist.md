@@ -634,6 +634,35 @@ expression from `m1-type-checker.md`, plus:
 - [ ] `unknown` propagation through `&&` / `||` (M4).
 - [ ] Partial-eval: `unknown && false → false` commutatively (M4).
 
+**M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
+`&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue
+offsets across the whole codegen pipeline — literals via
+`cel_make_bool`, every bool-producing call site (`has(msg.f)`,
+`starts_with` / `ends_with` / `contains`, ordered / equality
+comparisons) wraps its i32 result in `cel_make_bool`, and bool
+`$eval` params are auto-boxed at the prologue.  `&&` / `||` /
+`!` dispatch to the slice A 3VL helpers (`cel_and` / `cel_or` /
+`cel_not`) on boxed operands.  `?:` unboxes its condition via
+`cel_bool_from_value` (two-valued stopgap — tracked in the
+design-doc §10.2.1 until the 3VL ternary decision lands).
+Coverage: the existing e2e suite exercises the new shape end-to-
+end — `eval_test::{BoolLiteralTrue, BoolLiteralFalse,
+LogicalAndShortCircuit, LogicalOrShortCircuit, LogicalNot,
+Ternary, MixedArithAndConditional, BoolVariableInTernary,
+HasComposesWithLogicalNot, HasAndFieldCompareTernary,
+MultiParamTwoMessagesConditional}` all pass against the new
+`cel_make_bool` + `cel_and` / `cel_or` / `cel_not` codegen.
+Non-obvious coverage holes still open: the 3VL truth-table for
+`cel_and` / `cel_or` (25 × 2 cases) and the `unknown`-in-`?:`
+semantics — both deferred to later M4 slices.  Dead-runtime
+audit in the same commit: `cel_box_bool`, `cel_int_*` /
+`cel_uint_*` non-sret, their `_ii` / `_uu` scalar variants,
+boxed `_at` variants, `cel_int_neg*`, and the
+`propagate_status_at` / `*_binop_prelude` helpers were all
+removed — the `cel_runtime_test.cc` cases that covered them went
+with them, and the sret `_at_ii` / `_at_uu` / `_neg_at_i`
+coverage (from slice C commit 2) stands unchanged.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

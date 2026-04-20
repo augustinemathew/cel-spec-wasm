@@ -1,6 +1,6 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slices A+B shipped (2026-04-19); slices C-G in progress.**
+Status: **slices A+B+C+D shipped (2026-04-20); slices E-G in progress.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
@@ -116,18 +116,69 @@ Block]).  All 15 `//compiler/...` test targets pass.  Trap-on-
 ERROR is still the stopgap; commit 3 wires 3VL `&&` / `||` and
 flips the arithmetic-ERROR path from trap to observable CelValue.
 
+**M4 slice C commit 3a (2026-04-20): `$eval` flips to sret ABI
+`(slot, args) → void`.**  The `$eval` signature grows a leading
+i32 sret slot argument and now returns void; every codegen path
+that used to produce an i32 result now writes it through the sret
+slot via a small set of `cel_copy_*` helpers (`cel_copy_i64_at` /
+`cel_copy_f64_at` / `cel_copy_celvalue_at`) or through the sret
+variant of an existing runtime helper.  The host test harness and
+wasmtime loader (`cel_host_wasmtime.cc`) allocate the caller slot
+via `cel_alloc(24)` before calling `$eval` and read the CelValue
+back through the slot.  No behavioural change yet — arithmetic
+ERROR still traps — but the ABI is now shaped so commit 3b1 can
+drop the trap in favour of an observable CelValue copy.
+
+**M4 slice C commit 3b1 (2026-04-20): arithmetic + NaN-unordered
+compares stop trapping.**  `EmitCheckedArithmetic` and
+`LowerDoubleOrderedCompare` swap their `BinaryenUnreachable`
+branches for `Block([cel_copy_celvalue_at(sret, scratch),
+return])` — on ERROR the scratch slot's CelValue is copied into
+the caller's sret slot and the function returns, so downstream
+consumers (comprehensions, 3VL `&&` / `||`) can observe and
+absorb the ERROR instead of the host seeing a wasm trap.
+NaN-unordered compares use the same path but construct their
+ERROR via `cel_set_error_at(scratch, CEL_ERR_NAN_COMPARE)`.
+Coverage: updated `expr_lower_test` shape assertions and the e2e
+arithmetic / NaN tests now expect `CelValue{ERROR, code=…}`
+instead of an `absl::InternalError` trap surface.
+
+**M4 slice C commit 3b2 (2026-04-20): bool travels as a CelValue
+offset; 3VL plumbing in `&&` / `||` / `!` / `?:`.**
+`Repr::kBool`'s ABI is still i32, but every bool value is now a
+CelValue arena offset — literals go through `cel_make_bool`
+(replacing the deleted `cel_box_bool`), and every bool-producing
+site (`has(msg.f)`, `starts_with` / `ends_with` / `contains`,
+ordered / equality comparisons) wraps its i32 result in
+`cel_make_bool` before handing it upward.  `$eval` params of
+`Repr::kBool` are auto-boxed into CelValue locals at prologue via
+a new `LoweringContext::prologue_setups` list.  `&&` / `||` / `!`
+dispatch to `cel_and` / `cel_or` / `cel_not` (the slice A 3VL
+helpers) on boxed operands.  `?:` unboxes its condition through
+`cel_bool_from_value` — a two-valued stopgap documented in the
+design-doc §10.2.1 until we decide on 3VL ternary semantics.
+Sret writes for bool / string / bytes / wrapped-message roots
+now all share `cel_copy_celvalue_at`, and pre-existing dead
+runtime exports (`cel_int_*` / `cel_uint_*` non-sret, `_ii` /
+`_uu` scalar variants, boxed `_at` variants, `cel_int_neg*`,
+`cel_box_bool`, and the `propagate_status_at` / `*_binop_prelude`
+C helpers) were removed in the same commit — codegen only
+reaches the `_at_ii` / `_at_uu` / `_neg_at_i` sret shape.
+
 ### Codegen
 
 - [x] Arithmetic ops grow an **overflow check** on int.  Slice B
-      (2026-04-19): codegen dispatches `_+_` / `_-_` / `_*_` / `_/_` /
-      `_%_` on int/uint through the B1 runtime helpers
-      (`cel_int_add_ii` etc.).  The emitted shape is
-      `Block(LocalSet(Call(helper)), If(kind==CEL_ERROR, unreachable),
-      i64.load offset=8)` — on ERROR the trap surfaces through
-      wasmtime as an `absl::InternalError("... trapped: ...")`.  The
-      CEL-correct "observable ERROR value" path lands with the 3VL
-      &&/|| retrofit in a later slice; the trap is the stopgap so the
-      "INT_MAX + 1" testing-checklist row is closed today.
+      (2026-04-19) shipped the trap-on-ERROR stopgap via
+      `cel_int_add_ii` etc.; slice C commit 2 (2026-04-19) flipped
+      codegen onto the sret helpers (`cel_int_add_at_ii` /
+      `_at_uu` / `cel_int_neg_at_i`) with one per-`$eval` scratch
+      slot; slice C commit 3b1 (2026-04-20) then dropped the trap
+      in favour of an observable ERROR: the emitted shape is
+      `Block(Call(sret_helper, slot, a, b), If(kind==CEL_ERROR,
+      [cel_copy_celvalue_at(sret, slot), return]),
+      i64.load offset=8)`.  "INT_MAX + 1" now surfaces as a
+      `CelValue{ERROR, code=CEL_ERR_OVERFLOW}` the host can
+      inspect, not a wasmtime trap.
 - [x] `/` and `%` grow a **zero-divisor check**.  (Slice B: division
       and modulo go through the same checked helpers; `_uint_ / 0`,
       `_int_ / 0`, `INT64_MIN / -1`, and `_int_ % 0` all produce a
@@ -152,14 +203,23 @@ flips the arithmetic-ERROR path from trap to observable CelValue.
       `DoubleDivZeroProducesInfNotTrap`), plus updated
       `expr_lower_test::DoubleComparisons` asserting the new
       Block[set_a, set_b, trap_if, Binary] body shape.
-- [ ] `&&` / `||` switch from M2's scalar short-circuit to the
-      three-valued `cel_and` / `cel_or` helpers.  The codegen
-      inspects both operand Reprs and picks the scalar-only path
-      when the checker has guaranteed both are definite booleans —
-      this is an important optimisation because without it every
-      boolean expression pays the three-valued overhead.
-- [ ] `?:` grows the same treatment: when the condition is
+- [x] `&&` / `||` / `!` switch from M2's scalar short-circuit to
+      the three-valued `cel_and` / `cel_or` / `cel_not` helpers.
+      **Slice C commit 3b2 (2026-04-20):** bool values now travel
+      as CelValue offsets (Repr::kBool is an arena-offset i32);
+      `&&` / `||` / `!` call the slice A 3VL helpers on boxed
+      operands.  The checker-driven scalar fast-path is deferred —
+      every boolean expression pays the boxed overhead today, but
+      the `cel_make_bool` + 3VL-helper shape is uniform, which
+      keeps codegen small.  Fast-path revisit is tracked in
+      `testing-checklist.md`.
+- [~] `?:` grows the same treatment: when the condition is
       UNKNOWN / ERROR, the ternary returns the same (per spec).
+      **Stopgap (slice C commit 3b2):** `?:` unboxes its
+      condition via `cel_bool_from_value` and falls back to a
+      two-valued `If` — UNKNOWN / ERROR-in-condition semantics are
+      still pending a 3VL decision (tracked as a design-doc
+      §10.2.1 note).
 - [ ] Identifier lookup against a host-provided `unknown_attributes`
       set — the host ABI grows
       `cel_host.is_unknown(externref, i32 attr_id) → i32`; if true,
