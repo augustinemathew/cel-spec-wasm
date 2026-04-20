@@ -921,11 +921,30 @@ The M3 surface — what codegen emits today — is three imports under the
 ;; span storage and populates payload.s.{ptr,len}.  For message fields
 ;; the host writes kind=CEL_MESSAGE and payload.msg_slot = intern(ref).
 ;; UNKNOWN and ERROR propagate via kind=CEL_UNKNOWN / CEL_ERROR.
+;;
+;; The i32 `field_intern_id` indexes `cel.abi.fields` (a FieldEntry
+;; table interned at compile time; each entry carries the field's
+;; wire number + UTF-8 name so the host can dispatch through proto
+;; reflection without trusting the module's symbol strings).
+;;
+;; The i32 `attr_id` indexes `cel.abi.attributes` (each entry is
+;; `{id, variable, qualifiers[]}` — the full rooted attribute path of
+;; the select site).  It exists for partial-evaluation: at call time
+;; the host matches the attribute path against its
+;; `LoadedEval::SetUnknownPatterns(...)` set, and on FULL match
+;; writes `CelValue{CEL_UNKNOWN, payload.unk=0}` into `*out_cv` and
+;; skips the field read.  A host that does not use partial-eval can
+;; ignore the attr_id — it still has to carry through the call slot.
 (import "cel_host" "get_field"
-        (func (param externref i32 i32)))     ;; (msg, field_number, out_cv)
+        (func (param externref i32 i32 i32)))  ;; (msg, field_intern_id, attr_id, out_cv)
 
 ;; Presence test.  Host dispatches on proto3 presence rules (submessage
 ;; explicit-set, scalar-non-default) via google::protobuf::Reflection.
+;;
+;; `has_field` stays 2-arg because its i32 return cannot carry
+;; UNKNOWN today — if partial-eval should absorb through `has(…)`,
+;; the fix is to widen the return to a sret CelValue (Slice F
+;; tracking), not to thread `attr_id` through.
 (import "cel_host" "has_field"
         (func (param externref i32) (result i32)))
 
@@ -936,12 +955,14 @@ The M3 surface — what codegen emits today — is three imports under the
         (func (param externref externref) (result i32)))
 ```
 
-Field numbers are emitted as codegen immediates (the externref already
-carries the descriptor pool, so no interning table is needed).  The
-imports are declared unconditionally on every eval module — the "don't
-gate `cel_host.*` imports on AST inspection" rule avoids a class of
-bugs where a host provides a linker that doesn't know about imports
-the module didn't happen to call.
+Field and attribute intern ids are emitted as codegen immediates.
+Both tables are walked pre-order outer-first at codegen, and
+`BuildCelAbi` uses the same walk so the ids embedded in the module
+line up with the entries in `cel.abi.{fields,attributes}`.  The
+imports are declared unconditionally on every eval module — the
+"don't gate `cel_host.*` imports on AST inspection" rule avoids a
+class of bugs where a host provides a linker that doesn't know about
+imports the module didn't happen to call.
 
 The M3 surface does **not** cover repeated fields, maps, regex, or
 type-of-message — those land with the collections milestones:
@@ -1087,7 +1108,7 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 | --------------------- | --------------------------------------------------------------------------------- |
 | Literal               | `cel_<kind>(const)` for scalars; for strings/bytes: `cel_alloc(len)` → cache `cel_mem_base() + rel` in a local, store literal bytes through that absolute pointer, then `cel_string_view(rel, len)` (view takes the arena-relative offset) |
 | Variable              | `local.get $argN`                                                                 |
-| `e.f` (any field)     | `scratch = cel_alloc(24); cel_host.get_field(unwrap(e), field_number, scratch);` then a per-`Repr` payload load from `cel_mem_base() + scratch + 8` — scalars load inline, strings/bytes become a `cel_make_*_view` over `payload.s.{ptr,len}`, messages call `cel_unwrap_message(scratch)` to re-hydrate the externref |
+| `e.f` (any field)     | `scratch = cel_alloc(24); cel_host.get_field(unwrap(e), field_intern_id, attr_id, scratch);` then a per-`Repr` payload load from `cel_mem_base() + scratch + 8` — scalars load inline, strings/bytes become a `cel_make_*_view` over `payload.s.{ptr,len}`, messages call `cel_unwrap_message(scratch)` to re-hydrate the externref.  For scalar / message Reprs codegen inserts `EmitSretEarlyReturnIfNonOk(scratch)` between the call and the load so an UNKNOWN/ERROR in the sret slot propagates instead of reinterpreting garbage bytes; for bool / string / bytes the payload offset *is* the scratch slot so UNKNOWN flows naturally and 3VL absorbers (`cel_and`/`cel_or`/`cel_not`) handle it |
 | `has(e.f)`            | `cel_host.has_field(unwrap(e), field_number)` — returns i32 0/1 directly; no scratch CelValue needed |
 | `e1 == e2` (message)  | `cel_host.message_eq(unwrap(e1), unwrap(e2))` — wrapped in `i32.eqz` for `!=` |
 | `m[k]` (list)         | `cel_list_get(m, k)`                                                              |
@@ -1525,17 +1546,28 @@ orientation only.
 message CelAbi {
   uint32 version = 1;
   string cel_source = 2;
-  google.api.expr.v1alpha1.CheckedExpr checked = 3;
-  repeated TypeIdEntry    types       = 4;   // (type_id, fqn)
-  repeated AttributeEntry attributes  = 5;   // (attribute_id, var, path)
-  repeated PatternEntry   patterns    = 6;   // (pattern_id, regex_src)
-  repeated ErrorMessage   error_msgs  = 7;   // (error_msg_id, text)
-  FunctionSet             function_set = 8;
-  MemoryLayout            layout      = 9;   // initial/max pages, reserved regions
+  cel.expr.CheckedExpr   checked     = 3;
+  repeated FieldEntry     fields      = 4;   // (id, field_number, name) — indexed by `field_intern_id`
+  repeated AttributeEntry attributes  = 5;   // (id, variable, qualifiers[]) — indexed by `attr_id`
+  // Reserved for later milestones (see M7): PatternEntry, TypeIdEntry,
+  // ErrorMessage intern tables line up with the §8.2 plan — they stay
+  // absent until a codegen site actually references them.
+  FunctionSet  function_set = 8;
+  MemoryLayout layout       = 9;
 }
+
+message FieldEntry     { uint32 id = 1; uint32 field_number = 2; string name = 3; }
+message AttributeEntry { uint32 id = 1; string variable = 2; repeated string qualifiers = 3; }
 ```
 
 Hosts MUST read and verify this section before instantiation.
+`fields` and `attributes` are both dense-from-zero intern tables —
+codegen walks the AST pre-order outer-first and emits the id as an
+i32 immediate at every `cel_host.get_field` / `has_field` call site;
+`BuildCelAbi` walks in the same order, so the emitted id and the
+ABI-table index match without a separate round-trip.  An eval module
+with no selects emits an empty `fields` / `attributes` list, not a
+missing field — downstream tooling reads both unconditionally.
 
 ## Appendix B: minimal host worked example
 

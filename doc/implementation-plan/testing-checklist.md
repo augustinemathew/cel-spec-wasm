@@ -631,8 +631,26 @@ expression from `m1-type-checker.md`, plus:
       DoubleOrderedCompareNonNaNStillWorks,
       DoubleDivZeroProducesInfNotTrap}`.
 - [ ] String coercion errors where the spec forbids them.
-- [ ] `unknown` propagation through `&&` / `||` (M4).
-- [ ] Partial-eval: `unknown && false → false` commutatively (M4).
+- [x] `unknown` propagation through `&&` / `||` (M4).  **Slice C/3b2
+      (2026-04-20)** wired `cel_and` / `cel_or` / `cel_not` into
+      codegen; **Slice E2a.1 (2026-04-20)** added the first non-
+      synthetic UNKNOWN producer.  `eval_test::EvalE2EUnknownTest`
+      flips this row by running end-to-end expressions where a host-
+      marked attribute flows into `&&` / `||` via `c.is_premium`.
+- [x] Partial-eval: `unknown && false → false` commutatively (M4).
+      Covered by `cel_runtime_test` (25×2 helper truth table) plus
+      `EvalE2EUnknownTest::PartialMatchDoesNotShortCircuit` and
+      related e2e tests that run the absorber end-to-end on a real
+      host-emitted UNKNOWN.
+- [x] **UNKNOWN producer via `cel_host.get_field`.**  Slice E2a.1
+      (2026-04-20).  `EvalE2EUnknownTest` — 9 passing tests across
+      full-match, partial-match, no-match, wildcards, bare-variable
+      patterns, multi-pattern dispatch, and `SetUnknownPatterns`
+      idempotency.  `AttributePattern::IsMatch` unit coverage lives
+      in `compiler/host/attribute_test.cc` (18 cases over
+      `{NONE, PARTIAL, FULL}` × wildcards × parse errors), and the
+      codegen→ABI invariant (pre-order attr_id assignment) is
+      pinned by `abi_test::BuildPopulatesAttributeTable…`.
 - [ ] **3VL absorption in non-absorbing ops (Slice F).**  Every
       expression where an ERROR / UNKNOWN subtree flows through a
       non-absorbing intermediate op (arithmetic, comparison,
@@ -641,8 +659,11 @@ expression from `m1-type-checker.md`, plus:
       `m4-slice-f-3vl-absorption.md`.  The ERROR-source rows (1–8)
       are live as `DISABLED_ThreeValuedAbsorption_*` in
       `eval_test.cc` — drop the prefix when Slice F lands and they
-      should pass.  UNKNOWN-source rows (9–22) wait for Slice E2a.1
-      (host UNKNOWN producer).
+      should pass.  UNKNOWN-source rows (9, 10, 15, 18) are now
+      cataloged as `DISABLED_UnknownThrough{Equality,OrderedCompare,
+      StringEq,ArithThenCompare}Absorbed` (live regression tests
+      the moment Slice F flips the codegen).  Remaining UNKNOWN
+      rows (11–14, 16–17, 19–22) still need DISABLED_ shells.
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

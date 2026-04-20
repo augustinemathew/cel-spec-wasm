@@ -1,10 +1,9 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slices A+B+C+D+E1 shipped (2026-04-20); slice E2a.1 (host
-UNKNOWN propagation via `get_field`) next; slice E2a.2 (CLI flag)
-and Slice F (3VL absorption in non-absorbing ops) deferred — Slice
-F is tracked in `m4-slice-f-3vl-absorption.md` with the full
-checklist of spec-breaking expressions.**
+Status: **slices A+B+C+D+E1+E2a.1 shipped (E2a.1 on 2026-04-20);
+slice E2a.2 (CLI flag) next; Slice F (3VL absorption in
+non-absorbing ops) tracked in `m4-slice-f-3vl-absorption.md` with
+the full checklist of spec-breaking expressions.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
@@ -169,6 +168,50 @@ runtime exports (`cel_int_*` / `cel_uint_*` non-sret, `_ii` /
 C helpers) were removed in the same commit — codegen only
 reaches the `_at_ii` / `_at_uu` / `_neg_at_i` sret shape.
 
+**M4 slice E2a.1 (2026-04-20): partial-eval UNKNOWN producer via
+`cel_host.get_field`.**  The first path that can surface an UNKNOWN
+CelValue at runtime.  Three things landed in one slice:
+
+  1. **`AttributePattern`** (`compiler/host/attribute.{h,cc}`) —
+     port of cel-cpp's wildcard-aware pattern with MatchType
+     `{NONE, PARTIAL, FULL}`.  `ParseUnknownAttributePattern` takes
+     a `var.q1.q2` / `var.*.q2` style string.  `pattern_len >
+     attr_len` → PARTIAL (attribute is a prefix of the pattern);
+     `pattern_len ≤ attr_len` + all shared qualifiers match → FULL.
+  2. **`CelAbi.attributes`** grows to field 5 —
+     `AttributeEntry{id, variable, qualifiers[]}`.  `AttributePool`
+     in codegen and `BuildCelAbi` both walk selects pre-order
+     outer-first so codegen's embedded `attr_id` ints match the
+     runtime table.
+  3. **`cel_host.get_field`** signature widened from
+     `(externref, i32) → i32 (sret offset)` to
+     `(externref msg, i32 field_intern_id, i32 attr_id, i32 out) →
+     ()` — the caller pre-allocates the sret slot via `cel_alloc(24)`
+     and hands it to the trampoline.  `CelHostEnv` now carries an
+     `attribute_table_` + `unknown_patterns_`; on FULL match the
+     trampoline writes `CelValue{CEL_UNKNOWN, payload.unk=0}`
+     directly into the slot and skips the field read.
+     `LoadedEval::SetUnknownPatterns(std::vector<AttributePattern>)`
+     is how a host installs patterns after `LoadEval`.
+
+Coverage (component-by-component):
+  - `compiler/host/attribute_test.cc` — 18 unit tests across
+    MatchType enumeration, wildcard handling, parse errors.
+  - `compiler/codegen/attribute_pool_test.cc` — pool determinism,
+    pre-order walk invariant, empty-table case.
+  - `compiler/codegen/abi_test.cc` — `BuildPopulatesAttributeTable…`
+    / `…EmptyForSelectlessExpressions` verify the ABI serialization
+    of attribute entries matches the codegen walk.
+  - `compiler/host/host_loader_test.cc` — `ParseAttributeTable`
+    round-trip; `SetUnknownPatterns` idempotency.
+  - `compiler/e2e/eval_test.cc` `EvalE2EUnknownTest` — 9 passing
+    tests over full/partial/no-match, wildcards, bare-variable
+    patterns, multi-pattern dispatch, pattern-set idempotency.
+  - Spec gap for Slice F is cataloged in-place as four
+    `DISABLED_UnknownThrough{Equality,OrderedCompare,StringEq,
+    ArithThenCompare}Absorbed` tests referencing
+    `m4-slice-f-3vl-absorption.md` rows 9, 10, 15, 18.
+
 ### Codegen
 
 - [x] Arithmetic ops grow an **overflow check** on int.  Slice B
@@ -229,13 +272,37 @@ reaches the `_at_ii` / `_at_uu` / `_neg_at_i` sret shape.
       Codegen-shape coverage via `expr_lower_test::Conditional`;
       e2e coverage of the 3VL-cond path is deferred until Slice E2
       introduces the first non-early-returning UNKNOWN producer.
-- [ ] Identifier lookup against a host-provided `unknown_attributes`
-      set — the host ABI grows
-      `cel_host.is_unknown(externref, i32 attr_id) → i32`; if true,
-      the ident lowering returns an `UnknownSet{attr_id}` instead
-      of the scalar.
-- [ ] Select lowering chains the unknown: if the receiver is
-      UNKNOWN, propagate; else read field.
+- [x] Identifier lookup against a host-provided `unknown_attributes`
+      set.  **M4 slice E2a.1 (2026-04-20):** rather than adding a
+      standalone `cel_host.is_unknown`, the producer lives on the
+      existing `get_field` trampoline — its signature grew a third
+      `i32 attr_id` arg and a fourth `i32 out_offset` sret slot, so
+      it now reads `(externref msg, i32 field_intern_id, i32 attr_id,
+      i32 out) -> ()`.  On call, the host matches the attr_id's
+      rooted path (looked up in `CelAbi.attributes`) against
+      `LoadedEval::SetUnknownPatterns(...)`; on FULL match it writes
+      `CelValue{CEL_UNKNOWN, payload.unk=0}` into the sret slot and
+      the field is never read.  `AttributePattern::IsMatch` ports
+      cel-cpp's MatchType {NONE, PARTIAL, FULL} with wildcard
+      qualifiers.  `BuildCelAbi` walks selects pre-order outer-first
+      (same order as `FieldNamePool`) so codegen and the ABI hand
+      out matching attr_ids.  Bare-ident UNKNOWN still has no
+      dedicated producer; today a host only marks root-plus-path
+      attributes, which is sufficient for every §partial-evaluation
+      test in the spec.
+- [x] Select lowering chains the unknown: if the receiver is
+      UNKNOWN, propagate; else read field.  **M4 slice E2a.1
+      (2026-04-20):** `LowerSelectField` inserts
+      `EmitSretEarlyReturnIfNonOk(scratch)` between the
+      `get_field` call and the payload load whenever the Repr is
+      scalar/message — an UNKNOWN (or ERROR) in the sret slot is
+      copied into the caller sret and `$eval` returns before the
+      load reinterprets the UNKNOWN bytes.  For Repr::kBool /
+      kString / kBytes the payload is already the scratch offset
+      itself, so the UNKNOWN flows naturally to the parent (3VL
+      `cel_and`/`cel_or`/`cel_not` absorb it for bool).  The
+      non-absorbing consumers (`==`, ordered compare, arithmetic)
+      still short-circuit today — that's Slice F.
 - [ ] Comprehension aggregation: the accumulator's kind dominates.
       `all` over a range that has an unknown element returns UNKNOWN,
       not false (unless an earlier element already forced false, in
