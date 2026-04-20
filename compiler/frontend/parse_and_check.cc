@@ -25,9 +25,13 @@
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
 #include "google/protobuf/arena.h"
+#include "google/protobuf/compiler/importer.h"
+#include "google/protobuf/compiler/parser.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/descriptor_database.h"
+#include "google/protobuf/io/tokenizer.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "parser/parser.h"
 
 namespace celwasm {
@@ -46,37 +50,115 @@ struct DescriptorPoolBundle {
   const google::protobuf::DescriptorPool* pool = nullptr;
 };
 
+// Captures Parser diagnostics so we can surface them in an absl::Status
+// rather than losing them to stderr.  Separate line / column recorded
+// per error so the final message reads the same as `protoc`'s output.
+class StringErrorCollector : public google::protobuf::io::ErrorCollector {
+ public:
+  void RecordError(int line, int column, absl::string_view message) override {
+    absl::StrAppend(&text_, "  line ", line + 1, ":", column + 1, " ", message,
+                    "\n");
+  }
+  void RecordWarning(int /*line*/, int /*column*/,
+                     absl::string_view /*message*/) override {}
+  const std::string& text() const { return text_; }
+
+ private:
+  std::string text_;
+};
+
+// Parses a textual `.proto` source into a `FileDescriptorProto`.  Imports
+// are NOT resolved here — the returned proto still references any imports
+// by name, and the caller's `MergedDescriptorDatabase` resolves them
+// against the generated pool (which covers the CEL well-known types) or
+// fails downstream with a clear "unknown type" error.  That's the right
+// trade: single-file user schemas work with zero setup, and complex
+// multi-file schemas fall through to `schema_descriptor_set_path`.
+absl::StatusOr<google::protobuf::FileDescriptorProto> ParseProtoSource(
+    absl::string_view path) {
+  std::ifstream in{std::string(path)};
+  if (!in) {
+    return absl::NotFoundError(
+        absl::StrCat("cannot open proto source: ", path));
+  }
+  std::stringstream buf;
+  buf << in.rdbuf();
+  const std::string contents = buf.str();
+
+  google::protobuf::io::ArrayInputStream input(contents.data(),
+                                               static_cast<int>(contents.size()));
+  StringErrorCollector collector;
+  google::protobuf::io::Tokenizer tokenizer(&input, &collector);
+
+  google::protobuf::compiler::Parser parser;
+  parser.RecordErrorsTo(&collector);
+
+  google::protobuf::FileDescriptorProto file;
+  if (!parser.Parse(&tokenizer, &file)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "failed to parse proto source ", path, ":\n", collector.text()));
+  }
+  // Parser leaves `name` unset (the source file doesn't carry it); the
+  // descriptor pool uses `name` as a unique key, so we stamp it from the
+  // filesystem path.  Any valid string works — we pick the full path so
+  // duplicate adds (two --schema flags pointing at the same file) fail
+  // loudly rather than silently overwriting.
+  file.set_name(std::string(path));
+  return file;
+}
+
+// Builds a descriptor pool rooted at the generated pool plus any user
+// schema supplied via `opts`.  At most one of the two schema fields may
+// be set; both unset falls through to the generated pool directly.
 absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
-    absl::string_view schema_path) {
+    const CheckOptions& opts) {
   DescriptorPoolBundle bundle;
-  if (schema_path.empty()) {
+  const bool has_proto = !opts.schema_proto_path.empty();
+  const bool has_fds = !opts.schema_descriptor_set_path.empty();
+  if (has_proto && has_fds) {
+    return absl::InvalidArgumentError(
+        "at most one of schema_proto_path / schema_descriptor_set_path may "
+        "be set");
+  }
+  if (!has_proto && !has_fds) {
     bundle.pool = google::protobuf::DescriptorPool::generated_pool();
     return bundle;
   }
 
-  std::ifstream in{std::string(schema_path), std::ios::binary};
-  if (!in) {
-    return absl::NotFoundError(
-        absl::StrCat("cannot open schema file: ", schema_path));
-  }
-  std::stringstream buf;
-  buf << in.rdbuf();
-  std::string bytes = buf.str();
-
-  google::protobuf::FileDescriptorSet fds;
-  if (!fds.ParseFromString(bytes)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "schema file is not a valid FileDescriptorSet: ", schema_path));
-  }
-
   bundle.schema_db =
       std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
-  for (const auto& file : fds.file()) {
-    if (!bundle.schema_db->Add(file)) {
+
+  if (has_proto) {
+    auto file = ParseProtoSource(opts.schema_proto_path);
+    if (!file.ok()) return file.status();
+    if (!bundle.schema_db->Add(*file)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "could not register proto source: ", opts.schema_proto_path));
+    }
+  } else {
+    std::ifstream in{opts.schema_descriptor_set_path, std::ios::binary};
+    if (!in) {
+      return absl::NotFoundError(absl::StrCat(
+          "cannot open schema file: ", opts.schema_descriptor_set_path));
+    }
+    std::stringstream buf;
+    buf << in.rdbuf();
+    const std::string bytes = buf.str();
+
+    google::protobuf::FileDescriptorSet fds;
+    if (!fds.ParseFromString(bytes)) {
       return absl::InvalidArgumentError(
-          absl::StrCat("duplicate file in FileDescriptorSet: ", file.name()));
+          absl::StrCat("schema file is not a valid FileDescriptorSet: ",
+                       opts.schema_descriptor_set_path));
+    }
+    for (const auto& file : fds.file()) {
+      if (!bundle.schema_db->Add(file)) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("duplicate file in FileDescriptorSet: ", file.name()));
+      }
     }
   }
+
   bundle.generated_db =
       std::make_unique<google::protobuf::DescriptorPoolDatabase>(
           *google::protobuf::DescriptorPool::generated_pool());
@@ -220,7 +302,7 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
 absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
                                        const CheckOptions& opts) {
   // 1. Descriptor pool (WKTs + optional user schema).
-  auto pool_bundle = LoadDescriptorPool(opts.schema_path);
+  auto pool_bundle = LoadDescriptorPool(opts);
   if (!pool_bundle.ok()) return pool_bundle.status();
 
   // 2. Type-checker builder.

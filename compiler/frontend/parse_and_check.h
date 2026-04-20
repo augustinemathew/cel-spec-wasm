@@ -18,10 +18,18 @@ namespace celwasm {
 //   - a parameterized type: list<T>, map<K,V> (recursively composed)
 //   - a protobuf message's fully-qualified name, e.g. `google.example.Request`
 struct CheckOptions {
-  // Path to a binary-serialized `google.protobuf.FileDescriptorSet` that
-  // describes protobuf message types referenced by variables.  When empty only
-  // the CEL well-known descriptors are available.
-  std::string schema_path;
+  // Path to a textual `.proto` source file describing protobuf message types
+  // referenced by variables.  Parsed in-process with
+  // `google::protobuf::compiler::Parser`; imports other than CEL well-known
+  // types are not resolved at parse time, so use `schema_descriptor_set_path`
+  // for multi-file schemas that reference one another.
+  std::string schema_proto_path;
+
+  // Path to a binary-serialized `google.protobuf.FileDescriptorSet` (the
+  // output of `protoc --descriptor_set_out=...`) describing protobuf message
+  // types referenced by variables.  Preferred for multi-file schemas or when
+  // the caller already runs `protoc` in their build.
+  std::string schema_descriptor_set_path;
 
   // `name:Type` variable declarations injected into the checker's env.
   std::vector<std::string> variable_specs;

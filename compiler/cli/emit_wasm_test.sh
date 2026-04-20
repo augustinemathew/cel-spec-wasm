@@ -58,4 +58,34 @@ set -e
 grep -q "codegen error" "${TEST_TMPDIR}/list_stderr" \
   || die "missing 'codegen error' diagnostic in stderr"
 
+# 5. Positive case: `--schema <file.proto>` feeds a textual proto source
+#    into the checker.  Uses the shared `e2e_fixture.proto` that lives
+#    under `compiler/testdata/`.  We run in `--check` mode only so this
+#    test stays a flag-plumbing check rather than a full codegen run
+#    (codegen of `c.name` is covered end-to-end by
+#    `//compiler/e2e:eval_test`).
+PROTO_SRC="${TEST_SRCDIR}/_main/compiler/testdata/e2e_fixture.proto"
+[[ -r "${PROTO_SRC}" ]] || die "missing proto fixture at ${PROTO_SRC}"
+"${CLI}" -e 'c.name' --check \
+  --schema="${PROTO_SRC}" \
+  --var='c:celwasm.testdata.Customer' \
+  > "${TEST_TMPDIR}/schema_stdout" 2>&1 \
+  || die "--schema failed: $(cat "${TEST_TMPDIR}/schema_stdout")"
+grep -q 'string' "${TEST_TMPDIR}/schema_stdout" \
+  || die "--schema: expected string annotation, got $(cat "${TEST_TMPDIR}/schema_stdout")"
+
+# 6. Negative case: passing both `--schema` and `--schema-descriptorset`
+#    should fail fast with an InvalidArgument error.
+set +e
+"${CLI}" -e 'c.name' --check \
+  --schema="${PROTO_SRC}" \
+  --schema_descriptorset="${PROTO_SRC}" \
+  --var='c:celwasm.testdata.Customer' \
+  > "${TEST_TMPDIR}/both_stdout" 2> "${TEST_TMPDIR}/both_stderr"
+BOTH_STATUS=$?
+set -e
+[[ ${BOTH_STATUS} -ne 0 ]] || die "dual-schema should have failed"
+grep -q 'at most one of' "${TEST_TMPDIR}/both_stderr" \
+  || die "dual-schema diagnostic missing: $(cat "${TEST_TMPDIR}/both_stderr")"
+
 echo "PASS"

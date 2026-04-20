@@ -50,8 +50,15 @@ ABSL_FLAG(bool, check, false, "Run the type checker in addition to the parser");
 ABSL_FLAG(bool, reject_dyn, true,
           "When --check is set, reject expressions with any DYN-typed nodes");
 ABSL_FLAG(std::string, schema, "",
-          "Path to a FileDescriptorSet (binary) describing proto message types "
-          "referenced by --var");
+          "Path to a textual .proto source file describing proto message "
+          "types referenced by --var.  Parsed in-process; imports other "
+          "than CEL well-known types are not resolved — use "
+          "--schema-descriptorset for multi-file schemas.");
+ABSL_FLAG(std::string, schema_descriptorset, "",
+          "Path to a binary google.protobuf.FileDescriptorSet describing "
+          "proto message types referenced by --var (the output of "
+          "`protoc --descriptor_set_out=...`).  Mutually exclusive with "
+          "--schema.");
 ABSL_FLAG(std::string, var, "",
           "Variable declarations 'name:Type' separated by ';'. "
           "Type is a primitive (bool, int, uint, double, string, bytes, "
@@ -200,8 +207,10 @@ int main(int argc, char** argv) {
   if (expression.empty()) {
     std::fprintf(stderr,
                  "usage: celwasmc -e \"<cel expression>\" "
-                 "[--check [--schema=<fds.pb.bin>] [--var=name:Type ...] "
-                 "[--container=<pkg>]] [--emit-wasm=<out.wasm>]\n");
+                 "[--check [--schema=<source.proto> | "
+                 "--schema_descriptorset=<fds.pb.bin>] "
+                 "[--var=name:Type ...] [--container=<pkg>]] "
+                 "[--emit-wasm=<out.wasm>]\n");
     return 2;
   }
 
@@ -215,7 +224,8 @@ int main(int argc, char** argv) {
   }
 
   celwasm::CheckOptions opts;
-  opts.schema_path = absl::GetFlag(FLAGS_schema);
+  opts.schema_proto_path = absl::GetFlag(FLAGS_schema);
+  opts.schema_descriptor_set_path = absl::GetFlag(FLAGS_schema_descriptorset);
   const std::string var_flag = absl::GetFlag(FLAGS_var);
   if (!var_flag.empty()) {
     for (absl::string_view spec :

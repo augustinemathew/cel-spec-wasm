@@ -223,8 +223,42 @@ Remaining slices before M3 closes:
     - `cel_host_test.cc` — `MessageEq` table coverage from Slice G1
       still applies; the G4 add is codegen-only over that host
       primitive.
-- **Checker integration** — pass a `--schema` file on the CLI,
-  round-trip through a proto fixture under `compiler/e2e/testdata/`.
+- **Checker integration (2026-04-19, landed).** Two CLI entry points
+  for supplying message definitions, both funnelling into the same
+  `DescriptorPool` + checker type env via `CheckOptions`:
+    - `--schema <file.proto>` — textual `.proto` source.  Parsed
+      in-process with `google::protobuf::compiler::Parser`.  Imports
+      other than CEL well-known types are not resolved at parse time
+      — the resulting `FileDescriptorProto` is handed to a
+      `SimpleDescriptorDatabase` which is merged with the generated
+      pool, so references to WKTs (duration, timestamp, wrappers)
+      still resolve, but non-WKT imports surface as "unknown type"
+      further down.  That's the point where the user should switch
+      to `--schema_descriptorset` for multi-file schemas.
+    - `--schema_descriptorset <file.pb>` — pre-compiled
+      `google.protobuf.FileDescriptorSet` (output of
+      `protoc --descriptor_set_out=...`).  Preferred for multi-file
+      schemas or when the caller already runs `protoc` in their
+      build.
+  Flag names use underscores to match the rest of the absl-flags CLI
+  (`--emit_wasm`, etc.).  At most one of the two may be set;
+  `CheckOptions` surfaces a dedicated `InvalidArgument` error
+  otherwise.  `CheckOptions::schema_path` was replaced by
+  `schema_proto_path` + `schema_descriptor_set_path` — the only
+  in-tree caller (the CLI) and the one test that exercised it were
+  updated in the same change.
+  **Coverage landed in this slice:**
+    - `parse_and_check_test.cc` — 4 new cases:
+      `RejectsSchemaDescriptorSetNotFound`,
+      `RejectsProtoSourceNotFound`, `RejectsBothSchemaFlags`,
+      `ProtoSourceSchemaRegistersMessage`,
+      `ProtoSourceSchemaResolvesNestedMessageField`,
+      `ProtoSourceSchemaRejectsSyntaxError`.
+    - `cli/emit_wasm_test.sh` — positive case running the CLI with
+      `--schema=e2e_fixture.proto --var=c:celwasm.testdata.Customer
+      --check -e 'c.name'`, and a negative case asserting that
+      setting both `--schema` and `--schema_descriptorset` is
+      rejected at the flag plumbing boundary.
 
 ## Scope
 
@@ -364,12 +398,24 @@ The design doc §12 fixes these; M3 is where we first implement them.
 
 ### CLI
 
-- [ ] `celwasmc --emit_wasm` already accepts `--var` and `--schema`
+- [x] `celwasmc --emit_wasm` already accepts `--var` and `--schema`
       from M1; this milestone exercises those for the first time in
-      codegen.  Regression-test with a schema whose message has nested
-      messages and repeated scalar fields.  No new flag work expected,
-      but the sh_test gains a case that passes `--var request:my.pkg.Request`
-      and inspects the emitted module's imports list.
+      codegen.  As of 2026-04-19 `--schema` takes a textual `.proto`
+      source file (parsed in-process via
+      `google::protobuf::compiler::Parser`) and a new
+      `--schema_descriptorset` takes a binary
+      `google.protobuf.FileDescriptorSet` (the output of
+      `protoc --descriptor_set_out=...`).  Both land the same
+      messages in the same `DescriptorPool` and are mutually
+      exclusive.  sh_test coverage: positive case with `--schema`
+      + `--var c:celwasm.testdata.Customer -e 'c.name'`; negative
+      case asserting that passing both flags is rejected.
+      **Follow-up (not blocking M3):** add a sh_test that emits a
+      .wasm with `--var request:celwasm.testdata.Customer` and
+      inspects the imports list for the expected `cel_host.*`
+      entries — and add a cross-equivalence test that `--schema x.proto`
+      and `--schema_descriptorset x.pb` produce identical bytes
+      for the same expression.
 
 ## Testing obligations
 

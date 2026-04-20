@@ -475,10 +475,53 @@ TEST(ParseAndCheckTest, RejectsTrailingGarbageInSpec) {
             absl::string_view::npos);
 }
 
-TEST(ParseAndCheckTest, RejectsSchemaNotFound) {
+TEST(ParseAndCheckTest, RejectsSchemaDescriptorSetNotFound) {
   CheckOptions opts;
-  opts.schema_path = "/does/not/exist.fds";
+  opts.schema_descriptor_set_path = "/does/not/exist.fds";
   EXPECT_THAT(ParseAndCheck("1", opts), StatusIs(absl::StatusCode::kNotFound));
+}
+
+TEST(ParseAndCheckTest, RejectsProtoSourceNotFound) {
+  CheckOptions opts;
+  opts.schema_proto_path = "/does/not/exist.proto";
+  EXPECT_THAT(ParseAndCheck("1", opts), StatusIs(absl::StatusCode::kNotFound));
+}
+
+TEST(ParseAndCheckTest, RejectsBothSchemaFlags) {
+  CheckOptions opts;
+  opts.schema_proto_path = "/tmp/a.proto";
+  opts.schema_descriptor_set_path = "/tmp/a.fds";
+  EXPECT_THAT(ParseAndCheck("1", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+// Positive: loading a proto source file registers its messages and the
+// checker resolves field selects through the user-supplied schema.
+TEST(ParseAndCheckTest, ProtoSourceSchemaRegistersMessage) {
+  CheckOptions opts;
+  opts.schema_proto_path = "compiler/testdata/e2e_fixture.proto";
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  auto ta = ParseAndCheck("c.name", opts);
+  ASSERT_THAT(ta, IsOk());
+  EXPECT_EQ(RootRepr(*ta), Repr::kString);
+}
+
+TEST(ParseAndCheckTest, ProtoSourceSchemaResolvesNestedMessageField) {
+  CheckOptions opts;
+  opts.schema_proto_path = "compiler/testdata/e2e_fixture.proto";
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  auto ta = ParseAndCheck("c.billing_address.city", opts);
+  ASSERT_THAT(ta, IsOk());
+  EXPECT_EQ(RootRepr(*ta), Repr::kString);
+}
+
+TEST(ParseAndCheckTest, ProtoSourceSchemaRejectsSyntaxError) {
+  CheckOptions opts;
+  // Point at a file that exists but isn't a valid .proto source.
+  opts.schema_proto_path = "compiler/frontend/parse_and_check.h";
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  EXPECT_THAT(ParseAndCheck("c.name", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // ---- Negative: expression-level failures -----------------------------------

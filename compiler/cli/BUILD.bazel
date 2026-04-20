@@ -28,5 +28,8 @@ cc_binary(
 sh_test(
     name = "emit_wasm_test",
     srcs = ["emit_wasm_test.sh"],
-    data = [":celwasmc"],
+    data = [
+        ":celwasmc",
+        "//compiler/testdata:e2e_fixture.proto",
+    ],
 )
