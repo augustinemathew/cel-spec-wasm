@@ -587,24 +587,27 @@ Each e2e test instantiates the generated module against a host stub, calls
 expression from `m1-type-checker.md`, plus:
 
 - [x] Arithmetic overflow error (int + int overflows to `ERROR`).
-      **M4 slice B (2026-04-19):** codegen routes `_+_` / `_-_` /
-      `_*_` on int/uint through B1 runtime helpers that return a
-      CEL_ERROR on overflow, and the emitted IR traps when it sees
-      the ERROR kind.  Covered by
-      `eval_test::{IntAddOverflowTraps, IntSubOverflowTraps,
-      IntMulOverflowTraps, UintAddOverflowTraps,
-      UintSubUnderflowTraps, UintMulOverflowTraps}` plus the
-      `INT64_MIN / -1` corner case
-      `eval_test::IntDivMinByNegOneTraps`.  The "observable ERROR
-      value" path (i.e. not a trap) lands with the 3VL &&/|| retrofit
-      in a later slice — until then the trap is the stopgap closing
-      this checklist row.
+      **M4 slice B (2026-04-19) + slice C/3b1 (2026-04-20):** codegen
+      routes `_+_` / `_-_` / `_*_` on int/uint through runtime
+      helpers that write a CEL_ERROR{code} into the scratch slot on
+      overflow.  Slice C/3b1 replaced the `unreachable` trap with a
+      `cel_copy_celvalue_at(sret, scratch); return` early-exit so the
+      host sees an observable CelValue ERROR rather than a wasm trap.
+      Covered by `eval_test::{IntAddOverflowIsCelError,
+      IntSubOverflowIsCelError, IntMulOverflowIsCelError,
+      UintAddOverflowIsCelError, UintSubUnderflowIsCelError,
+      UintMulOverflowIsCelError}` plus the `INT64_MIN / -1` corner
+      case `eval_test::IntDivMinByNegOneIsCelError`.  `CallEval` in
+      `host_loader.cc` decodes the slot and surfaces CEL_ERROR as
+      `absl::InternalError("CallEval: result is ERROR")` — the
+      `CelErrorStatus` matcher guards on that message.
 - [x] Division by zero (`int / 0` and `double / 0`).  **M4 slice B
-      (2026-04-19):** `int / 0`, `uint / 0`, and `int % 0` produce
-      CEL_ERROR via the B1 helpers — covered by
-      `eval_test::{IntDivByZeroTraps, UintDivByZeroTraps,
-      IntModByZeroTraps}`.  `INT64_MIN % -1` is defined as 0 per
-      IEEE-style cel-go precedent
+      (2026-04-19) + slice C/3b1 (2026-04-20):** `int / 0`, `uint / 0`,
+      and `int % 0` write CEL_ERROR to the slot, the eval fn early-
+      returns, and the host decodes it as an observable ERROR —
+      covered by `eval_test::{IntDivByZeroIsCelError,
+      UintDivByZeroIsCelError, IntModByZeroIsCelError}`.
+      `INT64_MIN % -1` is defined as 0 per IEEE-style cel-go precedent
       (`IntModMinByNegOneIsZeroNotTrap`).  `double / 0` produces
       +/-Inf per IEEE 754 per §langdef, which is OK not ERROR;
       negative-coverage still pending once the double-op-coverage
@@ -614,18 +617,19 @@ expression from `m1-type-checker.md`, plus:
       `SignedMulIntMinByOneRoundTrips` guard against the refactor
       breaking the non-overflow path.
 - [x] NaN-unordered compare produces ERROR for `<` / `<=` / `>` / `>=`,
-      OK(false) for `==` / `!=`.  **M4 slice D (2026-04-19):** codegen
-      routes every ordered double compare through
-      `LowerDoubleOrderedCompare`, which traps via
-      `BinaryenUnreachable` when either operand is NaN (IEEE 754
-      `x != x`).  Equality stays as a plain `f64.eq` / `f64.ne`, which
-      IEEE 754 defines to return false for any NaN input — no trap
-      needed.  Covered by `eval_test::{DoubleLessNaNOnLeftTraps,
-      DoubleLessNaNOnRightTraps, DoubleLessEqNaNTraps,
-      DoubleGreaterNaNTraps, DoubleGreaterEqNaNTraps,
+      OK(false) for `==` / `!=`.  **M4 slice D (2026-04-19) + slice
+      C/3b1 (2026-04-20):** codegen routes every ordered double
+      compare through `LowerDoubleOrderedCompare`, which now emits
+      `cel_set_error_at(sret, CEL_ERR_TYPE_MISMATCH); return;` when
+      either operand is NaN (IEEE 754 `x != x`).  Equality stays as
+      a plain `f64.eq` / `f64.ne`, which IEEE 754 defines to return
+      false for any NaN input — no guard needed.  Covered by
+      `eval_test::{DoubleLessNaNOnLeftIsCelError,
+      DoubleLessNaNOnRightIsCelError, DoubleLessEqNaNIsCelError,
+      DoubleGreaterNaNIsCelError, DoubleGreaterEqNaNIsCelError,
       DoubleEqualityWithNaNReturnsFalseNotTrap,
-      DoubleOrderedCompareNonNaNStillWorks, DoubleDivZeroProducesInfNotTrap}`.
-      The "observable ERROR value" path lands with the 3VL retrofit.
+      DoubleOrderedCompareNonNaNStillWorks,
+      DoubleDivZeroProducesInfNotTrap}`.
 - [ ] String coercion errors where the spec forbids them.
 - [ ] `unknown` propagation through `&&` / `||` (M4).
 - [ ] Partial-eval: `unknown && false → false` commutatively (M4).

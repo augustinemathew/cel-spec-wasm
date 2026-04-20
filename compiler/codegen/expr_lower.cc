@@ -127,6 +127,7 @@ void DeclareSretRootImports(WasmModule& mod) {
   ImportCel2(mod, "cel_box_uint", i32, i64, none);
   ImportCel2(mod, "cel_box_double", i32, f64, none);
   ImportCel2(mod, "cel_copy_celvalue_at", i32, i32, none);
+  ImportCel2(mod, "cel_set_error_at", i32, i32, none);
 }
 
 // Allocation / span-literal / equality / size / member-call imports.
@@ -420,26 +421,29 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
 // Used by the checked-arithmetic unbox path to recognise an ERROR box.
 constexpr int32_t kCelErrorKind = 15;
 
+// Matches the `CEL_ERR_TYPE_MISMATCH` enumerator in
+// compiler/runtime/cel_runtime.h — codegen emits the literal because
+// we cannot `#include` the runtime header from C++.
+constexpr int32_t kCelErrTypeMismatch = 13;
+
 // Wraps a sret checked-arithmetic helper call so the overall
 // expression has the same i64-returning shape as native wasm
 // arithmetic.  The helper writes a 24-byte CelValue into the
 // scratch slot (pre-allocated at eval entry); codegen loads the
-// kind tag inline and traps on CEL_ERROR.
+// kind tag inline and, on CEL_ERROR, copies the error box into the
+// eval function's sret slot (param 0) and early-returns.  This makes
+// arithmetic overflow / divide-by-zero an observable CelValue ERROR
+// at the host boundary rather than a wasm trap.
 //
 // Pattern:
 //   (block (result i64)
 //     (call $helper (local.get $slot) lhs rhs)
 //     (if (i32.eq (i32.load (i32.add base (local.get $slot)))
 //                 (i32.const 15))
-//       (unreachable))
+//       (block
+//         (call $cel_copy_celvalue_at (local.get $sret) (local.get $slot))
+//         (return)))
 //     (i64.load offset=8 (i32.add base (local.get $slot))))
-//
-// "unreachable" surfaces through wasmtime as a trap, which the host
-// catches and converts to an `absl::Status` error.  The CEL-correct
-// behavior is an observable CelValue ERROR, not a trap; that retrofit
-// lands with the 3VL &&/|| rewrite (which forces arithmetic roots to
-// propagate status end-to-end).  Until then, "trap on overflow"
-// closes the "INT_MAX + 1 is observable" testing-checklist row.
 BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
                                             const char* helper,
                                             BinaryenExpressionRef lhs,
@@ -461,7 +465,7 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
                           BinaryenLocalGet(m, slot, BinaryenTypeInt32()));
   };
 
-  // if (kind == CEL_ERROR) unreachable
+  // if (kind == CEL_ERROR) { copy scratch -> sret; return }
   BinaryenExpressionRef kind_load =
       BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
                    /*align=*/4, BinaryenTypeInt32(), abs_expr(),
@@ -469,8 +473,18 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
   BinaryenExpressionRef is_error =
       BinaryenBinary(m, BinaryenEqInt32(), kind_load,
                      BinaryenConst(m, BinaryenLiteralInt32(kCelErrorKind)));
-  BinaryenExpressionRef trap_if =
-      BinaryenIf(m, is_error, BinaryenUnreachable(m), /*ifFalse=*/nullptr);
+  BinaryenExpressionRef copy_args[2] = {
+      BinaryenLocalGet(m, LoweringContext::kOutSlotParam, BinaryenTypeInt32()),
+      BinaryenLocalGet(m, slot, BinaryenTypeInt32()),
+  };
+  BinaryenExpressionRef copy_call =
+      BinaryenCall(m, "cel_copy_celvalue_at", copy_args, 2, BinaryenTypeNone());
+  BinaryenExpressionRef ret = BinaryenReturn(m, /*value=*/nullptr);
+  BinaryenExpressionRef err_children[2] = {copy_call, ret};
+  BinaryenExpressionRef err_block = BinaryenBlock(
+      m, /*name=*/nullptr, err_children, /*numChildren=*/2, BinaryenTypeNone());
+  BinaryenExpressionRef err_if =
+      BinaryenIf(m, is_error, err_block, /*ifFalse=*/nullptr);
 
   // payload.i / payload.u at offset 8.  Signed/unsigned distinction is
   // irrelevant at the wasm load level — the bits are the same; the
@@ -479,7 +493,7 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
       BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false, /*offset=*/8, /*align=*/8,
                    BinaryenTypeInt64(), abs_expr(), /*memoryName=*/"memory");
 
-  BinaryenExpressionRef children[3] = {call_helper, trap_if, payload_load};
+  BinaryenExpressionRef children[3] = {call_helper, err_if, payload_load};
   return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
                        BinaryenTypeInt64());
 }
@@ -674,12 +688,13 @@ BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
              : call;
 }
 
-// Ordered double compare with NaN-trap guard (M4 Slice D).  IEEE 754
-// defines `NaN < x`, `NaN <= x`, `NaN > x`, `NaN >= x` as all false
-// (unordered), but CEL §langdef requires NaN-in-ordered-compare to
-// produce ERROR rather than a bogus `false`.  We trap on NaN on
-// either side; the observable-ERROR retrofit lands with the 3VL
-// `&&` / `||` work.
+// Ordered double compare with NaN-ERROR guard (M4 Slice D + C/3b1).
+// IEEE 754 defines `NaN < x`, `NaN <= x`, `NaN > x`, `NaN >= x` as
+// all false (unordered), but CEL §langdef requires NaN-in-ordered-
+// compare to produce ERROR rather than a bogus `false`.  When either
+// operand is NaN, we write CEL_ERR_TYPE_MISMATCH into the eval sret
+// slot and return from the eval function — the host decodes the slot
+// and surfaces an observable error.
 //
 // NaN detection uses `x != x`, which IEEE 754 defines as true iff
 // x is NaN (NaN is the only value that compares unequal to itself).
@@ -704,10 +719,20 @@ BinaryenExpressionRef LowerDoubleOrderedCompare(LoweringContext& ctx,
       BinaryenBinary(m, BinaryenNeFloat64(), get_b(), get_b());
   BinaryenExpressionRef any_nan =
       BinaryenBinary(m, BinaryenOrInt32(), a_is_nan, b_is_nan);
-  BinaryenExpressionRef trap_if =
-      BinaryenIf(m, any_nan, BinaryenUnreachable(m), /*ifFalse=*/nullptr);
+  BinaryenExpressionRef set_err_args[2] = {
+      BinaryenLocalGet(m, LoweringContext::kOutSlotParam, BinaryenTypeInt32()),
+      BinaryenConst(m, BinaryenLiteralInt32(kCelErrTypeMismatch)),
+  };
+  BinaryenExpressionRef set_err =
+      BinaryenCall(m, "cel_set_error_at", set_err_args, 2, BinaryenTypeNone());
+  BinaryenExpressionRef ret = BinaryenReturn(m, /*value=*/nullptr);
+  BinaryenExpressionRef err_children[2] = {set_err, ret};
+  BinaryenExpressionRef err_block = BinaryenBlock(
+      m, /*name=*/nullptr, err_children, /*numChildren=*/2, BinaryenTypeNone());
+  BinaryenExpressionRef err_if =
+      BinaryenIf(m, any_nan, err_block, /*ifFalse=*/nullptr);
   BinaryenExpressionRef cmp = BinaryenBinary(m, op, get_a(), get_b());
-  BinaryenExpressionRef children[4] = {set_a, set_b, trap_if, cmp};
+  BinaryenExpressionRef children[4] = {set_a, set_b, err_if, cmp};
   return BinaryenBlock(m, /*name=*/nullptr, children,
                        /*numChildren=*/4, BinaryenTypeInt32());
 }

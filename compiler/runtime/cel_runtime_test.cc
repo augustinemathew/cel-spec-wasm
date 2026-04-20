@@ -1458,6 +1458,22 @@ TEST_F(RuntimeTest, CopyCelvalueAtSrcZeroWritesTypeMismatch) {
   ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
 }
 
+TEST_F(RuntimeTest, SetErrorAtWritesCodedError) {
+  // cel_set_error_at is the codegen escape hatch for NaN-in-ordered-
+  // compare (and future non-slot ERROR sources).  Every CEL_ERR_*
+  // code round-trips unchanged.
+  uint32_t out = AllocSlot();
+  cel_set_error_at(out, CEL_ERR_TYPE_MISMATCH);
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, SetErrorAtOutZeroIsNoOp) {
+  uint32_t null_off = cel_make_null();
+  CelKind prev = KindOf(null_off);
+  cel_set_error_at(0, CEL_ERR_OVERFLOW);
+  EXPECT_EQ(KindOf(null_off), prev);
+}
+
 TEST_F(RuntimeTest, IntAddAtHappyPath) {
   uint32_t out = AllocSlot();
   cel_int_add_at(out, cel_make_int(3), cel_make_int(4));

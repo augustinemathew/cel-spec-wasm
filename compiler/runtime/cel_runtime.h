@@ -375,6 +375,14 @@ void cel_box_double(uint32_t out, double d);
 // phantom OK.
 void cel_copy_celvalue_at(uint32_t out, uint32_t src);
 
+// Writes CEL_ERROR{code, no-msg} into the 24-byte slot at `*out`.
+// Used by codegen as the "oh no, computation failed" escape hatch:
+// the NaN-in-ordered-compare guard emits
+// `cel_set_error_at(sret, CEL_ERR_TYPE_MISMATCH); return;` so the
+// host sees an observable error instead of a wasm trap.  `out == 0`
+// is a no-op — same total-function guarantee as the box helpers.
+void cel_set_error_at(uint32_t out, uint32_t code);
+
 // ---- Checked-arithmetic sret helpers -------------------------------------
 //
 // Semantics: see the "total-function guarantee" block above.  One

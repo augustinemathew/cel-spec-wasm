@@ -962,6 +962,11 @@ void cel_copy_celvalue_at(uint32_t out, uint32_t src) {
   memcpy(g_memory + out, g_memory + src, sizeof(CelValue));
 }
 
+void cel_set_error_at(uint32_t out, uint32_t code) {
+  if (out == 0) return;
+  write_error_at(out, code);
+}
+
 // Shared prelude for int-binop sret helpers: handles zero-offset,
 // status propagation, and kind check.  Returns 1 if the slot has been
 // written (caller should return); 0 if the caller should do the

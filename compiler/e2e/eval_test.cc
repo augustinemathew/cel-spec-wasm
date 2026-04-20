@@ -252,51 +252,52 @@ TEST(EvalE2ETest, IntModulo) {
 
 // ---- Checked arithmetic (M4 Slice B) -----------------------------------
 //
-// Happy-path regression — the codegen retrofit reshaped arithmetic into
-// a helper call + unreachable-on-error block.  The existing
-// arithmetic/precedence tests exercise the happy path; these add the
-// overflow / div-by-zero side.  Traps surface as an `absl::Status`
-// whose message contains `trapped:` (see `host_loader::CallFunction`),
+// Happy-path regression — the codegen retrofit reshaped arithmetic
+// into a helper call + write-to-sret-on-error block (M4 Slice C/3b1
+// switched from trap to observable CelValue ERROR).  The existing
+// arithmetic / precedence tests exercise the happy path; these add
+// the overflow / div-by-zero side.  CallEval's DecodeSlot surfaces
+// CEL_ERROR as `absl::InternalError("CallEval: result is ERROR")`,
 // so that's the assertion we make here.
 
-MATCHER(TrapStatus, "is an InternalError mentioning a wasm trap") {
+MATCHER(CelErrorStatus, "is an InternalError carrying a CelValue ERROR") {
   return !arg.ok() && arg.code() == absl::StatusCode::kInternal &&
-         absl::StrContains(arg.message(), "trapped:");
+         absl::StrContains(arg.message(), "result is ERROR");
 }
 
-TEST(EvalE2ETest, IntAddOverflowTraps) {
+TEST(EvalE2ETest, IntAddOverflowIsCelError) {
   // 9223372036854775807 + 1 = INT64_MAX + 1 — overflow.
   auto r = Evaluate("9223372036854775807 + 1");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, IntSubOverflowTraps) {
+TEST(EvalE2ETest, IntSubOverflowIsCelError) {
   // INT64_MIN - 1 underflows.
   auto r = Evaluate("-9223372036854775808 - 1");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, IntMulOverflowTraps) {
+TEST(EvalE2ETest, IntMulOverflowIsCelError) {
   // 2^62 * 8 = 2^65, overflow.  The hi/lo-split helper must detect this
   // without pulling in __multi3 on wasm32.
   auto r = Evaluate("4611686018427387904 * 8");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, IntDivMinByNegOneTraps) {
+TEST(EvalE2ETest, IntDivMinByNegOneIsCelError) {
   // INT64_MIN / -1 is the classic signed overflow case.
   auto r = Evaluate("-9223372036854775808 / -1");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, IntDivByZeroTraps) {
+TEST(EvalE2ETest, IntDivByZeroIsCelError) {
   auto r = Evaluate("5 / 0");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, IntModByZeroTraps) {
+TEST(EvalE2ETest, IntModByZeroIsCelError) {
   auto r = Evaluate("5 % 0");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
 TEST(EvalE2ETest, IntModMinByNegOneIsZeroNotTrap) {
@@ -308,26 +309,26 @@ TEST(EvalE2ETest, IntModMinByNegOneIsZeroNotTrap) {
   EXPECT_EQ(r->of.i64, 0);
 }
 
-TEST(EvalE2ETest, UintAddOverflowTraps) {
+TEST(EvalE2ETest, UintAddOverflowIsCelError) {
   // UINT64_MAX + 1 wraps arithmetically but CEL defines it as error.
   auto r = Evaluate("18446744073709551615u + 1u");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, UintSubUnderflowTraps) {
+TEST(EvalE2ETest, UintSubUnderflowIsCelError) {
   auto r = Evaluate("0u - 1u");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, UintMulOverflowTraps) {
+TEST(EvalE2ETest, UintMulOverflowIsCelError) {
   // (2^32) * (2^32) = 2^64, overflow.  Exercises the hi/lo-split path.
   auto r = Evaluate("4294967296u * 4294967296u");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, UintDivByZeroTraps) {
+TEST(EvalE2ETest, UintDivByZeroIsCelError) {
   auto r = Evaluate("5u / 0u");
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
 TEST(EvalE2ETest, IntMulHappyPathStillWorksAfterRetrofit) {
@@ -368,38 +369,38 @@ TEST(EvalE2ETest, SignedMulIntMinByOneRoundTrips) {
 // `!=`, IEEE 754's NaN behavior is what CEL wants (`NaN == NaN` is
 // false, `NaN != NaN` is true), so no guard is needed there.
 //
-// Until the observable-ERROR 3VL retrofit lands, Slice D surfaces
-// NaN-in-ordered-compare as a trap (wasmtime InternalError) instead
-// of the eventual CEL_ERROR value.
+// Under Slice C/3b1, NaN-in-ordered-compare writes CEL_ERR_TYPE_MISMATCH
+// into the sret slot and returns; the host decodes it as an observable
+// CelValue ERROR.
 
-TEST(EvalE2ETest, DoubleLessNaNOnLeftTraps) {
+TEST(EvalE2ETest, DoubleLessNaNOnLeftIsCelError) {
   auto r = EvaluateWithVars("x < 1.0", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, DoubleLessNaNOnRightTraps) {
+TEST(EvalE2ETest, DoubleLessNaNOnRightIsCelError) {
   auto r = EvaluateWithVars("1.0 < x", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, DoubleLessEqNaNTraps) {
+TEST(EvalE2ETest, DoubleLessEqNaNIsCelError) {
   auto r = EvaluateWithVars("x <= 1.0", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, DoubleGreaterNaNTraps) {
+TEST(EvalE2ETest, DoubleGreaterNaNIsCelError) {
   auto r = EvaluateWithVars("x > 1.0", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
-TEST(EvalE2ETest, DoubleGreaterEqNaNTraps) {
+TEST(EvalE2ETest, DoubleGreaterEqNaNIsCelError) {
   auto r = EvaluateWithVars("x >= 1.0", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
-  EXPECT_THAT(r.status(), TrapStatus());
+  EXPECT_THAT(r.status(), CelErrorStatus());
 }
 
 TEST(EvalE2ETest, DoubleEqualityWithNaNReturnsFalseNotTrap) {
