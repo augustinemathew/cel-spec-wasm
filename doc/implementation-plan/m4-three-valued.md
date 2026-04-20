@@ -1,9 +1,9 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slices A+B+C+D+E1+E2a.1 shipped (E2a.1 on 2026-04-20);
-slice E2a.2 (CLI flag) next; Slice F (3VL absorption in
-non-absorbing ops) tracked in `m4-slice-f-3vl-absorption.md` with
-the full checklist of spec-breaking expressions.**
+Status: **slices A+B+C+D+E1+E2a.1+E2a.2 shipped (E2a.2 on
+2026-04-20); Slice F (3VL absorption in non-absorbing ops) tracked
+in `m4-slice-f-3vl-absorption.md` with the full checklist of
+spec-breaking expressions.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
@@ -310,9 +310,21 @@ Coverage (component-by-component):
 
 ### CLI / host-ABI tooling
 
-- [ ] `celwasmc --unknown-attrs=var.field,…` — a CLI flag to mark
-      specific attributes unknown for testing.  Avoids wiring a
-      full host config for every repro.
+- [x] `celwasmc-eval --unknown_attrs=var.field[,…]` — a CLI flag to
+      mark specific attributes unknown for testing.  Avoids wiring a
+      full host config for every repro.  **Slice E2a.2 (2026-04-20):**
+      landed as a separate binary `celwasmc-eval` rather than a flag
+      on `celwasmc`, because the eval path's `host_loader` dep drags
+      in the darwin-arm64-only wasmtime archive and keeping the
+      compile-only `celwasmc` portable matters more than a unified
+      CLI.  `celwasmc-eval` reuses the compile pipeline, then calls
+      `LoadEval` + `SetUnknownPatterns` + `CallEval` / `CallNullaryEval`.
+      Variables are bound to zero / null-externref args — sufficient
+      for partial-eval tests where every variable access FULL-matches
+      a pattern, and traps loudly for anything else.  Shell coverage
+      in `compiler/cli/celwasmc_eval_test.sh` (8 cases: nullary int /
+      double / bool×2, partial-eval exact / wildcard / multi-pattern,
+      malformed-pattern diagnostic, missing-`-e` usage).
 - [ ] `cel.abi.attributes` table grows to hold the reverse map
       (attr_id → source path) so error + unknown messages can
       pretty-print.

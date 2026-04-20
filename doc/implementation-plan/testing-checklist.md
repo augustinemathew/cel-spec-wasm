@@ -694,6 +694,27 @@ removed — the `cel_runtime_test.cc` cases that covered them went
 with them, and the sret `_at_ii` / `_at_uu` / `_neg_at_i`
 coverage (from slice C commit 2) stands unchanged.
 
+**M4 slice E2a.2 (2026-04-20): `celwasmc-eval` CLI + `--unknown_attrs`.**
+New cc_binary at `compiler/cli:celwasmc-eval` that compiles a CEL
+expression and runs it under wasmtime in-process.  Adds
+`--unknown_attrs=var.q[,...]` — each pattern is parsed via
+`ParseUnknownAttributePattern` and installed through
+`LoadedEval::SetUnknownPatterns`.  Platform-gated to darwin-arm64
+alongside every other `host_loader` consumer.  Variables are bound
+to zero / null-externref arguments (null externref uses the
+`wasmtime_val_t{}`-zero-init convention that
+`wasmtime_externref_is_null` treats as null); this is sufficient
+for partial-eval testing because a pattern-covered access never
+dereferences the null handle.  Shell coverage in
+`compiler/cli:celwasmc_eval_test` (8 cases):
+nullary-int `1 + 2 * 3 → 7`, nullary-double `1.5 + 2.5 → 4`, bool
+`&&` / `||`, partial-eval exact `c.age / --unknown_attrs=c.age →
+unknown`, wildcard `c.*`, multi-pattern dispatch, malformed-pattern
+diagnostic (must mention `--unknown_attrs`), missing-`-e` usage.
+Out of scope: decoding string / bytes / message results (the slot
+offset is printed as an i32 today); flag for non-null variable
+values (deferred — add `--var_value=name=json` if / when needed).
+
 ## Bench harness (2026-04-20)
 
 Google Benchmark suite under `compiler/bench/`.  Not coverage; a
