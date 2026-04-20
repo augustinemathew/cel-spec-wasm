@@ -37,8 +37,9 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `performance-unnecessary-value-param` | 1 |
 | `readability-math-missing-parentheses` | 1 |
 | `readability-use-concise-preprocessor-directives` | 1 |
+| `readability-static-accessed-through-instance` | 6 |
 
-**Total unique warnings:** 186
+**Total unique warnings:** 192
 
 ## Notes for triage
 
@@ -422,7 +423,20 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 **`readability-function-size`** (1)
 
-- L222: function 'LoadEval' exceeds recommended size/complexity thresholds
+- L230: function 'LoadEval' exceeds recommended size/complexity thresholds
+  (92 lines / 55 statements — grew during G4 from L222 when
+  `BindEvalInterner` + its null-store tolerance was added).
+
+### `compiler/host/cel_host_test.cc` — 6 warnings
+
+**`readability-static-accessed-through-instance`** (6)
+
+- L332, L346, L358, L367, L376, L385: `msg.GetDescriptor()` — static
+  member accessed through instance.  Introduced by bf5f919 when the
+  synthetic DescriptorProto fixture was swapped for real `.proto`
+  fixtures; each call should read `celwasm::testdata::HostMsgN::
+  GetDescriptor()` instead.  Trivial but tedious — fix
+  opportunistically when revisiting these tests.
 
 ### `compiler/ir/typed_ast.cc` — 2 warnings
 

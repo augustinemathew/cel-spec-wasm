@@ -1169,5 +1169,162 @@ TEST(EvalE2ETest, NestedMessageEqualityComposesSelectAndEq) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
+// ---- Multi-param + proto-field composition (M3 polish, #40) ----------------
+//
+// Task #40 scope: expressions that mix several param kinds or compose a
+// proto field read with a CEL operator/macro.  Each case is the minimum
+// that exercises one composition path — no wall-of-scenarios coverage;
+// the per-type payload branches are already pinned above.
+//
+// The composition surface we care about here is the interaction between
+// `cel_host.get_field` (which writes a `CelValue` into scratch) and the
+// CEL operator that reads its payload.  A regression in e.g. `size()`
+// not understanding a proto-sourced string would still pass the
+// `LoadSelectPayload` string pass-through test because that only checks
+// the payload load, not the downstream operator.
+
+TEST(EvalE2ETest, MultiParamTwoMessagesConcatenateNames) {
+  // Two message params composing a string concat on proto string
+  // fields.  Breaks if the eval module's param ordering or the
+  // externref plumbing gets either slot wrong.
+  auto loaded = LoadCompiled(
+      "a.name + \" & \" + b.name",
+      {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.set_name("Ada");
+  celwasm::testdata::Customer b;
+  b.set_name("Grace");
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  ASSERT_EQ(r->kind, WASMTIME_I32);
+  auto s = DecodeStringAt(*loaded, r->of.i32);
+  ASSERT_THAT(s.status(), IsOk());
+  EXPECT_EQ(s->payload, "Ada & Grace");
+}
+
+TEST(EvalE2ETest, MultiParamMessagePlusScalarUintComparison) {
+  // Mixes a message param with a scalar uint param.  The uint slot
+  // has to be wired after the externref, and the comparison must see
+  // CEL `uint` semantics (unsigned) despite both operands living in
+  // i64 wasm slots.
+  auto loaded = LoadCompiled("c.balance_cents > threshold",
+                             {std::string(kCustomerSpec), "threshold:uint"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer c;
+  c.set_balance_cents(5'000);
+  wasmtime_val_t msg_arg = MessageAsExternref(*loaded, c);
+  auto r = loaded->CallEval({msg_arg, I64(1'000)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+
+  auto r2 = loaded->CallEval({msg_arg, I64(10'000)});
+  ASSERT_THAT(r2.status(), IsOk());
+  EXPECT_EQ(r2->of.i32, 0);
+}
+
+TEST(EvalE2ETest, MultiParamTwoMessagesConditional) {
+  // Two message params feeding a ternary that picks one or the other.
+  // Exercises both the bool-from-field path (`is_premium`) and a
+  // message-field pass-through on either branch — the scratch slot
+  // has to be per-invocation, not per-select.
+  auto loaded = LoadCompiled(
+      "a.is_premium ? a.name : b.name",
+      {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.set_is_premium(true);
+  a.set_name("Alpha");
+  celwasm::testdata::Customer b;
+  b.set_name("Beta");
+  {
+    wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+    wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+    auto r = loaded->CallEval({arg_a, arg_b});
+    ASSERT_THAT(r.status(), IsOk());
+    auto s = DecodeStringAt(*loaded, r->of.i32);
+    ASSERT_THAT(s.status(), IsOk());
+    EXPECT_EQ(s->payload, "Alpha");
+  }
+  a.set_is_premium(false);
+  {
+    wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+    wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+    auto r = loaded->CallEval({arg_a, arg_b});
+    ASSERT_THAT(r.status(), IsOk());
+    auto s = DecodeStringAt(*loaded, r->of.i32);
+    ASSERT_THAT(s.status(), IsOk());
+    EXPECT_EQ(s->payload, "Beta");
+  }
+}
+
+TEST(EvalE2ETest, SizeOfProtoStringField) {
+  // `size()` over a proto-sourced string — exercises the payload load
+  // for kString (pass-through scratch offset) composing with the
+  // `cel_size` runtime import.
+  auto loaded = LoadCompiled("size(c.name)", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer c;
+  c.set_name("héllo");  // 5 codepoints, 6 bytes; CEL size() on string is
+                        // codepoint count.
+  wasmtime_val_t arg = MessageAsExternref(*loaded, c);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i64, 5);
+}
+
+TEST(EvalE2ETest, ProtoStringFieldStartsWith) {
+  // Member-call `startsWith` on a proto-sourced string.  Breaks if
+  // member dispatch assumes a literal/scratch-local operand shape and
+  // can't accept the CelValue that `cel_host.get_field` writes.
+  auto loaded =
+      LoadCompiled("c.name.startsWith(\"Ad\")", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer c;
+  c.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, c);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, ProtoIntFieldArithmetic) {
+  // Proto int64 field + literal.  Result must be an i64 CEL int, and
+  // the proto value (which goes through `LoadSelectPayload` kInt) has
+  // to feed cleanly into the `+` lowering.
+  auto loaded = LoadCompiled("c.user_id + 100", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer c;
+  c.set_user_id(42);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, c);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, 142);
+}
+
+TEST(EvalE2ETest, NestedProtoStringFieldConcatWithLiteral) {
+  // Two nested-select reads of the same submessage, composed via `+`.
+  // Pins that repeated `cel_host.get_field` calls from the same eval
+  // function don't alias each other through the scratch slot, and
+  // that nested-string loads work the same as flat ones.
+  auto loaded = LoadCompiled(
+      "c.billing_address.city + \", \" + c.billing_address.country",
+      {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer c;
+  c.mutable_billing_address()->set_city("Seattle");
+  c.mutable_billing_address()->set_country("USA");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, c);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  ASSERT_EQ(r->kind, WASMTIME_I32);
+  auto s = DecodeStringAt(*loaded, r->of.i32);
+  ASSERT_THAT(s.status(), IsOk());
+  EXPECT_EQ(s->payload, "Seattle, USA");
+}
+
 }  // namespace
 }  // namespace celwasm

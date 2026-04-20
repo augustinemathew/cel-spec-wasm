@@ -223,6 +223,34 @@ Remaining slices before M3 closes:
     - `cel_host_test.cc` — `MessageEq` table coverage from Slice G1
       still applies; the G4 add is codegen-only over that host
       primitive.
+- **Richer e2e coverage (2026-04-19, landed).**  Pure test-only slice
+  over the already-shipped G2/G3/G4 codegen, filling out the
+  multi-param + mixed-stage matrix that the per-slice suites each
+  covered in isolation but no single test exercised together.  Seven
+  new cases in `compiler/e2e/eval_test.cc`:
+    - `MultiParamTwoMessagesConcatenateNames` — two `Customer` externref
+      params composed through string concat (`a.name + " & " + b.name`).
+    - `MultiParamMessagePlusScalarUintComparison` — Customer message +
+      scalar uint param together (`c.balance_cents > threshold`);
+      asserts both branches.
+    - `MultiParamTwoMessagesConditional` — ternary selecting between
+      two message params' string fields (`a.is_premium ? a.name :
+      b.name`); both branches.
+    - `SizeOfProtoStringField` — `size(c.name)` with UTF-8 payload
+      `"héllo"` asserting 5 codepoints (pins G2 string-payload + §1110
+      codepoint semantics together).
+    - `ProtoStringFieldStartsWith` — `c.name.startsWith("Ad")` (G2
+      field read + slice E member call composed).
+    - `ProtoIntFieldArithmetic` — `c.user_id + 100` with int32 field
+      (pins scalar-from-proto-field promotion into a plain i64 add).
+    - `NestedProtoStringFieldConcatWithLiteral` — G4 nested select
+      composed with a string literal (`c.billing_address.city + ", " +
+      c.billing_address.country`).
+  A test attempting to thread a host-side C string as an eval param
+  (`"Hello, " + c.name`) was dropped during this slice: `CallEval`
+  invokes `cel_reset` internally so any host-side `cel_alloc` before
+  the call is wiped.  Passing host strings as params is a host SDK
+  design problem (Slice H / task #41), not an M3 e2e concern.
 - **Checker integration (2026-04-19, landed).** Two CLI entry points
   for supplying message definitions, both funnelling into the same
   `DescriptorPool` + checker type env via `CheckOptions`:
@@ -434,6 +462,7 @@ must flip to `[x]`:
 | `kSelectExpr` (field) | [x] | [x] |
 | `kSelectExpr` (test_only, from `has()`) | [x] | [x] |
 | `kCallExpr` (member) | [x] | [x] |
+| multi-param eval (proto+proto, proto+scalar) | [x] | [x] |
 
 New e2e test cases (all under `compiler/e2e/eval_test.cc`):
 

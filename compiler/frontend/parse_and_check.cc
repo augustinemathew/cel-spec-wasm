@@ -61,7 +61,9 @@ class StringErrorCollector : public google::protobuf::io::ErrorCollector {
   }
   void RecordWarning(int /*line*/, int /*column*/,
                      absl::string_view /*message*/) override {}
-  const std::string& text() const { return text_; }
+  const std::string& text() const {
+    return text_;
+  }
 
  private:
   std::string text_;
@@ -85,8 +87,8 @@ absl::StatusOr<google::protobuf::FileDescriptorProto> ParseProtoSource(
   buf << in.rdbuf();
   const std::string contents = buf.str();
 
-  google::protobuf::io::ArrayInputStream input(contents.data(),
-                                               static_cast<int>(contents.size()));
+  google::protobuf::io::ArrayInputStream input(
+      contents.data(), static_cast<int>(contents.size()));
   StringErrorCollector collector;
   google::protobuf::io::Tokenizer tokenizer(&input, &collector);
 
@@ -138,8 +140,8 @@ absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
   } else {
     std::ifstream in{opts.schema_descriptor_set_path, std::ios::binary};
     if (!in) {
-      return absl::NotFoundError(absl::StrCat(
-          "cannot open schema file: ", opts.schema_descriptor_set_path));
+      return absl::NotFoundError(absl::StrCat("cannot open schema file: ",
+                                              opts.schema_descriptor_set_path));
     }
     std::stringstream buf;
     buf << in.rdbuf();

@@ -180,6 +180,21 @@ rule; `HasAndFieldCompareTernary` composes a G2 field read and a G3
 `has()` in a single ternary to catch scratch-local aliasing between
 the two select paths.
 
+**M3 richer e2e coverage (2026-04-19, landed).**  Seven additional
+`compiler/e2e/eval_test.cc` cases composing the G2/G3/G4 codegen
+across stages and multi-param shapes that each individual slice
+covered in isolation: `MultiParamTwoMessagesConcatenateNames`,
+`MultiParamMessagePlusScalarUintComparison`,
+`MultiParamTwoMessagesConditional`, `SizeOfProtoStringField` (pins
+§1110 UTF-8 codepoint count on a field-read payload),
+`ProtoStringFieldStartsWith` (G2 field + slice E member call),
+`ProtoIntFieldArithmetic`, `NestedProtoStringFieldConcatWithLiteral`
+(G4 nested select + slice D concat).  The `kCallExpr (member)` row's
+codegen + e2e cells flip to `[x]` since
+`ProtoStringFieldStartsWith` is the first e2e test that composes
+`.startsWith()` with a G2 field read (the slice-E suite only
+exercised literal receivers).
+
 **M3 slice G4 (2026-04-19): nested message select + message equality.**
 Two codegen extensions composing on top of G2: `LoadSelectPayload`
 handles `Repr::kMessage` by calling `cel_unwrap_message(cv)` on the
@@ -424,7 +439,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kSelectExpr` (`test_only`, from `has()`) | [x] | [x] | [x]  | [x] | [x] | [x] |
 | `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
-| `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [x] | [x] |
 | `kListExpr` (empty + non-empty) | [x] | [x] | [x]  | [x]       | [ ]     | [ ] |
 | `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [ ] |
