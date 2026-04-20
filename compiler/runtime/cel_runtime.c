@@ -866,3 +866,298 @@ uint32_t cel_int_neg(uint32_t a) {
   if (va->kind != (uint32_t)CEL_INT) return 0;
   return cel_int_neg_i(va->payload.i);
 }
+
+// ---- Scratch-slot (sret) ABI (M4 Slice C) --------------------------------
+//
+// Every exported `_at` helper in this section is built from three
+// internal building blocks so the per-op bodies stay short:
+//
+//   write_error_at(out, code)          — write CEL_ERROR{code} into *out.
+//   propagate_status_at(out, a, b)     — if either operand is non-OK,
+//                                        memcpy the dominant status
+//                                        value into *out and return 1;
+//                                        else return 0 (go do arith).
+//   int_binop_prelude / uint_binop_prelude — the front half of every
+//                                        binop: zero-offset check →
+//                                        status propagation → kind
+//                                        check.  Returns 1 if *out was
+//                                        populated (caller must return);
+//                                        0 with the scalar operands
+//                                        unpacked into (*ai,*bi) for
+//                                        the happy path.
+//
+// With those in hand each exported binop is just:
+//   1. `if (out == 0) return;`           // caller bug
+//   2. `if (prelude(...)) return;`       // status / type-error
+//   3. `scalar_op(ai, bi)` + overflow / div-0 / mod-0 checks
+//   4. `write_int_at / write_uint_at` on success
+//
+// The scalar overflow helpers (s64_add_overflow etc.) are defined
+// earlier in this file and reused unchanged from Slice B.
+//
+// See `cel_runtime.h` for the ABI contract (24-byte slot, total-
+// function guarantee, memcpy'd status propagation).
+
+// Writes a CEL_ERROR into *out, allocating a fresh error struct in the
+// arena.  Arena-OOM still writes the kind tag with a zero err offset so
+// the slot is well-formed — callers branch on the kind, not the payload.
+static void write_error_at(uint32_t out, uint32_t code) {
+  uint32_t err_off = cel_alloc(16u);
+  if (err_off != 0) {
+    uint32_t* p = (uint32_t*)(g_memory + err_off);
+    p[0] = code;
+    p[1] = 0;
+    p[2] = 0;
+    p[3] = 0;
+  }
+  CelValue* v = cv_at(out);
+  v->kind = CEL_ERROR;
+  v->payload.err = err_off;
+}
+
+// If either operand carries non-OK status, memcpy the dominant status
+// value (per cel_status_either) into *out and return 1.  Returns 0 when
+// both operands are OK so the caller proceeds with arithmetic.
+static int propagate_status_at(uint32_t out, uint32_t a, uint32_t b) {
+  uint32_t s = cel_status_either(a, b);
+  if (s == 0) return 0;
+  memcpy(g_memory + out, g_memory + s, sizeof(CelValue));
+  return 1;
+}
+
+void cel_box_bool(uint32_t out, int32_t b) {
+  if (out == 0) return;
+  CelValue* v = cv_at(out);
+  v->kind = CEL_BOOL;
+  v->payload.b = b ? 1 : 0;
+}
+
+void cel_box_int(uint32_t out, int64_t i) {
+  if (out == 0) return;
+  CelValue* v = cv_at(out);
+  v->kind = CEL_INT;
+  v->payload.i = i;
+}
+
+void cel_box_uint(uint32_t out, uint64_t u) {
+  if (out == 0) return;
+  CelValue* v = cv_at(out);
+  v->kind = CEL_UINT;
+  v->payload.u = u;
+}
+
+void cel_box_double(uint32_t out, double d) {
+  if (out == 0) return;
+  CelValue* v = cv_at(out);
+  v->kind = CEL_DOUBLE;
+  v->payload.d = d;
+}
+
+// Shared prelude for int-binop sret helpers: handles zero-offset,
+// status propagation, and kind check.  Returns 1 if the slot has been
+// written (caller should return); 0 if the caller should do the
+// arithmetic on (*ai, *bi).
+static int int_binop_prelude(uint32_t out, uint32_t a, uint32_t b, int64_t* ai,
+                             int64_t* bi) {
+  if (a == 0 || b == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  if (propagate_status_at(out, a, b)) return 1;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_INT || vb->kind != (uint32_t)CEL_INT) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  *ai = va->payload.i;
+  *bi = vb->payload.i;
+  return 0;
+}
+
+static int uint_binop_prelude(uint32_t out, uint32_t a, uint32_t b,
+                              uint64_t* au, uint64_t* bu) {
+  if (a == 0 || b == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  if (propagate_status_at(out, a, b)) return 1;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_UINT || vb->kind != (uint32_t)CEL_UINT) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  *au = va->payload.u;
+  *bu = vb->payload.u;
+  return 0;
+}
+
+static void write_int_at(uint32_t out, int64_t r) {
+  CelValue* v = cv_at(out);
+  v->kind = CEL_INT;
+  v->payload.i = r;
+}
+
+static void write_uint_at(uint32_t out, uint64_t r) {
+  CelValue* v = cv_at(out);
+  v->kind = CEL_UINT;
+  v->payload.u = r;
+}
+
+void cel_int_add_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  int64_t ai;
+  int64_t bi;
+  if (int_binop_prelude(out, a, b, &ai, &bi)) return;
+  int64_t r;
+  if (s64_add_overflow(ai, bi, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_sub_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  int64_t ai;
+  int64_t bi;
+  if (int_binop_prelude(out, a, b, &ai, &bi)) return;
+  int64_t r;
+  if (s64_sub_overflow(ai, bi, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_mul_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  int64_t ai;
+  int64_t bi;
+  if (int_binop_prelude(out, a, b, &ai, &bi)) return;
+  int64_t r;
+  if (s64_mul_overflow(ai, bi, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_div_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  int64_t ai;
+  int64_t bi;
+  if (int_binop_prelude(out, a, b, &ai, &bi)) return;
+  if (bi == 0) {
+    write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  if (ai == INT64_MIN && bi == -1) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, ai / bi);
+}
+
+void cel_int_mod_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  int64_t ai;
+  int64_t bi;
+  if (int_binop_prelude(out, a, b, &ai, &bi)) return;
+  if (bi == 0) {
+    write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  // INT64_MIN % -1 is mathematically 0; C reserves UB, so special-case.
+  if (ai == INT64_MIN && bi == -1) {
+    write_int_at(out, 0);
+    return;
+  }
+  write_int_at(out, ai % bi);
+}
+
+void cel_uint_add_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  uint64_t au;
+  uint64_t bu;
+  if (uint_binop_prelude(out, a, b, &au, &bu)) return;
+  uint64_t r;
+  if (u64_add_overflow(au, bu, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_sub_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  uint64_t au;
+  uint64_t bu;
+  if (uint_binop_prelude(out, a, b, &au, &bu)) return;
+  uint64_t r;
+  if (u64_sub_overflow(au, bu, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_mul_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  uint64_t au;
+  uint64_t bu;
+  if (uint_binop_prelude(out, a, b, &au, &bu)) return;
+  uint64_t r;
+  if (u64_mul_overflow(au, bu, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_div_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  uint64_t au;
+  uint64_t bu;
+  if (uint_binop_prelude(out, a, b, &au, &bu)) return;
+  if (bu == 0) {
+    write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  write_uint_at(out, au / bu);
+}
+
+void cel_uint_mod_at(uint32_t out, uint32_t a, uint32_t b) {
+  if (out == 0) return;
+  uint64_t au;
+  uint64_t bu;
+  if (uint_binop_prelude(out, a, b, &au, &bu)) return;
+  if (bu == 0) {
+    write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  write_uint_at(out, au % bu);
+}
+
+void cel_int_neg_at(uint32_t out, uint32_t a) {
+  if (out == 0) return;
+  if (a == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const CelValue* va = cv_at(a);
+  if (va->kind == (uint32_t)CEL_ERROR || va->kind == (uint32_t)CEL_UNKNOWN) {
+    memcpy(g_memory + out, g_memory + a, sizeof(CelValue));
+    return;
+  }
+  if (va->kind != (uint32_t)CEL_INT) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (va->payload.i == INT64_MIN) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, -va->payload.i);
+}

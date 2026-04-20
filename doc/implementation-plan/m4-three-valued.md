@@ -76,6 +76,24 @@ positive/negative cases for merge (determinism + dedup),
 (error dominance, left-wins ordering).  No codegen wiring yet; that
 lands in slices B (checked arithmetic) and onward.
 
+**M4 slice C commit 1 (2026-04-19): sret arithmetic ABI (runtime
+only).**  Runtime grows a scratch-slot / sret counterpart to every
+Slice B checked-arithmetic helper: `cel_int_add_at(out, a, b)` and
+friends write the 24-byte result CelValue into a caller-provided
+slot at offset `out` instead of bump-allocating.  `cel_box_{bool,
+int,uint,double}` are the scalar→slot counterparts used at
+scalar→boxed boundaries (e.g. a checker-proven-bool operand
+entering 3VL `cel_and`).  Status propagation is via
+`cel_status_either` + 24-byte memcpy into the slot.  Type mismatch
+surfaces as `CEL_ERROR{CEL_ERR_TYPE_MISMATCH = 13}` (new enum
+value) so a checker miss degrades gracefully instead of forging a
+phantom OK.  Coverage: 30 new tests in `cel_runtime_test.cc`
+covering box helpers, happy / overflow / div0 / mod0 / INT64_MIN
+edge cases, ERROR/UNKNOWN propagation (both sides, both-unknown
+merge, error-dominates-unknown), type mismatch, and zero-offset
+operand.  No codegen wiring yet; commit 2 adds the scratch-slot
+pool at `$eval` entry and flips arithmetic codegen over.
+
 ### Codegen
 
 - [x] Arithmetic ops grow an **overflow check** on int.  Slice B

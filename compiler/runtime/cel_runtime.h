@@ -229,6 +229,11 @@ enum {
   CEL_ERR_OVERFLOW = 10,
   CEL_ERR_DIVIDE_BY_ZERO = 11,
   CEL_ERR_MODULUS_BY_ZERO = 12,
+  // Static-type-checker-guaranteed-impossible mismatch that still made it
+  // to runtime.  Reaching one at runtime is a codegen bug, not a user
+  // bug — surfaced as CEL_ERROR so a buggy run degrades gracefully
+  // rather than forging a phantom OK result.
+  CEL_ERR_TYPE_MISMATCH = 13,
 };
 
 // Binary checked arithmetic.  Each helper takes two CelValue offsets
@@ -284,6 +289,98 @@ uint32_t cel_uint_div_uu(uint64_t a, uint64_t b);
 uint32_t cel_uint_mod_uu(uint64_t a, uint64_t b);
 
 uint32_t cel_int_neg_i(int64_t a);
+
+// ---- Scratch-slot (sret) ABI (M4 Slice C) --------------------------------
+//
+// Parallel flavor of the checked-arithmetic API above.  Instead of
+// bump-allocating a fresh 24-byte CelValue in the arena on every call,
+// these helpers write the 24-byte result *into a caller-provided slot*.
+//
+// The `out` parameter is a 32-bit byte offset into linear memory
+// pointing at an 8-byte-aligned, 24-byte region — one CelValue's
+// worth.  Typically it is a software-stack frame slot reserved at
+// `$eval` entry (see `doc/wasm-compiler-design.md` §7.4.2), though
+// the runtime is agnostic: any aligned region in the module's linear
+// memory works.  `a` and `b` are the usual offset-to-boxed-CelValue
+// arguments that the boxed API already speaks, so callers can freely
+// mix the two ABIs (e.g. pass an arena-resident ident read as `a`
+// and a freshly-computed stack slot as `b`).
+//
+// Contrast:
+//     uint32_t cel_int_add(a, b);        // allocates, returns offset.
+//     void     cel_int_add_at(out,a,b);  // caller pre-owns `out`.
+//
+// **Total-function guarantee.**  Every helper always writes a
+// well-formed 24-byte CelValue into `*out` before returning.  This
+// holds across all four outcomes:
+//
+//   1. Status propagation.  If either operand carries non-OK status,
+//      the helper does NOT do arithmetic — it copies the dominant
+//      status value into `*out`.  Dominance is ERROR > UNKNOWN > OK
+//      with left-wins tie-breaking (same as `cel_status_either`);
+//      two UNKNOWNs merge their sets via `cel_unknown_merge`.
+//   2. Type mismatch.  If an operand's kind doesn't match the
+//      expected arithmetic kind (int for `cel_int_*_at`, uint for
+//      `cel_uint_*_at`), `*out` gets `CEL_ERROR{CEL_ERR_TYPE_MISMATCH}`.
+//      The static checker should make this unreachable; surfacing it
+//      as ERROR means a codegen bug degrades gracefully instead of
+//      forging a phantom OK result.
+//   3. Arithmetic error.  Overflow → `CEL_ERROR{CEL_ERR_OVERFLOW}`;
+//      int `/` by 0 → `CEL_ERR_DIVIDE_BY_ZERO`; int `%` by 0 →
+//      `CEL_ERR_MODULUS_BY_ZERO`.  `INT64_MIN / -1` overflows;
+//      `INT64_MIN % -1` is defined as 0 (matching cel-go).  `-INT64_MIN`
+//      overflows.
+//   4. Happy path.  `CEL_INT{result}` or `CEL_UINT{result}`.
+//
+// Because `*out` is always well-formed, codegen emits no branch on
+// "did the helper write anything?" — it just loads `[out+0]` after
+// the call and dispatches on the kind tag (OK → read payload;
+// ERROR → propagate up; UNKNOWN → propagate up).  The return type
+// is `void` for the same reason.
+//
+// `out == 0` points at the null sentinel at memory offset 0.  That's
+// treated as a caller bug (no frame slot is ever allocated there) and
+// the helpers early-return without writing, leaving the sentinel intact.
+//
+// **Why not just reuse the boxed ABI?**  The boxed variants burn an
+// arena CelValue per call — for an expression like `(a + b) + (c + d)`
+// that's 3 allocations for the intermediate results alone, all of which
+// outlive the expression.  The sret ABI lets codegen reuse a small
+// pool of frame slots sized to the expression's tree depth, keeping
+// temporary-value memory O(depth) instead of O(#subexpressions).
+
+// ---- Primitive → slot writers -------------------------------------------
+//
+// Used at scalar→boxed boundaries where codegen has a raw wasm
+// scalar on the stack (a literal, an ident read, or the unboxed
+// result of a non-checked op) and needs to hand it to something
+// that speaks boxed CelValue (e.g. the 3VL `cel_and` / `cel_or`).
+// `cel_box_bool` normalizes any non-zero int input to 1; the others
+// are straight payload writes.
+void cel_box_bool(uint32_t out, int32_t b);
+void cel_box_int(uint32_t out, int64_t i);
+void cel_box_uint(uint32_t out, uint64_t u);
+void cel_box_double(uint32_t out, double d);
+
+// ---- Checked-arithmetic sret helpers -------------------------------------
+//
+// Semantics: see the "total-function guarantee" block above.  One
+// helper per CEL `_+_` / `_-_` / `_*_` / `_/_` / `_%_` overload on
+// int/uint, plus `cel_int_neg_at` for unary minus.  (CEL has no
+// unary-minus overload on uint, so there is no `cel_uint_neg_at`.)
+void cel_int_add_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_int_sub_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_int_mul_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_int_div_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_int_mod_at(uint32_t out, uint32_t a, uint32_t b);
+
+void cel_uint_add_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_uint_sub_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_uint_mul_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_uint_div_at(uint32_t out, uint32_t a, uint32_t b);
+void cel_uint_mod_at(uint32_t out, uint32_t a, uint32_t b);
+
+void cel_int_neg_at(uint32_t out, uint32_t a);
 
 #ifdef __cplusplus
 }

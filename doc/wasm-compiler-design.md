@@ -47,8 +47,8 @@ Appendices and Open questions are reference material at the end.
   - **§6 Type system** — supported CEL types, checker integration,
     rejection of `dyn` / `Any` unwrap / heterogeneous collections.
   - **§7 Runtime layout (linear memory)** — memory map, `CelValue`
-    shape, arena allocation, `$cel_refs` externref table,
-    constructors.
+    shape, arena + software-stack allocators, storage-tier / escape
+    rules, `$cel_refs` externref table, constructors.
   - **§8 Host ABI (normative)** — imports / exports every host must
     provide; `cel_host.get_field` / `has_field` / `message_eq`; type
     and attribute identity via `cel.abi`.
@@ -425,16 +425,32 @@ profiling justifies it.
 │ const data segment             │  interned literals, type/attr tables,
 │ (emitted by compiler)          │  error message blobs, `cel.abi` payload
 ├────────────────────────────────┤ data_end
-│ static globals                 │  g_arena, singletons (null, true, false),
-│                                │  ref-table free list head
+│ static globals                 │  g_cel_arena, singletons (null, true,
+│                                │  false), ref-table head, initial
+│                                │  value of $cel_stack_ptr
 ├────────────────────────────────┤ ← cel_mem_base()  (== &g_memory[0])
-│ g_memory[0]                    │  runtime arena, addressed by the rest of
-│   reserved null sentinel       │  the runtime via offsets RELATIVE to
-│   static singletons            │  g_memory.  `cel_alloc` returns one of
-│   bump arena ↓                 │  these relative offsets; all CelValue
-│ g_memory[limit]                │  sub-pointers (CelSpan.ptr, CelArray.ptr,
-├────────────────────────────────┤  etc.) are relative to g_memory too.
-│ unused                         │  memory.grow if allocator exhausts
+│ g_memory[0]                    │  reserved null sentinel (offset 0 is
+│   null sentinel                │  "absent" everywhere nullable)
+├────────────────────────────────┤ g_static_singletons_start
+│   static singletons            │  true / false / null / optional-none
+│                                │  CelValues.  Survive cel_reset().
+├────────────────────────────────┤ g_static_end
+│   bump arena (grows ↑)         │  cel_alloc() returns offsets here.
+│                                │  cel_reset() rewinds to g_static_end.
+│                                │  Used for: dynamic-size payloads
+│                                │  (concatenated strings, comprehension-
+│                                │  built lists/maps, UnknownSet ids).
+├────────────────────────────────┤ kStackBase (== g_cel_arena.limit)
+│   software stack (grows ↓)     │  Per-function CelValue scratch slots.
+│                                │  Managed by $cel_stack_ptr global;
+│                                │  frames push by `sub` and pop by
+│                                │  `add` on the pointer.  Used for:
+│                                │  arithmetic results with 3VL status,
+│                                │  map/list literal bodies of known
+│                                │  size, temporary boxed scalars.
+├────────────────────────────────┤ CELWASM_ARENA_BYTES (initial $cel_stack_ptr)
+│ unused                         │  memory.grow reserve if the two
+│                                │  meet; today the total is fixed.
 └────────────────────────────────┘
 ```
 
@@ -560,16 +576,33 @@ typedef struct {
 } Error;
 ```
 
-### 7.4 Allocator
+### 7.4 Allocators
+
+Two allocators share `g_memory`:
+
+  1. **Arena** — bump allocator, lifetime = one host-visible `eval()`
+     call, reclaimed by `cel_reset()`.  Used for dynamic-size payloads
+     whose size isn't known until runtime (concatenated strings,
+     comprehension-built lists/maps, merged UnknownSets).
+  2. **Software stack** — per-WASM-function scratch frames, lifetime =
+     one function activation, reclaimed by the function's epilogue.
+     Used for fixed-size temporaries: `CelValue` slots for arithmetic
+     results with 3VL status, boxed scalars at 3VL boundaries, and
+     map/list literal bodies of compile-time-known size.
+
+Both are purely a discipline on `g_memory` — the runtime does not grow
+linear memory today, and neither allocator talks to `memory.grow`.
+
+#### 7.4.1 Arena
 
 ```c
 typedef struct {
   uint32_t bump;
   uint32_t limit;
-} Arena;
+} CelArena;
 
 // Single global instance; cel_reset rewinds to the post-static boundary.
-extern Arena g_arena;
+extern CelArena g_cel_arena;
 
 // Exported to the host.
 uint32_t cel_alloc(uint32_t n);   // 8-byte-aligned bump alloc
@@ -578,6 +611,8 @@ uint32_t cel_mem_base(void);      // absolute linear-memory address of g_memory[
 ```
 
 No `cel_free`. Hosts call `cel_reset()` after every `eval` to reclaim.
+`g_cel_arena.limit` is set to `kStackBase` at module init so `cel_alloc`
+can never collide with the stack region.
 
 `cel_alloc` returns an offset **relative to `g_memory`**. External callers
 that want to write through linear memory (eval module codegen, host
@@ -588,7 +623,119 @@ runtime reconstructs `g_memory + rel` internally on every dereference,
 which is what lets the same C sources link into both wasm32 and
 native-host builds.
 
-### 7.5 Constructors
+#### 7.4.2 Software stack
+
+A single mutable i32 global tracks the top of the stack:
+
+```wat
+(global $cel_stack_ptr (mut i32) (i32.const CELWASM_ARENA_BYTES))
+```
+
+Initial value is the high end of `g_memory`.  The stack grows **down**
+(matching clang's wasm32 ABI convention for `__stack_pointer`), so a
+frame prologue **subtracts** its frame size from the pointer and the
+epilogue **adds** it back.  The value of `$cel_stack_ptr` at any moment
+is the offset of the current frame's lowest byte; frame-local slots
+live at `$cel_stack_ptr + local_offset`.
+
+Frame protocol emitted by codegen for every function that needs scratch:
+
+```wat
+(func $eval (result i32)
+  (local $frame_base i32)
+  ;; ---- prologue ------------------------------------------------
+  (global.set $cel_stack_ptr
+    (i32.sub (global.get $cel_stack_ptr) (i32.const <frame_size>)))
+  (local.set $frame_base (global.get $cel_stack_ptr))
+  ;; ---- body ----------------------------------------------------
+  ;; slot_k lives at  $frame_base + <k * 24>  (for CelValue slots)
+  ;; or at            $frame_base + <byte_offset>  (for container bodies).
+  ...
+  ;; ---- epilogue ------------------------------------------------
+  (global.set $cel_stack_ptr
+    (i32.add (global.get $cel_stack_ptr) (i32.const <frame_size>)))
+  ...)
+```
+
+`frame_size` is a compile-time constant: codegen walks the function body
+and sums (a) 24 bytes per `CelValue` slot needed for arithmetic / 3VL /
+boxed scalars, plus (b) any fixed-size container bodies (a map literal
+of N entries needs `N * 48` bytes for the pair array).  Dynamic-size
+containers fall through to the arena.
+
+No `cel_stack_reset` entry point — frame restoration is purely in-band
+in the emitted WASM.  The host never touches `$cel_stack_ptr` directly;
+it's a private detail of the eval module (the runtime module declares
+the global, but only `$eval` and functions it calls read or mutate it).
+
+Nested calls compose naturally: if `$eval` calls another function that
+also carves its own frame, that callee runs its own prologue/epilogue
+pair.  LIFO discipline is enforced by codegen — every `global.set
+$cel_stack_ptr (sub …)` in the prologue has a matching `(add …)` in the
+epilogue on every exit path (including early returns from 3VL
+short-circuit).
+
+### 7.5 Storage tiers and escape rules
+
+Every value produced at runtime lives in exactly one of three regions,
+chosen by codegen at compile time based on **size-known-ness** and
+**lifetime**:
+
+| Source of the value                             | Body storage                       | Header (CelValue) storage |
+| ----------------------------------------------- | ---------------------------------- | ------------------------- |
+| String / bytes **literal**                      | const data segment                 | const data segment (interned) |
+| Int / uint / double / bool **literal**          | — (inline in CelValue payload)     | const data segment or stack |
+| Proto message (from host)                       | externref table (host-owned)       | stack                     |
+| Ident read of a scalar eval param               | — (inline in payload)              | stack (boxed at 3VL boundary) |
+| Arithmetic result (`a + b`, `a * b`, …)         | — (inline, may be CEL_ERROR)       | stack                     |
+| Runtime-built string (`a + b` on strings)       | arena (dynamic size)               | stack                     |
+| Map / list **literal** of compile-time-known N  | stack (`N * 48` / `N * 24` bytes)  | stack                     |
+| List / map from a **comprehension**             | arena (size unknown at compile)    | stack                     |
+| Merged UnknownSet (`cel_unknown_merge`)         | arena (id array is dynamic)        | arena (current) / stack (future opt) |
+| The **final return value** of `eval`            | arena (lifetime = cel_reset)       | arena                     |
+
+The rule underneath:
+
+  - **Stack** when the size is known at compile time AND the value does
+    not escape the current frame.
+  - **Arena** when either the size is dynamic OR the value must outlive
+    the current frame (the paradigm case: `eval`'s return value, which
+    the host reads after `eval` returns).
+  - **Const data segment** when the value is truly a compile-time
+    constant (string literals, the singleton `true` / `false` /
+    `null` / `optional-none` CelValues).
+
+The **CelValue header is always 24 bytes** (§7.2), so a header is always
+stack-allocable when its body is.  Variable-length things (string bytes,
+list element array, map pair array, UnknownSet id array) are separate
+allocations the header points at via a relative offset — those follow
+the same stack-vs-arena rule independently.
+
+Worked example: `{'a': 10}['a']`
+
+```
+  const data segment (built at compile time):
+    off=data_a:      UTF-8 bytes "a"           (1 byte)
+    off=cv_str_a:    { CEL_STRING, s:{data_a,1} }   (24 bytes, interned)
+
+  software stack frame of $eval (after prologue):
+    slot[0] (48B):   pair array for the map literal
+                      [0].key   = *cv_str_a   (or a copy)
+                      [0].value = { CEL_INT, i=10 }
+    slot[1] (24B):   { CEL_MAP, map:{pairs_ptr=&slot[0], len=1} }
+    slot[2] (24B):   { CEL_STRING, s:{data_a,1} }   (index key, copy of cv_str_a)
+    slot[3] (24B):   lookup result — codegen can reuse slot[0..2]
+                     space if it proves no later node reads from them.
+```
+
+Nothing hits the arena.  The final scalar int `10` escapes `$eval` only
+because the host reads it after `eval` returns; that escape is handled
+at the module boundary by copying the return value into the arena (or,
+when we ship an sret entry point for `$eval` in M7, into a host-provided
+out-ptr).  The map itself never escapes — it's constructed and thrown
+away inside the same frame.
+
+### 7.6 Constructors
 
 All return a `CelValue*`. Null, true, false, and the type literals are
 statically allocated singletons so construction is free.
@@ -644,7 +791,7 @@ CelValue* cel_unknown_merge(CelValue* a, CelValue* b);
 CelValue* cel_error(uint32_t code, uint32_t msg_ptr, uint32_t msg_len);
 ```
 
-### 7.6 Accessors, ops, and logic
+### 7.7 Accessors, ops, and logic
 
 ```c
 int32_t   cel_is_ok(const CelValue* v);
@@ -1519,10 +1666,10 @@ cel_reset.call();
       `i64` and traps on overflow (the M4 slice B retrofit already
       left room for this shape).
     - **Option B — sret / linear-memory "stack" CelValue.**  Helpers
-      stay written in C; the caller reserves 24 bytes in a
-      software-managed stack frame at the top of `eval` (decrement a
-      stack-pointer global, compute an i32 offset), passes the
-      offset as a hidden first argument, and the callee writes the
+      stay written in C; the caller reserves 24 bytes in the software
+      stack frame described in §7.4.2 (decrement `$cel_stack_ptr`,
+      compute an i32 offset), passes the offset as a hidden first
+      argument, and the callee writes the
       CelValue through it.  This is clang's native wasm32 C ABI for
       struct returns, so no exotic toolchain dance is needed — the
       helper signature is just
@@ -1545,17 +1692,17 @@ cel_reset.call();
       Binaryen's `BinaryenAddFunction` accepts tuple result types),
       but they move the runtime out of C.
   .
-  Current lean: **Option A with a checker-driven scalar fast-path**
-  as the near-term landing shape, **Option B as the mid-term
-  upgrade** once we have a software stack frame for any other
-  reason (comprehensions will need one anyway for accumulator
-  spills, M5+).  Option C is only worth the C-to-WAT migration cost
-  if benchmarking shows arena pressure dominates evaluation time,
-  which we don't have data for yet.
+  Decision (2026-04-19): **Option B — sret with a per-`$eval` software
+  stack frame.**  Rationale: frame-local lifetime matches arithmetic
+  temporaries exactly, avoids arena pressure, and M5 comprehensions
+  will want the same stack for accumulator spills anyway — so we pay
+  the "carve a stack out of linear memory" cost once and amortise.
+  The storage-tier rules and stack-pointer protocol are written up in
+  §7.4.2 / §7.5.  Option C (true WASM multi-value) stays on the shelf
+  unless benchmarking later shows the sret memory round-trip dominates.
   .
-  Decision owner: whoever picks up M4 Slice C.  When the decision
-  ships, §10.2 needs a rewrite that drops the "trap on ERROR"
-  paragraph.
+  When Slice C ships, §10.2 needs a rewrite that drops the "trap on
+  ERROR" paragraph.
 
 - **compiler-rt / wasi-sdk cross-platform strategy for the runtime
   wasm32 build (revisit when the next runtime dep appears).**  The

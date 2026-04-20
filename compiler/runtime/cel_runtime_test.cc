@@ -1377,5 +1377,240 @@ TEST_F(RuntimeTest, BoxedUintErrorPropagates) {
   EXPECT_EQ(cel_uint_add(u, e), e);
 }
 
+// ---- Scratch-slot (sret) ABI (M4 Slice C) --------------------------------
+//
+// The runtime is agnostic to stack vs arena — any aligned 24-byte slot
+// works for the sret helpers — so these tests reuse `cel_alloc` as a
+// stand-in for the software-stack frame slots codegen will emit later.
+
+uint32_t AllocSlot() {
+  return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+}
+
+TEST_F(RuntimeTest, BoxBoolWritesSlot) {
+  uint32_t out = AllocSlot();
+  cel_box_bool(out, 1);
+  EXPECT_EQ(KindOf(out), CEL_BOOL);
+  EXPECT_EQ(cel_value_at(out)->payload.b, 1);
+  cel_box_bool(out, 0);
+  EXPECT_EQ(cel_value_at(out)->payload.b, 0);
+  // Any non-zero int input normalizes to 1.
+  cel_box_bool(out, -5);
+  EXPECT_EQ(cel_value_at(out)->payload.b, 1);
+}
+
+TEST_F(RuntimeTest, BoxIntWritesSlot) {
+  uint32_t out = AllocSlot();
+  cel_box_int(out, -42);
+  ExpectInt(out, -42);
+}
+
+TEST_F(RuntimeTest, BoxUintWritesSlot) {
+  uint32_t out = AllocSlot();
+  cel_box_uint(out, UINT64_MAX);
+  ExpectUint(out, UINT64_MAX);
+}
+
+TEST_F(RuntimeTest, BoxDoubleWritesSlot) {
+  uint32_t out = AllocSlot();
+  cel_box_double(out, 3.14);
+  EXPECT_EQ(KindOf(out), CEL_DOUBLE);
+  EXPECT_DOUBLE_EQ(cel_value_at(out)->payload.d, 3.14);
+}
+
+TEST_F(RuntimeTest, BoxOutZeroIsNoOp) {
+  // out == 0 targets the null sentinel; helpers must not corrupt it.
+  uint32_t null_off = cel_make_null();
+  CelKind prev_kind = KindOf(null_off);
+  cel_box_int(0, 42);
+  cel_box_bool(0, 1);
+  EXPECT_EQ(KindOf(null_off), prev_kind);
+}
+
+TEST_F(RuntimeTest, IntAddAtHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at(out, cel_make_int(3), cel_make_int(4));
+  ExpectInt(out, 7);
+}
+
+TEST_F(RuntimeTest, IntAddAtOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at(out, cel_make_int(INT64_MAX), cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntAddAtErrorPropagatesLeft) {
+  uint32_t out = AllocSlot();
+  uint32_t e = cel_make_error(99, 0, 0);
+  uint32_t b = cel_make_int(2);
+  cel_int_add_at(out, e, b);
+  // Copied from the original ERROR — payload pointer survives the memcpy.
+  EXPECT_EQ(KindOf(out), CEL_ERROR);
+  EXPECT_EQ(cel_value_at(out)->payload.err, cel_value_at(e)->payload.err);
+}
+
+TEST_F(RuntimeTest, IntAddAtErrorPropagatesRight) {
+  uint32_t out = AllocSlot();
+  uint32_t b = cel_make_int(2);
+  uint32_t e = cel_make_error(99, 0, 0);
+  cel_int_add_at(out, b, e);
+  EXPECT_EQ(KindOf(out), CEL_ERROR);
+  EXPECT_EQ(cel_value_at(out)->payload.err, cel_value_at(e)->payload.err);
+}
+
+TEST_F(RuntimeTest, IntAddAtUnknownPropagates) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at(out, cel_make_unknown(42), cel_make_int(2));
+  EXPECT_EQ(KindOf(out), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(out), (std::vector<uint32_t>{42u}));
+}
+
+TEST_F(RuntimeTest, IntAddAtTwoUnknownsMerge) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at(out, cel_make_unknown(42), cel_make_unknown(100));
+  EXPECT_EQ(KindOf(out), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(out), (std::vector<uint32_t>{42u, 100u}));
+}
+
+TEST_F(RuntimeTest, IntAddAtErrorDominatesUnknown) {
+  uint32_t out = AllocSlot();
+  uint32_t e = cel_make_error(7, 0, 0);
+  uint32_t u = cel_make_unknown(42);
+  cel_int_add_at(out, e, u);
+  EXPECT_EQ(KindOf(out), CEL_ERROR);
+  cel_int_add_at(out, u, e);
+  EXPECT_EQ(KindOf(out), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, IntAddAtTypeMismatchIsError) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at(out, cel_make_int(1), cel_make_string("1", 1));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntAddAtZeroOffsetIsError) {
+  uint32_t out = AllocSlot();
+  uint32_t i = cel_make_int(1);
+  cel_int_add_at(out, 0, i);
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+  cel_int_add_at(out, i, 0);
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntSubAtOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_sub_at(out, cel_make_int(INT64_MIN), cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntMulAtOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_mul_at(out, cel_make_int(INT64_MAX), cel_make_int(2));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntDivAtByZero) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at(out, cel_make_int(5), cel_make_int(0));
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntDivAtMinByNegOneOverflows) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at(out, cel_make_int(INT64_MIN), cel_make_int(-1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntModAtByZero) {
+  uint32_t out = AllocSlot();
+  cel_int_mod_at(out, cel_make_int(5), cel_make_int(0));
+  ExpectErrorWithCode(out, CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntModAtMinByNegOneIsZero) {
+  uint32_t out = AllocSlot();
+  cel_int_mod_at(out, cel_make_int(INT64_MIN), cel_make_int(-1));
+  ExpectInt(out, 0);
+}
+
+TEST_F(RuntimeTest, UintAddAtHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at(out, cel_make_uint(3), cel_make_uint(4));
+  ExpectUint(out, 7u);
+}
+
+TEST_F(RuntimeTest, UintAddAtWrapIsOverflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at(out, cel_make_uint(UINT64_MAX), cel_make_uint(1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintSubAtUnderflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_sub_at(out, cel_make_uint(0), cel_make_uint(1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintMulAtOverflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_mul_at(out, cel_make_uint(UINT64_MAX), cel_make_uint(2));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintDivAtByZero) {
+  uint32_t out = AllocSlot();
+  cel_uint_div_at(out, cel_make_uint(7), cel_make_uint(0));
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, UintModAtByZero) {
+  uint32_t out = AllocSlot();
+  cel_uint_mod_at(out, cel_make_uint(7), cel_make_uint(0));
+  ExpectErrorWithCode(out, CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, UintAtRejectsMixedSign) {
+  uint32_t out = AllocSlot();
+  // Mixed int/uint operands must have been caught (or coerced) by the
+  // checker; a runtime reach-through is a CEL_ERR_TYPE_MISMATCH.
+  cel_uint_add_at(out, cel_make_int(1), cel_make_uint(1));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntNegAtHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at(out, cel_make_int(5));
+  ExpectInt(out, -5);
+}
+
+TEST_F(RuntimeTest, IntNegAtMinOverflows) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at(out, cel_make_int(INT64_MIN));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntNegAtPropagatesError) {
+  uint32_t out = AllocSlot();
+  uint32_t e = cel_make_error(7, 0, 0);
+  cel_int_neg_at(out, e);
+  EXPECT_EQ(KindOf(out), CEL_ERROR);
+  EXPECT_EQ(cel_value_at(out)->payload.err, cel_value_at(e)->payload.err);
+}
+
+TEST_F(RuntimeTest, IntNegAtPropagatesUnknown) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at(out, cel_make_unknown(3));
+  EXPECT_EQ(KindOf(out), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(out), (std::vector<uint32_t>{3u}));
+}
+
+TEST_F(RuntimeTest, IntNegAtRejectsNonInt) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at(out, cel_make_double(1.0));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+  cel_int_neg_at(out, 0);
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
 }  // namespace
 }  // namespace celwasm
