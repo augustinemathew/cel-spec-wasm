@@ -633,6 +633,16 @@ expression from `m1-type-checker.md`, plus:
 - [ ] String coercion errors where the spec forbids them.
 - [ ] `unknown` propagation through `&&` / `||` (M4).
 - [ ] Partial-eval: `unknown && false → false` commutatively (M4).
+- [ ] **3VL absorption in non-absorbing ops (Slice F).**  Every
+      expression where an ERROR / UNKNOWN subtree flows through a
+      non-absorbing intermediate op (arithmetic, comparison,
+      NaN-compare, string op, message equality) into a 3VL
+      absorber (`&&` / `||` / `?:`).  Full enumeration (22 rows) in
+      `m4-slice-f-3vl-absorption.md`.  The ERROR-source rows (1–8)
+      are live as `DISABLED_ThreeValuedAbsorption_*` in
+      `eval_test.cc` — drop the prefix when Slice F lands and they
+      should pass.  UNKNOWN-source rows (9–22) wait for Slice E2a.1
+      (host UNKNOWN producer).
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

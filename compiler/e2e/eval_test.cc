@@ -434,6 +434,88 @@ TEST(EvalE2ETest, DoubleDivZeroProducesInfNotTrap) {
   EXPECT_TRUE(std::isinf(r->of.f64));
 }
 
+// ---- 3VL absorption gap (Slice F) -----------------------------------
+//
+// Every test below DISABLED_ asserts the CEL-spec answer for an
+// expression where an ERROR-producing subtree flows through a
+// non-absorbing intermediate op (arithmetic, comparison, NaN-compare)
+// into a 3VL absorber (`&&` / `||`).  Per `doc/langdef.md`
+// §partial-evaluation, the absorber is supposed to see the ERROR as a
+// value and short-circuit past it (`ERROR || OK(true) → OK(true)`).
+// Our pipeline today early-returns from `$eval` on the first ERROR
+// (Slice C/3b1 arithmetic + Slice D NaN-compare + Slice E1 ternary
+// cond), so the host sees `CelErrorStatus` instead of the spec result.
+//
+// Keep these tests in lock-step with the checklist in
+// `doc/implementation-plan/m4-slice-f-3vl-absorption.md`.  When Slice
+// F lands (3VL-aware comparisons and arithmetic: operands and results
+// ride the CelValue-offset ABI so the ERROR can flow upward), drop
+// the DISABLED_ prefix and they should pass.
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByOr) {
+  // Row 1: (1/0 == 0) || true → true.
+  auto r = Evaluate("(1 / 0 == 0) || true");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByAnd) {
+  // Row 2: (1/0 == 0) && false → false.
+  auto r = Evaluate("(1 / 0 == 0) && false");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorOrderedCompareAbsorbed) {
+  // Row 3: (1/0 > 5) || true → true.
+  auto r = Evaluate("(1 / 0 > 5) || true");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorArithThenCompareAbsorbed) {
+  // Row 4: ((1/0) + 1) == 0 || true → true.  ERROR through a second
+  // arithmetic hop before the comparison.
+  auto r = Evaluate("((1 / 0) + 1) == 0 || true");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionOverflowAbsorbed) {
+  // Row 5: (INT64_MAX + 1 == 0) || true → true.  Overflow-flavoured
+  // ERROR (vs. div-by-zero) absorbed the same way.
+  auto r = Evaluate("(9223372036854775807 + 1 == 0) || true");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionNaNCompareAbsorbed) {
+  // Row 6: (NaN < 1.0) || true → true.  NaN-compare ERROR (3b1)
+  // absorbed by `||` past the literal `true`.
+  auto r = EvaluateWithVars("(x < 1.0) || true", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionTernaryResultAbsorbedByOr) {
+  // Row 8: ((1/0 == 0) ? true : false) || true → true.  Slice E1 makes
+  // the ternary propagate ERROR-in-cond as its result (spec-correct
+  // for a root ternary), but when the ternary itself is wrapped by an
+  // absorber the absorber must still see the ERROR as a value.  This
+  // is the E1 semantic gap documented in §10.2.1.
+  auto r = Evaluate("((1 / 0 == 0) ? true : false) || true");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
 TEST(EvalE2ETest, IntVariableIsReadFromFirstParam) {
   // `x + 1` with x=41 exercises the full ident path: parse+check assigns
   // `x:int` an i64 Repr, codegen lays it out as param 0, and the runtime

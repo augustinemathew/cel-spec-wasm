@@ -1,7 +1,10 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slices A+B+C+D+E1 shipped (2026-04-20); slice E2 (host
-UNKNOWN) and slices F-G in progress.**
+Status: **slices A+B+C+D+E1 shipped (2026-04-20); slice E2a.1 (host
+UNKNOWN propagation via `get_field`) next; slice E2a.2 (CLI flag)
+and Slice F (3VL absorption in non-absorbing ops) deferred — Slice
+F is tracked in `m4-slice-f-3vl-absorption.md` with the full
+checklist of spec-breaking expressions.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
