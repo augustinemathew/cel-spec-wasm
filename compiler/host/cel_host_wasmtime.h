@@ -24,12 +24,25 @@
 #ifndef CELWASM_COMPILER_HOST_CEL_HOST_WASMTIME_H_
 #define CELWASM_COMPILER_HOST_CEL_HOST_WASMTIME_H_
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "wasmtime.h"
 
 namespace celwasm {
+
+// Resolved field-intern entry.  `field_number == 0` is the sentinel
+// for "not proto-resolvable" (forward-compat for future JSON / map
+// backings); the host then falls back to name-based field lookup.
+struct FieldTableEntry {
+  uint32_t field_number;
+  std::string name;
+};
 
 // Holds the runtime-instance handles the `cel_host.*` trampolines need,
 // plus the wasmtime store context.  Must outlive the
@@ -73,9 +86,28 @@ class CelHostEnv {
   //   get_field   (externref, i32, i32) -> ()
   //   has_field   (externref, i32)      -> i32
   //   message_eq  (externref, externref) -> i32
+  // The second `i32` in `get_field` / `has_field` is a field
+  // intern-id; the trampoline resolves it against `field_table_`
+  // (seeded via `SetFieldTable`) to produce the `(field_number,
+  // field_name)` pair passed to the pure host helpers.
   // Must be called before `wasmtime_linker_instantiate(eval_mod)`.
   ABSL_MUST_USE_RESULT absl::Status Register(
       wasmtime_linker_t* absl_nonnull linker);
+
+  // Installs the field intern-id → `(field_number, field_name)`
+  // lookup table parsed out of the eval module's `cel.abi` custom
+  // section.  Entry `i` maps intern-id `i` to the corresponding
+  // resolved field.  Must be called before the first call into a
+  // trampoline that consumes intern-ids (`get_field` / `has_field`).
+  // Loading an eval module with no selects is fine — the table stays
+  // empty.
+  void SetFieldTable(std::vector<FieldTableEntry> table);
+
+  // Resolves an intern-id to its field table row.  Returns nullptr
+  // when `id` is out of range (treated as CEL_ERROR by the caller).
+  // Public so the trampolines (free functions in the .cc) can call it;
+  // treat as internal.
+  const FieldTableEntry* absl_nullable LookupField(uint32_t intern_id) const;
 
   // Accessors used by the trampolines.  Public only because the
   // trampolines are free functions in the .cc; treat as internal.
@@ -101,6 +133,7 @@ class CelHostEnv {
   wasmtime_func_t cel_mem_base_{};
   wasmtime_func_t cel_ref_intern_{};
   wasmtime_memory_t memory_{};
+  std::vector<FieldTableEntry> field_table_;
 };
 
 }  // namespace celwasm

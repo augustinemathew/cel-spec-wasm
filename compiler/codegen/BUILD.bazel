@@ -45,6 +45,7 @@ cc_library(
     hdrs = ["expr_lower.h"],
     deps = [
         ":cel_refs",
+        ":field_name_pool",
         ":module",
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",
@@ -59,6 +60,35 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "field_name_pool",
+    srcs = ["field_name_pool.cc"],
+    hdrs = ["field_name_pool.h"],
+    deps = [
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "field_name_pool_test",
+    srcs = ["field_name_pool_test.cc"],
+    deps = [
+        ":field_name_pool",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:typed_ast",
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -107,6 +137,7 @@ cc_library(
     hdrs = ["abi.h"],
     deps = [
         ":cel_abi_cc_proto",
+        ":field_name_pool",
         ":module",
         "//compiler/ir:typed_ast",
         "//proto/cel/expr:checked_cc_proto",
@@ -128,6 +159,7 @@ cc_test(
         ":module",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
+        "//compiler/testdata:e2e_fixture_cc_proto",
         "//proto/cel/expr:checked_cc_proto",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/log:check",

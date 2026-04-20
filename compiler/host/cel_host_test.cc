@@ -187,7 +187,7 @@ void ExpectReadField(const google::protobuf::Message& msg,
       msg.GetDescriptor()->FindFieldByName(row.field_name);
   ASSERT_NE(f, nullptr) << row.field_name;
   CelValue out{};
-  ReadField(msg, f->number(), &out, alloc, intern);
+  ReadField(msg, f->number(), f->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, row.expected_kind) << row.field_name;
   ExpectScalarPayload(out, row);
 }
@@ -237,9 +237,9 @@ TEST(ReadFieldTest, StringFieldCopiesIntoArena) {
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   const google::protobuf::FieldDescriptor* f =
-      msg.GetDescriptor()->FindFieldByName("s");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("s");
   CelValue out{};
-  ReadField(msg, f->number(), &out, alloc, intern);
+  ReadField(msg, f->number(), f->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_STRING);
   EXPECT_EQ(out.payload.s.len, 5u);
   EXPECT_EQ(arena.View(out.payload.s.ptr, out.payload.s.len), "hello");
@@ -253,9 +253,9 @@ TEST(ReadFieldTest, BytesFieldCopiesIntoArenaPreservingHighBits) {
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   const google::protobuf::FieldDescriptor* f =
-      msg.GetDescriptor()->FindFieldByName("by");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("by");
   CelValue out{};
-  ReadField(msg, f->number(), &out, alloc, intern);
+  ReadField(msg, f->number(), f->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_BYTES);
   EXPECT_EQ(out.payload.bytes.len, 4u);
   absl::string_view span =
@@ -276,9 +276,9 @@ TEST(ReadFieldTest, MessageFieldInternsSubmessage) {
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   const google::protobuf::FieldDescriptor* inner_f =
-      msg.GetDescriptor()->FindFieldByName("inner");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("inner");
   CelValue out{};
-  ReadField(msg, inner_f->number(), &out, alloc, intern);
+  ReadField(msg, inner_f->number(), inner_f->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_MESSAGE);
   EXPECT_EQ(out.payload.msg_slot, 1u);
   EXPECT_EQ(interner.count(), 1u);
@@ -291,21 +291,21 @@ TEST(ReadFieldTest, UnknownFieldNumberSurfacesError) {
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   CelValue out{};
-  ReadField(msg, /*field_number=*/999, &out, alloc, intern);
+  ReadField(msg, /*field_number=*/999, /*field_name=*/"", &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_ERROR);
 }
 
 TEST(ReadFieldTest, RepeatedFieldSurfacesError) {
   testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* rep =
-      msg.GetDescriptor()->FindFieldByName("rep_i32");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("rep_i32");
   ASSERT_NE(rep, nullptr);
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   CelValue out{};
-  ReadField(msg, rep->number(), &out, alloc, intern);
+  ReadField(msg, rep->number(), rep->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_ERROR);
 }
 
@@ -317,9 +317,9 @@ TEST(ReadFieldTest, EmptyStringStillWritesSpanPayload) {
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   const google::protobuf::FieldDescriptor* s =
-      msg.GetDescriptor()->FindFieldByName("s");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("s");
   CelValue out{};
-  ReadField(msg, s->number(), &out, alloc, intern);
+  ReadField(msg, s->number(), s->name(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_STRING);
   EXPECT_EQ(out.payload.s.len, 0u);
 }
@@ -329,10 +329,10 @@ TEST(ReadFieldTest, EmptyStringStillWritesSpanPayload) {
 TEST(HasFieldTest, Proto3SingularScalarSetToNonDefaultIsPresent) {
   testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* i64 =
-      msg.GetDescriptor()->FindFieldByName("i64");
-  EXPECT_FALSE(HasField(msg, i64->number()));
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("i64");
+  EXPECT_FALSE(HasField(msg, i64->number(), i64->name()));
   msg.set_i64(42);
-  EXPECT_TRUE(HasField(msg, i64->number()));
+  EXPECT_TRUE(HasField(msg, i64->number(), i64->name()));
 }
 
 TEST(HasFieldTest, Proto3SingularScalarAtDefaultIsAbsent) {
@@ -343,9 +343,9 @@ TEST(HasFieldTest, Proto3SingularScalarAtDefaultIsAbsent) {
   // boundary; here it's pinned at the host-function boundary.
   testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* b =
-      msg.GetDescriptor()->FindFieldByName("b");
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("b");
   msg.set_b(false);
-  EXPECT_FALSE(HasField(msg, b->number()));
+  EXPECT_FALSE(HasField(msg, b->number(), b->name()));
 }
 
 TEST(HasFieldTest, Proto2SingularScalarAtDefaultIsStillPresent) {
@@ -355,42 +355,42 @@ TEST(HasFieldTest, Proto2SingularScalarAtDefaultIsStillPresent) {
   // presence from proto3's value-based presence.
   testdata::HostMsg2 msg;
   const google::protobuf::FieldDescriptor* b =
-      msg.GetDescriptor()->FindFieldByName("b");
-  EXPECT_FALSE(HasField(msg, b->number()));
+      testdata::HostMsg2::GetDescriptor()->FindFieldByName("b");
+  EXPECT_FALSE(HasField(msg, b->number(), b->name()));
   msg.set_b(false);
-  EXPECT_TRUE(HasField(msg, b->number()));
+  EXPECT_TRUE(HasField(msg, b->number(), b->name()));
 }
 
 TEST(HasFieldTest, Proto2UnsetSingularScalarIsAbsent) {
   testdata::HostMsg2 msg;
   const google::protobuf::FieldDescriptor* i64 =
-      msg.GetDescriptor()->FindFieldByName("i64");
-  EXPECT_FALSE(HasField(msg, i64->number()));
+      testdata::HostMsg2::GetDescriptor()->FindFieldByName("i64");
+  EXPECT_FALSE(HasField(msg, i64->number(), i64->name()));
   msg.set_i64(0);
-  EXPECT_TRUE(HasField(msg, i64->number()));
+  EXPECT_TRUE(HasField(msg, i64->number(), i64->name()));
 }
 
 TEST(HasFieldTest, SetAndUnsetMessage) {
   testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* inner =
-      msg.GetDescriptor()->FindFieldByName("inner");
-  EXPECT_FALSE(HasField(msg, inner->number()));
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("inner");
+  EXPECT_FALSE(HasField(msg, inner->number(), inner->name()));
   msg.mutable_inner();
-  EXPECT_TRUE(HasField(msg, inner->number()));
+  EXPECT_TRUE(HasField(msg, inner->number(), inner->name()));
 }
 
 TEST(HasFieldTest, RepeatedFieldCountsElements) {
   testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* rep =
-      msg.GetDescriptor()->FindFieldByName("rep_i32");
-  EXPECT_FALSE(HasField(msg, rep->number()));
+      testdata::HostMsg3::GetDescriptor()->FindFieldByName("rep_i32");
+  EXPECT_FALSE(HasField(msg, rep->number(), rep->name()));
   msg.add_rep_i32(1);
-  EXPECT_TRUE(HasField(msg, rep->number()));
+  EXPECT_TRUE(HasField(msg, rep->number(), rep->name()));
 }
 
 TEST(HasFieldTest, UnknownFieldNumberReturnsFalse) {
   testdata::HostMsg3 msg;
-  EXPECT_FALSE(HasField(msg, /*field_number=*/999));
+  EXPECT_FALSE(HasField(msg, /*field_number=*/999, /*field_name=*/""));
 }
 
 // ---- MessageEq coverage -----------------------------------------------------

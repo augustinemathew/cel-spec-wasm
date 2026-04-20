@@ -1,5 +1,6 @@
 #include "compiler/host/host_loader.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/codegen/cel_abi.pb.h"
 #include "compiler/host/cel_host_wasmtime.h"
 #include "compiler/runtime/cel_runtime_wasm_bytes.h"
 #include "wasm.h"
@@ -193,6 +195,90 @@ absl::StatusOr<wasmtime_val_t> DecodeSlot(const uint8_t* absl_nonnull mem,
       return absl::InternalError(
           absl::StrCat("CallEval: slot has unsupported kind ", kind));
   }
+}
+
+// Reads a ULEB128 from `bytes` starting at `*pos`, advancing `*pos`.
+// Returns false on truncation; on success `*out` holds the decoded value.
+bool ReadUleb128(absl::Span<const uint8_t> bytes, size_t* pos, uint64_t* out) {
+  uint64_t value = 0;
+  int shift = 0;
+  const uint8_t* const data = bytes.data();
+  while (*pos < bytes.size()) {
+    const uint8_t b = data[(*pos)++];
+    value |= static_cast<uint64_t>(b & 0x7F) << shift;
+    if ((b & 0x80) == 0) {
+      *out = value;
+      return true;
+    }
+    shift += 7;
+    if (shift > 63) return false;
+  }
+  return false;
+}
+
+// Walks `eval_wasm` looking for a custom section named `cel.abi` and
+// returns its payload bytes (after the section name).  Returns an
+// empty span if no such section exists — a valid state for
+// back-compat evals built before the ABI section landed, and for
+// selectless expressions (the codegen still emits the section but its
+// `fields` table is empty).  Binary format reference:
+// https://webassembly.github.io/spec/core/binary/modules.html.
+absl::Span<const uint8_t> FindCelAbiSection(
+    absl::Span<const uint8_t> eval_wasm) {
+  if (eval_wasm.size() < 8) return {};
+  const uint8_t* const data = eval_wasm.data();
+  size_t pos = 8;  // skip magic + version
+  while (pos < eval_wasm.size()) {
+    const uint8_t id = data[pos++];
+    uint64_t section_len = 0;
+    if (!ReadUleb128(eval_wasm, &pos, &section_len)) return {};
+    if (pos + section_len > eval_wasm.size()) return {};
+    const size_t section_start = pos;
+    const size_t section_end = section_start + section_len;
+    if (id == 0) {  // custom section
+      size_t p = section_start;
+      uint64_t name_len = 0;
+      if (!ReadUleb128(eval_wasm, &p, &name_len)) return {};
+      if (p + name_len > section_end) return {};
+      const absl::string_view name(reinterpret_cast<const char*>(data + p),
+                                   name_len);
+      p += name_len;
+      if (name == "cel.abi") {
+        return eval_wasm.subspan(p, section_end - p);
+      }
+    }
+    pos = section_end;
+  }
+  return {};
+}
+
+// Parses the `cel.abi` payload into a field intern-id table suitable
+// for `CelHostEnv::SetFieldTable`.  Fills row `i` from `CelAbi.fields(i)`
+// if present; holes in the `id` space are padded with zeroed entries
+// so `LookupField` keeps returning a non-null row for the compiler's
+// dense-id invariant.  Returns an empty table on a malformed payload
+// — the caller still instantiates, but `get_field` / `has_field`
+// degrade to CEL_ERROR, which is the intended surface for a corrupt
+// section.
+std::vector<FieldTableEntry> ParseFieldTable(
+    absl::Span<const uint8_t> abi_bytes) {
+  CelAbi abi;
+  if (abi_bytes.empty() ||
+      !abi.ParseFromArray(abi_bytes.data(),
+                          static_cast<int>(abi_bytes.size()))) {
+    return {};
+  }
+  uint32_t max_id = 0;
+  for (const auto& row : abi.fields()) {
+    max_id = std::max(row.id(), max_id);
+  }
+  std::vector<FieldTableEntry> out;
+  if (abi.fields_size() > 0) out.resize(max_id + 1);
+  for (const auto& row : abi.fields()) {
+    if (row.id() >= out.size()) continue;
+    out.at(row.id()) = FieldTableEntry{row.field_number(), row.name()};
+  }
+  return out;
 }
 
 // Fetches the exported `memory` + `cel_mem_base` global from the
@@ -432,6 +518,14 @@ absl::StatusOr<LoadedEval> LoadEval(absl::Span<const uint8_t> eval_wasm_bytes) {
           out.SetupLinkerAndInstantiateEval(wasmtime_store_context(out.store_));
       !s.ok()) {
     return s;
+  }
+  // Hand the intern-id table parsed from the eval module's `cel.abi`
+  // custom section over to the host env.  The trampolines consume it
+  // via `CelHostEnv::LookupField`; an empty table is fine for
+  // selectless evals (no `get_field` / `has_field` calls will be made).
+  if (out.host_env_ != nullptr) {
+    out.host_env_->SetFieldTable(
+        ParseFieldTable(FindCelAbiSection(eval_wasm_bytes)));
   }
   out.has_instances_ = true;
   return out;

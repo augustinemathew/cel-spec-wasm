@@ -11,6 +11,7 @@
 
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/strings/string_view.h"
 #include "compiler/runtime/cel_runtime.h"
 #include "google/protobuf/message.h"
 
@@ -38,19 +39,27 @@ using ArenaAllocator = absl::AnyInvocable<
 using InternMessage =
     absl::AnyInvocable<uint32_t(const google::protobuf::Message& submessage)>;
 
+// `field_number == 0` is the sentinel for "not proto-resolvable"
+// (forward-compat path for JSON / map backings): in that case the
+// host resolves the field by `field_name` instead.  For proto-backed
+// messages the compiler always emits the concrete number, so the
+// fast descriptor-lookup path is taken.  `field_name` is always
+// populated — attribute-pattern matching in the partial-eval layer
+// compares by name regardless of how the descriptor was resolved.
 void ReadField(const google::protobuf::Message& msg, int field_number,
-               CelValue* absl_nonnull out, ArenaAllocator& alloc,
-               InternMessage& intern);
+               absl::string_view field_name, CelValue* absl_nonnull out,
+               ArenaAllocator& alloc, InternMessage& intern);
 
-// Returns true iff `msg` has `field_number` set.  Mirrors
-// `Reflection::HasField`, which matches CEL's `has()` semantics for proto
-// messages: proto2 reports explicit presence; proto3 singular scalar
-// fields report true iff the field's value is not the type's default
-// (which is what CEL calls "has" on a proto3 field without presence).
-// Unknown field numbers return false — consistent with the checker-side
-// view that `has(msg.nope)` is an error, so the codegen path for
-// `has_field` never sees this call with a bogus number in practice.
-bool HasField(const google::protobuf::Message& msg, int field_number);
+// Returns true iff `msg` has the field set.  Same `(field_number,
+// field_name)` resolution contract as `ReadField`: prefer number
+// when non-zero, fall back to name.  Mirrors `Reflection::HasField`,
+// which matches CEL's `has()` semantics for proto messages: proto2
+// reports explicit presence; proto3 singular scalar fields report
+// true iff the field's value is not the type's default.  Unknown
+// fields return false — the checker already rejects `has(msg.nope)`
+// earlier, so `has_field` never sees a bogus name in practice.
+bool HasField(const google::protobuf::Message& msg, int field_number,
+              absl::string_view field_name);
 
 // True iff `a` and `b` are proto-equal.  Delegates to protobuf's
 // `MessageDifferencer::Equals`, which is descriptor-aware (handles

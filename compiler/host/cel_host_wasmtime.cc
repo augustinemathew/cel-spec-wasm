@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -185,21 +187,23 @@ wasm_trap_t* GetFieldTrampoline(void* data, wasmtime_caller_t* /*caller*/,
   if (nargs < 3) return nullptr;
   const google::protobuf::Message* msg =
       MessageFromExternref(env.ctx(), args[0]);
-  const auto field_number = static_cast<uint32_t>(args[1].of.i32);
+  const auto intern_id = static_cast<uint32_t>(args[1].of.i32);
   const auto out_offset = static_cast<uint32_t>(args[2].of.i32);
 
   const uint32_t base = CallRuntimeNullaryI32(env.ctx(), env.cel_mem_base());
   uint8_t* mem = wasmtime_memory_data(env.ctx(), &env.memory());
   auto* out_cv = reinterpret_cast<CelValue*>(mem + base + out_offset);
 
-  if (msg == nullptr) {
+  const FieldTableEntry* entry = env.LookupField(intern_id);
+  if (msg == nullptr || entry == nullptr) {
     out_cv->kind = CEL_ERROR;
     out_cv->payload.err = 0;
     return nullptr;
   }
   ArenaAllocator alloc = MakeArenaAllocator(env);
   InternMessage intern = MakeInternMessage(env);
-  ReadField(*msg, static_cast<int>(field_number), out_cv, alloc, intern);
+  ReadField(*msg, static_cast<int>(entry->field_number), entry->name, out_cv,
+            alloc, intern);
   return nullptr;
 }
 
@@ -210,9 +214,13 @@ wasm_trap_t* HasFieldTrampoline(void* data, wasmtime_caller_t* /*caller*/,
   if (nargs < 2 || nresults < 1) return nullptr;
   const google::protobuf::Message* msg =
       MessageFromExternref(env.ctx(), args[0]);
-  const auto field_number = static_cast<uint32_t>(args[1].of.i32);
+  const auto intern_id = static_cast<uint32_t>(args[1].of.i32);
   results[0].kind = WASMTIME_I32;
-  results[0].of.i32 = (msg != nullptr && HasField(*msg, field_number)) ? 1 : 0;
+  const FieldTableEntry* entry = env.LookupField(intern_id);
+  results[0].of.i32 = (msg != nullptr && entry != nullptr &&
+                       HasField(*msg, entry->field_number, entry->name))
+                          ? 1
+                          : 0;
   return nullptr;
 }
 
@@ -319,6 +327,15 @@ absl::Status CelHostEnv::Init(wasmtime_context_t* ctx,
 
 absl::Status CelHostEnv::BindEvalInterner(const wasmtime_instance_t& eval) {
   return LookupFunc(ctx_, eval, "cel_ref_intern", &cel_ref_intern_);
+}
+
+void CelHostEnv::SetFieldTable(std::vector<FieldTableEntry> table) {
+  field_table_ = std::move(table);
+}
+
+const FieldTableEntry* CelHostEnv::LookupField(uint32_t intern_id) const {
+  if (static_cast<size_t>(intern_id) >= field_table_.size()) return nullptr;
+  return &field_table_.at(intern_id);
 }
 
 absl::Status CelHostEnv::Register(wasmtime_linker_t* linker) {

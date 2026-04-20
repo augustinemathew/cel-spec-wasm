@@ -7,13 +7,12 @@
 // module and use it to seed their runtime tables and reject modules
 // whose required imports they cannot satisfy.
 //
-// Scope (M2):
+// Scope:
 //   - `version` / `cel_source` / `checked` populated from the typed
 //     AST via `cel::AstToCheckedExpr`.
-//   - `types` / `attributes` / `patterns` / `error_msgs` left empty:
-//     the M2 codegen MVP never emits the wasm side that would
-//     reference them.  They fill in as M3 (proto fields, strings),
-//     M4 (three-valued logic), and M5 (collections) land.
+//   - `fields` intern table — populated by the select lowering with
+//     one entry per distinct `(proto_field_number, name)` pair.
+//     Empty for expressions that do not read any fields.
 //   - `function_set` records every import the emitted module
 //     declares, so a host can diff it against its own impl up
 //     front.

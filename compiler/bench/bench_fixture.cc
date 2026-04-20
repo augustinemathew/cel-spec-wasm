@@ -9,6 +9,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "compiler/codegen/abi.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
@@ -31,6 +32,9 @@ absl::StatusOr<LoadedEval> Precompile(absl::string_view cel_source,
   auto fn = LowerToEvalFunction(*typed, "eval", mod);
   if (!fn.ok()) return fn.status();
   mod.ExportFunction("eval", "eval");
+  auto abi = BuildCelAbi(*typed, cel_source);
+  if (!abi.ok()) return abi.status();
+  if (auto s = AttachCelAbiSection(mod, *abi); !s.ok()) return s;
   if (auto s = mod.Validate(); !s.ok()) return s;
 
   auto bytes = mod.Serialize();

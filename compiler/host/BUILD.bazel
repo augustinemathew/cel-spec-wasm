@@ -61,6 +61,7 @@ cc_library(
     hdrs = ["host_loader.h"],
     deps = [
         ":cel_host_wasmtime",
+        "//compiler/codegen:cel_abi_cc_proto",
         "//compiler/runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",

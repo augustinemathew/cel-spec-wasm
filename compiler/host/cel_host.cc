@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 
+#include "absl/strings/string_view.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/util/message_differencer.h"
@@ -107,14 +108,27 @@ void ReadScalarField(const google::protobuf::Reflection& refl,
   WriteError(out);
 }
 
+// Resolves the `FieldDescriptor` on `msg` preferring the proto field
+// number (when non-zero) and falling back to a by-name lookup.  The
+// fallback is the forward-compat path: non-proto-backed hosts (JSON,
+// maps) emit `field_number = 0` so the resolution keys on the name.
+const google::protobuf::FieldDescriptor* absl_nullable ResolveField(
+    const google::protobuf::Message& msg, int field_number,
+    absl::string_view field_name) {
+  const google::protobuf::Descriptor* d = msg.GetDescriptor();
+  if (field_number != 0) {
+    return d->FindFieldByNumber(field_number);
+  }
+  return d->FindFieldByName(std::string(field_name));
+}
+
 }  // namespace
 
 void ReadField(const google::protobuf::Message& msg, int field_number,
-               CelValue* absl_nonnull out, ArenaAllocator& alloc,
-               InternMessage& intern) {
-  const google::protobuf::Descriptor* descriptor = msg.GetDescriptor();
+               absl::string_view field_name, CelValue* absl_nonnull out,
+               ArenaAllocator& alloc, InternMessage& intern) {
   const google::protobuf::FieldDescriptor* field =
-      descriptor->FindFieldByNumber(field_number);
+      ResolveField(msg, field_number, field_name);
   if (field == nullptr) {
     WriteError(out);
     return;
@@ -130,10 +144,10 @@ void ReadField(const google::protobuf::Message& msg, int field_number,
   ReadScalarField(*refl, msg, *field, out, alloc, intern);
 }
 
-bool HasField(const google::protobuf::Message& msg, int field_number) {
-  const google::protobuf::Descriptor* descriptor = msg.GetDescriptor();
+bool HasField(const google::protobuf::Message& msg, int field_number,
+              absl::string_view field_name) {
   const google::protobuf::FieldDescriptor* field =
-      descriptor->FindFieldByNumber(field_number);
+      ResolveField(msg, field_number, field_name);
   if (field == nullptr) return false;
   if (field->is_repeated()) {
     return msg.GetReflection()->FieldSize(msg, field) > 0;

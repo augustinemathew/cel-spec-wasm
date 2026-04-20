@@ -11,6 +11,7 @@
 #include "cel/expr/checked.pb.h"
 #include "common/ast_proto.h"
 #include "compiler/codegen/cel_abi.pb.h"
+#include "compiler/codegen/field_name_pool.h"
 #include "compiler/codegen/module.h"
 #include "compiler/ir/typed_ast.h"
 
@@ -28,9 +29,23 @@ absl::StatusOr<CelAbi> BuildCelAbi(const TypedAst& typed,
         absl::StrCat("AstToCheckedExpr failed: ", s.message()));
   }
 
-  // `function_set`, tables, and `layout` stay at their defaults for
-  // M2 — the codegen MVP never emits references to any of them.
-  // M3+ will populate these as features land.
+  // Emit the `(field_number, name)` intern table used by
+  // `cel_host.get_field` / `cel_host.has_field` call sites.  The
+  // walk order in `FromTypedAst` matches the one in
+  // `LowerToEvalFunction`, so the intern IDs the host sees here are
+  // the same ones the emitted wasm passes at call time.
+  const FieldNamePool pool = FieldNamePool::FromTypedAst(typed);
+  uint32_t id = 0;
+  for (const FieldNamePool::Entry& e : pool.entries()) {
+    FieldEntry* row = abi.add_fields();
+    row->set_id(id++);
+    row->set_field_number(e.field_number);
+    row->set_name(e.name);
+  }
+
+  // `function_set` and `layout` stay at their defaults — the
+  // codegen MVP never emits references to a custom `FunctionSet`,
+  // and `MemoryLayout` mirrors the runtime's single-page arena.
   abi.mutable_function_set();  // materialise as empty rather than unset.
   MemoryLayout* layout = abi.mutable_layout();
   layout->set_initial_pages(1);
