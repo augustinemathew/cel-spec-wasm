@@ -24,6 +24,8 @@ cc_test(
     deps = [
         ":cel_host",
         "//compiler/runtime:cel_runtime",
+        "//compiler/testdata:host_fixture_proto2_cc_proto",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",

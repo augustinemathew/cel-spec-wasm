@@ -15,3 +15,28 @@ cc_proto_library(
     name = "e2e_fixture_cc_proto",
     deps = [":e2e_fixture_proto"],
 )
+
+# Proto3 fixture for cel_host unit tests: every CEL-relevant wire type
+# plus enum / nested-message / repeated-scalar.
+proto_library(
+    name = "host_fixture_proto3_proto",
+    srcs = ["host_fixture_proto3.proto"],
+)
+
+cc_proto_library(
+    name = "host_fixture_proto3_cc_proto",
+    deps = [":host_fixture_proto3_proto"],
+)
+
+# Proto2 counterpart with the same field shape; `optional` on every
+# singular scalar gives proto2's explicit-presence semantics so tests
+# can distinguish `HasField` under both syntaxes.
+proto_library(
+    name = "host_fixture_proto2_proto",
+    srcs = ["host_fixture_proto2.proto"],
+)
+
+cc_proto_library(
+    name = "host_fixture_proto2_cc_proto",
+    deps = [":host_fixture_proto2_proto"],
+)

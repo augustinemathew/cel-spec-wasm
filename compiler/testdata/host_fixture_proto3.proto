@@ -1,0 +1,37 @@
+// Proto3 fixture for cel_host unit tests: one message with a field of
+// every CEL-relevant proto3 wire type plus an enum, a self-recursive
+// message, and a repeated scalar.
+//
+// Field numbers are deliberately non-contiguous across wire types so
+// off-by-one mistakes in the resolver or host dispatcher cannot pass
+// silently.
+
+syntax = "proto3";
+
+package celwasm.testdata;
+
+message HostMsg3 {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_SEVEN = 7;
+  }
+
+  bool     b        = 1;
+  int32    i32      = 2;
+  int64    i64      = 3;
+  uint32   u32      = 4;
+  uint64   u64      = 5;
+  sint32   si32     = 6;
+  sint64   si64     = 7;
+  fixed32  fx32     = 8;
+  fixed64  fx64     = 9;
+  sfixed32 sfx32    = 10;
+  sfixed64 sfx64    = 11;
+  float    f32      = 12;
+  double   f64      = 13;
+  string   s        = 14;
+  bytes    by       = 15;
+  Kind     kind     = 16;
+  HostMsg3 inner    = 17;
+  repeated int32 rep_i32 = 18;
+}

@@ -1,6 +1,5 @@
 #include "compiler/host/cel_host.h"
 
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -10,9 +9,9 @@
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "compiler/runtime/cel_runtime.h"
+#include "compiler/testdata/host_fixture_proto2.pb.h"
+#include "compiler/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
-#include "google/protobuf/descriptor.pb.h"
-#include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
@@ -52,7 +51,6 @@ class SlotInterner {
  public:
   InternMessage Intern() {
     return [this](const google::protobuf::Message& m) -> uint32_t {
-      // Identity is by object address — fine for tests that don't copy.
       for (uint32_t i = 0; i < interned_.size(); ++i) {
         if (interned_.at(i) == &m) return i + 1;
       }
@@ -69,116 +67,11 @@ class SlotInterner {
   std::vector<const google::protobuf::Message*> interned_;
 };
 
-// ---- Synthetic proto fixture ------------------------------------------------
-
-// Builds a `celwasm.hosttest.HostMsg` descriptor covering every proto wire
-// type plus a nested enum and a self-recursive message field.  Kept in a
-// class so helpers can split the 40-statement constructor without blowing
-// the function-size gate.
-class HostProtoFixture {
- public:
-  HostProtoFixture() {
-    google::protobuf::FileDescriptorProto file;
-    file.set_name("celwasm_hosttest.proto");
-    file.set_package("celwasm.hosttest");
-    file.set_syntax("proto2");
-
-    google::protobuf::DescriptorProto* outer = file.add_message_type();
-    outer->set_name("HostMsg");
-    AddKindEnum(outer);
-    AddScalarFields(outer);
-    AddNestedFields(outer);
-
-    pool_ = std::make_unique<google::protobuf::DescriptorPool>();
-    CHECK(pool_->BuildFile(file) != nullptr);
-    const google::protobuf::Descriptor* descriptor =
-        pool_->FindMessageTypeByName("celwasm.hosttest.HostMsg");
-    CHECK(descriptor != nullptr);
-    factory_ = std::make_unique<google::protobuf::DynamicMessageFactory>();
-    prototype_ = factory_->GetPrototype(descriptor);
-    CHECK(prototype_ != nullptr);
-  }
-
-  std::unique_ptr<google::protobuf::Message> New() const {
-    return std::unique_ptr<google::protobuf::Message>(prototype_->New());
-  }
-
-  const google::protobuf::Descriptor* descriptor() const {
-    return prototype_->GetDescriptor();
-  }
-
- private:
-  static void AddKindEnum(google::protobuf::DescriptorProto* outer) {
-    google::protobuf::EnumDescriptorProto* k = outer->add_enum_type();
-    k->set_name("Kind");
-    google::protobuf::EnumValueDescriptorProto* v0 = k->add_value();
-    v0->set_name("KIND_UNSPECIFIED");
-    v0->set_number(0);
-    google::protobuf::EnumValueDescriptorProto* v7 = k->add_value();
-    v7->set_name("KIND_SEVEN");
-    v7->set_number(7);
-  }
-
-  static void AddScalarFields(google::protobuf::DescriptorProto* outer) {
-    using Field = google::protobuf::FieldDescriptorProto;
-    AddField(outer, "b", 1, Field::TYPE_BOOL);
-    AddField(outer, "i32", 2, Field::TYPE_INT32);
-    AddField(outer, "i64", 3, Field::TYPE_INT64);
-    AddField(outer, "u32", 4, Field::TYPE_UINT32);
-    AddField(outer, "u64", 5, Field::TYPE_UINT64);
-    AddField(outer, "sint32", 6, Field::TYPE_SINT32);
-    AddField(outer, "sint64", 7, Field::TYPE_SINT64);
-    AddField(outer, "fixed32", 8, Field::TYPE_FIXED32);
-    AddField(outer, "fixed64", 9, Field::TYPE_FIXED64);
-    AddField(outer, "sfixed32", 10, Field::TYPE_SFIXED32);
-    AddField(outer, "sfixed64", 11, Field::TYPE_SFIXED64);
-    AddField(outer, "f32", 12, Field::TYPE_FLOAT);
-    AddField(outer, "f64", 13, Field::TYPE_DOUBLE);
-    AddField(outer, "s", 14, Field::TYPE_STRING);
-    AddField(outer, "by", 15, Field::TYPE_BYTES);
-  }
-
-  static void AddNestedFields(google::protobuf::DescriptorProto* outer) {
-    using Field = google::protobuf::FieldDescriptorProto;
-    google::protobuf::FieldDescriptorProto* kind_f = outer->add_field();
-    kind_f->set_name("kind");
-    kind_f->set_number(16);
-    kind_f->set_type(Field::TYPE_ENUM);
-    kind_f->set_type_name(".celwasm.hosttest.HostMsg.Kind");
-    kind_f->set_label(Field::LABEL_OPTIONAL);
-
-    google::protobuf::FieldDescriptorProto* inner_f = outer->add_field();
-    inner_f->set_name("inner");
-    inner_f->set_number(17);
-    inner_f->set_type(Field::TYPE_MESSAGE);
-    inner_f->set_type_name(".celwasm.hosttest.HostMsg");
-    inner_f->set_label(Field::LABEL_OPTIONAL);
-
-    google::protobuf::FieldDescriptorProto* rep_f = outer->add_field();
-    rep_f->set_name("rep_i32");
-    rep_f->set_number(18);
-    rep_f->set_type(Field::TYPE_INT32);
-    rep_f->set_label(Field::LABEL_REPEATED);
-  }
-
-  static void AddField(google::protobuf::DescriptorProto* msg,
-                       absl::string_view name, int number,
-                       google::protobuf::FieldDescriptorProto::Type type) {
-    google::protobuf::FieldDescriptorProto* f = msg->add_field();
-    f->set_name(std::string(name));
-    f->set_number(number);
-    f->set_type(type);
-    f->set_label(google::protobuf::FieldDescriptorProto::LABEL_OPTIONAL);
-  }
-
-  std::unique_ptr<google::protobuf::DescriptorPool> pool_;
-  std::unique_ptr<google::protobuf::DynamicMessageFactory> factory_;
-  const google::protobuf::Message* prototype_ = nullptr;
-};
-
 // Sets `field` on `msg` to an arbitrary non-default value chosen to round-
 // trip distinctly for every wire type (e.g. the high bit is set on fixed-
-// width unsigned fields so sign-extension bugs can't pass).
+// width unsigned fields so sign-extension bugs can't pass).  Dispatches on
+// the field descriptor's proto wire type, so it works against any message
+// regardless of whether it came from a proto2 or proto3 .proto file.
 void SetScalar(google::protobuf::Message* msg,
                const google::protobuf::FieldDescriptor* f) {
   using FD = google::protobuf::FieldDescriptor;
@@ -250,9 +143,9 @@ struct ExpectedRow {
   int32_t b = 0;
 };
 
-void PopulateScalars(google::protobuf::Message* msg,
-                     const google::protobuf::Descriptor* desc) {
+void PopulateScalars(google::protobuf::Message* msg) {
   using FD = google::protobuf::FieldDescriptor;
+  const google::protobuf::Descriptor* desc = msg->GetDescriptor();
   for (int i = 0; i < desc->field_count(); ++i) {
     const FD* f = desc->field(i);
     if (f->is_repeated()) continue;
@@ -285,14 +178,13 @@ void ExpectScalarPayload(const CelValue& out, const ExpectedRow& row) {
 }
 
 void ExpectReadField(const google::protobuf::Message& msg,
-                     const google::protobuf::Descriptor* desc,
                      const ExpectedRow& row) {
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   const google::protobuf::FieldDescriptor* f =
-      desc->FindFieldByName(row.field_name);
+      msg.GetDescriptor()->FindFieldByName(row.field_name);
   ASSERT_NE(f, nullptr) << row.field_name;
   CelValue out{};
   ReadField(msg, f->number(), &out, alloc, intern);
@@ -300,60 +192,70 @@ void ExpectReadField(const google::protobuf::Message& msg,
   ExpectScalarPayload(out, row);
 }
 
-TEST(ReadFieldTest, EveryScalarWireType) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  const google::protobuf::Descriptor* desc = fixture.descriptor();
-  PopulateScalars(msg.get(), desc);
+// Value matrix shared by the proto3 and proto2 scalar-read tests — both
+// messages carry the same fields under the same names, so this table
+// drives both.  Field-ordering tolerance is explicit: `ExpectReadField`
+// looks up by name, not by position.
+const ExpectedRow kScalarRows[] = {
+    {"b", CEL_BOOL, 0, 0, 0.0, {}, 1},
+    {"i32", CEL_INT, -7},
+    {"i64", CEL_INT, -1234567890123LL},
+    {"u32", CEL_UINT, 0, 0xFEDCBA98u},
+    {"u64", CEL_UINT, 0, 0xFEDCBA9876543210ULL},
+    {"si32", CEL_INT, -11},
+    {"si64", CEL_INT, -13},
+    {"fx32", CEL_UINT, 0, 0x80000001u},
+    {"fx64", CEL_UINT, 0, 0x8000000000000001ULL},
+    {"sfx32", CEL_INT, -17},
+    {"sfx64", CEL_INT, -19},
+    {"f32", CEL_DOUBLE, 0, 0, 0.5},
+    {"f64", CEL_DOUBLE, 0, 0, -2.5},
+    {"kind", CEL_INT, 7},
+};
 
-  const ExpectedRow rows[] = {
-      {"b", CEL_BOOL, 0, 0, 0.0, {}, 1},
-      {"i32", CEL_INT, -7},
-      {"i64", CEL_INT, -1234567890123LL},
-      {"u32", CEL_UINT, 0, 0xFEDCBA98u},
-      {"u64", CEL_UINT, 0, 0xFEDCBA9876543210ULL},
-      {"sint32", CEL_INT, -11},
-      {"sint64", CEL_INT, -13},
-      {"fixed32", CEL_UINT, 0, 0x80000001u},
-      {"fixed64", CEL_UINT, 0, 0x8000000000000001ULL},
-      {"sfixed32", CEL_INT, -17},
-      {"sfixed64", CEL_INT, -19},
-      {"f32", CEL_DOUBLE, 0, 0, 0.5},
-      {"f64", CEL_DOUBLE, 0, 0, -2.5},
-      {"kind", CEL_INT, 7},
-  };
-  for (const auto& row : rows) {
-    ExpectReadField(*msg, desc, row);
+TEST(ReadFieldTest, EveryScalarWireTypeProto3) {
+  testdata::HostMsg3 msg;
+  PopulateScalars(&msg);
+  for (const auto& row : kScalarRows) {
+    ExpectReadField(msg, row);
+  }
+}
+
+TEST(ReadFieldTest, EveryScalarWireTypeProto2) {
+  testdata::HostMsg2 msg;
+  PopulateScalars(&msg);
+  for (const auto& row : kScalarRows) {
+    ExpectReadField(msg, row);
   }
 }
 
 TEST(ReadFieldTest, StringFieldCopiesIntoArena) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  SetScalar(msg.get(), fixture.descriptor()->FindFieldByName("s"));
+  testdata::HostMsg3 msg;
+  msg.set_s("hello");
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
+  const google::protobuf::FieldDescriptor* f =
+      msg.GetDescriptor()->FindFieldByName("s");
   CelValue out{};
-  ReadField(*msg, fixture.descriptor()->FindFieldByName("s")->number(), &out,
-            alloc, intern);
+  ReadField(msg, f->number(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_STRING);
   EXPECT_EQ(out.payload.s.len, 5u);
   EXPECT_EQ(arena.View(out.payload.s.ptr, out.payload.s.len), "hello");
 }
 
 TEST(ReadFieldTest, BytesFieldCopiesIntoArenaPreservingHighBits) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  SetScalar(msg.get(), fixture.descriptor()->FindFieldByName("by"));
+  testdata::HostMsg3 msg;
+  msg.set_by(std::string("\x00\xFFok", 4));
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
+  const google::protobuf::FieldDescriptor* f =
+      msg.GetDescriptor()->FindFieldByName("by");
   CelValue out{};
-  ReadField(*msg, fixture.descriptor()->FindFieldByName("by")->number(), &out,
-            alloc, intern);
+  ReadField(msg, f->number(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_BYTES);
   EXPECT_EQ(out.payload.bytes.len, 4u);
   absl::string_view span =
@@ -365,144 +267,158 @@ TEST(ReadFieldTest, BytesFieldCopiesIntoArenaPreservingHighBits) {
 }
 
 TEST(ReadFieldTest, MessageFieldInternsSubmessage) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  const google::protobuf::FieldDescriptor* inner_f =
-      fixture.descriptor()->FindFieldByName("inner");
-  // Force the message to be present so GetMessage returns a non-default
-  // stable address the interner can identify.
-  msg->GetReflection()->MutableMessage(msg.get(), inner_f);
+  testdata::HostMsg3 msg;
+  // Force the submessage to be present so GetMessage returns a stable
+  // object address that the interner can identify.
+  msg.mutable_inner();
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
+  const google::protobuf::FieldDescriptor* inner_f =
+      msg.GetDescriptor()->FindFieldByName("inner");
   CelValue out{};
-  ReadField(*msg, inner_f->number(), &out, alloc, intern);
+  ReadField(msg, inner_f->number(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_MESSAGE);
   EXPECT_EQ(out.payload.msg_slot, 1u);
   EXPECT_EQ(interner.count(), 1u);
 }
 
 TEST(ReadFieldTest, UnknownFieldNumberSurfacesError) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
+  testdata::HostMsg3 msg;
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   CelValue out{};
-  ReadField(*msg, /*field_number=*/999, &out, alloc, intern);
+  ReadField(msg, /*field_number=*/999, &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_ERROR);
 }
 
 TEST(ReadFieldTest, RepeatedFieldSurfacesError) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
+  testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* rep =
-      fixture.descriptor()->FindFieldByName("rep_i32");
+      msg.GetDescriptor()->FindFieldByName("rep_i32");
   ASSERT_NE(rep, nullptr);
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
   CelValue out{};
-  ReadField(*msg, rep->number(), &out, alloc, intern);
+  ReadField(msg, rep->number(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_ERROR);
 }
 
 TEST(ReadFieldTest, EmptyStringStillWritesSpanPayload) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  const google::protobuf::FieldDescriptor* s =
-      fixture.descriptor()->FindFieldByName("s");
-  msg->GetReflection()->SetString(msg.get(), s, "");
+  testdata::HostMsg3 msg;
+  msg.set_s("");
   FakeArena arena;
   SlotInterner interner;
   ArenaAllocator alloc = arena.Allocator();
   InternMessage intern = interner.Intern();
+  const google::protobuf::FieldDescriptor* s =
+      msg.GetDescriptor()->FindFieldByName("s");
   CelValue out{};
-  ReadField(*msg, s->number(), &out, alloc, intern);
+  ReadField(msg, s->number(), &out, alloc, intern);
   EXPECT_EQ(out.kind, CEL_STRING);
   EXPECT_EQ(out.payload.s.len, 0u);
 }
 
 // ---- HasField coverage ------------------------------------------------------
 
-TEST(HasFieldTest, SetAndUnsetScalar) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
+TEST(HasFieldTest, Proto3SingularScalarSetToNonDefaultIsPresent) {
+  testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* i64 =
-      fixture.descriptor()->FindFieldByName("i64");
-  EXPECT_FALSE(HasField(*msg, i64->number()));
-  msg->GetReflection()->SetInt64(msg.get(), i64, 42);
-  EXPECT_TRUE(HasField(*msg, i64->number()));
+      msg.GetDescriptor()->FindFieldByName("i64");
+  EXPECT_FALSE(HasField(msg, i64->number()));
+  msg.set_i64(42);
+  EXPECT_TRUE(HasField(msg, i64->number()));
+}
+
+TEST(HasFieldTest, Proto3SingularScalarAtDefaultIsAbsent) {
+  // Proto3 tracks presence by value-equals-default for singular scalars
+  // without the `optional` label.  Explicitly setting a scalar to its
+  // default therefore shows up as absent — this is the behaviour the
+  // G3 e2e test `HasProtoBoolFieldSetToFalseIsFalse` pins at the wasm
+  // boundary; here it's pinned at the host-function boundary.
+  testdata::HostMsg3 msg;
+  const google::protobuf::FieldDescriptor* b =
+      msg.GetDescriptor()->FindFieldByName("b");
+  msg.set_b(false);
+  EXPECT_FALSE(HasField(msg, b->number()));
+}
+
+TEST(HasFieldTest, Proto2SingularScalarAtDefaultIsStillPresent) {
+  // Proto2 with `optional` tracks presence independently of value.
+  // Setting the field — even to the type's default — flips HasField to
+  // true.  This is the behaviour that distinguishes proto2's explicit
+  // presence from proto3's value-based presence.
+  testdata::HostMsg2 msg;
+  const google::protobuf::FieldDescriptor* b =
+      msg.GetDescriptor()->FindFieldByName("b");
+  EXPECT_FALSE(HasField(msg, b->number()));
+  msg.set_b(false);
+  EXPECT_TRUE(HasField(msg, b->number()));
+}
+
+TEST(HasFieldTest, Proto2UnsetSingularScalarIsAbsent) {
+  testdata::HostMsg2 msg;
+  const google::protobuf::FieldDescriptor* i64 =
+      msg.GetDescriptor()->FindFieldByName("i64");
+  EXPECT_FALSE(HasField(msg, i64->number()));
+  msg.set_i64(0);
+  EXPECT_TRUE(HasField(msg, i64->number()));
 }
 
 TEST(HasFieldTest, SetAndUnsetMessage) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
+  testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* inner =
-      fixture.descriptor()->FindFieldByName("inner");
-  EXPECT_FALSE(HasField(*msg, inner->number()));
-  msg->GetReflection()->MutableMessage(msg.get(), inner);
-  EXPECT_TRUE(HasField(*msg, inner->number()));
+      msg.GetDescriptor()->FindFieldByName("inner");
+  EXPECT_FALSE(HasField(msg, inner->number()));
+  msg.mutable_inner();
+  EXPECT_TRUE(HasField(msg, inner->number()));
 }
 
 TEST(HasFieldTest, RepeatedFieldCountsElements) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
+  testdata::HostMsg3 msg;
   const google::protobuf::FieldDescriptor* rep =
-      fixture.descriptor()->FindFieldByName("rep_i32");
-  EXPECT_FALSE(HasField(*msg, rep->number()));
-  msg->GetReflection()->AddInt32(msg.get(), rep, 1);
-  EXPECT_TRUE(HasField(*msg, rep->number()));
+      msg.GetDescriptor()->FindFieldByName("rep_i32");
+  EXPECT_FALSE(HasField(msg, rep->number()));
+  msg.add_rep_i32(1);
+  EXPECT_TRUE(HasField(msg, rep->number()));
 }
 
 TEST(HasFieldTest, UnknownFieldNumberReturnsFalse) {
-  HostProtoFixture fixture;
-  auto msg = fixture.New();
-  EXPECT_FALSE(HasField(*msg, /*field_number=*/999));
+  testdata::HostMsg3 msg;
+  EXPECT_FALSE(HasField(msg, /*field_number=*/999));
 }
 
 // ---- MessageEq coverage -----------------------------------------------------
 
 TEST(MessageEqTest, IdenticalMessagesAreEqual) {
-  HostProtoFixture fixture;
-  auto a = fixture.New();
-  auto b = fixture.New();
-  SetScalar(a.get(), fixture.descriptor()->FindFieldByName("i64"));
-  SetScalar(b.get(), fixture.descriptor()->FindFieldByName("i64"));
-  EXPECT_TRUE(MessageEq(*a, *b));
+  testdata::HostMsg3 a;
+  testdata::HostMsg3 b;
+  a.set_i64(-1234567890123LL);
+  b.set_i64(-1234567890123LL);
+  EXPECT_TRUE(MessageEq(a, b));
 }
 
 TEST(MessageEqTest, DifferentFieldsAreUnequal) {
-  HostProtoFixture fixture;
-  auto a = fixture.New();
-  auto b = fixture.New();
-  const google::protobuf::FieldDescriptor* i64 =
-      fixture.descriptor()->FindFieldByName("i64");
-  a->GetReflection()->SetInt64(a.get(), i64, 1);
-  b->GetReflection()->SetInt64(b.get(), i64, 2);
-  EXPECT_FALSE(MessageEq(*a, *b));
+  testdata::HostMsg3 a;
+  testdata::HostMsg3 b;
+  a.set_i64(1);
+  b.set_i64(2);
+  EXPECT_FALSE(MessageEq(a, b));
 }
 
 TEST(MessageEqTest, NestedMessageEqualityRecurses) {
-  HostProtoFixture fixture;
-  auto a = fixture.New();
-  auto b = fixture.New();
-  const google::protobuf::FieldDescriptor* inner =
-      fixture.descriptor()->FindFieldByName("inner");
-  const google::protobuf::FieldDescriptor* i64 =
-      fixture.descriptor()->FindFieldByName("i64");
-  google::protobuf::Message* a_inner =
-      a->GetReflection()->MutableMessage(a.get(), inner);
-  google::protobuf::Message* b_inner =
-      b->GetReflection()->MutableMessage(b.get(), inner);
-  a_inner->GetReflection()->SetInt64(a_inner, i64, 42);
-  b_inner->GetReflection()->SetInt64(b_inner, i64, 42);
-  EXPECT_TRUE(MessageEq(*a, *b));
-  b_inner->GetReflection()->SetInt64(b_inner, i64, 43);
-  EXPECT_FALSE(MessageEq(*a, *b));
+  testdata::HostMsg3 a;
+  testdata::HostMsg3 b;
+  a.mutable_inner()->set_i64(42);
+  b.mutable_inner()->set_i64(42);
+  EXPECT_TRUE(MessageEq(a, b));
+  b.mutable_inner()->set_i64(43);
+  EXPECT_FALSE(MessageEq(a, b));
 }
 
 }  // namespace
