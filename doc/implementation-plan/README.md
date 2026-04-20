@@ -78,4 +78,11 @@ Companion documents (do not duplicate — link):
   - `testing-checklist.md`   — CEL type × AST-variant coverage grid.
                                 Has a top-of-file **Gap summary** that
                                 calls out what's open in the active
-                                milestone vs. deferred.
+                                milestone vs. deferred.  The end-of-
+                                file **Bench harness** section (added
+                                2026-04-20) documents the
+                                `compiler/bench/...` Google Benchmark
+                                suite and the first-run findings
+                                (~420 ns CallEval floor; per-op cost;
+                                per-call O(L) string materialisation
+                                via `cel_reset`).

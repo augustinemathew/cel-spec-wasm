@@ -673,6 +673,52 @@ removed — the `cel_runtime_test.cc` cases that covered them went
 with them, and the sret `_at_ii` / `_at_uu` / `_neg_at_i`
 coverage (from slice C commit 2) stands unchanged.
 
+## Bench harness (2026-04-20)
+
+Google Benchmark suite under `compiler/bench/`.  Not coverage; a
+regression tripwire for the eval + compile hot paths.  Three
+`cc_binary` targets: `eval_bench`, `compile_bench`, `proto_bench`.
+
+Run with `bazel run -c opt //compiler/bench:eval_bench -- \
+--benchmark_filter=...`.  `-c opt` is load-bearing — fastbuild numbers
+are 100× noisier.  CI builds the targets but does not execute them;
+numbers are captured ad-hoc (no baseline checked in).
+
+Matrix:
+  - Arithmetic / logic depth (AddChain, MulChain, AndChain, OrChain,
+    TernaryLadder) — Arg sweep over N.  N capped at 28 for chains and
+    24 for ternaries because cel-cpp's parser `max_recursion_depth`
+    defaults to 32; bumping it would measure a different thing than
+    shipping.
+  - String / bytes length L ∈ {10, 100, 1k, 10k} for literal pass-
+    through, `size(...)`, `== 'lit'`, `+` concat.  Both "match" and
+    "mismatch-at-front" for `==` so early-exit is a separate number.
+  - Proto field reads against the Customer fixture: every scalar
+    kind, nested select, `has(…)`, compound predicates.
+  - Compile path times ParseAndCheck + Lower + Serialize + LoadEval as
+    one unit (users of the library pay all four).
+
+First-run findings (2026-04-20, darwin-arm64, `-c opt`):
+  - `CallEval` floor ≈ 420 ns — wasmtime boundary + `cel_reset` +
+    enter/exit wasm, same whether the expression returns `42` or a
+    deep chain.  This dominates anything with <28 ops.
+  - Per-op cost ≈ 3–4 ns for arithmetic and `&&` / `||` on the
+    CelValue-offset bool path.
+  - String literals scale O(L) per call (pass-through: 2.0 µs @ 10k,
+    size: 4.6 µs @ 10k) — not because `size`/pass-through walk the
+    bytes, but because `cel_reset` wipes the arena between calls, so
+    each iteration re-materialises the literal.  If short-string
+    eval cost becomes a bottleneck, caching the literal arena
+    prefix across `cel_reset` is the lever.
+  - `cel_string_eq` short-circuits correctly: mismatch-at-front at
+    L=10000 is ~4 µs faster than full-match, matching the 9999-byte
+    memcmp we skip.
+
+Updating the suite: add a new `BENCHMARK(...)` in the matching file,
+rebuild with `-c opt`, re-run to confirm the new case isn't an
+outlier.  No gate on the numbers — this is a reference, not a
+regression test.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

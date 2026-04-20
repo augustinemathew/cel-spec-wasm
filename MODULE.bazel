@@ -78,6 +78,11 @@ bazel_dep(
     repo_name = "com_google_googletest",
 )
 bazel_dep(
+    name = "google_benchmark",
+    version = "1.9.1",
+    repo_name = "com_google_benchmark",
+)
+bazel_dep(
     name = "rules_go",
     version = "0.53.0",
     repo_name = "io_bazel_rules_go",
