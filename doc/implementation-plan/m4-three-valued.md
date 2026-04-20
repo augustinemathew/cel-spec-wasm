@@ -1,6 +1,6 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slice A shipped (2026-04-19); slices B-G in progress.**
+Status: **slices A+B shipped (2026-04-19); slices C-G in progress.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
@@ -78,10 +78,21 @@ lands in slices B (checked arithmetic) and onward.
 
 ### Codegen
 
-- [ ] Arithmetic ops grow an **overflow check** on int.  Standard
-      pattern: do the op into a local, compare against
-      `INT_MIN`/`INT_MAX`, branch to an error path.  Binaryen `IfElse`.
-- [ ] `/` and `%` grow a **zero-divisor check**.
+- [x] Arithmetic ops grow an **overflow check** on int.  Slice B
+      (2026-04-19): codegen dispatches `_+_` / `_-_` / `_*_` / `_/_` /
+      `_%_` on int/uint through the B1 runtime helpers
+      (`cel_int_add_ii` etc.).  The emitted shape is
+      `Block(LocalSet(Call(helper)), If(kind==CEL_ERROR, unreachable),
+      i64.load offset=8)` — on ERROR the trap surfaces through
+      wasmtime as an `absl::InternalError("... trapped: ...")`.  The
+      CEL-correct "observable ERROR value" path lands with the 3VL
+      &&/|| retrofit in a later slice; the trap is the stopgap so the
+      "INT_MAX + 1" testing-checklist row is closed today.
+- [x] `/` and `%` grow a **zero-divisor check**.  (Slice B: division
+      and modulo go through the same checked helpers; `_uint_ / 0`,
+      `_int_ / 0`, `INT64_MIN / -1`, and `_int_ % 0` all produce a
+      CEL_ERROR that trips the trap-on-ERROR path.  `INT64_MIN % -1`
+      is defined as 0 per the helper, matching cel-go.)
 - [ ] Double comparisons convert "unordered" results (NaN inputs)
       into an `ERROR` return instead of the plain `0` / `1` i32 that
       M2 emits.

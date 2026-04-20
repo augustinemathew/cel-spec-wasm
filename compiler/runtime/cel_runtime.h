@@ -219,6 +219,72 @@ uint32_t cel_unknown_merge(uint32_t a, uint32_t b);
 // status).
 uint32_t cel_status_either(uint32_t a, uint32_t b);
 
+// ---- Checked arithmetic (M4 Slice B) -------------------------------------
+//
+// Error codes carried in `cel_make_error(code, ...)` by the checked
+// arithmetic helpers.  Kept numeric rather than stringly-typed so the
+// wasm side stays allocation-free in the happy path — the host-side
+// pretty-printer maps code → message when formatting a failed eval.
+enum {
+  CEL_ERR_OVERFLOW = 10,
+  CEL_ERR_DIVIDE_BY_ZERO = 11,
+  CEL_ERR_MODULUS_BY_ZERO = 12,
+};
+
+// Binary checked arithmetic.  Each helper takes two CelValue offsets
+// (kind must be CEL_INT / CEL_UINT for the happy path; any CEL_ERROR
+// or CEL_UNKNOWN on either side propagates via `cel_status_either`)
+// and returns a CelValue offset of kind CEL_INT / CEL_UINT on success,
+// or CEL_ERROR with `CEL_ERR_OVERFLOW` / `CEL_ERR_DIVIDE_BY_ZERO` /
+// `CEL_ERR_MODULUS_BY_ZERO` on failure.  Returns 0 on type error
+// (operand kind not one of the supported ones) or OOM — callers get
+// the usual zero-check for free.
+//
+// CEL §langdef.arithmetic: signed overflow, int `/` / `%` by zero,
+// and `INT64_MIN / -1` (which also overflows) must produce ERROR, not
+// trap.  Unsigned uses wrap-around detection (`a + b < a`) since
+// `uint64_t` addition is well-defined in C.
+uint32_t cel_int_add(uint32_t a, uint32_t b);
+uint32_t cel_int_sub(uint32_t a, uint32_t b);
+uint32_t cel_int_mul(uint32_t a, uint32_t b);
+uint32_t cel_int_div(uint32_t a, uint32_t b);
+uint32_t cel_int_mod(uint32_t a, uint32_t b);
+
+uint32_t cel_uint_add(uint32_t a, uint32_t b);
+uint32_t cel_uint_sub(uint32_t a, uint32_t b);
+uint32_t cel_uint_mul(uint32_t a, uint32_t b);
+uint32_t cel_uint_div(uint32_t a, uint32_t b);
+uint32_t cel_uint_mod(uint32_t a, uint32_t b);
+
+// Unary negate for int.  `-INT64_MIN` overflows, so this helper
+// produces ERROR for that one input.  No `cel_uint_neg` because CEL
+// has no unary-minus overload on uint.
+uint32_t cel_int_neg(uint32_t a);
+
+// Scalar-constructor variants the codegen can call from straight-line
+// wasm without round-tripping a scalar through `cel_make_int`.  Same
+// semantics as the boxed variants — the boxed version just does the
+// unwrap internally — but shaped to match the common case where one
+// or both operands are already scalars (constants, ident reads).
+//
+// We do not combinatorially expand every (boxed, scalar) pair: the
+// codegen consistently boxes leaves first, so the boxed variants
+// above are the load-bearing ones.  These scalar helpers are kept
+// for completeness and for the benchmarks in the M4 plan doc.
+uint32_t cel_int_add_ii(int64_t a, int64_t b);
+uint32_t cel_int_sub_ii(int64_t a, int64_t b);
+uint32_t cel_int_mul_ii(int64_t a, int64_t b);
+uint32_t cel_int_div_ii(int64_t a, int64_t b);
+uint32_t cel_int_mod_ii(int64_t a, int64_t b);
+
+uint32_t cel_uint_add_uu(uint64_t a, uint64_t b);
+uint32_t cel_uint_sub_uu(uint64_t a, uint64_t b);
+uint32_t cel_uint_mul_uu(uint64_t a, uint64_t b);
+uint32_t cel_uint_div_uu(uint64_t a, uint64_t b);
+uint32_t cel_uint_mod_uu(uint64_t a, uint64_t b);
+
+uint32_t cel_int_neg_i(int64_t a);
+
 #ifdef __cplusplus
 }
 #endif

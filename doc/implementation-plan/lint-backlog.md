@@ -14,31 +14,26 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 | check | count |
 |---|---|
-| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 77 |
-| `google-readability-braces-around-statements` | 23 |
+| `cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` | 56 |
+| `google-readability-braces-around-statements` | 3 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
-| `readability-function-size` | 11 |
-| `readability-avoid-nested-conditional-operator` | 9 |
+| `readability-function-size` | 6 |
 | `cppcoreguidelines-no-malloc` | 6 |
 | `readability-isolate-declaration` | 3 |
-| `modernize-use-auto` | 2 |
-| `modernize-raw-string-literal` | 3 |
 | `bugprone-unchecked-optional-access` | 2 |
 | `misc-unused-using-decls` | 2 |
+| `modernize-raw-string-literal` | 1 |
 | `bugprone-argument-comment` | 1 |
-| `bugprone-branch-clone` | 1 |
 | `bugprone-exception-escape` | 1 |
 | `clang-analyzer-optin.core.EnumCastOutOfRange` | 1 |
-| `cppcoreguidelines-pro-type-member-init` | 1 |
 | `performance-move-const-arg` | 1 |
 | `performance-no-int-to-ptr` | 1 |
-| `performance-unnecessary-value-param` | 1 |
-| `readability-math-missing-parentheses` | 1 |
 | `readability-static-accessed-through-instance` | 6 |
 
-**Total unique warnings:** 184 (was 192; M4 slice A cleared 8 in
-`compiler/runtime/`).
+**Total unique warnings:** 122 (was 184; M4 slice B cleared 62 in
+`compiler/codegen/expr_lower.cc` (50), `expr_lower_test.cc` (7), and
+`compiler/e2e/eval_test.cc` (5)).
 
 ## Notes for triage
 
@@ -50,75 +45,20 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 ## Per-file detail
 
-### `compiler/codegen/expr_lower.cc` — 50 warnings
+### `compiler/codegen/expr_lower.cc` — 0 warnings
 
-**`google-readability-braces-around-statements`** (20)
-
-- L319: statement should be inside braces
-- L321: statement should be inside braces
-- L323: statement should be inside braces
-- L326: statement should be inside braces
-- L328: statement should be inside braces
-- L330: statement should be inside braces
-- L333: statement should be inside braces
-- L335: statement should be inside braces
-- L337: statement should be inside braces
-- L340: statement should be inside braces
-- L342: statement should be inside braces
-- L344: statement should be inside braces
-- L346: statement should be inside braces
-- L350: statement should be inside braces
-- L352: statement should be inside braces
-- L354: statement should be inside braces
-- L446: statement should be inside braces
-- L448: statement should be inside braces
-- L450: statement should be inside braces
-- L452: statement should be inside braces
-
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (15)
-
-- L215: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L467: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L499: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L510: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L512: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L532: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L534: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L536: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L547: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L549: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L567: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L569: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L583: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L585: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L587: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
-**`readability-avoid-nested-conditional-operator`** (9)
-
-- L409: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L410: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L411: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L416: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L417: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L418: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L423: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L424: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-- L425: conditional operator is used as sub-expression of parent conditional operator, refrain from using nested conditional operators
-
-**`readability-function-size`** (4)
-
-- L300: function 'LowerArithmetic' exceeds recommended size/complexity thresholds
-- L363: function 'LowerComparison' exceeds recommended size/complexity thresholds
-- L474: function 'LowerCall' exceeds recommended size/complexity thresholds
-- L851: function 'LowerToEvalFunction' exceeds recommended size/complexity thresholds
-
-**`bugprone-branch-clone`** (1)
-
-- L830: switch has 2 consecutive identical branches
-
-**`modernize-use-auto`** (1)
-
-- L889: use auto when initializing with a cast to avoid duplicating the type name
+Cleared by M4 slice B (2026-04-19): the file was refactored into
+per-op helpers (`LowerSpanConcat`, `LowerCheckedIntArith`,
+`LowerDoubleArithmetic`, `ScalarEqualityOp`, `OrderedIntOp` /
+`OrderedUintOp` / `OrderedDoubleOp`, `LowerLogicalNot` / `LowerNegate`
+/ `LowerConditional` / `LowerShortCircuit` / `LowerSizeCall` /
+`LowerBinaryCall`, `BuildParamList`, `AddMessageSupport`,
+`ImportCel{0,1,2}` +  split runtime-import declarators) so every
+function stays under the size gate; nested ternaries in the ordered-
+compare dispatch were replaced by flat `if`-chains; the
+`WasmTypeFor` `kType` / `kString` / `kBytes` branches were merged
+into a single case group to resolve `bugprone-branch-clone`; and all
+`call.args()[i]` / `bytes[i]` / `params[i]` sites moved to `.at(i)`.
 
 ### `compiler/cli/celwasmc_main.cc` — 34 warnings
 
@@ -239,30 +179,14 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 - L537: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L539: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
-### `compiler/e2e/eval_test.cc` — 8 warnings
+### `compiler/e2e/eval_test.cc` — 0 warnings
 
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (3)
-
-- L588: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L589: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L590: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
-**`modernize-raw-string-literal`** (2)
-
-- L584: escaped string literal can be written as a raw string literal
-- L624: escaped string literal can be written as a raw string literal
-
-**`performance-unnecessary-value-param`** (1)
-
-- L75: the parameter 'args' of type 'std::vector<wasmtime_val_t>' is copied for each invocation but only used as a const reference
-
-**`readability-math-missing-parentheses`** (1)
-
-- L142: '*' has higher precedence than '+'; add parentheses to explicitly specify the order of operations
-
-**`modernize-use-auto`** (1)
-
-- L354: use auto when initializing with a cast to avoid duplicating the type name
+Cleared by M4 slice B (2026-04-19): the three `payload[i]` sites
+switched to `.at(i)`; the `\xff\x00\xfe` byte and `\xf0\x9f\x98\x80`
+UTF-8 string literals became raw string literals; `args` param moved
+to `const&`; `mem_base = static_cast<uint32_t>(...)` moved to
+`const auto`; the precedence-ambiguous `1.5 + 2.25 * 4.0` expectation
+got parens.
 
 ### `compiler/frontend/parse_and_check.cc` — 8 warnings
 
@@ -304,20 +228,12 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L39: function 'FindCustomSection' exceeds recommended size/complexity thresholds
 
-### `compiler/codegen/expr_lower_test.cc` — 7 warnings
+### `compiler/codegen/expr_lower_test.cc` — 0 warnings
 
-**`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access`** (6)
-
-- L325: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L340: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L362: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L363: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L388: possibly unsafe 'operator[]', consider bounds-safe alternatives
-- L412: possibly unsafe 'operator[]', consider bounds-safe alternatives
-
-**`cppcoreguidelines-pro-type-member-init`** (1)
-
-- L25: constructor does not initialize these fields: fn
+Cleared by M4 slice B (2026-04-19): `out[0] = packed` and the five
+`params[i]` sites switched to `.at(i)`; the `Lowered` struct got
+`LoweredFunction fn{}` so the implicit default constructor value-
+initialises the contained `LoweredFunction`.
 
 ### `compiler/codegen/module.cc` — 5 warnings
 

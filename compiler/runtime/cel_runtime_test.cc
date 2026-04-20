@@ -1075,5 +1075,307 @@ TEST_F(RuntimeTest, StatusEitherRejectsZero) {
   EXPECT_EQ(cel_status_either(i, 0), 0u);
 }
 
+// ---- Checked arithmetic (M4 Slice B) -------------------------------------
+
+void ExpectInt(uint32_t got, int64_t want) {
+  ASSERT_NE(got, 0u);
+  EXPECT_EQ(KindOf(got), CEL_INT);
+  EXPECT_EQ(cel_value_at(got)->payload.i, want);
+}
+
+void ExpectUint(uint32_t got, uint64_t want) {
+  ASSERT_NE(got, 0u);
+  EXPECT_EQ(KindOf(got), CEL_UINT);
+  EXPECT_EQ(cel_value_at(got)->payload.u, want);
+}
+
+void ExpectErrorWithCode(uint32_t got, uint32_t code) {
+  ASSERT_NE(got, 0u);
+  ASSERT_EQ(KindOf(got), CEL_ERROR);
+  const auto* err = reinterpret_cast<const uint32_t*>(
+      cel_mem_base() + cel_value_at(got)->payload.err);
+  EXPECT_EQ(err[0], code);
+}
+
+// ---- Scalar int helpers ---------------------------------------------------
+
+TEST_F(RuntimeTest, IntAddScalarHappyPath) {
+  ExpectInt(cel_int_add_ii(2, 3), 5);
+  ExpectInt(cel_int_add_ii(-7, 2), -5);
+  ExpectInt(cel_int_add_ii(0, 0), 0);
+}
+
+TEST_F(RuntimeTest, IntAddScalarOverflowsAtMax) {
+  ExpectErrorWithCode(cel_int_add_ii(INT64_MAX, 1), CEL_ERR_OVERFLOW);
+  ExpectErrorWithCode(cel_int_add_ii(1, INT64_MAX), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntAddScalarOverflowsAtMin) {
+  ExpectErrorWithCode(cel_int_add_ii(INT64_MIN, -1), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntSubScalarHappyPath) {
+  ExpectInt(cel_int_sub_ii(5, 3), 2);
+  ExpectInt(cel_int_sub_ii(-1, -1), 0);
+}
+
+TEST_F(RuntimeTest, IntSubScalarOverflowsAtMin) {
+  ExpectErrorWithCode(cel_int_sub_ii(INT64_MIN, 1), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntMulScalarHappyPath) {
+  ExpectInt(cel_int_mul_ii(6, 7), 42);
+  ExpectInt(cel_int_mul_ii(-3, 4), -12);
+  ExpectInt(cel_int_mul_ii(0, INT64_MAX), 0);
+}
+
+TEST_F(RuntimeTest, IntMulScalarOverflows) {
+  ExpectErrorWithCode(cel_int_mul_ii(INT64_MAX, 2), CEL_ERR_OVERFLOW);
+  ExpectErrorWithCode(cel_int_mul_ii(INT64_MIN, -1), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntDivScalarHappyPath) {
+  ExpectInt(cel_int_div_ii(20, 4), 5);
+  ExpectInt(cel_int_div_ii(-9, 2), -4);  // C rounds toward zero
+}
+
+TEST_F(RuntimeTest, IntDivScalarByZero) {
+  ExpectErrorWithCode(cel_int_div_ii(7, 0), CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntDivScalarMinByNegOneOverflows) {
+  // |INT64_MIN| > INT64_MAX — representing -INT64_MIN is impossible.
+  ExpectErrorWithCode(cel_int_div_ii(INT64_MIN, -1), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntModScalarHappyPath) {
+  ExpectInt(cel_int_mod_ii(10, 3), 1);
+  ExpectInt(cel_int_mod_ii(-10, 3), -1);  // C: result takes sign of dividend
+}
+
+TEST_F(RuntimeTest, IntModScalarByZero) {
+  ExpectErrorWithCode(cel_int_mod_ii(7, 0), CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntModScalarMinByNegOneIsZero) {
+  // Mathematically INT64_MIN % -1 = 0; C reserves UB so we special-case.
+  ExpectInt(cel_int_mod_ii(INT64_MIN, -1), 0);
+}
+
+TEST_F(RuntimeTest, IntNegScalarHappyPath) {
+  ExpectInt(cel_int_neg_i(5), -5);
+  ExpectInt(cel_int_neg_i(-5), 5);
+  ExpectInt(cel_int_neg_i(0), 0);
+}
+
+TEST_F(RuntimeTest, IntNegScalarMinOverflows) {
+  ExpectErrorWithCode(cel_int_neg_i(INT64_MIN), CEL_ERR_OVERFLOW);
+}
+
+// ---- Scalar uint helpers --------------------------------------------------
+
+TEST_F(RuntimeTest, UintAddScalarHappyPath) {
+  ExpectUint(cel_uint_add_uu(2, 3), 5);
+  ExpectUint(cel_uint_add_uu(0, UINT64_MAX), UINT64_MAX);
+}
+
+TEST_F(RuntimeTest, UintAddScalarWrapIsOverflow) {
+  // CEL semantics: unsigned addition that wraps is ERROR, not silent
+  // wrap.  `a + b < a` is the standard detection.
+  ExpectErrorWithCode(cel_uint_add_uu(UINT64_MAX, 1), CEL_ERR_OVERFLOW);
+  ExpectErrorWithCode(cel_uint_add_uu(1, UINT64_MAX), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintSubScalarHappyPath) {
+  ExpectUint(cel_uint_sub_uu(5, 3), 2);
+  ExpectUint(cel_uint_sub_uu(0, 0), 0);
+}
+
+TEST_F(RuntimeTest, UintSubScalarUnderflowsIsOverflow) {
+  ExpectErrorWithCode(cel_uint_sub_uu(0, 1), CEL_ERR_OVERFLOW);
+  ExpectErrorWithCode(cel_uint_sub_uu(3, 4), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintMulScalarHappyPath) {
+  ExpectUint(cel_uint_mul_uu(6, 7), 42u);
+  ExpectUint(cel_uint_mul_uu(0, UINT64_MAX), 0u);
+}
+
+TEST_F(RuntimeTest, UintMulScalarOverflows) {
+  ExpectErrorWithCode(cel_uint_mul_uu(UINT64_MAX, 2), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintDivScalarHappyPath) {
+  ExpectUint(cel_uint_div_uu(20, 4), 5u);
+}
+
+TEST_F(RuntimeTest, UintDivScalarByZero) {
+  ExpectErrorWithCode(cel_uint_div_uu(7, 0), CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, UintModScalarHappyPath) {
+  ExpectUint(cel_uint_mod_uu(10, 3), 1u);
+}
+
+TEST_F(RuntimeTest, UintModScalarByZero) {
+  ExpectErrorWithCode(cel_uint_mod_uu(7, 0), CEL_ERR_MODULUS_BY_ZERO);
+}
+
+// ---- Boxed int helpers ----------------------------------------------------
+
+TEST_F(RuntimeTest, BoxedIntAddHappyPath) {
+  uint32_t a = cel_make_int(3);
+  uint32_t b = cel_make_int(4);
+  ExpectInt(cel_int_add(a, b), 7);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddOverflow) {
+  uint32_t a = cel_make_int(INT64_MAX);
+  uint32_t b = cel_make_int(1);
+  ExpectErrorWithCode(cel_int_add(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddErrorPropagates) {
+  uint32_t e = cel_make_error(99, 0, 0);
+  uint32_t b = cel_make_int(2);
+  // Left ERROR wins.
+  EXPECT_EQ(cel_int_add(e, b), e);
+  // Right ERROR wins when left is OK.
+  EXPECT_EQ(cel_int_add(b, e), e);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddUnknownPropagates) {
+  uint32_t u = cel_make_unknown(42);
+  uint32_t b = cel_make_int(2);
+  EXPECT_EQ(cel_int_add(u, b), u);
+  EXPECT_EQ(cel_int_add(b, u), u);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddTwoUnknownsMerge) {
+  uint32_t a = cel_make_unknown(42);
+  uint32_t b = cel_make_unknown(100);
+  uint32_t r = cel_int_add(a, b);
+  ASSERT_NE(r, 0u);
+  ASSERT_EQ(KindOf(r), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{42u, 100u}));
+}
+
+TEST_F(RuntimeTest, BoxedIntSubOverflow) {
+  uint32_t a = cel_make_int(INT64_MIN);
+  uint32_t b = cel_make_int(1);
+  ExpectErrorWithCode(cel_int_sub(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedIntMulOverflow) {
+  uint32_t a = cel_make_int(INT64_MAX);
+  uint32_t b = cel_make_int(2);
+  ExpectErrorWithCode(cel_int_mul(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedIntDivByZero) {
+  uint32_t a = cel_make_int(5);
+  uint32_t b = cel_make_int(0);
+  ExpectErrorWithCode(cel_int_div(a, b), CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, BoxedIntDivMinByNegOne) {
+  uint32_t a = cel_make_int(INT64_MIN);
+  uint32_t b = cel_make_int(-1);
+  ExpectErrorWithCode(cel_int_div(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedIntModByZero) {
+  uint32_t a = cel_make_int(5);
+  uint32_t b = cel_make_int(0);
+  ExpectErrorWithCode(cel_int_mod(a, b), CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddRejectsNonInt) {
+  uint32_t i = cel_make_int(1);
+  uint32_t d = cel_make_double(1.0);
+  uint32_t s = cel_make_string("1", 1);
+  // Checker is responsible for type-matching; runtime refuses to guess.
+  EXPECT_EQ(cel_int_add(i, d), 0u);
+  EXPECT_EQ(cel_int_add(d, i), 0u);
+  EXPECT_EQ(cel_int_add(i, s), 0u);
+}
+
+TEST_F(RuntimeTest, BoxedIntAddRejectsZero) {
+  uint32_t i = cel_make_int(1);
+  EXPECT_EQ(cel_int_add(0, i), 0u);
+  EXPECT_EQ(cel_int_add(i, 0), 0u);
+}
+
+TEST_F(RuntimeTest, BoxedIntNegHappyPath) {
+  uint32_t a = cel_make_int(5);
+  ExpectInt(cel_int_neg(a), -5);
+}
+
+TEST_F(RuntimeTest, BoxedIntNegOverflow) {
+  uint32_t a = cel_make_int(INT64_MIN);
+  ExpectErrorWithCode(cel_int_neg(a), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedIntNegPropagatesStatus) {
+  uint32_t e = cel_make_error(7, 0, 0);
+  EXPECT_EQ(cel_int_neg(e), e);
+  uint32_t u = cel_make_unknown(3);
+  EXPECT_EQ(cel_int_neg(u), u);
+}
+
+TEST_F(RuntimeTest, BoxedIntNegRejectsNonInt) {
+  uint32_t d = cel_make_double(1.0);
+  EXPECT_EQ(cel_int_neg(d), 0u);
+  EXPECT_EQ(cel_int_neg(0), 0u);
+}
+
+// ---- Boxed uint helpers ---------------------------------------------------
+
+TEST_F(RuntimeTest, BoxedUintAddHappyPath) {
+  uint32_t a = cel_make_uint(3);
+  uint32_t b = cel_make_uint(4);
+  ExpectUint(cel_uint_add(a, b), 7u);
+}
+
+TEST_F(RuntimeTest, BoxedUintAddWrapIsOverflow) {
+  uint32_t a = cel_make_uint(UINT64_MAX);
+  uint32_t b = cel_make_uint(1);
+  ExpectErrorWithCode(cel_uint_add(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedUintSubUnderflow) {
+  uint32_t a = cel_make_uint(0);
+  uint32_t b = cel_make_uint(1);
+  ExpectErrorWithCode(cel_uint_sub(a, b), CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, BoxedUintDivByZero) {
+  uint32_t a = cel_make_uint(7);
+  uint32_t b = cel_make_uint(0);
+  ExpectErrorWithCode(cel_uint_div(a, b), CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, BoxedUintModByZero) {
+  uint32_t a = cel_make_uint(7);
+  uint32_t b = cel_make_uint(0);
+  ExpectErrorWithCode(cel_uint_mod(a, b), CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, BoxedUintRejectsNonUint) {
+  uint32_t i = cel_make_int(1);
+  uint32_t u = cel_make_uint(1);
+  // Signed int is NOT a uint.  Mixed-sign arithmetic must have been
+  // rejected or coerced by the checker.
+  EXPECT_EQ(cel_uint_add(i, u), 0u);
+  EXPECT_EQ(cel_uint_add(u, i), 0u);
+}
+
+TEST_F(RuntimeTest, BoxedUintErrorPropagates) {
+  uint32_t e = cel_make_error(99, 0, 0);
+  uint32_t u = cel_make_uint(2);
+  EXPECT_EQ(cel_uint_add(e, u), e);
+  EXPECT_EQ(cel_uint_add(u, e), e);
+}
+
 }  // namespace
 }  // namespace celwasm

@@ -647,3 +647,222 @@ uint32_t cel_status_either(uint32_t a, uint32_t b) {
   if (bu) return b;
   return 0;
 }
+
+// ---- Checked arithmetic (M4 Slice B) -------------------------------------
+//
+// Scalar variants do the op with compiler-intrinsic overflow detection and
+// return a boxed CelValue (CEL_INT / CEL_UINT on success, CEL_ERROR on
+// overflow / div-0).  Boxed variants thread ERROR / UNKNOWN via
+// cel_status_either, then dispatch to the scalar variant.
+//
+// INT64_MIN edge cases:
+//   * `-INT64_MIN` overflows (|INT64_MIN| > INT64_MAX).
+//   * `INT64_MIN / -1` overflows (same reason; C has UB for this).
+//   * `INT64_MIN % -1` is mathematically 0; C has UB so special-case.
+
+#define CEL_OVERFLOW_ERR() cel_make_error(CEL_ERR_OVERFLOW, 0, 0)
+#define CEL_DIV0_ERR() cel_make_error(CEL_ERR_DIVIDE_BY_ZERO, 0, 0)
+#define CEL_MOD0_ERR() cel_make_error(CEL_ERR_MODULUS_BY_ZERO, 0, 0)
+
+// Compiler builtins like `__builtin_mul_overflow` lower to compiler-rt
+// helpers (e.g. `__multi3`) that aren't in the freestanding wasm32
+// link, so overflow detection is hand-rolled against in-range
+// arithmetic.  Each helper returns 1 on overflow, 0 otherwise, and
+// writes the (defined) result to `*r` when safe — mirroring the
+// signature of the builtins so the call sites stay readable.
+//
+// Clang's -O2 also recognizes the idioms `a > UINT64_MAX / b` and
+// `a > INT64_MAX / y` as overflow-check equivalents and rewrites them
+// back into `__builtin_{mul,add,sub}_overflow`, which for 64-bit mul
+// on wasm32 re-pulls in `__multi3`.  The mul helpers below use a
+// 32×32→64 hi/lo split so the optimizer sees only native 64-bit muls
+// and can't re-fold the check.
+static int s64_add_overflow(int64_t a, int64_t b, int64_t* r) {
+  if (b > 0 && a > INT64_MAX - b) return 1;
+  if (b < 0 && a < INT64_MIN - b) return 1;
+  *r = a + b;
+  return 0;
+}
+
+static int s64_sub_overflow(int64_t a, int64_t b, int64_t* r) {
+  if (b < 0 && a > INT64_MAX + b) return 1;
+  if (b > 0 && a < INT64_MIN + b) return 1;
+  *r = a - b;
+  return 0;
+}
+
+// 64×64 → 128 unsigned multiply, returned as (hi, lo).  Each partial
+// product is 32×32 → 64, which wasm32 expresses as `i64.mul` after a
+// widening load.  Exposing the high half explicitly prevents the
+// overflow-idiom recognizer from pattern-matching; the comparison is
+// against an arithmetic result, not a division.
+static void u64_mul_full(uint64_t a, uint64_t b, uint64_t* hi, uint64_t* lo) {
+  uint64_t al = (uint32_t)a;
+  uint64_t ah = a >> 32;
+  uint64_t bl = (uint32_t)b;
+  uint64_t bh = b >> 32;
+  uint64_t ll = al * bl;
+  uint64_t lh = al * bh;
+  uint64_t hl = ah * bl;
+  uint64_t hh = ah * bh;
+  uint64_t mid = (ll >> 32) + (uint32_t)lh + (uint32_t)hl;
+  *lo = (ll & 0xffffffffu) | (mid << 32);
+  *hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
+}
+
+static int u64_mul_overflow(uint64_t a, uint64_t b, uint64_t* r) {
+  uint64_t hi;
+  uint64_t lo;
+  u64_mul_full(a, b, &hi, &lo);
+  if (hi != 0) return 1;
+  *r = lo;
+  return 0;
+}
+
+static int s64_mul_overflow(int64_t a, int64_t b, int64_t* r) {
+  // Signed overflow via unsigned full multiply: sign-correct the
+  // absolute values (INT64_MIN abs is representable as uint64_t), do a
+  // 128-bit unsigned mul, then apply the sign and check magnitude.
+  uint64_t au = a < 0 ? (uint64_t)-(a + 1) + 1u : (uint64_t)a;
+  uint64_t bu = b < 0 ? (uint64_t)-(b + 1) + 1u : (uint64_t)b;
+  uint64_t hi;
+  uint64_t lo;
+  u64_mul_full(au, bu, &hi, &lo);
+  if (hi != 0) return 1;
+  int neg = (a < 0) ^ (b < 0);
+  if (neg) {
+    // Representable range for a negative signed 64-bit result is
+    // [-2^63, -1] in magnitude [1, 2^63].
+    if (lo > (uint64_t)INT64_MAX + 1u) return 1;
+    *r = (lo == (uint64_t)INT64_MAX + 1u) ? INT64_MIN : -(int64_t)lo;
+    return 0;
+  }
+  if (lo > (uint64_t)INT64_MAX) return 1;
+  *r = (int64_t)lo;
+  return 0;
+}
+
+static int u64_add_overflow(uint64_t a, uint64_t b, uint64_t* r) {
+  uint64_t s = a + b;
+  if (s < a) return 1;
+  *r = s;
+  return 0;
+}
+
+static int u64_sub_overflow(uint64_t a, uint64_t b, uint64_t* r) {
+  if (b > a) return 1;
+  *r = a - b;
+  return 0;
+}
+
+uint32_t cel_int_add_ii(int64_t a, int64_t b) {
+  int64_t r;
+  if (s64_add_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_int(r);
+}
+
+uint32_t cel_int_sub_ii(int64_t a, int64_t b) {
+  int64_t r;
+  if (s64_sub_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_int(r);
+}
+
+uint32_t cel_int_mul_ii(int64_t a, int64_t b) {
+  int64_t r;
+  if (s64_mul_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_int(r);
+}
+
+uint32_t cel_int_div_ii(int64_t a, int64_t b) {
+  if (b == 0) return CEL_DIV0_ERR();
+  if (a == INT64_MIN && b == -1) return CEL_OVERFLOW_ERR();
+  return cel_make_int(a / b);
+}
+
+uint32_t cel_int_mod_ii(int64_t a, int64_t b) {
+  if (b == 0) return CEL_MOD0_ERR();
+  // INT64_MIN % -1 is mathematically 0 but C reserves UB for it.
+  if (a == INT64_MIN && b == -1) return cel_make_int(0);
+  return cel_make_int(a % b);
+}
+
+uint32_t cel_uint_add_uu(uint64_t a, uint64_t b) {
+  uint64_t r;
+  if (u64_add_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_uint(r);
+}
+
+uint32_t cel_uint_sub_uu(uint64_t a, uint64_t b) {
+  uint64_t r;
+  if (u64_sub_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_uint(r);
+}
+
+uint32_t cel_uint_mul_uu(uint64_t a, uint64_t b) {
+  uint64_t r;
+  if (u64_mul_overflow(a, b, &r)) return CEL_OVERFLOW_ERR();
+  return cel_make_uint(r);
+}
+
+uint32_t cel_uint_div_uu(uint64_t a, uint64_t b) {
+  if (b == 0) return CEL_DIV0_ERR();
+  return cel_make_uint(a / b);
+}
+
+uint32_t cel_uint_mod_uu(uint64_t a, uint64_t b) {
+  if (b == 0) return CEL_MOD0_ERR();
+  return cel_make_uint(a % b);
+}
+
+uint32_t cel_int_neg_i(int64_t a) {
+  if (a == INT64_MIN) return CEL_OVERFLOW_ERR();
+  return cel_make_int(-a);
+}
+
+// Boxed binary helper: threads status via cel_status_either, rejects on
+// type mismatch, else dispatches to the scalar INT variant.
+#define CEL_INT_BINOP(name, scalar_fn)                                  \
+  uint32_t name(uint32_t a, uint32_t b) {                               \
+    if (a == 0 || b == 0) return 0;                                     \
+    uint32_t s = cel_status_either(a, b);                               \
+    if (s != 0) return s;                                               \
+    const CelValue* va = cv_at(a);                                      \
+    const CelValue* vb = cv_at(b);                                      \
+    if (va->kind != (uint32_t)CEL_INT || vb->kind != (uint32_t)CEL_INT) \
+      return 0;                                                         \
+    return scalar_fn(va->payload.i, vb->payload.i);                     \
+  }
+
+#define CEL_UINT_BINOP(name, scalar_fn)                                   \
+  uint32_t name(uint32_t a, uint32_t b) {                                 \
+    if (a == 0 || b == 0) return 0;                                       \
+    uint32_t s = cel_status_either(a, b);                                 \
+    if (s != 0) return s;                                                 \
+    const CelValue* va = cv_at(a);                                        \
+    const CelValue* vb = cv_at(b);                                        \
+    if (va->kind != (uint32_t)CEL_UINT || vb->kind != (uint32_t)CEL_UINT) \
+      return 0;                                                           \
+    return scalar_fn(va->payload.u, vb->payload.u);                       \
+  }
+
+CEL_INT_BINOP(cel_int_add, cel_int_add_ii)
+CEL_INT_BINOP(cel_int_sub, cel_int_sub_ii)
+CEL_INT_BINOP(cel_int_mul, cel_int_mul_ii)
+CEL_INT_BINOP(cel_int_div, cel_int_div_ii)
+CEL_INT_BINOP(cel_int_mod, cel_int_mod_ii)
+
+CEL_UINT_BINOP(cel_uint_add, cel_uint_add_uu)
+CEL_UINT_BINOP(cel_uint_sub, cel_uint_sub_uu)
+CEL_UINT_BINOP(cel_uint_mul, cel_uint_mul_uu)
+CEL_UINT_BINOP(cel_uint_div, cel_uint_div_uu)
+CEL_UINT_BINOP(cel_uint_mod, cel_uint_mod_uu)
+
+uint32_t cel_int_neg(uint32_t a) {
+  if (a == 0) return 0;
+  const CelValue* va = cv_at(a);
+  if (va->kind == (uint32_t)CEL_ERROR || va->kind == (uint32_t)CEL_UNKNOWN) {
+    return a;
+  }
+  if (va->kind != (uint32_t)CEL_INT) return 0;
+  return cel_int_neg_i(va->payload.i);
+}

@@ -586,8 +586,33 @@ Each e2e test instantiates the generated module against a host stub, calls
 `eval`, and asserts the returned `CelValue`.  Track one row per smoke
 expression from `m1-type-checker.md`, plus:
 
-- [ ] Arithmetic overflow error (int + int overflows to `ERROR`).
-- [ ] Division by zero (`int / 0` and `double / 0`).
+- [x] Arithmetic overflow error (int + int overflows to `ERROR`).
+      **M4 slice B (2026-04-19):** codegen routes `_+_` / `_-_` /
+      `_*_` on int/uint through B1 runtime helpers that return a
+      CEL_ERROR on overflow, and the emitted IR traps when it sees
+      the ERROR kind.  Covered by
+      `eval_test::{IntAddOverflowTraps, IntSubOverflowTraps,
+      IntMulOverflowTraps, UintAddOverflowTraps,
+      UintSubUnderflowTraps, UintMulOverflowTraps}` plus the
+      `INT64_MIN / -1` corner case
+      `eval_test::IntDivMinByNegOneTraps`.  The "observable ERROR
+      value" path (i.e. not a trap) lands with the 3VL &&/|| retrofit
+      in a later slice — until then the trap is the stopgap closing
+      this checklist row.
+- [x] Division by zero (`int / 0` and `double / 0`).  **M4 slice B
+      (2026-04-19):** `int / 0`, `uint / 0`, and `int % 0` produce
+      CEL_ERROR via the B1 helpers — covered by
+      `eval_test::{IntDivByZeroTraps, UintDivByZeroTraps,
+      IntModByZeroTraps}`.  `INT64_MIN % -1` is defined as 0 per
+      IEEE-style cel-go precedent
+      (`IntModMinByNegOneIsZeroNotTrap`).  `double / 0` produces
+      +/-Inf per IEEE 754 per §langdef, which is OK not ERROR;
+      negative-coverage still pending once the double-op-coverage
+      checklist row moves.  Regression cases
+      `IntMulHappyPathStillWorksAfterRetrofit`,
+      `SignedMulNegativeResultRoundTrips`, and
+      `SignedMulIntMinByOneRoundTrips` guard against the refactor
+      breaking the non-overflow path.
 - [ ] String coercion errors where the spec forbids them.
 - [ ] `unknown` propagation through `&&` / `||` (M4).
 - [ ] Partial-eval: `unknown && false → false` commutatively (M4).

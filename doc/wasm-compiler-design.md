@@ -986,10 +986,33 @@ Binaryen optimizes these away when a branch is a constant.
 
 ### 10.2 Overflow handling
 
-`cel_int_add` and friends implement the spec's checked arithmetic internally
-and return a `CEL_ERROR` value with `code=OVERFLOW` on overflow. Codegen
-never inlines raw `i64.add` for CEL ints — it always calls the runtime op,
-which inlines at the WASM level but keeps the error path correct.
+`cel_int_add_ii` / `_sub_ii` / `_mul_ii` / `_div_ii` / `_mod_ii` and their
+`_uu` uint counterparts implement the spec's checked arithmetic internally
+and return a boxed `CelValue*` that is either OK(int/uint) or an ERROR with
+`code=OVERFLOW` / `DIVIDE_BY_ZERO` / `MODULUS_BY_ZERO`.  Codegen never
+inlines raw `i64.add` for CEL ints — it always calls the runtime op, which
+inlines at the WASM level but keeps the error path correct.
+
+**Current trap-on-ERROR stopgap (M4 Slice B, 2026-04-19).**  The helpers
+return CEL_ERROR values correctly, but the codegen for an arithmetic node
+currently emits
+
+```
+Block(
+  LocalSet($tmp, Call(cel_int_add_ii, …)),     ;; boxed CelValue*
+  If(i32.load8_u offset=0 ($tmp) == CEL_ERROR,  ;; kind byte
+     Unreachable),                              ;; trap
+  i64.load offset=8 ($tmp))                    ;; unbox the scalar payload
+```
+
+so on ERROR the module traps and wasmtime surfaces it as
+`absl::InternalError("... trapped: ...")`.  That is observable at the host
+(the testing-checklist row is closed) but it is **not** the spec-correct
+three-valued behaviour: `1/0 || true` should short-circuit to `true`, not
+trap, and the 3VL retrofit in slices C+ of M4 needs every arithmetic node
+to hand back a real `CelValue*` that `cel_and` / `cel_or` / `?:` can
+absorb.  The gap is tracked as an open question at the end of this
+document ("Trap-vs-observable-CEL_ERROR").
 
 ### 10.3 Comprehension lowering and scope management
 
@@ -1458,3 +1481,124 @@ cel_reset.call();
   `ScopeFrame` sketch is Option A; if we take Option B, §10.3 needs a
   rewrite.  See also the checker-integration bullet in
   `doc/implementation-plan/m5-collections-and-comprehensions.md`.
+
+- **Trap-vs-observable-CEL_ERROR for checked arithmetic (decide in
+  M4 Slice C).**  Today the checked-arithmetic helpers return boxed
+  `CelValue*` with a CEL_ERROR tag on overflow / div0 / mod0 (see
+  §10.2), but the arithmetic codegen unboxes immediately: it traps
+  (`BinaryenUnreachable`) on ERROR and then loads the `i64` payload so
+  the rest of the emitted expression can consume a scalar.  The trap
+  is observable at the host (wasmtime surfaces it as
+  `absl::InternalError("... trapped: ...")`, which is good enough to
+  close the testing-checklist row for "INT_MAX + 1") but it violates
+  the 3VL propagation rules the spec actually requires:
+    - `1/0 || true` must short-circuit to `true`, not trap.
+    - `(1/0) == 0 ? "a" : "b"` must return the ternary's else-branch
+      under the spec's "ERROR propagates through non-absorbing ops"
+      rule, not trap at the divide.
+    - Comprehension aggregators (`all` / `exists_one`) need to
+      *inspect* an inner ERROR to decide whether to short-circuit.
+  .
+  The trap is a deliberate stopgap because today's arithmetic subtrees
+  hand i64 / f64 scalars up to their parent op — there is no status
+  channel in that ABI.  The fix is to give every arithmetic result
+  room to carry a `kind` byte alongside its payload so `cel_and` /
+  `cel_or` / `?:` / comprehension steps can absorb a CEL_ERROR
+  without trapping.  Three ways to close the gap, in order of
+  runtime cost:
+    - **Option A — arena-boxed `CelValue*` (i32 offset).**  Every
+      checked helper returns an i32 offset into the arena; every
+      consumer of arithmetic (comparisons, `&&`, `||`, `?:`,
+      comprehension bodies, calls) unboxes.  Uniform, matches the
+      rest of the runtime ABI, but bumps the arena per op — even
+      when the checker has proved the operands definite.  Mitigated
+      by a checker-driven fast-path: when the parent already accepts
+      a boxed value (like `cel_and`) skip the unbox; when two
+      arithmetic ops compose with both operands definite, call a
+      `_scalar` variant (`cel_int_add_scalar`) that returns a plain
+      `i64` and traps on overflow (the M4 slice B retrofit already
+      left room for this shape).
+    - **Option B — sret / linear-memory "stack" CelValue.**  Helpers
+      stay written in C; the caller reserves 24 bytes in a
+      software-managed stack frame at the top of `eval` (decrement a
+      stack-pointer global, compute an i32 offset), passes the
+      offset as a hidden first argument, and the callee writes the
+      CelValue through it.  This is clang's native wasm32 C ABI for
+      struct returns, so no exotic toolchain dance is needed — the
+      helper signature is just
+      `void cel_int_add(CelValue* out, CelValue a, CelValue b)`
+      (with `a` / `b` themselves passed by sret-style hidden ptr,
+      since clang also passes 24-byte structs by indirect ref on
+      wasm32).  No arena bump, lifetime ends with the `eval` call,
+      one memory round-trip per op.
+    - **Option C — true WASM multi-value on the value stack.**
+      Helpers return `(i32 kind, i64 payload)` — or `(i32, i64, i64)`
+      when ERROR metadata needs a second payload slot — directly
+      via WASM's multi-value return.  Zero memory traffic for
+      arithmetic chains: values stay in WASM locals / the value
+      stack.  Catch: **clang's wasm32 C ABI does not emit multi-value
+      returns for structs** — it always lowers struct returns to sret.
+      Reaching Option C means either writing the checked helpers in
+      hand-WAT, or emitting them directly via Binaryen's C API the
+      same way codegen emits `$eval` today.  Both are buildable
+      (wasmtime and every major engine enable multi-value by default,
+      Binaryen's `BinaryenAddFunction` accepts tuple result types),
+      but they move the runtime out of C.
+  .
+  Current lean: **Option A with a checker-driven scalar fast-path**
+  as the near-term landing shape, **Option B as the mid-term
+  upgrade** once we have a software stack frame for any other
+  reason (comprehensions will need one anyway for accumulator
+  spills, M5+).  Option C is only worth the C-to-WAT migration cost
+  if benchmarking shows arena pressure dominates evaluation time,
+  which we don't have data for yet.
+  .
+  Decision owner: whoever picks up M4 Slice C.  When the decision
+  ships, §10.2 needs a rewrite that drops the "trap on ERROR"
+  paragraph.
+
+- **compiler-rt / wasi-sdk cross-platform strategy for the runtime
+  wasm32 build (revisit when the next runtime dep appears).**  The
+  current runtime compile is `clang -target wasm32 -ffreestanding
+  -nostdlib -O2 …`, which deliberately excludes compiler-rt so the
+  only wasm32 toolchain required on contributor machines is a
+  reasonably modern clang.  That constraint shaped the M4 Slice B
+  multiply: `__builtin_mul_overflow` on i64 lowers to `__multi3`
+  (128-bit multiply in compiler-rt), which is absent from a
+  freestanding link, so the runtime hand-rolls a 32×32→64 hi/lo split
+  in `u64_mul_full` to defeat clang's overflow-idiom recognizer.
+  .
+  The question: **where does the line move when the next helper
+  needs something wider than "basic clang"?**  Mul-overflow was a
+  20-line workaround; popcount + ctz were free (clang lowers them as
+  wasm instructions); but if a future milestone needs `fmod`,
+  `strtod`, regex DFA construction, or 128-bit int division, the
+  hand-roll cost climbs sharply.  Three options, in order of
+  preference:
+    - **Option A — keep hand-rolling** while the scope is small (one
+      or two helpers per milestone), same as today.
+    - **Option B — pull compiler-rt + wasi-libc via a Bazel
+      `http_archive` pointing at an official
+      [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) release
+      tarball, hash-pinned.**  wasi-sdk ships pre-built cross-platform
+      binaries (Linux / Mac / Windows) and a CMake toolchain file; the
+      runtime `genrule` switches from `clang -target wasm32
+      -ffreestanding -nostdlib` to `$(location @wasi_sdk//:clang)
+      --sysroot=$(location @wasi_sdk//:sysroot)`.  Hermetic, no
+      contributor setup step beyond `bazel build`.
+    - **Option C — require `brew install wasi-runtimes` /
+      `apt install wasi-sdk` / `choco install wasi-sdk` per OS.**
+      **Rejected.**  Platform-specific package managers are not an
+      acceptable required setup step for this repo; runtime builds
+      must work on Linux, macOS, and Windows without a
+      per-OS install recipe.  (Brew's `llvm` is grandfathered in
+      because it was there before this constraint was articulated;
+      that is not a licence to add more brew formulas.)
+  .
+  Current posture: **stay on Option A** until a slice genuinely
+  can't be hand-rolled in <~50 lines of C.  At that point, switch
+  the whole runtime wasm32 build to Option B in one go — don't do a
+  half-migration that leaves some helpers hand-rolled and others
+  pulling compiler-rt.  Decision owner: whoever first hits a helper
+  that needs more than "basic clang + a bit of C".  When the
+  decision ships, §10.2 and `doc/contributing.md` need updates.

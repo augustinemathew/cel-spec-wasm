@@ -63,6 +63,86 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
                                                 const TypedAst& ast,
                                                 const cel::Expr& expr);
 
+// Small helpers that wrap `mod.AddFunctionImport` with the right arity-
+// encoded `absl::Span`.  All eval-module imports live under the `cel`
+// external-module name (the runtime), so that is hardcoded here; host-
+// owned imports are declared by `DeclareHostImports` below.
+void ImportCel0(WasmModule& mod, absl::string_view name, BinaryenType result) {
+  mod.AddFunctionImport(name, /*external_module=*/"cel",
+                        /*external_base=*/name,
+                        absl::Span<const BinaryenType>(), result);
+}
+void ImportCel1(WasmModule& mod, absl::string_view name, BinaryenType p0,
+                BinaryenType result) {
+  mod.AddFunctionImport(name, /*external_module=*/"cel",
+                        /*external_base=*/name,
+                        absl::Span<const BinaryenType>(&p0, 1), result);
+}
+void ImportCel2(WasmModule& mod, absl::string_view name, BinaryenType p0,
+                BinaryenType p1, BinaryenType result) {
+  BinaryenType params[2] = {p0, p1};
+  mod.AddFunctionImport(name, /*external_module=*/"cel",
+                        /*external_base=*/name,
+                        absl::Span<const BinaryenType>(params, 2), result);
+}
+
+// Allocation / span-literal / equality / size / member-call imports.
+void DeclareAllocAndSpanImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType i64 = BinaryenTypeInt64();
+  // Allocation + string/bytes construction (M3 slice A).
+  ImportCel1(mod, "cel_alloc", i32, i32);
+  ImportCel2(mod, "cel_make_string_view", i32, i32, i32);
+  ImportCel2(mod, "cel_make_bytes_view", i32, i32, i32);
+  // Message-value construction (M3 slice G): wraps an interned `$cel_refs`
+  // slot into a heap-allocated CelValue whose kind is CEL_MESSAGE.  Used
+  // by `cel_wrap_message` in the eval module.
+  ImportCel1(mod, "cel_make_message", i32, i32);
+  // `cel_mem_base` returns the absolute linear-memory offset at which
+  // the runtime's arena (`g_memory`) begins.  The eval module needs
+  // this to translate arena-relative offsets returned by `cel_alloc`
+  // into absolute offsets usable with `i32.store8` (see
+  // LowerSpanLiteral for the translation).
+  ImportCel0(mod, "cel_mem_base", i32);
+  // String/bytes helpers (equality, concat, size, value-unbox).
+  ImportCel2(mod, "cel_string_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_bytes_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_string_concat", i32, i32, i32);
+  ImportCel2(mod, "cel_bytes_concat", i32, i32, i32);
+  ImportCel1(mod, "cel_string_size", i32, i64);
+  ImportCel1(mod, "cel_bytes_size", i32, i64);
+  ImportCel1(mod, "cel_bool_from_value", i32, i32);
+  // Member-call helpers (slice E).  Each returns i32 0/1.
+  ImportCel2(mod, "cel_string_starts_with", i32, i32, i32);
+  ImportCel2(mod, "cel_string_ends_with", i32, i32, i32);
+  ImportCel2(mod, "cel_string_contains", i32, i32, i32);
+}
+
+// Checked arithmetic (M4 Slice B).  Each scalar helper takes two i64
+// (or u64) operands and returns a CelValue offset (i32): on success
+// the offset points at a boxed CEL_INT / CEL_UINT; on overflow or
+// div-by-zero it points at a CEL_ERROR.  Codegen unboxes inline —
+// traps on CEL_ERROR for the moment, since the end-to-end
+// CEL_ERROR-as-result-value plumbing lands with the &&/|| 3VL
+// retrofit in a later slice.  Scalar-helper variants (suffix _ii /
+// _uu / _i) avoid boxing the already-scalar operands, which is the
+// common case emitted from straight-line `i64` / `u64` arithmetic.
+void DeclareCheckedArithmeticImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType i64 = BinaryenTypeInt64();
+  ImportCel2(mod, "cel_int_add_ii", i64, i64, i32);
+  ImportCel2(mod, "cel_int_sub_ii", i64, i64, i32);
+  ImportCel2(mod, "cel_int_mul_ii", i64, i64, i32);
+  ImportCel2(mod, "cel_int_div_ii", i64, i64, i32);
+  ImportCel2(mod, "cel_int_mod_ii", i64, i64, i32);
+  ImportCel2(mod, "cel_uint_add_uu", i64, i64, i32);
+  ImportCel2(mod, "cel_uint_sub_uu", i64, i64, i32);
+  ImportCel2(mod, "cel_uint_mul_uu", i64, i64, i32);
+  ImportCel2(mod, "cel_uint_div_uu", i64, i64, i32);
+  ImportCel2(mod, "cel_uint_mod_uu", i64, i64, i32);
+  ImportCel1(mod, "cel_int_neg_i", i64, i32);
+}
+
 // Declares every import the eval module may reference, up front.  Each
 // eval module is always linked against the runtime at instantiation
 // time, so declaring imports the current AST happens not to use is
@@ -76,58 +156,11 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
                                /*external_base=*/"memory",
                                /*initial_pages=*/1,
                                /*max_pages=*/std::nullopt);
-  if (!s.ok()) return s;
-
-  const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType i64 = BinaryenTypeInt64();
-
-  auto import0 = [&](absl::string_view name, BinaryenType result) {
-    mod.AddFunctionImport(name, /*external_module=*/"cel",
-                          /*external_base=*/name,
-                          absl::Span<const BinaryenType>(), result);
-  };
-  auto import1 = [&](absl::string_view name, BinaryenType p0,
-                     BinaryenType result) {
-    mod.AddFunctionImport(name, /*external_module=*/"cel",
-                          /*external_base=*/name,
-                          absl::Span<const BinaryenType>(&p0, 1), result);
-  };
-  auto import2 = [&](absl::string_view name, BinaryenType p0, BinaryenType p1,
-                     BinaryenType result) {
-    BinaryenType params[2] = {p0, p1};
-    mod.AddFunctionImport(name, /*external_module=*/"cel",
-                          /*external_base=*/name,
-                          absl::Span<const BinaryenType>(params, 2), result);
-  };
-
-  // Allocation + string/bytes construction (M3 slice A).
-  import1("cel_alloc", i32, i32);
-  import2("cel_make_string_view", i32, i32, i32);
-  import2("cel_make_bytes_view", i32, i32, i32);
-  // Message-value construction (M3 slice G): wraps an interned `$cel_refs`
-  // slot into a heap-allocated CelValue whose kind is CEL_MESSAGE.  Used
-  // by `cel_wrap_message` in the eval module.
-  import1("cel_make_message", i32, i32);
-  // `cel_mem_base` returns the absolute linear-memory offset at which
-  // the runtime's arena (`g_memory`) begins.  The eval module needs
-  // this to translate arena-relative offsets returned by `cel_alloc`
-  // into absolute offsets usable with `i32.store8` (see
-  // LowerSpanLiteral for the translation).
-  import0("cel_mem_base", i32);
-  // String/bytes helpers expected to land in M3 — pre-declaring them
-  // keeps the import list stable once those lowerings arrive.
-  import2("cel_string_eq", i32, i32, i32);
-  import2("cel_bytes_eq", i32, i32, i32);
-  import2("cel_string_concat", i32, i32, i32);
-  import2("cel_bytes_concat", i32, i32, i32);
-  import1("cel_string_size", i32, i64);
-  import1("cel_bytes_size", i32, i64);
-  import1("cel_bool_from_value", i32, i32);
-  // Member-call helpers (slice E).  Each returns i32 0/1.
-  import2("cel_string_starts_with", i32, i32, i32);
-  import2("cel_string_ends_with", i32, i32, i32);
-  import2("cel_string_contains", i32, i32, i32);
-
+  if (!s.ok()) {
+    return s;
+  }
+  DeclareAllocAndSpanImports(mod);
+  DeclareCheckedArithmeticImports(mod);
   return absl::OkStatus();
 }
 
@@ -246,7 +279,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerSpanLiteral(
   // One i32.store8 per byte, using `offset=i` to avoid emitting a
   // separate add for each position.
   for (uint32_t i = 0; i < len; ++i) {
-    const auto byte = static_cast<uint8_t>(bytes[i]);
+    const auto byte = static_cast<uint8_t>(bytes.at(i));
     BinaryenExpressionRef ptr = BinaryenLocalGet(m, abs, BinaryenTypeInt32());
     BinaryenExpressionRef value =
         BinaryenConst(m, BinaryenLiteralInt32(static_cast<int32_t>(byte)));
@@ -329,69 +362,261 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
   (void)ast;
 }
 
+// CEL_ERROR kind tag.  Keep in sync with `CelKind` in cel_runtime.h.
+// Used by the checked-arithmetic unbox path to recognise an ERROR box.
+constexpr int32_t kCelErrorKind = 15;
+
+// Wraps a checked-arithmetic helper call so the overall expression has
+// the same i64-returning shape as native wasm arithmetic.  The helper
+// returns a CelValue offset (i32): kind `CEL_ERROR` on overflow /
+// div-by-zero, otherwise kind CEL_INT / CEL_UINT with the payload at
+// offset 8.
+//
+// Pattern:
+//   (block (result i64)
+//     (local.set $box (call $helper lhs rhs))
+//     (if (i32.eq (i32.load (i32.add base (local.get $box)))
+//                 (i32.const 15))
+//       (unreachable))
+//     (i64.load offset=8 (i32.add base (local.get $box))))
+//
+// "unreachable" surfaces through wasmtime as a trap, which the host
+// catches and converts to an `absl::Status` error.  The CEL-correct
+// behavior is an observable CelValue ERROR, not a trap; that retrofit
+// lands with the 3VL &&/|| rewrite (which forces arithmetic roots to
+// propagate status end-to-end).  Until then, "trap on overflow"
+// closes the "INT_MAX + 1 is observable" testing-checklist row.
+BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
+                                            const char* helper,
+                                            BinaryenExpressionRef lhs,
+                                            BinaryenExpressionRef rhs) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenIndex box = ctx.AddLocal(BinaryenTypeInt32());
+  BinaryenExpressionRef call_args[2] = {lhs, rhs};
+  BinaryenExpressionRef call_helper =
+      BinaryenCall(m, helper, call_args, 2, BinaryenTypeInt32());
+  BinaryenExpressionRef set_box = BinaryenLocalSet(m, box, call_helper);
+
+  // abs = cel_mem_base() + box
+  auto abs_expr = [&]() {
+    BinaryenExpressionRef base_call =
+        BinaryenCall(m, "cel_mem_base", /*operands=*/nullptr,
+                     /*numOperands=*/0, BinaryenTypeInt32());
+    return BinaryenBinary(m, BinaryenAddInt32(), base_call,
+                          BinaryenLocalGet(m, box, BinaryenTypeInt32()));
+  };
+
+  // if (kind == CEL_ERROR) unreachable
+  BinaryenExpressionRef kind_load =
+      BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
+                   /*align=*/4, BinaryenTypeInt32(), abs_expr(),
+                   /*memoryName=*/"memory");
+  BinaryenExpressionRef is_error =
+      BinaryenBinary(m, BinaryenEqInt32(), kind_load,
+                     BinaryenConst(m, BinaryenLiteralInt32(kCelErrorKind)));
+  BinaryenExpressionRef trap_if =
+      BinaryenIf(m, is_error, BinaryenUnreachable(m), /*ifFalse=*/nullptr);
+
+  // payload.i / payload.u at offset 8.  Signed/unsigned distinction is
+  // irrelevant at the wasm load level — the bits are the same; the
+  // caller already has the Repr-level type info.
+  BinaryenExpressionRef payload_load =
+      BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false, /*offset=*/8, /*align=*/8,
+                   BinaryenTypeInt64(), abs_expr(), /*memoryName=*/"memory");
+
+  BinaryenExpressionRef children[3] = {set_box, trap_if, payload_load};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
+                       BinaryenTypeInt64());
+}
+
+// Name of the checked-arithmetic runtime helper for a given op + signedness.
+// Returns nullptr if `name` is not one of ADD/SUBTRACT/MULTIPLY/DIVIDE/MODULO.
+const char* CheckedIntHelperName(absl::string_view name, bool is_int) {
+  if (name == op::CelOperator::ADD) {
+    return is_int ? "cel_int_add_ii" : "cel_uint_add_uu";
+  }
+  if (name == op::CelOperator::SUBTRACT) {
+    return is_int ? "cel_int_sub_ii" : "cel_uint_sub_uu";
+  }
+  if (name == op::CelOperator::MULTIPLY) {
+    return is_int ? "cel_int_mul_ii" : "cel_uint_mul_uu";
+  }
+  if (name == op::CelOperator::DIVIDE) {
+    return is_int ? "cel_int_div_ii" : "cel_uint_div_uu";
+  }
+  if (name == op::CelOperator::MODULO) {
+    return is_int ? "cel_int_mod_ii" : "cel_uint_mod_uu";
+  }
+  return nullptr;
+}
+
+// String / bytes `_+_` concatenation.  Both cases go through a runtime
+// helper because the result needs a fresh arena-owned CelValue.
+BinaryenExpressionRef LowerSpanConcat(Repr r, BinaryenExpressionRef lhs,
+                                      BinaryenExpressionRef rhs,
+                                      BinaryenModuleRef m) {
+  const char* helper =
+      (r == Repr::kString) ? "cel_string_concat" : "cel_bytes_concat";
+  BinaryenExpressionRef args[2] = {lhs, rhs};
+  return BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
+}
+
+// Int / uint arithmetic goes through the checked helpers so overflow
+// and div-by-zero become observable (as a trap today, a CEL ERROR
+// value once the 3VL retrofit lands).
+absl::StatusOr<BinaryenExpressionRef> LowerCheckedIntArith(
+    absl::string_view name, Repr r, BinaryenExpressionRef lhs,
+    BinaryenExpressionRef rhs, LoweringContext& ctx) {
+  const bool is_int = (r == Repr::kInt);
+  const char* helper = CheckedIntHelperName(name, is_int);
+  if (helper == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "LowerCheckedIntArith: unhandled int/uint op `", name, "`"));
+  }
+  return EmitCheckedArithmetic(ctx, helper, lhs, rhs);
+}
+
+// Double arithmetic stays inline — IEEE 754 defines overflow to
+// +/-Inf and div-by-zero to +/-Inf / NaN per CEL §langdef.
+absl::StatusOr<BinaryenExpressionRef> LowerDoubleArithmetic(
+    absl::string_view name, BinaryenExpressionRef lhs,
+    BinaryenExpressionRef rhs, BinaryenModuleRef m) {
+  if (name == op::CelOperator::ADD) {
+    return BinaryenBinary(m, BinaryenAddFloat64(), lhs, rhs);
+  }
+  if (name == op::CelOperator::SUBTRACT) {
+    return BinaryenBinary(m, BinaryenSubFloat64(), lhs, rhs);
+  }
+  if (name == op::CelOperator::MULTIPLY) {
+    return BinaryenBinary(m, BinaryenMulFloat64(), lhs, rhs);
+  }
+  if (name == op::CelOperator::DIVIDE) {
+    return BinaryenBinary(m, BinaryenDivFloat64(), lhs, rhs);
+  }
+  if (name == op::CelOperator::MODULO) {
+    // CEL has no % for double; checker rejects it, but if one sneaks
+    // through we surface a clear error rather than emitting bad IR.
+    return UnimplementedRepr(name, Repr::kDouble, 0);
+  }
+  return absl::InternalError(
+      absl::StrCat("LowerDoubleArithmetic: unhandled op `", name, "`"));
+}
+
 // Binary arithmetic.  Dispatch on the Repr of the first operand (the
 // checker guarantees both operands share a type for these overloads).
 absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(absl::string_view name,
                                                       Repr r,
                                                       BinaryenExpressionRef lhs,
                                                       BinaryenExpressionRef rhs,
-                                                      WasmModule& mod) {
-  BinaryenModuleRef m = mod.raw();
-  // Non-numeric `_+_` overloads that the checker accepts: string and
-  // bytes concatenation.  Both lower to a runtime call (not a binary
-  // opcode) because each result requires allocating a new CelValue in
-  // the runtime's arena.
+                                                      LoweringContext& ctx) {
+  BinaryenModuleRef m = ctx.mod.raw();
   if (name == op::CelOperator::ADD &&
       (r == Repr::kString || r == Repr::kBytes)) {
-    const char* helper =
-        (r == Repr::kString) ? "cel_string_concat" : "cel_bytes_concat";
-    BinaryenExpressionRef args[2] = {lhs, rhs};
-    return BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
+    return LowerSpanConcat(r, lhs, rhs, m);
   }
-  BinaryenOp bop;
-  if (name == op::CelOperator::ADD) {
-    if (r == Repr::kInt || r == Repr::kUint)
-      bop = BinaryenAddInt64();
-    else if (r == Repr::kDouble)
-      bop = BinaryenAddFloat64();
-    else
-      return UnimplementedRepr(name, r, /*id=*/0);
-  } else if (name == op::CelOperator::SUBTRACT) {
-    if (r == Repr::kInt || r == Repr::kUint)
-      bop = BinaryenSubInt64();
-    else if (r == Repr::kDouble)
-      bop = BinaryenSubFloat64();
-    else
-      return UnimplementedRepr(name, r, 0);
-  } else if (name == op::CelOperator::MULTIPLY) {
-    if (r == Repr::kInt || r == Repr::kUint)
-      bop = BinaryenMulInt64();
-    else if (r == Repr::kDouble)
-      bop = BinaryenMulFloat64();
-    else
-      return UnimplementedRepr(name, r, 0);
-  } else if (name == op::CelOperator::DIVIDE) {
-    if (r == Repr::kInt)
-      bop = BinaryenDivSInt64();
-    else if (r == Repr::kUint)
-      bop = BinaryenDivUInt64();
-    else if (r == Repr::kDouble)
-      bop = BinaryenDivFloat64();
-    else
-      return UnimplementedRepr(name, r, 0);
-  } else if (name == op::CelOperator::MODULO) {
-    // CEL has no % for double; checker rejects it.
-    if (r == Repr::kInt)
-      bop = BinaryenRemSInt64();
-    else if (r == Repr::kUint)
-      bop = BinaryenRemUInt64();
-    else
-      return UnimplementedRepr(name, r, 0);
-  } else {
-    return absl::InternalError(
-        absl::StrCat("LowerArithmetic: unhandled op `", name, "`"));
+  if (r == Repr::kInt || r == Repr::kUint) {
+    return LowerCheckedIntArith(name, r, lhs, rhs, ctx);
   }
-  return BinaryenBinary(m, bop, lhs, rhs);
+  if (r == Repr::kDouble) {
+    return LowerDoubleArithmetic(name, lhs, rhs, m);
+  }
+  return UnimplementedRepr(name, r, 0);
+}
+
+// Scalar `_==_` / `_!=_` opcode for bool / int / uint / double.  The
+// caller handles the span / message cases separately because they need
+// a runtime call rather than a single opcode.
+absl::StatusOr<BinaryenOp> ScalarEqualityOp(absl::string_view name,
+                                            Repr arg_r) {
+  const bool eq = (name == op::CelOperator::EQUALS);
+  switch (arg_r) {
+    case Repr::kBool:
+      return eq ? BinaryenEqInt32() : BinaryenNeInt32();
+    case Repr::kInt:
+    case Repr::kUint:
+      return eq ? BinaryenEqInt64() : BinaryenNeInt64();
+    case Repr::kDouble:
+      return eq ? BinaryenEqFloat64() : BinaryenNeFloat64();
+    default:
+      return UnimplementedRepr(name, arg_r, 0);
+  }
+}
+
+// Ordered-compare opcode for int64 operands.
+absl::StatusOr<BinaryenOp> OrderedIntOp(absl::string_view name) {
+  if (name == op::CelOperator::LESS) return BinaryenLtSInt64();
+  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeSInt64();
+  if (name == op::CelOperator::GREATER) return BinaryenGtSInt64();
+  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeSInt64();
+  return absl::InternalError(
+      absl::StrCat("OrderedIntOp: not an ordered op: `", name, "`"));
+}
+
+absl::StatusOr<BinaryenOp> OrderedUintOp(absl::string_view name) {
+  if (name == op::CelOperator::LESS) return BinaryenLtUInt64();
+  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeUInt64();
+  if (name == op::CelOperator::GREATER) return BinaryenGtUInt64();
+  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeUInt64();
+  return absl::InternalError(
+      absl::StrCat("OrderedUintOp: not an ordered op: `", name, "`"));
+}
+
+absl::StatusOr<BinaryenOp> OrderedDoubleOp(absl::string_view name) {
+  if (name == op::CelOperator::LESS) return BinaryenLtFloat64();
+  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeFloat64();
+  if (name == op::CelOperator::GREATER) return BinaryenGtFloat64();
+  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeFloat64();
+  return absl::InternalError(
+      absl::StrCat("OrderedDoubleOp: not an ordered op: `", name, "`"));
+}
+
+absl::StatusOr<BinaryenOp> OrderedCompareOp(absl::string_view name,
+                                            Repr arg_r) {
+  switch (arg_r) {
+    case Repr::kInt:
+      return OrderedIntOp(name);
+    case Repr::kUint:
+      return OrderedUintOp(name);
+    case Repr::kDouble:
+      return OrderedDoubleOp(name);
+    default:
+      return UnimplementedRepr(name, arg_r, 0);
+  }
+}
+
+// String / bytes equality can't be a single opcode — both operands
+// are i32 offsets to CelValues, and the payload compare must walk
+// the bytes in linear memory.  Delegate to the runtime helper and,
+// for `_!=_`, invert with `i32.eqz`.
+BinaryenExpressionRef LowerSpanEquality(absl::string_view name, Repr arg_r,
+                                        BinaryenExpressionRef lhs,
+                                        BinaryenExpressionRef rhs,
+                                        BinaryenModuleRef m) {
+  const char* helper =
+      (arg_r == Repr::kString) ? "cel_string_eq" : "cel_bytes_eq";
+  BinaryenExpressionRef args[2] = {lhs, rhs};
+  BinaryenExpressionRef call =
+      BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
+  return (name == op::CelOperator::NOT_EQUALS)
+             ? BinaryenUnary(m, BinaryenEqZInt32(), call)
+             : call;
+}
+
+// Message equality can't be a structural comparison of externrefs —
+// two externrefs may point at structurally equal messages from
+// different descriptor origins, and the CEL spec demands the host's
+// descriptor-aware equality.  Delegate to cel_host.message_eq and,
+// for `_!=_`, invert with i32.eqz — same pattern as string/bytes.
+BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
+                                           BinaryenExpressionRef lhs,
+                                           BinaryenExpressionRef rhs,
+                                           BinaryenModuleRef m) {
+  BinaryenExpressionRef args[2] = {lhs, rhs};
+  BinaryenExpressionRef call =
+      BinaryenCall(m, "message_eq", args, 2, BinaryenTypeInt32());
+  return (name == op::CelOperator::NOT_EQUALS)
+             ? BinaryenUnary(m, BinaryenEqZInt32(), call)
+             : call;
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
@@ -400,80 +625,22 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
                                                       BinaryenExpressionRef rhs,
                                                       WasmModule& mod) {
   BinaryenModuleRef m = mod.raw();
-  BinaryenOp bop;
   const bool eq = (name == op::CelOperator::EQUALS);
   const bool ne = (name == op::CelOperator::NOT_EQUALS);
   if (eq || ne) {
-    // String / bytes equality can't be a single opcode — both operands
-    // are i32 offsets to CelValues, and the payload compare must walk
-    // the bytes in linear memory.  Delegate to the runtime helper and,
-    // for `_!=_`, invert with `i32.eqz`.
     if (arg_r == Repr::kString || arg_r == Repr::kBytes) {
-      const char* helper =
-          (arg_r == Repr::kString) ? "cel_string_eq" : "cel_bytes_eq";
-      BinaryenExpressionRef args[2] = {lhs, rhs};
-      BinaryenExpressionRef call =
-          BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
-      return ne ? BinaryenUnary(m, BinaryenEqZInt32(), call) : call;
+      return LowerSpanEquality(name, arg_r, lhs, rhs, m);
     }
-    // Message equality can't be a structural comparison of externrefs —
-    // two externrefs may point at structurally equal messages from
-    // different descriptor origins, and the CEL spec demands the host's
-    // descriptor-aware equality.  Delegate to cel_host.message_eq and,
-    // for `_!=_`, invert with i32.eqz — same pattern as string/bytes.
     if (arg_r == Repr::kMessage) {
-      BinaryenExpressionRef args[2] = {lhs, rhs};
-      BinaryenExpressionRef call =
-          BinaryenCall(m, "message_eq", args, 2, BinaryenTypeInt32());
-      return ne ? BinaryenUnary(m, BinaryenEqZInt32(), call) : call;
+      return LowerMessageEquality(name, lhs, rhs, m);
     }
-    switch (arg_r) {
-      case Repr::kBool:
-        bop = eq ? BinaryenEqInt32() : BinaryenNeInt32();
-        break;
-      case Repr::kInt:
-      case Repr::kUint:
-        bop = eq ? BinaryenEqInt64() : BinaryenNeInt64();
-        break;
-      case Repr::kDouble:
-        bop = eq ? BinaryenEqFloat64() : BinaryenNeFloat64();
-        break;
-      default:
-        return UnimplementedRepr(name, arg_r, 0);
-    }
-    return BinaryenBinary(m, bop, lhs, rhs);
+    auto bop = ScalarEqualityOp(name, arg_r);
+    if (!bop.ok()) return bop.status();
+    return BinaryenBinary(m, *bop, lhs, rhs);
   }
-  // Ordered comparisons.  Bool is not ordered in CEL.
-  const bool lt = (name == op::CelOperator::LESS);
-  const bool le = (name == op::CelOperator::LESS_EQUALS);
-  const bool gt = (name == op::CelOperator::GREATER);
-  const bool ge = (name == op::CelOperator::GREATER_EQUALS);
-  switch (arg_r) {
-    case Repr::kInt:
-      bop = lt   ? BinaryenLtSInt64()
-            : le ? BinaryenLeSInt64()
-            : gt ? BinaryenGtSInt64()
-            : ge ? BinaryenGeSInt64()
-                 : BinaryenEqInt64();
-      break;
-    case Repr::kUint:
-      bop = lt   ? BinaryenLtUInt64()
-            : le ? BinaryenLeUInt64()
-            : gt ? BinaryenGtUInt64()
-            : ge ? BinaryenGeUInt64()
-                 : BinaryenEqInt64();
-      break;
-    case Repr::kDouble:
-      bop = lt   ? BinaryenLtFloat64()
-            : le ? BinaryenLeFloat64()
-            : gt ? BinaryenGtFloat64()
-            : ge ? BinaryenGeFloat64()
-                 : BinaryenEqFloat64();
-      break;
-    default:
-      return UnimplementedRepr(name, arg_r, 0);
-  }
-  return BinaryenBinary(m, bop, lhs, rhs);
+  auto bop = OrderedCompareOp(name, arg_r);
+  if (!bop.ok()) return bop.status();
+  return BinaryenBinary(m, *bop, lhs, rhs);
 }
 
 // Member-call dispatch for the string extension methods (§9):
@@ -488,14 +655,15 @@ absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerStringMemberCall(
   namespace b = ::cel::builtin;
   const std::string& fn = call.function();
   const char* helper = nullptr;
-  if (fn == b::kStringStartsWith)
+  if (fn == b::kStringStartsWith) {
     helper = "cel_string_starts_with";
-  else if (fn == b::kStringEndsWith)
+  } else if (fn == b::kStringEndsWith) {
     helper = "cel_string_ends_with";
-  else if (fn == b::kStringContains)
+  } else if (fn == b::kStringContains) {
     helper = "cel_string_contains";
-  else
+  } else {
     return std::optional<BinaryenExpressionRef>{};
+  }
 
   if (call.args().size() != 1) {
     return absl::InvalidArgumentError(
@@ -509,11 +677,137 @@ absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerStringMemberCall(
   }
   auto recv = LowerExpr(ctx, ast, call.target());
   if (!recv.ok()) return recv.status();
-  auto arg = LowerExpr(ctx, ast, call.args()[0]);
+  auto arg = LowerExpr(ctx, ast, call.args().at(0));
   if (!arg.ok()) return arg.status();
   BinaryenExpressionRef args[2] = {*recv, *arg};
   return std::optional<BinaryenExpressionRef>(
       BinaryenCall(ctx.mod.raw(), helper, args, 2, BinaryenTypeInt32()));
+}
+
+// `!_` — logical not.
+absl::StatusOr<BinaryenExpressionRef> LowerLogicalNot(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
+  if (call.args().size() != 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`!_` takes 1 argument, got ", call.args().size()));
+  }
+  auto v = LowerExpr(ctx, ast, call.args().at(0));
+  if (!v.ok()) return v.status();
+  return BinaryenUnary(ctx.mod.raw(), BinaryenEqZInt32(), *v);
+}
+
+// `-_` — unary negate.  0 - x preserves i64 signedness; CEL also
+// rejects negating uint.
+absl::StatusOr<BinaryenExpressionRef> LowerNegate(LoweringContext& ctx,
+                                                  const TypedAst& ast,
+                                                  const cel::CallExpr& call,
+                                                  int64_t expr_id) {
+  if (call.args().size() != 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`-_` takes 1 argument, got ", call.args().size()));
+  }
+  auto v = LowerExpr(ctx, ast, call.args().at(0));
+  if (!v.ok()) return v.status();
+  auto arg_r = ReprOf(ast, call.args().at(0));
+  if (!arg_r.ok()) return arg_r.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  switch (*arg_r) {
+    case Repr::kInt:
+      return BinaryenBinary(m, BinaryenSubInt64(),
+                            BinaryenConst(m, BinaryenLiteralInt64(0)), *v);
+    case Repr::kDouble:
+      return BinaryenUnary(m, BinaryenNegFloat64(), *v);
+    default:
+      return UnimplementedRepr(op::CelOperator::NEGATE, *arg_r, expr_id);
+  }
+}
+
+// `_?_:_` — ternary.  Both branches must have the same Repr (checker
+// invariant); we rely on BinaryenIf to validate type agreement.
+absl::StatusOr<BinaryenExpressionRef> LowerConditional(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
+  if (call.args().size() != 3) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`_?_:_` takes 3 arguments, got ", call.args().size()));
+  }
+  auto cond = LowerExpr(ctx, ast, call.args().at(0));
+  if (!cond.ok()) return cond.status();
+  auto t = LowerExpr(ctx, ast, call.args().at(1));
+  if (!t.ok()) return t.status();
+  auto f = LowerExpr(ctx, ast, call.args().at(2));
+  if (!f.ok()) return f.status();
+  return BinaryenIf(ctx.mod.raw(), *cond, *t, *f);
+}
+
+// `_&&_` / `_||_` — lowered as `if` so the RHS is only evaluated when
+// necessary.  This is the 2VL shape; the 3VL retrofit lands later.
+absl::StatusOr<BinaryenExpressionRef> LowerShortCircuit(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
+    absl::string_view fn) {
+  if (call.args().size() != 2) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`", fn, "` takes 2 arguments, got ", call.args().size()));
+  }
+  auto l = LowerExpr(ctx, ast, call.args().at(0));
+  if (!l.ok()) return l.status();
+  auto r = LowerExpr(ctx, ast, call.args().at(1));
+  if (!r.ok()) return r.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  const bool is_and = (fn == op::CelOperator::LOGICAL_AND);
+  BinaryenExpressionRef if_true =
+      is_and ? *r : BinaryenConst(m, BinaryenLiteralInt32(1));
+  BinaryenExpressionRef if_false =
+      is_and ? BinaryenConst(m, BinaryenLiteralInt32(0)) : *r;
+  return BinaryenIf(m, *l, if_true, if_false);
+}
+
+// `size(x)` — the checker resolves the overload to the exact
+// container kind, but the function-name string in the AST is still
+// `"size"` regardless of overload.  Dispatch on the argument Repr
+// and emit a call to the matching runtime helper.  List / map sizes
+// land in later milestones alongside the container Reprs themselves.
+absl::StatusOr<BinaryenExpressionRef> LowerSizeCall(LoweringContext& ctx,
+                                                    const TypedAst& ast,
+                                                    const cel::CallExpr& call,
+                                                    int64_t expr_id) {
+  auto arg_r = ReprOf(ast, call.args().at(0));
+  if (!arg_r.ok()) return arg_r.status();
+  auto arg = LowerExpr(ctx, ast, call.args().at(0));
+  if (!arg.ok()) return arg.status();
+  if (*arg_r == Repr::kString || *arg_r == Repr::kBytes) {
+    const char* helper =
+        (*arg_r == Repr::kString) ? "cel_string_size" : "cel_bytes_size";
+    BinaryenExpressionRef a = *arg;
+    return BinaryenCall(ctx.mod.raw(), helper, &a, 1, BinaryenTypeInt64());
+  }
+  return UnimplementedRepr("size", *arg_r, expr_id);
+}
+
+// Binary arithmetic and comparisons: both operands share a Repr;
+// dispatch on the first.  If the function name isn't a known binary
+// arithmetic or comparison op, falls through to UnimplementedKind.
+absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
+                                                      const TypedAst& ast,
+                                                      const cel::CallExpr& call,
+                                                      absl::string_view fn,
+                                                      int64_t expr_id) {
+  auto arg_r = ReprOf(ast, call.args().at(0));
+  if (!arg_r.ok()) return arg_r.status();
+  auto l = LowerExpr(ctx, ast, call.args().at(0));
+  if (!l.ok()) return l.status();
+  auto r = LowerExpr(ctx, ast, call.args().at(1));
+  if (!r.ok()) return r.status();
+  if (fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
+      fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
+      fn == op::CelOperator::MODULO) {
+    return LowerArithmetic(fn, *arg_r, *l, *r, ctx);
+  }
+  if (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
+      fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
+      fn == op::CelOperator::GREATER || fn == op::CelOperator::GREATER_EQUALS) {
+    return LowerComparison(fn, *arg_r, *l, *r, ctx.mod);
+  }
+  return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr_id);
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
@@ -521,8 +815,6 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
                                                 const cel::Expr& expr) {
   const cel::CallExpr& call = expr.call_expr();
   const std::string& fn = call.function();
-  WasmModule& mod = ctx.mod;
-  BinaryenModuleRef m = mod.raw();
 
   // Member form (x.f(...)).  The only ones supported today are the three
   // string extension methods; anything else returns UnimplementedKind so
@@ -534,116 +826,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
     if (member->has_value()) return **member;
     return UnimplementedKind(absl::StrCat("method call `", fn, "`"), expr.id());
   }
-
-  // Unary: logical not.
   if (fn == op::CelOperator::LOGICAL_NOT) {
-    if (call.args().size() != 1) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("`!_` takes 1 argument, got ", call.args().size()));
-    }
-    auto v = LowerExpr(ctx, ast, call.args()[0]);
-    if (!v.ok()) return v.status();
-    return BinaryenUnary(m, BinaryenEqZInt32(), *v);
+    return LowerLogicalNot(ctx, ast, call);
   }
-
-  // Unary: negate.
   if (fn == op::CelOperator::NEGATE) {
-    if (call.args().size() != 1) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("`-_` takes 1 argument, got ", call.args().size()));
-    }
-    auto v = LowerExpr(ctx, ast, call.args()[0]);
-    if (!v.ok()) return v.status();
-    auto arg_r = ReprOf(ast, call.args()[0]);
-    if (!arg_r.ok()) return arg_r.status();
-    switch (*arg_r) {
-      case Repr::kInt:
-        // 0 - x preserves i64 signedness; CEL also rejects negating uint.
-        return BinaryenBinary(m, BinaryenSubInt64(),
-                              BinaryenConst(m, BinaryenLiteralInt64(0)), *v);
-      case Repr::kDouble:
-        return BinaryenUnary(m, BinaryenNegFloat64(), *v);
-      default:
-        return UnimplementedRepr(fn, *arg_r, expr.id());
-    }
+    return LowerNegate(ctx, ast, call, expr.id());
   }
-
-  // Ternary: _?_:_
   if (fn == op::CelOperator::CONDITIONAL) {
-    if (call.args().size() != 3) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("`_?_:_` takes 3 arguments, got ", call.args().size()));
-    }
-    auto cond = LowerExpr(ctx, ast, call.args()[0]);
-    if (!cond.ok()) return cond.status();
-    auto t = LowerExpr(ctx, ast, call.args()[1]);
-    if (!t.ok()) return t.status();
-    auto f = LowerExpr(ctx, ast, call.args()[2]);
-    if (!f.ok()) return f.status();
-    return BinaryenIf(m, *cond, *t, *f);
+    return LowerConditional(ctx, ast, call);
   }
-
-  // Short-circuit logical: _&&_ and _||_.
   if (fn == op::CelOperator::LOGICAL_AND || fn == op::CelOperator::LOGICAL_OR) {
-    if (call.args().size() != 2) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "`", fn, "` takes 2 arguments, got ", call.args().size()));
-    }
-    auto l = LowerExpr(ctx, ast, call.args()[0]);
-    if (!l.ok()) return l.status();
-    auto r = LowerExpr(ctx, ast, call.args()[1]);
-    if (!r.ok()) return r.status();
-    // a && b  ->  if (a) b else 0
-    // a || b  ->  if (a) 1 else b
-    const bool is_and = (fn == op::CelOperator::LOGICAL_AND);
-    BinaryenExpressionRef if_true =
-        is_and ? *r : BinaryenConst(m, BinaryenLiteralInt32(1));
-    BinaryenExpressionRef if_false =
-        is_and ? BinaryenConst(m, BinaryenLiteralInt32(0)) : *r;
-    return BinaryenIf(m, *l, if_true, if_false);
+    return LowerShortCircuit(ctx, ast, call, fn);
   }
-
-  // `size(x)` — the checker resolves the overload to the exact
-  // container kind, but the function-name string in the AST is still
-  // `"size"` regardless of overload.  Dispatch on the argument Repr
-  // and emit a call to the matching runtime helper.  List / map sizes
-  // land in later milestones alongside the container Reprs themselves.
   if (fn == "size" && call.args().size() == 1) {
-    auto arg_r = ReprOf(ast, call.args()[0]);
-    if (!arg_r.ok()) return arg_r.status();
-    auto arg = LowerExpr(ctx, ast, call.args()[0]);
-    if (!arg.ok()) return arg.status();
-    if (*arg_r == Repr::kString || *arg_r == Repr::kBytes) {
-      const char* helper =
-          (*arg_r == Repr::kString) ? "cel_string_size" : "cel_bytes_size";
-      BinaryenExpressionRef a = *arg;
-      return BinaryenCall(m, helper, &a, 1, BinaryenTypeInt64());
-    }
-    return UnimplementedRepr(fn, *arg_r, expr.id());
+    return LowerSizeCall(ctx, ast, call, expr.id());
   }
-
-  // Binary arithmetic and comparisons: both operands share a Repr;
-  // dispatch on the first.
   if (call.args().size() == 2) {
-    auto arg_r = ReprOf(ast, call.args()[0]);
-    if (!arg_r.ok()) return arg_r.status();
-    auto l = LowerExpr(ctx, ast, call.args()[0]);
-    if (!l.ok()) return l.status();
-    auto r = LowerExpr(ctx, ast, call.args()[1]);
-    if (!r.ok()) return r.status();
-    if (fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
-        fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
-        fn == op::CelOperator::MODULO) {
-      return LowerArithmetic(fn, *arg_r, *l, *r, mod);
-    }
-    if (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
-        fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
-        fn == op::CelOperator::GREATER ||
-        fn == op::CelOperator::GREATER_EQUALS) {
-      return LowerComparison(fn, *arg_r, *l, *r, mod);
-    }
+    return LowerBinaryCall(ctx, ast, call, fn, expr.id());
   }
-
   return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr.id());
 }
 
@@ -836,11 +1036,63 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
   return absl::InternalError("expr_lower: unreachable kind_case");
 }
 
+// Populates `params`, `ctx.idents`, `ctx.num_params`, and sets
+// `has_message_param` iff any variable has Repr::kMessage.  Fails
+// cleanly on unsupported Reprs or duplicate variable names.
+absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
+                            std::vector<BinaryenType>& params,
+                            bool& has_message_param) {
+  params.reserve(ast.variables().size());
+  has_message_param = false;
+  for (const Variable& v : ast.variables()) {
+    BinaryenType pt = WasmTypeFor(v.repr);
+    if (pt == BinaryenTypeNone()) {
+      return absl::UnimplementedError(absl::StrCat(
+          "expr_lower: variable `", v.name, "` has Repr `", ReprName(v.repr),
+          "` which has no scalar ABI lowering in M3"));
+    }
+    if (v.repr == Repr::kMessage) has_message_param = true;
+    const auto idx = static_cast<BinaryenIndex>(params.size());
+    params.push_back(pt);
+    const bool inserted = ctx.idents.emplace(v.name, idx).second;
+    if (!inserted) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "expr_lower: duplicate variable name `", v.name, "` in specs"));
+    }
+  }
+  ctx.num_params = static_cast<uint32_t>(params.size());
+  return absl::OkStatus();
+}
+
+// Any message-valued variable drags in the externref table + the
+// wrap/unwrap helpers.  We emit the table with 16 initial slots:
+// a single evaluation never pins more than a handful of messages
+// (one per `kIdentExpr`, plus transient wraps for field reads), so
+// 16 is a comfortable ceiling that still keeps the table's root
+// set small for wasmtime.  Slot 0 is the null sentinel, slot 1 is
+// the first allocatable slot.
+absl::Status AddMessageSupport(WasmModule& mod) {
+  if (auto s = AddCelRefsTableAndHelpers(mod, "$cel_refs",
+                                         /*initial_slots=*/16);
+      !s.ok()) {
+    return s;
+  }
+  return AddMessageWrapHelpers(mod, "$cel_refs");
+}
+
 }  // namespace
 
 BinaryenType WasmTypeFor(Repr r) {
   switch (r) {
+    // Bool / type / string / bytes all travel as i32 in the ABI.
+    // Strings and bytes are offsets into the shared linear memory —
+    // each is a pointer to a `CelValue` owned by the runtime's arena
+    // (see LowerSpanLiteral).  Types are encoded as internal type-id
+    // integers (placeholder — M6).
     case Repr::kBool:
+    case Repr::kType:
+    case Repr::kString:
+    case Repr::kBytes:
       return BinaryenTypeInt32();
     case Repr::kInt:
     case Repr::kUint:
@@ -850,15 +1102,6 @@ BinaryenType WasmTypeFor(Repr r) {
       return BinaryenTypeInt64();
     case Repr::kDouble:
       return BinaryenTypeFloat64();
-    case Repr::kType:
-      return BinaryenTypeInt32();
-    // Strings and bytes travel as i32 offsets into the shared linear
-    // memory — each is a pointer to a `CelValue` owned by the runtime's
-    // arena.  The codegen materialises the offset via `cel_alloc` +
-    // `cel_make_string_view` (see LowerSpanLiteral).
-    case Repr::kString:
-    case Repr::kBytes:
-      return BinaryenTypeInt32();
     // Messages travel as `externref`: the host owns the underlying
     // proto object and hands it to the module as an opaque reference.
     // When codegen needs to thread the value through a CelValue* API
@@ -894,45 +1137,14 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
   // variable becomes one WASM param whose type is the ABI encoding of
   // its Repr.  Variables whose Repr has no scalar encoding (list, map,
   // dyn) fail cleanly here — their support lives in later milestones.
-  // Duplicate names would be a checker bug (the decl-builder would
-  // have refused to add the second one) but are worth flagging here
-  // too since ctx.idents silently overwrites on collision.
   std::vector<BinaryenType> params;
-  params.reserve(ast.variables().size());
   LoweringContext ctx{mod};
   bool has_message_param = false;
-  for (const Variable& v : ast.variables()) {
-    BinaryenType pt = WasmTypeFor(v.repr);
-    if (pt == BinaryenTypeNone()) {
-      return absl::UnimplementedError(absl::StrCat(
-          "expr_lower: variable `", v.name, "` has Repr `", ReprName(v.repr),
-          "` which has no scalar ABI lowering in M3"));
-    }
-    if (v.repr == Repr::kMessage) has_message_param = true;
-    BinaryenIndex idx = static_cast<BinaryenIndex>(params.size());
-    params.push_back(pt);
-    auto [it, inserted] = ctx.idents.emplace(v.name, idx);
-    if (!inserted) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "expr_lower: duplicate variable name `", v.name, "` in specs"));
-    }
+  if (auto s = BuildParamList(ast, ctx, params, has_message_param); !s.ok()) {
+    return s;
   }
-  ctx.num_params = static_cast<uint32_t>(params.size());
-
-  // Any message-valued variable drags in the externref table + the
-  // wrap/unwrap helpers.  We emit the table with 16 initial slots:
-  // a single evaluation never pins more than a handful of messages
-  // (one per `kIdentExpr`, plus transient wraps for field reads), so
-  // 16 is a comfortable ceiling that still keeps the table's root
-  // set small for wasmtime.  Slot 0 is the null sentinel, slot 1 is
-  // the first allocatable slot.
   if (has_message_param) {
-    if (auto s = AddCelRefsTableAndHelpers(mod, "$cel_refs",
-                                           /*initial_slots=*/16);
-        !s.ok()) {
-      return s;
-    }
-    if (auto s = AddMessageWrapHelpers(mod, "$cel_refs"); !s.ok()) return s;
+    if (auto s = AddMessageSupport(mod); !s.ok()) return s;
   }
 
   auto body = LowerExpr(ctx, ast, root);

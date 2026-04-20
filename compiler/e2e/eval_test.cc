@@ -27,6 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
@@ -72,7 +73,7 @@ absl::StatusOr<wasmtime_val_t> Evaluate(absl::string_view cel_source) {
 // int/uint, i32 for bool, f64 for double, etc.).
 absl::StatusOr<wasmtime_val_t> EvaluateWithVars(
     absl::string_view cel_source, std::vector<std::string> variable_specs,
-    std::vector<wasmtime_val_t> args) {
+    const std::vector<wasmtime_val_t>& args) {
   CheckOptions opts;
   opts.variable_specs = std::move(variable_specs);
   auto typed = ParseAndCheck(cel_source, opts);
@@ -139,7 +140,7 @@ TEST(EvalE2ETest, DoubleArithmetic) {
   auto r = Evaluate("1.5 + 2.25 * 4.0");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_F64);
-  EXPECT_DOUBLE_EQ(r->of.f64, 1.5 + 2.25 * 4.0);
+  EXPECT_DOUBLE_EQ(r->of.f64, 1.5 + (2.25 * 4.0));
 }
 
 TEST(EvalE2ETest, BoolLiteralTrue) {
@@ -247,6 +248,113 @@ TEST(EvalE2ETest, IntModulo) {
   EXPECT_EQ(r->of.i64, 1);
 }
 
+// ---- Checked arithmetic (M4 Slice B) -----------------------------------
+//
+// Happy-path regression — the codegen retrofit reshaped arithmetic into
+// a helper call + unreachable-on-error block.  The existing
+// arithmetic/precedence tests exercise the happy path; these add the
+// overflow / div-by-zero side.  Traps surface as an `absl::Status`
+// whose message contains `trapped:` (see `host_loader::CallFunction`),
+// so that's the assertion we make here.
+
+MATCHER(TrapStatus, "is an InternalError mentioning a wasm trap") {
+  return !arg.ok() && arg.code() == absl::StatusCode::kInternal &&
+         absl::StrContains(arg.message(), "trapped:");
+}
+
+TEST(EvalE2ETest, IntAddOverflowTraps) {
+  // 9223372036854775807 + 1 = INT64_MAX + 1 — overflow.
+  auto r = Evaluate("9223372036854775807 + 1");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntSubOverflowTraps) {
+  // INT64_MIN - 1 underflows.
+  auto r = Evaluate("-9223372036854775808 - 1");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntMulOverflowTraps) {
+  // 2^62 * 8 = 2^65, overflow.  The hi/lo-split helper must detect this
+  // without pulling in __multi3 on wasm32.
+  auto r = Evaluate("4611686018427387904 * 8");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntDivMinByNegOneTraps) {
+  // INT64_MIN / -1 is the classic signed overflow case.
+  auto r = Evaluate("-9223372036854775808 / -1");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntDivByZeroTraps) {
+  auto r = Evaluate("5 / 0");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntModByZeroTraps) {
+  auto r = Evaluate("5 % 0");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntModMinByNegOneIsZeroNotTrap) {
+  // INT64_MIN % -1 is mathematically 0; C reserves UB, so the runtime
+  // special-cases it.  A trap here would mean the special case leaked.
+  auto r = Evaluate("-9223372036854775808 % -1");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, 0);
+}
+
+TEST(EvalE2ETest, UintAddOverflowTraps) {
+  // UINT64_MAX + 1 wraps arithmetically but CEL defines it as error.
+  auto r = Evaluate("18446744073709551615u + 1u");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, UintSubUnderflowTraps) {
+  auto r = Evaluate("0u - 1u");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, UintMulOverflowTraps) {
+  // (2^32) * (2^32) = 2^64, overflow.  Exercises the hi/lo-split path.
+  auto r = Evaluate("4294967296u * 4294967296u");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, UintDivByZeroTraps) {
+  auto r = Evaluate("5u / 0u");
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, IntMulHappyPathStillWorksAfterRetrofit) {
+  // 2^32 * 2^30 = 2^62 — fits in signed 64.  Regression guard: the hi/lo
+  // split must reconstruct the low 64 bits correctly on in-range mul.
+  auto r = Evaluate("4294967296 * 1073741824");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, int64_t{4611686018427387904});
+}
+
+TEST(EvalE2ETest, SignedMulNegativeResultRoundTrips) {
+  // -3 * 7 = -21 — ensures the sign-reconstruction branch in
+  // s64_mul_overflow returns the right sign.
+  auto r = Evaluate("-3 * 7");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, -21);
+}
+
+TEST(EvalE2ETest, SignedMulIntMinByOneRoundTrips) {
+  // INT64_MIN * 1 must produce INT64_MIN, not overflow — this is the
+  // one edge case where |a| == 2^63 but the result is representable.
+  auto r = Evaluate("-9223372036854775808 * 1");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, INT64_MIN);
+}
+
 TEST(EvalE2ETest, IntVariableIsReadFromFirstParam) {
   // `x + 1` with x=41 exercises the full ident path: parse+check assigns
   // `x:int` an i64 Repr, codegen lays it out as param 0, and the runtime
@@ -351,7 +459,7 @@ absl::StatusOr<DecodedString> DecodeStringAt(LoadedEval& loaded,
       return absl::InternalError("cel_mem_base call failed");
     }
   }
-  const uint32_t mem_base = static_cast<uint32_t>(base_off.of.i32);
+  const auto mem_base = static_cast<uint32_t>(base_off.of.i32);
   const uint64_t abs_cv =
       static_cast<uint64_t>(mem_base) + static_cast<uint64_t>(offset);
   if (offset <= 0 || abs_cv + sizeof(CelValue) > size) {
@@ -581,13 +689,13 @@ TEST(EvalE2ETest, BytesLiteralPreservesHighBits) {
   // Binaryen; a regression that let a u8 get sign-extended through i32
   // would surface as a mismatched byte here (0xff would become -1 and
   // then zero-extend differently on the other side).
-  auto r = EvaluateToString("b'\\xff\\x00\\xfe'");
+  auto r = EvaluateToString(R"(b'\xff\x00\xfe')");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, static_cast<uint32_t>(CEL_BYTES));
   ASSERT_EQ(r->payload.size(), 3u);
-  EXPECT_EQ(static_cast<uint8_t>(r->payload[0]), 0xffu);
-  EXPECT_EQ(static_cast<uint8_t>(r->payload[1]), 0x00u);
-  EXPECT_EQ(static_cast<uint8_t>(r->payload[2]), 0xfeu);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload.at(0)), 0xffu);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload.at(1)), 0x00u);
+  EXPECT_EQ(static_cast<uint8_t>(r->payload.at(2)), 0xfeu);
 }
 
 TEST(EvalE2ETest, BytesConcatenationProducesJoinedBytes) {
@@ -621,7 +729,7 @@ TEST(EvalE2ETest, SizeOfBytesIsByteCount) {
   // must report 4 here — `size(bytes)` is byte count per CEL §1110.
   // This is the semantic difference between `cel_string_size` and
   // `cel_bytes_size` that the codegen dispatch must honour.
-  auto r = Evaluate("size(b'\\xf0\\x9f\\x98\\x80')");
+  auto r = Evaluate(R"(size(b'\xf0\x9f\x98\x80'))");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_I64);
   EXPECT_EQ(r->of.i64, 4);
