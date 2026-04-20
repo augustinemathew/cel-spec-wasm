@@ -101,12 +101,12 @@ When a bug is fixed, add a regression test *in the same commit*.
 Track these while working; raise them to the user when a change touches
 the surrounding code, and update / close them when a decision ships.
 
-- **Unified symbol table (decide before M4 Slice A).** Name / type /
+- **Unified symbol table (decide before M5 Slice A).** Name / type /
   scope info is currently split three ways: `CheckOptions::variable_specs`
   (frontend), `TypedAst::variables()` + `WasmAnnotations` (IR), and
   `LoweringContext.idents` in `compiler/codegen/expr_lower.cc`
   (codegen).  Works for today's flat, scope-free subset; breaks the
-  moment comprehensions (M4), user functions (M6), or a leading-dot
+  moment comprehensions (M5), user functions (M6), or a leading-dot
   rewrite pass need nested scopes.  Two options in the design doc's
   "Open questions" section: (A) promote to a `SymbolTable` on
   `TypedAst`, (B) side-table off cel-cpp's `reference_map`.  **If you

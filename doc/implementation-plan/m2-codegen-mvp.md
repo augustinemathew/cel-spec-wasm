@@ -23,8 +23,8 @@ together.
 Out of scope for M2 (later milestones pick these up):
   - comprehensions (M3) — but the scope-frame plumbing is stubbed in M2 so
     M3 only has to fill in codegen.
-  - advanced string ops + format directives (M4).
-  - three-valued error/unknown propagation (M5).
+  - advanced string ops + format directives (M7).
+  - three-valued error/unknown propagation (M4).
   - user-defined functions (M6).
 
 ## Deliverables
@@ -97,7 +97,7 @@ Out of scope for M2 (later milestones pick these up):
       scalar ABI lowering.  Identifiers, selects, lists, maps,
       structs, comprehensions, strings, bytes return `Unimplemented`.
       Error-propagation semantics (overflow, divide-by-zero, NaN,
-      unknown) deferred to M5.
+      unknown) deferred to M4.
 - [x] `compiler/codegen/abi.{h,cc}` + `cel_abi.proto` — writer for the
       `cel.abi` custom section.  Uses cel-cpp's `AstToCheckedExpr` to
       embed a full `cel.expr.CheckedExpr`; M2 leaves the interning
@@ -269,8 +269,8 @@ of them is a blocker for scalar e2e but all three gate the start of M3.
    = {initial_pages=1, max_pages=0}.  The interning tables
    (`types` / `attributes` / `patterns` / `error_msgs`) stay empty
    because the codegen MVP never references them; they populate as
-   M3 (proto fields, strings), M4 (collections), and M5
-   (three-valued logic) introduce features that need them.  The
+   M3 (proto fields, strings), M4 (three-valued logic), and M5
+   (collections) introduce features that need them.  The
    CLI's `--emit_wasm` flow attaches the section on every emitted
    module.  Round-trip coverage in `abi_test.cc` walks the wasm
    section list directly (small hand-rolled parser — Binaryen

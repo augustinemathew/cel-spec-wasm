@@ -1,17 +1,31 @@
-# M5 — Three-valued logic (OK / UNKNOWN / ERROR)
+# M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **planned.**  Blocked on M4 — the comprehension lowering is
-the first place error propagation has multiple branch points in one
-expression.
+Status: **planned.**  Next milestone after M3.  Unblocked — the
+per-type and per-`ExprKindCase` codegen surface M3 closed is exactly
+what the 3VL plumbing threads through, so nothing upstream blocks
+this.
+
+**Ordering note (2026-04-19): M4 and M5 were swapped.**  Originally
+M4 was collections + comprehensions and M5 was three-valued logic,
+with the rationale that the comprehension lowering was the first
+place error propagation had multiple branch points in one
+expression.  That was an M4-internal observation; the stronger
+ordering constraint turned out to be that the §8.2 host ABI is
+leaking semantics the compiler cannot rely on at compile time —
+every `get_field` can return UNKNOWN / ERROR, and today codegen has
+no story for threading that status.  The right fix is to finish
+three-valued logic first so the ABI has something well-defined to
+hand back, then build collections on top.  Collections moved to
+M5 (`m5-collections-and-comprehensions.md`).
 
 ## Scope
 
 Make the compiler produce CEL's normative three-valued semantics
 end-to-end.  Up to this point, every lowered expression trusts its
-inputs and emits straight-line WASM; M5 inserts the
+inputs and emits straight-line WASM; M4 inserts the
 check/propagate/short-circuit plumbing.
 
-Post-M5 these expressions evaluate to **ERROR**, not panic / not
+Post-M4 these expressions evaluate to **ERROR**, not panic / not
 trap:
 
   - `1 / 0` → ERROR (divide-by-zero).
@@ -20,7 +34,7 @@ trap:
     case that confirms the checker still catches what it should).
   - `NaN < 1.0` → ERROR (NaN-unordered).
 
-Post-M5 these evaluate to **UNKNOWN**:
+Post-M4 these evaluate to **UNKNOWN**:
 
   - When `request.user` is marked unknown by the host,
     `request.user.name == "alice"` returns `UnknownSet{request.user}`.
@@ -99,8 +113,8 @@ Post-M5 these evaluate to **UNKNOWN**:
       division produces +/-Inf, which is NOT an error per IEEE 754;
       only modulo is).
 - [x] String coercion errors where the spec forbids them.
-- [x] `unknown` propagation through `&&` / `||` (M5).
-- [x] Partial-eval: `unknown && false → false` commutatively (M5).
+- [x] `unknown` propagation through `&&` / `||` (M4).
+- [x] Partial-eval: `unknown && false → false` commutatively (M4).
 
 New e2e cases:
 
@@ -125,7 +139,7 @@ Negative tests:
 
 1. **Checked arithmetic codegen shape.** Inline branch per op, or
    one `cel_add_checked` runtime call?  Call is simpler; inline is
-   faster.  Benchmark M5-1 to decide.
+   faster.  Benchmark M4-1 to decide.
 2. **UnknownSet representation.** Sorted dedup'd `i32[]` is the
    current lean.  An open question is whether the spec allows the
    compiler to dedup eagerly, or whether the host sees the
@@ -133,5 +147,5 @@ Negative tests:
    committing.
 3. **Error source propagation.** The spec doesn't mandate that a
    runtime ERROR carries its source-code span, but the design doc
-   §12 implies we record it.  M5 is where it lands or gets
+   §12 implies we record it.  M4 is where it lands or gets
    deferred.

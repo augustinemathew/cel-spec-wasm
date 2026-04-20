@@ -353,7 +353,7 @@ change rather than rediscover it):
 
 A simpler incremental option — per-expression sub-arenas within
 one thread (to bound peak memory across many small evaluations) —
-does not require wasm threads and can land as an M5+ feature if
+does not require wasm threads and can land as an M4+ feature if
 profiling justifies it.
 
 ### 7.1 Memory map
@@ -737,8 +737,8 @@ the module didn't happen to call.
 The M3 surface does **not** cover repeated fields, maps, regex, or
 type-of-message — those land with the collections milestones:
 
-- `repeated_len` / `repeated_get_*` — **M4** (list codegen).
-- `map_keys_count` / `map_get_*` / `map_iter` — **M4** (map codegen).
+- `repeated_len` / `repeated_get_*` — **M5** (list codegen).
+- `map_keys_count` / `map_get_*` / `map_iter` — **M5** (map codegen).
 - `string_matches(cv, pattern_id)` — **M7** (regex stdlib).
 - `message_type_of(ref) → type_id` — **M7** (type reflection).
 
@@ -1222,8 +1222,8 @@ orientation only.
 | M1  | `m1-type-checker.md`                       | DONE         | `cel_runtime.{c,h}` + constructors + type-checker integration + Repr IR |
 | M2  | `m2-codegen-mvp.md`                        | DONE*        | Codegen of pure-primitive expressions (`1 + 2 * 3`, `&&`, `||`, `?:`); `cel_refs`, wasm32 cross-compile, and `cel.abi` custom section all landed 2026-04-18/19. *Asterisk: Linux cross-compile portability is still gated on the darwin-only brew path — tracked under the M2 "testing gaps" list, must close before the runtime becomes a hard CI dep.* |
 | M3  | `m3-proto-and-strings.md`                  | DONE         | Proto field reads (`cel_host.get_field`, `has_field`), `has()`, string constants / equality / concat / size. Slices A+B (runtime wiring, host loader, string literals + equality), C (scalar `kIdentExpr`), D (`+`/`==`/`!=`/`size` on string), E (`startsWith`/`endsWith`/`contains`), F (bytes constants + operators), G1 (message params as externref + `$cel_refs` table / wrappers), G2 (`kSelectExpr` → `cel_host.get_field` with scalar payload loads + realistic `Customer` proto e2e fixture), G3 (`has(msg.field)` → `cel_host.has_field` via the `test_only` branch of `LowerSelect`, sharing field-number + operand validation with G2 through `LowerSelectOperand`), G4 (nested-message select via a `Repr::kMessage` arm in `LoadSelectPayload` calling `cel_unwrap_message` + `_==_` on `Repr::kMessage` dispatching to `cel_host.message_eq`; host-side `BindEvalInterner` now runs after eval instantiation so `get_field` can intern submessages), CLI schema integration (`--schema <file.proto>` parses textual proto source in-process via `google::protobuf::compiler::Parser`; new `--schema_descriptorset <file.pb>` accepts a pre-compiled `FileDescriptorSet`; flags are mutually exclusive, both land in the same `DescriptorPool`), and a richer e2e compose-test suite (seven cases spanning multi-param + mixed-stage shapes) all landed 2026-04-19. |
-| M4  | `m4-collections-and-comprehensions.md`     | PLANNED      | List, map, struct literals + every comprehension macro + nested-shadowing scoping (§5.4) |
-| M5  | `m5-three-valued.md`                       | PLANNED      | Partial eval: attribute interning, UnknownSet, overflow / div-by-zero / NaN → ERROR, `cel_status_either` |
+| M4  | `m4-three-valued.md`                       | PLANNED      | Partial eval: attribute interning, UnknownSet, overflow / div-by-zero / NaN → ERROR, `cel_status_either`. **Swapped with M5 on 2026-04-19** — the §8.2 host ABI leaks UNKNOWN / ERROR statuses that codegen needs a story for before collections can build on top. |
+| M5  | `m5-collections-and-comprehensions.md`     | PLANNED      | List, map, struct literals + every comprehension macro + nested-shadowing scoping (§5.4) |
 | M6  | `m6-custom-fns.md`                         | PLANNED      | User functions: `.celfn` IDL + `FunctionSet` proto, `celfnc` stub gen, `cel_fn.*` host imports |
 | M7  | `m7-stdlib.md`                             | PLANNED      | Stdlib completeness: timestamps, durations, regex, bytes, string ext, format directives, proto ext |
 | M8  | `m8-conformance.md`                        | PLANNED      | Conformance run against `tests/simple/testdata/` (static subset) — the release gate |
@@ -1350,7 +1350,7 @@ cel_reset.call();
 - **Memory growth**: the allocator calls `memory.grow` when the arena fills.
   We budget an initial 64 KiB page and grow as needed; the host can request
   a larger initial size via the `cel.abi.layout` section.
-- **Unified symbol table (decide before M4).** Today name/type/scope
+- **Unified symbol table (decide before M5).** Today name/type/scope
   information is split across three partial structures with no shared
   owner:
     1. Frontend — `CheckOptions::variable_specs` holds user-provided
@@ -1371,14 +1371,14 @@ cel_reset.call();
   This is fine for the static subset we lower today (scalars, string
   ops, top-level idents) because everything resolves against the
   single top-level frame.  It stops being fine the moment
-  comprehensions land in M4, because every macro-expanded
+  comprehensions land in M5, because every macro-expanded
   `kComprehensionExpr` binds `iter_var` / `iter_var2` / accumulator in
   an inner scope that the codegen has to mirror exactly the way the
   checker did — and again in M6 when user functions introduce param
   frames, and again if we add a leading-dot rewrite pass (§5.4) that
   needs to see the checker's binding graph.
   .
-  Two viable shapes, to be chosen **before the first M4 slice ships**:
+  Two viable shapes, to be chosen **before the first M5 slice ships**:
     - **Option A — promote to a proper `SymbolTable` on `TypedAst`.**
       Built once during IR construction; carries `Repr`, wasm-local
       index, and scope parent per binding; codegen becomes a pure
@@ -1392,7 +1392,7 @@ cel_reset.call();
       Less code, tighter coupling to cel-cpp's resolution model;
       makes our own passes harder.
   .
-  Decision owner: whoever picks up M4 Slice A.  The design doc §10.3
+  Decision owner: whoever picks up M5 Slice A.  The design doc §10.3
   `ScopeFrame` sketch is Option A; if we take Option B, §10.3 needs a
   rewrite.  See also the checker-integration bullet in
-  `doc/implementation-plan/m4-collections-and-comprehensions.md`.
+  `doc/implementation-plan/m5-collections-and-comprehensions.md`.

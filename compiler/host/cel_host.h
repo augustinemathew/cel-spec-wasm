@@ -32,7 +32,7 @@ using ArenaAllocator = absl::AnyInvocable<
 // If `field_number` does not resolve on `msg`'s descriptor, `*out` is set
 // to `{kind = CEL_ERROR}` — CEL treats "field not present" as an evaluation
 // error, not a host-level failure, so it travels through the same
-// out-parameter shape as a successful read.  Repeated fields (M4+) are
+// out-parameter shape as a successful read.  Repeated fields (M5+) are
 // likewise stubbed as CEL_ERROR for now; the checker should normally catch
 // this earlier, but the runtime guard keeps the host honest.
 using InternMessage =

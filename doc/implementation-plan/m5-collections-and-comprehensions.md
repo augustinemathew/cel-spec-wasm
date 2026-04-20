@@ -1,8 +1,21 @@
-# M4 — Collections + comprehensions
+# M5 — Collections + comprehensions
 
-Status: **planned.**  Blocked on M3 (strings, field reads) — most of
-the collection code paths assume the runtime-side `CelValue` plumbing
-that M3 wires up.
+Status: **planned.**  Blocked on M4 (three-valued logic) — the
+comprehension aggregator has to thread UNKNOWN / ERROR through the
+accumulator (see M4's `cel_status_either`), and list / map element
+access has to return the spec-mandated ERROR wrappers; both need the
+3VL runtime helpers and the codegen Repr-dispatch plumbing that M4
+lands.
+
+**Ordering note (2026-04-19):** M4 and M5 were swapped.  Originally
+this document was M4 and three-valued logic was M5, because the
+comprehension lowering was the first place error propagation had
+multiple branch points in one expression.  The stronger constraint
+turned out to be that the §8.2 host ABI leaks semantics the compiler
+cannot rely on at compile time (every `get_field` can return UNKNOWN
+/ ERROR), so 3VL was promoted to M4 so the ABI has something
+well-defined to hand back before collections build on top of it.
+See `m4-three-valued.md`.
 
 ## Scope
 
@@ -11,7 +24,7 @@ macros (`all`, `exists`, `exists_one`, `map`, `filter`), plus nested
 comprehensions with shadowing per `../langdef.md` §comprehension-scoping
 and `../wasm-compiler-design.md` §5.4.
 
-Post-M4, these expressions must work end-to-end:
+Post-M5, these expressions must work end-to-end:
 
   - `[1, 2, 3].all(x, x > 0)` — simple `all`.
   - `[1, 2, 3].exists(x, x == 2)` — `exists`.
@@ -26,9 +39,11 @@ Post-M4, these expressions must work end-to-end:
     declaration environment.
 
 Out of scope:
-  - Error / unknown propagation through a comprehension — M5.
+  - Error / unknown propagation through a comprehension — M4 lands
+    the scalar plumbing; M5 extends it to the aggregator (see
+    `m4-three-valued.md` deliverable "Comprehension aggregation").
   - User-defined macros — never (spec forbids; macros are closed).
-  - Proto map fields — M4 handles CEL-level maps; proto map fields
+  - Proto map fields — M5 handles CEL-level maps; proto map fields
     read via `cel_host.get_field` already slot into the same
     pipeline as long as the field descriptor declares the element
     types.
@@ -54,7 +69,7 @@ Out of scope:
       `expr_lower` can `push` / `pop` around a comprehension body to
       mirror the resolution rules of §5.4.  (Runtime doesn't know
       about this; it's a codegen-side data structure.  Listed here
-      because M4's testing grid pivots on it.)
+      because M5's testing grid pivots on it.)
 
 ### Codegen
 
@@ -76,7 +91,7 @@ Out of scope:
 - [ ] Leading-dot ident resolution (`.x`) — during the comprehension
       body walk, a leading-dot ident skips the frame stack entirely
       and resolves in the root declaration env.  This was stubbed in
-      M1's `RejectDyn` / `static_subset`; M4 hooks it up to codegen.
+      M1's `RejectDyn` / `static_subset`; M5 hooks it up to codegen.
 - [ ] Nested comprehensions — the frame stack handles this by
       construction, but add **explicit** e2e tests with the spec's
       shadowing examples so a future refactor that mistakenly
@@ -89,7 +104,7 @@ Out of scope:
 ### CLI
 
 - [ ] `celwasmc --emit_wasm` on a comprehension should not need any
-      new flags.  The M4 sh_test gains cases for each macro against a
+      new flags.  The M5 sh_test gains cases for each macro against a
       test schema.
 
 ## Testing obligations
@@ -132,7 +147,7 @@ New e2e cases:
 
 ## Open design questions
 
-1. **Map hash function.** Linear probing is fine for the sizes M4
+1. **Map hash function.** Linear probing is fine for the sizes M5
    cares about; the open question is whether we commit to a specific
    hash (FNV-1a?) that hosts can assume for debug dumps or leave it
    opaque.
@@ -145,4 +160,4 @@ New e2e cases:
 3. **Comprehension accumulator encoding.** `accu_var` is always a
    scalar or a collection — never a message — so today's thinking is
    that the runtime always stores it as a `CelValue*` and we rely on
-   the bump allocator.  Tracked for confirmation during M4.
+   the bump allocator.  Tracked for confirmation during M5.

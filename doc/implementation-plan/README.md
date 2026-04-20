@@ -51,15 +51,21 @@ Companion documents (do not duplicate — link):
                                 scope.  Renamed locally from
                                 `m3-comprehensions.md` after the design
                                 doc was settled (comprehensions moved to
-                                M4 alongside collections).
-  - `m4-collections-and-comprehensions.md` — **planned.**  List, map,
-                                struct literals + the comprehension
-                                macros (`all`, `exists`, `exists_one`,
-                                `map`, `filter`, nested shadowing).
-  - `m5-three-valued.md`     — **planned.**  Overflow → ERROR,
+                                M5 alongside collections; see the
+                                ordering note below).
+  - `m4-three-valued.md`     — **planned.**  Overflow → ERROR,
                                 divide-by-zero, NaN-unordered compares,
                                 `UnknownSet`, `cel_status_either`, and
                                 the commutativity of `unknown && false`.
+                                Swapped with collections on 2026-04-19 —
+                                the §8.2 host ABI returns UNKNOWN /
+                                ERROR statuses that codegen needs a
+                                story for before collections can build
+                                on top.
+  - `m5-collections-and-comprehensions.md` — **planned.**  List, map,
+                                struct literals + the comprehension
+                                macros (`all`, `exists`, `exists_one`,
+                                `map`, `filter`, nested shadowing).
   - `m6-custom-fns.md`       — **planned.**  `.celfn` IDL, `celfnc`
                                 stub generator, `cel_fn.*` emission.
   - `m7-stdlib.md`           — **planned.**  Timestamps, durations,

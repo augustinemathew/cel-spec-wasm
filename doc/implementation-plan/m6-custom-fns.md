@@ -1,6 +1,6 @@
 # M6 — User-defined custom functions
 
-Status: **planned.**  Blocked on M5 (three-valued logic) — custom
+Status: **planned.**  Blocked on M4 (three-valued logic) — custom
 functions return the same `OK / UNKNOWN / ERROR` tri-state as built-in
 overloads.
 

@@ -24,7 +24,7 @@
 // churn in this file.
 //
 // IMPORTANT: keep fields singular for now — map / repeated / enum
-// coverage belongs to M4+ and will add sibling messages, not mutate
+// coverage belongs to M5+ and will add sibling messages, not mutate
 // these.
 
 syntax = "proto3";

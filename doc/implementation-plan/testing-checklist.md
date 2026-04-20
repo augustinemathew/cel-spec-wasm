@@ -77,7 +77,7 @@ block is the triage view a reviewer can read in ten seconds.
     is the first caller that actually interns a host externref.
   - List / map growth + iteration runtime tests — still open.  The
     wasm32 cross-compile is in place but no codegen caller
-    constructs a list or map yet (first caller lands in M4).  When
+    constructs a list or map yet (first caller lands in M5).  When
     it does, add a test that instantiates the merged module under
     wasmtime, grows a list through the allocator, and walks it from
     the host.
@@ -387,11 +387,11 @@ string-escape row become load-bearing once M3 lowers
 
 **Waiting on later milestones** (don't try to close in M2):
   - `kListExpr`, `kMapExpr`, `kStructExpr` — codegen + e2e rows
-    `[ ]`.  Unblocked by M4 (collections).
-  - `kComprehensionExpr` × 4 variants + nested shadowing — M3/M4.
+    `[ ]`.  Unblocked by M5 (collections).
+  - `kComprehensionExpr` × 4 variants + nested shadowing — M3/M5.
   - Arithmetic-overflow / divide-by-zero / NaN-unordered / string
-    coercion / unknown-propagation e2e — M5 (three-valued logic).
-  - Partial-eval commutativity for `unknown && false → false` — M5.
+    coercion / unknown-propagation e2e — M4 (three-valued logic).
+  - Partial-eval commutativity for `unknown && false → false` — M4.
   - Enum and `Any`-unwrap rejection — M7 stdlib or earlier if a
     user expression forces the question.
   - Conformance suite from `tests/simple/testdata/` — M8.
@@ -582,8 +582,8 @@ expression from `m1-type-checker.md`, plus:
 - [ ] Arithmetic overflow error (int + int overflows to `ERROR`).
 - [ ] Division by zero (`int / 0` and `double / 0`).
 - [ ] String coercion errors where the spec forbids them.
-- [ ] `unknown` propagation through `&&` / `||` (M5).
-- [ ] Partial-eval: `unknown && false → false` commutatively (M5).
+- [ ] `unknown` propagation through `&&` / `||` (M4).
+- [ ] Partial-eval: `unknown && false → false` commutatively (M4).
 
 ## How to update
 

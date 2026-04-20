@@ -13,7 +13,7 @@
 //   - `types` / `attributes` / `patterns` / `error_msgs` left empty:
 //     the M2 codegen MVP never emits the wasm side that would
 //     reference them.  They fill in as M3 (proto fields, strings),
-//     M4 (collections), and M5 (three-valued logic) land.
+//     M4 (three-valued logic), and M5 (collections) land.
 //   - `function_set` records every import the emitted module
 //     declares, so a host can diff it against its own impl up
 //     front.

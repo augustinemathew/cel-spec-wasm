@@ -7,7 +7,7 @@
 //
 // Error-propagation semantics (overflow, divide-by-zero, NaN
 // comparisons, unknown) are out of scope; the MVP emits the
-// straight-line WASM instructions and defers three-valued logic to M5.
+// straight-line WASM instructions and defers three-valued logic to M4.
 
 #ifndef CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_
 #define CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_

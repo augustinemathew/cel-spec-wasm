@@ -310,9 +310,9 @@ through `celwasmc --emit_wasm` and evaluate correctly under wasmtime:
   - `"hello".startsWith("he")` — member-call string ops (design §11).
 
 Out of scope (later milestones):
-  - list / map / struct literals and comprehensions — **M4**.
+  - list / map / struct literals and comprehensions — **M5**.
   - substring / format / regex — **M7**.
-  - overflow, divide-by-zero, unknown — **M5**.
+  - overflow, divide-by-zero, unknown — **M4**.
 
 ## Deliverables
 
@@ -388,7 +388,7 @@ The design doc §8.2 fixes these; M3 is where we first implement them.
       submessage-explicitly-set = present) delegated to
       `google::protobuf::Reflection::HasField`.  `has()` on a map is
       a different operation (map-key presence) and remains deferred
-      to M4.
+      to M5.
 - [x] `cel_host.message_eq(externref a, externref b) → i32` — message
       equality.  Landed in Slice G4 (2026-04-19); delegated to host
       `google::protobuf::util::MessageDifferencer`-style equality per
@@ -528,7 +528,7 @@ M3 closure on them.
       celwasmc exits with the checker's diagnostic, not a codegen
       ICE.
 - [ ] A field whose type is unsupported in M3 (e.g. a `repeated`
-      field, since lists are M4) surfaces a **codegen** `Unimplemented`
+      field, since lists are M5) surfaces a **codegen** `Unimplemented`
       error mentioning the field FQN.  This is the "fails with a good
       message" counterpart for the field-read path.
 
