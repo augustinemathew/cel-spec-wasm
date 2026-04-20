@@ -32,6 +32,7 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
+#include "compiler/host/attribute.h"
 #include "wasmtime.h"
 
 namespace celwasm {
@@ -42,6 +43,15 @@ namespace celwasm {
 struct FieldTableEntry {
   uint32_t field_number;
   std::string name;
+};
+
+// Resolved attribute-intern entry: the full rooted path the
+// `cel_host.get_field` call site refers to.  `variable` is empty for
+// non-ident-rooted paths — those never FULL-match any pattern and
+// the host treats them as "always resolve normally".
+struct AttributeTableEntry {
+  std::string variable;
+  std::vector<std::string> qualifiers;
 };
 
 // Holds the runtime-instance handles the `cel_host.*` trampolines need,
@@ -83,9 +93,9 @@ class CelHostEnv {
   CelHostEnv& operator=(CelHostEnv&&) = delete;
 
   // Registers three functions on `linker` under module `"cel_host"`:
-  //   get_field   (externref, i32, i32) -> ()
-  //   has_field   (externref, i32)      -> i32
-  //   message_eq  (externref, externref) -> i32
+  //   get_field   (externref, i32, i32, i32) -> ()
+  //   has_field   (externref, i32)           -> i32
+  //   message_eq  (externref, externref)     -> i32
   // The second `i32` in `get_field` / `has_field` is a field
   // intern-id; the trampoline resolves it against `field_table_`
   // (seeded via `SetFieldTable`) to produce the `(field_number,
@@ -108,6 +118,36 @@ class CelHostEnv {
   // Public so the trampolines (free functions in the .cc) can call it;
   // treat as internal.
   const FieldTableEntry* absl_nullable LookupField(uint32_t intern_id) const;
+
+  // Installs the attribute intern-id → `(variable, qualifiers[])`
+  // lookup table parsed out of the eval module's `cel.abi.attributes`
+  // section.  Entry `i` maps attr-id `i` to the select call-site's
+  // full attribute path.  Loading an eval module with no selects is
+  // fine — the table stays empty.
+  void SetAttributeTable(std::vector<AttributeTableEntry> table);
+
+  // Resolves an attr-id to its attribute-table row.  Returns nullptr
+  // when `id` is out of range.  When no table has been installed
+  // (e.g. pre-E2a.1 eval modules without the `attributes` section)
+  // every call returns nullptr and the trampoline skips unknown-
+  // pattern matching, resolving fields normally.
+  const AttributeTableEntry* absl_nullable LookupAttribute(
+      uint32_t attr_id) const;
+
+  // Installs the set of attribute patterns the embedder has marked as
+  // unknown.  The trampoline checks each `cel_host.get_field` call
+  // site's attribute path against every pattern via
+  // `AttributePattern::IsMatch`; on a FULL match it writes
+  // `CelValue{CEL_UNKNOWN, attr_id}` into the sret slot and skips
+  // `ReadField`.  Overrides any previous set.
+  void SetUnknownPatterns(std::vector<AttributePattern> patterns);
+
+  // Runs every configured pattern against `attr` and returns true iff
+  // any match is FULL.  PARTIAL / NONE results do not short-circuit
+  // the field read — a FULL match on a deeper select will trigger the
+  // UNKNOWN there.  Public for the trampoline's sake; treat as
+  // internal.
+  bool AttributeIsFullyUnknown(const Attribute& attr) const;
 
   // Accessors used by the trampolines.  Public only because the
   // trampolines are free functions in the .cc; treat as internal.
@@ -134,6 +174,8 @@ class CelHostEnv {
   wasmtime_func_t cel_ref_intern_{};
   wasmtime_memory_t memory_{};
   std::vector<FieldTableEntry> field_table_;
+  std::vector<AttributeTableEntry> attribute_table_;
+  std::vector<AttributePattern> unknown_patterns_;
 };
 
 }  // namespace celwasm

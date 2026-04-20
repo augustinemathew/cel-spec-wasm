@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -35,6 +36,7 @@
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
+#include "compiler/host/attribute.h"
 #include "compiler/host/host_loader.h"
 #include "compiler/ir/typed_ast.h"
 #include "compiler/runtime/cel_runtime.h"
@@ -1606,6 +1608,265 @@ TEST(EvalE2ETest, NestedProtoStringFieldConcatWithLiteral) {
   auto s = DecodeStringAt(*loaded, r->of.i32);
   ASSERT_THAT(s.status(), IsOk());
   EXPECT_EQ(s->payload, "Seattle, USA");
+}
+
+// ---- Partial-eval UNKNOWN propagation (M4 Slice E2a.1) --------------------
+//
+// Scope of this slice: the host `cel_host.get_field` trampoline is the
+// single new UNKNOWN *producer*.  When a call site's rooted attribute
+// path FULL-matches a host-configured `AttributePattern`, the slot is
+// written with `CelValue{CEL_UNKNOWN}` and the field read is skipped.
+// Downstream 3VL absorption through logical operators is a separate
+// slice (M4 Slice F) — the tests here verify the producer only:
+// direct UNKNOWN at the top of the expression, pattern match modes
+// (FULL / PARTIAL / NONE), wildcards, and the empty-pattern path.
+// End-user surface for an UNKNOWN result is
+// `absl::InternalError("CallEval: result is UNKNOWN")` today —
+// `DecodeSlot` elevates every non-OK kind to InternalError.
+
+AttributePattern ParsePatternOrDie(absl::string_view text) {
+  auto p = ParseUnknownAttributePattern(text);
+  CHECK_OK(p);
+  return *std::move(p);
+}
+
+bool ResultIsUnknown(const absl::StatusOr<wasmtime_val_t>& r) {
+  return !r.ok() && absl::StrContains(r.status().message(), "UNKNOWN");
+}
+
+TEST(EvalE2EUnknownTest, FullMatchOnFlatSelectProducesUnknownTopLevel) {
+  // Canonical happy path: pattern `c.name` exactly matches the only
+  // select site, slot gets CEL_UNKNOWN, CallEval surfaces it.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
+}
+
+TEST(EvalE2EUnknownTest, EmptyPatternSetResolvesNormally) {
+  // With zero patterns configured, the trampoline must never
+  // short-circuit — proves `AttributeIsFullyUnknown` returns false
+  // for every attribute when `unknown_patterns_` is empty.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  ASSERT_THAT(loaded->SetUnknownPatterns({}), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Grace");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk()) << "empty pattern set must not UNKNOWN";
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+}
+
+TEST(EvalE2EUnknownTest, PatternMismatchOnDifferentVariableResolvesNormally) {
+  // Pattern roots on a different variable (`d` vs `c`) — match is
+  // NONE, normal field read path.
+  auto loaded = LoadCompiled("c.name == \"Ada\"", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("d.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1) << "field read must happen when no pattern matches";
+}
+
+TEST(EvalE2EUnknownTest, PatternMismatchOnDifferentQualifierResolvesNormally) {
+  // Same variable but a different qualifier — pattern `c.age`
+  // against attribute `c.name` is NONE (qualifier mismatch, neither
+  // wildcard).
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Grace");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+}
+
+TEST(EvalE2EUnknownTest, WildcardFullMatchProducesUnknown) {
+  // `c.*` is a single-wildcard pattern; it FULL-matches any
+  // `c.<qualifier>` attribute (pattern_len = attr_len = 1, wildcard
+  // accepts any concrete qualifier).
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.*"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
+}
+
+TEST(EvalE2EUnknownTest, BareVariablePatternFullMatchesAnyField) {
+  // A pattern with no qualifiers (`c`) FULL-matches every attribute
+  // rooted at `c`, regardless of qualifier path length.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
+}
+
+TEST(EvalE2EUnknownTest, PartialMatchDoesNotShortCircuit) {
+  // Pattern `c.name.surname` is longer than the select path `c.name`,
+  // so `IsMatch` returns PARTIAL — the trampoline must fall through
+  // to the real field read, not produce UNKNOWN.
+  auto loaded = LoadCompiled("c.name == \"Ada\"", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name.surname"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1) << "PARTIAL must not trigger UNKNOWN";
+}
+
+TEST(EvalE2EUnknownTest, MultiplePatternsAnyFullMatchWins) {
+  // Two patterns; only the second FULL-matches.  Checks that the
+  // trampoline iterates the full set, not just index 0.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("d.foo"));   // NONE
+  patterns.push_back(ParsePatternOrDie("c.name"));  // FULL
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
+}
+
+// ---- UNKNOWN-absorption gap (Slice F, rows 9-21) --------------------------
+//
+// E2a.1 ships the UNKNOWN *producer* only.  Every expression below
+// produces an UNKNOWN value on one side of a non-absorbing op
+// (equality, ordered compare, arithmetic, string op) and feeds the
+// result into a 3VL absorber (`&&` / `||`).  Per `doc/langdef.md`
+// §partial-evaluation, the spec answer is the absorber's short-circuit
+// result — but today the non-absorbing ops consume the UNKNOWN as if
+// it were an OK value, so the absorber never sees it.  These assert
+// the spec answers and will go green when Slice F
+// (doc/implementation-plan/m4-slice-f-3vl-absorption.md) lands.
+//
+// Row numbers below refer to that doc's UNKNOWN-source table.
+
+TEST(EvalE2EUnknownTest,
+     DISABLED_UnknownThroughEqualityAbsorbedByAnd) {  // Slice F row 10
+  auto loaded =
+      LoadCompiled("c.age == 0 && false", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2EUnknownTest,
+     DISABLED_UnknownThroughOrderedCompareAbsorbedByOr) {  // Slice F row 9
+  auto loaded =
+      LoadCompiled("c.age > 10 || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     DISABLED_UnknownThroughStringEqAbsorbedByOr) {  // Slice F row 15
+  auto loaded =
+      LoadCompiled("c.name == \"foo\" || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     DISABLED_UnknownThroughArithThenCompareAbsorbed) {  // Slice F row 18
+  auto loaded =
+      LoadCompiled("(c.age + 1) == 0 || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest, SetUnknownPatternsIsIdempotentAcrossCalls) {
+  // SetUnknownPatterns replaces; calling again with an empty set
+  // restores the normal field read path.  Prevents per-call state
+  // leaking between invocations on the same LoadedEval.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  {
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
+  }
+  // Now clear; the next call must resolve normally.
+  ASSERT_THAT(loaded->SetUnknownPatterns({}), IsOk());
+  {
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk()) << "cleared pattern set must not UNKNOWN";
+  }
 }
 
 }  // namespace

@@ -1,5 +1,6 @@
 #include "compiler/codegen/expr_lower.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,6 +17,7 @@
 #include "common/constant.h"
 #include "common/expr.h"
 #include "common/operators.h"
+#include "compiler/codegen/attribute_pool.h"
 #include "compiler/codegen/cel_refs.h"
 #include "compiler/codegen/field_name_pool.h"
 #include "compiler/codegen/module.h"
@@ -63,6 +65,16 @@ struct LoweringContext {
   // `BuildCelAbi` walks the AST the same way via `FromTypedAst`, so
   // the two pools produce identical entries by construction.
   FieldNamePool field_pool;
+
+  // Intern table for attribute paths (M4 Slice E2a.1).  Each
+  // `kSelectExpr` call site interns its full path (variable + every
+  // qualifier from root down to the select) and the returned
+  // `attr_id` becomes the third i32 `cel_host.get_field` receives.
+  // The host resolves it back to a cel-cpp-style `Attribute` via the
+  // `CelAbi.attributes` table and matches it against any unknown
+  // patterns the embedder configured.  Same walk order as
+  // `field_pool`, so IDs stay in lockstep with `BuildCelAbi`.
+  AttributePool attr_pool;
 
   // Sret eval ABI (M4 Slice C commit 3): param 0 is an i32 offset
   // into the runtime's arena where the eval function must write its
@@ -253,20 +265,29 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
 void DeclareHostImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType extref = BinaryenTypeExternref();
-  // get_field(msg, field_intern_id, out_cv_offset) → ().  The host
-  // writes a full 24-byte CelValue at `cel_mem_base() + out_cv_offset`.
-  // `field_intern_id` is an index into `CelAbi.fields` (see
-  // `cel.abi` custom section); the host looks up the field's name +
-  // descriptor through that table rather than receiving a raw proto
-  // field number.  This keeps the wasm surface proto-agnostic — non-
-  // proto backings resolve the same intern ID by name only.
-  BinaryenType gf_params[3] = {extref, i32, i32};
+  // get_field(msg, field_intern_id, attr_id, out_cv_offset) → ().
+  // The host writes a full 24-byte CelValue at
+  // `cel_mem_base() + out_cv_offset`.  `field_intern_id` is an index
+  // into `CelAbi.fields`; `attr_id` is an index into
+  // `CelAbi.attributes` (partial-eval attribute path, M4 Slice
+  // E2a.1).  The host resolves both at instantiation time and uses
+  // the attribute path to match against any host-configured unknown
+  // patterns — on a FULL match the trampoline writes
+  // `CelValue{CEL_UNKNOWN}` and skips the field read.  This keeps
+  // the wasm surface proto-agnostic: non-proto backings resolve the
+  // intern IDs the same way.
+  BinaryenType gf_params[4] = {extref, i32, i32, i32};
   mod.AddFunctionImport("get_field", /*external_module=*/"cel_host",
                         /*external_base=*/"get_field",
-                        absl::Span<const BinaryenType>(gf_params, 3),
+                        absl::Span<const BinaryenType>(gf_params, 4),
                         BinaryenTypeNone());
-  // has_field(msg, field_intern_id) → i32 (0/1).  Same intern-ID
-  // semantics as `get_field`.
+  // has_field(msg, field_intern_id) → i32 (0/1).  `has()` is not yet
+  // unknown-aware — its i32 return can't carry CEL_UNKNOWN, and
+  // absorbing unknowns through `has()` is tracked with Slice F
+  // (3VL-absorption for the non-absorbing operators).  Leaving the
+  // arg list at two keeps the codegen emit simple until that slice
+  // widens the signature to `(externref, i32, i32) → i32` (attr_id
+  // added) and grows a return convention that can encode UNKNOWN.
   BinaryenType hf_params[2] = {extref, i32};
   mod.AddFunctionImport("has_field", /*external_module=*/"cel_host",
                         /*external_base=*/"has_field",
@@ -1165,12 +1186,16 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
   }
 }
 
-// Bundles the two pieces both `LowerSelectField` and `LowerSelectTestOnly`
-// need from the operand side: the lowered operand expression and the
-// `(field_number, field_name)` intern-ID the host receives.
+// Bundles the pieces both `LowerSelectField` and `LowerSelectTestOnly`
+// need from the operand side: the lowered operand expression, the
+// `(field_number, field_name)` intern-ID the host receives as
+// `field_intern_id`, and the attribute-path intern-ID the host uses
+// to look up the select site in `CelAbi.attributes` for partial-eval
+// pattern matching.
 struct SelectOperand {
   BinaryenExpressionRef operand;
   int32_t intern_id;
+  int32_t attr_id;
 };
 
 // Validates the shared preconditions for a lowered `SelectExpr` (field
@@ -1210,9 +1235,30 @@ absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
   // and the host-side lookup would dereference the wrong field.
   const uint32_t intern_id = ctx.field_pool.Intern(
       static_cast<uint32_t>(a->field_number), select.field());
+  // Intern the full attribute path at the same point so codegen and
+  // `BuildCelAbi` hand out matching attr_ids (both walk pre-order
+  // outer-first).  Walk the operand chain inward, collect field
+  // names in outer-to-inner order, then reverse; root ident provides
+  // the variable (empty → non-ident root, host sees "no match").
+  std::vector<std::string> qualifiers{std::string(select.field())};
+  std::string variable;
+  for (const cel::Expr* cur = &select.operand();;) {
+    if (cur->kind_case() == cel::ExprKindCase::kSelectExpr) {
+      qualifiers.emplace_back(cur->select_expr().field());
+      cur = &cur->select_expr().operand();
+      continue;
+    }
+    if (cur->kind_case() == cel::ExprKindCase::kIdentExpr) {
+      variable = cur->ident_expr().name();
+    }
+    break;
+  }
+  std::reverse(qualifiers.begin(), qualifiers.end());
+  const uint32_t attr_id = ctx.attr_pool.Intern(variable, qualifiers);
   auto operand = LowerExpr(ctx, ast, select.operand());
   if (!operand.ok()) return operand.status();
-  return SelectOperand{*operand, static_cast<int32_t>(intern_id)};
+  return SelectOperand{*operand, static_cast<int32_t>(intern_id),
+                       static_cast<int32_t>(attr_id)};
 }
 
 // Lowers `has(operand.field)` — a `SelectExpr` with `test_only=true` —
@@ -1258,13 +1304,14 @@ absl::StatusOr<BinaryenExpressionRef> LowerSelectField(LoweringContext& ctx,
   BinaryenExpressionRef alloc_call =
       BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
   BinaryenExpressionRef set_scratch = BinaryenLocalSet(m, scratch, alloc_call);
-  BinaryenExpressionRef args[3] = {
+  BinaryenExpressionRef args[4] = {
       op->operand,
       BinaryenConst(m, BinaryenLiteralInt32(op->intern_id)),
+      BinaryenConst(m, BinaryenLiteralInt32(op->attr_id)),
       BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
   };
   BinaryenExpressionRef get_field_call =
-      BinaryenCall(m, "get_field", args, 3, BinaryenTypeNone());
+      BinaryenCall(m, "get_field", args, 4, BinaryenTypeNone());
   auto load = LoadSelectPayload(ctx, scratch, *result_r, expr.id());
   if (!load.ok()) return load.status();
   BinaryenType result_type = WasmTypeFor(*result_r);

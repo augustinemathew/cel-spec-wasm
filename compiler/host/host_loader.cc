@@ -281,6 +281,38 @@ std::vector<FieldTableEntry> ParseFieldTable(
   return out;
 }
 
+// Parses `cel.abi` into an attribute intern-id table for
+// `CelHostEnv::SetAttributeTable`.  Same dense-id invariant as the
+// field table — holes pad with empty entries so `LookupAttribute` never
+// dereferences past the vector.  Empty on a malformed or absent section,
+// which the trampoline treats as "never match an unknown pattern".
+std::vector<AttributeTableEntry> ParseAttributeTable(
+    absl::Span<const uint8_t> abi_bytes) {
+  CelAbi abi;
+  if (abi_bytes.empty() ||
+      !abi.ParseFromArray(abi_bytes.data(),
+                          static_cast<int>(abi_bytes.size()))) {
+    return {};
+  }
+  uint32_t max_id = 0;
+  for (const auto& row : abi.attributes()) {
+    max_id = std::max(row.id(), max_id);
+  }
+  std::vector<AttributeTableEntry> out;
+  if (abi.attributes_size() > 0) out.resize(max_id + 1);
+  for (const auto& row : abi.attributes()) {
+    if (row.id() >= out.size()) continue;
+    AttributeTableEntry entry;
+    entry.variable = row.variable();
+    entry.qualifiers.reserve(row.qualifiers_size());
+    for (const std::string& q : row.qualifiers()) {
+      entry.qualifiers.push_back(q);
+    }
+    out.at(row.id()) = std::move(entry);
+  }
+  return out;
+}
+
 // Fetches the exported `memory` + `cel_mem_base` global from the
 // runtime instance.  Separated from CallEval so the decode is a
 // straight-line function under the lint threshold.
@@ -423,6 +455,16 @@ absl::StatusOr<wasmtime_val_t> LoadedEval::CallNullaryEval() {
   return CallEval(/*args=*/{});
 }
 
+absl::Status LoadedEval::SetUnknownPatterns(
+    std::vector<AttributePattern> patterns) {
+  if (host_env_ == nullptr) {
+    return absl::FailedPreconditionError(
+        "LoadedEval::SetUnknownPatterns: host env not initialised");
+  }
+  host_env_->SetUnknownPatterns(std::move(patterns));
+  return absl::OkStatus();
+}
+
 absl::Status LoadedEval::InitEngineStoreAndCompile(
     absl::Span<const uint8_t> eval_wasm_bytes) {
   engine_ = NewEngine();
@@ -524,8 +566,10 @@ absl::StatusOr<LoadedEval> LoadEval(absl::Span<const uint8_t> eval_wasm_bytes) {
   // via `CelHostEnv::LookupField`; an empty table is fine for
   // selectless evals (no `get_field` / `has_field` calls will be made).
   if (out.host_env_ != nullptr) {
-    out.host_env_->SetFieldTable(
-        ParseFieldTable(FindCelAbiSection(eval_wasm_bytes)));
+    const absl::Span<const uint8_t> abi_bytes =
+        FindCelAbiSection(eval_wasm_bytes);
+    out.host_env_->SetFieldTable(ParseFieldTable(abi_bytes));
+    out.host_env_->SetAttributeTable(ParseAttributeTable(abi_bytes));
   }
   out.has_instances_ = true;
   return out;

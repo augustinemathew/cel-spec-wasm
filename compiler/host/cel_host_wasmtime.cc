@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,6 +9,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "compiler/host/attribute.h"
 #include "compiler/host/cel_host.h"
 #include "compiler/runtime/cel_runtime.h"
 #include "google/protobuf/message.h"
@@ -179,20 +179,54 @@ const google::protobuf::Message* MessageFromExternref(
 
 // ---- Trampolines -----------------------------------------------------------
 
+// Builds a `celwasm::Attribute` from a resolved `AttributeTableEntry`.
+// Copies because the `Attribute` owns its strings and the table row
+// may outlive the trampoline invocation (but is cheap either way —
+// attributes are short paths).
+Attribute AttributeFromEntry(const AttributeTableEntry& entry) {
+  std::vector<AttributeQualifier> path;
+  path.reserve(entry.qualifiers.size());
+  for (const std::string& q : entry.qualifiers) {
+    path.emplace_back(q);
+  }
+  return Attribute(entry.variable, std::move(path));
+}
+
 wasm_trap_t* GetFieldTrampoline(void* data, wasmtime_caller_t* /*caller*/,
                                 const wasmtime_val_t* args, size_t nargs,
                                 wasmtime_val_t* /*results*/,
                                 size_t /*nresults*/) {
   CelHostEnv& env = *static_cast<CelHostEnv*>(data);
-  if (nargs < 3) return nullptr;
+  if (nargs < 4) return nullptr;
   const google::protobuf::Message* msg =
       MessageFromExternref(env.ctx(), args[0]);
   const auto intern_id = static_cast<uint32_t>(args[1].of.i32);
-  const auto out_offset = static_cast<uint32_t>(args[2].of.i32);
+  const auto attr_id = static_cast<uint32_t>(args[2].of.i32);
+  const auto out_offset = static_cast<uint32_t>(args[3].of.i32);
 
   const uint32_t base = CallRuntimeNullaryI32(env.ctx(), env.cel_mem_base());
   uint8_t* mem = wasmtime_memory_data(env.ctx(), &env.memory());
   auto* out_cv = reinterpret_cast<CelValue*>(mem + base + out_offset);
+
+  // Partial-eval check — before we even look at the field table.
+  // A FULL-match unknown pattern supersedes the field read: we
+  // carry the codegen attr_id as the single element of the
+  // UnknownSet so the embedder can map it back to a source path
+  // through `CelAbi.attributes`.  PARTIAL / NONE fall through to
+  // the normal field-read path; a FULL match on a deeper select
+  // will fire when the codegen walks to that call site.
+  const AttributeTableEntry* attr_entry = env.LookupAttribute(attr_id);
+  if (attr_entry != nullptr &&
+      env.AttributeIsFullyUnknown(AttributeFromEntry(*attr_entry))) {
+    out_cv->kind = CEL_UNKNOWN;
+    // Point at an empty UnknownSet; we don't mint a new one here
+    // because `cel_make_unknown` writes into the arena and the caller
+    // only needs the UNKNOWN kind visible for 3VL absorption.  A
+    // later slice that surfaces attr provenance through diagnostics
+    // will swap this for a reentrant call into `cel_make_unknown`.
+    out_cv->payload.unk = 0;
+    return nullptr;
+  }
 
   const FieldTableEntry* entry = env.LookupField(intern_id);
   if (msg == nullptr || entry == nullptr) {
@@ -239,15 +273,17 @@ wasm_trap_t* MessageEqTrampoline(void* data, wasmtime_caller_t* /*caller*/,
 
 // ---- Type descriptors for the trampolines ----------------------------------
 
-// Builds `(externref, i32, i32) -> ()`.
+// Builds `(externref, i32, i32, i32) -> ()`.
+// Params: message externref, field_intern_id, attr_id, out_offset.
 wasm_functype_t* GetFieldType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
-  wasm_valtype_t* param_arr[3];
+  wasm_valtype_t* param_arr[4];
   param_arr[0] = wasm_valtype_new(WASM_EXTERNREF);
   param_arr[1] = wasm_valtype_new(WASM_I32);
   param_arr[2] = wasm_valtype_new(WASM_I32);
-  wasm_valtype_vec_new(&params, 3, param_arr);
+  param_arr[3] = wasm_valtype_new(WASM_I32);
+  wasm_valtype_vec_new(&params, 4, param_arr);
   wasm_valtype_vec_new_empty(&results);
   return wasm_functype_new(&params, &results);
 }
@@ -336,6 +372,26 @@ void CelHostEnv::SetFieldTable(std::vector<FieldTableEntry> table) {
 const FieldTableEntry* CelHostEnv::LookupField(uint32_t intern_id) const {
   if (static_cast<size_t>(intern_id) >= field_table_.size()) return nullptr;
   return &field_table_.at(intern_id);
+}
+
+void CelHostEnv::SetAttributeTable(std::vector<AttributeTableEntry> table) {
+  attribute_table_ = std::move(table);
+}
+
+const AttributeTableEntry* CelHostEnv::LookupAttribute(uint32_t attr_id) const {
+  if (static_cast<size_t>(attr_id) >= attribute_table_.size()) return nullptr;
+  return &attribute_table_.at(attr_id);
+}
+
+void CelHostEnv::SetUnknownPatterns(std::vector<AttributePattern> patterns) {
+  unknown_patterns_ = std::move(patterns);
+}
+
+bool CelHostEnv::AttributeIsFullyUnknown(const Attribute& attr) const {
+  for (const AttributePattern& pat : unknown_patterns_) {
+    if (pat.IsMatch(attr) == AttributePattern::MatchType::FULL) return true;
+  }
+  return false;
 }
 
 absl::Status CelHostEnv::Register(wasmtime_linker_t* linker) {

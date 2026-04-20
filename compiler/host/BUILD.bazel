@@ -2,6 +2,33 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
+# Pure attribute-pattern machinery: no wasm / wasmtime dep, so it can
+# be unit-tested and reused by any embedder that wants to mark
+# attributes as UNKNOWN.  Ported (trimmed) from cel-cpp's
+# `base/attribute.{h,cc}`.
+cc_library(
+    name = "attribute",
+    srcs = ["attribute.cc"],
+    hdrs = ["attribute.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "attribute_test",
+    srcs = ["attribute_test.cc"],
+    deps = [
+        ":attribute",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Pure host-side logic for `cel_host.{get_field, has_field, message_eq}`.
 # No wasmtime dependency — unit-testable on any host.  The wasmtime glue
 # that wires these into a linker lives in `cel_host_wasmtime.{h,cc}`
@@ -41,6 +68,7 @@ cc_library(
     srcs = ["cel_host_wasmtime.cc"],
     hdrs = ["cel_host_wasmtime.h"],
     deps = [
+        ":attribute",
         ":cel_host",
         "//compiler/runtime:cel_runtime",
         "@com_google_absl//absl/base:core_headers",

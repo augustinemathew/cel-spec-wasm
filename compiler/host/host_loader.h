@@ -78,6 +78,17 @@ class LoadedEval {
     return runtime_instance_;
   }
 
+  // Embedder hook for partial evaluation.  Installs the set of
+  // attribute patterns to treat as UNKNOWN; any `cel_host.get_field`
+  // call site whose rooted path FULL-matches one of these patterns
+  // writes a CEL_UNKNOWN into its sret slot instead of reading the
+  // field.  Replaces any previously configured set.  Safe to call
+  // between evaluations; no effect when the eval module has no
+  // selects.  Returns a failed-precondition if the host env was never
+  // initialised (LoadEval failed).
+  ABSL_MUST_USE_RESULT absl::Status SetUnknownPatterns(
+      std::vector<AttributePattern> patterns);
+
  private:
   friend absl::StatusOr<LoadedEval> LoadEval(
       absl::Span<const uint8_t> eval_wasm_bytes);

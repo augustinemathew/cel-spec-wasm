@@ -76,6 +76,26 @@ a positive and a negative test.**  Before a milestone is marked done:
      are ticked for that milestone.
   3. `bazel test //compiler/...` is green.
 
+**Testing principles.**  This codebase is a pipeline — frontend → IR →
+codegen → runtime/host.  Each stage is a component, and any non-trivial
+change touches several of them.  Apply these rules every time:
+
+  - **No feature is done without tests.**  Ship the test in the same
+    commit as the code; a "will add tests later" is shipping a
+    regression surface.
+  - **Test component-by-component, exhaustively.**  After a slice, audit
+    every file you touched and enumerate which tests now cover which
+    method / code path.  Gaps get filled before the slice lands.  A
+    change that modifies, say, proto codegen, ABI emission, host
+    parsing, and a trampoline needs tests at each level — not just one
+    end-to-end test that happens to pass.
+  - **The CEL language spec (`doc/langdef.md`) is the source of truth.**
+    When testing 3VL / partial-eval / type coercion / comprehension
+    semantics, the assertion matrix comes from the spec, not from
+    whatever shape the implementation happens to produce.  Cite the
+    spec section in the test comment when the behaviour is
+    spec-mandated.
+
 Prefer `@com_google_googletest//:gtest_main` + status matchers.  For
 pipeline coverage:
 

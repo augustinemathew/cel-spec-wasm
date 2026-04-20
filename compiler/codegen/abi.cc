@@ -10,6 +10,7 @@
 #include "binaryen-c.h"
 #include "cel/expr/checked.pb.h"
 #include "common/ast_proto.h"
+#include "compiler/codegen/attribute_pool.h"
 #include "compiler/codegen/cel_abi.pb.h"
 #include "compiler/codegen/field_name_pool.h"
 #include "compiler/codegen/module.h"
@@ -41,6 +42,21 @@ absl::StatusOr<CelAbi> BuildCelAbi(const TypedAst& typed,
     row->set_id(id++);
     row->set_field_number(e.field_number);
     row->set_name(e.name);
+  }
+
+  // Emit the attribute intern table used by `cel_host.get_field`'s
+  // partial-eval path (M4 Slice E2a.1).  Same walk order as the
+  // field pool (both `FromTypedAst` variants do a pre-order outer-
+  // first traversal), so the intern IDs the host sees here match
+  // the ones the emitted wasm passes as the `attr_id` argument at
+  // call time.
+  const AttributePool attrs = AttributePool::FromTypedAst(typed);
+  uint32_t attr_id = 0;
+  for (const AttributePool::Entry& e : attrs.entries()) {
+    AttributeEntry* row = abi.add_attributes();
+    row->set_id(attr_id++);
+    row->set_variable(e.variable);
+    for (const std::string& q : e.qualifiers) row->add_qualifiers(q);
   }
 
   // `function_set` and `layout` stay at their defaults — the

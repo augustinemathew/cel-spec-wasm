@@ -174,6 +174,40 @@ TEST(CelAbiTest, BuildPopulatesFieldTableForSelectExpressions) {
   EXPECT_GT(abi.fields(1).field_number(), 0u);
 }
 
+TEST(CelAbiTest, BuildPopulatesAttributeTableForSelectExpressions) {
+  (void)celwasm::testdata::Customer::descriptor();
+  CheckOptions opts;
+  opts.variable_specs.emplace_back("c:celwasm.testdata.Customer");
+  const std::string src = "c.billing_address.city";
+  auto typed = ParseAndCheck(src, opts);
+  ASSERT_THAT(typed, IsOk());
+  auto abi_or = BuildCelAbi(*typed, src);
+  ASSERT_THAT(abi_or, IsOk());
+  const CelAbi& abi = *abi_or;
+
+  // Same pre-order walk as the field pool: outer `.city` call-site
+  // at id 0 holds the full two-qualifier path; the inner
+  // `.billing_address` select at id 1 holds only the first qualifier.
+  ASSERT_EQ(abi.attributes_size(), 2);
+  EXPECT_EQ(abi.attributes(0).id(), 0u);
+  EXPECT_EQ(abi.attributes(0).variable(), "c");
+  ASSERT_EQ(abi.attributes(0).qualifiers_size(), 2);
+  EXPECT_EQ(abi.attributes(0).qualifiers(0), "billing_address");
+  EXPECT_EQ(abi.attributes(0).qualifiers(1), "city");
+  EXPECT_EQ(abi.attributes(1).id(), 1u);
+  EXPECT_EQ(abi.attributes(1).variable(), "c");
+  ASSERT_EQ(abi.attributes(1).qualifiers_size(), 1);
+  EXPECT_EQ(abi.attributes(1).qualifiers(0), "billing_address");
+}
+
+TEST(CelAbiTest, AttributeTableIsEmptyForSelectlessExpressions) {
+  auto typed = ParseAndCheck("1 + 2 * 3", CheckOptions{});
+  ASSERT_THAT(typed, IsOk());
+  auto abi_or = BuildCelAbi(*typed, "1 + 2 * 3");
+  ASSERT_THAT(abi_or, IsOk());
+  EXPECT_EQ(abi_or->attributes_size(), 0);
+}
+
 TEST(CelAbiTest, SectionNameConstantMatchesDesignDoc) {
   // The string `cel.abi` is part of the host contract.  A typo in
   // this constant would break every host silently — pin it.
