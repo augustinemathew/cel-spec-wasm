@@ -158,10 +158,40 @@ void DeclareSretRootImports(WasmModule& mod) {
   ImportCel2(mod, "cel_set_error_at", i32, i32, none);
 }
 
+// 3VL-aware scalar comparison imports (M4 Slice F1).  Six ops per
+// scalar kind (int/uint/double) plus bool eq/ne — 20 helpers total.
+// Taken when either operand's subtree can produce CEL_UNKNOWN /
+// CEL_ERROR; definite-both-sides expressions stay on the scalar
+// fast path.
+void DeclareBoxedCmpImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  ImportCel2(mod, "cel_cmp_int_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_int_ne", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_int_lt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_int_le", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_int_gt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_int_ge", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_ne", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_lt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_le", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_gt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_uint_ge", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_ne", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_lt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_le", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_gt", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_double_ge", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_bool_eq", i32, i32, i32);
+  ImportCel2(mod, "cel_cmp_bool_ne", i32, i32, i32);
+}
+
 // Allocation / span-literal / equality / size / member-call imports.
 void DeclareAllocAndSpanImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType i64 = BinaryenTypeInt64();
+  const BinaryenType f64 = BinaryenTypeFloat64();
   // Allocation + string/bytes construction (M3 slice A).
   ImportCel1(mod, "cel_alloc", i32, i32);
   ImportCel1(mod, "cel_make_bool", i32, i32);
@@ -197,6 +227,11 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel1(mod, "cel_not", i32, i32);
   ImportCel2(mod, "cel_and", i32, i32, i32);
   ImportCel2(mod, "cel_or", i32, i32, i32);
+  DeclareBoxedCmpImports(mod);
+  // Int boxing helpers (F1 boxed path): scalar → CelValue offset.
+  ImportCel1(mod, "cel_make_int", i64, i32);
+  ImportCel1(mod, "cel_make_uint", i64, i32);
+  ImportCel1(mod, "cel_make_double", f64, i32);
 }
 
 // Checked arithmetic (M4 Slice C commit 2).  Codegen uses the
@@ -853,6 +888,280 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
   return BoxBool(m, BinaryenBinary(m, *bop, lhs, rhs));
 }
 
+// ---- Slice F1: 3VL-aware boxed comparison path ---------------------------
+//
+// When either comparison operand's subtree can leave a non-OK CelValue
+// (UNKNOWN / ERROR) in a scratch slot, we can't use the scalar-fast-path
+// lowering above: the scalar opcode expects raw i64 / f64 payloads, and
+// the producer would have to early-return from `$eval` before the
+// comparison ever sees the non-OK.  The boxed path lowers both operands
+// as CelValue offsets, then dispatches to `cel_cmp_<kind>_<op>`, which
+// forwards `cel_status_either(a, b)` when either side is non-OK so
+// wrapping `&&` / `||` can apply CEL's absorption rules.
+
+// Conservative predicate: returns true iff `expr`'s subtree may produce
+// a non-OK CelValue at runtime.  Drives the comparison dispatch
+// between the scalar fast path and the boxed slow path.  False
+// positives only lose fast-path coverage — never correctness.
+bool HasNonOkProducer(const cel::Expr& expr) {
+  switch (expr.kind_case()) {
+    case cel::ExprKindCase::kSelectExpr: {
+      // has(...) always returns a definite 0/1 today (M4 Slice F4 will
+      // address the UNKNOWN-inside-has case).  Field reads can surface
+      // CEL_UNKNOWN via partial-eval and CEL_ERROR via a bad descriptor.
+      if (expr.select_expr().test_only()) {
+        return HasNonOkProducer(expr.select_expr().operand());
+      }
+      return true;
+    }
+    case cel::ExprKindCase::kCallExpr: {
+      const cel::CallExpr& c = expr.call_expr();
+      const std::string& fn = c.function();
+      // Checked int/uint arithmetic + any ordered compare: the helper
+      // can write CEL_ERROR into its scratch slot (overflow /
+      // div-by-zero / NaN).  Unary negate is the same story.
+      if (fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
+          fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
+          fn == op::CelOperator::MODULO || fn == op::CelOperator::NEGATE ||
+          fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
+          fn == op::CelOperator::GREATER ||
+          fn == op::CelOperator::GREATER_EQUALS) {
+        return true;
+      }
+      if (c.has_target() && HasNonOkProducer(c.target())) return true;
+      return std::any_of(c.args().begin(), c.args().end(),
+                         [](const cel::Expr& a) {
+                           return HasNonOkProducer(a);
+                         });
+    }
+    default:
+      return false;
+  }
+}
+
+// Bundles the pieces both `LowerSelectField` and `LowerSelectTestOnly`
+// need from the operand side: the lowered operand expression, the
+// `(field_number, field_name)` intern-ID the host receives as
+// `field_intern_id`, and the attribute-path intern-ID the host uses
+// to look up the select site in `CelAbi.attributes` for partial-eval
+// pattern matching.  Defined here rather than next to
+// `LowerSelectOperand` below because F1's `LowerSelectFieldBoxed`
+// dereferences it at this higher position in the TU.
+struct SelectOperand {
+  BinaryenExpressionRef operand;
+  int32_t intern_id;
+  int32_t attr_id;
+};
+
+// Forward decls: these helpers are defined later in the file but
+// `LowerSelectFieldBoxed` + `LowerCheckedArithBoxed` call them from
+// inside the F1 boxed-path block.
+absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
+                                                 const TypedAst& ast,
+                                                 const cel::SelectExpr& select,
+                                                 int64_t expr_id);
+absl::StatusOr<BinaryenExpressionRef> LowerExprBoxed(LoweringContext& ctx,
+                                                     const TypedAst& ast,
+                                                     const cel::Expr& expr);
+
+// Select-of-field variant that returns the scratch offset directly (no
+// `EmitSretEarlyReturnIfNonOk`, no payload load).  Used by the boxed
+// comparison path so the caller's 3VL-aware helper can see an UNKNOWN
+// / ERROR CelValue as a value rather than short-circuiting `$eval`.
+absl::StatusOr<BinaryenExpressionRef> LowerSelectFieldBoxed(
+    LoweringContext& ctx, const TypedAst& ast, const cel::Expr& expr) {
+  auto op = LowerSelectOperand(ctx, ast, expr.select_expr(), expr.id());
+  if (!op.ok()) return op.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
+  BinaryenExpressionRef alloc_arg = BinaryenConst(m, BinaryenLiteralInt32(24));
+  BinaryenExpressionRef alloc_call =
+      BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
+  BinaryenExpressionRef set_scratch = BinaryenLocalSet(m, scratch, alloc_call);
+  BinaryenExpressionRef args[4] = {
+      op->operand,
+      BinaryenConst(m, BinaryenLiteralInt32(op->intern_id)),
+      BinaryenConst(m, BinaryenLiteralInt32(op->attr_id)),
+      BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
+  };
+  BinaryenExpressionRef get_field_call =
+      BinaryenCall(m, "get_field", args, 4, BinaryenTypeNone());
+  BinaryenExpressionRef children[3] = {
+      set_scratch, get_field_call,
+      BinaryenLocalGet(m, scratch, BinaryenTypeInt32())};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
+                       BinaryenTypeInt32());
+}
+
+// Checked int/uint arithmetic variant that returns the scratch offset
+// directly (no kind-check, no payload load).  On overflow / divide-
+// by-zero the scratch holds CEL_ERROR, which the caller's
+// `cel_cmp_<kind>_<op>` will absorb via `cel_status_either`.  F1 only
+// supports scalar operands (literals / idents); F2 will extend this
+// to nested arith-of-arith and arith-of-select.
+absl::StatusOr<BinaryenExpressionRef> LowerCheckedArithBoxed(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
+    Repr r) {
+  const bool is_int = (r == Repr::kInt);
+  const char* helper = CheckedIntHelperName(call.function(), is_int);
+  if (helper == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "LowerCheckedArithBoxed: unhandled op `", call.function(), "`"));
+  }
+  auto lhs = LowerExpr(ctx, ast, call.args().at(0));
+  if (!lhs.ok()) return lhs.status();
+  auto rhs = LowerExpr(ctx, ast, call.args().at(1));
+  if (!rhs.ok()) return rhs.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
+  BinaryenExpressionRef alloc_arg = BinaryenConst(m, BinaryenLiteralInt32(24));
+  BinaryenExpressionRef alloc_call =
+      BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
+  BinaryenExpressionRef set_scratch = BinaryenLocalSet(m, scratch, alloc_call);
+  BinaryenExpressionRef call_args[3] = {
+      BinaryenLocalGet(m, scratch, BinaryenTypeInt32()), *lhs, *rhs};
+  BinaryenExpressionRef helper_call =
+      BinaryenCall(m, helper, call_args, 3, BinaryenTypeNone());
+  BinaryenExpressionRef children[3] = {
+      set_scratch, helper_call,
+      BinaryenLocalGet(m, scratch, BinaryenTypeInt32())};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
+                       BinaryenTypeInt32());
+}
+
+// Lowers `expr` to a CelValue offset regardless of its static Repr.
+// Mirrors `LowerExpr` but keeps everything in the boxed ABI so a
+// wrapping 3VL-aware consumer (`cel_cmp_*`, `cel_and`, ...) can see
+// UNKNOWN / ERROR operand values.  Reprs that already travel as
+// CelValue offsets (kBool, kString, kBytes, kMessage, kNull) fall
+// through to `LowerExpr`; scalar Reprs (kInt / kUint / kDouble) are
+// boxed via `cel_make_<kind>` or, for producer nodes whose scalar path
+// early-returns on non-OK (Select-of-scalar, checked arith), via
+// dedicated `*Boxed` variants that return the scratch offset.
+absl::StatusOr<BinaryenExpressionRef> LowerExprBoxed(LoweringContext& ctx,
+                                                     const TypedAst& ast,
+                                                     const cel::Expr& expr) {
+  auto repr = ReprOf(ast, expr);
+  if (!repr.ok()) return repr.status();
+  // Reprs that already travel as CelValue offsets — normal LowerExpr
+  // works.  Select-of-bool/string/bytes/message returns the scratch
+  // offset today (no early-return — see `LowerSelectField`'s
+  // `payload_is_offset` branch).
+  if (*repr == Repr::kBool || *repr == Repr::kString || *repr == Repr::kBytes ||
+      *repr == Repr::kMessage || *repr == Repr::kNull) {
+    return LowerExpr(ctx, ast, expr);
+  }
+  // Scalar-valued producers whose normal path either early-returns
+  // from `$eval` on non-OK (Select-of-scalar) or emits a kind-check
+  // that loses the error box (checked arith).  Both are rerouted
+  // through the `*Boxed` variants that return the scratch offset
+  // verbatim.
+  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr &&
+      !expr.select_expr().test_only()) {
+    return LowerSelectFieldBoxed(ctx, ast, expr);
+  }
+  if (expr.kind_case() == cel::ExprKindCase::kCallExpr) {
+    const cel::CallExpr& call = expr.call_expr();
+    const std::string& fn = call.function();
+    if ((fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
+         fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
+         fn == op::CelOperator::MODULO) &&
+        (*repr == Repr::kInt || *repr == Repr::kUint)) {
+      return LowerCheckedArithBoxed(ctx, ast, call, *repr);
+    }
+  }
+  // Anything else (literal, ident, pure expression): lower normally
+  // and wrap with `cel_make_<kind>`.  The wrapped constructor
+  // allocates a fresh 24-byte CelValue per call — fine for F1 since
+  // arenas are reset between evals and the scratch lifetimes here are
+  // short.
+  auto raw = LowerExpr(ctx, ast, expr);
+  if (!raw.ok()) return raw.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef raw_ref = *raw;
+  switch (*repr) {
+    case Repr::kInt:
+      return BinaryenCall(m, "cel_make_int", &raw_ref, 1, BinaryenTypeInt32());
+    case Repr::kUint:
+      return BinaryenCall(m, "cel_make_uint", &raw_ref, 1, BinaryenTypeInt32());
+    case Repr::kDouble:
+      return BinaryenCall(m, "cel_make_double", &raw_ref, 1,
+                          BinaryenTypeInt32());
+    default:
+      break;
+  }
+  return absl::UnimplementedError(
+      absl::StrCat("LowerExprBoxed: unsupported Repr `", ReprName(*repr),
+                   "` for expr id ", expr.id()));
+}
+
+// Helper-name tables for the F1 boxed comparison dispatch.
+const char* BoxedCmpIntHelper(absl::string_view op) {
+  if (op == op::CelOperator::EQUALS) return "cel_cmp_int_eq";
+  if (op == op::CelOperator::NOT_EQUALS) return "cel_cmp_int_ne";
+  if (op == op::CelOperator::LESS) return "cel_cmp_int_lt";
+  if (op == op::CelOperator::LESS_EQUALS) return "cel_cmp_int_le";
+  if (op == op::CelOperator::GREATER) return "cel_cmp_int_gt";
+  if (op == op::CelOperator::GREATER_EQUALS) return "cel_cmp_int_ge";
+  return nullptr;
+}
+const char* BoxedCmpUintHelper(absl::string_view op) {
+  if (op == op::CelOperator::EQUALS) return "cel_cmp_uint_eq";
+  if (op == op::CelOperator::NOT_EQUALS) return "cel_cmp_uint_ne";
+  if (op == op::CelOperator::LESS) return "cel_cmp_uint_lt";
+  if (op == op::CelOperator::LESS_EQUALS) return "cel_cmp_uint_le";
+  if (op == op::CelOperator::GREATER) return "cel_cmp_uint_gt";
+  if (op == op::CelOperator::GREATER_EQUALS) return "cel_cmp_uint_ge";
+  return nullptr;
+}
+const char* BoxedCmpDoubleHelper(absl::string_view op) {
+  if (op == op::CelOperator::EQUALS) return "cel_cmp_double_eq";
+  if (op == op::CelOperator::NOT_EQUALS) return "cel_cmp_double_ne";
+  if (op == op::CelOperator::LESS) return "cel_cmp_double_lt";
+  if (op == op::CelOperator::LESS_EQUALS) return "cel_cmp_double_le";
+  if (op == op::CelOperator::GREATER) return "cel_cmp_double_gt";
+  if (op == op::CelOperator::GREATER_EQUALS) return "cel_cmp_double_ge";
+  return nullptr;
+}
+const char* BoxedCmpHelper(absl::string_view op, Repr r) {
+  switch (r) {
+    case Repr::kInt:
+      return BoxedCmpIntHelper(op);
+    case Repr::kUint:
+      return BoxedCmpUintHelper(op);
+    case Repr::kDouble:
+      return BoxedCmpDoubleHelper(op);
+    case Repr::kBool:
+      if (op == op::CelOperator::EQUALS) return "cel_cmp_bool_eq";
+      if (op == op::CelOperator::NOT_EQUALS) return "cel_cmp_bool_ne";
+      return nullptr;
+    default:
+      return nullptr;
+  }
+}
+
+// Boxed-operand comparison: both operands arrive as CelValue offsets
+// via `LowerExprBoxed`, and the runtime helper returns a CelValue
+// offset (Repr::kBool or the propagated UNKNOWN / ERROR).  This is
+// the F1 slow-path dispatch; the caller (`LowerBinaryCall`) picks it
+// whenever `HasNonOkProducer` fires on either operand.
+absl::StatusOr<BinaryenExpressionRef> LowerBoxedComparison(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
+    absl::string_view fn, Repr arg_r) {
+  const char* helper = BoxedCmpHelper(fn, arg_r);
+  if (helper == nullptr) {
+    return absl::UnimplementedError(
+        absl::StrCat("LowerBoxedComparison: no 3VL helper for `", fn,
+                     "` on Repr `", ReprName(arg_r), "`"));
+  }
+  auto lhs = LowerExprBoxed(ctx, ast, call.args().at(0));
+  if (!lhs.ok()) return lhs.status();
+  auto rhs = LowerExprBoxed(ctx, ast, call.args().at(1));
+  if (!rhs.ok()) return rhs.status();
+  BinaryenExpressionRef args[2] = {*lhs, *rhs};
+  return BinaryenCall(ctx.mod.raw(), helper, args, 2, BinaryenTypeInt32());
+}
+
 // Member-call dispatch for the string extension methods (§9):
 // `.startsWith`, `.endsWith`, `.contains`.  All three share the same
 // shape: lower the receiver + arg and call a runtime helper returning
@@ -1072,6 +1381,20 @@ absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
                                                       int64_t expr_id) {
   auto arg_r = ReprOf(ast, call.args().at(0));
   if (!arg_r.ok()) return arg_r.status();
+  const bool is_comparison =
+      (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
+       fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
+       fn == op::CelOperator::GREATER || fn == op::CelOperator::GREATER_EQUALS);
+  // F1 boxed path: when either comparison operand's subtree can
+  // produce UNKNOWN / ERROR, box both operands and call the 3VL-aware
+  // `cel_cmp_<kind>_<op>` helper.  Applies only to scalar / bool
+  // Reprs — string / bytes / message comparisons stay on their
+  // existing runtime helpers until F3 covers them.
+  if (is_comparison && BoxedCmpHelper(fn, *arg_r) != nullptr &&
+      (HasNonOkProducer(call.args().at(0)) ||
+       HasNonOkProducer(call.args().at(1)))) {
+    return LowerBoxedComparison(ctx, ast, call, fn, *arg_r);
+  }
   auto l = LowerExpr(ctx, ast, call.args().at(0));
   if (!l.ok()) return l.status();
   auto r = LowerExpr(ctx, ast, call.args().at(1));
@@ -1081,9 +1404,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
       fn == op::CelOperator::MODULO) {
     return LowerArithmetic(fn, *arg_r, *l, *r, ctx);
   }
-  if (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
-      fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
-      fn == op::CelOperator::GREATER || fn == op::CelOperator::GREATER_EQUALS) {
+  if (is_comparison) {
     return LowerComparison(fn, *arg_r, *l, *r, ctx);
   }
   return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr_id);
@@ -1186,18 +1507,6 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
   }
 }
 
-// Bundles the pieces both `LowerSelectField` and `LowerSelectTestOnly`
-// need from the operand side: the lowered operand expression, the
-// `(field_number, field_name)` intern-ID the host receives as
-// `field_intern_id`, and the attribute-path intern-ID the host uses
-// to look up the select site in `CelAbi.attributes` for partial-eval
-// pattern matching.
-struct SelectOperand {
-  BinaryenExpressionRef operand;
-  int32_t intern_id;
-  int32_t attr_id;
-};
-
 // Validates the shared preconditions for a lowered `SelectExpr` (field
 // number resolved, operand is a message) and lowers the operand.  Both
 // the field-read and `has()` paths go through this so a single error
@@ -1209,6 +1518,9 @@ struct SelectOperand {
 // `get_field` / `has_field` call receives as its i32 argument.  The
 // host uses the same intern ID to look up the field's name +
 // descriptor at call time (see `CelAbi.fields` in `cel.abi`).
+//
+// `SelectOperand` is defined above at the top of this TU because the
+// Slice F1 boxed-path helpers reference it.
 absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
                                                  const TypedAst& ast,
                                                  const cel::SelectExpr& select,

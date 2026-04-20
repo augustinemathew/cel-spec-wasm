@@ -63,10 +63,246 @@ Make every non-absorbing op 3VL-aware.  The minimum-viable shape:
     ERROR producer in either subtree), codegen stays on the scalar
     path — zero overhead regression against M4 Slice B / C shapes.
 
-This is big enough to warrant its own slice.  Slicing internally
-(F1: scalar → CelValue ABI for comparisons; F2: arithmetic slow
-path; F3: string / bytes ops; F4: cross-wiring with comprehension
-aggregators) is likely but not mapped out yet.
+This is big enough to warrant its own slice.  Internal breakdown
+(agreed 2026-04-20):
+
+  - **F1 — comparison sret ABI.**  `==`/`!=`/`<`/`<=`/`>`/`>=` stop
+    returning scalar `i32` bool; they accept CelValue-offset inputs
+    when either operand's subtree can produce UNKNOWN / ERROR, write
+    a CelValue into a caller-provided scratch slot, and on
+    UNKNOWN / ERROR operand copy the dominant status in per
+    `cel_status_either`.  A checker-driven fast path keeps the
+    scalar shape for expressions whose operands are both proved
+    definite — zero overhead regression against Slice B/C.
+    Unblocks rows 1, 2, 3, 5, 9–14, 20.
+  - **F2 — arithmetic slow path.**  When either operand of
+    `+`/`-`/`*`/`/`/`%` comes from a subtree that can yield
+    UNKNOWN / ERROR, lower through the CelValue-offset shape F1
+    introduces instead of the scalar overflow-check pair.  The
+    definite-both-sides case stays on the scalar Slice B checked
+    arithmetic.  Unblocks rows 4, 18, 22.
+  - **F3 — string / bytes ops + `size`.**  `==` / `startsWith` /
+    `endsWith` / `contains` / `matches` and `size(…)` go sret
+    CelValue end-to-end (they already travel as arena offsets, so
+    this is a wrapper change, not an ABI overhaul).  Unblocks rows
+    15, 16, 17, 21.
+  - **F4 — ternary dispatch.**  `?:` gains a dispatch: when the
+    cond slot holds UNKNOWN / ERROR and the `?:` is *not* at eval
+    root (i.e. has a wrapping 3VL absorber), copy the dominant
+    status through to the sret slot instead of early-returning
+    from `$eval` (Slice E1's current behaviour at root stays
+    intact).  Unblocks rows 7, 8, 19.
+
+No sub-slice blocks another; F2 and F3 both consume the F1 ABI, F4
+is independent.  F1 ships first because it is the largest
+structural change and has the longest test row.
+
+## F1 — shipped 2026-04-20
+
+F1 landed as a single commit introducing the boxed comparison ABI
+and flipping the DISABLED_ prefix on the rows it unblocks.  Live
+regression coverage in `eval_test.cc`:
+
+  - ERROR-source rows 1, 2, 3, 5 (`ThreeValuedAbsorptionError{EqAbsorbedBy{Or,And},OrderedCompareAbsorbed,OverflowAbsorbed}`).
+  - UNKNOWN-source row 9 (`UnknownThroughOrderedCompareAbsorbedByOr`).
+  - UNKNOWN-source row 10 (`UnknownThroughEqualityAbsorbedByAnd`).
+  - UNKNOWN-source row 11 (`UnknownEqualityBothOperandsUnknownAbsorbedByOr`).
+  - UNKNOWN-source row 12 (`UnknownUintOrderedCompareAbsorbedByOr`).
+  - UNKNOWN-source row 13 (`UnknownDoubleOrderedCompareAbsorbedByOr`).
+  - UNKNOWN-source row 20 (`UnknownBoolEqualityPropagatesThroughOrFalse`).
+
+Rows 4 (F2), 6 / 8 (F4), 14 (F3 — message equality), 15 / 16 / 17 /
+21 (F3), 18 / 22 (F2), 19 (F4) remain DISABLED pending the matching
+slice.  The `cel_unknown_merge` empty-set handling was also fixed
+in the same commit — the host `get_field` trampoline mints UNKNOWNs
+with `payload.unk == 0`, which the old merge rejected as invalid;
+it now treats an empty set as "no ids to contribute" and returns
+the other side verbatim (left-biased when both empty).
+
+## F1 implementation plan (as shipped)
+
+### Root cause we're unwinding
+
+Two codegen sites early-return from `$eval` when their sret scratch
+holds a non-OK CelValue:
+
+  - `LowerSelectField` for scalar Reprs (int / uint / double /
+    message) — emits `EmitSretEarlyReturnIfNonOk(ctx, scratch)`
+    before `LoadSelectPayload`.  The reason the early-return was
+    added: `LoadSelectPayload` reads `[scratch+8]` as a raw scalar,
+    so an UNKNOWN CelValue's `unk` pointer would be reinterpreted
+    as an int64 — silent garbage.
+  - `EmitCheckedArithmetic` — after the helper writes to scratch,
+    inspects `[scratch+0] == CEL_ERROR` and, if so, copies the ERROR
+    into `$sret` and returns.  Same motivation: the surrounding
+    codegen expects an i64 off the block, but scratch holds a full
+    ERROR box.
+
+Both early-returns bypass any wrapping `&&` / `||` absorber.  F1
+keeps them on the scalar fast path for definite-both-sides
+expressions and introduces a parallel **boxed** path taken whenever
+a comparison's operand subtree can produce UNKNOWN / ERROR.
+
+### Runtime helpers (cel_runtime.{h,c})
+
+Four-operator group per scalar kind, plus bool eq/ne.  Every helper
+takes two CelValue offsets and returns a CelValue offset pointing
+at a `Repr::kBool` result — or at a propagated ERROR / UNKNOWN when
+`cel_status_either` reports a dominant non-OK.  Return 0 on type
+error so codegen keeps the familiar zero-check shape.
+
+```
+// Returns cel_status_either(a, b) if either side is non-OK;
+// otherwise reads .payload.i from both and returns cel_make_bool.
+uint32_t cel_cmp_int_eq (uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_ne (uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_lt (uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_le (uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_gt (uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_ge (uint32_t a, uint32_t b);
+
+// Same shape on CEL_UINT / payload.u.
+uint32_t cel_cmp_uint_eq / ne / lt / le / gt / ge(uint32_t, uint32_t);
+
+// CEL_DOUBLE / payload.d.  Ordered ops additionally return
+// cel_make_error(CEL_ERR_TYPE_MISMATCH) when either OK operand is
+// NaN — same spec rule as LowerDoubleOrderedCompare.
+uint32_t cel_cmp_double_eq / ne / lt / le / gt / ge(uint32_t, uint32_t);
+
+// CEL_BOOL / payload.b.  No ordered variant (CEL has no <,<=,>,>=
+// overload on bool).
+uint32_t cel_cmp_bool_eq (uint32_t a, uint32_t b);
+uint32_t cel_cmp_bool_ne (uint32_t a, uint32_t b);
+```
+
+Each helper factors through a tiny inline dispatcher:
+
+```
+uint32_t st = cel_status_either(a, b);
+if (st != 0) return st;
+// Both a, b are OK of the expected kind (codegen guarantees via
+// Repr); read the payload and return cel_make_bool(raw_cmp).
+```
+
+Rows that need this helper family on the boxed path: 1, 2, 3, 5,
+9–13, 20.  Row 14 (`msg.sub_msg == other || true`) and the string
+equality rows (15, 17) stay on the existing span / message path;
+moving them to the boxed shape is F3's scope.
+
+### Codegen (`compiler/codegen/expr_lower.cc`)
+
+1. **`HasNonOkProducer(const TypedAst&, const cel::Expr&) -> bool`**
+
+   Pure AST predicate.  Returns true iff the subtree contains a
+   node that can leave a non-OK CelValue in a scratch slot:
+
+     - `SelectExpr` (field reads can return UNKNOWN / ERROR).
+     - `CallExpr` for `/` / `%` / `+` / `-` / `*` on int or uint
+       (checked-arith can overflow → CEL_ERROR).
+     - `CallExpr` for ordered compare on double (NaN → CEL_ERROR).
+
+   Constants, idents, bool ops, and string / bytes ops are pure OK
+   today; they return false.  The predicate is conservative — false
+   positives just force the boxed path (no correctness loss, only
+   fast-path coverage loss).  Recurses into call args and into
+   select operands.
+
+2. **`LowerExprBoxed(LoweringContext&, const TypedAst&, const cel::Expr&)
+    -> absl::StatusOr<BinaryenExpressionRef>`**
+
+   Returns a wasm i32 expression producing a CelValue offset for
+   `expr`, regardless of its static Repr.  Mirrors `LowerExpr` but
+   keeps everything in the boxed ABI:
+
+     - Constant of int / uint / double → `cel_make_int / uint /
+       double` on the raw scalar.  Bool / string / bytes / null
+       already return CelValue offsets — reuse `LowerConstant`.
+     - Ident of int / uint / double → alloc 24-byte scratch,
+       `cel_box_int / uint / double(scratch, raw)`, return scratch.
+       Bool / string / bytes / message idents are already CelValue
+       offsets post-3b2 — reuse `LowerIdent`.
+     - `SelectExpr` (non-test-only) → same machinery as
+       `LowerSelectField` up to the `get_field` call, then return
+       the scratch offset.  Skip both `LoadSelectPayload` and
+       `EmitSretEarlyReturnIfNonOk`.  `test_only` (`has(…)`) stays
+       on the scalar path (the host never returns UNKNOWN for
+       `has`; it returns a definite 0/1).
+     - `CallExpr` for checked arithmetic (`/`, `%`, `+`, `-`, `*`
+       on int / uint) → alloc scratch, call
+       `cel_int_add_at_ii(scratch, lhs, rhs)` (or the op variant),
+       return scratch.  Skip the CEL_ERROR kind-check + early-return
+       that `EmitCheckedArithmetic` emits today.  (F2 will grow this
+       out to the nested case where either operand is itself
+       boxed — F1 keeps lhs / rhs as raw scalars because the
+       comparison dispatch only boxes one level up.)
+     - `CallExpr` for double arithmetic → compute via
+       `LowerDoubleArithmetic`, then `cel_box_double(scratch, raw)`,
+       return scratch.
+     - `CallExpr` for `_&&_` / `_||_` / `!_` / `_?_:_` → fall
+       through to `LowerExpr`; those already return CelValue
+       offsets.
+     - Any other node → `LowerExpr` + box if Repr is scalar.
+
+3. **Modified `LowerComparison`.**  After the existing
+   `Repr::kString` / `kBytes` / `kMessage` / `kBool` dispatches, the
+   default scalar case (int / uint / double) gains a pre-check:
+
+     ```
+     if (HasNonOkProducer(lhs_expr) || HasNonOkProducer(rhs_expr)) {
+       return LowerBoxedComparison(ctx, ast, call, arg_r);
+     }
+     ```
+
+   `LowerBoxedComparison` calls `LowerExprBoxed` on both operands,
+   picks the right helper name by `(arg_r, op)`, and emits:
+
+     ```
+     cel_cmp_<kind>_<op>(lhs_boxed, rhs_boxed)   // returns i32 offset
+     ```
+
+   The result is a CelValue offset — `Repr::kBool` — matching what
+   every bool-consuming caller (cel_and / cel_or / BinaryenIf of a
+   `?:` guard that has been unboxed) expects.
+
+   The bool equality case gains the same pre-check: if either
+   operand's subtree is non-OK-producing, emit
+   `cel_cmp_bool_{eq,ne}` instead of `UnboxBool` + `BinaryenEqInt32`.
+   This is row 20's fix.
+
+4. **Signature change at the `LowerBinaryCall` seam.**
+   `LowerComparison` needs access to the raw operand expressions (to
+   run `HasNonOkProducer`), not just their lowered forms.  Two
+   options: (a) pass `call.args()` through alongside the lowered
+   values, or (b) run `HasNonOkProducer` before calling
+   `LowerExpr` on the operands, then pick the path.  Option (b) is
+   cleaner — `LowerBinaryCall` picks the path, calls either the
+   scalar `LowerExpr` pair or the boxed `LowerExprBoxed` pair, then
+   dispatches.  F1 takes option (b).
+
+### Tests
+
+  - **Runtime unit tests** in `cel_runtime_test.cc`: one `TEST`
+    block per new helper covering (i) OK + OK → OK bool, (ii)
+    ERROR + OK → ERROR propagation, (iii) UNKNOWN + OK → UNKNOWN
+    propagation, (iv) ERROR + UNKNOWN → ERROR (dominance), (v)
+    NaN-in-ordered-double → ERROR.  Type-mismatch → 0.
+  - **Codegen tests**: extend `expr_lower_test.cc` with a fixture
+    that runs a comparison over a Select-of-scalar operand and
+    validates the emitted IR calls `cel_cmp_int_lt` (not
+    `BinaryenLtSInt64`) when the Select is present.
+  - **eval_test.cc**: flip `DISABLED_` off the absorption rows F1
+    unblocks (1, 2, 3, 5, 9–13, 20) once the codegen + runtime
+    pieces are in place.
+
+### Out of F1 scope (deferred to F2 / F3)
+
+  - Row 14 (message equality UNKNOWN): needs a boxed `message_eq`
+    — F3.
+  - Rows 15 / 16 / 17 / 21 (string / bytes / size): F3.
+  - Row 4, 18, 22 (UNKNOWN through arithmetic into another op): F2
+    grows `LowerExprBoxed` to handle operands that are themselves
+    boxed checked-arith results.
+  - Rows 7 / 8 / 19 (ternary at root vs. under an absorber): F4.
 
 ## Spec-breaking test cases (the Slice F checklist)
 
@@ -139,12 +375,11 @@ of the breaks above.  We explicitly accept the gap so M4 can ship
 and M5 (collections + comprehensions) can start, with Slice F as
 the follow-up that makes CEL 3VL end-to-end correct.
 
-## Also-deferred companion: CLI flag for unknown attrs
+## CLI flag for unknown attrs — shipped 2026-04-20
 
-`celwasmc --eval --unknown-attrs=var.field,…` (was M4 Slice E2a.2)
-is deferred with Slice F.  Rationale: until Slice F lands, the CLI
-flag would let users write expressions whose runtime behavior
-disagrees with the spec, and the quietly-wrong answers are worse
-than "no CLI support yet".  E2a.1 will expose the
-`CelHost::SetUnknownAttrs` API for C++ test harnesses; the CLI
-surface waits.
+M4 Slice E2a.2 landed the `celwasmc-eval --unknown_attrs=var.q[,…]`
+flag (commit 9a1b672).  The flag only exposes the E2a.1 host API —
+it does not unblock any of the spec-breaking rows above; those still
+require Slice F.  Rows 9–22 become testable from the CLI once F1/F2
+land, but eval_test.cc (not the CLI) is the canonical coverage
+surface.

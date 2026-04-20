@@ -563,7 +563,15 @@ uint32_t cel_unknown_merge(uint32_t a, uint32_t b) {
   }
   uint32_t set_a = va->payload.unk;
   uint32_t set_b = vb->payload.unk;
-  if (set_a == 0 || set_b == 0) return 0;
+  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN — the
+  // host `get_field` trampoline mints UNKNOWNs this way for FULL
+  // attribute-pattern matches (provenance not surfaced yet).  Treat an
+  // empty side as "no new ids to contribute" and return the other side
+  // verbatim; if both are empty, return `a` (left-biased).  Only the 0
+  // *offset* case (null CelValue) still yields 0.
+  if (set_a == 0 && set_b == 0) return a;
+  if (set_a == 0) return b;
+  if (set_b == 0) return a;
 
   // Snapshot descriptor scalars before any further cel_alloc — on wasm32
   // memory.grow can relocate g_memory, so pointers derived from offsets
@@ -936,4 +944,125 @@ void cel_int_neg_at_i(uint32_t out, int64_t a) {
     return;
   }
   write_int_at(out, -a);
+}
+
+// ---- 3VL-aware scalar comparison helpers (M4 Slice F1) -------------------
+//
+// Each helper mirrors the same four-step shape:
+//   1.  Zero-offset type-error guard (matches the rest of the runtime).
+//   2.  `cel_status_either(a, b)` propagates dominant non-OK status;
+//       return it verbatim so the wrapping absorber sees the CelValue.
+//   3.  Confirm both operands are OK of the expected scalar kind; if
+//       not, return 0 (type error) so codegen's zero-check catches it.
+//   4.  Read payload and return `cel_make_bool(raw)`.
+//
+// Ordered double compares additionally translate NaN into
+// `cel_make_error(CEL_ERR_TYPE_MISMATCH)`, matching the spec rule
+// and the scalar `LowerDoubleOrderedCompare` path.  Equality is
+// IEEE-754 literal: `NaN == NaN` is false, `NaN != x` is true.
+// Common front-matter for every `cel_cmp_*` helper.  Writes either a
+// propagated non-OK status offset (cel_status_either) or 0 into
+// `*status_out`, and returns 1 iff the caller should proceed to read
+// the payload (both operands are OK and of the expected kind).  When
+// it returns 0 the helper's caller returns `*status_out` verbatim —
+// a zero offset when either operand is missing / wrong kind, or the
+// dominant non-OK status otherwise.
+static int cel_cmp_prologue(uint32_t a, uint32_t b, uint32_t expected_kind,
+                            uint32_t* status_out) {
+  if (a == 0 || b == 0) {
+    *status_out = 0;
+    return 0;
+  }
+  uint32_t st = cel_status_either(a, b);
+  if (st != 0) {
+    *status_out = st;
+    return 0;
+  }
+  if (cv_at(a)->kind != expected_kind || cv_at(b)->kind != expected_kind) {
+    *status_out = 0;
+    return 0;
+  }
+  return 1;
+}
+
+#define CEL_CMP_INT_OP(suffix, op)                                    \
+  uint32_t cel_cmp_int_##suffix(uint32_t a, uint32_t b) {             \
+    uint32_t st;                                                      \
+    if (!cel_cmp_prologue(a, b, (uint32_t)CEL_INT, &st)) return st;   \
+    return cel_make_bool(cv_at(a)->payload.i op cv_at(b)->payload.i); \
+  }
+
+CEL_CMP_INT_OP(eq, ==)
+CEL_CMP_INT_OP(ne, !=)
+CEL_CMP_INT_OP(lt, <)
+CEL_CMP_INT_OP(le, <=)
+CEL_CMP_INT_OP(gt, >)
+CEL_CMP_INT_OP(ge, >=)
+
+#undef CEL_CMP_INT_OP
+
+#define CEL_CMP_UINT_OP(suffix, op)                                   \
+  uint32_t cel_cmp_uint_##suffix(uint32_t a, uint32_t b) {            \
+    uint32_t st;                                                      \
+    if (!cel_cmp_prologue(a, b, (uint32_t)CEL_UINT, &st)) return st;  \
+    return cel_make_bool(cv_at(a)->payload.u op cv_at(b)->payload.u); \
+  }
+
+CEL_CMP_UINT_OP(eq, ==)
+CEL_CMP_UINT_OP(ne, !=)
+CEL_CMP_UINT_OP(lt, <)
+CEL_CMP_UINT_OP(le, <=)
+CEL_CMP_UINT_OP(gt, >)
+CEL_CMP_UINT_OP(ge, >=)
+
+#undef CEL_CMP_UINT_OP
+
+// IEEE 754 equality is well-defined on NaN (NaN == x is false, NaN != x is
+// true); CEL's `==` / `!=` inherit that, so no NaN-to-ERROR guard on the
+// equality helpers.
+#define CEL_CMP_DOUBLE_EQ_OP(suffix, op)                               \
+  uint32_t cel_cmp_double_##suffix(uint32_t a, uint32_t b) {           \
+    uint32_t st;                                                       \
+    if (!cel_cmp_prologue(a, b, (uint32_t)CEL_DOUBLE, &st)) return st; \
+    return cel_make_bool(cv_at(a)->payload.d op cv_at(b)->payload.d);  \
+  }
+
+CEL_CMP_DOUBLE_EQ_OP(eq, ==)
+CEL_CMP_DOUBLE_EQ_OP(ne, !=)
+
+#undef CEL_CMP_DOUBLE_EQ_OP
+
+// Ordered double compares: NaN-in → CEL_ERROR{TYPE_MISMATCH} per spec
+// (matches `LowerDoubleOrderedCompare` on the scalar fast path).
+// `x != x` is the portable NaN check (NaN is the only value unequal
+// to itself).
+#define CEL_CMP_DOUBLE_ORD_OP(suffix, op)                              \
+  uint32_t cel_cmp_double_##suffix(uint32_t a, uint32_t b) {           \
+    uint32_t st;                                                       \
+    if (!cel_cmp_prologue(a, b, (uint32_t)CEL_DOUBLE, &st)) return st; \
+    double ad = cv_at(a)->payload.d;                                   \
+    double bd = cv_at(b)->payload.d;                                   \
+    if (ad != ad || bd != bd) {                                        \
+      return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);              \
+    }                                                                  \
+    return cel_make_bool(ad op bd);                                    \
+  }
+
+CEL_CMP_DOUBLE_ORD_OP(lt, <)
+CEL_CMP_DOUBLE_ORD_OP(le, <=)
+CEL_CMP_DOUBLE_ORD_OP(gt, >)
+CEL_CMP_DOUBLE_ORD_OP(ge, >=)
+
+#undef CEL_CMP_DOUBLE_ORD_OP
+
+uint32_t cel_cmp_bool_eq(uint32_t a, uint32_t b) {
+  uint32_t st;
+  if (!cel_cmp_prologue(a, b, (uint32_t)CEL_BOOL, &st)) return st;
+  return cel_make_bool(cv_at(a)->payload.b == cv_at(b)->payload.b);
+}
+
+uint32_t cel_cmp_bool_ne(uint32_t a, uint32_t b) {
+  uint32_t st;
+  if (!cel_cmp_prologue(a, b, (uint32_t)CEL_BOOL, &st)) return st;
+  return cel_make_bool(cv_at(a)->payload.b != cv_at(b)->payload.b);
 }

@@ -656,14 +656,14 @@ expression from `m1-type-checker.md`, plus:
       non-absorbing intermediate op (arithmetic, comparison,
       NaN-compare, string op, message equality) into a 3VL
       absorber (`&&` / `||` / `?:`).  Full enumeration (22 rows) in
-      `m4-slice-f-3vl-absorption.md`.  The ERROR-source rows (1–8)
-      are live as `DISABLED_ThreeValuedAbsorption_*` in
-      `eval_test.cc` — drop the prefix when Slice F lands and they
-      should pass.  UNKNOWN-source rows (9, 10, 15, 18) are now
-      cataloged as `DISABLED_UnknownThrough{Equality,OrderedCompare,
-      StringEq,ArithThenCompare}Absorbed` (live regression tests
-      the moment Slice F flips the codegen).  Remaining UNKNOWN
-      rows (11–14, 16–17, 19–22) still need DISABLED_ shells.
+      `m4-slice-f-3vl-absorption.md`.  **F1 shipped 2026-04-20**:
+      ERROR-source rows 1, 2, 3, 5 and UNKNOWN-source rows 9, 10,
+      11, 12, 13, 20 are enabled in `eval_test.cc` and pass against
+      the new `cel_cmp_*` 3VL boxed comparison helpers; F2 / F3 /
+      F4 carry the residual rows (see the slice doc).  Remaining
+      DISABLED shells: rows 4 (F2), 6 / 8 (F4), 15 / 18 (existing
+      placeholders for F2 / F3); rows 14, 16, 17, 19, 21, 22 still
+      need shells to be added when their slice ships.
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

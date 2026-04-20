@@ -461,7 +461,7 @@ TEST(EvalE2ETest, DoubleDivZeroProducesInfNotTrap) {
 // ride the CelValue-offset ABI so the ERROR can flow upward), drop
 // the DISABLED_ prefix and they should pass.
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByOr) {
+TEST(EvalE2ETest, ThreeValuedAbsorptionErrorEqAbsorbedByOr) {
   // Row 1: (1/0 == 0) || true → true.
   auto r = Evaluate("(1 / 0 == 0) || true");
   ASSERT_THAT(r.status(), IsOk());
@@ -469,7 +469,7 @@ TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByOr) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByAnd) {
+TEST(EvalE2ETest, ThreeValuedAbsorptionErrorEqAbsorbedByAnd) {
   // Row 2: (1/0 == 0) && false → false.
   auto r = Evaluate("(1 / 0 == 0) && false");
   ASSERT_THAT(r.status(), IsOk());
@@ -477,7 +477,7 @@ TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorEqAbsorbedByAnd) {
   EXPECT_EQ(r->of.i32, 0);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorOrderedCompareAbsorbed) {
+TEST(EvalE2ETest, ThreeValuedAbsorptionErrorOrderedCompareAbsorbed) {
   // Row 3: (1/0 > 5) || true → true.
   auto r = Evaluate("(1 / 0 > 5) || true");
   ASSERT_THAT(r.status(), IsOk());
@@ -494,7 +494,7 @@ TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorArithThenCompareAbsorbed) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionOverflowAbsorbed) {
+TEST(EvalE2ETest, ThreeValuedAbsorptionOverflowAbsorbed) {
   // Row 5: (INT64_MAX + 1 == 0) || true → true.  Overflow-flavoured
   // ERROR (vs. div-by-zero) absorbed the same way.
   auto r = Evaluate("(9223372036854775807 + 1 == 0) || true");
@@ -1783,7 +1783,7 @@ TEST(EvalE2EUnknownTest, MultiplePatternsAnyFullMatchWins) {
 // Row numbers below refer to that doc's UNKNOWN-source table.
 
 TEST(EvalE2EUnknownTest,
-     DISABLED_UnknownThroughEqualityAbsorbedByAnd) {  // Slice F row 10
+     UnknownThroughEqualityAbsorbedByAnd) {  // Slice F row 10
   auto loaded =
       LoadCompiled("c.age == 0 && false", {std::string(kCustomerSpec)});
   ASSERT_THAT(loaded.status(), IsOk());
@@ -1798,7 +1798,7 @@ TEST(EvalE2EUnknownTest,
 }
 
 TEST(EvalE2EUnknownTest,
-     DISABLED_UnknownThroughOrderedCompareAbsorbedByOr) {  // Slice F row 9
+     UnknownThroughOrderedCompareAbsorbedByOr) {  // Slice F row 9
   auto loaded =
       LoadCompiled("c.age > 10 || true", {std::string(kCustomerSpec)});
   ASSERT_THAT(loaded.status(), IsOk());
@@ -1825,6 +1825,69 @@ TEST(EvalE2EUnknownTest,
   auto r = loaded->CallEval({arg});
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownEqualityBothOperandsUnknownAbsorbedByOr) {  // Slice F row 11
+  auto loaded =
+      LoadCompiled("c.age == c.user_id || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  patterns.push_back(ParsePatternOrDie("c.user_id"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownUintOrderedCompareAbsorbedByOr) {  // Slice F row 12
+  auto loaded =
+      LoadCompiled("c.priority >= 0u || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.priority"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownDoubleOrderedCompareAbsorbedByOr) {  // Slice F row 13
+  auto loaded = LoadCompiled("c.credit_score < 1.0 || true",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.credit_score"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownBoolEqualityPropagatesThroughOrFalse) {  // Slice F row 20
+  // Spec: `UNKNOWN || OK(false) → UNKNOWN`.  `|| false` does NOT
+  // short-circuit past UNKNOWN (only `|| true` absorbs), so the
+  // bool-equality UNKNOWN must ride through to the host.
+  auto loaded = LoadCompiled("(c.is_premium == true) || false",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.is_premium"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  EXPECT_TRUE(ResultIsUnknown(r)) << r.status();
 }
 
 TEST(EvalE2EUnknownTest,

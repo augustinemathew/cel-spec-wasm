@@ -331,6 +331,52 @@ void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b);
 
 void cel_int_neg_at_i(uint32_t out, int64_t a);
 
+// ---- 3VL-aware scalar comparison (M4 Slice F1) ---------------------------
+//
+// Boxed-operand comparisons used when either operand's subtree can
+// produce CEL_UNKNOWN or CEL_ERROR.  Each helper takes two CelValue
+// offsets and returns a CelValue offset:
+//
+//   - If either operand is non-OK, returns `cel_status_either(a, b)`
+//     (ERROR dominates UNKNOWN; UNKNOWN operands are merged).  The
+//     wrapping 3VL absorber (`cel_and` / `cel_or`) then sees the
+//     non-OK value and applies the spec's absorption rules rather
+//     than the compiler early-returning from `$eval`.
+//   - If both operands are OK of the expected kind, reads the
+//     payload and returns `cel_make_bool(raw_cmp)`.
+//   - Returns 0 on type mismatch (operand kind not matching the
+//     helper's scalar kind), matching the other runtime helpers so
+//     codegen's zero-check shape keeps working.
+//
+// Ordered double compares additionally return
+// `cel_make_error(CEL_ERR_TYPE_MISMATCH)` when either OK operand is
+// NaN — the same spec rule `LowerDoubleOrderedCompare` enforces on
+// the scalar path.  Equality (`==` / `!=`) on NaN is well-defined by
+// IEEE 754 and goes through the normal `d == d` compare.
+uint32_t cel_cmp_int_eq(uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_ne(uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_lt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_le(uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_gt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_int_ge(uint32_t a, uint32_t b);
+
+uint32_t cel_cmp_uint_eq(uint32_t a, uint32_t b);
+uint32_t cel_cmp_uint_ne(uint32_t a, uint32_t b);
+uint32_t cel_cmp_uint_lt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_uint_le(uint32_t a, uint32_t b);
+uint32_t cel_cmp_uint_gt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_uint_ge(uint32_t a, uint32_t b);
+
+uint32_t cel_cmp_double_eq(uint32_t a, uint32_t b);
+uint32_t cel_cmp_double_ne(uint32_t a, uint32_t b);
+uint32_t cel_cmp_double_lt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_double_le(uint32_t a, uint32_t b);
+uint32_t cel_cmp_double_gt(uint32_t a, uint32_t b);
+uint32_t cel_cmp_double_ge(uint32_t a, uint32_t b);
+
+uint32_t cel_cmp_bool_eq(uint32_t a, uint32_t b);
+uint32_t cel_cmp_bool_ne(uint32_t a, uint32_t b);
+
 #ifdef __cplusplus
 }
 #endif

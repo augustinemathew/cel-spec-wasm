@@ -1,5 +1,6 @@
 #include "compiler/runtime/cel_runtime.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -829,6 +830,28 @@ TEST_F(RuntimeTest, UnknownMergeRejectsZeroOffset) {
   EXPECT_EQ(cel_unknown_merge(unk, 0), 0u);
 }
 
+TEST_F(RuntimeTest, UnknownMergeHandlesEmptySet) {
+  // The host `get_field` trampoline mints UNKNOWNs with payload.unk == 0
+  // on FULL attribute-pattern matches (provenance not surfaced yet).
+  // Both-empty must not collapse to 0; it must return a usable UNKNOWN
+  // so wrapping 3VL absorbers see the kind.
+  uint32_t empty_unk = cel_alloc(sizeof(CelValue));
+  CelValue* v = cel_value_at(empty_unk);
+  v->kind = CEL_UNKNOWN;
+  v->payload.unk = 0;
+  uint32_t empty_unk2 = cel_alloc(sizeof(CelValue));
+  CelValue* v2 = cel_value_at(empty_unk2);
+  v2->kind = CEL_UNKNOWN;
+  v2->payload.unk = 0;
+  uint32_t real_unk = cel_make_unknown(42);
+
+  // both empty → left-biased return
+  EXPECT_EQ(cel_unknown_merge(empty_unk, empty_unk2), empty_unk);
+  // empty + real → real side wins (no ids lost)
+  EXPECT_EQ(cel_unknown_merge(empty_unk, real_unk), real_unk);
+  EXPECT_EQ(cel_unknown_merge(real_unk, empty_unk), real_unk);
+}
+
 // ---- cel_not --------------------------------------------------------------
 
 TEST_F(RuntimeTest, NotBoolFlips) {
@@ -1301,6 +1324,118 @@ TEST_F(RuntimeTest, ScalarAtZeroOffsetIsNoOp) {
   cel_uint_add_at_uu(0, 1u, 2u);
   cel_int_neg_at_i(0, 1);
   EXPECT_EQ(KindOf(null_off), prev_kind);
+}
+
+// ---- 3VL-aware comparison helpers (M4 Slice F1) --------------------------
+//
+// Each helper must (a) forward dominant non-OK status so absorbing
+// operators upstream can see UNKNOWN / ERROR as values, (b) compute the
+// normal boolean result when both operands are OK, and (c) return 0
+// on kind-mismatch so codegen's zero-check surfaces a bug rather than
+// a phantom OK.  The tests below exercise all three cases for int;
+// narrower coverage on the uint / double / bool variants since the
+// helpers share the same prologue.
+
+TEST_F(RuntimeTest, CmpIntEqHappyPath) {
+  ExpectBool(cel_cmp_int_eq(cel_make_int(7), cel_make_int(7)), 1);
+  ExpectBool(cel_cmp_int_eq(cel_make_int(7), cel_make_int(8)), 0);
+}
+
+TEST_F(RuntimeTest, CmpIntOrderedHappyPath) {
+  ExpectBool(cel_cmp_int_lt(cel_make_int(1), cel_make_int(2)), 1);
+  ExpectBool(cel_cmp_int_le(cel_make_int(2), cel_make_int(2)), 1);
+  ExpectBool(cel_cmp_int_gt(cel_make_int(3), cel_make_int(2)), 1);
+  ExpectBool(cel_cmp_int_ge(cel_make_int(2), cel_make_int(3)), 0);
+  ExpectBool(cel_cmp_int_ne(cel_make_int(1), cel_make_int(2)), 1);
+}
+
+TEST_F(RuntimeTest, CmpIntErrorDominates) {
+  uint32_t err = cel_make_error(CEL_ERR_DIVIDE_BY_ZERO, 0, 0);
+  uint32_t r = cel_cmp_int_lt(err, cel_make_int(5));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+  ExpectErrorWithCode(r, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, CmpIntUnknownPassesThrough) {
+  uint32_t unk = cel_make_unknown(42);
+  uint32_t r = cel_cmp_int_eq(unk, cel_make_int(5));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, CmpIntErrorDominatesUnknown) {
+  uint32_t err = cel_make_error(CEL_ERR_OVERFLOW, 0, 0);
+  uint32_t unk = cel_make_unknown(3);
+  uint32_t r = cel_cmp_int_gt(err, unk);
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+  ExpectErrorWithCode(r, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, CmpIntTwoUnknownsMerge) {
+  uint32_t r = cel_cmp_int_eq(cel_make_unknown(2), cel_make_unknown(1));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, CmpIntKindMismatchReturnsZero) {
+  // Both operands OK but the right one isn't an int — codegen bug.
+  EXPECT_EQ(cel_cmp_int_eq(cel_make_int(1), cel_make_uint(1u)), 0u);
+}
+
+TEST_F(RuntimeTest, CmpIntZeroOffsetReturnsZero) {
+  EXPECT_EQ(cel_cmp_int_eq(0, cel_make_int(1)), 0u);
+  EXPECT_EQ(cel_cmp_int_eq(cel_make_int(1), 0), 0u);
+}
+
+TEST_F(RuntimeTest, CmpUintHappyPath) {
+  ExpectBool(cel_cmp_uint_eq(cel_make_uint(7u), cel_make_uint(7u)), 1);
+  ExpectBool(cel_cmp_uint_lt(cel_make_uint(1u), cel_make_uint(2u)), 1);
+  ExpectBool(cel_cmp_uint_ge(cel_make_uint(2u), cel_make_uint(3u)), 0);
+}
+
+TEST_F(RuntimeTest, CmpUintUnknownPassesThrough) {
+  uint32_t unk = cel_make_unknown(1);
+  uint32_t r = cel_cmp_uint_lt(unk, cel_make_uint(5u));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, CmpDoubleHappyPath) {
+  ExpectBool(cel_cmp_double_eq(cel_make_double(1.5), cel_make_double(1.5)), 1);
+  ExpectBool(cel_cmp_double_lt(cel_make_double(1.0), cel_make_double(2.0)), 1);
+  ExpectBool(cel_cmp_double_ne(cel_make_double(1.0), cel_make_double(2.0)), 1);
+}
+
+TEST_F(RuntimeTest, CmpDoubleEqWithNaNIsFalse) {
+  // IEEE 754: NaN equality is well-defined (false for ==, true for !=).
+  double nan_v = std::nan("");
+  ExpectBool(cel_cmp_double_eq(cel_make_double(nan_v), cel_make_double(1.0)),
+             0);
+  ExpectBool(cel_cmp_double_ne(cel_make_double(nan_v), cel_make_double(1.0)),
+             1);
+}
+
+TEST_F(RuntimeTest, CmpDoubleOrderedNaNReturnsError) {
+  double nan_v = std::nan("");
+  uint32_t r = cel_cmp_double_lt(cel_make_double(nan_v), cel_make_double(1.0));
+  ExpectErrorWithCode(r, CEL_ERR_TYPE_MISMATCH);
+  r = cel_cmp_double_gt(cel_make_double(1.0), cel_make_double(nan_v));
+  ExpectErrorWithCode(r, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, CmpDoubleUnknownBeatsNaN) {
+  // cel_status_either runs first; NaN-check only on the OK path.
+  double nan_v = std::nan("");
+  uint32_t r = cel_cmp_double_lt(cel_make_unknown(2), cel_make_double(nan_v));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, CmpBoolEqHappyPath) {
+  ExpectBool(cel_cmp_bool_eq(cel_make_bool(1), cel_make_bool(1)), 1);
+  ExpectBool(cel_cmp_bool_eq(cel_make_bool(1), cel_make_bool(0)), 0);
+  ExpectBool(cel_cmp_bool_ne(cel_make_bool(1), cel_make_bool(0)), 1);
+}
+
+TEST_F(RuntimeTest, CmpBoolUnknownPassesThrough) {
+  uint32_t r = cel_cmp_bool_eq(cel_make_unknown(7), cel_make_bool(1));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
 }
 
 }  // namespace
