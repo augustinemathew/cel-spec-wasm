@@ -3,17 +3,17 @@
 //   - only string qualifiers (field selects; map lookups and list
 //     indexing land with M5 collections);
 //   - wildcards as `*` segments in a dotted path;
-//   - `MatchType { NONE, PARTIAL, FULL }` matching an `Attribute`
+//   - `MatchType { kNone, kPartial, kFull }` matching an `Attribute`
 //     against a pattern, with the same semantics as cel-cpp
 //     `AttributePattern::IsMatch` (pattern-shorter-or-equal-to-attribute
 //     → FULL, pattern-longer → PARTIAL, any qualifier mismatch → NONE).
 //
 // When a select-site's attribute path matches a host-configured
-// unknown pattern at FULL, the `cel_host.get_field` trampoline
+// unknown pattern at kFull, the `cel_host.get_field` trampoline
 // produces `CelValue{CEL_UNKNOWN}` instead of resolving the field, and
-// the 3VL plumbing elsewhere carries it to the eval result.  PARTIAL
+// the 3VL plumbing elsewhere carries it to the eval result.  kPartial
 // matches do NOT produce UNKNOWN on their own — they resolve
-// normally; a deeper select under the partial match will FULL-match
+// normally; a deeper select under the partial match will kFull-match
 // and produce UNKNOWN there.
 //
 // The parser accepts dotted paths of the form
@@ -25,6 +25,7 @@
 #ifndef CELWASM_COMPILER_HOST_ATTRIBUTE_H_
 #define CELWASM_COMPILER_HOST_ATTRIBUTE_H_
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -43,7 +44,9 @@ class AttributeQualifier {
  public:
   explicit AttributeQualifier(std::string name) : name_(std::move(name)) {}
 
-  absl::string_view name() const { return name_; }
+  absl::string_view name() const {
+    return name_;
+  }
 
   bool operator==(const AttributeQualifier& other) const {
     return name_ == other.name_;
@@ -57,7 +60,7 @@ class AttributeQualifier {
 // (matches any qualifier value).  Wildcard only matches at its
 // position, not across the path (e.g. `a.*` matches `a.x` but not
 // `a.x.y` — length rules below handle longer attributes via
-// MatchType::FULL).
+// MatchType::kFull).
 class AttributeQualifierPattern {
  public:
   static AttributeQualifierPattern OfName(std::string name) {
@@ -68,11 +71,12 @@ class AttributeQualifierPattern {
     return AttributeQualifierPattern(std::nullopt);
   }
 
-  bool is_wildcard() const { return !value_.has_value(); }
+  bool is_wildcard() const {
+    return !value_.has_value();
+  }
 
   bool IsMatch(const AttributeQualifier& q) const {
-    if (is_wildcard()) return true;
-    return value_.value() == q;
+    return !value_.has_value() || *value_ == q;
   }
 
  private:
@@ -90,8 +94,12 @@ class Attribute {
   Attribute(std::string variable, std::vector<AttributeQualifier> path)
       : variable_(std::move(variable)), path_(std::move(path)) {}
 
-  absl::string_view variable() const { return variable_; }
-  absl::Span<const AttributeQualifier> qualifier_path() const { return path_; }
+  absl::string_view variable() const {
+    return variable_;
+  }
+  absl::Span<const AttributeQualifier> qualifier_path() const {
+    return path_;
+  }
 
  private:
   std::string variable_;
@@ -102,26 +110,28 @@ class Attribute {
 // dotted path like `request.user.*` or constructed programmatically.
 class AttributePattern {
  public:
-  enum class MatchType {
-    NONE,     // pattern does not match this attribute nor any of its children
-    PARTIAL,  // pattern refers to something nested within the attribute
-    FULL,     // pattern matches the attribute itself (or one of its ancestors)
+  enum class MatchType : std::uint8_t {
+    kNone,     // pattern does not match this attribute nor any of its children
+    kPartial,  // pattern refers to something nested within the attribute
+    kFull,     // pattern matches the attribute itself (or one of its ancestors)
   };
 
   AttributePattern(std::string variable,
                    std::vector<AttributeQualifierPattern> path)
       : variable_(std::move(variable)), path_(std::move(path)) {}
 
-  absl::string_view variable() const { return variable_; }
+  absl::string_view variable() const {
+    return variable_;
+  }
 
   // Implements the same three-way decision as cel-cpp's
   // `cel::AttributePattern::IsMatch`:
-  //   - different root variable             → NONE
-  //   - pattern length > attribute length   → PARTIAL (if all shared
+  //   - different root variable             → kNone
+  //   - pattern length > attribute length   → kPartial (if all shared
   //                                           qualifiers match)
-  //   - pattern length ≤ attribute length   → FULL (if all pattern
+  //   - pattern length ≤ attribute length   → kFull (if all pattern
   //                                           qualifiers match)
-  //   - any qualifier mismatch              → NONE
+  //   - any qualifier mismatch              → kNone
   MatchType IsMatch(const Attribute& attr) const;
 
  private:

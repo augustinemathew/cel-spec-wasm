@@ -56,7 +56,9 @@ absl::StatusOr<CelAbi> BuildCelAbi(const TypedAst& typed,
     AttributeEntry* row = abi.add_attributes();
     row->set_id(attr_id++);
     row->set_variable(e.variable);
-    for (const std::string& q : e.qualifiers) row->add_qualifiers(q);
+    for (const std::string& q : e.qualifiers) {
+      row->add_qualifiers(q);
+    }
   }
 
   // `function_set` and `layout` stay at their defaults — the

@@ -49,10 +49,22 @@
 #include "wasm.h"
 #include "wasmtime.h"
 
+// ABSL_FLAG expands to a file-scope variable plus two macro-named
+// helper structs.  clang-tidy flags all of them:
+//   - `misc-use-internal-linkage` — wants `static` / anon-namespace,
+//     but the macro is designed around external linkage.
+//   - `bugprone-throwing-static-initialization` — `std::string` flag
+//     defaults can throw on bad_alloc, but the same risk applies to
+//     every absl-based binary; ABSL accepts it.
+// Both are tracked in doc/implementation-plan/lint-backlog.md for the
+// other CLI (celwasmc_main.cc); suppressing here keeps the new
+// binary consistent rather than expanding the backlog further.
+// NOLINTBEGIN(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 ABSL_FLAG(std::string, e, "", "CEL expression to compile and evaluate");
 ABSL_FLAG(std::string, description, "<input>",
           "Source description used in parser/checker diagnostics");
-ABSL_FLAG(bool, reject_dyn, true, "Reject expressions with any DYN-typed nodes");
+ABSL_FLAG(bool, reject_dyn, true,
+          "Reject expressions with any DYN-typed nodes");
 ABSL_FLAG(std::string, schema, "",
           "Path to a textual .proto source file describing proto message "
           "types referenced by --var.  Mutually exclusive with "
@@ -74,6 +86,7 @@ ABSL_FLAG(std::string, unknown_attrs, "",
           "position).  Any `cel_host.get_field` call whose rooted "
           "attribute path FULL-matches a pattern produces a CelValue "
           "with kind=CEL_UNKNOWN.");
+// NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace {
 
@@ -190,6 +203,27 @@ int PrintErrorOrUnknown(const absl::Status& s) {
   return 1;
 }
 
+// Installs `--unknown_attrs` patterns on `loaded`.  Returns 0 on
+// success; on failure prints the diagnostic on stderr and returns the
+// CLI exit code (always 1 — parse / installation failures are hard
+// config errors, not CEL-level UNKNOWN / ERROR).
+int InstallUnknownPatterns(celwasm::LoadedEval& loaded,
+                           absl::string_view unknown_attrs_flag) {
+  if (unknown_attrs_flag.empty()) return 0;
+  auto patterns = ParsePatternList(unknown_attrs_flag);
+  if (!patterns.ok()) {
+    std::fprintf(stderr, "%s\n",
+                 std::string(patterns.status().message()).c_str());
+    return 1;
+  }
+  if (auto s = loaded.SetUnknownPatterns(*std::move(patterns)); !s.ok()) {
+    std::fprintf(stderr, "SetUnknownPatterns: %s\n",
+                 std::string(s.message()).c_str());
+    return 1;
+  }
+  return 0;
+}
+
 int Run(absl::string_view expression, const celwasm::CheckOptions& opts,
         bool reject_dyn, absl::string_view unknown_attrs_flag) {
   auto typed = celwasm::ParseAndCheck(expression, opts);
@@ -218,24 +252,13 @@ int Run(absl::string_view expression, const celwasm::CheckOptions& opts,
     return 1;
   }
 
-  if (!unknown_attrs_flag.empty()) {
-    auto patterns = ParsePatternList(unknown_attrs_flag);
-    if (!patterns.ok()) {
-      std::fprintf(stderr, "%s\n",
-                   std::string(patterns.status().message()).c_str());
-      return 1;
-    }
-    if (auto s = loaded->SetUnknownPatterns(*std::move(patterns)); !s.ok()) {
-      std::fprintf(stderr, "SetUnknownPatterns: %s\n",
-                   std::string(s.message()).c_str());
-      return 1;
-    }
+  if (int rc = InstallUnknownPatterns(*loaded, unknown_attrs_flag); rc != 0) {
+    return rc;
   }
 
   const std::vector<wasmtime_val_t> args = ZeroArgsFor(vars);
-  auto result = args.empty()
-                    ? loaded->CallNullaryEval()
-                    : loaded->CallEval(absl::MakeConstSpan(args));
+  auto result = args.empty() ? loaded->CallNullaryEval()
+                             : loaded->CallEval(absl::MakeConstSpan(args));
   if (!result.ok()) return PrintErrorOrUnknown(result.status());
   PrintValue(*result);
   return 0;
@@ -243,7 +266,9 @@ int Run(absl::string_view expression, const celwasm::CheckOptions& opts,
 
 }  // namespace
 
-int main(int argc, char** argv) {
+// absl/proto allocation may throw, but we let the runtime terminate
+// rather than catching in a CLI entry point.
+int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   absl::ParseCommandLine(argc, argv);
 
   const std::string& expression = absl::GetFlag(FLAGS_e);

@@ -13,27 +13,23 @@
 namespace celwasm {
 namespace {
 
-// Pre-order walk: every SelectExpr contributes its `(field_number,
-// field())` pair to the pool, then the walk recurses into child
-// expressions.  The ordering matters — codegen lowers the same tree
-// top-down and calls `Intern` at each SelectExpr in the same order,
-// so the two agree on intern IDs by construction.
 void WalkAndIntern(const TypedAst& ast, const cel::Expr& expr,
-                   FieldNamePool& pool) {
+                   FieldNamePool& pool);
+
+// Recurses into every child of `expr` that can transitively contain a
+// SelectExpr.  Kept separate from `WalkAndIntern` so the outer function
+// stays under the lint's size threshold; the only case that is not
+// pure child-recursion is kSelectExpr, which `WalkAndIntern` handles
+// directly before delegating here.
+void WalkChildren(const TypedAst& ast, const cel::Expr& expr,
+                  FieldNamePool& pool) {
   switch (expr.kind_case()) {
-    case cel::ExprKindCase::kSelectExpr: {
-      const cel::SelectExpr& s = expr.select_expr();
-      const NodeAnnotation* ann = ast.annotations().Find(expr.id());
-      const uint32_t field_number =
-          ann != nullptr ? static_cast<uint32_t>(ann->field_number) : 0u;
-      pool.Intern(field_number, s.field());
-      WalkAndIntern(ast, s.operand(), pool);
-      break;
-    }
     case cel::ExprKindCase::kCallExpr: {
       const cel::CallExpr& c = expr.call_expr();
       if (c.has_target()) WalkAndIntern(ast, c.target(), pool);
-      for (const cel::Expr& arg : c.args()) WalkAndIntern(ast, arg, pool);
+      for (const cel::Expr& arg : c.args()) {
+        WalkAndIntern(ast, arg, pool);
+      }
       break;
     }
     case cel::ExprKindCase::kListExpr: {
@@ -64,6 +60,7 @@ void WalkAndIntern(const TypedAst& ast, const cel::Expr& expr,
       WalkAndIntern(ast, ce.result(), pool);
       break;
     }
+    case cel::ExprKindCase::kSelectExpr:
     case cel::ExprKindCase::kConstant:
     case cel::ExprKindCase::kIdentExpr:
     case cel::ExprKindCase::kUnspecifiedExpr:
@@ -71,14 +68,32 @@ void WalkAndIntern(const TypedAst& ast, const cel::Expr& expr,
   }
 }
 
+// Pre-order walk: every SelectExpr contributes its `(field_number,
+// field())` pair to the pool, then the walk recurses into child
+// expressions.  The ordering matters — codegen lowers the same tree
+// top-down and calls `Intern` at each SelectExpr in the same order,
+// so the two agree on intern IDs by construction.
+void WalkAndIntern(const TypedAst& ast, const cel::Expr& expr,
+                   FieldNamePool& pool) {
+  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr) {
+    const cel::SelectExpr& s = expr.select_expr();
+    const NodeAnnotation* ann = ast.annotations().Find(expr.id());
+    const uint32_t field_number =
+        ann != nullptr ? static_cast<uint32_t>(ann->field_number) : 0u;
+    pool.Intern(field_number, s.field());
+    WalkAndIntern(ast, s.operand(), pool);
+    return;
+  }
+  WalkChildren(ast, expr, pool);
+}
+
 }  // namespace
 
-uint32_t FieldNamePool::Intern(uint32_t field_number,
-                               absl::string_view name) {
+uint32_t FieldNamePool::Intern(uint32_t field_number, absl::string_view name) {
   std::string key = absl::StrCat(field_number, ":", name);
   auto it = index_.find(key);
   if (it != index_.end()) return it->second;
-  const uint32_t id = static_cast<uint32_t>(entries_.size());
+  const auto id = static_cast<uint32_t>(entries_.size());
   entries_.push_back(Entry{field_number, std::string(name)});
   index_.emplace(std::move(key), id);
   return id;

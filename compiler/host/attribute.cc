@@ -24,13 +24,15 @@ bool IsIdentStart(char c) {
 
 absl::StatusOr<std::string> ReadIdent(absl::string_view text, size_t* pos) {
   const size_t start = *pos;
-  if (start >= text.size() || !IsIdentStart(text[start])) {
+  if (start >= text.size() || !IsIdentStart(text.at(start))) {
     return absl::InvalidArgumentError(
         absl::StrCat("unknown-attrs: expected identifier at offset ", start,
                      " in `", text, "`"));
   }
   size_t end = start + 1;
-  while (end < text.size() && IsIdentChar(text[end])) ++end;
+  while (end < text.size() && IsIdentChar(text.at(end))) {
+    ++end;
+  }
   *pos = end;
   return std::string(text.substr(start, end - start));
 }
@@ -39,18 +41,20 @@ absl::StatusOr<std::string> ReadIdent(absl::string_view text, size_t* pos) {
 
 AttributePattern::MatchType AttributePattern::IsMatch(
     const Attribute& attr) const {
-  if (attr.variable() != variable_) return MatchType::NONE;
+  if (attr.variable() != variable_) return MatchType::kNone;
   // cel-cpp's convention: if the pattern is longer than the attribute,
   // the pattern *might* describe something nested inside the attribute
-  // — PARTIAL.  Otherwise the pattern covers the attribute (and any
-  // children) — FULL.
+  // — kPartial.  Otherwise the pattern covers the attribute (and any
+  // children) — kFull.
   const auto pat_len = path_.size();
-  const auto attr_len = attr.qualifier_path().size();
-  MatchType result =
-      pat_len > attr_len ? MatchType::PARTIAL : MatchType::FULL;
+  const auto qualifier_path = attr.qualifier_path();
+  const auto attr_len = qualifier_path.size();
+  const MatchType result =
+      pat_len > attr_len ? MatchType::kPartial : MatchType::kFull;
   const size_t cmp_len = pat_len < attr_len ? pat_len : attr_len;
-  for (size_t i = 0; i < cmp_len; ++i) {
-    if (!path_.at(i).IsMatch(attr.qualifier_path()[i])) return MatchType::NONE;
+  auto attr_it = qualifier_path.begin();
+  for (size_t i = 0; i < cmp_len; ++i, ++attr_it) {
+    if (!path_.at(i).IsMatch(*attr_it)) return MatchType::kNone;
   }
   return result;
 }
@@ -66,13 +70,12 @@ absl::StatusOr<AttributePattern> ParseUnknownAttributePattern(
   if (!variable.ok()) return variable.status();
   std::vector<AttributeQualifierPattern> path;
   while (pos < text.size()) {
-    if (text[pos] != '.') {
-      return absl::InvalidArgumentError(
-          absl::StrCat("unknown-attrs: expected `.` at offset ", pos, " in `",
-                       text, "`"));
+    if (text.at(pos) != '.') {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "unknown-attrs: expected `.` at offset ", pos, " in `", text, "`"));
     }
     ++pos;  // consume '.'
-    if (pos < text.size() && text[pos] == '*') {
+    if (pos < text.size() && text.at(pos) == '*') {
       path.push_back(AttributeQualifierPattern::Wildcard());
       ++pos;
       continue;

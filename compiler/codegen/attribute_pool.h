@@ -67,7 +67,9 @@ class AttributePool {
   // invoke these parallel builds so their intern IDs agree.
   static AttributePool FromTypedAst(const TypedAst& ast);
 
-  absl::Span<const Entry> entries() const { return entries_; }
+  absl::Span<const Entry> entries() const {
+    return entries_;
+  }
 
  private:
   std::vector<Entry> entries_;

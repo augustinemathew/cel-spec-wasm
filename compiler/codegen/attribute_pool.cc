@@ -24,23 +24,20 @@ std::string MakeKey(absl::string_view variable,
                       absl::StrJoin(qualifiers, std::string(1, '\0')));
 }
 
-// Pre-order walk: every SelectExpr contributes its full attribute
-// path (rooted at the enclosing identifier) to the pool, then the
-// walk recurses into child expressions.  The outer-most select is
-// interned first so IDs match the codegen's LowerSelectOperand
-// order, which interns the outer path before recursing.
-void WalkAndIntern(const cel::Expr& expr, AttributePool& pool) {
+void WalkAndIntern(const cel::Expr& expr, AttributePool& pool);
+
+// Recurses into every child of `expr` that can transitively contain a
+// SelectExpr.  Extracted to keep `WalkAndIntern` under the lint's
+// function-size threshold; only kSelectExpr has non-trivial
+// per-kind logic and it lives on the fast path in `WalkAndIntern`.
+void WalkChildren(const cel::Expr& expr, AttributePool& pool) {
   switch (expr.kind_case()) {
-    case cel::ExprKindCase::kSelectExpr: {
-      auto entry = AttributePool::BuildPath(expr);
-      pool.Intern(entry.variable, entry.qualifiers);
-      WalkAndIntern(expr.select_expr().operand(), pool);
-      break;
-    }
     case cel::ExprKindCase::kCallExpr: {
       const cel::CallExpr& c = expr.call_expr();
       if (c.has_target()) WalkAndIntern(c.target(), pool);
-      for (const cel::Expr& arg : c.args()) WalkAndIntern(arg, pool);
+      for (const cel::Expr& arg : c.args()) {
+        WalkAndIntern(arg, pool);
+      }
       break;
     }
     case cel::ExprKindCase::kListExpr: {
@@ -71,11 +68,27 @@ void WalkAndIntern(const cel::Expr& expr, AttributePool& pool) {
       WalkAndIntern(ce.result(), pool);
       break;
     }
+    case cel::ExprKindCase::kSelectExpr:
     case cel::ExprKindCase::kConstant:
     case cel::ExprKindCase::kIdentExpr:
     case cel::ExprKindCase::kUnspecifiedExpr:
       break;
   }
+}
+
+// Pre-order walk: every SelectExpr contributes its full attribute
+// path (rooted at the enclosing identifier) to the pool, then the
+// walk recurses into child expressions.  The outer-most select is
+// interned first so IDs match the codegen's LowerSelectOperand
+// order, which interns the outer path before recursing.
+void WalkAndIntern(const cel::Expr& expr, AttributePool& pool) {
+  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr) {
+    auto entry = AttributePool::BuildPath(expr);
+    pool.Intern(entry.variable, entry.qualifiers);
+    WalkAndIntern(expr.select_expr().operand(), pool);
+    return;
+  }
+  WalkChildren(expr, pool);
 }
 
 }  // namespace
@@ -85,7 +98,7 @@ uint32_t AttributePool::Intern(absl::string_view variable,
   std::string key = MakeKey(variable, qualifiers);
   auto it = index_.find(key);
   if (it != index_.end()) return it->second;
-  const uint32_t id = static_cast<uint32_t>(entries_.size());
+  const auto id = static_cast<uint32_t>(entries_.size());
   Entry e;
   e.variable = std::string(variable);
   e.qualifiers.assign(qualifiers.begin(), qualifiers.end());

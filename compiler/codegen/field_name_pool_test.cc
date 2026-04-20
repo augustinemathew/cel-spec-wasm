@@ -3,8 +3,6 @@
 #include <string>
 
 #include "absl/log/check.h"
-#include "absl/status/status.h"
-#include "absl/status/status_matchers.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/typed_ast.h"
 #include "compiler/testdata/e2e_fixture.pb.h"
@@ -12,8 +10,6 @@
 
 namespace celwasm {
 namespace {
-
-using ::absl_testing::IsOk;
 
 TypedAst CheckOrDie(const std::string& source,
                     const CheckOptions& options = {}) {
@@ -30,7 +26,7 @@ CheckOptions CustomerOpts() {
   // nothing in this TU mentions the type.
   (void)celwasm::testdata::Customer::descriptor();
   CheckOptions opts;
-  opts.variable_specs.push_back("c:celwasm.testdata.Customer");
+  opts.variable_specs.emplace_back("c:celwasm.testdata.Customer");
   return opts;
 }
 
@@ -44,8 +40,8 @@ TEST(FieldNamePoolTest, InternReturnsSameIdForSameKey) {
 
 TEST(FieldNamePoolTest, InternDistinguishesByNumberAndName) {
   FieldNamePool pool;
-  const uint32_t a = pool.Intern(1, "id");       // Customer.id
-  const uint32_t b = pool.Intern(2, "id");       // Address.id (same name, diff num)
+  const uint32_t a = pool.Intern(1, "id");  // Customer.id
+  const uint32_t b = pool.Intern(2, "id");  // Address.id (same name, diff num)
   const uint32_t c = pool.Intern(1, "user_id");  // diff name, same num
   EXPECT_NE(a, b);
   EXPECT_NE(a, c);
@@ -70,19 +66,18 @@ TEST(FieldNamePoolTest, FromTypedAstInternsFlatSelect) {
   TypedAst typed = CheckOrDie("c.age + 1", CustomerOpts());
   FieldNamePool pool = FieldNamePool::FromTypedAst(typed);
   ASSERT_EQ(pool.entries().size(), 1u);
-  EXPECT_EQ(pool.entries()[0].name, "age");
-  EXPECT_GT(pool.entries()[0].field_number, 0u);
+  EXPECT_EQ(pool.entries().front().name, "age");
+  EXPECT_GT(pool.entries().front().field_number, 0u);
 }
 
 TEST(FieldNamePoolTest, FromTypedAstInternsNestedSelectInPreOrder) {
-  TypedAst typed =
-      CheckOrDie("c.billing_address.city", CustomerOpts());
+  TypedAst typed = CheckOrDie("c.billing_address.city", CustomerOpts());
   FieldNamePool pool = FieldNamePool::FromTypedAst(typed);
   ASSERT_EQ(pool.entries().size(), 2u);
   // Outer select (.city) visited before its operand (.billing_address):
   // pre-order walk.
-  EXPECT_EQ(pool.entries()[0].name, "city");
-  EXPECT_EQ(pool.entries()[1].name, "billing_address");
+  EXPECT_EQ(pool.entries().front().name, "city");
+  EXPECT_EQ(pool.entries().back().name, "billing_address");
 }
 
 TEST(FieldNamePoolTest, FromTypedAstDedupsRepeatedField) {

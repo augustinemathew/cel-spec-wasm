@@ -1,5 +1,6 @@
 #include "compiler/host/cel_host_wasmtime.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -189,7 +190,7 @@ Attribute AttributeFromEntry(const AttributeTableEntry& entry) {
   for (const std::string& q : entry.qualifiers) {
     path.emplace_back(q);
   }
-  return Attribute(entry.variable, std::move(path));
+  return {entry.variable, std::move(path)};
 }
 
 wasm_trap_t* GetFieldTrampoline(void* data, wasmtime_caller_t* /*caller*/,
@@ -388,10 +389,11 @@ void CelHostEnv::SetUnknownPatterns(std::vector<AttributePattern> patterns) {
 }
 
 bool CelHostEnv::AttributeIsFullyUnknown(const Attribute& attr) const {
-  for (const AttributePattern& pat : unknown_patterns_) {
-    if (pat.IsMatch(attr) == AttributePattern::MatchType::FULL) return true;
-  }
-  return false;
+  return std::any_of(unknown_patterns_.begin(), unknown_patterns_.end(),
+                     [&attr](const AttributePattern& pat) {
+                       return pat.IsMatch(attr) ==
+                              AttributePattern::MatchType::kFull;
+                     });
 }
 
 absl::Status CelHostEnv::Register(wasmtime_linker_t* linker) {
