@@ -164,8 +164,16 @@ TEST(ExprLowerTest, DoubleComparisons) {
   auto L = LowerOk("1.0 <= 2.0");
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenLeFloat64());
+  // Double ordered-compare traps on NaN: Block[set_a, set_b, if(any_nan) trap,
+  // Binary(op, a, b)].  The last child is the actual compare.
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  const BinaryenIndex n = BinaryenBlockGetNumChildren(body);
+  ASSERT_EQ(n, 4u);
+  BinaryenExpressionRef cmp = BinaryenBlockGetChildAt(body, 3);
+  ASSERT_EQ(BinaryenExpressionGetId(cmp), BinaryenBinaryId());
+  EXPECT_EQ(BinaryenBinaryGetOp(cmp), BinaryenLeFloat64());
+  BinaryenExpressionRef trap_if = BinaryenBlockGetChildAt(body, 2);
+  EXPECT_EQ(BinaryenExpressionGetId(trap_if), BinaryenIfId());
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 

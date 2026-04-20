@@ -613,6 +613,19 @@ expression from `m1-type-checker.md`, plus:
       `SignedMulNegativeResultRoundTrips`, and
       `SignedMulIntMinByOneRoundTrips` guard against the refactor
       breaking the non-overflow path.
+- [x] NaN-unordered compare produces ERROR for `<` / `<=` / `>` / `>=`,
+      OK(false) for `==` / `!=`.  **M4 slice D (2026-04-19):** codegen
+      routes every ordered double compare through
+      `LowerDoubleOrderedCompare`, which traps via
+      `BinaryenUnreachable` when either operand is NaN (IEEE 754
+      `x != x`).  Equality stays as a plain `f64.eq` / `f64.ne`, which
+      IEEE 754 defines to return false for any NaN input — no trap
+      needed.  Covered by `eval_test::{DoubleLessNaNOnLeftTraps,
+      DoubleLessNaNOnRightTraps, DoubleLessEqNaNTraps,
+      DoubleGreaterNaNTraps, DoubleGreaterEqNaNTraps,
+      DoubleEqualityWithNaNReturnsFalseNotTrap,
+      DoubleOrderedCompareNonNaNStillWorks, DoubleDivZeroProducesInfNotTrap}`.
+      The "observable ERROR value" path lands with the 3VL retrofit.
 - [ ] String coercion errors where the spec forbids them.
 - [ ] `unknown` propagation through `&&` / `||` (M4).
 - [ ] Partial-eval: `unknown && false → false` commutatively (M4).

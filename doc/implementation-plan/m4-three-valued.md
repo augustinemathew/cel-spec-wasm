@@ -133,9 +133,25 @@ flips the arithmetic-ERROR path from trap to observable CelValue.
       `_int_ / 0`, `INT64_MIN / -1`, and `_int_ % 0` all produce a
       CEL_ERROR that trips the trap-on-ERROR path.  `INT64_MIN % -1`
       is defined as 0 per the helper, matching cel-go.)
-- [ ] Double comparisons convert "unordered" results (NaN inputs)
+- [x] Double comparisons convert "unordered" results (NaN inputs)
       into an `ERROR` return instead of the plain `0` / `1` i32 that
-      M2 emits.
+      M2 emits.  **M4 slice D (2026-04-19):** ordered double compares
+      route through `LowerDoubleOrderedCompare`, which binds both
+      operands to f64 locals, checks `a != a | b != b` (true iff
+      either is NaN), traps via `BinaryenUnreachable` on NaN, and
+      otherwise returns `f64.<op>`.  Equality (`==` / `!=`) stays as
+      a bare `f64.eq` / `f64.ne` because IEEE 754 already defines
+      those to return false / true for any NaN input — no trap
+      needed, no CEL-spec gap.  Like Slice B, this is the trap
+      stopgap; the observable-ERROR value path lands with the 3VL
+      retrofit.  Covered by 8 e2e tests in `eval_test.cc`
+      (`DoubleLessNaN*Traps`, `DoubleLessEqNaNTraps`,
+      `DoubleGreaterNaNTraps`, `DoubleGreaterEqNaNTraps`,
+      `DoubleEqualityWithNaNReturnsFalseNotTrap`,
+      `DoubleOrderedCompareNonNaNStillWorks`,
+      `DoubleDivZeroProducesInfNotTrap`), plus updated
+      `expr_lower_test::DoubleComparisons` asserting the new
+      Block[set_a, set_b, trap_if, Binary] body shape.
 - [ ] `&&` / `||` switch from M2's scalar short-circuit to the
       three-valued `cel_and` / `cel_or` helpers.  The codegen
       inspects both operand Reprs and picks the scalar-only path

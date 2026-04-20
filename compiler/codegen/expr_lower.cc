@@ -647,12 +647,50 @@ BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
              : call;
 }
 
+// Ordered double compare with NaN-trap guard (M4 Slice D).  IEEE 754
+// defines `NaN < x`, `NaN <= x`, `NaN > x`, `NaN >= x` as all false
+// (unordered), but CEL §langdef requires NaN-in-ordered-compare to
+// produce ERROR rather than a bogus `false`.  We trap on NaN on
+// either side; the observable-ERROR retrofit lands with the 3VL
+// `&&` / `||` work.
+//
+// NaN detection uses `x != x`, which IEEE 754 defines as true iff
+// x is NaN (NaN is the only value that compares unequal to itself).
+BinaryenExpressionRef LowerDoubleOrderedCompare(LoweringContext& ctx,
+                                                BinaryenOp op,
+                                                BinaryenExpressionRef lhs,
+                                                BinaryenExpressionRef rhs) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenIndex la = ctx.AddLocal(BinaryenTypeFloat64());
+  const BinaryenIndex lb = ctx.AddLocal(BinaryenTypeFloat64());
+  auto get_a = [&]() {
+    return BinaryenLocalGet(m, la, BinaryenTypeFloat64());
+  };
+  auto get_b = [&]() {
+    return BinaryenLocalGet(m, lb, BinaryenTypeFloat64());
+  };
+  BinaryenExpressionRef set_a = BinaryenLocalSet(m, la, lhs);
+  BinaryenExpressionRef set_b = BinaryenLocalSet(m, lb, rhs);
+  BinaryenExpressionRef a_is_nan =
+      BinaryenBinary(m, BinaryenNeFloat64(), get_a(), get_a());
+  BinaryenExpressionRef b_is_nan =
+      BinaryenBinary(m, BinaryenNeFloat64(), get_b(), get_b());
+  BinaryenExpressionRef any_nan =
+      BinaryenBinary(m, BinaryenOrInt32(), a_is_nan, b_is_nan);
+  BinaryenExpressionRef trap_if =
+      BinaryenIf(m, any_nan, BinaryenUnreachable(m), /*ifFalse=*/nullptr);
+  BinaryenExpressionRef cmp = BinaryenBinary(m, op, get_a(), get_b());
+  BinaryenExpressionRef children[4] = {set_a, set_b, trap_if, cmp};
+  return BinaryenBlock(m, /*name=*/nullptr, children,
+                       /*numChildren=*/4, BinaryenTypeInt32());
+}
+
 absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
                                                       Repr arg_r,
                                                       BinaryenExpressionRef lhs,
                                                       BinaryenExpressionRef rhs,
-                                                      WasmModule& mod) {
-  BinaryenModuleRef m = mod.raw();
+                                                      LoweringContext& ctx) {
+  BinaryenModuleRef m = ctx.mod.raw();
   const bool eq = (name == op::CelOperator::EQUALS);
   const bool ne = (name == op::CelOperator::NOT_EQUALS);
   if (eq || ne) {
@@ -668,6 +706,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
   }
   auto bop = OrderedCompareOp(name, arg_r);
   if (!bop.ok()) return bop.status();
+  if (arg_r == Repr::kDouble) {
+    return LowerDoubleOrderedCompare(ctx, *bop, lhs, rhs);
+  }
   return BinaryenBinary(m, *bop, lhs, rhs);
 }
 
@@ -833,7 +874,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
   if (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
       fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
       fn == op::CelOperator::GREATER || fn == op::CelOperator::GREATER_EQUALS) {
-    return LowerComparison(fn, *arg_r, *l, *r, ctx.mod);
+    return LowerComparison(fn, *arg_r, *l, *r, ctx);
   }
   return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr_id);
 }

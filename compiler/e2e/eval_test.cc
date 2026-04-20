@@ -18,8 +18,10 @@
 // expr_lower_test) can still pass while the module means nothing
 // semantically; this test catches that.
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -353,6 +355,82 @@ TEST(EvalE2ETest, SignedMulIntMinByOneRoundTrips) {
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_I64);
   EXPECT_EQ(r->of.i64, INT64_MIN);
+}
+
+// ---- NaN-unordered compares (M4 Slice D) -------------------------------
+//
+// CEL §langdef specifies that NaN in an ordered compare (`<`, `<=`,
+// `>`, `>=`) produces ERROR, not a bogus `false`.  IEEE 754 says
+// `NaN op x` is always false for ordered compares — using that
+// directly would violate CEL semantics, so codegen must insert an
+// explicit NaN guard.  NaN flows in via host-provided `double`
+// params (CEL has no NaN literal) or via `0.0 / 0.0`.  For `==` /
+// `!=`, IEEE 754's NaN behavior is what CEL wants (`NaN == NaN` is
+// false, `NaN != NaN` is true), so no guard is needed there.
+//
+// Until the observable-ERROR 3VL retrofit lands, Slice D surfaces
+// NaN-in-ordered-compare as a trap (wasmtime InternalError) instead
+// of the eventual CEL_ERROR value.
+
+TEST(EvalE2ETest, DoubleLessNaNOnLeftTraps) {
+  auto r = EvaluateWithVars("x < 1.0", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, DoubleLessNaNOnRightTraps) {
+  auto r = EvaluateWithVars("1.0 < x", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, DoubleLessEqNaNTraps) {
+  auto r = EvaluateWithVars("x <= 1.0", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, DoubleGreaterNaNTraps) {
+  auto r = EvaluateWithVars("x > 1.0", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, DoubleGreaterEqNaNTraps) {
+  auto r = EvaluateWithVars("x >= 1.0", {"x:double"},
+                            {F64(std::numeric_limits<double>::quiet_NaN())});
+  EXPECT_THAT(r.status(), TrapStatus());
+}
+
+TEST(EvalE2ETest, DoubleEqualityWithNaNReturnsFalseNotTrap) {
+  // Per CEL §langdef, `==` / `!=` on NaN follow IEEE 754: NaN == NaN
+  // is false; NaN != NaN is true.  These must NOT trap — that would
+  // mean the NaN guard leaked into the equality path.
+  auto nan = F64(std::numeric_limits<double>::quiet_NaN());
+  auto r_eq = EvaluateWithVars("x == 1.0", {"x:double"}, {nan});
+  ASSERT_THAT(r_eq.status(), IsOk());
+  EXPECT_EQ(r_eq->kind, WASMTIME_I32);
+  EXPECT_EQ(r_eq->of.i32, 0);
+  auto r_ne = EvaluateWithVars("x != 1.0", {"x:double"}, {nan});
+  ASSERT_THAT(r_ne.status(), IsOk());
+  EXPECT_EQ(r_ne->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DoubleOrderedCompareNonNaNStillWorks) {
+  // Regression guard: the NaN guard must not alter ordinary double
+  // ordered-compare semantics.
+  auto r = EvaluateWithVars("x < 2.0", {"x:double"}, {F64(1.5)});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, DoubleDivZeroProducesInfNotTrap) {
+  // IEEE 754 defines double `/ 0.0` as +/- Infinity, and CEL
+  // inherits that — it's only integer div-by-zero that's ERROR.
+  auto r = Evaluate("1.0 / 0.0");
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_F64);
+  EXPECT_TRUE(std::isinf(r->of.f64));
 }
 
 TEST(EvalE2ETest, IntVariableIsReadFromFirstParam) {
