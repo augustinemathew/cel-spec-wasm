@@ -72,6 +72,12 @@ struct LoweringContext {
   // helper call reuses the slot (straight-line tree evaluation).
   std::optional<BinaryenIndex> scratch_slot;
 
+  // Pre-body setup expressions emitted by BuildParamList to box raw
+  // scalar params (today: bool only) into Repr-matching CelValue
+  // offsets before the lowered body runs.  `WithScratchSlotPrologue`
+  // prepends these in registration order.
+  std::vector<BinaryenExpressionRef> prologue_setups;
+
   BinaryenIndex AddLocal(BinaryenType type) {
     local_types.push_back(type);
     return static_cast<BinaryenIndex>(num_params + local_types.size() - 1);
@@ -122,7 +128,6 @@ void DeclareSretRootImports(WasmModule& mod) {
   const BinaryenType i64 = BinaryenTypeInt64();
   const BinaryenType f64 = BinaryenTypeFloat64();
   const BinaryenType none = BinaryenTypeNone();
-  ImportCel2(mod, "cel_box_bool", i32, i32, none);
   ImportCel2(mod, "cel_box_int", i32, i64, none);
   ImportCel2(mod, "cel_box_uint", i32, i64, none);
   ImportCel2(mod, "cel_box_double", i32, f64, none);
@@ -136,6 +141,7 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   const BinaryenType i64 = BinaryenTypeInt64();
   // Allocation + string/bytes construction (M3 slice A).
   ImportCel1(mod, "cel_alloc", i32, i32);
+  ImportCel1(mod, "cel_make_bool", i32, i32);
   ImportCel2(mod, "cel_make_string_view", i32, i32, i32);
   ImportCel2(mod, "cel_make_bytes_view", i32, i32, i32);
   // Message-value construction (M3 slice G): wraps an interned `$cel_refs`
@@ -160,6 +166,14 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel2(mod, "cel_string_starts_with", i32, i32, i32);
   ImportCel2(mod, "cel_string_ends_with", i32, i32, i32);
   ImportCel2(mod, "cel_string_contains", i32, i32, i32);
+  // 3VL helpers (M4 Slice C / 3b2): `cel_and`/`cel_or`/`cel_not` take
+  // and return CelValue offsets, propagating CEL_UNKNOWN / CEL_ERROR
+  // through the logical operators.  Repr::kBool now travels as a
+  // CelValue offset precisely so codegen can hand these values to the
+  // 3VL helpers without a separate boxing step.
+  ImportCel1(mod, "cel_not", i32, i32);
+  ImportCel2(mod, "cel_and", i32, i32, i32);
+  ImportCel2(mod, "cel_or", i32, i32, i32);
 }
 
 // Checked arithmetic (M4 Slice C commit 2).  Codegen uses the
@@ -396,8 +410,16 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
   const cel::Constant& c = expr.const_expr();
   BinaryenModuleRef m = ctx.mod.raw();
   switch (c.kind_case()) {
-    case cel::ConstantKindCase::kBool:
-      return BinaryenConst(m, BinaryenLiteralInt32(c.bool_value() ? 1 : 0));
+    case cel::ConstantKindCase::kBool: {
+      // Repr::kBool travels as a CelValue offset (M4 Slice C / 3b2),
+      // so bool literals box through `cel_make_bool` rather than
+      // emitting a raw 0/1.  The boxed offset is the one every 3VL
+      // helper (`cel_and`/`cel_or`/`cel_not`) and every
+      // bool-consuming call site speaks.
+      BinaryenExpressionRef raw =
+          BinaryenConst(m, BinaryenLiteralInt32(c.bool_value() ? 1 : 0));
+      return BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
+    }
     case cel::ConstantKindCase::kInt:
       return BinaryenConst(m, BinaryenLiteralInt64(c.int_value()));
     case cel::ConstantKindCase::kUint:
@@ -592,15 +614,14 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(absl::string_view name,
   return UnimplementedRepr(name, r, 0);
 }
 
-// Scalar `_==_` / `_!=_` opcode for bool / int / uint / double.  The
-// caller handles the span / message cases separately because they need
-// a runtime call rather than a single opcode.
+// Scalar `_==_` / `_!=_` opcode for int / uint / double.  Bool
+// operands are CelValue offsets (M4 Slice C / 3b2), so their
+// equality lowers separately via `UnboxBool` + an i32 compare.  Span
+// and message cases are runtime calls handled by their own helpers.
 absl::StatusOr<BinaryenOp> ScalarEqualityOp(absl::string_view name,
                                             Repr arg_r) {
   const bool eq = (name == op::CelOperator::EQUALS);
   switch (arg_r) {
-    case Repr::kBool:
-      return eq ? BinaryenEqInt32() : BinaryenNeInt32();
     case Repr::kInt:
     case Repr::kUint:
       return eq ? BinaryenEqInt64() : BinaryenNeInt64();
@@ -609,6 +630,23 @@ absl::StatusOr<BinaryenOp> ScalarEqualityOp(absl::string_view name,
     default:
       return UnimplementedRepr(name, arg_r, 0);
   }
+}
+
+// Unboxes a Repr::kBool CelValue offset to a raw i32 0/1 via
+// `cel_bool_from_value`.  Used wherever the bool's truth value must
+// flow into a wasm i32 condition (BinaryenIf, EqZ, etc.) or an i32
+// compare opcode (`_==_` / `_!=_` on bool operands).
+BinaryenExpressionRef UnboxBool(BinaryenModuleRef m,
+                                BinaryenExpressionRef boxed) {
+  return BinaryenCall(m, "cel_bool_from_value", &boxed, 1, BinaryenTypeInt32());
+}
+
+// Boxes a raw wasm i32 0/1 back into a Repr::kBool CelValue offset via
+// `cel_make_bool`.  Paired with UnboxBool at the boundaries where a
+// bool-returning wasm opcode or runtime helper produces a raw i32 and
+// the result position demands the boxed ABI.
+BinaryenExpressionRef BoxBool(BinaryenModuleRef m, BinaryenExpressionRef raw) {
+  return BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
 }
 
 // Ordered-compare opcode for int64 operands.
@@ -655,8 +693,8 @@ absl::StatusOr<BinaryenOp> OrderedCompareOp(absl::string_view name,
 
 // String / bytes equality can't be a single opcode — both operands
 // are i32 offsets to CelValues, and the payload compare must walk
-// the bytes in linear memory.  Delegate to the runtime helper and,
-// for `_!=_`, invert with `i32.eqz`.
+// the bytes in linear memory.  Delegate to the runtime helper, invert
+// for `_!=_`, and box the raw i32 into a Repr::kBool CelValue offset.
 BinaryenExpressionRef LowerSpanEquality(absl::string_view name, Repr arg_r,
                                         BinaryenExpressionRef lhs,
                                         BinaryenExpressionRef rhs,
@@ -666,9 +704,10 @@ BinaryenExpressionRef LowerSpanEquality(absl::string_view name, Repr arg_r,
   BinaryenExpressionRef args[2] = {lhs, rhs};
   BinaryenExpressionRef call =
       BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
-  return (name == op::CelOperator::NOT_EQUALS)
-             ? BinaryenUnary(m, BinaryenEqZInt32(), call)
-             : call;
+  BinaryenExpressionRef raw = (name == op::CelOperator::NOT_EQUALS)
+                                  ? BinaryenUnary(m, BinaryenEqZInt32(), call)
+                                  : call;
+  return BoxBool(m, raw);
 }
 
 // Message equality can't be a structural comparison of externrefs —
@@ -683,9 +722,10 @@ BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
   BinaryenExpressionRef args[2] = {lhs, rhs};
   BinaryenExpressionRef call =
       BinaryenCall(m, "message_eq", args, 2, BinaryenTypeInt32());
-  return (name == op::CelOperator::NOT_EQUALS)
-             ? BinaryenUnary(m, BinaryenEqZInt32(), call)
-             : call;
+  BinaryenExpressionRef raw = (name == op::CelOperator::NOT_EQUALS)
+                                  ? BinaryenUnary(m, BinaryenEqZInt32(), call)
+                                  : call;
+  return BoxBool(m, raw);
 }
 
 // Ordered double compare with NaN-ERROR guard (M4 Slice D + C/3b1).
@@ -732,7 +772,8 @@ BinaryenExpressionRef LowerDoubleOrderedCompare(LoweringContext& ctx,
   BinaryenExpressionRef err_if =
       BinaryenIf(m, any_nan, err_block, /*ifFalse=*/nullptr);
   BinaryenExpressionRef cmp = BinaryenBinary(m, op, get_a(), get_b());
-  BinaryenExpressionRef children[4] = {set_a, set_b, err_if, cmp};
+  BinaryenExpressionRef boxed = BoxBool(m, cmp);
+  BinaryenExpressionRef children[4] = {set_a, set_b, err_if, boxed};
   return BinaryenBlock(m, /*name=*/nullptr, children,
                        /*numChildren=*/4, BinaryenTypeInt32());
 }
@@ -752,16 +793,26 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
     if (arg_r == Repr::kMessage) {
       return LowerMessageEquality(name, lhs, rhs, m);
     }
+    if (arg_r == Repr::kBool) {
+      // Both operands are CelValue offsets — unbox to raw i32 0/1 and
+      // compare.  We don't forward 3VL status through `_==_` / `_!=_`:
+      // the checker already guarantees both sides are kBool, and
+      // CEL equality on a non-bool value is a compile-time error.
+      BinaryenExpressionRef raw =
+          BinaryenBinary(m, eq ? BinaryenEqInt32() : BinaryenNeInt32(),
+                         UnboxBool(m, lhs), UnboxBool(m, rhs));
+      return BoxBool(m, raw);
+    }
     auto bop = ScalarEqualityOp(name, arg_r);
     if (!bop.ok()) return bop.status();
-    return BinaryenBinary(m, *bop, lhs, rhs);
+    return BoxBool(m, BinaryenBinary(m, *bop, lhs, rhs));
   }
   auto bop = OrderedCompareOp(name, arg_r);
   if (!bop.ok()) return bop.status();
   if (arg_r == Repr::kDouble) {
     return LowerDoubleOrderedCompare(ctx, *bop, lhs, rhs);
   }
-  return BinaryenBinary(m, *bop, lhs, rhs);
+  return BoxBool(m, BinaryenBinary(m, *bop, lhs, rhs));
 }
 
 // Member-call dispatch for the string extension methods (§9):
@@ -801,11 +852,16 @@ absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerStringMemberCall(
   auto arg = LowerExpr(ctx, ast, call.args().at(0));
   if (!arg.ok()) return arg.status();
   BinaryenExpressionRef args[2] = {*recv, *arg};
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef raw =
+      BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
   return std::optional<BinaryenExpressionRef>(
-      BinaryenCall(ctx.mod.raw(), helper, args, 2, BinaryenTypeInt32()));
+      BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32()));
 }
 
-// `!_` — logical not.
+// `!_` — logical not.  3VL (M4 Slice C / 3b2): calls `cel_not` so
+// CEL_UNKNOWN / CEL_ERROR operands are passed through unchanged
+// rather than collapsed to 0/1 by `i32.eqz`.
 absl::StatusOr<BinaryenExpressionRef> LowerLogicalNot(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
   if (call.args().size() != 1) {
@@ -814,7 +870,8 @@ absl::StatusOr<BinaryenExpressionRef> LowerLogicalNot(
   }
   auto v = LowerExpr(ctx, ast, call.args().at(0));
   if (!v.ok()) return v.status();
-  return BinaryenUnary(ctx.mod.raw(), BinaryenEqZInt32(), *v);
+  BinaryenExpressionRef arg = *v;
+  return BinaryenCall(ctx.mod.raw(), "cel_not", &arg, 1, BinaryenTypeInt32());
 }
 
 // `-_` — unary negate.  0 - x preserves i64 signedness; CEL also
@@ -844,7 +901,20 @@ absl::StatusOr<BinaryenExpressionRef> LowerNegate(LoweringContext& ctx,
 }
 
 // `_?_:_` — ternary.  Both branches must have the same Repr (checker
-// invariant); we rely on BinaryenIf to validate type agreement.
+// invariant); we rely on BinaryenIf to validate type agreement.  The
+// condition is a Repr::kBool (CelValue offset, M4 Slice C / 3b2), so
+// we unbox to raw i32 with `cel_bool_from_value` before branching.
+//
+// Known 3VL gap: `cel_bool_from_value` returns 0 for non-bool kinds,
+// which silently maps CEL_UNKNOWN / CEL_ERROR in the condition to the
+// else branch.  CEL's spec says ERROR / UNKNOWN in a ternary condition
+// should propagate as the result.  We accept the gap for now because
+// the static checker rejects any expression whose condition could be
+// ERROR / UNKNOWN under normal typing — the only path to a 3VL cond
+// is a runtime proto field read returning an unexpected kind, which
+// every other lowering site also surfaces as "else".  A proper fix
+// needs an inline kind-dispatch around BinaryenIf, tracked as a
+// 3VL-ternary follow-up in the M4 plan doc.
 absl::StatusOr<BinaryenExpressionRef> LowerConditional(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
   if (call.args().size() != 3) {
@@ -857,11 +927,22 @@ absl::StatusOr<BinaryenExpressionRef> LowerConditional(
   if (!t.ok()) return t.status();
   auto f = LowerExpr(ctx, ast, call.args().at(2));
   if (!f.ok()) return f.status();
-  return BinaryenIf(ctx.mod.raw(), *cond, *t, *f);
+  BinaryenModuleRef m = ctx.mod.raw();
+  return BinaryenIf(m, UnboxBool(m, *cond), *t, *f);
 }
 
-// `_&&_` / `_||_` — lowered as `if` so the RHS is only evaluated when
-// necessary.  This is the 2VL shape; the 3VL retrofit lands later.
+// `_&&_` / `_||_` — 3VL (M4 Slice C / 3b2).  Delegate to the runtime
+// helpers `cel_and` / `cel_or`, which implement the OK / UNKNOWN /
+// ERROR truth table from `doc/langdef.md` §partial-evaluation.
+//
+// Trade-off: we give up wasm-native short-circuit evaluation because
+// `cel_and`/`cel_or` evaluate both operands before dispatching.
+// Short-circuit in a 3VL setting is subtle — `false && err` must be
+// `false`, but the checker doesn't prove the LHS is `false`, so we
+// need the helper to see both values to decide.  A future slice can
+// reintroduce short-circuit by emitting an inline kind dispatch
+// around BinaryenIf when the checker proves the LHS is pure
+// Repr::kBool with no UNKNOWN/ERROR potential.
 absl::StatusOr<BinaryenExpressionRef> LowerShortCircuit(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
     absl::string_view fn) {
@@ -875,11 +956,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerShortCircuit(
   if (!r.ok()) return r.status();
   BinaryenModuleRef m = ctx.mod.raw();
   const bool is_and = (fn == op::CelOperator::LOGICAL_AND);
-  BinaryenExpressionRef if_true =
-      is_and ? *r : BinaryenConst(m, BinaryenLiteralInt32(1));
-  BinaryenExpressionRef if_false =
-      is_and ? BinaryenConst(m, BinaryenLiteralInt32(0)) : *r;
-  return BinaryenIf(m, *l, if_true, if_false);
+  const char* helper = is_and ? "cel_and" : "cel_or";
+  BinaryenExpressionRef args[2] = {*l, *r};
+  return BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
 }
 
 // `size(x)` — the checker resolves the overload to the exact
@@ -984,7 +1063,11 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
                                                         Repr result_r,
                                                         int64_t expr_id) {
   BinaryenModuleRef m = ctx.mod.raw();
-  if (result_r == Repr::kString || result_r == Repr::kBytes) {
+  if (result_r == Repr::kString || result_r == Repr::kBytes ||
+      result_r == Repr::kBool) {
+    // Repr::kBool travels as a CelValue offset (M4 Slice C / 3b2),
+    // same ABI shape as string / bytes — the scratch slot IS the
+    // result, kind already set to CEL_BOOL by the host.
     return BinaryenLocalGet(m, scratch, BinaryenTypeInt32());
   }
   BinaryenExpressionRef base_call =
@@ -995,10 +1078,6 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
                      BinaryenLocalGet(m, scratch, BinaryenTypeInt32()));
   const uint32_t payload_off = 8;
   switch (result_r) {
-    case Repr::kBool:
-      return BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false,
-                          /*offset=*/payload_off, /*align=*/4,
-                          BinaryenTypeInt32(), abs, /*memoryName=*/"memory");
     case Repr::kInt:
       return BinaryenLoad(m, /*bytes=*/8, /*signed_=*/true,
                           /*offset=*/payload_off, /*align=*/8,
@@ -1065,11 +1144,10 @@ absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
 }
 
 // Lowers `has(operand.field)` — a `SelectExpr` with `test_only=true` —
-// to a single `cel_host.has_field(operand, field_number) → i32` call.
-// No scratch CelValue is needed; the host returns 0/1 directly.  The
-// checker guarantees the result is a CEL bool (`Repr::kBool`), which
-// maps to i32 in the ABI, so the raw call expression is the block's
-// result as-is.
+// to a single `cel_host.has_field(operand, field_number) → i32` call,
+// boxed through `cel_make_bool` so the result lives in the
+// Repr::kBool ABI (CelValue offset, M4 Slice C / 3b2) alongside every
+// other bool-producing site.
 absl::StatusOr<BinaryenExpressionRef> LowerSelectTestOnly(
     LoweringContext& ctx, const TypedAst& ast, const cel::Expr& expr) {
   auto op = LowerSelectOperand(ctx, ast, expr.select_expr(), expr.id());
@@ -1079,7 +1157,9 @@ absl::StatusOr<BinaryenExpressionRef> LowerSelectTestOnly(
       op->operand,
       BinaryenConst(m, BinaryenLiteralInt32(op->field_number)),
   };
-  return BinaryenCall(m, "has_field", args, 2, BinaryenTypeInt32());
+  BinaryenExpressionRef raw =
+      BinaryenCall(m, "has_field", args, 2, BinaryenTypeInt32());
+  return BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
 }
 
 // Lowers `operand.field` to a three-step block:
@@ -1171,6 +1251,16 @@ absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
   params.reserve(ast.variables().size() + 1);
   params.push_back(BinaryenTypeInt32());  // param 0: sret slot.
   has_message_param = false;
+  // Bool params arrive as raw i32 0/1 from the host — the post-3b2
+  // eval body expects CelValue offsets.  We record each bool param's
+  // raw slot and the name it binds so we can emit the boxing
+  // prologue in a second pass, after `num_params` is final (AddLocal
+  // needs `num_params` to compute local indices).
+  struct PendingBoolBox {
+    std::string name;
+    BinaryenIndex raw_param;
+  };
+  std::vector<PendingBoolBox> pending_bool_boxes;
   for (const Variable& v : ast.variables()) {
     BinaryenType pt = WasmTypeFor(v.repr);
     if (pt == BinaryenTypeNone()) {
@@ -1186,8 +1276,21 @@ absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
       return absl::InvalidArgumentError(absl::StrCat(
           "expr_lower: duplicate variable name `", v.name, "` in specs"));
     }
+    if (v.repr == Repr::kBool) {
+      pending_bool_boxes.push_back({v.name, idx});
+    }
   }
   ctx.num_params = static_cast<uint32_t>(params.size());
+  BinaryenModuleRef m = ctx.mod.raw();
+  for (const auto& pending : pending_bool_boxes) {
+    const BinaryenIndex boxed = ctx.AddLocal(BinaryenTypeInt32());
+    BinaryenExpressionRef raw =
+        BinaryenLocalGet(m, pending.raw_param, BinaryenTypeInt32());
+    BinaryenExpressionRef box =
+        BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
+    ctx.prologue_setups.push_back(BinaryenLocalSet(m, boxed, box));
+    ctx.idents.insert_or_assign(pending.name, boxed);
+  }
   return absl::OkStatus();
 }
 
@@ -1227,7 +1330,9 @@ absl::StatusOr<BinaryenExpressionRef> EmitSretStore(LoweringContext& ctx,
   const char* fn = nullptr;
   switch (root_repr) {
     case Repr::kBool:
-      fn = "cel_box_bool";
+      // Post-3b2, Repr::kBool is already a CelValue offset — nothing
+      // to box, just copy the 24-byte payload into the sret slot.
+      fn = "cel_copy_celvalue_at";
       break;
     case Repr::kInt:
       fn = "cel_box_int";
@@ -1263,24 +1368,31 @@ absl::StatusOr<BinaryenExpressionRef> EmitSretStore(LoweringContext& ctx,
   return BinaryenCall(m, fn, args, 2, BinaryenTypeNone());
 }
 
-// Wraps `body` with the scratch-slot prologue when the lowering
-// allocated a slot.  cel_reset() rewinds the arena between host
-// invocations, so the slot must be (re)allocated on every $eval
+// Wraps `body` with the eval prologue: scratch-slot allocation (when
+// any sret arithmetic helper needs one) plus any param-boxing setups
+// registered during BuildParamList.  cel_reset() rewinds the arena
+// between host invocations, so these setups must run on every $eval
 // entry — the prologue is per-invocation, not global.
 BinaryenExpressionRef WithScratchSlotPrologue(LoweringContext& ctx,
                                               BinaryenExpressionRef body,
                                               BinaryenType body_type) {
-  if (!ctx.scratch_slot.has_value()) return body;
+  std::vector<BinaryenExpressionRef> children;
+  children.reserve(ctx.prologue_setups.size() + 2);
+  for (BinaryenExpressionRef setup : ctx.prologue_setups) {
+    children.push_back(setup);
+  }
   BinaryenModuleRef m = ctx.mod.raw();
-  BinaryenExpressionRef slot_size = BinaryenConst(
-      m, BinaryenLiteralInt32(static_cast<int32_t>(sizeof(uint64_t) * 3)));
-  BinaryenExpressionRef alloc_call =
-      BinaryenCall(m, "cel_alloc", &slot_size, 1, BinaryenTypeInt32());
-  BinaryenExpressionRef set_slot =
-      BinaryenLocalSet(m, *ctx.scratch_slot, alloc_call);
-  BinaryenExpressionRef children[2] = {set_slot, body};
-  return BinaryenBlock(m, /*name=*/nullptr, children,
-                       /*numChildren=*/2, body_type);
+  if (ctx.scratch_slot.has_value()) {
+    BinaryenExpressionRef slot_size = BinaryenConst(
+        m, BinaryenLiteralInt32(static_cast<int32_t>(sizeof(uint64_t) * 3)));
+    BinaryenExpressionRef alloc_call =
+        BinaryenCall(m, "cel_alloc", &slot_size, 1, BinaryenTypeInt32());
+    children.push_back(BinaryenLocalSet(m, *ctx.scratch_slot, alloc_call));
+  }
+  if (children.empty()) return body;
+  children.push_back(body);
+  return BinaryenBlock(m, /*name=*/nullptr, children.data(),
+                       static_cast<BinaryenIndex>(children.size()), body_type);
 }
 
 }  // namespace

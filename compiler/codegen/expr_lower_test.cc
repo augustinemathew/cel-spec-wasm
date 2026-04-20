@@ -44,15 +44,31 @@ Lowered LowerOk(absl::string_view expr) {
 // (or `cel_copy_celvalue_at`) as operand 1.  If the lowering used the
 // scratch slot for checked arithmetic, the whole thing sits inside a
 // 2-child Block emitting a `local.set $scratch (call $cel_alloc 24)`
-// prologue.  Most tests want the inner expression so they can assert
-// the shape the lowering produced — this helper peels those wrappers
-// off.
+// prologue.  Since 3b2 the prologue may also carry per-bool-param
+// boxing `local.set`s, which multiplies the block to N+1 children.
+// Most tests want the inner expression so they can assert the shape
+// the lowering produced — this helper peels those wrappers off, plus
+// the outer `cel_make_bool` wrap that every bool-producing helper
+// site now emits.
 BinaryenExpressionRef ScalarBody(BinaryenExpressionRef body) {
-  if (BinaryenExpressionGetId(body) == BinaryenBlockId() &&
-      BinaryenBlockGetNumChildren(body) == 2) {
-    BinaryenExpressionRef first = BinaryenBlockGetChildAt(body, 0);
-    if (BinaryenExpressionGetId(first) == BinaryenLocalSetId()) {
-      body = BinaryenBlockGetChildAt(body, 1);
+  if (BinaryenExpressionGetId(body) == BinaryenBlockId()) {
+    const BinaryenIndex n = BinaryenBlockGetNumChildren(body);
+    // The prologue-wrapping block's only non-LocalSet child is the
+    // terminal body expression.  Any longer prefix of LocalSets is
+    // valid (one per bool param + optional scratch alloc); we walk
+    // the prefix and land on the first non-LocalSet child.
+    if (n >= 2) {
+      bool all_prefix_are_local_set = true;
+      for (BinaryenIndex i = 0; i + 1 < n; ++i) {
+        if (BinaryenExpressionGetId(BinaryenBlockGetChildAt(body, i)) !=
+            BinaryenLocalSetId()) {
+          all_prefix_are_local_set = false;
+          break;
+        }
+      }
+      if (all_prefix_are_local_set) {
+        body = BinaryenBlockGetChildAt(body, n - 1);
+      }
     }
   }
   if (BinaryenExpressionGetId(body) == BinaryenCallId() &&
@@ -61,11 +77,15 @@ BinaryenExpressionRef ScalarBody(BinaryenExpressionRef body) {
   }
   // For message roots EmitSretStore also wraps the externref through
   // cel_wrap_message; peel that so the "inner" body is the original
-  // externref expression.
+  // externref expression.  The same single-operand peel also strips
+  // the `cel_make_bool` wrap every bool-producing helper site emits
+  // after 3b2 so individual shape assertions can target the
+  // underlying i32 opcode or runtime call.
   if (BinaryenExpressionGetId(body) == BinaryenCallId() &&
       BinaryenCallGetNumOperands(body) == 1) {
     const char* target = BinaryenCallGetTarget(body);
-    if (target != nullptr && std::string(target) == "cel_wrap_message") {
+    if (target != nullptr && (std::string(target) == "cel_wrap_message" ||
+                              std::string(target) == "cel_make_bool")) {
       return BinaryenCallGetOperandAt(body, 0);
     }
   }
@@ -176,8 +196,12 @@ TEST(ExprLowerTest, LogicalNot) {
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
-  EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenEqZInt32());
+  // 3VL (M4 Slice C / 3b2): `!_` lowers to `cel_not` so CEL_UNKNOWN /
+  // CEL_ERROR operands pass through instead of being collapsed to 0/1
+  // by i32.eqz.
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_not");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
 }
 
 TEST(ExprLowerTest, IntComparisonsAreSigned) {
@@ -206,16 +230,22 @@ TEST(ExprLowerTest, DoubleComparisons) {
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  // Double ordered-compare traps on NaN: Block[set_a, set_b, if(any_nan) trap,
-  // Binary(op, a, b)].  The last child is the actual compare.
+  // Double ordered-compare is a 4-child Block[set_a, set_b, if(any_nan)
+  // cel_set_error+return, cel_make_bool(Binary(op, a, b))].  Peeled off
+  // the sret copy wrap, we see the block; the last child wraps the raw
+  // compare through `cel_make_bool` because Repr::kBool is a CelValue
+  // offset (M4 Slice C / 3b2).
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   const BinaryenIndex n = BinaryenBlockGetNumChildren(body);
   ASSERT_EQ(n, 4u);
-  BinaryenExpressionRef cmp = BinaryenBlockGetChildAt(body, 3);
-  ASSERT_EQ(BinaryenExpressionGetId(cmp), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(cmp), BinaryenLeFloat64());
   BinaryenExpressionRef trap_if = BinaryenBlockGetChildAt(body, 2);
   EXPECT_EQ(BinaryenExpressionGetId(trap_if), BinaryenIfId());
+  BinaryenExpressionRef boxed = BinaryenBlockGetChildAt(body, 3);
+  ASSERT_EQ(BinaryenExpressionGetId(boxed), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(boxed), "cel_make_bool");
+  BinaryenExpressionRef cmp = BinaryenCallGetOperandAt(boxed, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(cmp), BinaryenBinaryId());
+  EXPECT_EQ(BinaryenBinaryGetOp(cmp), BinaryenLeFloat64());
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
@@ -226,23 +256,29 @@ TEST(ExprLowerTest, EqualityAcrossScalarReprs) {
   EXPECT_THAT(LowerOk("1.5 != 2.5").mod.Validate(), IsOk());
 }
 
-TEST(ExprLowerTest, LogicalAndShortCircuits) {
+TEST(ExprLowerTest, LogicalAndIsThreeValued) {
+  // Post-3b2 `&&` delegates to `cel_and` so CEL_UNKNOWN / CEL_ERROR
+  // in either operand propagate through the logical result instead of
+  // being implicitly coerced.
   auto L = LowerOk("true && false");
   EXPECT_EQ(L.fn.result_repr, Repr::kBool);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  // Lowering shape is `if(lhs) rhs else 0`.
-  EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_and");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
-TEST(ExprLowerTest, LogicalOrShortCircuits) {
+TEST(ExprLowerTest, LogicalOrIsThreeValued) {
   auto L = LowerOk("false || true");
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_or");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
@@ -457,15 +493,22 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
   // regression where WasmTypeFor and LoweredIdent disagree on the type
   // of a `local.get`.  (Binaryen's validator would catch the mismatch,
   // but it's worth nailing down the intended mapping in a test.)
+  //
+  // Bool params get auto-boxed to a CelValue offset at eval entry
+  // (M4 Slice C / 3b2), so the body reads from a prologue-allocated
+  // local rather than directly from the raw param slot — `want_idx`
+  // encodes that shift per-case.  Non-bool params still flow as raw
+  // scalars so the ident read resolves straight to slot 1.
   struct Case {
     const char* spec;
     BinaryenType want;
+    BinaryenIndex want_idx;
   };
   for (const auto& c : {
-           Case{"b:bool", BinaryenTypeInt32()},
-           Case{"i:int", BinaryenTypeInt64()},
-           Case{"u:uint", BinaryenTypeInt64()},
-           Case{"d:double", BinaryenTypeFloat64()},
+           Case{"b:bool", BinaryenTypeInt32(), 2u},
+           Case{"i:int", BinaryenTypeInt64(), 1u},
+           Case{"u:uint", BinaryenTypeInt64(), 1u},
+           Case{"d:double", BinaryenTypeFloat64(), 1u},
        }) {
     SCOPED_TRACE(c.spec);
     std::string name(c.spec, 1);  // first char is the var name.
@@ -480,7 +523,7 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
     BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
     body = ScalarBody(body);
     ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
-    EXPECT_EQ(BinaryenLocalGetGetIndex(body), 1u);
+    EXPECT_EQ(BinaryenLocalGetGetIndex(body), c.want_idx);
     EXPECT_EQ(BinaryenExpressionGetType(body), c.want);
   }
 }

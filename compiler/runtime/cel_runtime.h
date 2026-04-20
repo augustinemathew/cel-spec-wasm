@@ -236,118 +236,37 @@ enum {
   CEL_ERR_TYPE_MISMATCH = 13,
 };
 
-// Binary checked arithmetic.  Each helper takes two CelValue offsets
-// (kind must be CEL_INT / CEL_UINT for the happy path; any CEL_ERROR
-// or CEL_UNKNOWN on either side propagates via `cel_status_either`)
-// and returns a CelValue offset of kind CEL_INT / CEL_UINT on success,
-// or CEL_ERROR with `CEL_ERR_OVERFLOW` / `CEL_ERR_DIVIDE_BY_ZERO` /
-// `CEL_ERR_MODULUS_BY_ZERO` on failure.  Returns 0 on type error
-// (operand kind not one of the supported ones) or OOM — callers get
-// the usual zero-check for free.
-//
-// CEL §langdef.arithmetic: signed overflow, int `/` / `%` by zero,
-// and `INT64_MIN / -1` (which also overflows) must produce ERROR, not
-// trap.  Unsigned uses wrap-around detection (`a + b < a`) since
-// `uint64_t` addition is well-defined in C.
-uint32_t cel_int_add(uint32_t a, uint32_t b);
-uint32_t cel_int_sub(uint32_t a, uint32_t b);
-uint32_t cel_int_mul(uint32_t a, uint32_t b);
-uint32_t cel_int_div(uint32_t a, uint32_t b);
-uint32_t cel_int_mod(uint32_t a, uint32_t b);
-
-uint32_t cel_uint_add(uint32_t a, uint32_t b);
-uint32_t cel_uint_sub(uint32_t a, uint32_t b);
-uint32_t cel_uint_mul(uint32_t a, uint32_t b);
-uint32_t cel_uint_div(uint32_t a, uint32_t b);
-uint32_t cel_uint_mod(uint32_t a, uint32_t b);
-
-// Unary negate for int.  `-INT64_MIN` overflows, so this helper
-// produces ERROR for that one input.  No `cel_uint_neg` because CEL
-// has no unary-minus overload on uint.
-uint32_t cel_int_neg(uint32_t a);
-
-// Scalar-constructor variants the codegen can call from straight-line
-// wasm without round-tripping a scalar through `cel_make_int`.  Same
-// semantics as the boxed variants — the boxed version just does the
-// unwrap internally — but shaped to match the common case where one
-// or both operands are already scalars (constants, ident reads).
-//
-// We do not combinatorially expand every (boxed, scalar) pair: the
-// codegen consistently boxes leaves first, so the boxed variants
-// above are the load-bearing ones.  These scalar helpers are kept
-// for completeness and for the benchmarks in the M4 plan doc.
-uint32_t cel_int_add_ii(int64_t a, int64_t b);
-uint32_t cel_int_sub_ii(int64_t a, int64_t b);
-uint32_t cel_int_mul_ii(int64_t a, int64_t b);
-uint32_t cel_int_div_ii(int64_t a, int64_t b);
-uint32_t cel_int_mod_ii(int64_t a, int64_t b);
-
-uint32_t cel_uint_add_uu(uint64_t a, uint64_t b);
-uint32_t cel_uint_sub_uu(uint64_t a, uint64_t b);
-uint32_t cel_uint_mul_uu(uint64_t a, uint64_t b);
-uint32_t cel_uint_div_uu(uint64_t a, uint64_t b);
-uint32_t cel_uint_mod_uu(uint64_t a, uint64_t b);
-
-uint32_t cel_int_neg_i(int64_t a);
-
 // ---- Scratch-slot (sret) ABI (M4 Slice C) --------------------------------
 //
-// Parallel flavor of the checked-arithmetic API above.  Instead of
-// bump-allocating a fresh 24-byte CelValue in the arena on every call,
-// these helpers write the 24-byte result *into a caller-provided slot*.
+// These helpers write a 24-byte CelValue result *into a caller-provided
+// slot* rather than bump-allocating from the arena on every call.  The
+// `out` parameter is a 32-bit byte offset into linear memory pointing at
+// an 8-byte-aligned, 24-byte region — typically a software-stack frame
+// slot reserved at `$eval` entry (see `doc/wasm-compiler-design.md`
+// §7.4.2), though the runtime is agnostic to any aligned region.
 //
-// The `out` parameter is a 32-bit byte offset into linear memory
-// pointing at an 8-byte-aligned, 24-byte region — one CelValue's
-// worth.  Typically it is a software-stack frame slot reserved at
-// `$eval` entry (see `doc/wasm-compiler-design.md` §7.4.2), though
-// the runtime is agnostic: any aligned region in the module's linear
-// memory works.  `a` and `b` are the usual offset-to-boxed-CelValue
-// arguments that the boxed API already speaks, so callers can freely
-// mix the two ABIs (e.g. pass an arena-resident ident read as `a`
-// and a freshly-computed stack slot as `b`).
+// **Total-function guarantee.**  Every helper always writes a well-formed
+// 24-byte CelValue into `*out` before returning:
 //
-// Contrast:
-//     uint32_t cel_int_add(a, b);        // allocates, returns offset.
-//     void     cel_int_add_at(out,a,b);  // caller pre-owns `out`.
+//   - Arithmetic error.  Overflow → `CEL_ERROR{CEL_ERR_OVERFLOW}`;
+//     int `/` by 0 → `CEL_ERR_DIVIDE_BY_ZERO`; int `%` by 0 →
+//     `CEL_ERR_MODULUS_BY_ZERO`.  `INT64_MIN / -1` overflows;
+//     `INT64_MIN % -1` is defined as 0 (matching cel-go).
+//     `-INT64_MIN` overflows.
+//   - Happy path.  `CEL_INT{result}` or `CEL_UINT{result}`.
 //
-// **Total-function guarantee.**  Every helper always writes a
-// well-formed 24-byte CelValue into `*out` before returning.  This
-// holds across all four outcomes:
-//
-//   1. Status propagation.  If either operand carries non-OK status,
-//      the helper does NOT do arithmetic — it copies the dominant
-//      status value into `*out`.  Dominance is ERROR > UNKNOWN > OK
-//      with left-wins tie-breaking (same as `cel_status_either`);
-//      two UNKNOWNs merge their sets via `cel_unknown_merge`.
-//   2. Type mismatch.  If an operand's kind doesn't match the
-//      expected arithmetic kind (int for `cel_int_*_at`, uint for
-//      `cel_uint_*_at`), `*out` gets `CEL_ERROR{CEL_ERR_TYPE_MISMATCH}`.
-//      The static checker should make this unreachable; surfacing it
-//      as ERROR means a codegen bug degrades gracefully instead of
-//      forging a phantom OK result.
-//   3. Arithmetic error.  Overflow → `CEL_ERROR{CEL_ERR_OVERFLOW}`;
-//      int `/` by 0 → `CEL_ERR_DIVIDE_BY_ZERO`; int `%` by 0 →
-//      `CEL_ERR_MODULUS_BY_ZERO`.  `INT64_MIN / -1` overflows;
-//      `INT64_MIN % -1` is defined as 0 (matching cel-go).  `-INT64_MIN`
-//      overflows.
-//   4. Happy path.  `CEL_INT{result}` or `CEL_UINT{result}`.
-//
-// Because `*out` is always well-formed, codegen emits no branch on
-// "did the helper write anything?" — it just loads `[out+0]` after
-// the call and dispatches on the kind tag (OK → read payload;
-// ERROR → propagate up; UNKNOWN → propagate up).  The return type
-// is `void` for the same reason.
+// Because `*out` is always well-formed, codegen emits no branch on "did
+// the helper write anything?" — it just loads `[out+0]` after the call
+// and dispatches on the kind tag.  The return type is `void` for the
+// same reason.
 //
 // `out == 0` points at the null sentinel at memory offset 0.  That's
 // treated as a caller bug (no frame slot is ever allocated there) and
 // the helpers early-return without writing, leaving the sentinel intact.
 //
-// **Why not just reuse the boxed ABI?**  The boxed variants burn an
-// arena CelValue per call — for an expression like `(a + b) + (c + d)`
-// that's 3 allocations for the intermediate results alone, all of which
-// outlive the expression.  The sret ABI lets codegen reuse a small
-// pool of frame slots sized to the expression's tree depth, keeping
-// temporary-value memory O(depth) instead of O(#subexpressions).
+// The sret ABI lets codegen reuse a small pool of frame slots sized to
+// the expression's tree depth, keeping temporary-value memory O(depth)
+// instead of O(#subexpressions).
 
 // ---- Primitive → slot writers -------------------------------------------
 //
@@ -355,9 +274,10 @@ uint32_t cel_int_neg_i(int64_t a);
 // scalar on the stack (a literal, an ident read, or the unboxed
 // result of a non-checked op) and needs to hand it to something
 // that speaks boxed CelValue (e.g. the 3VL `cel_and` / `cel_or`).
-// `cel_box_bool` normalizes any non-zero int input to 1; the others
-// are straight payload writes.
-void cel_box_bool(uint32_t out, int32_t b);
+// Bool doesn't have an sret writer of its own because Repr::kBool
+// travels as a CelValue offset post-3b2 — codegen goes through
+// `cel_make_bool(raw)` and then `cel_copy_celvalue_at(out, offset)`
+// instead of a dedicated `cel_box_bool(out, raw)`.
 void cel_box_int(uint32_t out, int64_t i);
 void cel_box_uint(uint32_t out, uint64_t u);
 void cel_box_double(uint32_t out, double d);
@@ -389,29 +309,14 @@ void cel_set_error_at(uint32_t out, uint32_t code);
 // helper per CEL `_+_` / `_-_` / `_*_` / `_/_` / `_%_` overload on
 // int/uint, plus `cel_int_neg_at` for unary minus.  (CEL has no
 // unary-minus overload on uint, so there is no `cel_uint_neg_at`.)
-void cel_int_add_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_int_sub_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_int_mul_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_int_div_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_int_mod_at(uint32_t out, uint32_t a, uint32_t b);
-
-void cel_uint_add_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_uint_sub_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_uint_mul_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_uint_div_at(uint32_t out, uint32_t a, uint32_t b);
-void cel_uint_mod_at(uint32_t out, uint32_t a, uint32_t b);
-
-void cel_int_neg_at(uint32_t out, uint32_t a);
-
-// Scalar-arg sret variants.  Same semantics as the boxed-arg `_at`
-// helpers above — the total-function guarantee still holds — except
-// the operands arrive as raw wasm scalars instead of arena offsets,
-// so there is no operand-status to propagate (pure OK/ERROR outcome).
-// These are the ones codegen emits from straight-line arithmetic
-// where both operands are already wasm i64 / u64 values (literals,
-// ident reads, payload.i loads).  Paired with `cel_box_*` at the
-// boundaries where a scalar needs to enter the boxed API (e.g. a 3VL
-// `cel_and` call).
+// Scalar-arg sret variants.  Operands arrive as raw wasm scalars
+// (i64 / u64) rather than arena offsets, so there is no operand-status
+// to propagate (pure OK/ERROR outcome).  These are the ones codegen
+// emits from straight-line arithmetic where both operands are already
+// wasm scalars (literals, ident reads, payload.i loads).  The same
+// total-function guarantee as the other sret helpers holds.  Paired
+// with `cel_box_*` at the boundaries where a scalar needs to enter
+// the boxed API (e.g. a 3VL `cel_and` call).
 void cel_int_add_at_ii(uint32_t out, int64_t a, int64_t b);
 void cel_int_sub_at_ii(uint32_t out, int64_t a, int64_t b);
 void cel_int_mul_at_ii(uint32_t out, int64_t a, int64_t b);
