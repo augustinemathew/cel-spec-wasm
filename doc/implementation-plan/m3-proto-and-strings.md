@@ -184,9 +184,45 @@ Remaining slices before M3 closes:
     - `compiler/host/cel_host_test.cc` — existing `HasField*` table
       coverage still applies; no new unit tests needed because G3 is
       a codegen-only addition over an already-tested host primitive.
-- **Slice G4** — nested-message select (compose G2 with
-  `cel_unwrap_message`) + `_==_` on `Repr::kMessage` dispatching to
-  `cel_host.message_eq(externref, externref) → i32`.
+- **Slice G4 — nested-message select + message equality (2026-04-19, landed).**
+  Two small extensions to G2 codegen that together let nested SelectExprs
+  round-trip and `_==_` accept two `Repr::kMessage` operands:
+    1. `LoadSelectPayload` gained a `Repr::kMessage` arm that calls
+       `cel_unwrap_message(cv)` on the scratch CelValue pointer, turning
+       the host-written `payload.msg_slot` back into the externref the
+       rest of codegen expects for message values.  The scratch offset
+       is passed through verbatim — `cel_unwrap_message` does the
+       `cel_mem_base + cv + 8` msg_slot load itself, so pre-loading the
+       slot at the call site and handing it in would treat the slot
+       index as a CelValue address and walk off the arena.  Caught in
+       the first run of the G4 e2e suite (`got=0 expected=1` on every
+       nested test); fixed before commit.
+    2. `LowerComparison` grew a `Repr::kMessage` branch that emits
+       `message_eq(lhs, rhs)` for `==` and wraps the result in
+       `i32.eqz` for `!=`.  The existing `DeclareHostImports` already
+       declared `message_eq` in Slice G2, so no import plumbing was
+       needed.
+  Host plumbing: `host_loader.cc` now calls
+  `CelHostEnv::BindEvalInterner(eval_instance)` after
+  `wasmtime_linker_instantiate`, tolerant of `absl::NotFound` for
+  scalar-only evals that never pulled in `AddCelRefsTableAndHelpers`.
+  Without that bind step the `cel_ref_intern` func handle on
+  `CelHostEnv` stayed zero-initialised and any `get_field` call that
+  produced a submessage tripped a wasmtime "object used with the wrong
+  store" panic inside `InternMessageViaRefIntern`.
+  **Coverage landed in this slice:**
+    - `compiler/e2e/eval_test.cc` — 6 new cases against `Customer`:
+      `NestedSelectReadsInnerField` (`c.billing_address.city ==
+      "Seattle"`), `NestedSelectThroughUnsetSubmessageReadsDefault`
+      (default-of-unset composes with the inner select),
+      `MessageEqualityTrueForStructurallyEqual`,
+      `MessageEqualityFalseForDifferentFields`,
+      `MessageInequalityInvertsMessageEq`,
+      `NestedMessageEqualityComposesSelectAndEq`
+      (`a.billing_address == b.billing_address`).
+    - `cel_host_test.cc` — `MessageEq` table coverage from Slice G1
+      still applies; the G4 add is codegen-only over that host
+      primitive.
 - **Checker integration** — pass a `--schema` file on the CLI,
   round-trip through a proto fixture under `compiler/e2e/testdata/`.
 

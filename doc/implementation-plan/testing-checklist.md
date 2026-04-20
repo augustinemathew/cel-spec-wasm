@@ -180,6 +180,26 @@ rule; `HasAndFieldCompareTernary` composes a G2 field read and a G3
 `has()` in a single ternary to catch scratch-local aliasing between
 the two select paths.
 
+**M3 slice G4 (2026-04-19): nested message select + message equality.**
+Two codegen extensions composing on top of G2: `LoadSelectPayload`
+handles `Repr::kMessage` by calling `cel_unwrap_message(cv)` on the
+scratch CelValue, so a SelectExpr that returns a submessage produces
+an externref the rest of codegen can feed back into another Select or
+into a comparison.  `LowerComparison` grew a `Repr::kMessage` arm that
+calls `cel_host.message_eq` (already declared by `DeclareHostImports`
+in G2) and wraps the result with `i32.eqz` for `!=`.  On the host side
+`host_loader.cc` now invokes `CelHostEnv::BindEvalInterner` after
+`wasmtime_linker_instantiate`, so `cel_host.get_field` can intern
+submessages into the eval module's `$cel_refs` table — without that
+bind step `InternMessageViaRefIntern` tripped a "wrong store" panic.
+Coverage: 6 new `compiler/e2e/eval_test.cc` cases:
+`NestedSelectReadsInnerField`,
+`NestedSelectThroughUnsetSubmessageReadsDefault`,
+`MessageEqualityTrueForStructurallyEqual`,
+`MessageEqualityFalseForDifferentFields`,
+`MessageInequalityInvertsMessageEq`,
+`NestedMessageEqualityComposesSelectAndEq`.
+
 **M3 slice G1 (2026-04-19): message params as externref.**
 `Repr::kMessage` variables now lower to an `externref` param on the
 eval function.  `WasmTypeFor(kMessage)` is `BinaryenTypeExternref()`.

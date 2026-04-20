@@ -416,6 +416,17 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
           BinaryenCall(m, helper, args, 2, BinaryenTypeInt32());
       return ne ? BinaryenUnary(m, BinaryenEqZInt32(), call) : call;
     }
+    // Message equality can't be a structural comparison of externrefs —
+    // two externrefs may point at structurally equal messages from
+    // different descriptor origins, and the CEL spec demands the host's
+    // descriptor-aware equality.  Delegate to cel_host.message_eq and,
+    // for `_!=_`, invert with i32.eqz — same pattern as string/bytes.
+    if (arg_r == Repr::kMessage) {
+      BinaryenExpressionRef args[2] = {lhs, rhs};
+      BinaryenExpressionRef call =
+          BinaryenCall(m, "message_eq", args, 2, BinaryenTypeInt32());
+      return ne ? BinaryenUnary(m, BinaryenEqZInt32(), call) : call;
+    }
     switch (arg_r) {
       case Repr::kBool:
         bop = eq ? BinaryenEqInt32() : BinaryenNeInt32();
@@ -679,6 +690,18 @@ absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
       return BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false,
                           /*offset=*/payload_off, /*align=*/8,
                           BinaryenTypeFloat64(), abs, /*memoryName=*/"memory");
+    case Repr::kMessage: {
+      // `cel_unwrap_message` takes the arena-relative CelValue pointer
+      // (the scratch slot) and does the msg_slot load + table.get
+      // internally, so we hand it `scratch` directly instead of
+      // pre-loading the slot — pre-loading would treat the slot index
+      // as a CelValue address inside `cel_unwrap_message` and walk off
+      // the arena.
+      BinaryenExpressionRef cv_arg =
+          BinaryenLocalGet(m, scratch, BinaryenTypeInt32());
+      return BinaryenCall(m, "cel_unwrap_message", &cv_arg, /*numOperands=*/1,
+                          BinaryenTypeExternref());
+    }
     default:
       return UnimplementedRepr("SelectExpr payload", result_r, expr_id);
   }

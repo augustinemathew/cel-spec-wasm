@@ -305,6 +305,18 @@ absl::StatusOr<LoadedEval> LoadEval(absl::Span<const uint8_t> eval_wasm_bytes) {
           absl::StrCat("eval start-function trap: ", TrapMessage(trap)));
     }
   }
+
+  // Bind `cel_ref_intern` on the eval instance so `cel_host.get_field`
+  // can intern submessages into the module's `$cel_refs` table when a
+  // SelectExpr returns a message (G4).  The export only exists when
+  // codegen pulled in `AddCelRefsTableAndHelpers`, i.e. when the eval
+  // declared at least one message variable.  A missing export is fine
+  // for scalar-only evals; any other failure propagates.
+  if (auto s = out.host_env_->BindEvalInterner(out.eval_instance_);
+      !s.ok() && !absl::IsNotFound(s)) {
+    return s;
+  }
+
   out.has_instances_ = true;
   return out;
 }

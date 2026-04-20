@@ -1057,5 +1057,117 @@ TEST(EvalE2ETest, HasAndFieldCompareTernary) {
   }
 }
 
+// ---- G4: nested message select + message equality --------------------------
+//
+// Every test below forces codegen to pair `LowerSelectField` with
+// `LoadSelectPayload(Repr::kMessage)` or `LowerComparison(Repr::kMessage)`
+// — both landed in G4.  Failures localise cleanly because G2/G3 scalar
+// coverage above remains intact on the same fixture.
+
+TEST(EvalE2ETest, NestedSelectReadsInnerField) {
+  auto loaded = LoadCompiled("c.billing_address.city == \"Seattle\"",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.mutable_billing_address()->set_city("Seattle");
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;
+    msg.mutable_billing_address()->set_city("Boston");
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, NestedSelectThroughUnsetSubmessageReadsDefault) {
+  // Proto3 reads through an unset submessage as the submessage's
+  // default, so `c.billing_address.city` is `""` when billing_address
+  // was never set.  Pins that G4 follows proto3 reflection semantics
+  // rather than treating unset as an error / unknown.
+  auto loaded = LoadCompiled("c.billing_address.city == \"\"",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, MessageEqualityTrueForStructurallyEqual) {
+  auto loaded = LoadCompiled(
+      "a == b", {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.set_name("Ada");
+  a.set_age(30);
+  celwasm::testdata::Customer b;
+  b.set_name("Ada");
+  b.set_age(30);
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, MessageEqualityFalseForDifferentFields) {
+  auto loaded = LoadCompiled(
+      "a == b", {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.set_name("Ada");
+  celwasm::testdata::Customer b;
+  b.set_name("Bob");
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2ETest, MessageInequalityInvertsMessageEq) {
+  auto loaded = LoadCompiled(
+      "a != b", {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.set_age(1);
+  celwasm::testdata::Customer b;
+  b.set_age(2);
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, NestedMessageEqualityComposesSelectAndEq) {
+  // Composition: two G4 `LowerSelectField(kMessage)` feeding into a G4
+  // `LowerComparison(kMessage) → message_eq`.  Catches bugs where the
+  // externref returned by LoadSelectPayload isn't a valid argument to
+  // message_eq, or where wrap/unwrap loses identity across a round-trip
+  // through $cel_refs.
+  auto loaded = LoadCompiled(
+      "a.billing_address == b.billing_address",
+      {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer a;
+  a.mutable_billing_address()->set_city("NY");
+  celwasm::testdata::Customer b;
+  b.mutable_billing_address()->set_city("NY");
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
 }  // namespace
 }  // namespace celwasm
