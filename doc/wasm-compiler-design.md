@@ -1,21 +1,83 @@
 # CEL → WebAssembly AOT Compiler — Design
 
-Status: **draft v2**. Target: a C++20 compiler that ingests CEL source + a
-protobuf schema + a custom-function set, and emits one self-contained `.wasm`
-module whose single exported `eval` returns a pointer to a `CelValue` tagged
-union, under a three-valued logic (OK / UNKNOWN / ERROR) that falls out of the
-tag field.
+Status: **draft v2** (last refreshed 2026-04-19 after M3 shipped and M4 ↔ M5
+were swapped).
 
-Sources of truth:
+This is the architectural reference for `celwasmc`, the CEL →
+WebAssembly AOT compiler in this repo's `compiler/` tree.  It describes
+the pipeline (parse, check, lower, codegen), the normative runtime
+layout and host ABI, the milestone plan, and the open design questions
+driving upcoming work.
 
-- Grammar: `Cel.g4` from `github.com/google/cel-cpp/parser/internal/Cel.g4`
-  (vendored at `third_party/cel-cpp/parser/internal/Cel.g4`).
-- Semantics: `doc/langdef.md` in this repo.
-- Reusable C++: `third_party/cel-cpp/` (parser, checker, common type system).
+The doc is **normative for the host ABI (§8)** and the **`cel.abi`
+custom section (Appendix A)**: any host that instantiates a module
+emitted by this compiler must match those shapes verbatim.  Everything
+else — codegen strategy, IR layout, project structure — is
+implementation detail.  It's correct as of the latest milestone but
+subject to change; for what has actually shipped, the milestone docs
+under `doc/implementation-plan/` are the source of truth.
+
+### Sources of truth
+
+- **Grammar** — `Cel.g4` from `github.com/google/cel-cpp/parser/internal/Cel.g4`,
+  vendored at `third_party/cel-cpp/parser/internal/Cel.g4`.
+- **Semantics** — `doc/langdef.md` in this repo.
+- **Reusable C++** — `third_party/cel-cpp/` (parser, checker, common
+  type system).
+- **Per-milestone status** — `doc/implementation-plan/`: plan docs
+  (`m0-*` through `m8-*`), the transverse testing grid
+  (`testing-checklist.md`), and the lint backlog.
+
+### Organization of this document
+
+Sections §1–§4 set the frame.  Sections §5–§12 are the guts.  Sections
+§13–§15 cover how the compiler itself is built, tested, and sequenced.
+Appendices and Open questions are reference material at the end.
+
+**Frame (§1–§4).**
+  - **§1 Architectural stance** — why the emitted module uses both
+    linear memory and `externref`, and what follows from that.
+  - **§2 Goals / §3 Non-goals** — what we are and aren't building.
+  - **§4 Pipeline** — end-to-end flow from CEL source to
+    per-expression `.wasm` sitting next to the shared `runtime.wasm`.
+
+**Compiler internals (§5–§12).**
+  - **§5 Front-end** — grammar reuse, parser, macro expansion,
+    comprehension scoping (§5.4 is load-bearing for M5).
+  - **§6 Type system** — supported CEL types, checker integration,
+    rejection of `dyn` / `Any` unwrap / heterogeneous collections.
+  - **§7 Runtime layout (linear memory)** — memory map, `CelValue`
+    shape, arena allocation, `$cel_refs` externref table,
+    constructors.
+  - **§8 Host ABI (normative)** — imports / exports every host must
+    provide; `cel_host.get_field` / `has_field` / `message_eq`; type
+    and attribute identity via `cel.abi`.
+  - **§9 Three-valued logic** — OK / UNKNOWN / ERROR semantics,
+    propagation rules, short-circuit tables (the M4 charter).
+  - **§10 Code generation** — per-`ExprKindCase` lowering strategy,
+    Binaryen IR, `Repr` dispatch.
+  - **§11 Standard library** — built-in operators the compiler
+    emits; what's deferred to M7.
+  - **§12 Custom functions** — `.celfn` IDL, `celfnc` stub
+    generator, `cel_fn.*` import convention.
+
+**Build and sequence (§13–§15).**
+  - **§13 Project layout** — directory structure of the compiler
+    tree.
+  - **§14 Build** — Bazel targets, cross-compile toolchain, CI.
+  - **§15 Milestones** — the M0–M8 plan.  M4 ↔ M5 were swapped on
+    2026-04-19 so three-valued logic lands before collections; see
+    the milestone table for the rationale.
+
+**Reference.**
+  - **Appendix A** — `cel.abi` custom section format (normative).
+  - **Appendix B** — minimal host worked example.
+  - **Open questions** — deferred design decisions scoped to later
+    milestones.
 
 ---
 
-## 1. Architectural stance (v3: both linear memory and externref)
+## 1. Architectural stance
 
 The emitted module uses **both** storage schemes, each for what it's good
 at:
@@ -761,7 +823,7 @@ returning a `CelValue` of that kind, constructed via the exported helpers.
 
 ### 8.4 Type identity & attribute identity
 
-Emitted in a WASM custom section `cel.abi` (see Appendix B):
+Emitted in a WASM custom section `cel.abi` (see Appendix A):
 
 - `type_id: i32` — one per distinct message FQN referenced by the expression.
 - `attribute_id: i32` — one per distinct (var, field-path) that could be
