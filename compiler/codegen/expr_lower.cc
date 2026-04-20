@@ -900,21 +900,50 @@ absl::StatusOr<BinaryenExpressionRef> LowerNegate(LoweringContext& ctx,
   }
 }
 
-// `_?_:_` — ternary.  Both branches must have the same Repr (checker
-// invariant); we rely on BinaryenIf to validate type agreement.  The
-// condition is a Repr::kBool (CelValue offset, M4 Slice C / 3b2), so
-// we unbox to raw i32 with `cel_bool_from_value` before branching.
-//
-// Known 3VL gap: `cel_bool_from_value` returns 0 for non-bool kinds,
-// which silently maps CEL_UNKNOWN / CEL_ERROR in the condition to the
-// else branch.  CEL's spec says ERROR / UNKNOWN in a ternary condition
-// should propagate as the result.  We accept the gap for now because
-// the static checker rejects any expression whose condition could be
-// ERROR / UNKNOWN under normal typing — the only path to a 3VL cond
-// is a runtime proto field read returning an unexpected kind, which
-// every other lowering site also surfaces as "else".  A proper fix
-// needs an inline kind-dispatch around BinaryenIf, tracked as a
-// 3VL-ternary follow-up in the M4 plan doc.
+// Emits `if (kind(*cond_local) >= CEL_UNKNOWN) {
+//   cel_copy_celvalue_at($sret, *cond_local); return;
+// }` — the sret early-exit that propagates a non-OK CelValue out
+// through the eval sret slot.  Shared by the ternary 3VL guard and
+// any future UNKNOWN/ERROR propagation site.
+BinaryenExpressionRef EmitSretEarlyReturnIfNonOk(LoweringContext& ctx,
+                                                 BinaryenIndex cond_local) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef base_call = BinaryenCall(
+      m, "cel_mem_base", /*operands=*/nullptr, 0, BinaryenTypeInt32());
+  BinaryenExpressionRef abs_expr =
+      BinaryenBinary(m, BinaryenAddInt32(), base_call,
+                     BinaryenLocalGet(m, cond_local, BinaryenTypeInt32()));
+  BinaryenExpressionRef kind_load =
+      BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
+                   /*align=*/4, BinaryenTypeInt32(), abs_expr,
+                   /*memoryName=*/"memory");
+  // kind >= CEL_UNKNOWN (14) catches both CEL_UNKNOWN (14) and
+  // CEL_ERROR (15); any other non-bool kind is a checker miss.
+  constexpr int32_t kCelUnknownKind = 14;
+  BinaryenExpressionRef is_non_ok =
+      BinaryenBinary(m, BinaryenGeUInt32(), kind_load,
+                     BinaryenConst(m, BinaryenLiteralInt32(kCelUnknownKind)));
+  BinaryenExpressionRef copy_args[2] = {
+      BinaryenLocalGet(m, LoweringContext::kOutSlotParam, BinaryenTypeInt32()),
+      BinaryenLocalGet(m, cond_local, BinaryenTypeInt32()),
+  };
+  BinaryenExpressionRef copy_call =
+      BinaryenCall(m, "cel_copy_celvalue_at", copy_args, 2, BinaryenTypeNone());
+  BinaryenExpressionRef ret = BinaryenReturn(m, /*value=*/nullptr);
+  BinaryenExpressionRef err_children[2] = {copy_call, ret};
+  BinaryenExpressionRef err_block = BinaryenBlock(
+      m, /*name=*/nullptr, err_children, /*numChildren=*/2, BinaryenTypeNone());
+  return BinaryenIf(m, is_non_ok, err_block, /*ifFalse=*/nullptr);
+}
+
+// `_?_:_` — ternary with 3VL condition handling (M4 Slice E1).  Both
+// branches must have the same Repr (checker invariant); we rely on
+// BinaryenIf to validate type agreement.  The condition is a
+// Repr::kBool (CelValue offset), so we first probe its kind byte and
+// early-return from $eval when the cond is CEL_UNKNOWN or CEL_ERROR,
+// propagating the cond as the eval result (see
+// `EmitSretEarlyReturnIfNonOk`).  On the OK path we unbox to raw i32
+// via `cel_bool_from_value` and dispatch to the then / else branches.
 absl::StatusOr<BinaryenExpressionRef> LowerConditional(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
   if (call.args().size() != 3) {
@@ -928,7 +957,19 @@ absl::StatusOr<BinaryenExpressionRef> LowerConditional(
   auto f = LowerExpr(ctx, ast, call.args().at(2));
   if (!f.ok()) return f.status();
   BinaryenModuleRef m = ctx.mod.raw();
-  return BinaryenIf(m, UnboxBool(m, *cond), *t, *f);
+  const BinaryenIndex cond_local = ctx.AddLocal(BinaryenTypeInt32());
+  BinaryenExpressionRef cond_set = BinaryenLocalSet(m, cond_local, *cond);
+  BinaryenExpressionRef err_if = EmitSretEarlyReturnIfNonOk(ctx, cond_local);
+  BinaryenExpressionRef unbox_args[1] = {
+      BinaryenLocalGet(m, cond_local, BinaryenTypeInt32()),
+  };
+  BinaryenExpressionRef unbox =
+      BinaryenCall(m, "cel_bool_from_value", unbox_args,
+                   /*numOperands=*/1, BinaryenTypeInt32());
+  BinaryenExpressionRef inner_if = BinaryenIf(m, unbox, *t, *f);
+  BinaryenExpressionRef children[3] = {cond_set, err_if, inner_if};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
+                       BinaryenExpressionGetType(*t));
 }
 
 // `_&&_` / `_||_` — 3VL (M4 Slice C / 3b2).  Delegate to the runtime

@@ -1095,7 +1095,7 @@ Every `CheckedExpr` node lowers to a single Binaryen expression returning an
 | `a OP b` (arith)      | `cel_int_add_at_ii(scratch, a, b)` (and `_at_uu` for uint; `cel_int_neg_at_i` for unary `-`) — sret helper writes CEL_INT / CEL_UINT on success, CEL_ERROR on overflow / div0 / mod0 |
 | `a OP b` (relation)   | `cel_num_lt(a, b)` (etc.) — returns i32 0/1; wrap in `cel_make_bool` to produce a CelValue offset |
 | `a && b`              | evaluate both as CelValue offsets; `cel_and(a, b)` (similarly `cel_or`, `cel_not`) |
-| `a ? t : e`           | `cel_bool_from_value(a)` (stopgap; see §10.2.1) drives an `if` that evaluates either arm |
+| `a ? t : e`           | probe cond's kind byte; if `>= CEL_UNKNOWN`, `cel_copy_celvalue_at($sret, cond); return;` else `cel_bool_from_value(cond)` drives an `if` over the two arms (see §10.2.1) |
 | Call (stdlib inline)  | inlined sequence of runtime calls                                                 |
 | Call (host stdlib)    | import call in `cel_host`                                                         |
 | Call (user fn)        | import call in `cel_fn.<overload_id>`                                             |
@@ -1207,11 +1207,18 @@ Sret-roots whose Repr is already a CelValue offset (`kBool`, `kString`,
 `cel_copy_celvalue_at($sret, $offset)` — so the earlier scalar-repr
 `cel_box_bool` helper is removed.
 
-The ternary `?:` still unboxes its condition through
-`cel_bool_from_value(offset) → i32` and dispatches on the result.
-Making `?:` itself three-valued (condition=UNKNOWN → result=UNKNOWN;
-condition=ERROR → result=ERROR) is deferred — the stopgap is
-documented at the call site in `LowerConditional`.
+The ternary `?:` (3VL closed in M4 Slice E1) first probes its
+condition's kind byte: when `kind >= CEL_UNKNOWN` (i.e. CEL_UNKNOWN
+or CEL_ERROR), `LowerConditional` emits
+`cel_copy_celvalue_at($sret, $cond); return;` so the cond
+propagates as the eval result — same sret early-exit shape the
+checked-arithmetic and NaN-compare helpers use.  On the OK path it
+unboxes through `cel_bool_from_value(offset) → i32` and dispatches
+to the then / else arms via `BinaryenIf`.  End-to-end coverage of
+the 3VL path is deferred until Slice E2 introduces the first
+non-early-returning UNKNOWN producer (host `is_unknown`); until
+then the path is covered by codegen-shape assertions in
+`expr_lower_test::Conditional`.
 
 ### 10.3 Comprehension lowering and scope management
 

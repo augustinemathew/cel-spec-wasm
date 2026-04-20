@@ -1,6 +1,7 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **slices A+B+C+D shipped (2026-04-20); slices E-G in progress.**
+Status: **slices A+B+C+D+E1 shipped (2026-04-20); slice E2 (host
+UNKNOWN) and slices F-G in progress.**
 Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
 closed is exactly what the 3VL plumbing threads through, so nothing
 upstream blocks this.
@@ -213,13 +214,18 @@ reaches the `_at_ii` / `_at_uu` / `_neg_at_i` sret shape.
       the `cel_make_bool` + 3VL-helper shape is uniform, which
       keeps codegen small.  Fast-path revisit is tracked in
       `testing-checklist.md`.
-- [~] `?:` grows the same treatment: when the condition is
+- [x] `?:` grows the same treatment: when the condition is
       UNKNOWN / ERROR, the ternary returns the same (per spec).
-      **Stopgap (slice C commit 3b2):** `?:` unboxes its
-      condition via `cel_bool_from_value` and falls back to a
-      two-valued `If` — UNKNOWN / ERROR-in-condition semantics are
-      still pending a 3VL decision (tracked as a design-doc
-      §10.2.1 note).
+      **M4 slice E1 (2026-04-20):** `LowerConditional` emits a
+      3-child Block `[cond_set, err_if, inner_if]`.  The err_if
+      tests `kind >= CEL_UNKNOWN` on the cond's kind byte and, on
+      match, copies the cond CelValue into the eval sret slot and
+      early-returns — same shape as `EmitCheckedArithmetic` /
+      `LowerDoubleOrderedCompare`.  The inner_if unboxes the cond
+      via `cel_bool_from_value` and dispatches as before.
+      Codegen-shape coverage via `expr_lower_test::Conditional`;
+      e2e coverage of the 3VL-cond path is deferred until Slice E2
+      introduces the first non-early-returning UNKNOWN producer.
 - [ ] Identifier lookup against a host-provided `unknown_attributes`
       set — the host ABI grows
       `cel_host.is_unknown(externref, i32 attr_id) → i32`; if true,

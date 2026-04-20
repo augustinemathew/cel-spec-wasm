@@ -289,7 +289,16 @@ TEST(ExprLowerTest, Conditional) {
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
+  // Since M4 Slice E1 the ternary lowers to a 3-child Block:
+  // [cond_set, err_if (non-OK => copy to sret + return), inner_if].
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 3u);
+  EXPECT_EQ(BinaryenExpressionGetId(BinaryenBlockGetChildAt(body, 0)),
+            BinaryenLocalSetId());
+  EXPECT_EQ(BinaryenExpressionGetId(BinaryenBlockGetChildAt(body, 1)),
+            BinaryenIfId());
+  EXPECT_EQ(BinaryenExpressionGetId(BinaryenBlockGetChildAt(body, 2)),
+            BinaryenIfId());
 }
 
 TEST(ExprLowerTest, MixedExpressionValidates) {
