@@ -1,0 +1,49 @@
+// E2E test fixture messages.
+//
+// Deliberately shaped like a realistic user-facing domain (a loyalty-
+// program customer profile) rather than borrowed from descriptor.proto:
+// the wire-type coverage is intentional — one scalar of each CEL-
+// relevant proto type — and the field numbers are stable so the tests
+// read as scenarios, not as "some field that happens to be #3 on
+// DescriptorProto."
+//
+// Scalar fields below cover every payload-load branch in
+// `LoadSelectPayload` (expr_lower.cc):
+//
+//   string   name           — kString  (pass-through)
+//   bytes    session_token  — kBytes   (pass-through)
+//   int32    age            — kInt  (i64.load, signed proto int32→CEL int)
+//   int64    user_id        — kInt  (i64.load)
+//   uint32   priority       — kUint (i64.load unsigned)
+//   uint64   balance_cents  — kUint (i64.load unsigned)
+//   double   credit_score   — kDouble (f64.load)
+//   bool     is_premium     — kBool (i32.load)
+//
+// The nested `Address` message is here so G4 (nested select + message
+// equality) has a ready-made submessage to reference without another
+// churn in this file.
+//
+// IMPORTANT: keep fields singular for now — map / repeated / enum
+// coverage belongs to M4+ and will add sibling messages, not mutate
+// these.
+
+syntax = "proto3";
+
+package celwasm.testdata;
+
+message Address {
+  string city = 1;
+  string country = 2;
+}
+
+message Customer {
+  string name           = 1;
+  int32  age            = 2;
+  int64  user_id        = 3;
+  uint32 priority       = 4;
+  uint64 balance_cents  = 5;
+  double credit_score   = 6;
+  bool   is_premium     = 7;
+  bytes  session_token  = 8;
+  Address billing_address = 9;
+}

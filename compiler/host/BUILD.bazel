@@ -2,6 +2,53 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
+# Pure host-side logic for `cel_host.{get_field, has_field, message_eq}`.
+# No wasmtime dependency — unit-testable on any host.  The wasmtime glue
+# that wires these into a linker lives in `cel_host_wasmtime.{h,cc}`
+# (added alongside G2 codegen).
+cc_library(
+    name = "cel_host",
+    srcs = ["cel_host.cc"],
+    hdrs = ["cel_host.h"],
+    deps = [
+        "//compiler/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "cel_host_test",
+    srcs = ["cel_host_test.cc"],
+    deps = [
+        ":cel_host",
+        "//compiler/runtime:cel_runtime",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# wasmtime-specific glue that registers the `cel_host.*` imports on a
+# linker by forwarding them to the pure-host logic in `:cel_host`.
+# Same darwin-arm64 constraint as `:host_loader` (wasmtime dep).
+cc_library(
+    name = "cel_host_wasmtime",
+    srcs = ["cel_host_wasmtime.cc"],
+    hdrs = ["cel_host_wasmtime.h"],
+    deps = [
+        ":cel_host",
+        "//compiler/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
 # Two-module loader.  Only buildable on darwin-arm64 today — the same
 # constraint as //compiler/e2e:* — because we vendor wasmtime only for
 # that triple.  If another triple is added to MODULE.bazel, flip the
@@ -11,6 +58,7 @@ cc_library(
     srcs = ["host_loader.cc"],
     hdrs = ["host_loader.h"],
     deps = [
+        ":cel_host_wasmtime",
         "//compiler/runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",

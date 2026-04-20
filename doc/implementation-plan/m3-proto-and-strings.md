@@ -102,18 +102,55 @@ Remaining slices before M3 closes:
   correct / incorrect at eval time, so the e2e is the real end of the
   slice.
 
-- **Slice G2 — `kSelectExpr` codegen (next, remaining).**  With
+- **Slice G2 — `kSelectExpr` codegen (2026-04-19, landed).**  With
   field numbers in `NodeAnnotation`, codegen lowers a non-`test_only`
-  `SelectExpr` to `cel_alloc(24)` + `cel_host.get_field(msg,
-  field_number, out_cv) → void` + a branch on `out_cv->kind`.
-  The host writes `{kind, payload}` in place.  For string/bytes fields
-  the host additionally allocates the span payload bytes via an
-  imported-back `cel_alloc(len)` and fills `payload.s.{ptr,len}`; for
+  `SelectExpr` on a `Repr::kMessage` operand to
+  `cel_alloc(24)` → `cel_host.get_field(msg, field_number, out_cv) → void`
+  → a per-Repr payload load.  The host writes `{kind, payload}` in
+  place.  For string/bytes fields the host allocates the span payload
+  bytes via `cel_alloc(len)` and fills `payload.s.{ptr,len}`; for
   message fields the host writes `kind=CEL_MESSAGE` + an interned slot
   into `payload.msg_slot`.  `CEL_UNKNOWN` and `CEL_ERROR` travel
-  through the same slot.  Proto field numbers are emitted as codegen
-  immediates (no new interning table — the externref already carries
-  the descriptor).  See "Open design questions" §1 for the rationale.
+  through the same slot.  Field numbers are emitted as immediates; no
+  new interning table (the externref already carries the descriptor).
+  Plumbing pieces:
+    - `compiler/host/cel_host.{h,cc}` — runtime-agnostic
+      `ReadField`/`HasField`/`MessageEq` over a
+      `google::protobuf::Message*`.
+    - `compiler/host/cel_host_wasmtime.{h,cc}` — wasmtime-specific
+      trampolines that unwrap externref / i32 / memory and register
+      three functions on a `wasmtime_linker_t` under the `"cel_host"`
+      namespace: `get_field`, `has_field`, `message_eq`.
+    - `compiler/codegen/expr_lower.cc` — `DeclareHostImports` emits
+      the three imports unconditionally (per the "don't gate cel_*
+      imports on AST inspection" rule).  `LowerSelect` produces the
+      3-child block; `LoadSelectPayload` dispatches on `Repr` for the
+      payload load (string/bytes pass through the scratch CelValue*;
+      numeric/bool load from `cel_mem_base + scratch + 8`).
+    - `compiler/host/host_loader.cc` — holds a
+      `std::unique_ptr<CelHostEnv>` per `LoadedEval`; unique_ptr
+      because `CelHostEnv` is non-movable (address captured as
+      callback data).
+    - `compiler/testdata/e2e_fixture.proto` — realistic `Customer`
+      fixture with one scalar per CEL-relevant wire type
+      (`string`, `int32`, `int64`, `uint32`, `uint64`, `double`,
+      `bool`, `bytes`), plus an `Address` submessage staged for G4.
+  **Coverage landed in this slice:**
+    - `compiler/host/cel_host_test.cc` — table-driven unit tests over
+      every wire type; exercises default/absent values too.
+    - `compiler/e2e/eval_test.cc` — 10 proto e2e cases against
+      `Customer`, running the full pipeline under wasmtime:
+      `SelectProtoStringFieldEq`, `SelectProtoStringFieldNeq`,
+      `SelectProtoStringFieldDefaultIsEmpty`,
+      `SelectProtoStringFieldPassThrough`,
+      `SelectProtoInt32FieldIsCelInt`,
+      `SelectProtoInt64FieldCarriesLargeValue`,
+      `SelectProtoUint64FieldIsUnsigned`,
+      `SelectProtoUint32FieldIsCelUint`,
+      `SelectProtoDoubleField`, `SelectProtoBoolField`,
+      `SelectProtoBytesFieldRoundTrips`.  Nested-message select and
+      `CEL_MESSAGE` payload dispatch are deferred to G4 — LowerSelect
+      rejects non-`kMessage` operands with `Unimplemented` today.
 - **Slice G3** — `kSelectExpr` with `test_only = true` lowers to a
   separate `cel_host.has_field(externref, i32) → i32` import.
 - **Slice G4** — nested-message select (compose G2 with

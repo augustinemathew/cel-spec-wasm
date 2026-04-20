@@ -1,0 +1,17 @@
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+# Shared proto fixtures for end-to-end tests that need realistic
+# message shapes.  Keep this target generic — individual tests depend
+# on :e2e_fixture_cc_proto, not on specific messages within it.
+proto_library(
+    name = "e2e_fixture_proto",
+    srcs = ["e2e_fixture.proto"],
+)
+
+cc_proto_library(
+    name = "e2e_fixture_cc_proto",
+    deps = [":e2e_fixture_proto"],
+)

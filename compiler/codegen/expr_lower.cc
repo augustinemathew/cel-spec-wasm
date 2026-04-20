@@ -127,7 +127,36 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   import2("cel_string_starts_with", i32, i32, i32);
   import2("cel_string_ends_with", i32, i32, i32);
   import2("cel_string_contains", i32, i32, i32);
+
   return absl::OkStatus();
+}
+
+// Host-side proto access (slice G2+).  Lives under the `cel_host` module
+// rather than `cel` because the host, not the runtime, backs these
+// imports.  Declared unconditionally — eval modules that don't touch
+// proto fields still satisfy wasmtime's "all imports must resolve"
+// rule, since the linker binds them from `CelHostEnv` regardless of
+// whether the body ever calls them.
+void DeclareHostImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType extref = BinaryenTypeExternref();
+  // get_field(msg, field_number, out_cv_offset) → ().  The host writes
+  // a full 24-byte CelValue at `cel_mem_base() + out_cv_offset`.
+  BinaryenType gf_params[3] = {extref, i32, i32};
+  mod.AddFunctionImport("get_field", /*external_module=*/"cel_host",
+                        /*external_base=*/"get_field",
+                        absl::Span<const BinaryenType>(gf_params, 3),
+                        BinaryenTypeNone());
+  // has_field(msg, field_number) → i32 (0/1).
+  BinaryenType hf_params[2] = {extref, i32};
+  mod.AddFunctionImport("has_field", /*external_module=*/"cel_host",
+                        /*external_base=*/"has_field",
+                        absl::Span<const BinaryenType>(hf_params, 2), i32);
+  // message_eq(a, b) → i32 (0/1).
+  BinaryenType me_params[2] = {extref, extref};
+  mod.AddFunctionImport("message_eq", /*external_module=*/"cel_host",
+                        /*external_base=*/"message_eq",
+                        absl::Span<const BinaryenType>(me_params, 2), i32);
 }
 
 absl::Status UnimplementedKind(absl::string_view kind, int64_t id) {
@@ -607,6 +636,113 @@ absl::StatusOr<BinaryenExpressionRef> LowerCall(LoweringContext& ctx,
   return UnimplementedKind(absl::StrCat("call `", fn, "`"), expr.id());
 }
 
+// Builds the payload-load tail of a `kSelectExpr` lowering.  `scratch`
+// is a local holding the arena-relative offset of a freshly allocated
+// 24-byte CelValue that `cel_host.get_field` has written into.
+//
+// Scalar kinds load through the absolute address
+// `cel_mem_base() + scratch + 8` (payload starts at offset 8 — kind is
+// u32 @0, _pad is u32 @4).  String / bytes travel through the codegen
+// as arena-relative CelValue offsets, so their "load" is just
+// `local.get $scratch`.  Message / enum / dur / ts results are out of
+// scope for G2 and return Unimplemented so a future caller can't
+// silently forge a bogus payload.
+absl::StatusOr<BinaryenExpressionRef> LoadSelectPayload(LoweringContext& ctx,
+                                                        BinaryenIndex scratch,
+                                                        Repr result_r,
+                                                        int64_t expr_id) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  if (result_r == Repr::kString || result_r == Repr::kBytes) {
+    return BinaryenLocalGet(m, scratch, BinaryenTypeInt32());
+  }
+  BinaryenExpressionRef base_call =
+      BinaryenCall(m, "cel_mem_base", /*operands=*/nullptr, /*numOperands=*/0,
+                   BinaryenTypeInt32());
+  BinaryenExpressionRef abs =
+      BinaryenBinary(m, BinaryenAddInt32(), base_call,
+                     BinaryenLocalGet(m, scratch, BinaryenTypeInt32()));
+  const uint32_t payload_off = 8;
+  switch (result_r) {
+    case Repr::kBool:
+      return BinaryenLoad(m, /*bytes=*/4, /*signed_=*/false,
+                          /*offset=*/payload_off, /*align=*/4,
+                          BinaryenTypeInt32(), abs, /*memoryName=*/"memory");
+    case Repr::kInt:
+      return BinaryenLoad(m, /*bytes=*/8, /*signed_=*/true,
+                          /*offset=*/payload_off, /*align=*/8,
+                          BinaryenTypeInt64(), abs, /*memoryName=*/"memory");
+    case Repr::kUint:
+      return BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false,
+                          /*offset=*/payload_off, /*align=*/8,
+                          BinaryenTypeInt64(), abs, /*memoryName=*/"memory");
+    case Repr::kDouble:
+      return BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false,
+                          /*offset=*/payload_off, /*align=*/8,
+                          BinaryenTypeFloat64(), abs, /*memoryName=*/"memory");
+    default:
+      return UnimplementedRepr("SelectExpr payload", result_r, expr_id);
+  }
+}
+
+// Lowers `operand.field` to a three-step block:
+//   1. scratch = cel_alloc(24)
+//   2. cel_host.get_field(operand, field_number, scratch)
+//   3. load the payload slice implied by the result's Repr
+//
+// Only the flat case (operand is a direct kMessage value) is in G2.
+// Nested selects — where the operand is itself a kSelectExpr
+// returning a message — need the host to intern the submessage into
+// `$cel_refs` and hand codegen back an externref; that path lands in
+// G4 together with `message_eq`.
+absl::StatusOr<BinaryenExpressionRef> LowerSelect(LoweringContext& ctx,
+                                                  const TypedAst& ast,
+                                                  const cel::Expr& expr) {
+  const cel::SelectExpr& select = expr.select_expr();
+  if (select.test_only()) {
+    // `has(x.f)` — G3.
+    return UnimplementedKind("SelectExpr (test_only)", expr.id());
+  }
+  const NodeAnnotation* a = ast.annotations().Find(expr.id());
+  if (a == nullptr || a->field_number == 0) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "expr_lower: SelectExpr at id ", expr.id(),
+        " has no resolved field_number — was PopulateAnnotations run "
+        "with a descriptor pool, and does the operand type have a "
+        "field named `",
+        select.field(), "`?"));
+  }
+  auto operand_r = ReprOf(ast, select.operand());
+  if (!operand_r.ok()) return operand_r.status();
+  if (*operand_r != Repr::kMessage) {
+    return UnimplementedRepr("SelectExpr operand", *operand_r, expr.id());
+  }
+  auto operand = LowerExpr(ctx, ast, select.operand());
+  if (!operand.ok()) return operand.status();
+  auto result_r = ReprOf(ast, expr);
+  if (!result_r.ok()) return result_r.status();
+
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());
+  BinaryenExpressionRef alloc_arg = BinaryenConst(m, BinaryenLiteralInt32(24));
+  BinaryenExpressionRef alloc_call =
+      BinaryenCall(m, "cel_alloc", &alloc_arg, 1, BinaryenTypeInt32());
+  BinaryenExpressionRef set_scratch = BinaryenLocalSet(m, scratch, alloc_call);
+  BinaryenExpressionRef args[3] = {
+      *operand,
+      BinaryenConst(
+          m, BinaryenLiteralInt32(static_cast<int32_t>(a->field_number))),
+      BinaryenLocalGet(m, scratch, BinaryenTypeInt32()),
+  };
+  BinaryenExpressionRef get_field_call =
+      BinaryenCall(m, "get_field", args, 3, BinaryenTypeNone());
+  auto load = LoadSelectPayload(ctx, scratch, *result_r, expr.id());
+  if (!load.ok()) return load.status();
+  BinaryenType result_type = WasmTypeFor(*result_r);
+  BinaryenExpressionRef children[3] = {set_scratch, get_field_call, *load};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
+                       result_type);
+}
+
 absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
                                                 const TypedAst& ast,
                                                 const cel::Expr& expr) {
@@ -618,7 +754,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
     case cel::ExprKindCase::kIdentExpr:
       return LowerIdent(ctx, ast, expr);
     case cel::ExprKindCase::kSelectExpr:
-      return UnimplementedKind("SelectExpr", expr.id());
+      return LowerSelect(ctx, ast, expr);
     case cel::ExprKindCase::kListExpr:
       return UnimplementedKind("ListExpr", expr.id());
     case cel::ExprKindCase::kStructExpr:
@@ -686,6 +822,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
                      "` has no scalar ABI lowering in M2"));
   }
   if (auto s = DeclareRuntimeImports(mod); !s.ok()) return s;
+  DeclareHostImports(mod);
 
   // Build the parameter list from the declared variables.  Each user
   // variable becomes one WASM param whose type is the ABI encoding of

@@ -19,12 +19,14 @@
 #define CELWASM_COMPILER_HOST_HOST_LOADER_H_
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "compiler/host/cel_host_wasmtime.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -87,6 +89,10 @@ class LoadedEval {
   wasmtime_module_t* runtime_mod_ = nullptr;
   wasmtime_module_t* eval_mod_ = nullptr;
   wasmtime_linker_t* linker_ = nullptr;
+  // Held behind unique_ptr because CelHostEnv is non-movable (its
+  // address is captured as void* callback-data by wasmtime's linker);
+  // LoadedEval itself is movable, so the env travels as a pointer.
+  std::unique_ptr<CelHostEnv> host_env_;
   wasmtime_instance_t runtime_instance_{};
   wasmtime_instance_t eval_instance_{};
   bool has_instances_ = false;

@@ -18,11 +18,13 @@ cc_test(
         "//compiler/host:host_loader",
         "//compiler/ir:typed_ast",
         "//compiler/runtime:cel_runtime",
+        "//compiler/testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )

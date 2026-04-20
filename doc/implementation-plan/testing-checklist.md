@@ -130,16 +130,28 @@ side-table-by-expr-id shape that matches the planned `attribute_id` /
     driving the real parser + checker + `PopulateAnnotations` against
     `google.protobuf.DescriptorProto` from the generated pool.
 
-**Coverage gap intentionally deferred.**  No e2e (wasmtime) row for
-`kSelectExpr` flips yet: the *consumer* of `field_number` is the
-`cel_host.get_field` codegen path which has not landed.  When that
-codegen ships, close the e2e gap by adding `eval_test` cases that
-evaluate `msg.scalar_field == literal` (and nested-hop variants)
-under a wasmtime host stub — field-number plumbing only becomes
-end-to-end correct / incorrect at eval time, so that is the real
-end of the slice.  Until then, the `kSelectExpr (field)` and
-`kSelectExpr (test_only)` rows stay `[ ]` in the codegen and e2e
-columns.
+**M3 slice G2 (2026-04-19): `kSelectExpr` codegen + e2e.**  With
+field numbers in `NodeAnnotation`, codegen lowers a non-`test_only`
+`SelectExpr` on a `Repr::kMessage` operand to
+`cel_alloc(24) → cel_host.get_field(msg, field_number, out_cv) →`
+payload-load by `Repr`.  Host imports (`get_field`, `has_field`,
+`message_eq`) are emitted unconditionally under the `"cel_host"`
+namespace and backed by the pure-host logic in
+`compiler/host/cel_host.{h,cc}` + the wasmtime trampolines in
+`compiler/host/cel_host_wasmtime.{h,cc}`.  A realistic fixture —
+`celwasm.testdata.Customer` in `compiler/testdata/e2e_fixture.proto`
+— gives one scalar per CEL-relevant wire type so every payload-load
+branch in `LoadSelectPayload` has an e2e assertion.  Coverage:
+`cel_host_test::*` (table-driven over every wire type),
+`expr_lower_test::SelectLowersToHostGetField` family, and
+`eval_test::SelectProto{StringField{Eq,Neq,DefaultIsEmpty,PassThrough},
+Int32FieldIsCelInt,Int64FieldCarriesLargeValue,
+Uint64FieldIsUnsigned,Uint32FieldIsCelUint,DoubleField,BoolField,
+BytesFieldRoundTrips}` — 10 wasmtime-backed scenarios flipping the
+`kSelectExpr (field)` row across codegen and e2e columns.
+
+The `test_only` e2e row is still `[ ]` — deferred to G3, which lowers
+`has(msg.field)` to `cel_host.has_field`.
 
 **M3 slice G1 (2026-04-19): message params as externref.**
 `Repr::kMessage` variables now lower to an `externref` param on the
@@ -349,7 +361,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `duration`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `list<T>`       | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `map<K,V>`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
-| proto message   | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| proto message   | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | enum            | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
 | wrapper (Int64Value …) | [ ] | [ ]  | [x]         | [x]       | [ ]     | [ ]      |
 | `any`           | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
@@ -362,7 +374,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | ------------------- | :----: | :-----: | :---------: | :-------: | :-----: | :-: |
 | `kConstant`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kIdentExpr`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x] |
-| `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [ ]     | [ ] |
+| `kSelectExpr` (field) | [x]  | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kSelectExpr` (`test_only`, from `has()`) | [x] | [x] | [x]  | [x] | [ ] | [ ] |
 | `kCallExpr` (global) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [ ]     | [ ] |

@@ -6,11 +6,14 @@
 #include <string>
 #include <utility>
 
+#include <memory>
+
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/host/cel_host_wasmtime.h"
 #include "compiler/runtime/cel_runtime_wasm_bytes.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -130,6 +133,10 @@ absl::Status CallInstanceFn(wasmtime_context_t* ctx,
 
 void LoadedEval::Reset() noexcept {
   has_instances_ = false;
+  // Delete the host env before the linker/store it borrows from: its
+  // trampolines closed over `store_` via CelHostEnv::ctx_, and the
+  // linker holds raw `this` pointers to CelHostEnv as callback data.
+  host_env_.reset();
   if (linker_ != nullptr) {
     wasmtime_linker_delete(linker_);
     linker_ = nullptr;
@@ -170,6 +177,7 @@ LoadedEval& LoadedEval::operator=(LoadedEval&& other) noexcept {
   runtime_mod_ = other.runtime_mod_;
   eval_mod_ = other.eval_mod_;
   linker_ = other.linker_;
+  host_env_ = std::move(other.host_env_);
   runtime_instance_ = other.runtime_instance_;
   eval_instance_ = other.eval_instance_;
   has_instances_ = other.has_instances_;
@@ -268,6 +276,18 @@ absl::StatusOr<LoadedEval> LoadEval(absl::Span<const uint8_t> eval_wasm_bytes) {
       return absl::InternalError(absl::StrCat(
           "wasmtime_linker_define_instance(cel): ", ErrorMessage(err)));
     }
+  }
+
+  // Register the host trampolines (`cel_host.get_field` etc.) on the
+  // same linker.  The eval module declares these imports unconditionally
+  // — wasmtime's linker accepts them as resolved whether or not the
+  // body ever calls them.  Must happen before `wasmtime_linker_instantiate`.
+  out.host_env_ = std::make_unique<CelHostEnv>();
+  if (auto s = out.host_env_->Init(ctx, out.runtime_instance_); !s.ok()) {
+    return s;
+  }
+  if (auto s = out.host_env_->Register(out.linker_); !s.ok()) {
+    return s;
   }
 
   // Instantiate the eval module; the linker resolves every "cel.<name>"

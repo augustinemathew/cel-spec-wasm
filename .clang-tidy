@@ -115,6 +115,11 @@ CheckOptions:
     value: k
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
+  # Allow the project's `CELWASM_<PATH>_H_` include-guard convention — the
+  # trailing underscore trips `UPPER_CASE` on its own.  The regex matches
+  # any identifier ending in `_H_` / `_HH_` / `_HPP_`.
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '.*_(H|HH|HPP)_$'
 
   # Function-size gate: short enough to read without scrolling. A
   # function that breaches any of these needs to be split (see

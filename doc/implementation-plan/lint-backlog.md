@@ -430,3 +430,4 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L154: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L170: possibly unsafe 'operator[]', consider bounds-safe alternatives
+

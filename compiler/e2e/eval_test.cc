@@ -34,6 +34,8 @@
 #include "compiler/host/host_loader.h"
 #include "compiler/ir/typed_ast.h"
 #include "compiler/runtime/cel_runtime.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -638,6 +640,255 @@ TEST(EvalE2ETest, SizeOfConcatenatedBytes) {
   auto r = Evaluate("size(b'hi' + b'there')");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->of.i64, 7);
+}
+
+// ---- Proto field reads (M3 Slice G2) ---------------------------------------
+//
+// Exercises `kSelectExpr` → `cel_host.get_field` through the full
+// pipeline: the CEL source references a message-typed variable, the
+// test builds a `celwasm.testdata.Customer` (see
+// `compiler/testdata/e2e_fixture.proto` — one scalar per CEL-relevant
+// wire type, so every payload-load dispatch in `LoadSelectPayload` has
+// at least one test), hands it to the module as an externref, and
+// checks the evaluator's result against the in-process protobuf value.
+//
+// The indirection through `LoadCompiled` (vs. `EvaluateWithVars`) is
+// because `wasmtime_externref_new` needs a live `wasmtime_context_t*`
+// — which only exists after `LoadEval` succeeds.
+
+absl::StatusOr<LoadedEval> LoadCompiled(absl::string_view cel_source,
+                                        std::vector<std::string> specs) {
+  CheckOptions opts;
+  opts.variable_specs = std::move(specs);
+  auto typed = ParseAndCheck(cel_source, opts);
+  if (!typed.ok()) return typed.status();
+  WasmModule mod;
+  auto fn = LowerToEvalFunction(*typed, "eval", mod);
+  if (!fn.ok()) return fn.status();
+  mod.ExportFunction("eval", "eval");
+  if (auto s = mod.Validate(); !s.ok()) return s;
+  auto bytes = mod.Serialize();
+  if (!bytes.ok()) return bytes.status();
+  return LoadEval(*bytes);
+}
+
+// Wraps `msg` in a fresh externref against `loaded`'s store.  The
+// caller must keep `msg` alive until `CallEval` returns — the test
+// passes a stack-allocated message, which is fine because evaluation
+// is synchronous.
+wasmtime_val_t MessageAsExternref(LoadedEval& loaded,
+                                  google::protobuf::Message& msg) {
+  wasmtime_val_t v{};
+  v.kind = WASMTIME_EXTERNREF;
+  EXPECT_TRUE(wasmtime_externref_new(loaded.context(), &msg,
+                                     /*finalizer=*/nullptr, &v.of.externref));
+  return v;
+}
+
+constexpr absl::string_view kCustomerSpec = "c:celwasm.testdata.Customer";
+
+TEST(EvalE2ETest, SelectProtoStringFieldEq) {
+  auto loaded = LoadCompiled("c.name == \"Ada\"", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_name("Ada");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoStringFieldNeq) {
+  auto loaded = LoadCompiled("c.name == \"Ada\"", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_name("Grace");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2ETest, SelectProtoStringFieldDefaultIsEmpty) {
+  // Unset singular string must come back as the empty string (proto3
+  // default) — a regression where `cel_host::get_field` returned the
+  // zero CelValue (kind=0) would surface as a traped memcmp or a
+  // silent true.  The comparison below is the cleanest positive
+  // assertion of the default.
+  auto loaded = LoadCompiled("c.name == \"\"", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;  // default-constructed: name is unset.
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoStringFieldPassThrough) {
+  // Directly returns the string payload — exercises the kString result
+  // path that short-circuits the payload-load branch and passes the
+  // scratch CelValue* straight through as the eval result.
+  auto loaded = LoadCompiled("c.name", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_name("Hello");
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  // The returned i32 is an arena-relative CelValue offset; dereference
+  // through the runtime's linear memory and check kind + bytes.
+  auto* ctx = loaded->context();
+  wasmtime_extern_t base_ext;
+  ASSERT_TRUE(wasmtime_instance_export_get(ctx, &loaded->runtime_instance(),
+                                           "cel_mem_base",
+                                           strlen("cel_mem_base"), &base_ext));
+  wasmtime_val_t base{};
+  wasm_trap_t* trap = nullptr;
+  ASSERT_EQ(
+      wasmtime_func_call(ctx, &base_ext.of.func, nullptr, 0, &base, 1, &trap),
+      nullptr);
+  wasmtime_extern_t mem_ext;
+  ASSERT_TRUE(wasmtime_instance_export_get(
+      ctx, &loaded->runtime_instance(), "memory", strlen("memory"), &mem_ext));
+  uint8_t* mem = wasmtime_memory_data(ctx, &mem_ext.of.memory);
+  auto* cv = reinterpret_cast<CelValue*>(mem + base.of.i32 + r->of.i32);
+  EXPECT_EQ(cv->kind, CEL_STRING);
+  std::string got(
+      reinterpret_cast<const char*>(mem + base.of.i32 + cv->payload.s.ptr),
+      cv->payload.s.len);
+  EXPECT_EQ(got, "Hello");
+}
+
+TEST(EvalE2ETest, SelectProtoInt32FieldIsCelInt) {
+  // proto int32 widens to CEL int (i64).  `c.age == 30` exercises the
+  // kInt payload-load (i64.load, signed) with a small positive value.
+  auto loaded = LoadCompiled("c.age == 30", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_age(30);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoInt64FieldCarriesLargeValue) {
+  // int64 that doesn't fit in int32 — guards against a regression that
+  // narrowed the host-side memcpy or the module-side i64.load.
+  constexpr int64_t kLarge = 1ll << 40;
+  auto loaded = LoadCompiled("c.user_id", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_user_id(kLarge);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I64);
+  EXPECT_EQ(r->of.i64, kLarge);
+}
+
+TEST(EvalE2ETest, SelectProtoUint64FieldIsUnsigned) {
+  // A value above INT64_MAX must round-trip without sign-flipping.
+  // If the payload-load branch used `i64.load` with a `signed` cast
+  // somewhere in the comparison, this test would fail.
+  constexpr uint64_t kHuge = (1ull << 63) + 42ull;
+  auto loaded =
+      LoadCompiled("c.balance_cents > 1u", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_balance_cents(kHuge);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoUint32FieldIsCelUint) {
+  auto loaded = LoadCompiled("c.priority == 5u", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_priority(5);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoDoubleField) {
+  // f64 payload-load at offset 8 — a regression that used i64.load on
+  // the double branch would compare wrong bit patterns and fail.
+  auto loaded =
+      LoadCompiled("c.credit_score > 700.0", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_credit_score(742.5);
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2ETest, SelectProtoBoolField) {
+  // bool payload-load at offset 8 — a 4-byte i32 load.  Covers true
+  // and false on the same expression so an inverted branch would
+  // flip both assertions.
+  auto loaded = LoadCompiled("c.is_premium", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_is_premium(true);
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->kind, WASMTIME_I32);
+    EXPECT_EQ(r->of.i32, 1);
+  }
+  {
+    celwasm::testdata::Customer msg;
+    msg.set_is_premium(false);
+    wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+    auto r = loaded->CallEval({arg});
+    ASSERT_THAT(r.status(), IsOk());
+    EXPECT_EQ(r->of.i32, 0);
+  }
+}
+
+TEST(EvalE2ETest, SelectProtoBytesFieldRoundTrips) {
+  // bytes share the pass-through path with strings but must come back
+  // with kind = CEL_BYTES (not CEL_STRING) — `cel_host::ReadField` is
+  // responsible for that split.  A regression that produced the wrong
+  // kind would be caught here even though the bytes bytes match.
+  auto loaded = LoadCompiled("c.session_token", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  celwasm::testdata::Customer msg;
+  msg.set_session_token(std::string("\xff\x00\x01", 3));
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->kind, WASMTIME_I32);
+  auto* ctx = loaded->context();
+  wasmtime_extern_t base_ext;
+  ASSERT_TRUE(wasmtime_instance_export_get(ctx, &loaded->runtime_instance(),
+                                           "cel_mem_base",
+                                           strlen("cel_mem_base"), &base_ext));
+  wasmtime_val_t base{};
+  wasm_trap_t* trap = nullptr;
+  ASSERT_EQ(
+      wasmtime_func_call(ctx, &base_ext.of.func, nullptr, 0, &base, 1, &trap),
+      nullptr);
+  wasmtime_extern_t mem_ext;
+  ASSERT_TRUE(wasmtime_instance_export_get(
+      ctx, &loaded->runtime_instance(), "memory", strlen("memory"), &mem_ext));
+  uint8_t* mem = wasmtime_memory_data(ctx, &mem_ext.of.memory);
+  auto* cv = reinterpret_cast<CelValue*>(mem + base.of.i32 + r->of.i32);
+  EXPECT_EQ(cv->kind, CEL_BYTES);
+  ASSERT_EQ(cv->payload.s.len, 3u);
+  const uint8_t* bytes = mem + base.of.i32 + cv->payload.s.ptr;
+  EXPECT_EQ(bytes[0], 0xffu);
+  EXPECT_EQ(bytes[1], 0x00u);
+  EXPECT_EQ(bytes[2], 0x01u);
 }
 
 }  // namespace
