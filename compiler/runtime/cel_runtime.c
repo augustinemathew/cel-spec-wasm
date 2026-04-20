@@ -5,7 +5,7 @@
 // headers, so for wasm we declare the two functions we actually use
 // and let clang lower them to LLVM intrinsics (wasm-ld resolves the
 // intrinsics to compiler-rt's own `memcpy` / `memset`).
-#if defined(__wasm__)
+#ifdef __wasm__
 // Freestanding wasm32 build: no libc.  Provide trivial byte-loop
 // implementations of the three `<string.h>` functions we use.  They
 // are not perf-critical (runtime calls are per-CelValue, not per
@@ -71,7 +71,7 @@ static uint32_t align_up(uint32_t n, uint32_t align) {
 }
 
 static CelValue* cv_at(uint32_t off) {
-  return (CelValue*)(void*)(g_memory + off);
+  return (CelValue*)(g_memory + off);
 }
 
 static void write_cv(uint32_t off, const CelValue* v) {
@@ -449,7 +449,8 @@ static int string_span_pair(uint32_t a, uint32_t b, const uint8_t** pa,
 int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
   const uint8_t* sp;
   const uint8_t* pp;
-  uint32_t sl, pl;
+  uint32_t sl;
+  uint32_t pl;
   if (!string_span_pair(s, prefix, &sp, &sl, &pp, &pl)) return 0;
   if (pl == 0) return 1;
   if (pl > sl) return 0;
@@ -459,7 +460,8 @@ int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
 int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
   const uint8_t* sp;
   const uint8_t* xp;
-  uint32_t sl, xl;
+  uint32_t sl;
+  uint32_t xl;
   if (!string_span_pair(s, suffix, &sp, &sl, &xp, &xl)) return 0;
   if (xl == 0) return 1;
   if (xl > sl) return 0;
@@ -469,7 +471,8 @@ int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
 int32_t cel_string_contains(uint32_t s, uint32_t needle) {
   const uint8_t* sp;
   const uint8_t* np;
-  uint32_t sl, nl;
+  uint32_t sl;
+  uint32_t nl;
   if (!string_span_pair(s, needle, &sp, &sl, &np, &nl)) return 0;
   if (nl == 0) return 1;
   if (nl > sl) return 0;
@@ -480,5 +483,167 @@ int32_t cel_string_contains(uint32_t s, uint32_t needle) {
   for (uint32_t i = 0; i <= last; ++i) {
     if (memcmp(sp + i, np, nl) == 0) return 1;
   }
+  return 0;
+}
+
+// ---- Three-valued logic helpers ------------------------------------------
+
+static int is_3vl_kind(uint32_t k) {
+  return k == (uint32_t)CEL_BOOL || k == (uint32_t)CEL_UNKNOWN ||
+         k == (uint32_t)CEL_ERROR;
+}
+
+static int is_ok_false(const CelValue* v) {
+  return v->kind == (uint32_t)CEL_BOOL && v->payload.b == 0;
+}
+
+static int is_ok_true(const CelValue* v) {
+  return v->kind == (uint32_t)CEL_BOOL && v->payload.b != 0;
+}
+
+// Allocates a CEL_UNKNOWN over a sorted, already-populated id array at
+// `ids_off` with `len` valid entries.  Used by cel_unknown_merge after
+// the merge walk finishes.  Takes the array offset rather than a pointer
+// so cel_alloc activity in between is safe.
+static uint32_t make_unknown_from_ids(uint32_t ids_off, uint32_t len) {
+  uint32_t set_off = cel_alloc(2u * (uint32_t)sizeof(uint32_t));
+  if (set_off == 0) return 0;
+  uint32_t* desc = (uint32_t*)(g_memory + set_off);
+  desc[0] = ids_off;
+  desc[1] = len;
+
+  uint32_t off = alloc_cv();
+  if (off == 0) return 0;
+  CelValue* v = cv_at(off);
+  v->kind = CEL_UNKNOWN;
+  v->payload.unk = set_off;
+  return off;
+}
+
+// Sorted-dedup'd merge walk over two already-sorted u32 id arrays.
+// Writes into `out` and returns the post-dedup length.  Factored out of
+// cel_unknown_merge so the enclosing function stays under the lint
+// function-size threshold.
+static uint32_t merge_sorted_ids(const uint32_t* ids_a, uint32_t len_a,
+                                 const uint32_t* ids_b, uint32_t len_b,
+                                 uint32_t* out) {
+  uint32_t i = 0;
+  uint32_t j = 0;
+  uint32_t k = 0;
+  while (i < len_a && j < len_b) {
+    uint32_t ai = ids_a[i];
+    uint32_t bj = ids_b[j];
+    if (ai < bj) {
+      out[k++] = ai;
+      ++i;
+    } else if (ai > bj) {
+      out[k++] = bj;
+      ++j;
+    } else {
+      out[k++] = ai;
+      ++i;
+      ++j;
+    }
+  }
+  while (i < len_a) {
+    out[k++] = ids_a[i++];
+  }
+  while (j < len_b) {
+    out[k++] = ids_b[j++];
+  }
+  return k;
+}
+
+uint32_t cel_unknown_merge(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_UNKNOWN || vb->kind != (uint32_t)CEL_UNKNOWN) {
+    return 0;
+  }
+  uint32_t set_a = va->payload.unk;
+  uint32_t set_b = vb->payload.unk;
+  if (set_a == 0 || set_b == 0) return 0;
+
+  // Snapshot descriptor scalars before any further cel_alloc — on wasm32
+  // memory.grow can relocate g_memory, so pointers derived from offsets
+  // must be re-taken after each bump.
+  uint32_t* desc_a = (uint32_t*)(g_memory + set_a);
+  uint32_t* desc_b = (uint32_t*)(g_memory + set_b);
+  uint32_t ids_a_off = desc_a[0];
+  uint32_t len_a = desc_a[1];
+  uint32_t ids_b_off = desc_b[0];
+  uint32_t len_b = desc_b[1];
+
+  uint32_t max_total = len_a + len_b;
+  uint32_t bytes = max_total * (uint32_t)sizeof(uint32_t);
+  uint32_t out_ids = cel_alloc(bytes == 0 ? (uint32_t)sizeof(uint32_t) : bytes);
+  if (out_ids == 0) return 0;
+
+  const uint32_t* ids_a = (const uint32_t*)(g_memory + ids_a_off);
+  const uint32_t* ids_b = (const uint32_t*)(g_memory + ids_b_off);
+  uint32_t* out = (uint32_t*)(g_memory + out_ids);
+  uint32_t k = merge_sorted_ids(ids_a, len_a, ids_b, len_b, out);
+  return make_unknown_from_ids(out_ids, k);
+}
+
+uint32_t cel_not(uint32_t a) {
+  if (a == 0) return 0;
+  const CelValue* va = cv_at(a);
+  uint32_t k = va->kind;
+  if (k == (uint32_t)CEL_BOOL) {
+    return cel_make_bool(va->payload.b ? 0 : 1);
+  }
+  if (k == (uint32_t)CEL_UNKNOWN || k == (uint32_t)CEL_ERROR) {
+    return a;
+  }
+  return 0;
+}
+
+uint32_t cel_and(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (!is_3vl_kind(va->kind) || !is_3vl_kind(vb->kind)) return 0;
+  // OK(false) short-circuits past everything, including ERROR / UNKNOWN.
+  if (is_ok_false(va)) return a;
+  if (is_ok_false(vb)) return b;
+  // OK(true) && x = x.
+  if (is_ok_true(va)) return b;
+  if (is_ok_true(vb)) return a;
+  // Neither side is a definite bool.  ERROR dominates UNKNOWN.
+  if (va->kind == (uint32_t)CEL_ERROR) return a;
+  if (vb->kind == (uint32_t)CEL_ERROR) return b;
+  // Both UNKNOWN.
+  return cel_unknown_merge(a, b);
+}
+
+uint32_t cel_or(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (!is_3vl_kind(va->kind) || !is_3vl_kind(vb->kind)) return 0;
+  // OK(true) short-circuits.
+  if (is_ok_true(va)) return a;
+  if (is_ok_true(vb)) return b;
+  // OK(false) || x = x.
+  if (is_ok_false(va)) return b;
+  if (is_ok_false(vb)) return a;
+  if (va->kind == (uint32_t)CEL_ERROR) return a;
+  if (vb->kind == (uint32_t)CEL_ERROR) return b;
+  return cel_unknown_merge(a, b);
+}
+
+uint32_t cel_status_either(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind == (uint32_t)CEL_ERROR) return a;
+  if (vb->kind == (uint32_t)CEL_ERROR) return b;
+  int au = (va->kind == (uint32_t)CEL_UNKNOWN);
+  int bu = (vb->kind == (uint32_t)CEL_UNKNOWN);
+  if (au && bu) return cel_unknown_merge(a, b);
+  if (au) return a;
+  if (bu) return b;
   return 0;
 }

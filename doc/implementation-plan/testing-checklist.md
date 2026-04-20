@@ -570,6 +570,13 @@ source→shape mapping still has an unpinned surprise.
        unknown, error)
 - [x] `cel_string_eq` / `cel_bytes_eq` on empty, equal, unequal-length,
       different-content inputs.
+- [x] Three-valued logic helpers: `cel_unknown_merge` (sorted-dedup'd
+      union + determinism), `cel_not` (bool flip + ERROR/UNKNOWN
+      passthrough), `cel_and` / `cel_or` full 5×5 truth tables over
+      {TRUE, FALSE, ERROR, UnknownA, UnknownB} via `TEST_P`, and
+      `cel_status_either` (ERROR > UNKNOWN > OK dominance, left-wins
+      determinism).  Type-error rejection for every helper.
+      (M4 slice A — `cel_runtime_test.cc`)
 - [ ] List / map growth, iteration.
 - [ ] `cel_ref_intern` dedup + `cel_unwrap_message` round-trip.
 

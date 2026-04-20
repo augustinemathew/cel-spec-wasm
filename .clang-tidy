@@ -95,6 +95,13 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.EnumConstantPrefix
     value: k
+  # The cross-ABI `CelKind` enum in `compiler/runtime/cel_runtime.h` is a
+  # C header whose constants (`CEL_NULL`, `CEL_BOOL`, ...) are referenced
+  # from generated wasm, from the C runtime, and from every C++ test as
+  # screaming-snake identifiers — the standard C ABI convention.
+  # Renaming to `kCelNull` would churn every caller for no runtime win.
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '^CEL_[A-Z_]+$'
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
   - key: readability-identifier-naming.ProtectedMemberSuffix

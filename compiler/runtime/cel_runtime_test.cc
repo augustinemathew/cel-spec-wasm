@@ -276,7 +276,7 @@ TEST_F(RuntimeTest, MakeUnknownCarriesAttributeId) {
   CelValue* v = cel_value_at(off);
   EXPECT_EQ(v->kind, (uint32_t)CEL_UNKNOWN);
   ASSERT_NE(v->payload.unk, 0u);
-  const uint32_t* set =
+  const auto* set =
       reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.unk);
   uint32_t ids_ptr = set[0];
   uint32_t ids_len = set[1];
@@ -295,7 +295,7 @@ TEST_F(RuntimeTest, MakeErrorCarriesCodeAndMessage) {
   CelValue* v = cel_value_at(off);
   EXPECT_EQ(v->kind, (uint32_t)CEL_ERROR);
   ASSERT_NE(v->payload.err, 0u);
-  const uint32_t* err =
+  const auto* err =
       reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.err);
   EXPECT_EQ(err[0], 7u);
   EXPECT_EQ(err[1], msg_ptr);
@@ -734,6 +734,345 @@ TEST_F(RuntimeTest, BoolFromValueRejectsNonBool) {
   EXPECT_EQ(cel_bool_from_value(i), 0);
   uint32_t s = cel_make_string("true", 4);
   EXPECT_EQ(cel_bool_from_value(s), 0);
+}
+
+// ---- Three-valued logic helpers -------------------------------------------
+
+// Helpers that build one of the five 3VL operand classes.  Parametric
+// truth-table tests below drive all 25 pairings through `cel_and` /
+// `cel_or` and all 5 inputs through `cel_not`.
+enum class Cls : std::uint8_t {
+  kTrue,
+  kFalse,
+  kError,
+  kUnkA,  // UnknownSet{42}
+  kUnkB,  // UnknownSet{100}
+};
+
+uint32_t Build(Cls c) {
+  switch (c) {
+    case Cls::kTrue:
+      return cel_make_bool(1);
+    case Cls::kFalse:
+      return cel_make_bool(0);
+    case Cls::kError:
+      return cel_make_error(/*code=*/1, /*msg_ptr=*/0, /*msg_len=*/0);
+    case Cls::kUnkA:
+      return cel_make_unknown(42);
+    case Cls::kUnkB:
+      return cel_make_unknown(100);
+  }
+  return 0;
+}
+
+// The attribute ids contained in a CEL_UNKNOWN, as a vector we can
+// compare against literals — tests use this to assert merge determinism.
+std::vector<uint32_t> UnknownIds(uint32_t cv_off) {
+  const CelValue* v = cel_value_at(cv_off);
+  if (v == nullptr || v->kind != static_cast<uint32_t>(CEL_UNKNOWN)) return {};
+  const auto* desc =
+      reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.unk);
+  uint32_t ids_off = desc[0];
+  uint32_t len = desc[1];
+  const auto* ids = reinterpret_cast<const uint32_t*>(cel_mem_base() + ids_off);
+  return {ids, ids + len};
+}
+
+CelKind KindOf(uint32_t cv_off) {
+  const CelValue* v = cel_value_at(cv_off);
+  return v == nullptr ? CEL_NULL : static_cast<CelKind>(v->kind);
+}
+
+// ---- cel_unknown_merge ----------------------------------------------------
+
+TEST_F(RuntimeTest, UnknownMergeTwoSingletons) {
+  uint32_t a = cel_make_unknown(42);
+  uint32_t b = cel_make_unknown(100);
+  uint32_t r = cel_unknown_merge(a, b);
+  ASSERT_NE(r, 0u);
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{42u, 100u}));
+}
+
+TEST_F(RuntimeTest, UnknownMergeIsDeterministic) {
+  // Order of arguments must not affect the result's id order — the spec
+  // calls for a canonical (sorted-dedup'd) set so a host diffing two
+  // unknowns produced from the same attributes sees the same bytes.
+  uint32_t a = cel_make_unknown(100);
+  uint32_t b = cel_make_unknown(42);
+  uint32_t r1 = cel_unknown_merge(a, b);
+  uint32_t r2 = cel_unknown_merge(b, a);
+  EXPECT_EQ(UnknownIds(r1), UnknownIds(r2));
+  EXPECT_EQ(UnknownIds(r1), (std::vector<uint32_t>{42u, 100u}));
+}
+
+TEST_F(RuntimeTest, UnknownMergeDedupsOverlap) {
+  // Merging {42} with itself must produce {42}, not {42, 42}.
+  uint32_t a = cel_make_unknown(42);
+  uint32_t b = cel_make_unknown(42);
+  uint32_t r = cel_unknown_merge(a, b);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{42u}));
+}
+
+TEST_F(RuntimeTest, UnknownMergeRejectsNonUnknown) {
+  uint32_t unk = cel_make_unknown(1);
+  uint32_t err = cel_make_error(0, 0, 0);
+  uint32_t boolv = cel_make_bool(1);
+  EXPECT_EQ(cel_unknown_merge(unk, err), 0u);
+  EXPECT_EQ(cel_unknown_merge(err, unk), 0u);
+  EXPECT_EQ(cel_unknown_merge(unk, boolv), 0u);
+}
+
+TEST_F(RuntimeTest, UnknownMergeRejectsZeroOffset) {
+  uint32_t unk = cel_make_unknown(1);
+  EXPECT_EQ(cel_unknown_merge(0, unk), 0u);
+  EXPECT_EQ(cel_unknown_merge(unk, 0), 0u);
+}
+
+// ---- cel_not --------------------------------------------------------------
+
+TEST_F(RuntimeTest, NotBoolFlips) {
+  EXPECT_EQ(cel_value_at(cel_not(cel_make_bool(1)))->payload.b, 0);
+  EXPECT_EQ(cel_value_at(cel_not(cel_make_bool(0)))->payload.b, 1);
+}
+
+TEST_F(RuntimeTest, NotErrorPassesThrough) {
+  uint32_t e = cel_make_error(5, 0, 0);
+  uint32_t r = cel_not(e);
+  EXPECT_EQ(r, e);
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, NotUnknownPassesThrough) {
+  uint32_t u = cel_make_unknown(7);
+  uint32_t r = cel_not(u);
+  EXPECT_EQ(r, u);
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, NotRejectsNonBoolean) {
+  EXPECT_EQ(cel_not(cel_make_int(1)), 0u);
+  EXPECT_EQ(cel_not(cel_make_string("true", 4)), 0u);
+  EXPECT_EQ(cel_not(0), 0u);
+}
+
+// ---- cel_and / cel_or truth tables ---------------------------------------
+
+// Name the expected output for a given (a, b) cell of the 5x5 table.
+// Two Unknown classes (UnkA=42, UnkB=100) are needed so the merge case
+// exercises a real sorted union and not just identity.
+enum class Want : std::uint8_t {
+  kTrue,
+  kFalse,
+  kError,
+  kUnkA,      // UnknownSet{42}
+  kUnkB,      // UnknownSet{100}
+  kUnkMerge,  // UnknownSet{42, 100}
+};
+
+void ExpectBool(uint32_t got, int32_t b) {
+  EXPECT_EQ(KindOf(got), CEL_BOOL);
+  EXPECT_EQ(cel_value_at(got)->payload.b, b);
+}
+
+void ExpectUnknownWith(uint32_t got, const std::vector<uint32_t>& ids) {
+  EXPECT_EQ(KindOf(got), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(got), ids);
+}
+
+void ExpectWant(uint32_t got, Want w) {
+  ASSERT_NE(got, 0u);
+  switch (w) {
+    case Want::kTrue:
+      ExpectBool(got, 1);
+      return;
+    case Want::kFalse:
+      ExpectBool(got, 0);
+      return;
+    case Want::kError:
+      EXPECT_EQ(KindOf(got), CEL_ERROR);
+      return;
+    case Want::kUnkA:
+      ExpectUnknownWith(got, {42u});
+      return;
+    case Want::kUnkB:
+      ExpectUnknownWith(got, {100u});
+      return;
+    case Want::kUnkMerge:
+      ExpectUnknownWith(got, {42u, 100u});
+      return;
+  }
+}
+
+struct AndOrCase {
+  Cls a;
+  Cls b;
+  Want want;
+};
+
+// CEL `&&` truth table.  OK(false) short-circuits past everything; OK(true)
+// passes the other operand through; ERROR dominates UNKNOWN when neither
+// short-circuits.  UnkA/UnkB are distinguishable so the merge column is a
+// real test, not a tautology.
+class AndTruthTable : public RuntimeTest,
+                      public ::testing::WithParamInterface<AndOrCase> {};
+
+TEST_P(AndTruthTable, Matches) {
+  AndOrCase c = GetParam();
+  uint32_t a = Build(c.a);
+  uint32_t b = Build(c.b);
+  uint32_t r = cel_and(a, b);
+  ExpectWant(r, c.want);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllCells, AndTruthTable,
+    ::testing::Values(
+        // a = true
+        AndOrCase{Cls::kTrue, Cls::kTrue, Want::kTrue},
+        AndOrCase{Cls::kTrue, Cls::kFalse, Want::kFalse},
+        AndOrCase{Cls::kTrue, Cls::kError, Want::kError},
+        AndOrCase{Cls::kTrue, Cls::kUnkA, Want::kUnkA},
+        AndOrCase{Cls::kTrue, Cls::kUnkB, Want::kUnkB},
+        // a = false  (short-circuit — every cell is kFalse)
+        AndOrCase{Cls::kFalse, Cls::kTrue, Want::kFalse},
+        AndOrCase{Cls::kFalse, Cls::kFalse, Want::kFalse},
+        AndOrCase{Cls::kFalse, Cls::kError, Want::kFalse},
+        AndOrCase{Cls::kFalse, Cls::kUnkA, Want::kFalse},
+        AndOrCase{Cls::kFalse, Cls::kUnkB, Want::kFalse},
+        // a = error
+        AndOrCase{Cls::kError, Cls::kTrue, Want::kError},
+        AndOrCase{Cls::kError, Cls::kFalse, Want::kFalse},
+        AndOrCase{Cls::kError, Cls::kError, Want::kError},
+        AndOrCase{Cls::kError, Cls::kUnkA, Want::kError},
+        AndOrCase{Cls::kError, Cls::kUnkB, Want::kError},
+        // a = unknown(A)
+        AndOrCase{Cls::kUnkA, Cls::kTrue, Want::kUnkA},
+        AndOrCase{Cls::kUnkA, Cls::kFalse, Want::kFalse},
+        AndOrCase{Cls::kUnkA, Cls::kError, Want::kError},
+        AndOrCase{Cls::kUnkA, Cls::kUnkA, Want::kUnkA},
+        AndOrCase{Cls::kUnkA, Cls::kUnkB, Want::kUnkMerge},
+        // a = unknown(B)
+        AndOrCase{Cls::kUnkB, Cls::kTrue, Want::kUnkB},
+        AndOrCase{Cls::kUnkB, Cls::kFalse, Want::kFalse},
+        AndOrCase{Cls::kUnkB, Cls::kError, Want::kError},
+        AndOrCase{Cls::kUnkB, Cls::kUnkA, Want::kUnkMerge},
+        AndOrCase{Cls::kUnkB, Cls::kUnkB, Want::kUnkB}));
+
+// CEL `||` truth table.  Mirror of `&&`: OK(true) short-circuits, OK(false)
+// passes through, ERROR dominates UNKNOWN in the non-short-circuit
+// quadrant.
+class OrTruthTable : public RuntimeTest,
+                     public ::testing::WithParamInterface<AndOrCase> {};
+
+TEST_P(OrTruthTable, Matches) {
+  AndOrCase c = GetParam();
+  uint32_t a = Build(c.a);
+  uint32_t b = Build(c.b);
+  uint32_t r = cel_or(a, b);
+  ExpectWant(r, c.want);
+}
+
+INSTANTIATE_TEST_SUITE_P(AllCells, OrTruthTable,
+                         ::testing::Values(
+                             // a = true  (short-circuit — every cell is kTrue)
+                             AndOrCase{Cls::kTrue, Cls::kTrue, Want::kTrue},
+                             AndOrCase{Cls::kTrue, Cls::kFalse, Want::kTrue},
+                             AndOrCase{Cls::kTrue, Cls::kError, Want::kTrue},
+                             AndOrCase{Cls::kTrue, Cls::kUnkA, Want::kTrue},
+                             AndOrCase{Cls::kTrue, Cls::kUnkB, Want::kTrue},
+                             // a = false
+                             AndOrCase{Cls::kFalse, Cls::kTrue, Want::kTrue},
+                             AndOrCase{Cls::kFalse, Cls::kFalse, Want::kFalse},
+                             AndOrCase{Cls::kFalse, Cls::kError, Want::kError},
+                             AndOrCase{Cls::kFalse, Cls::kUnkA, Want::kUnkA},
+                             AndOrCase{Cls::kFalse, Cls::kUnkB, Want::kUnkB},
+                             // a = error
+                             AndOrCase{Cls::kError, Cls::kTrue, Want::kTrue},
+                             AndOrCase{Cls::kError, Cls::kFalse, Want::kError},
+                             AndOrCase{Cls::kError, Cls::kError, Want::kError},
+                             AndOrCase{Cls::kError, Cls::kUnkA, Want::kError},
+                             AndOrCase{Cls::kError, Cls::kUnkB, Want::kError},
+                             // a = unknown(A)
+                             AndOrCase{Cls::kUnkA, Cls::kTrue, Want::kTrue},
+                             AndOrCase{Cls::kUnkA, Cls::kFalse, Want::kUnkA},
+                             AndOrCase{Cls::kUnkA, Cls::kError, Want::kError},
+                             AndOrCase{Cls::kUnkA, Cls::kUnkA, Want::kUnkA},
+                             AndOrCase{Cls::kUnkA, Cls::kUnkB, Want::kUnkMerge},
+                             // a = unknown(B)
+                             AndOrCase{Cls::kUnkB, Cls::kTrue, Want::kTrue},
+                             AndOrCase{Cls::kUnkB, Cls::kFalse, Want::kUnkB},
+                             AndOrCase{Cls::kUnkB, Cls::kError, Want::kError},
+                             AndOrCase{Cls::kUnkB, Cls::kUnkA, Want::kUnkMerge},
+                             AndOrCase{Cls::kUnkB, Cls::kUnkB, Want::kUnkB}));
+
+TEST_F(RuntimeTest, AndRejectsNonBooleanOperand) {
+  uint32_t i = cel_make_int(1);
+  uint32_t t = cel_make_bool(1);
+  EXPECT_EQ(cel_and(i, t), 0u);
+  EXPECT_EQ(cel_and(t, i), 0u);
+  EXPECT_EQ(cel_and(0, t), 0u);
+  EXPECT_EQ(cel_and(t, 0), 0u);
+}
+
+TEST_F(RuntimeTest, OrRejectsNonBooleanOperand) {
+  uint32_t i = cel_make_int(1);
+  uint32_t t = cel_make_bool(1);
+  EXPECT_EQ(cel_or(i, t), 0u);
+  EXPECT_EQ(cel_or(t, i), 0u);
+  EXPECT_EQ(cel_or(0, t), 0u);
+  EXPECT_EQ(cel_or(t, 0), 0u);
+}
+
+// ---- cel_status_either ----------------------------------------------------
+
+// `cel_status_either` is how arithmetic ops decide whether to do the op,
+// propagate an error, or fold into an unknown.  Distinct from cel_and /
+// cel_or because it returns 0 when both operands are OK (meaning "proceed
+// with the arithmetic") rather than an OK bool.
+TEST_F(RuntimeTest, StatusEitherBothOkReturnsZero) {
+  EXPECT_EQ(cel_status_either(cel_make_int(1), cel_make_int(2)), 0u);
+  EXPECT_EQ(cel_status_either(cel_make_double(1.0), cel_make_int(2)), 0u);
+}
+
+TEST_F(RuntimeTest, StatusEitherErrorDominates) {
+  uint32_t e = cel_make_error(5, 0, 0);
+  uint32_t u = cel_make_unknown(1);
+  uint32_t i = cel_make_int(7);
+  EXPECT_EQ(cel_status_either(e, i), e);
+  EXPECT_EQ(cel_status_either(i, e), e);
+  EXPECT_EQ(cel_status_either(e, u), e);
+  EXPECT_EQ(cel_status_either(u, e), e);
+}
+
+TEST_F(RuntimeTest, StatusEitherUnknownPassesThrough) {
+  uint32_t u = cel_make_unknown(42);
+  uint32_t i = cel_make_int(7);
+  EXPECT_EQ(cel_status_either(u, i), u);
+  EXPECT_EQ(cel_status_either(i, u), u);
+}
+
+TEST_F(RuntimeTest, StatusEitherTwoUnknownsMerge) {
+  uint32_t a = cel_make_unknown(42);
+  uint32_t b = cel_make_unknown(100);
+  uint32_t r = cel_status_either(a, b);
+  ASSERT_NE(r, 0u);
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{42u, 100u}));
+}
+
+TEST_F(RuntimeTest, StatusEitherPrefersLeftErrorWhenBothError) {
+  uint32_t a = cel_make_error(1, 0, 0);
+  uint32_t b = cel_make_error(2, 0, 0);
+  // Deterministic: left wins.  Tests rely on this when probing "which
+  // error did we keep" after a multi-operand expression.
+  EXPECT_EQ(cel_status_either(a, b), a);
+}
+
+TEST_F(RuntimeTest, StatusEitherRejectsZero) {
+  uint32_t i = cel_make_int(1);
+  EXPECT_EQ(cel_status_either(0, i), 0u);
+  EXPECT_EQ(cel_status_either(i, 0), 0u);
 }
 
 }  // namespace

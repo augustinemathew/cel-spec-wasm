@@ -1,9 +1,9 @@
 # M4 — Three-valued logic (OK / UNKNOWN / ERROR)
 
-Status: **planned.**  Next milestone after M3.  Unblocked — the
-per-type and per-`ExprKindCase` codegen surface M3 closed is exactly
-what the 3VL plumbing threads through, so nothing upstream blocks
-this.
+Status: **slice A shipped (2026-04-19); slices B-G in progress.**
+Unblocked — the per-type and per-`ExprKindCase` codegen surface M3
+closed is exactly what the 3VL plumbing threads through, so nothing
+upstream blocks this.
 
 **Ordering note (2026-04-19): M4 and M5 were swapped.**  Originally
 M4 was collections + comprehensions and M5 was three-valued logic,
@@ -46,25 +46,35 @@ Post-M4 these evaluate to **UNKNOWN**:
 
 ### Runtime
 
-- [ ] `CelKind::CEL_UNKNOWN` + `CEL_ERROR` constructors + payload
-      helpers (already stubbed in `cel_runtime.h` — verify they cover
-      the full API and add what's missing).
-- [ ] `UnknownSet` — a sorted `i32[]` of attribute ids.  Attribute
+- [x] `CelKind::CEL_UNKNOWN` + `CEL_ERROR` constructors + payload
+      helpers — pre-existing from M2, reused unchanged.
+- [x] `UnknownSet` — a sorted `i32[]` of attribute ids.  Attribute
       ids come from the `cel.abi.attributes` table interned at
-      compile time.
-- [ ] `cel_and(CelValue* a, CelValue* b)` — implements the
-      short-circuit table:
-      `OK(true)  && x = x`, `OK(false) && x = OK(false)`,
-      `ERR && OK(true) = ERR`, `ERR && OK(false) = OK(false)`,
-      `UNK && OK(true) = UNK`, etc.
-- [ ] `cel_or` — symmetric.
-- [ ] `cel_not` — `OK(b) → OK(!b)`, `ERR → ERR`, `UNK → UNK`.
-- [ ] `cel_status_either(a, b)` — given two values, returns UNKNOWN
-      if either is unknown (merged), ERROR if exactly one is error,
-      otherwise a specific ordering ERROR>UNKNOWN>OK.  Used by
-      arithmetic.
-- [ ] `cel_unknown_merge(a, b)` — sorted-merge of two UnknownSets
-      into a third.
+      compile time.  Runtime layout: `{ids_ptr:u32, ids_len:u32}`
+      at `CelValue.payload.unk`.
+- [x] `cel_and(uint32_t a, uint32_t b)` — short-circuits OK(false)
+      past ERROR/UNKNOWN; ERROR dominates UNKNOWN otherwise; two
+      UNKNOWNs fold via `cel_unknown_merge`.  (M4 slice A.)
+- [x] `cel_or` — symmetric (short-circuits OK(true)).
+- [x] `cel_not` — `OK(b) → OK(!b)`, `ERR → ERR`, `UNK → UNK`.
+- [x] `cel_status_either(a, b)` — ERROR > UNKNOWN > OK dominance
+      with left-wins tie-breaking.  Returns 0 when both operands
+      are OK, signalling "proceed with arithmetic".  (M4 slice A.)
+- [x] `cel_unknown_merge(a, b)` — sorted-dedup'd union of two
+      UnknownSets, deterministic (order-independent).  (M4 slice A.)
+
+**M4 slice A (2026-04-19): 3VL runtime helpers.** All six helpers
+live in `compiler/runtime/cel_runtime.{h,c}` and return the arena
+offset of the result `CelValue` (or 0 on type error / OOM, matching
+the rest of the ABI).  The merge walk is factored into a static
+`merge_sorted_ids` helper so `cel_unknown_merge` stays under the
+function-size lint gate.  Coverage: `cel_runtime_test.cc` runs full
+5×5 parametric truth tables for `cel_and` / `cel_or` over
+{TRUE, FALSE, ERROR, UnknownA, UnknownB}, plus the usual
+positive/negative cases for merge (determinism + dedup),
+`cel_not` (bool flip + status passthrough), and `cel_status_either`
+(error dominance, left-wins ordering).  No codegen wiring yet; that
+lands in slices B (checked arithmetic) and onward.
 
 ### Codegen
 

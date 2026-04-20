@@ -95,10 +95,35 @@ else
 fi
 
 echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s)"
+
+# Split targets into C vs C++ groups. Bazel's compile_commands.json uses
+# `clang++` as the driver for every entry, even plain C files — which
+# errors out as `-std=c11 not allowed with C++` when clang-tidy replays
+# the entry. Forcing `-xc` on C inputs sidesteps that. `.h` headers
+# under `compiler/runtime/` are treated as C because the runtime is a
+# C translation unit shared with C++ tests (wrapped in `extern "C"`).
+declare -a c_targets=()
+declare -a cpp_targets=()
+for f in "${targets[@]}"; do
+  case "$f" in
+    *.c)                          c_targets+=("$f") ;;
+    compiler/runtime/*.h)         c_targets+=("$f") ;;
+    *)                            cpp_targets+=("$f") ;;
+  esac
+done
+
+rc=0
 # `--warnings-as-errors=*` so *any* emitted warning becomes a non-zero
 # exit. The check set is driven by the repo-root .clang-tidy.
-if ! "$CLANG_TIDY" "${tidy_args[@]}" --warnings-as-errors='*' \
-    --quiet "${targets[@]}"; then
+if [[ ${#cpp_targets[@]} -gt 0 ]]; then
+  "$CLANG_TIDY" "${tidy_args[@]}" --warnings-as-errors='*' --quiet \
+      "${cpp_targets[@]}" || rc=$?
+fi
+if [[ ${#c_targets[@]} -gt 0 ]]; then
+  "$CLANG_TIDY" "${tidy_args[@]}" --extra-arg-before=-xc \
+      --warnings-as-errors='*' --quiet "${c_targets[@]}" || rc=$?
+fi
+if [[ $rc -ne 0 ]]; then
   echo "lint.sh: clang-tidy reported warnings — see above." >&2
   exit 1
 fi

@@ -21,14 +21,13 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `readability-function-size` | 11 |
 | `readability-avoid-nested-conditional-operator` | 9 |
 | `cppcoreguidelines-no-malloc` | 6 |
-| `readability-isolate-declaration` | 6 |
-| `modernize-use-auto` | 4 |
+| `readability-isolate-declaration` | 3 |
+| `modernize-use-auto` | 2 |
 | `modernize-raw-string-literal` | 3 |
 | `bugprone-unchecked-optional-access` | 2 |
 | `misc-unused-using-decls` | 2 |
 | `bugprone-argument-comment` | 1 |
 | `bugprone-branch-clone` | 1 |
-| `bugprone-casting-through-void` | 1 |
 | `bugprone-exception-escape` | 1 |
 | `clang-analyzer-optin.core.EnumCastOutOfRange` | 1 |
 | `cppcoreguidelines-pro-type-member-init` | 1 |
@@ -36,10 +35,10 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `performance-no-int-to-ptr` | 1 |
 | `performance-unnecessary-value-param` | 1 |
 | `readability-math-missing-parentheses` | 1 |
-| `readability-use-concise-preprocessor-directives` | 1 |
 | `readability-static-accessed-through-instance` | 6 |
 
-**Total unique warnings:** 192
+**Total unique warnings:** 184 (was 192; M4 slice A cleared 8 in
+`compiler/runtime/`).
 
 ## Notes for triage
 
@@ -333,21 +332,15 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L38: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
-### `compiler/runtime/cel_runtime.c` — 5 warnings
+### `compiler/runtime/cel_runtime.c` — 0 warnings
 
-**`readability-isolate-declaration`** (3)
-
-- L452: multiple declarations in a single statement reduces readability
-- L462: multiple declarations in a single statement reduces readability
-- L472: multiple declarations in a single statement reduces readability
-
-**`readability-use-concise-preprocessor-directives`** (1)
-
-- L8: preprocessor condition can be written more concisely using '#ifdef'
-
-**`bugprone-casting-through-void`** (1)
-
-- L74: do not cast 'uint8_t *' (aka 'unsigned char *') to 'CelValue *' through 'void *'; use reinterpret_cast instead
+Cleared by M4 slice A (2026-04-19): the three `readability-isolate-
+declaration` sites split their paired `sl,pl` / `sl,xl` / `sl,nl`
+into one-per-line; `#if defined(__wasm__)` became `#ifdef __wasm__`;
+and `cv_at` dropped the redundant `(void*)` so the cast through void
+was no longer needed (we're compiling the file as C via
+`--extra-arg-before=-xc` in `scripts/lint.sh`, so there is no strict-
+aliasing problem to dance around).
 
 ### `compiler/frontend/parse_and_check_test.cc` — 3 warnings
 
@@ -400,12 +393,10 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 
 - L217: statement should be inside braces
 
-### `compiler/runtime/cel_runtime_test.cc` — 2 warnings
+### `compiler/runtime/cel_runtime_test.cc` — 0 warnings
 
-**`modernize-use-auto`** (2)
-
-- L279: use auto when initializing with a cast to avoid duplicating the type name
-- L298: use auto when initializing with a cast to avoid duplicating the type name
+Cleared by M4 slice A (2026-04-19): the two `reinterpret_cast`-into-
+typed-pointer declarations switched to `const auto*`.
 
 ### `compiler/codegen/cel_refs.cc` — 1 warnings
 

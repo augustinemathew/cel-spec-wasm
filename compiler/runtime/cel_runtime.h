@@ -173,6 +173,52 @@ int32_t cel_string_starts_with(uint32_t s, uint32_t prefix);
 int32_t cel_string_ends_with(uint32_t s, uint32_t suffix);
 int32_t cel_string_contains(uint32_t s, uint32_t needle);
 
+// ---- Three-valued logic helpers ------------------------------------------
+//
+// Implements CEL's OK / UNKNOWN / ERROR tri-state for the logical
+// operators and for propagating UNKNOWN / ERROR status through
+// arithmetic.  All inputs and outputs are arena offsets; a zero return
+// encodes "type error" (operand kind was not one of CEL_BOOL /
+// CEL_UNKNOWN / CEL_ERROR for the boolean helpers) so codegen can hoist
+// the usual zero-check that every other runtime helper already emits.
+//
+// CEL `&&` and `||` short-circuit past ERROR / UNKNOWN when an operand
+// is OK(false) / OK(true) respectively.  Outside short-circuit, ERROR
+// dominates UNKNOWN, which dominates OK — see `doc/langdef.md`
+// §partial-evaluation.
+
+// 3VL AND.  Short-circuits on OK(false): `false && error = false`,
+// `false && unknown = false`.  When both operands are UNKNOWN, returns
+// a fresh UNKNOWN whose UnknownSet is the sorted-dedup'd union of the
+// two operand sets.  Returns 0 on type error (operand kind not bool /
+// unknown / error).
+uint32_t cel_and(uint32_t a, uint32_t b);
+
+// 3VL OR.  Short-circuits on OK(true).  Symmetric to `cel_and`.
+uint32_t cel_or(uint32_t a, uint32_t b);
+
+// 3VL NOT.  Flips a CEL_BOOL; passes CEL_UNKNOWN and CEL_ERROR through
+// unchanged.  Returns 0 on type error.
+uint32_t cel_not(uint32_t a);
+
+// Sorted-dedup'd union of two UnknownSets, returned as a fresh
+// CEL_UNKNOWN value.  Either operand being non-UNKNOWN is a type error
+// (returns 0).  Deterministic — the merged order does not depend on
+// which operand is passed first.
+uint32_t cel_unknown_merge(uint32_t a, uint32_t b);
+
+// Arithmetic status propagation.  Given two operand values, returns:
+//   - `a` if `a` is ERROR;
+//   - `b` if `b` is ERROR and `a` is not;
+//   - `cel_unknown_merge(a, b)` if both are UNKNOWN;
+//   - `a` if `a` is UNKNOWN and `b` is OK;
+//   - `b` if `b` is UNKNOWN and `a` is OK;
+//   - 0 if both are OK (the caller performs the arithmetic).
+// Encodes the ERROR > UNKNOWN > OK dominance ordering; deterministic
+// (prefers the left operand when both sides have the same dominant
+// status).
+uint32_t cel_status_either(uint32_t a, uint32_t b);
+
 #ifdef __cplusplus
 }
 #endif
