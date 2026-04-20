@@ -953,6 +953,15 @@ void cel_box_double(uint32_t out, double d) {
   v->payload.d = d;
 }
 
+void cel_copy_celvalue_at(uint32_t out, uint32_t src) {
+  if (out == 0) return;
+  if (src == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  memcpy(g_memory + out, g_memory + src, sizeof(CelValue));
+}
+
 // Shared prelude for int-binop sret helpers: handles zero-offset,
 // status propagation, and kind check.  Returns 1 if the slot has been
 // written (caller should return); 0 if the caller should do the

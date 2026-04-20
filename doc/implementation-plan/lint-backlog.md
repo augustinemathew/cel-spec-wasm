@@ -18,7 +18,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `google-readability-braces-around-statements` | 3 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
-| `readability-function-size` | 6 |
+| `readability-function-size` | 5 |
 | `cppcoreguidelines-no-malloc` | 6 |
 | `readability-isolate-declaration` | 3 |
 | `bugprone-unchecked-optional-access` | 2 |
@@ -31,9 +31,10 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `performance-no-int-to-ptr` | 1 |
 | `readability-static-accessed-through-instance` | 6 |
 
-**Total unique warnings:** 122 (was 184; M4 slice B cleared 62 in
+**Total unique warnings:** 121 (was 184; M4 slice B cleared 62 in
 `compiler/codegen/expr_lower.cc` (50), `expr_lower_test.cc` (7), and
-`compiler/e2e/eval_test.cc` (5)).
+`compiler/e2e/eval_test.cc` (5); M4 slice C commit 3a cleared 1 in
+`compiler/host/host_loader.cc` by splitting `LoadEval`).
 
 ## Notes for triage
 
@@ -326,13 +327,15 @@ typed-pointer declarations switched to `const auto*`.
 
 - L84: multiple declarations in a single statement reduces readability
 
-### `compiler/host/host_loader.cc` — 1 warnings
+### `compiler/host/host_loader.cc` — 0 warnings
 
-**`readability-function-size`** (1)
-
-- L230: function 'LoadEval' exceeds recommended size/complexity thresholds
-  (92 lines / 55 statements — grew during G4 from L222 when
-  `BindEvalInterner` + its null-store tolerance was added).
+Cleared by M4 slice C commit 3a (2026-04-20): `LoadEval` was split
+into two private `LoadedEval` member functions —
+`InitEngineStoreAndCompile` (engine/store/module compile + bare
+runtime instantiation) and `SetupLinkerAndInstantiateEval` (linker
+wiring, host-env register, eval instantiation, `BindEvalInterner`
+tolerance).  `LoadEval` itself is now a thin driver; neither helper
+exceeds the 60 line / 40 stmt / 15 branch thresholds.
 
 ### `compiler/host/cel_host_test.cc` — 6 warnings
 

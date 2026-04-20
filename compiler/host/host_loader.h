@@ -84,6 +84,17 @@ class LoadedEval {
 
   void Reset() noexcept;  // free owned handles; leave fields nulled
 
+  // LoadEval is split across these two private steps so each fits
+  // under the lint's function-size threshold.  Engine/store/module
+  // compilation + bare runtime instantiation happens in
+  // InitEngineStoreAndCompile; linker wiring, host-trampoline
+  // registration, and eval instantiation happen in
+  // SetupLinkerAndInstantiateEval.
+  absl::Status InitEngineStoreAndCompile(
+      absl::Span<const uint8_t> eval_wasm_bytes);
+  absl::Status SetupLinkerAndInstantiateEval(
+      wasmtime_context_t* absl_nonnull ctx);
+
   wasm_engine_t* engine_ = nullptr;
   wasmtime_store_t* store_ = nullptr;
   wasmtime_module_t* runtime_mod_ = nullptr;

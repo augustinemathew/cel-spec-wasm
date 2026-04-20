@@ -362,6 +362,19 @@ void cel_box_int(uint32_t out, int64_t i);
 void cel_box_uint(uint32_t out, uint64_t u);
 void cel_box_double(uint32_t out, double d);
 
+// Copies a pre-built 24-byte CelValue from `src` to `out` (both are
+// arena offsets into g_memory).  Used at the sret-eval boundary for
+// roots whose Repr is already carried as a CelValue offset (string,
+// bytes, message wrapped via `cel_wrap_message`) — in those cases
+// there is no raw scalar to box, so the copy is all we need.  The
+// `out == 0` check matches every other `_at` helper (a zero slot is
+// a well-defined no-op so the total-function guarantee holds even
+// when codegen forgets to pre-allocate).  `src == 0` means "no value
+// available" — we write CEL_ERROR{TYPE_MISMATCH} into the slot so a
+// forgotten source propagates as a proper CEL error instead of a
+// phantom OK.
+void cel_copy_celvalue_at(uint32_t out, uint32_t src);
+
 // ---- Checked-arithmetic sret helpers -------------------------------------
 //
 // Semantics: see the "total-function guarantee" block above.  One

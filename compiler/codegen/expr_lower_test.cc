@@ -39,32 +39,70 @@ Lowered LowerOk(absl::string_view expr) {
   return out;
 }
 
+// Since M4 Slice C commit 3 the eval body is wrapped in the sret-root
+// epilogue: the actual expression is handed to `cel_box_<repr>_at`
+// (or `cel_copy_celvalue_at`) as operand 1.  If the lowering used the
+// scratch slot for checked arithmetic, the whole thing sits inside a
+// 2-child Block emitting a `local.set $scratch (call $cel_alloc 24)`
+// prologue.  Most tests want the inner expression so they can assert
+// the shape the lowering produced — this helper peels those wrappers
+// off.
+BinaryenExpressionRef ScalarBody(BinaryenExpressionRef body) {
+  if (BinaryenExpressionGetId(body) == BinaryenBlockId() &&
+      BinaryenBlockGetNumChildren(body) == 2) {
+    BinaryenExpressionRef first = BinaryenBlockGetChildAt(body, 0);
+    if (BinaryenExpressionGetId(first) == BinaryenLocalSetId()) {
+      body = BinaryenBlockGetChildAt(body, 1);
+    }
+  }
+  if (BinaryenExpressionGetId(body) == BinaryenCallId() &&
+      BinaryenCallGetNumOperands(body) == 2) {
+    body = BinaryenCallGetOperandAt(body, 1);
+  }
+  // For message roots EmitSretStore also wraps the externref through
+  // cel_wrap_message; peel that so the "inner" body is the original
+  // externref expression.
+  if (BinaryenExpressionGetId(body) == BinaryenCallId() &&
+      BinaryenCallGetNumOperands(body) == 1) {
+    const char* target = BinaryenCallGetTarget(body);
+    if (target != nullptr && std::string(target) == "cel_wrap_message") {
+      return BinaryenCallGetOperandAt(body, 0);
+    }
+  }
+  return body;
+}
+
+BinaryenExpressionRef ScalarBodyOf(const Lowered& L) {
+  return ScalarBody(
+      BinaryenFunctionGetBody(BinaryenGetFunction(L.mod.raw(), "eval")));
+}
+
 // Positive cases: each returns OK and the validator accepts.
 
 TEST(ExprLowerTest, IntConstantReturnsI64) {
   auto L = LowerOk("42");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kInt);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
 TEST(ExprLowerTest, UintConstantReturnsI64) {
   auto L = LowerOk("7u");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kUint);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
 TEST(ExprLowerTest, DoubleConstantReturnsF64) {
   auto L = LowerOk("3.14");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeFloat64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kDouble);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
 TEST(ExprLowerTest, BoolConstantReturnsI32) {
   auto L = LowerOk("true");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kBool);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
@@ -78,28 +116,28 @@ TEST(ExprLowerTest, IntArithmetic) {
 TEST(ExprLowerTest, UintArithmeticDispatchesToUintHelper) {
   auto L = LowerOk("10u / 3u");
   EXPECT_THAT(L.mod.Validate(), IsOk());
-  // Post-Slice-C-commit-2, int/uint arithmetic lowers to a block that
-  // calls the sret checked-arithmetic helper, traps on CEL_ERROR, and
-  // loads the payload.  The unsigned distinction is carried by the
-  // helper name (`cel_uint_div_at_uu`), not by a wasm opcode.  Body
-  // shape: Block[prologue, inner Block[helperCall, trap_if, load]].
+  // After ScalarBody peels the sret epilogue (box call + scratch-slot
+  // prologue) the checked-arith block surfaces directly:
+  //   Block[ Call(cel_uint_div_at_uu, slot, 10, 3),
+  //          If(kind==ERR, unreachable),
+  //          i64.load offset=8 ].
+  // The unsigned distinction is carried by the helper name, not a
+  // wasm opcode.
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   EXPECT_EQ(BinaryenExpressionGetType(body), BinaryenTypeInt64());
-  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
-  BinaryenExpressionRef inner = BinaryenBlockGetChildAt(body, 1);
-  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenBlockId());
-  ASSERT_GT(BinaryenBlockGetNumChildren(inner), 0u);
-  BinaryenExpressionRef call = BinaryenBlockGetChildAt(inner, 0);
+  ASSERT_GT(BinaryenBlockGetNumChildren(body), 0u);
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
   ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_uint_div_at_uu");
 }
 
 TEST(ExprLowerTest, DoubleArithmetic) {
   auto L = LowerOk("1.0 + 2.0 * 3.0 - 4.0 / 5.0");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeFloat64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
@@ -112,13 +150,12 @@ TEST(ExprLowerTest, UnaryNegateInt) {
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
-  // The inner `1+2` uses the sret checked-arithmetic path so the
-  // function body is Block[prologue, BinaryOp(Sub, 0, checked block)].
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
-  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
-  BinaryenExpressionRef negate_expr = BinaryenBlockGetChildAt(body, 1);
-  ASSERT_EQ(BinaryenExpressionGetId(negate_expr), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(negate_expr), BinaryenSubInt64());
+  body = ScalarBody(body);
+  // After peeling the sret epilogue the negate is `Binary(Sub, 0,
+  // checked_arith_block)` — wasm has no i64 unary negate, so the
+  // canonical form is `0 - x`.
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
+  EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenSubInt64());
 }
 
 TEST(ExprLowerTest, UnaryNegateDouble) {
@@ -127,6 +164,7 @@ TEST(ExprLowerTest, UnaryNegateDouble) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
   EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenNegFloat64());
 }
@@ -137,6 +175,7 @@ TEST(ExprLowerTest, LogicalNot) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
   EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenEqZInt32());
 }
@@ -147,6 +186,7 @@ TEST(ExprLowerTest, IntComparisonsAreSigned) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
   EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenLtSInt64());
 }
@@ -155,6 +195,7 @@ TEST(ExprLowerTest, UintComparisonsAreUnsigned) {
   auto L = LowerOk("1u < 2u");
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
   EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenLtUInt64());
   EXPECT_THAT(L.mod.Validate(), IsOk());
@@ -164,6 +205,7 @@ TEST(ExprLowerTest, DoubleComparisons) {
   auto L = LowerOk("1.0 <= 2.0");
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   // Double ordered-compare traps on NaN: Block[set_a, set_b, if(any_nan) trap,
   // Binary(op, a, b)].  The last child is the actual compare.
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
@@ -190,6 +232,7 @@ TEST(ExprLowerTest, LogicalAndShortCircuits) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   // Lowering shape is `if(lhs) rhs else 0`.
   EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
 }
@@ -198,6 +241,7 @@ TEST(ExprLowerTest, LogicalOrShortCircuits) {
   auto L = LowerOk("false || true");
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
@@ -208,6 +252,7 @@ TEST(ExprLowerTest, Conditional) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenIfId());
 }
 
@@ -252,12 +297,13 @@ TEST(ExprLowerTest, StringConstantReturnsI32) {
   // hands back from cel_make_string_view.  The body shape is a block
   // that allocates, stores each byte, and calls the runtime helper.
   auto L = LowerOk("'hello'");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kString);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
 }
 
@@ -265,7 +311,7 @@ TEST(ExprLowerTest, EmptyStringLowers) {
   // The store-per-byte loop must be empty-safe; cel_alloc(0) still
   // returns a valid offset and cel_make_string_view accepts len=0.
   auto L = LowerOk("''");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kString);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
@@ -357,34 +403,26 @@ TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
-  // One i64 param for `x`.  The sret checked-arithmetic lowering
-  // allocates an i32 scratch-slot local, so num-vars is >= 1.
+  // Param 0 is the sret out-slot (i32); param 1 is `x` (i64).
   auto params = ParamTypes(fn);
-  ASSERT_EQ(params.size(), 1u);
-  EXPECT_EQ(params.at(0), BinaryenTypeInt64());
+  ASSERT_EQ(params.size(), 2u);
+  EXPECT_EQ(params.at(0), BinaryenTypeInt32());
+  EXPECT_EQ(params.at(1), BinaryenTypeInt64());
   EXPECT_GE(BinaryenFunctionGetNumVars(fn), 1u);
 
-  // Body shape post-Slice-C-commit-2: outer Block with
-  //   child 0: LocalSet(slot, Call(cel_alloc, Const(24)))   ← prologue
-  //   child 1: inner Block {
-  //     Call(cel_int_add_at_ii, LocalGet(slot), LocalGet(x), Const(1));
-  //     If(...) Unreachable;
-  //     i64.load offset=8 (cel_mem_base + slot)
+  // After ScalarBody peels the sret epilogue the checked-arith block
+  // surfaces directly:
+  //   Block {
+  //     Call(cel_int_add_at_ii, LocalGet(scratch), LocalGet(x), Const(1));
+  //     If(kind==ERR, unreachable);
+  //     i64.load offset=8 (cel_mem_base + scratch)
   //   }
+  // `x` lives at param index 1 because param 0 is the sret slot.
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
-  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
-
-  BinaryenExpressionRef prologue = BinaryenBlockGetChildAt(body, 0);
-  ASSERT_EQ(BinaryenExpressionGetId(prologue), BinaryenLocalSetId());
-  BinaryenExpressionRef alloc = BinaryenLocalSetGetValue(prologue);
-  ASSERT_EQ(BinaryenExpressionGetId(alloc), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(alloc), "cel_alloc");
-
-  BinaryenExpressionRef inner = BinaryenBlockGetChildAt(body, 1);
-  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenBlockId());
-  ASSERT_GT(BinaryenBlockGetNumChildren(inner), 0u);
-  BinaryenExpressionRef call = BinaryenBlockGetChildAt(inner, 0);
+  ASSERT_GT(BinaryenBlockGetNumChildren(body), 0u);
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
   ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_int_add_at_ii");
   // Arg 0: scratch-slot (LocalGet i32).  Arg 1: the ident lhs.
@@ -394,7 +432,7 @@ TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
   EXPECT_EQ(BinaryenExpressionGetType(slot_arg), BinaryenTypeInt32());
   BinaryenExpressionRef lhs = BinaryenCallGetOperandAt(call, 1);
   ASSERT_EQ(BinaryenExpressionGetId(lhs), BinaryenLocalGetId());
-  EXPECT_EQ(BinaryenLocalGetGetIndex(lhs), 0u);
+  EXPECT_EQ(BinaryenLocalGetGetIndex(lhs), 1u);
   EXPECT_EQ(BinaryenExpressionGetType(lhs), BinaryenTypeInt64());
 }
 
@@ -407,9 +445,11 @@ TEST(ExprLowerTest, MultipleVarsGetParamsInDeclarationOrder) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   auto params = ParamTypes(fn);
-  ASSERT_EQ(params.size(), 2u);
-  EXPECT_EQ(params.at(0), BinaryenTypeInt64());
-  EXPECT_EQ(params.at(1), BinaryenTypeFloat64());
+  // Param 0 is the sret slot; user vars start at 1.
+  ASSERT_EQ(params.size(), 3u);
+  EXPECT_EQ(params.at(0), BinaryenTypeInt32());
+  EXPECT_EQ(params.at(1), BinaryenTypeInt64());
+  EXPECT_EQ(params.at(2), BinaryenTypeFloat64());
 }
 
 TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
@@ -433,10 +473,14 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
     EXPECT_THAT(L.mod.Validate(), IsOk());
     BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
     auto params = ParamTypes(fn);
-    ASSERT_EQ(params.size(), 1u);
-    EXPECT_EQ(params.at(0), c.want);
+    // Param 0 is the sret slot; the user's variable lives at 1.
+    ASSERT_EQ(params.size(), 2u);
+    EXPECT_EQ(params.at(0), BinaryenTypeInt32());
+    EXPECT_EQ(params.at(1), c.want);
     BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+    body = ScalarBody(body);
     ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
+    EXPECT_EQ(BinaryenLocalGetGetIndex(body), 1u);
     EXPECT_EQ(BinaryenExpressionGetType(body), c.want);
   }
 }
@@ -453,14 +497,18 @@ TEST(ExprLowerTest, MessageVariableLowersAsExternrefParam) {
   auto L = LowerOkWithVars("m", {"m:google.protobuf.Empty"});
   EXPECT_THAT(L.mod.Validate(), IsOk());
   EXPECT_EQ(L.fn.result_repr, Repr::kMessage);
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeExternref());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
 
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   auto params = ParamTypes(fn);
-  ASSERT_EQ(params.size(), 1u);
-  EXPECT_EQ(params.at(0), BinaryenTypeExternref());
+  // Param 0 is the sret slot; `m` is at index 1.
+  ASSERT_EQ(params.size(), 2u);
+  EXPECT_EQ(params.at(0), BinaryenTypeInt32());
+  EXPECT_EQ(params.at(1), BinaryenTypeExternref());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenLocalGetGetIndex(body), 1u);
   EXPECT_EQ(BinaryenExpressionGetType(body), BinaryenTypeExternref());
 }
 
@@ -507,12 +555,13 @@ TEST(ExprLowerTest, UnsupportedVariableReprFailsWithSpecName) {
 
 TEST(ExprLowerTest, StringConcatLowersToRuntimeCall) {
   auto L = LowerOk("'hi' + 'there'");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kString);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_concat");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
@@ -524,6 +573,7 @@ TEST(ExprLowerTest, StringEqualityLowersToRuntimeCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_eq");
 }
@@ -537,6 +587,7 @@ TEST(ExprLowerTest, StringInequalityInvertsEqualityCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
   EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenEqZInt32());
   BinaryenExpressionRef inner = BinaryenUnaryGetValue(body);
@@ -556,6 +607,7 @@ TEST(ExprLowerTest, StartsWithLowersToRuntimeCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_starts_with");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
@@ -567,6 +619,7 @@ TEST(ExprLowerTest, EndsWithLowersToRuntimeCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_ends_with");
 }
@@ -577,6 +630,7 @@ TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_contains");
 }
@@ -584,11 +638,12 @@ TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
 TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
   auto L = LowerOk("size('abc')");
   // CEL's `size()` returns int, which is i64 in our ABI.
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kInt);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_size");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
@@ -601,12 +656,13 @@ TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
 
 TEST(ExprLowerTest, BytesConstantReturnsI32) {
   auto L = LowerOk("b'hi'");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   EXPECT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   // Last child of the block is the ctor call — walk to it and verify
   // it targets the bytes constructor rather than the string one.  A
@@ -621,18 +677,19 @@ TEST(ExprLowerTest, BytesConstantReturnsI32) {
 
 TEST(ExprLowerTest, EmptyBytesLowers) {
   auto L = LowerOk("b''");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
   EXPECT_THAT(L.mod.Validate(), IsOk());
 }
 
 TEST(ExprLowerTest, BytesConcatLowersToRuntimeCall) {
   auto L = LowerOk("b'ab' + b'cd'");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt32());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kBytes);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_concat");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
@@ -644,17 +701,19 @@ TEST(ExprLowerTest, BytesEqualityLowersToRuntimeCall) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_eq");
 }
 
 TEST(ExprLowerTest, SizeBytesLowersToRuntimeCall) {
   auto L = LowerOk("size(b'abc')");
-  EXPECT_EQ(L.fn.result_type, BinaryenTypeInt64());
+  EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kInt);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
+  body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_size");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);

@@ -1427,6 +1427,37 @@ TEST_F(RuntimeTest, BoxOutZeroIsNoOp) {
   EXPECT_EQ(KindOf(null_off), prev_kind);
 }
 
+TEST_F(RuntimeTest, CopyCelvalueAtCopiesAllBytes) {
+  // Round-trip a string CelValue through the sret-copy helper.  Use
+  // cel_make_string which builds a CelValue{kind=STRING, ptr, len} in
+  // the arena; the copy helper should reproduce it byte-for-byte at
+  // the destination slot.
+  const char kStr[] = "hello";
+  uint32_t src = cel_make_string(kStr, sizeof(kStr) - 1);
+  uint32_t out = AllocSlot();
+  cel_copy_celvalue_at(out, src);
+  EXPECT_EQ(KindOf(out), CEL_STRING);
+  EXPECT_EQ(cel_value_at(out)->payload.s.len, cel_value_at(src)->payload.s.len);
+  EXPECT_EQ(cel_value_at(out)->payload.s.ptr, cel_value_at(src)->payload.s.ptr);
+}
+
+TEST_F(RuntimeTest, CopyCelvalueAtOutZeroIsNoOp) {
+  uint32_t src = cel_make_int(42);
+  uint32_t null_off = cel_make_null();
+  CelKind prev = KindOf(null_off);
+  cel_copy_celvalue_at(0, src);
+  EXPECT_EQ(KindOf(null_off), prev);
+}
+
+TEST_F(RuntimeTest, CopyCelvalueAtSrcZeroWritesTypeMismatch) {
+  // A zero src means "no value was produced" — translate to a
+  // proper CEL error so forgetting to allocate a source surfaces as
+  // TYPE_MISMATCH rather than a phantom OK read from offset zero.
+  uint32_t out = AllocSlot();
+  cel_copy_celvalue_at(out, 0);
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
 TEST_F(RuntimeTest, IntAddAtHappyPath) {
   uint32_t out = AllocSlot();
   cel_int_add_at(out, cel_make_int(3), cel_make_int(4));

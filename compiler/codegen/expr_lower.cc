@@ -52,6 +52,15 @@ struct LoweringContext {
   uint32_t num_params = 0;
   std::vector<BinaryenType> local_types;
   absl::flat_hash_map<std::string, BinaryenIndex> idents;
+
+  // Sret eval ABI (M4 Slice C commit 3): param 0 is an i32 offset
+  // into the runtime's arena where the eval function must write its
+  // final 24-byte CelValue.  Declared variables follow, starting at
+  // param index 1, in the order `BuildParamList` inserts them.
+  // Kept as a constant rather than a computed field because the
+  // slot's position is fixed by the ABI; callers that need it load
+  // `local.get 0` (see `EmitSretStore`).
+  static constexpr BinaryenIndex kOutSlotParam = 0;
   // Lazily materialized scratch slot: a single i32 local holding the
   // offset (into the runtime's arena) of a 24-byte CelValue region
   // that the sret arithmetic helpers write into.  Created on first
@@ -101,6 +110,23 @@ void ImportCel2(WasmModule& mod, absl::string_view name, BinaryenType p0,
   mod.AddFunctionImport(name, /*external_module=*/"cel",
                         /*external_base=*/name,
                         absl::Span<const BinaryenType>(params, 2), result);
+}
+
+// Sret-root boxing imports (M4 Slice C commit 3).  The eval function
+// writes its final CelValue into a caller-owned 24-byte slot via one
+// of these helpers — `cel_box_<repr>_at` for scalars, a 24-byte
+// memcpy (`cel_copy_celvalue_at`) for string / bytes / message roots
+// whose Repr already travels as a CelValue offset.
+void DeclareSretRootImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType i64 = BinaryenTypeInt64();
+  const BinaryenType f64 = BinaryenTypeFloat64();
+  const BinaryenType none = BinaryenTypeNone();
+  ImportCel2(mod, "cel_box_bool", i32, i32, none);
+  ImportCel2(mod, "cel_box_int", i32, i64, none);
+  ImportCel2(mod, "cel_box_uint", i32, i64, none);
+  ImportCel2(mod, "cel_box_double", i32, f64, none);
+  ImportCel2(mod, "cel_copy_celvalue_at", i32, i32, none);
 }
 
 // Allocation / span-literal / equality / size / member-call imports.
@@ -188,6 +214,7 @@ absl::Status DeclareRuntimeImports(WasmModule& mod) {
   }
   DeclareAllocAndSpanImports(mod);
   DeclareCheckedArithmeticImports(mod);
+  DeclareSretRootImports(mod);
   return absl::OkStatus();
 }
 
@@ -1108,10 +1135,16 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
 // Populates `params`, `ctx.idents`, `ctx.num_params`, and sets
 // `has_message_param` iff any variable has Repr::kMessage.  Fails
 // cleanly on unsupported Reprs or duplicate variable names.
+//
+// Param 0 is the sret out-slot (i32 arena offset); declared variables
+// follow at indices 1..N.  The `idx = params.size()` pattern below
+// reads the post-slot slot before appending, so the first variable
+// gets index 1 as required.
 absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
                             std::vector<BinaryenType>& params,
                             bool& has_message_param) {
-  params.reserve(ast.variables().size());
+  params.reserve(ast.variables().size() + 1);
+  params.push_back(BinaryenTypeInt32());  // param 0: sret slot.
   has_message_param = false;
   for (const Variable& v : ast.variables()) {
     BinaryenType pt = WasmTypeFor(v.repr);
@@ -1147,6 +1180,62 @@ absl::Status AddMessageSupport(WasmModule& mod) {
     return s;
   }
   return AddMessageWrapHelpers(mod, "$cel_refs");
+}
+
+// Emits the sret-root store: takes a scalar `body` of WasmTypeFor(root_repr)
+// and returns an expression of type None that writes the boxed CelValue
+// into the caller-provided out slot (param 0).  `body` is consumed — the
+// returned expression evaluates it exactly once.  For string / bytes /
+// message roots, `body` is already a CelValue offset, so a 24-byte
+// memcpy via `cel_copy_celvalue_at` is enough.  For scalar roots the
+// paired `cel_box_<repr>_at` helper writes kind + payload.  Reprs with
+// no sret encoding today (list / map / type / duration / timestamp /
+// enum) surface as `Unimplemented` — none have end-to-end coverage at
+// root, so waiting to ship the helpers until there's a concrete caller
+// avoids speculative runtime code.
+absl::StatusOr<BinaryenExpressionRef> EmitSretStore(LoweringContext& ctx,
+                                                    BinaryenExpressionRef body,
+                                                    Repr root_repr) {
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef slot =
+      BinaryenLocalGet(m, LoweringContext::kOutSlotParam, BinaryenTypeInt32());
+  const char* fn = nullptr;
+  switch (root_repr) {
+    case Repr::kBool:
+      fn = "cel_box_bool";
+      break;
+    case Repr::kInt:
+      fn = "cel_box_int";
+      break;
+    case Repr::kUint:
+      fn = "cel_box_uint";
+      break;
+    case Repr::kDouble:
+      fn = "cel_box_double";
+      break;
+    case Repr::kString:
+    case Repr::kBytes:
+      fn = "cel_copy_celvalue_at";
+      break;
+    case Repr::kMessage: {
+      // Root Repr::kMessage means `body` is an externref.  Wrap to a
+      // CelValue offset via cel_wrap_message and then copy.  M3's
+      // `AddMessageSupport` declared both helpers when any message
+      // variable was present; it now also runs when the root is a
+      // message (`LowerToEvalFunction`).
+      BinaryenExpressionRef wrap_args[1] = {body};
+      body = BinaryenCall(m, "cel_wrap_message", wrap_args, 1,
+                          BinaryenTypeInt32());
+      fn = "cel_copy_celvalue_at";
+      break;
+    }
+    default:
+      return absl::UnimplementedError(
+          absl::StrCat("expr_lower: root Repr `", ReprName(root_repr),
+                       "` has no sret-box encoding in M4"));
+  }
+  BinaryenExpressionRef args[2] = {slot, body};
+  return BinaryenCall(m, fn, args, 2, BinaryenTypeNone());
 }
 
 // Wraps `body` with the scratch-slot prologue when the lowering
@@ -1203,44 +1292,59 @@ BinaryenType WasmTypeFor(Repr r) {
   }
 }
 
-absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
-                                                    absl::string_view func_name,
-                                                    WasmModule& mod) {
+// Validates the AST root, declares runtime + host imports, builds the
+// parameter list from `ast.variables()`, and arranges for message
+// support when either a parameter or the root Repr is Message.  On
+// success `*root_r` is populated and `params` holds the WASM types for
+// the user-declared variables (the sret slot is prepended inside
+// BuildParamList).
+static absl::Status PrepareEvalFnSignature(const TypedAst& ast, WasmModule& mod,
+                                           LoweringContext& ctx,
+                                           std::vector<BinaryenType>& params,
+                                           Repr& root_r) {
   if (!ast.has_ast()) {
     return absl::InvalidArgumentError(
         "LowerToEvalFunction: TypedAst has no underlying cel::Ast");
   }
   const cel::Expr& root = ast.ast().root_expr();
-  auto root_r = ReprOf(ast, root);
-  if (!root_r.ok()) return root_r.status();
-  BinaryenType result_type = WasmTypeFor(*root_r);
-  if (result_type == BinaryenTypeNone()) {
+  auto r = ReprOf(ast, root);
+  if (!r.ok()) return r.status();
+  root_r = *r;
+  if (WasmTypeFor(root_r) == BinaryenTypeNone()) {
     return absl::UnimplementedError(
-        absl::StrCat("expr_lower: root Repr `", ReprName(*root_r),
+        absl::StrCat("expr_lower: root Repr `", ReprName(root_r),
                      "` has no scalar ABI lowering in M2"));
   }
   if (auto s = DeclareRuntimeImports(mod); !s.ok()) return s;
   DeclareHostImports(mod);
-
-  // Build the parameter list from the declared variables.  Each user
-  // variable becomes one WASM param whose type is the ABI encoding of
-  // its Repr.  Variables whose Repr has no scalar encoding (list, map,
-  // dyn) fail cleanly here — their support lives in later milestones.
-  std::vector<BinaryenType> params;
-  LoweringContext ctx{mod};
   bool has_message_param = false;
   if (auto s = BuildParamList(ast, ctx, params, has_message_param); !s.ok()) {
     return s;
   }
-  if (has_message_param) {
+  if (has_message_param || root_r == Repr::kMessage) {
     if (auto s = AddMessageSupport(mod); !s.ok()) return s;
   }
+  return absl::OkStatus();
+}
 
+absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
+                                                    absl::string_view func_name,
+                                                    WasmModule& mod) {
+  std::vector<BinaryenType> params;
+  LoweringContext ctx{mod};
+  Repr root_r = Repr::kUnknown;
+  if (auto s = PrepareEvalFnSignature(ast, mod, ctx, params, root_r); !s.ok()) {
+    return s;
+  }
+  const cel::Expr& root = ast.ast().root_expr();
   auto body = LowerExpr(ctx, ast, root);
   if (!body.ok()) return body.status();
-  mod.AddFunction(func_name, params, result_type,
+  auto store = EmitSretStore(ctx, *body, root_r);
+  if (!store.ok()) return store.status();
+  const BinaryenType none = BinaryenTypeNone();
+  mod.AddFunction(func_name, params, none,
                   /*local_types=*/ctx.local_types,
-                  WithScratchSlotPrologue(ctx, *body, result_type));
+                  WithScratchSlotPrologue(ctx, *store, none));
   BinaryenFunctionRef fn =
       BinaryenGetFunction(mod.raw(), std::string(func_name).c_str());
   if (fn == nullptr) {
@@ -1248,7 +1352,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
         absl::StrCat("expr_lower: BinaryenGetFunction returned null for `",
                      func_name, "` immediately after AddFunction"));
   }
-  return LoweredFunction{fn, result_type, *root_r};
+  return LoweredFunction{fn, none, root_r};
 }
 
 }  // namespace celwasm
