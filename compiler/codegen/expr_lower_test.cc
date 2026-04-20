@@ -78,21 +78,23 @@ TEST(ExprLowerTest, IntArithmetic) {
 TEST(ExprLowerTest, UintArithmeticDispatchesToUintHelper) {
   auto L = LowerOk("10u / 3u");
   EXPECT_THAT(L.mod.Validate(), IsOk());
-  // Post-Slice-B, int/uint arithmetic lowers to a block that calls the
-  // checked-arithmetic helper, traps on CEL_ERROR, and loads the
-  // payload.  The unsigned distinction is carried by the helper name
-  // (`cel_uint_div_uu`), not by a wasm opcode.
+  // Post-Slice-C-commit-2, int/uint arithmetic lowers to a block that
+  // calls the sret checked-arithmetic helper, traps on CEL_ERROR, and
+  // loads the payload.  The unsigned distinction is carried by the
+  // helper name (`cel_uint_div_at_uu`), not by a wasm opcode.  Body
+  // shape: Block[prologue, inner Block[helperCall, trap_if, load]].
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   EXPECT_EQ(BinaryenExpressionGetType(body), BinaryenTypeInt64());
-  ASSERT_GT(BinaryenBlockGetNumChildren(body), 0u);
-  BinaryenExpressionRef first = BinaryenBlockGetChildAt(body, 0);
-  ASSERT_EQ(BinaryenExpressionGetId(first), BinaryenLocalSetId());
-  BinaryenExpressionRef call = BinaryenLocalSetGetValue(first);
+  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
+  BinaryenExpressionRef inner = BinaryenBlockGetChildAt(body, 1);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenBlockId());
+  ASSERT_GT(BinaryenBlockGetNumChildren(inner), 0u);
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(inner, 0);
   ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_uint_div_uu");
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_uint_div_at_uu");
 }
 
 TEST(ExprLowerTest, DoubleArithmetic) {
@@ -110,9 +112,13 @@ TEST(ExprLowerTest, UnaryNegateInt) {
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
-  // Our lowering is `0 - (1+2)`, i.e. a Binary node with i64.sub.
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenSubInt64());
+  // The inner `1+2` uses the sret checked-arithmetic path so the
+  // function body is Block[prologue, BinaryOp(Sub, 0, checked block)].
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
+  BinaryenExpressionRef negate_expr = BinaryenBlockGetChildAt(body, 1);
+  ASSERT_EQ(BinaryenExpressionGetId(negate_expr), BinaryenBinaryId());
+  EXPECT_EQ(BinaryenBinaryGetOp(negate_expr), BinaryenSubInt64());
 }
 
 TEST(ExprLowerTest, UnaryNegateDouble) {
@@ -343,27 +349,42 @@ TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   ASSERT_NE(fn, nullptr);
-  // One i64 param for `x`.  The checked-arithmetic lowering allocates
-  // an i32 scratch local for the helper's CelValue-offset return, so
-  // num-vars is >= 1 post-Slice-B (not 0).
+  // One i64 param for `x`.  The sret checked-arithmetic lowering
+  // allocates an i32 scratch-slot local, so num-vars is >= 1.
   auto params = ParamTypes(fn);
   ASSERT_EQ(params.size(), 1u);
   EXPECT_EQ(params.at(0), BinaryenTypeInt64());
   EXPECT_GE(BinaryenFunctionGetNumVars(fn), 1u);
 
-  // Body shape: `x + 1` → Block(... Call(cel_int_add_ii, LocalGet(0,
-  // i64), Const(1)) ... i64.load at offset 8).  Walk into the block to
-  // confirm the helper sees the LocalGet as its lhs.
+  // Body shape post-Slice-C-commit-2: outer Block with
+  //   child 0: LocalSet(slot, Call(cel_alloc, Const(24)))   ← prologue
+  //   child 1: inner Block {
+  //     Call(cel_int_add_at_ii, LocalGet(slot), LocalGet(x), Const(1));
+  //     If(...) Unreachable;
+  //     i64.load offset=8 (cel_mem_base + slot)
+  //   }
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
-  ASSERT_GT(BinaryenBlockGetNumChildren(body), 0u);
-  BinaryenExpressionRef first = BinaryenBlockGetChildAt(body, 0);
-  ASSERT_EQ(BinaryenExpressionGetId(first), BinaryenLocalSetId());
-  BinaryenExpressionRef call = BinaryenLocalSetGetValue(first);
+  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
+
+  BinaryenExpressionRef prologue = BinaryenBlockGetChildAt(body, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(prologue), BinaryenLocalSetId());
+  BinaryenExpressionRef alloc = BinaryenLocalSetGetValue(prologue);
+  ASSERT_EQ(BinaryenExpressionGetId(alloc), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(alloc), "cel_alloc");
+
+  BinaryenExpressionRef inner = BinaryenBlockGetChildAt(body, 1);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenBlockId());
+  ASSERT_GT(BinaryenBlockGetNumChildren(inner), 0u);
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(inner, 0);
   ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_int_add_ii");
-  ASSERT_GE(BinaryenCallGetNumOperands(call), 1u);
-  BinaryenExpressionRef lhs = BinaryenCallGetOperandAt(call, 0);
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_int_add_at_ii");
+  // Arg 0: scratch-slot (LocalGet i32).  Arg 1: the ident lhs.
+  ASSERT_EQ(BinaryenCallGetNumOperands(call), 3u);
+  BinaryenExpressionRef slot_arg = BinaryenCallGetOperandAt(call, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(slot_arg), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenExpressionGetType(slot_arg), BinaryenTypeInt32());
+  BinaryenExpressionRef lhs = BinaryenCallGetOperandAt(call, 1);
   ASSERT_EQ(BinaryenExpressionGetId(lhs), BinaryenLocalGetId());
   EXPECT_EQ(BinaryenLocalGetGetIndex(lhs), 0u);
   EXPECT_EQ(BinaryenExpressionGetType(lhs), BinaryenTypeInt64());

@@ -1612,5 +1612,126 @@ TEST_F(RuntimeTest, IntNegAtRejectsNonInt) {
   ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
 }
 
+// ---- Scalar-arg sret helpers (M4 Slice C commit 2) ----------------------
+//
+// These take raw i64 / u64 operands instead of boxed offsets so there
+// is no operand-status plumbing — just overflow / div0 / mod0 checks.
+// Codegen uses these as the replacement for the Slice B `_ii` / `_uu`
+// variants; happy path + each arithmetic error path must land in the
+// slot as a well-formed CelValue.
+
+TEST_F(RuntimeTest, IntAddAtIiHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_ii(out, 3, 4);
+  ExpectInt(out, 7);
+}
+
+TEST_F(RuntimeTest, IntAddAtIiOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_ii(out, INT64_MAX, 1);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntSubAtIiOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_sub_at_ii(out, INT64_MIN, 1);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntMulAtIiOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_mul_at_ii(out, INT64_MAX, 2);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntDivAtIiHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at_ii(out, 10, 3);
+  ExpectInt(out, 3);
+}
+
+TEST_F(RuntimeTest, IntDivAtIiByZero) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at_ii(out, 5, 0);
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntDivAtIiMinByNegOneOverflows) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at_ii(out, INT64_MIN, -1);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntModAtIiByZero) {
+  uint32_t out = AllocSlot();
+  cel_int_mod_at_ii(out, 5, 0);
+  ExpectErrorWithCode(out, CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntModAtIiMinByNegOneIsZero) {
+  uint32_t out = AllocSlot();
+  cel_int_mod_at_ii(out, INT64_MIN, -1);
+  ExpectInt(out, 0);
+}
+
+TEST_F(RuntimeTest, UintAddAtUuHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at_uu(out, 3u, 4u);
+  ExpectUint(out, 7u);
+}
+
+TEST_F(RuntimeTest, UintAddAtUuWrapIsOverflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at_uu(out, UINT64_MAX, 1u);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintSubAtUuUnderflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_sub_at_uu(out, 0u, 1u);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintMulAtUuOverflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_mul_at_uu(out, UINT64_MAX, 2u);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintDivAtUuByZero) {
+  uint32_t out = AllocSlot();
+  cel_uint_div_at_uu(out, 7u, 0u);
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, UintModAtUuByZero) {
+  uint32_t out = AllocSlot();
+  cel_uint_mod_at_uu(out, 7u, 0u);
+  ExpectErrorWithCode(out, CEL_ERR_MODULUS_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntNegAtIHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_i(out, 5);
+  ExpectInt(out, -5);
+}
+
+TEST_F(RuntimeTest, IntNegAtIMinOverflows) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_i(out, INT64_MIN);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, ScalarAtZeroOffsetIsNoOp) {
+  // All scalar-sret helpers must early-return on out == 0 without
+  // trapping; mirrors the BoxOutZeroIsNoOp contract.
+  uint32_t null_off = cel_make_null();
+  CelKind prev_kind = KindOf(null_off);
+  cel_int_add_at_ii(0, 1, 2);
+  cel_uint_add_at_uu(0, 1u, 2u);
+  cel_int_neg_at_i(0, 1);
+  EXPECT_EQ(KindOf(null_off), prev_kind);
+}
+
 }  // namespace
 }  // namespace celwasm

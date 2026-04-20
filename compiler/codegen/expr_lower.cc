@@ -52,10 +52,27 @@ struct LoweringContext {
   uint32_t num_params = 0;
   std::vector<BinaryenType> local_types;
   absl::flat_hash_map<std::string, BinaryenIndex> idents;
+  // Lazily materialized scratch slot: a single i32 local holding the
+  // offset (into the runtime's arena) of a 24-byte CelValue region
+  // that the sret arithmetic helpers write into.  Created on first
+  // demand via GetScratchSlotLocal(); `LowerToEvalFunction` then
+  // wraps the body with a prologue that runs
+  // `local.set $slot (call $cel_alloc (i32.const 24))` at eval entry.
+  // One slot suffices today because every checked-arithmetic codegen
+  // shape loads the payload into a wasm local before the next
+  // helper call reuses the slot (straight-line tree evaluation).
+  std::optional<BinaryenIndex> scratch_slot;
 
   BinaryenIndex AddLocal(BinaryenType type) {
     local_types.push_back(type);
     return static_cast<BinaryenIndex>(num_params + local_types.size() - 1);
+  }
+
+  BinaryenIndex GetScratchSlotLocal() {
+    if (!scratch_slot.has_value()) {
+      scratch_slot = AddLocal(BinaryenTypeInt32());
+    }
+    return *scratch_slot;
   }
 };
 
@@ -118,29 +135,39 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel2(mod, "cel_string_contains", i32, i32, i32);
 }
 
-// Checked arithmetic (M4 Slice B).  Each scalar helper takes two i64
-// (or u64) operands and returns a CelValue offset (i32): on success
-// the offset points at a boxed CEL_INT / CEL_UINT; on overflow or
-// div-by-zero it points at a CEL_ERROR.  Codegen unboxes inline —
-// traps on CEL_ERROR for the moment, since the end-to-end
-// CEL_ERROR-as-result-value plumbing lands with the &&/|| 3VL
-// retrofit in a later slice.  Scalar-helper variants (suffix _ii /
-// _uu / _i) avoid boxing the already-scalar operands, which is the
-// common case emitted from straight-line `i64` / `u64` arithmetic.
+// Checked arithmetic (M4 Slice C commit 2).  Codegen uses the
+// scalar-arg sret variants — `cel_int_add_at_ii(out, i64, i64)` —
+// where `out` is a 24-byte scratch slot offset the helper writes
+// the result CelValue into (kind + payload).  Codegen loads the
+// kind tag inline; on CEL_ERROR it still traps (the observable-
+// ERROR 3VL plumbing lands in commit 3 with the &&/|| retrofit).
+// Switching from the Slice B `_ii`-returning-offset shape to sret
+// removes the per-operation arena bump and unlocks the single-
+// slot temporary reuse that commit 3 depends on.
 void DeclareCheckedArithmeticImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType i64 = BinaryenTypeInt64();
-  ImportCel2(mod, "cel_int_add_ii", i64, i64, i32);
-  ImportCel2(mod, "cel_int_sub_ii", i64, i64, i32);
-  ImportCel2(mod, "cel_int_mul_ii", i64, i64, i32);
-  ImportCel2(mod, "cel_int_div_ii", i64, i64, i32);
-  ImportCel2(mod, "cel_int_mod_ii", i64, i64, i32);
-  ImportCel2(mod, "cel_uint_add_uu", i64, i64, i32);
-  ImportCel2(mod, "cel_uint_sub_uu", i64, i64, i32);
-  ImportCel2(mod, "cel_uint_mul_uu", i64, i64, i32);
-  ImportCel2(mod, "cel_uint_div_uu", i64, i64, i32);
-  ImportCel2(mod, "cel_uint_mod_uu", i64, i64, i32);
-  ImportCel1(mod, "cel_int_neg_i", i64, i32);
+  const BinaryenType none = BinaryenTypeNone();
+  BinaryenType int_params[3] = {i32, i64, i64};
+  auto import_int = [&](absl::string_view name) {
+    mod.AddFunctionImport(name, /*external_module=*/"cel",
+                          /*external_base=*/name,
+                          absl::Span<const BinaryenType>(int_params, 3), none);
+  };
+  import_int("cel_int_add_at_ii");
+  import_int("cel_int_sub_at_ii");
+  import_int("cel_int_mul_at_ii");
+  import_int("cel_int_div_at_ii");
+  import_int("cel_int_mod_at_ii");
+  import_int("cel_uint_add_at_uu");
+  import_int("cel_uint_sub_at_uu");
+  import_int("cel_uint_mul_at_uu");
+  import_int("cel_uint_div_at_uu");
+  import_int("cel_uint_mod_at_uu");
+  BinaryenType neg_params[2] = {i32, i64};
+  mod.AddFunctionImport("cel_int_neg_at_i", /*external_module=*/"cel",
+                        /*external_base=*/"cel_int_neg_at_i",
+                        absl::Span<const BinaryenType>(neg_params, 2), none);
 }
 
 // Declares every import the eval module may reference, up front.  Each
@@ -366,19 +393,19 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
 // Used by the checked-arithmetic unbox path to recognise an ERROR box.
 constexpr int32_t kCelErrorKind = 15;
 
-// Wraps a checked-arithmetic helper call so the overall expression has
-// the same i64-returning shape as native wasm arithmetic.  The helper
-// returns a CelValue offset (i32): kind `CEL_ERROR` on overflow /
-// div-by-zero, otherwise kind CEL_INT / CEL_UINT with the payload at
-// offset 8.
+// Wraps a sret checked-arithmetic helper call so the overall
+// expression has the same i64-returning shape as native wasm
+// arithmetic.  The helper writes a 24-byte CelValue into the
+// scratch slot (pre-allocated at eval entry); codegen loads the
+// kind tag inline and traps on CEL_ERROR.
 //
 // Pattern:
 //   (block (result i64)
-//     (local.set $box (call $helper lhs rhs))
-//     (if (i32.eq (i32.load (i32.add base (local.get $box)))
+//     (call $helper (local.get $slot) lhs rhs)
+//     (if (i32.eq (i32.load (i32.add base (local.get $slot)))
 //                 (i32.const 15))
 //       (unreachable))
-//     (i64.load offset=8 (i32.add base (local.get $box))))
+//     (i64.load offset=8 (i32.add base (local.get $slot))))
 //
 // "unreachable" surfaces through wasmtime as a trap, which the host
 // catches and converts to an `absl::Status` error.  The CEL-correct
@@ -391,19 +418,20 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
                                             BinaryenExpressionRef lhs,
                                             BinaryenExpressionRef rhs) {
   BinaryenModuleRef m = ctx.mod.raw();
-  const BinaryenIndex box = ctx.AddLocal(BinaryenTypeInt32());
-  BinaryenExpressionRef call_args[2] = {lhs, rhs};
+  const BinaryenIndex slot = ctx.GetScratchSlotLocal();
+  BinaryenExpressionRef slot_get =
+      BinaryenLocalGet(m, slot, BinaryenTypeInt32());
+  BinaryenExpressionRef call_args[3] = {slot_get, lhs, rhs};
   BinaryenExpressionRef call_helper =
-      BinaryenCall(m, helper, call_args, 2, BinaryenTypeInt32());
-  BinaryenExpressionRef set_box = BinaryenLocalSet(m, box, call_helper);
+      BinaryenCall(m, helper, call_args, 3, BinaryenTypeNone());
 
-  // abs = cel_mem_base() + box
+  // abs = cel_mem_base() + slot
   auto abs_expr = [&]() {
     BinaryenExpressionRef base_call =
         BinaryenCall(m, "cel_mem_base", /*operands=*/nullptr,
                      /*numOperands=*/0, BinaryenTypeInt32());
     return BinaryenBinary(m, BinaryenAddInt32(), base_call,
-                          BinaryenLocalGet(m, box, BinaryenTypeInt32()));
+                          BinaryenLocalGet(m, slot, BinaryenTypeInt32()));
   };
 
   // if (kind == CEL_ERROR) unreachable
@@ -424,7 +452,7 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
       BinaryenLoad(m, /*bytes=*/8, /*signed_=*/false, /*offset=*/8, /*align=*/8,
                    BinaryenTypeInt64(), abs_expr(), /*memoryName=*/"memory");
 
-  BinaryenExpressionRef children[3] = {set_box, trap_if, payload_load};
+  BinaryenExpressionRef children[3] = {call_helper, trap_if, payload_load};
   return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/3,
                        BinaryenTypeInt64());
 }
@@ -433,19 +461,19 @@ BinaryenExpressionRef EmitCheckedArithmetic(LoweringContext& ctx,
 // Returns nullptr if `name` is not one of ADD/SUBTRACT/MULTIPLY/DIVIDE/MODULO.
 const char* CheckedIntHelperName(absl::string_view name, bool is_int) {
   if (name == op::CelOperator::ADD) {
-    return is_int ? "cel_int_add_ii" : "cel_uint_add_uu";
+    return is_int ? "cel_int_add_at_ii" : "cel_uint_add_at_uu";
   }
   if (name == op::CelOperator::SUBTRACT) {
-    return is_int ? "cel_int_sub_ii" : "cel_uint_sub_uu";
+    return is_int ? "cel_int_sub_at_ii" : "cel_uint_sub_at_uu";
   }
   if (name == op::CelOperator::MULTIPLY) {
-    return is_int ? "cel_int_mul_ii" : "cel_uint_mul_uu";
+    return is_int ? "cel_int_mul_at_ii" : "cel_uint_mul_at_uu";
   }
   if (name == op::CelOperator::DIVIDE) {
-    return is_int ? "cel_int_div_ii" : "cel_uint_div_uu";
+    return is_int ? "cel_int_div_at_ii" : "cel_uint_div_at_uu";
   }
   if (name == op::CelOperator::MODULO) {
-    return is_int ? "cel_int_mod_ii" : "cel_uint_mod_uu";
+    return is_int ? "cel_int_mod_at_ii" : "cel_uint_mod_at_uu";
   }
   return nullptr;
 }
@@ -1080,6 +1108,26 @@ absl::Status AddMessageSupport(WasmModule& mod) {
   return AddMessageWrapHelpers(mod, "$cel_refs");
 }
 
+// Wraps `body` with the scratch-slot prologue when the lowering
+// allocated a slot.  cel_reset() rewinds the arena between host
+// invocations, so the slot must be (re)allocated on every $eval
+// entry — the prologue is per-invocation, not global.
+BinaryenExpressionRef WithScratchSlotPrologue(LoweringContext& ctx,
+                                              BinaryenExpressionRef body,
+                                              BinaryenType body_type) {
+  if (!ctx.scratch_slot.has_value()) return body;
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef slot_size = BinaryenConst(
+      m, BinaryenLiteralInt32(static_cast<int32_t>(sizeof(uint64_t) * 3)));
+  BinaryenExpressionRef alloc_call =
+      BinaryenCall(m, "cel_alloc", &slot_size, 1, BinaryenTypeInt32());
+  BinaryenExpressionRef set_slot =
+      BinaryenLocalSet(m, *ctx.scratch_slot, alloc_call);
+  BinaryenExpressionRef children[2] = {set_slot, body};
+  return BinaryenBlock(m, /*name=*/nullptr, children,
+                       /*numChildren=*/2, body_type);
+}
+
 }  // namespace
 
 BinaryenType WasmTypeFor(Repr r) {
@@ -1150,7 +1198,8 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(const TypedAst& ast,
   auto body = LowerExpr(ctx, ast, root);
   if (!body.ok()) return body.status();
   mod.AddFunction(func_name, params, result_type,
-                  /*local_types=*/ctx.local_types, *body);
+                  /*local_types=*/ctx.local_types,
+                  WithScratchSlotPrologue(ctx, *body, result_type));
   BinaryenFunctionRef fn =
       BinaryenGetFunction(mod.raw(), std::string(func_name).c_str());
   if (fn == nullptr) {

@@ -382,6 +382,29 @@ void cel_uint_mod_at(uint32_t out, uint32_t a, uint32_t b);
 
 void cel_int_neg_at(uint32_t out, uint32_t a);
 
+// Scalar-arg sret variants.  Same semantics as the boxed-arg `_at`
+// helpers above — the total-function guarantee still holds — except
+// the operands arrive as raw wasm scalars instead of arena offsets,
+// so there is no operand-status to propagate (pure OK/ERROR outcome).
+// These are the ones codegen emits from straight-line arithmetic
+// where both operands are already wasm i64 / u64 values (literals,
+// ident reads, payload.i loads).  Paired with `cel_box_*` at the
+// boundaries where a scalar needs to enter the boxed API (e.g. a 3VL
+// `cel_and` call).
+void cel_int_add_at_ii(uint32_t out, int64_t a, int64_t b);
+void cel_int_sub_at_ii(uint32_t out, int64_t a, int64_t b);
+void cel_int_mul_at_ii(uint32_t out, int64_t a, int64_t b);
+void cel_int_div_at_ii(uint32_t out, int64_t a, int64_t b);
+void cel_int_mod_at_ii(uint32_t out, int64_t a, int64_t b);
+
+void cel_uint_add_at_uu(uint32_t out, uint64_t a, uint64_t b);
+void cel_uint_sub_at_uu(uint32_t out, uint64_t a, uint64_t b);
+void cel_uint_mul_at_uu(uint32_t out, uint64_t a, uint64_t b);
+void cel_uint_div_at_uu(uint32_t out, uint64_t a, uint64_t b);
+void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b);
+
+void cel_int_neg_at_i(uint32_t out, int64_t a);
+
 #ifdef __cplusplus
 }
 #endif

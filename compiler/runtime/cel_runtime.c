@@ -1161,3 +1161,125 @@ void cel_int_neg_at(uint32_t out, uint32_t a) {
   }
   write_int_at(out, -va->payload.i);
 }
+
+// ---- Scalar-arg sret helpers (M4 Slice C commit 2) ----------------------
+//
+// These take raw i64 / u64 operands instead of boxed CelValue offsets,
+// so there is no operand-status dance — just the arithmetic check and
+// the slot write.  Codegen calls these from straight-line arithmetic
+// where both sides are already wasm scalars (literals, ident reads,
+// an unboxed result from a previous `*_at_ii` slot read).
+
+void cel_int_add_at_ii(uint32_t out, int64_t a, int64_t b) {
+  if (out == 0) return;
+  int64_t r;
+  if (s64_add_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_sub_at_ii(uint32_t out, int64_t a, int64_t b) {
+  if (out == 0) return;
+  int64_t r;
+  if (s64_sub_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_mul_at_ii(uint32_t out, int64_t a, int64_t b) {
+  if (out == 0) return;
+  int64_t r;
+  if (s64_mul_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, r);
+}
+
+void cel_int_div_at_ii(uint32_t out, int64_t a, int64_t b) {
+  if (out == 0) return;
+  if (b == 0) {
+    write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  if (a == INT64_MIN && b == -1) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, a / b);
+}
+
+void cel_int_mod_at_ii(uint32_t out, int64_t a, int64_t b) {
+  if (out == 0) return;
+  if (b == 0) {
+    write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  // INT64_MIN % -1 is mathematically 0 but C reserves UB for it.
+  if (a == INT64_MIN && b == -1) {
+    write_int_at(out, 0);
+    return;
+  }
+  write_int_at(out, a % b);
+}
+
+void cel_uint_add_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  if (out == 0) return;
+  uint64_t r;
+  if (u64_add_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_sub_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  if (out == 0) return;
+  uint64_t r;
+  if (u64_sub_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_mul_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  if (out == 0) return;
+  uint64_t r;
+  if (u64_mul_overflow(a, b, &r)) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint_at(out, r);
+}
+
+void cel_uint_div_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  if (out == 0) return;
+  if (b == 0) {
+    write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  write_uint_at(out, a / b);
+}
+
+void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  if (out == 0) return;
+  if (b == 0) {
+    write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  write_uint_at(out, a % b);
+}
+
+void cel_int_neg_at_i(uint32_t out, int64_t a) {
+  if (out == 0) return;
+  if (a == INT64_MIN) {
+    write_error_at(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int_at(out, -a);
+}

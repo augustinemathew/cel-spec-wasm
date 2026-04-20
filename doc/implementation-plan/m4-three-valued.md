@@ -94,6 +94,28 @@ merge, error-dominates-unknown), type mismatch, and zero-offset
 operand.  No codegen wiring yet; commit 2 adds the scratch-slot
 pool at `$eval` entry and flips arithmetic codegen over.
 
+**M4 slice C commit 2 (2026-04-19): codegen switches to sret
+arithmetic.**  Runtime adds 11 scalar-arg sret helpers
+(`cel_int_add_at_ii(out, i64, i64)` and friends for int/uint add/
+sub/mul/div/mod, plus `cel_int_neg_at_i`) so codegen can call the
+sret ABI from straight-line i64 wasm without re-boxing scalars.
+Codegen grows a single scratch slot per `$eval` invocation: the
+new `LoweringContext::GetScratchSlotLocal()` lazily allocates an
+i32 local, and `WithScratchSlotPrologue` wraps the body with
+`local.set $slot (call $cel_alloc 24)` when the slot was used.
+`EmitCheckedArithmetic` now emits `Call(helper, LocalGet(slot),
+lhs, rhs); If(kind==CEL_ERROR, unreachable); i64.load offset=8 —
+no arena bump per op.  One slot suffices today because every
+checked-arithmetic shape loads the payload into a wasm local
+before the next helper call reuses the slot (straight-line tree
+evaluation).  Coverage: 15 new runtime tests parametrise the new
+scalar helpers over happy / overflow / div-0 / mod-0 / INT64_MIN
+edges + zero-offset no-op; three codegen assertions now verify
+the new body shape (outer Block = [prologue, inner checked-op
+Block]).  All 15 `//compiler/...` test targets pass.  Trap-on-
+ERROR is still the stopgap; commit 3 wires 3VL `&&` / `||` and
+flips the arithmetic-ERROR path from trap to observable CelValue.
+
 ### Codegen
 
 - [x] Arithmetic ops grow an **overflow check** on int.  Slice B
