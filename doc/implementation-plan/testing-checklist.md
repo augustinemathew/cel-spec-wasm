@@ -659,11 +659,18 @@ expression from `m1-type-checker.md`, plus:
       `m4-slice-f-3vl-absorption.md`.  **F1 shipped 2026-04-20**:
       ERROR-source rows 1, 2, 3, 5 and UNKNOWN-source rows 9, 10,
       11, 12, 13, 20 are enabled in `eval_test.cc` and pass against
-      the new `cel_cmp_*` 3VL boxed comparison helpers; F2 / F3 /
-      F4 carry the residual rows (see the slice doc).  Remaining
-      DISABLED shells: rows 4 (F2), 6 / 8 (F4), 15 / 18 (existing
-      placeholders for F2 / F3); rows 14, 16, 17, 19, 21, 22 still
-      need shells to be added when their slice ships.
+      the new `cel_cmp_*` 3VL boxed comparison helpers.
+      **Uniform-boxed Step 2 shipped 2026-04-20**: arithmetic now
+      takes and returns CelValue offsets via `cel_int_*_at_vv` /
+      `cel_uint_*_at_vv` helpers, so ERROR / UNKNOWN operands
+      absorb into the sret slot via `cel_status_either` instead of
+      early-returning from `$eval`; rows 4, 18, 22 enabled
+      (`ThreeValuedAbsorptionErrorArithThenCompareAbsorbed`,
+      `UnknownThroughArithThenCompareAbsorbed`,
+      `UnknownAndErrorInArithSubtreeErrorDominates`).  Remaining
+      DISABLED shells: rows 6 / 8 (always-boxed compare — step 3),
+      14 / 15 / 16 / 17 / 21 (string / bytes / size / msg-eq
+      absorption — steps 4–5), 7 / 19 (ternary simplify — step 6).
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

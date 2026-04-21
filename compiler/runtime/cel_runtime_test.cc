@@ -1372,6 +1372,152 @@ TEST_F(RuntimeTest, ScalarAtZeroOffsetIsNoOp) {
   EXPECT_EQ(KindOf(null_off), prev_kind);
 }
 
+// ---- Boxed-operand arithmetic (M4 Slice F Step 2) ------------------------
+//
+// Each helper has four observable contracts:
+//   (a) OK + OK → delegate to `_at_ii` / `_at_uu` (happy + overflow).
+//   (b) non-OK operand → dominant status copied into `*out`.
+//   (c) kind-mismatch (non-int / non-uint) → CEL_ERROR{TYPE_MISMATCH}.
+//   (d) out == 0 → no-op (total-function guarantee).
+// The int-add path exercises all four; the other binary helpers get
+// narrower coverage since they share `arith_boxed_prologue`.
+
+TEST_F(RuntimeTest, IntAddAtVvHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_vv(out, cel_make_int(3), cel_make_int(4));
+  ExpectInt(out, 7);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvOverflow) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_vv(out, cel_make_int(INT64_MAX), cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvErrorLeftAbsorbs) {
+  uint32_t out = AllocSlot();
+  uint32_t err = cel_make_error(CEL_ERR_DIVIDE_BY_ZERO, 0, 0);
+  cel_int_add_at_vv(out, err, cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvErrorRightAbsorbs) {
+  uint32_t out = AllocSlot();
+  uint32_t err = cel_make_error(CEL_ERR_OVERFLOW, 0, 0);
+  cel_int_add_at_vv(out, cel_make_int(1), err);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvUnknownLeftAbsorbs) {
+  uint32_t out = AllocSlot();
+  uint32_t unk = cel_make_unknown(42u);
+  cel_int_add_at_vv(out, unk, cel_make_int(1));
+  ExpectUnknownWith(out, {42u});
+}
+
+TEST_F(RuntimeTest, IntAddAtVvUnknownBothMerges) {
+  uint32_t out = AllocSlot();
+  uint32_t ua = cel_make_unknown(42u);
+  uint32_t ub = cel_make_unknown(100u);
+  cel_int_add_at_vv(out, ua, ub);
+  ExpectUnknownWith(out, {42u, 100u});
+}
+
+TEST_F(RuntimeTest, IntAddAtVvErrorDominatesUnknown) {
+  uint32_t out = AllocSlot();
+  uint32_t unk = cel_make_unknown(42u);
+  uint32_t err = cel_make_error(CEL_ERR_OVERFLOW, 0, 0);
+  cel_int_add_at_vv(out, unk, err);
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvKindMismatchIsTypeError) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_vv(out, cel_make_int(1), cel_make_uint(1u));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntAddAtVvZeroOperandIsTypeError) {
+  uint32_t out = AllocSlot();
+  cel_int_add_at_vv(out, 0, cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntDivAtVvDivByZero) {
+  uint32_t out = AllocSlot();
+  cel_int_div_at_vv(out, cel_make_int(5), cel_make_int(0));
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, UintAddAtVvHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at_vv(out, cel_make_uint(3u), cel_make_uint(4u));
+  ExpectUint(out, 7u);
+}
+
+TEST_F(RuntimeTest, UintAddAtVvOverflow) {
+  uint32_t out = AllocSlot();
+  cel_uint_add_at_vv(out, cel_make_uint(UINT64_MAX), cel_make_uint(1u));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, UintMulAtVvUnknownAbsorbs) {
+  uint32_t out = AllocSlot();
+  uint32_t unk = cel_make_unknown(7u);
+  cel_uint_mul_at_vv(out, cel_make_uint(3u), unk);
+  ExpectUnknownWith(out, {7u});
+}
+
+TEST_F(RuntimeTest, UintSubAtVvKindMismatch) {
+  // Passing int operands to a uint helper must surface as type error
+  // (mirrors the int variant's kind check).
+  uint32_t out = AllocSlot();
+  cel_uint_sub_at_vv(out, cel_make_int(5), cel_make_int(1));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, IntNegAtVHappyPath) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_v(out, cel_make_int(5));
+  ExpectInt(out, -5);
+}
+
+TEST_F(RuntimeTest, IntNegAtVMinOverflows) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_v(out, cel_make_int(INT64_MIN));
+  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(RuntimeTest, IntNegAtVUnknownAbsorbs) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_v(out, cel_make_unknown(42u));
+  ExpectUnknownWith(out, {42u});
+}
+
+TEST_F(RuntimeTest, IntNegAtVErrorAbsorbs) {
+  uint32_t out = AllocSlot();
+  uint32_t err = cel_make_error(CEL_ERR_DIVIDE_BY_ZERO, 0, 0);
+  cel_int_neg_at_v(out, err);
+  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(RuntimeTest, IntNegAtVKindMismatch) {
+  uint32_t out = AllocSlot();
+  cel_int_neg_at_v(out, cel_make_uint(1u));
+  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(RuntimeTest, ScalarAtVvZeroOffsetIsNoOp) {
+  // The prologue's `out == 0` early-return must fire before any
+  // arena read, mirroring the `_at_ii` contract.
+  uint32_t null_off = cel_make_null();
+  CelKind prev_kind = KindOf(null_off);
+  cel_int_add_at_vv(0, cel_make_int(1), cel_make_int(2));
+  cel_uint_add_at_vv(0, cel_make_uint(1u), cel_make_uint(2u));
+  cel_int_neg_at_v(0, cel_make_int(1));
+  EXPECT_EQ(KindOf(null_off), prev_kind);
+}
+
 // ---- 3VL-aware comparison helpers (M4 Slice F1) --------------------------
 //
 // Each helper must (a) forward dominant non-OK status so absorbing

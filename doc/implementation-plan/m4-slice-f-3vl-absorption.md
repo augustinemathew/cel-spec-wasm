@@ -215,10 +215,30 @@ sees "dead code after dispatch collapse" and not a drive-by.
    new unbox helpers) and `expr_lower_test.cc`
    (`IntIdentLowersToLocalGetWithI64Param`,
    `IdentsOfAllScalarReprs`) to match the new ident shape.
-2. Add `cel_int_add_at_vv` and siblings (boxed-in, boxed-out).
-   Route arithmetic through them; drop
-   `EmitCheckedArithmetic`'s kind-check-early-return.  Change arith
-   Repr to CelValue offset.  Flip rows 4, 18, 22.
+2. **[shipped 2026-04-20]** Boxed-in / boxed-out arithmetic
+   helpers.  Added `cel_int_{add,sub,mul,div,mod}_at_vv` and the
+   `cel_uint_*_at_vv` siblings, plus unary `cel_int_neg_at_v`.  Each
+   helper wraps `arith_boxed_prologue` which (a) short-circuits on
+   `cel_status_either` — copying the dominant non-OK into the sret
+   slot via `cel_copy_celvalue_at` — and (b) raises
+   `CEL_ERR_TYPE_MISMATCH` when either operand has the wrong kind
+   or is the null offset.  On success delegates to the scalar
+   `_at_ii` / `_at_uu` sibling for the arithmetic + overflow /
+   div0 check.  Codegen: `LowerCheckedArithBoxed` now routes every
+   `+`/`-`/`*`/`/`/`%` through `_at_vv` and recurses into operands
+   via `LowerExprBoxed` (not `LowerExpr`), so nested arithmetic
+   inside a boxed compare stays on the boxed path end-to-end.
+   Flipped DISABLED_ rows 4 (`ThreeValuedAbsorptionErrorArithThenCompareAbsorbed`)
+   and 18 (`UnknownThroughArithThenCompareAbsorbed`); added row 22
+   (`UnknownAndErrorInArithSubtreeErrorDominates`, ERROR > UNKNOWN
+   in `cel_status_either` absorbed by `|| true`).  Unit coverage:
+   16 new tests in `cel_runtime_test.cc` covering happy path,
+   overflow, div-by-zero, left / right / both absorption,
+   ERROR-dominates-UNKNOWN, kind mismatch, and zero-offset no-op
+   across int / uint add / sub / mul / div / mod / neg.  The
+   scalar `_at_ii` / `_at_uu` helpers remain reachable via the
+   wrappers; their direct call sites from codegen go away when
+   step 7 lands.
 3. Always-boxed comparison: drop the `HasNonOkProducer` gate in
    `LowerBinaryCall`; keep F1's boxed helpers as the only path for
    scalar-kind compares.  Covers the existing F1 rows plus row 6

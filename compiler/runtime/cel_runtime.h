@@ -340,6 +340,41 @@ void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b);
 
 void cel_int_neg_at_i(uint32_t out, int64_t a);
 
+// ---- Boxed-operand checked arithmetic (M4 Slice F Step 2) ----------------
+//
+// Sret helpers that take CelValue offsets for both operands.  Each:
+//
+//   1. Short-circuits on `cel_status_either(a, b)` — if either
+//      operand is ERROR / UNKNOWN, the dominant non-OK value is
+//      copied into `*out` and the helper returns.  The wrapping
+//      3VL absorber (`cel_and` / `cel_or` or a boxed comparison)
+//      then sees the non-OK value as a CelValue offset and applies
+//      the spec's absorption rules.
+//   2. Kind-checks both operands (expected kind: CEL_INT or
+//      CEL_UINT depending on the helper).  Type-mismatch writes
+//      CEL_ERROR{CEL_ERR_TYPE_MISMATCH}.
+//   3. Delegates the scalar overflow / div-by-zero checks to the
+//      existing `_at_ii` / `_at_uu` siblings by extracting the
+//      payload.
+//
+// Paired with Step 2's always-boxed arith codegen — `LowerCheckedArithBoxed`
+// calls these so a nested arith subtree of a boxed comparison (rows
+// 4, 18, 22 in `doc/implementation-plan/m4-slice-f-3vl-absorption.md`)
+// absorbs non-OK instead of early-returning from `$eval`.
+void cel_int_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_int_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_int_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_int_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_int_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_uint_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_uint_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_uint_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_uint_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+void cel_uint_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
+// Unary negation wants only one operand; same absorption + kind-check
+// shape as the binary siblings.
+void cel_int_neg_at_v(uint32_t out, uint32_t a_off);
+
 // ---- 3VL-aware scalar comparison (M4 Slice F1) ---------------------------
 //
 // Boxed-operand comparisons used when either operand's subtree can

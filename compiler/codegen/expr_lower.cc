@@ -274,6 +274,29 @@ void DeclareCheckedArithmeticImports(WasmModule& mod) {
   mod.AddFunctionImport("cel_int_neg_at_i", /*external_module=*/"cel",
                         /*external_base=*/"cel_int_neg_at_i",
                         absl::Span<const BinaryenType>(neg_params, 2), none);
+  // Boxed-operand variants (Slice F Step 2): `(slot, a_off, b_off)`.
+  // Used by `LowerCheckedArithBoxed` so arith inside a boxed
+  // absorber sees non-OK operands as values instead of trapping.
+  BinaryenType vv_params[3] = {i32, i32, i32};
+  auto import_vv = [&](absl::string_view name) {
+    mod.AddFunctionImport(name, /*external_module=*/"cel",
+                          /*external_base=*/name,
+                          absl::Span<const BinaryenType>(vv_params, 3), none);
+  };
+  import_vv("cel_int_add_at_vv");
+  import_vv("cel_int_sub_at_vv");
+  import_vv("cel_int_mul_at_vv");
+  import_vv("cel_int_div_at_vv");
+  import_vv("cel_int_mod_at_vv");
+  import_vv("cel_uint_add_at_vv");
+  import_vv("cel_uint_sub_at_vv");
+  import_vv("cel_uint_mul_at_vv");
+  import_vv("cel_uint_div_at_vv");
+  import_vv("cel_uint_mod_at_vv");
+  BinaryenType neg_v_params[2] = {i32, i32};
+  mod.AddFunctionImport("cel_int_neg_at_v", /*external_module=*/"cel",
+                        /*external_base=*/"cel_int_neg_at_v",
+                        absl::Span<const BinaryenType>(neg_v_params, 2), none);
 }
 
 // Declares every import the eval module may reference, up front.  Each
@@ -647,6 +670,30 @@ const char* CheckedIntHelperName(absl::string_view name, bool is_int) {
   }
   if (name == op::CelOperator::MODULO) {
     return is_int ? "cel_int_mod_at_ii" : "cel_uint_mod_at_uu";
+  }
+  return nullptr;
+}
+
+// Boxed-operand counterpart (Slice F Step 2).  Each helper writes its
+// result (OK / ERROR / UNKNOWN) into the scratch slot rather than
+// requiring kind-check-early-return at the call site, so nested arith
+// inside a 3VL absorber can propagate dominant non-OK up through the
+// boxed comparison / `cel_or` / `cel_and` chain.
+const char* CheckedIntHelperNameV(absl::string_view name, bool is_int) {
+  if (name == op::CelOperator::ADD) {
+    return is_int ? "cel_int_add_at_vv" : "cel_uint_add_at_vv";
+  }
+  if (name == op::CelOperator::SUBTRACT) {
+    return is_int ? "cel_int_sub_at_vv" : "cel_uint_sub_at_vv";
+  }
+  if (name == op::CelOperator::MULTIPLY) {
+    return is_int ? "cel_int_mul_at_vv" : "cel_uint_mul_at_vv";
+  }
+  if (name == op::CelOperator::DIVIDE) {
+    return is_int ? "cel_int_div_at_vv" : "cel_uint_div_at_vv";
+  }
+  if (name == op::CelOperator::MODULO) {
+    return is_int ? "cel_int_mod_at_vv" : "cel_uint_mod_at_vv";
   }
   return nullptr;
 }
@@ -1052,23 +1099,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerSelectFieldBoxed(
 }
 
 // Checked int/uint arithmetic variant that returns the scratch offset
-// directly (no kind-check, no payload load).  On overflow / divide-
-// by-zero the scratch holds CEL_ERROR, which the caller's
-// `cel_cmp_<kind>_<op>` will absorb via `cel_status_either`.  F1 only
-// supports scalar operands (literals / idents); F2 will extend this
-// to nested arith-of-arith and arith-of-select.
+// directly (no kind-check, no payload load).  Operands are lowered
+// through `LowerExprBoxed` so nested arith / select / ident subtrees
+// arrive as CelValue offsets; the `_at_vv` helper absorbs dominant
+// non-OK via `cel_status_either` before performing the scalar op.
+// This is the path rows 4 / 18 / 22 take through a wrapping
+// `LowerBoxedComparison` / `cel_or` / `cel_and`.
 absl::StatusOr<BinaryenExpressionRef> LowerCheckedArithBoxed(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
     Repr r) {
   const bool is_int = (r == Repr::kInt);
-  const char* helper = CheckedIntHelperName(call.function(), is_int);
+  const char* helper = CheckedIntHelperNameV(call.function(), is_int);
   if (helper == nullptr) {
     return absl::InternalError(absl::StrCat(
         "LowerCheckedArithBoxed: unhandled op `", call.function(), "`"));
   }
-  auto lhs = LowerExpr(ctx, ast, call.args().at(0));
+  auto lhs = LowerExprBoxed(ctx, ast, call.args().at(0));
   if (!lhs.ok()) return lhs.status();
-  auto rhs = LowerExpr(ctx, ast, call.args().at(1));
+  auto rhs = LowerExprBoxed(ctx, ast, call.args().at(1));
   if (!rhs.ok()) return rhs.status();
   BinaryenModuleRef m = ctx.mod.raw();
   const BinaryenIndex scratch = ctx.AddLocal(BinaryenTypeInt32());

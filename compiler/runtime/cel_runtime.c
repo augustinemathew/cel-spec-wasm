@@ -967,6 +967,133 @@ void cel_int_neg_at_i(uint32_t out, int64_t a) {
   write_int_at(out, -a);
 }
 
+// ---- Boxed-operand arithmetic (M4 Slice F Step 2) ------------------------
+//
+// Shared front-matter for every `_at_vv` helper: returns 1 iff both
+// operands are OK of the expected kind (so the caller should proceed
+// with its scalar op); returns 0 in which case the helper has
+// already written the correct value into `*out` (dominant non-OK,
+// or CEL_ERROR{TYPE_MISMATCH} for a kind mismatch, or nothing for
+// `out == 0` — the total-function guarantee).
+static int arith_boxed_prologue(uint32_t out, uint32_t a_off, uint32_t b_off,
+                                uint32_t expected_kind, int64_t* ra,
+                                int64_t* rb) {
+  if (out == 0) return 0;
+  uint32_t st = cel_status_either(a_off, b_off);
+  if (st != 0) {
+    cel_copy_celvalue_at(out, st);
+    return 0;
+  }
+  if (a_off == 0 || b_off == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 0;
+  }
+  const CelValue* va = cv_at(a_off);
+  const CelValue* vb = cv_at(b_off);
+  if (va->kind != expected_kind || vb->kind != expected_kind) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return 0;
+  }
+  // Payloads are the same bit-width for both int and uint; the caller
+  // reinterprets after the copy.  Using int64_t here keeps the
+  // prologue kind-agnostic.
+  *ra = va->payload.i;
+  *rb = vb->payload.i;
+  return 1;
+}
+
+void cel_int_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
+  cel_int_add_at_ii(out, a, b);
+}
+
+void cel_int_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
+  cel_int_sub_at_ii(out, a, b);
+}
+
+void cel_int_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
+  cel_int_mul_at_ii(out, a, b);
+}
+
+void cel_int_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
+  cel_int_div_at_ii(out, a, b);
+}
+
+void cel_int_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
+  cel_int_mod_at_ii(out, a, b);
+}
+
+void cel_uint_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
+  cel_uint_add_at_uu(out, (uint64_t)a, (uint64_t)b);
+}
+
+void cel_uint_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
+  cel_uint_sub_at_uu(out, (uint64_t)a, (uint64_t)b);
+}
+
+void cel_uint_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
+  cel_uint_mul_at_uu(out, (uint64_t)a, (uint64_t)b);
+}
+
+void cel_uint_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
+  cel_uint_div_at_uu(out, (uint64_t)a, (uint64_t)b);
+}
+
+void cel_uint_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  int64_t a = 0;
+  int64_t b = 0;
+  if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
+  cel_uint_mod_at_uu(out, (uint64_t)a, (uint64_t)b);
+}
+
+void cel_int_neg_at_v(uint32_t out, uint32_t a_off) {
+  if (out == 0) return;
+  // `cel_status_either` short-circuits to 0 when one side is a null
+  // offset, so a single-operand absorption check inspects the kind
+  // tag directly.  ERROR and UNKNOWN both propagate to `*out`; any
+  // other non-int surfaces as a type-mismatch error.
+  if (a_off == 0) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const CelValue* va = cv_at(a_off);
+  if (va->kind == (uint32_t)CEL_ERROR || va->kind == (uint32_t)CEL_UNKNOWN) {
+    cel_copy_celvalue_at(out, a_off);
+    return;
+  }
+  if (va->kind != (uint32_t)CEL_INT) {
+    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  cel_int_neg_at_i(out, va->payload.i);
+}
+
 // ---- 3VL-aware scalar comparison helpers (M4 Slice F1) -------------------
 //
 // Each helper mirrors the same four-step shape:

@@ -485,7 +485,7 @@ TEST(EvalE2ETest, ThreeValuedAbsorptionErrorOrderedCompareAbsorbed) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionErrorArithThenCompareAbsorbed) {
+TEST(EvalE2ETest, ThreeValuedAbsorptionErrorArithThenCompareAbsorbed) {
   // Row 4: ((1/0) + 1) == 0 || true → true.  ERROR through a second
   // arithmetic hop before the comparison.
   auto r = Evaluate("((1 / 0) + 1) == 0 || true");
@@ -1891,9 +1891,27 @@ TEST(EvalE2EUnknownTest,
 }
 
 TEST(EvalE2EUnknownTest,
-     DISABLED_UnknownThroughArithThenCompareAbsorbed) {  // Slice F row 18
+     UnknownThroughArithThenCompareAbsorbed) {  // Slice F row 18
   auto loaded =
       LoadCompiled("(c.age + 1) == 0 || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownAndErrorInArithSubtreeErrorDominates) {  // Slice F row 22
+  // UNKNOWN and ERROR in the same arith subtree: cel_status_either picks
+  // ERROR over UNKNOWN (ERROR > UNKNOWN per langdef.md §11.1); the `||
+  // true` absorber then short-circuits, so the whole expression is true.
+  auto loaded = LoadCompiled("(c.age + (1 / 0)) == 0 || true",
+                             {std::string(kCustomerSpec)});
   ASSERT_THAT(loaded.status(), IsOk());
   std::vector<AttributePattern> patterns;
   patterns.push_back(ParsePatternOrDie("c.age"));
