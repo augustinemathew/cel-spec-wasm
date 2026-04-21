@@ -63,8 +63,8 @@ Make every non-absorbing op 3VL-aware.  The minimum-viable shape:
     ERROR producer in either subtree), codegen stays on the scalar
     path — zero overhead regression against M4 Slice B / C shapes.
 
-This is big enough to warrant its own slice.  Internal breakdown
-(agreed 2026-04-20):
+This is big enough to warrant its own slice.  Original breakdown
+(agreed 2026-04-20, F1 shipped under this scheme):
 
   - **F1 — comparison sret ABI.**  `==`/`!=`/`<`/`<=`/`>`/`>=` stop
     returning scalar `i32` bool; they accept CelValue-offset inputs
@@ -74,28 +74,160 @@ This is big enough to warrant its own slice.  Internal breakdown
     `cel_status_either`.  A checker-driven fast path keeps the
     scalar shape for expressions whose operands are both proved
     definite — zero overhead regression against Slice B/C.
-    Unblocks rows 1, 2, 3, 5, 9–14, 20.
-  - **F2 — arithmetic slow path.**  When either operand of
-    `+`/`-`/`*`/`/`/`%` comes from a subtree that can yield
-    UNKNOWN / ERROR, lower through the CelValue-offset shape F1
-    introduces instead of the scalar overflow-check pair.  The
-    definite-both-sides case stays on the scalar Slice B checked
-    arithmetic.  Unblocks rows 4, 18, 22.
-  - **F3 — string / bytes ops + `size`.**  `==` / `startsWith` /
-    `endsWith` / `contains` / `matches` and `size(…)` go sret
-    CelValue end-to-end (they already travel as arena offsets, so
-    this is a wrapper change, not an ABI overhaul).  Unblocks rows
-    15, 16, 17, 21.
-  - **F4 — ternary dispatch.**  `?:` gains a dispatch: when the
-    cond slot holds UNKNOWN / ERROR and the `?:` is *not* at eval
-    root (i.e. has a wrapping 3VL absorber), copy the dominant
-    status through to the sret slot instead of early-returning
-    from `$eval` (Slice E1's current behaviour at root stays
-    intact).  Unblocks rows 7, 8, 19.
+    Unblocks rows 1, 2, 3, 5, 9–14, 20.  **Shipped 2026-04-20.**
+  - **F2 / F3 / F4 — superseded 2026-04-20** by the uniform-boxed
+    ABI plan below.  Leaving their original descriptions here as
+    historical context:
+    - F2 was scoped as an arithmetic slow path gated by
+      `HasNonOkProducer`, reusing F1's dual-path machinery.
+    - F3 was scoped as a wrapper change over the existing span ABI
+      for string / bytes ops + `size`.
+    - F4 was scoped as a ternary dispatch that conditioned on
+      "wrapping 3VL absorber present".
+    All three shared F1's fast-vs-boxed dispatch complexity.  The
+    revised plan collapses them into a single slice that drops the
+    dispatch in favour of one uniform code path.
 
-No sub-slice blocks another; F2 and F3 both consume the F1 ABI, F4
-is independent.  F1 ships first because it is the largest
-structural change and has the longest test row.
+## Revised plan — uniform boxed ABI (agreed 2026-04-20)
+
+**Goal: conformance first, most of the performance.**  Keeping the
+scalar fast path alongside a boxed slow path means every op has two
+shapes, a predicate (`HasNonOkProducer`) picking between them, and
+parallel runtime helpers.  F1 shipped with this dual-path, but F2 /
+F3 / F4 each add another round of the same complexity.  The revised
+plan collapses F2–F4 into one slice that drops the scalar fast path
+for intermediate non-absorbing ops and keeps everything on the
+CelValue-offset ABI end-to-end.  The resulting codegen is a single
+code path; conformance falls out; perf is "most of" the scalar
+path's because (a) the runtime helpers still do raw `i64.add` /
+`i64.lt_s` / etc. *inside* the boxed wrapper, and (b) the envelope
+allocation is a bump-pointer into a per-eval arena, not a heap
+alloc.
+
+### Scope — "Slice F-uniform" (supersedes F2 / F3 / F4)
+
+All intermediate non-absorbing ops travel as CelValue offsets.  The
+Reprs `kInt`, `kUint`, `kDouble` change from "raw i64 / f64 wasm
+value" to "arena-relative CelValue offset" — matching what
+`kBool`, `kString`, `kBytes`, `kMessage` already do today (Slice C
+3b2).  Concrete changes:
+
+1. **Scalar param boxing** (mirroring the bool case from Slice C
+   3b2).  Int / uint / double params on `$eval` still arrive as raw
+   i64 / f64 per the host ABI contract, but at function entry
+   codegen emits
+   `local.set $boxed (call cel_make_{int,uint,double} (local.get
+   $raw_param))` for each scalar param and rebinds the ident name
+   to `$boxed`.  Subsequent ident reads land on the CelValue
+   offset.  Zero host ABI change.
+2. **Always-boxed comparison.**  Drop the
+   `HasNonOkProducer`-gated dispatch in `LowerBinaryCall`.  Every
+   `==`/`!=`/`<`/`<=`/`>`/`>=` lowers through `LowerBoxedComparison`
+   (F1's helpers).  The `BinaryenEqInt64` / `BinaryenLtSInt64` /
+   etc. emitters go away.  Bool equality on raw i32 goes away too
+   (use `cel_cmp_bool_eq`/`_ne`).
+3. **Always-boxed arithmetic.**  `+`/`-`/`*`/`/`/`%`/unary-`-`
+   lower to a CelValue-offset-in, CelValue-offset-out helper.  Add
+   `cel_int_add_at_vv(out, a_off, b_off)` and siblings.  Each helper
+   (a) short-circuits on `cel_status_either(a, b)` — writing the
+   dominant non-OK into the sret slot — and (b) falls through to
+   the existing scalar overflow check on raw payload loads.  Result
+   Repr becomes CelValue offset, so
+   `EmitCheckedArithmetic`'s kind-check-and-early-return disappears
+   — the scratch offset flows upward like every other boxed value.
+4. **Select-of-scalar becomes non-early-returning.**  Drop
+   `EmitSretEarlyReturnIfNonOk` in `LowerSelectField`.  Scalar
+   payload load (`LoadSelectPayload`) is removed: the select's
+   result is already a CelValue offset.  The existing select path
+   for bool / string / bytes / message already returns the scratch
+   offset, so this collapses to one branch.
+5. **Simplified ternary.**  `LowerConditional` just reads cond's
+   kind byte: if `kind >= CEL_UNKNOWN`,
+   `cel_copy_celvalue_at($sret, $cond); return;` (same as today);
+   if OK, `cel_bool_from_value → BinaryenIf` to pick an arm.  No
+   "am I at eval root?" contextual logic — the wrapping absorber
+   either sees the CelValue or doesn't, and F1's machinery already
+   passes it through comparison / `cel_and` / `cel_or`.  Rows 7,
+   8, 19 resolve.
+6. **String / bytes / size absorb non-OK.**  `cel_string_eq`,
+   `cel_bytes_eq`, `cel_string_concat`, `cel_bytes_concat`,
+   `cel_string_starts_with` / `_ends_with` / `_contains`,
+   `cel_string_size`, `cel_bytes_size` — each prefixed with a
+   `cel_status_either` check that short-circuits to the dominant
+   non-OK.  Return types shift from raw `i32` / `i64` bool-or-length
+   to CelValue offsets.  Rows 14 / 15 / 16 / 17 / 21 resolve.
+7. **Message equality absorption.**  `cel_host.message_eq` stays
+   2-arg externref (pure host-side compare), but the caller-side
+   wrapper `cel_wrap_message_eq_result` checks the two `msg_slot`
+   offsets for UNKNOWN / ERROR kind before invoking the host.  Row
+   14 resolves.
+
+### Runtime dead-code sweep (mandatory in the same slice)
+
+Once the scalar fast path is gone from codegen, a pile of runtime
+helpers lose their last caller.  **The slice is not done until they
+are deleted and `cel_runtime.{c,h}` and `cel_runtime_test.cc` are
+scrubbed of their references.**  Candidates to enumerate during
+implementation (audit all exported `cel_*` symbols against
+`expr_lower.cc` emission sites):
+
+  - `cel_bool_from_value` — was used by the scalar bool path.  If
+    the only surviving caller is the ternary cond unbox, keep it;
+    otherwise delete.
+  - `cel_int_add_at_ii` / `_sub_at_ii` / `_mul_at_ii` / `_div_at_ii`
+    / `_mod_at_ii` / `_neg_at_i` and the `_at_uu` uint siblings —
+    superseded by `_at_vv` variants.  Delete the scalar-arg forms
+    if no caller remains.
+  - `cel_set_error_at` / `cel_copy_celvalue_at` — may still be used
+    by the sret root copy; audit.
+  - `cel_box_int` / `cel_box_uint` / `cel_box_double` — only used
+    by F1's stopgap literal-box path; probably deletable once
+    step 1 (scalar param boxing) lands and literals go through
+    `cel_make_int` / `_uint` / `_double` directly.
+  - Any helper introduced for the F1 dual-path that the uniform
+    path subsumes (`LowerCheckedArithBoxed` in codegen — delete;
+    `LowerExprBoxed` — merges with `LowerExpr` once scalar-repr
+    callers are gone).
+  - Corresponding unit tests in `cel_runtime_test.cc`: remove the
+    tests for deleted helpers; keep (and extend) the tests for
+    helpers whose contract grew a 3VL absorption arm.
+
+Record the deletions in the commit message so the diff reviewer
+sees "dead code after dispatch collapse" and not a drive-by.
+
+### Implementation order (incremental, each step testable)
+
+1. Auto-box int / uint / double `$eval` params at function entry.
+   Update ident resolution to return CelValue offsets.  Introduce
+   `UnboxInt` / `UnboxUint` / `UnboxDouble` helpers in codegen and
+   route every existing scalar consumer through them — this is a
+   no-op transform at runtime (box-then-unbox) but moves the source
+   of truth to the boxed form.  All tests continue to pass.
+2. Add `cel_int_add_at_vv` and siblings (boxed-in, boxed-out).
+   Route arithmetic through them; drop
+   `EmitCheckedArithmetic`'s kind-check-early-return.  Change arith
+   Repr to CelValue offset.  Flip rows 4, 18, 22.
+3. Always-boxed comparison: drop the `HasNonOkProducer` gate in
+   `LowerBinaryCall`; keep F1's boxed helpers as the only path for
+   scalar-kind compares.  Covers the existing F1 rows plus row 6
+   (NaN-compare on plain ident) as a bonus.
+4. Upgrade string / bytes / size helpers to absorb non-OK and
+   return CelValue offsets.  Flip rows 15, 16, 17, 21.
+5. Upgrade message equality wrapper (caller-side absorption).  Flip
+   row 14.
+6. Simplify ternary: drop any "at eval root?" contextual logic.
+   Flip rows 7, 8, 19.
+7. Dead-code sweep: delete unreferenced runtime helpers + scalar-
+   path codegen emitters.  Update `cel_runtime_test.cc`.  No
+   `// NOLINT` around now-unused declarations — delete them.
+8. Doc sweep: update §10.2 / §10.2.2 in the design doc to describe
+   the uniform ABI as the single path, not "fast + slow".  Update
+   the testing-checklist row for Slice F to tick all 22 rows (or
+   the subset that stays in scope for conformance).
+
+No sub-step blocks another in principle, but step 1 is a
+prerequisite for 2 / 3 to have anywhere to lower idents from.  Each
+step ships tests; no step ships DISABLED_ shells for the next.
 
 ## F1 — shipped 2026-04-20
 

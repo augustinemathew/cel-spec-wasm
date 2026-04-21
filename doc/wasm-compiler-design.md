@@ -1303,29 +1303,49 @@ against Slice B/C on the code shapes M2 / M3 tests exercise.
 
 **What F1 unblocks.**  ERROR-source rows 1, 2, 3, 5 (see
 `m4-slice-f-3vl-absorption.md`) and UNKNOWN-source rows 9, 10, 11,
-12, 13, 20 — all live as regression tests in `eval_test.cc`.  The
-remaining rows wait for:
+12, 13, 20 — all live as regression tests in `eval_test.cc`.
 
-  - **F2 (arithmetic slow path).**  F1 boxes the comparison's
-    operands, but `LowerCheckedArithBoxed` still lowers its own
-    operands through the scalar `LowerExpr`.  So `((1/0) + 1) == 0
-    || true` (row 4), `(msg.int_field + 1) == 0 || true` (row 18),
-    and `(msg.int_field + (1/0)) == 0 || true` (row 22) still
-    early-return on the inner `1/0` / field read.  F2 will recurse
-    through `LowerExprBoxed` for arith operands and add
-    CelValue-offset checked-arith helpers.
-  - **F3 (string / bytes / size).**  `cel_string_eq` / `_starts_with`
-    / `_ends_with` / `_contains` / `_matches` and `cel_string_size` /
-    `cel_bytes_size` still take raw offsets and produce raw i32
-    bools — they don't absorb UNKNOWN / ERROR.  Rows 14 (message
-    equality), 15 (string eq), 16 / 17, 21 (size) depend on F3.
-  - **F4 (ternary dispatch).**  `?:` still early-returns on
-    non-OK cond regardless of whether it's at eval root or under an
-    absorber (rows 6, 7, 8, 19).
-  - The `has_field` i32-return widening noted in §8.2 remains open;
-    F1 did not touch it because `has(…)` today always returns a
-    definite 0/1 (the host UNKNOWN path short-circuits at
-    `get_field`, not `has_field`).
+**Follow-on — uniform boxed ABI (supersedes F2 / F3 / F4).**  F1
+shipped with a `HasNonOkProducer`-gated dispatch: every comparison
+has a scalar fast path and a boxed slow path, with a predicate
+picking between them.  F2 / F3 / F4 would each replicate that
+dual-path for arithmetic, string / bytes / size, and ternary — four
+slices of similar complexity.  The revised plan collapses F2 / F3
+/ F4 into a single slice that **drops the scalar fast path** and
+keeps every intermediate non-absorbing op on the CelValue-offset
+ABI end-to-end.  Concretely: scalar Reprs (`kInt`, `kUint`,
+`kDouble`) change from "raw i64 / f64" to "CelValue offset" (like
+`kBool` already does since Slice C 3b2); `$eval` params auto-box at
+function entry; arithmetic grows `_at_vv` variants;
+`HasNonOkProducer` / `LowerExprBoxed` / `LowerCheckedArithBoxed`
+disappear; `EmitSretEarlyReturnIfNonOk` in select disappears;
+ternary loses its "at eval root?" context check.  String / bytes /
+size helpers absorb non-OK via `cel_status_either` and return
+CelValue offsets.  All 22 rows in the Slice F checklist resolve
+together.
+
+Perf cost: inner arithmetic still does raw `i64.add` / overflow
+checks inside the boxed helper; the overhead is one
+arena-bump-allocated 24-byte envelope per intermediate CelValue.
+The arena is per-eval and reset en masse by `cel_reset`.  The
+scalar fast path may return later as a checker-driven optimization
+pass once conformance is green, but the primary code path is the
+uniform boxed one.
+
+**Runtime dead-code sweep is mandatory in the same slice.**  Once
+the scalar path is gone, `cel_int_add_at_ii` / `_at_uu`
+/ `_neg_at_i`, `cel_box_int` / `_box_uint` / `_box_double`,
+`cel_bool_from_value` (if unused outside ternary), and any other
+helper with no surviving caller are deleted.  Tests for deleted
+helpers come out of `cel_runtime_test.cc`.  The same-commit diff
+must reflect the dead-code removal; no `// NOLINT` over stale
+declarations.  Full tracking in the "Revised plan — uniform boxed
+ABI" section of `m4-slice-f-3vl-absorption.md`.
+
+**`has_field` widening** noted in §8.2 remains open; F1 did not
+touch it and the uniform boxed plan does not either — `has(…)`
+today always returns a definite 0/1 (the host UNKNOWN path
+short-circuits at `get_field`, not `has_field`).
 
 ### 10.3 Comprehension lowering and scope management
 
