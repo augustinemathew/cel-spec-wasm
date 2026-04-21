@@ -1235,11 +1235,97 @@ or CEL_ERROR), `LowerConditional` emits
 propagates as the eval result — same sret early-exit shape the
 checked-arithmetic and NaN-compare helpers use.  On the OK path it
 unboxes through `cel_bool_from_value(offset) → i32` and dispatches
-to the then / else arms via `BinaryenIf`.  End-to-end coverage of
-the 3VL path is deferred until Slice E2 introduces the first
-non-early-returning UNKNOWN producer (host `is_unknown`); until
-then the path is covered by codegen-shape assertions in
-`expr_lower_test::Conditional`.
+to the then / else arms via `BinaryenIf`.  E2a.1 shipped the
+UNKNOWN producer (AttributePattern-driven `cel_host.get_field`);
+end-to-end coverage of the "ternary under an absorber" case waits
+on Slice F4, which changes `LowerConditional` to copy a non-OK cond
+into its sret slot instead of early-returning from `$eval` when the
+ternary is not at eval root (rows 6, 7, 8, 19 in
+`m4-slice-f-3vl-absorption.md`).  Until F4, the path is covered by
+codegen-shape assertions in `expr_lower_test::Conditional`.
+
+### 10.2.2 Boxed comparison ABI (Slice F1, shipped 2026-04-20)
+
+`$eval`'s early-return-on-non-OK behaviour (Slice C arithmetic +
+Slice E2a.1 select-of-scalar) short-circuits past any wrapping 3VL
+absorber, which breaks CEL's spec rule that
+`ERROR || OK(true) → OK(true)` and `UNKNOWN || OK(true) → OK(true)`.
+Slice F1 closes that gap for direct comparisons: when either
+operand's subtree can leave a non-OK CelValue in a scratch slot,
+codegen switches the comparison from the scalar fast path
+(`BinaryenEqInt64`, `BinaryenLtSInt64`, …) to a **boxed path** that
+takes CelValue offsets on both sides and lets the runtime absorb.
+
+```c
+// Every helper: CelValue-offset inputs → CelValue-offset result.
+// On any non-OK input, returns cel_status_either(a, b) — the
+// dominant ERROR/UNKNOWN — without early-returning from $eval.
+uint32_t cel_cmp_int_eq   (uint32_t a, uint32_t b);  // also _ne/_lt/_le/_gt/_ge
+uint32_t cel_cmp_uint_eq  (uint32_t a, uint32_t b);  // …
+uint32_t cel_cmp_double_eq(uint32_t a, uint32_t b);  // ordered variants
+                                                     // also mint
+                                                     // CEL_ERR_TYPE_MISMATCH
+                                                     // on NaN.
+uint32_t cel_cmp_bool_eq  (uint32_t a, uint32_t b);  // _eq / _ne only
+```
+
+Path selection is a conservative AST predicate:
+
+```cpp
+// True iff expr's subtree can produce UNKNOWN / ERROR:
+//   - SelectExpr (field reads UNKNOWN via partial-eval, ERROR via
+//     descriptor errors).
+//   - Checked-arithmetic CallExpr (overflow / div0 / mod0).
+//   - Ordered-double compare (NaN).
+bool HasNonOkProducer(const cel::Expr& expr);
+```
+
+When `HasNonOkProducer(lhs) || HasNonOkProducer(rhs)` holds,
+`LowerBinaryCall` routes through `LowerBoxedComparison`:
+
+```
+LowerExprBoxed(lhs)   // returns a CelValue offset regardless of Repr
+LowerExprBoxed(rhs)
+call cel_cmp_<kind>_<op>(lhs_off, rhs_off) → result_off
+```
+
+`LowerExprBoxed` is a parallel lowering that keeps every scalar in
+its boxed form: Select-of-scalar goes through
+`LowerSelectFieldBoxed` (same `get_field` machinery, no
+`LoadSelectPayload`, no `EmitSretEarlyReturnIfNonOk`); checked arith
+goes through `LowerCheckedArithBoxed` (same `cel_int_add_at_ii`
+machinery, no kind-check-and-early-return); ident / constant falls
+back to `cel_make_int / _uint / _double` on the raw scalar.
+
+Definite-both-sides expressions (the checker has proved both
+subtrees OK) stay on the scalar fast path — F1 is zero-overhead
+against Slice B/C on the code shapes M2 / M3 tests exercise.
+
+**What F1 unblocks.**  ERROR-source rows 1, 2, 3, 5 (see
+`m4-slice-f-3vl-absorption.md`) and UNKNOWN-source rows 9, 10, 11,
+12, 13, 20 — all live as regression tests in `eval_test.cc`.  The
+remaining rows wait for:
+
+  - **F2 (arithmetic slow path).**  F1 boxes the comparison's
+    operands, but `LowerCheckedArithBoxed` still lowers its own
+    operands through the scalar `LowerExpr`.  So `((1/0) + 1) == 0
+    || true` (row 4), `(msg.int_field + 1) == 0 || true` (row 18),
+    and `(msg.int_field + (1/0)) == 0 || true` (row 22) still
+    early-return on the inner `1/0` / field read.  F2 will recurse
+    through `LowerExprBoxed` for arith operands and add
+    CelValue-offset checked-arith helpers.
+  - **F3 (string / bytes / size).**  `cel_string_eq` / `_starts_with`
+    / `_ends_with` / `_contains` / `_matches` and `cel_string_size` /
+    `cel_bytes_size` still take raw offsets and produce raw i32
+    bools — they don't absorb UNKNOWN / ERROR.  Rows 14 (message
+    equality), 15 (string eq), 16 / 17, 21 (size) depend on F3.
+  - **F4 (ternary dispatch).**  `?:` still early-returns on
+    non-OK cond regardless of whether it's at eval root or under an
+    absorber (rows 6, 7, 8, 19).
+  - The `has_field` i32-return widening noted in §8.2 remains open;
+    F1 did not touch it because `has(…)` today always returns a
+    definite 0/1 (the host UNKNOWN path short-circuits at
+    `get_field`, not `has_field`).
 
 ### 10.3 Comprehension lowering and scope management
 
