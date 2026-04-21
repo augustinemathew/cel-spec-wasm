@@ -667,10 +667,18 @@ expression from `m1-type-checker.md`, plus:
       early-returning from `$eval`; rows 4, 18, 22 enabled
       (`ThreeValuedAbsorptionErrorArithThenCompareAbsorbed`,
       `UnknownThroughArithThenCompareAbsorbed`,
-      `UnknownAndErrorInArithSubtreeErrorDominates`).  Remaining
-      DISABLED shells: rows 6 / 8 (always-boxed compare — step 3),
-      14 / 15 / 16 / 17 / 21 (string / bytes / size / msg-eq
-      absorption — steps 4–5), 7 / 19 (ternary simplify — step 6).
+      `UnknownAndErrorInArithSubtreeErrorDominates`).
+      **Uniform-boxed Step 3 shipped 2026-04-20**: dropped the
+      `HasNonOkProducer` gate; every scalar / bool comparison now
+      goes through `LowerBoxedComparison`, and the scalar-compare
+      emitters (`ScalarEqualityOp`, `OrderedIntOp`/`Uint`/`Double`/
+      `CompareOp`, `LowerDoubleOrderedCompare`, `UnboxBool`) are
+      deleted — NaN-in-ordered-compare → ERROR is now handled in
+      the runtime by `cel_cmp_double_{lt,le,gt,ge}`.  Row 6 enabled
+      (`ThreeValuedAbsorptionNaNCompareAbsorbed`).  Remaining
+      DISABLED shells: row 8 (ternary result — step 6), 14 / 15 /
+      16 / 17 / 21 (string / bytes / size / msg-eq absorption —
+      steps 4–5), 7 / 19 (ternary simplify — step 6).
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

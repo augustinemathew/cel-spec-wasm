@@ -239,10 +239,27 @@ sees "dead code after dispatch collapse" and not a drive-by.
    scalar `_at_ii` / `_at_uu` helpers remain reachable via the
    wrappers; their direct call sites from codegen go away when
    step 7 lands.
-3. Always-boxed comparison: drop the `HasNonOkProducer` gate in
-   `LowerBinaryCall`; keep F1's boxed helpers as the only path for
-   scalar-kind compares.  Covers the existing F1 rows plus row 6
-   (NaN-compare on plain ident) as a bonus.
+3. **[shipped 2026-04-20]** Always-boxed comparison.  Dropped the
+   `HasNonOkProducer` gate in `LowerBinaryCall`; every scalar / bool
+   `==`/`!=`/`<`/`<=`/`>`/`>=` now lowers through
+   `LowerBoxedComparison` → `cel_cmp_<kind>_<op>`.  Deleted
+   now-unreachable scalar-compare machinery: `HasNonOkProducer`,
+   `ScalarEqualityOp`, `OrderedIntOp` / `OrderedUintOp` /
+   `OrderedDoubleOp` / `OrderedCompareOp`, `LowerDoubleOrderedCompare`
+   (the codegen NaN-guard block — runtime `cel_cmp_double_{lt,le,
+   gt,ge}` already produces `CEL_ERROR{TYPE_MISMATCH}` on NaN per
+   spec), `UnboxBool` (no remaining callers — `LowerConditional` uses
+   `cel_bool_from_value` directly), and the `kCelErrTypeMismatch`
+   codegen constant.  `LowerComparison` is now string / bytes /
+   message eq/ne only (steps 4 / 5 will move those too).  Flipped
+   DISABLED_ row 6 (`ThreeValuedAbsorptionNaNCompareAbsorbed`).
+   Unit-test updates: `ExprLowerTest.IntComparisonsAreSigned` /
+   `UintComparisonsAreUnsigned` / `DoubleComparisons` replaced with
+   `*DispatchesToBoxedHelper` variants that assert the runtime-helper
+   call shape instead of the removed wasm opcodes.  Scalar arith
+   (`LowerArithmetic`, `LowerCheckedIntArith`, double arith) still
+   lives on the scalar path at the root — step 7 will take a second
+   pass once the whole pipeline is on the uniform ABI.
 4. Upgrade string / bytes / size helpers to absorb non-OK and
    return CelValue offsets.  Flip rows 15, 16, 17, 21.
 5. Upgrade message equality wrapper (caller-side absorption).  Flip

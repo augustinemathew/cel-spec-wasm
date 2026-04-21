@@ -204,49 +204,48 @@ TEST(ExprLowerTest, LogicalNot) {
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
 }
 
-TEST(ExprLowerTest, IntComparisonsAreSigned) {
+TEST(ExprLowerTest, IntComparisonDispatchesToBoxedHelper) {
+  // Uniform-boxed ABI (Step 3): every scalar comparison lowers to the
+  // 3VL-aware `cel_cmp_<kind>_<op>` helper, never to a raw wasm
+  // compare opcode.  The helper itself is signed-aware for int
+  // (matches the runtime implementation in cel_runtime.c); the shape
+  // contract here is "codegen took the boxed dispatch" + the right
+  // helper name.
   auto L = LowerOk("1 < 2");
   EXPECT_EQ(L.fn.result_repr, Repr::kBool);
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenLtSInt64());
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_cmp_int_lt");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
-TEST(ExprLowerTest, UintComparisonsAreUnsigned) {
+TEST(ExprLowerTest, UintComparisonDispatchesToBoxedHelper) {
   auto L = LowerOk("1u < 2u");
+  EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(body), BinaryenLtUInt64());
-  EXPECT_THAT(L.mod.Validate(), IsOk());
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_cmp_uint_lt");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
-TEST(ExprLowerTest, DoubleComparisons) {
+TEST(ExprLowerTest, DoubleComparisonDispatchesToBoxedHelper) {
+  // NaN-in-ordered-compare → CEL_ERROR is now a runtime responsibility
+  // (`cel_cmp_double_le` in cel_runtime.c); codegen no longer emits a
+  // NaN-guard block.  The shape is the same single-helper Call as
+  // int / uint.
   auto L = LowerOk("1.0 <= 2.0");
+  EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  // Double ordered-compare is a 4-child Block[set_a, set_b, if(any_nan)
-  // cel_set_error+return, cel_make_bool(Binary(op, a, b))].  Peeled off
-  // the sret copy wrap, we see the block; the last child wraps the raw
-  // compare through `cel_make_bool` because Repr::kBool is a CelValue
-  // offset (M4 Slice C / 3b2).
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
-  const BinaryenIndex n = BinaryenBlockGetNumChildren(body);
-  ASSERT_EQ(n, 4u);
-  BinaryenExpressionRef trap_if = BinaryenBlockGetChildAt(body, 2);
-  EXPECT_EQ(BinaryenExpressionGetId(trap_if), BinaryenIfId());
-  BinaryenExpressionRef boxed = BinaryenBlockGetChildAt(body, 3);
-  ASSERT_EQ(BinaryenExpressionGetId(boxed), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(boxed), "cel_make_bool");
-  BinaryenExpressionRef cmp = BinaryenCallGetOperandAt(boxed, 0);
-  ASSERT_EQ(BinaryenExpressionGetId(cmp), BinaryenBinaryId());
-  EXPECT_EQ(BinaryenBinaryGetOp(cmp), BinaryenLeFloat64());
-  EXPECT_THAT(L.mod.Validate(), IsOk());
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_cmp_double_le");
+  EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
 TEST(ExprLowerTest, EqualityAcrossScalarReprs) {

@@ -503,9 +503,11 @@ TEST(EvalE2ETest, ThreeValuedAbsorptionOverflowAbsorbed) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionNaNCompareAbsorbed) {
-  // Row 6: (NaN < 1.0) || true → true.  NaN-compare ERROR (3b1)
-  // absorbed by `||` past the literal `true`.
+TEST(EvalE2ETest, ThreeValuedAbsorptionNaNCompareAbsorbed) {
+  // Row 6: (NaN < 1.0) || true → true.  NaN-in-ordered-compare is
+  // surfaced as CEL_ERROR by `cel_cmp_double_lt` in the runtime, and
+  // the wrapping `||` absorbs past the literal `true`.  Uniform
+  // boxed path — no `HasNonOkProducer` gate.
   auto r = EvaluateWithVars("(x < 1.0) || true", {"x:double"},
                             {F64(std::numeric_limits<double>::quiet_NaN())});
   ASSERT_THAT(r.status(), IsOk());

@@ -480,7 +480,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerSpanLiteral(
 }
 
 // Forward declarations for the scalar-unbox helpers (definitions live
-// below, next to `UnboxBool`).  `LowerIdent` calls these to unbox
+// below, next to `BoxBool`).  `LowerIdent` calls these to unbox
 // auto-boxed int / uint / double params back to raw wasm scalars.
 BinaryenExpressionRef UnboxInt(BinaryenModuleRef m,
                                BinaryenExpressionRef boxed);
@@ -519,11 +519,10 @@ absl::StatusOr<BinaryenExpressionRef> LowerIdent(LoweringContext& ctx,
   }
   BinaryenModuleRef m = ctx.mod.raw();
   // Bool ident reads are already i32 offsets post-3b2 — `LowerIdent`
-  // returns the boxed offset directly and the `_!_` / `_?_:_` /
-  // short-circuit sites call `UnboxBool` where they need raw truth.
-  // The other three scalar reprs unbox inline so existing consumers
-  // (arithmetic, compare opcodes, payload.i loads) continue to see
-  // raw wasm scalars.
+  // returns the boxed offset directly and the `_?_:_` site calls
+  // `cel_bool_from_value` where it needs raw truth.  The other three
+  // scalar reprs unbox inline so existing consumers (arithmetic,
+  // payload.i loads) continue to see raw wasm scalars.
   switch (*repr) {
     case Repr::kInt:
       return UnboxInt(m, BinaryenLocalGet(m, it->second, BinaryenTypeInt32()));
@@ -575,11 +574,6 @@ absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
 // CEL_ERROR kind tag.  Keep in sync with `CelKind` in cel_runtime.h.
 // Used by the checked-arithmetic unbox path to recognise an ERROR box.
 constexpr int32_t kCelErrorKind = 15;
-
-// Matches the `CEL_ERR_TYPE_MISMATCH` enumerator in
-// compiler/runtime/cel_runtime.h — codegen emits the literal because
-// we cannot `#include` the runtime header from C++.
-constexpr int32_t kCelErrTypeMismatch = 13;
 
 // Wraps a sret checked-arithmetic helper call so the overall
 // expression has the same i64-returning shape as native wasm
@@ -771,37 +765,10 @@ absl::StatusOr<BinaryenExpressionRef> LowerArithmetic(absl::string_view name,
   return UnimplementedRepr(name, r, 0);
 }
 
-// Scalar `_==_` / `_!=_` opcode for int / uint / double.  Bool
-// operands are CelValue offsets (M4 Slice C / 3b2), so their
-// equality lowers separately via `UnboxBool` + an i32 compare.  Span
-// and message cases are runtime calls handled by their own helpers.
-absl::StatusOr<BinaryenOp> ScalarEqualityOp(absl::string_view name,
-                                            Repr arg_r) {
-  const bool eq = (name == op::CelOperator::EQUALS);
-  switch (arg_r) {
-    case Repr::kInt:
-    case Repr::kUint:
-      return eq ? BinaryenEqInt64() : BinaryenNeInt64();
-    case Repr::kDouble:
-      return eq ? BinaryenEqFloat64() : BinaryenNeFloat64();
-    default:
-      return UnimplementedRepr(name, arg_r, 0);
-  }
-}
-
-// Unboxes a Repr::kBool CelValue offset to a raw i32 0/1 via
-// `cel_bool_from_value`.  Used wherever the bool's truth value must
-// flow into a wasm i32 condition (BinaryenIf, EqZ, etc.) or an i32
-// compare opcode (`_==_` / `_!=_` on bool operands).
-BinaryenExpressionRef UnboxBool(BinaryenModuleRef m,
-                                BinaryenExpressionRef boxed) {
-  return BinaryenCall(m, "cel_bool_from_value", &boxed, 1, BinaryenTypeInt32());
-}
-
-// Boxes a raw wasm i32 0/1 back into a Repr::kBool CelValue offset via
-// `cel_make_bool`.  Paired with UnboxBool at the boundaries where a
-// bool-returning wasm opcode or runtime helper produces a raw i32 and
-// the result position demands the boxed ABI.
+// Boxes a raw wasm i32 0/1 into a Repr::kBool CelValue offset via
+// `cel_make_bool`.  String / bytes / message equality helpers return
+// a raw i32 and wrap through this before handing control back to the
+// boxed-ABI surface.
 BinaryenExpressionRef BoxBool(BinaryenModuleRef m, BinaryenExpressionRef raw) {
   return BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
 }
@@ -825,48 +792,6 @@ BinaryenExpressionRef UnboxDouble(BinaryenModuleRef m,
                                   BinaryenExpressionRef boxed) {
   return BinaryenCall(m, "cel_double_from_value", &boxed, 1,
                       BinaryenTypeFloat64());
-}
-
-// Ordered-compare opcode for int64 operands.
-absl::StatusOr<BinaryenOp> OrderedIntOp(absl::string_view name) {
-  if (name == op::CelOperator::LESS) return BinaryenLtSInt64();
-  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeSInt64();
-  if (name == op::CelOperator::GREATER) return BinaryenGtSInt64();
-  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeSInt64();
-  return absl::InternalError(
-      absl::StrCat("OrderedIntOp: not an ordered op: `", name, "`"));
-}
-
-absl::StatusOr<BinaryenOp> OrderedUintOp(absl::string_view name) {
-  if (name == op::CelOperator::LESS) return BinaryenLtUInt64();
-  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeUInt64();
-  if (name == op::CelOperator::GREATER) return BinaryenGtUInt64();
-  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeUInt64();
-  return absl::InternalError(
-      absl::StrCat("OrderedUintOp: not an ordered op: `", name, "`"));
-}
-
-absl::StatusOr<BinaryenOp> OrderedDoubleOp(absl::string_view name) {
-  if (name == op::CelOperator::LESS) return BinaryenLtFloat64();
-  if (name == op::CelOperator::LESS_EQUALS) return BinaryenLeFloat64();
-  if (name == op::CelOperator::GREATER) return BinaryenGtFloat64();
-  if (name == op::CelOperator::GREATER_EQUALS) return BinaryenGeFloat64();
-  return absl::InternalError(
-      absl::StrCat("OrderedDoubleOp: not an ordered op: `", name, "`"));
-}
-
-absl::StatusOr<BinaryenOp> OrderedCompareOp(absl::string_view name,
-                                            Repr arg_r) {
-  switch (arg_r) {
-    case Repr::kInt:
-      return OrderedIntOp(name);
-    case Repr::kUint:
-      return OrderedUintOp(name);
-    case Repr::kDouble:
-      return OrderedDoubleOp(name);
-    default:
-      return UnimplementedRepr(name, arg_r, 0);
-  }
 }
 
 // String / bytes equality can't be a single opcode — both operands
@@ -906,91 +831,25 @@ BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
   return BoxBool(m, raw);
 }
 
-// Ordered double compare with NaN-ERROR guard (M4 Slice D + C/3b1).
-// IEEE 754 defines `NaN < x`, `NaN <= x`, `NaN > x`, `NaN >= x` as
-// all false (unordered), but CEL §langdef requires NaN-in-ordered-
-// compare to produce ERROR rather than a bogus `false`.  When either
-// operand is NaN, we write CEL_ERR_TYPE_MISMATCH into the eval sret
-// slot and return from the eval function — the host decodes the slot
-// and surfaces an observable error.
-//
-// NaN detection uses `x != x`, which IEEE 754 defines as true iff
-// x is NaN (NaN is the only value that compares unequal to itself).
-BinaryenExpressionRef LowerDoubleOrderedCompare(LoweringContext& ctx,
-                                                BinaryenOp op,
-                                                BinaryenExpressionRef lhs,
-                                                BinaryenExpressionRef rhs) {
-  BinaryenModuleRef m = ctx.mod.raw();
-  const BinaryenIndex la = ctx.AddLocal(BinaryenTypeFloat64());
-  const BinaryenIndex lb = ctx.AddLocal(BinaryenTypeFloat64());
-  auto get_a = [&]() {
-    return BinaryenLocalGet(m, la, BinaryenTypeFloat64());
-  };
-  auto get_b = [&]() {
-    return BinaryenLocalGet(m, lb, BinaryenTypeFloat64());
-  };
-  BinaryenExpressionRef set_a = BinaryenLocalSet(m, la, lhs);
-  BinaryenExpressionRef set_b = BinaryenLocalSet(m, lb, rhs);
-  BinaryenExpressionRef a_is_nan =
-      BinaryenBinary(m, BinaryenNeFloat64(), get_a(), get_a());
-  BinaryenExpressionRef b_is_nan =
-      BinaryenBinary(m, BinaryenNeFloat64(), get_b(), get_b());
-  BinaryenExpressionRef any_nan =
-      BinaryenBinary(m, BinaryenOrInt32(), a_is_nan, b_is_nan);
-  BinaryenExpressionRef set_err_args[2] = {
-      BinaryenLocalGet(m, LoweringContext::kOutSlotParam, BinaryenTypeInt32()),
-      BinaryenConst(m, BinaryenLiteralInt32(kCelErrTypeMismatch)),
-  };
-  BinaryenExpressionRef set_err =
-      BinaryenCall(m, "cel_set_error_at", set_err_args, 2, BinaryenTypeNone());
-  BinaryenExpressionRef ret = BinaryenReturn(m, /*value=*/nullptr);
-  BinaryenExpressionRef err_children[2] = {set_err, ret};
-  BinaryenExpressionRef err_block = BinaryenBlock(
-      m, /*name=*/nullptr, err_children, /*numChildren=*/2, BinaryenTypeNone());
-  BinaryenExpressionRef err_if =
-      BinaryenIf(m, any_nan, err_block, /*ifFalse=*/nullptr);
-  BinaryenExpressionRef cmp = BinaryenBinary(m, op, get_a(), get_b());
-  BinaryenExpressionRef boxed = BoxBool(m, cmp);
-  BinaryenExpressionRef children[4] = {set_a, set_b, err_if, boxed};
-  return BinaryenBlock(m, /*name=*/nullptr, children,
-                       /*numChildren=*/4, BinaryenTypeInt32());
-}
-
+// String / bytes / message eq/ne fallback.  Scalar and bool compares
+// (int / uint / double / bool, both eq/ne and ordered) are handled
+// upstream in `LowerBinaryCall` via the uniform boxed path through
+// `LowerBoxedComparison` — the checker rules out ordered compare on
+// these Reprs, so only eq/ne reaches here.  Steps 4 / 5 will move
+// these onto CelValue-offset helpers too.
 absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
                                                       Repr arg_r,
                                                       BinaryenExpressionRef lhs,
                                                       BinaryenExpressionRef rhs,
                                                       LoweringContext& ctx) {
   BinaryenModuleRef m = ctx.mod.raw();
-  const bool eq = (name == op::CelOperator::EQUALS);
-  const bool ne = (name == op::CelOperator::NOT_EQUALS);
-  if (eq || ne) {
-    if (arg_r == Repr::kString || arg_r == Repr::kBytes) {
-      return LowerSpanEquality(name, arg_r, lhs, rhs, m);
-    }
-    if (arg_r == Repr::kMessage) {
-      return LowerMessageEquality(name, lhs, rhs, m);
-    }
-    if (arg_r == Repr::kBool) {
-      // Both operands are CelValue offsets — unbox to raw i32 0/1 and
-      // compare.  We don't forward 3VL status through `_==_` / `_!=_`:
-      // the checker already guarantees both sides are kBool, and
-      // CEL equality on a non-bool value is a compile-time error.
-      BinaryenExpressionRef raw =
-          BinaryenBinary(m, eq ? BinaryenEqInt32() : BinaryenNeInt32(),
-                         UnboxBool(m, lhs), UnboxBool(m, rhs));
-      return BoxBool(m, raw);
-    }
-    auto bop = ScalarEqualityOp(name, arg_r);
-    if (!bop.ok()) return bop.status();
-    return BoxBool(m, BinaryenBinary(m, *bop, lhs, rhs));
+  if (arg_r == Repr::kString || arg_r == Repr::kBytes) {
+    return LowerSpanEquality(name, arg_r, lhs, rhs, m);
   }
-  auto bop = OrderedCompareOp(name, arg_r);
-  if (!bop.ok()) return bop.status();
-  if (arg_r == Repr::kDouble) {
-    return LowerDoubleOrderedCompare(ctx, *bop, lhs, rhs);
+  if (arg_r == Repr::kMessage) {
+    return LowerMessageEquality(name, lhs, rhs, m);
   }
-  return BoxBool(m, BinaryenBinary(m, *bop, lhs, rhs));
+  return UnimplementedRepr(name, arg_r, 0);
 }
 
 // ---- Slice F1: 3VL-aware boxed comparison path ---------------------------
@@ -1003,46 +862,6 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
 // as CelValue offsets, then dispatches to `cel_cmp_<kind>_<op>`, which
 // forwards `cel_status_either(a, b)` when either side is non-OK so
 // wrapping `&&` / `||` can apply CEL's absorption rules.
-
-// Conservative predicate: returns true iff `expr`'s subtree may produce
-// a non-OK CelValue at runtime.  Drives the comparison dispatch
-// between the scalar fast path and the boxed slow path.  False
-// positives only lose fast-path coverage — never correctness.
-bool HasNonOkProducer(const cel::Expr& expr) {
-  switch (expr.kind_case()) {
-    case cel::ExprKindCase::kSelectExpr: {
-      // has(...) always returns a definite 0/1 today (M4 Slice F4 will
-      // address the UNKNOWN-inside-has case).  Field reads can surface
-      // CEL_UNKNOWN via partial-eval and CEL_ERROR via a bad descriptor.
-      if (expr.select_expr().test_only()) {
-        return HasNonOkProducer(expr.select_expr().operand());
-      }
-      return true;
-    }
-    case cel::ExprKindCase::kCallExpr: {
-      const cel::CallExpr& c = expr.call_expr();
-      const std::string& fn = c.function();
-      // Checked int/uint arithmetic + any ordered compare: the helper
-      // can write CEL_ERROR into its scratch slot (overflow /
-      // div-by-zero / NaN).  Unary negate is the same story.
-      if (fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
-          fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
-          fn == op::CelOperator::MODULO || fn == op::CelOperator::NEGATE ||
-          fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
-          fn == op::CelOperator::GREATER ||
-          fn == op::CelOperator::GREATER_EQUALS) {
-        return true;
-      }
-      if (c.has_target() && HasNonOkProducer(c.target())) return true;
-      return std::any_of(c.args().begin(), c.args().end(),
-                         [](const cel::Expr& a) {
-                           return HasNonOkProducer(a);
-                         });
-    }
-    default:
-      return false;
-  }
-}
 
 // Bundles the pieces both `LowerSelectField` and `LowerSelectTestOnly`
 // need from the operand side: the lowered operand expression, the
@@ -1248,9 +1067,11 @@ const char* BoxedCmpHelper(absl::string_view op, Repr r) {
 
 // Boxed-operand comparison: both operands arrive as CelValue offsets
 // via `LowerExprBoxed`, and the runtime helper returns a CelValue
-// offset (Repr::kBool or the propagated UNKNOWN / ERROR).  This is
-// the F1 slow-path dispatch; the caller (`LowerBinaryCall`) picks it
-// whenever `HasNonOkProducer` fires on either operand.
+// offset (Repr::kBool or the propagated UNKNOWN / ERROR).  Under the
+// uniform-boxed ABI (Step 3), every scalar / bool comparison lowers
+// through here — there is no scalar fast path.  NaN-in-ordered-
+// compare ERROR propagation is handled by `cel_cmp_double_{lt,le,
+// gt,ge}` in the runtime, not in codegen.
 absl::StatusOr<BinaryenExpressionRef> LowerBoxedComparison(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call,
     absl::string_view fn, Repr arg_r) {
@@ -1491,14 +1312,13 @@ absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
       (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS ||
        fn == op::CelOperator::LESS || fn == op::CelOperator::LESS_EQUALS ||
        fn == op::CelOperator::GREATER || fn == op::CelOperator::GREATER_EQUALS);
-  // F1 boxed path: when either comparison operand's subtree can
-  // produce UNKNOWN / ERROR, box both operands and call the 3VL-aware
-  // `cel_cmp_<kind>_<op>` helper.  Applies only to scalar / bool
-  // Reprs — string / bytes / message comparisons stay on their
-  // existing runtime helpers until F3 covers them.
-  if (is_comparison && BoxedCmpHelper(fn, *arg_r) != nullptr &&
-      (HasNonOkProducer(call.args().at(0)) ||
-       HasNonOkProducer(call.args().at(1)))) {
+  // Uniform-boxed ABI (Step 3): every scalar / bool comparison goes
+  // through `LowerBoxedComparison`, which hands both operands as
+  // CelValue offsets to `cel_cmp_<kind>_<op>`.  The helper forwards
+  // `cel_status_either(a, b)` when either side is UNKNOWN / ERROR, so
+  // wrapping `&&` / `||` / `?:` see the non-OK as a value.  String /
+  // bytes / message eq/ne stay on their own helpers (steps 4 / 5).
+  if (is_comparison && BoxedCmpHelper(fn, *arg_r) != nullptr) {
     return LowerBoxedComparison(ctx, ast, call, fn, *arg_r);
   }
   auto l = LowerExpr(ctx, ast, call.args().at(0));
