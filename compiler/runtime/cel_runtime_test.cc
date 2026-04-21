@@ -1835,5 +1835,55 @@ TEST_F(RuntimeTest, BytesSizeVKindMismatchErrors) {
   EXPECT_EQ(KindOf(r), CEL_ERROR);
 }
 
+// ---- cel_message_eq_prologue_v (Slice F Step 5) -------------------------
+// Only the absorption / kind-check half of message equality is runtime-
+// callable; the actual compare is `cel_host.message_eq` on externrefs.
+// These tests pin the prologue's total-function contract: OK-OK → 0;
+// dominant non-OK (ERROR > UNKNOWN) passes through verbatim; non-message
+// operand becomes a fresh TYPE_MISMATCH error.
+
+TEST_F(RuntimeTest, MessageEqPrologueVBothMessagesReturnsZero) {
+  uint32_t a = cel_make_message(3);
+  uint32_t b = cel_make_message(7);
+  EXPECT_EQ(cel_message_eq_prologue_v(a, b), 0u);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVLeftUnknownAbsorbs) {
+  uint32_t u = cel_make_unknown(4);
+  uint32_t r = cel_message_eq_prologue_v(u, cel_make_message(1));
+  EXPECT_EQ(r, u);
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVRightUnknownAbsorbs) {
+  uint32_t u = cel_make_unknown(5);
+  uint32_t r = cel_message_eq_prologue_v(cel_make_message(2), u);
+  EXPECT_EQ(r, u);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVErrorDominatesUnknown) {
+  uint32_t e = cel_make_error(3, 0, 0);
+  uint32_t r = cel_message_eq_prologue_v(cel_make_unknown(7), e);
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVBothUnknownMerges) {
+  uint32_t r =
+      cel_message_eq_prologue_v(cel_make_unknown(10), cel_make_unknown(20));
+  ASSERT_EQ(KindOf(r), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{10u, 20u}));
+}
+TEST_F(RuntimeTest, MessageEqPrologueVNonMessageLeftErrors) {
+  uint32_t r = cel_message_eq_prologue_v(cel_make_bool(1), cel_make_message(1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVNonMessageRightErrors) {
+  uint32_t r =
+      cel_message_eq_prologue_v(cel_make_message(1), cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, MessageEqPrologueVZeroOffsetErrors) {
+  EXPECT_EQ(KindOf(cel_message_eq_prologue_v(0, cel_make_message(1))),
+            CEL_ERROR);
+  EXPECT_EQ(KindOf(cel_message_eq_prologue_v(cel_make_message(1), 0)),
+            CEL_ERROR);
+}
+
 }  // namespace
 }  // namespace celwasm

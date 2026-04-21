@@ -690,8 +690,30 @@ expression from `m1-type-checker.md`, plus:
       `UnknownThroughSizeThenCompareAbsorbed`).  Runtime: 37 new
       unit tests over happy path, left / right / both absorption,
       ERROR-dominates-UNKNOWN, kind mismatch, and zero-offset.
-      Remaining DISABLED shells: row 14 (message-eq absorption —
-      step 5), rows 7 / 8 / 19 (ternary simplify — step 6).
+      **Uniform-boxed Step 5 shipped 2026-04-20**: message equality
+      now absorbs UNKNOWN / ERROR sub-messages before invoking the
+      host's descriptor-aware `message_eq`.  Added runtime helper
+      `cel_message_eq_prologue_v(a, b)` (0 on OK-OK, dominant non-OK
+      via `cel_status_either` otherwise, TYPE_MISMATCH on non-message
+      kind / zero offset) + codegen `LowerMessageEqualityBoxed` which
+      sets a/b/p locals, emits `BinaryenIf` over the prologue result,
+      and on the OK path calls
+      `cel_make_bool(message_eq(cel_unwrap_message(a),
+      cel_unwrap_message(b)))` (with `i32.eqz` wrap for `_!=_`).
+      `LowerExprBoxed` kMessage branch wraps ident-sourced externrefs
+      via `cel_wrap_message` and routes selects through
+      `LowerSelectFieldBoxed`.  Row 14 enabled
+      (`UnknownThroughMessageEqAbsorbedByOr`) over the
+      `billing_address` sub-message.  Runtime coverage: 8 new tests
+      over happy OK-OK, left-/right-UNKNOWN, both-UNKNOWN-merge,
+      ERROR-dominates-UNKNOWN, non-message left / right, zero offset.
+      Codegen shape tests:
+      `MessageEqualityLowersThroughPrologueAndHostCall` +
+      `MessageInequalityInvertsEqCallOnOkBranch`.  The pre-step-5
+      `LowerMessageEquality` emitter is left in-tree for the step 7
+      sweep (no remaining in-tree callers).
+      Remaining DISABLED shells: rows 7 / 8 / 19 (ternary simplify —
+      step 6).
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

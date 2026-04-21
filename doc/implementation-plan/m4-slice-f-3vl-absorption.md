@@ -298,8 +298,43 @@ sees "dead code after dispatch collapse" and not a drive-by.
    (`cel_string_eq`, `cel_string_concat`, etc.) remain reachable via
    the `_v` wrappers; their direct call sites from codegen go away
    when step 7 lands.
-5. Upgrade message equality wrapper (caller-side absorption).  Flip
-   row 14.
+5. **[shipped 2026-04-20]** Upgrade message equality to absorb
+   non-OK sub-messages.  Added runtime helper
+   `cel_message_eq_prologue_v(uint32_t a, uint32_t b)` that routes
+   through `cel_status_either` on UNKNOWN / ERROR input (dominant
+   non-OK offset returned verbatim) and emits a
+   `CEL_ERROR{TYPE_MISMATCH}` on kind mismatch / zero offset; returns
+   0 when both operands are OK CEL_MESSAGE.  Why a "prologue" and not
+   a full `cel_message_eq_v`: the compare itself is the host-side
+   `cel_host.message_eq` (externref-to-externref, descriptor-aware),
+   which is not callable from the runtime wasm module, so we stop at
+   absorption + kind-check and let codegen compose the host call on
+   the OK path.  Codegen `LowerMessageEqualityBoxed` sets
+   `a_local` / `b_local` / `p_local` from `LowerExprBoxed` + the
+   prologue call, then dispatches a `BinaryenIf` whose non-OK branch
+   returns `p_local` and whose OK branch calls
+   `cel_make_bool(message_eq(cel_unwrap_message(a),
+   cel_unwrap_message(b)))` — with `i32.eqz` wrap before `cel_make_bool`
+   for `_!=_`.  `LowerExprBoxed` now handles kMessage by routing
+   select-sourced operands through `LowerSelectFieldBoxed` (scratch
+   offset) and ident-sourced operands through `cel_wrap_message` on
+   the externref (earlier steps assumed kMessage already travelled
+   boxed, which was only true for the G4 nested-select path).
+   `LowerBinaryCall` routes `_==_` / `_!=_` on Repr::kMessage through
+   the boxed path; the non-absorbing `LowerMessageEquality` is left
+   in place for the step 7 sweep (no remaining in-tree callers).
+   Runtime tests: 8 new tests exercising happy OK-OK, left-UNKNOWN,
+   right-UNKNOWN, both-UNKNOWN-merge, ERROR-dominates-UNKNOWN,
+   non-message left / right, zero offset.  Codegen shape tests:
+   `MessageEqualityLowersThroughPrologueAndHostCall` and
+   `MessageInequalityInvertsEqCallOnOkBranch` assert the prologue
+   import and `message_eq` import are both present post-lowering.
+   E2E: added row 14
+   (`UnknownThroughMessageEqAbsorbedByOr`) over the Customer
+   fixture's `billing_address` sub-message — UNKNOWN pattern on
+   `a.billing_address`, `|| true` absorbs to `true`.  The happy-path
+   `NestedMessageEqualityComposesSelectAndEq` continues to pass
+   under the new lowering.
 6. Simplify ternary: drop any "at eval root?" contextual logic.
    Flip rows 7, 8, 19.
 7. Dead-code sweep: delete unreferenced runtime helpers + scalar-

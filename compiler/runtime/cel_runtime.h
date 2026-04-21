@@ -209,6 +209,30 @@ uint32_t cel_string_contains_v(uint32_t s, uint32_t needle);
 uint32_t cel_string_size_v(uint32_t s);
 uint32_t cel_bytes_size_v(uint32_t b);
 
+// Message-equality prologue (Slice F Step 5).  Codegen emits this
+// before invoking the host's `message_eq(externref, externref)` so
+// UNKNOWN / ERROR message operands surface as a value the wrapping
+// 3VL absorber (`cel_or` / `cel_and` / `cel_cmp_bool_*`) can see:
+//
+//   * OK CEL_MESSAGE both sides → returns 0.  Caller proceeds to
+//     `cel_make_bool(message_eq(cel_unwrap_message(a),
+//                                cel_unwrap_message(b)))` (and
+//     wraps with `cel_not` for `_!=_`).
+//   * Either side UNKNOWN / ERROR → returns the dominant non-OK
+//     offset (`cel_status_either`; ERROR > UNKNOWN) verbatim.
+//   * Either side non-message / zero → returns a freshly boxed
+//     `CEL_ERROR{CEL_ERR_TYPE_MISMATCH}` offset.
+//
+// Why a separate "prologue" rather than a single `cel_message_eq_v`
+// like the string / bytes helpers: `message_eq` is a host-side
+// descriptor-aware compare living in `cel_host`, not reachable from
+// the runtime wasm module.  Splitting the absorption check out into a
+// prologue keeps the host call shape unchanged (still `externref,
+// externref → i32`) while letting codegen short-circuit through the
+// prologue's offset result.  See `LowerMessageEqualityBoxed` in
+// `compiler/codegen/expr_lower.cc`.
+uint32_t cel_message_eq_prologue_v(uint32_t a, uint32_t b);
+
 // ---- Three-valued logic helpers ------------------------------------------
 //
 // Implements CEL's OK / UNKNOWN / ERROR tri-state for the logical

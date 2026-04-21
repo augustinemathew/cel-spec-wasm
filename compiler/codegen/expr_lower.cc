@@ -206,6 +206,9 @@ void DeclareBoxedSpanImports(WasmModule& mod) {
   ImportCel2(mod, "cel_string_contains_v", i32, i32, i32);
   ImportCel1(mod, "cel_string_size_v", i32, i32);
   ImportCel1(mod, "cel_bytes_size_v", i32, i32);
+  // Step 5: message-equality absorption prologue — codegen composes
+  // this with the host's `message_eq` to absorb non-OK message operands.
+  ImportCel2(mod, "cel_message_eq_prologue_v", i32, i32, i32);
 }
 
 // Allocation / span-literal / equality / size / member-call imports.
@@ -849,6 +852,10 @@ BinaryenExpressionRef LowerSpanEquality(absl::string_view name, Repr arg_r,
 // different descriptor origins, and the CEL spec demands the host's
 // descriptor-aware equality.  Delegate to cel_host.message_eq and,
 // for `_!=_`, invert with i32.eqz — same pattern as string/bytes.
+//
+// Superseded by `LowerMessageEqualityBoxed` (Slice F Step 5) for
+// in-tree consumers; kept only until the step 7 sweep removes its
+// last call sites.
 BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
                                            BinaryenExpressionRef lhs,
                                            BinaryenExpressionRef rhs,
@@ -1015,6 +1022,80 @@ absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerSizeCallBoxed(
       BinaryenCall(ctx.mod.raw(), helper, &a, 1, BinaryenTypeInt32()));
 }
 
+// kMessage is the one existing CelValue-tracked Repr that isn't
+// payload_is_offset: `LowerSelectField(kMessage)` does a cel_unwrap
+// load and `LowerIdent(kMessage)` returns the externref param
+// directly.  Boxed consumers want a CelValue offset instead, so
+// route select-sourced messages through the offset-returning
+// `LowerSelectFieldBoxed`; everything else gets wrapped back to an
+// offset via `cel_wrap_message` (externref → CelValue offset).
+absl::StatusOr<BinaryenExpressionRef> LowerMessageBoxed(LoweringContext& ctx,
+                                                        const TypedAst& ast,
+                                                        const cel::Expr& expr) {
+  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr &&
+      !expr.select_expr().test_only()) {
+    return LowerSelectFieldBoxed(ctx, ast, expr);
+  }
+  auto raw = LowerExpr(ctx, ast, expr);
+  if (!raw.ok()) return raw.status();
+  BinaryenExpressionRef arg = *raw;
+  return BinaryenCall(ctx.mod.raw(), "cel_wrap_message", &arg, 1,
+                      BinaryenTypeInt32());
+}
+
+// Literal / ident / pure-expression fallback: lower normally and
+// wrap the scalar with `cel_make_<kind>`.  The wrapped constructor
+// allocates a fresh 24-byte CelValue per call — fine for F1 since
+// arenas are reset between evals and the scratch lifetimes are short.
+absl::StatusOr<BinaryenExpressionRef> LowerScalarBoxedFallback(
+    LoweringContext& ctx, const TypedAst& ast, const cel::Expr& expr, Repr r) {
+  auto raw = LowerExpr(ctx, ast, expr);
+  if (!raw.ok()) return raw.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  BinaryenExpressionRef raw_ref = *raw;
+  const BinaryenType i32 = BinaryenTypeInt32();
+  switch (r) {
+    case Repr::kInt:
+      return BinaryenCall(m, "cel_make_int", &raw_ref, 1, i32);
+    case Repr::kUint:
+      return BinaryenCall(m, "cel_make_uint", &raw_ref, 1, i32);
+    case Repr::kDouble:
+      return BinaryenCall(m, "cel_make_double", &raw_ref, 1, i32);
+    default:
+      break;
+  }
+  return absl::UnimplementedError(
+      absl::StrCat("LowerExprBoxed: unsupported Repr `", ReprName(r),
+                   "` for expr id ", expr.id()));
+}
+
+// Scalar-valued producers whose normal path either early-returns
+// from `$eval` on non-OK (Select-of-scalar) or emits a kind-check
+// that loses the error box (checked arith).  Returns engaged only
+// if `expr` is one of those shapes; otherwise returns nullopt and
+// the caller falls through to `LowerScalarBoxedFallback`.
+absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerScalarProducerBoxed(
+    LoweringContext& ctx, const TypedAst& ast, const cel::Expr& expr, Repr r) {
+  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr &&
+      !expr.select_expr().test_only()) {
+    auto v = LowerSelectFieldBoxed(ctx, ast, expr);
+    if (!v.ok()) return v.status();
+    return std::optional<BinaryenExpressionRef>(*v);
+  }
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return std::nullopt;
+  const cel::CallExpr& call = expr.call_expr();
+  const std::string& fn = call.function();
+  if ((fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
+       fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
+       fn == op::CelOperator::MODULO) &&
+      (r == Repr::kInt || r == Repr::kUint)) {
+    auto v = LowerCheckedArithBoxed(ctx, ast, call, r);
+    if (!v.ok()) return v.status();
+    return std::optional<BinaryenExpressionRef>(*v);
+  }
+  return LowerSizeCallBoxed(ctx, ast, call);
+}
+
 // CelValue offsets (kBool, kString, kBytes, kMessage, kNull) fall
 // through to `LowerExpr`; scalar Reprs (kInt / kUint / kDouble) are
 // boxed via `cel_make_<kind>` or, for producer nodes whose scalar path
@@ -1026,58 +1107,18 @@ absl::StatusOr<BinaryenExpressionRef> LowerExprBoxed(LoweringContext& ctx,
   auto repr = ReprOf(ast, expr);
   if (!repr.ok()) return repr.status();
   // Reprs that already travel as CelValue offsets — normal LowerExpr
-  // works.  Select-of-bool/string/bytes/message returns the scratch
-  // offset today (no early-return — see `LowerSelectField`'s
+  // works.  Select-of-bool/string/bytes returns the scratch offset
+  // today (no early-return — see `LowerSelectField`'s
   // `payload_is_offset` branch).
   if (*repr == Repr::kBool || *repr == Repr::kString || *repr == Repr::kBytes ||
-      *repr == Repr::kMessage || *repr == Repr::kNull) {
+      *repr == Repr::kNull) {
     return LowerExpr(ctx, ast, expr);
   }
-  // Scalar-valued producers whose normal path either early-returns
-  // from `$eval` on non-OK (Select-of-scalar) or emits a kind-check
-  // that loses the error box (checked arith).  Both are rerouted
-  // through the `*Boxed` variants that return the scratch offset
-  // verbatim.
-  if (expr.kind_case() == cel::ExprKindCase::kSelectExpr &&
-      !expr.select_expr().test_only()) {
-    return LowerSelectFieldBoxed(ctx, ast, expr);
-  }
-  if (expr.kind_case() == cel::ExprKindCase::kCallExpr) {
-    const cel::CallExpr& call = expr.call_expr();
-    const std::string& fn = call.function();
-    if ((fn == op::CelOperator::ADD || fn == op::CelOperator::SUBTRACT ||
-         fn == op::CelOperator::MULTIPLY || fn == op::CelOperator::DIVIDE ||
-         fn == op::CelOperator::MODULO) &&
-        (*repr == Repr::kInt || *repr == Repr::kUint)) {
-      return LowerCheckedArithBoxed(ctx, ast, call, *repr);
-    }
-    auto size_v = LowerSizeCallBoxed(ctx, ast, call);
-    if (!size_v.ok()) return size_v.status();
-    if (size_v->has_value()) return **size_v;
-  }
-  // Anything else (literal, ident, pure expression): lower normally
-  // and wrap with `cel_make_<kind>`.  The wrapped constructor
-  // allocates a fresh 24-byte CelValue per call — fine for F1 since
-  // arenas are reset between evals and the scratch lifetimes here are
-  // short.
-  auto raw = LowerExpr(ctx, ast, expr);
-  if (!raw.ok()) return raw.status();
-  BinaryenModuleRef m = ctx.mod.raw();
-  BinaryenExpressionRef raw_ref = *raw;
-  switch (*repr) {
-    case Repr::kInt:
-      return BinaryenCall(m, "cel_make_int", &raw_ref, 1, BinaryenTypeInt32());
-    case Repr::kUint:
-      return BinaryenCall(m, "cel_make_uint", &raw_ref, 1, BinaryenTypeInt32());
-    case Repr::kDouble:
-      return BinaryenCall(m, "cel_make_double", &raw_ref, 1,
-                          BinaryenTypeInt32());
-    default:
-      break;
-  }
-  return absl::UnimplementedError(
-      absl::StrCat("LowerExprBoxed: unsupported Repr `", ReprName(*repr),
-                   "` for expr id ", expr.id()));
+  if (*repr == Repr::kMessage) return LowerMessageBoxed(ctx, ast, expr);
+  auto producer = LowerScalarProducerBoxed(ctx, ast, expr, *repr);
+  if (!producer.ok()) return producer.status();
+  if (producer->has_value()) return **producer;
+  return LowerScalarBoxedFallback(ctx, ast, expr, *repr);
 }
 
 // Helper-name tables for the F1 boxed comparison dispatch.
@@ -1123,6 +1164,78 @@ const char* BoxedCmpHelper(absl::string_view op, Repr r) {
     default:
       return nullptr;
   }
+}
+
+// OK branch of message equality: cel_make_bool(message_eq(
+//   cel_unwrap_message(a_local), cel_unwrap_message(b_local))), with
+// an optional `i32.eqz` flip for `_!=_`.
+BinaryenExpressionRef BuildMessageEqOkBranch(BinaryenModuleRef m,
+                                             BinaryenIndex a_local,
+                                             BinaryenIndex b_local,
+                                             bool is_not_equals) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  BinaryenExpressionRef ua_arg = BinaryenLocalGet(m, a_local, i32);
+  BinaryenExpressionRef ub_arg = BinaryenLocalGet(m, b_local, i32);
+  BinaryenExpressionRef me_args[2] = {
+      BinaryenCall(m, "cel_unwrap_message", &ua_arg, 1,
+                   BinaryenTypeExternref()),
+      BinaryenCall(m, "cel_unwrap_message", &ub_arg, 1,
+                   BinaryenTypeExternref()),
+  };
+  BinaryenExpressionRef eq_call =
+      BinaryenCall(m, "message_eq", me_args, 2, i32);
+  BinaryenExpressionRef raw =
+      is_not_equals ? BinaryenUnary(m, BinaryenEqZInt32(), eq_call) : eq_call;
+  return BinaryenCall(m, "cel_make_bool", &raw, 1, i32);
+}
+
+// Boxed-operand message equality (Slice F Step 5).  Row 14 of the
+// plan: `msg.sub_msg == other || true` must absorb an UNKNOWN / ERROR
+// sub-message into the wrapping `||`.  Shape:
+//
+//   a_local = LowerExprBoxed(lhs)        ; CelValue offset
+//   b_local = LowerExprBoxed(rhs)
+//   p_local = cel_message_eq_prologue_v(a_local, b_local)
+//   if p_local != 0 { p_local }          ; propagate non-OK verbatim
+//   else { cel_make_bool(message_eq(cel_unwrap_message(a_local),
+//                                    cel_unwrap_message(b_local))) }
+//
+// `cel_wrap_message` / `cel_unwrap_message` are expr-module helpers
+// defined in `cel_refs.cc`.
+absl::StatusOr<BinaryenExpressionRef> LowerMessageEqualityBoxed(
+    LoweringContext& ctx, const TypedAst& ast, absl::string_view name,
+    const cel::CallExpr& call) {
+  if (call.args().size() != 2) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "`", name, "` takes 2 arguments, got ", call.args().size()));
+  }
+  auto lhs = LowerExprBoxed(ctx, ast, call.args().at(0));
+  if (!lhs.ok()) return lhs.status();
+  auto rhs = LowerExprBoxed(ctx, ast, call.args().at(1));
+  if (!rhs.ok()) return rhs.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenIndex a_local = ctx.AddLocal(i32);
+  const BinaryenIndex b_local = ctx.AddLocal(i32);
+  const BinaryenIndex p_local = ctx.AddLocal(i32);
+  BinaryenExpressionRef prol_args[2] = {
+      BinaryenLocalGet(m, a_local, i32),
+      BinaryenLocalGet(m, b_local, i32),
+  };
+  BinaryenExpressionRef ok_branch = BuildMessageEqOkBranch(
+      m, a_local, b_local, name == op::CelOperator::NOT_EQUALS);
+  // BinaryenIf: if (cond != 0) non_ok else ok.  `cond` is 0 on OK
+  // (prologue returned 0), non-zero otherwise.
+  BinaryenExpressionRef children[4] = {
+      BinaryenLocalSet(m, a_local, *lhs),
+      BinaryenLocalSet(m, b_local, *rhs),
+      BinaryenLocalSet(
+          m, p_local,
+          BinaryenCall(m, "cel_message_eq_prologue_v", prol_args, 2, i32)),
+      BinaryenIf(m, BinaryenLocalGet(m, p_local, i32),
+                 BinaryenLocalGet(m, p_local, i32), ok_branch),
+  };
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/4, i32);
 }
 
 // Boxed-operand comparison: both operands arrive as CelValue offsets
@@ -1376,9 +1489,17 @@ absl::StatusOr<BinaryenExpressionRef> LowerBinaryCall(LoweringContext& ctx,
   // CelValue offsets to `cel_cmp_<kind>_<op>`.  The helper forwards
   // `cel_status_either(a, b)` when either side is UNKNOWN / ERROR, so
   // wrapping `&&` / `||` / `?:` see the non-OK as a value.  String /
-  // bytes / message eq/ne stay on their own helpers (steps 4 / 5).
+  // bytes stay on their absorbing `_v` helpers (step 4, via
+  // `LowerSpanEquality`).
   if (is_comparison && BoxedCmpHelper(fn, *arg_r) != nullptr) {
     return LowerBoxedComparison(ctx, ast, call, fn, *arg_r);
+  }
+  // Message eq/ne (Slice F Step 5): boxed-operand path so the host-
+  // side `message_eq` call is gated on `cel_message_eq_prologue_v`
+  // absorbing a non-OK sub-message.
+  if (is_comparison && *arg_r == Repr::kMessage &&
+      (fn == op::CelOperator::EQUALS || fn == op::CelOperator::NOT_EQUALS)) {
+    return LowerMessageEqualityBoxed(ctx, ast, fn, call);
   }
   auto l = LowerExpr(ctx, ast, call.args().at(0));
   if (!l.ok()) return l.status();

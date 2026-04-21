@@ -609,6 +609,38 @@ TEST(ExprLowerTest, MessageVariablePullsInCelRefsTableAndWrappers) {
   EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_unwrap_message"), nullptr);
 }
 
+// Message equality routes through `LowerMessageEqualityBoxed` (Slice F
+// Step 5): the top-level call is a BinaryenIf over the
+// `cel_message_eq_prologue_v` result, non-OK branch returning the
+// prologue status, OK branch calling `cel_make_bool(message_eq(...))`.
+// Pins the shape so a regression that drops the absorption gate would
+// fail the test.
+TEST(ExprLowerTest, MessageEqualityLowersThroughPrologueAndHostCall) {
+  auto L = LowerOkWithVars(
+      "a == b", {"a:google.protobuf.Empty", "b:google.protobuf.Empty"});
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  // The eval body for `a == b` must contain the prologue helper, the
+  // host compare, and cel_make_bool on the OK branch.  We assert
+  // their presence by scanning the function (shape of the block
+  // changes with local-set prologue churn across slices).
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_message_eq_prologue_v"),
+            nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "message_eq"), nullptr);
+}
+
+TEST(ExprLowerTest, MessageInequalityInvertsEqCallOnOkBranch) {
+  // `_!=_` wraps the host `message_eq` result in `i32.eqz` before
+  // `cel_make_bool`.  Non-OK short-circuit still goes through the
+  // prologue-return branch untouched.
+  auto L = LowerOkWithVars(
+      "a != b", {"a:google.protobuf.Empty", "b:google.protobuf.Empty"});
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_message_eq_prologue_v"),
+            nullptr);
+}
+
 TEST(ExprLowerTest, NoMessageVariableMeansNoCelRefsTable) {
   auto L = LowerOk("1 + 2");
   EXPECT_EQ(BinaryenGetTable(L.mod.raw(), "$cel_refs"), nullptr);

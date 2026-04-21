@@ -1879,6 +1879,31 @@ TEST(EvalE2EUnknownTest,
 }
 
 TEST(EvalE2EUnknownTest,
+     UnknownThroughMessageEqAbsorbedByOr) {  // Slice F row 14
+  // Message equality where one operand is an UNKNOWN sub-message: the
+  // host's descriptor-aware `message_eq` never runs because
+  // `cel_message_eq_prologue_v` short-circuits to the UNKNOWN offset,
+  // which the wrapping `|| true` then absorbs.  Proves the boxed
+  // message-eq path (Step 5) wires through to the 3VL absorber.
+  auto loaded = LoadCompiled(
+      "a.billing_address == b.billing_address || true",
+      {"a:celwasm.testdata.Customer", "b:celwasm.testdata.Customer"});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("a.billing_address"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer a;
+  a.mutable_billing_address()->set_city("NY");
+  celwasm::testdata::Customer b;
+  b.mutable_billing_address()->set_city("NY");
+  wasmtime_val_t arg_a = MessageAsExternref(*loaded, a);
+  wasmtime_val_t arg_b = MessageAsExternref(*loaded, b);
+  auto r = loaded->CallEval({arg_a, arg_b});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
      UnknownEqualityBothOperandsUnknownAbsorbedByOr) {  // Slice F row 11
   auto loaded =
       LoadCompiled("c.age == c.user_id || true", {std::string(kCustomerSpec)});

@@ -591,6 +591,22 @@ uint32_t cel_bytes_size_v(uint32_t b) {
   return cel_make_int(cel_bytes_size(b));
 }
 
+// Message equality prologue — see header for the full contract.  Why
+// not a full `cel_message_eq_v`: the actual compare is a descriptor-
+// aware host call (`cel_host.message_eq`), not a runtime-callable
+// function, so we stop at the absorption / kind-check step and let
+// codegen compose the host call on the OK path.
+uint32_t cel_message_eq_prologue_v(uint32_t a, uint32_t b) {
+  uint32_t st = cel_status_either(a, b);
+  if (st != 0) return st;
+  if (a == 0 || b == 0) return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  if (cv_at(a)->kind != (uint32_t)CEL_MESSAGE ||
+      cv_at(b)->kind != (uint32_t)CEL_MESSAGE) {
+    return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  }
+  return 0;
+}
+
 // ---- Three-valued logic helpers ------------------------------------------
 
 static int is_3vl_kind(uint32_t k) {
