@@ -925,6 +925,8 @@ absl::StatusOr<SelectOperand> LowerSelectOperand(LoweringContext& ctx,
 absl::StatusOr<BinaryenExpressionRef> LowerExprBoxed(LoweringContext& ctx,
                                                      const TypedAst& ast,
                                                      const cel::Expr& expr);
+absl::StatusOr<BinaryenExpressionRef> LowerConditionalBoxed(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call);
 
 // Select-of-field variant that returns the scratch offset directly (no
 // `EmitSretEarlyReturnIfNonOk`, no payload load).  Used by the boxed
@@ -1106,6 +1108,15 @@ absl::StatusOr<BinaryenExpressionRef> LowerExprBoxed(LoweringContext& ctx,
                                                      const cel::Expr& expr) {
   auto repr = ReprOf(ast, expr);
   if (!repr.ok()) return repr.status();
+  // Ternary routes through the boxed form regardless of Repr (Slice F
+  // step 6).  Scalar `LowerConditional` early-returns from `$eval` on
+  // non-OK cond, which bypasses every wrapping absorber.  Rows 8 / 19
+  // of the plan — the absorber must see the UNKNOWN / ERROR as a
+  // value, not be skipped.
+  if (expr.kind_case() == cel::ExprKindCase::kCallExpr &&
+      expr.call_expr().function() == op::CelOperator::CONDITIONAL) {
+    return LowerConditionalBoxed(ctx, ast, expr.call_expr());
+  }
   // Reprs that already travel as CelValue offsets — normal LowerExpr
   // works.  Select-of-bool/string/bytes returns the scratch offset
   // today (no early-return — see `LowerSelectField`'s
@@ -1307,14 +1318,17 @@ absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerStringMemberCall(
 
 // `!_` — logical not.  3VL (M4 Slice C / 3b2): calls `cel_not` so
 // CEL_UNKNOWN / CEL_ERROR operands are passed through unchanged
-// rather than collapsed to 0/1 by `i32.eqz`.
+// rather than collapsed to 0/1 by `i32.eqz`.  Operand lowered via
+// `LowerExprBoxed` so a nested ternary routes through the boxed form
+// (Slice F step 6) and doesn't bypass `cel_not` via `$eval`
+// early-return.
 absl::StatusOr<BinaryenExpressionRef> LowerLogicalNot(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
   if (call.args().size() != 1) {
     return absl::InvalidArgumentError(
         absl::StrCat("`!_` takes 1 argument, got ", call.args().size()));
   }
-  auto v = LowerExpr(ctx, ast, call.args().at(0));
+  auto v = LowerExprBoxed(ctx, ast, call.args().at(0));
   if (!v.ok()) return v.status();
   BinaryenExpressionRef arg = *v;
   return BinaryenCall(ctx.mod.raw(), "cel_not", &arg, 1, BinaryenTypeInt32());
@@ -1382,6 +1396,58 @@ BinaryenExpressionRef EmitSretEarlyReturnIfNonOk(LoweringContext& ctx,
   return BinaryenIf(m, is_non_ok, err_block, /*ifFalse=*/nullptr);
 }
 
+// Boxed ternary (Slice F step 6).  Every arm is lowered via
+// `LowerExprBoxed` so the result is a CelValue offset.  If the cond
+// is UNKNOWN / ERROR we return the cond offset verbatim — the
+// wrapping absorber (`cel_or` / `cel_and` / `cel_not` / boxed
+// comparison) will see it as a value rather than being skipped by a
+// scalar-path `$eval` early return.  Rows 8 / 19 of the plan.
+//
+// Shape:
+//
+//   cond_local = LowerExprBoxed(cond)           ; CelValue offset
+//   if kind(*cond_local) >= CEL_UNKNOWN
+//     cond_local                                 ; propagate non-OK
+//   else
+//     BinaryenIf(cel_bool_from_value(cond_local),
+//                LowerExprBoxed(then), LowerExprBoxed(else))
+absl::StatusOr<BinaryenExpressionRef> LowerConditionalBoxed(
+    LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
+  if (call.args().size() != 3) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("`_?_:_` takes 3 arguments, got ", call.args().size()));
+  }
+  auto cond = LowerExprBoxed(ctx, ast, call.args().at(0));
+  if (!cond.ok()) return cond.status();
+  auto t = LowerExprBoxed(ctx, ast, call.args().at(1));
+  if (!t.ok()) return t.status();
+  auto f = LowerExprBoxed(ctx, ast, call.args().at(2));
+  if (!f.ok()) return f.status();
+  BinaryenModuleRef m = ctx.mod.raw();
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenIndex cond_local = ctx.AddLocal(i32);
+  // `kind(*cond_local) >= CEL_UNKNOWN (14)` — catches both UNKNOWN
+  // (14) and ERROR (15).  Matches the kind-byte shape used by
+  // `EmitSretEarlyReturnIfNonOk` (4-byte load, align=4).
+  constexpr int32_t kCelUnknownKind = 14;
+  BinaryenExpressionRef abs_ptr = BinaryenBinary(
+      m, BinaryenAddInt32(), BinaryenCall(m, "cel_mem_base", nullptr, 0, i32),
+      BinaryenLocalGet(m, cond_local, i32));
+  BinaryenExpressionRef is_non_ok =
+      BinaryenBinary(m, BinaryenGeUInt32(),
+                     BinaryenLoad(m, 4, /*signed_=*/false, /*offset=*/0,
+                                  /*align=*/4, i32, abs_ptr, "memory"),
+                     BinaryenConst(m, BinaryenLiteralInt32(kCelUnknownKind)));
+  BinaryenExpressionRef unbox_arg = BinaryenLocalGet(m, cond_local, i32);
+  BinaryenExpressionRef inner_if = BinaryenIf(
+      m, BinaryenCall(m, "cel_bool_from_value", &unbox_arg, 1, i32), *t, *f);
+  BinaryenExpressionRef outer_if =
+      BinaryenIf(m, is_non_ok, BinaryenLocalGet(m, cond_local, i32), inner_if);
+  BinaryenExpressionRef children[2] = {BinaryenLocalSet(m, cond_local, *cond),
+                                       outer_if};
+  return BinaryenBlock(m, /*name=*/nullptr, children, /*numChildren=*/2, i32);
+}
+
 // `_?_:_` — ternary with 3VL condition handling (M4 Slice E1).  Both
 // branches must have the same Repr (checker invariant); we rely on
 // BinaryenIf to validate type agreement.  The condition is a
@@ -1437,9 +1503,13 @@ absl::StatusOr<BinaryenExpressionRef> LowerShortCircuit(
     return absl::InvalidArgumentError(
         absl::StrCat("`", fn, "` takes 2 arguments, got ", call.args().size()));
   }
-  auto l = LowerExpr(ctx, ast, call.args().at(0));
+  // Operands lowered via `LowerExprBoxed` so nested ternaries route
+  // through the boxed form (Slice F step 6).  kBool non-ternary exprs
+  // fall through to `LowerExpr` inside `LowerExprBoxed`, so this is a
+  // no-op for the common case.
+  auto l = LowerExprBoxed(ctx, ast, call.args().at(0));
   if (!l.ok()) return l.status();
-  auto r = LowerExpr(ctx, ast, call.args().at(1));
+  auto r = LowerExprBoxed(ctx, ast, call.args().at(1));
   if (!r.ok()) return r.status();
   BinaryenModuleRef m = ctx.mod.raw();
   const bool is_and = (fn == op::CelOperator::LOGICAL_AND);

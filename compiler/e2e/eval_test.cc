@@ -515,12 +515,13 @@ TEST(EvalE2ETest, ThreeValuedAbsorptionNaNCompareAbsorbed) {
   EXPECT_EQ(r->of.i32, 1);
 }
 
-TEST(EvalE2ETest, DISABLED_ThreeValuedAbsorptionTernaryResultAbsorbedByOr) {
-  // Row 8: ((1/0 == 0) ? true : false) || true → true.  Slice E1 makes
-  // the ternary propagate ERROR-in-cond as its result (spec-correct
-  // for a root ternary), but when the ternary itself is wrapped by an
-  // absorber the absorber must still see the ERROR as a value.  This
-  // is the E1 semantic gap documented in §10.2.1.
+TEST(EvalE2ETest, ThreeValuedAbsorptionTernaryResultAbsorbedByOr) {
+  // Row 8: ((1/0 == 0) ? true : false) || true → true.  Slice F step 6
+  // routes ternary operands of a 3VL absorber through
+  // `LowerConditionalBoxed`, which returns the cond's CelValue offset
+  // when the cond is UNKNOWN / ERROR instead of bailing out of `$eval`
+  // via `EmitSretEarlyReturnIfNonOk`.  The wrapping `||` then sees the
+  // ERROR as a value and absorbs it against the OK(true) rhs.
   auto r = Evaluate("((1 / 0 == 0) ? true : false) || true");
   ASSERT_THAT(r.status(), IsOk());
   EXPECT_EQ(r->kind, WASMTIME_I32);
@@ -1970,6 +1971,26 @@ TEST(EvalE2EUnknownTest,
      UnknownThroughArithThenCompareAbsorbed) {  // Slice F row 18
   auto loaded =
       LoadCompiled("(c.age + 1) == 0 || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.age"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownInTernaryCondAbsorbedByOr) {  // Slice F row 19
+  // Row 19: `(msg.int_field > 0 ? 1 : 2) == 1 || true` → true.
+  // UNKNOWN propagates through the ternary cond's `>` compare, Slice F
+  // step 6 routes the ternary through `LowerConditionalBoxed` from the
+  // boxed outer `==`, so the UNKNOWN CelValue reaches the wrapping
+  // `||` as a value instead of the ternary short-circuiting `$eval`.
+  auto loaded = LoadCompiled("(c.age > 0 ? 1 : 2) == 1 || true",
+                             {std::string(kCustomerSpec)});
   ASSERT_THAT(loaded.status(), IsOk());
   std::vector<AttributePattern> patterns;
   patterns.push_back(ParsePatternOrDie("c.age"));

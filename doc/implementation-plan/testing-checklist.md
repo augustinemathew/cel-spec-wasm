@@ -712,8 +712,25 @@ expression from `m1-type-checker.md`, plus:
       `MessageInequalityInvertsEqCallOnOkBranch`.  The pre-step-5
       `LowerMessageEquality` emitter is left in-tree for the step 7
       sweep (no remaining in-tree callers).
-      Remaining DISABLED shells: rows 7 / 8 / 19 (ternary simplify —
-      step 6).
+      **Uniform-boxed Step 6 shipped 2026-04-20**: ternary simplify.
+      Added `LowerConditionalBoxed` that returns a CelValue offset (no
+      `$eval` early-return): cond lowered via `LowerExprBoxed`, kind
+      byte probed against `CEL_UNKNOWN` — non-OK branch returns the
+      cond offset verbatim, OK branch unboxes via `cel_bool_from_value`
+      and selects t/f via `BinaryenIf`.  `LowerExprBoxed` dispatches
+      any `CONDITIONAL` call to it regardless of Repr; `LowerShortCircuit`
+      and `LowerLogicalNot` now lower operands via `LowerExprBoxed` so
+      a nested ternary flows through the boxed form.  Root-ternary
+      `LowerConditional` (scalar path with sret early-return) stays
+      for the eval-root case where no absorber wraps the ternary.  Row
+      8 enabled (`ThreeValuedAbsorptionTernaryResultAbsorbedByOr`);
+      added row 19 (`UnknownInTernaryCondAbsorbedByOr`) over the
+      Customer fixture's `c.age > 0 ? 1 : 2` under `== 1 || true`; row
+      7 remains spec-correct (root ternary bubbles ERROR-in-cond).
+      Codegen shape test: `TernaryUnderAbsorberLowersThroughBoxedForm`
+      asserts `cel_bool_from_value` + `cel_mem_base` + `cel_or` are
+      all present.  No DISABLED rows remain for Slice F; step 7 (dead-
+      code sweep) and step 8 (doc sweep) are next.
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

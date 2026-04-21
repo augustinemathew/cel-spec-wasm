@@ -641,6 +641,24 @@ TEST(ExprLowerTest, MessageInequalityInvertsEqCallOnOkBranch) {
             nullptr);
 }
 
+// Ternary lowering (Slice F step 6).  A ternary consumed by a 3VL
+// absorber — here, boxed `==` then `|| true` — must route through
+// `LowerConditionalBoxed` so the cond's UNKNOWN / ERROR flows into the
+// absorber as a CelValue rather than being swallowed by `$eval`'s sret
+// early-return.  We pin the presence of `cel_bool_from_value` (the OK-
+// branch unbox) and `cel_mem_base` (the kind-byte probe on the cond
+// offset) in the emitted module.  A regression that dropped either
+// signal would mean the boxed ternary path was bypassed.
+TEST(ExprLowerTest, TernaryUnderAbsorberLowersThroughBoxedForm) {
+  auto L = LowerOk("(1 > 0 ? 1 : 2) == 1 || true");
+  EXPECT_EQ(L.fn.result_repr, Repr::kBool);
+  EXPECT_THAT(L.mod.Validate(), IsOk());
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_bool_from_value"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_mem_base"), nullptr);
+  // The outer absorber must be `cel_or`, not a raw `i32.or`.
+  EXPECT_NE(BinaryenGetFunction(L.mod.raw(), "cel_or"), nullptr);
+}
+
 TEST(ExprLowerTest, NoMessageVariableMeansNoCelRefsTable) {
   auto L = LowerOk("1 + 2");
   EXPECT_EQ(BinaryenGetTable(L.mod.raw(), "$cel_refs"), nullptr);

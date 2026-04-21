@@ -335,8 +335,38 @@ sees "dead code after dispatch collapse" and not a drive-by.
    `a.billing_address`, `|| true` absorbs to `true`.  The happy-path
    `NestedMessageEqualityComposesSelectAndEq` continues to pass
    under the new lowering.
-6. Simplify ternary: drop any "at eval root?" contextual logic.
-   Flip rows 7, 8, 19.
+6. **[shipped 2026-04-20]** Simplify ternary.  Added
+   `LowerConditionalBoxed` that always returns a CelValue offset
+   (arena-relative i32): cond lowered via `LowerExprBoxed`, kind byte
+   probed against `CEL_UNKNOWN` (14) via a `cel_mem_base + cond_off →
+   i32.load + ge_u` block, non-OK branch returns the cond offset
+   verbatim, OK branch calls `cel_bool_from_value(cond_off)` and
+   dispatches between the two arms (both also lowered through
+   `LowerExprBoxed`) via `BinaryenIf`.  `LowerExprBoxed` dispatches
+   any `CONDITIONAL` call to the boxed form regardless of Repr.
+   `LowerShortCircuit` (`_&&_` / `_||_`) and `LowerLogicalNot` (`!_`)
+   now lower their operands via `LowerExprBoxed` so a nested ternary
+   routes through the boxed form — `LowerExprBoxed` is a no-op on
+   non-ternary kBool subtrees, so the existing shape is preserved for
+   everything else.  The original scalar-path `LowerConditional`
+   (still emits `EmitSretEarlyReturnIfNonOk`) stays for the eval-root
+   case where no absorber wraps the ternary — reached via
+   `LowerCall(CONDITIONAL)` from `LowerExpr` at the root; that path
+   correctly bubbles a non-OK cond through `$eval`'s sret.  Flipped
+   DISABLED_ row 8
+   (`ThreeValuedAbsorptionTernaryResultAbsorbedByOr`); added row 19
+   (`UnknownInTernaryCondAbsorbedByOr`, UNKNOWN in ternary cond
+   flows through `LowerBoxedComparison`'s boxed `==`, absorbed by
+   `|| true`).  Row 7 stays as-is — the scalar-root `LowerConditional`
+   is still spec-correct for a root ternary whose cond is ERROR
+   (propagates ERROR as the eval result).  Codegen shape test:
+   `TernaryUnderAbsorberLowersThroughBoxedForm` asserts
+   `cel_bool_from_value` (the OK-branch unbox), `cel_mem_base` (the
+   kind-byte probe against cond's arena offset), and `cel_or` (the
+   wrapping absorber) are all emitted for
+   `(1 > 0 ? 1 : 2) == 1 || true`.  The dead-code ledger for Step 7
+   gains `EmitSretEarlyReturnIfNonOk` once `LowerSelectField`'s last
+   scalar-path caller is removed.
 7. Dead-code sweep: delete unreferenced runtime helpers + scalar-
    path codegen emitters.  Update `cel_runtime_test.cc`.  No
    `// NOLINT` around now-unused declarations — delete them.
