@@ -126,36 +126,6 @@ uint32_t cel_make_optional_none(void);
 uint32_t cel_make_unknown(uint32_t attribute_id);
 uint32_t cel_make_error(uint32_t code, uint32_t msg_ptr, uint32_t msg_len);
 
-int32_t cel_string_eq(uint32_t a, uint32_t b);
-int32_t cel_bytes_eq(uint32_t a, uint32_t b);
-
-// Concatenates two CEL_STRING values and returns a new CelValue* offset.
-// Returns 0 if either operand is zero-offset or not a CEL_STRING, or if the
-// arena is out of memory.  The result copies both payloads into the arena so
-// it is independent of the inputs' storage (their spans may be arena-resident
-// views that will not survive a cel_reset()).
-uint32_t cel_string_concat(uint32_t a, uint32_t b);
-
-// Bytes-side concat counterpart.  Same semantics as `cel_string_concat`
-// but gated on CEL_BYTES kind — the payload is an opaque byte span and
-// there is no UTF-8 story, so the implementation shares every step with
-// the string version except the kind tag.
-uint32_t cel_bytes_concat(uint32_t a, uint32_t b);
-
-// Returns the number of UTF-8 code points in a CEL_STRING.  Returns -1 on
-// type error (non-string or zero offset) so the caller can distinguish
-// "string of length 0" from "not a string".  CEL §1110 defines size(string)
-// as code-point count, NOT byte count; counting continuation bytes
-// (0b10xxxxxx) is the portable way to do that without a full decoder.
-int64_t cel_string_size(uint32_t s);
-
-// Returns the number of bytes in a CEL_BYTES value.  CEL §1110 defines
-// size(bytes) as byte count (no UTF-8 interpretation), so unlike
-// cel_string_size this is a direct payload-length read.  Returns -1 on
-// type error so callers can distinguish "bytes of length 0" from "not
-// bytes".
-int64_t cel_bytes_size(uint32_t b);
-
 // Extracts the i32 bool payload from a CelValue*.  Returns 0 for a
 // non-bool / zero-offset input; callers that need to distinguish
 // false-from-not-a-bool must check the kind themselves.  The common
@@ -172,19 +142,10 @@ int64_t cel_int_from_value(uint32_t v);
 uint64_t cel_uint_from_value(uint32_t v);
 double cel_double_from_value(uint32_t v);
 
-// String member-call helpers (CEL §9 string extension): all three take
-// two CEL_STRING operands and return 0/1 as an i32, matching how
-// `cel_string_eq` speaks ABI.  Semantics follow the spec: the empty
-// string is a prefix/suffix/substring of every string; a longer
-// needle than haystack is never found.  Returns 0 on type mismatch
-// (non-string, zero offset) so a codegen bug never forges `true`.
-int32_t cel_string_starts_with(uint32_t s, uint32_t prefix);
-int32_t cel_string_ends_with(uint32_t s, uint32_t suffix);
-int32_t cel_string_contains(uint32_t s, uint32_t needle);
-
 // ---- Uniform-boxed ABI (Slice F step 4) ----------------------------------
 //
-// Absorption-aware siblings of the string / bytes helpers above.  Each
+// String / bytes eq, concat, starts_with, ends_with, contains, and size —
+// the sole codegen entrypoints for these ops since Slice F Step 4.  Each
 // takes CelValue offsets for its operands and returns a CelValue offset:
 //
 //   * If any operand is UNKNOWN / ERROR, the dominant non-OK status
@@ -195,10 +156,6 @@ int32_t cel_string_contains(uint32_t s, uint32_t needle);
 //   * On success the result is a freshly boxed CelValue of the expected
 //     kind: CEL_BOOL for eq / starts_with / ends_with / contains,
 //     CEL_STRING / CEL_BYTES for concat, CEL_INT for size.
-//
-// Codegen `expr_lower.cc` uses exclusively the `_v` variants after step
-// 4; the non-`_v` originals are unused by `$eval` and scheduled for
-// deletion in step 7's dead-code sweep.
 uint32_t cel_string_eq_v(uint32_t a, uint32_t b);
 uint32_t cel_bytes_eq_v(uint32_t a, uint32_t b);
 uint32_t cel_string_concat_v(uint32_t a, uint32_t b);
@@ -367,8 +324,8 @@ void cel_set_error_at(uint32_t out, uint32_t code);
 //
 // Semantics: see the "total-function guarantee" block above.  One
 // helper per CEL `_+_` / `_-_` / `_*_` / `_/_` / `_%_` overload on
-// int/uint, plus `cel_int_neg_at` for unary minus.  (CEL has no
-// unary-minus overload on uint, so there is no `cel_uint_neg_at`.)
+// int/uint.  Unary negate (`-_`) is emitted inline by codegen as a
+// plain `i64.sub` / `f64.neg`, so no `cel_*_neg_at` helper exists.
 // Scalar-arg sret variants.  Operands arrive as raw wasm scalars
 // (i64 / u64) rather than arena offsets, so there is no operand-status
 // to propagate (pure OK/ERROR outcome).  These are the ones codegen
@@ -388,8 +345,6 @@ void cel_uint_sub_at_uu(uint32_t out, uint64_t a, uint64_t b);
 void cel_uint_mul_at_uu(uint32_t out, uint64_t a, uint64_t b);
 void cel_uint_div_at_uu(uint32_t out, uint64_t a, uint64_t b);
 void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b);
-
-void cel_int_neg_at_i(uint32_t out, int64_t a);
 
 // ---- Boxed-operand checked arithmetic (M4 Slice F Step 2) ----------------
 //
@@ -422,9 +377,6 @@ void cel_uint_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
 void cel_uint_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
 void cel_uint_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
 void cel_uint_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off);
-// Unary negation wants only one operand; same absorption + kind-check
-// shape as the binary siblings.
-void cel_int_neg_at_v(uint32_t out, uint32_t a_off);
 
 // ---- 3VL-aware scalar comparison (M4 Slice F1) ---------------------------
 //
@@ -471,6 +423,154 @@ uint32_t cel_cmp_double_ge(uint32_t a, uint32_t b);
 
 uint32_t cel_cmp_bool_eq(uint32_t a, uint32_t b);
 uint32_t cel_cmp_bool_ne(uint32_t a, uint32_t b);
+
+// ---- Debug / audit logging (cel_log) -------------------------------------
+//
+// Shared by two use cases:
+//
+//   1. Dead-code audit.  Every public runtime helper begins with a
+//      `CEL_LOG("enter", ...)` call; a full run of the compiler test
+//      suite records which helpers fired.  Helpers that never appear
+//      in the capture are candidates for deletion.  macOS's Apple
+//      clang has no `llvm-cov --show-functions` equivalent, so the
+//      log-and-grep substitute lives in-tree.
+//   2. Ad-hoc runtime tracing.  Codegen does not emit `cel_log` calls
+//      today, but the import is declared unconditionally on every
+//      eval module so a trace can be inserted at any call site
+//      without a re-link.
+//
+// ABI (matches the import declared by `DeclareAllocAndSpanImports` in
+// `compiler/codegen/expr_lower.cc`):
+//
+//   void cel_log(uint32_t file_ptr, uint32_t file_len,
+//                uint32_t fn_ptr,   uint32_t fn_len,
+//                uint32_t line,
+//                uint32_t fmt_ptr,  uint32_t fmt_len,
+//                uint32_t argv_ptr, uint32_t argc);
+//
+// `argv_ptr` points at `argc` contiguous 16-byte slots.  Each slot is
+// two u64 words: the first word's low 32 bits carry the tag (high 32
+// reserved), the second word is the per-tag payload (see
+// `CEL_LOG_TAG_*` below).  The format string is parsed host-side — the
+// wasm runtime has no printf — so any byte that is not part of a known
+// directive is treated as a literal.  Directives:
+//
+//   %s   string span, payload = (u32 ptr, u32 len) packed into u64
+//   %d   signed i64
+//   %u   unsigned u64
+//   %f   f64 (bit-cast into payload)
+//   %b   i32 bool (prints "true" / "false")
+//   %v   u32 CelValue offset; host pretty-prints kind + payload
+//   %%   literal percent
+//
+// Anything else (a bare `%x`, an unmatched trailing `%`, an argc /
+// directive mismatch) is printed verbatim — logging is diagnostic-only
+// and must never trap.
+enum {
+  CEL_LOG_TAG_STR = 1,
+  CEL_LOG_TAG_INT = 2,
+  CEL_LOG_TAG_UINT = 3,
+  CEL_LOG_TAG_DOUBLE = 4,
+  CEL_LOG_TAG_BOOL = 5,
+  CEL_LOG_TAG_VALUE = 6,
+};
+
+// Host import.  On wasm32 the `import_module` / `import_name`
+// attributes force the symbol into an `(import "cel_env" "cel_log"
+// …)` entry that the host loader satisfies via `RegisterCelLog`
+// before the runtime instance stands up.  On the native-host build
+// `cel_runtime.c` provides a weak no-op so linking as a plain C
+// library for unit tests "just works"; embedders that want to
+// capture runtime-native log lines can define a strong override.
+#ifdef __wasm__
+__attribute__((import_module("cel_env"), import_name("cel_log")))
+#endif
+void cel_log(uint32_t file_ptr, uint32_t file_len, uint32_t fn_ptr,
+             uint32_t fn_len, uint32_t line, uint32_t fmt_ptr, uint32_t fmt_len,
+             uint32_t argv_ptr, uint32_t argc);
+
+// Ergonomic call-site helpers.  Each expands to a `(uint64_t) tag_word,
+// (uint64_t) payload` pair so `CEL_LOG` can slam them into a
+// `uint64_t[]` compound literal.  The tag word's low 32 bits hold the
+// `CEL_LOG_TAG_*` discriminator; the high 32 bits are reserved (zero
+// today — the host decoder reads only the low 32).  Total slot size
+// is 16 bytes (tag u32, pad u32, payload u64) — matching the
+// `kArgvSlotBytes` constant and the `(u32 tag, u32 pad, u64 payload)`
+// comment on `CelLogWireArgs`.
+//
+//   CEL_LOG_STR(ptr, len)  — %s
+//   CEL_LOG_INT(i)         — %d
+//   CEL_LOG_UINT(u)        — %u
+//   CEL_LOG_DBL(d)         — %f
+//   CEL_LOG_BOOL(b)        — %b
+//   CEL_LOG_V(off)         — %v
+//
+// The string-span packer keeps ptr in the low 32 bits and len in the
+// high 32 — the host decoder splits them back out via a mask / shift.
+#define CEL_LOG_STR(ptr, len) \
+  (uint64_t)CEL_LOG_TAG_STR,  \
+      ((uint64_t)(uint32_t)(ptr)) | ((uint64_t)(uint32_t)(len) << 32)
+
+#define CEL_LOG_INT(i) (uint64_t)CEL_LOG_TAG_INT, (uint64_t)(int64_t)(i)
+
+#define CEL_LOG_UINT(u) (uint64_t)CEL_LOG_TAG_UINT, (uint64_t)(u)
+
+// Bit-cast the double through a union-equivalent so strict-aliasing
+// stays happy on every target.  Picks a ULL payload the host reads
+// back via `memcpy(&d, &payload, 8)`.
+#define CEL_LOG_DBL(d) \
+  (uint64_t)CEL_LOG_TAG_DOUBLE, __builtin_bit_cast(uint64_t, (double)(d))
+
+#define CEL_LOG_BOOL(b) (uint64_t)CEL_LOG_TAG_BOOL, (uint64_t)((b) ? 1 : 0)
+
+#define CEL_LOG_V(off) (uint64_t)CEL_LOG_TAG_VALUE, (uint64_t)(uint32_t)(off)
+
+// Trampoline from the ergonomic `(const char*, ...)` call-site shape
+// to the `(uint32_t, ...)` wire ABI.  Keeps the macro a single
+// expression and hides the `uintptr_t`→`uint32_t` cast so callers
+// don't have to think about the wasm-vs-native layering.  On wasm32
+// a C pointer is a uint32 linear-memory offset already; on native
+// host the cast truncates 64-bit pointers to 32 bits — the weak
+// default `cel_log` body is a no-op so that's harmless, but embedders
+// wiring a native-host sink should intercept this call directly (not
+// the trampoline) to get the unfiltered pointers.
+void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
+                  uint32_t fn_len, uint32_t line, const char* fmt,
+                  uint32_t fmt_len, const uint64_t* argv, uint32_t argc);
+
+// Fire a log line.  Compiles to nothing when CEL_LOG_DISABLED is set,
+// so tests can disable the hook for perf-sensitive runs.  Default is
+// enabled — the audit driver wants it on.
+#ifdef CEL_LOG_DISABLED
+#define CEL_LOG(fmt_literal, ...) ((void)0)
+#else
+// Each `CEL_LOG_*` call-site helper expands to a `(tag_word, payload)`
+// pair of `uint64_t` values — a 16-byte slot once staged in memory.
+// Stage them into a compound-literal array sized `argc * 2 + 1` (the
+// trailing sentinel 0 makes an empty arg list legal — a zero-element
+// C array is non-standard).  Divide the element count minus the
+// sentinel by 2 to recover argc.
+#define CEL_LOG(fmt_literal, ...)                                        \
+  do {                                                                   \
+    static const char kCelLogFmt_[] = (fmt_literal);                     \
+    uint64_t argv_[] = {__VA_ARGS__ 0};                                  \
+    uint32_t argc_ =                                                     \
+        (uint32_t)(((sizeof(argv_) / sizeof(uint64_t)) - 1u) / 2u);      \
+    cel_log_emit(__FILE__, (uint32_t)sizeof(__FILE__) - 1u, __func__,    \
+                 cel_strlen_(__func__), (uint32_t)__LINE__, kCelLogFmt_, \
+                 (uint32_t)sizeof(kCelLogFmt_) - 1u, argv_, argc_);      \
+  } while (0)
+#endif
+
+// In-runtime strlen.  Small enough to inline; also keeps the
+// freestanding wasm build self-contained.  Not exported.
+static inline uint32_t cel_strlen_(const char* s) {
+  uint32_t n = 0;
+  while (s[n] != '\0') {
+    ++n;
+  }
+  return n;
+}
 
 #ifdef __cplusplus
 }

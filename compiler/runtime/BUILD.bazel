@@ -45,6 +45,7 @@ genrule(
     srcs = [
         "cel_runtime.c",
         "cel_runtime.h",
+        "wasm_imports.txt",
     ],
     outs = ["cel_runtime.wasm"],
     cmd = " ".join([
@@ -55,6 +56,13 @@ genrule(
         "-O2",
         "-Wl,--no-entry",
         "-Wl,--export-all",
+        # Host-imported symbols (see `import_module` / `import_name`
+        # attributes in cel_runtime.h).  An explicit allow-list rather
+        # than `--allow-undefined` — a typo that introduces a new
+        # undefined reference now fails at link time instead of at
+        # instantiation.  Add to wasm_imports.txt when a new host
+        # import lands.
+        "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
         "$(location :cel_runtime.c)",

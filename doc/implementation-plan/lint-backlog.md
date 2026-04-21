@@ -18,7 +18,7 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `google-readability-braces-around-statements` | 3 |
 | `bugprone-throwing-static-initialization` | 16 |
 | `misc-use-internal-linkage` | 16 |
-| `readability-function-size` | 5 |
+| `readability-function-size` | 7 |
 | `cppcoreguidelines-no-malloc` | 6 |
 | `readability-isolate-declaration` | 3 |
 | `bugprone-unchecked-optional-access` | 2 |
@@ -31,10 +31,11 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 | `performance-no-int-to-ptr` | 1 |
 | `readability-static-accessed-through-instance` | 6 |
 
-**Total unique warnings:** 121 (was 184; M4 slice B cleared 62 in
+**Total unique warnings:** 123 (was 184; M4 slice B cleared 62 in
 `compiler/codegen/expr_lower.cc` (50), `expr_lower_test.cc` (7), and
 `compiler/e2e/eval_test.cc` (5); M4 slice C commit 3a cleared 1 in
-`compiler/host/host_loader.cc` by splitting `LoadEval`).
+`compiler/host/host_loader.cc` by splitting `LoadEval`; cel_log wire
+ABI re-opened 2 in `compiler/runtime/cel_runtime.c` on 2026-04-20).
 
 ## Notes for triage
 
@@ -249,15 +250,23 @@ initialises the contained `LoweredFunction`.
 
 - L38: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
-### `compiler/runtime/cel_runtime.c` — 0 warnings
+### `compiler/runtime/cel_runtime.c` — 2 warnings
 
-Cleared by M4 slice A (2026-04-19): the three `readability-isolate-
-declaration` sites split their paired `sl,pl` / `sl,xl` / `sl,nl`
-into one-per-line; `#if defined(__wasm__)` became `#ifdef __wasm__`;
-and `cv_at` dropped the redundant `(void*)` so the cast through void
-was no longer needed (we're compiling the file as C via
-`--extra-arg-before=-xc` in `scripts/lint.sh`, so there is no strict-
-aliasing problem to dance around).
+Previously cleared by M4 slice A (2026-04-19).  Re-opened on
+2026-04-20 by the cel_log wire ABI:
+
+**`readability-function-size`** (2)
+
+- L1375: function `cel_log` — 9 parameters (threshold 6).  The weak
+  runtime-side stub matches the wasm import signature, which carries
+  call-site metadata (file/line/fn) plus a format span and a
+  (argv_ptr, argc) payload pair.  Can be collapsed to a single
+  struct-pointer once the CEL_LOG macro stacks its args in a
+  compound literal and the host trampoline reads them from linear
+  memory at the offset.  Tracked for a follow-up slice.
+- L1392: function `cel_log_emit` — same 9 params, called by the
+  weak stub.  Collapses together with `cel_log` in the struct-
+  pointer refactor.
 
 ### `compiler/frontend/parse_and_check_test.cc` — 3 warnings
 

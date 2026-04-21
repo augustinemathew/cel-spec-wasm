@@ -99,7 +99,7 @@ TEST_F(RuntimeTest, ValueAtHandlesZero) {
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
   ASSERT_NE(v, nullptr);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_INT);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_INT));
   EXPECT_EQ(v->payload.i, 42);
 }
 
@@ -109,7 +109,7 @@ TEST_F(RuntimeTest, NullIsSingleton) {
   EXPECT_EQ(a, b);
   CelValue* v = cel_value_at(a);
   ASSERT_NE(v, nullptr);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_NULL);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_NULL));
 }
 
 TEST_F(RuntimeTest, BoolIsSingleton) {
@@ -122,8 +122,8 @@ TEST_F(RuntimeTest, BoolIsSingleton) {
   EXPECT_NE(t1, f1);
   EXPECT_EQ(cel_value_at(t1)->payload.b, 1);
   EXPECT_EQ(cel_value_at(f1)->payload.b, 0);
-  EXPECT_EQ(cel_value_at(t1)->kind, (uint32_t)CEL_BOOL);
-  EXPECT_EQ(cel_value_at(f1)->kind, (uint32_t)CEL_BOOL);
+  EXPECT_EQ(cel_value_at(t1)->kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cel_value_at(f1)->kind, static_cast<uint32_t>(CEL_BOOL));
 }
 
 TEST_F(RuntimeTest, MakeIntRoundTrips) {
@@ -135,7 +135,7 @@ TEST_F(RuntimeTest, MakeIntRoundTrips) {
     uint32_t off = cel_make_int(c.in);
     ASSERT_NE(off, 0u);
     CelValue* v = cel_value_at(off);
-    EXPECT_EQ(v->kind, (uint32_t)CEL_INT);
+    EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_INT));
     EXPECT_EQ(v->payload.i, c.in);
   }
 }
@@ -146,7 +146,7 @@ TEST_F(RuntimeTest, MakeUintRoundTrips) {
     uint32_t off = cel_make_uint(u);
     ASSERT_NE(off, 0u);
     CelValue* v = cel_value_at(off);
-    EXPECT_EQ(v->kind, (uint32_t)CEL_UINT);
+    EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UINT));
     EXPECT_EQ(v->payload.u, u);
   }
 }
@@ -156,7 +156,7 @@ TEST_F(RuntimeTest, MakeDoubleRoundTrips) {
     uint32_t off = cel_make_double(d);
     ASSERT_NE(off, 0u);
     CelValue* v = cel_value_at(off);
-    EXPECT_EQ(v->kind, (uint32_t)CEL_DOUBLE);
+    EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_DOUBLE));
     EXPECT_EQ(v->payload.d, d);
   }
 }
@@ -167,7 +167,7 @@ TEST_F(RuntimeTest, MakeStringCopiesBytes) {
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
   ASSERT_NE(v, nullptr);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_STRING);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_STRING));
   EXPECT_EQ(v->payload.s.len, 5u);
   ASSERT_NE(v->payload.s.ptr, 0u);
   EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, src, 5), 0);
@@ -177,7 +177,7 @@ TEST_F(RuntimeTest, MakeStringEmpty) {
   uint32_t off = cel_make_string("", 0);
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_STRING);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_STRING));
   EXPECT_EQ(v->payload.s.len, 0u);
   EXPECT_EQ(v->payload.s.ptr, 0u);
 }
@@ -191,7 +191,7 @@ TEST_F(RuntimeTest, MakeStringViewAliases) {
   uint32_t off = cel_make_string_view(ptr, 4);
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_STRING);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_STRING));
   EXPECT_EQ(v->payload.s.ptr, ptr);
   EXPECT_EQ(v->payload.s.len, 4u);
 }
@@ -201,7 +201,7 @@ TEST_F(RuntimeTest, MakeBytesCopiesBytes) {
   uint32_t off = cel_make_bytes(src, 3);
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_BYTES);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_BYTES));
   EXPECT_EQ(v->payload.bytes.len, 3u);
   EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.bytes.ptr, src, 3), 0);
 }
@@ -212,7 +212,7 @@ TEST_F(RuntimeTest, MakeBytesViewAliases) {
   std::memcpy(cel_mem_base() + ptr, "ok", 2);
   uint32_t off = cel_make_bytes_view(ptr, 2);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_BYTES);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_BYTES));
   EXPECT_EQ(v->payload.bytes.ptr, ptr);
   EXPECT_EQ(v->payload.bytes.len, 2u);
 }
@@ -220,21 +220,21 @@ TEST_F(RuntimeTest, MakeBytesViewAliases) {
 TEST_F(RuntimeTest, MakeMessageCarriesSlot) {
   uint32_t off = cel_make_message(17);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_MESSAGE);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_MESSAGE));
   EXPECT_EQ(v->payload.msg_slot, 17u);
 }
 
 TEST_F(RuntimeTest, MakeType) {
   uint32_t off = cel_make_type(5);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_TYPE);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_TYPE));
   EXPECT_EQ(v->payload.type_id, 5u);
 }
 
 TEST_F(RuntimeTest, MakeDurationCarriesSecondsAndNanos) {
   uint32_t off = cel_make_duration(-5, 250);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_DURATION);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_DURATION));
   EXPECT_EQ(v->payload.dur.seconds, -5);
   EXPECT_EQ(v->payload.dur.nanos, 250);
 }
@@ -242,7 +242,7 @@ TEST_F(RuntimeTest, MakeDurationCarriesSecondsAndNanos) {
 TEST_F(RuntimeTest, MakeTimestampCarriesSecondsAndNanos) {
   uint32_t off = cel_make_timestamp(1'700'000'000, 123);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_TIMESTAMP);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_TIMESTAMP));
   EXPECT_EQ(v->payload.ts.seconds, 1'700'000'000);
   EXPECT_EQ(v->payload.ts.nanos, 123);
 }
@@ -253,7 +253,7 @@ TEST_F(RuntimeTest, MakeOptionalSomeWrapsInner) {
   uint32_t off = cel_make_optional_some(inner);
   ASSERT_NE(off, 0u);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_OPTIONAL);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_OPTIONAL));
   EXPECT_EQ(v->payload.opt, inner);
 }
 
@@ -268,14 +268,14 @@ TEST_F(RuntimeTest, MakeOptionalNoneIsSingleton) {
   uint32_t b = cel_make_optional_none();
   EXPECT_EQ(a, b);
   CelValue* v = cel_value_at(a);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_OPTIONAL);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_OPTIONAL));
   EXPECT_EQ(v->payload.opt, 0u);
 }
 
 TEST_F(RuntimeTest, MakeUnknownCarriesAttributeId) {
   uint32_t off = cel_make_unknown(42);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_UNKNOWN);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UNKNOWN));
   ASSERT_NE(v->payload.unk, 0u);
   const auto* set =
       reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.unk);
@@ -294,421 +294,13 @@ TEST_F(RuntimeTest, MakeErrorCarriesCodeAndMessage) {
 
   uint32_t off = cel_make_error(/*code=*/7, msg_ptr, /*msg_len=*/4);
   CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_ERROR);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_ERROR));
   ASSERT_NE(v->payload.err, 0u);
   const auto* err =
       reinterpret_cast<const uint32_t*>(cel_mem_base() + v->payload.err);
   EXPECT_EQ(err[0], 7u);
   EXPECT_EQ(err[1], msg_ptr);
   EXPECT_EQ(err[2], 4u);
-}
-
-TEST_F(RuntimeTest, StringEqEmpty) {
-  uint32_t a = cel_make_string("", 0);
-  uint32_t b = cel_make_string("", 0);
-  EXPECT_EQ(cel_string_eq(a, b), 1);
-}
-
-TEST_F(RuntimeTest, StringEqEqual) {
-  uint32_t a = cel_make_string("hello", 5);
-  uint32_t b = cel_make_string("hello", 5);
-  EXPECT_EQ(cel_string_eq(a, b), 1);
-}
-
-TEST_F(RuntimeTest, StringEqDifferentLengths) {
-  uint32_t a = cel_make_string("hello", 5);
-  uint32_t b = cel_make_string("helloo", 6);
-  EXPECT_EQ(cel_string_eq(a, b), 0);
-}
-
-TEST_F(RuntimeTest, StringEqDifferentContent) {
-  uint32_t a = cel_make_string("hello", 5);
-  uint32_t b = cel_make_string("world", 5);
-  EXPECT_EQ(cel_string_eq(a, b), 0);
-}
-
-TEST_F(RuntimeTest, StringEqRejectsNonString) {
-  uint32_t s = cel_make_string("x", 1);
-  uint32_t b = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_string_eq(s, b), 0);
-  EXPECT_EQ(cel_string_eq(b, s), 0);
-}
-
-TEST_F(RuntimeTest, StringEqRejectsZeroOffset) {
-  uint32_t s = cel_make_string("x", 1);
-  EXPECT_EQ(cel_string_eq(0, s), 0);
-  EXPECT_EQ(cel_string_eq(s, 0), 0);
-}
-
-TEST_F(RuntimeTest, BytesEqEmpty) {
-  uint32_t a = cel_make_bytes("", 0);
-  uint32_t b = cel_make_bytes("", 0);
-  EXPECT_EQ(cel_bytes_eq(a, b), 1);
-}
-
-TEST_F(RuntimeTest, BytesEqEqual) {
-  uint8_t src[3] = {0, 1, 2};
-  uint32_t a = cel_make_bytes(src, 3);
-  uint32_t b = cel_make_bytes(src, 3);
-  EXPECT_EQ(cel_bytes_eq(a, b), 1);
-}
-
-TEST_F(RuntimeTest, BytesEqDifferentContent) {
-  uint8_t x[3] = {0, 1, 2};
-  uint8_t y[3] = {0, 1, 3};
-  uint32_t a = cel_make_bytes(x, 3);
-  uint32_t b = cel_make_bytes(y, 3);
-  EXPECT_EQ(cel_bytes_eq(a, b), 0);
-}
-
-TEST_F(RuntimeTest, BytesEqDifferentLengths) {
-  uint8_t x[3] = {0, 1, 2};
-  uint8_t y[4] = {0, 1, 2, 3};
-  uint32_t a = cel_make_bytes(x, 3);
-  uint32_t b = cel_make_bytes(y, 4);
-  EXPECT_EQ(cel_bytes_eq(a, b), 0);
-}
-
-TEST_F(RuntimeTest, BytesEqRejectsNonBytes) {
-  uint32_t a = cel_make_string("x", 1);
-  uint32_t b = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_bytes_eq(a, b), 0);
-}
-
-// ---- cel_string_concat -----------------------------------------------------
-
-TEST_F(RuntimeTest, StringConcatJoinsPayloads) {
-  uint32_t a = cel_make_string("foo", 3);
-  uint32_t b = cel_make_string("bar", 3);
-  uint32_t r = cel_string_concat(a, b);
-  ASSERT_NE(r, 0u);
-  CelValue* v = cel_value_at(r);
-  ASSERT_NE(v, nullptr);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_STRING);
-  EXPECT_EQ(v->payload.s.len, 6u);
-  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "foobar", 6), 0);
-}
-
-TEST_F(RuntimeTest, StringConcatLeftEmpty) {
-  uint32_t a = cel_make_string("", 0);
-  uint32_t b = cel_make_string("abc", 3);
-  uint32_t r = cel_string_concat(a, b);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 3u);
-  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "abc", 3), 0);
-}
-
-TEST_F(RuntimeTest, StringConcatRightEmpty) {
-  uint32_t a = cel_make_string("abc", 3);
-  uint32_t b = cel_make_string("", 0);
-  uint32_t r = cel_string_concat(a, b);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 3u);
-  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "abc", 3), 0);
-}
-
-TEST_F(RuntimeTest, StringConcatBothEmpty) {
-  uint32_t a = cel_make_string("", 0);
-  uint32_t b = cel_make_string("", 0);
-  uint32_t r = cel_string_concat(a, b);
-  ASSERT_NE(r, 0u);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 0u);
-  EXPECT_EQ(v->payload.s.ptr, 0u);
-}
-
-TEST_F(RuntimeTest, StringConcatResultIndependentOfInputs) {
-  // Concat must copy into a fresh region so resetting after a subsequent
-  // allocation that overwrote the inputs' data would not invalidate the
-  // result.  We simulate that by checking that the result's data pointer
-  // differs from either input's data pointer.
-  uint32_t a = cel_make_string("aaa", 3);
-  uint32_t b = cel_make_string("bbb", 3);
-  uint32_t r = cel_string_concat(a, b);
-  const CelValue* va = cel_value_at(a);
-  const CelValue* vb = cel_value_at(b);
-  const CelValue* vr = cel_value_at(r);
-  EXPECT_NE(vr->payload.s.ptr, va->payload.s.ptr);
-  EXPECT_NE(vr->payload.s.ptr, vb->payload.s.ptr);
-}
-
-TEST_F(RuntimeTest, StringConcatRejectsZeroOffsets) {
-  uint32_t a = cel_make_string("x", 1);
-  EXPECT_EQ(cel_string_concat(0, a), 0u);
-  EXPECT_EQ(cel_string_concat(a, 0), 0u);
-  EXPECT_EQ(cel_string_concat(0, 0), 0u);
-}
-
-TEST_F(RuntimeTest, StringConcatRejectsNonStringOperands) {
-  // Concat must be strict about type to catch a codegen bug where an int or
-  // bytes operand sneaks past the checker's type rules.
-  uint32_t s = cel_make_string("x", 1);
-  uint32_t bts = cel_make_bytes("y", 1);
-  uint32_t i = cel_make_int(7);
-  EXPECT_EQ(cel_string_concat(s, bts), 0u);
-  EXPECT_EQ(cel_string_concat(bts, s), 0u);
-  EXPECT_EQ(cel_string_concat(s, i), 0u);
-}
-
-// ---- cel_string_size -------------------------------------------------------
-
-TEST_F(RuntimeTest, StringSizeAscii) {
-  uint32_t s = cel_make_string("hello", 5);
-  EXPECT_EQ(cel_string_size(s), 5);
-}
-
-TEST_F(RuntimeTest, StringSizeEmpty) {
-  uint32_t s = cel_make_string("", 0);
-  EXPECT_EQ(cel_string_size(s), 0);
-}
-
-TEST_F(RuntimeTest, StringSizeCountsCodepointsNotBytes) {
-  // "héllo" in UTF-8: h (1) é (0xC3 0xA9, 2 bytes) l l o — 6 bytes, 5 cps.
-  const char* src = "h\xC3\xA9llo";
-  uint32_t s = cel_make_string(src, 6);
-  EXPECT_EQ(cel_string_size(s), 5);
-}
-
-TEST_F(RuntimeTest, StringSizeCountsSurrogatePair) {
-  // U+1F600 (grinning face) encodes as 4 UTF-8 bytes: F0 9F 98 80. That's
-  // one code point even though it occupies four bytes.
-  const char* src = "\xF0\x9F\x98\x80";
-  uint32_t s = cel_make_string(src, 4);
-  EXPECT_EQ(cel_string_size(s), 1);
-}
-
-TEST_F(RuntimeTest, StringSizeRejectsZeroOffset) {
-  EXPECT_EQ(cel_string_size(0), -1);
-}
-
-TEST_F(RuntimeTest, StringSizeRejectsNonString) {
-  uint32_t b = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_string_size(b), -1);
-  uint32_t i = cel_make_int(9);
-  EXPECT_EQ(cel_string_size(i), -1);
-}
-
-// ---- cel_string_starts_with / ends_with / contains -------------------------
-
-TEST_F(RuntimeTest, StartsWithTrue) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t p = cel_make_string("he", 2);
-  EXPECT_EQ(cel_string_starts_with(s, p), 1);
-}
-
-TEST_F(RuntimeTest, StartsWithFalse) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t p = cel_make_string("xy", 2);
-  EXPECT_EQ(cel_string_starts_with(s, p), 0);
-}
-
-TEST_F(RuntimeTest, StartsWithEmptyPrefixIsTrue) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t p = cel_make_string("", 0);
-  EXPECT_EQ(cel_string_starts_with(s, p), 1);
-}
-
-TEST_F(RuntimeTest, StartsWithLongerPrefixIsFalse) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t p = cel_make_string("hello", 5);
-  EXPECT_EQ(cel_string_starts_with(s, p), 0);
-}
-
-TEST_F(RuntimeTest, StartsWithFullMatch) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t p = cel_make_string("hi", 2);
-  EXPECT_EQ(cel_string_starts_with(s, p), 1);
-}
-
-TEST_F(RuntimeTest, StartsWithRejectsZeroOffsets) {
-  uint32_t s = cel_make_string("x", 1);
-  EXPECT_EQ(cel_string_starts_with(0, s), 0);
-  EXPECT_EQ(cel_string_starts_with(s, 0), 0);
-}
-
-TEST_F(RuntimeTest, StartsWithRejectsNonString) {
-  uint32_t s = cel_make_string("x", 1);
-  uint32_t b = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_string_starts_with(s, b), 0);
-  EXPECT_EQ(cel_string_starts_with(b, s), 0);
-}
-
-TEST_F(RuntimeTest, EndsWithTrue) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t x = cel_make_string("lo", 2);
-  EXPECT_EQ(cel_string_ends_with(s, x), 1);
-}
-
-TEST_F(RuntimeTest, EndsWithFalse) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t x = cel_make_string("lx", 2);
-  EXPECT_EQ(cel_string_ends_with(s, x), 0);
-}
-
-TEST_F(RuntimeTest, EndsWithEmptySuffixIsTrue) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t x = cel_make_string("", 0);
-  EXPECT_EQ(cel_string_ends_with(s, x), 1);
-}
-
-TEST_F(RuntimeTest, EndsWithLongerSuffixIsFalse) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t x = cel_make_string("hello", 5);
-  EXPECT_EQ(cel_string_ends_with(s, x), 0);
-}
-
-TEST_F(RuntimeTest, EndsWithFullMatch) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t x = cel_make_string("hi", 2);
-  EXPECT_EQ(cel_string_ends_with(s, x), 1);
-}
-
-TEST_F(RuntimeTest, EndsWithRejectsZeroOffsets) {
-  uint32_t s = cel_make_string("x", 1);
-  EXPECT_EQ(cel_string_ends_with(0, s), 0);
-  EXPECT_EQ(cel_string_ends_with(s, 0), 0);
-}
-
-TEST_F(RuntimeTest, ContainsTrueMiddle) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t n = cel_make_string("ell", 3);
-  EXPECT_EQ(cel_string_contains(s, n), 1);
-}
-
-TEST_F(RuntimeTest, ContainsTruePrefix) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t n = cel_make_string("he", 2);
-  EXPECT_EQ(cel_string_contains(s, n), 1);
-}
-
-TEST_F(RuntimeTest, ContainsTrueSuffix) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t n = cel_make_string("lo", 2);
-  EXPECT_EQ(cel_string_contains(s, n), 1);
-}
-
-TEST_F(RuntimeTest, ContainsFalse) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t n = cel_make_string("xyz", 3);
-  EXPECT_EQ(cel_string_contains(s, n), 0);
-}
-
-TEST_F(RuntimeTest, ContainsEmptyNeedleIsTrue) {
-  uint32_t s = cel_make_string("hello", 5);
-  uint32_t n = cel_make_string("", 0);
-  EXPECT_EQ(cel_string_contains(s, n), 1);
-}
-
-TEST_F(RuntimeTest, ContainsLongerNeedleIsFalse) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t n = cel_make_string("hello", 5);
-  EXPECT_EQ(cel_string_contains(s, n), 0);
-}
-
-TEST_F(RuntimeTest, ContainsFullMatch) {
-  uint32_t s = cel_make_string("hi", 2);
-  uint32_t n = cel_make_string("hi", 2);
-  EXPECT_EQ(cel_string_contains(s, n), 1);
-}
-
-TEST_F(RuntimeTest, ContainsRejectsZeroOffsets) {
-  uint32_t s = cel_make_string("x", 1);
-  EXPECT_EQ(cel_string_contains(0, s), 0);
-  EXPECT_EQ(cel_string_contains(s, 0), 0);
-}
-
-TEST_F(RuntimeTest, ContainsRejectsNonString) {
-  uint32_t s = cel_make_string("x", 1);
-  uint32_t b = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_string_contains(s, b), 0);
-}
-
-// ---- cel_bytes_concat ------------------------------------------------------
-
-TEST_F(RuntimeTest, BytesConcatJoinsPayloads) {
-  uint32_t a = cel_make_bytes("\x01\x02", 2);
-  uint32_t b = cel_make_bytes("\x03\xff", 2);
-  uint32_t r = cel_bytes_concat(a, b);
-  ASSERT_NE(r, 0u);
-  CelValue* v = cel_value_at(r);
-  ASSERT_NE(v, nullptr);
-  EXPECT_EQ(v->kind, (uint32_t)CEL_BYTES);
-  EXPECT_EQ(v->payload.s.len, 4u);
-  EXPECT_EQ(
-      std::memcmp(cel_mem_base() + v->payload.s.ptr, "\x01\x02\x03\xff", 4), 0);
-}
-
-TEST_F(RuntimeTest, BytesConcatLeftEmpty) {
-  uint32_t a = cel_make_bytes("", 0);
-  uint32_t b = cel_make_bytes("\xaa\xbb", 2);
-  uint32_t r = cel_bytes_concat(a, b);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 2u);
-  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "\xaa\xbb", 2), 0);
-}
-
-TEST_F(RuntimeTest, BytesConcatRightEmpty) {
-  uint32_t a = cel_make_bytes("\xaa\xbb", 2);
-  uint32_t b = cel_make_bytes("", 0);
-  uint32_t r = cel_bytes_concat(a, b);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 2u);
-  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "\xaa\xbb", 2), 0);
-}
-
-TEST_F(RuntimeTest, BytesConcatBothEmpty) {
-  uint32_t a = cel_make_bytes("", 0);
-  uint32_t b = cel_make_bytes("", 0);
-  uint32_t r = cel_bytes_concat(a, b);
-  ASSERT_NE(r, 0u);
-  CelValue* v = cel_value_at(r);
-  EXPECT_EQ(v->payload.s.len, 0u);
-  EXPECT_EQ(v->payload.s.ptr, 0u);
-}
-
-TEST_F(RuntimeTest, BytesConcatRejectsZeroOffsets) {
-  uint32_t a = cel_make_bytes("x", 1);
-  EXPECT_EQ(cel_bytes_concat(0, a), 0u);
-  EXPECT_EQ(cel_bytes_concat(a, 0), 0u);
-  EXPECT_EQ(cel_bytes_concat(0, 0), 0u);
-}
-
-TEST_F(RuntimeTest, BytesConcatRejectsNonBytesOperands) {
-  // Bytes-specific so a codegen bug that feeds a string through
-  // `cel_bytes_concat` never produces a CEL_BYTES result whose payload
-  // contains UTF-8 the rest of the pipeline will misinterpret.
-  uint32_t bts = cel_make_bytes("y", 1);
-  uint32_t s = cel_make_string("x", 1);
-  uint32_t i = cel_make_int(7);
-  EXPECT_EQ(cel_bytes_concat(s, bts), 0u);
-  EXPECT_EQ(cel_bytes_concat(bts, s), 0u);
-  EXPECT_EQ(cel_bytes_concat(bts, i), 0u);
-}
-
-// ---- cel_bytes_size --------------------------------------------------------
-
-TEST_F(RuntimeTest, BytesSizeCountsBytes) {
-  // size(bytes) is byte count per CEL §1110 — the multi-byte UTF-8
-  // sequence that counts as one code point for `cel_string_size` must
-  // count as four bytes here.
-  uint32_t b = cel_make_bytes("\xF0\x9F\x98\x80", 4);
-  EXPECT_EQ(cel_bytes_size(b), 4);
-}
-
-TEST_F(RuntimeTest, BytesSizeEmpty) {
-  uint32_t b = cel_make_bytes("", 0);
-  EXPECT_EQ(cel_bytes_size(b), 0);
-}
-
-TEST_F(RuntimeTest, BytesSizeRejectsZeroOffset) {
-  EXPECT_EQ(cel_bytes_size(0), -1);
-}
-
-TEST_F(RuntimeTest, BytesSizeRejectsNonBytes) {
-  uint32_t s = cel_make_string("xyz", 3);
-  EXPECT_EQ(cel_bytes_size(s), -1);
-  uint32_t i = cel_make_int(9);
-  EXPECT_EQ(cel_bytes_size(i), -1);
 }
 
 // ---- cel_bool_from_value ---------------------------------------------------
@@ -1349,18 +941,6 @@ TEST_F(RuntimeTest, UintModAtUuByZero) {
   ExpectErrorWithCode(out, CEL_ERR_MODULUS_BY_ZERO);
 }
 
-TEST_F(RuntimeTest, IntNegAtIHappyPath) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_i(out, 5);
-  ExpectInt(out, -5);
-}
-
-TEST_F(RuntimeTest, IntNegAtIMinOverflows) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_i(out, INT64_MIN);
-  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
-}
-
 TEST_F(RuntimeTest, ScalarAtZeroOffsetIsNoOp) {
   // All scalar-sret helpers must early-return on out == 0 without
   // trapping; mirrors the BoxOutZeroIsNoOp contract.
@@ -1368,7 +948,6 @@ TEST_F(RuntimeTest, ScalarAtZeroOffsetIsNoOp) {
   CelKind prev_kind = KindOf(null_off);
   cel_int_add_at_ii(0, 1, 2);
   cel_uint_add_at_uu(0, 1u, 2u);
-  cel_int_neg_at_i(0, 1);
   EXPECT_EQ(KindOf(null_off), prev_kind);
 }
 
@@ -1476,37 +1055,6 @@ TEST_F(RuntimeTest, UintSubAtVvKindMismatch) {
   ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
 }
 
-TEST_F(RuntimeTest, IntNegAtVHappyPath) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_v(out, cel_make_int(5));
-  ExpectInt(out, -5);
-}
-
-TEST_F(RuntimeTest, IntNegAtVMinOverflows) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_v(out, cel_make_int(INT64_MIN));
-  ExpectErrorWithCode(out, CEL_ERR_OVERFLOW);
-}
-
-TEST_F(RuntimeTest, IntNegAtVUnknownAbsorbs) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_v(out, cel_make_unknown(42u));
-  ExpectUnknownWith(out, {42u});
-}
-
-TEST_F(RuntimeTest, IntNegAtVErrorAbsorbs) {
-  uint32_t out = AllocSlot();
-  uint32_t err = cel_make_error(CEL_ERR_DIVIDE_BY_ZERO, 0, 0);
-  cel_int_neg_at_v(out, err);
-  ExpectErrorWithCode(out, CEL_ERR_DIVIDE_BY_ZERO);
-}
-
-TEST_F(RuntimeTest, IntNegAtVKindMismatch) {
-  uint32_t out = AllocSlot();
-  cel_int_neg_at_v(out, cel_make_uint(1u));
-  ExpectErrorWithCode(out, CEL_ERR_TYPE_MISMATCH);
-}
-
 TEST_F(RuntimeTest, ScalarAtVvZeroOffsetIsNoOp) {
   // The prologue's `out == 0` early-return must fire before any
   // arena read, mirroring the `_at_ii` contract.
@@ -1514,7 +1062,6 @@ TEST_F(RuntimeTest, ScalarAtVvZeroOffsetIsNoOp) {
   CelKind prev_kind = KindOf(null_off);
   cel_int_add_at_vv(0, cel_make_int(1), cel_make_int(2));
   cel_uint_add_at_vv(0, cel_make_uint(1u), cel_make_uint(2u));
-  cel_int_neg_at_v(0, cel_make_int(1));
   EXPECT_EQ(KindOf(null_off), prev_kind);
 }
 

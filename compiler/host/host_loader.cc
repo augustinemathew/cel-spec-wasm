@@ -16,6 +16,7 @@
 #include "absl/types/span.h"
 #include "compiler/codegen/cel_abi.pb.h"
 #include "compiler/host/cel_host_wasmtime.h"
+#include "compiler/host/cel_log.h"
 #include "compiler/runtime/cel_runtime_wasm_bytes.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -76,23 +77,6 @@ absl::Status CompileModule(wasm_engine_t* engine,
   if (err != nullptr) {
     return absl::InternalError(
         absl::StrCat("wasmtime_module_new(", label, "): ", ErrorMessage(err)));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status InstantiateBare(wasmtime_context_t* ctx, wasmtime_module_t* module,
-                             absl::string_view label,
-                             wasmtime_instance_t* out) {
-  wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err = wasmtime_instance_new(
-      ctx, module, /*imports=*/nullptr, /*nimports=*/0, out, &trap);
-  if (err != nullptr) {
-    return absl::InternalError(absl::StrCat("wasmtime_instance_new(", label,
-                                            "): ", ErrorMessage(err)));
-  }
-  if (trap != nullptr) {
-    return absl::InternalError(absl::StrCat("start-function trap in ", label,
-                                            ": ", TrapMessage(trap)));
   }
   return absl::OkStatus();
 }
@@ -487,19 +471,41 @@ absl::Status LoadedEval::InitEngineStoreAndCompile(
       !s.ok()) {
     return s;
   }
-  // Runtime has no imports — instantiate it bare.
-  return InstantiateBare(ctx, runtime_mod_, "runtime", &runtime_instance_);
-}
-
-absl::Status LoadedEval::SetupLinkerAndInstantiateEval(
-    wasmtime_context_t* absl_nonnull ctx) {
-  // Linker: register the runtime's exports under the namespace `"cel"`
-  // so the eval module's `(import "cel" "memory" …)` and every
-  // `(import "cel" "cel_*" …)` resolves without per-name plumbing.
+  // Runtime imports `cel_env.cel_log` (see DeclareAllocAndSpanImports in
+  // compiler/codegen/expr_lower.cc and `cel_runtime.h`'s
+  // `import_module`/`import_name` attributes).  Create the shared
+  // linker up front, register the log trampoline, and instantiate the
+  // runtime through the same linker — the eval module will reuse it
+  // for its own `cel_log` import plus the `cel` / `cel_host` namespaces.
   linker_ = wasmtime_linker_new(engine_);
   if (linker_ == nullptr) {
     return absl::InternalError("wasmtime_linker_new returned null");
   }
+  if (auto s = RegisterCelLog(linker_); !s.ok()) {
+    return s;
+  }
+  wasm_trap_t* trap = nullptr;
+  wasmtime_error_t* err = wasmtime_linker_instantiate(
+      linker_, ctx, runtime_mod_, &runtime_instance_, &trap);
+  if (err != nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "wasmtime_linker_instantiate(runtime): ", ErrorMessage(err)));
+  }
+  if (trap != nullptr) {
+    return absl::InternalError(
+        absl::StrCat("runtime start-function trap: ", TrapMessage(trap)));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status LoadedEval::SetupLinkerAndInstantiateEval(
+    wasmtime_context_t* absl_nonnull ctx) {
+  // The linker was created in InitEngineStoreAndCompile; it already
+  // carries the `cel_env.cel_log` trampoline needed by both the
+  // runtime and the eval module.  Register the runtime's exports
+  // under the namespace `"cel"` so the eval module's
+  // `(import "cel" "memory" …)` and every `(import "cel" "cel_*" …)`
+  // resolves without per-name plumbing.
   {
     const char kCelNs[] = "cel";
     wasmtime_error_t* err = wasmtime_linker_define_instance(

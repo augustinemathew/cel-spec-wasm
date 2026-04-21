@@ -728,7 +728,7 @@ TEST(EvalE2ETest, StringConcatenationProducesJoinedBytes) {
 }
 
 TEST(EvalE2ETest, StringConcatenationEmptyLhs) {
-  // cel_string_concat's la=0 branch is the one that would regress if
+  // `span_concat`'s la=0 branch is the one that would regress if
   // someone reordered the memcpy guards.  Exercise it explicitly.
   auto r = EvaluateToString("'' + 'xy'");
   ASSERT_THAT(r.status(), IsOk());

@@ -1,17 +1,20 @@
 #include "compiler/host/host_loader.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "binaryen-c.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/module.h"
 #include "compiler/frontend/parse_and_check.h"
+#include "compiler/host/cel_log.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -102,6 +105,39 @@ TEST(HostLoaderTest, RejectsNonWasmBytes) {
   std::vector<uint8_t> garbage = {0x00, 0x00, 0x00, 0x00};
   auto loaded = LoadEval(garbage);
   EXPECT_THAT(loaded.status(), StatusIs(absl::StatusCode::kInternal));
+}
+
+TEST(HostLoaderTest, CelLogSinkCapturesRuntimeEnterLines) {
+  // End-to-end: when a capture sink is installed, evaluating any
+  // expression whose lowered runtime touches a `CEL_LOG(...)`-
+  // instrumented helper (e.g. cel_alloc from a string literal) must
+  // flush at least one line through the trampoline.  This validates
+  // the full pipeline: wasm-side import → wasmtime linker binding →
+  // host trampoline → decoder → sink.
+  CapturingCelLogSink sink;
+  CelLogSink* prev = SetCelLogSink(&sink);
+
+  auto bytes = EmitEval("'hello'");
+  auto loaded = LoadEval(bytes);
+  ASSERT_THAT(loaded.status(), IsOk());
+  auto r = loaded->CallNullaryEval();
+  ASSERT_THAT(r.status(), IsOk());
+
+  // Every instrumented helper fires a `CEL_LOG("enter")` — expect at
+  // least one captured line tagged with a `cel_runtime.c` file prefix
+  // and the "enter" body.
+  bool found_enter = false;
+  for (const std::string& line : sink.lines()) {
+    if (absl::StrContains(line, "cel_runtime.c") &&
+        absl::StrContains(line, "enter")) {
+      found_enter = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_enter) << "no cel_runtime.c enter lines captured (sink saw "
+                           << sink.lines().size() << " total)";
+
+  SetCelLogSink(prev);
 }
 
 TEST(HostLoaderTest, RejectsEvalModuleWithUnsatisfiedImports) {

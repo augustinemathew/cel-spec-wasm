@@ -100,10 +100,6 @@ TEST_F(RuntimeLinkTest, ExportsEveryCelConstructor) {
            "cel_make_optional_none",
            "cel_make_unknown",
            "cel_make_error",
-           "cel_string_eq",
-           "cel_bytes_eq",
-           "cel_string_concat",
-           "cel_string_size",
            "cel_bool_from_value",
            "memory",
        }) {
@@ -111,6 +107,27 @@ TEST_F(RuntimeLinkTest, ExportsEveryCelConstructor) {
         << "missing export: " << name
         << " (cross-compiled runtime lost a symbol)";
   }
+}
+
+TEST_F(RuntimeLinkTest, ImportsCelLogFromCelEnv) {
+  // The runtime's CEL_LOG(...) calls forward to an imported
+  // `cel_env.cel_log`.  If wasm-ld ever drops the import (dead-stripped
+  // the calls, or the `import_module` attribute stopped being honoured)
+  // the host trampoline would have nothing to bind against — making
+  // the dead-code audit silent.  Walk every function and find the one
+  // imported from `cel_env`.
+  bool found = false;
+  for (BinaryenIndex i = 0; i < BinaryenGetNumFunctions(module_); ++i) {
+    BinaryenFunctionRef f = BinaryenGetFunctionByIndex(module_, i);
+    const char* mod = BinaryenFunctionImportGetModule(f);
+    const char* base = BinaryenFunctionImportGetBase(f);
+    if (mod != nullptr && base != nullptr && std::string(mod) == "cel_env" &&
+        std::string(base) == "cel_log") {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "runtime.wasm lost its `cel_env.cel_log` import";
 }
 
 TEST_F(RuntimeLinkTest, MemoryExportIsPresentAndNonZeroSize) {

@@ -92,11 +92,6 @@ BinaryenExpressionRef ScalarBody(BinaryenExpressionRef body) {
   return body;
 }
 
-BinaryenExpressionRef ScalarBodyOf(const Lowered& L) {
-  return ScalarBody(
-      BinaryenFunctionGetBody(BinaryenGetFunction(L.mod.raw(), "eval")));
-}
-
 // Positive cases: each returns OK and the validator accepts.
 
 TEST(ExprLowerTest, IntConstantReturnsI64) {
@@ -392,16 +387,7 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
            "cel_mem_base",
            "cel_make_string_view",
            "cel_make_bytes_view",
-           "cel_string_eq",
-           "cel_bytes_eq",
-           "cel_string_concat",
-           "cel_bytes_concat",
-           "cel_string_size",
-           "cel_bytes_size",
            "cel_bool_from_value",
-           "cel_string_starts_with",
-           "cel_string_ends_with",
-           "cel_string_contains",
            "cel_string_eq_v",
            "cel_bytes_eq_v",
            "cel_string_concat_v",
@@ -411,6 +397,10 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
            "cel_string_contains_v",
            "cel_string_size_v",
            "cel_bytes_size_v",
+           // cel_log is declared unconditionally so the runtime's own
+           // CEL_LOG calls (and any future codegen-emitted traces) bind
+           // against the host's `cel_env.cel_log` trampoline.
+           "cel_log",
        }) {
     EXPECT_EQ(seen.count(name), 1u) << "missing import: " << name;
   }
@@ -778,7 +768,9 @@ TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
 
 TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
   auto L = LowerOk("size('abc')");
-  // CEL's `size()` returns int, which is i64 in our ABI.
+  // CEL's `size()` returns int, which is i64 in our ABI.  After Slice F
+  // Step 7 the scalar path calls the boxed `_v` helper and unboxes via
+  // `cel_int_from_value`, so the body is `cel_int_from_value(cel_string_size_v(...))`.
   EXPECT_EQ(L.fn.result_type, BinaryenTypeNone());
   EXPECT_EQ(L.fn.result_repr, Repr::kInt);
   EXPECT_THAT(L.mod.Validate(), IsOk());
@@ -786,8 +778,11 @@ TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_size");
-  EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_int_from_value");
+  ASSERT_EQ(BinaryenCallGetNumOperands(body), 1u);
+  BinaryenExpressionRef inner = BinaryenCallGetOperandAt(body, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_string_size_v");
 }
 
 // Bytes operators (M3 slice F).  Mirrors the string shape-checks above.
@@ -856,8 +851,11 @@ TEST(ExprLowerTest, SizeBytesLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_size");
-  EXPECT_EQ(BinaryenCallGetNumOperands(body), 1u);
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_int_from_value");
+  ASSERT_EQ(BinaryenCallGetNumOperands(body), 1u);
+  BinaryenExpressionRef inner = BinaryenCallGetOperandAt(body, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_bytes_size_v");
 }
 
 TEST(ExprLowerTest, WasmTypeForScalars) {

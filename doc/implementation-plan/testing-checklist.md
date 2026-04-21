@@ -729,8 +729,25 @@ expression from `m1-type-checker.md`, plus:
       7 remains spec-correct (root ternary bubbles ERROR-in-cond).
       Codegen shape test: `TernaryUnderAbsorberLowersThroughBoxedForm`
       asserts `cel_bool_from_value` + `cel_mem_base` + `cel_or` are
-      all present.  No DISABLED rows remain for Slice F; step 7 (dead-
-      code sweep) and step 8 (doc sweep) are next.
+      all present.  No DISABLED rows remain for Slice F; step 8 (doc
+      sweep) is next.
+      **Uniform-boxed Step 7 shipped 2026-04-20**: dead-code sweep.
+      Caller-grep audit (macOS Apple clang blocks
+      `llvm-cov --show-functions`) identified the post-Slice-F
+      orphaned public ABI.  Deletions: `cel_string_eq`, `cel_bytes_eq`,
+      `cel_string_concat`, `cel_bytes_concat`, `cel_int_neg_at_i`,
+      `cel_int_neg_at_v`, and the `LowerMessageEquality` scalar C++
+      emitter.  Static-ified (still referenced by their `_v` siblings
+      as single-source-of-truth): `cel_string_starts_with`,
+      `cel_string_ends_with`, `cel_string_contains`,
+      `cel_string_size`, `cel_bytes_size`.  `LowerSizeCall` now emits
+      `cel_int_from_value(cel_*_size_v(...))` so there's one code
+      path for size() regardless of absorber context.  Test-suite:
+      40+ `RuntimeTest` cases removed (the `_v` sibling tests cover
+      the same semantics); `expr_lower_test.cc` and
+      `runtime_link_test.cc` import/export exhaustive lists trimmed;
+      `Size{String,Bytes}LowersToRuntimeCall` now asserts the
+      `cel_int_from_value` outer + `cel_*_size_v` inner compose.
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue
@@ -827,6 +844,38 @@ Updating the suite: add a new `BENCHMARK(...)` in the matching file,
 rebuild with `-c opt`, re-run to confirm the new case isn't an
 outlier.  No gate on the numbers — this is a reference, not a
 regression test.
+
+## Tooling — cel_log host import (shipped 2026-04-20)
+
+Not a CEL-language feature, so no type-×-stage row applies.  Listed
+here so the "feature → test" audit is still exhaustive.
+
+  - [x] Runtime-side macro (`CEL_LOG` + `CEL_LOG_STR`/`_INT`/`_UINT`/
+    `_F64`/`_BOOL`/`_V`) in `compiler/runtime/cel_runtime.h`;
+    `CEL_LOG_DISABLED` compile-out switch.  Import symbol
+    `cel_env.cel_log` asserted present on runtime.wasm by
+    `compiler/codegen/runtime_link_test.cc::ImportsCelLogFromCelEnv`.
+  - [x] Host decoder + sink (`compiler/host/cel_log.{h,cc}`, target
+    `//compiler/host:cel_log`).  Format directives `%s %d %u %f %b
+    %v %%`; `%v` pretty-prints every CelKind.  Coverage:
+    `compiler/host/cel_log_test.cc` (33 tests) — every directive,
+    every CelKind for `%v`, edge cases (empty fmt, argc short, OOB
+    string / argv pointer, trailing `%`, unknown directive).
+  - [x] Wasmtime trampoline `RegisterCelLog` binds the import on the
+    two-module linker.  `host_loader.cc` creates the linker
+    up-front and uses `wasmtime_linker_instantiate` for both
+    modules.  E2E coverage:
+    `compiler/host/host_loader_test.cc::CelLogSinkCapturesRuntimeEnterLines`
+    asserts a capture sink receives `cel_runtime.c … enter` lines
+    from a real `'hello'` eval.
+  - [x] Codegen declares `cel_log` alongside every other runtime
+    import so eval modules see a consistent import set.  Coverage:
+    `compiler/codegen/expr_lower_test.cc`'s exhaustive
+    `EvalModuleDeclaresRuntimeFunctionImports` list.
+  - [x] Every public (non-`static`) helper in `cel_runtime.c` opens
+    with `CEL_LOG("enter")`.  Consumed by dead-code sweeps (F-Step 7
+    pattern) — an unseen `enter` after the full test suite flags a
+    delete candidate.
 
 ## How to update
 

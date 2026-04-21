@@ -124,15 +124,18 @@ static void ensure_initialized(void) {
 }
 
 uint8_t* cel_mem_base(void) {
+  CEL_LOG("enter");
   ensure_initialized();
   return g_memory;
 }
 
 uint32_t cel_mem_size(void) {
+  CEL_LOG("enter");
   return (uint32_t)sizeof(g_memory);
 }
 
 uint32_t cel_alloc(uint32_t n) {
+  CEL_LOG("enter");
   ensure_initialized();
   uint32_t need = align_up(n, 8u);
   if (need == 0) need = 8u;
@@ -146,11 +149,13 @@ uint32_t cel_alloc(uint32_t n) {
 }
 
 void cel_reset(void) {
+  CEL_LOG("enter");
   ensure_initialized();
   g_cel_arena.bump = g_static_end;
 }
 
 CelValue* cel_value_at(uint32_t off) {
+  CEL_LOG("enter");
   if (off == 0) return (CelValue*)0;
   return cv_at(off);
 }
@@ -160,16 +165,19 @@ static uint32_t alloc_cv(void) {
 }
 
 uint32_t cel_make_null(void) {
+  CEL_LOG("enter");
   ensure_initialized();
   return g_singleton_null_off;
 }
 
 uint32_t cel_make_bool(int32_t b) {
+  CEL_LOG("enter");
   ensure_initialized();
   return b ? g_singleton_true_off : g_singleton_false_off;
 }
 
 uint32_t cel_make_int(int64_t i) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -179,6 +187,7 @@ uint32_t cel_make_int(int64_t i) {
 }
 
 uint32_t cel_make_uint(uint64_t u) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -188,6 +197,7 @@ uint32_t cel_make_uint(uint64_t u) {
 }
 
 uint32_t cel_make_double(double d) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -223,22 +233,27 @@ static uint32_t make_span_view(CelKind kind, uint32_t ptr, uint32_t len) {
 }
 
 uint32_t cel_make_string(const char* src, uint32_t len) {
+  CEL_LOG("enter");
   return make_span(CEL_STRING, src, len);
 }
 
 uint32_t cel_make_bytes(const void* src, uint32_t len) {
+  CEL_LOG("enter");
   return make_span(CEL_BYTES, src, len);
 }
 
 uint32_t cel_make_string_view(uint32_t ptr, uint32_t len) {
+  CEL_LOG("enter");
   return make_span_view(CEL_STRING, ptr, len);
 }
 
 uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len) {
+  CEL_LOG("enter");
   return make_span_view(CEL_BYTES, ptr, len);
 }
 
 uint32_t cel_make_message(uint32_t ref_slot) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -248,6 +263,7 @@ uint32_t cel_make_message(uint32_t ref_slot) {
 }
 
 uint32_t cel_make_type(uint32_t type_id) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -257,6 +273,7 @@ uint32_t cel_make_type(uint32_t type_id) {
 }
 
 uint32_t cel_make_duration(int64_t seconds, int32_t nanos) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -267,6 +284,7 @@ uint32_t cel_make_duration(int64_t seconds, int32_t nanos) {
 }
 
 uint32_t cel_make_timestamp(int64_t seconds, int32_t nanos) {
+  CEL_LOG("enter");
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
   CelValue* v = cv_at(off);
@@ -277,6 +295,7 @@ uint32_t cel_make_timestamp(int64_t seconds, int32_t nanos) {
 }
 
 uint32_t cel_make_optional_some(uint32_t inner) {
+  CEL_LOG("enter");
   if (inner == 0) return 0;
   uint32_t off = alloc_cv();
   if (off == 0) return 0;
@@ -287,11 +306,13 @@ uint32_t cel_make_optional_some(uint32_t inner) {
 }
 
 uint32_t cel_make_optional_none(void) {
+  CEL_LOG("enter");
   ensure_initialized();
   return g_singleton_optional_none_off;
 }
 
 uint32_t cel_make_unknown(uint32_t attribute_id) {
+  CEL_LOG("enter");
   uint32_t ids_off = cel_alloc((uint32_t)sizeof(uint32_t));
   if (ids_off == 0) return 0;
   *(uint32_t*)(g_memory + ids_off) = attribute_id;
@@ -311,6 +332,7 @@ uint32_t cel_make_unknown(uint32_t attribute_id) {
 }
 
 uint32_t cel_make_error(uint32_t code, uint32_t msg_ptr, uint32_t msg_len) {
+  CEL_LOG("enter");
   uint32_t err_off = cel_alloc(16u);
   if (err_off == 0) return 0;
   uint32_t* p = (uint32_t*)(g_memory + err_off);
@@ -338,14 +360,6 @@ static int32_t span_eq(uint32_t a, uint32_t b, uint32_t expected_kind) {
                 va->payload.s.len) == 0
              ? 1
              : 0;
-}
-
-int32_t cel_string_eq(uint32_t a, uint32_t b) {
-  return span_eq(a, b, (uint32_t)CEL_STRING);
-}
-
-int32_t cel_bytes_eq(uint32_t a, uint32_t b) {
-  return span_eq(a, b, (uint32_t)CEL_BYTES);
 }
 
 // String and bytes concat share everything except the kind tag.  Factor
@@ -385,15 +399,10 @@ static uint32_t span_concat(uint32_t a, uint32_t b, uint32_t expected_kind) {
   return off;
 }
 
-uint32_t cel_string_concat(uint32_t a, uint32_t b) {
-  return span_concat(a, b, (uint32_t)CEL_STRING);
-}
-
-uint32_t cel_bytes_concat(uint32_t a, uint32_t b) {
-  return span_concat(a, b, (uint32_t)CEL_BYTES);
-}
-
-int64_t cel_string_size(uint32_t s) {
+// File-local after Slice F Step 7 — only the `_v` sibling is in the
+// public ABI.  Kept static so `cel_string_size_v` has a single-source-
+// of-truth for the UTF-8 code-point count.
+static int64_t cel_string_size(uint32_t s) {
   if (s == 0) return -1;
   const CelValue* v = cv_at(s);
   if (v->kind != (uint32_t)CEL_STRING) return -1;
@@ -412,7 +421,8 @@ int64_t cel_string_size(uint32_t s) {
   return codepoints;
 }
 
-int64_t cel_bytes_size(uint32_t b) {
+// File-local after Slice F Step 7 — see cel_string_size above.
+static int64_t cel_bytes_size(uint32_t b) {
   if (b == 0) return -1;
   const CelValue* v = cv_at(b);
   if (v->kind != (uint32_t)CEL_BYTES) return -1;
@@ -420,6 +430,7 @@ int64_t cel_bytes_size(uint32_t b) {
 }
 
 int32_t cel_bool_from_value(uint32_t v) {
+  CEL_LOG("enter");
   if (v == 0) return 0;
   const CelValue* cv = cv_at(v);
   if (cv->kind != (uint32_t)CEL_BOOL) return 0;
@@ -427,6 +438,7 @@ int32_t cel_bool_from_value(uint32_t v) {
 }
 
 int64_t cel_int_from_value(uint32_t v) {
+  CEL_LOG("enter");
   if (v == 0) return 0;
   const CelValue* cv = cv_at(v);
   if (cv->kind != (uint32_t)CEL_INT) return 0;
@@ -434,6 +446,7 @@ int64_t cel_int_from_value(uint32_t v) {
 }
 
 uint64_t cel_uint_from_value(uint32_t v) {
+  CEL_LOG("enter");
   if (v == 0) return 0;
   const CelValue* cv = cv_at(v);
   if (cv->kind != (uint32_t)CEL_UINT) return 0;
@@ -441,6 +454,7 @@ uint64_t cel_uint_from_value(uint32_t v) {
 }
 
 double cel_double_from_value(uint32_t v) {
+  CEL_LOG("enter");
   if (v == 0) return 0.0;
   const CelValue* cv = cv_at(v);
   if (cv->kind != (uint32_t)CEL_DOUBLE) return 0.0;
@@ -449,9 +463,9 @@ double cel_double_from_value(uint32_t v) {
 
 // Shared type-check shape for the three string member-call helpers.  On
 // type error (either side zero / non-string) returns a sentinel via the
-// out-param and `false`; the caller propagates 0 (matches cel_string_eq
-// behavior, and keeps these helpers total-functions-returning-i32 which
-// is what Binaryen imports want).
+// out-param and `false`; the caller propagates 0 (matches the legacy
+// i32-returning helper ABI, and keeps these helpers total-functions-
+// returning-i32 which is what the `_v` wrappers expect when delegating).
 static int string_span_pair(uint32_t a, uint32_t b, const uint8_t** pa,
                             uint32_t* la, const uint8_t** pb, uint32_t* lb) {
   if (a == 0 || b == 0) return 0;
@@ -467,7 +481,10 @@ static int string_span_pair(uint32_t a, uint32_t b, const uint8_t** pa,
   return 1;
 }
 
-int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
+// File-local after Slice F Step 7 — only the `_v` siblings are in the
+// public ABI.  Kept static so the `_v` prologue has a single-source-of-
+// truth for the byte-level search.
+static int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
   const uint8_t* sp;
   const uint8_t* pp;
   uint32_t sl;
@@ -478,7 +495,7 @@ int32_t cel_string_starts_with(uint32_t s, uint32_t prefix) {
   return memcmp(sp, pp, pl) == 0 ? 1 : 0;
 }
 
-int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
+static int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
   const uint8_t* sp;
   const uint8_t* xp;
   uint32_t sl;
@@ -489,7 +506,7 @@ int32_t cel_string_ends_with(uint32_t s, uint32_t suffix) {
   return memcmp(sp + (sl - xl), xp, xl) == 0 ? 1 : 0;
 }
 
-int32_t cel_string_contains(uint32_t s, uint32_t needle) {
+static int32_t cel_string_contains(uint32_t s, uint32_t needle) {
   const uint8_t* sp;
   const uint8_t* np;
   uint32_t sl;
@@ -538,54 +555,63 @@ static uint32_t size_v_prologue(uint32_t v, uint32_t kind) {
 }
 
 uint32_t cel_string_eq_v(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return cel_make_bool(span_eq(a, b, (uint32_t)CEL_STRING));
 }
 
 uint32_t cel_bytes_eq_v(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_BYTES);
   if (st != 0) return st;
   return cel_make_bool(span_eq(a, b, (uint32_t)CEL_BYTES));
 }
 
 uint32_t cel_string_concat_v(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return span_concat(a, b, (uint32_t)CEL_STRING);
 }
 
 uint32_t cel_bytes_concat_v(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_BYTES);
   if (st != 0) return st;
   return span_concat(a, b, (uint32_t)CEL_BYTES);
 }
 
 uint32_t cel_string_starts_with_v(uint32_t s, uint32_t prefix) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(s, prefix, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return cel_make_bool(cel_string_starts_with(s, prefix));
 }
 
 uint32_t cel_string_ends_with_v(uint32_t s, uint32_t suffix) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(s, suffix, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return cel_make_bool(cel_string_ends_with(s, suffix));
 }
 
 uint32_t cel_string_contains_v(uint32_t s, uint32_t needle) {
+  CEL_LOG("enter");
   uint32_t st = span_v_prologue(s, needle, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return cel_make_bool(cel_string_contains(s, needle));
 }
 
 uint32_t cel_string_size_v(uint32_t s) {
+  CEL_LOG("enter");
   uint32_t st = size_v_prologue(s, (uint32_t)CEL_STRING);
   if (st != 0) return st;
   return cel_make_int(cel_string_size(s));
 }
 
 uint32_t cel_bytes_size_v(uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = size_v_prologue(b, (uint32_t)CEL_BYTES);
   if (st != 0) return st;
   return cel_make_int(cel_bytes_size(b));
@@ -597,6 +623,7 @@ uint32_t cel_bytes_size_v(uint32_t b) {
 // function, so we stop at the absorption / kind-check step and let
 // codegen compose the host call on the OK path.
 uint32_t cel_message_eq_prologue_v(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st = cel_status_either(a, b);
   if (st != 0) return st;
   if (a == 0 || b == 0) return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
@@ -675,25 +702,10 @@ static uint32_t merge_sorted_ids(const uint32_t* ids_a, uint32_t len_a,
   return k;
 }
 
-uint32_t cel_unknown_merge(uint32_t a, uint32_t b) {
-  if (a == 0 || b == 0) return 0;
-  const CelValue* va = cv_at(a);
-  const CelValue* vb = cv_at(b);
-  if (va->kind != (uint32_t)CEL_UNKNOWN || vb->kind != (uint32_t)CEL_UNKNOWN) {
-    return 0;
-  }
-  uint32_t set_a = va->payload.unk;
-  uint32_t set_b = vb->payload.unk;
-  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN — the
-  // host `get_field` trampoline mints UNKNOWNs this way for FULL
-  // attribute-pattern matches (provenance not surfaced yet).  Treat an
-  // empty side as "no new ids to contribute" and return the other side
-  // verbatim; if both are empty, return `a` (left-biased).  Only the 0
-  // *offset* case (null CelValue) still yields 0.
-  if (set_a == 0 && set_b == 0) return a;
-  if (set_a == 0) return b;
-  if (set_b == 0) return a;
-
+// Merges two non-empty UnknownSets at `set_a`/`set_b` into a freshly
+// allocated sorted union.  Split out of `cel_unknown_merge` so the
+// entry point stays under the lint's statement threshold.
+static uint32_t merge_unknown_sets(uint32_t set_a, uint32_t set_b) {
   // Snapshot descriptor scalars before any further cel_alloc — on wasm32
   // memory.grow can relocate g_memory, so pointers derived from offsets
   // must be re-taken after each bump.
@@ -716,7 +728,30 @@ uint32_t cel_unknown_merge(uint32_t a, uint32_t b) {
   return make_unknown_from_ids(out_ids, k);
 }
 
+uint32_t cel_unknown_merge(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
+  if (a == 0 || b == 0) return 0;
+  const CelValue* va = cv_at(a);
+  const CelValue* vb = cv_at(b);
+  if (va->kind != (uint32_t)CEL_UNKNOWN || vb->kind != (uint32_t)CEL_UNKNOWN) {
+    return 0;
+  }
+  uint32_t set_a = va->payload.unk;
+  uint32_t set_b = vb->payload.unk;
+  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN — the
+  // host `get_field` trampoline mints UNKNOWNs this way for FULL
+  // attribute-pattern matches (provenance not surfaced yet).  Treat an
+  // empty side as "no new ids to contribute" and return the other side
+  // verbatim; if both are empty, return `a` (left-biased).  Only the 0
+  // *offset* case (null CelValue) still yields 0.
+  if (set_a == 0 && set_b == 0) return a;
+  if (set_a == 0) return b;
+  if (set_b == 0) return a;
+  return merge_unknown_sets(set_a, set_b);
+}
+
 uint32_t cel_not(uint32_t a) {
+  CEL_LOG("enter");
   if (a == 0) return 0;
   const CelValue* va = cv_at(a);
   uint32_t k = va->kind;
@@ -730,6 +765,7 @@ uint32_t cel_not(uint32_t a) {
 }
 
 uint32_t cel_and(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   if (a == 0 || b == 0) return 0;
   const CelValue* va = cv_at(a);
   const CelValue* vb = cv_at(b);
@@ -748,6 +784,7 @@ uint32_t cel_and(uint32_t a, uint32_t b) {
 }
 
 uint32_t cel_or(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   if (a == 0 || b == 0) return 0;
   const CelValue* va = cv_at(a);
   const CelValue* vb = cv_at(b);
@@ -764,6 +801,7 @@ uint32_t cel_or(uint32_t a, uint32_t b) {
 }
 
 uint32_t cel_status_either(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   if (a == 0 || b == 0) return 0;
   const CelValue* va = cv_at(a);
   const CelValue* vb = cv_at(b);
@@ -907,6 +945,7 @@ static void write_error_at(uint32_t out, uint32_t code) {
 }
 
 void cel_box_int(uint32_t out, int64_t i) {
+  CEL_LOG("enter");
   if (out == 0) return;
   CelValue* v = cv_at(out);
   v->kind = CEL_INT;
@@ -914,6 +953,7 @@ void cel_box_int(uint32_t out, int64_t i) {
 }
 
 void cel_box_uint(uint32_t out, uint64_t u) {
+  CEL_LOG("enter");
   if (out == 0) return;
   CelValue* v = cv_at(out);
   v->kind = CEL_UINT;
@@ -921,6 +961,7 @@ void cel_box_uint(uint32_t out, uint64_t u) {
 }
 
 void cel_box_double(uint32_t out, double d) {
+  CEL_LOG("enter");
   if (out == 0) return;
   CelValue* v = cv_at(out);
   v->kind = CEL_DOUBLE;
@@ -928,6 +969,7 @@ void cel_box_double(uint32_t out, double d) {
 }
 
 void cel_copy_celvalue_at(uint32_t out, uint32_t src) {
+  CEL_LOG("enter");
   if (out == 0) return;
   if (src == 0) {
     write_error_at(out, CEL_ERR_TYPE_MISMATCH);
@@ -937,6 +979,7 @@ void cel_copy_celvalue_at(uint32_t out, uint32_t src) {
 }
 
 void cel_set_error_at(uint32_t out, uint32_t code) {
+  CEL_LOG("enter");
   if (out == 0) return;
   write_error_at(out, code);
 }
@@ -954,6 +997,7 @@ static void write_uint_at(uint32_t out, uint64_t r) {
 }
 
 void cel_int_add_at_ii(uint32_t out, int64_t a, int64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   int64_t r;
   if (s64_add_overflow(a, b, &r)) {
@@ -964,6 +1008,7 @@ void cel_int_add_at_ii(uint32_t out, int64_t a, int64_t b) {
 }
 
 void cel_int_sub_at_ii(uint32_t out, int64_t a, int64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   int64_t r;
   if (s64_sub_overflow(a, b, &r)) {
@@ -974,6 +1019,7 @@ void cel_int_sub_at_ii(uint32_t out, int64_t a, int64_t b) {
 }
 
 void cel_int_mul_at_ii(uint32_t out, int64_t a, int64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   int64_t r;
   if (s64_mul_overflow(a, b, &r)) {
@@ -984,6 +1030,7 @@ void cel_int_mul_at_ii(uint32_t out, int64_t a, int64_t b) {
 }
 
 void cel_int_div_at_ii(uint32_t out, int64_t a, int64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   if (b == 0) {
     write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
@@ -997,6 +1044,7 @@ void cel_int_div_at_ii(uint32_t out, int64_t a, int64_t b) {
 }
 
 void cel_int_mod_at_ii(uint32_t out, int64_t a, int64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   if (b == 0) {
     write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
@@ -1011,6 +1059,7 @@ void cel_int_mod_at_ii(uint32_t out, int64_t a, int64_t b) {
 }
 
 void cel_uint_add_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   uint64_t r;
   if (u64_add_overflow(a, b, &r)) {
@@ -1021,6 +1070,7 @@ void cel_uint_add_at_uu(uint32_t out, uint64_t a, uint64_t b) {
 }
 
 void cel_uint_sub_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   uint64_t r;
   if (u64_sub_overflow(a, b, &r)) {
@@ -1031,6 +1081,7 @@ void cel_uint_sub_at_uu(uint32_t out, uint64_t a, uint64_t b) {
 }
 
 void cel_uint_mul_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   uint64_t r;
   if (u64_mul_overflow(a, b, &r)) {
@@ -1041,6 +1092,7 @@ void cel_uint_mul_at_uu(uint32_t out, uint64_t a, uint64_t b) {
 }
 
 void cel_uint_div_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   if (b == 0) {
     write_error_at(out, CEL_ERR_DIVIDE_BY_ZERO);
@@ -1050,21 +1102,13 @@ void cel_uint_div_at_uu(uint32_t out, uint64_t a, uint64_t b) {
 }
 
 void cel_uint_mod_at_uu(uint32_t out, uint64_t a, uint64_t b) {
+  CEL_LOG("enter");
   if (out == 0) return;
   if (b == 0) {
     write_error_at(out, CEL_ERR_MODULUS_BY_ZERO);
     return;
   }
   write_uint_at(out, a % b);
-}
-
-void cel_int_neg_at_i(uint32_t out, int64_t a) {
-  if (out == 0) return;
-  if (a == INT64_MIN) {
-    write_error_at(out, CEL_ERR_OVERFLOW);
-    return;
-  }
-  write_int_at(out, -a);
 }
 
 // ---- Boxed-operand arithmetic (M4 Slice F Step 2) ------------------------
@@ -1103,6 +1147,7 @@ static int arith_boxed_prologue(uint32_t out, uint32_t a_off, uint32_t b_off,
 }
 
 void cel_int_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
@@ -1110,6 +1155,7 @@ void cel_int_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_int_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
@@ -1117,6 +1163,7 @@ void cel_int_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_int_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
@@ -1124,6 +1171,7 @@ void cel_int_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_int_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
@@ -1131,6 +1179,7 @@ void cel_int_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_int_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_INT, &a, &b)) return;
@@ -1138,6 +1187,7 @@ void cel_int_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_uint_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
@@ -1145,6 +1195,7 @@ void cel_uint_add_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_uint_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
@@ -1152,6 +1203,7 @@ void cel_uint_sub_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_uint_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
@@ -1159,6 +1211,7 @@ void cel_uint_mul_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_uint_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
@@ -1166,32 +1219,11 @@ void cel_uint_div_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
 }
 
 void cel_uint_mod_at_vv(uint32_t out, uint32_t a_off, uint32_t b_off) {
+  CEL_LOG("enter");
   int64_t a = 0;
   int64_t b = 0;
   if (!arith_boxed_prologue(out, a_off, b_off, CEL_UINT, &a, &b)) return;
   cel_uint_mod_at_uu(out, (uint64_t)a, (uint64_t)b);
-}
-
-void cel_int_neg_at_v(uint32_t out, uint32_t a_off) {
-  if (out == 0) return;
-  // `cel_status_either` short-circuits to 0 when one side is a null
-  // offset, so a single-operand absorption check inspects the kind
-  // tag directly.  ERROR and UNKNOWN both propagate to `*out`; any
-  // other non-int surfaces as a type-mismatch error.
-  if (a_off == 0) {
-    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
-    return;
-  }
-  const CelValue* va = cv_at(a_off);
-  if (va->kind == (uint32_t)CEL_ERROR || va->kind == (uint32_t)CEL_UNKNOWN) {
-    cel_copy_celvalue_at(out, a_off);
-    return;
-  }
-  if (va->kind != (uint32_t)CEL_INT) {
-    write_error_at(out, CEL_ERR_TYPE_MISMATCH);
-    return;
-  }
-  cel_int_neg_at_i(out, va->payload.i);
 }
 
 // ---- 3VL-aware scalar comparison helpers (M4 Slice F1) -------------------
@@ -1235,6 +1267,7 @@ static int cel_cmp_prologue(uint32_t a, uint32_t b, uint32_t expected_kind,
 
 #define CEL_CMP_INT_OP(suffix, op)                                    \
   uint32_t cel_cmp_int_##suffix(uint32_t a, uint32_t b) {             \
+    CEL_LOG("enter");                                                 \
     uint32_t st;                                                      \
     if (!cel_cmp_prologue(a, b, (uint32_t)CEL_INT, &st)) return st;   \
     return cel_make_bool(cv_at(a)->payload.i op cv_at(b)->payload.i); \
@@ -1251,6 +1284,7 @@ CEL_CMP_INT_OP(ge, >=)
 
 #define CEL_CMP_UINT_OP(suffix, op)                                   \
   uint32_t cel_cmp_uint_##suffix(uint32_t a, uint32_t b) {            \
+    CEL_LOG("enter");                                                 \
     uint32_t st;                                                      \
     if (!cel_cmp_prologue(a, b, (uint32_t)CEL_UINT, &st)) return st;  \
     return cel_make_bool(cv_at(a)->payload.u op cv_at(b)->payload.u); \
@@ -1270,6 +1304,7 @@ CEL_CMP_UINT_OP(ge, >=)
 // equality helpers.
 #define CEL_CMP_DOUBLE_EQ_OP(suffix, op)                               \
   uint32_t cel_cmp_double_##suffix(uint32_t a, uint32_t b) {           \
+    CEL_LOG("enter");                                                  \
     uint32_t st;                                                       \
     if (!cel_cmp_prologue(a, b, (uint32_t)CEL_DOUBLE, &st)) return st; \
     return cel_make_bool(cv_at(a)->payload.d op cv_at(b)->payload.d);  \
@@ -1286,6 +1321,7 @@ CEL_CMP_DOUBLE_EQ_OP(ne, !=)
 // to itself).
 #define CEL_CMP_DOUBLE_ORD_OP(suffix, op)                              \
   uint32_t cel_cmp_double_##suffix(uint32_t a, uint32_t b) {           \
+    CEL_LOG("enter");                                                  \
     uint32_t st;                                                       \
     if (!cel_cmp_prologue(a, b, (uint32_t)CEL_DOUBLE, &st)) return st; \
     double ad = cv_at(a)->payload.d;                                   \
@@ -1304,13 +1340,71 @@ CEL_CMP_DOUBLE_ORD_OP(ge, >=)
 #undef CEL_CMP_DOUBLE_ORD_OP
 
 uint32_t cel_cmp_bool_eq(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st;
   if (!cel_cmp_prologue(a, b, (uint32_t)CEL_BOOL, &st)) return st;
   return cel_make_bool(cv_at(a)->payload.b == cv_at(b)->payload.b);
 }
 
 uint32_t cel_cmp_bool_ne(uint32_t a, uint32_t b) {
+  CEL_LOG("enter");
   uint32_t st;
   if (!cel_cmp_prologue(a, b, (uint32_t)CEL_BOOL, &st)) return st;
   return cel_make_bool(cv_at(a)->payload.b != cv_at(b)->payload.b);
+}
+
+// ---- Debug / audit logging (cel_log) -------------------------------------
+//
+// On wasm32 `cel_log` is imported from the `cel_env` module — the
+// freestanding build has no definition to link against, so `wasm-ld`
+// leaves it as a pending import.  The host wires it up in
+// `compiler/host/cel_log.cc` before instantiation.  The native-host
+// build has no such plumbing, so a weak no-op defined here keeps the
+// runtime's unit tests linkable without pulling in the host sink.
+// Embedders that want to see runtime-native log lines define their
+// own `cel_log` (strong) — the weak symbol steps aside.
+//
+// `cel_log_emit` exists for the macro's benefit: the ergonomic
+// `(const char*, ...)` shape stays out of the wire ABI so the wasm
+// side keeps a pure-i32 signature the host linker can bind.
+#ifdef __wasm__
+// wasm-ld auto-imports undefined symbols.  Leaving `cel_log`
+// undefined here forces the import; the host supplies it.
+#else
+// Weak stub so host-native test binaries link without the sink.
+// The 9 params are the wasm import wire ABI — the host-side trampoline
+// is bound by exact signature match, so they cannot be collapsed
+// without a coordinated change to cel_env.cel_log + the host loader.
+// Tracked in doc/implementation-plan/lint-backlog.md.
+// NOLINTNEXTLINE(readability-function-size)
+__attribute__((weak)) void cel_log(uint32_t file_ptr, uint32_t file_len,
+                                   uint32_t fn_ptr, uint32_t fn_len,
+                                   uint32_t line, uint32_t fmt_ptr,
+                                   uint32_t fmt_len, uint32_t argv_ptr,
+                                   uint32_t argc) {
+  (void)file_ptr;
+  (void)file_len;
+  (void)fn_ptr;
+  (void)fn_len;
+  (void)line;
+  (void)fmt_ptr;
+  (void)fmt_len;
+  (void)argv_ptr;
+  (void)argc;
+}
+#endif
+
+// Trampoline to the 9-i32 wire ABI — same constraint as cel_log above.
+// NOLINTNEXTLINE(readability-function-size)
+void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
+                  uint32_t fn_len, uint32_t line, const char* fmt,
+                  uint32_t fmt_len, const uint64_t* argv, uint32_t argc) {
+  // On wasm32 uintptr_t IS uint32_t, so no data is lost.  On 64-bit
+  // native hosts the cast truncates — the weak no-op `cel_log` above
+  // ignores the inputs so the truncation is harmless; embedders that
+  // wire a real sink for native tests should interpose on this
+  // trampoline (or on a sibling `cel_log_native_emit` they supply).
+  cel_log((uint32_t)(uintptr_t)file, file_len, (uint32_t)(uintptr_t)fn, fn_len,
+          line, (uint32_t)(uintptr_t)fmt, fmt_len, (uint32_t)(uintptr_t)argv,
+          argc);
 }

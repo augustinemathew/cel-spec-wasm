@@ -60,6 +60,38 @@ cc_test(
     ],
 )
 
+# Host-side implementation of the `cel_env.cel_log` import emitted by
+# the runtime module (and declared unconditionally by every eval
+# module).  Splits into a runtime-agnostic decoder + sink abstraction
+# plus a wasmtime trampoline that wires the import onto a linker.
+# Same darwin-arm64 constraint as `:host_loader` (wasmtime dep).
+cc_library(
+    name = "cel_log",
+    srcs = ["cel_log.cc"],
+    hdrs = ["cel_log.h"],
+    deps = [
+        "//compiler/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "cel_log_test",
+    srcs = ["cel_log_test.cc"],
+    deps = [
+        ":cel_log",
+        "//compiler/runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # wasmtime-specific glue that registers the `cel_host.*` imports on a
 # linker by forwarding them to the pure-host logic in `:cel_host`.
 # Same darwin-arm64 constraint as `:host_loader` (wasmtime dep).
@@ -89,6 +121,7 @@ cc_library(
     hdrs = ["host_loader.h"],
     deps = [
         ":cel_host_wasmtime",
+        ":cel_log",
         "//compiler/codegen:cel_abi_cc_proto",
         "//compiler/runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
@@ -104,6 +137,7 @@ cc_test(
     name = "host_loader_test",
     srcs = ["host_loader_test.cc"],
     deps = [
+        ":cel_log",
         ":host_loader",
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:module",

@@ -11,7 +11,7 @@
 //   - Ternary ladders — measures nested sret copy + 3VL early-return
 //     dispatch.
 //   - String length (L) — `size(s)` is O(1), `==` is O(L); we benchmark
-//     both so a regression in `cel_string_eq` (or in cel_alloc of a
+//     both so a regression in `cel_string_eq_v` (or in cel_alloc of a
 //     long literal) surfaces separately from `size` changes.
 //   - String match position (P) — worst-case for `contains`-style ops
 //     is a match right at the tail; tests both "match at front" and

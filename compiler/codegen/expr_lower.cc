@@ -187,14 +187,15 @@ void DeclareBoxedCmpImports(WasmModule& mod) {
   ImportCel2(mod, "cel_cmp_bool_ne", i32, i32, i32);
 }
 
-// Uniform-boxed `_v` variants (Slice F Step 4).  Same role as their
-// non-`_v` siblings above, but operands and results travel as
-// CelValue offsets and the helper absorbs UNKNOWN / ERROR per
+// Uniform-boxed `_v` variants (Slice F Step 4) — the sole codegen
+// route for eq/concat/starts_with/ends_with/contains on string/bytes
+// and for size() on the boxed path.  Operands and results travel as
+// CelValue offsets; the helpers absorb UNKNOWN / ERROR per
 // `cel_status_either` before computing.  Codegen routes
 // `LowerSpanEquality` / `LowerSpanConcat` / `LowerStringMemberCall`
 // through these so wrapping 3VL absorbers see the dominant non-OK
-// as a CelValue.  Size stays on the scalar helper at root; its
-// boxed route lives in `LowerExprBoxed`.
+// as a CelValue.  size() at the scalar root still uses the i64
+// helper via `LowerSizeCall`.
 void DeclareBoxedSpanImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   ImportCel2(mod, "cel_string_eq_v", i32, i32, i32);
@@ -231,13 +232,6 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   // into absolute offsets usable with `i32.store8` (see
   // LowerSpanLiteral for the translation).
   ImportCel0(mod, "cel_mem_base", i32);
-  // String/bytes helpers (equality, concat, size, value-unbox).
-  ImportCel2(mod, "cel_string_eq", i32, i32, i32);
-  ImportCel2(mod, "cel_bytes_eq", i32, i32, i32);
-  ImportCel2(mod, "cel_string_concat", i32, i32, i32);
-  ImportCel2(mod, "cel_bytes_concat", i32, i32, i32);
-  ImportCel1(mod, "cel_string_size", i32, i64);
-  ImportCel1(mod, "cel_bytes_size", i32, i64);
   ImportCel1(mod, "cel_bool_from_value", i32, i32);
   DeclareBoxedSpanImports(mod);
   // Scalar-unbox siblings (uniform boxed ABI Step 1): CelValue offset
@@ -247,10 +241,6 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel1(mod, "cel_int_from_value", i32, i64);
   ImportCel1(mod, "cel_uint_from_value", i32, i64);
   ImportCel1(mod, "cel_double_from_value", i32, f64);
-  // Member-call helpers (slice E).  Each returns i32 0/1.
-  ImportCel2(mod, "cel_string_starts_with", i32, i32, i32);
-  ImportCel2(mod, "cel_string_ends_with", i32, i32, i32);
-  ImportCel2(mod, "cel_string_contains", i32, i32, i32);
   // 3VL helpers (M4 Slice C / 3b2): `cel_and`/`cel_or`/`cel_not` take
   // and return CelValue offsets, propagating CEL_UNKNOWN / CEL_ERROR
   // through the logical operators.  Repr::kBool now travels as a
@@ -260,6 +250,24 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel2(mod, "cel_and", i32, i32, i32);
   ImportCel2(mod, "cel_or", i32, i32, i32);
   DeclareBoxedCmpImports(mod);
+  // Debug / audit logging hook.  Declared unconditionally so any
+  // future trace codegen emits, and the runtime.wasm's own
+  // `CEL_LOG(...)` calls, resolve against the same host trampoline.
+  // The module namespace matches the runtime's `import_module`
+  // attribute in `cel_runtime.h` — both the runtime and the eval
+  // module bind through `cel_env.cel_log`, so a single linker
+  // registration (`RegisterCelLog`) covers both.  Signature:
+  //   (file_ptr, file_len, fn_ptr, fn_len, line,
+  //    fmt_ptr, fmt_len, argv_ptr, argc) -> ()
+  // All nine params are i32 — a pure linear-memory ABI the host
+  // decoder parses.
+  {
+    BinaryenType log_params[9] = {i32, i32, i32, i32, i32, i32, i32, i32, i32};
+    mod.AddFunctionImport("cel_log", /*external_module=*/"cel_env",
+                          /*external_base=*/"cel_log",
+                          absl::Span<const BinaryenType>(log_params, 9),
+                          BinaryenTypeNone());
+  }
   // Int boxing helpers (F1 boxed path): scalar → CelValue offset.
   ImportCel1(mod, "cel_make_int", i64, i32);
   ImportCel1(mod, "cel_make_uint", i64, i32);
@@ -295,10 +303,6 @@ void DeclareCheckedArithmeticImports(WasmModule& mod) {
   import_int("cel_uint_mul_at_uu");
   import_int("cel_uint_div_at_uu");
   import_int("cel_uint_mod_at_uu");
-  BinaryenType neg_params[2] = {i32, i64};
-  mod.AddFunctionImport("cel_int_neg_at_i", /*external_module=*/"cel",
-                        /*external_base=*/"cel_int_neg_at_i",
-                        absl::Span<const BinaryenType>(neg_params, 2), none);
   // Boxed-operand variants (Slice F Step 2): `(slot, a_off, b_off)`.
   // Used by `LowerCheckedArithBoxed` so arith inside a boxed
   // absorber sees non-OK operands as values instead of trapping.
@@ -318,10 +322,6 @@ void DeclareCheckedArithmeticImports(WasmModule& mod) {
   import_vv("cel_uint_mul_at_vv");
   import_vv("cel_uint_div_at_vv");
   import_vv("cel_uint_mod_at_vv");
-  BinaryenType neg_v_params[2] = {i32, i32};
-  mod.AddFunctionImport("cel_int_neg_at_v", /*external_module=*/"cel",
-                        /*external_base=*/"cel_int_neg_at_v",
-                        absl::Span<const BinaryenType>(neg_v_params, 2), none);
 }
 
 // Declares every import the eval module may reference, up front.  Each
@@ -847,34 +847,12 @@ BinaryenExpressionRef LowerSpanEquality(absl::string_view name, Repr arg_r,
   return call;
 }
 
-// Message equality can't be a structural comparison of externrefs —
-// two externrefs may point at structurally equal messages from
-// different descriptor origins, and the CEL spec demands the host's
-// descriptor-aware equality.  Delegate to cel_host.message_eq and,
-// for `_!=_`, invert with i32.eqz — same pattern as string/bytes.
-//
-// Superseded by `LowerMessageEqualityBoxed` (Slice F Step 5) for
-// in-tree consumers; kept only until the step 7 sweep removes its
-// last call sites.
-BinaryenExpressionRef LowerMessageEquality(absl::string_view name,
-                                           BinaryenExpressionRef lhs,
-                                           BinaryenExpressionRef rhs,
-                                           BinaryenModuleRef m) {
-  BinaryenExpressionRef args[2] = {lhs, rhs};
-  BinaryenExpressionRef call =
-      BinaryenCall(m, "message_eq", args, 2, BinaryenTypeInt32());
-  BinaryenExpressionRef raw = (name == op::CelOperator::NOT_EQUALS)
-                                  ? BinaryenUnary(m, BinaryenEqZInt32(), call)
-                                  : call;
-  return BoxBool(m, raw);
-}
-
-// String / bytes / message eq/ne fallback.  Scalar and bool compares
-// (int / uint / double / bool, both eq/ne and ordered) are handled
-// upstream in `LowerBinaryCall` via the uniform boxed path through
-// `LowerBoxedComparison` — the checker rules out ordered compare on
-// these Reprs, so only eq/ne reaches here.  Steps 4 / 5 will move
-// these onto CelValue-offset helpers too.
+// String / bytes eq/ne fallback.  Scalar and bool compares (int /
+// uint / double / bool, eq/ne + ordered) are handled upstream in
+// `LowerBinaryCall` via the uniform boxed path through
+// `LowerBoxedComparison`; message eq/ne is intercepted by
+// `LowerMessageEqualityBoxed` before reaching here.  So only
+// string/bytes eq/ne reaches this function.
 absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
                                                       Repr arg_r,
                                                       BinaryenExpressionRef lhs,
@@ -883,9 +861,6 @@ absl::StatusOr<BinaryenExpressionRef> LowerComparison(absl::string_view name,
   BinaryenModuleRef m = ctx.mod.raw();
   if (arg_r == Repr::kString || arg_r == Repr::kBytes) {
     return LowerSpanEquality(name, arg_r, lhs, rhs, m);
-  }
-  if (arg_r == Repr::kMessage) {
-    return LowerMessageEquality(name, lhs, rhs, m);
   }
   return UnimplementedRepr(name, arg_r, 0);
 }
@@ -1002,8 +977,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerCheckedArithBoxed(
 // `_v` variant so an UNKNOWN / ERROR operand surfaces as the CelValue
 // the wrapping absorber (`cel_or` / `cel_cmp_int_*`) can see.  Scalar-
 // path consumers (root, scalar arith) keep using the i64-returning
-// `cel_string_size` / `cel_bytes_size` in `LowerSizeCall`; step 7's
-// sweep collapses the two when Repr::kInt everywhere travels boxed.
+// `cel_string_size` / `cel_bytes_size` in `LowerSizeCall`.
 // Returns nullopt if the call isn't a span-arg size().
 absl::StatusOr<std::optional<BinaryenExpressionRef>> LowerSizeCallBoxed(
     LoweringContext& ctx, const TypedAst& ast, const cel::CallExpr& call) {
@@ -1523,19 +1497,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerShortCircuit(
 // `"size"` regardless of overload.  Dispatch on the argument Repr
 // and emit a call to the matching runtime helper.  List / map sizes
 // land in later milestones alongside the container Reprs themselves.
+// Uniform-boxed ABI (Slice F Step 7): there is no scalar size helper.
+// We always call the absorbing `_v` variant and, if the scalar-arith
+// parent needs an i64, unbox through `cel_int_from_value`.
 absl::StatusOr<BinaryenExpressionRef> LowerSizeCall(LoweringContext& ctx,
                                                     const TypedAst& ast,
                                                     const cel::CallExpr& call,
                                                     int64_t expr_id) {
   auto arg_r = ReprOf(ast, call.args().at(0));
   if (!arg_r.ok()) return arg_r.status();
-  auto arg = LowerExpr(ctx, ast, call.args().at(0));
+  auto arg = LowerExprBoxed(ctx, ast, call.args().at(0));
   if (!arg.ok()) return arg.status();
   if (*arg_r == Repr::kString || *arg_r == Repr::kBytes) {
     const char* helper =
-        (*arg_r == Repr::kString) ? "cel_string_size" : "cel_bytes_size";
+        (*arg_r == Repr::kString) ? "cel_string_size_v" : "cel_bytes_size_v";
     BinaryenExpressionRef a = *arg;
-    return BinaryenCall(ctx.mod.raw(), helper, &a, 1, BinaryenTypeInt64());
+    BinaryenExpressionRef boxed =
+        BinaryenCall(ctx.mod.raw(), helper, &a, 1, BinaryenTypeInt32());
+    return UnboxInt(ctx.mod.raw(), boxed);
   }
   return UnimplementedRepr("size", *arg_r, expr_id);
 }

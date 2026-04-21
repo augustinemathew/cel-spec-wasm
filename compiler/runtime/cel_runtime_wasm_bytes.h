@@ -5,7 +5,7 @@
 // cross-compiles the C source with brew's `/opt/homebrew/opt/llvm/bin/clang`
 // against a freestanding wasm32 target).  Codegen feeds these bytes into
 // `BinaryenModuleRead` so every emitted module carries the full runtime
-// (allocator + `cel_make_*` constructors + `cel_string_eq` + …).
+// (allocator + `cel_make_*` constructors + `cel_string_eq_v` + …).
 //
 // The bytes are linked in as a plain C array to keep the dependency
 // surface small — no runfiles lookup, no `std::ifstream`, no filesystem

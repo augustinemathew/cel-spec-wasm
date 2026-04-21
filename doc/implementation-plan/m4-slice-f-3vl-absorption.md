@@ -367,9 +367,35 @@ sees "dead code after dispatch collapse" and not a drive-by.
    `(1 > 0 ? 1 : 2) == 1 || true`.  The dead-code ledger for Step 7
    gains `EmitSretEarlyReturnIfNonOk` once `LowerSelectField`'s last
    scalar-path caller is removed.
-7. Dead-code sweep: delete unreferenced runtime helpers + scalar-
-   path codegen emitters.  Update `cel_runtime_test.cc`.  No
-   `// NOLINT` around now-unused declarations — delete them.
+7. **[shipped 2026-04-20]** Dead-code sweep driven by a caller-grep
+   audit (macOS Apple clang can't run `llvm-cov --show-functions`,
+   so caller count — stronger than zero-coverage — is the gate).
+   Drops from the public ABI:
+     - `cel_string_eq`, `cel_bytes_eq`, `cel_string_concat`,
+       `cel_bytes_concat` — fully deleted; `_v` siblings call
+       `span_eq` / `span_concat` directly.
+     - `cel_string_starts_with`, `cel_string_ends_with`,
+       `cel_string_contains` — made `static`; their `_v` siblings
+       delegate internally for byte-level search.
+     - `cel_string_size`, `cel_bytes_size` — made `static`.
+       `LowerSizeCall` now always emits the absorbing `_v` variant
+       and unboxes through `cel_int_from_value` when scalar-path
+       parents need an i64, so the scalar size helper is single-
+       source-of-truth for the `_v` UTF-8 codepoint math.
+     - `cel_int_neg_at_i`, `cel_int_neg_at_v` — fully deleted.
+       Codegen's `LowerNegate` emits raw `i64.sub` / `f64.neg`
+       inline, so neither helper had any caller.
+     - `LowerMessageEquality` (scalar C++ helper) — deleted; the
+       `kMessage + EQ/NE` dispatch in `LowerBinaryCall` routes
+       through `LowerMessageEqualityBoxed` (Step 5) before
+       `LowerComparison` is reached.
+   Test-suite updates: removed 40+ `RuntimeTest` cases covering
+   the now-internal helpers (the `_v` siblings' tests cover the
+   same semantics), updated `expr_lower_test.cc` /
+   `runtime_link_test.cc` import-and-export exhaustive lists,
+   updated `SizeString/BytesLowersToRuntimeCall` to assert the
+   `cel_int_from_value(cel_*_size_v(...))` compose shape.  No
+   `// NOLINT` around removed declarations — they are gone.
 8. Doc sweep: update §10.2 / §10.2.2 in the design doc to describe
    the uniform ABI as the single path, not "fast + slow".  Update
    the testing-checklist row for Slice F to tick all 22 rows (or
@@ -665,3 +691,67 @@ it does not unblock any of the spec-breaking rows above; those still
 require Slice F.  Rows 9–22 become testable from the CLI once F1/F2
 land, but eval_test.cc (not the CLI) is the canonical coverage
 surface.
+
+## cel_log tooling — shipped 2026-04-20
+
+Dead-code audit driver + general runtime debug logging hook.  Not a
+milestone step; plumbing that feeds Step 7's caller-grep audit (and
+future sweeps) with runtime-side entry traces instead of source-side
+grep.
+
+  - **Runtime side** — new `CEL_LOG(fmt, ...)` macro in
+    `compiler/runtime/cel_runtime.h` forwards to an imported
+    `cel_env.cel_log(file, fn, line, fmt, argv, argc)`.  Slot layout
+    is 2× u64 per arg (tag_word + payload) — 16-byte slots as
+    recommended.  Argv is stack-allocated; no `cel_alloc` traffic,
+    no per-call heap pressure.  Call-site helpers `CEL_LOG_STR`,
+    `CEL_LOG_INT`, `CEL_LOG_UINT`, `CEL_LOG_F64`, `CEL_LOG_BOOL`,
+    `CEL_LOG_V` expand to `tag, payload` pairs.  Format directives:
+    `%s %d %u %f %b %v %%` only — no `printf`/`va_list` in wasm; the
+    host parses the format string.  `#define CEL_LOG_DISABLED`
+    compiles everything to nothing.  Every public (non-`static`)
+    helper in `cel_runtime.c` now opens with `CEL_LOG("enter")`.
+  - **Host side** — `compiler/host/cel_log.{h,cc}` + BUILD target
+    `:cel_log` implements a pure decoder (reads runtime linear
+    memory, parses `fmt`, pretty-prints `%v` per CelKind:
+    `int(42)` / `string("abc")` / `bytes(3 bytes)` /
+    `error(code=5, "msg")` / `unknown([1,7,42])` / `bool(true)` /
+    `null` / `double(3.14)` / …) and a `CelLogSink` abstraction
+    (default stderr; `CapturingCelLogSink` accumulates into
+    `std::vector<std::string>` for tests; `SetCelLogSink` swaps the
+    global).  Wasmtime trampoline `RegisterCelLog(linker)` binds
+    the import onto the two-module linker.
+  - **Codegen side** — `expr_lower.cc` declares `cel_log` alongside
+    every other runtime import so eval modules see a consistent
+    import set; `expr_lower_test.cc`'s exhaustive
+    `EvalModuleDeclaresRuntimeFunctionImports` list includes it.
+    `runtime_link_test.cc`'s new `ImportsCelLogFromCelEnv` walks
+    function imports on the cross-compiled runtime.wasm and
+    asserts the `cel_env.cel_log` import is present (catches the
+    case where `wasm-ld` dead-strips the import because all
+    `CEL_LOG` sites were accidentally macroed away).
+  - **Host loader plumbing** — `host_loader.cc` now creates a
+    wasmtime linker up-front in `InitEngineStoreAndCompile`, calls
+    `RegisterCelLog` on it, and uses `wasmtime_linker_instantiate`
+    for both the runtime module and the eval module.  The old
+    `InstantiateBare` helper is gone.
+  - **Tests** — `compiler/host/cel_log_test.cc` (33 tests) covers
+    every directive, every CelKind pretty-print for `%v`
+    (NULL/BOOL/INT/UINT/DOUBLE/STRING/BYTES/MESSAGE/TYPE/DURATION/
+    TIMESTAMP/OPTIONAL-some/OPTIONAL-none/UNKNOWN-with-ids/
+    ERROR-with-message/unknown-kind), and edge cases (empty fmt,
+    literal `%%`, `argc` shorter than directive count, OOB string
+    pointer, OOB argv pointer, trailing `%`, unknown directive
+    letter).  `host_loader_test.cc` gains
+    `CelLogSinkCapturesRuntimeEnterLines`: evaluating `'hello'`
+    (which hits `cel_alloc`, `cel_make_string_view`) must flush at
+    least one `cel_runtime.c … enter` line through the capture
+    sink, end-to-end from wasm-side import → wasmtime linker
+    binding → host trampoline → decoder → sink.  All 20 test
+    targets still green after landing.
+  - **Not ticked in testing-checklist.md** — cel_log is tooling,
+    not a CEL feature; no spec-row columns apply.  Testing
+    coverage for the tool itself lives in `cel_log_test.cc` +
+    `runtime_link_test.cc` + `host_loader_test.cc` and is covered
+    by the "feature → test" audit for each file that touches the
+    plumbing.
