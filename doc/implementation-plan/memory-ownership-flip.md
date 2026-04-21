@@ -1,6 +1,15 @@
 # Memory ownership flip: expr module defines + exports memory
 
-Status: **open — investigation requested 2026-04-20.**
+Status: **superseded 2026-04-21 by
+[`rewrite-memory-layout-codegen.md`](rewrite-memory-layout-codegen.md).**
+The rewrite doc adopts the flip (expr module owns memory; runtime
+imports) with the arena cursor at fixed memory offsets 8..15 rather
+than wasm globals. Kept here for historical context only — do not
+treat this as the active plan.
+
+---
+
+Status (original): **open — investigation requested 2026-04-20.**
 Not yet scheduled against a milestone.
 
 ## The proposal

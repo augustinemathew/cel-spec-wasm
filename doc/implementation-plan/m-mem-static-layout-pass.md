@@ -1,6 +1,15 @@
 # M-Mem: static layout pass (pre-codegen memory planning)
 
-Status: **design — drafted 2026-04-20, not yet scheduled.**
+Status: **superseded 2026-04-21 by
+[`rewrite-memory-layout-codegen.md`](rewrite-memory-layout-codegen.md).**
+The rewrite doc folds this pass (as `LayoutPass`), the ownership flip,
+and the full ResolvePass/emit redesign into a single 12-slice plan
+against a parallel `compiler_v2/` tree. Kept here for historical
+context only — do not treat this as the active plan.
+
+---
+
+Status (original): **design — drafted 2026-04-20, not yet scheduled.**
 Companion doc to `memory-ownership-flip.md` — the flip is the *enabling*
 change (expr module owns memory); this pass is what cashes in on it.
 
