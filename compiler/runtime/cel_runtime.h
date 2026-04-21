@@ -163,6 +163,15 @@ int64_t cel_bytes_size(uint32_t b);
 // guarantees the result is bool.
 int32_t cel_bool_from_value(uint32_t v);
 
+// Scalar-unbox siblings for the uniform boxed ABI: take a CelValue
+// offset of the expected kind, return its raw wasm scalar payload.
+// Returns 0 / 0.0 on kind mismatch or zero-offset — the type checker
+// guarantees the kind at every statically-typed call site, so this is
+// a defense-in-depth fallback rather than a supported user error path.
+int64_t cel_int_from_value(uint32_t v);
+uint64_t cel_uint_from_value(uint32_t v);
+double cel_double_from_value(uint32_t v);
+
 // String member-call helpers (CEL §9 string extension): all three take
 // two CEL_STRING operands and return 0/1 as an i32, matching how
 // `cel_string_eq` speaks ABI.  Semantics follow the spec: the empty

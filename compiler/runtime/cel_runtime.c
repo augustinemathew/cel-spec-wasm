@@ -426,6 +426,27 @@ int32_t cel_bool_from_value(uint32_t v) {
   return cv->payload.b ? 1 : 0;
 }
 
+int64_t cel_int_from_value(uint32_t v) {
+  if (v == 0) return 0;
+  const CelValue* cv = cv_at(v);
+  if (cv->kind != (uint32_t)CEL_INT) return 0;
+  return cv->payload.i;
+}
+
+uint64_t cel_uint_from_value(uint32_t v) {
+  if (v == 0) return 0;
+  const CelValue* cv = cv_at(v);
+  if (cv->kind != (uint32_t)CEL_UINT) return 0;
+  return cv->payload.u;
+}
+
+double cel_double_from_value(uint32_t v) {
+  if (v == 0) return 0.0;
+  const CelValue* cv = cv_at(v);
+  if (cv->kind != (uint32_t)CEL_DOUBLE) return 0.0;
+  return cv->payload.d;
+}
+
 // Shared type-check shape for the three string member-call helpers.  On
 // type error (either side zero / non-string) returns a sentinel via the
 // out-param and `false`; the caller propagates 0 (matches cel_string_eq

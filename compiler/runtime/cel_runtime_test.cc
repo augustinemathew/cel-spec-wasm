@@ -737,6 +737,52 @@ TEST_F(RuntimeTest, BoolFromValueRejectsNonBool) {
   EXPECT_EQ(cel_bool_from_value(s), 0);
 }
 
+// ---- cel_{int,uint,double}_from_value -------------------------------------
+//
+// Uniform boxed ABI unbox helpers. Round-trip (make → from) must be the
+// identity on the expected kind; kind-mismatch and zero-offset must
+// return a null-shaped scalar so a codegen bug can't forge a phantom
+// value.
+
+TEST_F(RuntimeTest, IntFromValueRoundTrip) {
+  EXPECT_EQ(cel_int_from_value(cel_make_int(0)), 0);
+  EXPECT_EQ(cel_int_from_value(cel_make_int(42)), 42);
+  EXPECT_EQ(cel_int_from_value(cel_make_int(-7)), -7);
+  EXPECT_EQ(cel_int_from_value(cel_make_int(INT64_MIN)), INT64_MIN);
+  EXPECT_EQ(cel_int_from_value(cel_make_int(INT64_MAX)), INT64_MAX);
+}
+
+TEST_F(RuntimeTest, IntFromValueRejectsNonInt) {
+  EXPECT_EQ(cel_int_from_value(0), 0);
+  EXPECT_EQ(cel_int_from_value(cel_make_bool(1)), 0);
+  EXPECT_EQ(cel_int_from_value(cel_make_uint(7)), 0);
+  EXPECT_EQ(cel_int_from_value(cel_make_double(1.5)), 0);
+}
+
+TEST_F(RuntimeTest, UintFromValueRoundTrip) {
+  EXPECT_EQ(cel_uint_from_value(cel_make_uint(0u)), 0u);
+  EXPECT_EQ(cel_uint_from_value(cel_make_uint(42u)), 42u);
+  EXPECT_EQ(cel_uint_from_value(cel_make_uint(UINT64_MAX)), UINT64_MAX);
+}
+
+TEST_F(RuntimeTest, UintFromValueRejectsNonUint) {
+  EXPECT_EQ(cel_uint_from_value(0), 0u);
+  EXPECT_EQ(cel_uint_from_value(cel_make_int(7)), 0u);
+  EXPECT_EQ(cel_uint_from_value(cel_make_double(1.5)), 0u);
+}
+
+TEST_F(RuntimeTest, DoubleFromValueRoundTrip) {
+  EXPECT_EQ(cel_double_from_value(cel_make_double(0.0)), 0.0);
+  EXPECT_EQ(cel_double_from_value(cel_make_double(1.5)), 1.5);
+  EXPECT_EQ(cel_double_from_value(cel_make_double(-3.25)), -3.25);
+}
+
+TEST_F(RuntimeTest, DoubleFromValueRejectsNonDouble) {
+  EXPECT_EQ(cel_double_from_value(0), 0.0);
+  EXPECT_EQ(cel_double_from_value(cel_make_int(7)), 0.0);
+  EXPECT_EQ(cel_double_from_value(cel_make_uint(7)), 0.0);
+}
+
 // ---- Three-valued logic helpers -------------------------------------------
 
 // Helpers that build one of the five 3VL operand classes.  Parametric

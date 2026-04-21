@@ -455,14 +455,19 @@ TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
   EXPECT_EQ(params.at(1), BinaryenTypeInt64());
   EXPECT_GE(BinaryenFunctionGetNumVars(fn), 1u);
 
-  // After ScalarBody peels the sret epilogue the checked-arith block
-  // surfaces directly:
+  // After ScalarBody peels the sret epilogue and the scalar-auto-box
+  // prologue, the checked-arith block surfaces directly:
   //   Block {
-  //     Call(cel_int_add_at_ii, LocalGet(scratch), LocalGet(x), Const(1));
+  //     Call(cel_int_add_at_ii, LocalGet(scratch),
+  //          Call(cel_int_from_value, LocalGet(boxed_x)), Const(1));
   //     If(kind==ERR, unreachable);
   //     i64.load offset=8 (cel_mem_base + scratch)
   //   }
-  // `x` lives at param index 1 because param 0 is the sret slot.
+  // `x` is auto-boxed at $eval entry (Step 1 of the uniform boxed
+  // ABI): the raw i64 param at index 1 is wrapped via `cel_make_int`
+  // and stored in the first scratch local (index 2); ident reads
+  // load that local and unbox via `cel_int_from_value`, which is a
+  // no-op at runtime but moves the source of truth to the boxed form.
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
@@ -470,15 +475,19 @@ TEST(ExprLowerTest, IntIdentLowersToLocalGetWithI64Param) {
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
   ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_int_add_at_ii");
-  // Arg 0: scratch-slot (LocalGet i32).  Arg 1: the ident lhs.
+  // Arg 0: scratch-slot (LocalGet i32).  Arg 1: the unboxed ident lhs.
   ASSERT_EQ(BinaryenCallGetNumOperands(call), 3u);
   BinaryenExpressionRef slot_arg = BinaryenCallGetOperandAt(call, 0);
   ASSERT_EQ(BinaryenExpressionGetId(slot_arg), BinaryenLocalGetId());
   EXPECT_EQ(BinaryenExpressionGetType(slot_arg), BinaryenTypeInt32());
   BinaryenExpressionRef lhs = BinaryenCallGetOperandAt(call, 1);
-  ASSERT_EQ(BinaryenExpressionGetId(lhs), BinaryenLocalGetId());
-  EXPECT_EQ(BinaryenLocalGetGetIndex(lhs), 1u);
+  ASSERT_EQ(BinaryenExpressionGetId(lhs), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(lhs), "cel_int_from_value");
   EXPECT_EQ(BinaryenExpressionGetType(lhs), BinaryenTypeInt64());
+  ASSERT_EQ(BinaryenCallGetNumOperands(lhs), 1u);
+  BinaryenExpressionRef inner = BinaryenCallGetOperandAt(lhs, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenExpressionGetType(inner), BinaryenTypeInt32());
 }
 
 TEST(ExprLowerTest, MultipleVarsGetParamsInDeclarationOrder) {
@@ -503,21 +512,27 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
   // of a `local.get`.  (Binaryen's validator would catch the mismatch,
   // but it's worth nailing down the intended mapping in a test.)
   //
-  // Bool params get auto-boxed to a CelValue offset at eval entry
-  // (M4 Slice C / 3b2), so the body reads from a prologue-allocated
-  // local rather than directly from the raw param slot — `want_idx`
-  // encodes that shift per-case.  Non-bool params still flow as raw
-  // scalars so the ident read resolves straight to slot 1.
+  // All four scalar params get auto-boxed to a CelValue offset at
+  // $eval entry (uniform boxed ABI Step 1): the raw scalar at param
+  // index 1 is wrapped via `cel_make_<kind>` and stored in the first
+  // scratch local (index 2).  Bool ident reads stop there (Repr::kBool
+  // already travels as an offset post-3b2); int / uint / double reads
+  // add an inline `cel_<kind>_from_value` unbox so the rest of codegen
+  // keeps speaking raw scalars.
   struct Case {
     const char* spec;
-    BinaryenType want;
-    BinaryenIndex want_idx;
+    BinaryenType param_t;   // raw param wire type.
+    BinaryenType result_t;  // ident-read result type.
+    const char* unbox_fn;   // nullptr when no unbox is emitted (bool).
   };
   for (const auto& c : {
-           Case{"b:bool", BinaryenTypeInt32(), 2u},
-           Case{"i:int", BinaryenTypeInt64(), 1u},
-           Case{"u:uint", BinaryenTypeInt64(), 1u},
-           Case{"d:double", BinaryenTypeFloat64(), 1u},
+           Case{"b:bool", BinaryenTypeInt32(), BinaryenTypeInt32(), nullptr},
+           Case{"i:int", BinaryenTypeInt64(), BinaryenTypeInt64(),
+                "cel_int_from_value"},
+           Case{"u:uint", BinaryenTypeInt64(), BinaryenTypeInt64(),
+                "cel_uint_from_value"},
+           Case{"d:double", BinaryenTypeFloat64(), BinaryenTypeFloat64(),
+                "cel_double_from_value"},
        }) {
     SCOPED_TRACE(c.spec);
     std::string name(c.spec, 1);  // first char is the var name.
@@ -528,12 +543,25 @@ TEST(ExprLowerTest, IdentsOfAllScalarReprs) {
     // Param 0 is the sret slot; the user's variable lives at 1.
     ASSERT_EQ(params.size(), 2u);
     EXPECT_EQ(params.at(0), BinaryenTypeInt32());
-    EXPECT_EQ(params.at(1), c.want);
+    EXPECT_EQ(params.at(1), c.param_t);
     BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
     body = ScalarBody(body);
-    ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
-    EXPECT_EQ(BinaryenLocalGetGetIndex(body), c.want_idx);
-    EXPECT_EQ(BinaryenExpressionGetType(body), c.want);
+    if (c.unbox_fn == nullptr) {
+      // Bool: body is `local.get boxed_b` (i32 offset) — no unbox.
+      ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenLocalGetId());
+      EXPECT_EQ(BinaryenLocalGetGetIndex(body), 2u);
+      EXPECT_EQ(BinaryenExpressionGetType(body), c.result_t);
+    } else {
+      // Scalar: body is `call $unbox_fn (local.get boxed_x)`.
+      ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+      EXPECT_STREQ(BinaryenCallGetTarget(body), c.unbox_fn);
+      EXPECT_EQ(BinaryenExpressionGetType(body), c.result_t);
+      ASSERT_EQ(BinaryenCallGetNumOperands(body), 1u);
+      BinaryenExpressionRef inner = BinaryenCallGetOperandAt(body, 0);
+      ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenLocalGetId());
+      EXPECT_EQ(BinaryenLocalGetGetIndex(inner), 2u);
+      EXPECT_EQ(BinaryenExpressionGetType(inner), BinaryenTypeInt32());
+    }
   }
 }
 

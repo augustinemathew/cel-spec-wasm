@@ -215,6 +215,13 @@ void DeclareAllocAndSpanImports(WasmModule& mod) {
   ImportCel1(mod, "cel_string_size", i32, i64);
   ImportCel1(mod, "cel_bytes_size", i32, i64);
   ImportCel1(mod, "cel_bool_from_value", i32, i32);
+  // Scalar-unbox siblings (uniform boxed ABI Step 1): CelValue offset
+  // → raw wasm scalar.  Paired with `cel_make_int`/`_uint`/`_double`
+  // at param entry so ident reads are always a boxed-then-unboxed
+  // round trip — see BuildParamList for the auto-boxing prologue.
+  ImportCel1(mod, "cel_int_from_value", i32, i64);
+  ImportCel1(mod, "cel_uint_from_value", i32, i64);
+  ImportCel1(mod, "cel_double_from_value", i32, f64);
   // Member-call helpers (slice E).  Each returns i32 0/1.
   ImportCel2(mod, "cel_string_starts_with", i32, i32, i32);
   ImportCel2(mod, "cel_string_ends_with", i32, i32, i32);
@@ -449,11 +456,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerSpanLiteral(
                        /*type=*/BinaryenTypeInt32());
 }
 
-// Lowers an `IdentExpr` to a `local.get` against the param slot the
-// variable was assigned in `LowerToEvalFunction`.  The node's Repr
-// annotation drives the result type — it must match the param's
-// declared BinaryenType (both are derived from the same user-supplied
-// type string upstream, so agreement is by construction).
+// Forward declarations for the scalar-unbox helpers (definitions live
+// below, next to `UnboxBool`).  `LowerIdent` calls these to unbox
+// auto-boxed int / uint / double params back to raw wasm scalars.
+BinaryenExpressionRef UnboxInt(BinaryenModuleRef m,
+                               BinaryenExpressionRef boxed);
+BinaryenExpressionRef UnboxUint(BinaryenModuleRef m,
+                                BinaryenExpressionRef boxed);
+BinaryenExpressionRef UnboxDouble(BinaryenModuleRef m,
+                                  BinaryenExpressionRef boxed);
+
+// Lowers an `IdentExpr` to a `local.get` against the local slot the
+// variable was assigned in `LowerToEvalFunction`.  For scalar reprs
+// (bool / int / uint / double) the slot holds a CelValue offset
+// (auto-boxed at $eval entry, see BuildParamList); we load the offset
+// and immediately unbox to the raw wasm scalar so the rest of codegen
+// keeps speaking raw scalars.  This is a runtime no-op (box-then-unbox)
+// today — Step 1 of the uniform boxed ABI retrofit moves the source
+// of truth to the boxed form without flipping any semantics yet.
 absl::StatusOr<BinaryenExpressionRef> LowerIdent(LoweringContext& ctx,
                                                  const TypedAst& ast,
                                                  const cel::Expr& expr) {
@@ -474,7 +494,24 @@ absl::StatusOr<BinaryenExpressionRef> LowerIdent(LoweringContext& ctx,
         "expr_lower: identifier `", name, "` has Repr `", ReprName(*repr),
         "` which has no scalar ABI lowering (expr id ", expr.id(), ")"));
   }
-  return BinaryenLocalGet(ctx.mod.raw(), it->second, t);
+  BinaryenModuleRef m = ctx.mod.raw();
+  // Bool ident reads are already i32 offsets post-3b2 — `LowerIdent`
+  // returns the boxed offset directly and the `_!_` / `_?_:_` /
+  // short-circuit sites call `UnboxBool` where they need raw truth.
+  // The other three scalar reprs unbox inline so existing consumers
+  // (arithmetic, compare opcodes, payload.i loads) continue to see
+  // raw wasm scalars.
+  switch (*repr) {
+    case Repr::kInt:
+      return UnboxInt(m, BinaryenLocalGet(m, it->second, BinaryenTypeInt32()));
+    case Repr::kUint:
+      return UnboxUint(m, BinaryenLocalGet(m, it->second, BinaryenTypeInt32()));
+    case Repr::kDouble:
+      return UnboxDouble(m,
+                         BinaryenLocalGet(m, it->second, BinaryenTypeInt32()));
+    default:
+      return BinaryenLocalGet(m, it->second, t);
+  }
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerConstant(LoweringContext& ctx,
@@ -720,6 +757,27 @@ BinaryenExpressionRef UnboxBool(BinaryenModuleRef m,
 // the result position demands the boxed ABI.
 BinaryenExpressionRef BoxBool(BinaryenModuleRef m, BinaryenExpressionRef raw) {
   return BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
+}
+
+// Scalar-unbox siblings for the uniform boxed ABI (Step 1).  Each takes
+// a CelValue offset and returns the raw wasm scalar payload of the
+// expected kind.  Consumers of int / uint / double ident reads call
+// these so the rest of codegen keeps speaking raw scalars while the
+// param ABI stays boxed.
+BinaryenExpressionRef UnboxInt(BinaryenModuleRef m,
+                               BinaryenExpressionRef boxed) {
+  return BinaryenCall(m, "cel_int_from_value", &boxed, 1, BinaryenTypeInt64());
+}
+
+BinaryenExpressionRef UnboxUint(BinaryenModuleRef m,
+                                BinaryenExpressionRef boxed) {
+  return BinaryenCall(m, "cel_uint_from_value", &boxed, 1, BinaryenTypeInt64());
+}
+
+BinaryenExpressionRef UnboxDouble(BinaryenModuleRef m,
+                                  BinaryenExpressionRef boxed) {
+  return BinaryenCall(m, "cel_double_from_value", &boxed, 1,
+                      BinaryenTypeFloat64());
 }
 
 // Ordered-compare opcode for int64 operands.
@@ -1699,22 +1757,44 @@ absl::StatusOr<BinaryenExpressionRef> LowerExpr(LoweringContext& ctx,
 // follow at indices 1..N.  The `idx = params.size()` pattern below
 // reads the post-slot slot before appending, so the first variable
 // gets index 1 as required.
+// Returns the `cel_make_*` helper that boxes a raw wasm scalar of the
+// given Repr into a CelValue offset at $eval entry.  Only Reprs that
+// travel as raw scalars over the host ABI need a boxing step — bool /
+// int / uint / double.  Other kinds (string, bytes, message, etc.)
+// either already arrive boxed or have a separate wrap path.
+const char* ScalarBoxHelper(Repr r) {
+  switch (r) {
+    case Repr::kBool:
+      return "cel_make_bool";
+    case Repr::kInt:
+      return "cel_make_int";
+    case Repr::kUint:
+      return "cel_make_uint";
+    case Repr::kDouble:
+      return "cel_make_double";
+    default:
+      return nullptr;
+  }
+}
+
 absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
                             std::vector<BinaryenType>& params,
                             bool& has_message_param) {
   params.reserve(ast.variables().size() + 1);
   params.push_back(BinaryenTypeInt32());  // param 0: sret slot.
   has_message_param = false;
-  // Bool params arrive as raw i32 0/1 from the host — the post-3b2
-  // eval body expects CelValue offsets.  We record each bool param's
-  // raw slot and the name it binds so we can emit the boxing
-  // prologue in a second pass, after `num_params` is final (AddLocal
-  // needs `num_params` to compute local indices).
-  struct PendingBoolBox {
+  // Scalar params (bool / int / uint / double) arrive as raw wasm
+  // scalars from the host — the uniform boxed ABI expects ident reads
+  // to produce CelValue offsets.  We record each scalar param's raw
+  // slot and the name it binds so we can emit the boxing prologue in
+  // a second pass, after `num_params` is final (AddLocal needs
+  // `num_params` to compute local indices).
+  struct PendingScalarBox {
     std::string name;
     BinaryenIndex raw_param;
+    Repr repr;
   };
-  std::vector<PendingBoolBox> pending_bool_boxes;
+  std::vector<PendingScalarBox> pending_scalar_boxes;
   for (const Variable& v : ast.variables()) {
     BinaryenType pt = WasmTypeFor(v.repr);
     if (pt == BinaryenTypeNone()) {
@@ -1730,18 +1810,18 @@ absl::Status BuildParamList(const TypedAst& ast, LoweringContext& ctx,
       return absl::InvalidArgumentError(absl::StrCat(
           "expr_lower: duplicate variable name `", v.name, "` in specs"));
     }
-    if (v.repr == Repr::kBool) {
-      pending_bool_boxes.push_back({v.name, idx});
+    if (ScalarBoxHelper(v.repr) != nullptr) {
+      pending_scalar_boxes.push_back({v.name, idx, v.repr});
     }
   }
   ctx.num_params = static_cast<uint32_t>(params.size());
   BinaryenModuleRef m = ctx.mod.raw();
-  for (const auto& pending : pending_bool_boxes) {
+  for (const auto& pending : pending_scalar_boxes) {
     const BinaryenIndex boxed = ctx.AddLocal(BinaryenTypeInt32());
-    BinaryenExpressionRef raw =
-        BinaryenLocalGet(m, pending.raw_param, BinaryenTypeInt32());
-    BinaryenExpressionRef box =
-        BinaryenCall(m, "cel_make_bool", &raw, 1, BinaryenTypeInt32());
+    const BinaryenType raw_t = WasmTypeFor(pending.repr);
+    BinaryenExpressionRef raw = BinaryenLocalGet(m, pending.raw_param, raw_t);
+    BinaryenExpressionRef box = BinaryenCall(m, ScalarBoxHelper(pending.repr),
+                                             &raw, 1, BinaryenTypeInt32());
     ctx.prologue_setups.push_back(BinaryenLocalSet(m, boxed, box));
     ctx.idents.insert_or_assign(pending.name, boxed);
   }

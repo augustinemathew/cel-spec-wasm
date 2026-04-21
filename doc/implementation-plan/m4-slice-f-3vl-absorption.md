@@ -197,12 +197,24 @@ sees "dead code after dispatch collapse" and not a drive-by.
 
 ### Implementation order (incremental, each step testable)
 
-1. Auto-box int / uint / double `$eval` params at function entry.
-   Update ident resolution to return CelValue offsets.  Introduce
-   `UnboxInt` / `UnboxUint` / `UnboxDouble` helpers in codegen and
-   route every existing scalar consumer through them — this is a
-   no-op transform at runtime (box-then-unbox) but moves the source
-   of truth to the boxed form.  All tests continue to pass.
+1. **[shipped 2026-04-20]** Auto-box int / uint / double `$eval`
+   params at function entry.  `BuildParamList` now boxes every
+   scalar-bearing Repr (bool / int / uint / double) through a
+   `cel_make_<kind>` prologue that stores the CelValue offset in a
+   scratch local and rebinds the ident name to it (generalised from
+   the bool-only `PendingBoolBox` into `PendingScalarBox`).  Added
+   runtime helpers `cel_int_from_value` / `cel_uint_from_value` /
+   `cel_double_from_value` (kind-checked payload accessors) and
+   codegen helpers `UnboxInt` / `UnboxUint` / `UnboxDouble`;
+   `LowerIdent` for int / uint / double now emits
+   `UnboxK(LocalGet(boxed))` so downstream arithmetic / compare
+   opcodes still see raw scalars.  This is a pure runtime no-op
+   (box-then-unbox round-trip) — every existing test stays green
+   without flipping any DISABLED_ rows.  Unit tests updated in
+   `cel_runtime_test.cc` (round-trip + kind-mismatch for the three
+   new unbox helpers) and `expr_lower_test.cc`
+   (`IntIdentLowersToLocalGetWithI64Param`,
+   `IdentsOfAllScalarReprs`) to match the new ident shape.
 2. Add `cel_int_add_at_vv` and siblings (boxed-in, boxed-out).
    Route arithmetic through them; drop
    `EmitCheckedArithmetic`'s kind-check-early-return.  Change arith
