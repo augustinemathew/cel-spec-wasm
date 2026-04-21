@@ -1815,9 +1815,58 @@ TEST(EvalE2EUnknownTest,
 }
 
 TEST(EvalE2EUnknownTest,
-     DISABLED_UnknownThroughStringEqAbsorbedByOr) {  // Slice F row 15
+     UnknownThroughStringEqAbsorbedByOr) {  // Slice F row 15
   auto loaded =
       LoadCompiled("c.name == \"foo\" || true", {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownThroughStartsWithAbsorbedByAndFalse) {  // Slice F row 16
+  // `UNKNOWN && OK(false) → OK(false)` per langdef.md §11.1 — the
+  // startsWith call's UNKNOWN return must be absorbed by `&& false`.
+  auto loaded = LoadCompiled("c.name.startsWith(\"x\") && false",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.name"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 0);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownThroughBytesEqAbsorbedByOr) {  // Slice F row 17
+  auto loaded = LoadCompiled("c.session_token == b\"foo\" || true",
+                             {std::string(kCustomerSpec)});
+  ASSERT_THAT(loaded.status(), IsOk());
+  std::vector<AttributePattern> patterns;
+  patterns.push_back(ParsePatternOrDie("c.session_token"));
+  ASSERT_THAT(loaded->SetUnknownPatterns(std::move(patterns)), IsOk());
+  celwasm::testdata::Customer msg;
+  wasmtime_val_t arg = MessageAsExternref(*loaded, msg);
+  auto r = loaded->CallEval({arg});
+  ASSERT_THAT(r.status(), IsOk());
+  EXPECT_EQ(r->of.i32, 1);
+}
+
+TEST(EvalE2EUnknownTest,
+     UnknownThroughSizeThenCompareAbsorbed) {  // Slice F row 21
+  // size(UNKNOWN) must propagate UNKNOWN (not collapse to 0); then
+  // `== 0` preserves UNKNOWN; then `|| true` absorbs.
+  auto loaded =
+      LoadCompiled("size(c.name) == 0 || true", {std::string(kCustomerSpec)});
   ASSERT_THAT(loaded.status(), IsOk());
   std::vector<AttributePattern> patterns;
   patterns.push_back(ParsePatternOrDie("c.name"));

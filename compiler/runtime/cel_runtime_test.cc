@@ -1630,5 +1630,210 @@ TEST_F(RuntimeTest, CmpBoolUnknownPassesThrough) {
   EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
 }
 
+// ---- _v absorbing span helpers (M4 Slice F Step 4) ------------------------
+// Shape contract: both operands are CelValue offsets; on non-OK inputs return
+// dominant (ERROR > UNKNOWN) via cel_status_either; on OK inputs perform the
+// operation and return a boxed CelValue (CEL_BOOL / CEL_STRING / CEL_BYTES /
+// CEL_INT).  langdef.md §11.1 absorption.
+
+TEST_F(RuntimeTest, StringEqVHappyTrue) {
+  uint32_t r =
+      cel_string_eq_v(cel_make_string("hi", 2), cel_make_string("hi", 2));
+  ExpectBool(r, 1);
+}
+TEST_F(RuntimeTest, StringEqVHappyFalse) {
+  uint32_t r =
+      cel_string_eq_v(cel_make_string("hi", 2), cel_make_string("ho", 2));
+  ExpectBool(r, 0);
+}
+TEST_F(RuntimeTest, StringEqVLeftUnknownAbsorbs) {
+  uint32_t r = cel_string_eq_v(cel_make_unknown(7), cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, StringEqVRightErrorDominatesUnknown) {
+  uint32_t e = cel_make_error(3, 0, 0);
+  uint32_t r = cel_string_eq_v(cel_make_unknown(7), e);
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StringEqVBothUnknownMerges) {
+  uint32_t r = cel_string_eq_v(cel_make_unknown(42), cel_make_unknown(100));
+  ASSERT_EQ(KindOf(r), CEL_UNKNOWN);
+  EXPECT_EQ(UnknownIds(r), (std::vector<uint32_t>{42u, 100u}));
+}
+TEST_F(RuntimeTest, StringEqVKindMismatchErrors) {
+  uint32_t r = cel_string_eq_v(cel_make_string("x", 1), cel_make_bytes("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StringEqVZeroOffsetErrors) {
+  EXPECT_EQ(KindOf(cel_string_eq_v(0, cel_make_string("x", 1))), CEL_ERROR);
+  EXPECT_EQ(KindOf(cel_string_eq_v(cel_make_string("x", 1), 0)), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, BytesEqVHappy) {
+  ExpectBool(cel_bytes_eq_v(cel_make_bytes("x", 1), cel_make_bytes("x", 1)), 1);
+  ExpectBool(cel_bytes_eq_v(cel_make_bytes("x", 1), cel_make_bytes("y", 1)), 0);
+}
+TEST_F(RuntimeTest, BytesEqVAbsorbsUnknown) {
+  uint32_t r = cel_bytes_eq_v(cel_make_bytes("x", 1), cel_make_unknown(9));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, BytesEqVErrorDominates) {
+  uint32_t r = cel_bytes_eq_v(cel_make_unknown(9), cel_make_error(1, 0, 0));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, BytesEqVKindMismatchErrors) {
+  uint32_t r = cel_bytes_eq_v(cel_make_bytes("x", 1), cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, StringConcatVHappy) {
+  uint32_t r =
+      cel_string_concat_v(cel_make_string("foo", 3), cel_make_string("bar", 3));
+  ASSERT_EQ(KindOf(r), CEL_STRING);
+  const CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 6u);
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, "foobar", 6), 0);
+}
+TEST_F(RuntimeTest, StringConcatVAbsorbsUnknown) {
+  uint32_t r =
+      cel_string_concat_v(cel_make_unknown(4), cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, StringConcatVErrorDominates) {
+  uint32_t r =
+      cel_string_concat_v(cel_make_unknown(4), cel_make_error(9, 0, 0));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StringConcatVKindMismatchErrors) {
+  uint32_t r =
+      cel_string_concat_v(cel_make_string("x", 1), cel_make_bytes("y", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StringConcatVZeroOffsetErrors) {
+  EXPECT_EQ(KindOf(cel_string_concat_v(0, cel_make_string("x", 1))), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, BytesConcatVHappy) {
+  uint32_t r = cel_bytes_concat_v(cel_make_bytes("\x01\x02", 2),
+                                  cel_make_bytes("\x03", 1));
+  ASSERT_EQ(KindOf(r), CEL_BYTES);
+  const CelValue* v = cel_value_at(r);
+  EXPECT_EQ(v->payload.s.len, 3u);
+  uint8_t expect[3] = {1, 2, 3};
+  EXPECT_EQ(std::memcmp(cel_mem_base() + v->payload.s.ptr, expect, 3), 0);
+}
+TEST_F(RuntimeTest, BytesConcatVAbsorbsUnknown) {
+  uint32_t r = cel_bytes_concat_v(cel_make_bytes("a", 1), cel_make_unknown(3));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, BytesConcatVErrorDominates) {
+  uint32_t r = cel_bytes_concat_v(cel_make_error(5, 0, 0), cel_make_unknown(3));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, BytesConcatVKindMismatchErrors) {
+  uint32_t r =
+      cel_bytes_concat_v(cel_make_bytes("x", 1), cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, StartsWithVHappy) {
+  ExpectBool(cel_string_starts_with_v(cel_make_string("hello", 5),
+                                      cel_make_string("he", 2)),
+             1);
+  ExpectBool(cel_string_starts_with_v(cel_make_string("hello", 5),
+                                      cel_make_string("lo", 2)),
+             0);
+}
+TEST_F(RuntimeTest, StartsWithVAbsorbsUnknown) {
+  uint32_t r =
+      cel_string_starts_with_v(cel_make_unknown(2), cel_make_string("he", 2));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+TEST_F(RuntimeTest, StartsWithVErrorDominates) {
+  uint32_t r =
+      cel_string_starts_with_v(cel_make_unknown(2), cel_make_error(4, 0, 0));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StartsWithVKindMismatchErrors) {
+  uint32_t r = cel_string_starts_with_v(cel_make_bytes("he", 2),
+                                        cel_make_string("he", 2));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, EndsWithVHappy) {
+  ExpectBool(cel_string_ends_with_v(cel_make_string("hello", 5),
+                                    cel_make_string("lo", 2)),
+             1);
+}
+TEST_F(RuntimeTest, EndsWithVAbsorbsUnknown) {
+  uint32_t r =
+      cel_string_ends_with_v(cel_make_string("hello", 5), cel_make_unknown(1));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, ContainsVHappy) {
+  ExpectBool(cel_string_contains_v(cel_make_string("hello", 5),
+                                   cel_make_string("ell", 3)),
+             1);
+  ExpectBool(cel_string_contains_v(cel_make_string("hello", 5),
+                                   cel_make_string("xyz", 3)),
+             0);
+}
+TEST_F(RuntimeTest, ContainsVAbsorbsUnknown) {
+  uint32_t r =
+      cel_string_contains_v(cel_make_unknown(1), cel_make_string("ell", 3));
+  EXPECT_EQ(KindOf(r), CEL_UNKNOWN);
+}
+
+TEST_F(RuntimeTest, StringSizeVHappy) {
+  uint32_t r = cel_string_size_v(cel_make_string("hello", 5));
+  ASSERT_EQ(KindOf(r), CEL_INT);
+  EXPECT_EQ(cel_value_at(r)->payload.i, 5);
+}
+TEST_F(RuntimeTest, StringSizeVEmpty) {
+  uint32_t r = cel_string_size_v(cel_make_string("", 0));
+  ASSERT_EQ(KindOf(r), CEL_INT);
+  EXPECT_EQ(cel_value_at(r)->payload.i, 0);
+}
+TEST_F(RuntimeTest, StringSizeVCountsCodepoints) {
+  uint32_t r = cel_string_size_v(cel_make_string("h\xC3\xA9llo", 6));
+  ASSERT_EQ(KindOf(r), CEL_INT);
+  EXPECT_EQ(cel_value_at(r)->payload.i, 5);
+}
+TEST_F(RuntimeTest, StringSizeVUnknownPassesThrough) {
+  uint32_t u = cel_make_unknown(7);
+  EXPECT_EQ(cel_string_size_v(u), u);
+}
+TEST_F(RuntimeTest, StringSizeVErrorPassesThrough) {
+  uint32_t e = cel_make_error(1, 0, 0);
+  EXPECT_EQ(cel_string_size_v(e), e);
+}
+TEST_F(RuntimeTest, StringSizeVKindMismatchErrors) {
+  uint32_t r = cel_string_size_v(cel_make_bytes("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+TEST_F(RuntimeTest, StringSizeVZeroOffsetErrors) {
+  EXPECT_EQ(KindOf(cel_string_size_v(0)), CEL_ERROR);
+}
+
+TEST_F(RuntimeTest, BytesSizeVHappy) {
+  uint32_t r = cel_bytes_size_v(cel_make_bytes("abc", 3));
+  ASSERT_EQ(KindOf(r), CEL_INT);
+  // Bytes size is byte count, not code points.
+  EXPECT_EQ(cel_value_at(r)->payload.i, 3);
+}
+TEST_F(RuntimeTest, BytesSizeVUnknownPassesThrough) {
+  uint32_t u = cel_make_unknown(7);
+  EXPECT_EQ(cel_bytes_size_v(u), u);
+}
+TEST_F(RuntimeTest, BytesSizeVErrorPassesThrough) {
+  uint32_t e = cel_make_error(1, 0, 0);
+  EXPECT_EQ(cel_bytes_size_v(e), e);
+}
+TEST_F(RuntimeTest, BytesSizeVKindMismatchErrors) {
+  uint32_t r = cel_bytes_size_v(cel_make_string("x", 1));
+  EXPECT_EQ(KindOf(r), CEL_ERROR);
+}
+
 }  // namespace
 }  // namespace celwasm

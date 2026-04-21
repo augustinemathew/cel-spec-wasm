@@ -507,6 +507,90 @@ int32_t cel_string_contains(uint32_t s, uint32_t needle) {
   return 0;
 }
 
+// ---- Uniform-boxed ABI (Slice F Step 4) ----------------------------------
+//
+// Shared prologue for the binary `_v` helpers.  Handles absorption and
+// operand-kind checking.  Returns 0 when both operands are OK of the
+// expected kind (caller should compute the result); otherwise returns
+// the CelValue offset the caller should propagate verbatim — either
+// the dominant non-OK status from `cel_status_either`, or a freshly
+// boxed CEL_ERROR{TYPE_MISMATCH}.
+static uint32_t span_v_prologue(uint32_t a, uint32_t b, uint32_t kind) {
+  uint32_t st = cel_status_either(a, b);
+  if (st != 0) return st;
+  if (a == 0 || b == 0) return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  if (cv_at(a)->kind != kind || cv_at(b)->kind != kind) {
+    return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  }
+  return 0;
+}
+
+// Single-operand prologue for size `_v` helpers.  `cel_status_either`
+// short-circuits to 0 for a zero offset, so status propagation is
+// inlined as a direct kind inspection: UNKNOWN / ERROR pass through
+// unchanged, a zero or wrong-kind operand becomes TYPE_MISMATCH.
+static uint32_t size_v_prologue(uint32_t v, uint32_t kind) {
+  if (v == 0) return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  uint32_t k = cv_at(v)->kind;
+  if (k == (uint32_t)CEL_ERROR || k == (uint32_t)CEL_UNKNOWN) return v;
+  if (k != kind) return cel_make_error(CEL_ERR_TYPE_MISMATCH, 0, 0);
+  return 0;
+}
+
+uint32_t cel_string_eq_v(uint32_t a, uint32_t b) {
+  uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return cel_make_bool(span_eq(a, b, (uint32_t)CEL_STRING));
+}
+
+uint32_t cel_bytes_eq_v(uint32_t a, uint32_t b) {
+  uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_BYTES);
+  if (st != 0) return st;
+  return cel_make_bool(span_eq(a, b, (uint32_t)CEL_BYTES));
+}
+
+uint32_t cel_string_concat_v(uint32_t a, uint32_t b) {
+  uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return span_concat(a, b, (uint32_t)CEL_STRING);
+}
+
+uint32_t cel_bytes_concat_v(uint32_t a, uint32_t b) {
+  uint32_t st = span_v_prologue(a, b, (uint32_t)CEL_BYTES);
+  if (st != 0) return st;
+  return span_concat(a, b, (uint32_t)CEL_BYTES);
+}
+
+uint32_t cel_string_starts_with_v(uint32_t s, uint32_t prefix) {
+  uint32_t st = span_v_prologue(s, prefix, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return cel_make_bool(cel_string_starts_with(s, prefix));
+}
+
+uint32_t cel_string_ends_with_v(uint32_t s, uint32_t suffix) {
+  uint32_t st = span_v_prologue(s, suffix, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return cel_make_bool(cel_string_ends_with(s, suffix));
+}
+
+uint32_t cel_string_contains_v(uint32_t s, uint32_t needle) {
+  uint32_t st = span_v_prologue(s, needle, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return cel_make_bool(cel_string_contains(s, needle));
+}
+
+uint32_t cel_string_size_v(uint32_t s) {
+  uint32_t st = size_v_prologue(s, (uint32_t)CEL_STRING);
+  if (st != 0) return st;
+  return cel_make_int(cel_string_size(s));
+}
+
+uint32_t cel_bytes_size_v(uint32_t b) {
+  uint32_t st = size_v_prologue(b, (uint32_t)CEL_BYTES);
+  if (st != 0) return st;
+  return cel_make_int(cel_bytes_size(b));
+}
+
 // ---- Three-valued logic helpers ------------------------------------------
 
 static int is_3vl_kind(uint32_t k) {

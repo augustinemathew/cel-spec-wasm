@@ -260,8 +260,44 @@ sees "dead code after dispatch collapse" and not a drive-by.
    (`LowerArithmetic`, `LowerCheckedIntArith`, double arith) still
    lives on the scalar path at the root — step 7 will take a second
    pass once the whole pipeline is on the uniform ABI.
-4. Upgrade string / bytes / size helpers to absorb non-OK and
-   return CelValue offsets.  Flip rows 15, 16, 17, 21.
+4. **[shipped 2026-04-20]** Upgrade string / bytes / size helpers
+   to absorb non-OK and return CelValue offsets.  Added 9 new
+   `_v`-suffixed runtime helpers alongside the existing scalar-return
+   ones: `cel_string_eq_v`, `cel_bytes_eq_v`, `cel_string_concat_v`,
+   `cel_bytes_concat_v`, `cel_string_starts_with_v` / `_ends_with_v` /
+   `_contains_v`, `cel_string_size_v`, `cel_bytes_size_v`.  Each
+   (a) routes through `cel_status_either` to pick the dominant non-OK
+   (ERROR > UNKNOWN) for two-operand helpers, or passes UNKNOWN / ERROR
+   through unchanged for `size_v`; (b) kind-checks both sides for
+   `CEL_ERR_TYPE_MISMATCH` on null offset or wrong kind; (c) on OK
+   inputs delegates to the existing raw helper (`span_eq`, `span_concat`,
+   `span_has_sub`, `cel_string_size`, `cel_bytes_size`) and boxes the
+   result via `cel_make_bool` / `cel_make_int` / directly.  Codegen
+   swaps in `expr_lower.cc`: `LowerSpanConcat`, `LowerSpanEquality`
+   (now also routes `!=` through `cel_not(...eq_v(...))` instead of
+   `i32.eqz` so UNKNOWN / ERROR ride through), `LowerStringMemberCall`
+   (drops the outer `cel_make_bool` wrap — the `_v` helper returns a
+   CelValue offset directly).  For `size()` the scalar-root path still
+   uses the raw `cel_string_size` / `cel_bytes_size` (Repr::kInt wants
+   raw i64 for the sret box); the boxed path (reached via nested
+   compare) routes through the new `LowerExprBoxed` branch that calls
+   the `_v` variants.  Flipped DISABLED_ row 15
+   (`UnknownThroughStringEqAbsorbedByOr`); added new rows 16
+   (`UnknownThroughStartsWithAbsorbedByAndFalse`,
+   `UNKNOWN && false → false`), 17
+   (`UnknownThroughBytesEqAbsorbedByOr`), and 21
+   (`UnknownThroughSizeThenCompareAbsorbed`, `size(UNKNOWN)` rides
+   UNKNOWN through `== 0 || true`).  Runtime unit coverage: 37 new
+   tests in `cel_runtime_test.cc` exercising happy path,
+   left-UNKNOWN-absorbs, right-ERROR-dominates-UNKNOWN, both-UNKNOWN-
+   merges, kind mismatch, and zero-offset across all 9 helpers
+   (size_v also covers UNKNOWN and ERROR pass-through).  Codegen
+   shape tests: 5 `*LowersToRuntimeCall` tests now expect the `_v`
+   target names; `StringInequalityInvertsEqualityCall` asserts the
+   outer body is `cel_not(cel_string_eq_v(...))`.  The scalar helpers
+   (`cel_string_eq`, `cel_string_concat`, etc.) remain reachable via
+   the `_v` wrappers; their direct call sites from codegen go away
+   when step 7 lands.
 5. Upgrade message equality wrapper (caller-side absorption).  Flip
    row 14.
 6. Simplify ternary: drop any "at eval root?" contextual logic.

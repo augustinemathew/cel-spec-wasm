@@ -675,10 +675,23 @@ expression from `m1-type-checker.md`, plus:
       `CompareOp`, `LowerDoubleOrderedCompare`, `UnboxBool`) are
       deleted — NaN-in-ordered-compare → ERROR is now handled in
       the runtime by `cel_cmp_double_{lt,le,gt,ge}`.  Row 6 enabled
-      (`ThreeValuedAbsorptionNaNCompareAbsorbed`).  Remaining
-      DISABLED shells: row 8 (ternary result — step 6), 14 / 15 /
-      16 / 17 / 21 (string / bytes / size / msg-eq absorption —
-      steps 4–5), 7 / 19 (ternary simplify — step 6).
+      (`ThreeValuedAbsorptionNaNCompareAbsorbed`).
+      **Uniform-boxed Step 4 shipped 2026-04-20**: string / bytes /
+      size helpers now absorb non-OK and return CelValue offsets via
+      the 9 new `cel_{string,bytes}_{eq,concat,starts_with,ends_with,
+      contains,size}_v` helpers; `LowerSpanConcat` /
+      `LowerSpanEquality` / `LowerStringMemberCall` swapped to the
+      `_v` variants, and `!=` on strings / bytes now emits
+      `cel_not(...eq_v(...))` so UNKNOWN / ERROR ride through instead
+      of collapsing via `i32.eqz`.  Rows 15 / 16 / 17 / 21 enabled
+      (`UnknownThroughStringEqAbsorbedByOr`,
+      `UnknownThroughStartsWithAbsorbedByAndFalse`,
+      `UnknownThroughBytesEqAbsorbedByOr`,
+      `UnknownThroughSizeThenCompareAbsorbed`).  Runtime: 37 new
+      unit tests over happy path, left / right / both absorption,
+      ERROR-dominates-UNKNOWN, kind mismatch, and zero-offset.
+      Remaining DISABLED shells: row 14 (message-eq absorption —
+      step 5), rows 7 / 8 / 19 (ternary simplify — step 6).
 
 **M4 slice C commit 3b2 (2026-04-20): bool-as-CelValue + 3VL in
 `&&` / `||` / `!` / `?:`.**  Bool values now travel as CelValue

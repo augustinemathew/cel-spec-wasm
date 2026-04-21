@@ -402,6 +402,15 @@ TEST(ExprLowerTest, EvalModuleDeclaresRuntimeFunctionImports) {
            "cel_string_starts_with",
            "cel_string_ends_with",
            "cel_string_contains",
+           "cel_string_eq_v",
+           "cel_bytes_eq_v",
+           "cel_string_concat_v",
+           "cel_bytes_concat_v",
+           "cel_string_starts_with_v",
+           "cel_string_ends_with_v",
+           "cel_string_contains_v",
+           "cel_string_size_v",
+           "cel_bytes_size_v",
        }) {
     EXPECT_EQ(seen.count(name), 1u) << "missing import: " << name;
   }
@@ -642,7 +651,9 @@ TEST(ExprLowerTest, StringConcatLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_concat");
+  // Slice F Step 4: codegen routes concat through the absorbing `_v`
+  // helper so an UNKNOWN / ERROR operand surfaces as a CelValue.
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_concat_v");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
@@ -654,24 +665,25 @@ TEST(ExprLowerTest, StringEqualityLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_eq");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_eq_v");
 }
 
 TEST(ExprLowerTest, StringInequalityInvertsEqualityCall) {
-  // `_!=_` on strings is `i32.eqz(cel_string_eq(...))`.  We can't
-  // reuse the numeric `ne` opcode because the helper returns i32 0/1,
-  // so we must invert explicitly.  The validator would accept either
-  // shape but only this one is semantically correct.
+  // `_!=_` on strings wraps the `_v` equality result in `cel_not`
+  // rather than raw `i32.eqz` (Slice F Step 4): `cel_not` is 3VL-aware
+  // and propagates UNKNOWN / ERROR unchanged, whereas `i32.eqz` would
+  // collapse them to a bogus bool.
   auto L = LowerOk("'a' != 'b'");
   EXPECT_THAT(L.mod.Validate(), IsOk());
   BinaryenFunctionRef fn = BinaryenGetFunction(L.mod.raw(), "eval");
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
-  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenUnaryId());
-  EXPECT_EQ(BinaryenUnaryGetOp(body), BinaryenEqZInt32());
-  BinaryenExpressionRef inner = BinaryenUnaryGetValue(body);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_not");
+  ASSERT_EQ(BinaryenCallGetNumOperands(body), 1u);
+  BinaryenExpressionRef inner = BinaryenCallGetOperandAt(body, 0);
   ASSERT_EQ(BinaryenExpressionGetId(inner), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_string_eq");
+  EXPECT_STREQ(BinaryenCallGetTarget(inner), "cel_string_eq_v");
 }
 
 // String member calls (M3 slice E).  The checker lowers
@@ -688,7 +700,7 @@ TEST(ExprLowerTest, StartsWithLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_starts_with");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_starts_with_v");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
@@ -700,7 +712,7 @@ TEST(ExprLowerTest, EndsWithLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_ends_with");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_ends_with_v");
 }
 
 TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
@@ -711,7 +723,7 @@ TEST(ExprLowerTest, ContainsLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_contains");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_string_contains_v");
 }
 
 TEST(ExprLowerTest, SizeStringLowersToRuntimeCall) {
@@ -770,7 +782,7 @@ TEST(ExprLowerTest, BytesConcatLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_concat");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_concat_v");
   EXPECT_EQ(BinaryenCallGetNumOperands(body), 2u);
 }
 
@@ -782,7 +794,7 @@ TEST(ExprLowerTest, BytesEqualityLowersToRuntimeCall) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(fn);
   body = ScalarBody(body);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_eq");
+  EXPECT_STREQ(BinaryenCallGetTarget(body), "cel_bytes_eq_v");
 }
 
 TEST(ExprLowerTest, SizeBytesLowersToRuntimeCall) {

@@ -182,6 +182,33 @@ int32_t cel_string_starts_with(uint32_t s, uint32_t prefix);
 int32_t cel_string_ends_with(uint32_t s, uint32_t suffix);
 int32_t cel_string_contains(uint32_t s, uint32_t needle);
 
+// ---- Uniform-boxed ABI (Slice F step 4) ----------------------------------
+//
+// Absorption-aware siblings of the string / bytes helpers above.  Each
+// takes CelValue offsets for its operands and returns a CelValue offset:
+//
+//   * If any operand is UNKNOWN / ERROR, the dominant non-OK status
+//     (per `cel_status_either`; ERROR > UNKNOWN) is returned verbatim so
+//     a wrapping `&&` / `||` / `?:` absorber sees it.
+//   * On kind mismatch (operand not the expected CEL_STRING / CEL_BYTES)
+//     a fresh `CEL_ERROR{CEL_ERR_TYPE_MISMATCH}` offset is returned.
+//   * On success the result is a freshly boxed CelValue of the expected
+//     kind: CEL_BOOL for eq / starts_with / ends_with / contains,
+//     CEL_STRING / CEL_BYTES for concat, CEL_INT for size.
+//
+// Codegen `expr_lower.cc` uses exclusively the `_v` variants after step
+// 4; the non-`_v` originals are unused by `$eval` and scheduled for
+// deletion in step 7's dead-code sweep.
+uint32_t cel_string_eq_v(uint32_t a, uint32_t b);
+uint32_t cel_bytes_eq_v(uint32_t a, uint32_t b);
+uint32_t cel_string_concat_v(uint32_t a, uint32_t b);
+uint32_t cel_bytes_concat_v(uint32_t a, uint32_t b);
+uint32_t cel_string_starts_with_v(uint32_t s, uint32_t prefix);
+uint32_t cel_string_ends_with_v(uint32_t s, uint32_t suffix);
+uint32_t cel_string_contains_v(uint32_t s, uint32_t needle);
+uint32_t cel_string_size_v(uint32_t s);
+uint32_t cel_bytes_size_v(uint32_t b);
+
 // ---- Three-valued logic helpers ------------------------------------------
 //
 // Implements CEL's OK / UNKNOWN / ERROR tri-state for the logical
