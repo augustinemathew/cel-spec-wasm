@@ -26,10 +26,15 @@
 // is padded back to 8-byte alignment before the next Allocate,
 // so every frame lands on an 8-byte boundary.
 //
-// `AllocateList` / `AllocateMap` are declared now so M5/M6
-// wiring lands as a body-only change (no API-surface churn).
-// Their M1 body `ABSL_CHECK(false)`s — any accidental early
-// caller gets a loud crash, not a silent miscodegen.
+// Out of scope: messages and non-all-literal lists / maps.
+// Their runtime value is a host-side handle (externref /
+// arena pointer), not bytes — they're constructed at eval
+// time via runtime / host calls (§4.7), not packed here.
+// `AllocateList` / `AllocateMap` are reserved for the narrow
+// all-literal optimization case (§12 open question 6) and are
+// signature-final stubs; their M1 body `ABSL_CHECK(false)`s
+// so any accidental early caller gets a loud crash, not a
+// silent miscodegen.  M5/M6 fills the body without API churn.
 
 #include <cstdint>
 #include <vector>
