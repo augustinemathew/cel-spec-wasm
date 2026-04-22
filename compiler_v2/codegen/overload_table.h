@@ -64,13 +64,29 @@ class OverloadTableBuilder {
   // Seeds every row in `kBuiltinSeeds` (empty in M1).
   OverloadTableBuilder();
 
-  // Registers a custom host function.  `helper_name` is the wasm
-  // import name the expr module will reference (one import per
-  // registered custom — no shared trampoline).  Returns
-  // `AlreadyExists` if `overload_id` collides with either a built-in
-  // (CEL spec forbids shadowing) or a prior custom registration.
-  // Caller-owned string_views are copied into stable storage, so they
-  // need not outlive the call.
+  // Registers a custom host function.
+  //
+  // `overload_id` is the string the cel-cpp checker will stamp onto
+  // resolved call nodes — the same value passed to
+  // `MakeOverloadDecl` when the embedder declares the function via
+  // `TypeCheckerBuilder::AddFunction` (e.g.
+  // `MakeOverloadDecl("my_upper_string", StringType(), StringType())`
+  // for a `my.upper(string) -> string` function — see
+  // `third_party/cel-cpp/checker/type_checker_builder.h` and
+  // `third_party/cel-cpp/common/decl.h`).  cel-cpp records this on
+  // the `FunctionReference::overloads()` entry in the checked AST's
+  // reference map; ResolvePass uses it as the lookup key here.
+  //
+  // `helper_name` is the wasm import name the expr module will
+  // reference (one import per registered custom — no shared
+  // trampoline; §4.6.1 of the rewrite design).  By convention it
+  // matches `overload_id`, but the embedder may pick any unique
+  // name — only `helper_name` is visible in the emitted wasm.
+  //
+  // Returns `AlreadyExists` if `overload_id` collides with either a
+  // built-in (CEL spec forbids shadowing) or a prior custom
+  // registration.  Caller-owned string_views are copied into stable
+  // storage, so they need not outlive the call.
   ABSL_MUST_USE_RESULT absl::Status RegisterCustom(
       absl::string_view overload_id, ImportModule module,
       absl::string_view helper_name);
