@@ -30,6 +30,7 @@ TEST(ReprNameTest, CoversEveryEnumerator) {
 }
 
 TEST(ReprNameTest, FallsBackForOutOfRangeValue) {
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
   EXPECT_EQ(ReprName(static_cast<Repr>(250)), "?");
 }
 
@@ -38,6 +39,7 @@ TEST(StorageKindNameTest, CoversEveryEnumerator) {
   EXPECT_EQ(StorageKindName(StorageKind::kStaticRodata), "static_rodata");
   EXPECT_EQ(StorageKindName(StorageKind::kWorkspaceSlot), "workspace_slot");
   EXPECT_EQ(StorageKindName(StorageKind::kLocal), "local");
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
   EXPECT_EQ(StorageKindName(static_cast<StorageKind>(250)), "?");
 }
 

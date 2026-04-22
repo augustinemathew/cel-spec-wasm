@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -176,6 +177,24 @@ absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
 
 // --- Type spec parsing -------------------------------------------------------
 
+// Returns a non-empty `cel::Type` iff `name` is one of the CEL spec's
+// primitive or well-known type keywords.  Kept separate from
+// `TypeParser` so the parser's per-method line count stays small.
+std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
+  if (name == "bool") return cel::Type(cel::BoolType{});
+  if (name == "int") return cel::Type(cel::IntType{});
+  if (name == "uint") return cel::Type(cel::UintType{});
+  if (name == "double") return cel::Type(cel::DoubleType{});
+  if (name == "string") return cel::Type(cel::StringType{});
+  if (name == "bytes") return cel::Type(cel::BytesType{});
+  if (name == "null_type") return cel::Type(cel::NullType{});
+  if (name == "timestamp") return cel::Type(cel::TimestampType{});
+  if (name == "duration") return cel::Type(cel::DurationType{});
+  if (name == "any") return cel::Type(cel::AnyType{});
+  if (name == "dyn") return cel::Type(cel::DynType{});
+  return std::nullopt;
+}
+
 struct TypeParser {
   absl::string_view src;
   size_t pos = 0;
@@ -183,8 +202,9 @@ struct TypeParser {
   const google::protobuf::DescriptorPool* pool;
 
   void SkipWhitespace() {
-    while (pos < src.size() && absl::ascii_isspace(src[pos]))
+    while (pos < src.size() && absl::ascii_isspace(src[pos])) {
       ++pos;
+    }
   }
 
   bool Consume(char c) {
@@ -210,58 +230,55 @@ struct TypeParser {
     return std::string(src.substr(start, pos - start));
   }
 
+  absl::StatusOr<cel::Type> ParseListType() {
+    if (!Consume('<')) {
+      return absl::InvalidArgumentError("expected '<' after 'list'");
+    }
+    auto elem = ParseType();
+    if (!elem.ok()) return elem.status();
+    if (!Consume('>')) {
+      return absl::InvalidArgumentError("expected '>' to close 'list<...>'");
+    }
+    return cel::Type(cel::ListType(arena, *elem));
+  }
+
+  absl::StatusOr<cel::Type> ParseMapType() {
+    if (!Consume('<')) {
+      return absl::InvalidArgumentError("expected '<' after 'map'");
+    }
+    auto key = ParseType();
+    if (!key.ok()) return key.status();
+    if (!Consume(',')) {
+      return absl::InvalidArgumentError("expected ',' in map<...>");
+    }
+    auto val = ParseType();
+    if (!val.ok()) return val.status();
+    if (!Consume('>')) {
+      return absl::InvalidArgumentError("expected '>' to close 'map<...>'");
+    }
+    return cel::Type(cel::MapType(arena, *key, *val));
+  }
+
+  absl::StatusOr<cel::Type> ParseMessageType(absl::string_view name) const {
+    const auto* descriptor = pool->FindMessageTypeByName(std::string(name));
+    if (descriptor == nullptr) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "unknown type in spec: '", name,
+          "' (not a primitive, list<>, map<>, or known message type)"));
+    }
+    return cel::Type::Message(descriptor);
+  }
+
   absl::StatusOr<cel::Type> ParseType() {
     SkipWhitespace();
     auto name = ParseIdent();
     if (!name.ok()) return name.status();
-
-    if (*name == "bool") return cel::Type(cel::BoolType{});
-    if (*name == "int") return cel::Type(cel::IntType{});
-    if (*name == "uint") return cel::Type(cel::UintType{});
-    if (*name == "double") return cel::Type(cel::DoubleType{});
-    if (*name == "string") return cel::Type(cel::StringType{});
-    if (*name == "bytes") return cel::Type(cel::BytesType{});
-    if (*name == "null_type") return cel::Type(cel::NullType{});
-    if (*name == "timestamp") return cel::Type(cel::TimestampType{});
-    if (*name == "duration") return cel::Type(cel::DurationType{});
-    if (*name == "any") return cel::Type(cel::AnyType{});
-    if (*name == "dyn") return cel::Type(cel::DynType{});
-
-    if (*name == "list") {
-      if (!Consume('<')) {
-        return absl::InvalidArgumentError("expected '<' after 'list'");
-      }
-      auto elem = ParseType();
-      if (!elem.ok()) return elem.status();
-      if (!Consume('>')) {
-        return absl::InvalidArgumentError("expected '>' to close 'list<...>'");
-      }
-      return cel::Type(cel::ListType(arena, *elem));
+    if (auto primitive = ParsePrimitiveType(*name); primitive.has_value()) {
+      return *primitive;
     }
-    if (*name == "map") {
-      if (!Consume('<')) {
-        return absl::InvalidArgumentError("expected '<' after 'map'");
-      }
-      auto key = ParseType();
-      if (!key.ok()) return key.status();
-      if (!Consume(',')) {
-        return absl::InvalidArgumentError("expected ',' in map<...>");
-      }
-      auto val = ParseType();
-      if (!val.ok()) return val.status();
-      if (!Consume('>')) {
-        return absl::InvalidArgumentError("expected '>' to close 'map<...>'");
-      }
-      return cel::Type(cel::MapType(arena, *key, *val));
-    }
-
-    const auto* descriptor = pool->FindMessageTypeByName(*name);
-    if (descriptor == nullptr) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "unknown type in spec: '", *name,
-          "' (not a primitive, list<>, map<>, or known message type)"));
-    }
-    return cel::Type::Message(descriptor);
+    if (*name == "list") return ParseListType();
+    if (*name == "map") return ParseMapType();
+    return ParseMessageType(*name);
   }
 };
 
@@ -295,7 +312,7 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
         "trailing garbage in type spec: '", type_src.substr(parser.pos), "'"));
   }
   Repr repr = ReprOf(*type);
-  return ParsedSpec{cel::MakeVariableDecl(name, std::move(*type)), repr};
+  return ParsedSpec{cel::MakeVariableDecl(name, *type), repr};
 }
 
 // --- Static-subset enforcement (folded from v1's ir/static_subset) ---------
@@ -320,6 +337,34 @@ const char* UnacceptableLabel(const cel::TypeSpec& type) {
 void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out);
 
+void CheckSubsetCall(const cel::CallExpr& call, const cel::Ast::TypeMap& types,
+                     std::vector<Violation>& out) {
+  if (call.has_target()) CheckSubsetNode(call.target(), types, out);
+  for (const auto& arg : call.args()) {
+    CheckSubsetNode(arg, types, out);
+  }
+}
+
+void CheckSubsetMap(const cel::MapExpr& map, const cel::Ast::TypeMap& types,
+                    std::vector<Violation>& out) {
+  for (const auto& entry : map.entries()) {
+    if (entry.has_key()) CheckSubsetNode(entry.key(), types, out);
+    if (entry.has_value()) CheckSubsetNode(entry.value(), types, out);
+  }
+}
+
+void CheckSubsetComprehension(const cel::ComprehensionExpr& c,
+                              const cel::Ast::TypeMap& types,
+                              std::vector<Violation>& out) {
+  if (c.has_iter_range()) CheckSubsetNode(c.iter_range(), types, out);
+  if (c.has_accu_init()) CheckSubsetNode(c.accu_init(), types, out);
+  if (c.has_loop_condition()) {
+    CheckSubsetNode(c.loop_condition(), types, out);
+  }
+  if (c.has_loop_step()) CheckSubsetNode(c.loop_step(), types, out);
+  if (c.has_result()) CheckSubsetNode(c.result(), types, out);
+}
+
 void CheckSubsetChildren(const cel::Expr& node, const cel::Ast::TypeMap& types,
                          std::vector<Violation>& out) {
   switch (node.kind_case()) {
@@ -332,13 +377,9 @@ void CheckSubsetChildren(const cel::Expr& node, const cel::Ast::TypeMap& types,
         CheckSubsetNode(node.select_expr().operand(), types, out);
       }
       return;
-    case cel::ExprKindCase::kCallExpr: {
-      const auto& call = node.call_expr();
-      if (call.has_target()) CheckSubsetNode(call.target(), types, out);
-      for (const auto& arg : call.args())
-        CheckSubsetNode(arg, types, out);
+    case cel::ExprKindCase::kCallExpr:
+      CheckSubsetCall(node.call_expr(), types, out);
       return;
-    }
     case cel::ExprKindCase::kListExpr:
       for (const auto& elem : node.list_expr().elements()) {
         if (elem.has_expr()) CheckSubsetNode(elem.expr(), types, out);
@@ -350,21 +391,11 @@ void CheckSubsetChildren(const cel::Expr& node, const cel::Ast::TypeMap& types,
       }
       return;
     case cel::ExprKindCase::kMapExpr:
-      for (const auto& entry : node.map_expr().entries()) {
-        if (entry.has_key()) CheckSubsetNode(entry.key(), types, out);
-        if (entry.has_value()) CheckSubsetNode(entry.value(), types, out);
-      }
+      CheckSubsetMap(node.map_expr(), types, out);
       return;
-    case cel::ExprKindCase::kComprehensionExpr: {
-      const auto& c = node.comprehension_expr();
-      if (c.has_iter_range()) CheckSubsetNode(c.iter_range(), types, out);
-      if (c.has_accu_init()) CheckSubsetNode(c.accu_init(), types, out);
-      if (c.has_loop_condition())
-        CheckSubsetNode(c.loop_condition(), types, out);
-      if (c.has_loop_step()) CheckSubsetNode(c.loop_step(), types, out);
-      if (c.has_result()) CheckSubsetNode(c.result(), types, out);
+    case cel::ExprKindCase::kComprehensionExpr:
+      CheckSubsetComprehension(node.comprehension_expr(), types, out);
       return;
-    }
   }
 }
 
@@ -402,6 +433,43 @@ absl::Status RejectDyn(const cel::Ast& ast) {
       "expression is not in the static subset:\n", absl::StrJoin(lines, "\n")));
 }
 
+absl::Status ConfigureCheckerBuilder(
+    cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
+    const google::protobuf::DescriptorPool* pool,
+    std::vector<Variable>& variables_out) {
+  if (auto s = builder.AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
+    return s;
+  }
+  if (!opts.container.empty()) {
+    builder.set_container(opts.container);
+  }
+  variables_out.reserve(opts.variable_specs.size());
+  for (const auto& spec : opts.variable_specs) {
+    auto parsed = ParseVariableSpec(spec, builder.arena(), pool);
+    if (!parsed.ok()) return parsed.status();
+    std::string name = parsed->decl.name();
+    if (auto s = builder.AddVariable(parsed->decl); !s.ok()) return s;
+    variables_out.push_back(Variable{std::move(name), parsed->repr});
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
+    cel::TypeChecker& checker, absl::string_view expression,
+    absl::string_view description) {
+  auto parsed = google::api::expr::parser::Parse(expression, description);
+  if (!parsed.ok()) return parsed.status();
+  auto ast = cel::CreateAstFromParsedExpr(*parsed);
+  if (!ast.ok()) return ast.status();
+  auto result = checker.Check(std::move(*ast));
+  if (!result.ok()) return result.status();
+  if (!result->IsValid()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("type check failed:\n", result->FormatError()));
+  }
+  return result->ReleaseAst();
+}
+
 }  // namespace
 
 absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
@@ -412,40 +480,17 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   auto builder = cel::CreateTypeCheckerBuilder(pool_bundle->pool);
   if (!builder.ok()) return builder.status();
 
-  if (auto s = (*builder)->AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
-    return s;
-  }
-  if (!opts.container.empty()) {
-    (*builder)->set_container(opts.container);
-  }
-
   std::vector<Variable> variables;
-  variables.reserve(opts.variable_specs.size());
-  for (const auto& spec : opts.variable_specs) {
-    auto parsed =
-        ParseVariableSpec(spec, (*builder)->arena(), pool_bundle->pool);
-    if (!parsed.ok()) return parsed.status();
-    std::string name = parsed->decl.name();
-    if (auto s = (*builder)->AddVariable(parsed->decl); !s.ok()) return s;
-    variables.push_back(Variable{std::move(name), parsed->repr});
+  if (auto s = ConfigureCheckerBuilder(**builder, opts, pool_bundle->pool,
+                                       variables);
+      !s.ok()) {
+    return s;
   }
 
   auto checker = (*builder)->Build();
   if (!checker.ok()) return checker.status();
 
-  auto parsed = google::api::expr::parser::Parse(expression, opts.description);
-  if (!parsed.ok()) return parsed.status();
-
-  auto ast = cel::CreateAstFromParsedExpr(*parsed);
-  if (!ast.ok()) return ast.status();
-
-  auto result = (*checker)->Check(std::move(*ast));
-  if (!result.ok()) return result.status();
-  if (!result->IsValid()) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("type check failed:\n", result->FormatError()));
-  }
-  auto checked_ast = result->ReleaseAst();
+  auto checked_ast = RunTypeCheck(**checker, expression, opts.description);
   if (!checked_ast.ok()) return checked_ast.status();
 
   // Static-subset gate: no DYN / ERROR / type-param / function / unset nodes.

@@ -37,6 +37,32 @@ Each bullet is a `file:line — check :: message` triple.  Duplicate (file, line
 `compiler/host/host_loader.cc` by splitting `LoadEval`; cel_log wire
 ABI re-opened 2 in `compiler/runtime/cel_runtime.c` on 2026-04-20).
 
+## Repo-policy change — 2026-04-21
+
+`cppcoreguidelines-pro-bounds-avoid-unchecked-container-access` is
+now disabled in `.clang-tidy`.  Rationale: the check fires on every
+`operator[]` / `data()[i]` regardless of whether the index is a
+compile-time constant, already bounds-checked, or iterating via
+`.size()`; it accounted for 56 of 123 warnings and added no safety
+signal in this codebase.  Preferred safer patterns going forward:
+
+- Prefer range-based `for`, iterators, or structured bindings over
+  explicit indexing when they read naturally.
+- For explicit indexing where a bounds violation would be a program
+  bug (internal state, after a `.size()`-gated loop), continue to
+  use `operator[]` — an index-out-of-bounds here is a crash either
+  way; `.at()` only adds a throw.
+- For indexing on data that *could* legitimately be too short
+  (wire bytes, parsed input, flag parsing), use `.at()` or an
+  explicit `ABSL_CHECK_LT` with a message.
+- For `absl::Span`, prefer `.subspan(pos, len)` over pointer
+  arithmetic and `.first()` / `.last()` over `[0]` / `[size-1]`.
+- Accessors that "may not be present" should return a pointer
+  (`const T* Find(...)`) or `absl::StatusOr<const T&>`, not throw.
+
+The repo `.clang-tidy` `HeaderFilterRegex` was also widened to
+`^(compiler|compiler_v2|include)/.*` so analysis covers the v2 tree.
+
 ## Notes for triage
 
 - `readability-function-size` — split the offending functions.  `LowerCall` in `compiler/codegen/expr_lower.cc` is the largest offender; it needs per-family helpers (arithmetic / comparison / logical / ternary / member).

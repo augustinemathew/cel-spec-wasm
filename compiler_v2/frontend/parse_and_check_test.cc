@@ -14,7 +14,6 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 
 // Look up the annotation for whichever node the checker assigned to the
@@ -244,7 +243,7 @@ TEST(ParseAndCheckTest, MemberCallExprParsesWithTarget) {
   // A string member-call — the lean-on case for M3's
   // `_.startsWith(_)` / `_.endsWith(_)` / `_.contains(_)` lowering.
   // No variable spec needed: the receiver is a literal.
-  auto r = ParseAndCheck("\"hi\".startsWith(\"h\")", {});
+  auto r = ParseAndCheck(R"("hi".startsWith("h"))", {});
   ASSERT_THAT(r, IsOk());
   const auto& root = r->ast().root_expr();
   ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kCallExpr);

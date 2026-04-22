@@ -212,7 +212,12 @@ uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len) {
 // Emit layer.  On wasm this posts args as u32 offsets into linear memory.
 // On host it is a weak no-op — tests that want to capture runtime-native
 // log lines override `cel_log` directly with a strong definition.
+// Parameter counts on `cel_log` and `cel_log_emit` are fixed by the
+// `cel_env.cel_log` wasm import signature (9 i32s); they cannot be
+// reduced by packing into a struct without changing the ABI.  Suppress
+// the function-size gate at the two declaration sites.
 #ifdef __wasm__
+// NOLINTNEXTLINE(readability-function-size)
 void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
                   uint32_t fn_len, uint32_t line, const char* fmt,
                   uint32_t fmt_len, const uint64_t* argv, uint32_t argc) {
@@ -221,6 +226,7 @@ void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
           argc);
 }
 #else
+// NOLINTNEXTLINE(readability-function-size)
 __attribute__((weak)) void cel_log(uint32_t file_ptr, uint32_t file_len,
                                    uint32_t fn_ptr, uint32_t fn_len,
                                    uint32_t line, uint32_t fmt_ptr,
@@ -237,6 +243,7 @@ __attribute__((weak)) void cel_log(uint32_t file_ptr, uint32_t file_len,
   (void)argc;
 }
 
+// NOLINTNEXTLINE(readability-function-size)
 void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
                   uint32_t fn_len, uint32_t line, const char* fmt,
                   uint32_t fmt_len, const uint64_t* argv, uint32_t argc) {

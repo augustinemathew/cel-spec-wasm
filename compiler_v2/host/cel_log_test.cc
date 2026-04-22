@@ -30,7 +30,7 @@ class Scratch {
   }
 
   absl::Span<const uint8_t> mem() const {
-    return absl::Span<const uint8_t>(bytes_.data(), bytes_.size());
+    return {bytes_.data(), bytes_.size()};
   }
 
   // Copies `s` at `off`; returns `off` for chaining.
@@ -69,8 +69,9 @@ class Scratch {
   uint32_t WriteUnknownSet(uint32_t desc_off, uint32_t ids_off,
                            absl::Span<const uint32_t> ids) {
     auto* ids_p = reinterpret_cast<uint32_t*>(bytes_.data() + ids_off);
-    for (size_t i = 0; i < ids.size(); ++i)
+    for (size_t i = 0; i < ids.size(); ++i) {
       ids_p[i] = ids[i];
+    }
     auto* desc_p = reinterpret_cast<uint32_t*>(bytes_.data() + desc_off);
     desc_p[0] = ids_off;
     desc_p[1] = static_cast<uint32_t>(ids.size());

@@ -25,7 +25,7 @@ namespace {
 // 32 bits carry the tag (high 32 reserved), the second is the
 // per-tag payload.  Keep in sync with the `CEL_LOG_*` call-site
 // macros in cel_runtime.h.
-constexpr size_t kArgvSlotBytes = 16;
+constexpr uint32_t kArgvSlotBytes = 16;
 
 // Process-wide sink.  Defaults to the stderr sink.
 CelLogSink* g_sink = nullptr;
@@ -50,8 +50,7 @@ StderrCelLogSink* StderrSingleton() {
 absl::string_view SafeSpan(absl::Span<const uint8_t> mem, uint32_t ptr,
                            uint32_t len) {
   if (static_cast<uint64_t>(ptr) + len > mem.size()) return {};
-  return absl::string_view(reinterpret_cast<const char*>(mem.data()) + ptr,
-                           len);
+  return {reinterpret_cast<const char*>(mem.data()) + ptr, len};
 }
 
 // Same as SafeSpan but returns a raw byte span (for CelValue reads).
@@ -139,7 +138,7 @@ void FormatSpanPayload(absl::Span<const uint8_t> mem, const CelSpan& s,
 void FormatUnknown(absl::Span<const uint8_t> mem, uint32_t set_off,
                    std::string* out) {
   if (set_off == 0 ||
-      static_cast<uint64_t>(set_off) + 2 * sizeof(uint32_t) > mem.size()) {
+      static_cast<uint64_t>(set_off) + (2 * sizeof(uint32_t)) > mem.size()) {
     absl::StrAppend(out, "unknown([])");
     return;
   }
@@ -150,10 +149,14 @@ void FormatUnknown(absl::Span<const uint8_t> mem, uint32_t set_off,
   absl::Span<const uint8_t> ids_bytes =
       SafeBytes(mem, ids_off, len * sizeof(uint32_t));
   absl::StrAppend(out, "unknown([");
-  for (uint32_t i = 0; i < len && ids_bytes.size() >= (i + 1) * 4; ++i) {
+  for (uint32_t i = 0;
+       i < len && ids_bytes.size() >= (static_cast<size_t>(i) + 1) * 4; ++i) {
     uint32_t id = 0;
-    std::memcpy(&id, ids_bytes.data() + i * 4, sizeof(uint32_t));
-    if (i > 0) absl::StrAppend(out, ",");
+    std::memcpy(&id, ids_bytes.data() + (static_cast<size_t>(i) * 4),
+                sizeof(uint32_t));
+    if (i > 0) {
+      absl::StrAppend(out, ",");
+    }
     absl::StrAppend(out, id);
   }
   absl::StrAppend(out, "])");
@@ -189,12 +192,10 @@ void FormatValueKind(absl::Span<const uint8_t> mem, const CelValue& cv,
       absl::StrAppendFormat(out, "bool(%s)", cv.payload.b ? "true" : "false");
       return;
     case CEL_INT:
-      absl::StrAppendFormat(out, "int(%d)",
-                            static_cast<long long>(cv.payload.i));
+      absl::StrAppendFormat(out, "int(%d)", cv.payload.i);
       return;
     case CEL_UINT:
-      absl::StrAppendFormat(out, "uint(%u)",
-                            static_cast<unsigned long long>(cv.payload.u));
+      absl::StrAppendFormat(out, "uint(%u)", cv.payload.u);
       return;
     case CEL_DOUBLE:
       absl::StrAppendFormat(out, "double(%g)", cv.payload.d);
@@ -212,13 +213,11 @@ void FormatValueKind(absl::Span<const uint8_t> mem, const CelValue& cv,
       absl::StrAppendFormat(out, "type(id=%u)", cv.payload.type_id);
       return;
     case CEL_DURATION:
-      absl::StrAppendFormat(out, "duration(s=%d,ns=%d)",
-                            static_cast<long long>(cv.payload.dur.seconds),
+      absl::StrAppendFormat(out, "duration(s=%d,ns=%d)", cv.payload.dur.seconds,
                             cv.payload.dur.nanos);
       return;
     case CEL_TIMESTAMP:
-      absl::StrAppendFormat(out, "timestamp(s=%d,ns=%d)",
-                            static_cast<long long>(cv.payload.ts.seconds),
+      absl::StrAppendFormat(out, "timestamp(s=%d,ns=%d)", cv.payload.ts.seconds,
                             cv.payload.ts.nanos);
       return;
     case CEL_OPTIONAL:
@@ -289,7 +288,7 @@ void ApplyDirective(char c, absl::Span<const uint8_t> mem, const ArgvSlot& slot,
 std::string FormatMessage(absl::Span<const uint8_t> mem, absl::string_view fmt,
                           uint32_t argv_ptr, uint32_t argc) {
   std::string out;
-  out.reserve(fmt.size() + 16 * argc);
+  out.reserve(fmt.size() + (size_t{16} * argc));
   uint32_t arg_idx = 0;
   for (size_t i = 0; i < fmt.size(); ++i) {
     const char c = fmt[i];
@@ -311,7 +310,7 @@ std::string FormatMessage(absl::Span<const uint8_t> mem, absl::string_view fmt,
       continue;
     }
     bool ok = false;
-    ArgvSlot slot = ReadSlot(mem, argv_ptr + arg_idx * kArgvSlotBytes, &ok);
+    ArgvSlot slot = ReadSlot(mem, argv_ptr + (arg_idx * kArgvSlotBytes), &ok);
     if (!ok) {
       absl::StrAppend(&out, "<oob-arg>");
       ++arg_idx;
@@ -398,7 +397,7 @@ absl::Span<const uint8_t> CallerMemory(wasmtime_caller_t* caller) {
   }
   const uint8_t* data = wasmtime_memory_data(ctx, &ext.of.memory);
   const size_t size = wasmtime_memory_data_size(ctx, &ext.of.memory);
-  return absl::Span<const uint8_t>(data, size);
+  return {data, size};
 }
 
 wasm_trap_t* CelLogTrampoline(void* /*data*/, wasmtime_caller_t* caller,
@@ -416,8 +415,8 @@ wasm_functype_t* CelLogType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
   wasm_valtype_t* param_arr[9];
-  for (int i = 0; i < 9; ++i) {
-    param_arr[i] = wasm_valtype_new(WASM_I32);
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
   }
   wasm_valtype_vec_new(&params, 9, param_arr);
   wasm_valtype_vec_new_empty(&results);

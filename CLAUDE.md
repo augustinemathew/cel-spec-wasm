@@ -39,6 +39,17 @@ reference — when in doubt, copy its conventions verbatim.  In particular:
     (`cc_library` per header).
   - Close namespaces with `}  // namespace celwasm`.
 
+**Unreachable switch defaults.**  When a `switch` enumerates a closed
+set of cases (every `enum` value, every `cel::ExprKindCase`, every
+`CelKind`, …), the `default:` arm is an invariant violation — not a
+legitimate code path.  Fail loudly with `ABSL_CHECK(false)` (or
+`ABSL_LOG(FATAL)`) naming the offending value.  **Do not use `DCHECK`**:
+a compiler that silently miscodegens in release builds is worse than
+one that crashes.  Only return a fallback value from `default:` when
+the switch is genuinely open — e.g. parsing untrusted wire bytes, where
+unknown bytes should pass through (see `FormatDirective` in
+`compiler/host/cel_log.cc` for an example of the legitimate form).
+
 ## Lint & format (mandatory before every commit)
 
 Formatter and linter are authoritative.  The configs live at the repo
