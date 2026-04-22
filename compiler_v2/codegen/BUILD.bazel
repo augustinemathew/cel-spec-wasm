@@ -81,16 +81,16 @@ cc_library(
     srcs = ["resolve_pass.cc"],
     hdrs = ["resolve_pass.h"],
     deps = [
-        ":overload_table",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
+        "@binaryen//:binaryen",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:ast_traverse",
         "@cel-cpp//common:ast_visitor_base",
         "@cel-cpp//common:expr",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
     ],
 )
 
