@@ -7,7 +7,14 @@ package(default_visibility = ["//compiler_v2:__subpackages__"])
 cc_library(
     name = "cel_runtime",
     srcs = ["cel_runtime.c"],
-    hdrs = ["cel_runtime.h"],
+    hdrs = [
+        "cel_arena.h",
+        "cel_data.h",
+        "cel_log.h",
+        "cel_make.h",
+        "cel_memory.h",
+        "cel_runtime.h",
+    ],
     copts = [
         "-std=c11",
         "-Wall",
@@ -16,9 +23,30 @@ cc_library(
     ],
 )
 
+# Each test includes only the narrow header under test — this verifies
+# the tiny headers are self-sufficient and don't secretly depend on the
+# umbrella re-exporting something they forgot to include.
 cc_test(
-    name = "cel_runtime_test",
-    srcs = ["cel_runtime_test.cc"],
+    name = "cel_arena_test",
+    srcs = ["cel_arena_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_make_test",
+    srcs = ["cel_make_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_memory_test",
+    srcs = ["cel_memory_test.cc"],
     deps = [
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
@@ -32,6 +60,11 @@ cc_test(
 genrule(
     name = "cel_runtime_wasm_file",
     srcs = [
+        "cel_arena.h",
+        "cel_data.h",
+        "cel_log.h",
+        "cel_make.h",
+        "cel_memory.h",
         "cel_runtime.c",
         "cel_runtime.h",
         "wasm_imports.txt",

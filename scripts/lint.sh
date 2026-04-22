@@ -53,10 +53,14 @@ else
   mapfile -t files < <(
     git diff --name-only --diff-filter=ACMR "$base_ref"...HEAD -- \
       'compiler/*.cc' 'compiler/*.h' 'compiler/*.c' \
-      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c'
+      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
+      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
+      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
     git diff --name-only --diff-filter=ACMR -- \
       'compiler/*.cc' 'compiler/*.h' 'compiler/*.c' \
-      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c'
+      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
+      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
+      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
   )
   # Dedup and strip empties.
   if [[ ${#files[@]} -gt 0 ]]; then
@@ -100,7 +104,7 @@ echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s)"
 # `clang++` as the driver for every entry, even plain C files — which
 # errors out as `-std=c11 not allowed with C++` when clang-tidy replays
 # the entry. Forcing `-xc` on C inputs sidesteps that. `.h` headers
-# under `compiler/runtime/` are treated as C because the runtime is a
+# under `compiler/runtime/` and `compiler_v2/runtime/` are treated as C because the runtime is a
 # C translation unit shared with C++ tests (wrapped in `extern "C"`).
 declare -a c_targets=()
 declare -a cpp_targets=()
@@ -108,6 +112,7 @@ for f in "${targets[@]}"; do
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
     compiler/runtime/*.h)         c_targets+=("$f") ;;
+    compiler_v2/runtime/*.h)      c_targets+=("$f") ;;
     *)                            cpp_targets+=("$f") ;;
   esac
 done
@@ -119,9 +124,30 @@ if [[ ${#cpp_targets[@]} -gt 0 ]]; then
   "$CLANG_TIDY" "${tidy_args[@]}" --warnings-as-errors='*' --quiet \
       "${cpp_targets[@]}" || rc=$?
 fi
-if [[ ${#c_targets[@]} -gt 0 ]]; then
+# Runtime .h files are freestanding C; don't pass `-p .` for them because
+# clang-tidy's basename-matching heuristic can otherwise pick up a C++
+# compile entry from a sibling directory (e.g. host/cel_log.cc vs.
+# runtime/cel_log.h) and analyze the header in C++ mode, which defeats
+# `-xc`.  `.c` translation units still get the DB for include paths.
+declare -a c_src_targets=()
+declare -a c_hdr_targets=()
+for f in "${c_targets[@]}"; do
+  case "$f" in
+    *.h) c_hdr_targets+=("$f") ;;
+    *)   c_src_targets+=("$f") ;;
+  esac
+done
+if [[ ${#c_src_targets[@]} -gt 0 ]]; then
   "$CLANG_TIDY" "${tidy_args[@]}" --extra-arg-before=-xc \
-      --warnings-as-errors='*' --quiet "${c_targets[@]}" || rc=$?
+      --warnings-as-errors='*' --quiet "${c_src_targets[@]}" || rc=$?
+fi
+if [[ ${#c_hdr_targets[@]} -gt 0 ]]; then
+  # Fixed-compilation-database form (`<file>... -- <flags>`) bypasses
+  # compile_commands.json entirely; otherwise tidy's auto-detect walks
+  # up to the repo root and its basename heuristic can pick up a
+  # sibling C++ entry that overrides `-xc`.
+  "$CLANG_TIDY" --warnings-as-errors='*' --quiet \
+      "${c_hdr_targets[@]}" -- -xc -I. || rc=$?
 fi
 if [[ $rc -ne 0 ]]; then
   echo "lint.sh: clang-tidy reported warnings — see above." >&2
