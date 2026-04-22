@@ -163,9 +163,9 @@ opt-in.
 Three objects, one builder, two leaves.
 
 ```
-Env ────Compile(source)──► Program ────Plan()──► Instance
-                                                   │
-                                                   └──Eval(Activation)──► Value
+Env ──Compile(source, opts)──► Program ──Plan()──► Instance
+                                                      │
+                                                      └──Eval(Activation)──► Value
 ```
 
 Lifecycle:
@@ -196,8 +196,12 @@ class Env {
   // Compile a CEL source string to a Program.  Runs parse → check
   // → lower → assemble; returns a Program that can be evaluated or
   // serialized.  The Env is captured by reference, so it must
-  // outlive all Programs it compiles.
-  absl::StatusOr<Program> Compile(absl::string_view source) const;
+  // outlive all Programs it compiles.  `opts` are per-compilation
+  // tunables (arena size, debug layout, stdlib-overload allowlist,
+  // …) — NOT declarations.  See §5.4.
+  absl::StatusOr<Program> Compile(
+      absl::string_view source,
+      CompilerOptions opts = {}) const;
 
   // Load a Program from previously-serialized wasm bytes.  Used for
   // cross-process / cached workflows.  The Env must be compatible
@@ -226,13 +230,25 @@ class Env::Builder {
   // Type registration — proto descriptors the compiler may reference.
   Builder& RegisterMessageType(const google::protobuf::Descriptor* desc);
 
-  // Compiler tunables (arena size, debug layout, overload-allowlist,
-  // etc.) — NOT declarations.  Variables / functions / types come
-  // from DeclareVariable / RegisterFunction / RegisterMessageType
-  // above, and feed both the checker AND the ABI emitter.
-  Builder& SetCompilerOptions(CompilerOptions opts);
-
   absl::StatusOr<Env> Build() &&;
+};
+
+// Compiler tunables — per-compilation, NOT per-Env.  Passed to
+// env.Compile(source, opts).  Declarations (variables / functions /
+// types) live on Env; opts only tunes how a specific expression is
+// lowered.  See §5.4 for the flow.
+struct CompilerOptions {
+  uint32_t arena_pages = 16;                 // initial linear-memory
+                                             //   pages for the arena.
+  bool debug_layout = false;                 // disable slot reuse so
+                                             //   per-expr values stay
+                                             //   distinct in memory.
+  std::vector<std::string> allowed_overloads;  // if non-empty, stdlib
+                                             //   overloads outside this
+                                             //   set fail with
+                                             //   Unimplemented at
+                                             //   compile time.
+  // (More tunables land here over time.  Keep decls out.)
 };
 
 }  // namespace celwasm
@@ -725,9 +741,10 @@ absorption rules (§4.2).
 
 ### 5.4 Compile-time flow — where the ABI row comes from
 
-Function decls flow from the public API through the checker
-into the ABI in one direction, with no separate
-`CompileOptions::functions`:
+Two inputs flow into `env.Compile(source, opts)`: **declarations
+from the `Env`** (functions, variables, types) and
+**`CompilerOptions` from the call site** (tunables only, no
+declarations). They meet in the compiler:
 
 ```
 Env::Builder::RegisterFunction(FunctionDecl d)
@@ -735,22 +752,24 @@ Env::Builder::RegisterFunction(FunctionDecl d)
     ▼  (d moved into Env's registry; d.impl retained for LoadEval)
 Env::functions()  ◄──── frozen at Builder::Build()
     │
-    ▼  (env.Compile(source) runs)
-CompilerInternal::FrozenDeclView
-    │      (signature-only view over Env::functions();
-    │       impl intentionally stripped — compile never
-    │       needs it)
-    │
-    ├──► cel-cpp TypeCheckerBuilder::AddFunction
-    │       (checker resolves "my.upper(x)" → overload id
-    │        "my_upper_string", is_receiver = false)
-    │
-    └──► Codegen / ABI emitter
-            │
-            ▼  UsedImports(used_overload_ids)
-                — filters to the subset this expression touches
-            │
-            ▼
+    │          ┌────────────────────────────────────────────┐
+    │          │  env.Compile(source, CompilerOptions opts) │
+    │          └────────────────────────────────────────────┘
+    ▼                                  ▼
+CompilerInternal::FrozenDeclView       opts (arena_pages,
+    │    (signature-only; impl                debug_layout,
+    │     stripped — compile never              allowed_overloads, …)
+    │     needs it)                            │
+    │                                          │
+    ├──► cel-cpp TypeCheckerBuilder  ◄─────────┤ (filters stdlib
+    │       .AddFunction                       │   overloads,
+    │    (resolves "my.upper(x)" →             │   etc.)
+    │     overload id "my_upper_string",       │
+    │     is_receiver = false)                 │
+    │                                          │
+    └──► Codegen / ABI emitter       ◄─────────┘ (picks arena
+            │                                     layout, slot
+            ▼  UsedImports(used_overload_ids)     reuse policy)
         cel.abi.functions.host_custom_imports[]:
           CustomFunctionEntry {
             function_name = d.name,
@@ -762,12 +781,18 @@ CompilerInternal::FrozenDeclView
           }
 ```
 
-**`CompilerOptions` holds only tunables** — arena size, debug
-layout, stdlib-overload allowlist, and similar knobs that affect
-lowering or runtime behaviour but are not name/type/signature
-declarations. If a knob needs to be cross-checked at LoadEval
-(e.g. arena page count), it goes into `cel.abi.layout`, not into
-`CompilerOptions`.
+**`CompilerOptions` lives at the call site, not on `Env`.** Two
+`Compile()` calls against the same `Env` may pass different
+options (e.g. production vs debug-layout); the `Env` doesn't
+care, and users aren't forced to rebuild it just to flip a
+knob. Declarations are stable; tunables are per-compilation.
+
+**Cross-checked tunables go into the ABI, not into
+`CompilerOptions`.** If a knob needs to be honoured at
+LoadEval (e.g. arena page count, which the host must match
+when instantiating memory), codegen writes it into
+`cel.abi.layout` from the `CompilerOptions` input. The host
+reads the ABI; it never sees `CompilerOptions` directly.
 
 **Impls are only used at LoadEval.** A `FunctionDecl` carries
 an `impl` so the Env can bind it when an `Instance` is planned
