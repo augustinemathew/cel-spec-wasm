@@ -2,44 +2,38 @@
 #define CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
 
 // Hands out 24-byte CelValue cells in the workspace region of linear
-// memory.  Every kCall / kSelect / kList / kCreateMap / kCreateStruct
-// node's `NodeAnnotation::storage` carries a `kWorkspaceSlot` with the
-// byte offset of its cell; LayoutPass uses `Acquire()` to assign
-// those offsets during the slot-Strahler walk (§6.3).
+// memory.  Callers `Acquire` a cell for each result they need to
+// store, and `Release` it once they're done reading from it — a
+// regular alloc/free pair, no assumptions about how or whether
+// offsets get reused.  Every `kCall` / `kSelect` / `kList` /
+// `kCreateMap` / `kCreateStruct` node's `NodeAnnotation::storage`
+// carries a `kWorkspaceSlot` with the byte offset of its cell.
 //
-// M1 — naive path (this file).  `Acquire` is monotonic; `Release` is
-// a no-op.  Peak slot count equals the number of `kWorkspaceSlot`
-// nodes in the AST — bounded linearly in expression size.
-//
-// M10 — Sethi–Ullman aliasing (future).  The constructor's
-// `debug_mode` flag flips to off and `Release` starts returning
-// freed slots to a free-list.  The naive path survives as the
-// `debug_mode == true` mode so debug-layout dumps keep per-expr
-// slot distinctness for arena walkers.
-//
-// Usage (LayoutPass, naive path):
+// Usage (LayoutPass):
 //
 //   // Workspace starts right after rodata; 8-byte aligned.
 //   SlotAllocator slots(/*base_offset=*/rodata_base + rodata_bytes,
 //                       /*debug_mode=*/true);
 //
-//   // Post-order walk: leaves store into rodata / locals (no Acquire);
-//   // every internal node acquires one 24-byte slot for its result.
+//   // Post-order walk.  Leaves store into rodata / locals; every
+//   // internal node acquires one cell for its result, and releases
+//   // its children's cells now that it has consumed them.
 //   void AssignSlots(const cel::Expr& e, WasmAnnotations& anno) {
 //     for (const cel::Expr* child : Children(e)) AssignSlots(*child, anno);
 //     NodeAnnotation& a = *anno.Mutable(e.id());
 //     switch (e.kind_case()) {
 //       case cel::ExprKindCase::kConstExpr:
-//         // Literal already packed by StaticMemoryBuilder; payload is
-//         // the rodata offset.  No workspace slot acquired.
+//         // Literal packed by StaticMemoryBuilder; payload is the
+//         // rodata offset, not a workspace cell.
 //         break;
 //       case cel::ExprKindCase::kIdentExpr:
-//         // Ident reads come from a wasm local, not workspace.
 //         a.storage = {StorageKind::kLocal, a.local_index};
 //         break;
 //       default:
-//         // Calls, selects, list/map/struct builds — every computed
-//         // CelValue lands in its own 24-byte cell.
+//         for (const cel::Expr* child : Children(e)) {
+//           const Storage& s = anno.Get(child->id()).storage;
+//           if (s.kind == StorageKind::kWorkspaceSlot) slots.Release(s.offset);
+//         }
 //         a.storage = {StorageKind::kWorkspaceSlot, slots.Acquire()};
 //         break;
 //     }
@@ -49,21 +43,19 @@
 //   // module's memory needs:
 //   const uint32_t workspace_bytes = slots.total_bytes();
 //
-// Example for `(a + b) * c` under the naive path (base_offset = 128):
-//   post-order: a, b, (a+b), c, ((a+b)*c)
-//   Acquire() calls:                  128, 152        — slots for the
-//                                                       two internal
-//                                                       kCall nodes
-//   peak_slots()                      2
-//   total_bytes()                     48
+// Example trace for `(a + b) * c` (base_offset = 128):
+//   visit a           kIdentExpr, no slot
+//   visit b           kIdentExpr, no slot
+//   visit (a + b)     Acquire → 128
+//   visit c           kIdentExpr, no slot
+//   visit ((a+b)*c)   Release(128); Acquire → 128 (reused) or 152 (fresh)
 //
-// Under the M10 aliasing path the same expression needs only one slot
-// (the inner `+` result aliases with the outer `*` result after the
-// right-hand `c` is consumed); a `Release` between the two Acquires
-// lets the allocator hand back the same offset.  Callers write the
-// Sethi–Ullman dance (visit-heavy-subtree-first, Release non-aliased
-// input, Acquire parent) today; in M1 the Release is a no-op so peak
-// equals acquire count.
+// The walker code above is the whole contract — LayoutPass doesn't
+// inspect the numbers that come back.  Implementation note: M1's
+// `Acquire` is monotonic and `Release` is a no-op (peak_slots() = 2,
+// total_bytes() = 48 for the example); M10's Sethi-Ullman path reuses
+// released cells via a free-list under `!debug_mode` (peak_slots() =
+// 1, total_bytes() = 24 for the same expression).
 
 #include <cstdint>
 
@@ -73,23 +65,24 @@ class SlotAllocator {
  public:
   // `base_offset` is the linear-memory offset at which the workspace
   // region starts; must be 8-byte aligned (CelValue alignment).
-  // `debug_mode` is the M10-compatible surface: naive mode is
-  // functionally `debug_mode == true`.  In M1 the flag is stored but
-  // both paths behave identically (monotonic + no-op release).
+  // `debug_mode == true` pins the allocator to one cell per
+  // `Acquire` even once M10 lands — useful for layout dumps that
+  // want per-expr slot distinctness.
   SlotAllocator(uint32_t base_offset, bool debug_mode);
 
-  // Returns the byte offset of a fresh 24-byte CelValue cell.
+  // Returns the byte offset of a 24-byte CelValue cell the caller
+  // can use as result storage.  Pass the offset to `Release` when
+  // the cell's contents are no longer needed.
   uint32_t Acquire();
 
-  // Returns the cell at `offset` to the allocator.  No-op in M1 —
-  // the naive path never reuses slots.  Kept on the interface so
-  // callers can write Sethi–Ullman-shaped code now and get aliasing
-  // for free at M10.
+  // Returns the cell at `offset` to the allocator.  After this
+  // call the caller must not read or write the cell; a later
+  // `Acquire` may hand it back out.
   void Release(uint32_t offset);
 
-  // Number of distinct 24-byte cells the allocator has handed out.
-  // After LayoutPass runs, this is the workspace size the expr
-  // module needs (bytes = `peak_slots() * 24`).
+  // Peak number of 24-byte cells live simultaneously.  After
+  // LayoutPass runs, this is the workspace size the expr module
+  // needs (bytes = `peak_slots() * 24`).
   uint32_t peak_slots() const {
     return peak_slots_;
   }
