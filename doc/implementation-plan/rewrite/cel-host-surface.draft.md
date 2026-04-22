@@ -413,29 +413,39 @@ backed; described here so reviewers can see the full picture.
 
 ### 3.1 What it does
 
-When the wasm module does `x.name`, codegen emits a `cel_host.
-cel_get_field(out_slot, msg_slot, field_number, field_name)` call.
-The trampoline fires; the host adapter owns what happens next:
+When the wasm module does `x.name`, codegen emits
+`cel_host.cel_get_field(out_slot, msg_slot, field_ref_id)`, where
+`field_ref_id` is a dense intern id assigned at compile time and
+recorded in `cel.abi.fields[]` (§6). The trampoline fires; the
+host adapter owns what happens next:
 
-1. Unwrap `msg_slot` — a `CelValue{kind: CEL_MESSAGE,
+1. **Look up the precomputed entry.** At `LoadEval`, the host
+   walked `cel.abi.fields[]` and built a vector
+   `FieldRef[field_ref_id] = {FieldDescriptor*, CelType
+   result_type}` by resolving each entry against the descriptor
+   pool once. The trampoline does one array lookup; no
+   per-call descriptor search.
+2. **Unwrap `msg_slot`** — a `CelValue{kind: CEL_MESSAGE,
    payload.msg_slot: <externref slot>}` at `msg_slot` points into
    the expr module's `cel_refs` externref table. The adapter
    resolves the slot to a `const google::protobuf::Message*` that
    it (or the activation layer) registered earlier.
-2. Resolve the field — use `field_number` if non-zero (proto fast
-   path); fall back to `field_name` via
-   `Descriptor::FindFieldByName`.
-3. Read the field — via `Reflection::Get*` per `cpp_type()`.
-4. Materialise the result as a `CelValue` at `out_slot`. Scalars
-   write in place. String/bytes copy into the arena via a
-   reentrant `cel_alloc` call. Submessages intern via the expr
-   module's `cel_ref_intern` export and write
+3. **Read the field** — via `Reflection::Get*` per the
+   precomputed `FieldDescriptor*`.
+4. **Materialise the result as a `CelValue` at `out_slot`**, per
+   the precomputed `result_type`. Scalars write in place.
+   String/bytes copy into the arena via a reentrant `cel_alloc`
+   call. Submessages intern via the expr module's
+   `cel_ref_intern` export and write
    `{kind: CEL_MESSAGE, payload.msg_slot: <new slot>}`.
+   Aggregate returns (list/map fields) materialise the wire
+   container per `result_type.list_element` /
+   `result_type.map_key/value`.
 
 `cel_has_field`, `cel_message_eq`, `cel_set_field`, and
-`cel_make_message` follow the same pattern — the adapter is
-single-owned, file-local, and handles externref bookkeeping +
-proto descriptor resolution end-to-end.
+`cel_make_message` follow the same intern-id pattern — the
+adapter is single-owned, file-local, and handles externref
+bookkeeping + proto descriptor resolution end-to-end.
 
 ### 3.2 Why this is not an interface today
 
@@ -469,6 +479,51 @@ The proto adapter uses `field_number` (descriptor lookup by index,
 O(1)); `field_name` is carried but unused. When a second backing
 arrives, it uses whichever field the checker populated for that
 type.
+
+### 3.4 Every callback site is typed
+
+A wasm callback is useless to the host without two facts:
+
+1. What handle / arg kinds the host is receiving.
+2. What CelValue kind the host must write back.
+
+The runtime cannot derive either from the `CelValue.kind` bits
+alone — `kind` is the dynamic shape; the *expected static type*
+is what the trampoline uses to marshal args in and results out.
+That expected type lives in the ABI, and every callback site has
+exactly one typed entry:
+
+| Callback | Typed ABI entry | Type info carried |
+|---|---|---|
+| `cel_get_field` | `FieldEntry[field_ref_id]` | owning `type_id`, `result_type` |
+| `cel_has_field` | `FieldEntry[field_ref_id]` | `result_type` always `BOOL` (structural) |
+| `cel_set_field` | `FieldEntry[field_ref_id]` | expected value `CelType` to coerce from |
+| `cel_make_message` | `TypeEntry[type_id]` | descriptor resolution key |
+| `cel_message_eq`   | `TypeEntry` of either operand | — (operand types drive Differencer) |
+| Custom call        | `CustomFunctionEntry[helper_name]` | full `(arg_types[], return_type)` signature |
+| Root variable read | `VariableEntry[param_index]` | declared type; trampoline boxes accordingly |
+
+**Consequence.** The `cel_host` import signatures stay narrow — a
+small fixed number of i32s per call — and the full type story
+lives in typed ABI entries the host precomputes at `LoadEval`.
+No string comparisons at runtime, no descriptor walks per call,
+no per-kind dispatch ladders in the trampoline.
+
+**Consequence for custom functions.** A custom function's
+trampoline knows, from the ABI, exactly how to unbox each arg
+CelValue into a typed C++ `Value` (and which `Value` constructor
+to call for the result). The user's `FunctionImpl` never sees raw
+offsets; it sees `absl::Span<const Value>` and returns a `Value`.
+If the return's kind doesn't match the declared `return_type`,
+the trampoline writes an `ERROR` CelValue — a compile-time-typed
+function that returns the wrong runtime kind is a user bug, not
+a wasm trap.
+
+**Consequence for future typed UNKNOWN.** `AttributeEntry` also
+carries the attribute's declared type (§6), so `Value::Unknown`
+produced by partial-eval can carry the type it *would have had* if
+resolved. Relevant when a user's custom fn inspects an UNKNOWN
+input and wants to type-check statically.
 
 ## 4. 3VL as a first-class citizen
 
@@ -646,12 +701,21 @@ message CelAbi {
   repeated VariableEntry variables = 9;      // new
 }
 
-// A field reference the module makes.  Both number and name are
+// A field-access call site the module makes.  Indexed densely by
+// `field_ref_id`; the wasm call passes only that id (§3.4), and
+// the host precomputes (FieldDescriptor*, marshal info) at
+// LoadEval from the rest of the row.  Both number and name are
 // always populated — adapters pick which to honour (§3.3).
 message FieldEntry {
-  uint32 type_id = 1;         // TypeEntry.type_id the field lives on
-  uint32 field_number = 2;    // 0 if the type isn't proto-backed
-  string field_name = 3;
+  uint32 field_ref_id = 1;    // dense, 0-indexed; wasm call-site id
+  uint32 type_id = 2;         // owning container type (→ TypeEntry)
+  uint32 field_number = 3;    // 0 if the type isn't proto-backed
+  string field_name = 4;
+  CelType result_type = 5;    // static type of the field-access
+                              //   result.  Drives how the trampoline
+                              //   marshals the read/set value and
+                              //   how aggregates (list/map) are
+                              //   materialised.
 }
 
 // An attribute path the module may reference as an "unknown"
@@ -661,6 +725,11 @@ message AttributeEntry {
   uint32 id = 1;
   string variable = 2;                   // "request"
   repeated string qualifiers = 3;        // ["auth", "claims"]
+  CelType declared_type = 4;             // type the attribute would
+                                         //   have if resolved — lets
+                                         //   typed UNKNOWN travel
+                                         //   through typed customs
+                                         //   (§3.4).
 }
 
 // Every external function the module needs to evaluate.  Self-
@@ -736,10 +805,13 @@ message MemoryLayout {
 ### 6.1 What stays from v1
 
 - `version`, `cel_source`, `checked` — full source + CheckedExpr.
-- `fields` — field table. Changed schema (field_number is the
-  dispatch key, not an intern-id) but the purpose is identical.
-- `attributes` — attribute table. Unchanged schema, but now load-
-  bearing (partial-eval first-class, not deferred).
+- `fields` — field table. v1's intern-id design restored as
+  `field_ref_id`; schema grows `result_type` (§3.4) so the
+  trampoline can marshal without consulting the descriptor pool
+  on the hot path.
+- `attributes` — attribute table. Grows `declared_type` so typed
+  UNKNOWN can flow through customs; otherwise unchanged. Now
+  load-bearing (partial-eval first-class, not deferred).
 - `FunctionSet` — the self-containment cornerstone. Restructured
   into three arms (runtime vs host-fixed vs host-custom) so each
   arm can be validated against the appropriate registry, but the
@@ -1004,6 +1076,7 @@ This draft is for discussion. Suggested review order:
    the adapter; this one hides it. Is anything still leaking?
 3. Are the 3VL absorption rules in §4.2 the ones we want, or is
    there a shorter formulation?
+>>> The 3VL absorpotion are totally handled in the compiler and emitted code. This layer does not concern itself with it. 
 4. Does the ABI schema in §6 preserve the v1 self-contained
    property to your satisfaction, or did we still trim something?
 5. Which of the still-open questions in §10 should be decided
