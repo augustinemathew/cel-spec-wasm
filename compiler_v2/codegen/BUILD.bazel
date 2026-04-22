@@ -115,18 +115,17 @@ cc_library(
     hdrs = ["layout_pass.h"],
     deps = [
         ":resolve_pass",
-        ":slot_allocator",
         ":static_memory_builder",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
-        "//compiler_v2/runtime:cel_runtime",
-        "@cel-cpp//common:ast",
+        "@binaryen//:binaryen",
         "@cel-cpp//common:ast_traverse",
         "@cel-cpp//common:ast_visitor_base",
+        "@cel-cpp//common:constant",
         "@cel-cpp//common:expr",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -135,12 +134,14 @@ cc_test(
     srcs = ["layout_pass_test.cc"],
     deps = [
         ":layout_pass",
+        ":resolve_pass",
         "//compiler_v2/frontend:parse_and_check",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/strings",
     ],
 )
 
