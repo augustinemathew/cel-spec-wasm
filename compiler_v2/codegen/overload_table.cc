@@ -50,14 +50,9 @@ OverloadTableBuilder::OverloadTableBuilder() {
   }
 }
 
-absl::Status OverloadTableBuilder::RegisterCustom(absl::string_view overload_id,
-                                                  ImportModule module,
-                                                  absl::string_view helper_name,
-                                                  uint32_t pattern_id) {
-  if (pattern_id == 0) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "RegisterCustom requires non-zero pattern_id for '", overload_id, "'"));
-  }
+absl::Status OverloadTableBuilder::RegisterCustom(
+    absl::string_view overload_id, ImportModule module,
+    absl::string_view helper_name) {
   if (builtin_ids_.contains(overload_id)) {
     return absl::AlreadyExistsError(absl::StrCat(
         "'", overload_id, "' is a standard built-in and cannot be overridden"));
@@ -71,7 +66,7 @@ absl::Status OverloadTableBuilder::RegisterCustom(absl::string_view overload_id,
   const std::string& stored_id = custom_ids_.emplace_back(overload_id);
   const std::string& stored_name =
       custom_helper_names_.emplace_back(helper_name);
-  const OverloadImpl impl{module, absl::string_view(stored_name), pattern_id};
+  const OverloadImpl impl{module, absl::string_view(stored_name)};
   const uint32_t interned_id = static_cast<uint32_t>(impls_.size()) + 1u;
   impls_.push_back(impl);
   index_.emplace(absl::string_view(stored_id), interned_id);

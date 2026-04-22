@@ -31,7 +31,8 @@ namespace celwasm {
 // two are overload targets — cel_env is logging-only.
 enum class ImportModule : uint8_t {
   kCelRuntime = 0,  // "cel" — runtime .wasm exports (cel_int_add_at_vv, …).
-  kCelHost = 1,     // "cel_host" — host trampolines (cel_host_call_custom).
+  kCelHost = 1,     // "cel_host" — host-provided helpers; each custom
+                    //   function registers its own named import here.
 };
 
 // "cel" / "cel_host".  Fails loudly on an unknown value — the enum is
@@ -41,16 +42,14 @@ absl::string_view ImportModuleName(ImportModule m);
 
 struct OverloadImpl {
   ImportModule module = ImportModule::kCelRuntime;
-  // Wasm import name within `module`.
+  // Wasm import name within `module`.  Built-ins and customs are
+  // symmetric: each row names one specific host-visible function.
   //   Built-in: "cel_int_add_at_vv" (kCelRuntime).
-  //   Custom:   "cel_host_call_custom" (kCelHost).
+  //   Custom:   "my_upper_string"   (kCelHost).
   // For built-ins this view points at a `constexpr` string in
   // `kBuiltinSeeds`; for customs it points into the frozen table's
   // owned storage (std::deque<std::string>, stable under move).
   absl::string_view name;
-  // 0 for built-ins; non-zero for customs — prepended as the first
-  // call arg by codegen.
-  uint32_t pattern_id = 0;
 };
 
 struct Seed {
@@ -65,14 +64,16 @@ class OverloadTableBuilder {
   // Seeds every row in `kBuiltinSeeds` (empty in M1).
   OverloadTableBuilder();
 
-  // Registers a custom host function.  `pattern_id` must be non-zero.
-  // Returns `AlreadyExists` if `overload_id` collides with either a
-  // built-in (CEL spec forbids shadowing) or a prior custom
-  // registration.  Caller-owned string_views are copied into stable
-  // storage, so they need not outlive the call.
+  // Registers a custom host function.  `helper_name` is the wasm
+  // import name the expr module will reference (one import per
+  // registered custom — no shared trampoline).  Returns
+  // `AlreadyExists` if `overload_id` collides with either a built-in
+  // (CEL spec forbids shadowing) or a prior custom registration.
+  // Caller-owned string_views are copied into stable storage, so they
+  // need not outlive the call.
   ABSL_MUST_USE_RESULT absl::Status RegisterCustom(
       absl::string_view overload_id, ImportModule module,
-      absl::string_view helper_name, uint32_t pattern_id);
+      absl::string_view helper_name);
 
   OverloadTable Build() &&;
 

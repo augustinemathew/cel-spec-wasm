@@ -245,8 +245,10 @@ single immutable `OverloadTable` built once per compilation.
 ### 4.1 Per-node facts on `NodeAnnotation`
 
 Extend the existing `WasmAnnotations` in `compiler/ir/annotations.h`.
-The header already flags these three new fields as the planned growth
-path (`attribute_id`, `pattern_id`, `scope_depth`).
+The header already flags the planned growth path (`attribute_id`,
+`scope_depth`). Custom-function interning is no longer on that path —
+customs are named imports resolved through the overload table
+(§4.6.1), so `NodeAnnotation` needs no custom-specific field.
 
 ```cpp
 enum class StorageKind : uint8_t {
@@ -308,9 +310,10 @@ Consequences:
     `cel_int_add_at_vv(out, a, b)` and `cel_string_concat(out, a, b)`
     have the same wasm signature — the caller doesn't need to know
     which it's emitting to set up the call.
-  - **One dispatch rule in codegen.** No slot-out vs arena-out branch;
-    the only split is built-in vs custom (the latter prepends a
-    `pattern_id` arg).
+  - **One dispatch rule in codegen.** No slot-out vs arena-out branch,
+    and no built-in vs custom branch either — both are just rows in
+    the overload table naming a specific wasm import
+    `(module, helper_name)` with the same slot-out signature.
 
 **Runtime implication.** `compiler/runtime/cel_runtime.c` owes every
 helper this shape. Variable-length-return helpers that today return
@@ -321,10 +324,10 @@ rewrite plan (§11).
 
 ### 4.3 Overload table
 
-Codegen needs `overload_id → (import_module, helper_name, pattern_id)`.
-Built-ins are fixed at tool-compile time; custom functions are
-registered by the embedder at compile time. Same lookup path for
-both, one table.
+Codegen needs `overload_id → (import_module, helper_name)`. Built-ins
+are fixed at tool-compile time; custom functions are registered by
+the embedder at compile time. Same lookup path for both, same row
+shape for both — each row names one specific wasm import.
 
 ```cpp
 // compiler/codegen/overload_table.h
@@ -336,7 +339,8 @@ both, one table.
 enum class ImportModule : uint8_t {
   kCelRuntime = 0,  // "cel"      — runtime .wasm exports (cel_int_add_at_vv,
                     //              cel_and, cel_alloc, cel_string_concat, …)
-  kCelHost    = 1,  // "cel_host" — host trampolines (cel_host_call_custom)
+  kCelHost    = 1,  // "cel_host" — host-provided helpers; each custom
+                    //              function registers its own named import.
 };
 absl::string_view ImportModuleName(ImportModule m);  // → "cel" / "cel_host"
 
@@ -344,10 +348,7 @@ struct OverloadImpl {
   ImportModule     module = ImportModule::kCelRuntime;
   std::string_view name;        // wasm import name within `module`.
                                 // Built-in: "cel_int_add_at_vv" (kCelRuntime).
-                                // Custom:   "cel_host_call_custom"   (kCelHost).
-  uint32_t pattern_id = 0;      // 0 for built-ins.
-                                // Non-zero for customs — prepended as the
-                                // first call arg by codegen.
+                                // Custom:   "my_upper_string"   (kCelHost).
 };
 ```
 
@@ -395,14 +396,16 @@ class OverloadTableBuilder {
  public:
   OverloadTableBuilder();  // seeds every row in kBuiltinSeeds.
 
-  // Registers a custom host function. `pattern_id` must be non-zero.
-  // Fails with AlreadyExists if `overload_id` is already present —
-  // either from kBuiltinSeeds (user cannot shadow a built-in; CEL
-  // spec forbids it and cel-cpp's FunctionRegistry would also reject)
-  // or from a prior RegisterCustom call (two customs with the same id).
+  // Registers a custom host function. `helper_name` is the wasm
+  // import name the expr module will reference — one import per
+  // registered custom, no shared trampoline (§4.6.1). Fails with
+  // AlreadyExists if `overload_id` is already present — either from
+  // kBuiltinSeeds (user cannot shadow a built-in; CEL spec forbids
+  // it and cel-cpp's FunctionRegistry would also reject) or from a
+  // prior RegisterCustom call (two customs with the same id).
   ABSL_MUST_USE_RESULT absl::Status RegisterCustom(
       absl::string_view overload_id, ImportModule module,
-      absl::string_view helper_name, uint32_t pattern_id);
+      absl::string_view helper_name);
 
   OverloadTable Build() &&;
 
@@ -467,7 +470,7 @@ itself assigned — returns a reference and DCHECKs.
 
 `kBuiltinSeeds` is a `constexpr` array in `overload_table.cc`. Every
 row names `ImportModule::kCelRuntime` explicitly; `kCelHost` only
-appears at `RegisterCustom` sites. `pattern_id` is omitted (0).
+appears at `RegisterCustom` sites.
 
 ```cpp
 constexpr auto kRT = ImportModule::kCelRuntime;
@@ -520,20 +523,20 @@ switch (expr.kind()) {
   case kCall: {
     const OverloadImpl& h = table.LookupById(a.overload_id);
     DCHECK(a.storage.kind == StorageKind::kWorkspaceSlot);
-    // Uniform ABI (§4.2): (out_slot, args…) -> void.
-    // Customs prepend pattern_id; built-ins pass args directly.
-    return h.pattern_id != 0
-        ? EmitCallCustom(ctx, h, a.storage.payload, child_refs)
-        : EmitCallBuiltin(ctx, h, a.storage.payload, child_refs);
+    // Uniform ABI (§4.2): (out_slot, args…) -> void. Built-ins and
+    // customs share one emitter — both are just a wasm `call $import`
+    // naming `h.module` / `h.name`.
+    return EmitHelperCallSlotOut(ctx, h, a.storage.payload, child_refs);
   }
   …
 }
 ```
 
-One dispatch rule: `h.pattern_id != 0` → custom, else built-in. Both
-use the slot-out ABI. Node storage is deterministic from AST kind
-(literal → rodata, ident → local, everything else → workspace slot)
-so the dispatch table is tiny.
+No built-in/custom branch: both rows look identical to codegen and
+resolve to a named wasm import via `h.module` + `h.name`. Node
+storage is deterministic from AST kind (literal → rodata, ident →
+local, everything else → workspace slot) so the dispatch table is
+tiny.
 
 **Import declaration follows the table.** After codegen finishes
 walking, `table.UsedImports(used_ids)` returns the unique
@@ -587,107 +590,126 @@ Because the checker treats customs and built-ins the same way,
 **customs are just dynamic entries in the overload table**. No
 separate `NodeAnnotation` field, no separate dispatch path in codegen.
 
-#### 4.6.1 Wasm ABI: single generic trampoline
+#### 4.6.1 Wasm ABI: one import per custom function
 
-One host import, regardless of arity:
+Each registered custom function becomes its own wasm import under
+module `"cel_host"`, with the uniform slot-out signature (§4.2):
 
 ```
-cel_host.cel_host_call_custom(pattern_id, out_slot, args_ptr) -> void
+cel_host.<helper_name>(out_slot, arg0, arg1, …, argN-1) -> void
 ```
 
-`args_ptr` is a linear-memory offset to a contiguous `uint32_t[]` of
-CelValue offsets — the `N` args, in order. `N` is fixed per
-`pattern_id` (the host's dispatch table carries the arity), so the
-host reads exactly that many slots and does not need a length field.
+`helper_name` is the wasm import name the embedder supplies at
+registration (typically matching the overload id, e.g.
+`my_upper_string`). Arity is baked into the wasm signature — same
+as every built-in helper; the host reads exactly `N` arg slots
+directly off the wasm stack. No args-staging region, no `args_ptr`
+indirection, no host-side fan-out table.
 
-**Why single, not per-arity.** Per-arity trampolines push arity into
-the wasm signature — every new max-arity grows the import set, and
-the import-and-binding plumbing duplicates. A single trampoline
-decouples the wasm ABI from the arity distribution of the embedder's
-function library; the host does the fan-out. The small cost is the
-`args_ptr` staging buffer — cheap and allocation-free (see below).
+**Why per-function, not a shared trampoline.** Makes customs and
+built-ins symmetric at every layer:
 
-**`args_ptr` has no `cel_alloc` cost.** LayoutPass reserves one
-**args-staging region** per expr module, sized to the maximum custom
-arity observed in the AST (`max_arity * 4` bytes, 4-byte aligned).
-Every custom call writes its args into this region at a known
-offset and passes that offset as `args_ptr`. Because args-staging is
-consumed synchronously by `cel_host_call_custom` — the host reads
-the args and returns before emitting the next call — one region
-serves every custom call in the expression. No arena traffic, no
-per-call allocation; the cost is one `StaticMemoryBuilder`-adjacent
-reservation at compile time.
+  - **Overload table.** Both rows are `(module, name)`; no
+    pattern-id sidecar, no "is-custom" bit, no dispatch-time branch
+    in codegen.
+  - **Wasm ABI.** Both use the same
+    `(out_slot, args…) -> void` signature; arity comes from the
+    signature like any other import.
+  - **Host binding.** The host binds one wasm import per embedder-
+    registered function by name at `LoadEval`; no dispatcher table
+    keyed by `pattern_id`; name collisions or missing bindings
+    surface as ordinary wasm link-time errors from the runtime
+    rather than a custom `FailedPrecondition` path.
 
-**Out-slot and args follow the uniform ABI (§4.2).** Every arg cell
-and the `out_slot` cell are pre-allocated `CelValue` offsets into
-workspace. The host reads arg `i` as `*(CelValue*)(mem + *(uint32_t*)
-(mem + args_ptr + i*4))` and writes the result into
-`*(CelValue*)(mem + out_slot)`.
+**Tradeoff: imports list grows with the registry.** The expr
+module's imports depend on which customs its expression references
+(same rule as built-in helpers: `UsedImports` filters to the
+subset). A registry change that adds or renames a custom requires
+recompiling any expression module that references the affected
+overload id — but that's already true under the shared-trampoline
+design (the `pattern_id` was baked into the emitted wasm and would
+need re-emission on renumbering). The only added coupling is that
+renaming a custom's `helper_name` also requires recompiling
+referencing modules. In an AOT world where compilation is cheap
+relative to registration frequency, this is acceptable.
 
-(Alternatives considered: per-function imports — baked into the
-module, rebuild on every registry change, rejected. Per-arity
-trampolines — fixed but duplicative; rejected because the single-
-trampoline + staging region design has no measurable hot-path cost
-and one fewer coupling point.)
+**No args-staging region.** LayoutPass reserves workspace slots
+for each custom call's result; args are looked up in their callee
+workspace slots exactly like built-ins. Nothing `StaticMemoryBuilder`-
+adjacent is needed for customs.
+
+(Alternatives considered: shared `cel_host_call_custom(pattern_id,
+out_slot, args_ptr)` trampoline — smaller imports list, but forces
+a host-side dispatch table, a staging region, and an asymmetric
+codegen path, all to avoid an imports-list recompile that the
+rest of the design already requires. Per-arity trampolines —
+fixed-signature but duplicative across arities and still
+asymmetric with built-ins. Both rejected in favour of per-function
+imports, which collapse customs and built-ins onto the same ABI
+surface.)
 
 #### 4.6.2 Registration flow
 
 When the embedder registers a function at compile time:
 
 1. `CompileOptions::RegisterFunction(name, arg_types, return_type, fn_ptr)`
-   allocates a fresh `pattern_id` (monotonic `uint32_t`, 1-based).
-2. The call is forwarded to cel-cpp's `FunctionRegistry` so the
-   checker resolves calls normally; the checker assigns it an
-   overload id (e.g. `"my_upper_string"`).
-3. `OverloadTableBuilder::RegisterCustom("my_upper_string",
-   ImportModule::kCelHost, "cel_host_call_custom", pattern_id)` is
-   called. Arity is not encoded in `name` — one import name serves
-   every custom, and the host's dispatch table carries arity per
-   `pattern_id`. On collision with a built-in, the embedder gets a
+   is forwarded to cel-cpp's `FunctionRegistry` so the checker
+   resolves calls normally; the checker assigns it an overload id
+   (e.g. `"my_upper_string"`).
+2. `OverloadTableBuilder::RegisterCustom("my_upper_string",
+   ImportModule::kCelHost, "my_upper_string")` is called. The
+   `helper_name` is the wasm import name the expr module will
+   reference; by convention it matches the overload id so embedders
+   don't need to keep two names in sync, but the embedder may
+   choose any unique name. Arity lives in the wasm signature, not
+   in the name. On collision with a built-in, the embedder gets a
    clean `AlreadyExists` citing the overload id.
-4. The `cel.abi` custom section records `pattern_id → (function
-   name, arg types, return type)` so the host dispatcher can wire
-   `fn_ptr`s at instantiation time.
+3. The `cel.abi` custom section records, for each registered
+   custom, its `(helper_name, arg types, return type)` so the host
+   loader can cross-check the registry's bound `fn_ptr` against the
+   expr module's arity expectation before returning from `LoadEval`.
 
 At ResolvePass, nothing special — the checker-supplied overload id
 is interned exactly like a built-in's; only
 `NodeAnnotation::overload_id` is written.
 
-At codegen, the `kCall` arm is one branch (§4.4); `h.pattern_id != 0`
-picks the custom-call emitter which prepends `pattern_id`.
+At codegen, the `kCall` arm is one unified emitter (§4.4); the
+(module, helper_name) row in the overload table is emitted as a
+`call $import` with the uniform slot-out signature. Built-ins and
+customs are indistinguishable at this layer.
 
 #### 4.6.3 Host runtime
 
-The host installs one dispatcher table at `LoadEval`:
+The host registry holds each registered function by its
+`helper_name`:
 
 ```cpp
 struct CustomEntry {
   uint8_t    arity;
   CustomFn   fn;  // void(*)(uint32_t out_slot, absl::Span<const uint32_t> args)
 };
-std::vector<CustomEntry> dispatcher;  // indexed 1..N by pattern_id
-
-// Single wasm import bound to this one function:
-void cel_host_call_custom_impl(uint32_t pattern_id,
-                               uint32_t out_slot,
-                               uint32_t args_ptr) {
-  const CustomEntry& e = dispatcher[pattern_id];
-  const uint32_t* args =
-      reinterpret_cast<const uint32_t*>(memory_base + args_ptr);
-  e.fn(out_slot, absl::MakeConstSpan(args, e.arity));
-}
+absl::flat_hash_map<std::string, CustomEntry> by_helper_name;
 ```
 
-At instantiation, the host reads `cel.abi.custom_functions` and
-wires each registered `pattern_id → {arity, fn_ptr}`. If the expr
-module references a `pattern_id` the host has not bound, `LoadEval`
-returns `FailedPrecondition` — detected at link time, not at eval.
+At `LoadEval`, the host walks the expr module's `cel.abi.
+custom_functions` list: for every `helper_name` the module
+references, it looks up the registry entry and binds the wasm
+import directly to a thin trampoline that reads the caller-supplied
+`out_slot` + arg offsets straight off the wasm stack and invokes
+`e.fn(out_slot, MakeConstSpan(args, e.arity))`. No pattern-id
+dispatch; name-keyed linking is the entire mechanism.
 
-Arity mismatch between the expr module's expectations and the host's
-binding is caught at `LoadEval` too: the checker already recorded
-the arg count against the overload id, and the `cel.abi` section
-records it; the host cross-checks against its registered `arity`
-field before returning from `LoadEval`.
+If the expr module references a `helper_name` the registry has not
+bound, `LoadEval` returns `FailedPrecondition` citing the unbound
+name — detected at link time, not at eval.
+
+Arity mismatch between the expr module's expectations and the
+registered function is caught at `LoadEval` too: the checker
+recorded the arg count against the overload id; the `cel.abi`
+section records it; the host cross-checks against the registered
+`arity` field before returning from `LoadEval`. (The wasm
+signature itself also encodes arity, so a mismatched binding
+would additionally fail at wasm link time — belt and braces.)
 
 #### 4.6.4 Test strategy
 
@@ -698,23 +720,26 @@ field before returning from `LoadEval`.
   - **Integration**: fixture custom `my.upper(string) -> string`
     called from `my.upper("abc") == "ABC"` round-trips e2e.
   - **Arity coverage**: one e2e test per arity in `{0, 1, 2, 3, 8}`,
-    each calling the single `cel_host_call_custom` trampoline; the
-    test fixture registers a function at each arity and asserts the
-    staging region layout (args read in order) matches the
-    embedder-visible C++ signature.
-  - **Args-staging reuse**: two custom calls in the same expression
-    (e.g. `my.a(1, 2) + my.b("x")`) share the staging region; the
-    second call overwrites the first's bytes before the host reads
-    them — confirmed via a test that orders the calls and inspects
-    staging bytes mid-eval.
-  - **Negative — unbound pattern**: compile against a registry
-    containing a function, instantiate without binding it; confirm
-    `LoadEval` returns `FailedPrecondition` citing the unbound
-    `pattern_id`.
+    each registering a function with a distinct `helper_name` and
+    the corresponding wasm signature; the test asserts that args
+    arrive at the host-side implementation in source order.
+  - **Sibling calls don't collide**: two custom calls in the same
+    expression (`my.a(1, 2) + my.b("x")`) each land in their own
+    workspace slots and lower to distinct wasm imports with no
+    shared state — regression coverage for the old staging-region
+    overwrite hazard.
+  - **Negative — unbound helper_name**: compile referencing a
+    custom, instantiate against a registry missing its binding;
+    confirm `LoadEval` returns `FailedPrecondition` citing the
+    unbound `helper_name`.
   - **Negative — arity mismatch**: compile with a registry that
     declares `my.fn(int, int)`; at bind time, register a 1-arg
     `my.fn`; `LoadEval` returns `FailedPrecondition` citing the
     arity mismatch.
+  - **Import declaration**: `table.UsedImports(used_ids)` for an
+    expression referencing only `my.a` produces one wasm import
+    under `cel_host` named `my_a` — no extra imports for unused
+    registered customs.
 
 ### 4.7 Proto messages and struct literals
 
@@ -1193,12 +1218,12 @@ BinaryenExpressionRef LowerExpr(LoweringContext& ctx,
     case kCall: {
       const OverloadImpl& h = ctx.overloads.LookupById(a.overload_id);
       DCHECK(a.storage.kind == StorageKind::kWorkspaceSlot);
-      // Uniform ABI (§4.2): helper(out_slot, args…) -> void.
-      // Custom calls prepend pattern_id; built-ins don't. No storage-
-      // kind branch — every call result is a workspace slot.
-      return h.pattern_id != 0
-          ? EmitCallCustom(ctx, h, a.storage.payload, child_refs)
-          : EmitCallBuiltin(ctx, h, a.storage.payload, child_refs);
+      // Uniform ABI (§4.2): helper(out_slot, args…) -> void. Built-
+      // ins and customs share one emitter — both resolve to a named
+      // wasm import via (h.module, h.name). No storage-kind branch,
+      // no built-in/custom branch — every call result is a workspace
+      // slot, every helper is an import.
+      return EmitHelperCallSlotOut(ctx, h, a.storage.payload, child_refs);
     }
 
     case kList:
@@ -1215,8 +1240,8 @@ BinaryenExpressionRef LowerExpr(LoweringContext& ctx,
     case kCreateStruct:
       // Proto message literal (§4.7.1): cel_host.cel_make_message
       // (type_id, out_slot) then one cel_host.cel_set_field per
-      // field. Empty-then-populate like maps/lists; no pre-staged
-      // args_ptr, no MessagePattern.
+      // field. Empty-then-populate like maps/lists; no
+      // MessagePattern side table.
       return EmitMakeMessage(ctx, expr, a, child_refs);
 
     case kComprehension:
@@ -1264,17 +1289,19 @@ they become dead code on the codegen path.
     `table.UsedImports(...)` to get unique `(ImportModule, name)`
     pairs, and emits `AddFunctionImport(name, ImportModuleName(module),
     name, …)` for each. The expr module ends up importing from two
-    modules: `"cel"` for runtime helpers and `"cel_host"` for custom
-    trampolines + the fixed host functions (`get_field`, `has_field`,
-    `message_eq`, `cel_make_message`). The old `ImportCel2` /
-    per-helper-name hand-imports are gone.
+    modules: `"cel"` for runtime helpers and `"cel_host"` for each
+    referenced custom function + the fixed host functions (`get_field`,
+    `has_field`, `message_eq`, `cel_make_message`). The old
+    `ImportCel2` / per-helper-name hand-imports are gone.
   - `DeclareHostImports` for the fixed host surface: `cel_get_field`,
     `cel_has_field`, `cel_set_field`, `cel_message_eq`,
-    `cel_make_message`, `cel_host_call_custom` — still declared once
-    up front (per `feedback_no_lazy_imports`), not driven by the
-    table, because the table doesn't know about them (they aren't
-    overloads). Module name is hard-coded `"cel_host"` at this one
-    site.
+    `cel_make_message` — still declared once up front (per
+    `feedback_no_lazy_imports`), not driven by the table, because
+    the table doesn't know about them (they aren't overloads).
+    Module name is hard-coded `"cel_host"` at this one site. Custom
+    functions are NOT declared here — each registered custom is an
+    overload-table row and comes through the
+    `DeclareImportsFromTable` path like any built-in.
   - The `cel_env` logging import (`cel_log`) — one site in codegen,
     unchanged; not an overload, not a host function surface.
   - The `cel.abi` custom section (M3), now extended with
@@ -1585,7 +1612,7 @@ compiler_v2/
 │   └── BUILD.bazel
 ├── host/
 │   ├── host_loader.{h,cc,_test.cc}  # §9, two-phase instantiation
-│   ├── cel_host.{h,cc,_test.cc}     # get_field/set_field/has_field/make_message/call_custom
+│   ├── cel_host.{h,cc,_test.cc}     # get_field/set_field/has_field/make_message + per-custom trampolines
 │   ├── cel_log.{h,cc,_test.cc}      # copied from compiler/host (already-new surface)
 │   └── BUILD.bazel
 ├── cli/
@@ -1672,7 +1699,7 @@ merged into their dependency-neighbours to keep PR overhead low.
   S6. has(msg.field) + message equality (M3 G3/G4 parity)
          │
          ▼
-  S7. Custom functions (single `cel_host_call_custom` trampoline)
+  S7. Custom functions (one wasm import per registered custom)
          │
          ▼
   S8. Map + list literals (runtime empty-then-populate primitives)
@@ -1916,32 +1943,35 @@ proto), `has(x.order.items)`.
 
 ---
 
-#### Slice 7 — Custom functions (single trampoline) (2 days)
+#### Slice 7 — Custom functions (per-function imports) (2 days)
 
 **Scope.**
 
-  - `OverloadTableBuilder::RegisterCustom` (§4.3) + the single
-    `cel_host.cel_host_call_custom(pattern_id, out_slot, args_ptr)`
-    host import (§4.6.1). Args-staging region reserved by
-    LayoutPass; codegen writes arg offsets into it before the
-    call.
+  - `OverloadTableBuilder::RegisterCustom` (§4.3) + per-function
+    wasm imports under `"cel_host"` (§4.6.1). Each registered
+    custom becomes its own `AddFunctionImport` with the uniform
+    slot-out signature; no shared trampoline, no args-staging
+    region.
   - `CompileOptions::RegisterFunction` plumbing through frontend
     to `OverloadTableBuilder::RegisterCustom`.
   - `cel.abi` custom section extended with `custom_functions[]`
-    (arity per pattern).
+    (each entry: `helper_name`, arg types, return type).
 
 **E2E check.** Fixture `my.upper(string) -> string` at arity 1
 wires register → compile → load → call → return. Per-arity e2e in
-`{0, 1, 2, 3, 8}`, all on the single trampoline with different
-`pattern_id`s.
+`{0, 1, 2, 3, 8}`, each registering a distinct `helper_name` and
+asserting args arrive in source order.
 
 **Tests.** `overload_table_test`: `RegisterCustom` collision /
-no-override; `e2e/eval_test`: per-arity + unbound-pattern negative
-+ arity-mismatch negative; `cel_host_test`: args-staging decode.
+no-override; `e2e/eval_test`: per-arity + unbound-helper-name
+negative + arity-mismatch negative; `cel_host_test`: per-function
+trampoline decodes arg offsets correctly.
 
-**Risk.** Args-staging overwrite between sibling custom calls.
-**Mitigation:** LayoutPass emits arg-writes immediately before
-each call with no interleaved calls; unit test verifies emit order.
+**Risk.** Import-list bloat for registries with many unused
+customs. **Mitigation:** `UsedImports` filters to the subset the
+expression actually references (already true for built-ins);
+unit test verifies an unused registered custom produces no wasm
+import.
 
 **Effort.** 2 days.
 
@@ -2106,7 +2136,7 @@ debugging (especially S10).
 | 4 | `resolve_pass` populates `local_index`/`field_number`; `cel_host` read ops | `kIdent` / `kSelect` emission | `Customer` field reads |
 | 5 | Every helper + aliasing test (locked); `overload_table` coverage tripwire | `kCall` dispatch | Full built-in overload set + 10k randomised vs cel-cpp |
 | 6 | — | `kSelect.test_only` dispatch | `has(msg.field)` + message equality |
-| 7 | `RegisterCustom` collision; args-staging decode | — | Per-arity customs; unbound / arity-mismatch negatives |
+| 7 | `RegisterCustom` collision; per-function import decode | — | Per-arity customs; unbound / arity-mismatch negatives |
 | 8 | `cel_map_*` / `cel_list_*` + duplicate / OOB | `kCreateMap` / `kList` emit | Map + list literal fixtures |
 | 9 | `cel_make_message` / `cel_set_field` host tests | `kCreateStruct` emit | Proto literal fixtures; unregistered-descriptor negative |
 | 10 | Slot-Strahler; `_at_vv` aliasing per §8.4; `CelErrorPayload.expr_id` | Debug vs prod slot count | Debug-vs-prod parity on 10k corpus; error provenance |
@@ -2239,11 +2269,11 @@ need emerges.
 **7. `MessagePatternTable` vs `OverloadTable` unification.** Proto
 construction lives in its own side table (§4.7.1) keyed by descriptor
 pointer, not overload id. One `CallTargetTable` that interleaves both
-is possible — same lookup surface, same pattern_id space — but the
-keys are disjoint and merging them complicates the builder's
-collision-check rules (built-in seeds vs customs vs message patterns,
-three partitions instead of two). Keep split until there's a concrete
-reason to merge.
+is possible — same lookup surface — but the keys are disjoint and
+merging them complicates the builder's collision-check rules
+(built-in seeds vs customs vs message patterns, three partitions
+instead of two). Keep split until there's a concrete reason to
+merge.
 
 **8. Do we also store the expr_id of the "primary slot-acquiring
 node" on `Storage` for debugging?** Would make arena walkers
