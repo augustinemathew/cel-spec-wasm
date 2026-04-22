@@ -65,6 +65,9 @@ cc_library(
     name = "slot_allocator",
     srcs = ["slot_allocator.cc"],
     hdrs = ["slot_allocator.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+    ],
 )
 
 cc_test(
