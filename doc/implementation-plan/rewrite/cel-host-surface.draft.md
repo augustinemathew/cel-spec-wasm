@@ -9,8 +9,9 @@ promoted.
 This doc scopes the entire host surface a developer touches when
 embedding a compiled CEL expression. It covers:
 
-- The **user-facing abstractions** (`Env` / `Program` / `Instance` /
-  `Value` / `Activation`) — the ten-line path from source → answer.
+- The **user-facing abstractions** (`Compiler` / `Program` /
+  `Instance` / `Value` / `Activation` + `RuntimeBindings`) —
+  the ten-line path from source → answer.
 - The **`cel.abi` custom section** — v1's self-contained contract,
   extended, not trimmed.
 - **3VL as a first-class citizen** — `UNKNOWN` and `ERROR` with real
@@ -49,8 +50,15 @@ The prior draft got four things wrong:
 4. **Skipped ergonomics.** It ended at "trampolines + wasmtime
    bindings". A developer's first question isn't "how is the
    trampoline bound"; it's "how do I evaluate `x + 1`". The
-   primary API is `Env` / `Program` / `Instance`, mirroring
-   cel-cpp.
+   primary API is `Compiler` / `Program` / `Instance`.
+5. **Conflated compile-time and eval-time config.** An earlier
+   pass had a single `Env` that held both declarations (needed
+   at compile) and function impls (needed at eval). That bundled
+   two different lifetimes into one object — compiling a
+   `Program` should not force you to have impls on hand, and
+   swapping impls should not force a recompile. The split is now
+   `Compiler` (declarations, no impls) + `RuntimeBindings`
+   (impls + runtime pool, supplied at `Plan` time).
 
 ## 1. Guiding principles
 
@@ -58,9 +66,10 @@ These are non-negotiable for v2. They drive every shape below.
 
 ### 1.1 The adapter is internal; `Value` is the user-facing polymorphism
 
-Users interact with `Env` / `Program` / `Instance` / `Value` /
-`Activation`. They bind `Value`s to names; they read `Value`s out
-of `Eval`. They never see an adapter.
+Users interact with `Compiler` / `Program` / `Instance` /
+`Value` / `Activation` (and `RuntimeBindings` when they have
+custom functions). They bind `Value`s to names; they read
+`Value`s out of `Eval`. They never see an adapter.
 
 Behind the scenes, the wasm module's `cel_host.*` imports are
 wired to a single adapter implementation that understands proto
@@ -141,12 +150,12 @@ This is not a compile-time flag or a special mode. It's the runtime.
 Ten-line sniff test:
 
 ```cpp
-ASSIGN_OR_RETURN(auto env, Env::NewBuilder()
+ASSIGN_OR_RETURN(auto compiler, Cel::Compiler::NewBuilder()
     .AddStandardDeclarations()
     .DeclareVariable("x", CelType::Int())
     .Build());
-ASSIGN_OR_RETURN(auto program, env.Compile("x + 1"));
-ASSIGN_OR_RETURN(auto instance, program.Plan());
+ASSIGN_OR_RETURN(auto program, compiler.Compile("x + 1"));
+ASSIGN_OR_RETURN(auto instance, program.Plan({}));    // no customs
 
 Activation act;
 act.Bind("x", Value::Int(41));
@@ -154,48 +163,65 @@ ASSIGN_OR_RETURN(auto result, instance.Eval(act));
 std::cout << result.AsInt().value();    // 42
 ```
 
-An intern should grasp `Env` / `Program` / `Instance` in one sitting.
-Anything fancier (adapters, partial eval, custom functions) is
-opt-in.
+An intern should grasp `Compiler` / `Program` / `Instance` in
+one sitting. Anything fancier (partial eval, custom functions)
+is opt-in.
 
 ## 2. User-facing abstractions
 
-Three objects, one builder, two leaves.
+Three classes, one struct, two value leaves.
 
 ```
-Env ──Compile(source, opts)──► Program ──Plan()──► Instance
-                                                      │
-                                                      └──Eval(Activation)──► Value
+Cel::Compiler ──Compile(source, opts)──► Cel::Program
+                                              │
+                                              │ Plan(RuntimeBindings)
+                                              ▼
+                                         Cel::Instance
+                                              │
+                                              └──Eval(Activation)──► Value
 ```
 
 Lifecycle:
 
-- `Env` — built once per process (or per long-lived config). Holds
-  function registry, descriptor pool, type declarations, host
-  adapter, compiler options. Immutable after `Build()`.
-- `Program` — built from `(Env, source)`. Holds wasm bytes + parsed
-  ABI. Serializable (persist to disk, re-load later). One `Env` can
-  produce many `Program`s.
-- `Instance` — built from `Program.Plan()`. Holds the live wasmtime
-  store + instance + per-instance state (mutable-message registry,
-  externref table). Thread-owned; reused across `Eval` calls with
-  automatic `cel_reset` between. One `Program` can yield many
-  `Instance`s (multi-threaded use).
+- `Compiler` — compile-time configuration. Holds function
+  **declarations** (signatures, no impls), variable
+  declarations, and the compile-time descriptor pool. Immutable
+  after `Build()`. One `Compiler` can produce many `Program`s
+  in parallel; it holds no per-eval state.
+- `Program` — the compiled artifact. Holds wasm bytes + parsed
+  ABI. Serializable (persist to disk, re-load later). Decoupled
+  from impls — you can ship a `Program` to another process that
+  has different impls bound to the same overload ids.
+- `RuntimeBindings` — runtime-side configuration. Holds function
+  **impls** (keyed by overload id) and the runtime descriptor
+  pool. Supplied to `Program::Plan(bindings)` when constructing
+  an `Instance`. A plain struct, not a class; build as a literal
+  at the call site.
+- `Instance` — the live evaluator. Holds the wasmtime store +
+  instance + per-instance state (mutable-message registry,
+  externref table). Thread-owned; reused across `Eval` calls
+  with automatic `cel_reset` between. One `Program` can yield
+  many `Instance`s (multi-threaded use; swap bindings between
+  Plans).
 
-### 2.1 `Env`
+### 2.1 `Cel::Compiler`
+
+Compile-time configuration. Contains **no runtime state** —
+declarations, types, and the compile-time descriptor pool only.
 
 ```cpp
-// compiler_v2/api/env.h
-namespace celwasm {
+// compiler_v2/api/compiler.h
+namespace cel {  // public top-level namespace; internal machinery
+                 // stays in `celwasm::`.
 
-class Env {
+class Compiler {
  public:
   class Builder;
   static Builder NewBuilder();
 
   // Compile a CEL source string to a Program.  Runs parse → check
   // → lower → assemble; returns a Program that can be evaluated or
-  // serialized.  The Env is captured by reference, so it must
+  // serialized.  The Compiler is captured by reference, so it must
   // outlive all Programs it compiles.  `opts` are per-compilation
   // tunables (arena size, debug layout, stdlib-overload allowlist,
   // …) — NOT declarations.  See §5.4.
@@ -203,18 +229,13 @@ class Env {
       absl::string_view source,
       CompilerOptions opts = {}) const;
 
-  // Load a Program from previously-serialized wasm bytes.  Used for
-  // cross-process / cached workflows.  The Env must be compatible
-  // with the Program's ABI — CheckCompatible does the audit.
-  absl::StatusOr<Program> LoadFromWasm(absl::string_view wasm_bytes) const;
-
-  // Introspection.
-  const FunctionRegistry& functions() const;
-  const google::protobuf::DescriptorPool& descriptor_pool() const;
+  // Introspection — declarations visible to this Compiler.
+  absl::Span<const FunctionDecl> declared_functions() const;
   absl::Span<const VariableDecl> declared_variables() const;
+  const google::protobuf::DescriptorPool& descriptor_pool() const;
 };
 
-class Env::Builder {
+class Compiler::Builder {
  public:
   // Seed with the CEL standard library + the Messages/Durations/
   // Timestamps type set.  Almost every caller starts here.
@@ -223,20 +244,21 @@ class Env::Builder {
   // Variable declarations — what free variables expressions can use.
   Builder& DeclareVariable(std::string name, CelType type);
 
-  // Custom function registration.  FunctionDecl carries signature +
-  // implementation; see §5.
+  // Custom function declaration.  Signature-only: name, overload_id,
+  // is_receiver, arg_types, return_type.  NO impl — impls live in
+  // RuntimeBindings and are supplied at Plan time.  See §5.1.
   Builder& RegisterFunction(FunctionDecl decl);
 
   // Type registration — proto descriptors the compiler may reference.
   Builder& RegisterMessageType(const google::protobuf::Descriptor* desc);
 
-  absl::StatusOr<Env> Build() &&;
+  absl::StatusOr<Compiler> Build() &&;
 };
 
-// Compiler tunables — per-compilation, NOT per-Env.  Passed to
-// env.Compile(source, opts).  Declarations (variables / functions /
-// types) live on Env; opts only tunes how a specific expression is
-// lowered.  See §5.4 for the flow.
+// Compiler tunables — per-compilation, NOT per-Compiler.  Passed
+// to compiler.Compile(source, opts).  Declarations (variables /
+// functions / types) live on Compiler; opts only tunes how a
+// specific expression is lowered.  See §5.4 for the flow.
 struct CompilerOptions {
   uint32_t arena_pages = 16;                 // initial linear-memory
                                              //   pages for the arena.
@@ -251,17 +273,24 @@ struct CompilerOptions {
   // (More tunables land here over time.  Keep decls out.)
 };
 
-}  // namespace celwasm
+}  // namespace cel
 ```
 
-### 2.2 `Program`
+### 2.2 `Cel::Program`
+
+The compiled artifact. Serializable; decoupled from impls.
 
 ```cpp
 // compiler_v2/api/program.h
-namespace celwasm {
+namespace cel {
 
 class Program {
  public:
+  // Load a Program from previously-serialized wasm bytes (cross-
+  // process / cached workflow).  Parses the cel.abi custom section
+  // so subsequent introspection calls work; does not bind impls.
+  static absl::StatusOr<Program> FromWasm(absl::string_view wasm_bytes);
+
   // Introspection — what does this program need to evaluate?
   absl::string_view source() const;         // original CEL expression
   absl::Span<const uint8_t> wasm() const;   // raw .wasm bytes
@@ -275,24 +304,28 @@ class Program {
   absl::Span<const FunctionImportDecl> required_imports() const;
 
   // Build an Instance — allocates a wasmtime store + instantiates
-  // the expr + runtime modules.  Can be called many times; each
-  // Instance is independent (different thread, different state).
-  absl::StatusOr<Instance> Plan() const;
+  // the expr + runtime modules, binding `bindings.function_impls`
+  // to each custom import the ABI declares (§5.5 cross-check).
+  // Can be called many times; each Instance is independent.
+  absl::StatusOr<Instance> Plan(const RuntimeBindings& bindings) const;
 
-  // Check that a (possibly different) Env has everything this
-  // Program needs — useful when loading a serialized Program
-  // against an Env that might have drifted.
-  absl::Status CheckCompatible(const Env& other) const;
+  // Audit without instantiating — do the bindings cover every
+  // required import?  Do the impls match the declared signatures?
+  // Useful for failing fast in deployment flows.
+  absl::Status CheckCompatible(const RuntimeBindings& bindings) const;
 };
 
-}  // namespace celwasm
+}  // namespace cel
 ```
 
-### 2.3 `Instance`
+### 2.3 `Cel::Instance`
+
+The live evaluator. Not serializable. Single-threaded (bind one
+per thread for concurrency).
 
 ```cpp
 // compiler_v2/api/instance.h
-namespace celwasm {
+namespace cel {
 
 class Instance {
  public:
@@ -308,17 +341,46 @@ class Instance {
       const Activation& act,
       absl::Span<const AttributePattern> unknowns);
 
-  // Back-reference to the Program.
+  // Back-reference to the Program that built this Instance.
   const Program& program() const;
 
   // Explicit reset — normally automatic between Eval calls.
   void Reset();
 };
 
-}  // namespace celwasm
+}  // namespace cel
 ```
 
-### 2.4 `Value`
+### 2.4 `Cel::RuntimeBindings`
+
+Runtime-side config. Supplied to `Program::Plan(bindings)`. A
+plain struct so call sites can use aggregate-init.
+
+```cpp
+// compiler_v2/api/runtime_bindings.h
+namespace cel {
+
+struct RuntimeBindings {
+  // Pool for resolving proto descriptors at runtime.  Usually the
+  // same pool the Compiler used, but nothing prevents it from
+  // diverging — CheckCompatible catches drift.  Nullable only when
+  // the Program references no proto types at all.
+  const google::protobuf::DescriptorPool* descriptor_pool = nullptr;
+
+  // Impls keyed by overload_id (matches cel.abi's
+  // CustomFunctionEntry.overload_id).  `Plan` requires one impl
+  // per declared custom import; extras are fine (ignored).
+  absl::flat_hash_map<std::string, FunctionImpl> function_impls;
+
+  // Convenience — chainable aggregate-init alternative.
+  RuntimeBindings& Bind(std::string overload_id, FunctionImpl impl) &;
+  RuntimeBindings&& Bind(std::string overload_id, FunctionImpl impl) &&;
+};
+
+}  // namespace cel
+```
+
+### 2.5 `Value`
 
 The user-facing counterpart to the 24-byte `CelValue` wire struct.
 Construct, inspect, extract.
@@ -397,7 +459,7 @@ structure — they defer materialisation (list elements fetched on
 access, not eagerly copied) so a user iterating a 1M-element list
 doesn't pay to unbox each element through the C++ surface.
 
-### 2.5 `Activation`
+### 2.6 `Activation`
 
 ```cpp
 // compiler_v2/api/activation.h
@@ -479,7 +541,8 @@ If / when a second backing arrives:
 1. The concrete proto impl extracts into `adapters/proto.{h,cc}`.
 2. A `HostAdapter` interface is carved from its public methods.
 3. A second impl joins under `adapters/`.
-4. `Env` gains an opt-in hook to override the default.
+4. `RuntimeBindings` gains an opt-in hook to override the
+   default (an adapter pointer alongside `function_impls`).
 
 Each of those four steps is cheap and well-localised. Doing them
 preemptively without a second impl is speculative architecture,
@@ -643,15 +706,18 @@ The `cel_host.*` trampolines (and any custom function trampoline):
 Per `design.md` §4.6, customs land as per-function wasm imports
 under `"cel_host"`. The surface-facing shape is higher-level:
 
-### 5.1 `FunctionDecl`
+### 5.1 `FunctionDecl` (signature only)
 
-One `FunctionDecl` describes **one overload**. cel-cpp's
+One `FunctionDecl` describes **one overload signature**. cel-cpp's
 `FunctionDecl` groups multiple `OverloadDecl`s under one name;
 we flatten so each row maps 1:1 to an `OverloadTable` entry and
-to one `CustomFunctionEntry` in the ABI.
+to one `CustomFunctionEntry` in the ABI. **No impl** — impls
+live in `RuntimeBindings` (§2.4), keyed by `overload_id`.
 
 ```cpp
 // compiler_v2/api/function.h
+namespace cel {
+
 struct FunctionDecl {
   // CEL-level call name.  What appears in source: "my.upper",
   // "size", "_+_" (the canonical form of the `+` operator).
@@ -659,7 +725,7 @@ struct FunctionDecl {
 
   // Globally-unique overload id, matches cel-cpp's OverloadDecl
   // id.  e.g. "my_upper_string", "add_int_int".  Same overload
-  // id registered twice → AlreadyExists.
+  // id declared twice → AlreadyExists.
   std::string overload_id;
 
   // Receiver style?  x.foo(y) vs foo(x, y).  When true,
@@ -672,31 +738,36 @@ struct FunctionDecl {
   // (if is_receiver), then formal args left-to-right.
   std::vector<CelType> arg_types;
   CelType return_type;
-
-  // Impl runs at eval time, inside the host, once per wasm call.
-  // Receives boxed Values in arg_types order; returns a boxed
-  // Value.  Can return Value::Unknown / Value::Error for 3VL
-  // semantics (rarely needed — see §5.3).
-  FunctionImpl impl;
 };
 
+// Impl provided separately at Plan time via RuntimeBindings.
+// Receives boxed Values in arg_types order; returns a boxed
+// Value.  Can return Value::Unknown / Value::Error for 3VL
+// semantics (rarely needed — see §5.3).
 using FunctionImpl = absl::AnyInvocable<
     Value(absl::Span<const Value> args) const>;
+
+}  // namespace cel
 ```
 
 The `FunctionImpl` takes boxed `Value`s, not raw i32 offsets. The
 trampoline (auto-generated by `RegisterCelHost`) handles boxing /
-unboxing. Embedders write natural C++:
+unboxing. Two-step: declare at compile time, bind at Plan time.
 
 ```cpp
-// Global: my.upper("abc") → "ABC"
-env_builder.RegisterFunction(FunctionDecl{
+// Step 1 — compile-time declaration on the Compiler.
+compiler_builder.RegisterFunction(FunctionDecl{
     .name = "my.upper",
     .overload_id = "my_upper_string",
     .is_receiver = false,
     .arg_types = {CelType::String()},
     .return_type = CelType::String(),
-    .impl = [](absl::Span<const Value> args) -> Value {
+});
+
+// Step 2 — runtime impl, supplied to Plan.
+RuntimeBindings bindings;
+bindings.Bind("my_upper_string",
+    [](absl::Span<const Value> args) -> Value {
       auto s = args[0].AsString();
       if (!s.ok()) return Value::Error({
           ErrorPayload::kTypeMismatch,
@@ -704,17 +775,17 @@ env_builder.RegisterFunction(FunctionDecl{
       std::string upper(s->begin(), s->end());
       absl::AsciiStrToUpper(&upper);
       return Value::String(std::move(upper));
-    }});
+    });
 
-// Receiver-style: x.upper() → "ABC" when x == "abc"
-env_builder.RegisterFunction(FunctionDecl{
+// Receiver-style declaration looks identical:
+compiler_builder.RegisterFunction(FunctionDecl{
     .name = "upper",
     .overload_id = "string_upper",
     .is_receiver = true,
     .arg_types = {CelType::String()},    // receiver == arg 0
     .return_type = CelType::String(),
-    .impl = /* same body */,
 });
+bindings.Bind("string_upper", /* same impl */);
 ```
 
 ### 5.2 Overloading
@@ -741,25 +812,26 @@ absorption rules (§4.2).
 
 ### 5.4 Compile-time flow — where the ABI row comes from
 
-Two inputs flow into `env.Compile(source, opts)`: **declarations
-from the `Env`** (functions, variables, types) and
-**`CompilerOptions` from the call site** (tunables only, no
-declarations). They meet in the compiler:
+Two inputs flow into `compiler.Compile(source, opts)`:
+**declarations from the `Compiler`** (functions, variables,
+types) and **`CompilerOptions` from the call site** (tunables
+only, no declarations). Impls are not involved at compile time
+at all — they live on `RuntimeBindings` and enter the system
+at `Plan`.
 
 ```
-Env::Builder::RegisterFunction(FunctionDecl d)
+Compiler::Builder::RegisterFunction(FunctionDecl d)
+    │                                  (signature only — no impl)
+    ▼
+Compiler::declared_functions()  ◄──── frozen at Builder::Build()
     │
-    ▼  (d moved into Env's registry; d.impl retained for LoadEval)
-Env::functions()  ◄──── frozen at Builder::Build()
-    │
-    │          ┌────────────────────────────────────────────┐
-    │          │  env.Compile(source, CompilerOptions opts) │
-    │          └────────────────────────────────────────────┘
+    │          ┌─────────────────────────────────────────────────┐
+    │          │  compiler.Compile(source, CompilerOptions opts) │
+    │          └─────────────────────────────────────────────────┘
     ▼                                  ▼
-CompilerInternal::FrozenDeclView       opts (arena_pages,
-    │    (signature-only; impl                debug_layout,
-    │     stripped — compile never              allowed_overloads, …)
-    │     needs it)                            │
+FrozenDeclView (already                opts (arena_pages,
+    │     signature-only — no impl            debug_layout,
+    │     field even exists)                    allowed_overloads, …)
     │                                          │
     ├──► cel-cpp TypeCheckerBuilder  ◄─────────┤ (filters stdlib
     │       .AddFunction                       │   overloads,
@@ -781,11 +853,12 @@ CompilerInternal::FrozenDeclView       opts (arena_pages,
           }
 ```
 
-**`CompilerOptions` lives at the call site, not on `Env`.** Two
-`Compile()` calls against the same `Env` may pass different
-options (e.g. production vs debug-layout); the `Env` doesn't
-care, and users aren't forced to rebuild it just to flip a
-knob. Declarations are stable; tunables are per-compilation.
+**`CompilerOptions` lives at the call site, not on `Compiler`.**
+Two `Compile()` calls against the same `Compiler` may pass
+different options (e.g. production vs debug-layout); the
+`Compiler` doesn't care, and users aren't forced to rebuild
+it just to flip a knob. Declarations are stable; tunables are
+per-compilation.
 
 **Cross-checked tunables go into the ABI, not into
 `CompilerOptions`.** If a knob needs to be honoured at
@@ -794,37 +867,36 @@ when instantiating memory), codegen writes it into
 `cel.abi.layout` from the `CompilerOptions` input. The host
 reads the ABI; it never sees `CompilerOptions` directly.
 
-**Impls are only used at LoadEval.** A `FunctionDecl` carries
-an `impl` so the Env can bind it when an `Instance` is planned
-— but the impl is invisible to compile. This means one `Env`
-can `Compile` many programs in parallel without risking impl
-state sharing, and an `Env` with stubbed impls (e.g. all
-returning `Unimplemented`) can still produce a valid compiled
-`Program` — useful for cross-compile / deploy-then-bind flows.
+**Impls never reach the Compiler.** A `FunctionDecl` is a pure
+signature. Impls enter the system at `Program::Plan(bindings)`,
+where `RuntimeBindings::function_impls` maps overload_id →
+`FunctionImpl`. This means one `Compiler` can `Compile` many
+programs in parallel without any per-eval state, and a
+serialized `Program` can travel to a different process that
+wires its own impls at load time.
 
-### 5.5 Cross-check at `LoadEval`
+### 5.5 Cross-check at `Plan`
 
-At `LoadEval`, the host walks `cel.abi.functions.host_custom_imports[]`
-and for each `CustomFunctionEntry e`:
+When `program.Plan(bindings)` runs, the host walks
+`cel.abi.functions.host_custom_imports[]` and for each
+`CustomFunctionEntry e`:
 
-1. Look up `env.functions()` for a registered `FunctionDecl d`
-   matching **every** of `(e.function_name, e.overload_id,
-   e.is_receiver)`. Missing → `FailedPrecondition` citing which
-   key was missing.
-2. Verify `d.arg_types.size() == e.arg_types.size()` and each
-   position matches. Mismatch → `FailedPrecondition` printing
-   both signatures.
-3. Verify `d.return_type == e.return_type`.
-4. Bind the wasm import `cel_host.<e.helper_name>` to a
-   per-decl trampoline that boxes args per `e.arg_types` and
-   writes the result per `e.return_type`.
+1. Look up `bindings.function_impls[e.overload_id]`. Missing →
+   `FailedPrecondition("no impl bound for overload_id '<id>' "
+   "(required by function '<function_name>')")`.
+2. (The ABI already carries `function_name` / `is_receiver` /
+   `arg_types` / `return_type` from compile time, so there's
+   no separate "signature check against the registry" step —
+   bindings hold impls only. Signature correctness was proven
+   at compile time; the impl is opaque.)
+3. Bind the wasm import `cel_host.<e.helper_name>` to a
+   per-overload trampoline that boxes args per `e.arg_types`
+   and writes the result per `e.return_type`, invoking
+   `bindings.function_impls[e.overload_id]`.
 
-Rejection at step 1 catches registry drift (embedder updated the
-function signature since the module was compiled). Rejection at
-steps 2–3 catches the same kind of drift at a finer granularity
-— the embedder changed arity or types. All rejection paths
-surface at load, not at first `Eval`, so a deployment error
-fails visibly rather than mid-request.
+`Program::CheckCompatible(bindings)` runs just step 1 for every
+entry without touching wasmtime — useful when you want to fail
+fast in a deployment pipeline before trying to instantiate.
 
 **Standard functions (stdlib) analogous but simpler.** Standard
 overloads have fixed `overload_id`s (per cel-cpp's
@@ -1008,21 +1080,22 @@ The section an intern reads first.
 ### 7.1 Basic
 
 ```cpp
-#include "compiler_v2/api/env.h"
+#include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/value.h"
 
-using ::celwasm::Env;
-using ::celwasm::Value;
-using ::celwasm::Activation;
-using ::celwasm::CelType;
+using ::cel::Compiler;
+using ::cel::RuntimeBindings;
+using ::cel::Value;
+using ::cel::Activation;
+using ::cel::CelType;
 
 absl::StatusOr<int64_t> AddOne(int64_t x) {
-  ASSIGN_OR_RETURN(auto env, Env::NewBuilder()
+  ASSIGN_OR_RETURN(auto compiler, Compiler::NewBuilder()
       .AddStandardDeclarations()
       .DeclareVariable("x", CelType::Int())
       .Build());
-  ASSIGN_OR_RETURN(auto program, env.Compile("x + 1"));
-  ASSIGN_OR_RETURN(auto instance, program.Plan());
+  ASSIGN_OR_RETURN(auto program, compiler.Compile("x + 1"));
+  ASSIGN_OR_RETURN(auto instance, program.Plan({}));  // no customs
 
   Activation act;
   act.Bind("x", Value::Int(x));
@@ -1035,14 +1108,18 @@ absl::StatusOr<int64_t> AddOne(int64_t x) {
 
 ```cpp
 absl::StatusOr<std::string> FullName(const Customer& c) {
-  ASSIGN_OR_RETURN(auto env, Env::NewBuilder()
+  ASSIGN_OR_RETURN(auto compiler, Compiler::NewBuilder()
       .AddStandardDeclarations()
       .RegisterMessageType(Customer::GetDescriptor())
       .DeclareVariable("c", CelType::Message("com.example.Customer"))
       .Build());
   ASSIGN_OR_RETURN(auto program,
-      env.Compile("c.first_name + ' ' + c.last_name"));
-  ASSIGN_OR_RETURN(auto instance, program.Plan());
+      compiler.Compile("c.first_name + ' ' + c.last_name"));
+
+  RuntimeBindings bindings{
+      .descriptor_pool = google::protobuf::DescriptorPool::generated_pool(),
+  };
+  ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
 
   Activation act;
   act.Bind("c", Value::Message(c));
@@ -1054,29 +1131,33 @@ absl::StatusOr<std::string> FullName(const Customer& c) {
 ### 7.3 Custom function
 
 ```cpp
-auto env_builder = Env::NewBuilder()
+// Compile-time: declare the signature.
+ASSIGN_OR_RETURN(auto compiler, Compiler::NewBuilder()
     .AddStandardDeclarations()
-    .DeclareVariable("s", CelType::String());
+    .DeclareVariable("s", CelType::String())
+    .RegisterFunction({
+        .name = "my.upper",
+        .overload_id = "my_upper_string",
+        .is_receiver = false,
+        .arg_types = {CelType::String()},
+        .return_type = CelType::String(),
+    })
+    .Build());
 
-env_builder.RegisterFunction({
-    .name = "my.upper",
-    .overload_id = "my_upper_string",
-    .is_receiver = false,
-    .arg_types = {CelType::String()},
-    .return_type = CelType::String(),
-    .impl = [](auto args) -> Value {
+ASSIGN_OR_RETURN(auto program, compiler.Compile("my.upper(s)"));
+
+// Runtime: bind the impl.
+RuntimeBindings bindings;
+bindings.Bind("my_upper_string",
+    [](absl::Span<const Value> args) -> Value {
       auto s = args[0].AsString();
       if (!s.ok()) return Value::Error({ErrorPayload::kTypeMismatch,
                                         std::string(s.status().message()), 0});
       std::string u(s->begin(), s->end());
       absl::AsciiStrToUpper(&u);
       return Value::String(std::move(u));
-    },
-});
-
-ASSIGN_OR_RETURN(auto env, std::move(env_builder).Build());
-ASSIGN_OR_RETURN(auto program, env.Compile("my.upper(s)"));
-ASSIGN_OR_RETURN(auto instance, program.Plan());
+    });
+ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
 
 Activation act;
 act.Bind("s", Value::String("hello"));
@@ -1104,21 +1185,32 @@ if (result.IsUnknown()) {
 ### 7.5 Cross-process (serialize / load)
 
 ```cpp
-// Server-side.
-auto wasm_bytes = program.wasm();   // raw .wasm
+// Server-side (compiler process).  Ship the raw .wasm bytes.
+auto wasm_bytes = program.wasm();
 Persist(wasm_bytes);                // to disk, to cache, to S3
 
-// Later / elsewhere — same Env layout.
+// Later / elsewhere (runner process — no Compiler needed).
 auto wasm_bytes = Load();
-ASSIGN_OR_RETURN(auto program, env.LoadFromWasm(wasm_bytes));
-RETURN_IF_ERROR(program.CheckCompatible(env));
-ASSIGN_OR_RETURN(auto instance, program.Plan());
+ASSIGN_OR_RETURN(auto program, cel::Program::FromWasm(wasm_bytes));
+
+// Wire impls for whatever custom overloads the ABI declares.
+RuntimeBindings bindings{
+    .descriptor_pool = MyPool(),
+};
+for (const auto& fn : program.abi().functions().host_custom_imports) {
+  bindings.Bind(fn.overload_id, LookUpMyImpl(fn.overload_id));
+}
+RETURN_IF_ERROR(program.CheckCompatible(bindings));
+
+ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
 // ... Eval as before.
 ```
 
-The ABI makes `LoadFromWasm` self-checking — mismatches between
-`program.declared_variables()` and `env.declared_variables()` surface
-at `CheckCompatible`, not at first `Eval`.
+No `Compiler` at the runner side — `Program::FromWasm` parses
+`cel.abi` straight from the bytes, `CheckCompatible` proves the
+bindings cover every declared custom, and `Plan` wires the
+trampolines. A runner that doesn't share source or declarations
+with the compiler can still evaluate.
 
 ## 8. File layout
 
@@ -1126,9 +1218,13 @@ at `CheckCompatible`, not at first `Eval`.
 compiler_v2/
 ├── api/                            # user-facing public headers
 │   ├── BUILD.bazel
-│   ├── env.{h,cc,_test.cc}
-│   ├── program.{h,cc,_test.cc}
-│   ├── instance.{h,cc,_test.cc}
+│   ├── compiler.{h,cc,_test.cc}    # Cel::Compiler + Builder +
+│   │                               #   CompilerOptions
+│   ├── program.{h,cc,_test.cc}     # Cel::Program (FromWasm,
+│   │                               #   Plan, CheckCompatible)
+│   ├── instance.{h,cc,_test.cc}    # Cel::Instance
+│   ├── runtime_bindings.{h,cc,_test.cc}  # RuntimeBindings struct +
+│   │                                     # convenience Bind helpers
 │   ├── value.{h,cc,_test.cc}
 │   ├── activation.{h,cc,_test.cc}
 │   ├── function.h                  # FunctionDecl / FunctionImpl
@@ -1155,8 +1251,9 @@ compiler_v2/
 
 The `api/` tier is the public surface. The `host/` tier is machinery.
 An embedder should almost never need to `#include` anything under
-`host/` — `api/env.h` and `api/value.h` should suffice for 95% of
-use cases.
+`host/` — `api/compiler.h`, `api/program.h`, `api/instance.h`,
+`api/runtime_bindings.h`, `api/value.h`, `api/activation.h` should
+suffice for 95% of use cases.
 
 ## 9. Per-slice landing plan
 
@@ -1166,7 +1263,7 @@ it (S4, first proto reads).
 
 | Slice | Additions |
 |---|---|
-| **S3.5** | `api/value.{h,cc}` + `api/activation.{h,cc}` + `api/env.{h,cc}` skeleton + `api/program.{h,cc}` + `api/instance.{h,cc}`. Wires the existing (scalar-only) pipeline through the public surface; `Env::Compile` / `Program::Plan` / `Instance::Eval` work for `-e "42"`. |
+| **S3.5** | `api/value.{h,cc}` + `api/activation.{h,cc}` + `api/compiler.{h,cc}` skeleton + `api/program.{h,cc}` + `api/runtime_bindings.{h,cc}` + `api/instance.{h,cc}`. Wires the existing (scalar-only) pipeline through the public surface; `Compiler::Compile` / `Program::Plan(bindings)` / `Instance::Eval` work for `-e "42"`. |
 | **S4** | `cel_host.{h,cc}` proto-backed adapter + fixed host imports (`cel_get_field`, `cel_has_field`). ABI v2 schema lands; `abi_parse` reads everything. Attribute table reserved but not yet populated. Root variables (scalars + proto messages) end-to-end. |
 | **S4.5** | `AttributePattern` + partial eval on root variables. Attribute table populated by checker. `Instance::PartialEval` lands. |
 | **S6** | `cel_message_eq`. ERROR payload grows `expr_id` field. |
@@ -1181,14 +1278,13 @@ Both are single-day and unlock the rest.
 
 ### Decided (2026-04-22)
 
-- **Q1. Adapter ownership.** ~~Does `Env` own the adapter, or
-  `Instance`?~~ The adapter is internal to `host/` and not part
-  of the public surface (§1.1, §3). The `Env` holds the config it
-  needs (descriptor pool, declared variables, function registry);
-  `Instance` holds the live wasmtime plumbing. The adapter lives
-  inside the host-side machinery and is constructed per `Instance`
-  — stateful per-eval work (externref table, mutable-message
-  registry) belongs there.
+- **Q1. Adapter ownership.** The adapter is internal to `host/`
+  and not part of the public surface (§1.1, §3). The `Compiler`
+  holds compile-time declarations (variables, functions, types,
+  descriptor pool); the `Instance` holds the live wasmtime plumbing
+  plus the adapter. Stateful per-eval work (externref table,
+  mutable-message registry) lives on the `Instance`. Impls enter
+  via `RuntimeBindings` at `Plan` time.
 - **Q2. `Value::Message(const Message&)` copy vs borrow.**
   **Borrow.** Matches cel-cpp's `CelValue` conventions. Lifetime
   documented on the function. `Value::OwnedMessage(unique_ptr)` is
@@ -1229,8 +1325,10 @@ Called out explicitly so reviewers don't ask:
   ABI leaves room (§3.3, §6.1); the v2 public surface only binds
   proto. If / when a second backing is real, §3.2 describes the
   four-step path to add it. Not attempting it speculatively.
-- **Thread safety of `Env`.** Immutable after `Build`; read-only.
-  Thread-safe by construction. Not discussed further.
+- **Thread safety of `Compiler`.** Immutable after `Build`;
+  read-only. Thread-safe by construction. `RuntimeBindings` is
+  a value type, copyable per-thread. Only `Instance` is
+  single-threaded. Not discussed further.
 - **Serialization of `Value` itself.** Users serialize via proto /
   JSON / their own format. `Value` is in-process only.
 - **Hot-reload of `Program`.** Re-compile and swap `Instance`s. No
@@ -1244,8 +1342,9 @@ Called out explicitly so reviewers don't ask:
 
 This draft is for discussion. Suggested review order:
 
-1. Does the `Env` / `Program` / `Instance` triad feel right? It's
-   the biggest shape decision; everything else hangs off it.
+1. Does the `Compiler` / `Program` / `Instance` split (+
+   `RuntimeBindings` at `Plan` time) feel right? It's the
+   biggest shape decision; everything else hangs off it.
 2. Is the activation → `Value::Bind` → internal-adapter flow the
    right cut between user and runtime? The previous draft exposed
    the adapter; this one hides it. Is anything still leaking?
