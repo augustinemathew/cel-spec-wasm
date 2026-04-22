@@ -31,8 +31,9 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   # Aquery-based fallback: dumps every compile action bazel would run
   # for //compiler/... and reformats it as compile_commands.json. This
   # works without any MODULE.bazel changes but is noticeably slower.
-  bazel build --config=lint //compiler/... 2>/dev/null || true
-  bazel aquery --output=jsonproto 'mnemonic("CppCompile", //compiler/...)' \
+  bazel build --config=lint //compiler/... //compiler_v2/... 2>/dev/null || true
+  bazel aquery --output=jsonproto \
+    'mnemonic("CppCompile", //compiler/... union //compiler_v2/...)' \
     > /tmp/celwasm_aquery.json
   python3 scripts/_aquery_to_compdb.py /tmp/celwasm_aquery.json \
     > compile_commands.json
