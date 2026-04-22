@@ -16,6 +16,54 @@
 // freed slots to a free-list.  The naive path survives as the
 // `debug_mode == true` mode so debug-layout dumps keep per-expr
 // slot distinctness for arena walkers.
+//
+// Usage (LayoutPass, naive path):
+//
+//   // Workspace starts right after rodata; 8-byte aligned.
+//   SlotAllocator slots(/*base_offset=*/rodata_base + rodata_bytes,
+//                       /*debug_mode=*/true);
+//
+//   // Post-order walk: leaves store into rodata / locals (no Acquire);
+//   // every internal node acquires one 24-byte slot for its result.
+//   void AssignSlots(const cel::Expr& e, WasmAnnotations& anno) {
+//     for (const cel::Expr* child : Children(e)) AssignSlots(*child, anno);
+//     NodeAnnotation& a = *anno.Mutable(e.id());
+//     switch (e.kind_case()) {
+//       case cel::ExprKindCase::kConstExpr:
+//         // Literal already packed by StaticMemoryBuilder; payload is
+//         // the rodata offset.  No workspace slot acquired.
+//         break;
+//       case cel::ExprKindCase::kIdentExpr:
+//         // Ident reads come from a wasm local, not workspace.
+//         a.storage = {StorageKind::kLocal, a.local_index};
+//         break;
+//       default:
+//         // Calls, selects, list/map/struct builds — every computed
+//         // CelValue lands in its own 24-byte cell.
+//         a.storage = {StorageKind::kWorkspaceSlot, slots.Acquire()};
+//         break;
+//     }
+//   }
+//
+//   // After the walk, this is how many bytes of workspace the expr
+//   // module's memory needs:
+//   const uint32_t workspace_bytes = slots.total_bytes();
+//
+// Example for `(a + b) * c` under the naive path (base_offset = 128):
+//   post-order: a, b, (a+b), c, ((a+b)*c)
+//   Acquire() calls:                  128, 152        — slots for the
+//                                                       two internal
+//                                                       kCall nodes
+//   peak_slots()                      2
+//   total_bytes()                     48
+//
+// Under the M10 aliasing path the same expression needs only one slot
+// (the inner `+` result aliases with the outer `*` result after the
+// right-hand `c` is consumed); a `Release` between the two Acquires
+// lets the allocator hand back the same offset.  Callers write the
+// Sethi–Ullman dance (visit-heavy-subtree-first, Release non-aliased
+// input, Acquire parent) today; in M1 the Release is a no-op so peak
+// equals acquire count.
 
 #include <cstdint>
 
