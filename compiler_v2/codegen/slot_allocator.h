@@ -1,61 +1,80 @@
 #ifndef CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
 #define CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
 
-// Hands out 24-byte CelValue cells in the workspace region of linear
-// memory.  Callers `Acquire` a cell for each result they need to
-// store, and `Release` it once they're done reading from it — a
-// regular alloc/free pair, no assumptions about how or whether
-// offsets get reused.  Every `kCall` / `kSelect` / `kList` /
-// `kCreateMap` / `kCreateStruct` node's `NodeAnnotation::storage`
-// carries a `kWorkspaceSlot` with the byte offset of its cell.
+// Hands out 24-byte CelValue cells in the workspace region of
+// linear memory.  Callers `Acquire` a cell for each computed
+// result and `Release` the cell once every read of that result
+// is done.  The allocator may reuse a released cell for a later
+// `Acquire`; callers treat the returned offsets as opaque
+// storage.
 //
-// Usage (LayoutPass):
+// When to release.  LayoutPass is a post-order recursive visitor.
+// Each `Visit` call returns the storage its subtree's result
+// lives in, and when it returns, that storage is already live
+// (the Acquire has happened, or the rodata/local slot has been
+// fixed).  The parent reads the child's value exactly once — by
+// emitting a load that references the child's offset — and has
+// no further use for it afterwards.  So the rule is: after
+// recursing into each child, release every workspace-resident
+// child, then acquire a cell for this node's own result.  Non-
+// workspace children (`kConstExpr` in rodata, `kIdentExpr` in a
+// wasm local) have nothing to release.
 //
-//   // Workspace starts right after rodata; 8-byte aligned.
+// Usage (LayoutPass visitor):
+//
 //   SlotAllocator slots(/*base_offset=*/rodata_base + rodata_bytes,
 //                       /*debug_mode=*/true);
 //
-//   // Post-order walk.  Leaves store into rodata / locals; every
-//   // internal node acquires one cell for its result, and releases
-//   // its children's cells now that it has consumed them.
-//   void AssignSlots(const cel::Expr& e, WasmAnnotations& anno) {
-//     for (const cel::Expr* child : Children(e)) AssignSlots(*child, anno);
-//     NodeAnnotation& a = *anno.Mutable(e.id());
+//   Storage Visit(const cel::Expr& e, WasmAnnotations& anno) {
+//     Storage storage;
 //     switch (e.kind_case()) {
 //       case cel::ExprKindCase::kConstExpr:
-//         // Literal packed by StaticMemoryBuilder; payload is the
-//         // rodata offset, not a workspace cell.
+//         storage = {StorageKind::kRodata, RodataOffsetOf(e)};
 //         break;
 //       case cel::ExprKindCase::kIdentExpr:
-//         a.storage = {StorageKind::kLocal, a.local_index};
+//         storage = {StorageKind::kLocal, anno.Get(e.id()).local_index};
 //         break;
-//       default:
+//       default: {
+//         // Recurse: every child returns with its cell already live.
+//         std::vector<Storage> child_storage;
 //         for (const cel::Expr* child : Children(e)) {
-//           const Storage& s = anno.Get(child->id()).storage;
+//           child_storage.push_back(Visit(*child, anno));
+//         }
+//         // Children's values have been read into our emitted
+//         // instructions; their cells die here.
+//         for (const Storage& s : child_storage) {
 //           if (s.kind == StorageKind::kWorkspaceSlot) slots.Release(s.offset);
 //         }
-//         a.storage = {StorageKind::kWorkspaceSlot, slots.Acquire()};
+//         // And ours is born here.
+//         storage = {StorageKind::kWorkspaceSlot, slots.Acquire()};
 //         break;
+//       }
 //     }
+//     anno.Mutable(e.id())->storage = storage;
+//     return storage;
 //   }
 //
-//   // After the walk, this is how many bytes of workspace the expr
-//   // module's memory needs:
+//   Visit(expr, anno);
 //   const uint32_t workspace_bytes = slots.total_bytes();
 //
-// Example trace for `(a + b) * c` (base_offset = 128):
-//   visit a           kIdentExpr, no slot
-//   visit b           kIdentExpr, no slot
-//   visit (a + b)     Acquire → 128
-//   visit c           kIdentExpr, no slot
-//   visit ((a+b)*c)   Release(128); Acquire → 128 (reused) or 152 (fresh)
+// Example trace for `(a + b) + (c + d)` (base_offset = 128,
+// allocator with free-list reuse):
 //
-// The walker code above is the whole contract — LayoutPass doesn't
-// inspect the numbers that come back.  Implementation note: M1's
-// `Acquire` is monotonic and `Release` is a no-op (peak_slots() = 2,
-// total_bytes() = 48 for the example); M10's Sethi-Ullman path reuses
-// released cells via a free-list under `!debug_mode` (peak_slots() =
-// 1, total_bytes() = 24 for the same expression).
+//   visit a, b, c, d     idents, no workspace slots
+//   visit (a + b)        Acquire       → 128      live: {128}
+//   visit (c + d)        Acquire       → 152      live: {128, 152}
+//   visit outer +        Release 128; Release 152
+//                        Acquire       → 128      live: {128}
+//   peak_slots() = 2     total_bytes() = 48
+//
+// Note how the outer node releases *both* children before its own
+// Acquire — that's the rule at work, and it's what lets the free
+// list hand back 128 instead of growing to 176.  Under a no-op
+// `Release` the three Acquires would instead bump monotonically to
+// 128, 152, 176 (peak_slots() = 3, total_bytes() = 72).  LayoutPass
+// doesn't inspect these numbers — either allocator produces a
+// workspace sized for the emitted loads and stores.  M1 ships the
+// no-op form; M10 flips on the free list under `!debug_mode`.
 
 #include <cstdint>
 
