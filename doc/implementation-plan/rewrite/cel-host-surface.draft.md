@@ -503,7 +503,7 @@ exactly one typed entry:
 | `cel_set_field` | `FieldEntry[field_ref_id]` | expected value `CelType` to coerce from |
 | `cel_make_message` | `TypeEntry[type_id]` | descriptor resolution key |
 | `cel_message_eq`   | `TypeEntry` of either operand | — (operand types drive Differencer) |
-| Custom call        | `CustomFunctionEntry[helper_name]` | `(function_name, overload_id, is_receiver, arg_types[], return_type, strict)` |
+| Custom call        | `CustomFunctionEntry[helper_name]` | `(function_name, overload_id, is_receiver, arg_types[], return_type)` |
 | Root variable read | `VariableEntry[param_index]` | declared type; trampoline boxes accordingly |
 
 **Consequence.** The `cel_host` import signatures stay narrow — a
@@ -657,15 +657,10 @@ struct FunctionDecl {
   std::vector<CelType> arg_types;
   CelType return_type;
 
-  // Default strict: trampoline absorbs UNKNOWN/ERROR before
-  // calling impl.  Set false for logical-merge fns that need
-  // raw args (§5.3).
-  bool strict = true;
-
   // Impl runs at eval time, inside the host, once per wasm call.
   // Receives boxed Values in arg_types order; returns a boxed
   // Value.  Can return Value::Unknown / Value::Error for 3VL
-  // semantics.
+  // semantics (rarely needed — see §5.3).
   FunctionImpl impl;
 };
 
@@ -715,10 +710,18 @@ and resolved by the checker (matches cel-cpp's
 
 ### 5.3 3VL in custom fns
 
-The trampoline absorbs `UNKNOWN` / `ERROR` *before* calling `impl`
-by default (matches strict-operator semantics). Custom fns that
-want to see `UNKNOWN` / `ERROR` directly (e.g. a logical-merge fn)
-set `FunctionDecl::strict = false` and receive the raw args.
+CEL's spec treats every user-defined function as strict: the
+trampoline absorbs `UNKNOWN` / `ERROR` args *before* calling
+`impl`, period. There is no opt-out — short-circuit behaviour is
+hardcoded at the operator level (`&&`, `||`, `?:`) and is not
+extensible to customs. A custom fn therefore only ever sees
+concrete, non-3VL args, and needs no special handling for
+absorption.
+
+A custom `impl` may still *produce* `Value::Unknown` or
+`Value::Error` — those are first-class return values and
+propagate through the rest of the expression under the normal
+absorption rules (§4.2).
 
 ### 5.4 Compile-time flow — where the ABI row comes from
 
@@ -756,7 +759,6 @@ CompilerInternal::FrozenDeclView
             helper_name   = d.helper_name  (defaults to overload_id),
             arg_types     = d.arg_types,
             return_type   = d.return_type,
-            strict        = d.strict,
           }
 ```
 
@@ -788,16 +790,15 @@ and for each `CustomFunctionEntry e`:
    position matches. Mismatch → `FailedPrecondition` printing
    both signatures.
 3. Verify `d.return_type == e.return_type`.
-4. Verify `d.strict == e.strict`.
-5. Bind the wasm import `cel_host.<e.helper_name>` to a
+4. Bind the wasm import `cel_host.<e.helper_name>` to a
    per-decl trampoline that boxes args per `e.arg_types` and
    writes the result per `e.return_type`.
 
 Rejection at step 1 catches registry drift (embedder updated the
 function signature since the module was compiled). Rejection at
-step 2–4 catches the same kind of drift at a finer granularity
-— the embedder changed arity, types, or strict-ness. All five
-paths surface at load, not at first `Eval`, so a deployment error
+steps 2–3 catches the same kind of drift at a finer granularity
+— the embedder changed arity or types. All rejection paths
+surface at load, not at first `Eval`, so a deployment error
 fails visibly rather than mid-request.
 
 **Standard functions (stdlib) analogous but simpler.** Standard
@@ -904,7 +905,6 @@ message CustomFunctionEntry {
                                //   but embedders may override.
   repeated CelType arg_types = 5;  // total arity including receiver.
   CelType return_type = 6;
-  bool strict = 7;             // §5.3 — defaults true.
 }
 
 message TypeEntry {
