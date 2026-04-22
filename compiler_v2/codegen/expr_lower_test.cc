@@ -41,9 +41,9 @@ Pipeline RunPipeline(absl::string_view expression) {
 void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
   std::vector<uint8_t> rodata_copy(layout.rodata);
   WasmModule::DataSegment seg{layout.rodata_base, rodata_copy};
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory",
-                          absl::MakeConstSpan(&seg, 1)),
-              IsOk());
+  ASSERT_THAT(
+      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
+      IsOk());
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType params[2] = {i32, i32};
   m.AddFunctionImport(kCelResetInternalName, "cel", "cel_reset", params,

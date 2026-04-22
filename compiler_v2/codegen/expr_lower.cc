@@ -65,8 +65,8 @@ BinaryenExpressionRef EmitStorageLoad(WasmModule& mod, const Storage& storage) {
   ABSL_CHECK(storage.kind == StorageKind::kStaticRodata)
       << "expr_lower: EmitStorageLoad called with storage kind "
       << static_cast<int>(storage.kind) << "; M1 only emits kStaticRodata";
-  return BinaryenConst(mod.raw(),
-                       BinaryenLiteralInt32(static_cast<int32_t>(storage.payload)));
+  return BinaryenConst(
+      mod.raw(), BinaryenLiteralInt32(static_cast<int32_t>(storage.payload)));
 }
 
 // Emits `call $cel_reset(arena_base, arena_limit)`.  This is the first
@@ -89,8 +89,7 @@ BinaryenExpressionRef EmitCelResetCall(WasmModule& mod, uint32_t arena_base,
 
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
-    absl::string_view func_name, WasmModule& mod,
-    const LoweringOptions& opts) {
+    absl::string_view func_name, WasmModule& mod, const LoweringOptions& opts) {
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
@@ -107,15 +106,14 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
 
   const NodeAnnotation* ann = layout.annotations.Find(root.id());
   if (ann == nullptr) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "expr_lower: root expr id ", root.id(),
-        " has no NodeAnnotation — LayoutPass was not run"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("expr_lower: root expr id ", root.id(),
+                     " has no NodeAnnotation — LayoutPass was not run"));
   }
   if (ann->storage.kind != StorageKind::kStaticRodata) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("expr_lower: root kConst node id ", root.id(),
-                     " has storage kind ", static_cast<int>(ann->storage.kind),
-                     "; M1 expects kStaticRodata"));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "expr_lower: root kConst node id ", root.id(), " has storage kind ",
+        static_cast<int>(ann->storage.kind), "; M1 expects kStaticRodata"));
   }
 
   // Build `(block (result i32) (call $cel_reset ...) (i32.const <off>))`.
@@ -125,9 +123,9 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
       EmitCelResetCall(mod, layout.arena_base, opts.mem_size_bytes),
       EmitStorageLoad(mod, ann->storage),
   };
-  BinaryenExpressionRef body = BinaryenBlock(
-      mod.raw(), /*name=*/nullptr, children, /*numChildren=*/2,
-      BinaryenTypeInt32());
+  BinaryenExpressionRef body =
+      BinaryenBlock(mod.raw(), /*name=*/nullptr, children, /*numChildren=*/2,
+                    BinaryenTypeInt32());
 
   const std::string func_name_c(func_name);
   std::vector<BinaryenType> local_types(layout.local_types.begin(),
@@ -135,7 +133,8 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   mod.AddFunction(func_name, /*params=*/{}, BinaryenTypeInt32(), local_types,
                   body);
 
-  BinaryenFunctionRef func = BinaryenGetFunction(mod.raw(), func_name_c.c_str());
+  BinaryenFunctionRef func =
+      BinaryenGetFunction(mod.raw(), func_name_c.c_str());
   ABSL_CHECK(func != nullptr)
       << "expr_lower: Binaryen did not register function `" << func_name
       << "` after AddFunction";
