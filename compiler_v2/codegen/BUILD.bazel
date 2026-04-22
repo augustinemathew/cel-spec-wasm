@@ -152,9 +152,10 @@ cc_library(
     srcs = ["module.cc"],
     hdrs = ["module.h"],
     deps = [
-        "//compiler_v2/ir:annotations",
         "@binaryen//:binaryen",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
@@ -167,6 +168,7 @@ cc_test(
         ":module",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
     ],
 )
