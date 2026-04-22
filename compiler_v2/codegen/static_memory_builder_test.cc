@@ -5,8 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/status/status.h"
-#include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler_v2/runtime/cel_runtime.h"
@@ -14,8 +12,6 @@
 
 namespace celwasm {
 namespace {
-
-using ::absl_testing::StatusIs;
 
 // Helpers ---------------------------------------------------------------
 
@@ -227,19 +223,21 @@ TEST(StaticMemoryBuilderTest, BaseOffsetIsAppliedToReturnedOffsetAndSpanPtr) {
   EXPECT_EQ(ReadU32LE(buf, 8), 152u);
 }
 
-TEST(StaticMemoryBuilderTest, AllocateListReturnsUnimplemented) {
+TEST(StaticMemoryBuilderDeathTest, AllocateListStubCrashes) {
   StaticMemoryBuilder builder(0);
   const uint32_t offs[] = {24u, 48u};
-  EXPECT_THAT(builder.AllocateList(absl::MakeSpan(offs)),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_DEATH(
+      { builder.AllocateList(absl::MakeSpan(offs)); },
+      "AllocateList is a stub until M5");
 }
 
-TEST(StaticMemoryBuilderTest, AllocateMapReturnsUnimplemented) {
+TEST(StaticMemoryBuilderDeathTest, AllocateMapStubCrashes) {
   StaticMemoryBuilder builder(0);
   const uint32_t keys[] = {24u};
   const uint32_t vals[] = {48u};
-  EXPECT_THAT(builder.AllocateMap(absl::MakeSpan(keys), absl::MakeSpan(vals)),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_DEATH(
+      { builder.AllocateMap(absl::MakeSpan(keys), absl::MakeSpan(vals)); },
+      "AllocateMap is a stub until M6");
 }
 
 }  // namespace

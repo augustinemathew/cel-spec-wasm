@@ -1,29 +1,39 @@
 #ifndef CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
 #define CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
 
-// Packs compile-time-known CelValues into a byte buffer destined for
-// the wasm module's `.rodata` data segment.  LayoutPass calls one
-// `Allocate*` per `kConst` literal in the AST; each returns the
-// linear-memory offset at which the emitted CelValue frame lives.
-// The buffer is move-returned via `Finalize() &&` and stamped into
-// the data segment by codegen.
+// Packs compile-time-known CelValues into a byte buffer destined
+// for the wasm module's `.rodata` data segment.  LayoutPass calls
+// one `Allocate*` per `kConst` literal in the AST; each returns
+// the frame's byte offset inside the compiled module's linear
+// memory.  The buffer is move-returned via `Finalize() &&` and
+// stamped into the data segment by codegen.
+//
+// Return type.  All `Allocate*` methods return `uint32_t` — an
+// absolute wasm32 linear-memory byte offset (buffer-local offset
+// plus `base_offset`), ready to drop into an `i32.const` or a
+// CelSpan without further arithmetic.  Not a host C++ pointer;
+// the value is only meaningful inside the emitted wasm module's
+// memory.  If we ever target wasm64 this becomes `uint64_t`.
+//
+// Infallible.  Rodata packing has no failure mode by design
+// (§6.2.1): no cap, no fallback, no runtime-initialised-literal
+// variant — every literal lands in rodata and the buffer grows
+// as needed.  Hence no `absl::StatusOr` on any Allocate return
+// path.
 //
 // CelValue is 24 bytes, 8-byte aligned.  For string / bytes the
-// payload bytes follow the 24-byte frame directly and the cursor is
-// padded back to 8-byte alignment before the next Allocate, so every
-// frame lands on an 8-byte boundary.
+// payload bytes follow the 24-byte frame directly and the cursor
+// is padded back to 8-byte alignment before the next Allocate,
+// so every frame lands on an 8-byte boundary.
 //
-// No cap, no fallback, no `absl::Status` on the scalar / span path:
-// by design §6.2.1 every scalar literal lands in rodata
-// unconditionally.  `AllocateList` / `AllocateMap` are declared now
-// so M5/M6 wiring lands as a data-only change; both return
-// Unimplemented at M1.
+// `AllocateList` / `AllocateMap` are declared now so M5/M6
+// wiring lands as a body-only change (no API-surface churn).
+// Their M1 body `ABSL_CHECK(false)`s — any accidental early
+// caller gets a loud crash, not a silent miscodegen.
 
 #include <cstdint>
 #include <vector>
 
-#include "absl/base/attributes.h"
-#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler_v2/runtime/cel_runtime.h"
@@ -55,14 +65,12 @@ class StaticMemoryBuilder {
   uint32_t AllocateString(absl::string_view s);
   uint32_t AllocateBytes(absl::string_view b);
 
-  // Future work.  M1 stub returns Unimplemented so any codegen path
-  // that tries to pack a list / map literal surfaces as a clean
-  // compile error, not a silent miscodegen.
-  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AllocateList(
-      absl::Span<const uint32_t> element_offsets);
-  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AllocateMap(
-      absl::Span<const uint32_t> key_offsets,
-      absl::Span<const uint32_t> value_offsets);
+  // Stubs until M5 / M6.  Signature is final; body is
+  // `ABSL_CHECK(false)` so any caller that reaches here in M1
+  // crashes with the method name, not a silent miscodegen.
+  uint32_t AllocateList(absl::Span<const uint32_t> element_offsets);
+  uint32_t AllocateMap(absl::Span<const uint32_t> key_offsets,
+                       absl::Span<const uint32_t> value_offsets);
 
   // Move-return the packed buffer.  After Finalize the builder is
   // consumed.  Use `size_bytes()` beforehand to learn the final size

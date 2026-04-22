@@ -7,8 +7,6 @@
 #include <vector>
 
 #include "absl/log/absl_check.h"
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler_v2/runtime/cel_runtime.h"
@@ -133,20 +131,20 @@ uint32_t StaticMemoryBuilder::AllocateBytes(absl::string_view b) {
   return AllocateSpan(CEL_BYTES, b);
 }
 
-absl::StatusOr<uint32_t> StaticMemoryBuilder::AllocateList(
+uint32_t StaticMemoryBuilder::AllocateList(
     absl::Span<const uint32_t> element_offsets) {
   (void)element_offsets;
-  return absl::UnimplementedError(
-      "StaticMemoryBuilder::AllocateList is not implemented until M5");
+  ABSL_CHECK(false) << "StaticMemoryBuilder::AllocateList is a stub until M5";
+  return 0u;  // unreachable; keeps some compilers' flow analysis happy
 }
 
-absl::StatusOr<uint32_t> StaticMemoryBuilder::AllocateMap(
+uint32_t StaticMemoryBuilder::AllocateMap(
     absl::Span<const uint32_t> key_offsets,
     absl::Span<const uint32_t> value_offsets) {
   (void)key_offsets;
   (void)value_offsets;
-  return absl::UnimplementedError(
-      "StaticMemoryBuilder::AllocateMap is not implemented until M6");
+  ABSL_CHECK(false) << "StaticMemoryBuilder::AllocateMap is a stub until M6";
+  return 0u;  // unreachable
 }
 
 std::vector<uint8_t> StaticMemoryBuilder::Finalize() && {

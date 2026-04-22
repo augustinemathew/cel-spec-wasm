@@ -36,10 +36,7 @@ cc_library(
     hdrs = ["static_memory_builder.h"],
     deps = [
         "//compiler_v2/runtime:cel_runtime",
-        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
@@ -51,8 +48,6 @@ cc_test(
     deps = [
         ":static_memory_builder",
         "//compiler_v2/runtime:cel_runtime",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",

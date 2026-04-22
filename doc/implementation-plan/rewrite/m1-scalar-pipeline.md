@@ -175,8 +175,10 @@ Full class per parent §6.2.1. M1 ships:
     Allocate.
   - `Finalize() &&` returns the owned `std::vector<uint8_t>`.
 
-`AllocateList` / `AllocateMap` exist as declared methods returning
-`absl::StatusOr<uint32_t>` with `Unimplemented` — M6/M7 or later.
+`AllocateList` / `AllocateMap` exist as signature-final stubs
+returning `uint32_t`; their M1 body `ABSL_CHECK(false)`s so an
+accidental early call surfaces as a crash, not a silent
+miscodegen.  Body fills in at M5/M6.
 
 ### 2.6 `codegen/slot_allocator.{h,cc}`
 

@@ -1070,7 +1070,11 @@ class StaticMemoryBuilder {
   uint32_t AllocateString(absl::string_view s);
   uint32_t AllocateBytes(absl::string_view b);
 
-  // Future work (M5/M6): AllocateList, AllocateMap.
+  // Signature-final stubs until M5/M6; body ABSL_CHECK(false)s so
+  // any M1 caller crashes loudly.
+  uint32_t AllocateList(absl::Span<const uint32_t> element_offsets);
+  uint32_t AllocateMap(absl::Span<const uint32_t> key_offsets,
+                       absl::Span<const uint32_t> value_offsets);
 
   std::vector<uint8_t> Finalize() &&;
   uint32_t size_bytes() const { return buf_.size(); }
@@ -2263,9 +2267,10 @@ Unchanged by this rewrite.
 construction via runtime / host calls ships in Slice 13 (§4.7). Static
 packing into `.rodata` (compile-time-known lists / maps whose keys
 and values are all literals) is out of scope for this rewrite;
-`StaticMemoryBuilder` leaves `AllocateList` / `AllocateMap` stubbed with
-an explicit `Unimplemented` return path. Addition when (if) a profiling
-need emerges.
+`StaticMemoryBuilder` leaves `AllocateList` / `AllocateMap` as
+signature-final stubs whose body is `ABSL_CHECK(false)` — M1 callers
+crash loudly rather than silently miscompile. Body fills in when (if)
+a profiling need emerges.
 
 **7. `MessagePatternTable` vs `OverloadTable` unification.** Proto
 construction lives in its own side table (§4.7.1) keyed by descriptor
