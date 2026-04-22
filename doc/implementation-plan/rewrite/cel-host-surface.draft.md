@@ -1,6 +1,6 @@
 # DRAFT — cel_host surface (compiler_v2)
 
-**Status:** DRAFT for discussion, 2026-04-21. Not a spec, not scheduled.
+**Status:** DRAFT for discussion, 2026-04-22. Not a spec, not scheduled.
 Supersedes the v1 of this draft (deleted); keeps nothing from it except
 the file location. Complements `design.md` §4.6/§4.7/§9; where this
 draft and `design.md` disagree, `design.md` wins until this draft is
@@ -11,25 +11,30 @@ embedding a compiled CEL expression. It covers:
 
 - The **user-facing abstractions** (`Env` / `Program` / `Instance` /
   `Value` / `Activation`) — the ten-line path from source → answer.
-- The **polyglot `HostAdapter`** — how the runtime reads fields from
-  proto, JSON, maps, or any other backing without the wasm module
-  knowing or caring.
 - The **`cel.abi` custom section** — v1's self-contained contract,
   extended, not trimmed.
 - **3VL as a first-class citizen** — `UNKNOWN` and `ERROR` with real
-  payloads, absorbed per spec, producible by host adapters and
+  payloads, absorbed per spec, producible by host callbacks and
   custom functions.
+- The **internal host adapter** — the proto-backed implementation
+  that sits behind the `cel_host.*` wasm imports. Today it is the
+  only implementation; it is a private class, not a user-facing
+  knob.
 
 ## 0. Why this draft exists
 
 The prior draft got four things wrong:
 
-1. **Dropped polyglot-ness.** It hard-coded proto in the cel_host
-   surface (`cel_host.cel_get_field(msg_slot, field_id)` with the
-   host immediately unwrapping a `Message*`). v1 deliberately
-   kept `(field_number, field_name)` as a pair so JSON / map / user-
-   struct backings are equally first-class. The runtime should not
-   know whether it's talking to a proto.
+1. **Conflated user config with adapter plumbing.** It put
+   `SetHostAdapter` on `Env::Builder` and spun up `JsonHostAdapter`
+   / `MapHostAdapter` as shipped alternatives. The adapter is an
+   implementation detail — today we only support proto, and the
+   proto adapter handles externref unwrapping + field resolution
+   internally. Users bind `Value`s through `Activation`; they do
+   not pick adapters. v1's ABI deliberately kept
+   `(field_number, field_name)` as a pair because the ABI is
+   future-proof for other backings — but that does not belong in
+   the public surface today.
 2. **Trimmed the ABI.** It retired `FunctionSet.required_imports`
    and treated `CheckedExpr` as "maybe we drop it". v1's ABI is
    self-contained — a fresh host can see, from bytes alone, every
@@ -51,19 +56,33 @@ The prior draft got four things wrong:
 
 These are non-negotiable for v2. They drive every shape below.
 
-### 1.1 Polyglot runtime
+### 1.1 The adapter is internal; `Value` is the user-facing polymorphism
 
-The wasm module knows nothing about proto. `cel_host.*` imports
-accept and return opaque container handles (`i32` externref slots);
-they never decode a `Descriptor*`. The *adapter* does that — and the
-adapter is a pluggable C++ interface with at least three concrete
-implementations shipped in-tree (proto, JSON, map).
+Users interact with `Env` / `Program` / `Instance` / `Value` /
+`Activation`. They bind `Value`s to names; they read `Value`s out
+of `Eval`. They never see an adapter.
 
-**Consequence:** a host embedding CEL over a JSON document can bind
-the same `cel_host.cel_get_field` import without recompiling the
-runtime, as long as it provides a `JsonHostAdapter`. The ABI's field
-table carries both `field_number` and `field_name`; the adapter
-picks whichever it understands.
+Behind the scenes, the wasm module's `cel_host.*` imports are
+wired to a single adapter implementation that understands proto
+messages. The adapter owns the externref-to-`Message*` mapping,
+resolves field reads/sets/equality, and handles message
+construction. It is one class, one file, no interface hierarchy
+above it.
+
+**Why not expose the adapter?** Because picking between "proto" vs
+"JSON" is not a user-level decision today — today we only support
+proto. When the second backing lands (if it does), we will abstract
+at that point from one known-good impl, not from speculation. The
+ABI already carries `(field_number, field_name)` so the wire
+format is future-proof; the C++ surface adapts when the need is
+real.
+
+**User data shapes.** A `Value` can wrap a proto `Message`, a
+primitive (int/uint/double/bool/string/bytes), a list, a map, a
+duration, a timestamp, `UNKNOWN`, or `ERROR`. That is the
+polymorphism users care about. If a user has JSON on hand, they
+convert it to a `Value::Map` / `Value::List` / primitives on their
+side before calling `Activation::Bind`; CEL never sees JSON.
 
 ### 1.2 Self-contained ABI
 
@@ -188,7 +207,6 @@ class Env {
   // Introspection.
   const FunctionRegistry& functions() const;
   const google::protobuf::DescriptorPool& descriptor_pool() const;
-  const HostAdapter& host_adapter() const;
   absl::Span<const VariableDecl> declared_variables() const;
 };
 
@@ -207,11 +225,6 @@ class Env::Builder {
 
   // Type registration — proto descriptors the compiler may reference.
   Builder& RegisterMessageType(const google::protobuf::Descriptor* desc);
-
-  // Host adapter — how proto/json/map backings are decoded.  Default
-  // is ProtoHostAdapter.  Pass a JsonHostAdapter or MapHostAdapter
-  // (both in-tree) or a custom impl.
-  Builder& SetHostAdapter(std::unique_ptr<HostAdapter>);
 
   // Compiler options — arena size, debug layout, etc.
   Builder& SetCompilerOptions(CompilerOptions opts);
@@ -391,108 +404,71 @@ class Activation {
 }  // namespace celwasm
 ```
 
-## 3. The polyglot `HostAdapter`
+## 3. The host adapter (internal)
 
-The runtime calls out to the host whenever an expression touches
-something the wasm module can't resolve locally: a field access on a
-message, a `has()` test, a message-equality check, a message-literal
-construction. None of those calls assume proto.
+This section describes machinery users never touch. It lives at
+`compiler_v2/host/cel_host.{h,cc}` — the same file the wasmtime
+trampolines call into. One concrete implementation today, proto-
+backed; described here so reviewers can see the full picture.
 
-### 3.1 Interface
+### 3.1 What it does
 
-```cpp
-// compiler_v2/host/host_adapter.h
-namespace celwasm {
+When the wasm module does `x.name`, codegen emits a `cel_host.
+cel_get_field(out_slot, msg_slot, field_number, field_name)` call.
+The trampoline fires; the host adapter owns what happens next:
 
-// A type-erased handle to an "opaque container" — the adapter
-// interprets it.  For ProtoHostAdapter, it wraps a Message*.  For
-// JsonHostAdapter, it wraps a JSON object ptr.  For MapHostAdapter,
-// it wraps a map<string, Value>*.
-class ContainerRef {
- public:
-  template <class T> const T& As() const;
-  template <class T> T& AsMut();
-  uint32_t type_id() const;   // → Abi.types
-};
+1. Unwrap `msg_slot` — a `CelValue{kind: CEL_MESSAGE,
+   payload.msg_slot: <externref slot>}` at `msg_slot` points into
+   the expr module's `cel_refs` externref table. The adapter
+   resolves the slot to a `const google::protobuf::Message*` that
+   it (or the activation layer) registered earlier.
+2. Resolve the field — use `field_number` if non-zero (proto fast
+   path); fall back to `field_name` via
+   `Descriptor::FindFieldByName`.
+3. Read the field — via `Reflection::Get*` per `cpp_type()`.
+4. Materialise the result as a `CelValue` at `out_slot`. Scalars
+   write in place. String/bytes copy into the arena via a
+   reentrant `cel_alloc` call. Submessages intern via the expr
+   module's `cel_ref_intern` export and write
+   `{kind: CEL_MESSAGE, payload.msg_slot: <new slot>}`.
 
-class HostAdapter {
- public:
-  virtual ~HostAdapter() = default;
+`cel_has_field`, `cel_message_eq`, `cel_set_field`, and
+`cel_make_message` follow the same pattern — the adapter is
+single-owned, file-local, and handles externref bookkeeping +
+proto descriptor resolution end-to-end.
 
-  // —— Read side ——
-  // `field_number` is provided (non-zero) when the checker resolved
-  // a proto field number; adapters that don't understand numbers
-  // should use `field_name` instead.  Both are always populated in
-  // the ABI; adapters pick which they honour.
-  //
-  // Returns any Value kind, INCLUDING Unknown / Error.  A missing
-  // field, a forbidden access, a lazy-fetch that hasn't resolved —
-  // all are first-class return values here.
-  virtual Value ReadField(ContainerRef container,
-                          absl::string_view field_name,
-                          uint32_t field_number) = 0;
+### 3.2 Why this is not an interface today
 
-  // `has(msg.field)` — returns a bool Value OR Unknown/Error.
-  virtual Value HasField(ContainerRef container,
-                         absl::string_view field_name,
-                         uint32_t field_number) = 0;
+A `HostAdapter` virtual interface with multiple implementations is
+not needed until we have a real second backing. "Future-proof" is
+not a motivation for interface abstraction — real requirements are.
+Until then, `cel_host.cc` is a concrete proto-backed file, reviewed
+as such.
 
-  virtual Value Equals(ContainerRef a, ContainerRef b) = 0;
+If / when a second backing arrives:
 
-  // —— Write side (message-literal construction) ——
-  // Optional — adapters that only support read may return
-  // Unimplemented.  The checker prevents construction of types the
-  // adapter doesn't support, so this path is dead for read-only
-  // adapters in well-typed code.
-  virtual absl::StatusOr<ContainerHandle> MakeContainer(
-      uint32_t type_id) = 0;
+1. The concrete proto impl extracts into `adapters/proto.{h,cc}`.
+2. A `HostAdapter` interface is carved from its public methods.
+3. A second impl joins under `adapters/`.
+4. `Env` gains an opt-in hook to override the default.
 
-  virtual absl::Status SetField(ContainerHandle& container,
-                                absl::string_view field_name,
-                                uint32_t field_number, Value value) = 0;
+Each of those four steps is cheap and well-localised. Doing them
+preemptively without a second impl is speculative architecture,
+and speculative architecture is the specific thing that killed the
+previous draft.
 
-  // —— Type metadata ——
-  // Drives Env's type-registration: "which types do I understand?"
-  virtual absl::Span<const AdapterTypeInfo> DeclaredTypes() const = 0;
-};
+### 3.3 Why the ABI still carries both `field_number` and `field_name`
 
-}  // namespace celwasm
-```
+The ABI is a wire contract — durable, cross-process, cross-version.
+Trimming it to proto-only today means new backings force a version
+bump tomorrow. The cost of including the name string is a handful
+of bytes per field reference; the value of *not* re-cutting the ABI
+in six months is very real.
 
-`ContainerHandle` is the owning variant — `Instance` keeps a registry
-of handles constructed during eval and drops them at `Reset`.
-`ContainerRef` is the borrowed view.
-
-### 3.2 Shipped adapters
-
-Three in-tree, all single-file:
-
-- **`ProtoHostAdapter`** (`compiler_v2/host/adapters/proto.h`) —
-  reads `google::protobuf::Message*` via `Reflection`. Transcribed
-  from v1 `cel_host.cc`.
-- **`JsonHostAdapter`** (`compiler_v2/host/adapters/json.h`) — reads
-  a small internal `JsonValue` (or the embedder's JSON lib of
-  choice via a thin shim). `field_number` is ignored; lookup by
-  name. Write side supported via mutation.
-- **`MapHostAdapter`** (`compiler_v2/host/adapters/map.h`) —
-  `absl::flat_hash_map<std::string, Value>` as a container.
-  Minimal, useful in tests, illustrates the interface.
-
-Embedders register their own with `Env::Builder::SetHostAdapter(...)`.
-
-### 3.3 Why `field_name` AND `field_number`
-
-v1 gets this right. The checker knows field numbers for proto-typed
-expressions and emits them into the AST; name is the fallback for
-non-proto backings (JSON) or forward-compat (field renames). The ABI
-stores both per field reference. The wasm-level import signature
-carries both i32s; a 0-valued number signals "resolve by name".
-
-**Performance.** Proto adapter uses number (fast path, descriptor
-lookup by index). JSON adapter uses name. Both paths are O(1) in
-the common case (proto: array lookup; JSON: hash). The other
-argument in each call is untouched — small cost for a big
-polyglot win.
+The proto adapter uses `field_number` (descriptor lookup by index,
+O(1)); `field_name` is carried but unused. When a second backing
+arrives, it uses whichever field the checker populated for that
+type.
 
 ## 4. 3VL as a first-class citizen
 
@@ -575,19 +551,18 @@ The message bytes live in the arena (allocated via `cel_alloc`).
 
 ### 4.5 Host contract for 3VL
 
-Every `HostAdapter` implementation MUST:
+The `cel_host.*` trampolines (and any custom function trampoline):
 
-- Accept `ContainerRef`s representing `UNKNOWN` / `ERROR` values and
-  return them unchanged (pass-through absorption). Typically this
-  is handled by the fixed trampolines *before* the adapter is
-  called — so adapter authors don't need to implement it — but the
-  interface allows adapters to override for weird cases (e.g. an
-  adapter that wants `UNKNOWN + x` to materialise).
-- Be allowed to return `UNKNOWN` from any method, naming an
-  `AttributeId` that's registered in the ABI.
-- Be allowed to return `ERROR` from any method, with a code the
-  host runtime recognises (or `kHostAdapterError` for embedder-
-  specific codes).
+- Absorb `UNKNOWN` / `ERROR` args *before* dispatching to adapter
+  logic. If any arg at the slot offsets is `UNKNOWN` or `ERROR`,
+  the trampoline writes the absorbed value to `out_slot` and
+  returns without touching the adapter.
+- Allow the adapter (or a custom function) to *produce* `UNKNOWN`
+  with an `AttributeId` that's registered in the ABI — used for
+  partial eval.
+- Allow the adapter (or a custom function) to *produce* `ERROR`
+  with a recognised code (or `kHostAdapterError` for embedder-
+  specific codes) and a message.
 
 ## 5. Custom functions
 
@@ -717,16 +692,10 @@ message CustomFunctionEntry {
 
 message TypeEntry {
   uint32 type_id = 1;
-  string name = 2;             // "com.example.Customer" (proto FQN
-                               //   or embedder-chosen name)
-  enum BackingHint {
-    UNSPECIFIED = 0;
-    PROTO = 1;
-    JSON = 2;
-    MAP = 3;
-    OPAQUE = 4;
-  }
-  BackingHint backing = 3;     // adapter may ignore
+  string name = 2;             // proto FQN today (e.g.
+                               //   "com.example.Customer").
+                               // A future non-proto backing may
+                               //   use an embedder-chosen name.
 }
 
 message VariableEntry {
@@ -779,12 +748,13 @@ message MemoryLayout {
 
 ### 6.2 What's new
 
-- `types` — explicit type table so multi-backing (proto / JSON /
-  map) is representable.
+- `types` — explicit type table. Used today only for proto
+  messages, but structured so a later non-proto backing would be
+  additive (no schema break).
 - `variables` — explicit root-variable declarations with
   param-index ordering. v1 inferred this from wasm-param layout;
-  v2 makes it explicit so multi-adapter hosts can validate before
-  instantiation.
+  v2 makes it explicit so `CheckCompatible` can validate before
+  instantiation rather than failing at first `Eval`.
 
 ## 7. End-to-end examples
 
@@ -884,29 +854,7 @@ if (result.IsUnknown()) {
 }
 ```
 
-### 7.5 Polyglot (JSON backing)
-
-```cpp
-ASSIGN_OR_RETURN(auto env, Env::NewBuilder()
-    .AddStandardDeclarations()
-    .SetHostAdapter(std::make_unique<JsonHostAdapter>())
-    .DeclareVariable("doc", CelType::Json("Document"))   // JSON-backed type
-    .Build());
-
-ASSIGN_OR_RETURN(auto program, env.Compile("doc.title"));
-ASSIGN_OR_RETURN(auto instance, program.Plan());
-
-Activation act;
-act.Bind("doc", Value::Json(ParseJson(R"({"title": "Hello"})")));
-ASSIGN_OR_RETURN(auto result, instance.Eval(act));      // "Hello"
-```
-
-Same expression. Same `Env::NewBuilder().Compile()` path. Different
-adapter. No wasm recompile across adapters — the module sees only
-`cel_host.cel_get_field(out, msg_slot, field_name, field_number)`;
-what's behind `msg_slot` is the adapter's problem.
-
-### 7.6 Cross-process (serialize / load)
+### 7.5 Cross-process (serialize / load)
 
 ```cpp
 // Server-side.
@@ -941,16 +889,16 @@ compiler_v2/
 │   └── attribute.{h,cc,_test.cc}   # AttributeId / AttributePattern
 ├── host/
 │   ├── BUILD.bazel
-│   ├── host_adapter.h              # interface
-│   ├── host_adapter_3vl.{cc,h}     # shared UNKNOWN/ERROR absorption
-│   ├── adapters/
-│   │   ├── proto.{h,cc,_test.cc}
-│   │   ├── json.{h,cc,_test.cc}
-│   │   └── map.{h,cc,_test.cc}
 │   ├── cel_abi.proto               # §6 schema
 │   ├── cel_abi.{h,cc}              # build (codegen side)
 │   ├── abi_parse.{h,cc,_test.cc}   # deserialize (host side)
-│   ├── cel_host.{h,cc,_test.cc}    # fixed host-fn implementations
+│   ├── cel_host.{h,cc,_test.cc}    # proto-backed adapter +
+│   │                               #   fixed host-fn implementations
+│   │                               #   (read/has/set/make/eq).
+│   │                               #   Internal; no public interface
+│   │                               #   class carved out yet (§3.2).
+│   ├── cel_host_3vl.{cc,h}         # shared UNKNOWN/ERROR absorption
+│   │                               #   used by every trampoline.
 │   ├── cel_host_wasmtime.{h,cc}    # RegisterCelHost trampolines
 │   ├── custom_registry.{h,cc,_test.cc}
 │   ├── host_loader.{h,cc,_test.cc} # two-phase wasmtime instantiation
@@ -972,57 +920,55 @@ it (S4, first proto reads).
 | Slice | Additions |
 |---|---|
 | **S3.5** | `api/value.{h,cc}` + `api/activation.{h,cc}` + `api/env.{h,cc}` skeleton + `api/program.{h,cc}` + `api/instance.{h,cc}`. Wires the existing (scalar-only) pipeline through the public surface; `Env::Compile` / `Program::Plan` / `Instance::Eval` work for `-e "42"`. |
-| **S4** | `host_adapter.h` interface + `ProtoHostAdapter` + fixed host imports (`cel_get_field`, `cel_has_field`). ABI v2 schema lands; `abi_parse` reads everything. Attribute table reserved but not yet populated. Root variables (non-proto scalars + proto messages) end-to-end. |
+| **S4** | `cel_host.{h,cc}` proto-backed adapter + fixed host imports (`cel_get_field`, `cel_has_field`). ABI v2 schema lands; `abi_parse` reads everything. Attribute table reserved but not yet populated. Root variables (scalars + proto messages) end-to-end. |
 | **S4.5** | `AttributePattern` + partial eval on root variables. Attribute table populated by checker. `Instance::PartialEval` lands. |
 | **S6** | `cel_message_eq`. ERROR payload grows `expr_id` field. |
 | **S7** | Custom functions — `FunctionDecl` + `RegisterCelHost` customs loop + `FunctionImpl` auto-boxing trampolines. |
-| **S8** | `JsonHostAdapter` + `MapHostAdapter`. List + map literals at the wasm level. `Value::List` / `Value::Map`. |
-| **S9** | `cel_make_message` + `cel_set_field`. Message-literal construction; adapter `MakeContainer` / `SetField`. |
+| **S8** | List + map literals at the wasm level. `Value::List` / `Value::Map` on the user surface. No new adapters. |
+| **S9** | `cel_make_message` + `cel_set_field` in the proto adapter. Message-literal construction wired end-to-end. |
 
 S3.5 and S4.5 are the new slices this draft introduces vs design.md.
 Both are single-day and unlock the rest.
 
 ## 10. Open questions
 
-1. **Does `Env` own the `HostAdapter`, or does `Instance`?**
-   If `Env` owns, all `Instance`s share one adapter — good for
-   stateless adapters (proto), awkward for stateful ones (a JSON
-   cache keyed by request). Recommend: **Env owns by default, with
-   an `Instance`-level override hook** for stateful adapters.
+### Decided (2026-04-22)
 
-2. **Should `Value::Message(const Message&)` copy, or borrow?**
-   cel-cpp's `CelValue` borrows. That forces the caller to keep
-   the message alive for the duration of `Eval`. Easy to get wrong.
-   Alternative: copy defensively, accept the cost. Recommend:
-   **borrow; document the lifetime; provide `Value::OwnedMessage`
-   for the copying case**. Matches cel-cpp, predictable.
+- **Q1. Adapter ownership.** ~~Does `Env` own the adapter, or
+  `Instance`?~~ The adapter is internal to `host/` and not part
+  of the public surface (§1.1, §3). The `Env` holds the config it
+  needs (descriptor pool, declared variables, function registry);
+  `Instance` holds the live wasmtime plumbing. The adapter lives
+  inside the host-side machinery and is constructed per `Instance`
+  — stateful per-eval work (externref table, mutable-message
+  registry) belongs there.
+- **Q2. `Value::Message(const Message&)` copy vs borrow.**
+  **Borrow.** Matches cel-cpp's `CelValue` conventions. Lifetime
+  documented on the function. `Value::OwnedMessage(unique_ptr)` is
+  the copying alternative.
 
-3. **`Activation::BindLazy` — is the value re-fetched across
+### Still open
+
+1. **`Activation::BindLazy` — is the value re-fetched across
    multiple `Eval`s on the same `Instance`?** If yes, lazy =
    per-`Find` call; if no, lazy = first `Find` caches. Recommend:
    **per-`Eval` caching, clear on `Reset`.** Matches developer
    intuition ("same eval sees the same value").
 
-4. **Should `Value::List` / `Value::Map` materialise the wire list
+2. **Should `Value::List` / `Value::Map` materialise the wire list
    eagerly, or stream?** Eager is simple; streaming avoids
    blowing up on large lists. Recommend: **streaming view
    (`ListView` / `MapView`) in the API, eager copy only when the
    user explicitly asks for `ToVector` / `ToMap`.**
 
-5. **Does `JsonHostAdapter` own a JSON implementation, or abstract?**
-   Owning picks winners (nlohmann vs rapidjson). Abstract makes it
-   one more interface. Recommend: **abstract — ship one concrete
-   subclass per common library under `adapters/json_*.{h,cc}`**.
-   Embedders pick the one matching their existing JSON lib.
-
-6. **Is `AttributeId` resolved eagerly (attribute_id = compile-time
+3. **Is `AttributeId` resolved eagerly (attribute_id = compile-time
    int) or lazily (attribute_id = string resolved at partial-eval
    time)?** Eager = fast; requires full attribute table in ABI.
    Lazy = flexible; allows runtime-declared unknowns. Recommend:
    **eager for declared attributes (common case), plus a fallback
    string path for runtime-synthesised attribute ids (rare).**
 
-7. **Does `Instance` always implicitly `Reset` between `Eval`s, or
+4. **Does `Instance` always implicitly `Reset` between `Eval`s, or
    does the caller control it?** Implicit is safer, explicit
    allows reuse of arena state across back-to-back evals (rare).
    Recommend: **implicit, with an opt-out
@@ -1032,6 +978,10 @@ Both are single-day and unlock the rest.
 
 Called out explicitly so reviewers don't ask:
 
+- **Non-proto backings (JSON, map, user-defined structs).** The
+  ABI leaves room (§3.3, §6.1); the v2 public surface only binds
+  proto. If / when a second backing is real, §3.2 describes the
+  four-step path to add it. Not attempting it speculatively.
 - **Thread safety of `Env`.** Immutable after `Build`; read-only.
   Thread-safe by construction. Not discussed further.
 - **Serialization of `Value` itself.** Users serialize via proto /
@@ -1049,14 +999,15 @@ This draft is for discussion. Suggested review order:
 
 1. Does the `Env` / `Program` / `Instance` triad feel right? It's
    the biggest shape decision; everything else hangs off it.
-2. Is the `HostAdapter` interface the right cut between runtime
-   and embedder? Or should the runtime know more?
+2. Is the activation → `Value::Bind` → internal-adapter flow the
+   right cut between user and runtime? The previous draft exposed
+   the adapter; this one hides it. Is anything still leaking?
 3. Are the 3VL absorption rules in §4.2 the ones we want, or is
    there a shorter formulation?
 4. Does the ABI schema in §6 preserve the v1 self-contained
    property to your satisfaction, or did we still trim something?
-5. Which of the open questions in §10 should be decided before
-   promotion; which can be deferred?
+5. Which of the still-open questions in §10 should be decided
+   before promotion; which can be deferred?
 
 Once settled, this draft graduates to `cel-host-design.md` (no
 `.draft.` infix), slices are added to `design.md` §11, and the
