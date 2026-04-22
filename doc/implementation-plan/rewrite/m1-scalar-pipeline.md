@@ -213,23 +213,47 @@ switch (expr.kind()) {
 the `i32` CelValue offset, which `$eval`'s caller reads as a
 pointer into linear memory.
 
-### 2.8 Runtime (`runtime/cel_runtime.{h,c}`)
+### 2.8 Runtime (`runtime/cel_*.h` + `cel_runtime.c`)
 
-M1 ships the **minimum** consistent with the final memory model:
+M1 ships the **minimum** consistent with the final memory model.
+The runtime surface is split into narrow topic headers, each
+depending on the smallest set of siblings it needs; a thin
+umbrella (`cel_runtime.h`) re-exports all of them for callers that
+want the whole thing:
 
-  - `CelValue` struct (24 bytes, matches v1's tagged-union layout).
-  - `CelKind` enum (final set — even kinds M1 doesn't use are
-    declared so the encoding is stable).
-  - Arena cursor at fixed linear-memory bytes 8..15 (parent §8.2);
-    `cel_alloc(nbytes)` and `cel_reset(arena_base, arena_limit)`
-    implemented. Neither is called by M1's eval path (pure literal
-    eval hits only `.rodata`) but both are exported so the memory
-    model is testable and stable.
-  - `cel_make_{bool,int,uint,double,null,string,bytes}` — used
-    only by tests and by host-boundary boxing. Not called from
-    codegen (codegen emits CelValues directly into `.rodata`).
-  - Build flags per parent §8.1: `--import-memory=cel,memory`,
-    explicit `--export=` per symbol, **no `--export-all`**.
+  - `cel_data.h` — pure types: `CelKind`, `CelSpan`/`CelArray`/
+    `CelMap`/`CelDurTs`, `CelValue` struct (24 bytes, asserted
+    via `_Static_assert`), `CEL_ERR_*` enum. No function decls.
+    Depends on `<stdint.h>` only.
+  - `cel_memory.h` — `cel_mem_base()` / `cel_mem_size()` only.
+    The rest of the runtime reads from these; pulling them into
+    their own header means a test exercising just "does the
+    backing memory exist" doesn't transitively depend on the
+    arena or any CelValue constructors.
+  - `cel_arena.h` — `cel_reset(arena_base, arena_limit)`,
+    `cel_alloc(nbytes)`, `cel_value_at(off)`. Arena cursor lives
+    at fixed linear-memory bytes 8..15 (parent §8.2). **Codegen
+    emits a call to `cel_reset(<rodata_size>, <mem_size>)` at the
+    top of every `$eval` body using compile-time-constant
+    offsets** — there is no separate host init phase and no
+    runtime-private state to initialize before calling `$eval`.
+  - `cel_make.h` — `cel_make_{bool,int,uint,double,null,string,
+    bytes,string_view,bytes_view}`. Used only by tests and by
+    host-boundary boxing; not called from M1 codegen (literals go
+    straight into `.rodata`). Included in the runtime so arena-
+    aware tests can construct CelValues without reaching into the
+    layout manually.
+  - `cel_log.h` — `cel_log` import declaration (with wasm-side
+    `import_module`/`import_name` attributes), format-tag enum,
+    `CEL_LOG_*` macros, `CEL_LOG(...)` dispatch macro.
+  - `cel_runtime.h` — umbrella that `#include`s all five.
+
+Build flags per parent §8.1: `--import-memory=cel,memory`,
+explicit `--export=` per symbol, **no `--export-all`**. Exports
+at M1: `cel_alloc`, `cel_reset` (so the runtime-module variant
+is callable from the expr module via the shared runtime-import
+binding; M1's `$eval` calls `cel_reset` itself, then never calls
+`cel_alloc` because pure-literal eval hits only `.rodata`).
 
 Helpers intentionally **not** in M1: arithmetic (`_add_at_vv`),
 comparisons, string ops, 3VL, size, map/list primitives. Those
@@ -243,10 +267,11 @@ Two-phase instantiation per parent §9.1. M1 implements:
     `memory`.
   - Phase 2: instantiate runtime module with `cel.memory` bound
     to the expr's exported memory.
-  - Call the expr's exported `cel_reset(arena_base, arena_limit)`
-    with offsets from the `cel.abi` custom section.
   - Invoke `$eval()` — returns `i32` offset of a `CelValue` in
-    linear memory. Host decodes via `memory_base + offset`.
+    linear memory. `$eval`'s first instruction is a call to
+    `cel_reset` with compile-time-baked arena offsets, so the
+    host does **not** call `cel_reset` itself. Host decodes the
+    result via `memory_base + offset`.
 
 Host does **not** call `cel_alloc` for an sret slot (v1 pattern at
 `host_loader.cc:429`) — the output slot is a fixed
@@ -315,9 +340,16 @@ compiler_v2/
 │   └── module_test.cc                       # NEW
 ├── runtime/
 │   ├── BUILD.bazel                          # --import-memory, explicit exports
-│   ├── cel_runtime.h                        # NEW — minimal set
+│   ├── cel_data.h                           # NEW — types only (CelValue, CelKind)
+│   ├── cel_memory.h                         # NEW — cel_mem_base / cel_mem_size
+│   ├── cel_arena.h                          # NEW — cel_reset / cel_alloc / cel_value_at
+│   ├── cel_make.h                           # NEW — cel_make_{bool,int,…,string_view}
+│   ├── cel_log.h                            # NEW — cel_log import + CEL_LOG_* macros
+│   ├── cel_runtime.h                        # NEW — umbrella re-export
 │   ├── cel_runtime.c                        # NEW — arena @ bytes 8/12
-│   ├── cel_runtime_test.cc                  # NEW — make_*, alloc, reset
+│   ├── cel_arena_test.cc                    # NEW — reset/alloc/value_at + layout asserts
+│   ├── cel_memory_test.cc                   # NEW — base/size/alignment
+│   ├── cel_make_test.cc                     # NEW — per-kind make_* round-trip
 │   ├── cel_runtime_wasm_bytes.h             # NEW (generated from .wasm)
 │   └── wasm_imports.txt                     # NEW — cel_log only at M1
 ├── host/
@@ -405,10 +437,15 @@ passes `bazel test //compiler_v2/...` and does not touch `compiler/`.
 8. **`codegen/layout_pass.{h,cc,_test.cc}`** — kConst →
    kStaticRodata; StaticMemoryBuilder invocation; final
    `rodata.size()` matches expected bytes per kind.
-9. **`runtime/cel_runtime.{h,c,_test.cc}`** + BUILD + WASM
-   cross-compile rule — CelValue layout test; arena at bytes 8/12
-   round-trip via `cel_alloc` / `cel_reset`; `cel_make_*` for
-   every scalar kind.
+9. **`runtime/` header split + `cel_runtime.c` + `cel_{arena,
+   memory,make}_test.cc`** + BUILD + WASM cross-compile rule —
+   author `cel_data.h` / `cel_memory.h` / `cel_arena.h` /
+   `cel_make.h` / `cel_log.h` + umbrella `cel_runtime.h`; each
+   test `#include`s only the narrow header it exercises (proves
+   the small headers are self-sufficient). CelValue layout test
+   lives in `cel_arena_test` (the arena is where layout matters);
+   arena at bytes 8/12 round-trip via `cel_alloc` / `cel_reset`;
+   `cel_make_*` for every scalar kind.
 10. **`codegen/module.{h,cc,_test.cc}`** — emits a module that
     defines memory, places rodata as an active data segment at
     `rodata_base = 16`, exports `memory` + `$eval` + `cel_reset`,
@@ -449,10 +486,18 @@ and its tests passing. Do not bundle; do not reorder.
   - `layout_pass_test.cc` — kConst → `storage.kind ==
     kStaticRodata`, `storage.payload` matches the builder's
     offset; total rodata bytes sum across kinds.
-  - `cel_runtime_test.cc` — `cel_reset(arena_base,
-    arena_limit)` writes bytes 8/12; `cel_alloc(n)` bumps the
-    cursor and returns the old value; `cel_make_int(7).payload.i
-    == 7` etc. per kind.
+  - `cel_memory_test.cc` — `cel_mem_base()` non-null,
+    8-byte-aligned; `cel_mem_size()` ≥ one wasm page.
+  - `cel_arena_test.cc` — `sizeof(CelValue) == 24`;
+    `cel_reset(arena_base, arena_limit)` writes bytes 8/12 and
+    rewinds the cursor; `cel_alloc(n)` bumps the cursor, aligns
+    to 8, and returns `0` on OOM; `cel_value_at(0)` returns
+    null, non-zero returns `base + off`.
+  - `cel_make_test.cc` — `cel_make_int(7).payload.i == 7` etc.
+    per kind; `cel_make_{string,bytes}` copies into the arena;
+    `cel_make_{string,bytes}_view` reuses a caller-owned region
+    without copying; `cel_make_string(nullptr, 0)` returns a
+    zero-ptr CelValue.
   - `module_test.cc` — compile an empty-body `$eval` module,
     validate via Binaryen; memory defined with correct pages;
     data segment at offset 16 matches expected rodata bytes.

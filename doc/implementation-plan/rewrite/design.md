@@ -1396,13 +1396,22 @@ constant per site.
 Today: runtime exports `cel_reset`; host calls it before every
 `CallEval`.
 
-Tomorrow: **expr module exports `cel_reset`**, which resets the arena
-cursor (byte 8 of reserved region) and any workspace bookkeeping.
-Host calls the expr's `cel_reset` between evals, or — if it wants
-fresh memory — reinstantiates the expr module (which gives it
-per-instance isolation for free).
+Tomorrow: **codegen emits a `cel_reset(<rodata_size>, <mem_size>)`
+call as the first instruction of every `$eval` body**, using
+compile-time-constant offsets from the layout pass. The runtime
+still *provides* the `cel_reset` implementation (the expr module
+imports it like any other `cel.*` helper); what goes away is the
+host-side init phase. The host instantiates expr + runtime,
+invokes `$eval`, and reads the result — no pre-`$eval` reset
+call, no runtime-private state that needs priming.
 
-Runtime-side `cel_reset` retires.
+Rationale: arena_base and arena_limit are compile-time constants
+of the module (rodata_size determines base; page-count-times-64K
+determines limit). Calling `cel_reset` from the host is an
+extra round-trip that buys nothing over emitting two `i32.const`s
+and a `call` at the top of `$eval`. Between-eval isolation is
+still trivial — each `$eval` entry re-resets the cursor, so
+carry-over from a prior call is impossible by construction.
 
 ### 8.4 Runtime test for aliasing ABI
 
@@ -1481,8 +1490,10 @@ absl::StatusOr<EvalInstance> LoadEval(const CompiledEval& compiled) {
     the sret slot is a `kWorkspaceSlot` offset known at compile time;
     the host passes it as the out-slot param (or `eval(0)` means "use
     the default output slot", which the expr reads from its layout).
-  - `cel_reset` call pre-`CallEval` — replaced by the expr's own
-    `cel_reset` export.
+  - `cel_reset` call pre-`CallEval` — codegen emits a
+    `cel_reset(<rodata_size>, <mem_size>)` as the first
+    instruction of `$eval`, so the host no longer primes the
+    arena (§8.3).
 
 ## 10. Comprehensions (M5) — how this design absorbs them
 
@@ -1767,10 +1778,15 @@ always "e2e check runs green and tests pass".
 **Scope.** Enough v2 to evaluate `42` under the v2 CLI.
 
   - `compiler_v2/` directory structure (§11.2).
-  - `compiler_v2/runtime/cel_runtime.{h,c}`: `CelValue` layout,
-    `cel_alloc`, `cel_reset`, `cel_make_int`. **Arena cursor at
-    fixed memory-base bytes 8/12** (§8.2) — no wasm globals.
-    Build flags per §8.1.
+  - `compiler_v2/runtime/`: header split into topic headers
+    (`cel_data.h` / `cel_memory.h` / `cel_arena.h` / `cel_make.h`
+    / `cel_log.h`) plus umbrella `cel_runtime.h`; `cel_runtime.c`
+    defines `cel_alloc` / `cel_reset` / `cel_make_int`. **Arena
+    cursor at fixed memory-base bytes 8/12** (§8.2) — no wasm
+    globals. Build flags per §8.1. Codegen emits a
+    `cel_reset(<rodata_size>, <mem_size>)` call as the first
+    instruction of `$eval` (§8.3) — there is no host-side reset
+    phase.
   - `compiler_v2/host/host_loader.{h,cc}`: two-phase instantiation
     (§9.1).
   - `compiler_v2/frontend/{parse,check}.{h,cc}`: copied verbatim
