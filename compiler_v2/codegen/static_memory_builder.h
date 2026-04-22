@@ -2,22 +2,22 @@
 #define CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
 
 // Packs compile-time-known CelValues into a byte buffer destined for
-// the wasm module's `.rodata` data segment.  LayoutPass calls
-// `AppendScalar` / `AppendSpan` for every `kConst` literal in the AST;
-// each returns the linear-memory offset at which the emitted CelValue
-// header lives.  The result is move-returned via `Finalize() &&` and
-// stamped into the data segment by codegen.
+// the wasm module's `.rodata` data segment.  LayoutPass calls one
+// `Allocate*` per `kConst` literal in the AST; each returns the
+// linear-memory offset at which the emitted CelValue frame lives.
+// The buffer is move-returned via `Finalize() &&` and stamped into
+// the data segment by codegen.
 //
-// CelValue is 24 bytes, 8-byte aligned.  Span payload bytes (the
-// string / bytes body that the CelValue header's CelSpan points at)
-// are emitted immediately after the header; the next append pads
-// back to 8-byte alignment, keeping every CelValue header on an
-// 8-byte boundary.
+// CelValue is 24 bytes, 8-byte aligned.  For string / bytes the
+// payload bytes follow the 24-byte frame directly and the cursor is
+// padded back to 8-byte alignment before the next Allocate, so every
+// frame lands on an 8-byte boundary.
 //
-// No cap, no fallback, no `absl::Status` on the happy path: by design
-// §6.2.1 every literal lands in rodata unconditionally.  AppendList
-// and AppendMap are declared now so M5/M6 wiring lands as a data-only
-// change; both return Unimplemented at M1.
+// No cap, no fallback, no `absl::Status` on the scalar / span path:
+// by design §6.2.1 every scalar literal lands in rodata
+// unconditionally.  `AllocateList` / `AllocateMap` are declared now
+// so M5/M6 wiring lands as a data-only change; both return
+// Unimplemented at M1.
 
 #include <cstdint>
 #include <vector>
@@ -30,45 +30,37 @@
 
 namespace celwasm {
 
-// A compile-time scalar literal: kind + its matching union payload.
-// `kind` must be one of CEL_NULL / CEL_BOOL / CEL_INT / CEL_UINT /
-// CEL_DOUBLE — spans use `AppendSpan`, not `AppendScalar`.
-struct CelScalarPayload {
-  CelKind kind;
-  union {
-    int32_t b;
-    int64_t i;
-    uint64_t u;
-    double d;
-  } value;
-};
-
 class StaticMemoryBuilder {
  public:
   // `base_offset` is the linear-memory offset at which this rodata
   // segment will start.  Returned offsets are absolute linear-memory
-  // offsets (`base_offset` + buffer-local offset) so callers can drop
-  // them into CelSpan / LocalGet without an extra add.
+  // offsets (`base_offset` + buffer-local offset) so callers can
+  // drop them into CelSpan / i32.const without an extra add.
   explicit StaticMemoryBuilder(uint32_t base_offset);
 
-  // Emits a 24-byte CelValue header (8-byte aligned) and returns its
-  // linear-memory offset.  Bytes after the payload inside the 24-byte
-  // frame are zero-filled.  CHECKs if `p.kind` is not a scalar kind.
-  uint32_t AppendScalar(const CelScalarPayload& p);
+  // Allocate a 24-byte CelValue frame in rodata holding one
+  // compile-time-known scalar and return its absolute linear-memory
+  // offset.  Bytes within the frame beyond the scalar payload are
+  // zero-filled so the whole frame is bit-for-bit deterministic.
+  uint32_t AllocateNull();
+  uint32_t AllocateBool(bool v);
+  uint32_t AllocateInt(int64_t v);
+  uint32_t AllocateUint(uint64_t v);
+  uint32_t AllocateDouble(double v);
 
-  // Emits a 24-byte CelValue header whose CelSpan points at the
-  // payload bytes that follow immediately after the header, then
-  // pads the next write-cursor back to 8-byte alignment.  Returns
-  // the header's linear-memory offset.  `kind` must be CEL_STRING or
-  // CEL_BYTES.
-  uint32_t AppendSpan(CelKind kind, absl::string_view bytes);
+  // Allocate a 24-byte CelValue frame whose CelSpan points at the
+  // payload bytes that follow immediately after the frame, then pad
+  // the next write cursor back to 8-byte alignment.  Returns the
+  // frame's absolute linear-memory offset.
+  uint32_t AllocateString(absl::string_view s);
+  uint32_t AllocateBytes(absl::string_view b);
 
   // Future work.  M1 stub returns Unimplemented so any codegen path
-  // that tries to AppendList / AppendMap a literal surfaces as a
-  // clean compile error, not a silent miscodegen.
-  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AppendList(
+  // that tries to pack a list / map literal surfaces as a clean
+  // compile error, not a silent miscodegen.
+  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AllocateList(
       absl::Span<const uint32_t> element_offsets);
-  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AppendMap(
+  ABSL_MUST_USE_RESULT absl::StatusOr<uint32_t> AllocateMap(
       absl::Span<const uint32_t> key_offsets,
       absl::Span<const uint32_t> value_offsets);
 
@@ -85,6 +77,15 @@ class StaticMemoryBuilder {
   }
 
  private:
+  // Writes the 8-byte (kind, pad) header prefix at the current
+  // cursor and returns the local offset of the frame's start.
+  // Caller must then write exactly 16 bytes of payload to complete
+  // the 24-byte frame.  CHECKs the cursor is 8-byte aligned.
+  uint32_t OpenFrame(CelKind kind);
+
+  // Shared implementation for AllocateString / AllocateBytes.
+  uint32_t AllocateSpan(CelKind kind, absl::string_view bytes);
+
   std::vector<uint8_t> buf_;
   uint32_t base_offset_;
 };

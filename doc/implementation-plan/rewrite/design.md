@@ -1054,23 +1054,23 @@ ABSL_MUST_USE_RESULT absl::StatusOr<StaticLayout> LayoutPass(
 ```cpp
 namespace celwasm {
 
-struct CelScalarPayload {
-  CelKind kind;
-  union { int32_t b; int64_t i; uint64_t u; double d; } value;
-};
-
 class StaticMemoryBuilder {
  public:
   explicit StaticMemoryBuilder(uint32_t base_offset);
 
-  // Returns the CelValue's linear-memory offset. Infallible — the
-  // builder grows as needed. Literals always land in rodata
+  // Returns the CelValue frame's linear-memory offset. Infallible —
+  // the builder grows as needed. Literals always land in rodata
   // (§4.2); there is no cap, no fallback path, no runtime-
   // initialised-literal variant.
-  uint32_t AppendScalar(const CelScalarPayload& p);
-  uint32_t AppendSpan(CelKind kind, absl::string_view bytes);
+  uint32_t AllocateNull();
+  uint32_t AllocateBool(bool v);
+  uint32_t AllocateInt(int64_t v);
+  uint32_t AllocateUint(uint64_t v);
+  uint32_t AllocateDouble(double v);
+  uint32_t AllocateString(absl::string_view s);
+  uint32_t AllocateBytes(absl::string_view b);
 
-  // Future work (M5): AppendList, AppendMap.
+  // Future work (M5/M6): AllocateList, AllocateMap.
 
   std::vector<uint8_t> Finalize() &&;
   uint32_t size_bytes() const { return buf_.size(); }
@@ -1774,7 +1774,7 @@ always "e2e check runs green and tests pass".
   - `compiler_v2/codegen/expr_lower.{h,cc}`: minimal — `kConst` for
     `int64` only, via `.rodata`.
   - `compiler_v2/codegen/static_memory_builder.{h,cc}` with
-    `AppendScalar` for int.
+    `AllocateInt`.
   - `compiler_v2/cli/celwasmc_v2.cc`: CLI entry.
   - `compiler_v2/e2e/eval_test.cc`: `EvalInt("42", 42)`.
 
@@ -1786,7 +1786,7 @@ prints `42`.
     + `cel_make_int`.
   - `host_loader_test`: two-phase instantiation with memory shared
     via bytes 8/12 cursor.
-  - `static_memory_builder_test::AppendScalar` int byte layout.
+  - `static_memory_builder_test::AllocateInt` byte layout.
   - `expr_lower_test`: emits `i32.const <offset>` for `kConst` int.
   - `e2e/eval_test`: `EvalInt("42", 42)`.
 
@@ -1799,9 +1799,10 @@ accept this is the longest slice — pay the cost once.
 
 #### Slice 2 — All scalar literals (1 day)
 
-**Scope.** `StaticMemoryBuilder::AppendScalar` for bool / uint /
-double / null; `AppendSpan` for string / bytes (header + payload +
-alignment pad). `expr_lower.cc` `kConst` arm per kind.
+**Scope.** `StaticMemoryBuilder::AllocateBool` / `AllocateUint` /
+`AllocateDouble` / `AllocateNull`; `AllocateString` / `AllocateBytes`
+(header + payload + alignment pad). `expr_lower.cc` `kConst` arm per
+kind.
 
 **E2E check.** `-e "true"`, `-e "3.14"`, `-e "\"hello\""`,
 `-e "b\"x\""`, `-e "null"` each print the expected value.
@@ -2130,8 +2131,8 @@ debugging (especially S10).
 
 | Slice | Unit | Integration / lowering | E2E |
 |---|---|---|---|
-| 1 | Arena-at-offset-8; `AppendScalar` int; `host_loader` two-phase | `kConst` int emits `i32.const <offset>` | `celwasmc_v2 -e "42"` → `42` |
-| 2 | `Append{Scalar,Span}` per kind | `kConst` emission per kind | Scalar literal e2e per kind |
+| 1 | Arena-at-offset-8; `AllocateInt`; `host_loader` two-phase | `kConst` int emits `i32.const <offset>` | `celwasmc_v2 -e "42"` → `42` |
+| 2 | `Allocate{Null,Bool,Uint,Double,String,Bytes}` | `kConst` emission per kind | Scalar literal e2e per kind |
 | 3 | `annotations_test`; `overload_table` builder + `AlreadyExists`; `resolve_pass`; `layout_pass` no-op | Pipeline refactor-only | All prior fixtures |
 | 4 | `resolve_pass` populates `local_index`/`field_number`; `cel_host` read ops | `kIdent` / `kSelect` emission | `Customer` field reads |
 | 5 | Every helper + aliasing test (locked); `overload_table` coverage tripwire | `kCall` dispatch | Full built-in overload set + 10k randomised vs cel-cpp |
@@ -2262,7 +2263,7 @@ Unchanged by this rewrite.
 construction via runtime / host calls ships in Slice 13 (§4.7). Static
 packing into `.rodata` (compile-time-known lists / maps whose keys
 and values are all literals) is out of scope for this rewrite;
-`StaticMemoryBuilder` leaves `AppendList` / `AppendMap` stubbed with
+`StaticMemoryBuilder` leaves `AllocateList` / `AllocateMap` stubbed with
 an explicit `Unimplemented` return path. Addition when (if) a profiling
 need emerges.
 

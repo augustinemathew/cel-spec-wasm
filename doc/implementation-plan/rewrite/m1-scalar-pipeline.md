@@ -148,8 +148,8 @@ interning is a stub that returns `0` (no `kBuiltinSeeds` entries).
 
 Full interface per parent §6.1. M1 implementation:
 
-  - Walks the AST, for each `kConst` calls
-    `StaticMemoryBuilder::AppendScalar` / `AppendSpan` and writes
+  - Walks the AST, for each `kConst` calls the matching
+    `StaticMemoryBuilder::Allocate*` and writes
     `{kStaticRodata, offset}` into the node's `Storage`.
   - For non-`kConst` nodes, leaves `storage.kind == kNone`. Codegen
     will see this and error.
@@ -164,16 +164,18 @@ Full interface per parent §6.1. M1 implementation:
 
 Full class per parent §6.2.1. M1 ships:
 
-  - `AppendScalar(CelScalarPayload)` — handles every scalar kind
-    M1 supports: bool / int / uint / double / null. Emits a
-    24-byte `CelValue` into the buffer, 8-byte aligned.
-  - `AppendSpan(kind, bytes)` — handles string / bytes. Emits a
-    24-byte `CelValue` header (span payload = `(offset, length)`
-    pointing at bytes appended immediately after the header,
-    pad to 8-byte alignment for the next append).
+  - `AllocateNull()` / `AllocateBool(bool)` / `AllocateInt(int64_t)` /
+    `AllocateUint(uint64_t)` / `AllocateDouble(double)` — each emits a
+    24-byte `CelValue` frame into the buffer, 8-byte aligned, and
+    returns the frame's absolute linear-memory offset.
+  - `AllocateString(absl::string_view)` / `AllocateBytes(absl::string_view)` —
+    emits a 24-byte `CelValue` frame (span payload = `(offset,
+    length)` pointing at bytes appended immediately after the frame)
+    and pads the cursor back to 8-byte alignment for the next
+    Allocate.
   - `Finalize() &&` returns the owned `std::vector<uint8_t>`.
 
-`AppendList` / `AppendMap` exist as declared methods returning
+`AllocateList` / `AllocateMap` exist as declared methods returning
 `absl::StatusOr<uint32_t>` with `Unimplemented` — M6/M7 or later.
 
 ### 2.6 `codegen/slot_allocator.{h,cc}`
@@ -430,11 +432,11 @@ and its tests passing. Do not bundle; do not reorder.
     `RegisterCustom` appends and returns the id;
     `RegisterCustom` with the same id twice returns
     `AlreadyExists`; `InternOverloadId("unknown")` returns `0`.
-  - `static_memory_builder_test.cc` — `AppendScalar` for
-    {bool, int, uint, double, null}: per-kind byte layout
-    asserted against a golden; 8-byte alignment of the next
-    append. `AppendSpan` for {string, bytes}: header bytes,
-    payload bytes, alignment pad; length + offset fields match.
+  - `static_memory_builder_test.cc` — `Allocate{Null,Bool,Int,
+    Uint,Double}`: per-kind byte layout asserted against a
+    golden; 8-byte alignment of the next Allocate.
+    `Allocate{String,Bytes}`: header bytes, payload bytes,
+    alignment pad; length + offset fields match.
   - `slot_allocator_test.cc` — `Acquire()` monotonic; 24-byte
     stride; `peak_slots()` equals acquire count; `Release()` is
     a no-op; `PushScope`/`PopScope` are no-ops.
@@ -551,11 +553,11 @@ runtime behavior.
 
 ## 9. Risk register (M1-specific)
 
-  - **`AppendSpan` alignment.** String / bytes payload is byte-
-    aligned; the next `Append*` must pad to 8 before writing a
-    new `CelValue` header. A one-byte slip corrupts every
+  - **`Allocate{String,Bytes}` alignment.** Span payload is byte-
+    aligned; the next `Allocate*` must pad to 8 before writing a
+    new `CelValue` frame. A one-byte slip corrupts every
     subsequent offset. *Mitigation:* an explicit alignment test
-    (§6.1 `static_memory_builder_test`) asserts the next header's
+    (§6.1 `static_memory_builder_test`) asserts the next frame's
     offset after a span payload of each of {0, 1, 7, 8, 9} bytes.
   - **Two-phase instantiation sequencing.** Wasmtime's linker API
     requires all imports to be resolvable before `instantiate`
