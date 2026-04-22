@@ -226,7 +226,10 @@ class Env::Builder {
   // Type registration — proto descriptors the compiler may reference.
   Builder& RegisterMessageType(const google::protobuf::Descriptor* desc);
 
-  // Compiler options — arena size, debug layout, etc.
+  // Compiler tunables (arena size, debug layout, overload-allowlist,
+  // etc.) — NOT declarations.  Variables / functions / types come
+  // from DeclareVariable / RegisterFunction / RegisterMessageType
+  // above, and feed both the checker AND the ABI emitter.
   Builder& SetCompilerOptions(CompilerOptions opts);
 
   absl::StatusOr<Env> Build() &&;
@@ -717,7 +720,62 @@ by default (matches strict-operator semantics). Custom fns that
 want to see `UNKNOWN` / `ERROR` directly (e.g. a logical-merge fn)
 set `FunctionDecl::strict = false` and receive the raw args.
 
-### 5.4 Cross-check at `LoadEval`
+### 5.4 Compile-time flow — where the ABI row comes from
+
+Function decls flow from the public API through the checker
+into the ABI in one direction, with no separate
+`CompileOptions::functions`:
+
+```
+Env::Builder::RegisterFunction(FunctionDecl d)
+    │
+    ▼  (d moved into Env's registry; d.impl retained for LoadEval)
+Env::functions()  ◄──── frozen at Builder::Build()
+    │
+    ▼  (env.Compile(source) runs)
+CompilerInternal::FrozenDeclView
+    │      (signature-only view over Env::functions();
+    │       impl intentionally stripped — compile never
+    │       needs it)
+    │
+    ├──► cel-cpp TypeCheckerBuilder::AddFunction
+    │       (checker resolves "my.upper(x)" → overload id
+    │        "my_upper_string", is_receiver = false)
+    │
+    └──► Codegen / ABI emitter
+            │
+            ▼  UsedImports(used_overload_ids)
+                — filters to the subset this expression touches
+            │
+            ▼
+        cel.abi.functions.host_custom_imports[]:
+          CustomFunctionEntry {
+            function_name = d.name,
+            overload_id   = d.overload_id,
+            is_receiver   = d.is_receiver,
+            helper_name   = d.helper_name  (defaults to overload_id),
+            arg_types     = d.arg_types,
+            return_type   = d.return_type,
+            strict        = d.strict,
+          }
+```
+
+**`CompilerOptions` holds only tunables** — arena size, debug
+layout, stdlib-overload allowlist, and similar knobs that affect
+lowering or runtime behaviour but are not name/type/signature
+declarations. If a knob needs to be cross-checked at LoadEval
+(e.g. arena page count), it goes into `cel.abi.layout`, not into
+`CompilerOptions`.
+
+**Impls are only used at LoadEval.** A `FunctionDecl` carries
+an `impl` so the Env can bind it when an `Instance` is planned
+— but the impl is invisible to compile. This means one `Env`
+can `Compile` many programs in parallel without risking impl
+state sharing, and an `Env` with stubbed impls (e.g. all
+returning `Unimplemented`) can still produce a valid compiled
+`Program` — useful for cross-compile / deploy-then-bind flows.
+
+### 5.5 Cross-check at `LoadEval`
 
 At `LoadEval`, the host walks `cel.abi.functions.host_custom_imports[]`
 and for each `CustomFunctionEntry e`:
