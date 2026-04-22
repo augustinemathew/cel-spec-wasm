@@ -50,6 +50,19 @@ the switch is genuinely open — e.g. parsing untrusted wire bytes, where
 unknown bytes should pass through (see `FormatDirective` in
 `compiler/host/cel_log.cc` for an example of the legitimate form).
 
+**Unimplemented features.**  When a code path is a stub until a later
+milestone — an arm of a switch that M1 doesn't handle, a
+signature-final helper whose body lands in M5, a visitor override that
+M2 will fill in, and so on — the body MUST be
+`ABSL_CHECK(false) << "<symbol> is a stub until <milestone>"`.  No
+silent fallbacks, no empty bodies, no bare `TODO` comment without the
+check.  The rule is the same as for unreachable switch defaults: a
+release build that silently miscompiles is worse than one that
+crashes, and naming the symbol + milestone in the message turns an
+earlier-than-expected caller into a directly actionable backtrace.
+See `StaticMemoryBuilder::AllocateList` in
+`compiler_v2/codegen/static_memory_builder.cc` for the canonical form.
+
 ## Lint & format (mandatory before every commit)
 
 Formatter and linter are authoritative.  The configs live at the repo
