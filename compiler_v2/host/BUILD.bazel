@@ -1,0 +1,75 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Host-side implementation of the `cel_env.cel_log` import.  Ported
+# verbatim from v1 compiler/host/cel_log.
+cc_library(
+    name = "cel_log",
+    srcs = ["cel_log.cc"],
+    hdrs = ["cel_log.h"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "cel_log_test",
+    srcs = ["cel_log_test.cc"],
+    deps = [
+        ":cel_log",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Two-phase loader.  Expr module defines + exports memory; runtime
+# module imports it.  darwin-arm64 only (wasmtime).
+cc_library(
+    name = "host_loader",
+    srcs = ["host_loader.cc"],
+    hdrs = ["host_loader.h"],
+    tags = ["manual"],  # depends on manual-tagged cel_runtime_wasm_bytes
+    deps = [
+        ":cel_log",
+        "//compiler_v2/runtime:cel_runtime",
+        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "host_loader_test",
+    srcs = ["host_loader_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":cel_log",
+        ":host_loader",
+        "//compiler_v2/codegen:expr_lower",
+        "//compiler_v2/codegen:layout_pass",
+        "//compiler_v2/codegen:module",
+        "//compiler_v2/codegen:resolve_pass",
+        "//compiler_v2/frontend:parse_and_check",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)

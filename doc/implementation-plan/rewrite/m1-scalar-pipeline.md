@@ -1,0 +1,600 @@
+# Rewrite M1 — scalar-literal pipeline, full abstraction skeleton
+
+Status: **plan — drafted 2026-04-21, not yet started.**
+
+Parent: `design.md` (this directory).
+Milestone boundary in the parent: **merges Slices 1 + 2 + 3** into
+one deliverable. M1 is the first of a planned `M1..Mn` sequence; each
+subsequent milestone adds one language capability against a frozen
+abstraction skeleton.
+
+## 0. Why one milestone, not three
+
+The parent plan splits bootstrap / all-literals / symbol-table into
+three slices because that's how they'd land as independent PRs. For
+an *abstraction-first rewrite*, splitting is the wrong axis:
+
+  - Slice 1 without Slice 3 produces a toy evaluator whose codegen
+    is shaped around `kConst` alone — the pass pipeline doesn't
+    exist, so the "codegen as pure translation" invariant can't be
+    demonstrated.
+  - Slice 3 without Slices 1–2 lands empty passes over nothing.
+  - Proving the abstractions work end-to-end requires all three
+    together: the pipeline has to flow from `parse` through every
+    new pass down to a wasm module that a real runtime evaluates.
+
+M1 therefore lands the **full skeleton** (every pass, every new
+type, every directory) **plus** the minimum codegen arm (`kConst`)
+needed to run it end-to-end against all seven scalar literal kinds.
+No call arm. No ident arm. No select arm. Those are later milestones
+filling in the skeleton — not restructuring it.
+
+## 1. Scope
+
+### 1.1 What works end-to-end after M1
+
+```
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42"
+42
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "true"
+true
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e '"hello"'
+"hello"
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e 'b"bytes"'
+b"bytes"
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "3.14"
+3.14
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42u"
+42u
+$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "null"
+null
+```
+
+Every one of these goes through the full pipeline:
+
+```
+parse → check → ResolvePass → LayoutPass → expr_lower → Binaryen module
+  → host_loader two-phase instantiate → invoke $eval → decode CelValue
+```
+
+### 1.2 Out of scope (deferred to M2+)
+
+| Capability | Parent-doc slice | Deferred to |
+|---|---|---|
+| `kIdent` / parameter binding | Slice 4 | M2 |
+| `kSelect` / proto field read | Slice 4 | M2 |
+| `kCall` (built-ins) | Slice 5 | M3 |
+| `cel_runtime` arithmetic helpers | Slice 5 | M3 |
+| `OverloadTable::kBuiltinSeeds` content | Slice 5 | M3 |
+| `has()` + message equality | Slice 6 | M4 |
+| Custom functions + `cel_host_call_custom` | Slice 7 | M5 |
+| Map / list literals | Slice 8 | M6 |
+| Proto literals | Slice 9 | M7 |
+| Sethi–Ullman slot-Strahler | Slice 10 | M8 |
+| `cel_refs` externref table | — | M4 (with `has()`) |
+| `cel_host` fixed-surface imports | Slice 4 | M2 |
+
+M1 leaves stubs / empty tables where these will land, so M2 is
+"fill in this arm" rather than "refactor the pipeline".
+
+## 2. Abstractions introduced in M1 (long-lasting shapes)
+
+These interfaces are **frozen at M1** — M2+ milestones populate
+their internals but do not reshape them. Any M1 decision that
+later turns out to constrain a milestone is a design bug in M1,
+not in the milestone that hit it.
+
+### 2.1 `ir/annotations.h` — `NodeAnnotation` with full schema
+
+Per parent §4.1, fields present and declared at M1 even though most
+are zero sentinels until their milestone:
+
+```cpp
+enum class Repr : uint8_t { kUnknown = 0, kBool, kInt, kUint, kDouble,
+                            kNull, kString, kBytes, /* kMessage, kList,
+                            kMap land when they ship */ };
+
+enum class StorageKind : uint8_t { kNone, kStaticRodata, kWorkspaceSlot,
+                                   kLocal };
+struct Storage { StorageKind kind = StorageKind::kNone; uint32_t payload = 0; };
+
+struct NodeAnnotation {
+  Repr     repr           = Repr::kUnknown;
+  uint32_t field_number   = 0;  // M2 SelectExpr
+  uint32_t overload_id    = 0;  // M3 CallExpr
+  uint32_t local_index    = 0;  // M2 IdentExpr
+  uint32_t scope_id       = 0;  // comprehensions, later
+  Storage  storage;
+};
+
+class WasmAnnotations {  // same side-map API as v1's
+ public:
+  NodeAnnotation& Mutable(int64_t expr_id);
+  const NodeAnnotation* Find(int64_t expr_id) const;
+ private:
+  absl::flat_hash_map<int64_t, NodeAnnotation> map_;
+};
+```
+
+**M1 populates:** `repr` (for `kConst` nodes only) and `storage`
+(every `kConst` gets `{kStaticRodata, rodata_offset}`).
+**M1 asserts at end-of-pipeline:** non-`kConst` kinds produce
+`Unimplemented` from codegen — not crash, not silent default.
+
+### 2.2 `codegen/overload_table.{h,cc}` — builder + frozen table
+
+Full class per parent §4.3, `kBuiltinSeeds` is an **empty array** in
+M1. `OverloadTableBuilder::RegisterCustom` is present and its
+`AlreadyExists` rule works (the test exercises it against custom-
+vs-custom collision — no built-ins to collide with yet).
+
+The table exists at M1 so that M3's "turn on the overload set" lands
+as a data-only change (fill `kBuiltinSeeds`), not a
+new-header-plus-new-BUILD-target change.
+
+### 2.3 `codegen/resolve_pass.{h,cc}` — the pipeline stage
+
+Full interface per parent §5.1. M1 implementation walks the
+`TypedAst` once and:
+
+  - Writes `repr` for `kConst` nodes (mapping const kind → `Repr`).
+  - Leaves every other field at its zero sentinel.
+  - DCHECKs that every `kConst` now has a non-`kUnknown` `repr`.
+
+Scope stack (§4.8) is declared but empty — M5 fills it. Overload
+interning is a stub that returns `0` (no `kBuiltinSeeds` entries).
+
+### 2.4 `codegen/layout_pass.{h,cc}` — the pipeline stage
+
+Full interface per parent §6.1. M1 implementation:
+
+  - Walks the AST, for each `kConst` calls
+    `StaticMemoryBuilder::AppendScalar` / `AppendSpan` and writes
+    `{kStaticRodata, offset}` into the node's `Storage`.
+  - For non-`kConst` nodes, leaves `storage.kind == kNone`. Codegen
+    will see this and error.
+  - Invokes `SlotAllocator` with its naive-only mode — no slot is
+    ever acquired in M1 because there are no workspace-slot nodes;
+    the allocator exists only so the interface is frozen.
+
+`LayoutOptions::debug_layout` field declared; has no effect yet
+(slot allocator is naive-only regardless).
+
+### 2.5 `codegen/static_memory_builder.{h,cc}`
+
+Full class per parent §6.2.1. M1 ships:
+
+  - `AppendScalar(CelScalarPayload)` — handles every scalar kind
+    M1 supports: bool / int / uint / double / null. Emits a
+    24-byte `CelValue` into the buffer, 8-byte aligned.
+  - `AppendSpan(kind, bytes)` — handles string / bytes. Emits a
+    24-byte `CelValue` header (span payload = `(offset, length)`
+    pointing at bytes appended immediately after the header,
+    pad to 8-byte alignment for the next append).
+  - `Finalize() &&` returns the owned `std::vector<uint8_t>`.
+
+`AppendList` / `AppendMap` exist as declared methods returning
+`absl::StatusOr<uint32_t>` with `Unimplemented` — M6/M7 or later.
+
+### 2.6 `codegen/slot_allocator.{h,cc}`
+
+Per parent §6.2.2, M1 ships the naive path only:
+
+  - `Acquire()` returns a fresh 24-byte offset, monotonically
+    increasing. `Release()` is a no-op.
+  - `PushScope()` / `PopScope()` are no-ops.
+  - `peak_slots()` / `total_bytes()` return the accurate counts.
+
+Sethi–Ullman logic is **not** written in M1. That's deferred to
+the milestone that needs it (M8 per the parent plan).
+
+### 2.7 `codegen/expr_lower.{h,cc}`
+
+Interface per parent §7.1. M1 implementation has one arm:
+
+```cpp
+switch (expr.kind()) {
+  case kConst:
+    DCHECK(a.storage.kind == StorageKind::kStaticRodata);
+    return EmitStorageLoad(ctx, a.storage);  // i32.const <offset>
+  default:
+    return absl::UnimplementedError(
+        absl::StrCat("expr kind ", ExprKindName(expr.kind()),
+                     " not supported before M", RequiredMilestone(expr.kind())));
+}
+```
+
+`EmitStorageLoad` for `kStaticRodata` is trivially
+`BinaryenConst(ctx.mod, BinaryenLiteralInt32(storage.payload))` —
+the `i32` CelValue offset, which `$eval`'s caller reads as a
+pointer into linear memory.
+
+### 2.8 Runtime (`runtime/cel_runtime.{h,c}`)
+
+M1 ships the **minimum** consistent with the final memory model:
+
+  - `CelValue` struct (24 bytes, matches v1's tagged-union layout).
+  - `CelKind` enum (final set — even kinds M1 doesn't use are
+    declared so the encoding is stable).
+  - Arena cursor at fixed linear-memory bytes 8..15 (parent §8.2);
+    `cel_alloc(nbytes)` and `cel_reset(arena_base, arena_limit)`
+    implemented. Neither is called by M1's eval path (pure literal
+    eval hits only `.rodata`) but both are exported so the memory
+    model is testable and stable.
+  - `cel_make_{bool,int,uint,double,null,string,bytes}` — used
+    only by tests and by host-boundary boxing. Not called from
+    codegen (codegen emits CelValues directly into `.rodata`).
+  - Build flags per parent §8.1: `--import-memory=cel,memory`,
+    explicit `--export=` per symbol, **no `--export-all`**.
+
+Helpers intentionally **not** in M1: arithmetic (`_add_at_vv`),
+comparisons, string ops, 3VL, size, map/list primitives. Those
+land with the milestones that add the corresponding codegen arms.
+
+### 2.9 Host loader (`host/host_loader.{h,cc}`)
+
+Two-phase instantiation per parent §9.1. M1 implements:
+
+  - Phase 1: instantiate expr module; it defines and exports
+    `memory`.
+  - Phase 2: instantiate runtime module with `cel.memory` bound
+    to the expr's exported memory.
+  - Call the expr's exported `cel_reset(arena_base, arena_limit)`
+    with offsets from the `cel.abi` custom section.
+  - Invoke `$eval()` — returns `i32` offset of a `CelValue` in
+    linear memory. Host decodes via `memory_base + offset`.
+
+Host does **not** call `cel_alloc` for an sret slot (v1 pattern at
+`host_loader.cc:429`) — the output slot is a fixed
+`kStaticRodata` offset baked into `$eval`'s return value.
+
+### 2.10 `cel.abi` custom section
+
+M1 emits a minimal section:
+
+```
+{
+  rodata_base:     u32,
+  rodata_size:     u32,
+  workspace_base:  u32,
+  workspace_size:  u32,
+  arena_base:      u32,
+  result_offset:   u32,   // CelValue offset $eval returns
+  eval_fn_name:    string
+}
+```
+
+Extended in later milestones (`custom_functions[]` at M5, etc.).
+The section is a fixed-offset header — M1 reserves field positions
+for growth; extensions append tagged blocks.
+
+## 3. Source layout (M1 deliverables)
+
+```
+compiler_v2/
+├── BUILD.bazel                              # root filegroup
+├── ir/
+│   ├── BUILD.bazel
+│   ├── annotations.h                        # NEW — full NodeAnnotation schema
+│   ├── annotations.cc                       # NEW
+│   ├── annotations_test.cc                  # NEW
+│   ├── typed_ast.h                          # PORT v1 verbatim
+│   ├── typed_ast.cc                         # PORT v1 verbatim
+│   └── typed_ast_test.cc                    # PORT v1 verbatim
+├── frontend/
+│   ├── BUILD.bazel
+│   ├── parse_and_check.h                    # PORT v1 + absorb v1's ir/static_subset
+│   ├── parse_and_check.cc                   # PORT v1; RejectDyn runs inline after check
+│   └── parse_and_check_test.cc              # PORT v1 + absorb static_subset_test cases
+├── codegen/
+│   ├── BUILD.bazel
+│   ├── overload_table.h                     # NEW — builder + frozen table
+│   ├── overload_table.cc                    # NEW — kBuiltinSeeds = {} for M1
+│   ├── overload_table_test.cc               # NEW — collision rule only
+│   ├── resolve_pass.h                       # NEW — full interface
+│   ├── resolve_pass.cc                      # NEW — kConst repr only
+│   ├── resolve_pass_test.cc                 # NEW
+│   ├── layout_pass.h                        # NEW — full interface
+│   ├── layout_pass.cc                       # NEW — kConst → kStaticRodata only
+│   ├── layout_pass_test.cc                  # NEW
+│   ├── static_memory_builder.h              # NEW
+│   ├── static_memory_builder.cc             # NEW — every scalar kind
+│   ├── static_memory_builder_test.cc        # NEW — per-kind byte layout
+│   ├── slot_allocator.h                     # NEW — naive only
+│   ├── slot_allocator.cc                    # NEW
+│   ├── slot_allocator_test.cc               # NEW — Acquire monotonic
+│   ├── expr_lower.h                         # NEW
+│   ├── expr_lower.cc                        # NEW — kConst arm only
+│   ├── expr_lower_test.cc                   # NEW
+│   ├── module.h                             # NEW — memory + data segment wiring
+│   ├── module.cc                            # NEW
+│   └── module_test.cc                       # NEW
+├── runtime/
+│   ├── BUILD.bazel                          # --import-memory, explicit exports
+│   ├── cel_runtime.h                        # NEW — minimal set
+│   ├── cel_runtime.c                        # NEW — arena @ bytes 8/12
+│   ├── cel_runtime_test.cc                  # NEW — make_*, alloc, reset
+│   ├── cel_runtime_wasm_bytes.h             # NEW (generated from .wasm)
+│   └── wasm_imports.txt                     # NEW — cel_log only at M1
+├── host/
+│   ├── BUILD.bazel
+│   ├── host_loader.h                        # NEW — two-phase
+│   ├── host_loader.cc                       # NEW
+│   ├── host_loader_test.cc                  # NEW
+│   ├── cel_log.h                            # PORT v1 verbatim
+│   ├── cel_log.cc                           # PORT v1 verbatim
+│   └── cel_log_test.cc                      # PORT v1 verbatim
+├── cli/
+│   ├── BUILD.bazel
+│   └── celwasmc_v2.cc                       # NEW — entry point
+└── e2e/
+    ├── BUILD.bazel
+    └── eval_test.cc                         # NEW — one test per scalar kind
+```
+
+**Not in M1** (deferred, no placeholder files):
+  - `host/cel_host.{h,cc}` — M2, when `kSelect` lands
+  - `host/attribute.{h,cc}` — M4, partial-eval
+  - `testdata/*.proto` — M2, when proto fixtures are needed
+  - `bench/eval_bench.cc` — M8, with Sethi–Ullman parity
+  - `ir/wasm_annotations*.{h,cc}` from v1 — its role is filled by
+    `annotations.h`'s `WasmAnnotations`
+
+## 4. What gets ported verbatim from v1
+
+Each item is a `cp` from v1 to the v2 tree **without edits**. BUILD
+target names adjust (`//compiler/ir:typed_ast` →
+`//compiler_v2/ir:typed_ast`); file contents do not.
+
+| v1 path | v2 path | Why safe to port verbatim |
+|---|---|---|
+| `compiler/ir/typed_ast.{h,cc,_test.cc}` | `compiler_v2/ir/` | Thin wrapper over cel-cpp's `CheckedExpr`; stable, no M1 design depends on changing it |
+| `compiler/frontend/parse_and_check.{h,cc,_test.cc}` + `compiler/ir/static_subset.{h,cc,_test.cc}` | `compiler_v2/frontend/parse_and_check.{h,cc,_test.cc}` (merged) | Cel-cpp parser/checker wrapper **with `RejectDyn` folded in**. Static-subset enforcement is a frontend concern — it runs on checker output before the IR is built — so v2 collapses the two files into one translation unit: `ParseAndCheck` returns a `TypedAst` only if the static-subset gate passes. v1's `static_subset` header stops existing as a separate surface. |
+| `compiler/host/cel_log.{h,cc,_test.cc}` | `compiler_v2/host/` | Already-new log surface |
+
+Everything else under `compiler_v2/` is **written from scratch**.
+Specifically:
+
+  - `compiler/ir/annotations.{h,cc}` is **not** ported. v1's
+    version has a different schema (no `storage`, no `overload_id`,
+    `local_index`, `scope_id`). M1's annotations header is born in
+    its final shape.
+  - `compiler/codegen/expr_lower.{h,cc}` is **not** ported. The
+    new one is annotation-driven and has a different
+    `LoweringContext`; cross-referencing v1 during authoring is a
+    trap (v1's shape encodes the assumptions we're eliminating).
+  - `compiler/host/host_loader.{h,cc}` is **reauthored** — wasmtime
+    boilerplate (error mapping, linker setup) is transcribed, but
+    the two-phase instantiation flow is different enough that a
+    verbatim port would fight the new memory model.
+
+## 5. Work breakdown (order of authoring)
+
+Author the files roughly in this order — each step compiles and
+tests in isolation. Parent §11.3 invariants hold: every commit
+passes `bazel test //compiler_v2/...` and does not touch `compiler/`.
+
+1. **Directory + BUILD skeleton** — root `BUILD.bazel` + per-dir
+   `BUILD.bazel`, empty filegroups. Smoke test: `bazel build
+   //compiler_v2/...` green (nothing to build yet).
+2. **Port v1 verbatims** — `typed_ast` (→ `ir/`),
+   `cel_log` (→ `host/`), and `parse_and_check` (→ `frontend/`)
+   **with `static_subset` folded in**: copy `parse_and_check.*`,
+   inline v1's `ir/static_subset::RejectDyn` call as the last step
+   of `ParseAndCheck` before it returns, and merge the
+   `static_subset_test.cc` cases into `parse_and_check_test.cc`.
+   v2 has no `static_subset.{h,cc}` surface. Run tests under v2
+   BUILD targets; green.
+3. **`ir/annotations.{h,cc,_test.cc}`** — write with full schema;
+   test field round-trip via `WasmAnnotations::Mutable` /
+   `Find`.
+4. **`codegen/overload_table.{h,cc,_test.cc}`** — empty
+   `kBuiltinSeeds`; test `RegisterCustom` + `AlreadyExists` on
+   custom-vs-custom collision.
+5. **`codegen/static_memory_builder.{h,cc,_test.cc}`** — every
+   scalar kind; per-kind byte layout test.
+6. **`codegen/slot_allocator.{h,cc,_test.cc}`** — naive path;
+   monotonic-offset test.
+7. **`codegen/resolve_pass.{h,cc,_test.cc}`** — kConst repr
+   population; non-kConst leaves zero-sentinel fields; kind
+   round-trip on every scalar-literal fixture.
+8. **`codegen/layout_pass.{h,cc,_test.cc}`** — kConst →
+   kStaticRodata; StaticMemoryBuilder invocation; final
+   `rodata.size()` matches expected bytes per kind.
+9. **`runtime/cel_runtime.{h,c,_test.cc}`** + BUILD + WASM
+   cross-compile rule — CelValue layout test; arena at bytes 8/12
+   round-trip via `cel_alloc` / `cel_reset`; `cel_make_*` for
+   every scalar kind.
+10. **`codegen/module.{h,cc,_test.cc}`** — emits a module that
+    defines memory, places rodata as an active data segment at
+    `rodata_base = 16`, exports `memory` + `$eval` + `cel_reset`,
+    imports `cel.cel_alloc` (declared even if unused at M1).
+11. **`codegen/expr_lower.{h,cc,_test.cc}`** — kConst arm only;
+    other kinds return Unimplemented.
+12. **`host/host_loader.{h,cc,_test.cc}`** — two-phase
+    instantiation; invoke `$eval`; decode result.
+13. **`cli/celwasmc_v2.cc`** + BUILD — wire parse → check →
+    resolve → layout → emit → write .wasm or direct-run.
+14. **`e2e/eval_test.cc`** — one test per scalar kind.
+
+Ordering is strict: each step depends on the previous compiling
+and its tests passing. Do not bundle; do not reorder.
+
+## 6. Test plan
+
+### 6.1 Unit tests (what each file's `_test.cc` covers)
+
+  - `annotations_test.cc` — `Mutable(id)` creates, `Find(id)`
+    reads back; all fields round-trip at their widths.
+  - `overload_table_test.cc` — build with empty seeds;
+    `RegisterCustom` appends and returns the id;
+    `RegisterCustom` with the same id twice returns
+    `AlreadyExists`; `InternOverloadId("unknown")` returns `0`.
+  - `static_memory_builder_test.cc` — `AppendScalar` for
+    {bool, int, uint, double, null}: per-kind byte layout
+    asserted against a golden; 8-byte alignment of the next
+    append. `AppendSpan` for {string, bytes}: header bytes,
+    payload bytes, alignment pad; length + offset fields match.
+  - `slot_allocator_test.cc` — `Acquire()` monotonic; 24-byte
+    stride; `peak_slots()` equals acquire count; `Release()` is
+    a no-op; `PushScope`/`PopScope` are no-ops.
+  - `resolve_pass_test.cc` — kConst → `repr` populated per
+    kind; non-kConst fixtures leave `overload_id`/`local_index`
+    etc. at zero; end-of-pass DCHECK asserts the per-kind
+    populated-ness pattern.
+  - `layout_pass_test.cc` — kConst → `storage.kind ==
+    kStaticRodata`, `storage.payload` matches the builder's
+    offset; total rodata bytes sum across kinds.
+  - `cel_runtime_test.cc` — `cel_reset(arena_base,
+    arena_limit)` writes bytes 8/12; `cel_alloc(n)` bumps the
+    cursor and returns the old value; `cel_make_int(7).payload.i
+    == 7` etc. per kind.
+  - `module_test.cc` — compile an empty-body `$eval` module,
+    validate via Binaryen; memory defined with correct pages;
+    data segment at offset 16 matches expected rodata bytes.
+  - `expr_lower_test.cc` — per-kind `kConst` lowering emits
+    `i32.const <offset>` where `<offset>` is the builder's
+    rodata offset.
+  - `host_loader_test.cc` — two-phase instantiation; expr's
+    memory is visible to the runtime; runtime's `cel_alloc`
+    (called from a test helper) bumps the cursor in the shared
+    memory.
+
+### 6.2 E2E tests (`eval_test.cc`)
+
+```cpp
+TEST(EvalScalar, Bool)   { EXPECT_THAT(Eval("true"),   IsOkAndBool(true));   }
+TEST(EvalScalar, Int)    { EXPECT_THAT(Eval("42"),     IsOkAndInt(42));     }
+TEST(EvalScalar, NegInt) { EXPECT_THAT(Eval("-42"),    IsOkAndInt(-42));    }
+TEST(EvalScalar, Uint)   { EXPECT_THAT(Eval("42u"),    IsOkAndUint(42));    }
+TEST(EvalScalar, Double) { EXPECT_THAT(Eval("3.14"),   IsOkAndDouble(3.14));}
+TEST(EvalScalar, Null)   { EXPECT_THAT(Eval("null"),   IsOkAndNull());      }
+TEST(EvalScalar, String) { EXPECT_THAT(Eval("\"hi\""), IsOkAndString("hi"));}
+TEST(EvalScalar, Bytes)  { EXPECT_THAT(Eval("b\"x\""), IsOkAndBytes("x"));  }
+TEST(EvalScalar, EmptyString) { EXPECT_THAT(Eval("\"\""), IsOkAndString(""));}
+TEST(EvalScalar, EmptyBytes)  { EXPECT_THAT(Eval("b\"\""), IsOkAndBytes("")); }
+TEST(EvalScalar, LongString) {
+  std::string s(1024, 'x');
+  EXPECT_THAT(Eval(absl::StrCat("\"", s, "\"")), IsOkAndString(s));
+}
+TEST(EvalScalar, UnimplementedOpFailsCleanly) {
+  EXPECT_THAT(Compile("1 + 2"),
+              StatusIs(absl::StatusCode::kUnimplemented,
+                       HasSubstr("kCall not supported before M3")));
+}
+```
+
+The last test is load-bearing: it proves the "codegen errors on
+unimplemented kinds" path works, so M2 onwards extends behavior by
+filling arms, not by ripping out silent fallbacks.
+
+### 6.3 Lint + testing-checklist rows
+
+Per CLAUDE.md, every merged feature flips at least one checklist
+row. M1 flips:
+
+  - Static-literal lowering × bool
+  - Static-literal lowering × int
+  - Static-literal lowering × uint
+  - Static-literal lowering × double
+  - Static-literal lowering × null
+  - Static-literal lowering × string
+  - Static-literal lowering × bytes
+  - Two-phase instantiation × fresh memory per eval module
+  - No-`cel_alloc` × static-only eval (eval of a pure-literal
+    expression makes zero `cel_alloc` calls)
+
+These get added to `testing-checklist.md` under a new
+"Rewrite M1" section and ticked in the same commit that lands M1.
+
+## 7. Exit criteria
+
+M1 is done when all of these hold simultaneously:
+
+  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //compiler/...` green (v1 untouched).
+  - [ ] All seven E2E scalar tests (§6.2) pass.
+  - [ ] `scripts/lint.sh` clean for every `compiler_v2/` file
+        (zero clang-tidy warnings).
+  - [ ] Every `compiler_v2/` non-trivial source file has a
+        companion `*_test.cc`.
+  - [ ] `testing-checklist.md` rows in §6.3 are ticked.
+  - [ ] This doc is updated with a `Status: shipped <date>` stanza.
+  - [ ] No `TODO(M2)` / `TODO(M3)` comments pointing at
+        abstraction *shape* — only at *population* (filling in an
+        empty table, adding an arm to a switch). If a shape needs
+        to change, M1 is misscoped and has to split.
+
+## 8. What M1 explicitly proves
+
+After M1 lands, the following claims are testable on `master`:
+
+  1. The pipeline is `parse → check → resolve → layout → emit`.
+     Not `parse → check → emit-that-also-decides-memory`.
+  2. `NodeAnnotation` is the single source of per-expr facts for
+     codegen. `LoweringContext` has no `idents` map, no
+     `scratch_slot`, no `prologue_setups`.
+  3. Literals land in `.rodata` unconditionally — zero `cel_alloc`
+     calls during evaluation of a pure-literal expression,
+     verifiable by a test that binds `cel_alloc` to a trampoline
+     that counts invocations.
+  4. The expr module owns memory; the runtime imports it. Two
+     expr instances against one runtime are memory-isolated.
+  5. Adding a new expression kind later is "add an arm to
+     `expr_lower`'s switch + populate the relevant
+     `NodeAnnotation` fields in `ResolvePass`" — no pipeline
+     reshaping, no new passes.
+
+These five are the load-bearing claims the parent rewrite makes.
+M1 is where they stop being design-doc prose and start being
+runtime behavior.
+
+## 9. Risk register (M1-specific)
+
+  - **`AppendSpan` alignment.** String / bytes payload is byte-
+    aligned; the next `Append*` must pad to 8 before writing a
+    new `CelValue` header. A one-byte slip corrupts every
+    subsequent offset. *Mitigation:* an explicit alignment test
+    (§6.1 `static_memory_builder_test`) asserts the next header's
+    offset after a span payload of each of {0, 1, 7, 8, 9} bytes.
+  - **Two-phase instantiation sequencing.** Wasmtime's linker API
+    requires all imports to be resolvable before `instantiate`
+    returns. Phase 1's `cel_alloc` import has no provider yet.
+    *Mitigation:* install a trampoline that forwards to a
+    placeholder; rebind to the real runtime export in phase 3
+    (parent §9.1). Host loader test exercises the rebind
+    explicitly.
+  - **Binaryen memory-export shape.** `BinaryenSetMemory` + a
+    single active data segment must produce a module the runtime
+    module can import as `cel.memory`. *Mitigation:* `module_test`
+    round-trips a minimal module through a wasmtime linker step
+    in the test harness, catching ABI mismatches at unit-test
+    time rather than at e2e time.
+  - **Over-scoping.** The temptation is to slip an M2 capability
+    ("just idents, they're easy") into M1. Every such slip
+    compounds through the milestone sequence. *Mitigation:* the
+    `UnimplementedOpFailsCleanly` test at §6.2 is the gate — if
+    M1 has code that handles a non-`kConst` kind, that test fails
+    and the reviewer rejects the PR.
+
+## 10. After M1
+
+Next milestones, in order (each against the frozen M1 skeleton):
+
+  - **M2** — `kIdent` + `kSelect` (proto field reads); adds
+    `host/cel_host.{h,cc}` for `cel_get_field` / `cel_has_field`;
+    ports the `Customer` proto fixture.
+  - **M3** — `kCall` + built-in overload set; fills
+    `kBuiltinSeeds`; adds arithmetic / comparison / string ops in
+    `cel_runtime`.
+  - **M4** — `has()`, message equality, 3VL, partial-eval; adds
+    `cel_refs` externref table.
+  - **M5** — custom functions (single `cel_host_call_custom`
+    trampoline).
+  - **M6** — map + list literals (runtime primitives).
+  - **M7** — proto literals (host primitives).
+  - **M8** — Sethi–Ullman, debug layout, error provenance, bench
+    parity, swap.
+
+Each subsequent milestone gets its own sub-plan doc following
+this template.

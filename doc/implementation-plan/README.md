@@ -75,14 +75,25 @@ Companion documents (do not duplicate — link):
                                 `tests/simple/testdata/` (the static
                                 subset only) as a gate for declaring
                                 the compiler production-ready.
-  - `rewrite-memory-layout-codegen.md` — **active design, not yet
-                                scheduled.**  12-slice plan to rewrite
-                                codegen + runtime against a parallel
+  - `rewrite/` — **active rewrite, in planning.**  Self-contained
+                                subtree for the codegen + runtime
+                                rewrite against a parallel
                                 `compiler_v2/` tree (ResolvePass +
                                 LayoutPass + uniform slot-out ABI +
-                                expr-owned memory).  Supersedes
-                                `m-mem-static-layout-pass.md` and
-                                `memory-ownership-flip.md`.
+                                expr-owned memory):
+     - `rewrite/design.md` — 12-slice design doc; supersedes the
+                                two predecessor docs now archived
+                                alongside it.
+     - `rewrite/m1-scalar-pipeline.md` — M1 plan: full abstraction
+                                skeleton + scalar-literal eval
+                                end-to-end (bool/int/uint/double/
+                                null/string/bytes).  Merges design-
+                                doc Slices 1–3.
+     - `rewrite/predecessor-m-mem-static-layout-pass.md`,
+                                `rewrite/predecessor-memory-ownership-flip.md`
+                                — retired predecessor designs kept
+                                for historical context; superseded
+                                by `design.md`.
   - `testing-checklist.md`   — CEL type × AST-variant coverage grid.
                                 Has a top-of-file **Gap summary** that
                                 calls out what's open in the active

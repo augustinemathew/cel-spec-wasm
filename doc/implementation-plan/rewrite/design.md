@@ -2,7 +2,8 @@
 
 Status: **design — drafted 2026-04-21, not yet scheduled.**
 
-Supersedes `m-mem-static-layout-pass.md` and `memory-ownership-flip.md`.
+Supersedes `predecessor-m-mem-static-layout-pass.md` and
+`predecessor-memory-ownership-flip.md` (both in this directory).
 Closes the "Unified symbol table" bullet in `CLAUDE.md` on completion.
 
 ## 0. What this is

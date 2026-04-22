@@ -1,4 +1,4 @@
-#include "compiler/host/cel_log.h"
+#include "compiler_v2/host/cel_log.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -14,7 +14,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler/runtime/cel_runtime.h"
+#include "compiler_v2/runtime/cel_runtime.h"
 #include "wasm.h"
 #include "wasmtime.h"
 

@@ -1,0 +1,201 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Operator-dispatch table.  M1 ships the shape (builder + frozen table +
+# collision rule) with an empty kBuiltinSeeds array; M3 fills the seeds.
+cc_library(
+    name = "overload_table",
+    srcs = ["overload_table.cc"],
+    hdrs = ["overload_table.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "overload_table_test",
+    srcs = ["overload_table_test.cc"],
+    deps = [
+        ":overload_table",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Pack compile-time-known CelValues into a rodata byte buffer.
+cc_library(
+    name = "static_memory_builder",
+    srcs = ["static_memory_builder.cc"],
+    hdrs = ["static_memory_builder.h"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "static_memory_builder_test",
+    srcs = ["static_memory_builder_test.cc"],
+    deps = [
+        ":static_memory_builder",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Workspace-slot allocator.  M1 is naive: Acquire monotonic, Release no-op.
+# Sethi–Ullman aliasing lands at M8.
+cc_library(
+    name = "slot_allocator",
+    srcs = ["slot_allocator.cc"],
+    hdrs = ["slot_allocator.h"],
+)
+
+cc_test(
+    name = "slot_allocator_test",
+    srcs = ["slot_allocator_test.cc"],
+    deps = [
+        ":slot_allocator",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Pipeline stage 1: scope / name / overload binding.  M1 populates only
+# Repr on kConst; other fields are zero sentinels.
+cc_library(
+    name = "resolve_pass",
+    srcs = ["resolve_pass.cc"],
+    hdrs = ["resolve_pass.h"],
+    deps = [
+        ":overload_table",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_traverse",
+        "@cel-cpp//common:ast_visitor_base",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "resolve_pass_test",
+    srcs = ["resolve_pass_test.cc"],
+    deps = [
+        ":resolve_pass",
+        "//compiler_v2/frontend:parse_and_check",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Pipeline stage 2: memory layout (rodata, workspace slots, locals).
+cc_library(
+    name = "layout_pass",
+    srcs = ["layout_pass.cc"],
+    hdrs = ["layout_pass.h"],
+    deps = [
+        ":resolve_pass",
+        ":slot_allocator",
+        ":static_memory_builder",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "//compiler_v2/runtime:cel_runtime",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_traverse",
+        "@cel-cpp//common:ast_visitor_base",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "layout_pass_test",
+    srcs = ["layout_pass_test.cc"],
+    deps = [
+        ":layout_pass",
+        "//compiler_v2/frontend:parse_and_check",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Wasm module wrapper: defines memory, rodata data segment, cel.abi
+# section, imports, exports.  Wraps Binaryen's C API.
+cc_library(
+    name = "module",
+    srcs = ["module.cc"],
+    hdrs = ["module.h"],
+    deps = [
+        "//compiler_v2/ir:annotations",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "module_test",
+    srcs = ["module_test.cc"],
+    deps = [
+        ":module",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Pipeline stage 3: emit wasm.  M1 handles only kConst; other kinds
+# return Unimplemented.
+cc_library(
+    name = "expr_lower",
+    srcs = ["expr_lower.cc"],
+    hdrs = ["expr_lower.h"],
+    deps = [
+        ":layout_pass",
+        ":module",
+        ":overload_table",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "@binaryen//:binaryen",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "expr_lower_test",
+    srcs = ["expr_lower_test.cc"],
+    deps = [
+        ":expr_lower",
+        ":layout_pass",
+        ":module",
+        ":resolve_pass",
+        "//compiler_v2/frontend:parse_and_check",
+        "@binaryen//:binaryen",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

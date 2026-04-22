@@ -1,0 +1,59 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# NodeAnnotation with the full rewrite schema (repr, field_number,
+# overload_id, local_index, scope_id, Storage).  See
+# doc/implementation-plan/rewrite/m1-scalar-pipeline.md §2.1.
+cc_library(
+    name = "annotations",
+    srcs = ["annotations.cc"],
+    hdrs = ["annotations.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "annotations_test",
+    srcs = ["annotations_test.cc"],
+    deps = [
+        ":annotations",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Typed AST wrapper over cel-cpp's CheckedExpr.  Ported verbatim from
+# v1's compiler/ir/typed_ast with #include paths retargeted.
+cc_library(
+    name = "typed_ast",
+    srcs = ["typed_ast.cc"],
+    hdrs = ["typed_ast.h"],
+    deps = [
+        ":annotations",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_traverse",
+        "@cel-cpp//common:ast_visitor_base",
+        "@cel-cpp//common:expr",
+        "@cel-cpp//common:type",
+        "@cel-cpp//common:type_kind",
+        "@com_google_absl//absl/types:variant",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "typed_ast_test",
+    srcs = ["typed_ast_test.cc"],
+    deps = [
+        ":annotations",
+        ":typed_ast",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:expr",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
