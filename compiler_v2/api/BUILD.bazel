@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
@@ -258,6 +258,28 @@ cc_test(
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Per-stage cost across the user-facing pipeline (Compiler / Engine
+# / Compile / Plan / Eval) plus four composite end-to-end shapes
+# (Cold / WarmEngine / WarmProgram / HotEval) × 5 scalar-literal
+# inputs.  See file header for what each bench measures and the
+# architectural invariants the numbers should confirm.  Run with:
+#   bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+#       --benchmark_min_time=1s
+cc_binary(
+    name = "cel_pipeline_bench",
+    srcs = ["cel_pipeline_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        ":compiler",
+        ":engine",
+        ":instance",
+        ":program",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
     ],
 )
 
