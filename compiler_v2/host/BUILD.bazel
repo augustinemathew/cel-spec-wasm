@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
@@ -65,5 +65,27 @@ cc_test(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Phase 1 measurement tool for the EvalEngine refactor.  Attributes
+# wall time across each sub-step of `EvalInstance::Create` so the
+# sharing boundary can be picked from numbers rather than intuition.
+# Run with `bazel run -c opt //compiler_v2/host:host_loader_bench`.
+cc_binary(
+    name = "host_loader_bench",
+    srcs = ["host_loader_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        ":cel_log",
+        ":host_loader",
+        "//compiler_v2:compile",
+        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
