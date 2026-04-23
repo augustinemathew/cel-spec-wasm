@@ -64,23 +64,38 @@ TEST(CompileTest, ArtifactCarriesAstLayoutAndEvalFunction) {
   EXPECT_NE(art.eval_fn.func, nullptr);
 }
 
-TEST(CompileTest, ModuleExportsMemoryAndEvalByDefault) {
+TEST(CompileTest, ModuleImportsCelMemoryAndExportsEvalByDefault) {
+  // Per Plan §5 Commit F: under the (A) two-phase topology, expr no
+  // longer defines its own memory — it imports `cel.memory` from the
+  // host (the same memory the cel_runtime.wasm instance imports), so
+  // both modules see the same bytes when wired up by `Engine::Plan`.
   auto art_or = Compile("42");
   ASSERT_THAT(art_or, IsOk());
   BinaryenModuleRef raw = art_or->module.raw();
   EXPECT_TRUE(BinaryenHasMemory(raw));
-  // Walk the export table and confirm both "memory" and "eval" are present.
-  bool saw_memory = false;
-  bool saw_eval = false;
+
+  // Memory should NOT be in the export table (it's an import now).
+  bool saw_memory_export = false;
+  bool saw_eval_export = false;
   const auto n = BinaryenGetNumExports(raw);
   for (BinaryenIndex i = 0; i < n; ++i) {
     BinaryenExportRef e = BinaryenGetExportByIndex(raw, i);
     const char* name = BinaryenExportGetName(e);
-    if (std::strcmp(name, "memory") == 0) saw_memory = true;
-    if (std::strcmp(name, "eval") == 0) saw_eval = true;
+    if (std::strcmp(name, "memory") == 0) saw_memory_export = true;
+    if (std::strcmp(name, "eval") == 0) saw_eval_export = true;
   }
-  EXPECT_TRUE(saw_memory);
-  EXPECT_TRUE(saw_eval);
+  EXPECT_FALSE(saw_memory_export);
+  EXPECT_TRUE(saw_eval_export);
+
+  // Memory import should be (cel, memory).  The internal binaryen
+  // name of the memory is also "memory" (set by AddMemoryImport in
+  // codegen/module.cc).
+  const char* mod_name = BinaryenMemoryImportGetModule(raw, "memory");
+  const char* base_name = BinaryenMemoryImportGetBase(raw, "memory");
+  ASSERT_NE(mod_name, nullptr);
+  ASSERT_NE(base_name, nullptr);
+  EXPECT_STREQ(mod_name, "cel");
+  EXPECT_STREQ(base_name, "memory");
 }
 
 TEST(CompileTest, ModuleInstallsCelResetAndCelAllocImports) {

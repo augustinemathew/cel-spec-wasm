@@ -29,15 +29,25 @@ uint32_t PagesForBytes(uint32_t mem_size_bytes) {
   return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
 }
 
-// Installs the expr module's host-ABI shape: exported memory with the
-// rodata data segment at `layout.rodata_base`, plus the two runtime
-// function imports the `$eval` body (and any future call sites) target.
+// Installs the expr module's host-ABI shape: imports `cel.memory`
+// (host-allocated, shared with the cel_runtime.wasm instance), with
+// the rodata data segment at `layout.rodata_base` applied to it at
+// instantiate-time.  Plus the two runtime function imports the
+// `$eval` body (and any future call sites) target.
+//
+// Memory ownership flipped per
+// doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
+// §5 Commit F: under the (A) two-phase topology the host
+// pre-allocates `cel.memory` and binds it on the linker; both expr
+// and cel_runtime.wasm import it.  Active data segments still
+// write at module-load time, so expr's .rodata lands in shared
+// memory regardless of who owns it.
 absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
                             uint32_t mem_size_bytes) {
   WasmModule::DataSegment seg{layout.rodata_base, layout.rodata};
-  auto s = mod.SetMemory(PagesForBytes(mem_size_bytes),
-                         /*max_pages=*/std::nullopt, "memory",
-                         absl::MakeConstSpan(&seg, 1));
+  auto s = mod.AddMemoryImport("cel", "memory", PagesForBytes(mem_size_bytes),
+                               /*max_pages=*/std::nullopt,
+                               absl::MakeConstSpan(&seg, 1));
   if (!s.ok()) return s;
 
   const BinaryenType i32 = BinaryenTypeInt32();

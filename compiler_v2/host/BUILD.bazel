@@ -31,39 +31,8 @@ cc_test(
     ],
 )
 
-# Two-phase loader.  Expr module defines + exports memory; runtime
-# module imports it.  darwin-arm64 only (wasmtime).
-cc_library(
-    name = "host_loader",
-    srcs = ["host_loader.cc"],
-    hdrs = ["host_loader.h"],
-    tags = ["manual"],  # depends on manual-tagged cel_runtime_wasm_bytes
-    deps = [
-        ":cel_log",
-        "//compiler_v2/runtime:cel_runtime",
-        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "@wasmtime_darwin_arm64//:wasmtime",
-    ],
-)
-
-cc_test(
-    name = "host_loader_test",
-    srcs = ["host_loader_test.cc"],
-    tags = ["manual"],
-    deps = [
-        ":host_loader",
-        "//compiler_v2:compile",
-        "//compiler_v2/runtime:cel_runtime",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
+# host_loader was deleted in the runtime-isolation rewrite.  Its
+# role (instantiate the expr wasm + bind host imports + drive
+# $eval) is now split across cel::Engine + cel::Instance under
+# //compiler_v2/api/.  See
+# doc/implementation-plan/rewrite/two-phase-runtime-isolation.md.
