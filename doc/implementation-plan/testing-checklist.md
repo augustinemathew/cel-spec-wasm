@@ -877,6 +877,55 @@ here so the "feature → test" audit is still exhaustive.
     pattern) — an unseen `enter` after the full test suite flags a
     delete candidate.
 
+## Rewrite M1 (shipped 2026-04-22)
+
+The runtime-isolation slice (8 commits on `master`,
+`825f2e3..5085f46`) closed M1.  Per
+`rewrite/m1-scalar-pipeline.md §6.3`, M1 flips the rows below.
+This block is the rewrite-tier counterpart to the v1 grids above —
+v1 stays in its own sections; v2 (everything under `compiler_v2/`)
+is tracked here.
+
+  - [x] Static-literal lowering × bool —
+        `compiler_v2/api/instance_test.cc::EvalsBoolLiteralTrue/False`
+  - [x] Static-literal lowering × int —
+        `compiler_v2/api/instance_test.cc::EvalsIntLiteral`,
+        `EvalsNegIntLiteral`
+  - [x] Static-literal lowering × uint —
+        `compiler_v2/api/instance_test.cc::EvalsUintLiteral`
+  - [x] Static-literal lowering × double —
+        `compiler_v2/api/instance_test.cc::EvalsDoubleLiteral`
+  - [x] Static-literal lowering × null —
+        `compiler_v2/api/instance_test.cc::EvalsNullLiteral`
+  - [x] Static-literal lowering × string —
+        `compiler_v2/api/instance_test.cc::EvalsStringLiteral`
+  - [x] Static-literal lowering × bytes —
+        `compiler_v2/api/instance_test.cc::EvalsBytesLiteral`
+  - [x] Two-phase instantiation × fresh memory per `Engine::Plan` —
+        `compiler_v2/api/engine_test.cc::PlanCalledTwiceProducesIndependentInstances`,
+        `compiler_v2/api/instance_test.cc::TwoInstancesEvaluateIndependently`
+  - [x] No-`cel_alloc` × static-only eval — implicit by
+        `EvalsNullLiteral` / `EvalsBoolLiteral` succeeding without
+        binding `cel_alloc` to anything bigger than its 2-page
+        host-owned memory; explicit counting-trampoline test is
+        a follow-up (see `m1-scalar-pipeline.md §11`).
+
+Bench harness for the M1 surface:
+  - [x] `cel_pipeline_bench` — per-stage cost across
+        Compiler::Build / Engine::Build / Compile / Plan / Eval +
+        4 composite end-to-end shapes, parameterised over the 5
+        scalar inputs.
+
+Architectural deltas vs as-written M1 plan (see
+`rewrite/two-phase-runtime-isolation.md §4-5`):
+  - [x] Compiler / Program / Engine / Instance role split (vs the
+        as-written 3-class plan that pinned wasmtime to Compiler).
+  - [x] Host-allocated `cel.memory` imported by both expr +
+        runtime (vs the as-written "expr defines memory; runtime
+        imports it").
+  - [x] `host_loader.{h,cc}` deleted; role split across
+        `api/engine` + `api/instance`.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

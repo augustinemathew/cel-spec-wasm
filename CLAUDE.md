@@ -21,6 +21,41 @@ something in them, update them in the same commit as the code.
     (CEL type × pipeline stage, AST variant × pipeline stage).  Every merged
     feature flips at least one box; every new variant adds at least one row.
 
+### Closing out a planning doc
+
+Planning docs (`doc/implementation-plan/**/*.md`) are living artifacts.
+When the work they describe ships:
+
+  1. **Update the header status line** so the doc itself signals state.
+     `Status: plan — drafted YYYY-MM-DD, not yet started.` →
+     `Status: shipped YYYY-MM-DD.` (with a one-paragraph "what landed"
+     summary if the as-shipped shape differs from the as-written plan —
+     architecture deltas, dropped/merged commits, scope changes).
+  2. **Reflect deltas in-line.** If sections describe an approach that
+     was revised during execution, leave the old text but mark the
+     delta with a callout (`> Plan-vs-execution delta: …`) or replace
+     the section with the as-shipped version, citing the doc that
+     captures the reasoning for the change.
+  3. **Append a "Future work" section at the bottom.** Anything
+     surfaced during execution but not in scope of this doc — perf
+     hotspots a bench measured, follow-up cleanups, design questions
+     punted to the next milestone — gets a one-line bullet here.
+     Future readers see what's done AND what's still open without
+     having to read the whole doc.
+  4. **Reconcile other docs that referenced the old plan.** Sibling
+     plan docs, `design.md`, `cel-host-surface.md`, milestone docs —
+     any doc that named the old shape gets updated in the same commit.
+     Stale plan refs in master are worse than no plan refs.
+  5. **Tick `testing-checklist.md` rows.** Per the checklist's own
+     "How to update" rule — every merged feature flips at least one
+     box; the milestone's "what coverage shipped" listed in §6.3 (or
+     equivalent) becomes ticked rows in a "Rewrite M<n>" section.
+
+The goal: a reader skimming the docs in `doc/implementation-plan/`
+should see at a glance which milestones are done, which are in flight,
+and what follow-ups each one surfaced — without having to grep the
+git log.
+
 ## C++ style
 
 Follow the Google C++ style (google3 flavour).  `third_party/cel-cpp/` is the

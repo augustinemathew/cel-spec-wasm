@@ -1,6 +1,12 @@
 # Rewrite M1 — scalar-literal pipeline, full abstraction skeleton
 
-Status: **plan — drafted 2026-04-21, not yet started.**
+Status: **shipped 2026-04-22.**  Lands on master as the
+runtime-isolation slice: 8 commits, 25 tests, 4 abstraction
+classes (`cel::Compiler` / `cel::Program` / `cel::Engine` /
+`cel::Instance`).  Architectural deltas vs the as-written plan
+are documented in `two-phase-runtime-isolation.md` §4 (the
+Compiler/Engine role split) and §5 (commit-by-commit log); §8
+claim #4 is updated below to match the shipped memory model.
 
 Parent: `design.md` (this directory).
 Milestone boundary in the parent: **merges Slices 1 + 2 + 3** into
@@ -633,8 +639,14 @@ After M1 lands, the following claims are testable on `master`:
      calls during evaluation of a pure-literal expression,
      verifiable by a test that binds `cel_alloc` to a trampoline
      that counts invocations.
-  4. The expr module owns memory; the runtime imports it. Two
-     expr instances against one runtime are memory-isolated.
+  4. **(Revised in shipping — see `two-phase-runtime-isolation.md`):**
+     The host owns memory; both the expr module and the
+     `cel_runtime.wasm` module import `cel.memory`.  Two
+     `Instance`s against one `Engine` are memory-isolated (each
+     has its own host-allocated `wasmtime_memory_t` in its own
+     store).  The original "expr owns memory" plan was inverted
+     during the runtime-isolation work to side-step the
+     expr↔runtime "circular import" 040c043 cited.
   5. Adding a new expression kind later is "add an arm to
      `expr_lower`'s switch + populate the relevant
      `NodeAnnotation` fields in `ResolvePass`" — no pipeline
@@ -693,3 +705,48 @@ Next milestones, in order (each against the frozen M1 skeleton):
 
 Each subsequent milestone gets its own sub-plan doc following
 this template.
+
+## 11. Future work surfaced during M1
+
+Items the M1 work surfaced but did not address.  Each is a one-line
+hand-off to the milestone or follow-up that owns it.  Per
+`CLAUDE.md` "Closing out a planning doc" — kept here so future
+readers see what M1 left behind without grepping git history.
+
+  - **Engine-side parsed-expr-module cache.** `cel_pipeline_bench`
+    showed `Engine::Plan` is dominated by `wasmtime_module_new(expr_bytes)`
+    (~150 µs of the 162 µs Plan_Hot).  An LRU keyed by content hash
+    would drop Plan to ~12 µs.  Out of scope for M1 per
+    `two-phase-runtime-isolation.md` §9; the bench numbers say
+    when it becomes worth doing.
+  - **`CEL_LOG_DISABLED` in the runtime cross-compile.**  Every
+    `cel_reset` / `cel_alloc` invocation crosses the wasm-host
+    boundary into `cel_log` even though the trampoline is a
+    no-op (caller has no exported memory).  Defining
+    `CEL_LOG_DISABLED` at runtime cross-compile time would
+    eliminate ~tens of ns per Eval in M3+ allocation-heavy
+    paths.  Trivial; awaiting a profile that says it matters.
+  - **`cel_log` source location.**  Inconsistent layout: the
+    runtime-isolation work put the Engine/Instance internals
+    under `compiler_v2/api/internal/`, but `cel_log.{h,cc}` —
+    structurally a peer (host-side wasmtime trampoline) —
+    stayed in `compiler_v2/host/`.  Either move `cel_log` to
+    `api/internal/` (collapses host/) or move the engine-state
+    structs back into `host/` (matches the original
+    `cel-host-surface.md §8` layout for the planned
+    `cel_host.*` trampolines).  Decision deferred.
+  - **Counting-trampoline test for "zero `cel_alloc` on literal eval".**
+    §8 claim #3 calls for a test that binds `cel_alloc` to a
+    counting trampoline and asserts zero calls during pure-
+    literal eval.  Under the new architecture `cel.cel_alloc` is
+    bound to the runtime instance's wasm export, not a host
+    trampoline — so the test needs to instrument differently
+    (e.g. read the bump cursor before/after Eval).  Not a
+    blocker; the existing tests already verify literal eval
+    works without allocation churn.
+  - **Stale CLI / e2e BUILD targets.** `compiler_v2/cli/celwasmc_v2`
+    and `compiler_v2/e2e/eval_test` reference `srcs` files that
+    don't exist yet.  The runtime-isolation slice updated their
+    deps to point at the new api/ trio but didn't write the
+    sources.  Pre-existing condition; folded into M2 when the
+    CLI / e2e harness is actually wired.
