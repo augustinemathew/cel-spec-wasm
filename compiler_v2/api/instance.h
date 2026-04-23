@@ -18,6 +18,10 @@
 #include <cstddef>
 #include <memory>
 
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
+#include "compiler_v2/api/value.h"
+
 namespace celwasm {
 struct WasmtimeEngineState;
 struct InstanceImpl;
@@ -35,7 +39,25 @@ class Instance {
   Instance& operator=(Instance&&) noexcept;
   ~Instance();
 
-  // Eval / Reset land in the next commit.
+  // Run `$eval()` once.  M1 takes no Activation (no variables in
+  // scope yet); M2+ adds an `Activation` arg whose values get
+  // marshalled into the arena before the call.
+  //
+  // Returns:
+  //   - the decoded `Value` for any scalar `CelKind`
+  //     (NULL/BOOL/INT/UINT/DOUBLE/STRING/BYTES) the runtime
+  //     produces;
+  //   - InvalidArgument if `$eval` returned a kind that has a
+  //     wire shape but no Value mapping yet (LIST/MAP/MESSAGE,
+  //     etc. land in their respective milestones);
+  //   - FailedPrecondition / Internal on wasmtime trap or out-of-
+  //     range offset.
+  //
+  // `$eval`'s first instruction is a baked-in `cel_reset(...)`
+  // call, so the arena is reset before the body runs every time —
+  // calling Eval back-to-back on the same Instance is safe and
+  // deterministic.
+  ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval();
 
   // Linear-memory byte size for this Instance's host-owned memory.
   // Reads through the wasmtime store, so will crash / UB if the
