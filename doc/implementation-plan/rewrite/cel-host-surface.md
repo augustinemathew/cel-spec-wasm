@@ -116,8 +116,9 @@ ASSIGN_OR_RETURN(auto compiler, Cel::Compiler::NewBuilder()
     .AddStandardDeclarations()
     .DeclareVariable("x", CelType::Int())
     .Build());
+ASSIGN_OR_RETURN(auto engine, Cel::Engine::NewBuilder().Build());
 ASSIGN_OR_RETURN(auto program, compiler.Compile("x + 1"));
-ASSIGN_OR_RETURN(auto instance, program.Plan({}));    // no customs
+ASSIGN_OR_RETURN(auto instance, engine.Plan(program));    // M5+ adds bindings
 
 Activation act;
 act.Bind("x", Value::Int(41));
@@ -131,16 +132,22 @@ is opt-in.
 
 ## 2. User-facing abstractions
 
-Three classes, one struct, two value leaves.
+Four classes, one struct, two value leaves.  The split is
+role-based: compile-time concerns (declarations, type checking,
+codegen) live on `Compiler`; runtime concerns (wasm execution,
+instances, evaluation) live on `Engine`.  `Program` is the
+serialization boundary between them.
 
 ```
-Cel::Compiler ──Compile(source, opts)──► Cel::Program
-                                              │
-                                              │ Plan(RuntimeBindings)
-                                              ▼
-                                         Cel::Instance
-                                              │
-                                              └──Eval(Activation)──► Value
+COMPILE-TIME                        RUNTIME
+────────────                        ───────
+Cel::Compiler                       Cel::Engine
+   │                                   │
+   │ Compile(source, opts)             │ Plan(program, bindings)
+   ▼                                   ▼
+Cel::Program  ──────────────────►  Cel::Instance
+(bytes + ABI; serializable)            │
+                                       └──Eval(Activation)──► Value
 ```
 
 Lifecycle:
@@ -149,22 +156,34 @@ Lifecycle:
   **declarations** (signatures, no impls), variable
   declarations, and the compile-time descriptor pool. Immutable
   after `Build()`. One `Compiler` can produce many `Program`s
-  in parallel; it holds no per-eval state.
+  in parallel; it holds no wasmtime state and no per-eval state.
+  A Compiler can run in a build server that never executes
+  anything.
 - `Program` — the compiled artifact. Holds wasm bytes + parsed
-  ABI. Serializable (persist to disk, re-load later). Decoupled
-  from impls — you can ship a `Program` to another process that
-  has different impls bound to the same overload ids.
+  ABI; **no wasmtime engine reference**. Serializable (persist to
+  disk, re-load later, ship to another process).  An `Engine` is
+  required to evaluate it; a Compiler is not.  Decoupled from
+  impls — you can ship a `Program` to another process that has
+  different impls bound to the same overload ids.
+- `Engine` — process-shared wasmtime fixture. Owns the
+  `wasm_engine_t` and the parsed `cel_runtime.wasm` module
+  (cached once at `Build` time, reused across every `Plan`).
+  Thread-safe; one `Engine` per process or per tenant. Bench-
+  justified: caching the parsed runtime gives a ~34× per-Plan
+  speedup; sharing the engine gives another ~64× cold-to-hot.
 - `RuntimeBindings` — runtime-side configuration. Holds function
   **impls** (keyed by overload id) and the runtime descriptor
-  pool. Supplied to `Program::Plan(bindings)` when constructing
-  an `Instance`. A plain struct, not a class; build as a literal
-  at the call site.
+  pool. Supplied to `Engine::Plan(program, bindings)` when
+  constructing an `Instance`. A plain struct, not a class; build
+  as a literal at the call site.
 - `Instance` — the live evaluator. Holds the wasmtime store +
   instance + per-instance state (mutable-message registry,
-  externref table). Thread-owned; reused across `Eval` calls
-  with automatic `cel_reset` between. One `Program` can yield
-  many `Instance`s (multi-threaded use; swap bindings between
-  Plans).
+  externref table) plus a `shared_ptr` back to the Engine's
+  WasmtimeEngineState — so an Instance can outlive the Engine
+  handle that built it. Thread-owned; reused across `Eval` calls
+  with automatic `cel_reset` between. One `Program` × one
+  `Engine` can yield many `Instance`s (multi-threaded use; swap
+  bindings between Plans).
 
 ### 2.1 `Cel::Compiler`
 
@@ -240,7 +259,16 @@ struct CompilerOptions {
 
 ### 2.2 `Cel::Program`
 
-The compiled artifact. Serializable; decoupled from impls.
+The compiled artifact. Pure data: wasm bytes + (future) parsed
+ABI. Serializable; **no wasmtime engine reference**; safe to copy
+across process boundaries.
+
+A `Program` is constructed by `Compiler::Compile(source)` (the
+standard path) or by `Program(wasm_bytes)` (the cross-process
+load path — bytes shipped from elsewhere, e.g. a cache).
+Construction is pure-data — it does **not** parse the wasm
+through wasmtime.  An `Engine` is required to evaluate; the
+wasmtime parse happens inside `Engine::Plan(program)`.
 
 ```cpp
 // compiler_v2/api/program.h
@@ -248,37 +276,69 @@ namespace cel {
 
 class Program {
  public:
-  // Load a Program from previously-serialized wasm bytes (cross-
-  // process / cached workflow).  Parses the cel.abi custom section
-  // so subsequent introspection calls work; does not bind impls.
-  static absl::StatusOr<Program> FromWasm(absl::string_view wasm_bytes);
+  // Construct a Program directly from wasm bytes.  Used by both
+  // `Compiler::Compile` (compiled in-process) and the cross-
+  // process load path (bytes shipped from elsewhere).  No
+  // validation of the bytes; the wasmtime parse happens later in
+  // `Engine::Plan`.
+  explicit Program(std::vector<uint8_t> wasm_bytes);
+
+  // Pure-data type: copyable + movable.  No external resources.
 
   // Introspection — what does this program need to evaluate?
-  absl::string_view source() const;         // original CEL expression
-  absl::Span<const uint8_t> wasm() const;   // raw .wasm bytes
-  const Abi& abi() const;                   // parsed cel.abi
-
-  // Declared variables in bind order (matches $eval param order).
-  absl::Span<const VariableDecl> declared_variables() const;
-
-  // Required host-side functions (fixed host imports + declared
-  // customs).  A pure introspection call — doesn't touch wasmtime.
-  absl::Span<const FunctionImportDecl> required_imports() const;
-
-  // Build an Instance — allocates a wasmtime store + instantiates
-  // the expr + runtime modules, binding `bindings.function_impls`
-  // to each custom import the ABI declares (§5.5 cross-check).
-  // Can be called many times; each Instance is independent.
-  absl::StatusOr<Instance> Plan(const RuntimeBindings& bindings) const;
-
-  // Audit without instantiating — do the bindings cover every
-  // required import?  Do the impls match the declared signatures?
-  // Useful for failing fast in deployment flows.
-  absl::Status CheckCompatible(const RuntimeBindings& bindings) const;
+  absl::Span<const uint8_t> wasm_bytes() const;
+  // (Future fields — parsed Abi for declared_variables /
+  // required_imports / source — land with the milestones that
+  // populate them.)
 };
 
 }  // namespace cel
 ```
+
+### 2.2.5 `Cel::Engine`
+
+Runtime fixture.  Owns the `wasm_engine_t` and parsed
+`cel_runtime.wasm` module — both wasmtime-thread-safe per upstream
+docs and shareable across all `Plan` calls.  Process-shared
+typically; per-tenant in multi-tenant hosts.
+
+```cpp
+// compiler_v2/api/engine.h
+namespace cel {
+
+class Engine {
+ public:
+  class Builder;
+  static Builder NewBuilder();
+
+  // Build an Instance from a Program, ready for evaluation.  Hot
+  // path: store + memory + linker + bind cel.memory + instantiate
+  // runtime + bind runtime exports + parse expr bytes via
+  // wasmtime_module_new + instantiate expr + lookup eval.  Plan
+  // re-parses the expr bytes per call for M1; an Engine-side
+  // expr-module cache is the named follow-up if profiles demand
+  // it.
+  //
+  // Safe to call concurrently from multiple threads — each call
+  // creates a fresh store + linker + memory; only the engine +
+  // parsed runtime module are shared (and both are documented
+  // thread-safe).
+  absl::StatusOr<Instance> Plan(const Program& program) const;
+};
+
+class Engine::Builder {
+ public:
+  // Materialises the Engine.  Allocates the wasm engine and
+  // parses cel_runtime.wasm into a wasmtime_module_t.
+  absl::StatusOr<Engine> Build() &&;
+};
+
+}  // namespace cel
+```
+
+Future `Plan(const Program&, const RuntimeBindings&)` overload
+adds custom-impl binding when M5+ user functions land.  M1's
+single-arg form is forward-compatible with that.
 
 ### 2.3 `Cel::Instance`
 
@@ -316,7 +376,7 @@ class Instance {
 ### 2.4 `Cel::RuntimeBindings`
 
 Runtime-side config. Built with chainable methods and supplied to
-`Program::Plan(bindings)`.
+`Engine::Plan(program, bindings)`.
 
 ```cpp
 // compiler_v2/api/runtime_bindings.h
@@ -367,7 +427,7 @@ class RuntimeBindings {
 Usage is fluent at the `Plan` call site:
 
 ```cpp
-ASSIGN_OR_RETURN(auto instance, program.Plan(
+ASSIGN_OR_RETURN(auto instance, engine.Plan(program,
     RuntimeBindings()
         .SetDescriptorPool(my_pool)
         .AddFunction("my_upper_string", upper_impl)
@@ -381,8 +441,8 @@ ASSIGN_OR_RETURN(auto instance, program.Plan(
 RuntimeBindings bindings;
 bindings.SetDescriptorPool(pool)
         .AddFunction("my_upper_string", upper_impl);
-ASSIGN_OR_RETURN(auto instance_a, program.Plan(bindings));
-ASSIGN_OR_RETURN(auto instance_b, program.Plan(bindings));
+ASSIGN_OR_RETURN(auto instance_a, engine.Plan(program, bindings));
+ASSIGN_OR_RETURN(auto instance_b, engine.Plan(program, bindings));
 ```
 
 ### 2.5 `Value`
@@ -890,7 +950,7 @@ when instantiating memory), codegen writes it into
 reads the ABI; it never sees `CompilerOptions` directly.
 
 **Impls never reach the Compiler.** A `FunctionDecl` is a pure
-signature. Impls enter the system at `Program::Plan(bindings)`,
+signature. Impls enter the system at `Engine::Plan(program, bindings)`,
 where `RuntimeBindings::function_impls` maps overload_id →
 `FunctionImpl`. This means one `Compiler` can `Compile` many
 programs in parallel without any per-eval state, and a
@@ -899,7 +959,7 @@ wires its own impls at load time.
 
 ### 5.5 Cross-check at `Plan`
 
-When `program.Plan(bindings)` runs, the host walks
+When `engine.Plan(program, bindings)` runs, the host walks
 `cel.abi.functions.host_custom_imports[]` and for each
 `CustomFunctionEntry e`:
 
@@ -1117,7 +1177,7 @@ absl::StatusOr<int64_t> AddOne(int64_t x) {
       .DeclareVariable("x", CelType::Int())
       .Build());
   ASSIGN_OR_RETURN(auto program, compiler.Compile("x + 1"));
-  ASSIGN_OR_RETURN(auto instance, program.Plan({}));  // no customs
+  ASSIGN_OR_RETURN(auto instance, engine.Plan(program));  // no customs
 
   Activation act;
   act.Bind("x", Value::Int(x));
@@ -1138,7 +1198,7 @@ absl::StatusOr<std::string> FullName(const Customer& c) {
   ASSIGN_OR_RETURN(auto program,
       compiler.Compile("c.first_name + ' ' + c.last_name"));
 
-  ASSIGN_OR_RETURN(auto instance, program.Plan(
+  ASSIGN_OR_RETURN(auto instance, engine.Plan(program,
       RuntimeBindings().SetDescriptorPool(
           google::protobuf::DescriptorPool::generated_pool())));
 
@@ -1168,7 +1228,7 @@ ASSIGN_OR_RETURN(auto compiler, Compiler::NewBuilder()
 ASSIGN_OR_RETURN(auto program, compiler.Compile("my.upper(s)"));
 
 // Runtime: bind the impl.
-ASSIGN_OR_RETURN(auto instance, program.Plan(
+ASSIGN_OR_RETURN(auto instance, engine.Plan(program,
     RuntimeBindings().AddFunction("my_upper_string",
         [](absl::Span<const Value> args) -> Value {
           auto s = args[0].AsString();
@@ -1210,9 +1270,11 @@ if (result.IsUnknown()) {
 auto wasm_bytes = program.wasm();
 Persist(wasm_bytes);                // to disk, to cache, to S3
 
-// Later / elsewhere (runner process — no Compiler needed).
+// Later / elsewhere (runner process — no Compiler needed; only an
+// Engine is required to evaluate).
 auto wasm_bytes = Load();
-ASSIGN_OR_RETURN(auto program, cel::Program::FromWasm(wasm_bytes));
+cel::Program program(std::move(wasm_bytes));
+ASSIGN_OR_RETURN(auto engine, cel::Engine::NewBuilder().Build());
 
 // Wire impls for whatever custom overloads the ABI declares.
 RuntimeBindings bindings;
@@ -1220,17 +1282,19 @@ bindings.SetDescriptorPool(MyPool());
 for (const auto& fn : program.abi().functions().host_custom_imports) {
   bindings.AddFunction(fn.overload_id, LookUpMyImpl(fn.overload_id));
 }
-RETURN_IF_ERROR(program.CheckCompatible(bindings));
+RETURN_IF_ERROR(engine.CheckCompatible(program, bindings));
 
-ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
+ASSIGN_OR_RETURN(auto instance, engine.Plan(program, bindings));
 // ... Eval as before.
 ```
 
-No `Compiler` at the runner side — `Program::FromWasm` parses
-`cel.abi` straight from the bytes, `CheckCompatible` proves the
-bindings cover every declared custom, and `Plan` wires the
-trampolines. A runner that doesn't share source or declarations
-with the compiler can still evaluate.
+No `Compiler` at the runner side — `Program(bytes)` reconstructs
+the artifact from raw bytes, `Engine::CheckCompatible(program,
+bindings)` proves the bindings cover every declared custom, and
+`Engine::Plan(program, bindings)` wires the trampolines.  An
+`Engine` is required (one per process), but a Compiler is not.
+A runner that doesn't share source or declarations with the
+compiler can still evaluate.
 
 ## 8. File layout
 
@@ -1239,34 +1303,50 @@ compiler_v2/
 ├── api/                            # user-facing public headers
 │   ├── BUILD.bazel
 │   ├── compiler.{h,cc,_test.cc}    # Cel::Compiler + Builder +
-│   │                               #   CompilerOptions
-│   ├── program.{h,cc,_test.cc}     # Cel::Program (FromWasm,
-│   │                               #   Plan, CheckCompatible)
-│   ├── instance.{h,cc,_test.cc}    # Cel::Instance
-│   ├── runtime_bindings.{h,cc,_test.cc}  # RuntimeBindings struct +
-│   │                                     # convenience Bind helpers
+│   │                               #   CompilerOptions (no wasmtime)
+│   ├── program.{h,_test.cc}        # Cel::Program (bytes + ABI;
+│   │                               #   header-only, Program(bytes) ctor)
+│   ├── engine.{h,cc,_test.cc}      # Cel::Engine + Builder; owns
+│   │                               #   wasm_engine_t + parsed
+│   │                               #   cel_runtime.wasm; Plan(program)
+│   │                               #   → Instance
+│   ├── instance.{h,cc,_test.cc}    # Cel::Instance + Eval
 │   ├── value.{h,cc,_test.cc}
 │   ├── activation.{h,cc,_test.cc}
-│   ├── function.h                  # FunctionDecl / FunctionImpl
-│   ├── type.h                      # CelType
-│   └── attribute.{h,cc,_test.cc}   # AttributeId / AttributePattern
+│   ├── type.{h,cc,_test.cc}        # CelType
+│   ├── attribute.{h,cc,_test.cc}   # AttributeId / AttributePattern
+│   ├── error.{h,cc,_test.cc}       # ErrorPayload + ErrorCode
+│   ├── cel_pipeline_bench.cc       # per-stage cost benches
+│   └── internal/
+│       ├── wasmtime_engine_state.{h,cc}  # engine + parsed runtime
+│       └── instance_impl.{h,cc}          # per-Plan wasmtime handles
+│
+│   Planned but not yet shipped:
+│     - runtime_bindings.{h,cc,_test.cc}  # RuntimeBindings struct
+│       + RegisterCustomImports hook on Engine::Plan (M5+)
+│     - function.h                        # FunctionDecl / FunctionImpl
+│       (M5+ custom function declaration / impl types)
 ├── host/
 │   ├── BUILD.bazel
-│   ├── cel_abi.proto               # §6 schema
-│   ├── cel_abi.{h,cc}              # build (codegen side)
-│   ├── abi_parse.{h,cc,_test.cc}   # deserialize (host side)
-│   ├── cel_host.{h,cc,_test.cc}    # proto-backed adapter +
-│   │                               #   fixed host-fn implementations
-│   │                               #   (read/has/set/make/eq).
-│   │                               #   Internal; no public interface
-│   │                               #   class carved out yet (§3.2).
-│   ├── cel_host_3vl.{cc,h}         # shared UNKNOWN/ERROR absorption
-│   │                               #   used by every trampoline.
-│   ├── cel_host_wasmtime.{h,cc}    # RegisterCelHost trampolines
-│   ├── custom_registry.{h,cc,_test.cc}
-│   ├── host_loader.{h,cc,_test.cc} # two-phase wasmtime instantiation
-│   └── cel_log.{h,cc,_test.cc}     # already shipped
+│   └── cel_log.{h,cc,_test.cc}     # already shipped — host-side
+│                                   #   cel_env.cel_log trampoline +
+│                                   #   format-string decoder
 └── …
+
+Files **planned but not yet shipped** under `host/` (named here so
+the future shape is visible; each lands with the milestone that
+needs it):
+
+  - `cel_abi.proto` + `cel_abi.{h,cc}` — §6 schema, build-side
+  - `abi_parse.{h,cc,_test.cc}` — runtime-side deserialize
+  - `cel_host.{h,cc,_test.cc}` + `cel_host_3vl.{cc,h}` +
+    `cel_host_wasmtime.{h,cc}` — proto-backed adapter +
+    UNKNOWN/ERROR absorption + `RegisterCelHost` trampolines
+  - `custom_registry.{h,cc,_test.cc}` — M5+ user-function impl
+    registry, walked by Engine::Plan when wiring custom imports
+
+`host/host_loader.{h,cc}` was removed in the runtime-isolation
+work — its role split across `api/engine` + `api/instance`.
 ```
 
 The `api/` tier is the public surface. The `host/` tier is machinery.
@@ -1283,7 +1363,7 @@ it (S4, first proto reads).
 
 | Slice | Additions |
 |---|---|
-| **S3.5** | `api/value.{h,cc}` + `api/activation.{h,cc}` + `api/compiler.{h,cc}` skeleton + `api/program.{h,cc}` + `api/runtime_bindings.{h,cc}` + `api/instance.{h,cc}`. Wires the existing (scalar-only) pipeline through the public surface; `Compiler::Compile` / `Program::Plan(bindings)` / `Instance::Eval` work for `-e "42"`. |
+| **S3.5** | `api/value.{h,cc}` + `api/activation.{h,cc}` + `api/compiler.{h,cc}` skeleton + `api/program.{h,cc}` + `api/runtime_bindings.{h,cc}` + `api/instance.{h,cc}`. Wires the existing (scalar-only) pipeline through the public surface; `Compiler::Compile` / `Engine::Plan(program, bindings)` / `Instance::Eval` work for `-e "42"`. |
 | **S4** | `cel_host.{h,cc}` proto-backed adapter + fixed host imports (`cel_get_field`, `cel_has_field`). ABI v2 schema lands; `abi_parse` reads everything. Attribute table reserved but not yet populated. Root variables (scalars + proto messages) end-to-end. |
 | **S4.5** | `AttributePattern` + partial eval on root variables. Attribute table populated by checker. `Instance::PartialEval` lands. |
 | **S6** | `cel_message_eq`. ERROR payload grows `expr_id` field. |

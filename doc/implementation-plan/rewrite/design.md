@@ -1500,42 +1500,69 @@ already maintains (`CheckedExpr.source_info`).
 Survives slot reuse because the ERROR CelValue travels through slots
 — its payload is copied, not reconstructed.
 
-## 9. Host loader — `compiler/host/host_loader.{h,cc}`
+## 9. Host runtime — `compiler_v2/api/engine.{h,cc}`, `compiler_v2/api/instance.{h,cc}`
 
-`LoadEval` is the internal two-phase wasmtime routine. The public
-entry point is `Cel::Program::Plan(RuntimeBindings)` — see
-`cel-host-surface.md` §2.2. `Plan` parses the ABI, runs the §4.6.2
-cross-check on `bindings`, then invokes `LoadEval` to spin up the
-wasmtime store.
+The runtime side of the host surface lives across two classes:
+`Cel::Engine` (process-shared wasmtime fixture, owns the engine +
+parsed runtime module) and `Cel::Instance` (per-Plan execution
+handle, owns store + memory + linker + instances).  `Plan` is the
+public entry point: `Cel::Engine::Plan(program, bindings)` — see
+`cel-host-surface.md` §2.2.5.  Plan validates the program (parses
+the ABI, runs the §4.6.2 cross-check on `bindings`), spins up the
+wasmtime store, instantiates both modules, and returns an
+Instance ready for `Eval`.
 
-### 9.1 Two-phase instantiation
+`compiler_v2/host/host_loader.{h,cc}` was deleted in the runtime-
+isolation work.  Its earlier role (single-class wasmtime
+boilerplate) is now split for clarity: Engine is the "what's
+shared across all Plans" half; Instance is the "what's owned per
+Plan" half.
+
+### 9.1 Two-phase instantiation (host-allocated memory)
 
 ```cpp
-// Pseudocode.  Called internally by Cel::Program::Plan; not a
-// public entry point.
-absl::StatusOr<EvalInstance> LoadEval(
-    const CompiledEval& compiled,
-    const RuntimeBindings& bindings) {
-  // Phase 1: instantiate the expr module. It defines + exports memory.
-  // Its imports are cel.cel_alloc, cel.cel_and, etc. Satisfy with
-  // trampolines that rebind in phase 2.  Custom host imports are
-  // bound here by walking cel.abi.functions.host_custom_imports[]
-  // and looking up bindings.function_impls[overload_id] per §4.6.3.
-  Trampolines t = InstallTrampolines(linker, bindings);
+// Pseudocode.  Called internally by Cel::Engine::Plan; not a
+// public entry point.  Engine reuses a cached parsed cel_runtime
+// wasmtime_module_t across every call; only the per-Plan
+// resources are fresh.
+absl::StatusOr<Instance> Plan(const Program& program,
+                              const RuntimeBindings& bindings) {
+  // Per-Plan: store + host-allocated memory + linker.
+  wasmtime_store_t* store = wasmtime_store_new(engine_, ...);
+  wasmtime_memory_t mem = wasmtime_memory_new(ctx, /*pages=*/2);
+  wasmtime_linker_t* linker = wasmtime_linker_new(engine_);
+
+  // Bind cel.memory + cel_env.cel_log + custom imports BEFORE
+  // either module instantiates.  Both expr and runtime import
+  // cel.memory; binding it once on the linker satisfies both.
+  RegisterCelLog(linker);
+  RegisterCustomImports(linker, bindings);  // M5+ no-op for M1
+  linker_define(linker, "cel", "memory", &mem);
+
+  // Phase 1: instantiate the runtime module.  Its imports are
+  // cel.memory + cel_env.cel_log — both already on the linker.
+  wasmtime_instance_t rt = wasmtime_linker_instantiate(linker, rt_mod_);
+
+  // Phase 2: bind runtime's cel_reset / cel_alloc exports back
+  // onto the linker as cel.cel_reset / cel.cel_alloc, then
+  // instantiate the expr module — its imports are now all
+  // resolved.
+  linker_define(linker, "cel", "cel_reset",
+                instance_export(rt, "cel_reset"));
+  linker_define(linker, "cel", "cel_alloc",
+                instance_export(rt, "cel_alloc"));
+  wasmtime_module_t* expr_mod = wasmtime_module_new(engine_, program.wasm_bytes());
   wasmtime_instance_t expr = wasmtime_linker_instantiate(linker, expr_mod);
 
-  // Phase 2: instantiate the runtime module. Its only import is
-  // cel.memory — provide expr's exported memory.
-  wasmtime_memory_t expr_mem = wasmtime_instance_export_get(expr, "memory");
-  wasmtime_linker_define_memory(linker, "cel", "memory", expr_mem);
-  wasmtime_instance_t rt = wasmtime_linker_instantiate(linker, rt_mod);
-
-  // Phase 3: rebind trampolines to the real runtime exports.
-  BindTrampolines(t, rt);
-
-  return EvalInstance{expr, rt, ...};
+  return Instance(store, linker, mem, rt, expr,
+                  instance_export(expr, "eval"));
 }
 ```
+
+The wiring order side-steps the expr↔runtime "circular import"
+the predecessor design wrestled with: trampolines + cel.memory
+are bound on the linker before either module instantiates, so
+neither has to exist before the other.
 
 ### 9.2 Deletions
 
@@ -1678,11 +1705,24 @@ compiler_v2/
 │   ├── cel_runtime_wasm_bytes.{h,cc}
 │   ├── wasm_imports.txt
 │   └── BUILD.bazel
+├── api/
+│   ├── compiler.{h,cc,_test.cc}    # cel::Compiler — pure compile-time
+│   ├── program.{h,_test.cc}        # cel::Program — bytes + ABI
+│   ├── engine.{h,cc,_test.cc}      # cel::Engine — wasm engine + parsed runtime
+│   ├── instance.{h,cc,_test.cc}    # cel::Instance — Eval + state
+│   ├── (value/activation/type/attribute/error already shipped)
+│   ├── cel_pipeline_bench.cc       # per-stage cost benches
+│   ├── internal/
+│   │   ├── wasmtime_engine_state.{h,cc}  # engine + runtime module
+│   │   └── instance_impl.{h,cc}          # per-Plan handles
+│   └── BUILD.bazel
 ├── host/
-│   ├── host_loader.{h,cc,_test.cc}  # §9, two-phase instantiation
-│   ├── cel_host.{h,cc,_test.cc}     # get_field/set_field/has_field/make_message + per-custom trampolines
+│   ├── cel_host.{h,cc,_test.cc}     # get_field/set_field/has_field/make_message + per-custom trampolines (M3+)
 │   ├── cel_log.{h,cc,_test.cc}      # copied from compiler/host (already-new surface)
 │   └── BUILD.bazel
+│
+│   (host_loader.{h,cc} was deleted in the runtime-isolation work
+│   — its role split across api/engine + api/instance.)
 ├── cli/
 │   ├── celwasmc_v2.cc               # CLI entry point; temp name until swap
 │   └── BUILD.bazel
@@ -1704,7 +1744,9 @@ our purposes:
   - `compiler/host/cel_log.*` (the log-skill host surface)
   - `compiler/testdata/customer.proto` (and any other .proto fixtures)
   - Most of `compiler/host/host_loader.*`'s wasmtime boilerplate
-    (error mapping, function-import wiring) — reimagined in Slice 1.
+    (error mapping, function-import wiring) — reimagined in
+    Slice 1, then again in the runtime-isolation work (now lives
+    in `api/engine.cc` + `api/instance.cc`).
 
 **Rewritten from scratch.** Everything under `compiler_v2/codegen/`
 and `compiler_v2/runtime/`. The ABI and memory model is new; there
@@ -1840,8 +1882,10 @@ always "e2e check runs green and tests pass".
     `cel_reset(<rodata_size>, <mem_size>)` call as the first
     instruction of `$eval` (§8.3) — there is no host-side reset
     phase.
-  - `compiler_v2/host/host_loader.{h,cc}`: two-phase instantiation
-    (§9.1).
+  - `compiler_v2/api/engine.{h,cc}` + `compiler_v2/api/instance.{h,cc}`:
+    two-phase instantiation (§9.1).  Originally this slice planned
+    `compiler_v2/host/host_loader.{h,cc}`; it was rewritten and split
+    in the runtime-isolation work — see `two-phase-runtime-isolation.md`.
   - `compiler_v2/frontend/{parse,check}.{h,cc}`: copied verbatim
     from v1 (already thin wrappers over cel-cpp).
   - `compiler_v2/codegen/expr_lower.{h,cc}`: minimal — `kConst` for
@@ -1857,8 +1901,10 @@ prints `42`.
 **Tests.**
   - `cel_runtime_test`: arena-at-offset-8 round-trip; `cel_alloc`
     + `cel_make_int`.
-  - `host_loader_test`: two-phase instantiation with memory shared
-    via bytes 8/12 cursor.
+  - `engine_test` + `instance_test` + `cel_runtime_wasm_test`:
+    two-phase instantiation with memory shared via bytes 8/12
+    cursor (host-allocated memory imported by both modules; see
+    `two-phase-runtime-isolation.md`).
   - `static_memory_builder_test::AllocateInt` byte layout.
   - `expr_lower_test`: emits `i32.const <offset>` for `kConst` int.
   - `e2e/eval_test`: `EvalInt("42", 42)`.
@@ -2226,7 +2272,7 @@ debugging (especially S10).
 
 | Slice | Unit | Integration / lowering | E2E |
 |---|---|---|---|
-| 1 | Arena-at-offset-8; `AllocateInt`; `host_loader` two-phase | `kConst` int emits `i32.const <offset>` | `celwasmc_v2 -e "42"` → `42` |
+| 1 | Arena-at-offset-8; `AllocateInt`; `engine`/`instance` two-phase | `kConst` int emits `i32.const <offset>` | `celwasmc_v2 -e "42"` → `42` |
 | 2 | `Allocate{Null,Bool,Uint,Double,String,Bytes}` | `kConst` emission per kind | Scalar literal e2e per kind |
 | 3 | `annotations_test`; `overload_table` builder + `AlreadyExists`; `resolve_pass`; `layout_pass` no-op | Pipeline refactor-only | All prior fixtures |
 | 4 | `resolve_pass` populates `local_index`/`field_number`; `cel_host` read ops | `kIdent` / `kSelect` emission | `Customer` field reads |
@@ -2419,7 +2465,10 @@ On completion, these are the observable artefacts:
   - [ ] `compiler/runtime/cel_runtime.{h,c}` — slimmed helper set, §8 changes
   - [ ] `compiler/runtime/BUILD.bazel` — `--import-memory`, explicit exports
   - [ ] `compiler/runtime/wasm_imports.txt` — already exists (cel_log)
-  - [ ] `compiler/host/host_loader.{h,cc}` — two-phase instantiation
+  - [x] `compiler_v2/api/engine.{h,cc}` + `instance.{h,cc}` —
+        two-phase instantiation (replaces the planned
+        `compiler_v2/host/host_loader.{h,cc}`; see
+        `rewrite/two-phase-runtime-isolation.md`)
   - [ ] `doc/wasm-compiler-design.md` §7.0 / §7.3 — rewritten
   - [ ] `doc/implementation-plan/testing-checklist.md` — new rows
   - [ ] `CLAUDE.md` — symbol-table debt bullet closed

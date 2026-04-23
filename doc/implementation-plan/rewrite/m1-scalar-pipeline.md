@@ -54,7 +54,7 @@ Every one of these goes through the full pipeline:
 
 ```
 parse → check → ResolvePass → LayoutPass → expr_lower → Binaryen module
-  → host_loader two-phase instantiate → invoke $eval → decode CelValue
+  → cel::Engine::Plan two-phase instantiate → cel::Instance::Eval → Value
 ```
 
 ### 1.2 Out of scope (deferred to M2+)
@@ -259,23 +259,54 @@ Helpers intentionally **not** in M1: arithmetic (`_add_at_vv`),
 comparisons, string ops, 3VL, size, map/list primitives. Those
 land with the milestones that add the corresponding codegen arms.
 
-### 2.9 Host loader (`host/host_loader.{h,cc}`)
+### 2.9 Host runtime (`api/engine.{h,cc}`, `api/instance.{h,cc}`)
 
-Two-phase instantiation per parent §9.1. M1 implements:
+`host/host_loader.{h,cc}` was deleted in the
+two-phase-runtime-isolation work (see
+`rewrite/two-phase-runtime-isolation.md`).  The runtime side is now
+split across `cel::Engine` (process-level wasmtime fixture) and
+`cel::Instance` (per-Plan execution handle).
 
-  - Phase 1: instantiate expr module; it defines and exports
-    `memory`.
-  - Phase 2: instantiate runtime module with `cel.memory` bound
-    to the expr's exported memory.
-  - Invoke `$eval()` — returns `i32` offset of a `CelValue` in
-    linear memory. `$eval`'s first instruction is a call to
-    `cel_reset` with compile-time-baked arena offsets, so the
-    host does **not** call `cel_reset` itself. Host decodes the
-    result via `memory_base + offset`.
+Topology — both expr and `cel_runtime.wasm` import a host-allocated
+`cel.memory` (the smoke test on the experiment branch confirmed
+this works as designed):
 
-Host does **not** call `cel_alloc` for an sret slot (v1 pattern at
-`host_loader.cc:429`) — the output slot is a fixed
-`kStaticRodata` offset baked into `$eval`'s return value.
+  - Engine setup (one-time per process): `wasm_engine_new` +
+    `wasmtime_module_new(cel_runtime.wasm)` cached on the
+    `WasmtimeEngineState` shared-state struct.
+  - Per-Plan: `wasmtime_store_new` + `wasmtime_memory_new` (host-
+    allocates 2-page memory) + `wasmtime_linker_new` +
+    `RegisterCelLog` + `linker_define(cel.memory)` +
+    `wasmtime_linker_instantiate(runtime)` +
+    `linker_define(cel.cel_reset / cel.cel_alloc)` from runtime's
+    exports + `wasmtime_module_new(expr_bytes)` +
+    `wasmtime_linker_instantiate(expr)` + lookup `eval`.
+  - Per-Eval: `wasmtime_func_call($eval)` returns `i32` offset of
+    a `CelValue`; `Instance::Eval` reads 24 bytes from the
+    host-owned memory and decodes into `cel::Value`.
+
+`$eval`'s first instruction is still `cel_reset(arena_base,
+arena_limit)` (compile-time-baked) so per-Eval arena reset is
+free — the host does not call `cel_reset` itself.
+
+Wiring order chosen to side-step the expr↔runtime "circular
+import" 040c043 cited: trampolines + `cel.memory` are bound on
+the linker before either module instantiates, so neither has to
+exist before the other.
+
+Bench-justified caching cuts (per
+`rewrite/two-phase-runtime-isolation.md §6`):
+
+  - Caching parsed `cel_runtime.wasm` on the engine: ~34× per-Plan
+    speedup (186 µs → 5.5 µs in the experiment).
+  - Sharing the engine across the process: ~64× cold-to-hot
+    (351 µs → 5.5 µs).
+  - Per-Plan cost in production: ~12 µs hot path; ~162 µs when
+    Plan re-parses the expr bytes per call (M1 default — an
+    Engine-side parsed-expr-module cache is the named follow-up).
+
+Host does **not** call `cel_alloc` for an sret slot — the output
+slot is a fixed offset baked into `$eval`'s return value.
 
 ### 2.10 `cel.abi` custom section
 
@@ -352,11 +383,18 @@ compiler_v2/
 │   ├── cel_make_test.cc                     # NEW — per-kind make_* round-trip
 │   ├── cel_runtime_wasm_bytes.h             # NEW (generated from .wasm)
 │   └── wasm_imports.txt                     # NEW — cel_log only at M1
+├── api/                                    # SHIPPED in two-phase-runtime-isolation
+│   ├── BUILD.bazel                         #   slice — see that doc for the
+│   ├── compiler.{h,cc,_test.cc}            #   reasoning + bench data
+│   ├── program.{h,_test.cc}
+│   ├── engine.{h,cc,_test.cc}              #   formerly host_loader role (Engine half)
+│   ├── instance.{h,cc,_test.cc}            #   formerly host_loader role (Instance half)
+│   ├── cel_pipeline_bench.cc
+│   └── internal/
+│       ├── wasmtime_engine_state.{h,cc}
+│       └── instance_impl.{h,cc}
 ├── host/
 │   ├── BUILD.bazel
-│   ├── host_loader.h                        # NEW — two-phase
-│   ├── host_loader.cc                       # NEW
-│   ├── host_loader_test.cc                  # NEW
 │   ├── cel_log.h                            # PORT v1 verbatim
 │   ├── cel_log.cc                           # PORT v1 verbatim
 │   └── cel_log_test.cc                      # PORT v1 verbatim
@@ -399,10 +437,13 @@ Specifically:
     new one is annotation-driven and has a different
     `LoweringContext`; cross-referencing v1 during authoring is a
     trap (v1's shape encodes the assumptions we're eliminating).
-  - `compiler/host/host_loader.{h,cc}` is **reauthored** — wasmtime
-    boilerplate (error mapping, linker setup) is transcribed, but
-    the two-phase instantiation flow is different enough that a
-    verbatim port would fight the new memory model.
+  - The wasmtime boilerplate (error mapping, linker setup) from
+    `compiler/host/host_loader.{h,cc}` is **reauthored** —
+    transcribed into `compiler_v2/api/engine.cc` +
+    `compiler_v2/api/instance.cc` — and split: the engine + parsed
+    runtime half lives on `cel::Engine`, the per-Plan handles on
+    `cel::Instance`.  See `two-phase-runtime-isolation.md` §4
+    for the cut.
 
 ## 5. Work breakdown (order of authoring)
 
@@ -452,8 +493,11 @@ passes `bazel test //compiler_v2/...` and does not touch `compiler/`.
     imports `cel.cel_alloc` (declared even if unused at M1).
 11. **`codegen/expr_lower.{h,cc,_test.cc}`** — kConst arm only;
     other kinds return Unimplemented.
-12. **`host/host_loader.{h,cc,_test.cc}`** — two-phase
-    instantiation; invoke `$eval`; decode result.
+12. **`api/engine.{h,cc,_test.cc}` + `api/instance.{h,cc,_test.cc}`** —
+    two-phase instantiation (Engine owns shared wasmtime state,
+    Instance is per-Plan); `Instance::Eval` invokes `$eval` and
+    decodes the result.  Replaces the original
+    `host/host_loader.{h,cc,_test.cc}` plan.
 13. **`cli/celwasmc_v2.cc`** + BUILD — wire parse → check →
     resolve → layout → emit → write .wasm or direct-run.
 14. **`e2e/eval_test.cc`** — one test per scalar kind.
@@ -504,10 +548,12 @@ and its tests passing. Do not bundle; do not reorder.
   - `expr_lower_test.cc` — per-kind `kConst` lowering emits
     `i32.const <offset>` where `<offset>` is the builder's
     rodata offset.
-  - `host_loader_test.cc` — two-phase instantiation; expr's
-    memory is visible to the runtime; runtime's `cel_alloc`
-    (called from a test helper) bumps the cursor in the shared
-    memory.
+  - `api/engine_test.cc` + `api/instance_test.cc` +
+    `runtime/cel_runtime_wasm_test.cc` — two-phase instantiation
+    (host-allocated memory imported by both modules); per-scalar-
+    kind round-trip through Compile → Plan → Eval; runtime
+    cel_alloc actually mutates the shared memory cursor (the
+    null-pointer-elision regression test).
 
 ### 6.2 E2E tests (`eval_test.cc`)
 
