@@ -1,10 +1,10 @@
-# DRAFT — cel_host surface (compiler_v2)
+# cel_host surface (compiler_v2)
 
-**Status:** DRAFT for discussion, 2026-04-22. Not a spec, not scheduled.
-Supersedes the v1 of this draft (deleted); keeps nothing from it except
-the file location. Complements `design.md` §4.6/§4.7/§9; where this
-draft and `design.md` disagree, `design.md` wins until this draft is
-promoted.
+**Status:** Committed 2026-04-22. Authoritative for the public user
+API, the `cel.abi` schema, and every wasm callback signature into
+the host. Complements `design.md`, which owns the runtime/codegen
+internals; where the two touch (ABI fields, callback shapes, slice
+plan for the api/ tier), this doc wins and `design.md` defers.
 
 This doc scopes the entire host surface a developer touches when
 embedding a compiled CEL expression. It covers:
@@ -13,52 +13,14 @@ embedding a compiled CEL expression. It covers:
   `Instance` / `Value` / `Activation` + `RuntimeBindings`) —
   the ten-line path from source → answer.
 - The **`cel.abi` custom section** — v1's self-contained contract,
-  extended, not trimmed.
-- **3VL as a first-class citizen** — `UNKNOWN` and `ERROR` with real
-  payloads, absorbed per spec, producible by host callbacks and
-  custom functions.
+  extended.
+- **`Value::Unknown` and `Value::Error` at the surface** — first-
+  class values with real payloads. (Absorption semantics are the
+  runtime's job, in `design.md` §4; this doc exposes only the
+  representation.)
 - The **internal host adapter** — the proto-backed implementation
-  that sits behind the `cel_host.*` wasm imports. Today it is the
-  only implementation; it is a private class, not a user-facing
-  knob.
-
-## 0. Why this draft exists
-
-The prior draft got four things wrong:
-
-1. **Conflated user config with adapter plumbing.** It put
-   `SetHostAdapter` on `Env::Builder` and spun up `JsonHostAdapter`
-   / `MapHostAdapter` as shipped alternatives. The adapter is an
-   implementation detail — today we only support proto, and the
-   proto adapter handles externref unwrapping + field resolution
-   internally. Users bind `Value`s through `Activation`; they do
-   not pick adapters. v1's ABI deliberately kept
-   `(field_number, field_name)` as a pair because the ABI is
-   future-proof for other backings — but that does not belong in
-   the public surface today.
-2. **Trimmed the ABI.** It retired `FunctionSet.required_imports`
-   and treated `CheckedExpr` as "maybe we drop it". v1's ABI is
-   self-contained — a fresh host can see, from bytes alone, every
-   external function the module needs and the full type-checked
-   expression. That property is load-bearing, not decorative. Keep
-   everything.
-3. **Demoted 3VL.** It marked unknown-attribute support as "deferred
-   / M4 E2a.1" and said errors are "written to out on failure". CEL
-   is a 3VL language; `UNKNOWN` and `ERROR` are values, not error
-   paths. Every host surface must handle them, and partial eval is a
-   first-class feature.
-4. **Skipped ergonomics.** It ended at "trampolines + wasmtime
-   bindings". A developer's first question isn't "how is the
-   trampoline bound"; it's "how do I evaluate `x + 1`". The
-   primary API is `Compiler` / `Program` / `Instance`.
-5. **Conflated compile-time and eval-time config.** An earlier
-   pass had a single `Env` that held both declarations (needed
-   at compile) and function impls (needed at eval). That bundled
-   two different lifetimes into one object — compiling a
-   `Program` should not force you to have impls on hand, and
-   swapping impls should not force a recompile. The split is now
-   `Compiler` (declarations, no impls) + `RuntimeBindings`
-   (impls + runtime pool, supplied at `Plan` time).
+  that sits behind the `cel_host.*` wasm imports. One impl today;
+  private class; not a user-facing knob.
 
 ## 1. Guiding principles
 
@@ -353,31 +315,74 @@ class Instance {
 
 ### 2.4 `Cel::RuntimeBindings`
 
-Runtime-side config. Supplied to `Program::Plan(bindings)`. A
-plain struct so call sites can use aggregate-init.
+Runtime-side config. Built with chainable methods and supplied to
+`Program::Plan(bindings)`.
 
 ```cpp
 // compiler_v2/api/runtime_bindings.h
 namespace cel {
 
-struct RuntimeBindings {
-  // Pool for resolving proto descriptors at runtime.  Usually the
-  // same pool the Compiler used, but nothing prevents it from
-  // diverging — CheckCompatible catches drift.  Nullable only when
-  // the Program references no proto types at all.
-  const google::protobuf::DescriptorPool* descriptor_pool = nullptr;
+class RuntimeBindings {
+ public:
+  // Fresh empty bindings.  Descriptor pool defaults to the
+  // generated pool (the process's statically-linked proto set);
+  // override with SetDescriptorPool if the runtime uses a
+  // different pool than the one the Compiler saw.
+  RuntimeBindings();
 
-  // Impls keyed by overload_id (matches cel.abi's
-  // CustomFunctionEntry.overload_id).  `Plan` requires one impl
-  // per declared custom import; extras are fine (ignored).
-  absl::flat_hash_map<std::string, FunctionImpl> function_impls;
+  // —— Chainable mutators (fluent construction) ——
+  RuntimeBindings& SetDescriptorPool(
+      const google::protobuf::DescriptorPool* pool);
 
-  // Convenience — chainable aggregate-init alternative.
-  RuntimeBindings& Bind(std::string overload_id, FunctionImpl impl) &;
-  RuntimeBindings&& Bind(std::string overload_id, FunctionImpl impl) &&;
+  // Bind a custom overload's impl.  `overload_id` must match the
+  // one declared on the Compiler (§5.1) and recorded in
+  // cel.abi.functions.host_custom_imports[].overload_id.  Redundant
+  // Binds under the same overload_id → AlreadyExists; extras not
+  // referenced by the Program → ignored at Plan time.
+  RuntimeBindings& AddFunction(
+      std::string overload_id, FunctionImpl impl);
+
+  // Seed impls for every host-backed stdlib function (e.g. the
+  // time-zone-aware timestamp helpers, regex helpers) that the
+  // runtime module expects on the host side.  Most stdlib lives in
+  // the runtime .wasm itself and needs no binding; this helper
+  // covers the minority that does.  Named so users don't reinvent
+  // the list.
+  RuntimeBindings& AddStdlibFunctions();
+
+  // —— Introspection ——
+  const google::protobuf::DescriptorPool* descriptor_pool() const;
+  const FunctionImpl* absl_nullable Find(
+      absl::string_view overload_id) const;
+  std::vector<absl::string_view> BoundOverloads() const;
+
+ private:
+  const google::protobuf::DescriptorPool* descriptor_pool_;
+  absl::flat_hash_map<std::string, FunctionImpl> function_impls_;
 };
 
 }  // namespace cel
+```
+
+Usage is fluent at the `Plan` call site:
+
+```cpp
+ASSIGN_OR_RETURN(auto instance, program.Plan(
+    RuntimeBindings()
+        .SetDescriptorPool(my_pool)
+        .AddFunction("my_upper_string", upper_impl)
+        .AddFunction("my_lower_string", lower_impl)));
+```
+
+…or retained for reuse across multiple `Plan` calls (different
+`Instance`s under the same bindings, typically one per thread):
+
+```cpp
+RuntimeBindings bindings;
+bindings.SetDescriptorPool(pool)
+        .AddFunction("my_upper_string", upper_impl);
+ASSIGN_OR_RETURN(auto instance_a, program.Plan(bindings));
+ASSIGN_OR_RETURN(auto instance_b, program.Plan(bindings));
 ```
 
 ### 2.5 `Value`
@@ -607,99 +612,116 @@ produced by partial-eval can carry the type it *would have had* if
 resolved. Relevant when a user's custom fn inspects an UNKNOWN
 input and wants to type-check statically.
 
-## 4. 3VL as a first-class citizen
+## 4. `Value::Unknown` / `Value::Error` in the user surface
 
-### 4.1 The four kinds that matter
+**Absorption is not this layer's concern.** The compiler emits
+wasm that applies the spec's 3VL absorption rules (`langdef.md`
+§3VL) at every operator, short-circuit site, and `has()`. A custom
+function's trampoline only ever hands it concrete, non-3VL args
+(absorbed before dispatch); a custom function can *produce*
+`UNKNOWN` / `ERROR`, and the surrounding emitted code absorbs it
+through the rest of the expression. None of that logic is
+configurable from this doc's surface — it ships in the runtime.
 
-| Kind | Payload | Produced by | Consumed by |
-|---|---|---|---|
-| `BOOL` / `INT` / `STRING` / … | primitive | literals, arithmetic, host reads | every operator |
-| `UNKNOWN` | `AttributeId` | host adapters (for unknown attrs), partial eval | every operator (absorbs) |
-| `ERROR` | `(code, message, expr_id)` | overflow, div-by-zero, type mismatch, host errors | every operator (absorbs, dominates UNKNOWN) |
+What *does* live at this layer is the representation of the two
+3VL kinds as first-class `Value`s.
 
-`ERROR` dominating `UNKNOWN` matches `langdef.md` and cel-cpp:
-`ERROR + UNKNOWN = ERROR` (the certainty of failure beats the
-uncertainty of missing data).
-
-### 4.2 Absorption rules (per-operator)
-
-Codified in every runtime helper, every host trampoline, every
-custom function the host wires in:
-
-- **Strict operators** (`+`, `-`, `*`, `/`, `<`, `>`, `==`, `!=`,
-  field reads, `has`, `size`, custom fns by default):
-  - any arg `ERROR` → return `ERROR` (first one wins, left-to-right)
-  - any arg `UNKNOWN` → return `UNKNOWN` (merge attribute ids if
-    multiple)
-  - else compute
-- **Short-circuit operators** (`&&`, `||`, `?:`):
-  - `false && x = false` regardless of `x`
-  - `true || x = true` regardless of `x`
-  - ternary picks the chosen branch; the unchosen branch's `ERROR`/
-    `UNKNOWN` is discarded
-- **Negation** (`!`):
-  - `!UNKNOWN = UNKNOWN`
-  - `!ERROR = ERROR`
-  - `!bool = negated bool`
-
-### 4.3 `AttributeId` and `AttributePattern`
+### 4.1 `UNKNOWN` — payload is `AttributeId`
 
 ```cpp
+// compiler_v2/api/attribute.h
+namespace cel {
+
 struct AttributeId {
-  // Index into Abi.attributes.  Resolves to (variable, qualifiers[])
-  // — e.g. "request.auth.claims".
+  // Dense index into cel.abi.attributes[].  Resolves to
+  // (variable, qualifiers[]) — e.g. "request.auth.claims".
   uint32_t id;
 };
 
 struct AttributePattern {
   // Textual pattern like "request.*" or "user.profile.email".
-  // Parsed by ParseAttributePattern(); matched against AttributeIds
-  // during partial eval.
+  // Parsed by ParseAttributePattern; matched against
+  // AttributeIds during partial eval.
   std::string pattern;
 };
+
+}  // namespace cel
 ```
 
-Instance::PartialEval takes a list of patterns; the host adapter
-and the boxed root-variable layer both consult this list to decide
-whether to return `UNKNOWN` vs a concrete value. A field read whose
-fully-qualified attribute path matches a declared-unknown pattern
-returns `Value::Unknown(AttributeId{...})`; propagation does the
-rest.
+`Instance::PartialEval` takes a list of `AttributePattern`s; the
+runtime compares each root-variable / field-read attribute path
+against them and returns `Value::Unknown(AttributeId{…})` when
+matched. From that point on, the compiler-emitted code handles
+propagation.
 
-### 4.4 `ErrorPayload`
+Custom functions may also produce `Value::Unknown(...)` for
+their own reasons (e.g. "this value needs a DB lookup I haven't
+done yet"). That behaves identically.
+
+### 4.2 `ERROR` — payload is `(code, message, expr_id)`
 
 ```cpp
+// compiler_v2/api/error.h
+namespace cel {
+
 struct ErrorPayload {
   enum Code {
     kOverflow, kDivideByZero, kModulusByZero, kTypeMismatch,
     kFieldNotFound, kKeyNotFound, kIndexOutOfBounds,
-    kUnknownType, kCustomFnFailed, kHostAdapterError, kTimeout, …
+    kUnknownType, kCustomFnFailed, kHostAdapterError, kTimeout,
+    // …
   };
   Code code;
   std::string message;
   uint32_t expr_id;             // index into CheckedExpr.source_info
-                                //   for source position
+                                //   for the originating subexpression.
 };
+
+}  // namespace cel
 ```
 
 On-wire representation fits in the 16-byte `CelValue.payload`:
 `{code: u16, _pad: u16, expr_id: u32, msg_off: u32, msg_len: u32}`.
 The message bytes live in the arena (allocated via `cel_alloc`).
 
-### 4.5 Host contract for 3VL
+### 4.3 Producing / inspecting 3VL in user code
 
-The `cel_host.*` trampolines (and any custom function trampoline):
+A custom function's `impl` can freely return a 3VL `Value`:
 
-- Absorb `UNKNOWN` / `ERROR` args *before* dispatching to adapter
-  logic. If any arg at the slot offsets is `UNKNOWN` or `ERROR`,
-  the trampoline writes the absorbed value to `out_slot` and
-  returns without touching the adapter.
-- Allow the adapter (or a custom function) to *produce* `UNKNOWN`
-  with an `AttributeId` that's registered in the ABI — used for
-  partial eval.
-- Allow the adapter (or a custom function) to *produce* `ERROR`
-  with a recognised code (or `kHostAdapterError` for embedder-
-  specific codes) and a message.
+```cpp
+RuntimeBindings()
+    .AddFunction("my_find_user_string",
+        [](absl::Span<const Value> args) -> Value {
+          auto id = args[0].AsString();
+          if (!id.ok()) return Value::Error({
+              ErrorPayload::kTypeMismatch,
+              std::string(id.status().message()),
+              /*expr_id=*/0});
+          if (!UserCached(*id)) {
+              // Tell partial eval we need this input fetched.
+              return Value::Unknown(
+                  AttributeId{/*id=*/SomeAttrIdFor("user")});
+          }
+          return Value::Message(LoadUser(*id));
+        });
+```
+
+At the call site, callers inspect `Value`:
+
+```cpp
+if (result.IsError()) {
+  auto info = result.ErrorInfo().value();
+  LOG(ERROR) << "cel failed: " << info->message
+             << " at expr " << info->expr_id;
+} else if (result.IsUnknown()) {
+  // Partial eval path: fetch the attribute, re-Eval.
+}
+```
+
+**That is the whole host-surface story for 3VL.** The how-it-
+propagates-through-operators table belongs in
+`doc/implementation-plan/rewrite/design.md` §4 (runtime helpers),
+not here.
 
 ## 5. Custom functions
 
@@ -766,7 +788,7 @@ compiler_builder.RegisterFunction(FunctionDecl{
 
 // Step 2 — runtime impl, supplied to Plan.
 RuntimeBindings bindings;
-bindings.Bind("my_upper_string",
+bindings.AddFunction("my_upper_string",
     [](absl::Span<const Value> args) -> Value {
       auto s = args[0].AsString();
       if (!s.ok()) return Value::Error({
@@ -785,7 +807,7 @@ compiler_builder.RegisterFunction(FunctionDecl{
     .arg_types = {CelType::String()},    // receiver == arg 0
     .return_type = CelType::String(),
 });
-bindings.Bind("string_upper", /* same impl */);
+bindings.AddFunction("string_upper", /* same impl */);
 ```
 
 ### 5.2 Overloading
@@ -1116,10 +1138,9 @@ absl::StatusOr<std::string> FullName(const Customer& c) {
   ASSIGN_OR_RETURN(auto program,
       compiler.Compile("c.first_name + ' ' + c.last_name"));
 
-  RuntimeBindings bindings{
-      .descriptor_pool = google::protobuf::DescriptorPool::generated_pool(),
-  };
-  ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
+  ASSIGN_OR_RETURN(auto instance, program.Plan(
+      RuntimeBindings().SetDescriptorPool(
+          google::protobuf::DescriptorPool::generated_pool())));
 
   Activation act;
   act.Bind("c", Value::Message(c));
@@ -1147,17 +1168,17 @@ ASSIGN_OR_RETURN(auto compiler, Compiler::NewBuilder()
 ASSIGN_OR_RETURN(auto program, compiler.Compile("my.upper(s)"));
 
 // Runtime: bind the impl.
-RuntimeBindings bindings;
-bindings.Bind("my_upper_string",
-    [](absl::Span<const Value> args) -> Value {
-      auto s = args[0].AsString();
-      if (!s.ok()) return Value::Error({ErrorPayload::kTypeMismatch,
-                                        std::string(s.status().message()), 0});
-      std::string u(s->begin(), s->end());
-      absl::AsciiStrToUpper(&u);
-      return Value::String(std::move(u));
-    });
-ASSIGN_OR_RETURN(auto instance, program.Plan(bindings));
+ASSIGN_OR_RETURN(auto instance, program.Plan(
+    RuntimeBindings().AddFunction("my_upper_string",
+        [](absl::Span<const Value> args) -> Value {
+          auto s = args[0].AsString();
+          if (!s.ok()) return Value::Error({
+              ErrorPayload::kTypeMismatch,
+              std::string(s.status().message()), 0});
+          std::string u(s->begin(), s->end());
+          absl::AsciiStrToUpper(&u);
+          return Value::String(std::move(u));
+        })));
 
 Activation act;
 act.Bind("s", Value::String("hello"));
@@ -1194,11 +1215,10 @@ auto wasm_bytes = Load();
 ASSIGN_OR_RETURN(auto program, cel::Program::FromWasm(wasm_bytes));
 
 // Wire impls for whatever custom overloads the ABI declares.
-RuntimeBindings bindings{
-    .descriptor_pool = MyPool(),
-};
+RuntimeBindings bindings;
+bindings.SetDescriptorPool(MyPool());
 for (const auto& fn : program.abi().functions().host_custom_imports) {
-  bindings.Bind(fn.overload_id, LookUpMyImpl(fn.overload_id));
+  bindings.AddFunction(fn.overload_id, LookUpMyImpl(fn.overload_id));
 }
 RETURN_IF_ERROR(program.CheckCompatible(bindings));
 
@@ -1274,9 +1294,9 @@ it (S4, first proto reads).
 S3.5 and S4.5 are the new slices this draft introduces vs design.md.
 Both are single-day and unlock the rest.
 
-## 10. Open questions
+## 10. Decisions
 
-### Decided (2026-04-22)
+All resolved 2026-04-22.
 
 - **Q1. Adapter ownership.** The adapter is internal to `host/`
   and not part of the public surface (§1.1, §3). The `Compiler`
@@ -1289,33 +1309,29 @@ Both are single-day and unlock the rest.
   **Borrow.** Matches cel-cpp's `CelValue` conventions. Lifetime
   documented on the function. `Value::OwnedMessage(unique_ptr)` is
   the copying alternative.
-
-### Still open
-
-1. **`Activation::BindLazy` — is the value re-fetched across
-   multiple `Eval`s on the same `Instance`?** If yes, lazy =
-   per-`Find` call; if no, lazy = first `Find` caches. Recommend:
-   **per-`Eval` caching, clear on `Reset`.** Matches developer
-   intuition ("same eval sees the same value").
-
-2. **Should `Value::List` / `Value::Map` materialise the wire list
-   eagerly, or stream?** Eager is simple; streaming avoids
-   blowing up on large lists. Recommend: **streaming view
-   (`ListView` / `MapView`) in the API, eager copy only when the
-   user explicitly asks for `ToVector` / `ToMap`.**
-
-3. **Is `AttributeId` resolved eagerly (attribute_id = compile-time
-   int) or lazily (attribute_id = string resolved at partial-eval
-   time)?** Eager = fast; requires full attribute table in ABI.
-   Lazy = flexible; allows runtime-declared unknowns. Recommend:
-   **eager for declared attributes (common case), plus a fallback
-   string path for runtime-synthesised attribute ids (rare).**
-
-4. **Does `Instance` always implicitly `Reset` between `Eval`s, or
-   does the caller control it?** Implicit is safer, explicit
-   allows reuse of arena state across back-to-back evals (rare).
-   Recommend: **implicit, with an opt-out
-   `Instance::EvalWithoutReset`** for the advanced case.
+- **Q3. `Activation::BindLazy` caching.** **Per-`Eval` caching,
+  cleared on `Reset`.** Same `Eval` call sees the same value;
+  subsequent `Eval`s re-invoke the lazy binder. Matches developer
+  intuition and keeps surprises out of multi-call Instance reuse.
+- **Q4. `Value::List` / `Value::Map` materialisation.**
+  **Streaming view.** `Value::AsList()` / `AsMap()` return
+  `ListView` / `MapView` handles that fetch elements on demand.
+  Explicit `ToVector` / `ToMap` methods materialise eagerly when
+  the user asks. Avoids O(N) boxing on every access to large
+  aggregates.
+- **Q5. `AttributeId` resolution.** **Eager.** Every attribute
+  referenced by the expression is interned into
+  `cel.abi.attributes[]` at compile time with a dense `uint32_t`
+  id. `Value::Unknown` payload is an `AttributeId`, not a string.
+  Runtime-synthesised (embedder-declared) attributes are a
+  non-goal; if a custom wants to signal UNKNOWN on an attribute
+  the checker didn't see, it returns an `AttributeId` pointing at
+  a reserved "opaque host-chosen" id. Kept simple; add a string
+  path later if real usage forces it.
+- **Q6. Implicit `Reset` between `Eval`s.** **Always reset.** No
+  `EvalWithoutReset`. Back-to-back `Eval`s on the same `Instance`
+  each start with a fresh arena + externref table. Simpler
+  lifetime model; no subtle bugs from arena carry-over.
 
 ## 11. Non-goals for this draft
 
@@ -1338,24 +1354,13 @@ Called out explicitly so reviewers don't ask:
 - **`CompilerOptions` details.** Important but orthogonal; lives in
   a separate doc when we get there.
 
-## 12. What happens next
+## 12. Pointers
 
-This draft is for discussion. Suggested review order:
-
-1. Does the `Compiler` / `Program` / `Instance` split (+
-   `RuntimeBindings` at `Plan` time) feel right? It's the
-   biggest shape decision; everything else hangs off it.
-2. Is the activation → `Value::Bind` → internal-adapter flow the
-   right cut between user and runtime? The previous draft exposed
-   the adapter; this one hides it. Is anything still leaking?
-3. Are the 3VL absorption rules in §4.2 the ones we want, or is
-   there a shorter formulation?
->>> The 3VL absorpotion are totally handled in the compiler and emitted code. This layer does not concern itself with it. 
-4. Does the ABI schema in §6 preserve the v1 self-contained
-   property to your satisfaction, or did we still trim something?
-5. Which of the still-open questions in §10 should be decided
-   before promotion; which can be deferred?
-
-Once settled, this draft graduates to `cel-host-design.md` (no
-`.draft.` infix), slices are added to `design.md` §11, and the
-testing checklist gets new rows.
+- `design.md` — runtime / codegen internals, memory model,
+  ResolvePass + LayoutPass, runtime helper catalogue. This doc's
+  §4.1 "absorption rules" intentionally absent — see `design.md`
+  §4 for the runtime's 3VL machinery.
+- `testing-checklist.md` — per-slice test rows. When a slice from
+  §9 ships, the matching rows flip.
+- `third_party/cel-cpp/common/standard_definitions.h` — canonical
+  source of `overload_id` constants for stdlib functions.

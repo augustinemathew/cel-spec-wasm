@@ -6,6 +6,16 @@ Supersedes `predecessor-m-mem-static-layout-pass.md` and
 `predecessor-memory-ownership-flip.md` (both in this directory).
 Closes the "Unified symbol table" bullet in `CLAUDE.md` on completion.
 
+**Companion doc — `cel-host-surface.md`** is authoritative for the
+public user API (`Cel::Compiler` / `Cel::Program` / `Cel::Instance`
+/ `Cel::RuntimeBindings` / `Cel::Value` / `Cel::Activation`), the
+`cel.abi` custom-section schema, and every wasm callback signature
+into the host. This doc owns runtime / codegen internals; where the
+two touch, `cel-host-surface.md` wins. Sections here that describe
+the custom-function flow (§4.6), the proto host imports (§4.7), or
+the two-phase loader (§9) describe *implementation mechanics* that
+realise surfaces defined there.
+
 ## 0. What this is
 
 Three threads of work that have accumulated in the implementation plan
@@ -579,12 +589,24 @@ CEL embedders register functions through cel-cpp's checker API:
     user-supplied via `MakeOverloadDecl("my_upper_string", string,
     string)` or auto-generated from arg types.
 
-This compiler is AOT, so custom functions are declared at compile
-time (the tool reads `CompileOptions` alongside the expression).
-After the checker runs, `CheckedExpr.reference_map[id]` carries the
-resolved overload id uniformly for built-ins and customs — no IR
-distinction. Our frontend already consumes `reference_map`; nothing
-about ResolvePass plumbing has to change.
+This compiler is AOT, and the public user surface splits
+registration in two
+(see `cel-host-surface.md` §2 — authoritative for the user API):
+
+  - **Compile-time declaration** on `Cel::Compiler::Builder::
+    RegisterFunction(FunctionDecl{...})`. `FunctionDecl` is
+    signature-only: `name`, `overload_id`, `is_receiver`,
+    `arg_types[]`, `return_type`. No impl. The Compiler forwards
+    these to cel-cpp's `TypeCheckerBuilder::AddFunction` so the
+    checker resolves calls normally.
+  - **Eval-time impl binding** on `Cel::RuntimeBindings::
+    AddFunction(overload_id, impl)`. Supplied at
+    `program.Plan(bindings)` time; the Compiler never sees impls.
+
+After the checker runs, `CheckedExpr.reference_map[id]` carries
+the resolved overload id uniformly for built-ins and customs — no
+IR distinction. Our frontend already consumes `reference_map`;
+nothing about ResolvePass plumbing has to change.
 
 Because the checker treats customs and built-ins the same way,
 **customs are just dynamic entries in the overload table**. No
@@ -650,24 +672,27 @@ surface.)
 
 #### 4.6.2 Registration flow
 
-When the embedder registers a function at compile time:
+Two phases. See `cel-host-surface.md` §5 for the user-facing API;
+this subsection describes what happens inside the compiler.
 
-1. `CompileOptions::RegisterFunction(name, arg_types, return_type, fn_ptr)`
-   is forwarded to cel-cpp's `FunctionRegistry` so the checker
-   resolves calls normally; the checker assigns it an overload id
-   (e.g. `"my_upper_string"`).
-2. `OverloadTableBuilder::RegisterCustom("my_upper_string",
-   ImportModule::kCelHost, "my_upper_string")` is called. The
-   `helper_name` is the wasm import name the expr module will
-   reference; by convention it matches the overload id so embedders
-   don't need to keep two names in sync, but the embedder may
-   choose any unique name. Arity lives in the wasm signature, not
-   in the name. On collision with a built-in, the embedder gets a
-   clean `AlreadyExists` citing the overload id.
-3. The `cel.abi` custom section records, for each registered
-   custom, its `(helper_name, arg types, return type)` so the host
-   loader can cross-check the registry's bound `fn_ptr` against the
-   expr module's arity expectation before returning from `LoadEval`.
+**Phase A — compile time.** The embedder calls
+`Compiler::Builder::RegisterFunction(FunctionDecl)` where
+`FunctionDecl` is signature-only (no impl). The Compiler:
+
+1. Forwards the declaration to cel-cpp's
+   `TypeCheckerBuilder::AddFunction` (matching overload_id),
+   so the checker resolves calls normally.
+2. Calls `OverloadTableBuilder::RegisterCustom("my_upper_string",
+   ImportModule::kCelHost, helper_name)`. `helper_name` defaults
+   to the overload id; `FunctionDecl::helper_name` overrides.
+   On collision with a built-in or with a prior custom, returns
+   `AlreadyExists`.
+3. At codegen, `UsedImports(used_overload_ids)` filters the
+   registry to the subset this expression touches; each is
+   emitted as a `CustomFunctionEntry` row into
+   `cel.abi.functions.host_custom_imports[]` carrying the full
+   signature (`function_name`, `overload_id`, `is_receiver`,
+   `helper_name`, `arg_types[]`, `return_type`).
 
 At ResolvePass, nothing special — the checker-supplied overload id
 is interned exactly like a built-in's; only
@@ -678,68 +703,83 @@ At codegen, the `kCall` arm is one unified emitter (§4.4); the
 `call $import` with the uniform slot-out signature. Built-ins and
 customs are indistinguishable at this layer.
 
+**Phase B — `program.Plan(bindings)` time.** The embedder
+supplies a `RuntimeBindings` carrying `AddFunction(overload_id,
+impl)` entries. `Plan` cross-checks (see
+`cel-host-surface.md` §5.5): every `host_custom_imports[]` entry
+must have a matching impl in `bindings.function_impls`. Missing →
+`FailedPrecondition` citing `overload_id` + `function_name`.
+
 #### 4.6.3 Host runtime
 
-The host registry holds each registered function by its
-`helper_name`:
+The bound impls live on the `Instance` that `Plan` constructed;
+the ABI's `CustomFunctionEntry` drives the boxing/unboxing
+trampoline shape:
 
 ```cpp
-struct CustomEntry {
-  uint8_t    arity;
-  CustomFn   fn;  // void(*)(uint32_t out_slot, absl::Span<const uint32_t> args)
+// Internal to host/cel_host_wasmtime.cc — not user-visible.
+struct BoundCustom {
+  const abi::CustomFunctionEntry* entry;  // signature from ABI
+  FunctionImpl                    fn;     // from RuntimeBindings
 };
-absl::flat_hash_map<std::string, CustomEntry> by_helper_name;
+absl::flat_hash_map<std::string /*helper_name*/, BoundCustom> bound_;
 ```
 
-At `LoadEval`, the host walks the expr module's `cel.abi.
-custom_functions` list: for every `helper_name` the module
-references, it looks up the registry entry and binds the wasm
-import directly to a thin trampoline that reads the caller-supplied
-`out_slot` + arg offsets straight off the wasm stack and invokes
-`e.fn(out_slot, MakeConstSpan(args, e.arity))`. No pattern-id
-dispatch; name-keyed linking is the entire mechanism.
+At `LoadEval` (internal routine invoked by `Program::Plan`), the
+host walks `cel.abi.functions.host_custom_imports[]` and, for
+each entry, binds the wasm import `cel_host.<helper_name>` to a
+trampoline that:
 
-If the expr module references a `helper_name` the registry has not
-bound, `LoadEval` returns `FailedPrecondition` citing the unbound
-name — detected at link time, not at eval.
+  1. Absorbs `UNKNOWN` / `ERROR` args into the out slot and
+     returns (spec-mandated strict absorption, handled before the
+     impl ever sees the args).
+  2. Boxes each arg offset → `Value` per `entry->arg_types`.
+  3. Invokes `fn(MakeConstSpan(values))`.
+  4. Unboxes the returned `Value` into a `CelValue` at `out_slot`
+     per `entry->return_type`. Return-kind mismatch → ERROR.
 
-Arity mismatch between the expr module's expectations and the
-registered function is caught at `LoadEval` too: the checker
-recorded the arg count against the overload id; the `cel.abi`
-section records it; the host cross-checks against the registered
-`arity` field before returning from `LoadEval`. (The wasm
-signature itself also encodes arity, so a mismatched binding
-would additionally fail at wasm link time — belt and braces.)
+No arity cross-check at the registry level — the signature is
+already in the ABI, and `Plan`'s cross-check runs against impls
+only. The wasm linker additionally rejects signature-incompatible
+bindings at instantiation time (belt + braces).
+
+If the Program references a helper the bindings don't cover,
+`Plan` returns `FailedPrecondition` at that call; `Program::
+CheckCompatible(bindings)` runs the same audit without
+instantiating wasmtime, for deployment preflight.
 
 #### 4.6.4 Test strategy
 
-  - **Unit**: `RegisterCustom` appends one row; `InternOverloadId`
-    returns the expected id; `RegisterCustom` with a built-in id
-    returns `AlreadyExists`; `RegisterCustom` with a duplicate custom
-    returns `AlreadyExists`.
+  - **Unit**: `OverloadTableBuilder::RegisterCustom` collision
+    rules: built-in id → `AlreadyExists`; duplicate custom →
+    `AlreadyExists`. `InternOverloadId` returns the expected id.
+  - **Unit**: `RuntimeBindings::AddFunction` collision with prior
+    `AddFunction(same_overload_id, ...)` → `AlreadyExists`.
+    `Find` returns the expected impl; `BoundOverloads` lists all.
   - **Integration**: fixture custom `my.upper(string) -> string`
-    called from `my.upper("abc") == "ABC"` round-trips e2e.
+    declared at compile, bound at Plan; `my.upper("abc") == "ABC"`
+    round-trips e2e.
   - **Arity coverage**: one e2e test per arity in `{0, 1, 2, 3, 8}`,
-    each registering a function with a distinct `helper_name` and
-    the corresponding wasm signature; the test asserts that args
-    arrive at the host-side implementation in source order.
-  - **Sibling calls don't collide**: two custom calls in the same
-    expression (`my.a(1, 2) + my.b("x")`) each land in their own
-    workspace slots and lower to distinct wasm imports with no
-    shared state — regression coverage for the old staging-region
-    overwrite hazard.
-  - **Negative — unbound helper_name**: compile referencing a
-    custom, instantiate against a registry missing its binding;
-    confirm `LoadEval` returns `FailedPrecondition` citing the
-    unbound `helper_name`.
-  - **Negative — arity mismatch**: compile with a registry that
-    declares `my.fn(int, int)`; at bind time, register a 1-arg
-    `my.fn`; `LoadEval` returns `FailedPrecondition` citing the
-    arity mismatch.
+    each with a distinct `overload_id` + matching wasm signature;
+    args arrive at the impl in source order.
+  - **Receiver style**: `x.upper()` with `is_receiver=true`
+    binds against `(string) -> string` signature; args[0] is the
+    receiver.
+  - **Sibling calls don't collide**: `my.a(1, 2) + my.b("x")`
+    each land in their own workspace slots and lower to distinct
+    wasm imports with no shared state.
+  - **Negative — missing impl at Plan**: compile referencing
+    `my.upper`, `Plan` against empty bindings → `FailedPrecondition`
+    citing `overload_id` + `function_name`.
+  - **Negative — CheckCompatible preflight**: same setup, but
+    `CheckCompatible` returns the same status without touching
+    wasmtime.
   - **Import declaration**: `table.UsedImports(used_ids)` for an
     expression referencing only `my.a` produces one wasm import
     under `cel_host` named `my_a` — no extra imports for unused
-    registered customs.
+    bound customs.
+  - **Stdlib parity**: a bound `my.upper` cannot shadow a built-in;
+    `RegisterCustom` on a built-in overload id fails.
 
 ### 4.7 Proto messages and struct literals
 
@@ -787,16 +827,18 @@ into wasm.
 
 ```
   ;; 1. Allocate an empty Customer. type_id is interned at compile
-  ;;    time against the descriptor pool.
+  ;;    time against the descriptor pool (→ cel.abi.types[]).
   cel_host.cel_make_message(type_id, out_slot)         ;; (u32, u32) -> void
 
   ;; 2. Lower each field value into its own workspace slot.
   <emit expr_n>   -> slot_n   ;; CelValue (string) at slot_n
   <emit expr_a>   -> slot_a   ;; CelValue (int)    at slot_a
 
-  ;; 3. Set each field. field_id is the proto field-number.
-  cel_host.cel_set_field(out_slot, field_id_name, slot_n)  ;; (u32,u32,u32) -> void
-  cel_host.cel_set_field(out_slot, field_id_age,  slot_a)  ;; (u32,u32,u32) -> void
+  ;; 3. Set each field.  field_ref_id is the intern id assigned at
+  ;;    compile time (→ cel.abi.fields[] row carrying type_id +
+  ;;    field_number + field_name + result_type).
+  cel_host.cel_set_field(out_slot, field_ref_id_name, slot_n)  ;; (u32,u32,u32) -> void
+  cel_host.cel_set_field(out_slot, field_ref_id_age,  slot_a)  ;; (u32,u32,u32) -> void
 ```
 
 **Host surface (`compiler/host/cel_host.cc`, §4.7.5).** Four fixed
@@ -804,20 +846,20 @@ host imports, regardless of message shape:
 
 ```
 cel_host.cel_make_message(type_id: u32, out_slot: u32) -> void
-cel_host.cel_set_field   (msg_slot: u32, field_id: u32, value_slot: u32) -> void
-cel_host.cel_get_field   (out_slot: u32, msg_slot: u32, field_id: u32) -> void   (read side — reused from M3 G2)
-cel_host.cel_has_field   (out_slot: u32, msg_slot: u32, field_id: u32) -> void   (from M3 G3)
+cel_host.cel_set_field   (msg_slot: u32, field_ref_id: u32, value_slot: u32) -> void
+cel_host.cel_get_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32) -> void   (read side — reused from M3 G2)
+cel_host.cel_has_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32) -> void   (from M3 G3)
 ```
 
-`type_id` is interned at compile time against the descriptor pool;
-the host's dispatcher maps `type_id → MessageFactory` and
-`(type_id, field_id) → MessageFieldSetter`. `cel_make_message`
-creates an empty, mutable proto; `cel_set_field` writes a field
-(host reads the CelValue from `value_slot` and calls the
-descriptor's setter). Field IDs are proto field numbers — the same
-`field_number` the checker already populates on `SelectExpr` nodes
-(§3 `NodeAnnotation::field_number`) and that M3 Slice G2 wired for
-reads.
+`type_id` is interned at compile time against the descriptor pool
+(recorded in `cel.abi.types[]`); the host's dispatcher maps
+`type_id → MessageFactory`. `field_ref_id` is a separate intern
+id per field-access call site (recorded in `cel.abi.fields[]`,
+carrying `type_id` + `field_number` + `field_name` + `result_type`);
+the host precomputes `field_ref_id → (FieldDescriptor*,
+MessageFieldSetter, CelType)` at `Plan` time so the trampoline
+does one array lookup on the hot path — no per-call descriptor
+walk. See `cel-host-surface.md` §3.1 and §6 for the ABI schema.
 
 **No `MessagePattern` table.** Earlier drafts proposed a
 `(descriptor, field-assignment-shape) → pattern_id` side table; that
@@ -1460,15 +1502,26 @@ Survives slot reuse because the ERROR CelValue travels through slots
 
 ## 9. Host loader — `compiler/host/host_loader.{h,cc}`
 
+`LoadEval` is the internal two-phase wasmtime routine. The public
+entry point is `Cel::Program::Plan(RuntimeBindings)` — see
+`cel-host-surface.md` §2.2. `Plan` parses the ABI, runs the §4.6.2
+cross-check on `bindings`, then invokes `LoadEval` to spin up the
+wasmtime store.
+
 ### 9.1 Two-phase instantiation
 
 ```cpp
-// Pseudocode.
-absl::StatusOr<EvalInstance> LoadEval(const CompiledEval& compiled) {
+// Pseudocode.  Called internally by Cel::Program::Plan; not a
+// public entry point.
+absl::StatusOr<EvalInstance> LoadEval(
+    const CompiledEval& compiled,
+    const RuntimeBindings& bindings) {
   // Phase 1: instantiate the expr module. It defines + exports memory.
   // Its imports are cel.cel_alloc, cel.cel_and, etc. Satisfy with
-  // trampolines that rebind in phase 2.
-  Trampolines t = InstallTrampolines(linker);
+  // trampolines that rebind in phase 2.  Custom host imports are
+  // bound here by walking cel.abi.functions.host_custom_imports[]
+  // and looking up bindings.function_impls[overload_id] per §4.6.3.
+  Trampolines t = InstallTrampolines(linker, bindings);
   wasmtime_instance_t expr = wasmtime_linker_instantiate(linker, expr_mod);
 
   // Phase 2: instantiate the runtime module. Its only import is
@@ -1966,33 +2019,55 @@ proto), `has(x.order.items)`.
 
 #### Slice 7 — Custom functions (per-function imports) (2 days)
 
-**Scope.**
+**Scope.** Landing the split model defined in
+`cel-host-surface.md` §5: signatures on `Compiler`, impls on
+`RuntimeBindings` at `Plan` time.
 
   - `OverloadTableBuilder::RegisterCustom` (§4.3) + per-function
-    wasm imports under `"cel_host"` (§4.6.1). Each registered
+    wasm imports under `"cel_host"` (§4.6.1). Each declared
     custom becomes its own `AddFunctionImport` with the uniform
     slot-out signature; no shared trampoline, no args-staging
     region.
-  - `CompileOptions::RegisterFunction` plumbing through frontend
-    to `OverloadTableBuilder::RegisterCustom`.
-  - `cel.abi` custom section extended with `custom_functions[]`
-    (each entry: `helper_name`, arg types, return type).
+  - `Cel::Compiler::Builder::RegisterFunction(FunctionDecl)`
+    plumbing through the frontend to `TypeCheckerBuilder::
+    AddFunction` + `OverloadTableBuilder::RegisterCustom`.
+    `FunctionDecl` is signature-only — no impl field (per
+    `cel-host-surface.md` §5.1).
+  - `Cel::RuntimeBindings::AddFunction(overload_id, impl)` on the
+    eval-time side, wired so `Program::Plan(bindings)` binds each
+    declared custom import to the trampoline + impl from the
+    bindings. Cross-check per §4.6.2 phase B.
+  - `cel.abi` custom section extended with `CustomFunctionEntry[]`
+    carrying `(function_name, overload_id, is_receiver,
+    helper_name, arg_types[], return_type)` — full signature so
+    the trampoline knows how to box/unbox on its own.
+  - Auto-boxing trampoline: wasm i32 offsets in → `Value` args →
+    `impl(...)` → `Value` result → i32 offset out. `Value`
+    constructors for every CelType kind the args/return might
+    take. No raw-offset FunctionImpl API.
 
-**E2E check.** Fixture `my.upper(string) -> string` at arity 1
-wires register → compile → load → call → return. Per-arity e2e in
-`{0, 1, 2, 3, 8}`, each registering a distinct `helper_name` and
-asserting args arrive in source order.
+**E2E check.** Fixture `my.upper(string) -> string` — compile-
+time `RegisterFunction`, Plan-time `AddFunction`, call round-
+trips. Per-arity e2e in `{0, 1, 2, 3, 8}`. Receiver-style e2e:
+`"abc".upper()` with `is_receiver=true`. `Program::FromWasm` +
+`RuntimeBindings` on a different process evaluates correctly.
 
-**Tests.** `overload_table_test`: `RegisterCustom` collision /
-no-override; `e2e/eval_test`: per-arity + unbound-helper-name
-negative + arity-mismatch negative; `cel_host_test`: per-function
-trampoline decodes arg offsets correctly.
+**Tests.**
+  - `overload_table_test`: `RegisterCustom` collision /
+    no-override; built-in shadowing fails.
+  - `runtime_bindings_test`: `AddFunction` collision; `Find`,
+    `BoundOverloads`; `SetDescriptorPool` override.
+  - `e2e/eval_test`: per-arity + receiver-style + missing-impl at
+    Plan → `FailedPrecondition` citing overload_id;
+    `CheckCompatible` preflight matches.
+  - `cel_host_test`: trampoline boxes each arg kind correctly;
+    mismatched return kind → ERROR.
 
-**Risk.** Import-list bloat for registries with many unused
-customs. **Mitigation:** `UsedImports` filters to the subset the
-expression actually references (already true for built-ins);
-unit test verifies an unused registered custom produces no wasm
-import.
+**Risk.** Import-list bloat for programs that declare many
+unused customs. **Mitigation:** `UsedImports` filters to the
+subset the expression actually references (same as built-ins);
+unit test confirms declared-but-unused customs produce no wasm
+imports.
 
 **Effort.** 2 days.
 
@@ -2038,7 +2113,7 @@ work via the same emit sequence).
 **Tests.** `cel_host_test` on `cel_make_message` + `cel_set_field`;
 `e2e/eval_test` with proto literal (literal values); proto literal
 (computed values); unregistered descriptor → compile-time
-`InvalidArgument`; unknown field_id → ERROR.
+`InvalidArgument`; unknown field_ref_id → ERROR.
 
 **Risk.** Unknown field on a known descriptor should fail at
 *compile time* (checker rejects it). **Mitigation:** fail fast
