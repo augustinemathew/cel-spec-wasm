@@ -53,6 +53,24 @@ cc_test(
     ],
 )
 
+# Locks the runtime null-pointer-elision bug closed.  Loads the
+# cross-compiled cel_runtime.wasm under wasmtime and asserts
+# cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
+# don't, without the asm opacity barrier in cel_memory_base_).
+# Tagged manual because the cel_runtime_wasm_bytes target is
+# (genrule-via-brew-llvm, darwin-arm64 only).
+cc_test(
+    name = "cel_runtime_wasm_test",
+    srcs = ["cel_runtime_wasm_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
 # wasm32 cross-compile.  Per rewrite plan §8.1: the runtime no longer
 # owns memory — the expr module does — so we pass `--import-memory=cel,memory`.
 # Explicit `--export=` per symbol (no `--export-all`).  darwin-arm64 only

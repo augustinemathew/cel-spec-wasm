@@ -27,10 +27,22 @@ static void* memset(void* dst, int v, size_t n) {
 // byte buffer so native tests exercise the exact same layout.
 #ifdef __wasm__
 // wasm-ld provides `__heap_base` after linking; with `--import-memory`
-// the base of memory is index 0, addressable directly.  We bypass the
-// extern and synthesize a byte pointer from offset 0.
+// the base of memory is index 0, addressable directly.  We synthesize
+// a byte pointer from offset 0.
+//
+// IMPORTANT: route the zero through `uintptr_t` + an inline-asm
+// opacity barrier.  Without the barrier, clang's wasm32 backend sees
+// `(uint8_t*)0` as a C null pointer and treats every store through
+// `cel_memory_base_() + off` as undefined behaviour — which it then
+// elides entirely.  Disassembly without this fix shows `cel_reset`
+// compiles to a no-op (no `i32.store` at byte 8 or 12) and
+// `cel_alloc` compiles to `unreachable`.  The barrier prevents the
+// optimizer from reasoning about the value-of-zero through the
+// pointer cast; the runtime cost is one register copy.
 static uint8_t* cel_memory_base_(void) {
-  return (uint8_t*)0;
+  uintptr_t p = 0;
+  __asm__("" : "+r"(p));
+  return (uint8_t*)p;
 }
 static uint32_t cel_memory_size_(void) {
   // The module imports a 1-page memory (64 KiB) at M1; later milestones
