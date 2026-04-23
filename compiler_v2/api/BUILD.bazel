@@ -1,0 +1,136 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# CelType — user-facing static type for declarations.  Leaf header; no
+# compiler dependency.  See doc/implementation-plan/rewrite/
+# cel-host-surface.md §2.
+cc_library(
+    name = "type",
+    srcs = ["type.cc"],
+    hdrs = ["type.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "type_test",
+    srcs = ["type_test.cc"],
+    deps = [
+        ":type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# AttributeId + AttributePattern + ErrorPayload/Code.  Payloads carried
+# by Value::Unknown / Value::Error.  Leaf.
+cc_library(
+    name = "attribute",
+    srcs = ["attribute.cc"],
+    hdrs = ["attribute.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "attribute_test",
+    srcs = ["attribute_test.cc"],
+    deps = [
+        ":attribute",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# ErrorCode + ErrorPayload — payload of Value::Error.  Separate from
+# attribute/ so callers that only need partial-eval plumbing don't
+# pull in the error catalogue.
+cc_library(
+    name = "error",
+    srcs = ["error.cc"],
+    hdrs = ["error.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "error_test",
+    srcs = ["error_test.cc"],
+    deps = [
+        ":error",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Value — user-facing counterpart to the 24-byte wire CelValue.  Owns
+# its payload by value; safe to copy / move / pass by value.  Aggregate
+# builders (List/Map/Message) are signature-final stubs until their
+# milestone ships.
+cc_library(
+    name = "value",
+    srcs = ["value.cc"],
+    hdrs = ["value.h"],
+    deps = [
+        ":attribute",
+        ":error",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "value_test",
+    srcs = ["value_test.cc"],
+    deps = [
+        ":attribute",
+        ":error",
+        ":value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Activation — per-Eval name → Value bindings.  BindLazy and
+# OverrideFunction are signature-final stubs until their milestone.
+cc_library(
+    name = "activation",
+    srcs = ["activation.cc"],
+    hdrs = ["activation.h"],
+    deps = [
+        ":value",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "activation_test",
+    srcs = ["activation_test.cc"],
+    deps = [
+        ":activation",
+        ":value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
