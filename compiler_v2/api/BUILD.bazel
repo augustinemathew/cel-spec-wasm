@@ -212,20 +212,51 @@ cc_test(
     ],
 )
 
+# Internal — pImpl payload for cel::Instance.  Owned via
+# unique_ptr from the public Instance.  Tagged manual; wasmtime dep.
+cc_library(
+    name = "instance_impl",
+    srcs = ["internal/instance_impl.cc"],
+    hdrs = ["internal/instance_impl.h"],
+    tags = ["manual"],
+    deps = [
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# cel::Instance — the live evaluator.  Constructed by Engine::Plan;
+# Eval() lands in a follow-up commit.
+cc_library(
+    name = "instance",
+    srcs = ["instance.cc"],
+    hdrs = ["instance.h"],
+    tags = ["manual"],
+    deps = [
+        ":instance_impl",
+        ":wasmtime_engine_state",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
 # cel::Engine — runtime side.  Owns wasm_engine_t + parsed
-# cel_runtime.wasm.  Plan() lands in a follow-up commit.
+# cel_runtime.wasm.  Plan(program) → Instance.
 cc_library(
     name = "engine",
     srcs = ["engine.cc"],
     hdrs = ["engine.h"],
     tags = ["manual"],
     deps = [
+        ":instance",
+        ":instance_impl",
+        ":program",
         ":wasmtime_engine_state",
+        "//compiler_v2/host:cel_log",
         "//compiler_v2/runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
@@ -236,6 +267,11 @@ cc_test(
     tags = ["manual"],
     deps = [
         ":engine",
+        ":program",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )

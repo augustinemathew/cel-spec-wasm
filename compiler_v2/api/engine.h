@@ -36,6 +36,8 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
+#include "compiler_v2/api/instance.h"
+#include "compiler_v2/api/program.h"
 
 namespace celwasm {
 struct WasmtimeEngineState;
@@ -54,8 +56,31 @@ class Engine {
   Engine& operator=(Engine&&) noexcept;
   ~Engine();
 
-  // Plan(...) and other runtime-side entry points land in the
-  // commits that follow.
+  // Build an Instance from a Program, ready for evaluation.  M1
+  // re-parses the program's wasm bytes via wasmtime_module_new on
+  // every Plan; future commits add an Engine-side cache keyed by
+  // program identity if profiles demand it.
+  //
+  // Wiring (per Plan §5.4): host-allocates a 2-page wasmtime_memory_t
+  // in a fresh store; binds it as cel.memory on a fresh linker;
+  // installs cel_env.cel_log; instantiates cel_runtime.wasm against
+  // those imports; binds the runtime's cel_reset / cel_alloc exports
+  // back onto the linker as cel.cel_reset / cel.cel_alloc; parses
+  // and instantiates the expr module against the now-complete linker;
+  // looks up the eval export.
+  //
+  // FailedPrecondition on:
+  //   - module_new(expr): malformed bytes
+  //   - instantiate failures (missing imports, etc.)
+  //   - missing `eval` export
+  //   - wasmtime trap during instantiation
+  //
+  // Plan is safe to call concurrently: each call creates a fresh
+  // store + linker + memory, sharing only the engine + parsed
+  // runtime module via the shared_ptr.  wasmtime engines and modules
+  // are documented thread-safe.
+  ABSL_MUST_USE_RESULT absl::StatusOr<Instance> Plan(
+      const Program& program) const;
 
  private:
   friend class Builder;
