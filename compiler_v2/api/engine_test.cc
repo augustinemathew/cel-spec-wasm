@@ -17,7 +17,10 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
+#include "compiler_v2/api/compiler.h"
+#include "compiler_v2/api/instance.h"
 #include "compiler_v2/api/program.h"
+#include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -161,27 +164,44 @@ TEST(EnginePlanThreadingTest, ConcurrentPlanCallsAllSucceed) {
   }
 }
 
-TEST(EnginePlanTest, InstanceOutlivesEngineThatBuiltIt) {
-  // Plan in an inner scope with the Engine; let the Engine handle
-  // die.  The Instance holds a shared_ptr to the WasmtimeEngineState
-  // so the wasm engine + parsed runtime stay alive; the Instance's
-  // own store/linker/instances were always Instance-owned.  Verify
-  // by reading memory_size_bytes() AFTER the Engine drops — that
-  // call goes through wasmtime_store_context + wasmtime_memory_data_size,
-  // both of which would crash / UB on freed handles.
-  std::size_t expected_size = 0;
-  Instance inst = ([&]() {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    auto i = e->Plan(SyntheticProgram());
-    ABSL_CHECK_OK(i);
-    expected_size = i->memory_size_bytes();
-    return *std::move(i);
+TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
+  // Build everything inside an inner scope so Compiler + Engine +
+  // Program all destruct before the assertions run.  Instance
+  // holds a shared_ptr to WasmtimeEngineState (the engine + parsed
+  // runtime module), so the wasm execution machinery stays alive;
+  // its own store / linker / instance were always Instance-owned.
+  //
+  // Proof of life via Eval: the Eval call goes through
+  // wasmtime_func_call against the cached eval_fn, which in turn
+  // dispatches into the runtime instance (which holds an internal
+  // ref to the runtime module via the shared_ptr).  If any of
+  // {engine, runtime module, store, linker, runtime_instance,
+  // expr_instance, eval_fn} were freed during Engine's destruction
+  // this would either trap or UB.  A clean Int(42) is the only
+  // way to pass.
+  Instance inst = ([]() {
+    auto compiler_or = Compiler::NewBuilder().Build();
+    ABSL_CHECK_OK(compiler_or);
+    auto engine_or = Engine::NewBuilder().Build();
+    ABSL_CHECK_OK(engine_or);
+    auto prog_or = compiler_or->Compile("42");
+    ABSL_CHECK_OK(prog_or);
+    auto inst_or = engine_or->Plan(*prog_or);
+    ABSL_CHECK_OK(inst_or);
+    return *std::move(inst_or);
   })();
-  // Engine destroyed.  If Instance's wasmtime resources weren't
-  // intact, this read would crash.
-  EXPECT_GT(expected_size, 0u);
-  EXPECT_EQ(inst.memory_size_bytes(), expected_size);
+
+  auto v_or = inst.Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kInt);
+  auto i = v_or->AsInt();
+  ASSERT_TRUE(i.ok());
+  EXPECT_EQ(*i, 42);
+
+  // Eval is also re-entrant after the originating Engine drop.
+  auto v2_or = inst.Eval();
+  ASSERT_TRUE(v2_or.ok()) << v2_or.status();
+  EXPECT_EQ(*v2_or->AsInt(), 42);
 }
 
 }  // namespace

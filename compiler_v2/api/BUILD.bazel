@@ -311,8 +311,11 @@ cc_test(
     srcs = ["engine_test.cc"],
     tags = ["manual"],
     deps = [
+        ":compiler",
         ":engine",
+        ":instance",
         ":program",
+        ":value",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
