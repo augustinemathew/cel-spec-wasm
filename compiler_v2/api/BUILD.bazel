@@ -134,3 +134,108 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# ─── Plan §5.2 (revised) — runtime-isolation execution ────────────────
+#
+# Three classes:
+#   - cel::Compiler  (compiler.{h,cc}) — pure compile-time front
+#                    end.  Compile(source) → Program.  No wasmtime.
+#   - cel::Program   (program.h)       — bytes + (future) ABI.
+#                    Pure data type; serializable.  No wasmtime.
+#   - cel::Engine    (engine.{h,cc})   — runtime side.  Owns the
+#                    wasm_engine_t + parsed cel_runtime.wasm.
+#                    Plan(program, bindings) → Instance lands in
+#                    a follow-up commit.
+#
+# Compiler depends on the existing celwasm::Compile pipeline; no
+# wasmtime dep on the public surface.  Engine pulls in wasmtime
+# (darwin-arm64-only via brew llvm) so its targets are tagged
+# manual.
+
+# Internal — owns the wasmtime state held by cel::Engine.  In
+# `celwasm::` per cel-host-surface.md §1 (public is `cel::`,
+# internal is `celwasm::`).
+cc_library(
+    name = "wasmtime_engine_state",
+    srcs = ["internal/wasmtime_engine_state.cc"],
+    hdrs = ["internal/wasmtime_engine_state.h"],
+    tags = ["manual"],
+    deps = [
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# cel::Program — the compiled artifact.  Pure data: bytes +
+# (future) ABI.  No wasmtime dep; can be serialized + shipped.
+cc_library(
+    name = "program",
+    hdrs = ["program.h"],
+    deps = [
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "program_test",
+    srcs = ["program_test.cc"],
+    deps = [
+        ":program",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# cel::Compiler — pure compile-time front end.  Wraps the
+# existing celwasm::Compile pipeline; produces cel::Program.  No
+# wasmtime dep.
+cc_library(
+    name = "compiler",
+    srcs = ["compiler.cc"],
+    hdrs = ["compiler.h"],
+    deps = [
+        ":program",
+        "//compiler_v2:compile",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "compiler_test",
+    srcs = ["compiler_test.cc"],
+    deps = [
+        ":compiler",
+        ":program",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# cel::Engine — runtime side.  Owns wasm_engine_t + parsed
+# cel_runtime.wasm.  Plan() lands in a follow-up commit.
+cc_library(
+    name = "engine",
+    srcs = ["engine.cc"],
+    hdrs = ["engine.h"],
+    tags = ["manual"],
+    deps = [
+        ":wasmtime_engine_state",
+        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "engine_test",
+    srcs = ["engine_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":engine",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

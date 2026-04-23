@@ -1,0 +1,96 @@
+// `cel::Engine` — runtime side of the host surface.  Owns the
+// wasm execution machinery shared across all evaluations: the
+// `wasm_engine_t` and the parsed `cel_runtime.wasm` module.
+//
+// Per doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
+// §4 (revised): role-separated from `cel::Compiler`.  Compiler is
+// pure compile-time and has no wasmtime dependency.  Engine is
+// pure runtime and has no compile-time dependency.  A Program
+// (bytes + ABI) is the serialization boundary between them.
+//
+// Lifecycle:
+//
+//   cel::Compiler  ─Compile(source)─►  cel::Program
+//                                            │
+//                                            ▼
+//                  cel::Engine ─Plan(program, bindings)─►  cel::Instance
+//
+// The Engine is process-shared (or per-tenant in multi-tenant
+// hosts).  `wasm_engine_t` and `wasmtime_module_t` are documented
+// thread-safe for concurrent access; many threads safely call
+// `Engine::Plan(...)` against the same Engine.
+//
+// Bench-justified: caching the parsed cel_runtime.wasm on the
+// Engine gives a ~34x per-Plan speedup over re-parsing it (186us
+// → 5.5us); sharing the engine across the process gives another
+// ~64x cold-to-hot (351us → 5.5us).  See §2 of the plan doc for
+// raw numbers.
+//
+// Plan() lands in a later commit; this one only stands up the
+// engine + parsed runtime fixture and the Builder.
+
+#ifndef CELWASM_COMPILER_V2_API_ENGINE_H_
+#define CELWASM_COMPILER_V2_API_ENGINE_H_
+
+#include <memory>
+
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
+
+namespace celwasm {
+struct WasmtimeEngineState;
+}  // namespace celwasm
+
+namespace cel {
+
+class Engine {
+ public:
+  class Builder;
+  static Builder NewBuilder();
+
+  Engine(const Engine&) = delete;
+  Engine& operator=(const Engine&) = delete;
+  Engine(Engine&&) noexcept;
+  Engine& operator=(Engine&&) noexcept;
+  ~Engine();
+
+  // Plan(...) and other runtime-side entry points land in the
+  // commits that follow.
+
+ private:
+  friend class Builder;
+
+  // Built only by Builder::Build(); the shared_ptr's control
+  // block is set up there so destruction here works without
+  // WasmtimeEngineState being a complete type.
+  explicit Engine(std::shared_ptr<celwasm::WasmtimeEngineState> wasmtime);
+
+  // shared_ptr (vs unique_ptr) so future Instances minted by Plan
+  // can hold a back-reference to the engine state and outlive the
+  // Engine handle the user originally constructed.  Internal
+  // detail; not exposed.
+  std::shared_ptr<celwasm::WasmtimeEngineState> wasmtime_;
+};
+
+class Engine::Builder {
+ public:
+  Builder() = default;
+
+  // Special members defaulted while M1 has no per-Builder state.
+  // When future commits add tunables (e.g. wasmtime config flags)
+  // the .cc will need definitions.
+  ~Builder() = default;
+  Builder(const Builder&) = delete;
+  Builder& operator=(const Builder&) = delete;
+  Builder(Builder&&) noexcept = default;
+  Builder& operator=(Builder&&) noexcept = default;
+
+  // Allocate the wasm engine + parse `cel_runtime.wasm` into a
+  // module.  Returns Internal on wasmtime allocation failure.
+  // Single-use: && enforces consumption at the call site.
+  ABSL_MUST_USE_RESULT absl::StatusOr<Engine> Build() &&;
+};
+
+}  // namespace cel
+
+#endif  // CELWASM_COMPILER_V2_API_ENGINE_H_
