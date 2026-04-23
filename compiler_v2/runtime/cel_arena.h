@@ -27,6 +27,16 @@ extern "C" {
 void cel_reset(uint32_t arena_base, uint32_t arena_limit);
 uint32_t cel_alloc(uint32_t n);
 
+// Native-caller variants.  Take an explicit memory-base pointer and
+// operate on `mem[8/12]` directly — no dependency on the module's own
+// memory or the C global used by the wasm / native-test builds of
+// `cel_reset` / `cel_alloc`.  Host trampolines for `cel.cel_reset` /
+// `cel.cel_alloc` thin-wrap these: pull the caller's exported memory
+// pointer from `wasmtime_caller_t`, forward the arguments unchanged.
+// Never duplicates logic — the trampoline is literally one line.
+void cel_reset_native(uint8_t* mem, uint32_t arena_base, uint32_t arena_limit);
+uint32_t cel_alloc_native(uint8_t* mem, uint32_t n);
+
 // Offset → CelValue* helper.  Returns NULL when `off == 0` so callers
 // can treat a zero offset uniformly as "absent".  Invalidated by
 // `cel_reset`.

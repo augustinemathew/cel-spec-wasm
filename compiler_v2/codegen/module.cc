@@ -123,10 +123,10 @@ absl::Status WasmModule::SetMemory(uint32_t initial_pages,
   return absl::OkStatus();
 }
 
-absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
-                                         absl::string_view external_base,
-                                         uint32_t initial_pages,
-                                         std::optional<uint32_t> max_pages) {
+absl::Status WasmModule::AddMemoryImport(
+    absl::string_view external_module, absl::string_view external_base,
+    uint32_t initial_pages, std::optional<uint32_t> max_pages,
+    absl::Span<const DataSegment> segments) {
   if (BinaryenHasMemory(module_)) {
     return absl::FailedPreconditionError(
         "WasmModule::AddMemoryImport: module already has a memory.");
@@ -136,24 +136,47 @@ absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
         absl::StrCat("memory import max (", *max_pages,
                      ") is less than initial (", initial_pages, ")"));
   }
+  // Pack segment info into the parallel-array shape Binaryen wants —
+  // identical to the SetMemory path; we keep the owned storage alive
+  // for the duration of the BinaryenSetMemory call.  Same `std::vector
+  // <uint8_t>` trick for the `bool*` passives arg (vector<bool> isn't
+  // contiguous).
+  std::vector<const char*> seg_datas;
+  std::vector<uint8_t> seg_passives;
+  std::vector<BinaryenExpressionRef> seg_offsets;
+  std::vector<BinaryenIndex> seg_sizes;
+  seg_datas.reserve(segments.size());
+  seg_passives.reserve(segments.size());
+  seg_offsets.reserve(segments.size());
+  seg_sizes.reserve(segments.size());
+  for (const DataSegment& seg : segments) {
+    seg_datas.push_back(reinterpret_cast<const char*>(seg.bytes.data()));
+    seg_passives.push_back(0);
+    seg_offsets.push_back(BinaryenConst(
+        module_, BinaryenLiteralInt32(static_cast<int32_t>(seg.offset))));
+    seg_sizes.push_back(static_cast<BinaryenIndex>(seg.bytes.size()));
+  }
+
   // `BinaryenSetMemory` wipes any existing import info on the memory
   // with the matching internal name, so install the memory shape first
   // and then mark it as imported.  Reversing these two calls silently
   // emits a non-imported memory (confirmed against binaryen 129).
   const std::string ext_mod_c = Cstr(external_module);
   const std::string ext_base_c = Cstr(external_base);
-  BinaryenSetMemory(module_, static_cast<BinaryenIndex>(initial_pages),
-                    max_pages.has_value()
-                        ? static_cast<BinaryenIndex>(*max_pages)
-                        : kNoMaximum,
-                    /*exportName=*/nullptr,
-                    /*segmentNames=*/nullptr, /*segmentDatas=*/nullptr,
-                    /*segmentPassives=*/nullptr, /*segmentOffsets=*/nullptr,
-                    /*segmentSizes=*/nullptr,
-                    /*numSegments=*/0,
-                    /*shared=*/false,
-                    /*memory64=*/false,
-                    /*name=*/"memory");
+  BinaryenSetMemory(
+      module_, static_cast<BinaryenIndex>(initial_pages),
+      max_pages.has_value() ? static_cast<BinaryenIndex>(*max_pages)
+                            : kNoMaximum,
+      /*exportName=*/nullptr,
+      /*segmentNames=*/nullptr, seg_datas.empty() ? nullptr : seg_datas.data(),
+      seg_passives.empty() ? nullptr
+                           : reinterpret_cast<bool*>(seg_passives.data()),
+      seg_offsets.empty() ? nullptr : seg_offsets.data(),
+      seg_sizes.empty() ? nullptr : seg_sizes.data(),
+      static_cast<BinaryenIndex>(segments.size()),
+      /*shared=*/false,
+      /*memory64=*/false,
+      /*name=*/"memory");
   BinaryenAddMemoryImport(module_,
                           /*internalName=*/"memory", ext_mod_c.c_str(),
                           ext_base_c.c_str(),
