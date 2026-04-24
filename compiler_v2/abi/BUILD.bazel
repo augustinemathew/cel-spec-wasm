@@ -1,0 +1,49 @@
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Schema of the `cel.abi` custom section emitted by compiler_v2.
+# Fresh v2 schema — decoupled from v1's compiler/codegen/cel_abi.proto.
+# See cel_abi.proto for the rationale and field-by-field docs.
+proto_library(
+    name = "cel_abi_proto",
+    srcs = ["cel_abi.proto"],
+)
+
+cc_proto_library(
+    name = "cel_abi_cc_proto",
+    deps = [":cel_abi_proto"],
+)
+
+# Compile-side: build a `CelAbi` from the StaticLayout.  Consumed by
+# compile.cc after LayoutPass + LowerToEvalFunction.  Pair with
+# compiler_v2/api/internal/abi_decode (load-time decoder).
+cc_library(
+    name = "cel_abi_emit",
+    srcs = ["cel_abi_emit.cc"],
+    hdrs = ["cel_abi_emit.h"],
+    deps = [
+        ":cel_abi_cc_proto",
+        "//compiler_v2/codegen:layout_pass",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "cel_abi_emit_test",
+    srcs = ["cel_abi_emit_test.cc"],
+    deps = [
+        ":cel_abi_cc_proto",
+        ":cel_abi_emit",
+        "//compiler_v2/codegen:layout_pass",
+        "//compiler_v2/codegen:resolve_pass",
+        "//compiler_v2/frontend:parse_and_check",
+        "//compiler_v2/ir:annotations",
+        "//compiler_v2/ir:typed_ast",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

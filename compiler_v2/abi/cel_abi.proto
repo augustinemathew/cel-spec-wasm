@@ -1,0 +1,125 @@
+// Schema of the `cel.abi` WASM custom section emitted by
+// compiler_v2/.  The compiler writes one `CelAbi` message into the
+// section, the host (Engine::Plan) decodes it at load time to build
+// its runtime dispatch tables.
+//
+// Fresh v2 schema — intentionally decoupled from v1's
+// compiler/codegen/cel_abi.proto.  Rationale: v2's host surface
+// (cel::Compiler / cel::Engine / cel::Instance) doesn't depend on
+// v1 types, and the v2 ABI grows on a different milestone cadence
+// (variables[] is an M2 addition; fields[] gets its final shape in
+// M2.C; attributes[] in M2.E).
+//
+// Design decisions:
+//   - Field numbers are dense and locked.  Extending a message is
+//     additive only — never renumber.
+//   - `CelType` is recursive and carries enough information for the
+//     host marshal to pick the right `Value → CelValue` encoder.
+//     Derivable facts (like the internal `Repr` enum) stay derived
+//     at decode time; wire payload is minimal.
+//   - MAP / LIST in `CelType` are reachable by a declared variable
+//     type at M2 (the checker accepts them) even though codegen
+//     rejects any map/list operation until M6.  Serialising them
+//     correctly now avoids a breaking change at M6.
+//   - No `cel.expr.CheckedExpr` on the wire.  v1 embedded the full
+//     checked AST for host-side re-analysis; v2's host doesn't run
+//     a second pass, so the AST stays compile-time-only.
+//
+// Consumed by compiler_v2/api/internal/abi_decode.{h,cc}.
+// Produced by compiler_v2/compile.cc (M2.B.2+).
+
+syntax = "proto3";
+
+package celwasm.abi;
+
+// One declared free variable.  Emitted by compile.cc from
+// `StaticLayout::variables`; consumed by Engine::Plan to build the
+// variable lookup table `Instance::Eval(Activation)` uses to marshal
+// bound values into their 24-byte workspace slots.
+//
+//   name         the source-level identifier (matches Activation::Bind).
+//   local_index  dense index into `$eval`'s wasm locals — 0, 1, 2 ...
+//                in first-referenced order.  Indexes cel.abi.variables[].
+//   slot_offset  absolute linear-memory byte offset of the 24-byte
+//                CelValue cell this variable occupies.  The host
+//                marshal writes CelValue bytes at this offset before
+//                calling $eval; the lowered body reads `local.get
+//                local_index`, whose value was set to slot_offset by
+//                the $eval prelude.
+//   repr         numeric mirror of `ir::Repr` (annotations.h).  Used
+//                by the host marshal to pick the right
+//                `Value → CelValue` encoder.  Values are stable on
+//                wire; any new Repr lands as an additional numeric
+//                value, never a renumbering.
+//
+// Rich type info (message FQN, list<T> element type, map<K,V>
+// parameters) is NOT on the wire at M2.B.  The host marshal only
+// needs Repr to pick an encoder; if a future feature (introspection,
+// per-type dispatch in M6) needs the full type, it lands as an
+// additive field (reserved slot 5) — the wire stays backward-
+// compatible.
+message VariableEntry {
+  string name = 1;
+  uint32 local_index = 2;
+  uint32 slot_offset = 3;
+  uint32 repr = 4;
+  // reserved 5;  // future: full CelType for introspection / M6
+}
+
+// One row of the field intern table.  Populated at M2.C (select
+// lowering); schema shipped now so M2.B's cel.abi section doesn't
+// change shape when M2.C lands.
+//
+//   id            dense index; 0 is the sentinel "not proto-
+//                 resolvable" (used by non-proto backings in M6+).
+//   field_number  proto wire field number, or 0 when the backing is
+//                 name-only.
+//   name          always populated; attribute-pattern matching
+//                 compares by name regardless of backing.
+//   owner_fqn     fully-qualified name of the message type that owns
+//                 this field.  Resolved at Plan time against the
+//                 process-wide DescriptorPool to obtain the
+//                 FieldDescriptor used by ProtoBacking.
+message FieldEntry {
+  uint32 id = 1;
+  uint32 field_number = 2;
+  string name = 3;
+  string owner_fqn = 4;
+}
+
+// One row of the attribute intern table (partial-eval, §4.8 /
+// M2.E).  Populated when ResolvePass interns an ident-rooted select
+// chain; consumed by the cel_host trampoline at runtime to match
+// against the active unknown-pattern set.
+//
+//   id          dense index; 0 is the sentinel "no attribute id"
+//               (used for nodes that aren't ident-rooted).
+//   variable    root variable name.
+//   qualifiers  ordered list of string qualifiers (field names for
+//               selects; extended to typed qualifiers if M6 folds
+//               map/list indices into the attribute path).
+message AttributeEntry {
+  uint32 id = 1;
+  string variable = 2;
+  repeated string qualifiers = 3;
+}
+
+// Top-level payload of the `cel.abi` custom section.
+message CelAbi {
+  // Bump on any field renumbering / removal.  Additive changes keep
+  // the version the same.  Hosts MAY reject a module whose version
+  // they don't recognise; typically they tolerate forward versions
+  // so long as they only consume the fields they know about.
+  uint32 version = 1;
+
+  // Declared free variables referenced by the expression — M2.B.
+  // Indexed by `local_index`; position i holds the entry whose
+  // `local_index == i`.
+  repeated VariableEntry variables = 2;
+
+  // Field intern table — M2.C.
+  repeated FieldEntry fields = 3;
+
+  // Attribute intern table — M2.E.
+  repeated AttributeEntry attributes = 4;
+}

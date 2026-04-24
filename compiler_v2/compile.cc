@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -11,6 +12,8 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "binaryen-c.h"
+#include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/abi/cel_abi_emit.h"
 #include "compiler_v2/codegen/expr_lower.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
@@ -59,29 +62,73 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
   return absl::OkStatus();
 }
 
-}  // namespace
+// Attach the `cel.abi` custom section to the module.  Payload is a
+// serialised `celwasm.abi.CelAbi` proto populated from the
+// compile-time layout.  Engine::Plan reads it at load time to build
+// the runtime lookup tables Instance::Eval(Activation) needs.
+absl::Status AttachCelAbiSection(WasmModule& module,
+                                 const StaticLayout& layout) {
+  auto abi_or = BuildCelAbi(layout);
+  if (!abi_or.ok()) return abi_or.status();
+  std::string abi_bytes;
+  if (!abi_or->SerializeToString(&abi_bytes)) {
+    return absl::InternalError("compile: failed to serialize cel.abi proto");
+  }
+  module.AddCustomSection(
+      "cel.abi",
+      absl::MakeConstSpan(reinterpret_cast<const uint8_t*>(abi_bytes.data()),
+                          abi_bytes.size()));
+  return absl::OkStatus();
+}
 
-absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
-                                         const CompileOptions& opts) {
+// Parse + check + resolve + layout.  The expensive half of the
+// pipeline; returns the populated front-half of a CompiledArtifact
+// (ast + layout).  Extracted from Compile() to keep the top-level
+// function under the function-size lint threshold.
+absl::StatusOr<CompiledArtifact> RunFrontAndLayout(absl::string_view expression,
+                                                   const CompileOptions& opts) {
   auto ast_or = ParseAndCheck(expression, opts.check);
   if (!ast_or.ok()) return ast_or.status();
-
   auto resolved_or = ResolvePass(*ast_or);
   if (!resolved_or.ok()) return resolved_or.status();
-
   auto layout_or = LayoutPass(*ast_or, *std::move(resolved_or));
   if (!layout_or.ok()) return layout_or.status();
-
-  CompiledArtifact out{
+  return CompiledArtifact{
       /*ast=*/*std::move(ast_or),
       /*layout=*/*std::move(layout_or),
       /*module=*/WasmModule(),
       /*eval_fn=*/{nullptr},
       /*wasm_bytes=*/{},
   };
+}
 
-  auto s = InstallHostAbi(out.module, out.layout, opts.mem_size_bytes);
-  if (!s.ok()) return s;
+// Validate + optionally serialize the emitted module.  Back half of
+// the pipeline.
+absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
+  if (opts.validate) {
+    auto v = out.module.Validate();
+    if (!v.ok()) return v;
+  }
+  if (opts.serialize) {
+    auto bytes_or = out.module.Serialize();
+    if (!bytes_or.ok()) return bytes_or.status();
+    out.wasm_bytes = *std::move(bytes_or);
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
+                                         const CompileOptions& opts) {
+  auto out_or = RunFrontAndLayout(expression, opts);
+  if (!out_or.ok()) return out_or.status();
+  CompiledArtifact out = *std::move(out_or);
+
+  if (auto s = InstallHostAbi(out.module, out.layout, opts.mem_size_bytes);
+      !s.ok()) {
+    return s;
+  }
 
   LoweringOptions lower_opts;
   lower_opts.mem_size_bytes = opts.mem_size_bytes;
@@ -92,17 +139,8 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
 
   out.module.ExportFunction(opts.eval_internal_name, opts.eval_export_name);
 
-  if (opts.validate) {
-    auto v = out.module.Validate();
-    if (!v.ok()) return v;
-  }
-
-  if (opts.serialize) {
-    auto bytes_or = out.module.Serialize();
-    if (!bytes_or.ok()) return bytes_or.status();
-    out.wasm_bytes = *std::move(bytes_or);
-  }
-
+  if (auto s = AttachCelAbiSection(out.module, out.layout); !s.ok()) return s;
+  if (auto s = FinaliseModule(out, opts); !s.ok()) return s;
   return out;
 }
 

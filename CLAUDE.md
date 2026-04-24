@@ -20,6 +20,13 @@ something in them, update them in the same commit as the code.
   - `doc/implementation-plan/testing-checklist.md` — transverse coverage grid
     (CEL type × pipeline stage, AST variant × pipeline stage).  Every merged
     feature flips at least one box; every new variant adds at least one row.
+  - `doc/implementation-plan/rewrite/feature-pipeline-checklist.md` — for
+    every feature type (new AST kind, new declarable type, new host import,
+    new ABI field, …), the concrete list of files + tests that MUST be
+    touched.  **Start every feature session by copying the matching
+    section's checklist into the milestone doc's "In progress" section**;
+    work through top-down.  This doc is the forcing function against
+    forgetting one of the 8–12 stages a typical feature ripples through.
 
 ### Closing out a planning doc
 

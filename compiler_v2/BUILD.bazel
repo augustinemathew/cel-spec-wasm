@@ -12,6 +12,8 @@ cc_library(
     srcs = ["compile.cc"],
     hdrs = ["compile.h"],
     deps = [
+        "//compiler_v2/abi:cel_abi_cc_proto",
+        "//compiler_v2/abi:cel_abi_emit",
         "//compiler_v2/codegen:expr_lower",
         "//compiler_v2/codegen:layout_pass",
         "//compiler_v2/codegen:module",
