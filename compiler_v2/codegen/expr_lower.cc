@@ -127,9 +127,13 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
       BinaryenBlock(mod.raw(), /*name=*/nullptr, children, /*numChildren=*/2,
                     BinaryenTypeInt32());
 
+  // Every wasm local `$eval` carries is a u32 memory offset — one
+  // per referenced variable (m2-ident-select-unknowns.md §2.6 /
+  // Slice M2.B).  Build the per-local type vector at emission
+  // time; the layout only carries the count via `variables.size()`.
   const std::string func_name_c(func_name);
-  std::vector<BinaryenType> local_types(layout.local_types.begin(),
-                                        layout.local_types.end());
+  const std::vector<BinaryenType> local_types(layout.variables.size(),
+                                              BinaryenTypeInt32());
   mod.AddFunction(func_name, /*params=*/{}, BinaryenTypeInt32(), local_types,
                   body);
 

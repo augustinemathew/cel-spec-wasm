@@ -1,0 +1,41 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# WAT-first prototyping harness.  Assembles a hand-written WAT
+# expression module and runs it end-to-end through wasmtime +
+# cel_runtime.wasm, with optional stub impls for cel_host imports.
+# See CLAUDE.md "WAT-first for ABI and codegen design".
+cc_library(
+    name = "wat_runner",
+    srcs = ["wat_runner.cc"],
+    hdrs = ["wat_runner.h"],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/host:cel_log",
+        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Exercises every WAT shape in doc/implementation-plan/rewrite/wat/
+# through the harness with stubbed cel_host impls where a milestone
+# hasn't landed real ones yet.  Each test is a milestone gate:
+# a codegen arm that stops producing shape-matching wasm fails here
+# before contaminating e2e tests.
+cc_test(
+    name = "wat_runner_test",
+    srcs = ["wat_runner_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":wat_runner",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

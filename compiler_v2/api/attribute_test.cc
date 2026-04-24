@@ -249,6 +249,191 @@ TEST(AttributePatternTest, MatchTypeNames) {
             "full");
 }
 
+// ————————— AttributePattern::Parse —————————
+
+TEST(AttributePatternParseTest, SingleSegmentVariable) {
+  auto p = AttributePattern::Parse("x");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  EXPECT_EQ(p->variable(), "x");
+  EXPECT_TRUE(p->qualifier_path().empty());
+}
+
+TEST(AttributePatternParseTest, DottedPathStringSegments) {
+  auto p = AttributePattern::Parse("c.billing_address.city");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  EXPECT_EQ(p->variable(), "c");
+  ASSERT_EQ(p->qualifier_path().size(), 2u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch("billing_address"));
+  EXPECT_FALSE(p->qualifier_path()[0].IsMatch("other"));
+  EXPECT_TRUE(p->qualifier_path()[1].IsMatch("city"));
+}
+
+TEST(AttributePatternParseTest, WildcardMidPath) {
+  auto p = AttributePattern::Parse("c.*.city");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 2u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsWildcard());
+  EXPECT_FALSE(p->qualifier_path()[1].IsWildcard());
+}
+
+TEST(AttributePatternParseTest, WildcardTrailing) {
+  auto p = AttributePattern::Parse("c.billing_address.*");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 2u);
+  EXPECT_FALSE(p->qualifier_path()[0].IsWildcard());
+  EXPECT_TRUE(p->qualifier_path()[1].IsWildcard());
+}
+
+TEST(AttributePatternParseTest, WildcardAtRootMatchesAnyVariable) {
+  // "*" as the whole pattern is treated as a bare variable named `*`
+  // rather than a wildcard root — roots are named variables.  Locks
+  // the intent so a future reader doesn't over-generalise the syntax.
+  auto p = AttributePattern::Parse("*");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  EXPECT_EQ(p->variable(), "*");
+}
+
+TEST(AttributePatternParseTest, EmptyInputIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse(""),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, LeadingDotIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse(".x"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, TrailingDotIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse("x."),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse("x..y"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+// Round-trip: parse → IsMatch behaves the same as the manual
+// constructor-built pattern.
+TEST(AttributePatternParseTest, ParseRoundTripsThroughIsMatch) {
+  auto parsed = AttributePattern::Parse("c.billing_address.city");
+  ASSERT_THAT(parsed, absl_testing::IsOk());
+  Attribute a("c", {AttributeQualifier::OfString("billing_address"),
+                    AttributeQualifier::OfString("city")});
+  EXPECT_EQ(parsed->IsMatch(a), AttributePattern::MatchType::kFull);
+}
+
+// ——— Bracketed qualifiers: int / uint / bool / string / wildcard ———
+
+TEST(AttributePatternParseTest, BracketedIntIndex) {
+  auto p = AttributePattern::Parse("xs[3]");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 1u);
+  const auto& q = p->qualifier_path()[0];
+  EXPECT_TRUE(q.IsMatch(AttributeQualifier::OfInt(3)));
+  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfInt(4)));
+  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfUint(3)));
+  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfString("3")));
+}
+
+TEST(AttributePatternParseTest, BracketedNegativeInt) {
+  auto p = AttributePattern::Parse("xs[-1]");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 1u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfInt(-1)));
+}
+
+TEST(AttributePatternParseTest, BracketedUintIndex) {
+  auto p = AttributePattern::Parse("xs[3u]");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 1u);
+  const auto& q = p->qualifier_path()[0];
+  EXPECT_TRUE(q.IsMatch(AttributeQualifier::OfUint(3u)));
+  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfInt(3)));
+}
+
+TEST(AttributePatternParseTest, BracketedBoolTrueAndFalse) {
+  auto t = AttributePattern::Parse("m[true]");
+  auto f = AttributePattern::Parse("m[false]");
+  ASSERT_THAT(t, absl_testing::IsOk());
+  ASSERT_THAT(f, absl_testing::IsOk());
+  EXPECT_TRUE(t->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(true)));
+  EXPECT_FALSE(t->qualifier_path()[0].IsMatch(
+      AttributeQualifier::OfBool(false)));
+  EXPECT_TRUE(f->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
+}
+
+TEST(AttributePatternParseTest, BracketedQuotedString) {
+  auto p = AttributePattern::Parse("m[\"key\"]");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 1u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(
+      AttributeQualifier::OfString("key")));
+  EXPECT_FALSE(p->qualifier_path()[0].IsMatch(
+      AttributeQualifier::OfString("other")));
+}
+
+TEST(AttributePatternParseTest, BracketedWildcard) {
+  auto p = AttributePattern::Parse("xs[*]");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  ASSERT_EQ(p->qualifier_path().size(), 1u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsWildcard());
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfInt(99)));
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
+}
+
+TEST(AttributePatternParseTest, MixedDottedAndBracketed) {
+  // Realistic: request.messages[3].text
+  auto p = AttributePattern::Parse("request.messages[3].text");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  EXPECT_EQ(p->variable(), "request");
+  ASSERT_EQ(p->qualifier_path().size(), 3u);
+  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(
+      AttributeQualifier::OfString("messages")));
+  EXPECT_TRUE(p->qualifier_path()[1].IsMatch(AttributeQualifier::OfInt(3)));
+  EXPECT_TRUE(p->qualifier_path()[2].IsMatch(
+      AttributeQualifier::OfString("text")));
+}
+
+TEST(AttributePatternParseTest, EmptyBracketIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse("xs[]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, UnterminatedBracketIsInvalid) {
+  EXPECT_THAT(AttributePattern::Parse("xs[3"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, MalformedBracketBodyIsInvalid) {
+  // Unsupported token in a bracket — not int/uint/bool/string/*.
+  EXPECT_THAT(AttributePattern::Parse("xs[abc]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(AttributePattern::Parse("xs[\"unterm]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, BracketedAtRootIsInvalid) {
+  // A pattern must start with a variable name, not a bracket.
+  EXPECT_THAT(AttributePattern::Parse("[3]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+// Wildcard parsed-pattern matches the same set as a
+// hand-constructed wildcard-pattern.
+TEST(AttributePatternParseTest, WildcardParsedMatchesAnyMidQualifier) {
+  auto parsed = AttributePattern::Parse("c.*.city");
+  ASSERT_THAT(parsed, absl_testing::IsOk());
+  Attribute billing(
+      "c", {AttributeQualifier::OfString("billing_address"),
+            AttributeQualifier::OfString("city")});
+  Attribute shipping(
+      "c", {AttributeQualifier::OfString("shipping_address"),
+            AttributeQualifier::OfString("city")});
+  EXPECT_EQ(parsed->IsMatch(billing), AttributePattern::MatchType::kFull);
+  EXPECT_EQ(parsed->IsMatch(shipping), AttributePattern::MatchType::kFull);
+}
+
 // ————————— AttributeId —————————
 
 TEST(AttributeIdTest, EqualityByNumericId) {

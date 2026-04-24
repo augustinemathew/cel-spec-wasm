@@ -84,11 +84,19 @@ _Static_assert(sizeof(CelValue) == 24, "CelValue must remain 24 bytes");
 // Error codes carried in `cel_make_error(code, ...)`.  Kept numeric so
 // the wasm side stays allocation-free in the happy path — the host
 // pretty-printer maps code → message when formatting a failed eval.
+//
+// Numeric values are stable on the wire and mirror
+// `cel::ErrorCode` (api/error.h).  Append only; never renumber.
 enum {
   CEL_ERR_OVERFLOW = 10,
   CEL_ERR_DIVIDE_BY_ZERO = 11,
   CEL_ERR_MODULUS_BY_ZERO = 12,
   CEL_ERR_TYPE_MISMATCH = 13,
+  // Returned by `ProtoBacking::ReadField` for MAP / REPEATED fields
+  // until M6 flips them to host-backed aggregates.  Named explicitly
+  // as the M2→M6 graduation contract (m2-ident-select-unknowns.md
+  // §2.8 / §6.1.1 envelope boundary row).
+  CEL_ERR_TYPE_UNSUPPORTED = 14,
 };
 
 #ifdef __cplusplus

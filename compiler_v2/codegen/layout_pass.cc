@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
@@ -13,6 +14,7 @@
 #include "compiler_v2/codegen/static_memory_builder.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
+#include "compiler_v2/runtime/cel_data.h"
 
 namespace celwasm {
 
@@ -27,12 +29,11 @@ uint32_t RoundUp8(uint32_t x) {
 
 // Walks every kConst node, packs its CelValue into rodata via the
 // StaticMemoryBuilder, and writes `{kStaticRodata, offset}` onto the
-// node's annotation.  Non-kConst nodes are left at `kNone`; M1's
-// expr_lower returns `absl::UnimplementedError` for them, so the zero
-// sentinel is never consumed.
-class LayoutVisitor : public cel::AstVisitorBase {
+// node's annotation.  Non-kConst nodes are left at `kNone` in this
+// visitor; `IdentStorageVisitor` (below) handles kIdent.
+class ConstLayoutVisitor : public cel::AstVisitorBase {
  public:
-  LayoutVisitor(StaticMemoryBuilder& builder, WasmAnnotations& annotations)
+  ConstLayoutVisitor(StaticMemoryBuilder& builder, WasmAnnotations& annotations)
       : builder_(builder), annotations_(annotations) {}
 
   void PreVisitExpr(const cel::Expr&) override {}
@@ -65,31 +66,95 @@ class LayoutVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
+// Walks every kIdent node and writes `{kLocal, local_index}` onto
+// its annotation.  Per m2-ident-select-unknowns.md §2.6 / Slice
+// M2.B: the kIdent arm lowers to `BinaryenLocalGet(local_index,
+// i32)`, matched by a `$eval` prelude that sets each local to the
+// compile-time-known slot offset.  The slot offset itself lives on
+// `StaticLayout::variables[local_index].slot_offset` and the
+// prelude reads it at emission time — the kIdent annotation holds
+// only the local index.
+class IdentStorageVisitor : public cel::AstVisitorBase {
+ public:
+  IdentStorageVisitor(WasmAnnotations& annotations, uint32_t num_variables)
+      : annotations_(annotations), num_variables_(num_variables) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitIdent(const cel::Expr& expr,
+                      const cel::IdentExpr& ident) override {
+    NodeAnnotation& ann = annotations_[expr.id()];
+    // Sanity: ResolvePass assigned a local_index for every kIdent and
+    // appended the matching entry to `variables`.  If this kIdent
+    // slipped past ResolvePass with an out-of-range index, the
+    // `local.get` we emit would read an undeclared local —
+    // invariant violation, crash.
+    ABSL_CHECK(ann.local_index < num_variables_)
+        << "LayoutPass: kIdent expr_id=" << expr.id() << " name=`"
+        << ident.name() << "` has local_index=" << ann.local_index
+        << " but only " << num_variables_ << " variables were resolved";
+    ann.storage = Storage{StorageKind::kLocal, ann.local_index};
+  }
+
+ private:
+  WasmAnnotations& annotations_;
+  uint32_t num_variables_;
+};
+
 }  // namespace
 
-absl::StatusOr<StaticLayout> LayoutPass(const TypedAst& ast,
-                                        ResolveOutput resolved,
-                                        const LayoutOptions& opts) {
+// `resolved` is passed by value — its annotations + variables are
+// moved into the StaticLayout below.  clang-tidy's
+// performance-unnecessary-value-param sees only the const-access
+// reads (the `for (const ResolvedVariable& rv : resolved.variables)`
+// loop) and doesn't recognise the std::move(resolved.annotations)
+// as a consuming use; suppressed inline.
+absl::StatusOr<StaticLayout> LayoutPass(
+    const TypedAst& ast,
+    ResolveOutput resolved,  // NOLINT(performance-unnecessary-value-param)
+    const LayoutOptions& opts) {
   ABSL_CHECK(ast.has_ast()) << "LayoutPass: TypedAst has no checked cel::Ast";
 
   StaticLayout layout;
   layout.annotations = std::move(resolved.annotations);
-  layout.local_types = std::move(resolved.local_types);
   layout.debug_mode = opts.debug_layout;
 
-  // Pack every kConst into rodata.  rodata_base is fixed at 16 (skip the
-  // null sentinel and the arena cursor/limit pair at bytes 0..16).
+  // --- Pass A: pack every kConst into rodata. ---
   StaticMemoryBuilder builder(layout.rodata_base);
-  LayoutVisitor visitor(builder, layout.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), visitor);
+  ConstLayoutVisitor const_visitor(builder, layout.annotations);
+  cel::AstTraverse(ast.ast().root_expr(), const_visitor);
   layout.rodata = std::move(builder).Finalize();
 
-  // Workspace comes after rodata, 8-aligned.  M1 has no workspace slots
-  // (expr_lower only handles kConst), so workspace_bytes stays 0 — the
-  // SlotAllocator is plumbed so later milestones just flip it on.
+  // --- Pass B: reserve one 24-byte workspace slot per referenced
+  // variable.  Workspace sits 8-aligned immediately after rodata; each
+  // slot is 24 bytes, and 24 is a multiple of 8 so every slot stays
+  // aligned.  Indexed by ResolveOutput::variables order (local_index). ---
   layout.workspace_base = RoundUp8(layout.rodata_base +
                                    static_cast<uint32_t>(layout.rodata.size()));
-  layout.workspace_bytes = 0;
+
+  constexpr auto kSlotBytes = static_cast<uint32_t>(sizeof(CelValue));
+  static_assert(kSlotBytes == 24, "CelValue must remain 24 bytes");
+  static_assert(kSlotBytes % 8u == 0u, "CelValue must stay 8-aligned");
+
+  layout.variables.reserve(resolved.variables.size());
+  for (const ResolvedVariable& rv : resolved.variables) {
+    const uint32_t slot_offset =
+        layout.workspace_base + (rv.local_index * kSlotBytes);
+    layout.variables.push_back(
+        LaidOutVariable{rv.name, rv.local_index, rv.repr, slot_offset});
+  }
+  layout.workspace_bytes =
+      static_cast<uint32_t>(resolved.variables.size()) * kSlotBytes;
+
+  // --- Pass C: tag every kIdent with `{kLocal, local_index}`. ---
+  // The wasm-local → slot_offset mapping lives on layout.variables;
+  // expr_lower emits the `$eval` prelude that writes each slot
+  // offset into its local.
+  IdentStorageVisitor ident_visitor(
+      layout.annotations, static_cast<uint32_t>(resolved.variables.size()));
+  cel::AstTraverse(ast.ast().root_expr(), ident_visitor);
+
   layout.peak_slots = 0;
 
   // Arena grows forward from the first 8-aligned byte past workspace.

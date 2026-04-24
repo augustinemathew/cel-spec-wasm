@@ -98,6 +98,28 @@ earlier-than-expected caller into a directly actionable backtrace.
 See `StaticMemoryBuilder::AllocateList` in
 `compiler_v2/codegen/static_memory_builder.cc` for the canonical form.
 
+**The rule applies to every control-flow shape, not just switches.**
+Any branch that reaches a path a later milestone will light up gets
+an `ABSL_CHECK(false) << "... is a stub until <milestone>"` at the
+branch, not a silent skip.  Covers:
+
+  - `switch` arms (closed enum case for a later-milestone kind)
+  - `if` / `else if` branches gated on a runtime flag a later
+    milestone will flip (e.g. `if (ann->map_origin == Origin::kArena)`)
+  - early returns that trade a zero sentinel for "this isn't
+    populated yet" (return the sentinel AND CHECK before use, or
+    CHECK at the write site so the zero never travels)
+  - factory / builder methods shipped as signature-final stubs
+    (`Value::HostMap`, `Activation::BindLazy`, …)
+
+The goal is invariant: a call into any code path that isn't done yet
+crashes at the call site naming the symbol and milestone, rather than
+miscompiling silently or producing a plausible-looking wrong answer
+four passes later.  If a future-milestone path is unreachable under
+the current pipeline (e.g. map codegen is gated out at the frontend),
+the CHECK still lives at the reachable edge — the gate can regress,
+the CHECK is the tripwire.
+
 ## Lint & format (mandatory before every commit)
 
 Formatter and linter are authoritative.  The configs live at the repo
@@ -124,6 +146,73 @@ it — do not `// NOLINT` around it.  Known exceedances are tracked in
 new code in the same file.
 
 Full workflow and install steps are in `doc/contributing.md`.
+
+## WAT-first for ABI and codegen design
+
+Before implementing any new codegen arm (kSelect, kCall, kComprehension,
+list/map ops, …) or host-ABI surface (`cel_host.cel_get_field`,
+future customs trampolines), write the **target wasm in WAT first**
+under `doc/implementation-plan/rewrite/wat/NN_name.wat`, add the
+walkthrough to `doc/implementation-plan/rewrite/wat-traces.md`, and
+assemble it end-to-end:
+
+```bash
+wasm-as doc/implementation-plan/rewrite/wat/NN_name.wat -o /tmp/foo.wasm
+```
+
+Then — whenever the wasm plausibly runs (all imports exist, real or
+stubbed) — execute it through the evaluator-runtime harness
+(`compiler_v2/tools/wat_runner`) with stub impls for any not-yet-
+implemented host functions.  The harness takes a `.wat` file and
+optional pre-populated memory bytes and runs $eval through wasmtime
+against `cel_runtime.wasm`, returning the decoded `CelValue`.
+
+Why this is mandatory, not a nice-to-have:
+
+  - **Memory layout and ABI are frozen at the WAT level.**  Every
+    decision — slot sizes, offset alignment, trampoline arg order,
+    locals vs constants, rodata vs workspace — is forced at WAT
+    authoring time.  No "we'll figure it out as we go" mid-codegen.
+  - **The WAT is executable.**  A WAT that fails to assemble means
+    the shape is wrong before any codegen C++ is touched.  A WAT
+    that assembles but wasmtime rejects means the ABI signatures
+    are wrong.  A WAT that traps at runtime means the semantics
+    are wrong.  Each failure mode surfaces before it contaminates
+    codegen.
+  - **ABI prototyping with stubs.**  A new host-imported function
+    (e.g. `cel_host.cel_get_field` at M2.C) gets a stub impl in
+    `wat_runner` that writes a caller-supplied CelValue to the
+    `out_slot` — letting us run the dependent WAT end-to-end before
+    the real trampoline is written.  When the real trampoline
+    lands, we verify byte-identical output against the stubbed
+    baseline.
+  - **Regression tests come for free.**  `wat_runner_test.cc`
+    re-assembles and re-runs every `.wat` under `doc/…/wat/` on
+    every build.  A codegen arm that stops producing shape-
+    matching wasm is caught by the WAT equivalence test, not by
+    an obscure e2e breakage four passes downstream.
+
+Workflow per codegen arm:
+
+  1. Write the WAT file with inline comments explaining memory
+     layout, offsets, and ABI rationale.
+  2. Assemble + validate with `wasm-as`.
+  3. If the WAT references host functions, add stub impls to
+     `wat_runner` and run it end-to-end through wasmtime.
+  4. Document in `wat-traces.md` (one section per WAT, with the
+     source-expr header, expected memory map, and any invariants
+     the shape locks).
+  5. Implement the codegen arm in `expr_lower.cc`.  Add a test
+     that compiles the source expression and asserts the emitted
+     wasm matches the WAT's disassembly byte-for-byte (modulo
+     Binaryen-assigned names).
+  6. Remove the stub from `wat_runner` once the real host impl
+     lands; keep the WAT running through the production
+     trampoline.
+
+This is the ONLY acceptable design process for new ABI surfaces
+or codegen arms.  Freehand C++ codegen without a WAT trace is a
+rewrite waiting to happen.
 
 ## Testing is mandatory
 
@@ -174,25 +263,6 @@ When a bug is fixed, add a regression test *in the same commit*.
   - CLI: `bazel-bin/compiler/cli/celwasmc -e "<expr>" [--check ...]`.
   - Apple clang does **not** have a wasm32 target.  Cross-compilation uses
     brew's `llvm` + `binaryen` (already installed on this machine).
-
-## Unresolved design debt to keep front-of-mind
-
-Track these while working; raise them to the user when a change touches
-the surrounding code, and update / close them when a decision ships.
-
-- **Unified symbol table (decide before M5 Slice A).** Name / type /
-  scope info is currently split three ways: `CheckOptions::variable_specs`
-  (frontend), `TypedAst::variables()` + `WasmAnnotations` (IR), and
-  `LoweringContext.idents` in `compiler/codegen/expr_lower.cc`
-  (codegen).  Works for today's flat, scope-free subset; breaks the
-  moment comprehensions (M5), user functions (M6), or a leading-dot
-  rewrite pass need nested scopes.  Two options in the design doc's
-  "Open questions" section: (A) promote to a `SymbolTable` on
-  `TypedAst`, (B) side-table off cel-cpp's `reference_map`.  **If you
-  are about to add comprehension lowering, a new IR pass, or a second
-  binding frame, flag this to the user and ask which option to take
-  before writing code.**  Close this bullet in both files when the
-  decision ships.
 
 ## What not to do
 

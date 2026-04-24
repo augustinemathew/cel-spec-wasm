@@ -15,6 +15,8 @@ absl::string_view ErrorCodeName(ErrorCode c) {
       return "modulus_by_zero";
     case ErrorCode::kTypeMismatch:
       return "type_mismatch";
+    case ErrorCode::kTypeUnsupported:
+      return "type_unsupported";
     case ErrorCode::kFieldNotFound:
       return "field_not_found";
     case ErrorCode::kKeyNotFound:

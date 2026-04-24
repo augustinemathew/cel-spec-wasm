@@ -12,6 +12,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -235,6 +236,166 @@ absl::string_view AttributePattern::variable() const {
 absl::Span<const AttributeQualifierPattern> AttributePattern::qualifier_path()
     const {
   return qualifier_path_;
+}
+
+namespace {
+
+// Parse one bracketed qualifier body (the text between `[` and `]`)
+// into a pattern.  Supported forms mirror `AsCanonicalString`:
+//   [*]     → wildcard
+//   ["key"] → string-keyed exact match (double quotes required)
+//   [true]/[false] → bool-keyed exact match
+//   [3]     → int64-keyed exact match (may be negative)
+//   [3u]    → uint64-keyed exact match (trailing `u`, unsigned)
+absl::StatusOr<AttributeQualifierPattern> ParseBracketBody(
+    absl::string_view body, absl::string_view whole) {
+  if (body.empty()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", whole,
+                     "` has an empty bracket qualifier"));
+  }
+  if (body == "*") return AttributeQualifierPattern::Wildcard();
+  if (body == "true") return AttributeQualifierPattern::OfBool(true);
+  if (body == "false") return AttributeQualifierPattern::OfBool(false);
+  // "key" — double-quoted string.  No escape handling for now; the
+  // canonical form rejects strings containing `"` so round-tripping
+  // a quoted key through here and AsCanonicalString stays bijective
+  // for the ASCII-safe subset.
+  if (body.size() >= 2 && body.front() == '"' && body.back() == '"') {
+    absl::string_view inner = body.substr(1, body.size() - 2);
+    if (inner.find('"') != absl::string_view::npos) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("AttributePattern::Parse: pattern `", whole,
+                       "` has an embedded quote in a string qualifier"));
+    }
+    return AttributeQualifierPattern::OfString(std::string(inner));
+  }
+  // Uint: a digit prefix plus trailing `u`.
+  if (body.back() == 'u') {
+    absl::string_view digits = body.substr(0, body.size() - 1);
+    uint64_t value = 0;
+    if (!absl::SimpleAtoi(digits, &value)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("AttributePattern::Parse: pattern `", whole,
+                       "` has malformed uint qualifier `[", body, "]`"));
+    }
+    return AttributeQualifierPattern::OfUint(value);
+  }
+  // Int: signed decimal integer.
+  int64_t value = 0;
+  if (!absl::SimpleAtoi(body, &value)) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", whole,
+                     "` has unrecognised qualifier `[", body,
+                     "]` "
+                     "(expected int, uint (trailing u), bool, "
+                     "\"string\", or *)"));
+  }
+  return AttributeQualifierPattern::OfInt(value);
+}
+
+// Split the variable / dotted / bracketed stream into atomic
+// segments without losing structure.  Each segment is either a
+// dotted identifier chunk or a bracketed body (without the brackets);
+// the returned `bracketed` parallel vector disambiguates.
+struct ParsedSegment {
+  absl::string_view text;
+  bool bracketed = false;
+};
+
+absl::StatusOr<std::vector<ParsedSegment>> Tokenize(absl::string_view dotted) {
+  std::vector<ParsedSegment> out;
+  size_t i = 0;
+  // Variable name — up to the first `.` or `[`.  May not be empty
+  // (handled by caller for the bare-empty case).
+  size_t var_end = dotted.find_first_of(".[");
+  if (var_end == absl::string_view::npos) {
+    out.push_back({dotted, /*bracketed=*/false});
+    return out;
+  }
+  if (var_end == 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                     "` has an empty variable segment"));
+  }
+  out.push_back({dotted.substr(0, var_end), /*bracketed=*/false});
+  i = var_end;
+  while (i < dotted.size()) {
+    if (dotted[i] == '.') {
+      ++i;
+      // Dotted identifier chunk up to next `.` or `[` or end.
+      size_t end = dotted.find_first_of(".[", i);
+      if (end == absl::string_view::npos) end = dotted.size();
+      if (end == i) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                         "` has an empty dotted segment"));
+      }
+      out.push_back({dotted.substr(i, end - i), /*bracketed=*/false});
+      i = end;
+    } else if (dotted[i] == '[') {
+      size_t close = dotted.find(']', i);
+      if (close == absl::string_view::npos) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                         "` has an unterminated bracket at offset ", i));
+      }
+      out.push_back({dotted.substr(i + 1, close - i - 1), /*bracketed=*/true});
+      i = close + 1;
+    } else {
+      return absl::InvalidArgumentError(
+          absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                       "` has an unexpected character at offset ", i));
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+absl::StatusOr<AttributePattern> AttributePattern::Parse(
+    absl::string_view dotted) {
+  if (dotted.empty()) {
+    return absl::InvalidArgumentError(
+        "AttributePattern::Parse: pattern is empty");
+  }
+  if (dotted.front() == '.' || dotted.back() == '.') {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                     "` has a leading or trailing dot"));
+  }
+  auto tokens_or = Tokenize(dotted);
+  if (!tokens_or.ok()) return tokens_or.status();
+  const auto& tokens = *tokens_or;
+  ABSL_CHECK(!tokens.empty());
+  if (tokens.front().bracketed) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
+                     "` starts with a bracketed qualifier (no variable)"));
+  }
+  // The first segment is the root variable.  Remaining segments are
+  // qualifier patterns: dotted identifiers become string-keyed
+  // qualifiers (with `*` as wildcard shorthand); bracketed bodies
+  // parse per `ParseBracketBody` (int / uint / bool / string / *).
+  std::string variable(tokens.front().text);
+  std::vector<AttributeQualifierPattern> path;
+  path.reserve(tokens.size() - 1);
+  for (size_t idx = 1; idx < tokens.size(); ++idx) {
+    const ParsedSegment& tok = tokens[idx];
+    if (tok.bracketed) {
+      auto q_or = ParseBracketBody(tok.text, dotted);
+      if (!q_or.ok()) return q_or.status();
+      path.push_back(*std::move(q_or));
+      continue;
+    }
+    if (tok.text == "*") {
+      path.push_back(AttributeQualifierPattern::Wildcard());
+    } else {
+      path.push_back(
+          AttributeQualifierPattern::OfString(std::string(tok.text)));
+    }
+  }
+  return AttributePattern(std::move(variable), std::move(path));
 }
 
 AttributePattern::MatchType AttributePattern::IsMatch(

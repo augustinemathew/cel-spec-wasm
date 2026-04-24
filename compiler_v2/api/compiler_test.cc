@@ -8,11 +8,17 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/program.h"
+#include "compiler_v2/api/type.h"
 #include "gtest/gtest.h"
 
 namespace cel {
 namespace {
+
+using ::absl_testing::IsOk;
+using ::absl_testing::StatusIs;
 
 TEST(CompilerBuilderTest, BuildSucceedsWithDefaults) {
   auto compiler_or = Compiler::NewBuilder().Build();
@@ -59,6 +65,90 @@ TEST(CompilerCompileTest, OneCompilerProducesManyPrograms) {
   EXPECT_NE(a->wasm_bytes().size(), 0u);
   EXPECT_NE(b->wasm_bytes().size(), 0u);
   EXPECT_NE(c->wasm_bytes().size(), 0u);
+}
+
+// ————————— DeclareVariable / RegisterMessageType (M2) —————————
+
+TEST(CompilerBuilderDeclareVariableTest, AcceptsScalarTypes) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int())
+      .DeclareVariable("s", CelType::String())
+      .DeclareVariable("b", CelType::Bool());
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  ASSERT_EQ(c->declared_variables().size(), 3u);
+  EXPECT_EQ(c->declared_variables()[0].name, "x");
+  EXPECT_EQ(c->declared_variables()[0].type.kind(), CelType::Kind::kInt);
+}
+
+TEST(CompilerBuilderDeclareVariableTest, RejectsDuplicateName) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int())
+      .DeclareVariable("x", CelType::String());
+  EXPECT_THAT(std::move(b).Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderDeclareVariableTest, RejectsEmptyName) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("", CelType::Int());
+  EXPECT_THAT(std::move(b).Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderDeclareVariableTest, RejectsUnknownType) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType{});  // default-constructed
+  EXPECT_THAT(std::move(b).Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderRegisterMessageTypeTest, RecordsDescriptor) {
+  auto b = Compiler::NewBuilder();
+  b.RegisterMessageType(celwasm::testdata::Customer::descriptor());
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+}
+
+// Compile with a declared variable — at this point we're still
+// pre-M2.B (expr_lower has no kIdent arm yet), so compiling `x`
+// must return Unimplemented.  The declaration itself MUST flow
+// through the checker without error — that's the contract this
+// test locks.
+TEST(CompilerCompileDeclaredVariableTest,
+     CheckerAcceptsDeclaredIdentButLowerFailsUnimplemented) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int());
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  auto prog_or = c->Compile("x");
+  // Not InvalidArgument (checker was happy); not OK (expr_lower M1
+  // doesn't handle kIdent).  Expect Unimplemented specifically.
+  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+// Compile with a declared Message variable — checker resolves
+// "celwasm.testdata.Customer" via the generated descriptor pool.
+// Still pre-M2.C (no kSelect), so `c.name` fails Unimplemented.
+TEST(CompilerCompileDeclaredVariableTest,
+     MessageTypeDeclarationResolvesThroughGeneratedPool) {
+  auto b = Compiler::NewBuilder();
+  b.RegisterMessageType(celwasm::testdata::Customer::descriptor())
+      .DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+  auto prog_or = compiler->Compile("c.name");
+  // Checker happy → select lowering not yet implemented.
+  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+// Undeclared variable in the source → InvalidArgument at the
+// checker level (not Unimplemented).
+TEST(CompilerCompileDeclaredVariableTest, UndeclaredVariableFailsAtChecker) {
+  auto c = Compiler::NewBuilder().Build();
+  ASSERT_THAT(c, IsOk());
+  auto prog_or = c->Compile("x");
+  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 }  // namespace

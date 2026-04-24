@@ -25,6 +25,10 @@ enum class ErrorCode : uint8_t {
   kDivideByZero = 11,
   kModulusByZero = 12,
   kTypeMismatch = 13,
+  // Returned by `ProtoBacking::ReadField` on MAP / REPEATED fields
+  // until M6 lifts the envelope — mirrors `CEL_ERR_TYPE_UNSUPPORTED`
+  // in `runtime/cel_data.h` (m2-ident-select-unknowns.md §2.8).
+  kTypeUnsupported = 14,
   kFieldNotFound = 20,
   kKeyNotFound = 21,
   kIndexOutOfBounds = 22,

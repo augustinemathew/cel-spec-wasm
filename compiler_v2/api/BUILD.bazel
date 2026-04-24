@@ -193,11 +193,17 @@ cc_library(
     hdrs = ["compiler.h"],
     deps = [
         ":program",
+        ":type",
         "//compiler_v2:compile",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -207,7 +213,10 @@ cc_test(
     deps = [
         ":compiler",
         ":program",
+        ":type",
+        "//compiler/testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
     ],
 )

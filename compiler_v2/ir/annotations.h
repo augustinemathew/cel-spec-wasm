@@ -51,6 +51,24 @@ struct Storage {
   uint32_t payload = 0;  // rodata offset | slot offset | local index
 };
 
+// Where a map- or list-typed node's backing lives at runtime.
+// Populated by ResolvePass in a forward-compat slot for M6 (map /
+// list dispatch).  M2 only writes `kHost` on `kSelect` / `kIdent`
+// nodes whose result type is `map<K,V>` / `list<T>` — every other
+// map/list-producing kind (kCreateMap, kComprehension, kCall,
+// ternary, …) lands in M5/M6 and stays `kDynamic` until then.
+//
+// See `doc/implementation-plan/rewrite/map-list-dispatch.md` for the
+// full inference rule set and `m2-ident-select-unknowns.md` §2.6 +
+// §2.8 for what M2 actually populates.
+enum class Origin : uint8_t {
+  kDynamic = 0,  // default — could be arena or host, decided by runtime
+  kArena = 1,    // arena-backed (kCreateMap / kCreateList / …)
+  kHost = 2,     // host-backed (proto field read, Activation::Bind)
+};
+
+absl::string_view OriginName(Origin o);
+
 // Per-node facts populated by ResolvePass + LayoutPass.  The schema is
 // intentionally the final shape from M1 even though M1 only writes
 // `repr` (for kConst nodes) and `storage` (kStaticRodata for kConst).
@@ -62,7 +80,12 @@ struct NodeAnnotation {
   uint32_t overload_id = 0;   // CallExpr interned into OverloadTable (M3)
   uint32_t local_index = 0;   // IdentExpr resolved wasm local (M2)
   uint32_t scope_id = 0;      // comprehension scope (later)
+  uint32_t attribute_id = 0;  // interned AttributeId (M2.E); 0 = none
   Storage storage;
+  // Forward-compat hooks for map/list dispatch — see
+  // m2-ident-select-unknowns.md §2.6 / §2.8.
+  Origin map_origin = Origin::kDynamic;
+  Origin list_origin = Origin::kDynamic;
 };
 
 // Side map keyed by cel::ExprId.

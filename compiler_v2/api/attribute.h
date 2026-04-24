@@ -199,6 +199,16 @@ class AttributePattern final {
   AttributePattern(std::string variable,
                    std::vector<AttributeQualifierPattern> qualifier_path);
 
+  // Parse a dotted-path pattern like `"c.name"` or `"c.order.*"`.  `*`
+  // is the wildcard segment (matches any qualifier at that position);
+  // every other segment becomes a string-key exact-match qualifier.
+  //
+  // InvalidArgument on: empty input, leading / trailing dot, two
+  // consecutive dots (empty segment).  No other validation is done on
+  // the names — the checker / resolver decides what variable + field
+  // names exist.
+  static absl::StatusOr<AttributePattern> Parse(absl::string_view dotted);
+
   absl::string_view variable() const;
   absl::Span<const AttributeQualifierPattern> qualifier_path() const;
 

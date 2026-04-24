@@ -1,5 +1,6 @@
 #include "compiler_v2/ir/annotations.h"
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 
 namespace celwasm {
@@ -52,6 +53,20 @@ absl::string_view StorageKindName(StorageKind k) {
       return "local";
   }
   return "?";
+}
+
+absl::string_view OriginName(Origin o) {
+  switch (o) {
+    case Origin::kDynamic:
+      return "dynamic";
+    case Origin::kArena:
+      return "arena";
+    case Origin::kHost:
+      return "host";
+  }
+  // Closed enum: any other value is an invariant violation.  Silent
+  // fallback would miscompile new kinds added in future milestones.
+  ABSL_CHECK(false) << "OriginName: unknown Origin = " << static_cast<int>(o);
 }
 
 }  // namespace celwasm

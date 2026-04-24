@@ -2,33 +2,56 @@
 #define CELWASM_COMPILER_V2_CODEGEN_RESOLVE_PASS_H_
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "binaryen-c.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
 
 namespace celwasm {
 
+// One referenced free variable — populated by ResolvePass when it
+// sees a `kIdentExpr` whose name matches a checker-declared variable.
+// The same variable may be referenced many times (each kIdent node
+// gets the same `local_index` in its NodeAnnotation), but we record
+// each distinct name exactly once here.
+//
+// `repr` comes from the checker's `type_map` for the kIdent node —
+// which is the declared variable's type — and tells the host-side
+// Activation marshal (Instance::Eval) how to encode the bound Value
+// into a 24-byte CelValue at the workspace slot.
+//
+// `local_index` is dense across referenced variables: 0, 1, 2, ...
+// in first-seen order.  The index also indexes `cel.abi.variables[]`
+// — the ABI the host reads at Plan time.
+struct ResolvedVariable {
+  std::string name;
+  uint32_t local_index = 0;
+  Repr repr = Repr::kUnknown;
+};
+
 // Output of the first codegen pipeline pass.  `annotations` carries `repr`
-// (every typed node), `field_number` (select nodes, M2+), `overload_id`
-// (call nodes, M3+), `local_index` / `scope_id` (ident + comprehension
-// nodes, M2/M5).  `storage` stays zero-initialised here — LayoutPass fills
-// it next.
+// (every typed node), `field_number` (select nodes, M2.C+), `overload_id`
+// (call nodes, M3+), `local_index` (ident nodes, M2.B+), `scope_id`
+// (comprehension nodes, M5+), `attribute_id` (M2.E+).
+// `storage` stays zero-initialised here — LayoutPass fills it next.
 //
-// `local_types` is the wasm local declaration list that the eventual
-// `$eval` function will carry.  M1 emits an empty list (no idents or
-// comprehensions yet); the vector is still plumbed end-to-end so
-// LayoutPass and the module emitter don't have to special-case "no
-// locals".
+// `variables` is the compact list of referenced free variables in
+// first-seen order; each `NodeAnnotation::local_index` on a kIdent
+// indexes into it.  An unreferenced declared variable does NOT
+// appear here (no slot reserved, no entry in the cel.abi).  The
+// size of this vector is also the count of wasm locals the lowered
+// `$eval` function declares — one i32 per referenced variable.
 //
-// `max_scope_id` is the highest `scope_id` assigned during the walk.  0
-// means "no comprehensions were present" (the M1 case).
+// `max_scope_id` is the highest `scope_id` assigned during the walk.
+// 0 means "no comprehensions were present".  M5's comprehension
+// scope work extends `variables` (iter/accu names treated uniformly
+// with free variables from codegen's point of view).
 struct ResolveOutput {
   WasmAnnotations annotations;
-  std::vector<BinaryenType> local_types;
+  std::vector<ResolvedVariable> variables;
   uint32_t max_scope_id = 0;
 };
 

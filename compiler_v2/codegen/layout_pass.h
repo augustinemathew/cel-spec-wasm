@@ -2,16 +2,36 @@
 #define CELWASM_COMPILER_V2_CODEGEN_LAYOUT_PASS_H_
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "binaryen-c.h"
 #include "compiler_v2/codegen/resolve_pass.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
 
 namespace celwasm {
+
+// One referenced variable after layout: the `ResolvedVariable` shape
+// extended with the absolute linear-memory offset of its 24-byte
+// workspace CelValue slot.  Populated by LayoutPass; consumed by:
+//
+//   - `expr_lower.cc`
+//       * `$eval` prelude — one `BinaryenLocalSet(local_index,
+//         i32.const <slot_offset>)` per variable.
+//       * kIdent arm — `BinaryenLocalGet(local_index, i32)`.
+//       (Per m2-ident-select-unknowns.md §2.6 / §5 Slice M2.B.)
+//   - the cel.abi module emitter — writes `cel.abi.variables[]` so
+//     the host-side Activation marshal (`Instance::Eval`) can encode
+//     each bound Value into the CelValue wire format at `slot_offset`
+//     before calling `$eval`.
+struct LaidOutVariable {
+  std::string name;
+  uint32_t local_index = 0;
+  Repr repr = Repr::kUnknown;
+  uint32_t slot_offset = 0;
+};
 
 // Layout-time knobs for the pass.  Today: `debug_layout` turns off slot
 // reuse (each workspace `Acquire` hands out a fresh cell).  M1 has no
@@ -22,10 +42,12 @@ struct LayoutOptions {
 
 // Output of the second codegen pipeline pass.  Extends `annotations` from
 // ResolveOutput by writing `.storage` on every node whose result has a
-// known memory location at compile time.  M1 only populates storage for
-// `kConst` nodes (all land in `.rodata`); non-kConst nodes are left with
-// `.storage.kind == kNone`, which is fine because expr_lower returns
-// `absl::UnimplementedError` for them at M1.
+// known memory location at compile time.  M2 populates storage for:
+//   - `kConst` nodes (rodata-packed — unchanged from M1)
+//   - `kIdent` nodes (workspace-slot pointing at the referenced
+//     variable's 24-byte CelValue cell)
+// Other non-populated kinds are left with `.storage.kind == kNone`;
+// expr_lower CHECKs or returns `Unimplemented` for them.
 //
 // Memory map the output describes:
 //
@@ -34,7 +56,8 @@ struct LayoutOptions {
 //     [rodata_base..rodata_base+rodata.size())
 //                active data segment (kConst CelValues + payload bytes)
 //     [workspace_base..workspace_base+workspace_bytes)
-//                SlotAllocator-owned 24B cells (empty at M1)
+//                24B cells — one per referenced variable (M2), plus
+//                eventual SlotAllocator-owned scratch cells (M3+)
 //     [arena_base..)  grows forward via cel_alloc
 //
 // `rodata_base` is fixed at 16 (skip past the two reserved slots).
@@ -42,6 +65,13 @@ struct LayoutOptions {
 // `arena_base` is `workspace_base + workspace_bytes`, also 8-aligned.
 struct StaticLayout {
   WasmAnnotations annotations;
+
+  // One entry per referenced variable, in first-seen order
+  // (local_index 0, 1, 2, ...).  Each entry's `slot_offset` is the
+  // absolute linear-memory byte offset of its 24-byte CelValue slot.
+  // `variables.size()` is also the count of wasm locals the lowered
+  // `$eval` declares — one i32 per referenced variable.
+  std::vector<LaidOutVariable> variables;
 
   // NOLINTNEXTLINE(readability-redundant-member-init) — explicit defaults
   // satisfy cppcoreguidelines-pro-type-member-init on the aggregate
@@ -51,9 +81,6 @@ struct StaticLayout {
   uint32_t workspace_base = 0;
   uint32_t workspace_bytes = 0;
   uint32_t arena_base = 0;
-
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::vector<BinaryenType> local_types = {};
 
   uint32_t peak_slots = 0;
   bool debug_mode = false;

@@ -1,0 +1,345 @@
+#include "compiler_v2/tools/wat_runner/wat_runner.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
+#include "compiler_v2/host/cel_log.h"
+#include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "wasm.h"
+#include "wasmtime.h"
+
+namespace celwasm {
+
+namespace {
+
+// ── Status helpers — mirror cel::Engine's shape ─────────────
+
+absl::Status WasmtimeErrorToStatus(absl::string_view context,
+                                   wasmtime_error_t* err) {
+  wasm_byte_vec_t msg;
+  wasmtime_error_message(err, &msg);
+  std::string text(msg.data, msg.size);
+  wasm_byte_vec_delete(&msg);
+  wasmtime_error_delete(err);
+  return absl::FailedPreconditionError(absl::StrCat(context, ": ", text));
+}
+
+absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
+  wasm_byte_vec_t msg;
+  wasm_trap_message(trap, &msg);
+  std::string text(msg.data, msg.size);
+  wasm_byte_vec_delete(&msg);
+  wasm_trap_delete(trap);
+  return absl::InternalError(absl::StrCat(context, ": ", text));
+}
+
+// ── Trampoline state: holds a CelHostStub + a way to reach the
+// caller's memory so the stub can write into `out_slot`. ─────
+
+struct StubEnv {
+  CelHostStub stub;
+};
+
+wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
+                            const wasmtime_val_t* args, size_t nargs,
+                            wasmtime_val_t* /*results*/,
+                            size_t /*nresults*/) {
+  if (nargs != 4 || args[0].kind != WASMTIME_I32 ||
+      args[1].kind != WASMTIME_I32 || args[2].kind != WASMTIME_I32 ||
+      args[3].kind != WASMTIME_I32) {
+    // Stub trampoline expects the M2 4-arg shape exactly.  Any
+    // mismatch is a programming error in the calling WAT, not a
+    // runtime failure we should paper over.
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner stub: expected 4 × i32 args";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  const uint32_t out_slot = static_cast<uint32_t>(args[0].of.i32);
+  const uint32_t msg_slot = static_cast<uint32_t>(args[1].of.i32);
+  const uint32_t field_ref_id = static_cast<uint32_t>(args[2].of.i32);
+  const uint32_t attribute_id = static_cast<uint32_t>(args[3].of.i32);
+
+  // Reach the caller's memory through its `memory` export.
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  wasmtime_extern_t ext;
+  const char kName[] = "memory";
+  if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner stub: caller has no memory export";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  uint8_t* data = wasmtime_memory_data(ctx, &ext.of.memory);
+  const size_t size = wasmtime_memory_data_size(ctx, &ext.of.memory);
+
+  auto* s = static_cast<StubEnv*>(env);
+  s->stub(out_slot, msg_slot, field_ref_id, attribute_id, data, size);
+  return nullptr;
+}
+
+void DeleteStubEnv(void* env) {
+  delete static_cast<StubEnv*>(env);
+}
+
+// Four-i32-in, zero-out — the M2 cel_host trampoline signature.
+wasm_functype_t* CelHostTrampolineType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[4];
+  for (auto& p : param_arr) p = wasm_valtype_new(WASM_I32);
+  wasm_valtype_vec_new(&params, 4, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+absl::Status RegisterCelHostStub(wasmtime_linker_t* linker,
+                                 absl::string_view name, CelHostStub stub) {
+  auto* env = new StubEnv{std::move(stub)};
+  wasm_functype_t* type = CelHostTrampolineType();
+  const char kModule[] = "cel_host";
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, kModule, sizeof(kModule) - 1, name.data(), name.size(), type,
+      StubTrampoline, env, DeleteStubEnv);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        absl::StrCat("linker.define(cel_host.", name, ")"), err);
+  }
+  return absl::OkStatus();
+}
+
+// ── WAT → wasm bytes ─────────────────────────────────────
+
+absl::StatusOr<std::vector<uint8_t>> Wat2Wasm(absl::string_view wat) {
+  wasm_byte_vec_t out;
+  wasmtime_error_t* err = wasmtime_wat2wasm(wat.data(), wat.size(), &out);
+  if (err != nullptr) {
+    wasm_byte_vec_t msg;
+    wasmtime_error_message(err, &msg);
+    std::string text(msg.data, msg.size);
+    wasm_byte_vec_delete(&msg);
+    wasmtime_error_delete(err);
+    return absl::InvalidArgumentError(absl::StrCat("wat2wasm: ", text));
+  }
+  std::vector<uint8_t> bytes(out.data, out.data + out.size);
+  wasm_byte_vec_delete(&out);
+  return bytes;
+}
+
+// ── Store + memory + linker wiring ──────────────────────
+
+struct RunState {
+  wasm_engine_t* engine = nullptr;
+  wasmtime_module_t* runtime_module = nullptr;
+  wasmtime_module_t* expr_module = nullptr;
+  wasmtime_store_t* store = nullptr;
+  wasmtime_linker_t* linker = nullptr;
+  wasmtime_memory_t memory{};
+  wasmtime_instance_t runtime_instance{};
+  wasmtime_instance_t expr_instance{};
+  wasmtime_func_t eval_fn{};
+
+  ~RunState() {
+    if (linker != nullptr) wasmtime_linker_delete(linker);
+    if (store != nullptr) wasmtime_store_delete(store);
+    if (expr_module != nullptr) wasmtime_module_delete(expr_module);
+    if (runtime_module != nullptr) wasmtime_module_delete(runtime_module);
+    if (engine != nullptr) wasm_engine_delete(engine);
+  }
+};
+
+absl::Status InitEngineAndModules(RunState& s,
+                                  absl::Span<const uint8_t> expr_bytes) {
+  s.engine = wasm_engine_new();
+  if (s.engine == nullptr) {
+    return absl::InternalError("wasm_engine_new returned null");
+  }
+  wasmtime_error_t* err = wasmtime_module_new(
+      s.engine, kCelRuntimeWasmBytes, kCelRuntimeWasmBytesSize,
+      &s.runtime_module);
+  if (err != nullptr) return WasmtimeErrorToStatus("module_new(runtime)", err);
+  err = wasmtime_module_new(s.engine, expr_bytes.data(), expr_bytes.size(),
+                            &s.expr_module);
+  if (err != nullptr) return WasmtimeErrorToStatus("module_new(expr)", err);
+  return absl::OkStatus();
+}
+
+absl::Status InitStoreAndMemory(RunState& s) {
+  s.store = wasmtime_store_new(s.engine, nullptr, nullptr);
+  if (s.store == nullptr) {
+    return absl::InternalError("wasmtime_store_new returned null");
+  }
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasm_memorytype_t* mty = nullptr;
+  wasmtime_error_t* err = wasmtime_memorytype_new(
+      /*min=*/2, /*max_present=*/true, /*max=*/2, /*is_64=*/false,
+      /*shared=*/false, /*page_size_log2=*/16, &mty);
+  if (err != nullptr) return WasmtimeErrorToStatus("memorytype_new", err);
+  err = wasmtime_memory_new(ctx, mty, &s.memory);
+  wasm_memorytype_delete(mty);
+  if (err != nullptr) return WasmtimeErrorToStatus("memory_new", err);
+  return absl::OkStatus();
+}
+
+absl::Status InitLinker(RunState& s, const WatRunInput& input) {
+  s.linker = wasmtime_linker_new(s.engine);
+  if (s.linker == nullptr) {
+    return absl::InternalError("wasmtime_linker_new returned null");
+  }
+  if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasmtime_extern_t mem_ext;
+  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
+  mem_ext.of.memory = s.memory;
+  wasmtime_error_t* err = wasmtime_linker_define(
+      s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
+  }
+  if (input.cel_get_field_stub) {
+    if (auto st = RegisterCelHostStub(s.linker, "cel_get_field",
+                                      input.cel_get_field_stub);
+        !st.ok()) {
+      return st;
+    }
+  }
+  if (input.cel_has_field_stub) {
+    if (auto st = RegisterCelHostStub(s.linker, "cel_has_field",
+                                      input.cel_has_field_stub);
+        !st.ok()) {
+      return st;
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status BindExport(wasmtime_linker_t* linker, wasmtime_context_t* ctx,
+                        const wasmtime_instance_t& inst,
+                        absl::string_view name) {
+  wasmtime_extern_t ext;
+  if (!wasmtime_instance_export_get(ctx, &inst, name.data(), name.size(),
+                                    &ext)) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("runtime has no export `", name, "`"));
+  }
+  wasmtime_error_t* err = wasmtime_linker_define(
+      linker, ctx, "cel", 3, name.data(), name.size(), &ext);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(absl::StrCat("linker.define(cel.", name, ")"),
+                                 err);
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstantiateRuntime(RunState& s) {
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasm_trap_t* trap = nullptr;
+  wasmtime_error_t* err = wasmtime_linker_instantiate(
+      s.linker, ctx, s.runtime_module, &s.runtime_instance, &trap);
+  if (err != nullptr) return WasmtimeErrorToStatus("instantiate(runtime)", err);
+  if (trap != nullptr) {
+    return WasmTrapToStatus("instantiate(runtime) trapped", trap);
+  }
+  if (auto st = BindExport(s.linker, ctx, s.runtime_instance, "cel_reset");
+      !st.ok()) {
+    return st;
+  }
+  return BindExport(s.linker, ctx, s.runtime_instance, "cel_alloc");
+}
+
+absl::Status InstantiateExpr(RunState& s) {
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasm_trap_t* trap = nullptr;
+  wasmtime_error_t* err = wasmtime_linker_instantiate(
+      s.linker, ctx, s.expr_module, &s.expr_instance, &trap);
+  if (err != nullptr) return WasmtimeErrorToStatus("instantiate(expr)", err);
+  if (trap != nullptr) {
+    return WasmTrapToStatus("instantiate(expr) trapped", trap);
+  }
+  wasmtime_extern_t ext;
+  if (!wasmtime_instance_export_get(ctx, &s.expr_instance, "eval", 4, &ext)) {
+    return absl::FailedPreconditionError("expr module does not export `eval`");
+  }
+  if (ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`eval` export is not a function");
+  }
+  s.eval_fn = ext.of.func;
+  return absl::OkStatus();
+}
+
+// Write the pre-write payloads into the live memory.  Applied AFTER
+// instantiation (so the data segments from the expr module have
+// already been laid down) but BEFORE $eval is called (so the body's
+// cel_reset runs on top of whatever we wrote).
+absl::Status ApplyPreWrites(RunState& s, const WatRunInput& input) {
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  uint8_t* data = wasmtime_memory_data(ctx, &s.memory);
+  const size_t size = wasmtime_memory_data_size(ctx, &s.memory);
+  for (const auto& [offset, bytes] : input.pre_writes) {
+    if (static_cast<std::uint64_t>(offset) + bytes.size() > size) {
+      return absl::OutOfRangeError(
+          absl::StrCat("pre_write [", offset, ", ", offset + bytes.size(),
+                       ") exceeds memory size ", size));
+    }
+    std::memcpy(data + offset, bytes.data(), bytes.size());
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<uint32_t> CallEval(RunState& s) {
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasmtime_val_t result{};
+  wasm_trap_t* trap = nullptr;
+  wasmtime_func_t fn = s.eval_fn;
+  wasmtime_error_t* err =
+      wasmtime_func_call(ctx, &fn, /*args=*/nullptr, /*nargs=*/0, &result,
+                         /*nresults=*/1, &trap);
+  if (err != nullptr) return WasmtimeErrorToStatus("eval", err);
+  if (trap != nullptr) return WasmTrapToStatus("eval trapped", trap);
+  if (result.kind != WASMTIME_I32) {
+    return absl::FailedPreconditionError("eval returned non-i32");
+  }
+  return static_cast<uint32_t>(result.of.i32);
+}
+
+std::vector<uint8_t> SnapshotMemory(RunState& s) {
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  const uint8_t* data = wasmtime_memory_data(ctx, &s.memory);
+  const size_t size = wasmtime_memory_data_size(ctx, &s.memory);
+  return {data, data + size};
+}
+
+}  // namespace
+
+absl::StatusOr<WatRunOutput> RunWat(const WatRunInput& input) {
+  auto expr_bytes_or = Wat2Wasm(input.wat);
+  if (!expr_bytes_or.ok()) return expr_bytes_or.status();
+
+  RunState s;
+  if (auto st = InitEngineAndModules(s, *expr_bytes_or); !st.ok()) return st;
+  if (auto st = InitStoreAndMemory(s); !st.ok()) return st;
+  if (auto st = InitLinker(s, input); !st.ok()) return st;
+  if (auto st = InstantiateRuntime(s); !st.ok()) return st;
+  if (auto st = InstantiateExpr(s); !st.ok()) return st;
+  if (auto st = ApplyPreWrites(s, input); !st.ok()) return st;
+  auto ret_or = CallEval(s);
+  if (!ret_or.ok()) return ret_or.status();
+
+  return WatRunOutput{*ret_or, SnapshotMemory(s)};
+}
+
+}  // namespace celwasm
