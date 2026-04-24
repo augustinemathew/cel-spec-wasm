@@ -55,34 +55,102 @@ absl::string_view ExprKindName(cel::ExprKindCase k) {
 absl::Status Unimplemented(cel::ExprKindCase kind, int64_t id) {
   return absl::UnimplementedError(
       absl::StrCat("expr_lower: expression kind `", ExprKindName(kind),
-                   "` is not supported at M1 (expr id ", id, ")"));
+                   "` is not supported yet (expr id ", id, ")"));
 }
 
-// Loads the root's rodata offset as an `i32.const`.  M1's only storage
-// kind is `kStaticRodata`, so every kConst node lowers to a single
-// constant instruction.
-BinaryenExpressionRef EmitStorageLoad(WasmModule& mod, const Storage& storage) {
-  ABSL_CHECK(storage.kind == StorageKind::kStaticRodata)
-      << "expr_lower: EmitStorageLoad called with storage kind "
-      << static_cast<int>(storage.kind) << "; M1 only emits kStaticRodata";
-  return BinaryenConst(
-      mod.raw(), BinaryenLiteralInt32(static_cast<int32_t>(storage.payload)));
+// Helper: wrap an i32 literal offset as a Binaryen `(i32.const <n>)`.
+BinaryenExpressionRef I32Const(WasmModule& mod, uint32_t value) {
+  return BinaryenConst(mod.raw(),
+                       BinaryenLiteralInt32(static_cast<int32_t>(value)));
 }
 
-// Emits `call $cel_reset(arena_base, arena_limit)`.  This is the first
-// instruction of every `$eval` body: it writes the arena cursor/limit
-// pair to linear-memory bytes 8/12, giving each eval a fresh arena.
-// Codegen bakes both arguments as compile-time constants.
+// Emits a rodata-offset `(i32.const <off>)`.  The only storage kind
+// for kConst is `kStaticRodata`; anything else on a kConst node is an
+// invariant violation (LayoutPass didn't pack the literal).
+BinaryenExpressionRef EmitKConstLoad(WasmModule& mod,
+                                     const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kStaticRodata)
+      << "expr_lower: kConst node has storage kind "
+      << static_cast<int>(ann.storage.kind)
+      << "; expected kStaticRodata (LayoutPass didn't pack the literal)";
+  return I32Const(mod, ann.storage.payload);
+}
+
+// Emits `(local.get <local_index>)`.  The local's value at runtime is
+// the u32 offset of the variable's CelValue cell in linear memory —
+// set once per Eval by the `$eval` prelude (free variable), or per
+// iteration by the loop header (comprehension iter var, M5).  The
+// kIdent read site is identical across both cases.
+BinaryenExpressionRef EmitKIdentLoad(WasmModule& mod,
+                                     const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kLocal)
+      << "expr_lower: kIdent node has storage kind "
+      << static_cast<int>(ann.storage.kind)
+      << "; expected kLocal (LayoutPass didn't tag the ident)";
+  return BinaryenLocalGet(mod.raw(), ann.storage.payload, BinaryenTypeInt32());
+}
+
+// Emits `call $cel_reset(arena_base, arena_limit)`.  First instruction
+// of every `$eval` body after the variable prelude: writes the arena
+// cursor/limit pair to linear-memory bytes 8/12, giving each eval a
+// fresh arena.  Both arguments are compile-time constants.
 BinaryenExpressionRef EmitCelResetCall(WasmModule& mod, uint32_t arena_base,
                                        uint32_t arena_limit) {
   BinaryenExpressionRef args[2] = {
-      BinaryenConst(mod.raw(),
-                    BinaryenLiteralInt32(static_cast<int32_t>(arena_base))),
-      BinaryenConst(mod.raw(),
-                    BinaryenLiteralInt32(static_cast<int32_t>(arena_limit))),
+      I32Const(mod, arena_base),
+      I32Const(mod, arena_limit),
   };
   const std::string name(kCelResetInternalName);
   return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+}
+
+// Emits one `local.set local_index (i32.const slot_offset)` per
+// referenced variable, populating each ident's wasm local with its
+// compile-time-known workspace slot offset before `cel_reset` or the
+// body run.  Per m2-ident-select-unknowns.md §2.6 / Slice M2.B:
+// every kIdent lowering is `local.get local_index`, so the prelude is
+// the one place where the "which slot?" question gets answered for
+// free variables.
+//
+// The resulting instructions go at the top of `$eval`, before
+// `cel_reset`, because cel_reset only writes bytes [8, 16) (arena
+// cursor/limit) and doesn't touch the workspace region — so the order
+// prelude-then-reset vs reset-then-prelude is irrelevant at runtime.
+// We put prelude first so the generated WAT reads top-down matching
+// the milestone plan doc's sketch.
+std::vector<BinaryenExpressionRef> EmitVariablePrelude(
+    WasmModule& mod, absl::Span<const LaidOutVariable> variables) {
+  std::vector<BinaryenExpressionRef> out;
+  out.reserve(variables.size());
+  for (const LaidOutVariable& v : variables) {
+    out.push_back(BinaryenLocalSet(mod.raw(), v.local_index,
+                                   I32Const(mod, v.slot_offset)));
+  }
+  return out;
+}
+
+// Emits the instruction that supplies `$eval`'s return i32 — the
+// offset of the root expression's CelValue.  Dispatches on the root's
+// kind; non-M2 kinds fail with Unimplemented.
+absl::StatusOr<BinaryenExpressionRef> EmitRoot(WasmModule& mod,
+                                               const cel::Expr& root,
+                                               const NodeAnnotation& ann) {
+  switch (root.kind_case()) {
+    case cel::ExprKindCase::kConstant:
+      return EmitKConstLoad(mod, ann);
+    case cel::ExprKindCase::kIdentExpr:
+      return EmitKIdentLoad(mod, ann);
+    case cel::ExprKindCase::kSelectExpr:
+    case cel::ExprKindCase::kCallExpr:
+    case cel::ExprKindCase::kListExpr:
+    case cel::ExprKindCase::kStructExpr:
+    case cel::ExprKindCase::kMapExpr:
+    case cel::ExprKindCase::kComprehensionExpr:
+    case cel::ExprKindCase::kUnspecifiedExpr:
+      return Unimplemented(root.kind_case(), root.id());
+  }
+  ABSL_CHECK(false) << "EmitRoot: unknown ExprKindCase "
+                    << static_cast<int>(root.kind_case());
 }
 
 }  // namespace
@@ -94,43 +162,39 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
   const cel::Expr& root = ast.ast().root_expr();
-  const cel::ExprKindCase kind = root.kind_case();
-
-  // M1 gate: only kConstant roots are lowered.  Non-root kConst (e.g.
-  // operands of a kCall) have been packed into rodata by LayoutPass,
-  // but the root's kind is what determines whether `$eval` has a
-  // codegen strategy at all.
-  if (kind != cel::ExprKindCase::kConstant) {
-    return Unimplemented(kind, root.id());
-  }
-
   const NodeAnnotation* ann = layout.annotations.Find(root.id());
   if (ann == nullptr) {
     return absl::InvalidArgumentError(
         absl::StrCat("expr_lower: root expr id ", root.id(),
                      " has no NodeAnnotation — LayoutPass was not run"));
   }
-  if (ann->storage.kind != StorageKind::kStaticRodata) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "expr_lower: root kConst node id ", root.id(), " has storage kind ",
-        static_cast<int>(ann->storage.kind), "; M1 expects kStaticRodata"));
-  }
 
-  // Build `(block (result i32) (call $cel_reset ...) (i32.const <off>))`.
-  // The block's last expression supplies its value, so the i32.const is
-  // what `$eval` returns.
-  BinaryenExpressionRef children[2] = {
-      EmitCelResetCall(mod, layout.arena_base, opts.mem_size_bytes),
-      EmitStorageLoad(mod, ann->storage),
-  };
-  BinaryenExpressionRef body =
-      BinaryenBlock(mod.raw(), /*name=*/nullptr, children, /*numChildren=*/2,
-                    BinaryenTypeInt32());
+  auto root_ref = EmitRoot(mod, root, *ann);
+  if (!root_ref.ok()) return root_ref.status();
+
+  // `$eval` body shape:
+  //   (block (result i32)
+  //     <prelude: one local.set per referenced variable>
+  //     (call $cel_reset arena_base mem_size)
+  //     <root expression>)
+  //
+  // The block's last expression supplies its return value, so the
+  // root expression's i32 is what `$eval` returns.  Prelude +
+  // cel_reset have `none` result type and contribute nothing to the
+  // block's value.
+  std::vector<BinaryenExpressionRef> instrs =
+      EmitVariablePrelude(mod, layout.variables);
+  instrs.push_back(
+      EmitCelResetCall(mod, layout.arena_base, opts.mem_size_bytes));
+  instrs.push_back(*root_ref);
+  BinaryenExpressionRef body = BinaryenBlock(
+      mod.raw(), /*name=*/nullptr, instrs.data(),
+      static_cast<BinaryenIndex>(instrs.size()), BinaryenTypeInt32());
 
   // Every wasm local `$eval` carries is a u32 memory offset — one
   // per referenced variable (m2-ident-select-unknowns.md §2.6 /
-  // Slice M2.B).  Build the per-local type vector at emission
-  // time; the layout only carries the count via `variables.size()`.
+  // Slice M2.B).  Build the per-local type vector at emission time;
+  // the layout carries only the count via `variables.size()`.
   const std::string func_name_c(func_name);
   const std::vector<BinaryenType> local_types(layout.variables.size(),
                                               BinaryenTypeInt32());

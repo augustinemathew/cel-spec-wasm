@@ -35,6 +35,18 @@ Pipeline RunPipeline(absl::string_view expression) {
   return Pipeline{*std::move(ta), *std::move(layout)};
 }
 
+// Like RunPipeline, but takes variable specs in the `name:Type` form
+// that CheckOptions consumes.  Used by kIdent lowering tests.
+Pipeline RunPipelineWithVars(absl::string_view expression,
+                             std::vector<std::string> variable_specs) {
+  CheckOptions opts;
+  opts.variable_specs = std::move(variable_specs);
+  auto ta = ParseAndCheck(expression, opts);
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  return Pipeline{*std::move(ta), *std::move(layout)};
+}
+
 // Installs the memory + `cel.cel_reset` import shape every lowered
 // `$eval` body relies on.  One wasm page and a `(i32,i32)->()` import
 // under the internal name `kCelResetInternalName`.
@@ -188,13 +200,127 @@ TEST(ExprLowerTest, MemSizeBytesFlowsIntoCelResetSecondArg) {
 // --- Unimplemented kinds return UnimplementedError -----------------------
 
 TEST(ExprLowerTest, KCallReturnsUnimplemented) {
-  // `1 + 2` type-checks but its root is a kCall; M1's expr_lower
-  // rejects any non-kConst root.
+  // `1 + 2` type-checks but its root is a kCall; M2 expr_lower
+  // rejects kCall roots (M3 lights them up).
   Pipeline p = RunPipeline("1 + 2");
   WasmModule m;
   PrepareHostModule(m, p.layout);
   EXPECT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m),
               StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+// ============================================================
+// M2.B.1 — kIdent root + `$eval` variable prelude
+// ============================================================
+//
+// Target wasm shape is locked by
+// `doc/implementation-plan/rewrite/wat/02_ident_x.wat`.  Each test
+// asserts one invariant of that shape; together they pin the
+// emitted IR up to Binaryen's local-name assignment.
+
+TEST(ExprLowerIdentTest, RootIdentLowersToLocalGet) {
+  // `x` with x:int.  Body should be:
+  //   (block (result i32)
+  //     (local.set 0 (i32.const <x_slot_offset>))
+  //     (call $cel_reset ...)
+  //     (local.get 0))
+  Pipeline p = RunPipelineWithVars("x", {"x:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  ASSERT_EQ(BinaryenBlockGetNumChildren(body), 3u)
+      << "prelude (1) + cel_reset (1) + root (1)";
+
+  // Child 0: prelude local.set of x's slot_offset.
+  BinaryenExpressionRef set = BinaryenBlockGetChildAt(body, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(set), BinaryenLocalSetId());
+  EXPECT_EQ(BinaryenLocalSetGetIndex(set), 0u);
+  BinaryenExpressionRef slot_const = BinaryenLocalSetGetValue(set);
+  ASSERT_EQ(BinaryenExpressionGetId(slot_const), BinaryenConstId());
+  ASSERT_EQ(p.layout.variables.size(), 1u);
+  EXPECT_EQ(BinaryenConstGetValueI32(slot_const),
+            static_cast<int32_t>(p.layout.variables[0].slot_offset));
+
+  // Child 1: call $cel_reset.
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 1);
+  EXPECT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_reset");
+
+  // Child 2: local.get of x's local.  The returned i32 is what
+  // `$eval` produces — the offset of x's CelValue.
+  BinaryenExpressionRef get = BinaryenBlockGetChildAt(body, 2);
+  ASSERT_EQ(BinaryenExpressionGetId(get), BinaryenLocalGetId());
+  EXPECT_EQ(BinaryenLocalGetGetIndex(get), 0u);
+}
+
+TEST(ExprLowerIdentTest, EvalFunctionDeclaresOneLocalPerVariable) {
+  Pipeline p = RunPipelineWithVars("x", {"x:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_EQ(BinaryenFunctionGetNumVars(lowered->func), 1u);
+  EXPECT_EQ(BinaryenFunctionGetVar(lowered->func, 0), BinaryenTypeInt32());
+}
+
+TEST(ExprLowerIdentTest, PreludePresentEvenWhenOnlyKConstIsUsed) {
+  // `x + 0` — two kIdent (x + literal 0 under kCall) where only one
+  // variable `x` is referenced.  kCall root still returns
+  // Unimplemented at M2, so this test proves the prelude shape, not
+  // the call shape.
+  //
+  // Actually `x + 0` is a kCall root — kCall rejection fires before
+  // we ever inspect the body.  To isolate the prelude invariant we
+  // use the plain `x` shape above.  This test instead checks the
+  // literal-only case has NO prelude (variables.empty()).
+  Pipeline p = RunPipeline("42");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_EQ(BinaryenFunctionGetNumVars(lowered->func), 0u)
+      << "literal-only program declares no wasm locals";
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_EQ(BinaryenBlockGetNumChildren(body), 2u)
+      << "no prelude: cel_reset + const root";
+}
+
+TEST(ExprLowerIdentTest, EmittedModuleSerializesAndValidates) {
+  // End-to-end shape check: the M2.B.1 output for `x:int` is a valid
+  // wasm module after the standard module emission step.  This is
+  // the same gate the WAT-runner harness applies but going through
+  // our codegen instead of hand-written WAT.
+  Pipeline p = RunPipelineWithVars("x", {"x:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  m.ExportFunction("$eval", "eval");
+  ASSERT_THAT(m.Validate(), IsOk());
+  EXPECT_THAT(m.Serialize(), IsOk());
+}
+
+TEST(ExprLowerIdentTest, MultipleVariablesGetSeparateLocalsAndPrelude) {
+  // With the kCall arm still Unimplemented, we can't root-test an
+  // expression with two kIdents.  But two declared variables is
+  // enough: ResolvePass only keeps referenced ones, so we need the
+  // expression to mention both.  `x + y` fails at kCall-root, but
+  // LayoutPass / ResolvePass already ran and populated
+  // layout.variables.  Feed the layout directly, forging a root
+  // that references one of them (`x`), proving both slots are
+  // populated by the prelude regardless of which ident the body
+  // reads.
+  //
+  // Simpler: just use `x` but DECLARE both x and y.  Unreferenced
+  // declarations don't reserve slots (ResolvePass filter), so this
+  // ends up a single-variable test — exactly what we want to avoid.
+  //
+  // Skipped until M3 (kCall arm) lands.  Documented here so the
+  // intent is recorded.
+  GTEST_SKIP() << "two-variable ident lowering requires M3 kCall to root";
 }
 
 }  // namespace

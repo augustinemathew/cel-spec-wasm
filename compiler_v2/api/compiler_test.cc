@@ -110,21 +110,26 @@ TEST(CompilerBuilderRegisterMessageTypeTest, RecordsDescriptor) {
   ASSERT_THAT(c, IsOk());
 }
 
-// Compile with a declared variable — at this point we're still
-// pre-M2.B (expr_lower has no kIdent arm yet), so compiling `x`
-// must return Unimplemented.  The declaration itself MUST flow
-// through the checker without error — that's the contract this
-// test locks.
-TEST(CompilerCompileDeclaredVariableTest,
-     CheckerAcceptsDeclaredIdentButLowerFailsUnimplemented) {
+// Compile with a declared variable — M2.B.1 lights the kIdent arm
+// of expr_lower.  The declaration flows through the checker, the
+// resolver assigns the variable a slot, expr_lower emits the
+// `$eval` prelude + local.get, and the module serialises.
+// Running the module requires Instance::Eval(Activation), which
+// lands in M2.B.3 — this test only goes as far as Compile().
+TEST(CompilerCompileDeclaredVariableTest, DeclaredIdentCompilesToValidModule) {
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("x", CelType::Int());
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   auto prog_or = c->Compile("x");
-  // Not InvalidArgument (checker was happy); not OK (expr_lower M1
-  // doesn't handle kIdent).  Expect Unimplemented specifically.
-  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kUnimplemented));
+  ASSERT_THAT(prog_or, IsOk());
+  auto bytes = prog_or->wasm_bytes();
+  // Wasm magic = 00 61 73 6d.
+  ASSERT_GE(bytes.size(), 4u);
+  EXPECT_EQ(bytes[0], 0x00);
+  EXPECT_EQ(bytes[1], 0x61);
+  EXPECT_EQ(bytes[2], 0x73);
+  EXPECT_EQ(bytes[3], 0x6d);
 }
 
 // Compile with a declared Message variable — checker resolves
