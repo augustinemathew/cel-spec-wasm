@@ -16,6 +16,7 @@ cc_test(
         "//compiler/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:attribute",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
         "//compiler_v2/api:engine",
         "//compiler_v2/api:instance",

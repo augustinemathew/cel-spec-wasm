@@ -92,7 +92,7 @@ Value Value::Error(ErrorPayload payload) {
   return r;
 }
 
-// ——— Aggregate / message builders: signature-final stubs ———
+// ——— Aggregate / message builders ———
 // Signature is locked by cel-host-surface.md §2.5 (pass-by-value sink
 // pattern); stub bodies ABSL_CHECK until the milestone that lights
 // them up.  The `auto taken = std::move(...)` lines both demonstrate
@@ -106,13 +106,26 @@ Value Value::Map(std::vector<std::pair<Value, Value>> entries) {
   [[maybe_unused]] auto taken = std::move(entries);
   ABSL_CHECK(false) << "Value::Map is a stub until M6 (lists + maps)";
 }
-Value Value::Message(const google::protobuf::Message& /*m*/) {
-  ABSL_CHECK(false) << "Value::Message is a stub until M2 (proto field reads)";
-}
 Value Value::OwnedMessage(std::unique_ptr<google::protobuf::Message> m) {
   [[maybe_unused]] auto taken = std::move(m);
   ABSL_CHECK(false)
       << "Value::OwnedMessage is a stub until M7 (proto literal construction)";
+}
+
+// HostMessage is the general-purpose message constructor — it takes
+// any `HostMessageBacking` subclass (`ProtoBacking` for proto,
+// embedder subclasses for JSON / XML / …) and stashes it on the
+// Value.  `Value::Message(proto)` is the proto-specific convenience,
+// defined in `api/internal/cel_host.cc` (needs ProtoBacking's full
+// type) to avoid a circular library dep: value.cc doesn't know
+// about ProtoBacking; cel_host.cc depends on value.h.
+Value Value::HostMessage(std::shared_ptr<celwasm::HostMessageBacking> backing) {
+  ABSL_CHECK(backing != nullptr)
+      << "Value::HostMessage: backing must not be null";
+  Value r;
+  r.kind_ = Kind::kMessage;
+  r.payload_ = std::move(backing);
+  return r;
 }
 
 // ————————— Accessors —————————
@@ -156,6 +169,11 @@ absl::StatusOr<const ErrorPayload*> Value::ErrorInfo() const {
   if (kind_ != Kind::kError) return KindMismatch("error", kind_);
   return std::get<std::shared_ptr<ErrorPayload>>(payload_).get();
 }
+absl::StatusOr<const celwasm::HostMessageBacking*> Value::MessageBacking()
+    const {
+  if (kind_ != Kind::kMessage) return KindMismatch("message", kind_);
+  return std::get<std::shared_ptr<celwasm::HostMessageBacking>>(payload_).get();
+}
 
 bool Value::StructurallyEquals(const Value& other) const {
   if (kind_ != other.kind_) return false;
@@ -191,11 +209,20 @@ bool Value::StructurallyEquals(const Value& other) const {
       return a.code == b.code && a.message == b.message &&
              a.expr_id == b.expr_id;
     }
+    case Kind::kMessage: {
+      // Pointer-identity on the backing is the only equality
+      // semantics that works without pulling the full
+      // HostMessageBacking interface into value.cc (which would
+      // require cel_host.h).  Spec-compliant message equality
+      // (MessageDifferencer for protos, custom-defined for other
+      // backings) lands in M4 with `cel_message_eq`.
+      return std::get<std::shared_ptr<celwasm::HostMessageBacking>>(payload_) ==
+             std::get<std::shared_ptr<celwasm::HostMessageBacking>>(
+                 other.payload_);
+    }
     case Kind::kList:
     case Kind::kMap:
-    case Kind::kMessage:
-      ABSL_CHECK(false)
-          << "StructurallyEquals on aggregates is a stub until M6/M7";
+      ABSL_CHECK(false) << "StructurallyEquals on list/map is a stub until M6";
   }
   ABSL_CHECK(false) << "unhandled Value::Kind = " << static_cast<int>(kind_);
 }

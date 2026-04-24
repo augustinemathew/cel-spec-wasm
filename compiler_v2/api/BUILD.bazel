@@ -189,6 +189,52 @@ cc_test(
     ],
 )
 
+# Internal — Layer 1 of the cel_host stack
+# (m2-ident-select-unknowns.md §2.4).  Pure CEL semantics:
+# HostMessageBacking interface + ProtoBacking built-in.  Layer 2
+# (MemoryView / ExternrefTable / ArenaAllocator + trampoline
+# semantics) + Layer 3 (wasmtime glue) land in follow-up slices.
+#
+# Also defines `cel::Value::Message(const Message&)` so value.cc
+# doesn't need to know about ProtoBacking — the library dep runs
+# cel_host -> value (never the reverse) and the Value stores a
+# forward-declared `HostMessageBacking` in its payload variant.
+cc_library(
+    name = "cel_host",
+    srcs = ["internal/cel_host.cc"],
+    hdrs = ["internal/cel_host.h"],
+    deps = [
+        ":error",
+        ":type",
+        ":value",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "cel_host_test",
+    srcs = ["internal/cel_host_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler/testdata:host_fixture_proto2_cc_proto",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Internal — owns the wasmtime state held by cel::Engine.  In
 # `celwasm::` per cel-host-surface.md §1 (public is `cel::`,
 # internal is `celwasm::`).

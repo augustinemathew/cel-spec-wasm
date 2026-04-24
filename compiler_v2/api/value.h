@@ -36,6 +36,13 @@ namespace google::protobuf {
 class Message;
 }
 
+// Forward-decl so Value can carry a shared_ptr<HostMessageBacking> in
+// its payload without pulling cel_host.h into every includer.  Full
+// definition lives in `compiler_v2/api/internal/cel_host.h`.
+namespace celwasm {
+class HostMessageBacking;
+}
+
 namespace cel {
 
 class Value {
@@ -76,14 +83,33 @@ class Value {
   static Value Unknown(AttributeId attr);
   static Value Error(ErrorPayload payload);
 
-  // ——— Aggregate / message builders (signature-final stubs) ———
-  // Bodies `ABSL_CHECK` until their milestone (lists + maps: M6;
-  // messages: M2 for read, M7 for construction).  Declared here so
-  // the surface shape doesn't change later.
+  // ——— Aggregate / message builders ———
+  // Lists + maps stay stubs (M6); OwnedMessage stays stubbed until
+  // M7 (proto literal construction).
   static Value List(std::vector<Value> elements);
   static Value Map(std::vector<std::pair<Value, Value>> entries);
-  static Value Message(const google::protobuf::Message& m);
   static Value OwnedMessage(std::unique_ptr<google::protobuf::Message> m);
+
+  // Carry a host-supplied message backing through Activation::Bind
+  // into the cel_host dispatch.  ProtoBacking is the built-in for
+  // `google::protobuf::Message`; embedders with JSON / XML /
+  // struct-of-structs data shapes provide their own subclass of
+  // `celwasm::HostMessageBacking` (see
+  // `compiler_v2/api/internal/cel_host.h`).
+  static Value HostMessage(
+      std::shared_ptr<celwasm::HostMessageBacking> backing);
+
+  // Convenience: wrap a `google::protobuf::Message` in a fresh
+  // `ProtoBacking` and forward to `HostMessage`.  Non-owning — the
+  // caller must keep `m` alive for the duration of any Eval that
+  // observes this Value (typically the Activation-Bind-to-Eval
+  // window).
+  //
+  // Implemented in `compiler_v2/api/internal/cel_host.cc` rather
+  // than `value.cc` — the implementation needs `ProtoBacking`'s
+  // complete definition, and keeping the dependency one-way
+  // (cel_host -> value, never the reverse) avoids a library cycle.
+  static Value Message(const google::protobuf::Message& m);
 
   // ————————— Inspection —————————
   Kind kind() const {
@@ -113,6 +139,10 @@ class Value {
   absl::StatusOr<AttributeId> UnknownAttribute() const;
   absl::StatusOr<const ErrorPayload*> ErrorInfo() const;
 
+  // Retrieve the host-side backing for a kMessage-kind Value.
+  // Returns `InvalidArgument` on any other kind.
+  absl::StatusOr<const celwasm::HostMessageBacking*> MessageBacking() const;
+
   // Structural equality — scalar-only at M1.  Aggregates / messages
   // delegate to the M6 / M2 bodies respectively.  Returns false if
   // kinds differ.  For 3VL-aware equality (`CelEquals`) that absorbs
@@ -123,16 +153,18 @@ class Value {
   // Discriminated by kind_.  kBytes shares the std::string alternative
   // with kString — the kind tag disambiguates.
   struct Empty {};
-  using Payload = std::variant<Empty,                           // Null
-                               bool,                            // Bool
-                               int64_t,                         // Int
-                               uint64_t,                        // Uint
-                               double,                          // Double
-                               std::string,                     // String/Bytes
-                               absl::Duration,                  // Duration
-                               absl::Time,                      // Timestamp
-                               AttributeId,                     // Unknown
-                               std::shared_ptr<ErrorPayload>>;  // Error
+  using Payload =
+      std::variant<Empty,                          // Null
+                   bool,                           // Bool
+                   int64_t,                        // Int
+                   uint64_t,                       // Uint
+                   double,                         // Double
+                   std::string,                    // String/Bytes
+                   absl::Duration,                 // Duration
+                   absl::Time,                     // Timestamp
+                   AttributeId,                    // Unknown
+                   std::shared_ptr<ErrorPayload>,  // Error
+                   std::shared_ptr<celwasm::HostMessageBacking>>;  // Message
 
   Kind kind_;
   Payload payload_;
