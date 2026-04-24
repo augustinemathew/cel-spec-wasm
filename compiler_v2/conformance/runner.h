@@ -1,0 +1,83 @@
+// Conformance-suite harness for compiler_v2.
+//
+// Wraps one `cel.expr.conformance.test.SimpleTest` as a pipeline
+// invocation (`cel::Compiler::Compile` → `cel::Engine::Plan` →
+// `cel::Instance::Eval`) and compares the decoded `cel::Value`
+// against the test's `cel.expr.Value` matcher.
+//
+// Every run yields exactly one of three outcomes:
+//
+//   - `kPass`         — compiled, evaluated, and matched the proto.
+//   - `kUnsupported`  — the test sits outside the current milestone's
+//                       envelope (bindings / container / type_env /
+//                       aggregate matcher / error matcher) *or*
+//                       compilation returned `Unimplemented`.  Not a
+//                       regression; later milestones graduate these.
+//   - `kFail`         — anything else.  Treated as a regression by the
+//                       test wrapper; the binary form tallies them.
+//
+// The envelope is M1-specific: scalar `value:` matcher with no
+// declarations, no container, no bindings.  Each subsequent milestone
+// loosens one dimension (`Has(Ident(...))` in M2, `Call` arms in M3,
+// …) and updates the filter here in the same commit.
+
+#ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
+#define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
+
+#include <cstdint>
+#include <string>
+
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "cel/expr/conformance/test/simple.pb.h"
+#include "cel/expr/value.pb.h"
+#include "compiler_v2/api/compiler.h"
+#include "compiler_v2/api/engine.h"
+#include "compiler_v2/api/value.h"
+
+namespace celwasm::conformance {
+
+enum class Outcome : std::uint8_t {
+  kPass,
+  kUnsupported,
+  kFail,
+};
+
+struct Result {
+  Outcome outcome = Outcome::kUnsupported;
+  // Human-readable reason.  For kPass, empty.  For kUnsupported, the
+  // envelope dimension or `Unimplemented` message.  For kFail, the
+  // underlying status + a short diff of got-vs-want.
+  std::string detail;
+};
+
+absl::string_view OutcomeName(Outcome o);
+
+// Returns true iff the test shape is one the M1 pipeline can even
+// attempt: no bindings, no type_env, no container, no macros disabled,
+// `check_only` unset, and the matcher is `value:` with a scalar kind
+// (null/bool/int64/uint64/double/string/bytes).  A false here short-
+// circuits to `kUnsupported` without compiling.
+bool IsM1Eligible(const cel::expr::conformance::test::SimpleTest& t);
+
+// Compare a decoded `cel::Value` against the proto `cel.expr.Value`.
+// OK on equality, `FailedPrecondition` with a diff-ish payload on
+// mismatch, `InvalidArgument` if `want` is a kind the runner has no
+// comparison for (aggregates, etc. — caller should have short-
+// circuited via `IsM1Eligible` first).
+absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
+
+// Run one test end-to-end using the shared compiler + engine
+// fixtures.  Never throws; always returns a `Result`.
+Result RunOne(const cel::expr::conformance::test::SimpleTest& t,
+              const cel::Compiler& compiler, const cel::Engine& engine);
+
+// Load a `SimpleTestFile` from a workspace-relative textproto path
+// (runfiles lookup handled by the caller — we just `ifstream` it).
+// Returns `NotFound` / `InvalidArgument` on I/O or parse failure.
+absl::Status LoadTestFile(absl::string_view path,
+                          cel::expr::conformance::test::SimpleTestFile& out);
+
+}  // namespace celwasm::conformance
+
+#endif  // CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_

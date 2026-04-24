@@ -413,8 +413,7 @@ compiler_v2/
 ```
 
 **Not in M1** (deferred, no placeholder files):
-  - `host/cel_host.{h,cc}` — M2, when `kSelect` lands
-  - `host/attribute.{h,cc}` — M4, partial-eval
+  - `api/internal/cel_host.{h,cc}` — M2, when `kSelect` lands
   - `testdata/*.proto` — M2, when proto fixtures are needed
   - `bench/eval_bench.cc` — M8, with Sethi–Ullman parity
   - `ir/wasm_annotations*.{h,cc}` from v1 — its role is filled by
@@ -688,14 +687,31 @@ runtime behavior.
 
 Next milestones, in order (each against the frozen M1 skeleton):
 
-  - **M2** — `kIdent` + `kSelect` (proto field reads); adds
-    `host/cel_host.{h,cc}` for `cel_get_field` / `cel_has_field`;
-    ports the `Customer` proto fixture.
+  - **M2** — `kIdent` + `kSelect` (proto field reads) + unknown
+    attributes on the `Activation` surface.  Full plan:
+    `m2-ident-select-unknowns.md`.  Adds:
+      - `api/internal/cel_host.{h,cc}` for `cel_get_field` /
+        `cel_has_field` (ports from v1 M3 G2/G3; internal-to-api
+        implementation detail, not a public-host surface);
+      - `Customer` proto fixture (ports from
+        `compiler/testdata/`);
+      - `cel::Activation` with `AttributePattern` support —
+        bindings carry values *or* unknown markers, and the
+        runtime `cel_unknown_merge` helper (already landed in
+        v1 as M4 Slice A) is wired through so a select against
+        an unknown-patterned attribute produces a
+        `Value::Unknown(attr)` rather than trapping.  This is
+        the smallest surface increment that lets the conformance
+        harness score `result_matcher: unknown` /
+        `any_unknowns` tests — see
+        `compiler_v2/conformance/README.md`.
   - **M3** — `kCall` + built-in overload set; fills
     `kBuiltinSeeds`; adds arithmetic / comparison / string ops in
     `cel_runtime`.
-  - **M4** — `has()`, message equality, 3VL, partial-eval; adds
-    `cel_refs` externref table.
+  - **M4** — `has()`, message equality, 3VL, error surface; adds
+    `cel_refs` externref table.  (Partial-eval / unknown
+    propagation moved to M2 with the `Activation` surface;
+    M4 now owns only 3VL + error.)
   - **M5** — custom functions (single `cel_host_call_custom`
     trampoline).
   - **M6** — map + list literals (runtime primitives).

@@ -4,7 +4,12 @@ Status: **design — drafted 2026-04-21, not yet scheduled.**
 
 Supersedes `predecessor-m-mem-static-layout-pass.md` and
 `predecessor-memory-ownership-flip.md` (both in this directory).
-Closes the "Unified symbol table" bullet in `CLAUDE.md` on completion.
+Subsumes the unified-symbol-table question: the extended
+`WasmAnnotations` (§4.1) is the single per-node fact table that
+`CheckOptions::variable_specs` / `TypedAst::variables()` /
+`LoweringContext.idents` splintered across in v1.  M2 populates
+`local_index` and `scope_id` on `NodeAnnotation`; M5 adds the
+scope stack.  No `SymbolTable` class on `TypedAst` is planned.
 
 **Companion doc — `cel-host-surface.md`** is authoritative for the
 public user API (`Cel::Compiler` / `Cel::Program` / `Cel::Instance`
@@ -86,13 +91,14 @@ between calls) but:
 
 ### 1.3 The symbol-table debt
 
-`CLAUDE.md` tracks an unresolved decision: name/type/scope info is
-split across `CheckOptions::variable_specs` (frontend),
+In v1, name/type/scope info is split across
+`CheckOptions::variable_specs` (frontend),
 `TypedAst::variables()` + `WasmAnnotations` (IR), and
-`LoweringContext::idents` (codegen). Two options were floated —
-promote to `SymbolTable` on `TypedAst`, or side-table off
-cel-cpp's `reference_map`. Comprehensions (M5) land before this
-decision forces itself.
+`LoweringContext::idents` (codegen).  That worked for the flat,
+scope-free subset v1 shipped; it breaks the moment M5
+(comprehensions) or user functions need nested scopes.  Two
+options were floated — promote to a `SymbolTable` on `TypedAst`,
+or side-table off cel-cpp's `reference_map`.
 
 This rewrite takes the side-table approach and extends it. `WasmAnnotations`
 (`compiler/ir/annotations.h`) is already the per-expr_id side map. It
@@ -717,7 +723,7 @@ the ABI's `CustomFunctionEntry` drives the boxing/unboxing
 trampoline shape:
 
 ```cpp
-// Internal to host/cel_host_wasmtime.cc — not user-visible.
+// Internal to api/internal/cel_host.cc — not user-visible.
 struct BoundCustom {
   const abi::CustomFunctionEntry* entry;  // signature from ABI
   FunctionImpl                    fn;     // from RuntimeBindings
@@ -841,25 +847,36 @@ into wasm.
   cel_host.cel_set_field(out_slot, field_ref_id_age,  slot_a)  ;; (u32,u32,u32) -> void
 ```
 
-**Host surface (`compiler/host/cel_host.cc`, §4.7.5).** Four fixed
-host imports, regardless of message shape:
+**Host surface (`api/internal/cel_host.cc`, full definition in
+§4.7.6).** Four fixed host imports, regardless of message shape:
 
 ```
-cel_host.cel_make_message(type_id: u32, out_slot: u32) -> void
-cel_host.cel_set_field   (msg_slot: u32, field_ref_id: u32, value_slot: u32) -> void
-cel_host.cel_get_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32) -> void   (read side — reused from M3 G2)
-cel_host.cel_has_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32) -> void   (from M3 G3)
+cel_host.cel_make_message(type_id: u32, out_slot: u32) -> void                                      (M7)
+cel_host.cel_set_field   (msg_slot: u32, field_ref_id: u32, value_slot: u32) -> void                (M7)
+cel_host.cel_get_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32, attribute_id: u32) -> void   (M2 — §4.7.6)
+cel_host.cel_has_field   (out_slot: u32, msg_slot: u32, field_ref_id: u32, attribute_id: u32) -> void   (M2 — §4.7.6)
 ```
 
-`type_id` is interned at compile time against the descriptor pool
-(recorded in `cel.abi.types[]`); the host's dispatcher maps
-`type_id → MessageFactory`. `field_ref_id` is a separate intern
-id per field-access call site (recorded in `cel.abi.fields[]`,
-carrying `type_id` + `field_number` + `field_name` + `result_type`);
-the host precomputes `field_ref_id → (FieldDescriptor*,
-MessageFieldSetter, CelType)` at `Plan` time so the trampoline
-does one array lookup on the hot path — no per-call descriptor
-walk. See `cel-host-surface.md` §3.1 and §6 for the ABI schema.
+Four i32s on the read/has side, not three: the trampoline needs
+both the field intern id (resolves to FieldDescriptor) and the
+attribute intern id (matches against the `PartialEval` unknown
+pattern set, §4.7.6.3).  The `attribute_id = 0` sentinel means
+"no attribute declared" — computed selects or non-ident-rooted
+paths skip the unknown-pattern check.  `type_id` is interned at
+compile time against the descriptor pool (recorded in
+`cel.abi.types[]`); the host's dispatcher maps `type_id →
+MessageFactory`.  `field_ref_id` is interned by `(type_id,
+field_number)` — two call sites for the same field share a
+row — and recorded in `cel.abi.fields[]` carrying `type_id +
+field_number + field_name + result_type`.  `attribute_id` is
+interned per call site (two reads of `c.name` at different
+syntactic positions get distinct ids so pattern matching can
+target them independently) and recorded in
+`cel.abi.attributes[]`.  The host precomputes `field_ref_id →
+(FieldDescriptor*, CelType)` and `attribute_id → AttributeEntry`
+at `Plan` time so each trampoline invocation does two array
+lookups on the hot path — no descriptor walk, no hash lookup.
+See `cel-host-surface.md` §3.1 and §6 for the ABI schema.
 
 **No `MessagePattern` table.** Earlier drafts proposed a
 `(descriptor, field-assignment-shape) → pattern_id` side table; that
@@ -980,6 +997,284 @@ operations are spec-legal:
 expr module imports the full set of aggregate primitives regardless
 of whether the AST uses them. `DeclareRuntimeImports` + `DeclareHostImports`
 (§7.4) name each primitive unconditionally.
+
+#### 4.7.6 Host-side C++ interface — field reads (M2)
+
+Canonical definition of `api/internal/cel_host.{h,cc}`.  M2 ships
+the read side (`cel_get_field` + `cel_has_field`); M4 adds
+`cel_message_eq`; M7 adds `cel_make_message` + `cel_set_field`.
+Every later addition grows this same file.
+
+Two-layer split, modelled on v1:
+
+  - **Pure host logic** — runtime-agnostic free functions
+    (`ReadField`, `HasField`).  No wasmtime dependency; unit-
+    testable natively; reusable by any embedder that can hand
+    over a `Message*` plus an allocator.
+  - **Wasmtime trampoline layer** — a registration function plus
+    a borrowed-state `CelHostBindings` struct.  Unwraps wasmtime
+    types (i32 offsets, memory base, callback data), calls into
+    the pure layer, writes the out slot.
+
+The split is load-bearing: every host-side behaviour has one
+canonical implementation in the pure layer.  The trampolines do
+no CEL-semantic work — they only marshal.
+
+##### 4.7.6.1 Pure host logic
+
+```cpp
+// api/internal/cel_host.h
+namespace celwasm {
+
+// Reserves `len` bytes in the expr module's arena (via the
+// imported-back `cel_alloc`) and returns a host-addressable
+// pointer plus the arena-relative offset so the CelSpan's
+// `ptr` field matches what the module sees.  Returns nullptr
+// on allocation failure; `*out_offset` is undefined then.
+using ArenaAllocator = absl::AnyInvocable<
+    uint8_t* absl_nullable(size_t len,
+                           uint32_t* absl_nonnull out_offset)>;
+
+// Interns `submessage` into the expr module's externref table
+// (`$cel_refs`) and returns the densely-assigned slot index
+// that a `CelValue{CEL_MESSAGE, payload.msg_slot:idx}` can
+// carry.  Backed by the expr module's `cel_ref_intern` export
+// when messages are in play; returns 0 (the reserved "no ref"
+// sentinel) for modules that haven't emitted the export
+// (no message selects).
+using MessageInterner = absl::AnyInvocable<
+    uint32_t(const google::protobuf::Message& submessage)>;
+
+// Read `msg.<field>` into `*out`.  Shape of `*out` is determined
+// by the FieldDescriptor's cpp_type per `langdef.md`:
+//
+//   BOOL               → CelValue{CEL_BOOL,    payload.b}
+//   INT{32,64}         → CelValue{CEL_INT,     payload.i}
+//   UINT{32,64}        → CelValue{CEL_UINT,    payload.u}
+//   FLOAT | DOUBLE     → CelValue{CEL_DOUBLE,  payload.d}
+//   ENUM               → CelValue{CEL_INT,     payload.i}     (spec: enums → int)
+//   STRING | BYTES     → CelValue{CEL_STRING,  payload.s={offset,len}} via `alloc`
+//   MESSAGE (singular) → CelValue{CEL_MESSAGE, payload.msg_slot=intern(submsg)}
+//   REPEATED | MAP     → CelValue{CEL_ERROR}                (M6 unlocks; checker
+//                                                              should have rejected,
+//                                                              runtime guard)
+//
+// `field_number == 0` is the "not proto-resolvable" sentinel
+// (forward-compat for JSON / map backings).  In that case the
+// reader falls back to `field_name` via `Descriptor::FindField
+// ByName`.  For proto-backed messages the compiler always emits
+// the concrete number, so the fast number-lookup path is taken.
+//
+// `field_name` is always populated — attribute-pattern matching
+// in the trampoline layer reads it regardless of how the
+// descriptor was resolved.
+//
+// An unresolvable field (unknown number AND unknown name) writes
+// `CelValue{CEL_ERROR}` to `*out`.  CEL treats "field not
+// present" as an evaluation error (absorbing), not a host fault,
+// so it travels through the same out-parameter shape as a
+// successful read.
+void ReadField(const google::protobuf::Message& msg,
+               int field_number,
+               absl::string_view field_name,
+               CelValue* absl_nonnull out,
+               ArenaAllocator& alloc,
+               MessageInterner& intern);
+
+// True iff `msg.<field>` is set.  Proto2: explicit presence via
+// `Reflection::HasField` (matches CEL `has()` proto2 rule).
+// Proto3 singular scalar: true iff not at type default.  Proto3
+// singular message: true iff set (implicit presence).  Unknown
+// field (unresolvable by number or name) returns false — the
+// checker normally rejects `has(msg.nope)` earlier, so this path
+// is defence-in-depth.
+bool HasField(const google::protobuf::Message& msg,
+              int field_number,
+              absl::string_view field_name);
+
+}  // namespace celwasm
+```
+
+These two functions are the entire read-side CEL contract.  The
+trampolines add no semantic logic beyond unwrap/dispatch/pack.
+
+##### 4.7.6.2 Per-Plan state
+
+```cpp
+// Resolved entries decoded from `cel.abi` at Plan time.  Owned
+// by `InstanceImpl`; borrowed by the trampoline callbacks.
+
+struct FieldRefEntry {
+  uint32_t field_number;      // 0 = "not proto-resolvable" sentinel
+  std::string field_name;     // always populated
+  // `FieldDescriptor*` is NOT cached here — the host resolves
+  // against `msg.GetDescriptor()` on each call so the same
+  // compiled expression works against multiple descriptor-
+  // compatible message types.
+};
+
+struct AttributeEntry {
+  std::string root_variable;              // "" = non-ident-rooted
+  std::vector<std::string> qualifiers;    // e.g. ["name"] for c.name
+};
+
+struct CelHostBindings {
+  // Decoded from cel.abi.fields[] / cel.abi.attributes[]; index
+  // lookup in the trampoline (`entries[id - 1]`, id == 0 is
+  // the sentinel).
+  absl::Span<const FieldRefEntry> field_refs;
+  absl::Span<const AttributeEntry> attributes;
+
+  // Only populated by `Instance::PartialEval(activation, patterns)`.
+  // Empty span for plain `Eval` — trampoline skips the check
+  // without branching.
+  absl::Span<const AttributePattern> unknown_patterns;
+
+  // Runtime-module handles cached once per Plan.
+  wasmtime_context_t* absl_nonnull ctx;
+  wasmtime_func_t cel_alloc;
+  wasmtime_func_t cel_ref_intern;   // zero-initialised if no message selects
+  wasmtime_memory_t memory;
+};
+```
+
+`CelHostBindings` is passed by pointer as wasmtime callback-data
+(not copied per call) so the address must outlive the store —
+`InstanceImpl` owns it.
+
+##### 4.7.6.3 Wasmtime trampoline registration
+
+```cpp
+// api/internal/cel_host.h (continued)
+namespace celwasm {
+
+// Registers `cel_host.cel_get_field` and `cel_host.cel_has_field`
+// on `linker`.  M4 extends with `cel_message_eq`; M7 extends
+// with `cel_make_message` + `cel_set_field`.  Must be called
+// before `wasmtime_linker_instantiate(linker, expr_module)`.
+// `bindings` is borrowed; caller (`Engine::Plan`) keeps it
+// alive for the lifetime of the Instance.
+ABSL_MUST_USE_RESULT absl::Status RegisterCelHostImports(
+    wasmtime_linker_t* absl_nonnull linker,
+    CelHostBindings& bindings);
+
+}  // namespace celwasm
+```
+
+##### 4.7.6.4 Trampoline body (`cel_get_field`)
+
+The `cel_get_field` trampoline is the load-bearing M2 code path.
+Executed per select-expression evaluation; ordering fixed:
+
+```
+cel_get_field(out_slot, msg_slot, field_ref_id, attribute_id):
+
+  1. Read CelValue at msg_slot from linear memory.
+  2. Absorb UNKNOWN / ERROR:
+       if msg.kind == CEL_UNKNOWN: write UNKNOWN to out_slot; return.
+       if msg.kind == CEL_ERROR:   write ERROR to out_slot;   return.
+     (Strict absorption per langdef.md — downstream `cel_unknown_merge`
+     calls in generated code are redundant for this specific edge
+     but cheap; the trampoline absorbing here saves a descriptor
+     walk.)
+
+  3. Type guard:
+       if msg.kind != CEL_MESSAGE: write ERROR to out_slot; return.
+     (Checker should have rejected; runtime guard is defence.)
+
+  4. Unknown-pattern check:
+       if attribute_id != 0 and !bindings.unknown_patterns.empty():
+         attr = bindings.attributes[attribute_id - 1]
+         for pattern in bindings.unknown_patterns:
+           if pattern.Matches(attr):
+             write CelValue{CEL_UNKNOWN, attribute_id} to out_slot; return.
+     Short-circuits the descriptor walk entirely on UNKNOWN — this is
+     why the unknown check lives at the trampoline, not at codegen.
+
+  5. Field resolution:
+       field = bindings.field_refs[field_ref_id - 1]
+       msg_ptr = cel_refs.Lookup(msg.payload.msg_slot)  // wasmtime externref
+       if msg_ptr == nullptr: write ERROR; return.      // cel_refs corruption
+
+  6. Dispatch:
+       ReadField(*msg_ptr, field.field_number, field.field_name,
+                 &out_staging, alloc_callback, intern_callback);
+
+  7. Copy `out_staging` (24B CelValue) into linear memory at out_slot.
+```
+
+Steps 1–3 and 7 are trampoline-side (pure marshal); step 6 is
+the entire CEL semantics.  Steps 4–5 are the M2-new layer (the
+unknown gate and the per-Plan field-ref table lookup).
+
+##### 4.7.6.5 Trampoline body (`cel_has_field`)
+
+Identical shape, with step 6 replaced by:
+
+```
+       bool present = HasField(*msg_ptr, field.field_number,
+                               field.field_name);
+       out_staging = {CEL_BOOL, present ? 1 : 0};
+```
+
+and with step 4's match-writing `UNKNOWN` instead of `false` —
+`has(c.name)` where `c.name` matches an unknown pattern must
+produce UNKNOWN, not a spuriously-confident boolean.
+
+##### 4.7.6.6 Invariants
+
+  - **Aliasing safety.** `msg_slot` and `out_slot` may be the
+    same workspace cell (Sethi–Ullman may alias them at M8).
+    `ReadField` must read the msg's `CelValue` fully before
+    writing `*out` — the trampoline copies it to a local
+    `out_staging` and writes at step 7 after the pure call
+    returns, so aliasing is safe by construction.
+  - **No allocation on the UNKNOWN / ERROR paths.**  Neither
+    absorption (step 2) nor pattern-match (step 4) calls
+    `alloc_callback` or `intern_callback` — both short-circuit
+    before the pure helpers can.  An expression with every
+    ident declared unknown never touches the expr module's
+    arena.
+  - **Bindings lifetime.** `CelHostBindings` address captured
+    as wasmtime callback-data.  Held by `InstanceImpl`; lives
+    as long as the Instance.  Re-invoking `PartialEval` on
+    the same Instance with a different pattern set mutates
+    `bindings.unknown_patterns` in place — no re-registration.
+  - **cel_refs opacity.** The trampoline treats `cel_refs` as
+    an opaque externref table: it asks the table "give me the
+    Message\* at slot `k`" without caring how the table got
+    populated (ident prelude materialises; inner `cel_get_field`
+    on a message-typed field adds via `intern_callback`).  The
+    table's own invariants live with the codegen emitter.
+
+##### 4.7.6.7 Testing
+
+Mandatory coverage in `api/internal/cel_host_test.cc`:
+
+  - `ReadField` × every `FieldDescriptor::CppType` landing on a
+    realistic Customer fixture (bool / int32 / int64 / uint32 /
+    uint64 / float / double / enum / string / bytes / message).
+  - `ReadField` × repeated / map field → `CEL_ERROR`.
+  - `ReadField` × unresolvable field number + unresolvable name
+    → `CEL_ERROR`.
+  - `HasField` × proto2 explicit-presence (set vs unset).
+  - `HasField` × proto3 scalar default vs non-default.
+  - `HasField` × proto3 singular message unset vs set.
+  - **Trampoline absorption**: `msg_slot`'s CelValue is UNKNOWN
+    / ERROR → out_slot gets that kind without invoking
+    `ReadField`.
+  - **Trampoline pattern match**: `bindings.unknown_patterns`
+    contains a pattern matching `attribute_id`'s entry →
+    out_slot gets UNKNOWN; no allocator or interner call.
+  - **Trampoline aliasing**: `msg_slot == out_slot` with a
+    message CelValue at that cell produces the correct read.
+  - **Multiple-pool descriptor**: two `Customer` messages built
+    against distinct `DescriptorPool` instances both read
+    correctly (each call resolves against the *passed*
+    message's descriptor, not a cached pool).
+
+E2E parity (`compiler_v2/e2e/eval_test.cc`) covers the full
+pipeline; the unit tests above lock the host interface itself.
 
 ### 4.8 Scope stack (ResolvePass internal)
 
@@ -1575,9 +1870,94 @@ neither has to exist before the other.
     instruction of `$eval`, so the host no longer primes the
     arena (§8.3).
 
-## 10. Comprehensions (M5) — how this design absorbs them
+## 10. Future-milestone absorption
 
-### 10.1 What M5 adds
+Two milestones have effects that reach into the rewrite's
+shape: M2 (idents + proto field reads + `Activation` + unknown
+attributes) and M5 (comprehensions).  Both must slot into the
+M1 skeleton *without* a schema change on `NodeAnnotation` or a
+new `StorageKind`.  The sub-sections below enumerate what
+each milestone adds and how the existing design absorbs it.
+
+### 10.1 Unknowns and `Activation` (M2) — how this design absorbs them
+
+Scope change vs the original M1-plan "After M1" list: unknown
+propagation / partial evaluation was originally slated for M4
+alongside 3VL + message equality.  It moves to M2 because
+`Activation` is the natural home for attribute patterns
+(declaring "this path is unknown"), and `Activation` already
+ships in M2 as the vehicle for idents.  M4 now owns just 3VL
++ the error surface.  See `m1-scalar-pipeline.md §10` for the
+milestone list and `compiler_v2/conformance/README.md` for
+the conformance forecast this unlocks.
+
+#### 10.1.1 What M2 adds
+
+  - `kIdent` + `kSelect` arms in `expr_lower` (§7.2).
+  - `api/internal/cel_host.{h,cc}` with `cel_get_field` /
+    `cel_has_field` trampolines — transcribed from v1 M3 G2/G3.
+    Lives at `api/internal/` (not `host/`) because it's an
+    implementation detail of `Engine::Plan` — the only caller
+    that registers these imports on the linker — not a
+    public-host surface.  Precedent: `instance_impl.{h,cc}` +
+    `wasmtime_engine_state.{h,cc}` already there.
+  - `cel::Activation` — user-facing class on the public API
+    (`cel-host-surface.md` §2.6).  Carries `Bind(name, Value)`
+    and `BindLazy(...)`.
+  - `Instance::PartialEval(activation, absl::Span<const
+    AttributePattern>)` — second entry point on `Instance`
+    (see `cel-host-surface.md` §2.3).  `AttributePattern`s are
+    parsed once per call and matched against `AttributeId`s the
+    resolver produced from `ident` + `select` chains.
+  - Runtime `cel_unknown_merge` helper — already landed in v1 as
+    M4 Slice A (`runtime/cel_runtime.{h,c}`, per the existing
+    checklist).  M2 wires it into the M2-new lowering paths:
+    every `kSelect` that resolves against an unknown-patterned
+    root attribute traps through `cel_host.cel_get_field` →
+    `cel_host` returns a `CelValue{kind:CEL_UNKNOWN,
+    payload.attr_id:...}` → downstream ops absorb via
+    `cel_unknown_merge`.
+  - `Customer` proto fixture port from `compiler/testdata/`.
+
+#### 10.1.2 How the annotations absorb it
+
+  - **Idents.** `kIdent` nodes use `NodeAnnotation.local_index`
+    (already declared on the M1 skeleton — see §4.1).
+    `ResolvePass` is the single writer.  No schema change.
+  - **Selects.** `kSelect` nodes use the existing
+    `NodeAnnotation.field_number` (ported from v1 M3 G2).  No
+    schema change.
+  - **Unknowns.** Zero codegen-facing impact.  The unknown-pattern
+    set passed to `Instance::PartialEval` is consulted *at
+    trampoline entry* inside `cel_host.cel_get_field` (host side),
+    not at lowering time.  Codegen emits the same wasm for a
+    select regardless of whether the attribute will resolve
+    concretely or as `UNKNOWN`; the fork is purely a runtime
+    property.  The `CelValue` kind on the wire already has
+    `CEL_UNKNOWN` (per `runtime/cel_data.h`), so no runtime
+    data-model change either.
+
+#### 10.1.3 Future-compat invariants
+
+M2 must preserve:
+
+  - **No new `NodeAnnotation` fields, no new `StorageKind`.**
+    Idents + selects + unknowns all fit in today's fields.
+  - **Codegen stays oblivious to partial eval.** The same lowered
+    `$eval` body must produce concrete or unknown values purely
+    by runtime dispatch at `cel_host.cel_get_field` entry; no
+    compile-time branching on "might this be unknown."
+  - **`cel_reset` semantics survive.** An Instance that evaluated
+    once via `Eval(A)` and once via `PartialEval(A, [pattern])`
+    on the same bindings must not require re-planning.  The
+    unknown set is per-`Eval` / `PartialEval` call, not per-`Plan`.
+
+If M2 cannot meet these, the design is wrong and this doc updates
+before M2 lands, not after.
+
+### 10.2 Comprehensions (M5) — how this design absorbs them
+
+#### 10.2.1 What M5 adds
 
   - Comprehension macros (`all`, `exists`, `exists_one`, `map`,
     `filter`) — already rewritten to explicit AST by cel-cpp's macro
@@ -1585,7 +1965,7 @@ neither has to exist before the other.
   - Nested scopes with inner-wins shadowing (`langdef.md`).
   - Per-iteration bindings for iter var and accu var.
 
-### 10.2 How the annotations absorb it
+#### 10.2.2 How the annotations absorb it
 
   - **Scope push.** ResolvePass pushes a `ScopeFrame` on comprehension
     entry, allocates two locals (iter, accu), assigns a fresh
@@ -1603,7 +1983,7 @@ neither has to exist before the other.
     accu's `kLocal` — the comprehension "aliases" its result through
     the accu. No new `StorageKind` needed.
 
-### 10.3 Future-compat invariants
+#### 10.2.3 Future-compat invariants
 
 M5 must preserve:
 
@@ -1714,15 +2094,21 @@ compiler_v2/
 │   ├── cel_pipeline_bench.cc       # per-stage cost benches
 │   ├── internal/
 │   │   ├── wasmtime_engine_state.{h,cc}  # engine + runtime module
-│   │   └── instance_impl.{h,cc}          # per-Plan handles
+│   │   ├── instance_impl.{h,cc}          # per-Plan handles
+│   │   └── cel_host.{h,cc,_test.cc}      # M2+: get_field/has_field trampolines;
+│   │                                     #      M4 adds message_eq; M7 adds make_message
+│   │                                     #      + set_field.  Internal-only because only
+│   │                                     #      Engine::Plan calls it.
 │   └── BUILD.bazel
 ├── host/
-│   ├── cel_host.{h,cc,_test.cc}     # get_field/set_field/has_field/make_message + per-custom trampolines (M3+)
-│   ├── cel_log.{h,cc,_test.cc}      # copied from compiler/host (already-new surface)
+│   ├── cel_log.{h,cc,_test.cc}     # copied from compiler/host (already-new surface)
 │   └── BUILD.bazel
 │
 │   (host_loader.{h,cc} was deleted in the runtime-isolation work
-│   — its role split across api/engine + api/instance.)
+│   — its role split across api/engine + api/instance.  cel_host
+│   moved from an earlier host/ placement to api/internal/ — it's
+│   an implementation detail of Engine::Plan, not a public-host
+│   surface like cel_log.)
 ├── cli/
 │   ├── celwasmc_v2.cc               # CLI entry point; temp name until swap
 │   └── BUILD.bazel
@@ -1973,9 +2359,13 @@ on fixture ASTs (ident + select); `layout_pass_test` no-op.
 
 **Scope.**
 
-  - `compiler_v2/host/cel_host.{h,cc}` with `cel_get_field` and
-    `cel_has_field` (transcribed from v1 host/cel_host — proven
-    code). Fixed host imports declared up front per
+  - `compiler_v2/api/internal/cel_host.{h,cc}` with `cel_get_field`
+    and `cel_has_field` (transcribed from v1 host/cel_host —
+    proven code). Lives at `api/internal/` per the convention
+    already set by `instance_impl.{h,cc}` +
+    `wasmtime_engine_state.{h,cc}` — internal-only implementation
+    detail of `Engine::Plan`, not a public-host surface.
+    Fixed host imports declared up front per
     `feedback_no_lazy_imports`.
   - `expr_lower.cc` grows arms for `kIdent` (returns local-held
     offset) and `kSelect` (non-`test_only` dispatches to
@@ -2249,7 +2639,6 @@ construction.
   - Sweep `//compiler_v2/...` → `//compiler/...` in any remaining
     references (docs, checklist, CLAUDE.md if any).
   - Update `doc/wasm-compiler-design.md` §7.0 / §7.3.
-  - Close CLAUDE.md's symbol-table debt bullet.
   - Rename `m-mem-static-layout-pass.md` +
     `memory-ownership-flip.md` → `.obsolete.md`.
   - Mark this doc `Status: shipped` at the top.
@@ -2361,9 +2750,6 @@ The rewrite is done when:
         comment pointing at the source-of-truth impl.
   - [ ] `doc/wasm-compiler-design.md` §7.0 / §7.3 reflect the new
         pipeline (ResolvePass → LayoutPass → emit).
-  - [ ] The CLAUDE.md "Unresolved design debt" bullet about the
-        unified symbol table is closed (the extended
-        `WasmAnnotations` subsumes it).
   - [ ] `m-mem-static-layout-pass.md` and `memory-ownership-flip.md`
         are renamed `.obsolete.md` with a pointer to this file.
   - [ ] This file has a `Status: shipped` stanza at the top with
@@ -2445,9 +2831,11 @@ A one-paragraph summary for the post-completion CLAUDE.md update:
   > `GetScratchSlotLocal`, the `_at_ii`/`_at_uu` helper families, and
   > most `cel_make_*` call sites in codegen are gone. Every helper
   > in `cel_runtime.h` carries a cel-cpp-parity pointer in its
-  > declaration comment. The extended `WasmAnnotations` is the
-  > symbol table the CLAUDE.md bullet asked for; it handles scoped
-  > bindings so M5's comprehensions slot in without schema changes.
+  > declaration comment. The extended `WasmAnnotations` subsumes
+  > v1's split symbol table (`CheckOptions::variable_specs` +
+  > `TypedAst::variables()` + `LoweringContext::idents`); it handles
+  > scoped bindings so M5's comprehensions slot in without schema
+  > changes.
 
 ## 14. Deliverables checklist
 
@@ -2471,7 +2859,6 @@ On completion, these are the observable artefacts:
         `rewrite/two-phase-runtime-isolation.md`)
   - [ ] `doc/wasm-compiler-design.md` §7.0 / §7.3 — rewritten
   - [ ] `doc/implementation-plan/testing-checklist.md` — new rows
-  - [ ] `CLAUDE.md` — symbol-table debt bullet closed
   - [ ] This doc — marked `shipped`; `m-mem-static-layout-pass.md` +
         `memory-ownership-flip.md` renamed `.obsolete.md` with a
         one-line pointer to this doc.

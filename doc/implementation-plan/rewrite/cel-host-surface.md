@@ -553,9 +553,12 @@ class Activation {
 ## 3. The host adapter (internal)
 
 This section describes machinery users never touch. It lives at
-`compiler_v2/host/cel_host.{h,cc}` — the same file the wasmtime
-trampolines call into. One concrete implementation today, proto-
-backed; described here so reviewers can see the full picture.
+`compiler_v2/api/internal/cel_host.{h,cc}` — the same file the
+wasmtime trampolines call into.  Internal to the api/ tier
+because `Engine::Plan` is its only caller (it registers the
+imports on the wasmtime linker before the expr module
+instantiates).  One concrete implementation today, proto-backed;
+described here so reviewers can see the full picture.
 
 ### 3.1 What it does
 

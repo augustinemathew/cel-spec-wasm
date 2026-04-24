@@ -1,0 +1,89 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Upstream conformance suite glue.  `runner` wraps one SimpleTest as
+# a pipeline invocation; `run_conformance` walks the whole
+# `tests/simple/testdata/` corpus and tallies outcomes.  See
+# README.md for the per-fixture inventory this binary feeds, and
+# doc/implementation-plan/testing-checklist.md for the milestone
+# coverage rows.
+
+cc_library(
+    name = "runner",
+    srcs = ["runner.cc"],
+    hdrs = ["runner.h"],
+    deps = [
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        # `TestAllTypes` descriptors registered at load time so
+        # TextFormat::Parse can resolve google.protobuf.Any values
+        # in the conformance textprotos (block_ext / dynamic / enums
+        # / parse / proto2 / proto2_ext / proto3 / type_deduction
+        # all embed Any<proto{2,3}.TestAllTypes>).
+        "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "//proto/cel/expr:value_cc_proto",
+        "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Textproto fixtures fan in via `data`; the runner ifstreams them from
+# workspace-relative paths (Bazel lands them at runfiles/_main/tests/...).
+SIMPLE_TESTDATA = [
+    "//tests/simple:testdata/basic.textproto",
+    "//tests/simple:testdata/bindings_ext.textproto",
+    "//tests/simple:testdata/block_ext.textproto",
+    "//tests/simple:testdata/comparisons.textproto",
+    "//tests/simple:testdata/conversions.textproto",
+    "//tests/simple:testdata/dynamic.textproto",
+    "//tests/simple:testdata/encoders_ext.textproto",
+    "//tests/simple:testdata/enums.textproto",
+    "//tests/simple:testdata/fields.textproto",
+    "//tests/simple:testdata/fp_math.textproto",
+    "//tests/simple:testdata/integer_math.textproto",
+    "//tests/simple:testdata/lists.textproto",
+    "//tests/simple:testdata/logic.textproto",
+    "//tests/simple:testdata/macros.textproto",
+    "//tests/simple:testdata/macros2.textproto",
+    "//tests/simple:testdata/math_ext.textproto",
+    "//tests/simple:testdata/namespace.textproto",
+    "//tests/simple:testdata/network_ext.textproto",
+    "//tests/simple:testdata/optionals.textproto",
+    "//tests/simple:testdata/parse.textproto",
+    "//tests/simple:testdata/plumbing.textproto",
+    "//tests/simple:testdata/proto2.textproto",
+    "//tests/simple:testdata/proto2_ext.textproto",
+    "//tests/simple:testdata/proto3.textproto",
+    "//tests/simple:testdata/string.textproto",
+    "//tests/simple:testdata/string_ext.textproto",
+    "//tests/simple:testdata/timestamps.textproto",
+    "//tests/simple:testdata/type_deduction.textproto",
+    "//tests/simple:testdata/unknowns.textproto",
+    "//tests/simple:testdata/wrappers.textproto",
+]
+
+cc_binary(
+    name = "run_conformance",
+    srcs = ["run_conformance.cc"],
+    data = SIMPLE_TESTDATA,
+    tags = ["manual"],
+    deps = [
+        ":runner",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
