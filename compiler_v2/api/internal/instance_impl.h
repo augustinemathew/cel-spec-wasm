@@ -12,6 +12,7 @@
 #ifndef CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 #define CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 
+#include "compiler_v2/api/internal/abi_decode.h"
 #include "wasmtime.h"
 
 namespace celwasm {
@@ -24,6 +25,16 @@ struct InstanceImpl {
   wasmtime_instance_t runtime_instance{};
   wasmtime_instance_t expr_instance{};
   wasmtime_func_t eval_fn{};
+
+  // Decoded `cel.abi` custom section.  Populated by Engine::Plan;
+  // consumed by Instance::Eval(Activation) to look up each declared
+  // variable's slot_offset + Repr when marshalling bound values into
+  // linear memory before the $eval call.
+  //
+  // Empty `variables` for M1-era modules that don't ship a cel.abi
+  // section (pre-M2.B.2 fixtures); Instance::Eval without an
+  // Activation stays valid in that case.
+  DecodedCelAbi abi;
 
   InstanceImpl() = default;
   ~InstanceImpl();

@@ -49,14 +49,13 @@ struct DecodedCelAbi {
 
   // Dense by local_index.  `variables[i].local_index == i` always
   // (the emitter emits in local_index order).
-  std::vector<DecodedVariable> variables;
+  std::vector<DecodedVariable> variables{};
 
   // Name-indexed view into `variables` for host-side marshal
-  // lookup.  `VariableTable` string_view keys point into
-  // `variables[i].name` — so the map's lifetime is coupled to the
-  // struct.  Users must not modify `variables` after building the
-  // map.
-  absl::flat_hash_map<std::string, const DecodedVariable*> by_name;
+  // lookup.  String keys pair with `variables[i].name` — so the
+  // map's lifetime is coupled to the struct.  Users must not
+  // modify `variables` after building the map.
+  absl::flat_hash_map<std::string, const DecodedVariable*> by_name{};
 
   // Rebuild by_name from variables.  Called by decoders; exposed
   // for tests.

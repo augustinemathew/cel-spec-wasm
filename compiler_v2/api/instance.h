@@ -20,6 +20,9 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "compiler_v2/api/activation.h"
+#include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/value.h"
 
 namespace celwasm {
@@ -39,9 +42,18 @@ class Instance {
   Instance& operator=(Instance&&) noexcept;
   ~Instance();
 
-  // Run `$eval()` once.  M1 takes no Activation (no variables in
-  // scope yet); M2+ adds an `Activation` arg whose values get
-  // marshalled into the arena before the call.
+  // Run `$eval()` once.
+  //
+  // The zero-arg overload is for literal-only / variable-free
+  // programs (the M1 case) — no host-side binding to marshal.
+  //
+  // The Activation overload is M2.B: for every variable the ABI
+  // declares (cel.abi.variables[]), look up in the activation, encode
+  // the bound Value into the 24-byte CelValue wire form, and write
+  // it into the variable's workspace slot before calling $eval.  A
+  // declared variable missing from the activation surfaces as
+  // FailedPrecondition.  An activation-bound Value whose kind
+  // doesn't match the declared variable's Repr is InvalidArgument.
   //
   // Returns:
   //   - the decoded `Value` for any scalar `CelKind`
@@ -50,14 +62,26 @@ class Instance {
   //   - InvalidArgument if `$eval` returned a kind that has a
   //     wire shape but no Value mapping yet (LIST/MAP/MESSAGE,
   //     etc. land in their respective milestones);
-  //   - FailedPrecondition / Internal on wasmtime trap or out-of-
-  //     range offset.
+  //   - FailedPrecondition / Internal on wasmtime trap, out-of-
+  //     range offset, or missing activation binding.
   //
-  // `$eval`'s first instruction is a baked-in `cel_reset(...)`
-  // call, so the arena is reset before the body runs every time —
-  // calling Eval back-to-back on the same Instance is safe and
-  // deterministic.
+  // `$eval`'s first instruction (after the variable prelude) is a
+  // baked-in `cel_reset(...)` call, so the arena is reset before
+  // the body runs every time — calling Eval back-to-back on the
+  // same Instance is safe and deterministic.
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval();
+  ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval(const Activation& activation);
+
+  // Partial evaluation — M2.E.  Same activation-marshalling as
+  // Eval, plus an unknown-pattern set the host consults at field
+  // read time: a select whose attribute_id matches any pattern
+  // short-circuits to `Value::Unknown(attribute_id)` instead of
+  // descending the proto.  Stub until M2.E ships; calling it today
+  // returns `Unimplemented` so the symbol exists for headers
+  // referencing it (the failing m2_test.cc e2e suite).
+  ABSL_MUST_USE_RESULT absl::StatusOr<Value> PartialEval(
+      const Activation& activation,
+      absl::Span<const AttributePattern> unknowns);
 
   // Linear-memory byte size for this Instance's host-owned memory.
   // Reads through the wasmtime store, so will crash / UB if the

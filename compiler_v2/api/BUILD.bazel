@@ -152,6 +152,43 @@ cc_test(
 # (darwin-arm64-only via brew llvm) so its targets are tagged
 # manual.
 
+# Internal — decode the `cel.abi` custom section from raw wasm
+# bytes.  Consumed by Engine::Plan at load time (M2.B.2).
+# Parses the wasm byte stream directly (no Binaryen dep) since
+# the custom-section framing is simple and keeping the decoder
+# self-contained limits blast radius on binaryen API changes.
+cc_library(
+    name = "abi_decode",
+    srcs = ["internal/abi_decode.cc"],
+    hdrs = ["internal/abi_decode.h"],
+    deps = [
+        "//compiler_v2/abi:cel_abi_cc_proto",
+        "//compiler_v2/ir:annotations",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "abi_decode_test",
+    srcs = ["internal/abi_decode_test.cc"],
+    deps = [
+        ":abi_decode",
+        "//compiler_v2:compile",
+        "//compiler_v2/abi:cel_abi_cc_proto",
+        "//compiler_v2/ir:annotations",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Internal — owns the wasmtime state held by cel::Engine.  In
 # `celwasm::` per cel-host-surface.md §1 (public is `cel::`,
 # internal is `celwasm::`).
@@ -229,6 +266,7 @@ cc_library(
     hdrs = ["internal/instance_impl.h"],
     tags = ["manual"],
     deps = [
+        ":abi_decode",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
@@ -242,14 +280,19 @@ cc_library(
     hdrs = ["instance.h"],
     tags = ["manual"],
     deps = [
+        ":abi_decode",
+        ":activation",
+        ":attribute",
         ":instance_impl",
         ":value",
         ":wasmtime_engine_state",
+        "//compiler_v2/ir:annotations",
         "//compiler_v2/runtime:cel_runtime",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
@@ -300,6 +343,7 @@ cc_library(
     hdrs = ["engine.h"],
     tags = ["manual"],
     deps = [
+        ":abi_decode",
         ":instance",
         ":instance_impl",
         ":program",

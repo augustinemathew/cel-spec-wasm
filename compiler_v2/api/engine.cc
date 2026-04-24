@@ -10,6 +10,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler_v2/api/internal/abi_decode.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
 #include "compiler_v2/api/program.h"
@@ -201,6 +202,18 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
           InstantiateExpr(wasmtime_.get(), impl.get(), program.wasm_bytes());
       !s.ok()) {
     return s;
+  }
+  // Decode the `cel.abi` custom section and park it on the Instance.
+  // Instance::Eval(Activation) consults `impl->abi.by_name` at
+  // call time to marshal bound values into their workspace slots.
+  // NotFound is tolerated: M1-era modules + synthetic WAT fixtures
+  // don't carry the section, and a variable-free Eval() still
+  // works — the decoded abi just stays empty.
+  auto abi_or = celwasm::DecodeCelAbiFromWasm(program.wasm_bytes());
+  if (abi_or.ok()) {
+    impl->abi = *std::move(abi_or);
+  } else if (abi_or.status().code() != absl::StatusCode::kNotFound) {
+    return abi_or.status();
   }
   return Instance(wasmtime_, std::move(impl));
 }
