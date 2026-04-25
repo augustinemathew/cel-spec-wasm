@@ -10,6 +10,7 @@ cc_library(
     hdrs = [
         "cel_arena.h",
         "cel_data.h",
+        "cel_list.h",
         "cel_log.h",
         "cel_make.h",
         "cel_map.h",
@@ -72,6 +73,15 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "cel_list_test",
+    srcs = ["cel_list_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Locks the runtime null-pointer-elision bug closed.  Loads the
 # cross-compiled cel_runtime.wasm under wasmtime and asserts
 # cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
@@ -99,6 +109,7 @@ genrule(
     srcs = [
         "cel_arena.h",
         "cel_data.h",
+        "cel_list.h",
         "cel_log.h",
         "cel_make.h",
         "cel_map.h",
@@ -131,6 +142,10 @@ genrule(
         "-Wl,--export=cel_map_insert",
         "-Wl,--export=cel_map_lookup",
         "-Wl,--export=cel_map_lookup_arena",
+        "-Wl,--export=cel_list_create",
+        "-Wl,--export=cel_list_set",
+        "-Wl,--export=cel_list_at",
+        "-Wl,--export=cel_list_at_arena",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

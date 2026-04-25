@@ -39,6 +39,7 @@
 
 #include "compiler_v2/runtime/cel_arena.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "compiler_v2/runtime/cel_list.h"
 #include "compiler_v2/runtime/cel_log.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_map.h"

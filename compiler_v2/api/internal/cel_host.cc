@@ -33,14 +33,6 @@ cel::Value FieldNotFound(absl::string_view name) {
   });
 }
 
-cel::Value TypeUnsupported(absl::string_view name) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kTypeUnsupported,
-      /*message=*/std::string(name),
-      /*expr_id=*/0,
-  });
-}
-
 // Port of v1 `ReadNumericField` — dispatches on the field's
 // `cpp_type` to build a `cel::Value` of the matching scalar kind.
 // Returns `std::nullopt` on non-numeric fields; the caller handles
@@ -138,13 +130,16 @@ absl::StatusOr<cel::Value> ProtoBacking::ReadField(
 
   // M3.G: map fields land here as `Value::HostMap(ProtoMap{…})` —
   // the trampoline interns the backing into the ExternrefTable and
-  // hands a `CEL_MAP_HOST` slot back to wasm.  Repeated (non-map)
-  // fields stay TypeUnsupported until the lists slice.
+  // hands a `CEL_MAP_HOST` slot back to wasm.
+  // M4.G: REPEATED (non-map) fields land as `Value::HostList(
+  // ProtoList{…})` — same intern path, separate ExternrefTable
+  // namespace.  `is_map()` is checked first because every map field
+  // is also `is_repeated()` per descriptor.proto.
   if (field->is_map()) {
     return cel::Value::HostMap(std::make_shared<ProtoMap>(msg_, field));
   }
   if (field->is_repeated()) {
-    return TypeUnsupported(field_name);
+    return cel::Value::HostList(std::make_shared<ProtoList>(msg_, field));
   }
   return ReadScalarField(*msg_, *field);
 }
@@ -309,6 +304,7 @@ uint32_t WireErrorCode(cel::ErrorCode c) {
     case cel::ErrorCode::kTypeUnsupported: return CEL_ERR_TYPE_UNSUPPORTED;
     case cel::ErrorCode::kKeyNotFound:     return CEL_ERR_NO_SUCH_KEY;
     case cel::ErrorCode::kFieldNotFound:   return CEL_ERR_FIELD_NOT_FOUND;
+    case cel::ErrorCode::kIndexOutOfBounds: return CEL_ERR_INDEX_OUT_OF_BOUNDS;
     case cel::ErrorCode::kHostAdapterError:
       return CEL_ERR_HOST_ADAPTER_ERROR;
     default:                               return CEL_ERR_TYPE_MISMATCH;
@@ -374,13 +370,21 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
       return absl::OkStatus();
     }
     case K::kUnknown:
-      // M4 wires `cel_unknown_pattern_match` into this path; for now
-      // the Layer 2 contract is that backings don't return unknowns —
-      // operand-pair propagation happens before this encoder.
-      ABSL_CHECK(false) << "EncodeValue: kUnknown is a stub until M4";
+      // Layer 2 contract: backings don't return unknowns — operand-
+      // pair propagation happens before this encoder.  M4
+      // PartialEval surfaces unknowns via a different path
+      // (MatchesAnyUnknownPattern).
+      ABSL_CHECK(false) << "EncodeValue: kUnknown is unreachable from "
+                          "Layer 1 returns";
     case K::kMessage:
     case K::kMap:
     case K::kList:
+      // Aggregate kinds are handled by `EncodeFieldResult` /
+      // `EncodeAggregateIfAny`, never via the inline path.  Reaching
+      // here is a contract violation by the caller.
+      ABSL_CHECK(false) << "EncodeValue: aggregate kind "
+                        << static_cast<int>(v.kind())
+                        << " must route through EncodeFieldResult";
     case K::kDuration:
     case K::kTimestamp:
       ABSL_CHECK(false) << "EncodeValue: kind " << static_cast<int>(v.kind())
@@ -390,7 +394,107 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
                     << static_cast<int>(v.kind());
 }
 
+// Encode a Layer-1 aggregate (message / map / list) by interning
+// the backing into the matching externref namespace and writing the
+// resulting ref_slot.  Returns true if `v` is an aggregate kind and
+// has been encoded; false if `v` is a scalar (caller falls through
+// to the inline EncodeValue path).
+absl::StatusOr<bool> EncodeAggregateIfAny(const cel::Value& v,
+                                          uint32_t out_slot,
+                                          const TrampolineContext& ctx) {
+  using K = cel::Value::Kind;
+  CelValue cv{};
+  if (v.kind() == K::kMessage) {
+    auto sub_or = v.SharedMessageBacking();
+    if (!sub_or.ok()) return sub_or.status();
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = ctx.refs.Intern(*std::move(sub_or));
+  } else if (v.kind() == K::kMap) {
+    auto sub_or = v.SharedMapBacking();
+    if (!sub_or.ok()) return sub_or.status();
+    cv.kind = CEL_MAP_HOST;
+    cv.payload.ref_slot = ctx.refs.InternMap(*std::move(sub_or));
+  } else if (v.kind() == K::kList) {
+    auto sub_or = v.SharedListBacking();
+    if (!sub_or.ok()) return sub_or.status();
+    cv.kind = CEL_LIST_HOST;
+    cv.payload.ref_slot = ctx.refs.InternList(*std::move(sub_or));
+  } else {
+    return false;
+  }
+  ctx.mem.WriteCelValue(out_slot, cv);
+  return true;
+}
+
+// Marshal a `cel::Value` returned by Layer 1 (ReadField / At / Get)
+// into the 24-byte CelValue at `out_slot`.  Scalars + null + error
+// encode inline / via arena (`EncodeValue`); aggregate kinds intern
+// via `EncodeAggregateIfAny`.  Used by every Layer-2 trampoline so
+// the wire shape is consistent across surfaces.
+absl::Status EncodeFieldResult(const cel::Value& v, uint32_t out_slot,
+                               const TrampolineContext& ctx) {
+  auto encoded_or = EncodeAggregateIfAny(v, out_slot, ctx);
+  if (!encoded_or.ok()) return encoded_or.status();
+  if (*encoded_or) return absl::OkStatus();
+  CelValue cv{};
+  if (auto s = EncodeValue(v, &cv, ctx.alloc); !s.ok()) return s;
+  ctx.mem.WriteCelValue(out_slot, cv);
+  return absl::OkStatus();
+}
+
 }  // namespace
+
+absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
+                           uint32_t index_slot,
+                           const TrampolineContext& ctx) {
+  CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
+  CelValue idx_cv = ctx.mem.ReadCelValue(index_slot);
+
+  // 3VL on operands — same path the runtime dispatcher uses.  Index
+  // first so an unknown index propagates even if the list is also
+  // poisoned (matches the runtime fast-path order in
+  // cel_list_at_arena).
+  if (idx_cv.kind == CEL_UNKNOWN || idx_cv.kind == CEL_ERROR) {
+    ctx.mem.WriteCelValue(out_slot, idx_cv);
+    return absl::OkStatus();
+  }
+  if (list_cv.kind == CEL_UNKNOWN || list_cv.kind == CEL_ERROR) {
+    ctx.mem.WriteCelValue(out_slot, list_cv);
+    return absl::OkStatus();
+  }
+
+  // Codegen calls into us only on the kHost arm; defence-in-depth.
+  if (list_cv.kind != CEL_LIST_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  // langdef §"Indexing": list indices are int only; checker rejects
+  // uint upstream.  Defend in depth.
+  if (idx_cv.kind != CEL_INT) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+
+  const HostListBacking* backing =
+      ctx.refs.LookupList(list_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelListAtImpl: list ref_slot ", list_cv.payload.ref_slot,
+                     " not found in ExternrefTable"));
+  }
+
+  const int64_t i = idx_cv.payload.i;
+  if (i < 0) {
+    WriteWireError(CEL_ERR_INDEX_OUT_OF_BOUNDS, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  // backing->At returns a Value::Error(kIndexOutOfBounds) when i >=
+  // Size; the encoder maps that to CEL_ERR_INDEX_OUT_OF_BOUNDS via
+  // WireErrorCode.  Single round-trip, no host-side double-check.
+  auto got = backing->At(static_cast<size_t>(i), cel::CelType::Int());
+  if (!got.ok()) return got.status();
+  return EncodeFieldResult(*got, out_slot, ctx);
+}
 
 absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
                               uint32_t key_slot,
@@ -441,11 +545,10 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
   // narrowing.
   auto got = backing->Get(*key, cel::CelType::Int());
   if (!got.ok()) return got.status();
-
-  CelValue out{};
-  if (auto s = EncodeValue(*got, &out, ctx.alloc); !s.ok()) return s;
-  ctx.mem.WriteCelValue(out_slot, out);
-  return absl::OkStatus();
+  // EncodeFieldResult handles scalar + every aggregate kind
+  // uniformly — nested map/list/message values from Get land
+  // through the matching externref namespace.
+  return EncodeFieldResult(*got, out_slot, ctx);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -557,6 +660,146 @@ void ProtoMap::ForEach(
 }
 
 // ══════════════════════════════════════════════════════════════════
+// HostList — vector-backed `HostListBacking` for user bindings.
+// ══════════════════════════════════════════════════════════════════
+
+namespace {
+
+cel::Value IndexOutOfBounds(size_t index, size_t count) {
+  return cel::Value::Error(cel::ErrorPayload{
+      /*code=*/cel::ErrorCode::kIndexOutOfBounds,
+      /*message=*/absl::StrCat("index ", index, " out of range [0, ", count,
+                               ")"),
+      /*expr_id=*/0,
+  });
+}
+
+}  // namespace
+
+HostList::HostList(std::vector<cel::Value> elements)
+    : elements_(std::move(elements)) {}
+
+size_t HostList::Size() const {
+  return elements_.size();
+}
+
+absl::StatusOr<cel::Value> HostList::At(
+    size_t index, const cel::CelType& /*expected_element_type*/) const {
+  if (index >= elements_.size()) {
+    return IndexOutOfBounds(index, elements_.size());
+  }
+  return elements_[index];
+}
+
+void HostList::ForEach(
+    absl::FunctionRef<void(const cel::Value&)> visit) const {
+  for (const cel::Value& v : elements_) {
+    visit(v);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ProtoList — proto reflection over a single REPEATED (non-map)
+// field.  Element reads delegate to `ReadScalarField` against a
+// synthesized FieldDescriptor view of the i-th element — proto's
+// `GetRepeated{Bool,Int32,…}()` family does the type dispatch.
+// ══════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Read the i-th element of a REPEATED field of the given cpp_type
+// into a cel::Value.  Mirrors `ReadNumericField` + the
+// string/bytes/message branches of `ReadScalarField`, but reads the
+// repeated-element accessors instead of the singular ones.  Returns
+// non-OK Status on infrastructure failure (no reflection); the
+// caller surfaces spec-level errors as Value::Error.
+absl::StatusOr<cel::Value> ReadRepeatedElement(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, int i) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      return cel::Value::Bool(refl.GetRepeatedBool(msg, &field, i));
+    case FD::CPPTYPE_INT32:
+      return cel::Value::Int(refl.GetRepeatedInt32(msg, &field, i));
+    case FD::CPPTYPE_INT64:
+      return cel::Value::Int(refl.GetRepeatedInt64(msg, &field, i));
+    case FD::CPPTYPE_UINT32:
+      return cel::Value::Uint(refl.GetRepeatedUInt32(msg, &field, i));
+    case FD::CPPTYPE_UINT64:
+      return cel::Value::Uint(refl.GetRepeatedUInt64(msg, &field, i));
+    case FD::CPPTYPE_FLOAT:
+      return cel::Value::Double(refl.GetRepeatedFloat(msg, &field, i));
+    case FD::CPPTYPE_DOUBLE:
+      return cel::Value::Double(refl.GetRepeatedDouble(msg, &field, i));
+    case FD::CPPTYPE_ENUM:
+      return cel::Value::Int(refl.GetRepeatedEnumValue(msg, &field, i));
+    case FD::CPPTYPE_STRING: {
+      std::string scratch;
+      const std::string& s =
+          refl.GetRepeatedStringReference(msg, &field, i, &scratch);
+      if (field.type() == FD::TYPE_BYTES) {
+        return cel::Value::Bytes(std::string(s));
+      }
+      return cel::Value::String(std::string(s));
+    }
+    case FD::CPPTYPE_MESSAGE: {
+      const google::protobuf::Message& sub =
+          refl.GetRepeatedMessage(msg, &field, i);
+      return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+    }
+  }
+  return absl::InternalError(absl::StrCat(
+      "ProtoList::At: unhandled cpp_type ",
+      static_cast<int>(field.cpp_type()), " on field `", field.name(), "`"));
+}
+
+}  // namespace
+
+ProtoList::ProtoList(const google::protobuf::Message* absl_nonnull owner,
+                     const google::protobuf::FieldDescriptor* absl_nonnull
+                         field)
+    : owner_(owner), field_(field) {
+  ABSL_CHECK(field->is_repeated())
+      << "ProtoList: field `" << field->name() << "` is not repeated";
+  ABSL_CHECK(!field->is_map())
+      << "ProtoList: field `" << field->name()
+      << "` is a map; use ProtoMap instead";
+}
+
+size_t ProtoList::Size() const {
+  const google::protobuf::Reflection* refl = owner_->GetReflection();
+  ABSL_CHECK(refl != nullptr) << "ProtoList::Size: no reflection";
+  return static_cast<size_t>(refl->FieldSize(*owner_, field_));
+}
+
+absl::StatusOr<cel::Value> ProtoList::At(
+    size_t index, const cel::CelType& /*expected_element_type*/) const {
+  const google::protobuf::Reflection* refl = owner_->GetReflection();
+  if (refl == nullptr) {
+    return absl::InternalError("ProtoList::At: no reflection");
+  }
+  const size_t count = static_cast<size_t>(refl->FieldSize(*owner_, field_));
+  if (index >= count) {
+    return IndexOutOfBounds(index, count);
+  }
+  return ReadRepeatedElement(*refl, *owner_, *field_,
+                             static_cast<int>(index));
+}
+
+void ProtoList::ForEach(
+    absl::FunctionRef<void(const cel::Value&)> visit) const {
+  const google::protobuf::Reflection* refl = owner_->GetReflection();
+  ABSL_CHECK(refl != nullptr) << "ProtoList::ForEach: no reflection";
+  const int n = refl->FieldSize(*owner_, field_);
+  for (int i = 0; i < n; ++i) {
+    auto v_or = ReadRepeatedElement(*refl, *owner_, *field_, i);
+    if (v_or.ok()) visit(*v_or);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
 // Layer-2 trampoline bodies — `CelGetFieldImpl` / `CelHasFieldImpl`
 // (M2.C.0b).
 //
@@ -645,28 +888,6 @@ bool MatchesAnyUnknownPattern(const CelHostBindings& bindings,
     }
   }
   return false;
-}
-
-// Marshal a `cel::Value` returned by `backing->ReadField` into the
-// 24-byte CelValue at `out_slot`.  Scalars + null + error encode
-// inline / via arena (existing `EncodeValue`); kMessage interns the
-// nested backing into the externref table and writes the slot.
-absl::Status EncodeFieldResult(const cel::Value& v, uint32_t out_slot,
-                               const TrampolineContext& ctx) {
-  if (v.kind() == cel::Value::Kind::kMessage) {
-    auto sub_or = v.SharedMessageBacking();
-    if (!sub_or.ok()) return sub_or.status();
-    const uint32_t slot = ctx.refs.Intern(*std::move(sub_or));
-    CelValue cv{};
-    cv.kind = CEL_MESSAGE;
-    cv.payload.msg_slot = slot;
-    ctx.mem.WriteCelValue(out_slot, cv);
-    return absl::OkStatus();
-  }
-  CelValue cv{};
-  if (auto s = EncodeValue(v, &cv, ctx.alloc); !s.ok()) return s;
-  ctx.mem.WriteCelValue(out_slot, cv);
-  return absl::OkStatus();
 }
 
 // Shared prelude for Get / Has.  Returns:
@@ -786,6 +1007,19 @@ Value Value::HostMap(std::shared_ptr<celwasm::HostMapBacking> backing) {
   ABSL_CHECK(backing != nullptr) << "Value::HostMap: backing must not be null";
   Value r;
   r.kind_ = Kind::kMap;
+  r.payload_ = std::move(backing);
+  return r;
+}
+
+Value Value::List(std::vector<Value> elements) {
+  return Value::HostList(
+      std::make_shared<celwasm::HostList>(std::move(elements)));
+}
+
+Value Value::HostList(std::shared_ptr<celwasm::HostListBacking> backing) {
+  ABSL_CHECK(backing != nullptr) << "Value::HostList: backing must not be null";
+  Value r;
+  r.kind_ = Kind::kList;
   r.payload_ = std::move(backing);
   return r;
 }

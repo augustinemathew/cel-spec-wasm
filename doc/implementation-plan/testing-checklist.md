@@ -1148,6 +1148,95 @@ Architectural deltas vs as-written M2 plan (see
         that the runtime instantiates with map imports bound.
         `compiler_v2/conformance/README.md` inventory updated.
 
+### Rewrite M4 — list literals + indexing (in progress 2026-04-25)
+
+Plan-vs-execution delta: shipped `cel_list_create(out, count)` +
+`cel_list_set(list, index, elem)` (fixed-length, no append/grow) per
+direct user direction.  Past-count `set` poisons.  See
+`m4-list-literals.md` Slice progress table for full slice status.
+
+**Slices M4.A–E + G — runtime + host backings + Layer 2/3 + envelope flip**
+
+  - [x] `CelKind` split (`CEL_LIST_ARENA = 7` re-using the slot,
+        `CEL_LIST_HOST = 17` appended) + `ArenaListHeader` (16 B) +
+        `kCelListEntryStride = 24` + `CEL_ERR_INDEX_OUT_OF_BOUNDS = 17` —
+        `runtime/cel_data.h`; size + offset invariants in
+        `runtime/cel_data_test.cc::ArenaListHeaderLayout` /
+        `ArenaListPayloadAliasesCorrectOffset` /
+        `HostListPayloadAliasesRefSlot`.
+  - [x] Arena list primitives — `cel_list_create` /
+        `cel_list_set` / `cel_list_at_arena` covered by
+        `runtime/cel_list_test.cc` parameterized over every
+        scalar element kind plus null + boundary indices
+        (negative, `== count`, multi-probe linear-scan), 3VL
+        absorption on operand + index, set-past-count poison,
+        set-duplicate-index overwrite, ForEach in order.
+  - [x] `__attribute__((musttail))` kDynamic dispatcher
+        (`cel_list_at` arming `cel_list_at_arena` /
+        `cel_host_cel_list_at`) — `runtime/cel_runtime.c`; same
+        toolchain config as the map dispatcher.
+  - [x] `HostList` + `ProtoList` concrete `HostListBacking` impls
+        — `api/internal/cel_host.{h,cc}`; behaviour parity covered
+        by `host_list_test.cc` (vector-backed, every element
+        kind + StructurallyEquals identity) +
+        `proto_list_test.cc` (proto-reflection-backed against
+        `rep_i32` / `rep_s` / `rep_b` / `rep_f64` / `rep_msg`).
+  - [x] Layer-2 trampoline `CelListAtImpl` — virtual call to
+        `HostListBacking::At`, scalar/aggregate marshal back into
+        `out_slot` via `EncodeFieldResult`; `cel_list_at_impl_test.cc`
+        exhaustive over absorption (`UNKNOWN` / `ERROR` on either
+        operand), non-int index, negative + OOB indices,
+        non-CEL_LIST_HOST operand, missing ref_slot, ProtoList
+        backing dispatch, nested message + nested list element
+        intern.  `EncodeFieldResult` factored to handle every
+        aggregate kind uniformly via `EncodeAggregateIfAny`.
+  - [x] `Value::List` / `Value::HostList` factories +
+        `Value::ListBacking` / `SharedListBacking` accessors +
+        `StructurallyEquals` kList arm (pointer-identity at M4) —
+        `value.h` / `cel_host.cc`; positive coverage in
+        `host_list_test.cc::ValueListTest::*`.
+  - [x] Layer-3 wasmtime glue grows a `cel_host.cel_list_at`
+        trampoline; `HostThreeArgTrampoline<Impl>` template
+        extracted to share with `CelMapLookupTrampoline`.
+        `HostExternrefTable` gains the third namespace
+        (`InternList` / `LookupList` + `list_backings_` vector +
+        slot-0 sentinel).  `api/internal/cel_host_wasmtime.{h,cc}`.
+  - [x] Test fakes deduplicated into shared
+        `cel_host_test_fakes.h` — three Layer-2 unit tests
+        previously each re-implemented `FakeMemoryView` /
+        `FakeExternrefTable` / `FakeArenaAllocator` and drifted
+        as new namespaces (M3 maps, M4 lists) landed; now
+        centralised so adding the next namespace touches one
+        file.  `api/BUILD.bazel` adds the `cel_host_test_fakes`
+        library; `cel_host_test.cc` + `cel_map_lookup_impl_test.cc`
+        replace their inline fakes with `using` aliases.
+  - [x] `BindRuntimeExport` loop covers every runtime export
+        the expr module may import — added `cel_list_create` /
+        `cel_list_set` / `cel_list_at_arena` / `cel_list_at`.
+        `api/engine.cc::InstantiateRuntime`.  Manual-test linker
+        setups (`cel_runtime_wasm_test.cc`, `wat_runner.cc`)
+        also bind no-op `cel_host.cel_list_at` so the runtime
+        module instantiates.
+  - [x] M4.G envelope flip: `ProtoBacking::ReadField` on
+        REPEATED (non-map) fields returns
+        `Value::HostList(ProtoList{...})` — was
+        `Value::Error(kTypeUnsupported)`.  Coverage flipped in
+        `cel_host_test.cc::RepeatedReturnsHostList` +
+        `Layer2DispatchTest::RepeatedFieldSurfacesAsHostList`.
+        `host_fixture_proto3.proto` extended with
+        `rep_s/rep_b/rep_f64/rep_msg` so per-cpp_type element
+        reads can be asserted.
+  - [ ] M4.F codegen: `ListOriginVisitor`, slot allocation,
+        `kCreateList` lowering, `kCallExpr(_[_])` × 3 origin
+        arms, WAT 11–14.
+  - [ ] M4.G e2e completion: `m2_test::SelectRepeatedFieldReturnsHostList`
+        currently single-test SKIPped — re-enables with M4.F+H.
+  - [ ] M4.H activation marshaller + Eval decoder
+        (`EncodeList` + `DecodeArenaListAt`).
+  - [ ] M4.I conformance harness — `IsInM4Envelope`,
+        `CompareList` (order-aware).
+  - [ ] M4.J e2e suite + `map-list-dispatch.md §11` reconcile.
+
 **M2.C.0b interim** (interleaved with M3 work)
 
   - [x] `CelGetFieldImpl` / `CelHasFieldImpl` shipped as

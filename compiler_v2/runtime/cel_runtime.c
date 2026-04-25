@@ -450,6 +450,146 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
   poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
 }
 
+// ---- list runtime --------------------------------------------------------
+//
+// Three-path dispatch design (`map-list-dispatch.md §4.2 / §6 / §7`):
+//   - kArena   : `cel_list_at_arena`        (pure wasm, called directly)
+//   - kHost    : `cel_host.cel_list_at`     (host trampoline, called direct)
+//   - kDynamic : `cel_list_at`              (this dispatcher, tail-calls)
+//
+// List literals construct via `cel_list_create(out, count)` followed
+// by `cel_list_set(out, i, elem)` for each i in [0, count); both
+// only ever produce CEL_LIST_ARENA values — kHost values originate
+// from proto reflection (REPEATED fields) or `Activation::Bind`,
+// never from emitted codegen.  The list shape is fixed-length —
+// codegen knows the element count up front, so there is no growth
+// path (no `cel_list_grow` / `cel_list_append`).
+
+static ArenaListHeader* arena_list_header(const CelValue* l) {
+  return (ArenaListHeader*)(cel_memory_base_() +
+                            l->payload.arena_list.header_ptr);
+}
+
+static CelValue* arena_list_element(ArenaListHeader* hdr, uint32_t i) {
+  return (CelValue*)(cel_memory_base_() + hdr->elements_offset +
+                     ((size_t)kCelListEntryStride * i));
+}
+
+void cel_list_create(uint32_t out_slot, uint32_t count) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaListHeader));
+  if (hdr_off == 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  uint32_t elements_off = 0;
+  if (count > 0) {
+    elements_off = cel_alloc((uint32_t)((size_t)kCelListEntryStride * count));
+    if (elements_off == 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+    // cel_alloc zero-fills, leaving every CelValue with kind=CEL_NULL
+    // (CEL_NULL == 0 by the enum order), so an unset element reads as
+    // null rather than a garbage kind.  Any codegen-correct emit
+    // overwrites every slot via cel_list_set before the list is used.
+  }
+  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
+  hdr->count = count;
+  hdr->capacity = count;
+  hdr->elements_offset = elements_off;
+  hdr->_pad = 0;
+  out->kind = CEL_LIST_ARENA;
+  out->payload.arena_list.header_ptr = hdr_off;
+}
+
+void cel_list_set(uint32_t list_slot, uint32_t index, uint32_t elem_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  // If the list is already poisoned, every subsequent set is a no-op
+  // — error sticks.
+  if (l->kind != CEL_LIST_ARENA) {
+    return;
+  }
+  ArenaListHeader* hdr = arena_list_header(l);
+  // List literals are fixed-length — codegen knows `index < count`
+  // because both are compile-time constants.  An out-of-range index
+  // means codegen drifted out of sync with the runtime; poison
+  // defensively so the bug surfaces at the first observable boundary
+  // instead of silently scribbling past the elements arena.
+  if (index >= hdr->count) {
+    poison(l, CEL_ERR_OVERFLOW);
+    return;
+  }
+  *arena_list_element(hdr, index) = *cel_value_at(elem_slot);
+}
+
+void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
+                       uint32_t index_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  CelValue* index = cel_value_at(index_slot);
+  if (index->kind == CEL_UNKNOWN || index->kind == CEL_ERROR) {
+    *out = *index;
+    return;
+  }
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind == CEL_UNKNOWN || l->kind == CEL_ERROR) {
+    *out = *l;
+    return;
+  }
+  // Per langdef §"Indexing": list indices are int only; uint is a
+  // checker error and never reaches here, but defend in depth.
+  if (index->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaListHeader* hdr = arena_list_header(l);
+  int64_t i = index->payload.i;
+  if (i < 0 || (uint64_t)i >= (uint64_t)hdr->count) {
+    poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
+    return;
+  }
+  *out = *arena_list_element(hdr, (uint32_t)i);
+}
+
+// kDynamic dispatcher — same shape as `cel_map_lookup`.  See the
+// musttail commentary on that function; identical toolchain
+// constraints apply here.
+#ifdef __wasm__
+extern void cel_host_cel_list_at(uint32_t out_slot, uint32_t list_slot,
+                                 uint32_t index_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_at")));
+#else
+__attribute__((weak)) void
+cel_host_cel_list_at(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
+  (void)list_slot;
+  (void)index_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+#endif
+
+void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind == CEL_UNKNOWN || l->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *l;
+    return;
+  }
+  if (l->kind == CEL_LIST_ARENA) {
+    __attribute__((musttail)) return cel_list_at_arena(out_slot, list_slot,
+                                                       index_slot);
+  }
+  if (l->kind == CEL_LIST_HOST) {
+    __attribute__((musttail)) return cel_host_cel_list_at(out_slot, list_slot,
+                                                          index_slot);
+  }
+  // Checker should have rejected; defence in depth.
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
 // ---- cel_log trampoline --------------------------------------------------
 
 // Emit layer.  On wasm this posts args as u32 offsets into linear memory.

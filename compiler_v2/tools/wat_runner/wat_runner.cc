@@ -95,19 +95,18 @@ void DeleteStubEnv(void* env) {
   delete static_cast<StubEnv*>(env);
 }
 
-// No-op cel_host.cel_map_lookup (3 i32, no result).  M3.C added a
-// `return_call $cel_host.cel_map_lookup` arm in cel_runtime.wasm; the
-// runtime won't instantiate without something bound here.  WAT
-// fixtures don't exercise the kHost path, so a no-op suffices —
-// they only call cel_map_lookup_arena directly when they touch maps
-// at all.
-wasm_trap_t* NoopCelMapLookup(void*, wasmtime_caller_t*,
-                              const wasmtime_val_t*, size_t,
-                              wasmtime_val_t*, size_t) {
+// No-op 3-i32-in, void-out trampoline.  M3.C added a
+// `return_call $cel_host.cel_map_lookup` arm in cel_runtime.wasm;
+// M4.C added the same shape for `cel_host.cel_list_at`.  The
+// runtime won't instantiate without these bound.  WAT fixtures
+// don't exercise the kHost paths, so a no-op suffices.
+wasm_trap_t* NoopCelHostThreeArg(void*, wasmtime_caller_t*,
+                                 const wasmtime_val_t*, size_t,
+                                 wasmtime_val_t*, size_t) {
   return nullptr;
 }
 
-wasm_functype_t* CelMapLookupTrampolineType() {
+wasm_functype_t* HostThreeArgTrampolineType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
   wasm_valtype_t* param_arr[3];
@@ -117,15 +116,16 @@ wasm_functype_t* CelMapLookupTrampolineType() {
   return wasm_functype_new(&params, &results);
 }
 
-absl::Status RegisterCelMapLookupNoop(wasmtime_linker_t* linker) {
-  wasm_functype_t* type = CelMapLookupTrampolineType();
+absl::Status RegisterCelHostThreeArgNoop(wasmtime_linker_t* linker,
+                                         absl::string_view name) {
+  wasm_functype_t* type = HostThreeArgTrampolineType();
   wasmtime_error_t* err = wasmtime_linker_define_func(
-      linker, "cel_host", 8, "cel_map_lookup", 14, type, NoopCelMapLookup,
-      nullptr, nullptr);
+      linker, "cel_host", 8, name.data(), name.size(), type,
+      NoopCelHostThreeArg, nullptr, nullptr);
   wasm_functype_delete(type);
   if (err != nullptr) {
-    return WasmtimeErrorToStatus("linker.define(cel_host.cel_map_lookup)",
-                                 err);
+    return WasmtimeErrorToStatus(
+        absl::StrCat("linker.define(cel_host.", name, ")"), err);
   }
   return absl::OkStatus();
 }
@@ -244,7 +244,10 @@ absl::Status InitLinker(RunState& s, const WatRunInput& input) {
     return absl::InternalError("wasmtime_linker_new returned null");
   }
   if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
-  if (auto st = RegisterCelMapLookupNoop(s.linker); !st.ok()) return st;
+  if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_map_lookup");
+      !st.ok()) return st;
+  if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_list_at");
+      !st.ok()) return st;
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;

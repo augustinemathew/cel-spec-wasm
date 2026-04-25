@@ -42,6 +42,7 @@ class Message;
 namespace celwasm {
 class HostMessageBacking;
 class HostMapBacking;
+class HostListBacking;
 }  // namespace celwasm
 
 namespace cel {
@@ -85,8 +86,9 @@ class Value {
   static Value Error(ErrorPayload payload);
 
   // ——— Aggregate / message builders ———
-  // Lists stay stubs (M6); OwnedMessage stays stubbed until
-  // M7 (proto literal construction).  Maps land in M3.
+  // OwnedMessage stays stubbed until M7 (proto literal construction).
+  // Lists land in M4 (vector-backed `HostList` wrapper, mirroring
+  // `Map`'s shape).
   static Value List(std::vector<Value> elements);
   // Wraps `entries` in a `celwasm::HostMap` (vector-backed) and
   // forwards to `Value::HostMap`.  Duplicate keys are flattened —
@@ -122,6 +124,14 @@ class Value {
   // wraps a proto reflection map field.  Embedders with non-proto
   // map shapes provide their own subclass of `celwasm::HostMapBacking`.
   static Value HostMap(std::shared_ptr<celwasm::HostMapBacking> backing);
+
+  // Carry a host-supplied list backing through Activation::Bind into
+  // the cel_host dispatch.  Mirrors `HostMap` for lists —
+  // `celwasm::HostList` is the vector-backed default;
+  // `celwasm::ProtoList` wraps a proto repeated field.  Embedders
+  // with non-proto list shapes provide their own subclass of
+  // `celwasm::HostListBacking`.
+  static Value HostList(std::shared_ptr<celwasm::HostListBacking> backing);
 
   // ————————— Inspection —————————
   Kind kind() const {
@@ -169,10 +179,18 @@ class Value {
   absl::StatusOr<std::shared_ptr<const celwasm::HostMapBacking>>
   SharedMapBacking() const;
 
-  // Structural equality — scalar-only at M1.  Aggregates / messages
-  // delegate to the M6 / M2 bodies respectively.  Returns false if
-  // kinds differ.  For 3VL-aware equality (`CelEquals`) that absorbs
-  // Unknown / Error per langdef, see the runtime — not this surface.
+  // Retrieve the host-side backing for a kList-kind Value.  Returns
+  // `InvalidArgument` on any other kind.  Mirrors `MapBacking`.
+  absl::StatusOr<const celwasm::HostListBacking*> ListBacking() const;
+  absl::StatusOr<std::shared_ptr<const celwasm::HostListBacking>>
+  SharedListBacking() const;
+
+  // Structural equality.  Scalar kinds compare by value; aggregate
+  // kinds (kMessage / kMap / kList) compare by backing-pointer
+  // identity — spec-compliant element-wise equality lives in the
+  // runtime / M5 `==` overloads.  Returns false if kinds differ.
+  // For 3VL-aware equality (`CelEquals`) that absorbs Unknown /
+  // Error per langdef, see the runtime — not this surface.
   bool StructurallyEquals(const Value& other) const;
 
  private:
@@ -191,7 +209,8 @@ class Value {
                    AttributeId,                    // Unknown
                    std::shared_ptr<ErrorPayload>,  // Error
                    std::shared_ptr<celwasm::HostMessageBacking>,  // Message
-                   std::shared_ptr<celwasm::HostMapBacking>>;     // Map
+                   std::shared_ptr<celwasm::HostMapBacking>,      // Map
+                   std::shared_ptr<celwasm::HostListBacking>>;    // List
 
   Kind kind_;
   Payload payload_;

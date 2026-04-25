@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "compiler_v2/api/error.h"
+#include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/runtime/cel_data.h"
@@ -30,90 +31,15 @@
 namespace celwasm {
 namespace {
 
-// ─── Fake MemoryView ────────────────────────────────────────────────
-// 64 KiB byte-buffer; CelValue read/write copies the 24-byte struct
-// at the requested offset; ReadSpan returns a view into the buffer.
-class FakeMemory final : public MemoryView {
- public:
-  FakeMemory() : buf_(64 * 1024) {}
-
-  CelValue ReadCelValue(uint32_t offset) const override {
-    CelValue v{};
-    std::memcpy(&v, buf_.data() + offset, sizeof(CelValue));
-    return v;
-  }
-  void WriteCelValue(uint32_t offset, const CelValue& v) override {
-    std::memcpy(buf_.data() + offset, &v, sizeof(CelValue));
-  }
-  absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
-    return absl::string_view(
-        reinterpret_cast<const char*>(buf_.data() + ptr), len);
-  }
-
-  uint8_t* data() { return buf_.data(); }
-  // Convenience: stage a CelValue at a slot, return the slot offset.
-  uint32_t Place(uint32_t slot, const CelValue& v) {
-    WriteCelValue(slot, v);
-    return slot;
-  }
-
- private:
-  std::vector<uint8_t> buf_;
-};
-
-// ─── Fake ExternrefTable ───────────────────────────────────────────
-class FakeRefs final : public ExternrefTable {
- public:
-  FakeRefs() {
-    msgs_.push_back(nullptr);
-    maps_.push_back(nullptr);
-  }
-  uint32_t Intern(std::shared_ptr<const HostMessageBacking> b) override {
-    msgs_.push_back(std::move(b));
-    return static_cast<uint32_t>(msgs_.size() - 1);
-  }
-  const HostMessageBacking* Lookup(uint32_t slot) const override {
-    return slot < msgs_.size() ? msgs_[slot].get() : nullptr;
-  }
-  uint32_t InternMap(std::shared_ptr<const HostMapBacking> b) override {
-    maps_.push_back(std::move(b));
-    return static_cast<uint32_t>(maps_.size() - 1);
-  }
-  const HostMapBacking* LookupMap(uint32_t slot) const override {
-    return slot < maps_.size() ? maps_[slot].get() : nullptr;
-  }
-  void Reset() override {
-    msgs_.clear();
-    msgs_.push_back(nullptr);
-    maps_.clear();
-    maps_.push_back(nullptr);
-  }
-
- private:
-  std::vector<std::shared_ptr<const HostMessageBacking>> msgs_;
-  std::vector<std::shared_ptr<const HostMapBacking>> maps_;
-};
-
-// ─── Fake ArenaAllocator ───────────────────────────────────────────
-// Bump from a fixed cursor; writes into the FakeMemory's buffer.
-class FakeArena final : public ArenaAllocator {
- public:
-  FakeArena(FakeMemory* mem, uint32_t base) : mem_(mem), cursor_(base) {}
-  uint8_t* Alloc(size_t len, uint32_t* out_offset) override {
-    *out_offset = cursor_;
-    cursor_ += static_cast<uint32_t>(len);
-    return mem_->data() + *out_offset;
-  }
- private:
-  FakeMemory* mem_;
-  uint32_t cursor_;
-};
+using FakeMemory = test::FakeMemoryView;
+using FakeRefs = test::FakeExternrefTable;
 
 // ─── Fixture ───────────────────────────────────────────────────────
 struct Fixture {
   FakeMemory mem;
   FakeRefs refs;
-  FakeArena arena{&mem, /*base=*/4096};  // arena well past slots region.
+  test::FakeArenaAllocator arena{&mem, /*base_offset=*/4096u,
+                                  /*capacity=*/8192u};
   CelHostBindings bindings{};
   TrampolineContext ctx{bindings, mem, refs, arena};
 

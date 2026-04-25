@@ -161,6 +161,12 @@ class ProtoMap final : public HostMapBacking {
   const google::protobuf::FieldDescriptor* absl_nonnull field_;
 };
 
+// Plug-in point for a CEL list.  Two built-in concretes (below):
+// `HostList` for vector-backed user bindings, `ProtoList` for proto
+// reflection-backed REPEATED fields.  `Activation::Bind(name,
+// Value::List(...))` (or `Value::HostList(...)`) carries the backing
+// into dispatch.  Out-of-bounds At() returns
+// `Value::Error(kIndexOutOfBounds)`, never non-OK Status.
 class HostListBacking {
  public:
   virtual ~HostListBacking() = default;
@@ -170,10 +176,57 @@ class HostListBacking {
   HostListBacking& operator=(const HostListBacking&) = delete;
 
   virtual size_t Size() const = 0;
+
+  // `expected_element_type` is informational; M4 ignores it (no
+  // implicit coercion between numeric kinds).  Mirrors
+  // `HostMapBacking::Get`'s expected_value_type contract.
   virtual absl::StatusOr<cel::Value> At(
-      size_t index, const cel::CelType& expected_element_type) = 0;
+      size_t index, const cel::CelType& expected_element_type) const = 0;
+
   virtual void ForEach(
       absl::FunctionRef<void(const cel::Value&)> visit) const = 0;
+};
+
+// Vector-backed concrete.  Used for `Activation::Bind(Value::List(...))`
+// — the host caller hands us an ordered element list and we keep it
+// in insertion order.  Mirrors `HostMap`'s shape.
+class HostList final : public HostListBacking {
+ public:
+  explicit HostList(std::vector<cel::Value> elements);
+  ~HostList() override = default;
+
+  size_t Size() const override;
+  absl::StatusOr<cel::Value> At(
+      size_t index,
+      const cel::CelType& expected_element_type) const override;
+  void ForEach(
+      absl::FunctionRef<void(const cel::Value&)> visit) const override;
+
+ private:
+  std::vector<cel::Value> elements_;
+};
+
+// Proto reflection-backed concrete.  Wraps a single
+// `google::protobuf::Message*` + the FieldDescriptor for one of its
+// REPEATED (non-map) fields.  Non-owning — caller (typically
+// `ProtoBacking::ReadField`) keeps the message alive for the
+// lifetime of any Eval that observes the wrapping Value.
+class ProtoList final : public HostListBacking {
+ public:
+  ProtoList(const google::protobuf::Message* absl_nonnull owner,
+            const google::protobuf::FieldDescriptor* absl_nonnull field);
+  ~ProtoList() override = default;
+
+  size_t Size() const override;
+  absl::StatusOr<cel::Value> At(
+      size_t index,
+      const cel::CelType& expected_element_type) const override;
+  void ForEach(
+      absl::FunctionRef<void(const cel::Value&)> visit) const override;
+
+ private:
+  const google::protobuf::Message* absl_nonnull owner_;
+  const google::protobuf::FieldDescriptor* absl_nonnull field_;
 };
 
 // ═══════════ Layer 2 — trampoline abstractions + entry points ═══════════
@@ -216,6 +269,14 @@ class ExternrefTable {
   // type, but callers should treat the namespaces as disjoint.
   virtual uint32_t InternMap(std::shared_ptr<const HostMapBacking> backing) = 0;
   virtual const HostMapBacking* absl_nullable LookupMap(
+      uint32_t slot) const = 0;
+
+  // M4.E: same intern/lookup contract for list backings.  Independent
+  // namespace from messages and maps — `LookupList(slot)` won't find
+  // a map or message interned under the other API.
+  virtual uint32_t InternList(
+      std::shared_ptr<const HostListBacking> backing) = 0;
+  virtual const HostListBacking* absl_nullable LookupList(
       uint32_t slot) const = 0;
 
   virtual void Reset() = 0;
@@ -296,6 +357,18 @@ ABSL_MUST_USE_RESULT absl::Status CelHasFieldImpl(uint32_t out_slot,
 // returned CelValue.
 ABSL_MUST_USE_RESULT absl::Status CelMapLookupImpl(
     uint32_t out_slot, uint32_t map_slot, uint32_t key_slot,
+    const TrampolineContext& ctx);
+
+// M4.E: Layer-2 entry point for the kHost arm of list indexing.
+// Reads list_slot's `ref_slot`, dereferences via
+// `ExternrefTable::LookupList` to a `HostListBacking`, decodes the
+// index CelValue (must be CEL_INT; non-int → kTypeMismatch;
+// negative or `>= Size()` → kIndexOutOfBounds), calls
+// `backing->At(index)`, and marshals the returned `cel::Value` into
+// `out_slot`.  Absorbs UNKNOWN / ERROR on either operand.  Same
+// non-OK Status contract as CelMapLookupImpl.
+ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(
+    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot,
     const TrampolineContext& ctx);
 
 }  // namespace celwasm

@@ -25,8 +25,9 @@ namespace celwasm {
 // ═══════════ HostExternrefTable ═══════════
 
 HostExternrefTable::HostExternrefTable() {
-  backings_.push_back(nullptr);      // slot 0 sentinel (messages)
-  map_backings_.push_back(nullptr);  // slot 0 sentinel (maps)
+  backings_.push_back(nullptr);       // slot 0 sentinel (messages)
+  map_backings_.push_back(nullptr);   // slot 0 sentinel (maps)
+  list_backings_.push_back(nullptr);  // slot 0 sentinel (lists)
 }
 
 uint32_t HostExternrefTable::Intern(
@@ -51,11 +52,24 @@ const HostMapBacking* absl_nullable HostExternrefTable::LookupMap(
   return slot < map_backings_.size() ? map_backings_[slot].get() : nullptr;
 }
 
+uint32_t HostExternrefTable::InternList(
+    std::shared_ptr<const HostListBacking> backing) {
+  list_backings_.push_back(std::move(backing));
+  return static_cast<uint32_t>(list_backings_.size() - 1);
+}
+
+const HostListBacking* absl_nullable HostExternrefTable::LookupList(
+    uint32_t slot) const {
+  return slot < list_backings_.size() ? list_backings_[slot].get() : nullptr;
+}
+
 void HostExternrefTable::Reset() {
   backings_.clear();
   backings_.push_back(nullptr);
   map_backings_.clear();
   map_backings_.push_back(nullptr);
+  list_backings_.clear();
+  list_backings_.push_back(nullptr);
 }
 
 // ═══════════ BuildCelHostBindings ═══════════
@@ -209,20 +223,34 @@ extern "C" wasm_trap_t* CelHasFieldTrampoline(
 // from the field trampolines (3 i32s in, void out vs. their 4
 // i32s).  Forwards into `CelMapLookupImpl` (Layer 2) which handles
 // the externref dereference + virtual `Get(key)` on the
-// `HostMapBacking`.
-extern "C" wasm_trap_t* CelMapLookupTrampoline(
-    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/,
-    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+// `HostMapBacking`.  M4.E adds a sibling for `cel_host.cel_list_at`
+// with the same shape; both share the 3-arg helper below.
+template <auto Impl>
+wasm_trap_t* HostThreeArgTrampoline(void* absl_nonnull env_ptr,
+                                    wasmtime_caller_t* absl_nonnull caller,
+                                    const wasmtime_val_t* args) {
   auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   WasmtimeMemoryView mem(ctx, env->memory);
   WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
-  return StatusToTrap(CelMapLookupImpl(static_cast<uint32_t>(args[0].of.i32),
-                                       static_cast<uint32_t>(args[1].of.i32),
-                                       static_cast<uint32_t>(args[2].of.i32),
-                                       tctx));
+  return StatusToTrap(Impl(static_cast<uint32_t>(args[0].of.i32),
+                           static_cast<uint32_t>(args[1].of.i32),
+                           static_cast<uint32_t>(args[2].of.i32), tctx));
+}
+
+extern "C" wasm_trap_t* CelMapLookupTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/,
+    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelMapLookupImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelListAtTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/,
+    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelListAtImpl>(env_ptr, caller, args);
 }
 
 wasm_functype_t* NI32sToVoid(size_t n) {
@@ -272,8 +300,13 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       !s.ok()) {
     return s;
   }
-  return DefineHostFunc(linker, "cel_map_lookup", /*arity=*/3,
-                        CelMapLookupTrampoline, env);
+  if (auto s = DefineHostFunc(linker, "cel_map_lookup", /*arity=*/3,
+                              CelMapLookupTrampoline, env);
+      !s.ok()) {
+    return s;
+  }
+  return DefineHostFunc(linker, "cel_list_at", /*arity=*/3,
+                        CelListAtTrampoline, env);
 }
 
 }  // namespace celwasm

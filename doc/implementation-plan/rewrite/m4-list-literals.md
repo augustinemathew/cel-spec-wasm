@@ -1,6 +1,53 @@
 # Rewrite M4 — list literals + indexing (replays the M3 map shape)
 
-Status: **plan — drafted 2026-04-25, not yet started.**
+Status: **in progress — drafted 2026-04-25, slices A–E + G shipped 2026-04-25.**
+
+> Plan-vs-execution delta (2026-04-25): the runtime construction
+> primitives diverged from the plan's `cel_list_create` +
+> `cel_list_append` + `cel_list_grow` triple.  Per direct user
+> direction ("the list is going to be of fixed length / we know what
+> the list size is / we should have a way to set an element at an
+> index / no grow"), the shipped surface is the simpler
+> `cel_list_create(out, count)` (zero-fills `count` element slots up
+> front) plus `cel_list_set(list, index, elem)` for codegen to write
+> each known position.  No append, no grow.  Past-count `set` poisons
+> with `CEL_ERR_OVERFLOW` — same shape as the map literal's
+> past-capacity insert.  Comprehensions in M5 will need either
+> `cel_list_clear` / `cel_list_set` over a pre-sized accumulator or
+> a separate dynamic-list primitive; the M5 plan picks one.
+
+## Slice progress (as of 2026-04-25)
+
+| slice | status | notes |
+|---|---|---|
+| **M4.A** — `cel_data.h` ABI split | shipped | `CEL_LIST_ARENA = 7` (kept the slot — minimal-churn option from §8 risk #2), `CEL_LIST_HOST = 17`, `ArenaListHeader` + `ArenaListRef` payload, `kCelListEntryStride = 24`, `CEL_ERR_INDEX_OUT_OF_BOUNDS = 17`.  Static asserts pinned via `cel_data_test`. |
+| **M4.B** — runtime arena primitives | shipped | New `cel_list.h` + `cel_list_create` / `cel_list_set` / `cel_list_at_arena` in `cel_runtime.c`.  `cel_list_test.cc` covers per-kind round-trip, OOB / negative / non-int index, set-past-count poisons, set-duplicate-index overwrites, ForEach, dispatcher routing. |
+| **M4.C** — kDynamic dispatcher | shipped | `cel_list_at` with `__attribute__((musttail))` arms; `cel_host_cel_list_at` extern import; `wasm_imports.txt` += `cel_host_cel_list_at`; `compile.cc::InstallHostAbi` registers all five list imports.  `InstallHostAbi` was split into `InstallSelectImports`/`InstallMapImports`/`InstallListImports` to clear the function-size lint gate. |
+| **M4.D** — host backings + Value::List | shipped | `HostList` (vector-backed) + `ProtoList` (proto reflection); `Value::List`/`Value::HostList`/`ListBacking`/`SharedListBacking` bodies in `cel_host.cc` (one-way dep matches `Value::Map`); `StructurallyEquals` kList arm = pointer-identity.  New `host_list_test.cc` + `proto_list_test.cc`.  `host_fixture_proto3.proto` extended with `rep_s/rep_b/rep_f64/rep_msg`. |
+| **M4.E** — Layer 2 + Layer 3 wasmtime glue | shipped | `CelListAtImpl` Layer-2 trampoline body in `cel_host.cc`; `EncodeFieldResult` + `EncodeAggregateIfAny` factored to handle every aggregate kind (message/map/list) uniformly via interning into the matching externref namespace.  `HostExternrefTable::InternList`/`LookupList`.  `HostThreeArgTrampoline<Impl>` template extracted in `cel_host_wasmtime.cc` (shared with `CelMapLookupTrampoline`); `RegisterCelHostImports` adds `cel_list_at`.  New `cel_list_at_impl_test.cc` (15 tests).  Test fakes deduplicated into shared `cel_host_test_fakes.h` — previously each Layer-2 test re-implemented `FakeMemoryView` / `FakeExternrefTable` / `FakeArenaAllocator` and drifted as new namespaces (M3 maps, M4 lists) landed; now centralised. |
+| **M4.F** — resolve + layout + codegen | not started | `ListOriginVisitor`, `kCreateList` lowering, `kCallExpr(_[_])` × 3 origin arms, WAT 11–14.  Next slice. |
+| **M4.G** — `ProtoBacking::ReadField` REPEATED flip | shipped | REPEATED → `Value::HostList(ProtoList{...})` (was `kTypeUnsupported`).  Two existing tests flipped to assert HostList; m2 envelope test re-targeted at M4.F+H (e2e Eval needs codegen + decoder).  Single-test SKIP per per-component-test-coverage SKIP rule. |
+| **M4.H** — activation marshaller + Eval decoder | not started | `EncodeList` + `DecodeArenaListAt` in `instance.cc`. |
+| **M4.I** — conformance harness envelope | not started | `IsInM4Envelope` admits `list_value`; `CompareList` (order-aware). |
+| **M4.J** — m4_test.cc + doc reconcile | not started | e2e suite + `map-list-dispatch.md §11` ticks. |
+
+**Manual targets that gate close (per §6.4 / `per-component-test-coverage.md §5`):**
+all 6 currently green — `cel_host_test`, `engine_test`, `instance_test`,
+`m2_test` (one single-test SKIP for `SelectRepeatedFieldReturnsHostList`,
+unblocks at M4.F+H), `cel_runtime_wasm_test`, `wat_runner_test`.
+
+The runtime-binding sites that needed list-aware updates (not in the
+original plan but surfaced during execution): `engine.cc::InstantiateRuntime`'s
+`BindRuntimeExport` loop (added `cel_list_create` / `cel_list_set` /
+`cel_list_at_arena` / `cel_list_at`), `cel_runtime_wasm_test.cc` linker
+setup (no-op `cel_host.cel_list_at`), and `wat_runner.cc` linker setup
+(same).  Codegen never decides to omit these imports based on AST
+shape — the "always link the runtime fully" rule from CLAUDE.md
+applies to the host runtime+linker side too.
+
+---
+
+(Original plan continues unchanged below.)
 
 Parent: `design.md`.  Predecessors: `m3-map-literals.md` (shipped
 2026-04-24, the maps half of the three-path dispatch contract);

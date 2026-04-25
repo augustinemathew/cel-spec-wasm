@@ -7,7 +7,6 @@
 #include "compiler_v2/api/internal/cel_host.h"
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -20,6 +19,7 @@
 #include "compiler/testdata/host_fixture_proto2.pb.h"
 #include "compiler/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/error.h"
+#include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
 #include "google/protobuf/message.h"
@@ -137,15 +137,21 @@ TEST(ProtoBackingReadFieldTest, Proto3UnsetStringDefaultsEmpty) {
   EXPECT_EQ(*v->AsString(), "");
 }
 
-TEST(ProtoBackingReadFieldTest, RepeatedReturnsTypeUnsupported) {
+// M4.G flipped: REPEATED fields now return Value::HostList(ProtoList).
+// Detailed coverage of element kinds + boundary semantics lives in
+// compiler_v2/api/internal/proto_list_test.cc; this test pins the
+// shape ProtoBacking::ReadField returns.
+TEST(ProtoBackingReadFieldTest, RepeatedReturnsHostList) {
   HostMsg3 m;
   m.add_rep_i32(1);
+  m.add_rep_i32(2);
   ProtoBacking pb(&m);
   auto v = pb.ReadField(18, "rep_i32", IgnoredType());
   ASSERT_THAT(v, IsOk());
-  auto err = v->ErrorInfo();
-  ASSERT_THAT(err, IsOk());
-  EXPECT_EQ((*err)->code, cel::ErrorCode::kTypeUnsupported);
+  EXPECT_EQ(v->kind(), cel::Value::Kind::kList);
+  auto b = v->ListBacking();
+  ASSERT_THAT(b, IsOk());
+  EXPECT_EQ((*b)->Size(), 2u);
 }
 
 TEST(ProtoBackingReadFieldTest, UnknownFieldReturnsCelError) {
@@ -282,85 +288,13 @@ TEST(JsonLikeBackingTest, RoundTripsThroughValueHostMessage) {
 }
 
 // ═══════════ Layer 2 — trampoline fakes ═══════════
-
-class FakeMemoryView final : public MemoryView {
- public:
-  explicit FakeMemoryView(size_t size) : mem_(size, 0) {}
-
-  CelValue ReadCelValue(uint32_t offset) const override {
-    CelValue cv{};
-    std::memcpy(&cv, mem_.data() + offset, sizeof(cv));
-    return cv;
-  }
-  void WriteCelValue(uint32_t offset, const CelValue& v) override {
-    std::memcpy(mem_.data() + offset, &v, sizeof(v));
-  }
-  absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
-    return {reinterpret_cast<const char*>(mem_.data() + ptr), len};
-  }
-
-  uint8_t* data() {
-    return mem_.data();
-  }
-
- private:
-  std::vector<uint8_t> mem_;
-};
-
-class FakeExternrefTable final : public ExternrefTable {
- public:
-  FakeExternrefTable() {
-    backings_.push_back(nullptr);
-  }  // slot 0 sentinel
-
-  uint32_t Intern(std::shared_ptr<const HostMessageBacking> b) override {
-    backings_.push_back(std::move(b));
-    return static_cast<uint32_t>(backings_.size() - 1);
-  }
-  const HostMessageBacking* absl_nullable Lookup(uint32_t slot) const override {
-    return slot < backings_.size() ? backings_[slot].get() : nullptr;
-  }
-  uint32_t InternMap(std::shared_ptr<const HostMapBacking> b) override {
-    map_backings_.push_back(std::move(b));
-    return static_cast<uint32_t>(map_backings_.size() - 1);
-  }
-  const HostMapBacking* absl_nullable LookupMap(uint32_t slot) const override {
-    return slot < map_backings_.size() ? map_backings_[slot].get() : nullptr;
-  }
-  void Reset() override {
-    backings_.clear();
-    backings_.push_back(nullptr);
-    map_backings_.clear();
-    map_backings_.push_back(nullptr);
-  }
-
- private:
-  std::vector<std::shared_ptr<const HostMessageBacking>> backings_;
-  std::vector<std::shared_ptr<const HostMapBacking>> map_backings_{nullptr};
-};
-
-class FakeArenaAllocator final : public ArenaAllocator {
- public:
-  FakeArenaAllocator(uint8_t* absl_nonnull base, size_t capacity,
-                     uint32_t base_offset)
-      : base_(base), capacity_(capacity), base_offset_(base_offset) {}
-
-  uint8_t* absl_nullable Alloc(size_t len,
-                               uint32_t* absl_nonnull out_offset) override {
-    const size_t need = (len + 7u) & ~size_t{7u};
-    if (cursor_ + need > capacity_) return nullptr;
-    uint8_t* dst = base_ + cursor_;
-    *out_offset = base_offset_ + static_cast<uint32_t>(cursor_);
-    cursor_ += need;
-    return dst;
-  }
-
- private:
-  uint8_t* absl_nonnull base_;
-  size_t capacity_;
-  uint32_t base_offset_;
-  size_t cursor_ = 0;
-};
+//
+// Defined in `cel_host_test_fakes.h` and shared with every other
+// Layer-2 unit test (cel_map_lookup_impl_test, cel_list_at_impl_test,
+// host_list_test, …).  Aliased into this TU's namespace for brevity.
+using FakeMemoryView = test::FakeMemoryView;
+using FakeExternrefTable = test::FakeExternrefTable;
+using FakeArenaAllocator = test::FakeArenaAllocator;
 
 // Fixture bundling mem/refs/alloc/bindings + a `Get`/`Has` helper
 // that handles slot wiring.  Tests that exercise the trampoline
@@ -372,8 +306,7 @@ struct Layer2Fixture {
 
   FakeMemoryView mem{4096};
   FakeExternrefTable refs;
-  FakeArenaAllocator alloc{mem.data() + kArenaBase, /*capacity=*/2048,
-                           kArenaBase};
+  FakeArenaAllocator alloc{&mem, kArenaBase, /*capacity=*/2048};
   std::vector<FieldRefEntry> field_refs{FieldRefEntry{}};  // index 0 sentinel
   std::vector<AttributeEntry> attributes;
   std::vector<cel::AttributePattern> unknown_patterns;
@@ -572,16 +505,21 @@ TEST(Layer2DispatchTest, NestedMessageInternsSubBacking) {
   EXPECT_EQ(f.mem.ReadSpan(city.payload.s.ptr, city.payload.s.len), "Seattle");
 }
 
-TEST(Layer2DispatchTest, RepeatedFieldSurfacesLayer1Error) {
+// M4.G flipped: REPEATED selects round-trip as CEL_LIST_HOST with
+// the ProtoList interned into the externref table.  Element-level
+// coverage lives in cel_list_at_impl_test.cc; this test pins the
+// kSelect-returns-HostList contract end-to-end through Layer 2.
+TEST(Layer2DispatchTest, RepeatedFieldSurfacesAsHostList) {
   HostMsg3 m;
   m.add_rep_i32(1);
+  m.add_rep_i32(2);
   Layer2Fixture f;
   f.BindMessage(std::make_shared<ProtoBacking>(&m), 18, "rep_i32");
 
   const CelValue out = f.Get();
-  EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(cel::ErrorCode::kTypeUnsupported));
+  ASSERT_EQ(out.kind, CEL_LIST_HOST);
+  EXPECT_NE(out.payload.ref_slot, 0u);
+  EXPECT_NE(f.refs.LookupList(out.payload.ref_slot), nullptr);
 }
 
 // ═══════════ Layer 2 — aliasing ═══════════

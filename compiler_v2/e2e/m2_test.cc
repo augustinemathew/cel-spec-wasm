@@ -672,18 +672,26 @@ TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  Envelope boundary — MAP/REPEATED → CEL_ERR_TYPE_UNSUPPORTED
+//  Envelope boundary — REPEATED field flow (M4.G)
 //
-//  §2.8 / §6.1.1 row: ProtoBacking::ReadField on a REPEATED
-//  field returns Value::Error(CEL_ERR_TYPE_UNSUPPORTED) until
-//  M6 swaps in ProtoRepeatedBacking.  The M2→M6 graduation
-//  contract: this test starts green at M2 and must be flipped
-//  (new expected value) when M6 lands.
+//  M4.G flipped `ProtoBacking::ReadField` on a REPEATED field
+//  from `Value::Error(kTypeUnsupported)` to
+//  `Value::HostList(ProtoList{...})`.  Host-side coverage of
+//  that flip lives in
+//  compiler_v2/api/internal/proto_list_test.cc::ReadFieldRepeatedReturnsHostList
+//  + cel_host_test.cc::RepeatedFieldSurfacesAsHostList.
+//
+//  The end-to-end Eval flow (`customer.tags[0]` returns "tag0")
+//  needs the M4.F (codegen for kCallExpr `_[_]` on lists) +
+//  M4.H (Eval-side DecodeArenaListAt + kHost activation marshal)
+//  slices to land before it can run green.  Single-test deferral
+//  per per-component-test-coverage.md SKIP rule.
 // ──────────────────────────────────────────────────────────────
 
-TEST(EnvelopeBoundaryE2ETest, SelectRepeatedFieldReturnsUnsupportedError) {
-  GTEST_SKIP() << "MAP/REPEATED envelope boundary lives in "
-                  "ProtoBacking::ReadField — lands with M2.C cel_host";
+TEST(EnvelopeBoundaryE2ETest, SelectRepeatedFieldReturnsHostList) {
+  GTEST_SKIP() << "ProtoBacking::ReadField on REPEATED returns "
+                  "HostList as of M4.G; e2e Eval of `c.tags[0]` "
+                  "lands with M4.F (codegen) + M4.H (decoder)";
 }
 
 }  // namespace

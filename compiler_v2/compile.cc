@@ -32,11 +32,66 @@ uint32_t PagesForBytes(uint32_t mem_size_bytes) {
   return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
 }
 
+// `cel_host.cel_get_field` + `cel_host.cel_has_field` trampolines
+// (M2.C / M2.D).  Always imported — the runtime links the cel_host
+// module unconditionally (see memory "No lazy tracking of runtime
+// imports").
+void InstallSelectImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType host_params[4] = {i32, i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelHostGetFieldInternalName), "cel_host",
+                        "cel_get_field", host_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
+                        "cel_has_field", host_params, BinaryenTypeNone());
+}
+
+// M3.F: map literal + indexing runtime entry points.  `cel_map_*`
+// come from the runtime module; `cel_host.cel_map_lookup` is the
+// host trampoline arm of the kDynamic dispatcher (see
+// map-list-dispatch.md §3 + §5).
+void InstallMapImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType map_create_params[2] = {i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapCreateInternalName), "cel",
+                        "cel_map_create", map_create_params,
+                        BinaryenTypeNone());
+  const BinaryenType map3_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
+                        "cel_map_insert", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
+                        "cel_map_lookup_arena", map3_params,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+}
+
+// M4.F: list literal + indexing runtime entry points.  Same shape
+// as maps; unused imports are harmless (Binaryen drops them at
+// validate).
+void InstallListImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType list_create_params[2] = {i32, i32};
+  mod.AddFunctionImport(std::string(kCelListCreateInternalName), "cel",
+                        "cel_list_create", list_create_params,
+                        BinaryenTypeNone());
+  const BinaryenType list3_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelListSetInternalName), "cel",
+                        "cel_list_set", list3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
+                        "cel_list_at_arena", list3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelListAtInternalName), "cel",
+                        "cel_list_at", list3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
+                        "cel_list_at", list3_params, BinaryenTypeNone());
+}
+
 // Installs the expr module's host-ABI shape: imports `cel.memory`
 // (host-allocated, shared with the cel_runtime.wasm instance), with
 // the rodata data segment at `layout.rodata_base` applied to it at
-// instantiate-time.  Plus the two runtime function imports the
-// `$eval` body (and any future call sites) target.
+// instantiate-time.  Plus the runtime function imports the `$eval`
+// body (and any future call sites) target.
 //
 // Memory ownership flipped per
 // doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
@@ -59,36 +114,9 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
                         BinaryenTypeNone());
   const BinaryenType alloc_params[1] = {i32};
   mod.AddFunctionImport("cel_alloc", "cel", "cel_alloc", alloc_params, i32);
-  // cel_host.cel_get_field + cel_host.cel_has_field trampolines
-  // (M2.C / M2.D).  Always imported — the runtime links the
-  // cel_host module unconditionally (see memory "No lazy tracking
-  // of runtime imports").
-  const BinaryenType host_params[4] = {i32, i32, i32, i32};
-  mod.AddFunctionImport(std::string(kCelHostGetFieldInternalName), "cel_host",
-                        "cel_get_field", host_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
-                        "cel_has_field", host_params, BinaryenTypeNone());
-
-  // M3.F: map literal + indexing runtime entry points.  `cel_map_*`
-  // come from the runtime module; `cel_host.cel_map_lookup` is the
-  // host trampoline arm of the kDynamic dispatcher (see
-  // map-list-dispatch.md §3 + §5).  Same "always imported" rule —
-  // codegen emits these calls iff the program contains map ops, but
-  // unused imports are harmless (Binaryen drops them at validate).
-  const BinaryenType map_create_params[2] = {i32, i32};
-  mod.AddFunctionImport(std::string(kCelMapCreateInternalName), "cel",
-                        "cel_map_create", map_create_params,
-                        BinaryenTypeNone());
-  const BinaryenType map3_params[3] = {i32, i32, i32};
-  mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
-                        "cel_map_insert", map3_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
-                        "cel_map_lookup_arena", map3_params,
-                        BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  InstallSelectImports(mod);
+  InstallMapImports(mod);
+  InstallListImports(mod);
   return absl::OkStatus();
 }
 

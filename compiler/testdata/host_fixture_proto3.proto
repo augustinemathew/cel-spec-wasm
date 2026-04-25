@@ -33,7 +33,17 @@ message HostMsg3 {
   bytes    by       = 15;
   Kind     kind     = 16;
   HostMsg3 inner    = 17;
-  repeated int32 rep_i32 = 18;
+
+  // M4.D fixture coverage — one repeated field per representative
+  // cpp_type so ProtoList reflection paths can be exhaustively
+  // asserted without adding new top-level messages.  Field numbers
+  // stay contiguous in the 18..27 block.  `repeated map` is not
+  // legal per descriptor.proto.
+  repeated int32  rep_i32 = 18;
+  repeated string rep_s   = 24;
+  repeated bool   rep_b   = 25;
+  repeated double rep_f64 = 26;
+  repeated HostMsg3 rep_msg = 27;
 
   // M3.G fixture coverage — one map field per allowed key kind so
   // ProtoMap reflection paths can be exhaustively asserted without

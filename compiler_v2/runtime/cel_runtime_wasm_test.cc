@@ -67,13 +67,14 @@ wasm_trap_t* NoopCelLog(void*, wasmtime_caller_t*, const wasmtime_val_t*,
   return nullptr;
 }
 
-// No-op cel_host.cel_map_lookup trampoline.  M3.C added the kDynamic
-// dispatcher in cel_runtime.c with a `return_call` into this import;
-// the runtime module won't instantiate without something bound here.
-// These tests don't exercise the kHost path, so a no-op suffices.
-wasm_trap_t* NoopCelMapLookup(void*, wasmtime_caller_t*,
-                              const wasmtime_val_t*, size_t,
-                              wasmtime_val_t*, size_t) {
+// No-op cel_host.cel_map_lookup / cel_host.cel_list_at trampolines.
+// M3.C added the kDynamic dispatcher with a `return_call` into the
+// map import; M4.C added the list one.  The runtime module won't
+// instantiate without these bound, even though these tests don't
+// exercise the kHost paths — a no-op suffices.
+wasm_trap_t* NoopCelHostThreeArg(void*, wasmtime_caller_t*,
+                                 const wasmtime_val_t*, size_t,
+                                 wasmtime_val_t*, size_t) {
   return nullptr;
 }
 
@@ -89,7 +90,7 @@ wasm_functype_t* CelLogFuncType() {
   return wasm_functype_new(&params, &results);
 }
 
-wasm_functype_t* CelMapLookupFuncType() {
+wasm_functype_t* HostThreeArgFuncType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
   wasm_valtype_t* param_arr[3];
@@ -198,14 +199,26 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure()
            << "define cel_env.cel_log: " << WasmtimeErrorMsg(err);
   }
-  wasm_functype_t* mlft = CelMapLookupFuncType();
+  wasm_functype_t* mlft = HostThreeArgFuncType();
   err = wasmtime_linker_define_func(
-      h->linker, "cel_host", 8, "cel_map_lookup", 14, mlft, NoopCelMapLookup,
+      h->linker, "cel_host", 8, "cel_map_lookup", 14, mlft,
+      NoopCelHostThreeArg,
       /*data=*/nullptr, /*finalizer=*/nullptr);
   wasm_functype_delete(mlft);
   if (err != nullptr) {
     return ::testing::AssertionFailure()
            << "define cel_host.cel_map_lookup: " << WasmtimeErrorMsg(err);
+  }
+  // M4.C: same shape for `cel_host.cel_list_at`.
+  wasm_functype_t* llft = HostThreeArgFuncType();
+  err = wasmtime_linker_define_func(
+      h->linker, "cel_host", 8, "cel_list_at", 11, llft,
+      NoopCelHostThreeArg,
+      /*data=*/nullptr, /*finalizer=*/nullptr);
+  wasm_functype_delete(llft);
+  if (err != nullptr) {
+    return ::testing::AssertionFailure()
+           << "define cel_host.cel_list_at: " << WasmtimeErrorMsg(err);
   }
   wasmtime_extern_t ext;
   ext.kind = WASMTIME_EXTERN_MEMORY;

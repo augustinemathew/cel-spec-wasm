@@ -165,7 +165,9 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   // `instantiate(expr): unknown import: cel::<name>`.
   for (const char* name : {"cel_reset", "cel_alloc", "cel_map_create",
                            "cel_map_insert", "cel_map_lookup_arena",
-                           "cel_map_lookup"}) {
+                           "cel_map_lookup", "cel_list_create",
+                           "cel_list_set", "cel_list_at_arena",
+                           "cel_list_at"}) {
     if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
                                    name);
         !s.ok()) {

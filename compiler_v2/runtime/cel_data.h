@@ -14,15 +14,20 @@
 extern "C" {
 #endif
 
-// Final CelKind set.  M3 splits the single `CEL_MAP` kind into
+// Final CelKind set.  M3 split the single `CEL_MAP` kind into
 // `CEL_MAP_ARENA` (literal-built, header in linear memory) and
 // `CEL_MAP_HOST` (proto reflection / Activation::Bind, payload is a
-// host-table ref_slot), per the three-path dispatch design
-// (`doc/implementation-plan/rewrite/map-list-dispatch.md`).
+// host-table ref_slot); M4 mirrors that split for lists:
+// `CEL_LIST_ARENA` (literal-built, header in linear memory) and
+// `CEL_LIST_HOST` (proto repeated / Activation::Bind list, payload
+// is a host-table ref_slot).  See
+// `doc/implementation-plan/rewrite/map-list-dispatch.md`.
 //
 // Numeric values are stable on the wire from this point forward:
 // host pretty-printers, cel_host trampolines, and any persisted
 // fixture fingerprints rely on them.  Append only; never renumber.
+// `CEL_LIST_ARENA` reuses the pre-M4 `CEL_LIST = 7` slot to avoid
+// ABI churn; `CEL_LIST_HOST = 17` is the new tail value.
 typedef enum {
   CEL_NULL = 0,
   CEL_BOOL = 1,
@@ -31,7 +36,7 @@ typedef enum {
   CEL_DOUBLE = 4,
   CEL_STRING = 5,
   CEL_BYTES = 6,
-  CEL_LIST = 7,
+  CEL_LIST_ARENA = 7,
   CEL_MAP_ARENA = 8,
   CEL_MAP_HOST = 9,
   CEL_MESSAGE = 10,
@@ -41,6 +46,7 @@ typedef enum {
   CEL_OPTIONAL = 14,
   CEL_UNKNOWN = 15,
   CEL_ERROR = 16,
+  CEL_LIST_HOST = 17,
 } CelKind;
 
 typedef struct {
@@ -74,6 +80,25 @@ typedef struct {
   uint32_t header_ptr;
 } ArenaMapRef;
 
+// Arena-backed list header (dispatch-doc §4.2).  Mirrors
+// `ArenaMapHeader` but each element is a single CelValue (24 B), so
+// the entry stride halves from 48 to 24.  `elements_offset` points at
+// a contiguous `capacity` × 24-byte run; growth re-allocates the run
+// and updates `elements_offset` in place.
+typedef struct {
+  uint32_t count;
+  uint32_t capacity;
+  uint32_t elements_offset;
+  uint32_t _pad;
+} ArenaListHeader;
+
+_Static_assert(sizeof(ArenaListHeader) == 16,
+               "ArenaListHeader must be 16 bytes (dispatch-doc §4.2)");
+
+typedef struct {
+  uint32_t header_ptr;
+} ArenaListRef;
+
 typedef struct {
   int64_t seconds;
   int32_t nanos;
@@ -92,11 +117,13 @@ struct CelValue {
     CelSpan s;
     CelSpan bytes;
     CelArray list;
-    ArenaMapRef arena_map;  // CEL_MAP_ARENA
-    uint32_t ref_slot;      // CEL_MAP_HOST (also reused by future host
-                            // aggregates; CEL_MESSAGE has its own
-                            // `msg_slot` for now to keep cel_host
-                            // call sites unchanged in M3.A).
+    ArenaMapRef arena_map;    // CEL_MAP_ARENA
+    ArenaListRef arena_list;  // CEL_LIST_ARENA
+    uint32_t ref_slot;        // CEL_MAP_HOST + CEL_LIST_HOST (and any
+                              // future host aggregates; CEL_MESSAGE
+                              // has its own `msg_slot` for now to
+                              // keep cel_host call sites unchanged
+                              // since M3.A).
     uint32_t msg_slot;
     uint32_t type_id;
     CelDurTs dur;
@@ -115,6 +142,16 @@ _Static_assert(sizeof(CelValue) == 24, "CelValue must remain 24 bytes");
 enum {
   kCelMapEntryStride = 48,
 };
+
+// Each list element is a single CelValue (no key).  `cel_list_create`
+// uses this to size the elements arena; codegen + decoders rely on
+// it to walk arena lists.
+enum {
+  kCelListEntryStride = 24,
+};
+
+_Static_assert(sizeof(CelValue) == kCelListEntryStride,
+               "kCelListEntryStride must equal sizeof(CelValue)");
 
 // Wasm memory is always little-endian (spec).  Host↔wasm CelValue
 // transfer uses bitwise memcpy, which only works when the host is
@@ -150,6 +187,12 @@ enum {
   // key — per langdef §"Map literals", repeated keys are an error
   // captured at construction time.
   CEL_ERR_DUPLICATE_KEY = 16,
+  // Returned by `cel_list_at_arena` (and the kDynamic dispatcher's
+  // arena arm) when the index is outside `[0, count)`.  Per langdef
+  // §"Indexing": list indexing on a negative index or `>= size` is
+  // an error (not Python-style wrap-around).  Wire value mirrors
+  // `cel::ErrorCode::kIndexOutOfBounds` (api/error.h).
+  CEL_ERR_INDEX_OUT_OF_BOUNDS = 17,
   // M2.C: Layer-2 trampoline (`CelGetFieldImpl` / `CelHasFieldImpl`)
   // returns this when the resolver can't find a FieldDescriptor for
   // the (field_number, field_name) pair the AST referenced — usually

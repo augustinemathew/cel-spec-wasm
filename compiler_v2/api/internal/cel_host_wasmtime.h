@@ -37,11 +37,18 @@ class HostExternrefTable final : public ExternrefTable {
   uint32_t InternMap(std::shared_ptr<const HostMapBacking> backing) override;
   const HostMapBacking* absl_nullable LookupMap(uint32_t slot) const override;
 
+  // M4.E: independent slot namespace for list backings.
+  uint32_t InternList(
+      std::shared_ptr<const HostListBacking> backing) override;
+  const HostListBacking* absl_nullable LookupList(
+      uint32_t slot) const override;
+
   void Reset() override;
 
  private:
   std::vector<std::shared_ptr<const HostMessageBacking>> backings_;
   std::vector<std::shared_ptr<const HostMapBacking>> map_backings_;
+  std::vector<std::shared_ptr<const HostListBacking>> list_backings_;
 };
 
 // Per-Instance payload the cel_host.cel_get_field trampoline reads.

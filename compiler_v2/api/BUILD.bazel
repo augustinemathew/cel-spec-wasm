@@ -222,11 +222,29 @@ cc_library(
     ],
 )
 
+# Header-only test fakes shared by every Layer-2 unit test that
+# touches MemoryView / ExternrefTable / ArenaAllocator.  Keeping the
+# externref namespace surface (Intern × Message/Map/List) in one
+# place — previously each test re-implemented it and drifted as new
+# namespaces landed.
+cc_library(
+    name = "cel_host_test_fakes",
+    testonly = True,
+    hdrs = ["internal/cel_host_test_fakes.h"],
+    deps = [
+        ":cel_host",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 cc_test(
     name = "cel_host_test",
     srcs = ["internal/cel_host_test.cc"],
     deps = [
         ":cel_host",
+        ":cel_host_test_fakes",
         ":error",
         ":type",
         ":value",
@@ -269,6 +287,36 @@ cc_test(
     ],
 )
 
+# M4.D — HostList (vector-backed Layer 1) coverage.  Mirrors
+# host_map_test.cc shape against cel::Value::List / HostList::At /
+# ForEach / boundary semantics.
+cc_test(
+    name = "host_list_test",
+    srcs = ["internal/host_list_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# M4.D — ProtoList (proto-reflection over a single REPEATED field).
+cc_test(
+    name = "proto_list_test",
+    srcs = ["internal/proto_list_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # M3.E — Layer 2 trampoline body for cel_host.cel_map_lookup.
 # Drives CelMapLookupImpl through fakes for MemoryView /
 # ExternrefTable / ArenaAllocator; intentionally does not depend on
@@ -278,11 +326,30 @@ cc_test(
     srcs = ["internal/cel_map_lookup_impl_test.cc"],
     deps = [
         ":cel_host",
+        ":cel_host_test_fakes",
         ":error",
         ":type",
         ":value",
         "//compiler_v2/runtime:cel_runtime",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# M4.E — Layer 2 trampoline body for cel_host.cel_list_at.  Uses
+# the same shared fakes as cel_map_lookup_impl_test.
+cc_test(
+    name = "cel_list_at_impl_test",
+    srcs = ["internal/cel_list_at_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 

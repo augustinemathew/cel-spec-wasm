@@ -65,6 +65,21 @@ inline constexpr absl::string_view kCelMapLookupInternalName =
 inline constexpr absl::string_view kCelHostMapLookupInternalName =
     "cel_host_cel_map_lookup";  // kHost arm import
 
+// M4.F: runtime entry points for list literal construction +
+// indexing.  cel_list_create is `(i32 out_slot, i32 count) -> ()`;
+// cel_list_set is `(i32 list_slot, i32 index, i32 elem_slot) -> ()`.
+// All three indexers carry signature
+// `(i32 out_slot, i32 list_slot, i32 index_slot) -> ()`.
+inline constexpr absl::string_view kCelListCreateInternalName =
+    "cel_list_create";
+inline constexpr absl::string_view kCelListSetInternalName = "cel_list_set";
+inline constexpr absl::string_view kCelListAtArenaInternalName =
+    "cel_list_at_arena";
+inline constexpr absl::string_view kCelListAtInternalName =
+    "cel_list_at";  // kDynamic dispatcher
+inline constexpr absl::string_view kCelHostListAtInternalName =
+    "cel_host_cel_list_at";  // kHost arm import
+
 // One row of the field intern table, one per kSelect emitted by
 // `LowerToEvalFunction`.  Index 0 is a reserved "not proto-resolvable"
 // sentinel; rows [1..N] are the ids the emitted `cel_get_field` calls

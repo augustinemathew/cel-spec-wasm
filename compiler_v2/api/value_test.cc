@@ -154,13 +154,11 @@ TEST(ValueTest, ErrorStructurallyEqualsFieldByField) {
                                             .expr_id = 1})));
 }
 
-TEST(ValueDeathTest, ListBuilderFiresCheckUntilM6) {
-  EXPECT_DEATH({ (void)Value::List({}); }, "stub until M6");
-}
-
-// Value::Map landed in M3.D — positive coverage lives in
-// compiler_v2/api/internal/cel_host_test.cc since the impl is in
-// cel_host.cc (one-way dep: cel_host → value).
+// Value::List + Value::Map both land in cel_host.cc (one-way dep:
+// cel_host → value, never the reverse).  Positive coverage —
+// HostList / HostMap construction, ListBacking / MapBacking
+// retrieval, StructurallyEquals on aggregate kinds — lives in
+// compiler_v2/api/internal/cel_host_test.cc, not here.
 
 TEST(ValueTest, KindNamesCoverAllKinds) {
   EXPECT_EQ(ValueKindName(Value::Kind::kNull), "null");
