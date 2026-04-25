@@ -21,9 +21,12 @@
 // matchers and routes them to `Instance::PartialEval`.  M3 admits
 // `map_value:` matchers — the `CompareValue` map arm decodes the
 // proto map entries and matches them order-agnostically against
-// the cel::Value's `HostMapBacking`.  Subsequent milestones loosen
-// further dimensions (error matchers in M4, list_value at the
-// lists slice, …) and update the filter here in the same commit.
+// the cel::Value's `HostMapBacking`.  M4 admits `list_value:`
+// matchers — `CompareList` walks the decoded `cel::Value`'s
+// `HostListBacking` ORDER-aware (lists are ordered per langdef
+// § "List equality", unlike maps).  Subsequent milestones loosen
+// further dimensions (error matchers, comprehensions) and update
+// the filter here in the same commit.
 
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
@@ -76,14 +79,14 @@ absl::string_view OutcomeName(Outcome o);
 // in-envelope tests graduate.
 //
 // A false here short-circuits to `kUnsupported` without compiling.
-bool IsInM3Envelope(const cel::expr::conformance::test::SimpleTest& t);
+bool IsInM4Envelope(const cel::expr::conformance::test::SimpleTest& t);
 
 // Compare a decoded `cel::Value` against the proto `cel.expr.Value`.
 // OK on equality, `FailedPrecondition` with a diff-ish payload on
 // mismatch, `InvalidArgument` if `want` is a kind the runner has no
 // comparison for (list_value / object_value / enum_value /
 // type_value — caller should have short-circuited via
-// `IsInM3Envelope` first).
+// `IsInM4Envelope` first).
 absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
 
 // Compare a `cel::Value` against an `UnknownSet` matcher.  OK iff

@@ -85,8 +85,11 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
 // decoded `cel::Value`'s `HostMapBacking` and compares entries
 // order-agnostically against the proto matcher's `entries` list
 // (langdef § "Map equality").
-bool IsAggregateMatcherKindForM3(ProtoValue::KindCase k) {
-  return k == ProtoValue::kMapValue;
+// M4 — additionally admit `list_value` matchers.  CompareList
+// walks the decoded `HostListBacking` ORDER-aware (lists are
+// ordered per langdef § "List equality").
+bool IsAggregateMatcherKindForM4(ProtoValue::KindCase k) {
+  return k == ProtoValue::kMapValue || k == ProtoValue::kListValue;
 }
 
 bool IsUnknownMatcher(const SimpleTest& t) {
@@ -119,6 +122,10 @@ absl::Status CompareDouble(double got, double want) {
 absl::Status CompareMap(const cel::Value& got,
                         const cel::expr::MapValue& want);
 
+// M4 forward decl — same shape as CompareMap but order-aware.
+absl::Status CompareList(const cel::Value& got,
+                         const cel::expr::ListValue& want);
+
 }  // namespace
 
 // clang-tidy runs per-TU and can't see the external callers in
@@ -140,16 +147,21 @@ absl::string_view OutcomeName(Outcome o) {
   return "?";
 }
 
-bool IsInM3Envelope(const SimpleTest& t) {
+bool IsInM4Envelope(const SimpleTest& t) {
   if (t.disable_check()) return false;
   if (t.check_only()) return false;
   if (IsUnknownMatcher(t)) return true;
   if (t.result_matcher_case() != SimpleTest::kValue) return false;
   const auto k = t.value().kind_case();
-  return IsScalarMatcherKind(k) || IsAggregateMatcherKindForM3(k);
+  return IsScalarMatcherKind(k) || IsAggregateMatcherKindForM4(k);
 }
 
-absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
+namespace {
+
+// Scalar arm of `CompareValue` — split out so the top-level
+// dispatcher stays under the function-size lint threshold once
+// the M4 list arm landed.
+absl::Status CompareScalar(const cel::Value& got, const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kNullValue:
       return got.IsNull() ? absl::OkStatus() : Mismatch(got, want);
@@ -183,11 +195,24 @@ absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
       if (!b.ok() || *b != want.bytes_value()) return Mismatch(got, want);
       return absl::OkStatus();
     }
-    case ProtoValue::kMapValue:
-      return CompareMap(got, want.map_value());
     default:
       return absl::InvalidArgumentError(
-          "non-scalar matcher — caller should filter via IsInM3Envelope");
+          "CompareScalar called with non-scalar matcher kind");
+  }
+}
+
+}  // namespace
+
+absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
+  switch (want.kind_case()) {
+    case ProtoValue::kMapValue:
+      return CompareMap(got, want.map_value());
+    case ProtoValue::kListValue:
+      return CompareList(got, want.list_value());
+    default:
+      // Scalar (or unrecognised — CompareScalar's default returns
+      // InvalidArgument, matching the pre-M4 behaviour).
+      return CompareScalar(got, want);
   }
 }
 
@@ -245,6 +270,40 @@ absl::Status CompareMap(const cel::Value& got,
     }
     if (!found) {
       return absl::FailedPreconditionError("map key missing in got");
+    }
+  }
+  return absl::OkStatus();
+}
+
+// Order-aware list equality per langdef § "List equality": same
+// size, and got-list[i] matches want-list.values[i] recursively
+// via `CompareValue`.  Unlike maps (entries are unordered), list
+// indices are load-bearing — `[1, 2]` ≠ `[2, 1]`.
+absl::Status CompareList(const cel::Value& got,
+                         const cel::expr::ListValue& want) {
+  auto bk_or = got.ListBacking();
+  if (!bk_or.ok()) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "want-kind=list got-kind=", ValueKindName(got.kind())));
+  }
+  const auto* backing = *bk_or;
+  const auto want_size = static_cast<std::size_t>(want.values_size());
+  if (backing->Size() != want_size) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("list size want=", want_size, " got=", backing->Size()));
+  }
+
+  // Snapshot got-elements in iteration order — `HostListBacking::ForEach`
+  // preserves index order (per `host_list_test`).
+  std::vector<cel::Value> got_elems;
+  got_elems.reserve(backing->Size());
+  backing->ForEach([&](const cel::Value& v) { got_elems.push_back(v); });
+
+  for (std::size_t i = 0; i < want_size; ++i) {
+    if (auto s = CompareValue(got_elems[i], want.values(static_cast<int>(i)));
+        !s.ok()) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("list[", i, "]: ", s.message()));
     }
   }
   return absl::OkStatus();
@@ -353,7 +412,7 @@ Result RunValueBranch(cel::Instance& inst, const cel::Activation& act,
 
 Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
               const cel::Engine& engine) {
-  if (!IsInM3Envelope(t)) return Unsupported("outside M3 envelope");
+  if (!IsInM4Envelope(t)) return Unsupported("outside M4 envelope");
 
   // Marshal type_env / bindings before touching the compiler — both
   // can SKIP, and a failed marshal means we never burn a compile.

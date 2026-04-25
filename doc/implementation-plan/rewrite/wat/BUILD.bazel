@@ -1,0 +1,13 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Hand-authored WAT traces — one per codegen arm or host-ABI
+# surface.  Per CLAUDE.md "WAT-first for ABI and codegen design",
+# every codegen arm MUST start with a WAT here, validate via
+# `wasm-as`, and run end-to-end through `wat_runner`.  Bundled as
+# a filegroup so `wat_runner_test` can ifstream them at runtime.
+filegroup(
+    name = "wat_traces",
+    srcs = glob(["*.wat"]),
+)

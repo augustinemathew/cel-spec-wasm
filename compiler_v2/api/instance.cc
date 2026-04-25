@@ -15,6 +15,7 @@
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/internal/abi_decode.h"
+#include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
 #include "compiler_v2/api/value.h"
@@ -84,6 +85,32 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
                                        const wasmtime_memory_t& mem,
                                        uint32_t offset);
 
+// Decode an arena list (CEL_LIST_ARENA) by reading its
+// `ArenaListHeader` and recursively decoding `count` × 24-byte
+// CelValue elements out of the elements run.  Each element decodes
+// through `DecodeCelValueAt`, so list values can themselves be
+// scalars or nested aggregates.  Wraps the result in a
+// `cel::Value::List(...)` (vector-backed `HostList`).
+absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
+                                        const wasmtime_memory_t& mem,
+                                        uint32_t header_ptr) {
+  ArenaListHeader header;
+  if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
+      !s.ok()) {
+    return s;
+  }
+  std::vector<Value> elements;
+  elements.reserve(header.count);
+  for (uint32_t i = 0; i < header.count; ++i) {
+    const uint32_t elem_off =
+        header.elements_offset + (i * kCelListEntryStride);
+    auto e_or = DecodeCelValueAt(ctx, mem, elem_off);
+    if (!e_or.ok()) return e_or.status();
+    elements.push_back(*std::move(e_or));
+  }
+  return Value::List(std::move(elements));
+}
+
 // Decode an arena map (CEL_MAP_ARENA) by reading its
 // `ArenaMapHeader` and recursively decoding `count` (key, value)
 // CelValue pairs out of the entries run.  Pairs decode through
@@ -145,6 +172,8 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       if (!bytes_or.ok()) return bytes_or.status();
       return Value::Bytes(*std::move(bytes_or));
     }
+    case CEL_LIST_ARENA:
+      return DecodeArenaListAt(ctx, mem, cv.payload.arena_list.header_ptr);
     case CEL_MAP_ARENA:
       return DecodeArenaMapAt(ctx, mem, cv.payload.arena_map.header_ptr);
     case CEL_UNKNOWN:
@@ -263,6 +292,27 @@ absl::Status EncodeMessage(const Value& v, absl::string_view name,
   return absl::OkStatus();
 }
 
+// M4.H: encode a Value::List / Value::HostList-bound variable into
+// a CEL_LIST_HOST CelValue.  The bound `HostListBacking` is
+// interned into the per-Instance `ExternrefTable` (independent
+// `list_backings_` namespace from messages and maps) and the
+// resulting slot lives in `payload.ref_slot`.  Same shape as
+// `EncodeMessage`, but routes through `InternList` so the
+// trampoline's `LookupList` finds it.
+absl::Status EncodeList(const Value& v, absl::string_view name,
+                        CelValue* dst,
+                        celwasm::ExternrefTable& refs) {
+  if (v.kind() != Value::Kind::kList) {
+    return KindMismatch(name, "list", v.kind());
+  }
+  auto backing_or = v.SharedListBacking();
+  if (!backing_or.ok()) return backing_or.status();
+  const uint32_t slot = refs.InternList(*std::move(backing_or));
+  dst->kind = CEL_LIST_HOST;
+  dst->payload.ref_slot = slot;
+  return absl::OkStatus();
+}
+
 // Dispatch a declared Repr to the right per-kind encoder.  M2.B
 // ships scalars; M2.C adds kMessage.  String/bytes activation
 // marshalling stays unimplemented (it needs a host-side arena
@@ -284,9 +334,10 @@ absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
       return EncodeDouble(v, name, dst);
     case celwasm::Repr::kMessage:
       return EncodeMessage(v, name, dst, refs);
+    case celwasm::Repr::kList:
+      return EncodeList(v, name, dst, refs);
     case celwasm::Repr::kString:
     case celwasm::Repr::kBytes:
-    case celwasm::Repr::kList:
     case celwasm::Repr::kMap:
     case celwasm::Repr::kDuration:
     case celwasm::Repr::kTimestamp:

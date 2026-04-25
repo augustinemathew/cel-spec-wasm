@@ -443,6 +443,183 @@ and `_[_]`) each take their own output slot.
 
 ---
 
+## 6. Map literal — `{1: 10}` (M3.F kArena)
+
+`wat/06_map_literal.wat`.  First map example: kCreateMap lowering.
+Two rodata kConst frames for the key and value, one workspace slot
+for the kMapExpr result.  Body is `cel_map_create(out, capacity)`
+followed by one `cel_map_insert(out, key, value)` per entry, then
+returns the map's slot offset.
+
+Memory:
+
+  - rodata [16, 40) + [40, 64) — the `1` and `10` kConsts.
+  - workspace [64, 88) — kMapExpr result slot.  After the create,
+    holds `{kind=CEL_MAP_ARENA, payload.arena_map.header_ptr=88}`.
+  - arena [88, …) — `cel_map_create` allocates 16 B for the
+    `ArenaMapHeader`, plus `capacity*48` B for the entries run.
+    `cel_map_insert` writes (key, value) into the next free slot.
+
+ABI surface introduced:
+
+  - `cel.cel_map_create(out_slot, capacity)` — i32, i32 → ()
+  - `cel.cel_map_insert(map_slot, key_slot, val_slot)` — i32×3 → ()
+
+Both come from `cel_runtime.wasm`; codegen always links the
+runtime fully (no AST-shape gating, per CLAUDE.md).
+
+## 7. Map literal indexed — `{1: 10}[1]` (M3.F kArena fast path)
+
+`wat/07_map_index_arena.wat`.  Builds the same map as 06, then
+indexes it.  Because `ResolvePass::MapOriginVisitor` proved
+`map_origin = kArena` on the kMapExpr, codegen routes the lookup
+through `cel.cel_map_lookup_arena` — the pure-wasm fast path —
+bypassing the kDynamic dispatcher and the kHost trampoline.
+
+Memory:
+
+  - rodata [16, 40) + [40, 64) — insert key + value.
+  - rodata [64, 88) — lookup-key kConst (no dedup at M3, so the
+    literal `1` appears twice in rodata).
+  - workspace [88, 112) — kMapExpr result slot.
+  - workspace [112, 136) — kCallExpr lookup-result slot.
+
+The lookup helper does a linear scan of the entries run for a key
+that `StructurallyEquals` the lookup key, copies the matching
+value CelValue into out_slot, or writes
+`{CEL_ERROR, payload.err=CEL_ERR_NO_SUCH_KEY}` on miss.
+
+## 8. Bound map indexed — `m["k"]` (M3.F kHost path)
+
+`wat/08_map_index_host.wat`.  `m` is declared `map<string, int>`;
+the host binds a `HostMapBacking` (vector-backed via
+`Activation::Bind`, or `ProtoMap` if from a proto map field) into
+the per-Instance `ExternrefTable`.  The map CelValue at `m`'s slot
+carries `{CEL_MAP_HOST, payload.ref_slot=<n>}`.
+`MapOriginVisitor` stamped `map_origin = kHost` on the kIdent
+(because its declared type is `map<…>`), so codegen routes the
+index call directly through `cel_host.cel_map_lookup` — no
+runtime dispatcher trip, no arena helpers.
+
+The body is one extern call:
+```
+(call $cel_map_lookup out_slot m_slot key_slot)
+```
+
+The Layer-3 wasmtime trampoline (in
+`api/internal/cel_host_wasmtime.cc`) reads the ref_slot, looks up
+the backing via `ExternrefTable::LookupMap`, decodes the key
+CelValue, calls `HostMapBacking::Get`, encodes the result back
+into out_slot via `EncodeFieldResult`.
+
+## 9. Dynamic-origin map index — runtime dispatcher (M3.C)
+
+`wat/09_map_index_dynamic.wat`.  When `ResolvePass` cannot prove
+a single origin (mixed `?:` arms, future kCall return), the
+kCallExpr arm emits `call $cel.cel_map_lookup` — the runtime
+dispatcher in `cel_runtime.wasm`.  The dispatcher tail-calls into
+the arena fast path or the host trampoline based on the
+operand's runtime CelKind:
+
+  - `CEL_MAP_ARENA` → `return_call cel_map_lookup_arena`
+  - `CEL_MAP_HOST` → `return_call cel_host.cel_map_lookup`
+  - anything else (UNKNOWN / ERROR / type mismatch) → poison
+    out_slot or absorb 3VL.
+
+The musttail discipline is enforced via `__attribute__((musttail))`
+in `cel_runtime.c`; the wasm tail-call feature must be on at the
+engine level (mirrored in `api/engine.cc`).
+
+This trace authors the call site; the dispatcher BODY lives in
+`cel_runtime.wasm`.  At M4 the only origin that flows through
+`kDynamic` from the frontend is the future `?:` codegen (M5);
+production paths cover the dispatcher arms via
+`m3_test::EnvelopeBoundaryE2ETest` and `instance_test`.  The
+`wat_runner_test` for this WAT documents a wasmtime c-api panic
+on the tail-call → host-import path and SKIPs the end-to-end
+run.
+
+## 10. Proto map field — `c.metadata["k"]` (M3.G chained kSelect + kCall)
+
+`wat/10_proto_map_field.wat`.  Two host trampoline calls in
+sequence:
+
+  1. `cel_host.cel_get_field` reads c's `metadata` field.
+     `ProtoBacking::ReadField` on a MAP field returns
+     `Value::HostMap(ProtoMap{owner, field})`; the trampoline
+     interns it via `InternMap` and writes
+     `{CEL_MAP_HOST, ref_slot=<n>}` into the kSelect's output
+     slot.
+  2. `cel_host.cel_map_lookup` indexes that HostMap by `"k"` —
+     the operand at the call site is exactly the kSelect's
+     output slot from step 1.
+
+Locks the kSelect → kCall(`_[_]`) chaining shape.  The
+`MapOriginVisitor` stamps `map_origin = kHost` on the kSelect
+because its result type is `map<…>` — driving codegen to emit
+the host-arm import name at step 2.
+
+## 11. List literal — `[1, 2, 3]` (M4.F kArena)
+
+`wat/11_list_literal.wat`.  Mirror of 06 for lists.  Three rodata
+kConst frames for the elements, one workspace slot for the
+kListExpr result.  Body is `cel_list_create(out, count)` followed
+by one `cel_list_set(out, index, elem)` per element.
+
+**Plan-vs-execution delta** from `m4-list-literals.md`: the runtime
+API is `create(out, count)` + `set(list, index, elem)`, NOT the
+planned `create / append / grow` triple.  Codegen always knows the
+element count at lowering time, so a fixed-length API is simpler.
+Past-count `set` poisons with `CEL_ERR_OVERFLOW`.
+
+Memory:
+
+  - rodata [16, 40) + [40, 64) + [64, 88) — the three int kConsts.
+  - workspace [88, 112) — kListExpr result slot.  After
+    `cel_list_create`, holds `{CEL_LIST_ARENA,
+    payload.arena_list.header_ptr=112}`.
+  - arena [112, …) — `cel_list_create` allocates 16 B for the
+    `ArenaListHeader` plus `count*24` B for the elements run.
+
+## 12. List literal indexed — `[1, 2, 3][1]` (M4.F kArena fast path)
+
+`wat/12_list_index_arena.wat`.  Mirror of 07 for lists.  Indexes
+through `cel.cel_list_at_arena` (no host trip).  The index slot
+must be `CEL_INT`; non-int → `CEL_ERR_TYPE_MISMATCH`.  Negative
+indices and `>= count` → `CEL_ERR_INDEX_OUT_OF_BOUNDS` per langdef
+("list indices are int and negative indices are an error, not
+Python-style wrap-around").
+
+## 13. Bound list indexed — `xs[0]` (M4.F kHost path)
+
+`wat/13_list_index_host.wat`.  Mirror of 08.  `xs` is declared
+`list<int>`; the host binds a `HostListBacking` (vector-backed or
+`ProtoList`).  The list CelValue carries
+`{CEL_LIST_HOST, payload.ref_slot=<n>}`.  `ListOriginVisitor`
+stamps `list_origin = kHost` on the kIdent, so codegen emits a
+direct `cel_host.cel_list_at` call — no runtime trip.
+
+## 14. Dynamic-origin list index — runtime dispatcher (M4.C)
+
+`wat/14_list_index_dynamic.wat`.  Mirror of 09 for lists.  Same
+dispatcher pattern; same ABI shape; same musttail discipline.
+Production paths cover the dispatcher arms via `instance_test` /
+`m4_test`; the `wat_runner_test` for this WAT documents the same
+wasmtime c-api panic as 09 and SKIPs the end-to-end run.
+
+## 15. Proto repeated field — `c.tags[2]` (M4.G chained kSelect + kCall)
+
+`wat/15_proto_repeated_field.wat`.  Mirror of 10 for lists.  Two
+host trampoline calls: `cel_get_field` reads c's `tags` REPEATED
+field (`ProtoBacking::ReadField` returns
+`Value::HostList(ProtoList{owner, field})`, interned via
+`InternList`), then `cel_host.cel_list_at` indexes it.
+
+The `Customer.tags = repeated string` field was added at M4.J
+for the e2e suite (`m4_test::ProtoRepeatedE2ETest`).
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool
@@ -454,10 +631,17 @@ and `_[_]`) each take their own output slot.
     trampoline matches `attribute_id` against the pattern set and
     writes `{CEL_UNKNOWN, attribute_id}` to out_slot instead of
     descending the proto.
-  - `x + y` — M3 kCall arithmetic; same shape as example 3 with
+  - `x + y` — M5 kCall arithmetic; same shape as example 3 with
     the `unreachable` replaced by `cel_int_add_at_vv`.
-  - `[1, 2, 3].map(x, x * 2)` — M5/M6; extends example 5 with a
-    new list built by the loop_step into a fresh list header.
+  - `[1, 2, 3].map(x, x * 2)` — M5; extends example 5 with a new
+    list built by the loop_step using `cel_list_create` +
+    per-iteration `cel_list_set` over a pre-sized accumulator.
+  - `cond ? [1, 2] : xs` — M5 ternary lowering with
+    `list_origin = kDynamic`; the `_[_]` arm emits the dispatcher
+    (`cel.cel_list_at`) since the operand origin can't be proven
+    statically.
+  - `x in [1, 2, 3]` / `size([1, 2, 3])` — M5 kCall built-in
+    overload set; reuses M3/M4's three-path origin dispatch.
 
 Each future entry follows the same pattern: write the target WAT,
 assemble it, discuss the memory layout, land the C++ codegen to

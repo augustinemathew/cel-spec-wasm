@@ -1,6 +1,22 @@
 # Rewrite M4 — list literals + indexing (replays the M3 map shape)
 
-Status: **in progress — drafted 2026-04-25, slices A–E + G shipped 2026-04-25.**
+Status: **shipped 2026-04-25.**
+
+Summary of what landed (vs the as-written plan): every slice A–J
+shipped under the as-written shape with one delta — the runtime
+construction primitives became `cel_list_create(out, count)` +
+`cel_list_set(list, index, elem)` rather than the planned
+`create / append / grow` triple, since codegen always knows the
+element count at lowering time (see the plan-vs-execution callout
+below for the rationale).  The M4.A–E + G slices shipped first as
+runtime + ABI; M4.F (codegen) + M4.H (Eval marshal/decoder) +
+M4.I (conformance envelope) + M4.J (m4_test.cc) followed and
+landed the e2e flows.  Conformance moved from 203 → 212 PASSes
+(`lists.textproto` 0 → 4, `parse.textproto` 148 → 150,
+`fields.textproto` 13 → 14).  One unplanned change: ResolvePass
+now returns `Unimplemented` on any AST that contains a
+`kComprehensionExpr` rather than crashing in the per-name Repr-
+agreement CHECK — the M5 scope handler will replace that gate.
 
 > Plan-vs-execution delta (2026-04-25): the runtime construction
 > primitives diverged from the plan's `cel_list_create` +
@@ -25,11 +41,11 @@ Status: **in progress — drafted 2026-04-25, slices A–E + G shipped 2026-04-2
 | **M4.C** — kDynamic dispatcher | shipped | `cel_list_at` with `__attribute__((musttail))` arms; `cel_host_cel_list_at` extern import; `wasm_imports.txt` += `cel_host_cel_list_at`; `compile.cc::InstallHostAbi` registers all five list imports.  `InstallHostAbi` was split into `InstallSelectImports`/`InstallMapImports`/`InstallListImports` to clear the function-size lint gate. |
 | **M4.D** — host backings + Value::List | shipped | `HostList` (vector-backed) + `ProtoList` (proto reflection); `Value::List`/`Value::HostList`/`ListBacking`/`SharedListBacking` bodies in `cel_host.cc` (one-way dep matches `Value::Map`); `StructurallyEquals` kList arm = pointer-identity.  New `host_list_test.cc` + `proto_list_test.cc`.  `host_fixture_proto3.proto` extended with `rep_s/rep_b/rep_f64/rep_msg`. |
 | **M4.E** — Layer 2 + Layer 3 wasmtime glue | shipped | `CelListAtImpl` Layer-2 trampoline body in `cel_host.cc`; `EncodeFieldResult` + `EncodeAggregateIfAny` factored to handle every aggregate kind (message/map/list) uniformly via interning into the matching externref namespace.  `HostExternrefTable::InternList`/`LookupList`.  `HostThreeArgTrampoline<Impl>` template extracted in `cel_host_wasmtime.cc` (shared with `CelMapLookupTrampoline`); `RegisterCelHostImports` adds `cel_list_at`.  New `cel_list_at_impl_test.cc` (15 tests).  Test fakes deduplicated into shared `cel_host_test_fakes.h` — previously each Layer-2 test re-implemented `FakeMemoryView` / `FakeExternrefTable` / `FakeArenaAllocator` and drifted as new namespaces (M3 maps, M4 lists) landed; now centralised. |
-| **M4.F** — resolve + layout + codegen | not started | `ListOriginVisitor`, `kCreateList` lowering, `kCallExpr(_[_])` × 3 origin arms, WAT 11–14.  Next slice. |
-| **M4.G** — `ProtoBacking::ReadField` REPEATED flip | shipped | REPEATED → `Value::HostList(ProtoList{...})` (was `kTypeUnsupported`).  Two existing tests flipped to assert HostList; m2 envelope test re-targeted at M4.F+H (e2e Eval needs codegen + decoder).  Single-test SKIP per per-component-test-coverage SKIP rule. |
-| **M4.H** — activation marshaller + Eval decoder | not started | `EncodeList` + `DecodeArenaListAt` in `instance.cc`. |
-| **M4.I** — conformance harness envelope | not started | `IsInM4Envelope` admits `list_value`; `CompareList` (order-aware). |
-| **M4.J** — m4_test.cc + doc reconcile | not started | e2e suite + `map-list-dispatch.md §11` ticks. |
+| **M4.F** — resolve + layout + codegen | shipped | `ListOriginVisitor` in `resolve_pass.cc` mirrors `MapOriginVisitor` (kListExpr → kArena, kIdent/kSelect with `Repr::kList` → kHost).  `MapStorageVisitor` generalised to `AggregateStorageVisitor` with a new `PostVisitList` arm (one workspace slot per kListExpr; element scratch slots released after `cel_list_set` consumes them).  `expr_lower.cc` gained `EmitKListExpr` (`cel_list_create` + per-element `cel_list_set`) and `ListAtCallTarget`; the `kCallExpr(_[_])` arm now dispatches on operand `repr` (kMap → MapLookupCallTarget, kList → ListAtCallTarget).  WAT 11–14 deferred (M3 maps shipped without WAT traces too — the byte-shape lock landed via `expr_lower_test`'s `BinaryenCallGetTarget` assertions).  An unplanned ResolvePass change: `kComprehensionExpr`-bearing programs return `Unimplemented` here so the conformance binary classifies them as SKIP rather than tripping the per-name Repr-agreement CHECK on cel-cpp's macro-expanded `@result` ident. |
+| **M4.G** — `ProtoBacking::ReadField` REPEATED flip | shipped | REPEATED → `Value::HostList(ProtoList{...})` (was `kTypeUnsupported`).  Two existing tests flipped to assert HostList; m2 envelope test re-targeted at M4.F+H (e2e Eval needs codegen + decoder). |
+| **M4.H** — activation marshaller + Eval decoder | shipped | `EncodeList` arm in `EncodeScalarValue` (interns `Value::List` / `Value::HostList` via `ExternrefTable::InternList` and writes `{CEL_LIST_HOST, payload.ref_slot}`).  `DecodeArenaListAt` reads `ArenaListHeader` + walks `count × 24B` and recursively decodes via `DecodeCelValueAt`; new `CEL_LIST_ARENA` arm in the top-level decoder.  `instance` build dep on `cel_host` added so `ExternrefTable::InternList` resolves.  m2_test's `SelectRepeatedFieldReturnsHostList` flipped from SKIP to a green `customer.tags[0] == "tag0"` assertion. |
+| **M4.I** — conformance harness envelope | shipped | `IsInM3Envelope` → `IsInM4Envelope`; `IsAggregateMatcherKindForM3` → `IsAggregateMatcherKindForM4` admitting `kListValue`.  New `CompareList` mirrors `CompareMap` but is order-aware (lists are ordered per langdef § "List equality").  `CompareValue` factored: scalar arm extracted into a `CompareScalar` helper so the dispatcher stays under the function-size lint gate after the kListValue arm landed.  Conformance: 203 → 212 PASSes (`lists.textproto` 0 → 4 first PASS, `parse.textproto` 148 → 150, `fields.textproto` 13 → 14). |
+| **M4.J** — m4_test.cc + doc reconcile | shipped | New `compiler_v2/e2e/m4_test.cc` (16 tests across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`, `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto fixture extended with `repeated string tags = 12`.  `scripts/run_full_suite.sh` MANUAL_TARGETS += `//compiler_v2/e2e:m4_test`.  This doc's status flipped to shipped + per-slice notes filled in. |
 
 **Manual targets that gate close (per §6.4 / `per-component-test-coverage.md §5`):**
 all 6 currently green — `cel_host_test`, `engine_test`, `instance_test`,
@@ -887,6 +903,70 @@ test-coverage rigour is now baked in (no rediscovery).
 
 ## Future work (will be appended at close)
 
-Filled in as M4 ships.  Anything surfaced during execution
-that wasn't in the as-written plan goes here per CLAUDE.md
-"Closing out a planning doc" rule.
+  - **WAT traces 06–15 landed retroactively.**  M3 maps + M4
+    lists originally shipped without WAT traces; both fully
+    backfilled — `wat/06_map_literal.wat` through
+    `wat/15_proto_repeated_field.wat` covering kArena fast paths,
+    kHost trampolines, kDynamic dispatcher, and proto map/list
+    field reads.  `wat-traces.md` extended with the
+    walkthroughs.  `wat_runner.cc` extended to bind the map/list
+    runtime exports and accept 3-arg `cel_host.*` stubs.
+    `wat_runner_test` adds 12 new test cases (10 PASS + 2 SKIP);
+    the 2 SKIPs are the kDynamic dispatcher arm tests, which
+    panic the wasmtime c-api on the `return_call` →
+    imported-host-function path (production e2e covers them
+    through the full `wasmtime::Engine`).
+  - **`ResolvePass` scope handler (M5 prereq).**  M4.F plugged a
+    `ComprehensionDetector` early-exit so the resolver doesn't
+    crash on cel-cpp's macro-expanded `@result` / `@iter` idents
+    (which legitimately carry different Reprs across comprehension
+    forms).  M5's comprehension lowering must replace this gate
+    with a real scope-aware resolver (push a fresh scope on
+    entering a `kComprehensionExpr`, pop on exit; intern names
+    per-scope rather than globally).
+  - **Negative-index error surface.**  M4.G's
+    `cel_list_at_arena` returns `{CEL_ERROR,
+    CEL_ERR_INDEX_OUT_OF_BOUNDS}` for negative + OOB indices and
+    the m4_test asserts `Eval` fails — but the Eval-side decoder
+    surfaces `CEL_ERROR` as a top-level decode error rather than a
+    proper `Value::Error(kIndexOutOfBounds)` because the Error-
+    matcher work is M4-error-surface-era.  When that lands, the
+    OOB / negative-index tests in `m4_test.cc` should flip to
+    asserting on the structured Error value.
+  - **String / bytes / list-of-string activation marshalling.**
+    Same host-arena gap that M2's `IdentE2ETest::String` /
+    `Bytes` still SKIPs.  `Activation::Bind("xs",
+    Value::List({Value::String(...), …}))` works at the encoder
+    side — the kList encoder interns the backing — but the
+    list elements that round-trip through `cel_list_at` still hit
+    the `kString`/`kBytes` encoder path for the result and
+    require the host arena to land first.
+  - **Conformance ceiling fell short of the +60–80 estimate.**
+    Lists landed +9 PASSes (3.5× under the rough estimate).  The
+    bulk of `lists.textproto` is gated behind `size(list)` /
+    `list1 == list2` / `x in list` / `+` (concatenation), which
+    are M5 kCall built-ins.  Once M5 ships, expect the
+    `lists.textproto` + `comparisons.textproto` rows to graduate
+    in bulk.
+  - **Empty list literal `[]`.**  Once M5's comprehensions
+    surface a list type from the iter-expr type, comprehensions
+    over an empty source list will exercise the `count == 0`
+    branch of `cel_list_create`.  `cel_list_test` already covers
+    that path at the runtime level.
+  - **`RejectDyn` misses implicit-dyn from list literals.**
+    Surfaced while writing the M4 edge-case e2e tests
+    (`m4_test.cc::ListRejectionE2ETest`): cel-cpp's checker
+    types BOTH `[]` (no inferable element) AND `[1, "two"]`
+    (heterogeneous) as `list<dyn>`.  Our static-subset
+    `RejectDyn` only catches explicit `dyn(...)` calls, not
+    implicit dyn surfacing from these inferences.  Two tests
+    in `m4_test.cc` lock the current PASS-through behaviour
+    with `EXPECT_TRUE(program_or.ok())` and a TODO comment
+    (`BareEmptyListLiteralCurrentlyAcceptedTODO`,
+    `HeterogeneousListCurrentlyAcceptedTODO`); both flip to
+    `EXPECT_FALSE` once `RejectDyn` is tightened to walk every
+    type-map entry and reject any node whose static type
+    contains dyn (recursive: `list<dyn>`, `map<_, dyn>`,
+    `dyn`).  Probably worth doing as a small standalone slice
+    before M5, since comprehensions will introduce more
+    inference paths where dyn could leak.

@@ -91,6 +91,20 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_map_lookup", map3_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
                       "cel_map_lookup", map3_params, BinaryenTypeNone());
+  // M4.F: list runtime entry points + host trampoline.
+  const BinaryenType list_create_params[2] = {i32, i32};
+  m.AddFunctionImport(std::string(kCelListCreateInternalName), "cel",
+                      "cel_list_create", list_create_params,
+                      BinaryenTypeNone());
+  const BinaryenType list3_params[3] = {i32, i32, i32};
+  m.AddFunctionImport(std::string(kCelListSetInternalName), "cel",
+                      "cel_list_set", list3_params, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
+                      "cel_list_at_arena", list3_params, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAtInternalName), "cel",
+                      "cel_list_at", list3_params, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
+                      "cel_list_at", list3_params, BinaryenTypeNone());
 }
 
 // --- kConst lowering per scalar kind ------------------------------------
@@ -550,6 +564,97 @@ TEST(ExprLowerMapTest, NonIndexCallStillUnimplemented) {
   PrepareHostModule(m, p.layout);
   EXPECT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m),
               StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+// --------------------------------------------------------------
+// M4.F — kListExpr + kCallExpr(`_[_]`) on lists
+// --------------------------------------------------------------
+
+TEST(ExprLowerListTest, EmptyListLiteralLowers) {
+  // `dyn([])` would slip past the static checker; use a simple
+  // typed literal to lock the empty-list path.  The kCreateList
+  // call must emit; no kListSet calls since N=0.
+  Pipeline p = RunPipeline("[1][0]");  // `[1]` exercises a 1-element create.
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_list_create"));
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_list_set"));
+}
+
+TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndSets) {
+  Pipeline p = RunPipeline("[10, 20, 30]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  // The kListExpr root materialises as:
+  //   (block (call $cel_list_create out N)
+  //          (call $cel_list_set out 0 e0)
+  //          (call $cel_list_set out 1 e1)
+  //          (call $cel_list_set out 2 e2)
+  //          (i32.const out))
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  ASSERT_EQ(BinaryenExpressionGetId(root), BinaryenBlockId())
+      << "kListExpr lowers to a block";
+  // 1 create + 3 sets + 1 i32.const trailer = 5 children.
+  EXPECT_EQ(BinaryenBlockGetNumChildren(root), 5u);
+
+  BinaryenExpressionRef create = BinaryenBlockGetChildAt(root, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(create), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(create), "cel_list_create");
+  // count is the second arg — pin N=3.
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(create, 1)), 3);
+
+  for (BinaryenIndex i = 1; i <= 3; ++i) {
+    BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, i);
+    ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
+    EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_list_set");
+    // Second arg of cel_list_set is the index — must increment 0,1,2.
+    EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 1)),
+              static_cast<int32_t>(i - 1));
+  }
+}
+
+TEST(ExprLowerListTest, ListIndexOnLiteralEmitsArenaFastPath) {
+  // List literal indexed by int — origin is kArena (literal),
+  // codegen routes to cel_list_at_arena (pure-wasm fast path).
+  Pipeline p = RunPipeline("[1, 2, 3][1]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_at_arena"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_at"))
+      << "kArena origin must skip the dispatcher";
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_host_cel_list_at"))
+      << "kArena origin must skip the host trampoline";
+}
+
+TEST(ExprLowerListTest, ListIndexOnHostBoundIdentEmitsHostTrampoline) {
+  // Bound `xs: list<int>` — kIdent on a list-typed variable
+  // stamps `kHost`, so `xs[0]` routes to cel_host_cel_list_at.
+  Pipeline p = RunPipelineWithVars("xs[0]", {"xs:list<int>"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_host_cel_list_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_at_arena"));
 }
 
 }  // namespace

@@ -538,5 +538,104 @@ TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
   EXPECT_EQ(layout->arena_base % 8u, 0u);
 }
 
+// --- M4.F: kCreateList + kCallExpr(`_[_]`) reserve workspace cells --------
+//
+// Same shape as the map tests above — the list's result CelValue
+// (24B) + a kCallExpr(`_[_]`) result cell when the list is indexed.
+// Element scratch slots are released as `cel_list_set` consumes
+// each one (mirrors map entry key/value handling).
+
+TEST(LayoutPassListTest, EmptyListLiteralGetsOneWorkspaceSlot) {
+  CheckOptions opts;
+  opts.variable_specs = {"xs:list<int>"};
+  // `xs[0]` is the simplest way to force an empty-list-typed list
+  // literal up to the checker — but we want a literal directly.
+  // `dyn([]) == dyn([])` doesn't typecheck; use a typed-context
+  // literal: `[1][0]` is enough to lock the slot for kListExpr.
+  auto ta = ParseAndCheck("[1]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // No variables; one kCreateList → one slot (the literal is the
+  // root).  Element kConsts live in rodata.
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+
+  const auto* root_ann =
+      layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
+}
+
+TEST(LayoutPassListTest, ScalarListLiteralGetsOneSlotRegardlessOfElementCount) {
+  // Per dispatch-doc §4.2: the kCreateList result slot is a single
+  // 24B CelValue.  Element storage lives in the arena
+  // (cel_list_create reserves count × 24B); the workspace cell
+  // count stays at 1 regardless of N.
+  auto ta = ParseAndCheck("[1, 2, 3, 4, 5]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+}
+
+TEST(LayoutPassListTest, ListLiteralIndexingGetsTwoContiguousSlots) {
+  // `[1,2,3][1]` — kCreateList result slot followed by the
+  // kCallExpr(`_[_]`) at-result slot.
+  auto ta = ParseAndCheck("[1, 2, 3][1]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->peak_slots, 2u);
+
+  // Root is the kCallExpr; its slot lands second.
+  const auto* root_ann =
+      layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
+}
+
+TEST(LayoutPassListTest, BoundListIndexingNeedsOnlyTheCallSlot) {
+  // `xs[0]` on a bound `list<int>` ident — only the kCallExpr
+  // result needs a workspace cell; the operand reaches the call
+  // as a local_get of the variable's own slot.  So workspace =
+  // 1 variable slot + 1 call slot = 48B.
+  CheckOptions opts;
+  opts.variable_specs = {"xs:list<int>"};
+  auto ta = ParseAndCheck("xs[0]", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+  ASSERT_EQ(layout->variables.size(), 1u);
+  EXPECT_EQ(layout->variables[0].name, "xs");
+  EXPECT_EQ(layout->variables[0].repr, Repr::kList);
+}
+
+TEST(LayoutPassListTest, ArenaBaseFollowsListWorkspace) {
+  auto ta = ParseAndCheck("[1, 2, 3][0]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->arena_base,
+            layout->workspace_base + layout->workspace_bytes);
+  EXPECT_EQ(layout->arena_base % 8u, 0u);
+}
+
 }  // namespace
 }  // namespace celwasm

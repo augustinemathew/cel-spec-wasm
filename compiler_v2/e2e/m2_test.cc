@@ -672,7 +672,7 @@ TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  Envelope boundary — REPEATED field flow (M4.G)
+//  Envelope boundary — REPEATED field flow (M4.G + M4.F + M4.H)
 //
 //  M4.G flipped `ProtoBacking::ReadField` on a REPEATED field
 //  from `Value::Error(kTypeUnsupported)` to
@@ -682,16 +682,28 @@ TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
 //  + cel_host_test.cc::RepeatedFieldSurfacesAsHostList.
 //
 //  The end-to-end Eval flow (`customer.tags[0]` returns "tag0")
-//  needs the M4.F (codegen for kCallExpr `_[_]` on lists) +
-//  M4.H (Eval-side DecodeArenaListAt + kHost activation marshal)
-//  slices to land before it can run green.  Single-test deferral
-//  per per-component-test-coverage.md SKIP rule.
+//  becomes runnable once M4.F (codegen for kCallExpr `_[_]` on
+//  lists) + M4.H (Eval-side activation marshal of HostList →
+//  CEL_LIST_HOST) land.  m4_test.cc::ProtoRepeatedE2ETest carries
+//  the broader e2e coverage; this single test stays here as the
+//  m2-envelope graduation marker.  Indexing returns string —
+//  decoded back via the host trampoline's EncodeFieldResult.
 // ──────────────────────────────────────────────────────────────
 
 TEST(EnvelopeBoundaryE2ETest, SelectRepeatedFieldReturnsHostList) {
-  GTEST_SKIP() << "ProtoBacking::ReadField on REPEATED returns "
-                  "HostList as of M4.G; e2e Eval of `c.tags[0]` "
-                  "lands with M4.F (codegen) + M4.H (decoder)";
+  // Compile + plan — the codegen arm proves out kCallExpr(_[_])
+  // on a REPEATED-field operand routes through cel_host.cel_list_at.
+  auto compiler = CompilerWithCustomerVar();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "c.tags[0]");
+  Customer msg;
+  msg.add_tags("tag0");
+  msg.add_tags("tag1");
+  Activation a;
+  a.Bind("c", Value::Message(msg));
+  Value v = EvalOk(instance, a);
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "tag0");
 }
 
 }  // namespace

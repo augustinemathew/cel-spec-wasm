@@ -139,19 +139,21 @@ bool IsIndexCall(const cel::CallExpr& call) {
   return call.function() == "_[_]";
 }
 
-// Allocates one workspace slot per kMapExpr (the map's result) AND
-// one per kCallExpr(_[_]) (the lookup result).  Operand slots are
-// released after the parent acquires per the kSelect convention.
+// Allocates one workspace slot per kMapExpr / kListExpr (the
+// aggregate's result) AND one per kCallExpr(_[_]) (the lookup
+// result).  Operand slots are released after the parent acquires
+// per the kSelect convention.
 //
-// Per-entry key/value scratch slots for kMapExpr are NOT pre-
-// reserved by the layout: each entry's sub-expression already gets
-// its own slot via the existing kSelect / future kCall visitors, or
-// resolves to a kStaticRodata offset if it's a kConst.  expr_lower
-// reads those operand slots and feeds them straight into
-// `cel_map_insert`; no extra layout work needed.
-class MapStorageVisitor : public cel::AstVisitorBase {
+// Per-entry key/value scratch slots for kMapExpr (and per-element
+// scratch slots for kListExpr) are NOT pre-reserved by the layout:
+// each sub-expression already gets its own slot via the existing
+// kSelect / future kCall visitors, or resolves to a kStaticRodata
+// offset if it's a kConst.  expr_lower reads those operand slots
+// and feeds them straight into `cel_map_insert` / `cel_list_set`;
+// no extra layout work needed.
+class AggregateStorageVisitor : public cel::AstVisitorBase {
  public:
-  MapStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
+  AggregateStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
       : annotations_(annotations), slots_(slots) {}
 
   void PreVisitExpr(const cel::Expr&) override {}
@@ -166,6 +168,18 @@ class MapStorageVisitor : public cel::AstVisitorBase {
     for (const cel::MapExprEntry& e : m.entries()) {
       ReleaseIfWorkspaceSlot(e.key().id());
       ReleaseIfWorkspaceSlot(e.value().id());
+    }
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+  }
+
+  void PostVisitList(const cel::Expr& expr,
+                     const cel::ListExpr& l) override {
+    // Each element expression's slot is consumed by `cel_list_set`
+    // at codegen; release here so the list's result slot can
+    // supersede in the same arena region.
+    for (const cel::ListExprElement& e : l.elements()) {
+      ReleaseIfWorkspaceSlot(e.expr().id());
     }
     annotations_[expr.id()].storage =
         Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
@@ -259,8 +273,8 @@ absl::StatusOr<StaticLayout> LayoutPass(
   SlotAllocator slots(selects_base, opts.debug_layout);
   SelectStorageVisitor select_visitor(layout.annotations, slots);
   cel::AstTraverse(ast.ast().root_expr(), select_visitor);
-  MapStorageVisitor map_visitor(layout.annotations, slots);
-  cel::AstTraverse(ast.ast().root_expr(), map_visitor);
+  AggregateStorageVisitor aggregate_visitor(layout.annotations, slots);
+  cel::AstTraverse(ast.ast().root_expr(), aggregate_visitor);
   layout.workspace_bytes += slots.total_bytes();
   layout.peak_slots = slots.peak_slots();
 

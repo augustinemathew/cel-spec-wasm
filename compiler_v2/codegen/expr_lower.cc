@@ -276,7 +276,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
 //   kArena    → cel.cel_map_lookup_arena (pure wasm fast path)
 //   kHost     → cel_host.cel_map_lookup  (host trampoline)
 //   kDynamic  → cel.cel_map_lookup       (the runtime dispatcher)
-absl::string_view LookupCallTarget(Origin origin) {
+absl::string_view MapLookupCallTarget(Origin origin) {
   switch (origin) {
     case Origin::kArena:
       return kCelMapLookupArenaInternalName;
@@ -285,8 +285,83 @@ absl::string_view LookupCallTarget(Origin origin) {
     case Origin::kDynamic:
       return kCelMapLookupInternalName;
   }
-  ABSL_CHECK(false) << "expr_lower: unknown Origin "
+  ABSL_CHECK(false) << "expr_lower: unknown map Origin "
                     << static_cast<int>(origin);
+}
+
+// M4.F: same shape as MapLookupCallTarget but for list indexing.
+//   kArena    → cel.cel_list_at_arena (pure wasm fast path)
+//   kHost     → cel_host.cel_list_at  (host trampoline)
+//   kDynamic  → cel.cel_list_at       (the runtime dispatcher)
+absl::string_view ListAtCallTarget(Origin origin) {
+  switch (origin) {
+    case Origin::kArena:
+      return kCelListAtArenaInternalName;
+    case Origin::kHost:
+      return kCelHostListAtInternalName;
+    case Origin::kDynamic:
+      return kCelListAtInternalName;
+  }
+  ABSL_CHECK(false) << "expr_lower: unknown list Origin "
+                    << static_cast<int>(origin);
+}
+
+// Emits `(call $cel.cel_list_create (i32.const out_slot) (i32.const N))`.
+BinaryenExpressionRef EmitCelListCreateCall(WasmModule& mod, uint32_t out_slot,
+                                            uint32_t count) {
+  BinaryenExpressionRef args[2] = {I32Const(mod, out_slot),
+                                   I32Const(mod, count)};
+  const std::string name(kCelListCreateInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+}
+
+// Emits `(call $cel.cel_list_set <list_slot> (i32.const index) <elem_expr>)`.
+// `elem_expr` is an i32-valued sub-expression whose value at runtime
+// is the linear-memory offset of the element's CelValue.
+BinaryenExpressionRef EmitCelListSetCall(WasmModule& mod, uint32_t list_slot,
+                                         uint32_t index,
+                                         BinaryenExpressionRef elem) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, list_slot),
+                                   I32Const(mod, index), elem};
+  const std::string name(kCelListSetInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
+// Lowers a kListExpr to:
+//   (call $cel.cel_list_create out_slot N)
+//   for i in [0, N):
+//     <eval element>      -> i32 elem_offset
+//     (call $cel.cel_list_set out_slot i elem_offset)
+//   (i32.const out_slot)
+// wrapped in a (block (result i32)) whose value is `out_slot`.
+absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
+                                                    const cel::Expr& expr,
+                                                    const cel::ListExpr& l,
+                                                    const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kListExpr expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  const uint32_t out_slot = ann.storage.payload;
+  const auto N = static_cast<uint32_t>(l.elements().size());
+
+  std::vector<BinaryenExpressionRef> instrs;
+  instrs.reserve(2u + N);
+  instrs.push_back(EmitCelListCreateCall(ctx.mod, out_slot, N));
+
+  for (uint32_t i = 0; i < N; ++i) {
+    const cel::ListExprElement& e = l.elements()[i];
+    ABSL_CHECK(!e.optional())
+        << "expr_lower: kListExpr expr_id=" << expr.id()
+        << " element index=" << i << " is optional — stub until M5";
+    auto elem_or = Emit(ctx, e.expr());
+    if (!elem_or.ok()) return elem_or.status();
+    instrs.push_back(EmitCelListSetCall(ctx.mod, out_slot, i, *elem_or));
+  }
+
+  instrs.push_back(I32Const(ctx.mod, out_slot));
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
+                       static_cast<BinaryenIndex>(instrs.size()),
+                       BinaryenTypeInt32());
 }
 
 absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(EmitCtx& ctx,
@@ -315,10 +390,21 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(EmitCtx& ctx,
   // Origin comes from the OPERAND, not the call: a kSelect over a
   // proto map field stamps `kHost` on its own annotation, and `m[k]`
   // reads that origin off `m` (operand) — same shape M2 uses for
-  // attribute-id propagation.
+  // attribute-id propagation.  The operand's repr selects which
+  // origin field (map vs list) and which dispatch table to use.
   const NodeAnnotation* op_ann = ctx.layout.annotations.Find(operand_expr.id());
-  const Origin origin = op_ann != nullptr ? op_ann->map_origin : Origin::kDynamic;
-  const std::string target(LookupCallTarget(origin));
+  ABSL_CHECK(op_ann != nullptr)
+      << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
+      << " operand has no NodeAnnotation";
+  ABSL_CHECK(op_ann->repr == Repr::kMap || op_ann->repr == Repr::kList)
+      << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
+      << " operand repr=" << ReprName(op_ann->repr)
+      << " — only map / list operands supported (checker should have rejected)";
+  const Origin origin =
+      (op_ann->repr == Repr::kList) ? op_ann->list_origin : op_ann->map_origin;
+  const std::string target((op_ann->repr == Repr::kList)
+                               ? ListAtCallTarget(origin)
+                               : MapLookupCallTarget(origin));
 
   BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot), *operand_or,
                                    *key_or};
@@ -360,6 +446,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kMapExpr:
       return EmitKMapExpr(ctx, expr, expr.map_expr(), *ann);
     case cel::ExprKindCase::kListExpr:
+      return EmitKListExpr(ctx, expr, expr.list_expr(), *ann);
     case cel::ExprKindCase::kStructExpr:
     case cel::ExprKindCase::kComprehensionExpr:
     case cel::ExprKindCase::kUnspecifiedExpr:

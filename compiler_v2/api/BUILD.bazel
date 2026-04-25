@@ -469,6 +469,7 @@ cc_library(
         ":abi_decode",
         ":activation",
         ":attribute",
+        ":cel_host",
         ":cel_host_wasmtime",
         ":instance_impl",
         ":value",

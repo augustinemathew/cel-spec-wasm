@@ -57,4 +57,10 @@ message Customer {
   // unit tests; this fixture is the e2e domain stand-in).
   map<string, string> metadata    = 10;
   map<int32, int32>   tier_quotas = 11;
+
+  // M4 — proto repeated field.  Scalar-element only; an exhaustive
+  // matrix per cpp_type lives in `host_fixture_proto3.proto`'s
+  // `rep_*` fields.  Used by `m4_test.cc` to exercise the
+  // `cel_host.cel_list_at` dispatch path on `customer.tags[i]`.
+  repeated string tags = 12;
 }

@@ -624,5 +624,60 @@ TEST(ResolvePassMapOriginTest, NonMapNodesStayDynamic) {
   }
 }
 
+// ============================================================
+// 10. ResolvePassListOriginTest — map-list-dispatch.md §2.6
+// ============================================================
+//
+//   kListExpr        → kArena
+//   kIdent[list<>]   → kHost   (Activation::Bind hands us a backing)
+//   kSelect[list<>]  → kHost   (proto repeated field via ProtoList)
+//   non-list nodes   → kDynamic (default — never set)
+
+TEST(ResolvePassListOriginTest, ListLiteralStampedArena) {
+  auto r = ResolveWithVars("[1, 2, 3]", {});
+  ASSERT_THAT(r, IsOk());
+  bool found_arena = false;
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    if (a.list_origin == Origin::kArena) found_arena = true;
+  }
+  EXPECT_TRUE(found_arena);
+}
+
+TEST(ResolvePassListOriginTest, ListTypedIdentStampedHost) {
+  auto r = ResolveWithVars("xs", {"xs:list<int>"});
+  ASSERT_THAT(r, IsOk());
+  bool found_host = false;
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    if (a.repr == Repr::kList && a.list_origin == Origin::kHost) {
+      found_host = true;
+    }
+  }
+  EXPECT_TRUE(found_host);
+}
+
+TEST(ResolvePassListOriginTest, NonListNodesStayDynamic) {
+  // Scalar program — no list_origin should be promoted off the
+  // kDynamic default for any node.
+  auto r = ResolveWithVars("true", {});
+  ASSERT_THAT(r, IsOk());
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    EXPECT_EQ(a.list_origin, Origin::kDynamic) << "expr id=" << id;
+  }
+}
+
+TEST(ResolvePassListOriginTest, ListLiteralIndexOperandStaysArena) {
+  // `[1,2,3][1]` — the operand of `_[_]` is the kListExpr; it must
+  // carry kArena so codegen routes to cel_list_at_arena.
+  auto r = ResolveWithVars("[1, 2, 3][1]", {});
+  ASSERT_THAT(r, IsOk());
+  bool found_arena_list = false;
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    if (a.repr == Repr::kList && a.list_origin == Origin::kArena) {
+      found_arena_list = true;
+    }
+  }
+  EXPECT_TRUE(found_arena_list);
+}
+
 }  // namespace
 }  // namespace celwasm

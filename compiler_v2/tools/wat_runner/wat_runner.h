@@ -65,6 +65,20 @@ using CelHostStub = std::function<void(uint32_t out_slot,
                                        uint32_t attribute_id,
                                        uint8_t* memory, size_t mem_size)>;
 
+// 3-arg stub for `cel_host.cel_map_lookup` / `cel_host.cel_list_at`.
+// Signature: `(out_slot, operand_slot, key_or_index_slot)`.  In
+// production these route through Layer-3 wasmtime trampolines that
+// dereference the operand's `payload.ref_slot` via the
+// ExternrefTable; the stub simulates that with caller-supplied
+// in-memory state.  When the WAT imports the corresponding
+// `cel_host.*` function and no stub is supplied, the harness binds
+// a no-op (sufficient for kArena WATs that link cel_host imports
+// but never call them).
+using CelHostThreeArgStub =
+    std::function<void(uint32_t out_slot, uint32_t operand_slot,
+                       uint32_t key_or_index_slot,
+                       uint8_t* memory, size_t mem_size)>;
+
 struct WatRunInput {
   absl::string_view wat;
 
@@ -82,6 +96,13 @@ struct WatRunInput {
 
   // Optional stub for `cel_host.cel_has_field`.  Same contract.
   CelHostStub cel_has_field_stub;
+
+  // Optional stubs for the 3-arg cel_host trampolines.  When unset,
+  // the harness binds a no-op so kArena-only WATs still link.  When
+  // set, the stub fires for every call (kHost path tests rely on
+  // this to simulate host-table backings).
+  CelHostThreeArgStub cel_host_cel_map_lookup_stub;
+  CelHostThreeArgStub cel_host_cel_list_at_stub;
 };
 
 struct WatRunOutput {

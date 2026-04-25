@@ -451,5 +451,43 @@ TEST_F(InstanceEvalTest, EvalsMapLiteralOverEveryAllowedKeyKind) {
   }
 }
 
+// ─── M4.H — list literal round-trip + indexing ─────────────
+
+TEST_F(InstanceEvalTest, EvalsEmptyListLiteralReturnsEmptyList) {
+  // The static checker rejects bare `[]` (no element type to
+  // infer); use a literal with one element to exercise the
+  // smallest-non-empty-list path.  An actually-empty list will
+  // travel through Activation::Bind once host-list bindings ship.
+  Value v = EvalLiteral("[1]");
+  ASSERT_EQ(v.kind(), Value::Kind::kList);
+  auto bk_or = v.ListBacking();
+  ASSERT_TRUE(bk_or.ok()) << bk_or.status();
+  EXPECT_EQ((*bk_or)->Size(), 1u);
+}
+
+TEST_F(InstanceEvalTest, EvalsScalarListLiteralRoundTrips) {
+  Value v = EvalLiteral("[10, 20, 30]");
+  ASSERT_EQ(v.kind(), Value::Kind::kList);
+  auto bk_or = v.ListBacking();
+  ASSERT_TRUE(bk_or.ok()) << bk_or.status();
+  const auto* backing = *bk_or;
+  ASSERT_EQ(backing->Size(), 3u);
+
+  // Lists are ORDER-aware; ForEach must visit elements in
+  // index order.
+  std::vector<int64_t> seen;
+  backing->ForEach([&](const Value& e) {
+    ASSERT_EQ(e.kind(), Value::Kind::kInt);
+    seen.push_back(*e.AsInt());
+  });
+  EXPECT_EQ(seen, (std::vector<int64_t>{10, 20, 30}));
+}
+
+TEST_F(InstanceEvalTest, EvalsLiteralListIndexingProducesScalarValue) {
+  Value v = EvalLiteral("[10, 20, 30][1]");
+  ASSERT_EQ(v.kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v.AsInt(), 20);
+}
+
 }  // namespace
 }  // namespace cel

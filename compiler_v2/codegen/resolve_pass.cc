@@ -49,6 +49,32 @@ class KConstReprAudit : public cel::AstVisitorBase {
   const WasmAnnotations& annotations_;
 };
 
+// Detects any `kComprehensionExpr` in the AST.  Comprehensions are
+// M5 work and introduce scope-local idents (cel-cpp's macro
+// expansion uses names like `@result` / `@iter` whose Repr varies
+// per comprehension form — `exists` yields bool, `map` yields list,
+// etc.).  The current `IdentResolver` is scope-flat and would CHECK
+// on the cross-form Repr clash, crashing the binary instead of
+// reporting a clean Unimplemented.  Until M5 lands scope handling,
+// reject comprehension-bearing programs at the front of the resolve
+// pass with a Status the conformance runner classifies as SKIP.
+class ComprehensionDetector : public cel::AstVisitorBase {
+ public:
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitComprehension(
+      const cel::Expr& /*expr*/,
+      const cel::ComprehensionExpr& /*comp*/) override {
+    found_ = true;
+  }
+
+  bool found() const { return found_; }
+
+ private:
+  bool found_ = false;
+};
+
 // Walks every `kIdentExpr` in the AST, interns the name into a dense
 // table (`local_index` 0, 1, 2, ... in first-seen order), and writes
 // the index onto the node's `NodeAnnotation::local_index`.
@@ -211,10 +237,64 @@ class MapOriginVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
+// M4.F: stamps `list_origin` on every list-typed node per the
+// `map-list-dispatch.md` §2.6 inference table (mirror of
+// MapOriginVisitor):
+//   kListExpr       → kArena  (literal in the wasm bump arena)
+//   kIdent[list<>]  → kHost   (Activation::Bind hands us a backing)
+//   kSelect[list<>] → kHost   (proto repeated field via ProtoList)
+// Codegen reads this annotation at the kCallExpr(_[_]) emission
+// site to choose between cel_list_at_arena (fast path),
+// cel_host.cel_list_at (host trampoline), and the kDynamic
+// dispatcher.  Branch-coalescing (?: / && / ||) over list operands
+// stays deferred to M5.
+class ListOriginVisitor : public cel::AstVisitorBase {
+ public:
+  explicit ListOriginVisitor(WasmAnnotations& annotations)
+      : annotations_(annotations) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitList(const cel::Expr& expr,
+                     const cel::ListExpr& /*l*/) override {
+    annotations_[expr.id()].list_origin = Origin::kArena;
+  }
+
+  void PostVisitIdent(const cel::Expr& expr,
+                      const cel::IdentExpr& /*ident*/) override {
+    StampHostIfListTyped(expr);
+  }
+
+  void PostVisitSelect(const cel::Expr& expr,
+                       const cel::SelectExpr& /*sel*/) override {
+    StampHostIfListTyped(expr);
+  }
+
+ private:
+  void StampHostIfListTyped(const cel::Expr& expr) {
+    NodeAnnotation* ann = &annotations_[expr.id()];
+    if (ann->repr == Repr::kList) ann->list_origin = Origin::kHost;
+  }
+  WasmAnnotations& annotations_;
+};
+
 }  // namespace
 
 absl::StatusOr<ResolveOutput> ResolvePass(const TypedAst& ast) {
   ABSL_CHECK(ast.has_ast()) << "ResolvePass: TypedAst has no checked cel::Ast";
+
+  // Comprehensions are M5; bail early so the kIdent resolver doesn't
+  // see the macro-introduced `@result` / `@iter` idents (whose Reprs
+  // legitimately vary per comprehension form and would trip the
+  // resolver's per-name Repr-agreement CHECK).
+  ComprehensionDetector comprehension_detector;
+  cel::AstTraverse(ast.ast().root_expr(), comprehension_detector);
+  if (comprehension_detector.found()) {
+    return absl::UnimplementedError(
+        "ResolvePass: comprehensions are M5 — reject until scope handling "
+        "lands");
+  }
 
   ResolveOutput output;
 
@@ -258,6 +338,12 @@ absl::StatusOr<ResolveOutput> ResolvePass(const TypedAst& ast) {
   // map operands stay deferred to M5.
   MapOriginVisitor map_origin_visitor(output.annotations);
   cel::AstTraverse(ast.ast().root_expr(), map_origin_visitor);
+
+  // Sixth (M4.F): mirror MapOriginVisitor for lists — stamp
+  // `list_origin = kArena` on every kListExpr; M2 already wrote
+  // `kHost` on list-typed kSelect / kIdent nodes.
+  ListOriginVisitor list_origin_visitor(output.annotations);
+  cel::AstTraverse(ast.ast().root_expr(), list_origin_visitor);
 
   return output;
 }

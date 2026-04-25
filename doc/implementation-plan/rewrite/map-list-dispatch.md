@@ -1,12 +1,11 @@
 # Map and list dispatch: arena / host / dynamic
 
-Status: **map half shipped 2026-04-24 (M3.A–H); list half still
-pending.**  The map-specific sections of this doc are now
-authoritative and have been folded into `design.md` (see the M3.I
-checklist at the bottom).  List sections (kCreateList,
-ArenaListHeader, HostListBacking, repeated-field reads) remain
-the design source of truth until the lists slice — they will be
-reconciled at that milestone.
+Status: **fully reconciled into design.md 2026-04-25.**  Map half
+shipped 2026-04-24 (M3.A–H); list half shipped 2026-04-25 (M4.A–J).
+The §11 reconciliation checklist below is fully ticked.  The
+map-specific and list-specific sections both folded into
+`design.md`; this doc remains as the dispatch-design retro for
+both halves.
 
 Parked as a standalone artifact so `design.md §4.7.2` / `§4.7.3` and
 related sections can absorb this in one focused reconciliation pass
@@ -495,29 +494,33 @@ When folding this into `design.md`:
 
 - [x] `§4.1` `NodeAnnotation` gains `map_origin` + `list_origin`.
   `Origin` enum added to `ir/annotations.h`.  *(map_origin shipped
-  M3.A; list_origin reserved.)*
+  M3.A; list_origin populated M4.F.)*
 - [x] `§4.7.2` rewritten around the three-path dispatch.
   `ArenaMapHeader` defined.  Construction + lookup helpers
   listed per path.  *(M3.A–C.)*
-- [ ] `§4.7.3` rewritten for lists.  `ArenaListHeader` defined.
-  *(Lists slice.)*
-- [x] `§4.7.6.1` Layer-1 interface grows `HostMapBacking`.
-  `HostListBacking` reserved as an abstract base; bodies land at
-  the lists slice.
+- [x] `§4.7.3` rewritten for lists.  `ArenaListHeader` defined
+  (16 B `{count, capacity, elements_offset, _pad}`; entries
+  stride 24 B).  *(M4.A.)*
+- [x] `§4.7.6.1` Layer-1 interface grows `HostMapBacking` +
+  `HostListBacking`.  `HostList` (vector-backed) + `ProtoList`
+  (proto reflection) bodies live in `api/internal/cel_host.cc`.
+  *(M3.D for maps; M4.D for lists.)*
 - [x] `§5` ResolvePass contract gains the origin-inference rule
-  (this doc's §2).  *(M3.F.)*
-- [x] `§7.2` codegen `kCreateMap` / `_[_]` arms specify origin-
-  dependent emit.  *(M3.F.)*  List arm pending.
+  (this doc's §2).  *(M3.F maps; M4.F lists.)*
+- [x] `§7.2` codegen `kCreateMap` / `kCreateList` / `_[_]` arms
+  specify origin-dependent emit.  *(M3.F maps; M4.F lists.)*
 - [x] `§8.1` runtime build flags: wasm_imports.txt gains
-  `cel_host.cel_map_lookup`; exports list gains `cel_map_create`
-  / `cel_map_insert` / `cel_map_lookup_arena` / `cel_map_lookup`.
-  *(M3.B–C.)*  List exports pending.
-- [x] `cel-host-surface.md` adds map dispatch to the adapter's
-  method set (mirror the field-read story); list dispatch
-  pending.  *(M3.D.)*
+  `cel_host.cel_map_lookup` + `cel_host.cel_list_at`; exports
+  list gains `cel_map_create` / `cel_map_insert` /
+  `cel_map_lookup_arena` / `cel_map_lookup` plus
+  `cel_list_create` / `cel_list_set` / `cel_list_at_arena` /
+  `cel_list_at`.  *(M3.B–C maps; M4.B–C lists.)*
+- [x] `cel-host-surface.md` adds map + list dispatch to the
+  adapter's method set (mirror the field-read story).
+  *(M3.D maps; M4.D–E lists.)*
 
-The map rows are reconciled.  List rows graduate when the list
-slice ships.
+Both map and list rows are reconciled.  Fully reconciled into
+design.md 2026-04-25.
 
 ## 12. Map half — what shipped (M3 retro)
 

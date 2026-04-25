@@ -1148,7 +1148,7 @@ Architectural deltas vs as-written M2 plan (see
         that the runtime instantiates with map imports bound.
         `compiler_v2/conformance/README.md` inventory updated.
 
-### Rewrite M4 — list literals + indexing (in progress 2026-04-25)
+### Rewrite M4 — list literals + indexing (shipped 2026-04-25)
 
 Plan-vs-execution delta: shipped `cel_list_create(out, count)` +
 `cel_list_set(list, index, elem)` (fixed-length, no append/grow) per
@@ -1226,16 +1226,50 @@ direct user direction.  Past-count `set` poisons.  See
         `host_fixture_proto3.proto` extended with
         `rep_s/rep_b/rep_f64/rep_msg` so per-cpp_type element
         reads can be asserted.
-  - [ ] M4.F codegen: `ListOriginVisitor`, slot allocation,
-        `kCreateList` lowering, `kCallExpr(_[_])` × 3 origin
-        arms, WAT 11–14.
-  - [ ] M4.G e2e completion: `m2_test::SelectRepeatedFieldReturnsHostList`
-        currently single-test SKIPped — re-enables with M4.F+H.
-  - [ ] M4.H activation marshaller + Eval decoder
-        (`EncodeList` + `DecodeArenaListAt`).
-  - [ ] M4.I conformance harness — `IsInM4Envelope`,
-        `CompareList` (order-aware).
-  - [ ] M4.J e2e suite + `map-list-dispatch.md §11` reconcile.
+  - [x] M4.F codegen: `ListOriginVisitor` (`resolve_pass.cc`),
+        `AggregateStorageVisitor::PostVisitList` slot allocation
+        (`layout_pass.cc`), `EmitKListExpr` (`expr_lower.cc`)
+        lowering kCreateList → `cel_list_create` + per-element
+        `cel_list_set`, and the kCallExpr(`_[_]`) arm dispatching
+        on operand `repr` (kMap → MapLookupCallTarget, kList →
+        new `ListAtCallTarget`).  Tests in
+        `resolve_pass_test::ResolvePassListOriginTest::*` (4),
+        `layout_pass_test::LayoutPassListTest::*` (5),
+        `expr_lower_test::ExprLowerListTest::*` (4 — empty,
+        scalar literal create+set with index pinning, arena
+        fast-path, host-bound trampoline).  WAT traces 11–15
+        authored and run through `wat_runner_test` (the kDynamic
+        dispatcher trace SKIPs end-to-end on a wasmtime c-api
+        panic; production paths cover that arm).
+  - [x] M4.G e2e completion: `m2_test::SelectRepeatedFieldReturnsHostList`
+        flipped from SKIP to a green `customer.tags[0] == "tag0"`
+        end-to-end test.
+  - [x] M4.H activation marshaller + Eval decoder:
+        `EncodeList` (interns via `ExternrefTable::InternList`,
+        writes `{CEL_LIST_HOST, payload.ref_slot}`) +
+        `DecodeArenaListAt` (walks `ArenaListHeader` + `count` ×
+        24 B elements, recurses through `DecodeCelValueAt`).
+        `instance_test.cc` adds three TESTs (empty-list literal,
+        scalar list round-trip with order-aware ForEach, literal
+        indexing).
+  - [x] M4.I conformance harness — `IsInM3Envelope` →
+        `IsInM4Envelope`, `IsAggregateMatcherKindForM4` admits
+        `kListValue`, new `CompareList` (order-aware).  Conformance
+        moved 203 → 212 PASSes (`lists.textproto` 0 → 4,
+        `parse.textproto` 148 → 150, `fields.textproto` 13 → 14).
+        Unrelated guard added: `ResolvePass` early-rejects
+        `kComprehensionExpr`-bearing programs (M5 will replace
+        with scope-aware resolution); fixes a crash that
+        previously aborted the conformance binary on
+        comprehension-bearing list_value tests.
+  - [x] M4.J e2e suite — `compiler_v2/e2e/m4_test.cc` (16 tests
+        across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`,
+        `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto
+        gained `repeated string tags = 12` for the kHost-list
+        e2e flows.  `map-list-dispatch.md §11` reconciliation
+        checklist fully ticked; header flipped to "fully
+        reconciled into design.md 2026-04-25".
+        `scripts/run_full_suite.sh` MANUAL_TARGETS += `//compiler_v2/e2e:m4_test`.
 
 **M2.C.0b interim** (interleaved with M3 work)
 

@@ -157,6 +157,69 @@ absl::Status RegisterCelHostStub(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
+// 3-arg stub trampoline state — mirrors StubEnv for the 4-arg case.
+struct ThreeArgStubEnv {
+  CelHostThreeArgStub stub;
+};
+
+void DeleteThreeArgStubEnv(void* p) {
+  delete static_cast<ThreeArgStubEnv*>(p);
+}
+
+wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
+                                    const wasmtime_val_t* args, size_t nargs,
+                                    wasmtime_val_t* /*results*/,
+                                    size_t /*nresults*/) {
+  if (nargs != 3 || args[0].kind != WASMTIME_I32 ||
+      args[1].kind != WASMTIME_I32 || args[2].kind != WASMTIME_I32) {
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner 3-arg stub: expected 3 × i32 args";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  const uint32_t out_slot = static_cast<uint32_t>(args[0].of.i32);
+  const uint32_t operand_slot = static_cast<uint32_t>(args[1].of.i32);
+  const uint32_t key_slot = static_cast<uint32_t>(args[2].of.i32);
+
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  wasmtime_extern_t ext;
+  const char kName[] = "memory";
+  if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner 3-arg stub: caller has no memory export";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  wasmtime_memory_t mem = ext.of.memory;
+  uint8_t* base = wasmtime_memory_data(ctx, &mem);
+  size_t size = wasmtime_memory_data_size(ctx, &mem);
+
+  static_cast<ThreeArgStubEnv*>(env)->stub(out_slot, operand_slot, key_slot,
+                                           base, size);
+  return nullptr;
+}
+
+absl::Status RegisterCelHostThreeArgStub(wasmtime_linker_t* linker,
+                                         absl::string_view name,
+                                         CelHostThreeArgStub stub) {
+  auto* env = new ThreeArgStubEnv{std::move(stub)};
+  wasm_functype_t* type = HostThreeArgTrampolineType();
+  const char kModule[] = "cel_host";
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, kModule, sizeof(kModule) - 1, name.data(), name.size(), type,
+      ThreeArgStubTrampoline, env, DeleteThreeArgStubEnv);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        absl::StrCat("linker.define(cel_host.", name, ")"), err);
+  }
+  return absl::OkStatus();
+}
+
 // ── WAT → wasm bytes ─────────────────────────────────────
 
 absl::StatusOr<std::vector<uint8_t>> Wat2Wasm(absl::string_view wat) {
@@ -244,10 +307,30 @@ absl::Status InitLinker(RunState& s, const WatRunInput& input) {
     return absl::InternalError("wasmtime_linker_new returned null");
   }
   if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
-  if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_map_lookup");
-      !st.ok()) return st;
-  if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_list_at");
-      !st.ok()) return st;
+  // 3-arg cel_host trampolines.  Caller may supply a stub to
+  // simulate the host-table dispatch (kHost path tests); otherwise
+  // a no-op binds so kArena WATs that link cel_host imports but
+  // never call them still instantiate.
+  if (input.cel_host_cel_map_lookup_stub) {
+    if (auto st = RegisterCelHostThreeArgStub(
+            s.linker, "cel_map_lookup", input.cel_host_cel_map_lookup_stub);
+        !st.ok()) {
+      return st;
+    }
+  } else {
+    if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_map_lookup");
+        !st.ok()) return st;
+  }
+  if (input.cel_host_cel_list_at_stub) {
+    if (auto st = RegisterCelHostThreeArgStub(
+            s.linker, "cel_list_at", input.cel_host_cel_list_at_stub);
+        !st.ok()) {
+      return st;
+    }
+  } else {
+    if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_list_at");
+        !st.ok()) return st;
+  }
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;
@@ -301,11 +384,29 @@ absl::Status InstantiateRuntime(RunState& s) {
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  if (auto st = BindExport(s.linker, ctx, s.runtime_instance, "cel_reset");
-      !st.ok()) {
-    return st;
+  // M1 baseline: cel_reset + cel_alloc.  M3 added the map runtime
+  // helpers; M4 added the list runtime helpers.  Bind every export
+  // so any WAT that imports them resolves at instantiate time —
+  // mirrors the "always link the runtime fully" rule from
+  // CLAUDE.md (api/engine.cc::Engine::Plan does the same).
+  for (absl::string_view name : {
+           absl::string_view("cel_reset"),
+           absl::string_view("cel_alloc"),
+           absl::string_view("cel_map_create"),
+           absl::string_view("cel_map_insert"),
+           absl::string_view("cel_map_lookup_arena"),
+           absl::string_view("cel_map_lookup"),
+           absl::string_view("cel_list_create"),
+           absl::string_view("cel_list_set"),
+           absl::string_view("cel_list_at_arena"),
+           absl::string_view("cel_list_at"),
+       }) {
+    if (auto st = BindExport(s.linker, ctx, s.runtime_instance, name);
+        !st.ok()) {
+      return st;
+    }
   }
-  return BindExport(s.linker, ctx, s.runtime_instance, "cel_alloc");
+  return absl::OkStatus();
 }
 
 absl::Status InstantiateExpr(RunState& s) {

@@ -30,11 +30,13 @@ cc_library(
 cc_test(
     name = "wat_runner_test",
     srcs = ["wat_runner_test.cc"],
+    data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
     tags = ["manual"],
     deps = [
         ":wat_runner",
         "//compiler_v2/runtime:cel_runtime",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
     ],
