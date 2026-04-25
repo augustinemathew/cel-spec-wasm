@@ -95,6 +95,41 @@ void DeleteStubEnv(void* env) {
   delete static_cast<StubEnv*>(env);
 }
 
+// No-op cel_host.cel_map_lookup (3 i32, no result).  M3.C added a
+// `return_call $cel_host.cel_map_lookup` arm in cel_runtime.wasm; the
+// runtime won't instantiate without something bound here.  WAT
+// fixtures don't exercise the kHost path, so a no-op suffices —
+// they only call cel_map_lookup_arena directly when they touch maps
+// at all.
+wasm_trap_t* NoopCelMapLookup(void*, wasmtime_caller_t*,
+                              const wasmtime_val_t*, size_t,
+                              wasmtime_val_t*, size_t) {
+  return nullptr;
+}
+
+wasm_functype_t* CelMapLookupTrampolineType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[3];
+  for (auto& p : param_arr) p = wasm_valtype_new(WASM_I32);
+  wasm_valtype_vec_new(&params, 3, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+absl::Status RegisterCelMapLookupNoop(wasmtime_linker_t* linker) {
+  wasm_functype_t* type = CelMapLookupTrampolineType();
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, "cel_host", 8, "cel_map_lookup", 14, type, NoopCelMapLookup,
+      nullptr, nullptr);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus("linker.define(cel_host.cel_map_lookup)",
+                                 err);
+  }
+  return absl::OkStatus();
+}
+
 // Four-i32-in, zero-out — the M2 cel_host trampoline signature.
 wasm_functype_t* CelHostTrampolineType() {
   wasm_valtype_vec_t params;
@@ -164,9 +199,17 @@ struct RunState {
 
 absl::Status InitEngineAndModules(RunState& s,
                                   absl::Span<const uint8_t> expr_bytes) {
-  s.engine = wasm_engine_new();
+  // M3.C: cel_runtime.wasm's cel_map_lookup uses `return_call`; the
+  // engine must opt in to the wasm tail-call feature to instantiate
+  // it.  Mirrors api/engine.cc and runtime/cel_runtime_wasm_test.cc.
+  wasm_config_t* config = wasm_config_new();
+  if (config == nullptr) {
+    return absl::InternalError("wasm_config_new returned null");
+  }
+  wasmtime_config_wasm_tail_call_set(config, true);
+  s.engine = wasm_engine_new_with_config(config);
   if (s.engine == nullptr) {
-    return absl::InternalError("wasm_engine_new returned null");
+    return absl::InternalError("wasm_engine_new_with_config returned null");
   }
   wasmtime_error_t* err = wasmtime_module_new(
       s.engine, kCelRuntimeWasmBytes, kCelRuntimeWasmBytesSize,
@@ -201,6 +244,7 @@ absl::Status InitLinker(RunState& s, const WatRunInput& input) {
     return absl::InternalError("wasmtime_linker_new returned null");
   }
   if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
+  if (auto st = RegisterCelMapLookupNoop(s.linker); !st.ok()) return st;
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;

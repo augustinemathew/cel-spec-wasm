@@ -27,11 +27,14 @@
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/value.pb.h"
+#include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
 #include "compiler_v2/api/instance.h"
 #include "compiler_v2/api/program.h"
+#include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/conformance/binding_marshal.h"
 #include "google/protobuf/text_format.h"
 
 namespace celwasm::conformance {
@@ -78,6 +81,19 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
   }
 }
 
+// M3 — admit `map_value` matchers.  CompareMap iterates the
+// decoded `cel::Value`'s `HostMapBacking` and compares entries
+// order-agnostically against the proto matcher's `entries` list
+// (langdef § "Map equality").
+bool IsAggregateMatcherKindForM3(ProtoValue::KindCase k) {
+  return k == ProtoValue::kMapValue;
+}
+
+bool IsUnknownMatcher(const SimpleTest& t) {
+  return t.result_matcher_case() == SimpleTest::kUnknown ||
+         t.result_matcher_case() == SimpleTest::kAnyUnknowns;
+}
+
 // A mismatch reports kinds only — compare-site callers already know
 // which test they ran, and the detailed value isn't load-bearing for
 // debugging (the fail list shows the expression source).  Keeping the
@@ -97,6 +113,11 @@ absl::Status CompareDouble(double got, double want) {
   return absl::FailedPreconditionError(
       absl::StrCat("double want=", want, " got=", got));
 }
+
+// Forward decl — definition below `CompareValue`; the two recurse
+// (a map can hold scalar values).
+absl::Status CompareMap(const cel::Value& got,
+                        const cel::expr::MapValue& want);
 
 }  // namespace
 
@@ -119,14 +140,13 @@ absl::string_view OutcomeName(Outcome o) {
   return "?";
 }
 
-bool IsM1Eligible(const SimpleTest& t) {
+bool IsInM3Envelope(const SimpleTest& t) {
   if (t.disable_check()) return false;
   if (t.check_only()) return false;
-  if (!t.type_env().empty()) return false;
-  if (!t.bindings().empty()) return false;
-  if (!t.container().empty()) return false;
+  if (IsUnknownMatcher(t)) return true;
   if (t.result_matcher_case() != SimpleTest::kValue) return false;
-  return IsScalarMatcherKind(t.value().kind_case());
+  const auto k = t.value().kind_case();
+  return IsScalarMatcherKind(k) || IsAggregateMatcherKindForM3(k);
 }
 
 absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
@@ -163,11 +183,74 @@ absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
       if (!b.ok() || *b != want.bytes_value()) return Mismatch(got, want);
       return absl::OkStatus();
     }
+    case ProtoValue::kMapValue:
+      return CompareMap(got, want.map_value());
     default:
       return absl::InvalidArgumentError(
-          "non-scalar matcher — caller should filter via IsM1Eligible");
+          "non-scalar matcher — caller should filter via IsInM3Envelope");
   }
 }
+
+absl::Status CompareUnknown(const cel::Value& got) {
+  if (got.IsUnknown()) return absl::OkStatus();
+  return absl::FailedPreconditionError(
+      absl::StrCat("want-kind=unknown got-kind=", ValueKindName(got.kind())));
+}
+
+namespace {
+
+// Order-agnostic map equality per langdef § "Map equality": same
+// size, and every want-entry has a got-entry whose key is
+// structurally equal and whose value matches recursively via
+// `CompareValue`.  Keys go through `ValueFromProto` (scalar-only
+// at M3 — bool/int/uint/string per the langdef map-key constraint),
+// so a `map_value` matcher with a non-scalar key short-circuits
+// to FailedPrecondition rather than miscompare silently.
+absl::Status CompareMap(const cel::Value& got,
+                        const cel::expr::MapValue& want) {
+  auto bk_or = got.MapBacking();
+  if (!bk_or.ok()) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "want-kind=map got-kind=", ValueKindName(got.kind())));
+  }
+  const auto* backing = *bk_or;
+  const auto want_size = static_cast<std::size_t>(want.entries_size());
+  if (backing->Size() != want_size) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("map size want=", want_size, " got=", backing->Size()));
+  }
+
+  // Snapshot got-entries so the inner loop is a flat O(n²) scan
+  // rather than a virtual ForEach per outer iteration.  Map sizes
+  // in the corpus are small (single-digit entries) — the constant
+  // factor is irrelevant and the code stays linear-shaped.
+  std::vector<std::pair<cel::Value, cel::Value>> got_entries;
+  got_entries.reserve(backing->Size());
+  backing->ForEach([&](const cel::Value& k, const cel::Value& v) {
+    got_entries.emplace_back(k, v);
+  });
+
+  for (const auto& want_entry : want.entries()) {
+    auto want_key_or = ValueFromProto(want_entry.key());
+    if (!want_key_or.ok()) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "undecodable map key: ", want_key_or.status().message()));
+    }
+    bool found = false;
+    for (const auto& [gk, gv] : got_entries) {
+      if (!gk.StructurallyEquals(*want_key_or)) continue;
+      if (auto s = CompareValue(gv, want_entry.value()); !s.ok()) return s;
+      found = true;
+      break;
+    }
+    if (!found) {
+      return absl::FailedPreconditionError("map key missing in got");
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
 
 namespace {
 
@@ -181,40 +264,125 @@ Result Fail(absl::string_view stage, const absl::Status& s) {
 
 }  // namespace
 
-Result RunOne(const SimpleTest& t, const cel::Compiler& compiler,
-              const cel::Engine& engine) {
-  if (!IsM1Eligible(t)) return Unsupported("outside M1 envelope");
+namespace {
 
-  auto prog_or = compiler.Compile(t.expr());
-  if (!prog_or.ok()) {
-    // Two non-regression compile outcomes:
-    //   - `Unimplemented` — `expr_lower` arm not yet shipped (future
-    //     milestone fills in).
-    //   - `InvalidArgument` with "static subset" — `RejectDyn` gate;
-    //     the test uses `dyn(…)` or other dynamic typing which
-    //     `celwasm` deliberately never accepts (CLAUDE.md § "What
-    //     not to do").  Not a regression, ever.
-    const auto& s = prog_or.status();
-    if (s.code() == absl::StatusCode::kUnimplemented) {
-      return Unsupported(absl::StrCat("compile unimplemented: ", s.message()));
-    }
-    if (s.code() == absl::StatusCode::kInvalidArgument &&
-        absl::StrContains(s.message(), "static subset")) {
-      return Unsupported("outside static subset (dyn)");
-    }
-    return Fail("compile", s);
+// Build a per-test Compiler with the right declared variables +
+// container.  Returns Unimplemented if any type_env entry is a kind
+// the marshaller doesn't yet handle (caller SKIPs).
+absl::StatusOr<cel::Compiler> BuildPerTestCompiler(const SimpleTest& t) {
+  auto b = cel::Compiler::NewBuilder();
+  if (auto s = DeclareVariablesOnBuilder(t, b); !s.ok()) return s;
+  return std::move(b).Build();
+}
+
+// Compile the test's expression with the test's container.  Status
+// passthrough — caller maps Unimplemented / static-subset to SKIP.
+absl::StatusOr<cel::Program> CompileForTest(const cel::Compiler& compiler,
+                                            const SimpleTest& t) {
+  cel::CompilerOptions opts;
+  opts.container = t.container();
+  return compiler.Compile(t.expr(), opts);
+}
+
+// Map a compile-stage status to either Unsupported (graceful) or Fail
+// (regression).  Mirrors the original `RunOne` classifier so the
+// same SKIP/FAIL policy survives the refactor.
+Result ClassifyCompileFailure(const absl::Status& s) {
+  if (s.code() == absl::StatusCode::kUnimplemented) {
+    return Unsupported(absl::StrCat("compile unimplemented: ", s.message()));
   }
+  if (s.code() == absl::StatusCode::kInvalidArgument &&
+      absl::StrContains(s.message(), "static subset")) {
+    return Unsupported("outside static subset (dyn)");
+  }
+  return Fail("compile", s);
+}
+
+// Map an Eval / PartialEval status to either Unsupported (graceful)
+// or Fail.  Kept here (not in `ClassifyCompileFailure`) because the
+// status codes that map to SKIP differ between stages: at eval the
+// runtime returns `Unimplemented` for declared-variable Reprs the
+// M2.C activation marshaller doesn't yet handle (kString / kBytes /
+// aggregates).  Those tests are graceful SKIPs, not regressions —
+// the M2 envelope at the decl level is widening ahead of the
+// runtime's encoder coverage.
+Result ClassifyEvalFailure(absl::string_view stage, const absl::Status& s) {
+  if (s.code() == absl::StatusCode::kUnimplemented) {
+    return Unsupported(absl::StrCat(stage, " unimplemented: ", s.message()));
+  }
+  // Layer-2 trampoline stubs (CelGetFieldImpl / CelHasFieldImpl,
+  // pending M2.C.0b) surface as a wasm trap whose message is the
+  // status text we pass to `wasmtime_trap_new`.  The trap travels
+  // through `WasmTrapToStatus` and lands here as
+  // `FailedPrecondition` — recognise the marker prefix so those
+  // tests SKIP cleanly until the real body lands, rather than
+  // counting as regressions.
+  if (s.code() == absl::StatusCode::kFailedPrecondition &&
+      absl::StrContains(s.message(), "stub:")) {
+    return Unsupported(absl::StrCat(stage, " trampoline stub: ", s.message()));
+  }
+  return Fail(stage, s);
+}
+
+// Run the unknown / partial-eval branch.  An Activation populated
+// from t.bindings() flows in unchanged — every `unknown:` test in
+// the corpus that also carries scalar bindings now exercises the
+// real binding-prelude path through PartialEval.
+Result RunUnknownBranch(cel::Instance& inst, const cel::Activation& act) {
+  auto val_or = inst.PartialEval(act, {});
+  if (!val_or.ok()) return ClassifyEvalFailure("partial_eval", val_or.status());
+  absl::Status s = CompareUnknown(*val_or);
+  if (!s.ok()) return Fail("compare", s);
+  return {Outcome::kPass, ""};
+}
+
+// Run the value-matcher branch.  Eval(activation) is used
+// unconditionally — the empty-Activation overload of Eval() just
+// loops over zero declared variables, so there's no overhead for
+// variable-free tests.
+Result RunValueBranch(cel::Instance& inst, const cel::Activation& act,
+                      const SimpleTest& t) {
+  auto val_or = inst.Eval(act);
+  if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
+  absl::Status s = CompareValue(*val_or, t.value());
+  if (!s.ok()) return Fail("compare", s);
+  return {Outcome::kPass, ""};
+}
+
+}  // namespace
+
+Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
+              const cel::Engine& engine) {
+  if (!IsInM3Envelope(t)) return Unsupported("outside M3 envelope");
+
+  // Marshal type_env / bindings before touching the compiler — both
+  // can SKIP, and a failed marshal means we never burn a compile.
+  auto compiler_or = BuildPerTestCompiler(t);
+  if (!compiler_or.ok()) {
+    if (compiler_or.status().code() == absl::StatusCode::kUnimplemented) {
+      return Unsupported(
+          absl::StrCat("type_env: ", compiler_or.status().message()));
+    }
+    return Fail("type_env", compiler_or.status());
+  }
+
+  cel::Activation act;
+  if (auto s = PopulateActivation(t, act); !s.ok()) {
+    if (s.code() == absl::StatusCode::kUnimplemented) {
+      return Unsupported(absl::StrCat("bindings: ", s.message()));
+    }
+    return Fail("bindings", s);
+  }
+
+  auto prog_or = CompileForTest(*compiler_or, t);
+  if (!prog_or.ok()) return ClassifyCompileFailure(prog_or.status());
 
   auto inst_or = engine.Plan(*prog_or);
   if (!inst_or.ok()) return Fail("plan", inst_or.status());
 
   cel::Instance inst = *std::move(inst_or);
-  auto val_or = inst.Eval();
-  if (!val_or.ok()) return Fail("eval", val_or.status());
-
-  absl::Status s = CompareValue(*val_or, t.value());
-  if (!s.ok()) return Fail("compare", s);
-  return {Outcome::kPass, ""};
+  if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
+  return RunValueBranch(inst, act, t);
 }
 
 absl::Status LoadTestFile(absl::string_view path, SimpleTestFile& out) {

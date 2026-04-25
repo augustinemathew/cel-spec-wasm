@@ -59,6 +59,36 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
                         BinaryenTypeNone());
   const BinaryenType alloc_params[1] = {i32};
   mod.AddFunctionImport("cel_alloc", "cel", "cel_alloc", alloc_params, i32);
+  // cel_host.cel_get_field + cel_host.cel_has_field trampolines
+  // (M2.C / M2.D).  Always imported — the runtime links the
+  // cel_host module unconditionally (see memory "No lazy tracking
+  // of runtime imports").
+  const BinaryenType host_params[4] = {i32, i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelHostGetFieldInternalName), "cel_host",
+                        "cel_get_field", host_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
+                        "cel_has_field", host_params, BinaryenTypeNone());
+
+  // M3.F: map literal + indexing runtime entry points.  `cel_map_*`
+  // come from the runtime module; `cel_host.cel_map_lookup` is the
+  // host trampoline arm of the kDynamic dispatcher (see
+  // map-list-dispatch.md §3 + §5).  Same "always imported" rule —
+  // codegen emits these calls iff the program contains map ops, but
+  // unused imports are harmless (Binaryen drops them at validate).
+  const BinaryenType map_create_params[2] = {i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapCreateInternalName), "cel",
+                        "cel_map_create", map_create_params,
+                        BinaryenTypeNone());
+  const BinaryenType map3_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
+                        "cel_map_insert", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
+                        "cel_map_lookup_arena", map3_params,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
   return absl::OkStatus();
 }
 
@@ -66,9 +96,9 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
 // serialised `celwasm.abi.CelAbi` proto populated from the
 // compile-time layout.  Engine::Plan reads it at load time to build
 // the runtime lookup tables Instance::Eval(Activation) needs.
-absl::Status AttachCelAbiSection(WasmModule& module,
-                                 const StaticLayout& layout) {
-  auto abi_or = BuildCelAbi(layout);
+absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
+                                 absl::Span<const FieldRefRow> field_refs) {
+  auto abi_or = BuildCelAbi(layout, field_refs);
   if (!abi_or.ok()) return abi_or.status();
   std::string abi_bytes;
   if (!abi_or->SerializeToString(&abi_bytes)) {
@@ -139,7 +169,11 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
 
   out.module.ExportFunction(opts.eval_internal_name, opts.eval_export_name);
 
-  if (auto s = AttachCelAbiSection(out.module, out.layout); !s.ok()) return s;
+  if (auto s = AttachCelAbiSection(out.module, out.layout,
+                                   absl::MakeConstSpan(out.eval_fn.field_refs));
+      !s.ok()) {
+    return s;
+  }
   if (auto s = FinaliseModule(out, opts); !s.ok()) return s;
   return out;
 }

@@ -10,3 +10,6 @@ compile_commands.json
 
 # clangd IDE cache.
 .cache/
+
+# scripts/build_lint_pch.sh output — speeds clang-tidy via -include-pch.
+.lint-cache/

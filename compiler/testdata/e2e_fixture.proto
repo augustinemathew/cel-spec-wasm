@@ -23,9 +23,12 @@
 // equality) has a ready-made submessage to reference without another
 // churn in this file.
 //
-// IMPORTANT: keep fields singular for now — map / repeated / enum
-// coverage belongs to M5+ and will add sibling messages, not mutate
-// these.
+// Scalar singletons cover every `LoadSelectPayload` arm (M2);
+// `metadata` (map<string,string>) and `tier_quotas` (map<string,int32>)
+// cover the M3 proto-map dispatch — `ProtoBacking::ReadField` on a
+// MAP field returns `Value::HostMap(ProtoMap{…})`, which the
+// `kCallExpr(_[_])` arm dispatches to `cel_host.cel_map_lookup`.
+// Repeated / enum coverage belongs to a later milestone.
 
 syntax = "proto3";
 
@@ -46,4 +49,12 @@ message Customer {
   bool   is_premium     = 7;
   bytes  session_token  = 8;
   Address billing_address = 9;
+
+  // M3 — proto map fields.  String-keyed and int-keyed variants so
+  // the `cel_host.cel_map_lookup` dispatch path can be exercised
+  // for both common key kinds without leaning on `host_fixture_proto3`'s
+  // exhaustive-key matrix (that file is owned by the host-surface
+  // unit tests; this fixture is the e2e domain stand-in).
+  map<string, string> metadata    = 10;
+  map<int32, int32>   tier_quotas = 11;
 }

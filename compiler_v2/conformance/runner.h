@@ -16,10 +16,14 @@
 //   - `kFail`         — anything else.  Treated as a regression by the
 //                       test wrapper; the binary form tallies them.
 //
-// The envelope is M1-specific: scalar `value:` matcher with no
-// declarations, no container, no bindings.  Each subsequent milestone
-// loosens one dimension (`Has(Ident(...))` in M2, `Call` arms in M3,
-// …) and updates the filter here in the same commit.
+// The envelope widens each milestone.  M1 accepts scalar `value:`
+// matchers only; M2 additionally accepts `unknown` / `any_unknowns`
+// matchers and routes them to `Instance::PartialEval`.  M3 admits
+// `map_value:` matchers — the `CompareValue` map arm decodes the
+// proto map entries and matches them order-agnostically against
+// the cel::Value's `HostMapBacking`.  Subsequent milestones loosen
+// further dimensions (error matchers in M4, list_value at the
+// lists slice, …) and update the filter here in the same commit.
 
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
@@ -53,19 +57,43 @@ struct Result {
 
 absl::string_view OutcomeName(Outcome o);
 
-// Returns true iff the test shape is one the M1 pipeline can even
-// attempt: no bindings, no type_env, no container, no macros disabled,
-// `check_only` unset, and the matcher is `value:` with a scalar kind
-// (null/bool/int64/uint64/double/string/bytes).  A false here short-
-// circuits to `kUnsupported` without compiling.
-bool IsM1Eligible(const cel::expr::conformance::test::SimpleTest& t);
+// Returns true iff the test shape is one the M3 pipeline can even
+// attempt: `check_only` and `disable_check` both unset, and the
+// matcher is one of
+//
+//   - `value:` with a scalar kind
+//     (null/bool/int64/uint64/double/string/bytes), or
+//   - `value:` with `map_value` (M3 — compared order-agnostically
+//     against the decoded `cel::Value`'s `HostMapBacking`), or
+//   - `unknown:` / `any_unknowns:` — routed to `PartialEval`.
+//
+// `bindings:` / `type_env:` / `container:` are NOT pre-filtered:
+// the harness-side marshaller (`binding_marshal.h`) attempts to
+// decode each entry into the public `cel::` surface and gracefully
+// returns `Unimplemented` (caller SKIPs) on aggregate / non-scalar
+// shapes.  This lets a single fixture file mix M3-eligible scalar
+// bindings with M6/M7 aggregate bindings and have only the
+// in-envelope tests graduate.
+//
+// A false here short-circuits to `kUnsupported` without compiling.
+bool IsInM3Envelope(const cel::expr::conformance::test::SimpleTest& t);
 
 // Compare a decoded `cel::Value` against the proto `cel.expr.Value`.
 // OK on equality, `FailedPrecondition` with a diff-ish payload on
 // mismatch, `InvalidArgument` if `want` is a kind the runner has no
-// comparison for (aggregates, etc. — caller should have short-
-// circuited via `IsM1Eligible` first).
+// comparison for (list_value / object_value / enum_value /
+// type_value — caller should have short-circuited via
+// `IsInM3Envelope` first).
 absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
+
+// Compare a `cel::Value` against an `UnknownSet` matcher.  OK iff
+// `got.IsUnknown()` — the matcher's `exprs` carry AST expression IDs
+// that our runtime-interned `AttributeId` can't be diffed against
+// without a per-run expr-id → attribute-id map, which the harness
+// doesn't plumb.  Upgrading to id-level equality is a future-work
+// item in `conformance/README.md`; for now the kind-level match is
+// enough to lock the PartialEval route end-to-end.
+absl::Status CompareUnknown(const cel::Value& got);
 
 // Run one test end-to-end using the shared compiler + engine
 // fixtures.  Never throws; always returns a `Result`.

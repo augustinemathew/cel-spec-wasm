@@ -102,10 +102,9 @@ Value Value::List(std::vector<Value> elements) {
   [[maybe_unused]] auto taken = std::move(elements);
   ABSL_CHECK(false) << "Value::List is a stub until M6 (lists + maps)";
 }
-Value Value::Map(std::vector<std::pair<Value, Value>> entries) {
-  [[maybe_unused]] auto taken = std::move(entries);
-  ABSL_CHECK(false) << "Value::Map is a stub until M6 (lists + maps)";
-}
+// Forwarded to api/internal/cel_host.cc — needs HostMap's complete
+// definition.  Same one-way dep rule as Value::Message.
+// Value Value::Map(...)  defined in cel_host.cc.
 Value Value::OwnedMessage(std::unique_ptr<google::protobuf::Message> m) {
   [[maybe_unused]] auto taken = std::move(m);
   ABSL_CHECK(false)
@@ -174,6 +173,20 @@ absl::StatusOr<const celwasm::HostMessageBacking*> Value::MessageBacking()
   if (kind_ != Kind::kMessage) return KindMismatch("message", kind_);
   return std::get<std::shared_ptr<celwasm::HostMessageBacking>>(payload_).get();
 }
+absl::StatusOr<std::shared_ptr<const celwasm::HostMessageBacking>>
+Value::SharedMessageBacking() const {
+  if (kind_ != Kind::kMessage) return KindMismatch("message", kind_);
+  return std::get<std::shared_ptr<celwasm::HostMessageBacking>>(payload_);
+}
+absl::StatusOr<const celwasm::HostMapBacking*> Value::MapBacking() const {
+  if (kind_ != Kind::kMap) return KindMismatch("map", kind_);
+  return std::get<std::shared_ptr<celwasm::HostMapBacking>>(payload_).get();
+}
+absl::StatusOr<std::shared_ptr<const celwasm::HostMapBacking>>
+Value::SharedMapBacking() const {
+  if (kind_ != Kind::kMap) return KindMismatch("map", kind_);
+  return std::get<std::shared_ptr<celwasm::HostMapBacking>>(payload_);
+}
 
 bool Value::StructurallyEquals(const Value& other) const {
   if (kind_ != other.kind_) return false;
@@ -220,9 +233,15 @@ bool Value::StructurallyEquals(const Value& other) const {
              std::get<std::shared_ptr<celwasm::HostMessageBacking>>(
                  other.payload_);
     }
+    case Kind::kMap: {
+      // Pointer-identity on the backing — same rationale as kMessage.
+      // Spec-compliant element-wise unordered map equality lands in
+      // M4 with `cel_map_eq`.
+      return std::get<std::shared_ptr<celwasm::HostMapBacking>>(payload_) ==
+             std::get<std::shared_ptr<celwasm::HostMapBacking>>(other.payload_);
+    }
     case Kind::kList:
-    case Kind::kMap:
-      ABSL_CHECK(false) << "StructurallyEquals on list/map is a stub until M6";
+      ABSL_CHECK(false) << "StructurallyEquals on list is a stub until M6";
   }
   ABSL_CHECK(false) << "unhandled Value::Kind = " << static_cast<int>(kind_);
 }

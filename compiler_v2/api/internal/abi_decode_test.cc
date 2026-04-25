@@ -1,29 +1,28 @@
 // Tests for abi_decode.  Covers:
-//   - Happy path: a hand-built wasm byte stream with a `cel.abi`
-//     custom section round-trips through FindCustomSection +
-//     DecodeCelAbiProto into a DecodedCelAbi.
-//   - End-to-end: compile `"x"` with `x:int` through the full
-//     pipeline, serialize, hand the bytes back to
-//     DecodeCelAbiFromWasm, verify the variable entry matches the
-//     StaticLayout the compiler emitted.
+//   - Happy path: hand-built wasm byte stream with a `cel.abi` custom
+//     section parses into a `celwasm::abi::CelAbi` proto.
+//   - End-to-end: compile `x` / `c.billing_address.city` through the
+//     full pipeline, serialize, re-decode, verify the proto matches
+//     the compiler's StaticLayout + LoweredFunction.
 //   - Error paths: malformed magic / version, missing section,
 //     truncated / invalid payload, truncated LEB128.
 
 #include "compiler_v2/api/internal/abi_decode.h"
 
 #include <cstdint>
-#include <cstring>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
 #include "compiler_v2/compile.h"
 #include "compiler_v2/ir/annotations.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -32,14 +31,20 @@ namespace {
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
 
-// ──────────────────────────────────────────────────────────────
-// Minimal wasm-module byte-stream builder.
-//
-// The decoder parses raw wasm bytes; driving real codegen from
-// every test would slow the suite and couple decoder correctness
-// to codegen bugs.  Instead, we hand-build the byte streams here.
-// ──────────────────────────────────────────────────────────────
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      return 0;
+    }();
 
+// Build the raw wasm byte stream for a single custom section.
+// The decoder parses wasm bytes; driving real codegen from every
+// test would slow the suite and couple decoder correctness to
+// codegen bugs, so we hand-build the byte streams here.
 void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value) {
   while (true) {
     uint8_t b = value & 0x7f;
@@ -54,18 +59,12 @@ void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value) {
 
 std::vector<uint8_t> MakeWasmWithCustomSection(absl::string_view name,
                                                absl::Span<const uint8_t> body) {
-  std::vector<uint8_t> out;
-  // Header.
-  out.insert(out.end(), {0x00, 0x61, 0x73, 0x6d});
-  uint32_t version = 1;
-  const auto* vb = reinterpret_cast<const uint8_t*>(&version);
-  out.insert(out.end(), vb, vb + 4);
-  // Custom section: id=0 + size + name_len + name + body.
+  std::vector<uint8_t> out = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
   std::vector<uint8_t> section;
   AppendLeb128U32(section, static_cast<uint32_t>(name.size()));
   section.insert(section.end(), name.begin(), name.end());
   section.insert(section.end(), body.begin(), body.end());
-  out.push_back(0);  // section_id
+  out.push_back(0);  // custom-section id
   AppendLeb128U32(out, static_cast<uint32_t>(section.size()));
   out.insert(out.end(), section.begin(), section.end());
   return out;
@@ -74,12 +73,10 @@ std::vector<uint8_t> MakeWasmWithCustomSection(absl::string_view name,
 std::vector<uint8_t> SerializeAbi(const celwasm::abi::CelAbi& abi) {
   std::string bytes;
   abi.SerializeToString(&bytes);
-  return std::vector<uint8_t>(bytes.begin(), bytes.end());
+  return {bytes.begin(), bytes.end()};
 }
 
-// ──────────────────────────────────────────────────────────────
-// Happy-path decode from a hand-built byte stream.
-// ──────────────────────────────────────────────────────────────
+// --- Happy path (hand-built byte stream) ---------------------------
 
 TEST(AbiDecodeTest, DecodesSingleVariableEntry) {
   celwasm::abi::CelAbi abi;
@@ -90,22 +87,15 @@ TEST(AbiDecodeTest, DecodesSingleVariableEntry) {
   v->set_slot_offset(16);
   v->set_repr(static_cast<uint32_t>(Repr::kInt));
 
-  std::vector<uint8_t> payload = SerializeAbi(abi);
-  std::vector<uint8_t> wasm = MakeWasmWithCustomSection("cel.abi", payload);
-
-  auto decoded = DecodeCelAbiFromWasm(wasm);
+  auto decoded = DecodeCelAbiFromWasm(
+      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
   ASSERT_THAT(decoded, IsOk());
-  EXPECT_EQ(decoded->version, 1u);
-  ASSERT_EQ(decoded->variables.size(), 1u);
-  EXPECT_EQ(decoded->variables[0].name, "x");
-  EXPECT_EQ(decoded->variables[0].local_index, 0u);
-  EXPECT_EQ(decoded->variables[0].slot_offset, 16u);
-  EXPECT_EQ(decoded->variables[0].repr, Repr::kInt);
-
-  // Name index populated.
-  auto it = decoded->by_name.find("x");
-  ASSERT_NE(it, decoded->by_name.end());
-  EXPECT_EQ(it->second, &decoded->variables[0]);
+  EXPECT_EQ(decoded->version(), 1u);
+  ASSERT_EQ(decoded->variables_size(), 1);
+  EXPECT_EQ(decoded->variables(0).name(), "x");
+  EXPECT_EQ(decoded->variables(0).local_index(), 0u);
+  EXPECT_EQ(decoded->variables(0).slot_offset(), 16u);
+  EXPECT_EQ(DecodeRepr(decoded->variables(0).repr()), Repr::kInt);
 }
 
 TEST(AbiDecodeTest, DecodesMultipleVariablesInOrder) {
@@ -115,28 +105,24 @@ TEST(AbiDecodeTest, DecodesMultipleVariablesInOrder) {
     auto* v = abi.add_variables();
     v->set_name(absl::StrCat("v", i));
     v->set_local_index(i);
-    v->set_slot_offset(16 + i * 24);
+    v->set_slot_offset(16 + (i * 24));
     v->set_repr(static_cast<uint32_t>(Repr::kInt));
   }
-  std::vector<uint8_t> wasm =
-      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi));
-  auto decoded = DecodeCelAbiFromWasm(wasm);
+  auto decoded = DecodeCelAbiFromWasm(
+      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
   ASSERT_THAT(decoded, IsOk());
-  ASSERT_EQ(decoded->variables.size(), 4u);
+  ASSERT_EQ(decoded->variables_size(), 4);
   for (uint32_t i = 0; i < 4; ++i) {
-    EXPECT_EQ(decoded->variables[i].name, absl::StrCat("v", i));
-    EXPECT_EQ(decoded->variables[i].local_index, i);
-    EXPECT_EQ(decoded->variables[i].slot_offset, 16 + i * 24);
+    EXPECT_EQ(decoded->variables(i).name(), absl::StrCat("v", i));
+    EXPECT_EQ(decoded->variables(i).local_index(), i);
+    EXPECT_EQ(decoded->variables(i).slot_offset(), 16 + (i * 24));
   }
-  EXPECT_EQ(decoded->by_name.size(), 4u);
 }
 
 TEST(AbiDecodeTest, DecodesEveryScalarRepr) {
-  // Locks the Repr u32 <-> enum mapping: one variable per Repr the
-  // host marshal knows how to encode at M2.B (scalars + null).
   struct Case {
-    absl::string_view name;
-    Repr repr;
+    absl::string_view name = "";
+    Repr repr = Repr::kUnknown;
   };
   const Case cases[] = {
       {"n", Repr::kNull},  {"b", Repr::kBool},       {"i", Repr::kInt},
@@ -150,48 +136,35 @@ TEST(AbiDecodeTest, DecodesEveryScalarRepr) {
     auto* v = abi.add_variables();
     v->set_name(std::string(c.name));
     v->set_local_index(idx);
-    v->set_slot_offset(16 + idx * 24);
+    v->set_slot_offset(16 + (idx * 24));
     v->set_repr(static_cast<uint32_t>(c.repr));
     ++idx;
   }
-  std::vector<uint8_t> wasm =
-      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi));
-  auto decoded = DecodeCelAbiFromWasm(wasm);
+  auto decoded = DecodeCelAbiFromWasm(
+      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
   ASSERT_THAT(decoded, IsOk());
-  ASSERT_EQ(decoded->variables.size(), static_cast<size_t>(std::size(cases)));
+  ASSERT_EQ(decoded->variables_size(), static_cast<int>(std::size(cases)));
   for (size_t i = 0; i < std::size(cases); ++i) {
-    EXPECT_EQ(decoded->variables[i].repr, cases[i].repr)
+    EXPECT_EQ(DecodeRepr(decoded->variables(i).repr()), cases[i].repr)
         << "case " << i << " name=" << cases[i].name;
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-// End-to-end: feed real compiler output through the decoder.
-// ──────────────────────────────────────────────────────────────
+// --- End-to-end (real compiler output) -----------------------------
 
 TEST(AbiDecodeTest, RoundTripsCompilerOutput) {
   CompileOptions opts;
   opts.check.variable_specs = {"x:int"};
   auto artifact = Compile("x", opts);
   ASSERT_THAT(artifact, IsOk());
-
   auto decoded = DecodeCelAbiFromWasm(artifact->wasm_bytes);
   ASSERT_THAT(decoded, IsOk());
-  ASSERT_EQ(decoded->variables.size(), 1u);
-  const auto& v = decoded->variables[0];
-  EXPECT_EQ(v.name, "x");
-  EXPECT_EQ(v.local_index, 0u);
-  EXPECT_EQ(v.slot_offset, artifact->layout.variables[0].slot_offset);
-  EXPECT_EQ(v.repr, Repr::kInt);
-}
-
-TEST(AbiDecodeTest, RoundTripsMultipleVariablesFromCompiler) {
-  // Multi-variable expressions require a kCall root (`b || s == "" ||
-  // i > 0`) which expr_lower rejects until M3.  The hand-built
-  // DecodesMultipleVariablesInOrder test above already covers the
-  // decoder side; skip this scenario until M3 unlocks compiling it
-  // end-to-end.
-  GTEST_SKIP() << "multi-variable round-trip needs M3 kCall-as-root";
+  ASSERT_EQ(decoded->variables_size(), 1);
+  EXPECT_EQ(decoded->variables(0).name(), "x");
+  EXPECT_EQ(decoded->variables(0).local_index(), 0u);
+  EXPECT_EQ(decoded->variables(0).slot_offset(),
+            artifact->layout.variables[0].slot_offset);
+  EXPECT_EQ(DecodeRepr(decoded->variables(0).repr()), Repr::kInt);
 }
 
 TEST(AbiDecodeTest, RoundTripsEveryScalarReprFromCompiler) {
@@ -203,94 +176,101 @@ TEST(AbiDecodeTest, RoundTripsEveryScalarReprFromCompiler) {
     ASSERT_THAT(artifact, IsOk()) << spec;
     auto decoded = DecodeCelAbiFromWasm(artifact->wasm_bytes);
     ASSERT_THAT(decoded, IsOk()) << spec;
-    ASSERT_EQ(decoded->variables.size(), 1u) << spec;
-    EXPECT_EQ(decoded->variables[0].name, "x") << spec;
-    EXPECT_EQ(decoded->variables[0].slot_offset,
+    ASSERT_EQ(decoded->variables_size(), 1) << spec;
+    EXPECT_EQ(decoded->variables(0).name(), "x") << spec;
+    EXPECT_EQ(decoded->variables(0).slot_offset(),
               artifact->layout.variables[0].slot_offset)
         << spec;
   }
 }
 
-TEST(AbiDecodeTest, RoundTripsWithLiteralOnlyProgramEmitsEmptyAbi) {
-  // `42` — no variables.  ABI section is still emitted (an empty
-  // CelAbi); decoder should return a DecodedCelAbi with version=1
-  // and variables.empty().
+TEST(AbiDecodeTest, RoundTripsWithLiteralOnlyProgramEmitsSentinelOnly) {
+  // `42` — no variables.  LoweredFunction always emits the sentinel
+  // field-ref row so the trampoline's bounds check stays uniform.
   auto artifact = Compile("42", {});
   ASSERT_THAT(artifact, IsOk());
   auto decoded = DecodeCelAbiFromWasm(artifact->wasm_bytes);
   ASSERT_THAT(decoded, IsOk());
-  EXPECT_EQ(decoded->version, 1u);
-  EXPECT_TRUE(decoded->variables.empty());
+  EXPECT_EQ(decoded->version(), 1u);
+  EXPECT_EQ(decoded->variables_size(), 0);
+  ASSERT_EQ(decoded->fields_size(), 1);
+  EXPECT_EQ(decoded->fields(0).field_number(), 0u);
+  EXPECT_EQ(decoded->fields(0).name(), "");
 }
 
-// ──────────────────────────────────────────────────────────────
-// Error paths.
-// ──────────────────────────────────────────────────────────────
+TEST(AbiDecodeTest, RoundTripsFieldRefsFromCompiler) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"c:celwasm.testdata.Customer"};
+  auto artifact = Compile("c.billing_address.city", opts);
+  ASSERT_THAT(artifact, IsOk());
+  auto decoded = DecodeCelAbiFromWasm(artifact->wasm_bytes);
+  ASSERT_THAT(decoded, IsOk());
+  // Sentinel + billing_address + city = 3 rows (post-order walk).
+  ASSERT_EQ(decoded->fields_size(), 3);
+  EXPECT_EQ(decoded->fields(0).field_number(), 0u);
+  EXPECT_EQ(decoded->fields(1).name(), "billing_address");
+  EXPECT_EQ(decoded->fields(1).field_number(), 9u);
+  EXPECT_EQ(decoded->fields(1).owner_fqn(), "celwasm.testdata.Customer");
+  EXPECT_EQ(decoded->fields(2).name(), "city");
+  EXPECT_EQ(decoded->fields(2).field_number(), 1u);
+  EXPECT_EQ(decoded->fields(2).owner_fqn(), "celwasm.testdata.Address");
+}
+
+// --- Error paths ---------------------------------------------------
 
 TEST(AbiDecodeErrorTest, FailsOnTooShortStream) {
-  std::vector<uint8_t> too_short = {0x00, 0x61, 0x73};  // 3 bytes
-  EXPECT_THAT(DecodeCelAbiFromWasm(too_short),
+  EXPECT_THAT(DecodeCelAbiFromWasm(std::vector<uint8_t>{0x00, 0x61, 0x73}),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AbiDecodeErrorTest, FailsOnBadMagic) {
-  std::vector<uint8_t> bad_magic = {0xff, 0xff, 0xff, 0xff,
-                                    0x01, 0x00, 0x00, 0x00};
-  EXPECT_THAT(DecodeCelAbiFromWasm(bad_magic),
+  EXPECT_THAT(DecodeCelAbiFromWasm(std::vector<uint8_t>{
+                  0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00}),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AbiDecodeErrorTest, FailsOnUnsupportedVersion) {
-  std::vector<uint8_t> bad_ver = {0x00, 0x61, 0x73, 0x6d,
-                                  0x02, 0x00, 0x00, 0x00};
-  EXPECT_THAT(DecodeCelAbiFromWasm(bad_ver),
+  EXPECT_THAT(DecodeCelAbiFromWasm(std::vector<uint8_t>{
+                  0x00, 0x61, 0x73, 0x6d, 0x02, 0x00, 0x00, 0x00}),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AbiDecodeErrorTest, ReturnsNotFoundWhenSectionIsMissing) {
-  // Valid wasm header but no sections — decoder walks to EOF
-  // without finding cel.abi.
-  std::vector<uint8_t> empty_module = {0x00, 0x61, 0x73, 0x6d,
-                                       0x01, 0x00, 0x00, 0x00};
-  EXPECT_THAT(DecodeCelAbiFromWasm(empty_module),
+  EXPECT_THAT(DecodeCelAbiFromWasm(std::vector<uint8_t>{
+                  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}),
               StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST(AbiDecodeErrorTest, ReturnsNotFoundWhenOtherCustomSectionsPresent) {
-  std::vector<uint8_t> other = {'n', 'o', 't'};
-  std::vector<uint8_t> wasm = MakeWasmWithCustomSection("name", other);
-  EXPECT_THAT(DecodeCelAbiFromWasm(wasm),
+  EXPECT_THAT(DecodeCelAbiFromWasm(MakeWasmWithCustomSection(
+                  "name", std::vector<uint8_t>{'n', 'o', 't'})),
               StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST(AbiDecodeErrorTest, FailsOnMalformedAbiPayload) {
-  std::vector<uint8_t> garbage = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-  std::vector<uint8_t> wasm = MakeWasmWithCustomSection("cel.abi", garbage);
-  EXPECT_THAT(DecodeCelAbiFromWasm(wasm),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(
+      DecodeCelAbiFromWasm(MakeWasmWithCustomSection(
+          "cel.abi", std::vector<uint8_t>{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})),
+      StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AbiDecodeErrorTest, FailsOnTruncatedSection) {
-  // Hand-craft a module whose first section claims size=100 but the
-  // bytes run out after 5.  FindCustomSection should fail with
-  // InvalidArgument, not crash or silently skip.
   std::vector<uint8_t> wasm = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
-  wasm.push_back(0);    // section_id = 0 (custom)
-  wasm.push_back(100);  // LEB128 100 — claims 100 bytes follow
-  // ...but only 5 follow.
-  for (int i = 0; i < 5; ++i)
+  wasm.push_back(0);    // custom-section id
+  wasm.push_back(100);  // claims 100 bytes follow
+  for (int i = 0; i < 5; ++i) {
     wasm.push_back(0);
+  }
   EXPECT_THAT(DecodeCelAbiFromWasm(wasm),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AbiDecodeErrorTest, FailsOnOversizeLeb128) {
-  // LEB128 encoding of a section size that keeps the continuation
-  // bit set for more than 5 bytes.
   std::vector<uint8_t> wasm = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
-  wasm.push_back(0);  // section_id
-  for (int i = 0; i < 6; ++i)
+  wasm.push_back(0);
+  for (int i = 0; i < 6; ++i) {
     wasm.push_back(0x80);  // all continuation
+  }
   EXPECT_THAT(DecodeCelAbiFromWasm(wasm),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }

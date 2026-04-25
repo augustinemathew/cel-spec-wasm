@@ -129,28 +129,244 @@ std::vector<BinaryenExpressionRef> EmitVariablePrelude(
   return out;
 }
 
-// Emits the instruction that supplies `$eval`'s return i32 — the
-// offset of the root expression's CelValue.  Dispatches on the root's
-// kind; non-M2 kinds fail with Unimplemented.
-absl::StatusOr<BinaryenExpressionRef> EmitRoot(WasmModule& mod,
-                                               const cel::Expr& root,
-                                               const NodeAnnotation& ann) {
-  switch (root.kind_case()) {
+// Shared per-eval emission context — threaded through every `Emit`
+// call so kSelect can recurse into its operand and append field-ref
+// rows without signature churn.
+struct EmitCtx {
+  WasmModule& mod;
+  const TypedAst& ast;
+  const StaticLayout& layout;
+  std::vector<FieldRefRow>& field_refs;
+};
+
+absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
+
+// Lookup the fully-qualified name of the message type of `expr`'s
+// static type, or "" if it isn't a message.  `cel.abi.fields[].
+// owner_fqn` uses this at Plan time to resolve the descriptor the
+// backing will dispatch through.
+std::string MessageTypeFqn(const TypedAst& ast, const cel::Expr& expr) {
+  const auto& type_map = ast.ast().type_map();
+  auto it = type_map.find(expr.id());
+  if (it == type_map.end() || !it->second.has_message_type()) return "";
+  return it->second.message_type().type();
+}
+
+absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
+                                                  const cel::Expr& expr,
+                                                  const cel::SelectExpr& sel,
+                                                  const NodeAnnotation& ann) {
+  // Recurse into operand — its block/leaf produces an i32 that is
+  // the wasm-memory offset of the operand's CelValue (workspace
+  // slot for a nested select, the variable's slot for an ident).
+  auto operand_or = Emit(ctx, sel.operand());
+  if (!operand_or.ok()) return operand_or.status();
+
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kSelect expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  const uint32_t out_slot = ann.storage.payload;
+
+  // Append a new field-ref row.  `field_refs.size()` at this point
+  // is also the dense id for the new row (the sentinel at index 0
+  // is pushed once in LowerToEvalFunction before the walk starts).
+  const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
+  ctx.field_refs.push_back(FieldRefRow{
+      /*field_number=*/ann.field_number,
+      /*name=*/sel.field(),
+      /*owner_fqn=*/MessageTypeFqn(ctx.ast, sel.operand()),
+  });
+
+  // attribute_id is the OPERAND's attribute id — the trampoline
+  // looks up that path and appends `sel.field()` at runtime.  0
+  // when the operand isn't path-bearing (literal, kCall, …); the
+  // trampoline treats 0 as "no unknown-pattern match possible".
+  const NodeAnnotation* op_ann =
+      ctx.layout.annotations.Find(sel.operand().id());
+  const uint32_t attribute_id = op_ann != nullptr ? op_ann->attribute_id : 0;
+  BinaryenExpressionRef args[4] = {
+      I32Const(ctx.mod, out_slot),
+      *operand_or,
+      I32Const(ctx.mod, field_ref_id),
+      I32Const(ctx.mod, attribute_id),
+  };
+  // test_only=true routes to cel_has_field (returns Bool);
+  // otherwise cel_get_field (returns the field's CelValue).
+  const absl::string_view target_view = sel.test_only()
+                                            ? kCelHostHasFieldInternalName
+                                            : kCelHostGetFieldInternalName;
+  const std::string internal_name(target_view);
+  BinaryenExpressionRef call = BinaryenCall(
+      ctx.mod.raw(), internal_name.c_str(), args, 4, BinaryenTypeNone());
+
+  // Wrap (call, i32.const out_slot) in a block whose value is the
+  // out_slot i32 — usable as msg_slot of a parent kSelect.
+  BinaryenExpressionRef block_items[2] = {call, I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
+// Emits `(call $cel.cel_map_create (i32.const out_slot) (i32.const N))`.
+// out_slot is the workspace offset LayoutPass assigned to the
+// kMapExpr; N is the entry count, used to size the arena allocation.
+BinaryenExpressionRef EmitCelMapCreateCall(WasmModule& mod, uint32_t out_slot,
+                                           uint32_t capacity) {
+  BinaryenExpressionRef args[2] = {I32Const(mod, out_slot),
+                                   I32Const(mod, capacity)};
+  const std::string name(kCelMapCreateInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+}
+
+// Emits `(call $cel.cel_map_insert <out_slot> <key_expr> <value_expr>)`.
+// `key_expr` and `value_expr` are i32-valued sub-expressions whose
+// values at runtime are linear-memory offsets of the key/value's
+// CelValue (rodata for kConst, workspace slot for everything else).
+BinaryenExpressionRef EmitCelMapInsertCall(WasmModule& mod, uint32_t out_slot,
+                                           BinaryenExpressionRef key,
+                                           BinaryenExpressionRef value) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, out_slot), key, value};
+  const std::string name(kCelMapInsertInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
+// Lowers a kMapExpr to:
+//   (call $cel.cel_map_create out_slot N)
+//   for each entry:
+//     <eval key>           -> i32 key_offset
+//     <eval value>         -> i32 value_offset
+//     (call $cel.cel_map_insert out_slot key_offset value_offset)
+//   (i32.const out_slot)
+// wrapped in a (block (result i32)) whose value is `out_slot`.
+absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
+                                                   const cel::Expr& expr,
+                                                   const cel::MapExpr& m,
+                                                   const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kMapExpr expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  const uint32_t out_slot = ann.storage.payload;
+  const auto N = static_cast<uint32_t>(m.entries().size());
+
+  std::vector<BinaryenExpressionRef> instrs;
+  instrs.reserve(2u + 3u * N);
+  instrs.push_back(EmitCelMapCreateCall(ctx.mod, out_slot, N));
+
+  for (const cel::MapExprEntry& e : m.entries()) {
+    ABSL_CHECK(!e.optional())
+        << "expr_lower: kMapExpr expr_id=" << expr.id()
+        << " entry id=" << e.id() << " is optional — stub until M5";
+    auto key_or = Emit(ctx, e.key());
+    if (!key_or.ok()) return key_or.status();
+    auto val_or = Emit(ctx, e.value());
+    if (!val_or.ok()) return val_or.status();
+    instrs.push_back(EmitCelMapInsertCall(ctx.mod, out_slot, *key_or, *val_or));
+  }
+
+  // Block-trailer i32 yields the map's slot offset for parent
+  // expressions (e.g. an index call or a return).
+  instrs.push_back(I32Const(ctx.mod, out_slot));
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
+                       static_cast<BinaryenIndex>(instrs.size()),
+                       BinaryenTypeInt32());
+}
+
+// Selects the runtime entry point for a `_[_]` indexing call based
+// on the operand's `map_origin`.  M3.F three-path dispatch (per
+// `map-list-dispatch.md` §2.6 / m3-map-literals.md §2.9):
+//   kArena    → cel.cel_map_lookup_arena (pure wasm fast path)
+//   kHost     → cel_host.cel_map_lookup  (host trampoline)
+//   kDynamic  → cel.cel_map_lookup       (the runtime dispatcher)
+absl::string_view LookupCallTarget(Origin origin) {
+  switch (origin) {
+    case Origin::kArena:
+      return kCelMapLookupArenaInternalName;
+    case Origin::kHost:
+      return kCelHostMapLookupInternalName;
+    case Origin::kDynamic:
+      return kCelMapLookupInternalName;
+  }
+  ABSL_CHECK(false) << "expr_lower: unknown Origin "
+                    << static_cast<int>(origin);
+}
+
+absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(EmitCtx& ctx,
+                                                     const cel::Expr& expr,
+                                                     const cel::CallExpr& call,
+                                                     const NodeAnnotation& ann) {
+  // CEL's `_[_]` is a binary operator: args[0] = collection,
+  // args[1] = index.  `target` (receiver) form is not used at M3 —
+  // the parser materialises the operand as args[0].
+  ABSL_CHECK(call.args().size() == 2)
+      << "expr_lower: `_[_]` expr_id=" << expr.id() << " has "
+      << call.args().size() << " args (expected 2)";
+  const cel::Expr& operand_expr = call.args()[0];
+  const cel::Expr& key_expr = call.args()[1];
+
+  auto operand_or = Emit(ctx, operand_expr);
+  if (!operand_or.ok()) return operand_or.status();
+  auto key_or = Emit(ctx, key_expr);
+  if (!key_or.ok()) return key_or.status();
+
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  const uint32_t out_slot = ann.storage.payload;
+
+  // Origin comes from the OPERAND, not the call: a kSelect over a
+  // proto map field stamps `kHost` on its own annotation, and `m[k]`
+  // reads that origin off `m` (operand) — same shape M2 uses for
+  // attribute-id propagation.
+  const NodeAnnotation* op_ann = ctx.layout.annotations.Find(operand_expr.id());
+  const Origin origin = op_ann != nullptr ? op_ann->map_origin : Origin::kDynamic;
+  const std::string target(LookupCallTarget(origin));
+
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot), *operand_or,
+                                   *key_or};
+  BinaryenExpressionRef call_expr = BinaryenCall(
+      ctx.mod.raw(), target.c_str(), args, 3, BinaryenTypeNone());
+
+  BinaryenExpressionRef block_items[2] = {call_expr, I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
+// Emits an i32-valued expression for any supported kind; the value is
+// always the linear-memory offset of that expression's CelValue.
+absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
+                                           const cel::Expr& expr) {
+  const NodeAnnotation* ann = ctx.layout.annotations.Find(expr.id());
+  if (ann == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("expr_lower: expr id ", expr.id(),
+                     " has no NodeAnnotation — LayoutPass was not run"));
+  }
+  switch (expr.kind_case()) {
     case cel::ExprKindCase::kConstant:
-      return EmitKConstLoad(mod, ann);
+      return EmitKConstLoad(ctx.mod, *ann);
     case cel::ExprKindCase::kIdentExpr:
-      return EmitKIdentLoad(mod, ann);
+      return EmitKIdentLoad(ctx.mod, *ann);
     case cel::ExprKindCase::kSelectExpr:
+      return EmitKSelect(ctx, expr, expr.select_expr(), *ann);
     case cel::ExprKindCase::kCallExpr:
+      // M3.F: only the indexing operator `_[_]` is lowered.  Other
+      // kCall variants (arithmetic, comparison, logical, custom)
+      // land at later milestones; surface as Unimplemented so the
+      // pipeline rejects deterministically rather than silently
+      // dropping the call.
+      if (expr.call_expr().function() == "_[_]") {
+        return EmitKIndexCall(ctx, expr, expr.call_expr(), *ann);
+      }
+      return Unimplemented(expr.kind_case(), expr.id());
+    case cel::ExprKindCase::kMapExpr:
+      return EmitKMapExpr(ctx, expr, expr.map_expr(), *ann);
     case cel::ExprKindCase::kListExpr:
     case cel::ExprKindCase::kStructExpr:
-    case cel::ExprKindCase::kMapExpr:
     case cel::ExprKindCase::kComprehensionExpr:
     case cel::ExprKindCase::kUnspecifiedExpr:
-      return Unimplemented(root.kind_case(), root.id());
+      return Unimplemented(expr.kind_case(), expr.id());
   }
-  ABSL_CHECK(false) << "EmitRoot: unknown ExprKindCase "
-                    << static_cast<int>(root.kind_case());
+  ABSL_CHECK(false) << "Emit: unknown ExprKindCase "
+                    << static_cast<int>(expr.kind_case());
 }
 
 }  // namespace
@@ -161,15 +377,14 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
-  const cel::Expr& root = ast.ast().root_expr();
-  const NodeAnnotation* ann = layout.annotations.Find(root.id());
-  if (ann == nullptr) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("expr_lower: root expr id ", root.id(),
-                     " has no NodeAnnotation — LayoutPass was not run"));
-  }
+  // field_refs[0] is the reserved "not proto-resolvable" sentinel;
+  // subsequent rows are pushed by EmitKSelect as the walk emits each
+  // select.
+  std::vector<FieldRefRow> field_refs;
+  field_refs.push_back(FieldRefRow{});
+  EmitCtx ctx{mod, ast, layout, field_refs};
 
-  auto root_ref = EmitRoot(mod, root, *ann);
+  auto root_ref = Emit(ctx, ast.ast().root_expr());
   if (!root_ref.ok()) return root_ref.status();
 
   // `$eval` body shape:
@@ -206,7 +421,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   ABSL_CHECK(func != nullptr)
       << "expr_lower: Binaryen did not register function `" << func_name
       << "` after AddFunction";
-  return LoweredFunction{func};
+  return LoweredFunction{func, std::move(field_refs)};
 }
 
 }  // namespace celwasm

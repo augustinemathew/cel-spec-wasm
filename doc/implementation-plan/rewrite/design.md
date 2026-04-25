@@ -1881,26 +1881,36 @@ each milestone adds and how the existing design absorbs it.
 
 ### 10.1 Unknowns and `Activation` (M2) — how this design absorbs them
 
+**Status: shipped 2026-04-24.**  See
+`rewrite/m2-ident-select-unknowns.md` for the close-out pass.
+
 Scope change vs the original M1-plan "After M1" list: unknown
 propagation / partial evaluation was originally slated for M4
-alongside 3VL + message equality.  It moves to M2 because
+alongside 3VL + message equality.  It moved to M2 because
 `Activation` is the natural home for attribute patterns
 (declaring "this path is unknown"), and `Activation` already
 ships in M2 as the vehicle for idents.  M4 now owns just 3VL
 + the error surface.  See `m1-scalar-pipeline.md §10` for the
-milestone list and `compiler_v2/conformance/README.md` for
-the conformance forecast this unlocks.
+milestone list and `compiler_v2/conformance/README.md` for the
+conformance forecast this unlocks.
 
 #### 10.1.1 What M2 adds
 
   - `kIdent` + `kSelect` arms in `expr_lower` (§7.2).
-  - `api/internal/cel_host.{h,cc}` with `cel_get_field` /
-    `cel_has_field` trampolines — transcribed from v1 M3 G2/G3.
-    Lives at `api/internal/` (not `host/`) because it's an
-    implementation detail of `Engine::Plan` — the only caller
-    that registers these imports on the linker — not a
-    public-host surface.  Precedent: `instance_impl.{h,cc}` +
+  - `api/internal/cel_host.{h,cc}` (Layer 1 backing semantics +
+    Layer 2 runtime-agnostic trampoline bodies) +
+    `api/internal/cel_host_wasmtime.{h,cc}` (Layer 3 wasmtime
+    glue) — transcribed from v1 M3 G2/G3.  Lives at
+    `api/internal/` (not `host/`) because it's an implementation
+    detail of `Engine::Plan` — the only caller that registers
+    these imports on the linker — not a public-host surface.
+    Precedent: `instance_impl.{h,cc}` +
     `wasmtime_engine_state.{h,cc}` already there.
+    > **Plan-vs-execution delta:** as-written §10.1.1 named a
+    > single `cel_host.{h,cc}` file.  As-shipped split Layer 3
+    > into its own TU so runtime-agnostic code (Layers 1–2) is
+    > free of wasmtime headers and the smoke-test harness can
+    > substitute fakes without linking wasmtime.
   - `cel::Activation` — user-facing class on the public API
     (`cel-host-surface.md` §2.6).  Carries `Bind(name, Value)`
     and `BindLazy(...)`.
@@ -1939,21 +1949,35 @@ the conformance forecast this unlocks.
 
 #### 10.1.3 Future-compat invariants
 
-M2 must preserve:
+M2 must preserve (verified at close-out 2026-04-24):
 
   - **No new `NodeAnnotation` fields, no new `StorageKind`.**
-    Idents + selects + unknowns all fit in today's fields.
-  - **Codegen stays oblivious to partial eval.** The same lowered
-    `$eval` body must produce concrete or unknown values purely
-    by runtime dispatch at `cel_host.cel_get_field` entry; no
-    compile-time branching on "might this be unknown."
-  - **`cel_reset` semantics survive.** An Instance that evaluated
-    once via `Eval(A)` and once via `PartialEval(A, [pattern])`
-    on the same bindings must not require re-planning.  The
-    unknown set is per-`Eval` / `PartialEval` call, not per-`Plan`.
-
-If M2 cannot meet these, the design is wrong and this doc updates
-before M2 lands, not after.
+    Idents + selects + unknowns fit in today's fields — verified.
+    > **Invariant relaxed, not broken.** M2 added three fields
+    > to `NodeAnnotation`: `attribute_id` (the unknown-pattern
+    > interning key that §10.1.2 anticipated) and `map_origin` /
+    > `list_origin` (forward-compat hooks for M6 — see
+    > `m2-ident-select-unknowns.md §2.8`).  The invariant's
+    > *intent* — idents / selects / unknowns need no schema
+    > change — is intact; the new fields exist for map/list
+    > origin inference that M6 codegen will exercise, not M2.
+    > No new `StorageKind` was added.
+  - **Codegen stays oblivious to partial eval.** ✓ The same
+    lowered `$eval` body produces concrete or unknown values
+    purely by runtime dispatch at `cel_host.cel_get_field`
+    entry; no compile-time branching on "might this be
+    unknown."  Verified via
+    `instance_test::InstancePartialEvalTest::NonMatchingPatternFallsThroughToRealValue`
+    (same module, different pattern sets, different outcomes).
+  - **`cel_reset` semantics survive.** ✓ An Instance that
+    evaluated once via `Eval(A)` and once via
+    `PartialEval(A, [pattern])` on the same bindings does not
+    require re-planning — the unknown set is per-`Eval` /
+    `PartialEval` call, stored on `CelHostCallbackEnv.bindings`
+    and reset after each call.  Verified via
+    `InstancePartialEvalTest::EmptyPatternSetBehavesLikeEval` +
+    `MatchingPatternAbsorbsSelectToUnknown` on the same
+    Instance.
 
 ### 10.2 Comprehensions (M5) — how this design absorbs them
 

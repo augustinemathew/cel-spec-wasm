@@ -32,6 +32,19 @@ struct ResolvedVariable {
   Repr repr = Repr::kUnknown;
 };
 
+// One row of the attribute intern table — one entry per distinct
+// (root_variable, qualifiers) path across the AST.  Indexed by
+// `NodeAnnotation::attribute_id`; id 0 is the sentinel "no
+// attribute" used on non-path-bearing nodes.  Populated by
+// `ResolvePass` (M2.E) by walking kIdent + kSelect post-order; the
+// trampoline reads this at cel_get_field time and appends the
+// selected field to construct the full attribute path for
+// unknown-pattern matching.
+struct AttributeEntryRow {
+  std::string root_variable;
+  std::vector<std::string> qualifiers;
+};
+
 // Output of the first codegen pipeline pass.  `annotations` carries `repr`
 // (every typed node), `field_number` (select nodes, M2.C+), `overload_id`
 // (call nodes, M3+), `local_index` (ident nodes, M2.B+), `scope_id`
@@ -52,6 +65,13 @@ struct ResolvedVariable {
 struct ResolveOutput {
   WasmAnnotations annotations;
   std::vector<ResolvedVariable> variables;
+
+  // Attribute intern table.  Entry 0 is the reserved "no attribute"
+  // sentinel; entries [1..N] are referenced by
+  // `NodeAnnotation::attribute_id` on kIdent + kSelect nodes.
+  // `BuildCelAbi` serialises this into `cel.abi.attributes[]`.
+  std::vector<AttributeEntryRow> attributes;
+
   uint32_t max_scope_id = 0;
 };
 

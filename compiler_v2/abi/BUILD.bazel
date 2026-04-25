@@ -25,9 +25,11 @@ cc_library(
     hdrs = ["cel_abi_emit.h"],
     deps = [
         ":cel_abi_cc_proto",
+        "//compiler_v2/codegen:expr_lower",
         "//compiler_v2/codegen:layout_pass",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -37,6 +39,7 @@ cc_test(
     deps = [
         ":cel_abi_cc_proto",
         ":cel_abi_emit",
+        "//compiler_v2/codegen:expr_lower",
         "//compiler_v2/codegen:layout_pass",
         "//compiler_v2/codegen:resolve_pass",
         "//compiler_v2/frontend:parse_and_check",
@@ -44,6 +47,7 @@ cc_test(
         "//compiler_v2/ir:typed_ast",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )

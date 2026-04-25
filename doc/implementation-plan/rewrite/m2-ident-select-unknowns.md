@@ -1,9 +1,74 @@
 # Rewrite M2 — idents, proto field reads, `Activation`, unknowns
 
-Status: **in progress — started 2026-04-23.**  Foundation (plan §2
-surfaces on the non-codegen side, ResolvePass + LayoutPass for
-idents, WAT-first prototyping infrastructure) has landed.  M2.B
-codegen + cel_host trampoline + PartialEval remain.
+Status: **shipped 2026-04-25.**  All slices M2.A–M2.F land
+end-to-end; `scripts/run_full_suite.sh` green (default suite +
+all manual-tagged targets); `bazel run
+//compiler_v2/conformance:run_conformance` shows
+`pass=203 / skip=1848 / fail=403` (up from M1 snapshot
+`178 / 1935 / 341` — +25 PASS from kSelect / has() / PartialEval
+graduating).
+
+> **Plan-vs-execution honesty note (2026-04-25).**  An earlier
+> commit marked this doc "shipped 2026-04-24," but a routine
+> validation that day found M2 was actually half-done: every
+> `SelectE2ETest` (12), `HasE2ETest` (6), and `UnknownE2ETest`
+> (7) test in `compiler_v2/e2e/m2_test.cc` had a fixture-level
+> `GTEST_SKIP` ("pending M2.C" / "pending M2.E") that hid the
+> gap from `bazel test //compiler_v2/...` (the e2e target is
+> tagged `manual`).  Today's commit closes the gap by:
+>
+>   1. Implementing `CelGetFieldImpl` / `CelHasFieldImpl` (M2.C.0b
+>      Layer-2 bodies — never landed in the original M2.C.0
+>      slice).
+>   2. Wiring `RegisterCelHostImports` into `Engine::Plan::InitLinker`
+>      and populating `host_env.memory` / `host_env.cel_alloc_fn`
+>      / `host_env.bindings` from the decoded ABI in
+>      `InstantiateRuntime`.
+>   3. Adding `EncodeMessage` to the activation marshaller so
+>      `Repr::kMessage`-bound variables intern into the
+>      externref table at `Eval(Activation)` time.
+>   4. Implementing `Instance::PartialEval` (M2.E) — the same
+>      marshal path with `unknown_patterns` populated, and the
+>      Layer-2 prelude consulting them via FULL-match against an
+>      *effective* attribute (operand attribute ⊕ field name).
+>   5. Removing the fixture-level `GTEST_SKIP`s in `m2_test.cc` —
+>      `SelectE2ETest` + `HasE2ETest` + `UnknownE2ETest` now all
+>      run green against the real wasmtime path.
+>
+> The follow-up doc `doc/implementation-plan/per-component-test-coverage.md`
+> codifies the closeout gate so this can't recur: a milestone
+> doesn't close until `scripts/run_full_suite.sh` is green
+> (default + manual-tagged), no fixture-level skips remain, and
+> the conformance README inventory is refreshed.
+
+What landed vs as-written plan:
+
+  - Ident + select + has + PartialEval end-to-end through the
+    `Compiler → Engine::Plan → Instance::Eval` pipeline.
+  - Three-layer `cel_host` split (Layer 1 backing semantics in
+    `internal/cel_host.{h,cc}`, Layer 2 runtime-agnostic
+    trampoline bodies, Layer 3 wasmtime glue in the dedicated
+    `internal/cel_host_wasmtime.{h,cc}`).  The as-written plan
+    lumped Layer 3 into the same file; splitting it kept
+    runtime-agnostic code free of wasmtime headers.
+  - `cel.abi` custom section now carries `variables[]`,
+    `fields[]`, `attributes[]` (each sentinel-at-0, dense); the
+    `types[]` + `patterns[]` sub-sections defer to M3+ as
+    planned.
+  - Mid-milestone simplifications: `abi_decode` returns proto
+    directly (mirror structs deleted), `RegisterMessageType`
+    dead API deleted, LE endianness static assertion added,
+    `(void)Foo::descriptor()` → `LinkMessageReflection<Foo>()`
+    across eight test files (consolidated into file-scope
+    `kDescriptorsLinked` static blocks).
+
+Follow-ups surfaced (see §8 Future work):
+
+  - Harness-side `ExprValue` → `cel::Activation` marshalling —
+    the gate for graduating `fields` / `namespace` / `macros`
+    fixtures in the conformance corpus.
+  - Conformance-harness expr-id → attribute-id map so
+    `UnknownSet.exprs` matching is id-level, not just kind-level.
 
 Parent: `design.md` (this directory).  Predecessor: `m1-scalar-pipeline.md`
 — the M1 skeleton that M2 fills in.  Companion: `cel-host-surface.md`
@@ -158,13 +223,83 @@ WAT-first rule added during M2).
 > is reserved for the ident-materialisation instructions at the
 > top of `$eval`.
 
+### Landed (2026-04-24)
+
+High-level per-slice summary.  The milestone doc's detailed
+close-out pass (as-shipped API walkthroughs, section-by-section
+plan-vs-execution deltas, checklist ticks) is a follow-up; this
+entry is a progress beacon so readers know the milestone is
+code-complete.
+
+  - **M2.A — `cel::Activation`.**  `api/activation.{h,cc}` +
+    tests; `Bind` / `BindLazy` / `Find` with lazy-once
+    memoisation.
+  - **M2.B — `kIdent` lowering + `Instance::Eval(Activation)` +
+    `cel.abi.variables[]`.**  Variable prelude emission,
+    workspace slots, ABI section decode at `Engine::Plan`.
+  - **M2.C.0a — Layer 1 `HostMessageBacking` / `ProtoBacking`.**
+    Pure backing semantics, arena-allocator aware.
+  - **M2.C.0b — Layer 2 `CelGetFieldImpl` / `CelHasFieldImpl`.**
+    Runtime-agnostic trampoline body shared across get/has.
+  - **M2.C.1 — `ResolvePass` preserves `field_number` +
+    `attribute_id`.**  Dense per-variable `local_index` + interned
+    attribute paths on ident + select chains.
+  - **M2.C.2 — `LayoutPass` workspace slots for `kSelect`.**
+    24-byte CelValue per select node at `workspace_base + n*24`.
+  - **M2.C.3 — `expr_lower kSelect` arm.**  Emits
+    `call $cel_host.cel_get_field` with operand + field-ref-id +
+    attribute-id + out-slot argument ordering.
+  - **M2.C.4 — `cel.abi.fields[]` serialisation.**  Dense
+    sentinel-at-0 field-ref table; `BuildCelAbi` takes
+    `absl::Span<const FieldRefRow>`.
+  - **M2.C.5 — Layer 3 wasmtime glue.**  New
+    `api/internal/cel_host_wasmtime.{h,cc}`; `CelHostCallbackEnv`
+    on `InstanceImpl`; `Engine::Plan` reorders to
+    decode-ABI → find-cel_alloc → build-bindings →
+    register-imports → instantiate.
+  - **M2.D — `has()` dispatch via `test_only`.**  Shared
+    `LowerSelectOperand` helper between get/has; `has()` returns
+    BOOL per `CelHasFieldImpl`.
+  - **M2.E — `AttributePattern` + `Instance::PartialEval`.**
+    `ResolvePass` interns `AttributeEntryRow` rows keyed by
+    path; `cel.abi.attributes[]` serialised; trampoline
+    consults `unknown_patterns` and returns
+    `CelValue{kind:CEL_UNKNOWN, payload:attribute_id}` on match.
+    `MarshalActivation` decodes unknowns back through
+    `Value::Unknown(AttributeId)`.
+  - **M2.F — Conformance harness envelope for unknowns.**
+    `runner::IsM1Eligible` → `IsInM2Envelope`; envelope now
+    admits `unknown` / `any_unknowns` matchers; `RunOne` routes
+    them to `Instance::PartialEval`; new `CompareUnknown`.
+    Headline unchanged from M1 snapshot
+    (`total=2454 · pass=178 · skip=1935 · fail=341`) — the
+    corpus has no tests using the unknown matchers, so the
+    widening is structural only.  Harness-side `bindings:` →
+    `cel::Activation` marshalling is a follow-up that would
+    graduate ~100 tests in `fields` / `namespace` / `macros`.
+
+**Bonus cleanups (off-plan, landed during M2.C–E):**
+
+  - `abi_decode.h` refactored to return `celwasm::abi::CelAbi`
+    directly — mirror structs (`DecodedCelAbi` / `DecodedVariable`
+    / `DecodedField` / `by_name`) dropped; ~120 LOC deleted.
+  - LE endianness static assertion in `runtime/cel_data.h` at
+    the `sizeof(CelValue) == 24` site (wasm is always LE;
+    host must match for the memcpy-based CelValue transfer).
+  - `Compiler::Builder::RegisterMessageType` deleted — dead API,
+    never read by any codepath.  `ProtoBacking` uses
+    `msg->GetDescriptor()` directly.
+  - Test-file sweep: `(void)Foo::descriptor()` →
+    `google::protobuf::LinkMessageReflection<Foo>()` consolidated
+    into file-scope `kDescriptorsLinked` static blocks across
+    eight test files.
+
 ### Open slices
 
-See `§5. Work breakdown (order of authoring)` below — every slice
-past M2.A / M2.B ResolvePass+LayoutPass is still open.  Immediate
-next: **M2.B.1 — expr_lower kIdent arm + `$eval` prelude
-emission**, targeting the shape locked by
-`doc/implementation-plan/rewrite/wat/02_ident_x.wat`.
+M2 is code-complete.  Detailed close-out (header status flip,
+section-by-section doc reconciliation, `testing-checklist.md`
+row ticks, `design.md` invariant verification) is the next
+follow-up — see `§7. Exit criteria` for the full list.
 
 ## 0. Why one milestone, not three
 
@@ -1205,6 +1340,44 @@ Flip these rows on `doc/implementation-plan/testing-checklist.md`
     cel-cpp memoises.  Mitigation: follow cel-cpp; test locks
     that the fn runs at most once per `Eval`, even if the
     expression references the variable multiple times.
+
+## 8. Future work
+
+Surfaced during M2 execution; not in scope of this milestone.
+
+  - **Conformance harness `ExprValue` → `cel::Activation`
+    marshalling.**  The envelope filter still rejects tests
+    with `bindings` / `type_env`.  Adding the scalar-ExprValue
+    path would graduate ~100 tests in
+    `fields.textproto` / `namespace.textproto` /
+    `macros.textproto::has()` without any further compiler
+    work — the runtime side already lands.
+  - **Conformance: expr-id → attribute-id mapping.**  `UnknownSet`
+    matchers carry AST expression IDs but our runtime-interned
+    `AttributeId` is opaque to the harness.  `CompareUnknown`
+    only locks the kind today.  A per-run side table built from
+    `ResolvePass` annotations would allow exact id-level
+    matching.
+  - **Harness: `typed_result:` matcher.**  `type_deduction.textproto`
+    (47 tests) is `check_only:true` with a deduced-type matcher;
+    envelope drops them today.  Running the checker and
+    comparing against `typed_result.deduced_type` unlocks all 47
+    without a milestone dependency.
+  - **Counting-trampoline test for `cel_alloc`-free fast path.**
+    M1's §11 deferred it; M2 didn't close it either.  Explicit
+    test that variable-free eval makes no `cel_alloc` call is
+    still useful as a perf-regression guard.
+  - **Descriptor pool indirection.**  `Compiler` accepts an
+    explicit pool via `--schema` / `--schema_descriptorset`;
+    fallback is the generated pool.  A future slice could make
+    the pool a first-class `Compiler::Builder` argument instead
+    of two mutually-exclusive CLI flags.
+  - **WAT coverage regression guard.**  `wat_runner_test.cc`
+    re-assembles every `.wat` under `doc/.../wat/`; M2's
+    kSelect / has / PartialEval WATs now live under that
+    directory.  Add byte-level disassembly equivalence tests
+    between emitted wasm and authored WAT (planned in CLAUDE.md
+    "WAT-first" but not ticketed as a specific test row).
 
 ## 10. After M2
 

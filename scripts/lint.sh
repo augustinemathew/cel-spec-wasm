@@ -84,8 +84,21 @@ if [[ ${#targets[@]} -eq 0 ]]; then
   exit 0
 fi
 
-echo "lint.sh: formatting ${#targets[@]} file(s) with $CLANG_FORMAT"
-"$CLANG_FORMAT" -i "${targets[@]}"
+# Filter to *.c/*.cc/*.h before clang-format.  clang-format will happily
+# rewrite anything you hand it as if it were C++ — passing a `.bazel`
+# or `.sh` here will silently corrupt the file.  Earlier versions of
+# this script pre-filtered up the call chain, but explicit guarding
+# here is the safer invariant.
+declare -a fmt_targets=()
+for f in "${targets[@]}"; do
+  case "$f" in
+    *.c|*.cc|*.h) fmt_targets+=("$f") ;;
+  esac
+done
+if [[ ${#fmt_targets[@]} -gt 0 ]]; then
+  echo "lint.sh: formatting ${#fmt_targets[@]} file(s) with $CLANG_FORMAT"
+  "$CLANG_FORMAT" -i "${fmt_targets[@]}"
+fi
 
 # clang-tidy. If compile_commands.json is missing we still try, but warn;
 # analysis without the DB is partial (missing include paths → many
@@ -98,7 +111,32 @@ else
   echo "  Run scripts/refresh_compile_db.sh before committing." >&2
 fi
 
-echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s)"
+# PCH speedup.  Build (or refresh) the precompiled-header up-front; it
+# amortises the absl + protobuf header parse across every C++ TU.  Best
+# effort — build failures fall back to no-PCH and emit a warning, never
+# break the lint.  PCH is C++-only; C TUs ignore it.
+PCH_PATH=".lint-cache/lint_pch.h.pch"
+declare -a cpp_pch_args=()
+if [[ -x scripts/build_lint_pch.sh && -f compile_commands.json ]]; then
+  if scripts/build_lint_pch.sh; then
+    if [[ -f "$PCH_PATH" ]]; then
+      cpp_pch_args+=("--extra-arg-before=-include-pch=$(pwd)/$PCH_PATH")
+    fi
+  else
+    echo "lint.sh: warning — PCH build failed; continuing without it." >&2
+  fi
+fi
+
+# Parallelism.  xargs -P fans clang-tidy out across cores, one file
+# per process (clang-tidy is itself single-threaded per invocation).
+# Override with `LINT_JOBS=N scripts/lint.sh`.
+JOBS="${LINT_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null \
+                     || nproc 2>/dev/null \
+                     || echo 4)}"
+
+pch_label="no"
+if [[ ${#cpp_pch_args[@]} -gt 0 ]]; then pch_label="yes"; fi
+echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s) — jobs=$JOBS, pch=$pch_label"
 
 # Split targets into C vs C++ groups. Bazel's compile_commands.json uses
 # `clang++` as the driver for every entry, even plain C files — which
@@ -119,10 +157,13 @@ done
 
 rc=0
 # `--warnings-as-errors=*` so *any* emitted warning becomes a non-zero
-# exit. The check set is driven by the repo-root .clang-tidy.
+# exit. The check set is driven by the repo-root .clang-tidy.  Each
+# block fans out via xargs -P so files within a group lint in parallel.
 if [[ ${#cpp_targets[@]} -gt 0 ]]; then
-  "$CLANG_TIDY" "${tidy_args[@]}" --warnings-as-errors='*' --quiet \
-      "${cpp_targets[@]}" || rc=$?
+  printf '%s\n' "${cpp_targets[@]}" \
+    | xargs -n 1 -P "$JOBS" "$CLANG_TIDY" "${tidy_args[@]}" \
+        "${cpp_pch_args[@]}" --warnings-as-errors='*' --quiet \
+    || rc=$?
 fi
 # Runtime .h files are freestanding C; don't pass `-p .` for them because
 # clang-tidy's basename-matching heuristic can otherwise pick up a C++
@@ -138,16 +179,22 @@ for f in "${c_targets[@]}"; do
   esac
 done
 if [[ ${#c_src_targets[@]} -gt 0 ]]; then
-  "$CLANG_TIDY" "${tidy_args[@]}" --extra-arg-before=-xc \
-      --warnings-as-errors='*' --quiet "${c_src_targets[@]}" || rc=$?
+  printf '%s\n' "${c_src_targets[@]}" \
+    | xargs -n 1 -P "$JOBS" "$CLANG_TIDY" "${tidy_args[@]}" \
+        --extra-arg-before=-xc --warnings-as-errors='*' --quiet \
+    || rc=$?
 fi
 if [[ ${#c_hdr_targets[@]} -gt 0 ]]; then
-  # Fixed-compilation-database form (`<file>... -- <flags>`) bypasses
+  # Fixed-compilation-database form (`<file> -- <flags>`) bypasses
   # compile_commands.json entirely; otherwise tidy's auto-detect walks
   # up to the repo root and its basename heuristic can pick up a
-  # sibling C++ entry that overrides `-xc`.
-  "$CLANG_TIDY" --warnings-as-errors='*' --quiet \
-      "${c_hdr_targets[@]}" -- -xc -I. || rc=$?
+  # sibling C++ entry that overrides `-xc`.  -I '{}' templates the
+  # filename in so xargs's `--` is consumed by xargs, not clang-tidy.
+  printf '%s\n' "${c_hdr_targets[@]}" \
+    | xargs -n 1 -P "$JOBS" -I '{}' \
+        "$CLANG_TIDY" --warnings-as-errors='*' --quiet \
+                      '{}' -- -xc -I. \
+    || rc=$?
 fi
 if [[ $rc -ne 0 ]]; then
   echo "lint.sh: clang-tidy reported warnings — see above." >&2

@@ -109,12 +109,6 @@ Compiler::Builder& Compiler::Builder::DeclareVariable(const std::string& name,
   return *this;
 }
 
-Compiler::Builder& Compiler::Builder::RegisterMessageType(
-    const google::protobuf::Descriptor* absl_nonnull desc) {
-  registered_messages_.push_back(desc);
-  return *this;
-}
-
 absl::StatusOr<Compiler> Compiler::Builder::Build() && {
   absl::flat_hash_set<std::string> seen;
   seen.reserve(declared_variables_.size());
@@ -129,14 +123,14 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
   }
   Compiler c;
   c.declared_variables_ = std::move(declared_variables_);
-  c.registered_messages_ = std::move(registered_messages_);
   return c;
 }
 
 absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
-                                          CompilerOptions opts) const {
+                                          const CompilerOptions& opts) const {
   celwasm::CompileOptions inner;
   inner.mem_size_bytes = opts.mem_size_bytes;
+  inner.check.container = opts.container;
   inner.check.variable_specs.reserve(declared_variables_.size());
   for (const auto& decl : declared_variables_) {
     inner.check.variable_specs.push_back(

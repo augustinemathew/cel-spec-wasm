@@ -12,7 +12,8 @@
 #ifndef CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 #define CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 
-#include "compiler_v2/api/internal/abi_decode.h"
+#include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/api/internal/cel_host_wasmtime.h"
 #include "wasmtime.h"
 
 namespace celwasm {
@@ -26,15 +27,17 @@ struct InstanceImpl {
   wasmtime_instance_t expr_instance{};
   wasmtime_func_t eval_fn{};
 
-  // Decoded `cel.abi` custom section.  Populated by Engine::Plan;
-  // consumed by Instance::Eval(Activation) to look up each declared
-  // variable's slot_offset + Repr when marshalling bound values into
-  // linear memory before the $eval call.
-  //
-  // Empty `variables` for M1-era modules that don't ship a cel.abi
-  // section (pre-M2.B.2 fixtures); Instance::Eval without an
-  // Activation stays valid in that case.
-  DecodedCelAbi abi;
+  // Parsed `cel.abi` custom section.  Populated by Engine::Plan;
+  // consumed by Instance::Eval(Activation) to walk the declared
+  // variables when marshalling bound values into linear memory
+  // before the $eval call.  Empty for M1-era modules that don't
+  // ship a section — a variable-free Eval still works.
+  celwasm::abi::CelAbi abi;
+
+  // Layer 3 callback payload.  Lives here for the instance's
+  // lifetime so the pointer stashed in the linker callback stays
+  // valid across every Eval.  Populated by Engine::Plan.
+  CelHostCallbackEnv host_env;
 
   InstanceImpl() = default;
   ~InstanceImpl();

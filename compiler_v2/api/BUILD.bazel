@@ -178,6 +178,7 @@ cc_test(
     srcs = ["internal/abi_decode_test.cc"],
     deps = [
         ":abi_decode",
+        "//compiler/testdata:e2e_fixture_cc_proto",
         "//compiler_v2:compile",
         "//compiler_v2/abi:cel_abi_cc_proto",
         "//compiler_v2/ir:annotations",
@@ -204,9 +205,11 @@ cc_library(
     srcs = ["internal/cel_host.cc"],
     hdrs = ["internal/cel_host.h"],
     deps = [
+        ":attribute",
         ":error",
         ":type",
         ":value",
+        "//compiler_v2/runtime:cel_runtime",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/functional:function_ref",
@@ -214,6 +217,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -232,6 +236,75 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# M3.D — HostMap (vector-backed Layer 1) coverage.  Lives separate
+# from cel_host_test so it doesn't pull in the wasmtime-edge fixture
+# scaffolding the trampoline tests need.
+cc_test(
+    name = "host_map_test",
+    srcs = ["internal/host_map_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# M3.G — ProtoMap (proto-reflection over a single map field).
+cc_test(
+    name = "proto_map_test",
+    srcs = ["internal/proto_map_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# M3.E — Layer 2 trampoline body for cel_host.cel_map_lookup.
+# Drives CelMapLookupImpl through fakes for MemoryView /
+# ExternrefTable / ArenaAllocator; intentionally does not depend on
+# the wasmtime-edge Layer 3 (still pending behind M2.C.0b).
+cc_test(
+    name = "cel_map_lookup_impl_test",
+    srcs = ["internal/cel_map_lookup_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Internal — Layer 3 wasmtime glue for cel_host.cel_get_field.
+# Adapts Layer 2 (cel_host) to the wasmtime callback ABI + builds
+# CelHostBindings from decoded cel.abi.
+cc_library(
+    name = "cel_host_wasmtime",
+    srcs = ["internal/cel_host_wasmtime.cc"],
+    hdrs = ["internal/cel_host_wasmtime.h"],
+    tags = ["manual"],
+    deps = [
+        ":cel_host",
+        "//compiler_v2/abi:cel_abi_cc_proto",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+        "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
 
@@ -279,14 +352,12 @@ cc_library(
         ":type",
         "//compiler_v2:compile",
         "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -313,6 +384,8 @@ cc_library(
     tags = ["manual"],
     deps = [
         ":abi_decode",
+        ":cel_host_wasmtime",
+        "//compiler_v2/abi:cel_abi_cc_proto",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )
@@ -329,9 +402,11 @@ cc_library(
         ":abi_decode",
         ":activation",
         ":attribute",
+        ":cel_host_wasmtime",
         ":instance_impl",
         ":value",
         ":wasmtime_engine_state",
+        "//compiler_v2/abi:cel_abi_cc_proto",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/runtime:cel_runtime",
         "@com_google_absl//absl/base:core_headers",
@@ -348,11 +423,16 @@ cc_test(
     srcs = ["instance_test.cc"],
     tags = ["manual"],
     deps = [
+        ":activation",
+        ":attribute",
+        ":cel_host",
         ":compiler",
         ":engine",
         ":instance",
         ":program",
+        ":type",
         ":value",
+        "//compiler/testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest_main",
@@ -390,6 +470,7 @@ cc_library(
     tags = ["manual"],
     deps = [
         ":abi_decode",
+        ":cel_host_wasmtime",
         ":instance",
         ":instance_impl",
         ":program",
@@ -401,6 +482,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )

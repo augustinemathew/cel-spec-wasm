@@ -51,6 +51,7 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
@@ -61,6 +62,16 @@ using ::absl_testing::StatusIs;
 using ::celwasm::testdata::Address;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg3;
+
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<Customer>();
+      google::protobuf::LinkMessageReflection<HostMsg3>();
+      return 0;
+    }();
 
 // ──────────────────────────────────────────────────────────────
 //  Test harness — builds a single Engine shared across tests.
@@ -94,15 +105,13 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 
 absl::StatusOr<Compiler> CompilerWithCustomerVar() {
   return BuildCompiler([](Compiler::Builder& b) {
-    b.RegisterMessageType(Customer::descriptor())
-        .DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+    b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
   });
 }
 
 absl::StatusOr<Compiler> CompilerWithHostMsg3Var() {
   return BuildCompiler([](Compiler::Builder& b) {
-    b.RegisterMessageType(HostMsg3::descriptor())
-        .DeclareVariable("h", CelType::Message("celwasm.testdata.HostMsg3"));
+    b.DeclareVariable("h", CelType::Message("celwasm.testdata.HostMsg3"));
   });
 }
 
@@ -263,13 +272,7 @@ TEST_F(IdentE2ETest, BackToBackEvalRebindsIdent) {
 
 class SelectE2ETest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    GTEST_SKIP() << "kSelect lowering + cel_host.cel_get_field trampoline "
-                    "pending M2.C";
-  }
-  // Never read at runtime (SetUp skips), but the test bodies reference
-  // it — keep a default-constructed member so the file still compiles.
-  Compiler compiler_{Compiler::NewBuilder().Build().value()};
+  Compiler compiler_{*CompilerWithCustomerVar()};
 };
 
 TEST_F(SelectE2ETest, SelectString) {
@@ -426,11 +429,7 @@ TEST_F(SelectE2ETest, SelectThreeHopSelfRecursive) {
 
 class HasE2ETest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    GTEST_SKIP() << "has() dispatches through kSelect-test_only + "
-                    "cel_host.cel_has_field — pending M2.D (after M2.C)";
-  }
-  Compiler compiler_{Compiler::NewBuilder().Build().value()};
+  Compiler compiler_{*CompilerWithCustomerVar()};
 };
 
 // Proto3 singular scalar: set → true.  This is the ONLY case
@@ -506,11 +505,7 @@ TEST_F(HasE2ETest, TwoHopHasUnsetLeafReturnsFalse) {
 
 class UnknownE2ETest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    GTEST_SKIP()
-        << "PartialEval + AttributePattern pattern-matching pending M2.E";
-  }
-  Compiler compiler_{Compiler::NewBuilder().Build().value()};
+  Compiler compiler_{*CompilerWithCustomerVar()};
 };
 
 // Leaf unknown: --unknown_attrs "c.name" → UNKNOWN(c.name).

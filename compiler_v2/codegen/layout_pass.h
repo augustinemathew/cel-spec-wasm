@@ -73,6 +73,12 @@ struct StaticLayout {
   // `$eval` declares — one i32 per referenced variable.
   std::vector<LaidOutVariable> variables;
 
+  // Attribute intern table — carried forward from ResolveOutput
+  // so `BuildCelAbi` can serialise it into `cel.abi.attributes[]`.
+  // Entry 0 is the reserved sentinel.  Populated by ResolvePass
+  // (M2.E); LayoutPass neither reads nor mutates it.
+  std::vector<AttributeEntryRow> attributes;
+
   // NOLINTNEXTLINE(readability-redundant-member-init) — explicit defaults
   // satisfy cppcoreguidelines-pro-type-member-init on the aggregate
   // without forcing callers into a boilerplate constructor.

@@ -6,12 +6,14 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler_v2/api/activation.h"
+#include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/internal/abi_decode.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
@@ -78,9 +80,41 @@ absl::StatusOr<std::string> ReadMemString(wasmtime_context_t* ctx,
   return std::string(reinterpret_cast<const char*>(base + offset), len);
 }
 
+absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
+                                       const wasmtime_memory_t& mem,
+                                       uint32_t offset);
+
+// Decode an arena map (CEL_MAP_ARENA) by reading its
+// `ArenaMapHeader` and recursively decoding `count` (key, value)
+// CelValue pairs out of the entries run.  Pairs decode through
+// `DecodeCelValueAt`, so map values can themselves be scalars or
+// nested aggregates (M3 has no nested maps from codegen, but a
+// host-bound map in a future milestone could).  Wraps the result
+// in a `cel::Value::Map(...)` (vector-backed `HostMap`).
+absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
+                                       const wasmtime_memory_t& mem,
+                                       uint32_t header_ptr) {
+  ArenaMapHeader header;
+  if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
+      !s.ok()) {
+    return s;
+  }
+  std::vector<std::pair<Value, Value>> entries;
+  entries.reserve(header.count);
+  for (uint32_t i = 0; i < header.count; ++i) {
+    const uint32_t entry_off = header.entries_offset + (i * kCelMapEntryStride);
+    auto k_or = DecodeCelValueAt(ctx, mem, entry_off);
+    if (!k_or.ok()) return k_or.status();
+    auto v_or = DecodeCelValueAt(ctx, mem, entry_off + sizeof(CelValue));
+    if (!v_or.ok()) return v_or.status();
+    entries.emplace_back(*std::move(k_or), *std::move(v_or));
+  }
+  return Value::Map(std::move(entries));
+}
+
 // Decode a 24-byte CelValue at `offset` in linear memory into a
-// `cel::Value`.  Spec milestones add more arms; M1 covers all
-// scalar kinds + null.
+// `cel::Value`.  Scalars + null + arena maps land in M1/M3; later
+// milestones add lists / messages / unknown / error.
 absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
                                        const wasmtime_memory_t& mem,
                                        uint32_t offset) {
@@ -111,11 +145,18 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       if (!bytes_or.ok()) return bytes_or.status();
       return Value::Bytes(*std::move(bytes_or));
     }
+    case CEL_MAP_ARENA:
+      return DecodeArenaMapAt(ctx, mem, cv.payload.arena_map.header_ptr);
+    case CEL_UNKNOWN:
+      // M2.E: PartialEval surfaces CEL_UNKNOWN with the
+      // attribute_id stamped in payload.unk.  Reconstruct an
+      // AttributeId carrying that wire id; embedders compare it
+      // against the slot they queried via PartialEval.
+      return Value::Unknown(AttributeId{cv.payload.unk});
     default:
       return absl::InvalidArgumentError(absl::StrCat(
           "Eval returned a CelValue kind ", static_cast<int>(cv.kind),
-          " not yet supported by Instance::Eval (M1 covers "
-          "scalars only)"));
+          " not yet supported by Instance::Eval"));
   }
 }
 
@@ -202,11 +243,34 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
   return absl::OkStatus();
 }
 
+// M2.C: encode a Value::Message-bound variable into a CEL_MESSAGE
+// CelValue.  The bound `HostMessageBacking` is interned into the
+// per-Instance `ExternrefTable` and the resulting slot lives in
+// `payload.msg_slot`.  The caller is responsible for resetting
+// the table between Evals so slot indices don't leak across
+// invocations.
+absl::Status EncodeMessage(const Value& v, absl::string_view name,
+                           CelValue* dst,
+                           celwasm::ExternrefTable& refs) {
+  if (v.kind() != Value::Kind::kMessage) {
+    return KindMismatch(name, "message", v.kind());
+  }
+  auto backing_or = v.SharedMessageBacking();
+  if (!backing_or.ok()) return backing_or.status();
+  const uint32_t slot = refs.Intern(*std::move(backing_or));
+  dst->kind = CEL_MESSAGE;
+  dst->payload.msg_slot = slot;
+  return absl::OkStatus();
+}
+
 // Dispatch a declared Repr to the right per-kind encoder.  M2.B
-// ships scalars; later-milestone reprs land in the Unimplemented
-// tail with the milestone tag named in the error message.
+// ships scalars; M2.C adds kMessage.  String/bytes activation
+// marshalling stays unimplemented (it needs a host-side arena
+// allocator that survives the `cel_reset` $eval prelude — pending
+// follow-up).
 absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
-                               absl::string_view name, CelValue* dst) {
+                               absl::string_view name, CelValue* dst,
+                               celwasm::ExternrefTable& refs) {
   switch (repr) {
     case celwasm::Repr::kNull:
       return EncodeNull(v, name, dst);
@@ -218,9 +282,10 @@ absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
       return EncodeUint(v, name, dst);
     case celwasm::Repr::kDouble:
       return EncodeDouble(v, name, dst);
+    case celwasm::Repr::kMessage:
+      return EncodeMessage(v, name, dst, refs);
     case celwasm::Repr::kString:
     case celwasm::Repr::kBytes:
-    case celwasm::Repr::kMessage:
     case celwasm::Repr::kList:
     case celwasm::Repr::kMap:
     case celwasm::Repr::kDuration:
@@ -230,8 +295,9 @@ absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kUnknown:
       return absl::UnimplementedError(
           absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
-                       " marshal not implemented at M2.B (pending "
-                       "string/bytes arena work + M2.C message ref)"));
+                       " marshal not implemented (pending host-arena work "
+                       "for kString/kBytes; later milestones for "
+                       "list/map/duration/timestamp/enum/type)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));
@@ -252,31 +318,34 @@ void WriteCelValueAt(wasmtime_context_t* ctx, const wasmtime_memory_t& mem,
 // declared Repr and bound Value::Kind → InvalidArgument.
 absl::Status MarshalActivation(wasmtime_context_t* ctx,
                                const wasmtime_memory_t& mem,
-                               const celwasm::DecodedCelAbi& abi,
-                               const Activation& activation) {
+                               const celwasm::abi::CelAbi& abi,
+                               const Activation& activation,
+                               celwasm::ExternrefTable& refs) {
   const size_t mem_size = [&]() {
     wasmtime_memory_t m = mem;
     return wasmtime_memory_data_size(ctx, &m);
   }();
 
-  for (const celwasm::DecodedVariable& dv : abi.variables) {
-    if (static_cast<std::uint64_t>(dv.slot_offset) + sizeof(CelValue) >
+  for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
+    if (static_cast<std::uint64_t>(dv.slot_offset()) + sizeof(CelValue) >
         mem_size) {
-      return absl::OutOfRangeError(
-          absl::StrCat("Activation[", dv.name, "]: slot offset ",
-                       dv.slot_offset, " + 24 exceeds memory size ", mem_size));
+      return absl::OutOfRangeError(absl::StrCat(
+          "Activation[", dv.name(), "]: slot offset ", dv.slot_offset(),
+          " + 24 exceeds memory size ", mem_size));
     }
-    const Value* bound = activation.Find(dv.name);
+    const Value* bound = activation.Find(dv.name());
     if (bound == nullptr) {
       return absl::FailedPreconditionError(
-          absl::StrCat("Activation: variable `", dv.name,
+          absl::StrCat("Activation: variable `", dv.name(),
                        "` declared on Compiler but not bound on Activation"));
     }
     CelValue cv{};
-    if (auto s = EncodeScalarValue(*bound, dv.repr, dv.name, &cv); !s.ok()) {
+    if (auto s = EncodeScalarValue(*bound, celwasm::DecodeRepr(dv.repr()),
+                                   dv.name(), &cv, refs);
+        !s.ok()) {
       return s;
     }
-    WriteCelValueAt(ctx, mem, dv.slot_offset, cv);
+    WriteCelValueAt(ctx, mem, dv.slot_offset(), cv);
   }
   return absl::OkStatus();
 }
@@ -323,13 +392,22 @@ absl::StatusOr<Value> Instance::Eval() {
 
 absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
+  // Reset the externref table before each Eval so message slots
+  // from prior evals don't leak into this one (per the
+  // ExternrefTable contract: monotonic per-Eval, Reset() clears
+  // between Evals).  Also clear any unknown patterns left from a
+  // prior PartialEval — empty-pattern set is the Eval contract.
+  impl_->host_env.refs.Reset();
+  impl_->host_env.bindings.unknown_patterns = {};
+
   // For every declared variable, look up in the activation and
   // write its CelValue into the pre-assigned workspace slot.  This
   // must run BEFORE the $eval call — $eval's prelude writes each
   // slot offset into a wasm local, then the body reads
   // `local.get local_index` to get the offset of the CelValue we
   // just placed.
-  if (auto s = MarshalActivation(ctx, impl_->memory, impl_->abi, activation);
+  if (auto s = MarshalActivation(ctx, impl_->memory, impl_->abi, activation,
+                                 impl_->host_env.refs);
       !s.ok()) {
     return s;
   }
@@ -337,18 +415,30 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
 }
 
 absl::StatusOr<Value> Instance::PartialEval(
-    const Activation& /*activation*/,
-    absl::Span<const AttributePattern> /*unknowns*/) {
-  // M2.E lights this up — the Activation marshal is the same as
-  // the full-Eval path, but the cel_host trampoline consults the
-  // unknown_patterns set and writes Value::Unknown(attribute_id)
-  // into the select's out_slot when a match fires.  Until that
-  // lands, surface Unimplemented so the symbol exists (e2e test
-  // suite links) and any caller gets a clear error.
-  return absl::UnimplementedError(
-      "Instance::PartialEval: not implemented until M2.E "
-      "(ResolvePass attribute_pool + cel_host unknown-pattern "
-      "consultation)");
+    const Activation& activation,
+    absl::Span<const AttributePattern> unknowns) {
+  wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
+
+  // Reset per-eval state.  Unlike Eval(), we then populate
+  // `unknown_patterns` so the cel_host trampoline shorts to
+  // CEL_UNKNOWN on FULL pattern matches.
+  impl_->host_env.refs.Reset();
+  impl_->host_env.bindings.unknown_patterns = unknowns;
+
+  if (auto s = MarshalActivation(ctx, impl_->memory, impl_->abi, activation,
+                                 impl_->host_env.refs);
+      !s.ok()) {
+    // Reset before bailing — the next call must see a clean state
+    // even on this failure path.
+    impl_->host_env.bindings.unknown_patterns = {};
+    return s;
+  }
+  auto result = Eval();
+  // Eval() resets unknown_patterns itself, but only at the *next*
+  // Eval invocation.  Clear here too so a follow-up Eval() that
+  // never gets called doesn't observe stale state.
+  impl_->host_env.bindings.unknown_patterns = {};
+  return result;
 }
 
 }  // namespace cel

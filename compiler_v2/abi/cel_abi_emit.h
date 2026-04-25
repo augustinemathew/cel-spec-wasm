@@ -14,17 +14,24 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/codegen/expr_lower.h"
 #include "compiler_v2/codegen/layout_pass.h"
 
 namespace celwasm {
 
-// Build a `CelAbi` message from the compile-time layout.  M2.B
-// populates `variables[]` from `layout.variables`; `fields[]` +
-// `attributes[]` stay empty until M2.C / M2.E.  The version field
-// is set to 1 (bumped on any breaking schema change).
+// Build a `CelAbi` message from the compile-time layout + codegen
+// output.  Populates:
+//   - `variables[]` from `layout.variables` (M2.B)
+//   - `fields[]` from `field_refs` (M2.C — field intern table, one
+//     row per kSelect; index 0 is the reserved sentinel)
+//   - `attributes[]` from `layout.attributes` (M2.E — attribute
+//     intern table; index 0 is the reserved sentinel)
+// The version field is set to 1 (bumped on any breaking schema
+// change).
 ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
-    const StaticLayout& layout);
+    const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs);
 
 }  // namespace celwasm
 

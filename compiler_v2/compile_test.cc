@@ -6,7 +6,9 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
 #include "binaryen-c.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -14,6 +16,16 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+
+// Force generated-pool registration of `celwasm.testdata.Customer`
+// + `Address` so the variable-spec parser can resolve them by FQN.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      return 0;
+    }();
 
 // --- Per-kind kConst round-trip through Compile() ------------------------
 
@@ -171,6 +183,258 @@ TEST(CompileTest, MemSizeBytesLargerThanOnePageGrowsPageCount) {
   // Serialize and validate that it's a legal module — the page-count
   // arithmetic is validated transitively by Binaryen's validator.
   EXPECT_THAT(art_or->module.Validate(), IsOk());
+}
+
+// ────────────────────────────────────────────────────────────────────
+// M3 — map literals + indexing.  These are compile-side tests: they
+// drive the full Compile() pipeline (parse → check → resolve →
+// layout → emit → validate) and assert that map-bearing source
+// reaches a valid wasm artifact with the expected import surface,
+// without instantiating wasmtime.  E2E (Compile→Plan→Eval) lives in
+// `compiler_v2/e2e/m3_test.cc`.
+// ────────────────────────────────────────────────────────────────────
+
+namespace {
+
+bool ModuleImports(BinaryenModuleRef raw, absl::string_view module_name,
+                   absl::string_view base_name) {
+  // Binaryen models function imports as functions whose body is null
+  // and whose `module` / `base` attrs are populated.  Walk every
+  // function and match on (module, base).
+  const auto n = BinaryenGetNumFunctions(raw);
+  for (BinaryenIndex i = 0; i < n; ++i) {
+    BinaryenFunctionRef f = BinaryenGetFunctionByIndex(raw, i);
+    const char* m = BinaryenFunctionImportGetModule(f);
+    const char* b = BinaryenFunctionImportGetBase(f);
+    if (m == nullptr || b == nullptr) continue;
+    if (module_name == m && base_name == b) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST(CompileMapTest, EmptyMapLiteralCompiles) {
+  EXPECT_THAT(Compile("{}").status(), IsOk());
+}
+
+TEST(CompileMapTest, ScalarMapLiteralCompiles) {
+  EXPECT_THAT(Compile("{\"a\": 1, \"b\": 2}").status(), IsOk());
+}
+
+TEST(CompileMapTest, MapLiteralIndexingCompiles) {
+  EXPECT_THAT(Compile("{\"a\": 1}[\"a\"]").status(), IsOk());
+}
+
+TEST(CompileMapTest, BoundMapIdentIndexingCompiles) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"m:map<string,int>"};
+  EXPECT_THAT(Compile("m[\"k\"]", opts).status(), IsOk());
+}
+
+TEST(CompileMapTest, BoundMapEveryAllowedKeyKindCompiles) {
+  // langdef restricts map keys to bool / int / uint / string.
+  // Each kind should compile cleanly when indexed by a literal of
+  // the matching scalar type — the M3 ResolvePass map_origin
+  // visitor stamps `kHost` on the bound ident regardless of key
+  // kind, and the host-arm dispatch in expr_lower is shape-
+  // agnostic.
+  struct Case {
+    const char* spec;
+    const char* expr;
+  };
+  for (const Case& c : {
+           Case{"m:map<bool,int>", "m[true]"},
+           Case{"m:map<int,int>", "m[1]"},
+           Case{"m:map<uint,int>", "m[1u]"},
+           Case{"m:map<string,int>", "m[\"k\"]"},
+       }) {
+    CompileOptions opts;
+    opts.check.variable_specs = {c.spec};
+    EXPECT_THAT(Compile(c.expr, opts).status(), IsOk())
+        << "spec=" << c.spec << " expr=" << c.expr;
+  }
+}
+
+TEST(CompileMapTest, ModuleImportsRuntimeMapEntryPoints) {
+  // A map-bearing program must drag in every runtime map symbol the
+  // codegen may emit calls to: cel_map_create, cel_map_insert,
+  // cel_map_lookup_arena, cel_map_lookup.  No lazy import gating
+  // (CLAUDE.md "always link the runtime fully").
+  auto art_or = Compile("{\"a\": 1}[\"a\"]");
+  ASSERT_THAT(art_or, IsOk());
+  BinaryenModuleRef raw = art_or->module.raw();
+  for (const char* fn : {"cel_map_create", "cel_map_insert",
+                         "cel_map_lookup_arena", "cel_map_lookup"}) {
+    EXPECT_TRUE(ModuleImports(raw, "cel", fn))
+        << "missing import cel." << fn;
+  }
+}
+
+TEST(CompileMapTest, ModuleImportsHostMapLookup) {
+  // The kHost arm + kDynamic dispatcher both reach
+  // `cel_host.cel_map_lookup`.  The compile pipeline installs it
+  // unconditionally; verify it's wired even on a literal-only
+  // expression so the `BindRuntimeExport` loop in `Engine::Plan`
+  // can rely on it.
+  auto art_or = Compile("{\"a\": 1}[\"a\"]");
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_TRUE(
+      ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));
+}
+
+TEST(CompileMapTest, RuntimeImportsAlsoPresentForLiteralOnlyMap) {
+  // Even a bare `{}` (no indexing) ends up with the cel_host import
+  // — codegen never decides to omit it based on AST shape.
+  auto art_or = Compile("{}");
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_TRUE(
+      ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));
+}
+
+TEST(CompileMapTest, EmittedModuleSerializesAndValidates) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"m:map<string,int>"};
+  auto art_or = Compile("m[\"k\"]", opts);
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_THAT(art_or->module.Validate(), IsOk());
+  ASSERT_GE(art_or->wasm_bytes.size(), 8u);
+  EXPECT_EQ(art_or->wasm_bytes[0], 0x00);
+  EXPECT_EQ(art_or->wasm_bytes[1], 0x61);
+  EXPECT_EQ(art_or->wasm_bytes[2], 0x73);
+  EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
+}
+
+TEST(CompileMapTest, MapTypedIdentLandsAsRefSlotVariable) {
+  // A `map<...>` variable should be declared on the ABI's variables[]
+  // table with `repr == kMap` (interned to the wire enum).  Stamps
+  // the bridge between the M3 ResolvePass map_origin annotation and
+  // the host marshal layer.
+  CompileOptions opts;
+  opts.check.variable_specs = {"m:map<string,int>"};
+  auto art_or = Compile("m[\"k\"]", opts);
+  ASSERT_THAT(art_or, IsOk());
+  // ABI is emitted as a custom section; here we inspect the layout
+  // pass output directly (the ABI proto mirrors layout.variables).
+  bool saw_map_var = false;
+  for (const auto& v : art_or->layout.variables) {
+    if (v.name == "m") {
+      saw_map_var = true;
+      EXPECT_EQ(v.repr, Repr::kMap);
+    }
+  }
+  EXPECT_TRUE(saw_map_var);
+}
+
+TEST(CompileMapTest, MapLiteralProgramLayoutReservesWorkspaceForMap) {
+  // kCreateMap nodes need a 24-byte slot in the workspace so the
+  // emitted `cel_map_create` call has somewhere to write the
+  // result CelValue.  Compile() must report a non-zero workspace
+  // size for any map-bearing program.
+  auto art_or = Compile("{\"a\": 1}");
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_GT(art_or->layout.workspace_bytes, 0u);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// M3 — proto map field access.  `customer.metadata["env"]` is the
+// M3.G dispatch path: `kSelect` on a `map<K,V>`-typed field flows
+// through `ProtoBacking::ReadField` (host returns
+// `Value::HostMap(ProtoMap{…})`) and the `kCallExpr(_[_])` arm
+// emits a `cel_host.cel_map_lookup` call.  These compile-side
+// tests cover the schema → check → resolve → layout → emit
+// pipeline; e2e (Compile→Plan→Eval) requires M2.C.0b's
+// `CelGetFieldImpl` to land first and lives in `m3_test.cc`.
+// ────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Compile against the `celwasm.testdata.Customer` schema (M3
+// fixture has `map<string,string> metadata` + `map<int32,int32>
+// tier_quotas`).  Uses the generated descriptor pool so no
+// SchemaProtoSource path is needed at test time.
+absl::StatusOr<CompiledArtifact> CompileWithCustomer(
+    absl::string_view expr) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"c:celwasm.testdata.Customer"};
+  return Compile(expr, opts);
+}
+
+}  // namespace
+
+TEST(CompileProtoMapTest, StringKeyedProtoMapFieldIndexCompiles) {
+  EXPECT_THAT(CompileWithCustomer("c.metadata[\"env\"]").status(), IsOk());
+}
+
+TEST(CompileProtoMapTest, IntKeyedProtoMapFieldIndexCompiles) {
+  EXPECT_THAT(CompileWithCustomer("c.tier_quotas[1]").status(), IsOk());
+}
+
+TEST(CompileProtoMapTest, ProtoMapFieldAsBareSelectCompiles) {
+  // `c.metadata` (no indexing) — kSelect produces a `map<...>`
+  // result that should reach a workspace slot via ResolvePass +
+  // LayoutPass.  Pure compile-side: doesn't exercise the host
+  // dispatch arm.
+  EXPECT_THAT(CompileWithCustomer("c.metadata").status(), IsOk());
+}
+
+TEST(CompileProtoMapTest, MapFieldIndexImportsHostMapLookup) {
+  // `c.metadata["env"]` reaches `cel_host.cel_map_lookup` because
+  // ResolvePass stamps the kSelect with map_origin == kHost.
+  // The compiled artifact must declare that import on the module
+  // so wasmtime instantiation succeeds at Plan time.
+  auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_TRUE(
+      ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));
+  // It also imports the runtime exports that codegen may emit.
+  EXPECT_TRUE(ModuleImports(art_or->module.raw(), "cel", "cel_map_lookup"));
+  EXPECT_TRUE(
+      ModuleImports(art_or->module.raw(), "cel", "cel_map_lookup_arena"));
+}
+
+TEST(CompileProtoMapTest, ProtoMapFieldRefRecordedOnAbi) {
+  // The host trampoline needs to know the field's number + name
+  // to call `ProtoBacking::ReadField` with the right descriptor.
+  // Codegen interns the (field_number, field_name) into the
+  // emitter's `field_refs` table; that table is what
+  // `compile.cc::InstallHostAbi` serialises into the `cel.abi`
+  // custom section.
+  auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
+  ASSERT_THAT(art_or, IsOk());
+  bool saw_metadata_field = false;
+  for (const auto& fr : art_or->eval_fn.field_refs) {
+    if (fr.name == "metadata" && fr.owner_fqn == "celwasm.testdata.Customer") {
+      saw_metadata_field = true;
+      EXPECT_EQ(fr.field_number, 10u);  // proto field number from .proto
+    }
+  }
+  EXPECT_TRUE(saw_metadata_field);
+}
+
+TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
+  auto art_or = CompileWithCustomer("c.tier_quotas[1]");
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_THAT(art_or->module.Validate(), IsOk());
+  ASSERT_GE(art_or->wasm_bytes.size(), 8u);
+  EXPECT_EQ(art_or->wasm_bytes[0], 0x00);
+  EXPECT_EQ(art_or->wasm_bytes[1], 0x61);
+  EXPECT_EQ(art_or->wasm_bytes[2], 0x73);
+  EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
+}
+
+TEST(CompileProtoMapTest, ProtoMapFieldLayoutGetsContiguousSelectAndCallSlots) {
+  // `c.metadata["env"]` lays out as: c slot (variable), kSelect
+  // result slot, kCallExpr(_[_]) result slot.  Pin the totals
+  // so an accidental slot fusion or duplication trips this test.
+  auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
+  ASSERT_THAT(art_or, IsOk());
+  ASSERT_EQ(art_or->layout.variables.size(), 1u);
+  EXPECT_EQ(art_or->layout.variables[0].name, "c");
+  EXPECT_EQ(art_or->layout.variables[0].repr, Repr::kMessage);
+  // 1 variable + kSelect + kCallExpr = 3 cells = 72 B.
+  EXPECT_EQ(art_or->layout.workspace_bytes, 72u);
+  EXPECT_EQ(art_or->layout.peak_slots, 2u);
 }
 
 }  // namespace

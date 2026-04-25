@@ -2,8 +2,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <string>
-#include <utility>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -21,18 +19,12 @@ namespace {
 constexpr uint8_t kWasmMagic[4] = {0x00, 0x61, 0x73, 0x6d};
 constexpr uint32_t kWasmVersion = 1;
 
-// Custom sections have section_id = 0.  Non-zero ids are "known
-// sections" (type, import, function, …) we skip past.
+// Custom sections have section_id = 0.
 constexpr uint8_t kCustomSectionId = 0;
 
-// Upper bound on unsigned LEB128 for a u32: 5 bytes * 7 bits = 35,
-// but wasm's validation rejects oversize encodings.
+// Upper bound on unsigned LEB128 for a u32 (5 × 7 bits).
 constexpr size_t kMaxU32LebBytes = 5;
 
-// Decode an unsigned LEB128 u32 starting at `*pos`.  Advances `*pos`
-// past the last byte read on success.  Returns InvalidArgument on
-// malformed input (too many continuation bytes, truncated stream,
-// high-bit set on the 5th byte outside the top-5-bit mask).
 absl::StatusOr<uint32_t> DecodeLeb128U32(absl::Span<const uint8_t> bytes,
                                          size_t* pos) {
   uint32_t result = 0;
@@ -43,19 +35,14 @@ absl::StatusOr<uint32_t> DecodeLeb128U32(absl::Span<const uint8_t> bytes,
     }
     const uint8_t b = bytes[*pos];
     ++*pos;
-    // Bottom 7 bits contribute to the value; top bit is continuation.
     result |= static_cast<uint32_t>(b & 0x7f) << shift;
     if ((b & 0x80) == 0) return result;
     shift += 7;
   }
-  // 5 bytes with the continuation bit set on the last means the
-  // encoding tried to represent a value larger than u32.
   return absl::InvalidArgumentError(
       "abi_decode: LEB128 u32 exceeds five bytes");
 }
 
-// Validate the wasm header (magic + version) and advance `pos` past
-// it.  On success, `pos` points at the first section byte.
 absl::Status CheckWasmHeader(absl::Span<const uint8_t> bytes, size_t* pos) {
   if (bytes.size() < 8) {
     return absl::InvalidArgumentError(
@@ -75,9 +62,6 @@ absl::Status CheckWasmHeader(absl::Span<const uint8_t> bytes, size_t* pos) {
   return absl::OkStatus();
 }
 
-// Scan the section stream for a custom section whose name matches
-// `target_name`.  Returns the payload span on hit, NotFound on
-// exhaustion, InvalidArgument on malformed framing.
 absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     absl::Span<const uint8_t> bytes, absl::string_view target_name) {
   size_t pos = 0;
@@ -89,7 +73,6 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     auto size_or = DecodeLeb128U32(bytes, &pos);
     if (!size_or.ok()) return size_or.status();
     const uint32_t section_size = *size_or;
-
     if (static_cast<std::uint64_t>(pos) + section_size > bytes.size()) {
       return absl::InvalidArgumentError(
           "abi_decode: section size runs past end of module");
@@ -101,9 +84,6 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
       continue;
     }
 
-    // Custom section: read name + payload.  `name_len` is a LEB128
-    // u32 immediately after the section size.
-    size_t after_size = pos;
     auto name_len_or = DecodeLeb128U32(bytes, &pos);
     if (!name_len_or.ok()) return name_len_or.status();
     const uint32_t name_len = *name_len_or;
@@ -118,8 +98,6 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     if (name == target_name) {
       return bytes.subspan(pos, section_end - pos);
     }
-    // Skip to the next section.
-    (void)after_size;
     pos = section_end;
   }
   return absl::NotFoundError(absl::StrCat("abi_decode: custom section `",
@@ -127,11 +105,10 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
                                           "` not found in wasm byte stream"));
 }
 
-// Translate the on-wire `repr` u32 back to the ir::Repr enum.
-// Values beyond the enum range land as Repr::kUnknown — the host
-// marshal will then fail loudly on any bound variable whose Repr it
-// can't encode, rather than silently miscoding.
-Repr DecodeReprU32(uint32_t v) {
+}  // namespace
+
+Repr DecodeRepr(uint32_t wire_value) {
+  const uint32_t v = wire_value;
   switch (v) {
     case static_cast<uint32_t>(Repr::kUnknown):
       return Repr::kUnknown;
@@ -168,47 +145,21 @@ Repr DecodeReprU32(uint32_t v) {
   }
 }
 
-absl::StatusOr<DecodedCelAbi> DecodeCelAbiProto(
-    absl::Span<const uint8_t> payload) {
-  celwasm::abi::CelAbi abi;
-  if (!abi.ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
-    return absl::InvalidArgumentError(
-        "abi_decode: cel.abi payload failed CelAbi::ParseFromArray");
-  }
-  DecodedCelAbi out;
-  out.version = abi.version();
-  out.variables.reserve(static_cast<size_t>(abi.variables_size()));
-  for (const auto& v : abi.variables()) {
-    DecodedVariable dv;
-    dv.name = v.name();
-    dv.local_index = v.local_index();
-    dv.slot_offset = v.slot_offset();
-    dv.repr = DecodeReprU32(v.repr());
-    out.variables.push_back(std::move(dv));
-  }
-  out.RebuildNameIndex();
-  return out;
-}
-
-}  // namespace
-
-void DecodedCelAbi::RebuildNameIndex() {
-  by_name.clear();
-  by_name.reserve(variables.size());
-  for (const DecodedVariable& v : variables) {
-    by_name.emplace(v.name, &v);
-  }
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage) — public declaration
-// lives in abi_decode.h; clang-tidy's include-path for the header
-// is incomplete in compile_commands.json and it mistakes this for
-// a static candidate.
-absl::StatusOr<DecodedCelAbi> DecodeCelAbiFromWasm(
+// Public declaration lives in abi_decode.h; clang-tidy's include
+// path for the header is incomplete in compile_commands.json and
+// it mistakes this for a static candidate.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+absl::StatusOr<celwasm::abi::CelAbi> DecodeCelAbiFromWasm(
     absl::Span<const uint8_t> wasm_bytes) {
   auto payload_or = FindCustomSection(wasm_bytes, "cel.abi");
   if (!payload_or.ok()) return payload_or.status();
-  return DecodeCelAbiProto(*payload_or);
+  celwasm::abi::CelAbi abi;
+  if (!abi.ParseFromArray(payload_or->data(),
+                          static_cast<int>(payload_or->size()))) {
+    return absl::InvalidArgumentError(
+        "abi_decode: cel.abi payload failed CelAbi::ParseFromArray");
+  }
+  return abi;
 }
 
 }  // namespace celwasm

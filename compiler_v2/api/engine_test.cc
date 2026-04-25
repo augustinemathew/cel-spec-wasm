@@ -111,9 +111,14 @@ TEST(EnginePlanTest, PlanFailsOnMalformedBytes) {
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
   Engine engine = *std::move(engine_or);
 
-  // Wasm magic + garbage past the version word.
+  // Wasm magic + garbage past the version word.  As shipped, the
+  // expr module is parsed via `wasmtime_module_new` before the
+  // cel.abi custom section is decoded, so malformed bytes fail at
+  // module-parse and surface as `FailedPrecondition` (the
+  // wasmtime-error wrapper status code).
   Program garbage(std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d, 0xff, 0xff});
   auto inst_or = engine.Plan(garbage);
+  EXPECT_FALSE(inst_or.ok());
   EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 

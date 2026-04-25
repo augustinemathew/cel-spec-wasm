@@ -926,6 +926,242 @@ Architectural deltas vs as-written M1 plan (see
   - [x] `host_loader.{h,cc}` deleted; role split across
         `api/engine` + `api/instance`.
 
+## Rewrite M2 (shipped 2026-04-24)
+
+The ident / select / has / unknowns slice closed M2.  Per
+`rewrite/m2-ident-select-unknowns.md §6.3 / §6.4`, M2 flips the
+rows below.  v1 grids above are untouched; v2 coverage (everything
+under `compiler_v2/`) is tracked here.
+
+**Slice M2.A — `cel::Activation`**
+
+  - [x] `Bind` / `BindLazy` / `Find` per scalar kind —
+        `compiler_v2/api/activation_test.cc`
+  - [x] `Find` on unbound → `NotFoundError`,
+        `BindLazy` memoises across `Find` —
+        `activation_test.cc`
+
+**Slice M2.B — `kIdent` lowering + `Eval(Activation)` +
+`cel.abi.variables[]`**
+
+  - [x] `kIdent` emits `local.get` (workspace slot) —
+        `compiler_v2/codegen/expr_lower_test.cc`
+  - [x] `Instance::Eval(Activation)` per scalar kind —
+        `compiler_v2/e2e/m2_test.cc::IdentE2ETest::{Bool,Int,Uint,
+        Double,String,Bytes}`
+  - [x] Unbound declared variable → `FailedPrecondition` —
+        `m2_test.cc::IdentE2ETest::UnboundDeclaredVariableFailsPrecondition`
+  - [x] Back-to-back Eval rebinds ident cleanly —
+        `m2_test.cc::IdentE2ETest::BackToBackEvalRebindsIdent`
+  - [x] `cel.abi.variables[]` serialised with name /
+        local_index / slot_offset / repr —
+        `compiler_v2/abi/cel_abi_emit_test.cc`
+  - [x] ABI wire round-trip through proto serialization —
+        `cel_abi_emit_test::EmittedProtoSerializesAndRoundTripsThroughProtoParse`
+
+**Slice M2.C — `kSelect` + host-ABI trampoline + `cel.abi.fields[]`**
+
+  - [x] `kSelect` lowering × every proto scalar field kind
+        (string / int32 / int64 / uint32 / uint64 / double / bool
+        / bytes) —
+        `m2_test.cc::SelectE2ETest::Select{String,Int32,Int64,
+        Uint32,Uint64,Double,Bool,Bytes}`
+  - [x] Nested select (message → message → scalar) —
+        `m2_test.cc::SelectE2ETest::SelectNestedMessageField`,
+        `SelectSelfRecursiveInnerField`,
+        `SelectThreeHopSelfRecursive`
+  - [x] Proto3 unset-scalar reads back as zero-default —
+        `m2_test.cc::SelectE2ETest::SelectUnsetProto3StringReturnsDefault`
+  - [x] Back-to-back Eval with different message bindings —
+        `m2_test.cc::SelectE2ETest::BackToBackEvalWithDifferentMessages`
+  - [x] Unit kSelect lowering shape —
+        `compiler_v2/api/instance_test.cc::InstanceSelectEvalTest::{
+        IntFieldOnMessageRoundTrips, BoolFieldOnMessageRoundTrips,
+        NestedSelectReadsSubBackingString}`
+  - [x] `cel.abi.fields[]` dense with sentinel at 0 —
+        `cel_abi_emit_test::FieldRefsEmittedDenselyWithSentinelAtZero`
+  - [x] Envelope boundary: `kSelect` on REPEATED field returns
+        `CEL_ERR_TYPE_UNSUPPORTED` —
+        `m2_test.cc::EnvelopeBoundaryE2ETest::SelectRepeatedFieldReturnsUnsupportedError`
+
+**Slice M2.D — `has()` dispatch via `test_only`**
+
+  - [x] `has()` × populated scalar / message field —
+        `m2_test.cc::HasE2ETest::{StringFieldSetReturnsTrue,
+        NestedMessageSetReturnsTrue}`
+  - [x] `has()` × unset field returns false —
+        `m2_test.cc::HasE2ETest::{StringFieldUnsetReturnsFalse,
+        NestedMessageUnsetReturnsFalse}`
+  - [x] `has()` on nested / two-hop paths —
+        `m2_test.cc::HasE2ETest::{TwoHopHasSet,
+        TwoHopHasUnsetLeafReturnsFalse}`
+  - [x] Unit `has()` dispatch shape —
+        `instance_test::InstanceSelectEvalTest::{HasMessageFieldSetReturnsTrue,
+        HasMessageFieldUnsetReturnsFalse}`
+
+**Slice M2.E — `AttributePattern` + `Instance::PartialEval`**
+
+  - [x] `AttributePattern::Parse` × each wildcard position +
+        every rejection case —
+        `compiler_v2/api/attribute_test.cc` (24 parse tests:
+        single-segment, dotted, wildcard-mid / trailing, array /
+        map keys, leading / trailing / consecutive dot rejection)
+  - [x] `PartialEval` × leaf unknown short-circuit —
+        `m2_test.cc::UnknownE2ETest::LeafUnknownShortCircuits`
+  - [x] `PartialEval` × nested-chain absorbs at first unknown
+        hop —
+        `m2_test.cc::UnknownE2ETest::NestedChainAbsorbsAtFirstUnknownHop`
+  - [x] `PartialEval` × wildcard mid-path matches —
+        `m2_test.cc::UnknownE2ETest::WildcardMidPathMatches`
+  - [x] `PartialEval` × non-matching pattern passes through to
+        real value —
+        `m2_test.cc::UnknownE2ETest::NonMatchingPatternsPassThrough`
+  - [x] Eval vs PartialEval parity with empty pattern set —
+        `m2_test.cc::UnknownE2ETest::EvalVsPartialEvalParityWithNoPatterns`
+  - [x] `has()` absorbs UNKNOWN at target —
+        `m2_test.cc::UnknownE2ETest::HasAbsorbsUnknownAtTarget`
+  - [x] Root-ident unknown short-circuits `kSelect` —
+        `m2_test.cc::UnknownE2ETest::RootIdentUnknownShortCircuitsSelect`
+  - [x] Unit `PartialEval` behaviour —
+        `instance_test::InstancePartialEvalTest::{MatchingPatternAbsorbsSelectToUnknown,
+        NonMatchingPatternFallsThroughToRealValue,
+        WildcardPatternMatchesAnyFieldUnderRoot,
+        EmptyPatternSetBehavesLikeEval}`
+  - [x] `cel.abi.attributes[]` interned densely with sentinel
+        at 0 — `cel_abi_emit_test::EmptyWhenNoVariablesReferenced`
+        (sentinel check) + `resolve_pass_test` (dense interning
+        per rooted path)
+
+**Slice M2.F — conformance harness envelope for unknowns**
+
+  - [x] `IsInM2Envelope` admits `unknown:` / `any_unknowns:`
+        matchers; `RunOne` routes them to `PartialEval` with
+        empty pattern set — `compiler_v2/conformance/runner.{h,cc}`.
+  - [x] `run_conformance` shows no regressions vs the M1
+        snapshot (`total=2454 · pass=178 · skip=1935 · fail=341`)
+        — `compiler_v2/conformance/README.md` inventory table
+        refreshed.
+
+Architectural deltas vs as-written M2 plan (see
+`rewrite/m2-ident-select-unknowns.md §Plan-vs-execution deltas`):
+
+  - [x] `VariableDecl` → `VariableDeclaration` to avoid ODR
+        collision with cel-cpp's `cel::VariableDecl`.
+  - [x] `local_types` dropped from `ResolveOutput` /
+        `StaticLayout` (no information beyond `variables.size()`).
+  - [x] Layer-3 wasmtime glue moved to a dedicated
+        `api/internal/cel_host_wasmtime.{h,cc}` (vs the as-
+        written single-file `cel_host` plan); decouples
+        runtime-agnostic Layer 2 from wasmtime-specific Layer 3.
+  - [x] `api/internal/abi_decode` refactored mid-milestone to
+        return `celwasm::abi::CelAbi` directly — mirror structs
+        (`DecodedCelAbi` / `DecodedVariable` / `DecodedField`)
+        deleted.
+  - [x] `Compiler::Builder::RegisterMessageType` deleted — dead
+        API, never read. `ProtoBacking` uses
+        `msg->GetDescriptor()` directly.
+  - [x] LE endianness static assertion added at the
+        `sizeof(CelValue) == 24` site in `runtime/cel_data.h`.
+
+### Rewrite M3 — map literals + indexing (shipped 2026-04-24)
+
+**Slices M3.A–G — runtime + codegen + host surface**
+
+  - [x] `CelKind` split (`CEL_MAP_ARENA = 8`, `CEL_MAP_HOST = 9`,
+        kinds renumbered down) + `ArenaMapHeader` (16 B) —
+        `runtime/cel_data.h`; size invariants in
+        `runtime/cel_data_test.cc`.
+  - [x] Arena map primitives — `cel_map_create` / `cel_map_insert`
+        / `cel_map_lookup_arena` covered by
+        `runtime/cel_map_test.cc` parameterized over every scalar
+        key kind (bool/int/uint/string), boundary values
+        (`INT64_MIN/MAX`, `UINT64_MAX`, embedded NUL, multi-byte
+        UTF-8), and disallowed key kinds (every CelKind that
+        isn't a valid map key).
+  - [x] `__attribute__((musttail))` kDynamic dispatcher
+        (`cel_map_lookup` arming `cel_map_lookup_arena` /
+        `cel_host_cel_map_lookup`) — `runtime/cel_runtime.c`;
+        wasmtime tail-call config flipped on in `api/engine.cc`
+        + `tools/wat_runner/wat_runner.cc`.
+  - [x] `HostMap` + `ProtoMap` concrete `HostMapBacking` impls —
+        `api/internal/cel_host.{h,cc}`; behaviour parity covered
+        by `host_map_test.cc` (vector-backed) +
+        `proto_map_test.cc` (proto-reflection-backed).
+  - [x] Layer-2 trampoline `CelMapLookupImpl` — virtual call to
+        `HostMapBacking::Get`, span+message marshal back into
+        `out_slot`; `cel_map_lookup_impl_test.cc` exhaustive over
+        absorption (`UNKNOWN` / `ERROR` on either operand),
+        invalid slot, slot type mismatch, message-value
+        ExternrefTable interning.
+  - [x] `Value::HostMap` / `Value::Map` factories +
+        `StructurallyEquals` kMap arm (pointer-identity at M3) —
+        `value.h` / `cel_host.cc::Value::Map`.
+  - [x] Resolve pass `MapOriginVisitor` (kCreateMap → kArena;
+        kIdent/kSelect with kMap repr → kHost) — `resolve_pass.cc`;
+        unit coverage in `resolve_pass_test.cc`.
+  - [x] Layout pass slot allocation for kCreateMap +
+        kCallExpr(`_[_]`) — `layout_pass.cc`; coverage in
+        `layout_pass_test.cc`.
+  - [x] expr_lower kCreateMap arm + kCall(`_[_]`) three-origin
+        dispatch (kArena → `cel_map_lookup_arena`, kHost →
+        `cel_host.cel_map_lookup`, kDynamic → `cel_map_lookup`) —
+        `expr_lower.cc`; `expr_lower_test.cc` asserts the right
+        target call shows up in the emitted body.
+  - [x] `ProtoBacking::ReadField` on MAP fields wraps in
+        `Value::HostMap(std::make_shared<ProtoMap>(…))` — covered
+        by `proto_map_test.cc::ProtoBackingMapTest::*`.
+
+**Slice M3.H — conformance harness envelope bump for maps**
+
+  - [x] `IsInM2Envelope` → `IsInM3Envelope`; admits
+        `value:{ map_value: … }` matchers in addition to scalar
+        + unknown.  `runner.{h,cc}`.
+  - [x] `CompareValue` grows a `kMapValue` arm dispatching to a
+        new `CompareMap` (order-agnostic — sizes match, every
+        `entries[].key` decodes via `binding_marshal::ValueFromProto`
+        and is found in the cel-side `HostMapBacking` via
+        structural-equality scan, value compare recurses through
+        `CompareValue`).  `runner.cc`.
+  - [x] `Instance::Eval` decoder grows a `CEL_MAP_ARENA` arm:
+        reads `ArenaMapHeader`, walks `count` × 48-byte entries,
+        recursively decodes (key, value) CelValue pairs, wraps
+        in vector-backed `Value::Map(...)`. `api/instance.cc`.
+  - [x] Layer-3 wasmtime glue grows a third trampoline —
+        `cel_host.cel_map_lookup` (3-arg, distinct ABI from the
+        4-arg field trampolines) — and `Engine::Plan` registers
+        all three on the linker so the M3 runtime module
+        instantiates regardless of whether the program reaches
+        the host arm.  `api/internal/cel_host_wasmtime.cc`,
+        `api/engine.cc::InitLinker`.
+  - [x] `BindRuntimeExport` loop covers every runtime export
+        the expr module may import (`cel_reset` / `cel_alloc` /
+        `cel_map_create` / `cel_map_insert` / `cel_map_lookup_arena`
+        / `cel_map_lookup`) — no lazy import tracking, per the
+        repo "always link the runtime fully" rule.
+        `api/engine.cc::InstantiateRuntime`.
+  - [x] `run_conformance` snapshot refreshed — headline
+        `total=2454 · pass=203 · skip=1873 · fail=378` (up
+        from `186 · 1903 · 365`).  Movements: `fields/map_fields/*`
+        graduates 13 tests via M3 arena dispatch; `basic.{}` /
+        `basic.{"k":"v"}` pass via `CompareMap`; `parse.repeat/map_literal`
+        + `plumbing.eval_results/eval_map_results` graduate now
+        that the runtime instantiates with map imports bound.
+        `compiler_v2/conformance/README.md` inventory updated.
+
+**M2.C.0b interim** (interleaved with M3 work)
+
+  - [x] `CelGetFieldImpl` / `CelHasFieldImpl` shipped as
+        Unimplemented-returning Layer-2 stubs (rather than
+        `ABSL_CHECK(false)`) — the only callers are the wasmtime
+        Layer-3 trampoline (production path crashes at the
+        compile-time gate before reaching the trampoline) and
+        the conformance harness, where graceful Unimplemented
+        is the load-bearing behaviour.  Real bodies land in
+        their own slice; unit tests in
+        `cel_host_test.cc::Layer2{Absorption,Dispatch,Aliasing,UnknownPattern,HasField,CrossBacking}`
+        currently FAIL against the stub and will graduate when
+        the bodies land.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

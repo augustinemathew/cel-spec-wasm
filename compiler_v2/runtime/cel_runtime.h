@@ -41,6 +41,7 @@
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_log.h"
 #include "compiler_v2/runtime/cel_make.h"
+#include "compiler_v2/runtime/cel_map.h"
 #include "compiler_v2/runtime/cel_memory.h"
 
 #endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_

@@ -48,6 +48,17 @@ namespace {
 
 using ::absl_testing::IsOk;
 
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::HostMsg3>();
+      return 0;
+    }();
+
 // ============================================================
 // 1. Helpers
 // ============================================================
@@ -55,8 +66,7 @@ using ::absl_testing::IsOk;
 // Parse + check + resolve an expression whose free variables are
 // supplied as "name:Type" specs.
 absl::StatusOr<ResolveOutput> ResolveWithVars(
-    absl::string_view expression,
-    std::vector<std::string> variable_specs) {
+    absl::string_view expression, std::vector<std::string> variable_specs) {
   CheckOptions opts;
   opts.variable_specs = std::move(variable_specs);
   auto ta = ParseAndCheck(expression, opts);
@@ -100,11 +110,12 @@ class IdentCollector : public cel::AstVisitorBase {
  public:
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
-  void PostVisitIdent(const cel::Expr& e,
-                      const cel::IdentExpr& i) override {
+  void PostVisitIdent(const cel::Expr& e, const cel::IdentExpr& i) override {
     refs_.push_back({i.name(), e.id()});
   }
-  std::vector<IdentRef> take() { return std::move(refs_); }
+  std::vector<IdentRef> take() {
+    return std::move(refs_);
+  }
 
  private:
   std::vector<IdentRef> refs_;
@@ -167,14 +178,13 @@ TEST_P(ResolvePassReprTest, RootReprMatches) {
 
 INSTANTIATE_TEST_SUITE_P(
     EveryKConstKind, ResolvePassReprTest,
-    ::testing::Values(
-        ReprCase{"null", "null", Repr::kNull},
-        ReprCase{"bool", "true", Repr::kBool},
-        ReprCase{"int", "42", Repr::kInt},
-        ReprCase{"uint", "42u", Repr::kUint},
-        ReprCase{"double", "3.14", Repr::kDouble},
-        ReprCase{"string", "\"hi\"", Repr::kString},
-        ReprCase{"bytes", "b\"x\"", Repr::kBytes}),
+    ::testing::Values(ReprCase{"null", "null", Repr::kNull},
+                      ReprCase{"bool", "true", Repr::kBool},
+                      ReprCase{"int", "42", Repr::kInt},
+                      ReprCase{"uint", "42u", Repr::kUint},
+                      ReprCase{"double", "3.14", Repr::kDouble},
+                      ReprCase{"string", "\"hi\"", Repr::kString},
+                      ReprCase{"bytes", "b\"x\"", Repr::kBytes}),
     [](const ::testing::TestParamInfo<ReprCase>& info) {
       return std::string(info.param.name);
     });
@@ -250,10 +260,7 @@ struct IdentReprCase {
 class ResolvePassIdentReprTest
     : public ::testing::TestWithParam<IdentReprCase> {
  protected:
-  static void SetUpTestSuite() {
-    (void)celwasm::testdata::Customer::descriptor();
-    (void)celwasm::testdata::HostMsg3::descriptor();
-  }
+  static void SetUpTestSuite() {}
 };
 
 TEST_P(ResolvePassIdentReprTest, SingleIdentOfGivenTypeCarriesExpectedRepr) {
@@ -266,15 +273,15 @@ TEST_P(ResolvePassIdentReprTest, SingleIdentOfGivenTypeCarriesExpectedRepr) {
 
 INSTANTIATE_TEST_SUITE_P(
     AllScalars, ResolvePassIdentReprTest,
-    ::testing::Values(
-        IdentReprCase{"bool", "bool", Repr::kBool},
-        IdentReprCase{"int", "int", Repr::kInt},
-        IdentReprCase{"uint", "uint", Repr::kUint},
-        IdentReprCase{"double", "double", Repr::kDouble},
-        IdentReprCase{"string", "string", Repr::kString},
-        IdentReprCase{"bytes", "bytes", Repr::kBytes},
-        IdentReprCase{"duration", "duration", Repr::kDuration},
-        IdentReprCase{"timestamp", "timestamp", Repr::kTimestamp}),
+    ::testing::Values(IdentReprCase{"bool", "bool", Repr::kBool},
+                      IdentReprCase{"int", "int", Repr::kInt},
+                      IdentReprCase{"uint", "uint", Repr::kUint},
+                      IdentReprCase{"double", "double", Repr::kDouble},
+                      IdentReprCase{"string", "string", Repr::kString},
+                      IdentReprCase{"bytes", "bytes", Repr::kBytes},
+                      IdentReprCase{"duration", "duration", Repr::kDuration},
+                      IdentReprCase{"timestamp", "timestamp",
+                                    Repr::kTimestamp}),
     [](const ::testing::TestParamInfo<IdentReprCase>& info) {
       return std::string(info.param.name);
     });
@@ -295,11 +302,9 @@ INSTANTIATE_TEST_SUITE_P(
         IdentReprCase{"map_string_int", "map<string,int>", Repr::kMap},
         IdentReprCase{"map_int_string", "map<int,string>", Repr::kMap},
         IdentReprCase{"map_uint_double", "map<uint,double>", Repr::kMap},
-        IdentReprCase{"map_bool_list",
-                      "map<bool,list<int>>", Repr::kMap},
+        IdentReprCase{"map_bool_list", "map<bool,list<int>>", Repr::kMap},
         IdentReprCase{"map_string_message",
-                      "map<string,celwasm.testdata.Customer>",
-                      Repr::kMap}),
+                      "map<string,celwasm.testdata.Customer>", Repr::kMap}),
     [](const ::testing::TestParamInfo<IdentReprCase>& info) {
       return std::string(info.param.name);
     });
@@ -307,12 +312,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     Messages, ResolvePassIdentReprTest,
     ::testing::Values(
-        IdentReprCase{"Customer", "celwasm.testdata.Customer",
-                      Repr::kMessage},
-        IdentReprCase{"Address", "celwasm.testdata.Address",
-                      Repr::kMessage},
-        IdentReprCase{"HostMsg3", "celwasm.testdata.HostMsg3",
-                      Repr::kMessage}),
+        IdentReprCase{"Customer", "celwasm.testdata.Customer", Repr::kMessage},
+        IdentReprCase{"Address", "celwasm.testdata.Address", Repr::kMessage},
+        IdentReprCase{"HostMsg3", "celwasm.testdata.HostMsg3", Repr::kMessage}),
     [](const ::testing::TestParamInfo<IdentReprCase>& info) {
       return std::string(info.param.name);
     });
@@ -331,8 +333,7 @@ TEST(ResolvePassIdentTest, SingleIdentAssignsIndexZeroAndTagsNode) {
   EXPECT_EQ(r->variables[0].local_index, 0u);
   EXPECT_EQ(r->variables[0].repr, Repr::kInt);
 
-  const NodeAnnotation* ann =
-      r->annotations.Find(ta->ast().root_expr().id());
+  const NodeAnnotation* ann = r->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(ann, nullptr);
   EXPECT_EQ(ann->local_index, 0u);
   EXPECT_EQ(ann->repr, Repr::kInt);
@@ -340,8 +341,7 @@ TEST(ResolvePassIdentTest, SingleIdentAssignsIndexZeroAndTagsNode) {
 
 TEST(ResolvePassIdentTest, MultipleDistinctIdentsAssignDenseIndicesInOrder) {
   auto ta = ParseAndCheck(
-      "x + y + z",
-      CheckOptions{.variable_specs = {"x:int", "y:int", "z:int"}});
+      "x + y + z", CheckOptions{.variable_specs = {"x:int", "y:int", "z:int"}});
   ASSERT_THAT(ta, IsOk());
   auto r = ResolvePass(*ta);
   ASSERT_THAT(r, IsOk());
@@ -387,16 +387,13 @@ struct SameSlotCase {
 class ResolvePassSameSlotShapeTest
     : public ::testing::TestWithParam<SameSlotCase> {
  protected:
-  static void SetUpTestSuite() {
-    (void)celwasm::testdata::Customer::descriptor();
-    (void)celwasm::testdata::HostMsg3::descriptor();
-  }
+  static void SetUpTestSuite() {}
 };
 
 TEST_P(ResolvePassSameSlotShapeTest, AllOccurrencesShareOneSlot) {
   const auto& c = GetParam();
-  auto ta = ParseAndCheck(c.expression,
-                          CheckOptions{.variable_specs = c.var_specs});
+  auto ta =
+      ParseAndCheck(c.expression, CheckOptions{.variable_specs = c.var_specs});
   ASSERT_THAT(ta, IsOk()) << c.name;
   auto r = ResolvePass(*ta);
   ASSERT_THAT(r, IsOk()) << c.name;
@@ -406,42 +403,59 @@ TEST_P(ResolvePassSameSlotShapeTest, AllOccurrencesShareOneSlot) {
   EXPECT_EQ(r->variables[0].repr, c.expected_repr) << c.name;
 
   auto counts = CheckIdentAnnotations(*ta, *r);
-  EXPECT_EQ(counts[std::string(c.var_name)], c.expected_occurrences)
-      << c.name;
+  EXPECT_EQ(counts[std::string(c.var_name)], c.expected_occurrences) << c.name;
 }
 
 INSTANTIATE_TEST_SUITE_P(
     Shapes, ResolvePassSameSlotShapeTest,
     ::testing::Values(
         // Simplest: used twice as a direct kCall operand.
-        SameSlotCase{"scalar_twice_under_kcall", "x + x", {"x:int"},
-                     "x", Repr::kInt, 2},
-        // Used three times across two nested kCall contexts.
-        SameSlotCase{"scalar_thrice_mixed_ops", "x + x * x", {"x:int"},
-                     "x", Repr::kInt, 3},
-        // List variable indexed at two different positions: `l[0] + l[1]`.
-        SameSlotCase{"list_indexed_twice", "l[0] + l[1]", {"l:list<int>"},
-                     "l", Repr::kList, 2},
-        // Same list as both the array and the index source.
-        SameSlotCase{"list_as_both_array_and_index", "arr[arr[0]]",
-                     {"arr:list<int>"}, "arr", Repr::kList, 2},
-        // Message used twice at different select-chain depths.
         SameSlotCase{
-            "message_at_two_select_depths",
-            "c.age == 1 || c.billing_address.city == \"Seattle\"",
-            {"c:celwasm.testdata.Customer"}, "c", Repr::kMessage, 2},
+            "scalar_twice_under_kcall", "x + x", {"x:int"}, "x", Repr::kInt, 2},
+        // Used three times across two nested kCall contexts.
+        SameSlotCase{"scalar_thrice_mixed_ops",
+                     "x + x * x",
+                     {"x:int"},
+                     "x",
+                     Repr::kInt,
+                     3},
+        // List variable indexed at two different positions: `l[0] + l[1]`.
+        SameSlotCase{"list_indexed_twice",
+                     "l[0] + l[1]",
+                     {"l:list<int>"},
+                     "l",
+                     Repr::kList,
+                     2},
+        // Same list as both the array and the index source.
+        SameSlotCase{"list_as_both_array_and_index",
+                     "arr[arr[0]]",
+                     {"arr:list<int>"},
+                     "arr",
+                     Repr::kList,
+                     2},
+        // Message used twice at different select-chain depths.
+        SameSlotCase{"message_at_two_select_depths",
+                     "c.age == 1 || c.billing_address.city == \"Seattle\"",
+                     {"c:celwasm.testdata.Customer"},
+                     "c",
+                     Repr::kMessage,
+                     2},
         // The nastiest: root variable as array AND inside its own
         // index expression — a message fixture with list + scalar
         // fields.  `c.rep_i32[c.i32 + 10]`.
         SameSlotCase{"message_root_in_own_index",
                      "c.rep_i32[c.i32 + 10]",
-                     {"c:celwasm.testdata.HostMsg3"}, "c",
-                     Repr::kMessage, 2},
+                     {"c:celwasm.testdata.HostMsg3"},
+                     "c",
+                     Repr::kMessage,
+                     2},
         // Same message reused across has() + select.
         SameSlotCase{"message_in_has_and_select",
                      "has(c.name) && c.age > 0",
-                     {"c:celwasm.testdata.Customer"}, "c",
-                     Repr::kMessage, 2}),
+                     {"c:celwasm.testdata.Customer"},
+                     "c",
+                     Repr::kMessage,
+                     2}),
     [](const ::testing::TestParamInfo<SameSlotCase>& info) {
       return std::string(info.param.name);
     });
@@ -472,16 +486,13 @@ struct MixedShapeCase {
 class ResolvePassMixedShapeTest
     : public ::testing::TestWithParam<MixedShapeCase> {
  protected:
-  static void SetUpTestSuite() {
-    (void)celwasm::testdata::Customer::descriptor();
-    (void)celwasm::testdata::HostMsg3::descriptor();
-  }
+  static void SetUpTestSuite() {}
 };
 
 TEST_P(ResolvePassMixedShapeTest, EachVariableGetsItsOwnDenseSlot) {
   const auto& c = GetParam();
-  auto ta = ParseAndCheck(c.expression,
-                          CheckOptions{.variable_specs = c.var_specs});
+  auto ta =
+      ParseAndCheck(c.expression, CheckOptions{.variable_specs = c.var_specs});
   ASSERT_THAT(ta, IsOk()) << c.name;
   auto r = ResolvePass(*ta);
   ASSERT_THAT(r, IsOk()) << c.name;
@@ -505,52 +516,113 @@ INSTANTIATE_TEST_SUITE_P(
     Shapes, ResolvePassMixedShapeTest,
     ::testing::Values(
         // Scalar alongside message select-chain.
-        MixedShapeCase{
-            "scalar_and_message",
-            "c.age == x",
-            {"c:celwasm.testdata.Customer", "x:int"},
-            {{"c", 0, Repr::kMessage, 1}, {"x", 1, Repr::kInt, 1}}},
+        MixedShapeCase{"scalar_and_message",
+                       "c.age == x",
+                       {"c:celwasm.testdata.Customer", "x:int"},
+                       {{"c", 0, Repr::kMessage, 1}, {"x", 1, Repr::kInt, 1}}},
         // Three variables: scalar, message (twice), scalar.
-        MixedShapeCase{
-            "three_vars_message_twice",
-            "n == c.age || c.billing_address.city == s",
-            {"n:int", "c:celwasm.testdata.Customer", "s:string"},
-            {{"n", 0, Repr::kInt, 1},
-             {"c", 1, Repr::kMessage, 2},
-             {"s", 2, Repr::kString, 1}}},
+        MixedShapeCase{"three_vars_message_twice",
+                       "n == c.age || c.billing_address.city == s",
+                       {"n:int", "c:celwasm.testdata.Customer", "s:string"},
+                       {{"n", 0, Repr::kInt, 1},
+                        {"c", 1, Repr::kMessage, 2},
+                        {"s", 2, Repr::kString, 1}}},
         // Scalar + list + map, three different container kinds at
         // different depths under the root `+`.
-        MixedShapeCase{
-            "scalar_list_map_at_different_depths",
-            "n + l[0] + m[\"x\"]",
-            {"n:int", "l:list<int>", "m:map<string,int>"},
-            {{"n", 0, Repr::kInt, 1},
-             {"l", 1, Repr::kList, 1},
-             {"m", 2, Repr::kMap, 1}}},
+        MixedShapeCase{"scalar_list_map_at_different_depths",
+                       "n + l[0] + m[\"x\"]",
+                       {"n:int", "l:list<int>", "m:map<string,int>"},
+                       {{"n", 0, Repr::kInt, 1},
+                        {"l", 1, Repr::kList, 1},
+                        {"m", 2, Repr::kMap, 1}}},
         // Message used as array root AND inside its own index
         // expression, alongside a separate scalar index variable:
         // `c.rep_i32[i + c.i32]`.
-        MixedShapeCase{
-            "message_root_and_index_plus_scalar_index",
-            "c.rep_i32[i + c.i32]",
-            {"c:celwasm.testdata.HostMsg3", "i:int"},
-            {{"c", 0, Repr::kMessage, 2}, {"i", 1, Repr::kInt, 1}}},
+        MixedShapeCase{"message_root_and_index_plus_scalar_index",
+                       "c.rep_i32[i + c.i32]",
+                       {"c:celwasm.testdata.HostMsg3", "i:int"},
+                       {{"c", 0, Repr::kMessage, 2}, {"i", 1, Repr::kInt, 1}}},
         // Nested indexing with two distinct container variables:
         // `m[l[0]]` — `m` at outer kCall, `l` inside inner kCall.
-        MixedShapeCase{
-            "nested_indexing_two_containers",
-            "m[l[0]]",
-            {"m:map<int,string>", "l:list<int>"},
-            {{"m", 0, Repr::kMap, 1}, {"l", 1, Repr::kList, 1}}},
+        MixedShapeCase{"nested_indexing_two_containers",
+                       "m[l[0]]",
+                       {"m:map<int,string>", "l:list<int>"},
+                       {{"m", 0, Repr::kMap, 1}, {"l", 1, Repr::kList, 1}}},
         // Map-typed variable indexed by a string-variable key.
-        MixedShapeCase{
-            "map_and_key_var",
-            "m[k]",
-            {"m:map<string,int>", "k:string"},
-            {{"m", 0, Repr::kMap, 1}, {"k", 1, Repr::kString, 1}}}),
+        MixedShapeCase{"map_and_key_var",
+                       "m[k]",
+                       {"m:map<string,int>", "k:string"},
+                       {{"m", 0, Repr::kMap, 1}, {"k", 1, Repr::kString, 1}}}),
     [](const ::testing::TestParamInfo<MixedShapeCase>& info) {
       return std::string(info.param.name);
     });
+
+// ============================================================
+// 8. ResolvePassSelectTest — kSelect field_number preserved
+// ============================================================
+//
+// Upstream layers lock the field-number resolution rules:
+// `PopulateAnnotations` (typed_ast_test.cc) covers the cpp_type
+// matrix, and `ParseAndCheck` (parse_and_check_test.cc) covers
+// each AST shape.  Here we verify ResolvePass preserves those
+// stamps in its output — the M2.C.1 invariant.
+
+TEST(ResolvePassSelectTest, PreservesFieldNumberFromAnnotations) {
+  auto ta = ParseAndCheck(
+      "c.billing_address.city",
+      CheckOptions{.variable_specs = {"c:celwasm.testdata.Customer"}});
+  ASSERT_THAT(ta, IsOk());
+  auto r = ResolvePass(*ta);
+  ASSERT_THAT(r, IsOk());
+
+  // Outer select is the root (`<inner>.city`); inner is its operand.
+  const cel::Expr& city_sel = ta->ast().root_expr();
+  const cel::Expr& billing_sel = city_sel.select_expr().operand();
+  // Customer.billing_address = 9; Address.city = 1.
+  EXPECT_EQ(r->annotations.Find(billing_sel.id())->field_number, 9u);
+  EXPECT_EQ(r->annotations.Find(city_sel.id())->field_number, 1u);
+}
+
+// ============================================================
+// 9. ResolvePassMapOriginTest — map-list-dispatch.md §2.6
+// ============================================================
+//
+//   kMapExpr        → kArena
+//   kIdent[map<>]   → kHost   (Activation::Bind hands us a backing)
+//   kSelect[map<>]  → kHost   (proto map field via ProtoBacking)
+//   non-map nodes   → kDynamic (default — never set)
+
+TEST(ResolvePassMapOriginTest, MapLiteralStampedArena) {
+  auto r = ResolveWithVars("{1: 10}", {});
+  ASSERT_THAT(r, IsOk());
+  bool found_arena = false;
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    if (a.map_origin == Origin::kArena) found_arena = true;
+  }
+  EXPECT_TRUE(found_arena);
+}
+
+TEST(ResolvePassMapOriginTest, MapTypedIdentStampedHost) {
+  auto r = ResolveWithVars("m", {"m:map<int,int>"});
+  ASSERT_THAT(r, IsOk());
+  bool found_host = false;
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    if (a.repr == Repr::kMap && a.map_origin == Origin::kHost) {
+      found_host = true;
+    }
+  }
+  EXPECT_TRUE(found_host);
+}
+
+TEST(ResolvePassMapOriginTest, NonMapNodesStayDynamic) {
+  // Scalar program — no map_origin should be promoted off the
+  // kDynamic default for any node.
+  auto r = ResolveWithVars("true", {});
+  ASSERT_THAT(r, IsOk());
+  for (const auto& [id, a] : r->annotations.nodes()) {
+    EXPECT_EQ(a.map_origin, Origin::kDynamic) << "expr id=" << id;
+  }
+}
 
 }  // namespace
 }  // namespace celwasm

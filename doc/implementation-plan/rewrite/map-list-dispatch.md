@@ -1,6 +1,12 @@
 # Map and list dispatch: arena / host / dynamic
 
-Status: **draft — scratch doc, 2026-04-23; not yet reconciled into `design.md`.**
+Status: **map half shipped 2026-04-24 (M3.A–H); list half still
+pending.**  The map-specific sections of this doc are now
+authoritative and have been folded into `design.md` (see the M3.I
+checklist at the bottom).  List sections (kCreateList,
+ArenaListHeader, HostListBacking, repeated-field reads) remain
+the design source of truth until the lists slice — they will be
+reconciled at that milestone.
 
 Parked as a standalone artifact so `design.md §4.7.2` / `§4.7.3` and
 related sections can absorb this in one focused reconciliation pass
@@ -430,12 +436,14 @@ the registration step in (2).
 
 | Milestone | Scope relative to this doc |
 |---|---|
-| **M2** (idents + proto field reads + unknowns) | Signature-final stubs land in `api/internal/cel_host.h`: `HostMapBacking` + `HostListBacking` interfaces declared; bodies `ABSL_CHECK(false) << "M6"`.  `ProtoBacking::ReadField` on MAP/REPEATED returns `CEL_ERROR` — the envelope boundary.  `NodeAnnotation.map_origin` + `list_origin` fields added but only `kSelect` returning map/list populates them (always to `kHost`). |
-| **M5** (comprehensions) | Origin rule for `kComprehension` folding into a map/list → `kArena`.  `cel_map_insert` / `cel_list_append` exercised as comprehension side effects.  Custom-function return trampoline's map/list wrapping defined; `kCall.map_origin = kHost`. |
-| **M6** (map + list literals) | Primary landing.  `ArenaMapHeader` / `ArenaListHeader` structs.  Runtime-side `cel_map_*` / `cel_list_*` helpers.  Codegen `kCreateMap` / `kCreateList` arms.  `_[_]`, `size`, `in` overloads across all three origin dispatch paths.  Envelope boundary drops the M2 `CEL_ERROR` for map/repeated; `ProtoBacking::ReadField` returns `Value::HostMap(ProtoMapBacking)` / `Value::HostList(ProtoRepeatedBacking)`. |
-| **M7** (proto literals) | No new map/list machinery — proto literal construction (`Customer{name: "a"}`) goes through `cel_host.cel_make_message` / `cel_set_field` (design.md §4.7.1), orthogonal to map dispatch. |
+| **M2** (idents + proto field reads + unknowns) — shipped 2026-04-24 | Signature-final stubs land in `api/internal/cel_host.h`: `HostMapBacking` + `HostListBacking` interfaces declared; bodies `ABSL_CHECK(false) << "M6"` (now `M3`).  `ProtoBacking::ReadField` on MAP/REPEATED returns `CEL_ERR_TYPE_UNSUPPORTED` — the envelope boundary (locked by `EnvelopeBoundaryE2ETest::SelectRepeatedFieldReturnsUnsupportedError`).  `NodeAnnotation.map_origin` + `list_origin` fields added but only `kSelect` / `kIdent` declared map/list populate them (always to `kHost`). |
+| **M3** (map literals only) — map half of this design lands here | `CEL_MAP_ARENA` / `CEL_MAP_HOST` split; `ArenaMapHeader`; runtime-side `cel_map_*` arena helpers; kDynamic dispatcher with `return_call` tail calls (`__attribute__((musttail))` in `cel_runtime.c`); `HostMap` + `ProtoMap` concrete backings; narrow `kCall(_[_])` arm across all three map dispatch paths.  Envelope boundary drops the M2 `CEL_ERR_TYPE_UNSUPPORTED` for map fields only; `ProtoBacking::ReadField` on MAP returns `Value::HostMap(ProtoMap{…})`.  REPEATED stays erroring until the lists iteration.  Reconciliation of the **map** §11 bullets into `design.md` ticked in this milestone. |
+| **M3-follow-up (lists)** | Replay the M3 pattern for lists: `CEL_LIST_ARENA` / `CEL_LIST_HOST` split; `ArenaListHeader`; `HostList` + `ProtoList` concretes; `kCreateList` + `kCallExpr(_[_])` on list × 3 origins; envelope flip for REPEATED fields. Ticks the list bullets in §11. |
+| **Next milestone** (`kCall` + built-in overload set) | `size`, `in`, `==`, `+` on maps + lists reuse M3's three-path origin dispatch per §6.  `OverloadTable::kBuiltinSeeds` populated.  No new data-structure work. |
+| **Later milestone** (proto literals) | `cel_host.cel_make_message` trampoline + `cel.abi.message_ctors[]` + `kCreateStruct` codegen arm.  Orthogonal to this doc's map/list dispatch; no changes to the three-path design. |
+| **M5** (comprehensions + customs + 3VL) | Origin rule for `kComprehension` folding into a map/list → `kArena`.  `cel_map_insert` / `cel_list_append` exercised as comprehension side effects.  Custom-function return trampoline's map/list wrapping defined; `kCall.map_origin = kHost`. |
 
-M2's stub work is what keeps M6 additive rather than
+M2's stub work is what keeps M3 additive rather than
 structural — the interface is declared before the body is
 implemented.
 
@@ -485,24 +493,56 @@ implemented.
 
 When folding this into `design.md`:
 
-- [ ] `§4.1` `NodeAnnotation` gains `map_origin` + `list_origin`.
-  `Origin` enum added to `ir/annotations.h`.
-- [ ] `§4.7.2` rewritten around the three-path dispatch.
+- [x] `§4.1` `NodeAnnotation` gains `map_origin` + `list_origin`.
+  `Origin` enum added to `ir/annotations.h`.  *(map_origin shipped
+  M3.A; list_origin reserved.)*
+- [x] `§4.7.2` rewritten around the three-path dispatch.
   `ArenaMapHeader` defined.  Construction + lookup helpers
-  listed per path.
+  listed per path.  *(M3.A–C.)*
 - [ ] `§4.7.3` rewritten for lists.  `ArenaListHeader` defined.
-- [ ] `§4.7.6.1` Layer-1 interfaces grow `HostMapBacking` +
-  `HostListBacking`.
-- [ ] `§5` ResolvePass contract gains the origin-inference rule
-  (this doc's §2).
-- [ ] `§7.2` codegen `kCreateMap` / `kCreateList` / `_[_]` /
-  `size` / `in` arms specify origin-dependent emit.
-- [ ] `§8.1` runtime build flags: wasm_imports.txt gains 6
-  host-side imports; exports list gains `cel_map_*` /
-  `cel_list_*` names.
-- [ ] `cel-host-surface.md §3` adds map/list dispatch to the
-  adapter's method set (mirror the field-read story).
+  *(Lists slice.)*
+- [x] `§4.7.6.1` Layer-1 interface grows `HostMapBacking`.
+  `HostListBacking` reserved as an abstract base; bodies land at
+  the lists slice.
+- [x] `§5` ResolvePass contract gains the origin-inference rule
+  (this doc's §2).  *(M3.F.)*
+- [x] `§7.2` codegen `kCreateMap` / `_[_]` arms specify origin-
+  dependent emit.  *(M3.F.)*  List arm pending.
+- [x] `§8.1` runtime build flags: wasm_imports.txt gains
+  `cel_host.cel_map_lookup`; exports list gains `cel_map_create`
+  / `cel_map_insert` / `cel_map_lookup_arena` / `cel_map_lookup`.
+  *(M3.B–C.)*  List exports pending.
+- [x] `cel-host-surface.md` adds map dispatch to the adapter's
+  method set (mirror the field-read story); list dispatch
+  pending.  *(M3.D.)*
 
-Reconcile when the map/list surface enters the implementation
-roadmap (M5 preparation) — doing it before that is premature
-since open-question answers in §10 may reshape the detail.
+The map rows are reconciled.  List rows graduate when the list
+slice ships.
+
+## 12. Map half — what shipped (M3 retro)
+
+  - `CelKind` split: `CEL_MAP_ARENA = 8`, `CEL_MAP_HOST = 9` (other
+    kinds renumbered down).  `ArenaMapHeader` is 16 B with
+    `{count, capacity, entries_offset, _pad}`; entries stride 48 B.
+  - Runtime exports: `cel_map_create`, `cel_map_insert`,
+    `cel_map_lookup_arena`, `cel_map_lookup` (the
+    `__attribute__((musttail))` dispatcher).  Cross-toolchain
+    tail-call config (`-mtail-call`, Binaryen
+    `--enable-tail-call`, wasmtime `wasm_tail_call(true)`) all
+    flipped on.
+  - Host import: one new line in `wasm_imports.txt` —
+    `cel_host.cel_map_lookup`.  Three-arg ABI (`out_slot`,
+    `map_slot`, `key_slot`) distinct from the four-arg
+    `cel_get_field` / `cel_has_field`.
+  - `Value::Map(...)` / `Value::HostMap(...)` constructors;
+    `StructurallyEquals` kMap arm uses pointer-identity at M3
+    (deferred to a richer comparator when comprehensions land).
+  - `HostMap` (vector-backed) + `ProtoMap` (proto-reflection-
+    backed) concrete `HostMapBacking` impls share the
+    map-key-equality + invalid-kind helpers.
+  - `ProtoBacking::ReadField` on MAP fields wraps in
+    `Value::HostMap(std::make_shared<ProtoMap>(...))`.
+
+The lists slice repeats this shape for `CEL_LIST_ARENA` /
+`CEL_LIST_HOST` + REPEATED-field reads; `cel_list_lookup` /
+`cel_host.cel_list_at` follow the same three-path dispatch.

@@ -12,6 +12,7 @@ cc_library(
         "cel_data.h",
         "cel_log.h",
         "cel_make.h",
+        "cel_map.h",
         "cel_memory.h",
         "cel_runtime.h",
     ],
@@ -53,6 +54,24 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "cel_data_test",
+    srcs = ["cel_data_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_map_test",
+    srcs = ["cel_map_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Locks the runtime null-pointer-elision bug closed.  Loads the
 # cross-compiled cel_runtime.wasm under wasmtime and asserts
 # cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
@@ -82,6 +101,7 @@ genrule(
         "cel_data.h",
         "cel_log.h",
         "cel_make.h",
+        "cel_map.h",
         "cel_memory.h",
         "cel_runtime.c",
         "cel_runtime.h",
@@ -94,6 +114,12 @@ genrule(
         "-ffreestanding",
         "-nostdlib",
         "-O2",
+        # M3.C: `__attribute__((musttail))` requires the wasm tail-call
+        # feature to lower as `return_call`.  Without `-mtail-call`
+        # clang errors out rather than silently downgrading — that's
+        # the point.  wasmtime config also gets the matching flag in
+        # api/engine.cc.
+        "-mtail-call",
         "-Wl,--no-entry",
         # `-Wl,` splits on commas, which would corrupt the two-arg
         # `--import-memory=<module>,<name>` form.  Use `-Xlinker` so
@@ -101,6 +127,10 @@ genrule(
         "-Xlinker --import-memory=cel,memory",
         "-Wl,--export=cel_alloc",
         "-Wl,--export=cel_reset",
+        "-Wl,--export=cel_map_create",
+        "-Wl,--export=cel_map_insert",
+        "-Wl,--export=cel_map_lookup",
+        "-Wl,--export=cel_map_lookup_arena",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

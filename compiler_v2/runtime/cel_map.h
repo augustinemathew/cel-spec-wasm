@@ -1,0 +1,71 @@
+// Map runtime primitives — arena construction + arena-fast-path lookup
+// + the kDynamic tail-call dispatcher.  Three-path origin design from
+// `doc/implementation-plan/rewrite/map-list-dispatch.md`:
+//
+//   - kArena   — call `cel_map_lookup_arena` directly (codegen knows).
+//   - kHost    — call `cel_host.cel_map_lookup` directly (codegen
+//                knows).  See `api/internal/cel_host.{h,cc}`.
+//   - kDynamic — call `cel_map_lookup`, the dispatcher below; it
+//                branches on `kind` and `return_call`s the right arm.
+//
+// All offsets are u32 byte offsets into the shared linear memory
+// (parent design §8.2).
+
+#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_
+#define CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_
+
+#include <stdint.h>
+
+#include "compiler_v2/runtime/cel_data.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Construction.  Allocates a fresh `ArenaMapHeader` plus an entries
+// array of exactly `capacity` slots in the bump arena, writes a
+// `{CEL_MAP_ARENA, header_ptr}` CelValue into `out_slot`.  Map
+// literals are fixed-length: the codegen knows the exact entry
+// count at build time and passes it as `capacity`, so there is no
+// growth path — a subsequent `cel_map_insert` past `capacity` is a
+// codegen invariant violation and poisons the map.  On OOM poisons
+// `out_slot` with `{CEL_ERROR, CEL_ERR_OVERFLOW}`.
+void cel_map_create(uint32_t out_slot, uint32_t capacity);
+
+// Linear-scan insert with duplicate-key poisoning.  If `key_slot`'s
+// kind is unsupported (anything other than bool/int/uint/string) the
+// map slot is poisoned with `CEL_ERR_TYPE_MISMATCH`; if the key is
+// already present the map slot is poisoned with
+// `CEL_ERR_DUPLICATE_KEY`, per langdef §"Map literals".  Inserting
+// past the constructed `capacity` is a codegen-side invariant
+// violation and poisons with `CEL_ERR_OVERFLOW` — the runtime never
+// resizes; the literal's entry count is fixed at compile time.
+void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
+
+// Arena fast path — codegen calls this directly when ResolvePass
+// proved the operand origin is `kArena`.  No host trip; pure wasm
+// linear scan.  Cross-type numeric key equality follows langdef
+// §"Equality": int/uint/double compare by mathematical value across
+// the type ladder; bool and string compare by structural identity.
+//
+// On hit: writes the value CelValue into `out_slot`.
+// On miss: writes `{CEL_ERROR, CEL_ERR_NO_SUCH_KEY}` into `out_slot`.
+// On unknown/error key: propagates the operand into `out_slot` (3VL).
+void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
+                          uint32_t key_slot);
+
+// kDynamic dispatcher.  Codegen emits a `call` to this when
+// ResolvePass cannot prove a single origin (mixed sources, e.g. a
+// branch that yields either an arena literal or a proto map).  The
+// dispatcher absorbs unknown / error operands, then `return_call`s
+// (`__attribute__((musttail))`) into the kArena or kHost arm — never
+// growing the wasm stack.  See `cel_runtime.c` for the `musttail`
+// invariant; toolchain requires `-mtail-call` on clang and
+// `wasmtime::Config::wasm_tail_call(true)`.
+void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_

@@ -67,6 +67,16 @@ wasm_trap_t* NoopCelLog(void*, wasmtime_caller_t*, const wasmtime_val_t*,
   return nullptr;
 }
 
+// No-op cel_host.cel_map_lookup trampoline.  M3.C added the kDynamic
+// dispatcher in cel_runtime.c with a `return_call` into this import;
+// the runtime module won't instantiate without something bound here.
+// These tests don't exercise the kHost path, so a no-op suffices.
+wasm_trap_t* NoopCelMapLookup(void*, wasmtime_caller_t*,
+                              const wasmtime_val_t*, size_t,
+                              wasmtime_val_t*, size_t) {
+  return nullptr;
+}
+
 wasm_functype_t* CelLogFuncType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
@@ -75,6 +85,18 @@ wasm_functype_t* CelLogFuncType() {
     p = wasm_valtype_new(WASM_I32);
   }
   wasm_valtype_vec_new(&params, 9, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+wasm_functype_t* CelMapLookupFuncType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[3];
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
+  wasm_valtype_vec_new(&params, 3, param_arr);
   wasm_valtype_vec_new_empty(&results);
   return wasm_functype_new(&params, &results);
 }
@@ -124,9 +146,18 @@ struct RuntimeHarness {
 // pages matches cel_runtime.wasm's `--import-memory` min=2 (per
 // runtime/BUILD.bazel).
 ::testing::AssertionResult InitEngineStoreMemory(RuntimeHarness* h) {
-  h->engine = wasm_engine_new();
+  // M3.C: enable wasm tail-call so the runtime's `cel_map_lookup`
+  // dispatcher can `return_call` into the kArena / kHost arms.
+  // wasmtime defaults this off; without it the module won't even
+  // compile.
+  wasm_config_t* config = wasm_config_new();
+  if (config == nullptr) {
+    return ::testing::AssertionFailure() << "wasm_config_new";
+  }
+  wasmtime_config_wasm_tail_call_set(config, true);
+  h->engine = wasm_engine_new_with_config(config);
   if (h->engine == nullptr) {
-    return ::testing::AssertionFailure() << "wasm_engine_new";
+    return ::testing::AssertionFailure() << "wasm_engine_new_with_config";
   }
   h->store = wasmtime_store_new(h->engine, nullptr, nullptr);
   if (h->store == nullptr) {
@@ -166,6 +197,15 @@ struct RuntimeHarness {
   if (err != nullptr) {
     return ::testing::AssertionFailure()
            << "define cel_env.cel_log: " << WasmtimeErrorMsg(err);
+  }
+  wasm_functype_t* mlft = CelMapLookupFuncType();
+  err = wasmtime_linker_define_func(
+      h->linker, "cel_host", 8, "cel_map_lookup", 14, mlft, NoopCelMapLookup,
+      /*data=*/nullptr, /*finalizer=*/nullptr);
+  wasm_functype_delete(mlft);
+  if (err != nullptr) {
+    return ::testing::AssertionFailure()
+           << "define cel_host.cel_map_lookup: " << WasmtimeErrorMsg(err);
   }
   wasmtime_extern_t ext;
   ext.kind = WASMTIME_EXTERN_MEMORY;

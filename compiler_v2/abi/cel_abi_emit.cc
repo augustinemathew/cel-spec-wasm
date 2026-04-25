@@ -18,7 +18,12 @@ constexpr uint32_t kCelAbiVersion = 1;
 
 }  // namespace
 
-absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(const StaticLayout& layout) {
+// Public declaration lives in cel_abi_emit.h; clang-tidy's include
+// path for the header is incomplete in compile_commands.json and it
+// mistakes this for a static candidate.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
+    const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs) {
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
 
@@ -31,9 +36,32 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(const StaticLayout& layout) {
     entry->set_repr(static_cast<uint32_t>(v.repr));
   }
 
-  // fields[] + attributes[] stay empty at M2.B — populated by
-  // M2.C (kSelect field intern table) and M2.E (kIdent/kSelect
-  // attribute intern table) respectively.
+  // fields[]: one row per kSelect (M2.C).  Index 0 is the sentinel
+  // (zero-initialised FieldRefRow); emit it too so the host-side
+  // table's indices line up 1:1 with field_ref_id used in
+  // `cel_host.cel_get_field` calls.
+  abi.mutable_fields()->Reserve(static_cast<int>(field_refs.size()));
+  for (uint32_t i = 0; i < field_refs.size(); ++i) {
+    const FieldRefRow& row = field_refs[i];
+    celwasm::abi::FieldEntry* entry = abi.add_fields();
+    entry->set_id(i);
+    entry->set_field_number(row.field_number);
+    entry->set_name(row.name);
+    entry->set_owner_fqn(row.owner_fqn);
+  }
+
+  // attributes[]: one row per distinct attribute path (M2.E).
+  // Index 0 is the sentinel (empty row).
+  abi.mutable_attributes()->Reserve(static_cast<int>(layout.attributes.size()));
+  for (uint32_t i = 0; i < layout.attributes.size(); ++i) {
+    const AttributeEntryRow& row = layout.attributes[i];
+    celwasm::abi::AttributeEntry* entry = abi.add_attributes();
+    entry->set_id(i);
+    entry->set_variable(row.root_variable);
+    for (const std::string& q : row.qualifiers) {
+      entry->add_qualifiers(q);
+    }
+  }
 
   return abi;
 }

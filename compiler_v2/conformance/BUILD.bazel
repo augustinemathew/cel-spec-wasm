@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
@@ -14,6 +14,9 @@ cc_library(
     srcs = ["runner.cc"],
     hdrs = ["runner.h"],
     deps = [
+        ":binding_marshal",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",
         "//compiler_v2/api:compiler",
         "//compiler_v2/api:engine",
         "//compiler_v2/api:instance",
@@ -32,6 +35,51 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Marshaller from test-fixture proto shapes (`cel.expr.ExprValue`,
+# `cel.expr.Decl`) to the public `cel::` surface (`cel::Value`,
+# `cel::Activation`, `Compiler::Builder::DeclareVariable`).  Lives
+# in its own translation unit so the unit tests can exercise the
+# scalar-only marshal contract without pulling in the wasmtime
+# runner.
+cc_library(
+    name = "binding_marshal",
+    srcs = ["binding_marshal.cc"],
+    hdrs = ["binding_marshal.h"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "//proto/cel/expr:checked_cc_proto",
+        "//proto/cel/expr:eval_cc_proto",
+        "//proto/cel/expr:value_cc_proto",
+        "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "binding_marshal_test",
+    srcs = ["binding_marshal_test.cc"],
+    deps = [
+        ":binding_marshal",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:value",
+        "//proto/cel/expr:checked_cc_proto",
+        "//proto/cel/expr:eval_cc_proto",
+        "//proto/cel/expr:value_cc_proto",
+        "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
     ],
 )

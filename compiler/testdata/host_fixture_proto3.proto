@@ -34,4 +34,15 @@ message HostMsg3 {
   Kind     kind     = 16;
   HostMsg3 inner    = 17;
   repeated int32 rep_i32 = 18;
+
+  // M3.G fixture coverage — one map field per allowed key kind so
+  // ProtoMap reflection paths can be exhaustively asserted without
+  // adding new top-level messages.  Values are scalars or messages;
+  // repeated/map values are not legal as proto map values per
+  // descriptor.proto.
+  map<string, int32>  str_to_i32 = 19;
+  map<int64,  string> i64_to_str = 20;
+  map<uint32, double> u32_to_f64 = 21;
+  map<bool,   int64>  bool_to_i64 = 22;
+  map<string, HostMsg3> str_to_msg = 23;
 }

@@ -21,6 +21,16 @@ namespace {
 
 using ::absl_testing::IsOk;
 
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      return 0;
+    }();
+
 // Runs parse → check → resolve → layout and returns the root node's
 // storage field.  Any pipeline failure dereferences a bad StatusOr and
 // crashes with the absl-standard message — per-kind tests below only
@@ -239,8 +249,7 @@ TEST(LayoutPassTest, DistinctLiteralsGetDistinctOffsets) {
 // time, not stored on the layout).
 
 absl::StatusOr<StaticLayout> LayoutWithVars(
-    absl::string_view expression,
-    std::vector<std::string> variable_specs) {
+    absl::string_view expression, std::vector<std::string> variable_specs) {
   CheckOptions opts;
   opts.variable_specs = std::move(variable_specs);
   auto ta = ParseAndCheck(expression, opts);
@@ -262,8 +271,7 @@ TEST(LayoutPassVariableTest,
 }
 
 TEST(LayoutPassVariableTest, SlotOffsetsAreContiguousAndEightAligned) {
-  auto layout = LayoutWithVars("x + y + z",
-                               {"x:int", "y:int", "z:int"});
+  auto layout = LayoutWithVars("x + y + z", {"x:int", "y:int", "z:int"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 3u);
   EXPECT_EQ(layout->variables[0].slot_offset, layout->workspace_base);
@@ -285,9 +293,7 @@ TEST(LayoutPassVariableTest, ArenaBaseStillFollowsWorkspaceWithVariables) {
 
 TEST(LayoutPassVariableTest,
      IdentAnnotationStoresLocalKindWithLocalIndexPayload) {
-  auto ta = ParseAndCheck(
-      "x",
-      CheckOptions{.variable_specs = {"x:int"}});
+  auto ta = ParseAndCheck("x", CheckOptions{.variable_specs = {"x:int"}});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   ASSERT_THAT(resolved, IsOk());
@@ -306,9 +312,7 @@ TEST(LayoutPassVariableTest,
   // `x + x` — two kIdent nodes for variable `x`.  Both annotations
   // carry the same local_index; only one variable slot + one wasm
   // local is allocated.
-  auto ta = ParseAndCheck(
-      "x + x",
-      CheckOptions{.variable_specs = {"x:int"}});
+  auto ta = ParseAndCheck("x + x", CheckOptions{.variable_specs = {"x:int"}});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   ASSERT_THAT(resolved, IsOk());
@@ -357,9 +361,7 @@ TEST(LayoutPassVariableTest, MessageVariableGetsOneSlot) {
   // Touch the descriptor so the generated Customer proto gets
   // registered in the process-wide generated DescriptorPool that
   // ParseAndCheck reaches through monostate-schema lookup.
-  (void)celwasm::testdata::Customer::descriptor();
-  auto layout = LayoutWithVars(
-      "c", {"c:celwasm.testdata.Customer"});
+  auto layout = LayoutWithVars("c", {"c:celwasm.testdata.Customer"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].repr, Repr::kMessage);
@@ -370,15 +372,170 @@ TEST(LayoutPassVariableTest, MessageVariableGetsOneSlot) {
 // emitter can write it into cel.abi.variables[] without re-plumbing
 // the type through the pipeline.
 TEST(LayoutPassVariableTest, VariableReprForwardedFromResolvePass) {
-  auto layout = LayoutWithVars(
-      "b || s == \"a\" || i > 0 || d > 0.0",
-      {"b:bool", "s:string", "i:int", "d:double"});
+  auto layout = LayoutWithVars("b || s == \"a\" || i > 0 || d > 0.0",
+                               {"b:bool", "s:string", "i:int", "d:double"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 4u);
   EXPECT_EQ(layout->variables[0].repr, Repr::kBool);
   EXPECT_EQ(layout->variables[1].repr, Repr::kString);
   EXPECT_EQ(layout->variables[2].repr, Repr::kInt);
   EXPECT_EQ(layout->variables[3].repr, Repr::kDouble);
+}
+
+// --- kSelect nodes reserve workspace cells (M2.C.2) ----------------------
+//
+// Every kSelect result lands in a 24B workspace slot allocated
+// after the variable-slot region.  Naive SlotAllocator at M2 —
+// peak_slots == kSelect node count.
+
+TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
+  CheckOptions opts;
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  auto ta = ParseAndCheck("c.billing_address.city", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // 1 variable (c) + 2 selects = 72B workspace; peak = 2 slots.
+  EXPECT_EQ(layout->workspace_bytes, 72u);
+  EXPECT_EQ(layout->peak_slots, 2u);
+  EXPECT_EQ(layout->arena_base,
+            layout->workspace_base + layout->workspace_bytes);
+
+  const cel::Expr& city_sel = ta->ast().root_expr();
+  const cel::Expr& billing_sel = city_sel.select_expr().operand();
+  const NodeAnnotation* billing_ann =
+      layout->annotations.Find(billing_sel.id());
+  const NodeAnnotation* city_ann = layout->annotations.Find(city_sel.id());
+  ASSERT_NE(billing_ann, nullptr);
+  ASSERT_NE(city_ann, nullptr);
+  // Selects sit right after the variable slot, 24B-aligned.
+  const uint32_t select_base = layout->workspace_base + 24u;
+  EXPECT_EQ(billing_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(billing_ann->storage.payload, select_base);
+  EXPECT_EQ(city_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(city_ann->storage.payload, select_base + 24u);
+}
+
+// --- M3.F: kCreateMap + kCallExpr(`_[_]`) reserve workspace cells ---------
+//
+// kCreateMap nodes get a 24B slot for the result CelValue from
+// `cel_map_create` to write into; kCallExpr(`_[_]`) on a map gets
+// another 24B slot for the lookup result (cel_map_lookup_arena /
+// cel_host.cel_map_lookup / cel_map_lookup write into it).  The
+// MapStorageVisitor in `layout_pass.cc` allocates these out of the
+// shared SlotAllocator so they coexist with kSelect's slots.
+
+TEST(LayoutPassMapTest, EmptyMapLiteralGetsOneWorkspaceSlot) {
+  auto ta = ParseAndCheck("{}", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // No variables; one kCreateMap → one slot.
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+
+  const auto* root_ann =
+      layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
+}
+
+TEST(LayoutPassMapTest, ScalarMapLiteralGetsOneSlotRegardlessOfEntryCount) {
+  // Per dispatch-doc §4: the kCreateMap result slot is a single
+  // 24B CelValue (the wire shape).  Entry storage lives in the
+  // arena (allocated by `cel_map_insert`), not the workspace.
+  auto ta = ParseAndCheck("{\"a\": 1, \"b\": 2, \"c\": 3}", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+}
+
+TEST(LayoutPassMapTest, MapLiteralIndexingGetsTwoContiguousSlots) {
+  // `{"a":1}["a"]` — kCreateMap result slot followed by the
+  // kCallExpr(`_[_]`) lookup-result slot.
+  auto ta = ParseAndCheck("{\"a\": 1}[\"a\"]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->peak_slots, 2u);
+
+  // Root is the kCallExpr; its slot lands second.
+  const auto* root_ann =
+      layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
+}
+
+TEST(LayoutPassMapTest, BoundMapIndexingNeedsOnlyTheCallSlot) {
+  // `m[k]` on a bound `map<K,V>` ident — only the kCallExpr result
+  // needs a workspace cell; the operand reaches the call as a
+  // local_get (variable's own slot) rather than another scratch
+  // cell.  So workspace = 1 variable slot + 1 call slot = 48B.
+  CheckOptions opts;
+  opts.variable_specs = {"m:map<string,int>"};
+  auto ta = ParseAndCheck("m[\"k\"]", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+  ASSERT_EQ(layout->variables.size(), 1u);
+  EXPECT_EQ(layout->variables[0].name, "m");
+  EXPECT_EQ(layout->variables[0].repr, Repr::kMap);
+}
+
+TEST(LayoutPassMapTest, MultipleMapLiteralsGetDistinctSlots) {
+  // `{"a":1}["a"] + {"b":2}["b"]` would parse but not type-check
+  // until the kCall arm lands; use sibling map literals via a
+  // different shape — the underlying invariant we care about is
+  // that distinct kCreateMap nodes don't share slots.
+  CheckOptions opts;
+  opts.variable_specs = {"k:string"};
+  auto ta = ParseAndCheck("{\"a\": 1, \"b\": 2}[k]", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // 1 variable + kCreateMap + kCallExpr(`_[_]`) = 3 cells.  But
+  // `k` is a string repr — its slot still counts.  Pin the totals
+  // so a layout regression that fuses or duplicates a slot trips
+  // here.
+  EXPECT_EQ(layout->variables.size(), 1u);
+  EXPECT_EQ(layout->workspace_bytes, 72u);
+  EXPECT_EQ(layout->peak_slots, 2u);
+}
+
+TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
+  // Sanity: arena_base = workspace_base + workspace_bytes and 8-
+  // aligned, regardless of map content.  This invariant is what
+  // lets `cel_map_insert` bump-allocate entry storage past the
+  // last workspace slot.
+  auto ta = ParseAndCheck("{\"a\": 1}[\"a\"]", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  EXPECT_EQ(layout->arena_base,
+            layout->workspace_base + layout->workspace_bytes);
+  EXPECT_EQ(layout->arena_base % 8u, 0u);
 }
 
 }  // namespace

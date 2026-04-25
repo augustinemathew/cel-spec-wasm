@@ -1,10 +1,13 @@
 # cel_host surface (compiler_v2)
 
-**Status:** Committed 2026-04-22. Authoritative for the public user
-API, the `cel.abi` schema, and every wasm callback signature into
-the host. Complements `design.md`, which owns the runtime/codegen
-internals; where the two touch (ABI fields, callback shapes, slice
-plan for the api/ tier), this doc wins and `design.md` defers.
+**Status:** Committed 2026-04-22, reconciled 2026-04-24 against
+as-shipped M2 (three-layer cel_host split, `HostMessageBacking`
+abstract base, Instance surface deltas).  Authoritative for the
+public user API, the `cel.abi` schema, and every wasm callback
+signature into the host.  Complements `design.md`, which owns the
+runtime/codegen internals; where the two touch (ABI fields,
+callback shapes, slice plan for the api/ tier), this doc wins and
+`design.md` defers.
 
 This doc scopes the entire host surface a developer touches when
 embedding a compiled CEL expression. It covers:
@@ -346,32 +349,46 @@ The live evaluator. Not serializable. Single-threaded (bind one
 per thread for concurrency).
 
 ```cpp
-// compiler_v2/api/instance.h
+// compiler_v2/api/instance.h — as-shipped M2
 namespace cel {
 
 class Instance {
  public:
-  // Full evaluation.  All declared variables must be bound in act;
-  // unbound variables are an error (not UNKNOWN).
-  absl::StatusOr<Value> Eval(const Activation& act);
+  // Zero-arg overload — literal-only / variable-free programs.
+  absl::StatusOr<Value> Eval();
+
+  // Full evaluation with an activation.  All declared variables
+  // must be bound in act; unbound variables surface as
+  // FailedPrecondition (not UNKNOWN).
+  absl::StatusOr<Value> Eval(const Activation& activation);
 
   // Partial evaluation — some attributes are declared unknown.
   // Returns Value::Unknown(...) if evaluation can't make progress
-  // without resolving at least one of the declared unknowns; returns
-  // a concrete Value if short-circuiting let it avoid them.
+  // without resolving at least one of the declared unknowns;
+  // returns a concrete Value if short-circuiting let it avoid
+  // them.  `cel_reset` runs internally at each call, so the same
+  // Instance can alternate between `Eval` and `PartialEval`
+  // without re-planning.
   absl::StatusOr<Value> PartialEval(
-      const Activation& act,
+      const Activation& activation,
       absl::Span<const AttributePattern> unknowns);
 
-  // Back-reference to the Program that built this Instance.
-  const Program& program() const;
-
-  // Explicit reset — normally automatic between Eval calls.
-  void Reset();
+  // Linear-memory byte size for this Instance's host-owned
+  // memory.  Lifetime-test hook; likely to narrow once a richer
+  // surface lands.
+  std::size_t memory_size_bytes() const;
 };
 
 }  // namespace cel
 ```
+
+> **Plan-vs-execution delta:** as-written showed `program()` and
+> `Reset()` on `Instance`.  `program()` is unshipped — callers
+> that built the Program hold it themselves; no path needed the
+> back-reference.  `Reset()` is unshipped too — `cel_reset` runs
+> internally on every Eval / PartialEval call (no user-visible
+> explicit reset button), which was sufficient for every M2 test
+> shape.
 
 ### 2.4 `Cel::RuntimeBindings`
 
@@ -527,38 +544,76 @@ doesn't pay to unbox each element through the C++ surface.
 ### 2.6 `Activation`
 
 ```cpp
-// compiler_v2/api/activation.h
-namespace celwasm {
+// compiler_v2/api/activation.h — as-shipped M2
+namespace cel {
 
 class Activation {
  public:
-  // Direct binding.
-  void Bind(std::string name, Value value);
+  // Direct binding.  Chainable.
+  Activation& Bind(std::string name, Value value);
 
-  // Lazy binding — fn is called only if the expression references
-  // the variable.  Avoids boxing expensive values up front.
-  void BindLazy(std::string name,
-                absl::AnyInvocable<absl::StatusOr<Value>() const>);
+  // Lazy binding — fn is invoked at most once per Eval, the first
+  // time the expression references the variable.  Memoised for the
+  // duration of that Eval call.
+  Activation& BindLazy(
+      std::string name,
+      absl::AnyInvocable<absl::StatusOr<Value>() const> binder);
 
   // Per-call function override — rare, but cel-cpp supports it.
-  void OverrideFunction(std::string name, FunctionImpl fn);
+  // Body is a stub until M5 (CHECKs on use).
+  Activation& OverrideFunction(std::string overload_id, FunctionImpl impl);
 
-  // Lookup (used by Instance at eval start).
-  absl::StatusOr<const Value*> Find(absl::string_view name) const;
+  // Lookup (used by Instance at eval start).  nullptr if not bound.
+  const Value* absl_nullable Find(absl::string_view name) const;
 };
 
-}  // namespace celwasm
+}  // namespace cel
 ```
+
+> **Plan-vs-execution delta:** as-written showed `namespace
+> celwasm`; the shipped class is `cel::Activation` (the
+> public-API namespace).  `Find` returns a nullable pointer, not
+> `StatusOr` — cheaper and sufficient for the "unbound variable"
+> surface (the caller reports `FailedPrecondition` with context).
 
 ## 3. The host adapter (internal)
 
-This section describes machinery users never touch. It lives at
-`compiler_v2/api/internal/cel_host.{h,cc}` — the same file the
-wasmtime trampolines call into.  Internal to the api/ tier
-because `Engine::Plan` is its only caller (it registers the
-imports on the wasmtime linker before the expr module
-instantiates).  One concrete implementation today, proto-backed;
-described here so reviewers can see the full picture.
+This section describes machinery users never touch. Internal to
+the api/ tier because `Engine::Plan` is its only caller (it
+registers the imports on the wasmtime linker before the expr
+module instantiates).  Described here so reviewers can see the
+full picture.
+
+**As-shipped (M2, 2026-04-24): three layers across two TUs.**
+
+  - **Layer 1** — pure CEL field-read semantics.  Abstract base
+    `HostMessageBacking` in `api/internal/cel_host.h`; concrete
+    `ProtoBacking` (the only impl today) wraps a
+    `google::protobuf::Message*` and reads via reflection.  No
+    wasmtime dependency.  Also in the file:
+    `HostMapBacking` / `HostListBacking` stubs (signature-final,
+    bodies `ABSL_CHECK(false) << "... is a stub until M6"`).
+  - **Layer 2** — runtime-agnostic trampoline bodies:
+    `CelGetFieldImpl(out_slot, msg_slot, field_ref_id, ctx)` and
+    `CelHasFieldImpl(...)` in `cel_host.cc`.  They consume a
+    `TrampolineContext` (ExternrefTable + MemoryView +
+    ArenaAllocator + `CelHostBindings` pointers into the
+    precomputed FieldRef / Attribute tables).  No wasmtime
+    headers.  The `cel_host` smoke test
+    (`cel_host_test.cc`) exercises these against fakes.
+  - **Layer 3** — wasmtime glue in
+    `api/internal/cel_host_wasmtime.{h,cc}`.  Adapters for
+    `wasmtime_memory_t` (MemoryView), `wasmtime_func_call`
+    reentrancy (ArenaAllocator calling back into `cel_alloc`),
+    the `CelHostCallbackEnv` lifetime hanging off `InstanceImpl`,
+    and the extern-"C" `CelGetFieldTrampoline` /
+    `CelHasFieldTrampoline` functions registered on the linker.
+
+> **Plan-vs-execution delta:** §3 as-written described a single
+> `cel_host.{h,cc}` file.  The as-shipped split isolates the
+> runtime-agnostic work from the wasmtime-specific glue, and
+> factors Layer-1 backing semantics into an abstract base so the
+> smoke test can substitute fakes without a real `Message*`.
 
 ### 3.1 What it does
 
@@ -596,26 +651,29 @@ host adapter owns what happens next:
 adapter is single-owned, file-local, and handles externref
 bookkeeping + proto descriptor resolution end-to-end.
 
-### 3.2 Why this is not an interface today
+### 3.2 Why there's exactly one virtual interface today
 
-A `HostAdapter` virtual interface with multiple implementations is
-not needed until we have a real second backing. "Future-proof" is
-not a motivation for interface abstraction — real requirements are.
-Until then, `cel_host.cc` is a concrete proto-backed file, reviewed
-as such.
+As-shipped, `HostMessageBacking` is an abstract base with one
+concrete impl (`ProtoBacking`).  The virtual is not speculative —
+it is the plug-in point the smoke-test harness uses to substitute
+a fake backing without linking libprotobuf.  The Layer-2
+trampoline bodies (`CelGetFieldImpl` / `CelHasFieldImpl`) depend
+only on the abstract base; they don't reach for `Reflection::Get*`
+directly.
 
-If / when a second backing arrives:
+If / when a second *production* backing arrives (JSON, a custom
+in-memory struct map, …), it drops in as a new
+`HostMessageBacking` subclass alongside `ProtoBacking`.  The
+trampolines don't change.  `RuntimeBindings` would gain an
+opt-in hook to override which backing is chosen when a user
+binds a `Value::Message`, but that's a small additive change.
 
-1. The concrete proto impl extracts into `adapters/proto.{h,cc}`.
-2. A `HostAdapter` interface is carved from its public methods.
-3. A second impl joins under `adapters/`.
-4. `RuntimeBindings` gains an opt-in hook to override the
-   default (an adapter pointer alongside `function_impls`).
-
-Each of those four steps is cheap and well-localised. Doing them
-preemptively without a second impl is speculative architecture,
-and speculative architecture is the specific thing that killed the
-previous draft.
+> **Plan-vs-execution delta:** §3.2 as-written said "`cel_host.cc`
+> is a concrete proto-backed file" and described abstraction as a
+> future "if / when".  The as-shipped shape skipped that because
+> the smoke-test harness genuinely needed a fake backing during
+> M2.C.0 development — so the virtual is earning its keep today,
+> not speculative.
 
 ### 3.3 Why the ABI still carries both `field_number` and `field_name`
 
@@ -1322,7 +1380,16 @@ compiler_v2/
 │   ├── cel_pipeline_bench.cc       # per-stage cost benches
 │   └── internal/
 │       ├── wasmtime_engine_state.{h,cc}  # engine + parsed runtime
-│       └── instance_impl.{h,cc}          # per-Plan wasmtime handles
+│       ├── instance_impl.{h,cc}          # per-Plan wasmtime handles
+│       ├── cel_host.{h,cc,_test.cc}      # Layer 1 (HostMessageBacking
+│       │                                 #   + ProtoBacking) + Layer 2
+│       │                                 #   (CelGetFieldImpl /
+│       │                                 #   CelHasFieldImpl)
+│       ├── cel_host_wasmtime.{h,cc}      # Layer 3 (wasmtime linker
+│       │                                 #   glue, CelHostCallbackEnv,
+│       │                                 #   extern-"C" trampolines)
+│       └── abi_decode.{h,cc,_test.cc}    # custom-section parser —
+│                                         #   returns celwasm::abi::CelAbi
 │
 │   Planned but not yet shipped:
 │     - runtime_bindings.{h,cc,_test.cc}  # RuntimeBindings struct

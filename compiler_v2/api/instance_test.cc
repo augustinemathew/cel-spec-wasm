@@ -15,15 +15,31 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/api/activation.h"
+#include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
 #include "compiler_v2/api/instance.h"
+#include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/program.h"
+#include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
 namespace {
+
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      return 0;
+    }();
 
 // Compiler + Engine are reused across tests via a fixture — both
 // are immutable after Build (Compiler) / immutable after Build
@@ -186,6 +202,253 @@ TEST_F(InstanceEvalTest, TwoInstancesEvaluateIndependently) {
   EXPECT_EQ(*v_b1->AsString(), "world");
   ASSERT_EQ(v_a2->kind(), Value::Kind::kInt);
   EXPECT_EQ(*v_a2->AsInt(), 42);
+}
+
+// --- M2.C.5 kSelect e2e: Customer.age read through Layer 3 ---------
+//
+// First green path where wasm calls back into host: compile
+// `c.age` → Engine::Plan wires cel_host.cel_get_field →
+// Instance::Eval(activation) marshals Customer backing into the
+// externref table → $eval hits the trampoline, ProtoBacking reads
+// the int field, result surfaces as a Value::Int.
+
+// Helper: compile + plan `expr` against a Customer-declaring
+// compiler.  Returns the live Instance ready for Eval(activation).
+// Customer/Address lookup goes through the process-wide generated
+// descriptor pool; `google::protobuf::LinkMessageReflection<T>()`
+// in the caller forces static-init registration of T.
+Instance PlanAgainstCustomer(Engine& engine, absl::string_view expr) {
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+  auto compiler_or = std::move(builder).Build();
+  ABSL_CHECK_OK(compiler_or);
+  auto prog_or = compiler_or->Compile(expr);
+  ABSL_CHECK_OK(prog_or) << expr;
+  auto inst_or = engine.Plan(*prog_or);
+  ABSL_CHECK_OK(inst_or) << expr;
+  return *std::move(inst_or);
+}
+
+TEST(InstanceSelectEvalTest, IntFieldOnMessageRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.age");
+
+  celwasm::testdata::Customer c;
+  c.set_age(42);
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  auto val_or = inst.Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsInt(), 42);
+}
+
+TEST(InstanceSelectEvalTest, BoolFieldOnMessageRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.is_premium");
+
+  celwasm::testdata::Customer c;
+  c.set_is_premium(true);
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  auto val_or = inst.Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsBool(), true);
+}
+
+// has(c.billing_address) dispatches via cel_host.cel_has_field.
+// The SelectExpr's test_only flag routes expr_lower to the
+// has-field trampoline instead of get-field; Layer 2's HasField
+// calls ProtoBacking::HasField which applies proto3 presence.
+TEST(InstanceSelectEvalTest, HasMessageFieldSetReturnsTrue) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "has(c.billing_address)");
+
+  celwasm::testdata::Customer c;
+  c.mutable_billing_address()->set_city("Seattle");  // presence
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  auto val_or = inst.Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsBool(), true);
+}
+
+TEST(InstanceSelectEvalTest, HasMessageFieldUnsetReturnsFalse) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "has(c.billing_address)");
+
+  celwasm::testdata::Customer c;  // default-constructed; no billing_address
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  auto val_or = inst.Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsBool(), false);
+}
+
+// Nested select: c.billing_address.city reads a nested sub-backing.
+// The inner cel_get_field interns a fresh ProtoBacking (the
+// address); the outer reads `city` off it.  String marshal exercises
+// WasmtimeArenaAllocator via the runtime's cel_alloc.
+TEST(InstanceSelectEvalTest, NestedSelectReadsSubBackingString) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.billing_address.city");
+
+  celwasm::testdata::Customer c;
+  c.mutable_billing_address()->set_city("Seattle");
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  auto val_or = inst.Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  ASSERT_EQ(val_or->kind(), Value::Kind::kString);
+  EXPECT_EQ(*val_or->AsString(), "Seattle");
+}
+
+// --- M2.E PartialEval: unknown-pattern matching --------------------
+
+TEST(InstancePartialEvalTest, MatchingPatternAbsorbsSelectToUnknown) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.billing_address");
+
+  celwasm::testdata::Customer c;
+  c.mutable_billing_address()->set_city("Seattle");
+  Activation act;
+  act.Bind("c", Value::Message(c));
+
+  auto pat = AttributePattern::Parse("c.billing_address");
+  ASSERT_TRUE(pat.ok()) << pat.status();
+  AttributePattern patterns[] = {*std::move(pat)};
+  auto val_or = inst.PartialEval(act, patterns);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_TRUE(val_or->IsUnknown());
+}
+
+TEST(InstancePartialEvalTest, NonMatchingPatternFallsThroughToRealValue) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.age");
+
+  celwasm::testdata::Customer c;
+  c.set_age(30);
+  Activation act;
+  act.Bind("c", Value::Message(c));
+
+  // Pattern matches a different field (name), not age — so c.age
+  // reads normally and returns the bound value.
+  auto pat = AttributePattern::Parse("c.name");
+  ASSERT_TRUE(pat.ok()) << pat.status();
+  AttributePattern patterns[] = {*std::move(pat)};
+  auto val_or = inst.PartialEval(act, patterns);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsInt(), 30);
+}
+
+TEST(InstancePartialEvalTest, WildcardPatternMatchesAnyFieldUnderRoot) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.age");
+
+  celwasm::testdata::Customer c;
+  c.set_age(30);
+  Activation act;
+  act.Bind("c", Value::Message(c));
+
+  auto pat = AttributePattern::Parse("c.*");
+  ASSERT_TRUE(pat.ok()) << pat.status();
+  AttributePattern patterns[] = {*std::move(pat)};
+  EXPECT_TRUE(inst.PartialEval(act, patterns)->IsUnknown());
+}
+
+TEST(InstancePartialEvalTest, EmptyPatternSetBehavesLikeEval) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanAgainstCustomer(*engine_or, "c.age");
+
+  celwasm::testdata::Customer c;
+  c.set_age(30);
+  Activation act;
+  act.Bind("c", Value::Message(c));
+
+  auto val_or = inst.PartialEval(act, {});
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  EXPECT_EQ(*val_or->AsInt(), 30);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// M3 — `Instance::Eval` decoder grew a `CEL_MAP_ARENA` arm.  These
+// tests exercise the decoder by evaluating a map-producing
+// expression and asserting the host-side `cel::Value::Map` round-
+// trips correctly: size matches, key kind matches, value matches
+// per entry.  Both the literal/index path (scalar value) and the
+// pure-literal path (map value) flow through `DecodeArenaMapAt`.
+// ────────────────────────────────────────────────────────────────────
+
+TEST_F(InstanceEvalTest, EvalsEmptyMapLiteralReturnsEmptyMap) {
+  Value v = EvalLiteral("{}");
+  ASSERT_EQ(v.kind(), Value::Kind::kMap);
+  auto bk_or = v.MapBacking();
+  ASSERT_TRUE(bk_or.ok()) << bk_or.status();
+  EXPECT_EQ((*bk_or)->Size(), 0u);
+}
+
+TEST_F(InstanceEvalTest, EvalsScalarMapLiteralRoundTrips) {
+  Value v = EvalLiteral(R"({"a": 1, "b": 2})");
+  ASSERT_EQ(v.kind(), Value::Kind::kMap);
+  auto bk_or = v.MapBacking();
+  ASSERT_TRUE(bk_or.ok()) << bk_or.status();
+  const auto* backing = *bk_or;
+  EXPECT_EQ(backing->Size(), 2u);
+
+  // Order-agnostic key-by-key probe — `cel_map_insert` preserves
+  // insertion order in the arena, but the decoder doesn't promise
+  // ordering on the host side, so iterate via ForEach and bucket
+  // by key.
+  int hit_a = -1;
+  int hit_b = -1;
+  backing->ForEach([&](const Value& k, const Value& val) {
+    if (k.kind() == Value::Kind::kString && *k.AsString() == "a") {
+      ASSERT_EQ(val.kind(), Value::Kind::kInt);
+      hit_a = static_cast<int>(*val.AsInt());
+    } else if (k.kind() == Value::Kind::kString && *k.AsString() == "b") {
+      ASSERT_EQ(val.kind(), Value::Kind::kInt);
+      hit_b = static_cast<int>(*val.AsInt());
+    }
+  });
+  EXPECT_EQ(hit_a, 1);
+  EXPECT_EQ(hit_b, 2);
+}
+
+TEST_F(InstanceEvalTest, EvalsLiteralMapIndexingProducesScalarValue) {
+  Value v = EvalLiteral(R"({"a": 1, "b": 2}["b"])");
+  ASSERT_EQ(v.kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v.AsInt(), 2);
+}
+
+TEST_F(InstanceEvalTest, EvalsMapLiteralOverEveryAllowedKeyKind) {
+  // langdef map keys: bool / int / uint / string.  Index a literal
+  // map of each key kind by the matching literal and assert the
+  // round-trip lands.  Cross-type numeric (int↔uint) is exercised
+  // by `host_map_test.cc` + the cross-type runtime test; here we
+  // only pin same-kind hits to make sure the codegen + decoder
+  // agrees on the wire form per key kind.
+  struct Case {
+    const char* expr;
+    int64_t expected;
+  };
+  for (const Case& c : {
+           Case{R"({1: 10, 2: 20}[2])", 20},
+           Case{R"({1u: 10, 2u: 20}[2u])", 20},
+           Case{R"({"x": 10, "y": 20}["y"])", 20},
+           Case{R"({true: 10, false: 20}[false])", 20},
+       }) {
+    Value v = EvalLiteral(c.expr);
+    ASSERT_EQ(v.kind(), Value::Kind::kInt) << c.expr;
+    EXPECT_EQ(*v.AsInt(), c.expected) << c.expr;
+  }
 }
 
 }  // namespace

@@ -12,6 +12,7 @@
 #include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
@@ -19,6 +20,15 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+
+// Force generated-pool registration of descriptors referenced by
+// tests below.  Runs once at static init per test binary.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      return 0;
+    }();
 
 TEST(CompilerBuilderTest, BuildSucceedsWithDefaults) {
   auto compiler_or = Compiler::NewBuilder().Build();
@@ -103,13 +113,6 @@ TEST(CompilerBuilderDeclareVariableTest, RejectsUnknownType) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(CompilerBuilderRegisterMessageTypeTest, RecordsDescriptor) {
-  auto b = Compiler::NewBuilder();
-  b.RegisterMessageType(celwasm::testdata::Customer::descriptor());
-  auto c = std::move(b).Build();
-  ASSERT_THAT(c, IsOk());
-}
-
 // Compile with a declared variable — M2.B.1 lights the kIdent arm
 // of expr_lower.  The declaration flows through the checker, the
 // resolver assigns the variable a slot, expr_lower emits the
@@ -132,19 +135,20 @@ TEST(CompilerCompileDeclaredVariableTest, DeclaredIdentCompilesToValidModule) {
   EXPECT_EQ(bytes[3], 0x6d);
 }
 
-// Compile with a declared Message variable — checker resolves
-// "celwasm.testdata.Customer" via the generated descriptor pool.
-// Still pre-M2.C (no kSelect), so `c.name` fails Unimplemented.
+// Compile with a declared Message variable — the checker resolves
+// "celwasm.testdata.Customer" via the process-wide generated
+// descriptor pool (the cc_proto_library fixture is linked into the
+// test binary).  M2.C select lowering takes `c.name` through to a
+// valid module.  Touching `Customer::descriptor()` once is enough
+// to force the generated pool registration — no explicit
+// registration API is needed.
 TEST(CompilerCompileDeclaredVariableTest,
      MessageTypeDeclarationResolvesThroughGeneratedPool) {
   auto b = Compiler::NewBuilder();
-  b.RegisterMessageType(celwasm::testdata::Customer::descriptor())
-      .DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+  b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
   auto compiler = std::move(b).Build();
   ASSERT_THAT(compiler, IsOk());
-  auto prog_or = compiler->Compile("c.name");
-  // Checker happy → select lowering not yet implemented.
-  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(compiler->Compile("c.name"), IsOk());
 }
 
 // Undeclared variable in the source → InvalidArgument at the

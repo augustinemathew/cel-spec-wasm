@@ -27,6 +27,16 @@ something in them, update them in the same commit as the code.
     section's checklist into the milestone doc's "In progress" section**;
     work through top-down.  This doc is the forcing function against
     forgetting one of the 8–12 stages a typical feature ripples through.
+  - `doc/implementation-plan/per-component-test-coverage.md` — the keystone
+    testing doc.  Per-component required test scenarios (positive +
+    negative + boundary), the catalog of `manual`-tagged targets that
+    MUST run before a milestone closes, SKIP discipline (never
+    `GTEST_SKIP` an entire fixture's `SetUp` for "this whole feature
+    isn't done yet" — that's how M2 silently shipped half-done with 29
+    skipped tests), and the closeout gate to copy into every milestone
+    PR description.  **`bazel test //compiler_v2/...` being green does
+    NOT mean a milestone is done — manual-tagged tests carry the
+    load-bearing e2e assertions; they MUST be run explicitly.**
 
 ### Closing out a planning doc
 
@@ -250,6 +260,32 @@ change touches several of them.  Apply these rules every time:
     whatever shape the implementation happens to produce.  Cite the
     spec section in the test comment when the behaviour is
     spec-mandated.
+  - **Cover the edge-case matrix — this is a compiler.**  Compilers
+    miscompile silently when an unhandled input shape slips through.
+    For every new feature, enumerate the matrix explicitly: every
+    allowed type (e.g. map keys → bool / int / uint / string; check
+    each), every boundary value (`INT64_MIN`, `INT64_MAX`, `UINT64_MAX`,
+    `0`, `-1`, empty string, embedded NUL, multi-byte UTF-8), and
+    every disallowed shape (every CelKind that *isn't* a valid map
+    key, every AST node a feature doesn't yet support).  Negative
+    coverage is the load-bearing half — a poison/error path that
+    isn't exercised will break in production silently.  When the
+    spec restricts inputs to a closed set (e.g. valid map-key kinds,
+    valid arithmetic operand kinds), the test matrix should cover
+    every member of that set AND a representative set of complement
+    members that must reject.
+  - **Parameterize to remove duplication, but write the cases out
+    longhand first.**  Drafting tests as separate `TEST_F`s is the
+    clearest way to think through which cases exist and what each
+    asserts.  Once the matrix is settled, consolidate the
+    structurally-identical ones into a `TEST_P` + `INSTANTIATE_TEST_SUITE_P`
+    table.  Keep tests with distinct stories (a specific
+    bug-surface, a specific spec citation, a one-off invariant) as
+    individual `TEST_F`s — parameterizing those obscures intent
+    rather than clarifying it.  See `compiler_v2/runtime/cel_map_test.cc`
+    for the canonical shape: parameterized round-trip / cross-type /
+    disallowed-kind tables coexist with focused single-`TEST_F`
+    cases for embedded-NUL strings and bool-vs-int distinctness.
 
 Prefer `@com_google_googletest//:gtest_main` + status matchers.  For
 pipeline coverage:

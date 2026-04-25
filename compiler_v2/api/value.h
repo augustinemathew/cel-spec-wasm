@@ -41,7 +41,8 @@ class Message;
 // definition lives in `compiler_v2/api/internal/cel_host.h`.
 namespace celwasm {
 class HostMessageBacking;
-}
+class HostMapBacking;
+}  // namespace celwasm
 
 namespace cel {
 
@@ -84,9 +85,13 @@ class Value {
   static Value Error(ErrorPayload payload);
 
   // ——— Aggregate / message builders ———
-  // Lists + maps stay stubs (M6); OwnedMessage stays stubbed until
-  // M7 (proto literal construction).
+  // Lists stay stubs (M6); OwnedMessage stays stubbed until
+  // M7 (proto literal construction).  Maps land in M3.
   static Value List(std::vector<Value> elements);
+  // Wraps `entries` in a `celwasm::HostMap` (vector-backed) and
+  // forwards to `Value::HostMap`.  Duplicate keys are flattened —
+  // the runtime catches them via `cel_map_insert` for arena
+  // literals; this host-side variant accepts the entries as given.
   static Value Map(std::vector<std::pair<Value, Value>> entries);
   static Value OwnedMessage(std::unique_ptr<google::protobuf::Message> m);
 
@@ -110,6 +115,13 @@ class Value {
   // complete definition, and keeping the dependency one-way
   // (cel_host -> value, never the reverse) avoids a library cycle.
   static Value Message(const google::protobuf::Message& m);
+
+  // Carry a host-supplied map backing through Activation::Bind into
+  // the cel_host dispatch.  Mirrors `HostMessage` for maps —
+  // `celwasm::HostMap` is the vector-backed default; `celwasm::ProtoMap`
+  // wraps a proto reflection map field.  Embedders with non-proto
+  // map shapes provide their own subclass of `celwasm::HostMapBacking`.
+  static Value HostMap(std::shared_ptr<celwasm::HostMapBacking> backing);
 
   // ————————— Inspection —————————
   Kind kind() const {
@@ -143,6 +155,20 @@ class Value {
   // Returns `InvalidArgument` on any other kind.
   absl::StatusOr<const celwasm::HostMessageBacking*> MessageBacking() const;
 
+  // Shared-ownership handle to the message backing.  Use this
+  // (instead of MessageBacking()) when the caller needs to store
+  // the backing past the lifetime of this Value — e.g. the
+  // cel_host trampoline's ExternrefTable::Intern, which holds the
+  // backing for a full Eval.
+  absl::StatusOr<std::shared_ptr<const celwasm::HostMessageBacking>>
+  SharedMessageBacking() const;
+
+  // Retrieve the host-side backing for a kMap-kind Value.  Returns
+  // `InvalidArgument` on any other kind.  Mirrors `MessageBacking`.
+  absl::StatusOr<const celwasm::HostMapBacking*> MapBacking() const;
+  absl::StatusOr<std::shared_ptr<const celwasm::HostMapBacking>>
+  SharedMapBacking() const;
+
   // Structural equality — scalar-only at M1.  Aggregates / messages
   // delegate to the M6 / M2 bodies respectively.  Returns false if
   // kinds differ.  For 3VL-aware equality (`CelEquals`) that absorbs
@@ -164,7 +190,8 @@ class Value {
                    absl::Time,                     // Timestamp
                    AttributeId,                    // Unknown
                    std::shared_ptr<ErrorPayload>,  // Error
-                   std::shared_ptr<celwasm::HostMessageBacking>>;  // Message
+                   std::shared_ptr<celwasm::HostMessageBacking>,  // Message
+                   std::shared_ptr<celwasm::HostMapBacking>>;     // Map
 
   Kind kind_;
   Payload payload_;

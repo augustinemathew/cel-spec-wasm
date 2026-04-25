@@ -224,6 +224,232 @@ uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len) {
   return make_span_view(CEL_BYTES, ptr, len);
 }
 
+// ---- map runtime ---------------------------------------------------------
+//
+// Three-path dispatch design (`map-list-dispatch.md`):
+//   - kArena   : `cel_map_lookup_arena`    (pure wasm, called directly)
+//   - kHost    : `cel_host.cel_map_lookup` (host trampoline, called direct)
+//   - kDynamic : `cel_map_lookup`          (this dispatcher, tail-calls)
+//
+// Map literals construct via `cel_map_create` + `cel_map_insert`; both
+// only ever produce CEL_MAP_ARENA values — kHost values originate from
+// proto reflection or `Activation::Bind`, never from emitted codegen.
+
+static void poison(CelValue* v, uint32_t err_code) {
+  v->kind = CEL_ERROR;
+  v->payload.err = err_code;
+}
+
+static int is_valid_map_key_kind(uint32_t kind) {
+  return kind == CEL_BOOL || kind == CEL_INT || kind == CEL_UINT ||
+         kind == CEL_STRING;
+}
+
+// Cross-type numeric equality per langdef §"Equality": int/uint
+// compare by mathematical value (no wraparound), with negative ints
+// never equal to any uint.  M3 keys are bool/int/uint/string only —
+// double keys are rejected by the checker.
+static int numeric_keys_equal(const CelValue* a, const CelValue* b) {
+  if (a->kind == CEL_INT && b->kind == CEL_INT) {
+    return a->payload.i == b->payload.i;
+  }
+  if (a->kind == CEL_UINT && b->kind == CEL_UINT) {
+    return a->payload.u == b->payload.u;
+  }
+  if (a->kind == CEL_INT && b->kind == CEL_UINT) {
+    if (a->payload.i < 0) {
+      return 0;
+    }
+    return (uint64_t)a->payload.i == b->payload.u;
+  }
+  if (a->kind == CEL_UINT && b->kind == CEL_INT) {
+    if (b->payload.i < 0) {
+      return 0;
+    }
+    return a->payload.u == (uint64_t)b->payload.i;
+  }
+  return 0;
+}
+
+static int spans_equal(CelSpan a, CelSpan b) {
+  if (a.len != b.len) {
+    return 0;
+  }
+  if (a.len == 0) {
+    return 1;
+  }
+  const uint8_t* base = cel_memory_base_();
+  for (uint32_t i = 0; i < a.len; ++i) {
+    if (base[a.ptr + i] != base[b.ptr + i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int map_keys_equal(const CelValue* a, const CelValue* b) {
+  if (a->kind == CEL_BOOL && b->kind == CEL_BOOL) {
+    return (a->payload.b != 0) == (b->payload.b != 0);
+  }
+  if (a->kind == CEL_STRING && b->kind == CEL_STRING) {
+    return spans_equal(a->payload.s, b->payload.s);
+  }
+  return numeric_keys_equal(a, b);
+}
+
+static ArenaMapHeader* arena_map_header(const CelValue* m) {
+  return (ArenaMapHeader*)(cel_memory_base_() +
+                           m->payload.arena_map.header_ptr);
+}
+
+static CelValue* arena_map_entry_key(ArenaMapHeader* hdr, uint32_t i) {
+  return (CelValue*)(cel_memory_base_() + hdr->entries_offset +
+                     ((size_t)kCelMapEntryStride * i));
+}
+
+static CelValue* arena_map_entry_val(ArenaMapHeader* hdr, uint32_t i) {
+  return (CelValue*)(cel_memory_base_() + hdr->entries_offset +
+                     ((size_t)kCelMapEntryStride * i) + sizeof(CelValue));
+}
+
+void cel_map_create(uint32_t out_slot, uint32_t initial_capacity) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaMapHeader));
+  if (hdr_off == 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  uint32_t entries_off = 0;
+  if (initial_capacity > 0) {
+    entries_off =
+        cel_alloc((uint32_t)((size_t)kCelMapEntryStride * initial_capacity));
+    if (entries_off == 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+  }
+  ArenaMapHeader* hdr = (ArenaMapHeader*)(cel_memory_base_() + hdr_off);
+  hdr->count = 0;
+  hdr->capacity = initial_capacity;
+  hdr->entries_offset = entries_off;
+  hdr->_pad = 0;
+  out->kind = CEL_MAP_ARENA;
+  out->payload.arena_map.header_ptr = hdr_off;
+}
+
+void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  // If the map is already poisoned (e.g. an earlier insert failed),
+  // every subsequent insert is a no-op — error sticks.
+  if (m->kind != CEL_MAP_ARENA) {
+    return;
+  }
+  CelValue* key = cel_value_at(key_slot);
+  CelValue* val = cel_value_at(value_slot);
+  if (!is_valid_map_key_kind(key->kind)) {
+    poison(m, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+      poison(m, CEL_ERR_DUPLICATE_KEY);
+      return;
+    }
+  }
+  // Map literals are fixed-length — codegen sized capacity to the
+  // exact entry count via `cel_map_create`.  Exceeding it means
+  // codegen drifted out of sync with the runtime; poison defensively
+  // so the bug surfaces at the first observable boundary instead of
+  // silently scribbling past the entries arena.
+  if (hdr->count >= hdr->capacity) {
+    poison(m, CEL_ERR_OVERFLOW);
+    return;
+  }
+  *arena_map_entry_key(hdr, hdr->count) = *key;
+  *arena_map_entry_val(hdr, hdr->count) = *val;
+  hdr->count++;
+}
+
+void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
+                          uint32_t key_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  CelValue* key = cel_value_at(key_slot);
+  if (key->kind == CEL_UNKNOWN || key->kind == CEL_ERROR) {
+    *out = *key;
+    return;
+  }
+  CelValue* m = cel_value_at(map_slot);
+  // 3VL on operand — same path the dispatcher uses; codegen calls
+  // this directly only when origin is kArena, but `m` could still be
+  // a poisoned arena map if a prior insert failed.
+  if (m->kind == CEL_UNKNOWN || m->kind == CEL_ERROR) {
+    *out = *m;
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+      *out = *arena_map_entry_val(hdr, i);
+      return;
+    }
+  }
+  poison(out, CEL_ERR_NO_SUCH_KEY);
+}
+
+// kDynamic dispatcher.  `__attribute__((musttail))` forces clang to
+// emit `return_call` (or `return_call_indirect`); any path it can't
+// prove tail-callable is a hard compile error — the whole point.
+// Consequence: this dispatcher's stack frame never grows, even when
+// invoked recursively through e.g. nested map-of-map indexing.
+//
+// On the wasm32 target the import call to `cel_host.cel_map_lookup`
+// becomes `return_call $import_index`, observable in the disassembly
+// of `cel_runtime.wasm`.  On the host build (no `__wasm__`) the
+// attribute degrades to a plain tail call — semantics preserved,
+// stack guarantees relaxed (host tests don't depend on stack depth).
+#ifdef __wasm__
+extern void cel_host_cel_map_lookup(uint32_t out_slot, uint32_t map_slot,
+                                    uint32_t key_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_map_lookup")));
+#else
+// Host build: weak no-op stub so C++ unit tests link without the
+// wasmtime trampoline.  Tests that exercise the kHost path provide
+// a strong override (mirrors the cel_log pattern earlier in this
+// file).  Default behaviour is poison-with-type-mismatch — making
+// any accidental host invocation visible at the assertion boundary.
+// External linkage is required for the weak/strong override across TUs.
+__attribute__((weak)) void
+cel_host_cel_map_lookup(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
+  (void)map_slot;
+  (void)key_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+#endif
+
+void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind == CEL_UNKNOWN || m->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *m;
+    return;
+  }
+  if (m->kind == CEL_MAP_ARENA) {
+    __attribute__((musttail)) return cel_map_lookup_arena(out_slot, map_slot,
+                                                          key_slot);
+  }
+  if (m->kind == CEL_MAP_HOST) {
+    __attribute__((musttail)) return cel_host_cel_map_lookup(out_slot, map_slot,
+                                                             key_slot);
+  }
+  // Checker should have rejected; defence in depth.
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
 // ---- cel_log trampoline --------------------------------------------------
 
 // Emit layer.  On wasm this posts args as u32 offsets into linear memory.

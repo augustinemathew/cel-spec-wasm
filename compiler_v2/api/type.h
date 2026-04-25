@@ -48,9 +48,11 @@ class CelType {
   static CelType Timestamp();
 
   // ——— Container factories ———
-  // Message by fully-qualified name.  The name is resolved to a
-  // Descriptor at Compiler::Builder::RegisterMessageType time; the
-  // type itself is pure metadata.
+  // Message by fully-qualified name.  The FQN is resolved to a
+  // Descriptor at Compile time via the process-wide generated
+  // descriptor pool (any statically-linked `cc_proto_library`
+  // descriptor is reachable there).  The type itself is pure
+  // metadata.
   static CelType Message(std::string fully_qualified_name);
 
   // List / Map element types.  Shallow copies held by shared_ptr

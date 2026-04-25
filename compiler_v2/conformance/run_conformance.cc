@@ -161,7 +161,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::size_t skip = 0;
   std::size_t fail = 0;
 
-  std::cout << "compiler_v2 conformance run (M1-scope)\n";
+  std::cout << "compiler_v2 conformance run (M3-scope)\n";
   for (const auto& path : paths) {
     FileTally t = RunFile(path, compiler, engine, max_examples);
     PrintTally(t);

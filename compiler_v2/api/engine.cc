@@ -46,9 +46,18 @@ absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
 
 absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
   auto state = std::make_shared<celwasm::WasmtimeEngineState>();
-  state->engine = wasm_engine_new();
+  // M3.C: the cel_runtime module's `cel_map_lookup` dispatcher emits
+  // `return_call` (via clang `__attribute__((musttail))` + `-mtail-call`).
+  // wasmtime rejects modules using the tail-call feature unless the host
+  // opts in via the engine's config.
+  wasm_config_t* config = wasm_config_new();
+  if (config == nullptr) {
+    return absl::InternalError("wasm_config_new returned null");
+  }
+  wasmtime_config_wasm_tail_call_set(config, true);
+  state->engine = wasm_engine_new_with_config(config);
   if (state->engine == nullptr) {
-    return absl::InternalError("wasm_engine_new returned null");
+    return absl::InternalError("wasm_engine_new_with_config returned null");
   }
   wasmtime_error_t* err = wasmtime_module_new(
       state->engine, celwasm::kCelRuntimeWasmBytes,
@@ -84,7 +93,16 @@ absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
   return absl::OkStatus();
 }
 
-// Wires cel_env.cel_log + cel.memory onto a fresh linker.
+// Wires cel_env.cel_log + cel.memory + cel_host.* onto a fresh
+// linker.  The cel_host imports point at trampolines whose
+// stub-bodies fire `ABSL_CHECK(false)` (`CelGetFieldImpl` /
+// `CelHasFieldImpl` until M2.C.0b lands the real bodies);
+// `cel_host.cel_map_lookup` is the only host-resident M3 path —
+// arena-resident map programs evaluate without ever calling it.
+// We register all three regardless so the runtime module
+// instantiates: the runtime's static import list demands every
+// `cel_host.*` symbol by name (no lazy import tracking, per the
+// project rule).
 absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
                         celwasm::InstanceImpl* impl) {
   impl->linker = wasmtime_linker_new(state->engine);
@@ -92,6 +110,11 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
     return absl::InternalError("wasmtime_linker_new returned null");
   }
   if (auto s = celwasm::RegisterCelLog(impl->linker); !s.ok()) return s;
+  if (auto s =
+          celwasm::RegisterCelHostImports(impl->linker, &impl->host_env);
+      !s.ok()) {
+    return s;
+  }
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;
@@ -136,13 +159,37 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
-                                 "cel_reset");
-      !s.ok()) {
-    return s;
+  // Every runtime export the expr module may import.  No lazy
+  // tracking — codegen always links the runtime fully (per repo
+  // rule); a missing entry here surfaces as
+  // `instantiate(expr): unknown import: cel::<name>`.
+  for (const char* name : {"cel_reset", "cel_alloc", "cel_map_create",
+                           "cel_map_insert", "cel_map_lookup_arena",
+                           "cel_map_lookup"}) {
+    if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
+                                   name);
+        !s.ok()) {
+      return s;
+    }
   }
-  return BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
-                           "cel_alloc");
+
+  // Populate the layer-3 callback env now that the runtime
+  // instance is live: the cel_host trampolines need a func handle
+  // to `cel_alloc` (for span payload allocation) + the memory
+  // handle (for CelValue + span reads/writes).  Both are tied to
+  // this store; resetting the table happens per-Eval.
+  impl->host_env.memory = impl->memory;
+  wasmtime_extern_t alloc_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance,
+                                    "cel_alloc", 9, &alloc_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `cel_alloc` (cel_host needs it)");
+  }
+  if (alloc_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`cel_alloc` is not a function");
+  }
+  impl->host_env.cel_alloc_fn = alloc_ext.of.func;
+  return absl::OkStatus();
 }
 
 absl::Status InstantiateExpr(celwasm::WasmtimeEngineState* state,
@@ -215,6 +262,14 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   } else if (abi_or.status().code() != absl::StatusCode::kNotFound) {
     return abi_or.status();
   }
+
+  // M2.C: populate host_env.bindings (field_refs + attributes) from
+  // the decoded ABI so the cel_host trampolines can resolve
+  // field_ref_id → (field_number, field_name) and attribute_id →
+  // (root, qualifiers).  unknown_patterns stays empty for Eval();
+  // PartialEval rebinds it per-call.
+  celwasm::BuildCelHostBindings(impl->abi, /*pool=*/nullptr, impl->host_env);
+
   return Instance(wasmtime_, std::move(impl));
 }
 

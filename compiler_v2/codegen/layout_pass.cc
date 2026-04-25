@@ -11,6 +11,7 @@
 #include "common/constant.h"
 #include "common/expr.h"
 #include "compiler_v2/codegen/resolve_pass.h"
+#include "compiler_v2/codegen/slot_allocator.h"
 #include "compiler_v2/codegen/static_memory_builder.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
@@ -102,6 +103,98 @@ class IdentStorageVisitor : public cel::AstVisitorBase {
   uint32_t num_variables_;
 };
 
+// Walks every `kSelect` node post-order and writes
+// `{kWorkspaceSlot, offset}` onto its annotation.  Operand slots
+// (nested selects) are released before acquiring the parent's slot,
+// matching the post-order rule in slot_allocator.h — once the parent
+// emits its load of the operand, the operand's cell is dead.
+class SelectStorageVisitor : public cel::AstVisitorBase {
+ public:
+  SelectStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
+      : annotations_(annotations), slots_(slots) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitSelect(const cel::Expr& expr,
+                       const cel::SelectExpr& sel) override {
+    const NodeAnnotation* op = annotations_.Find(sel.operand().id());
+    if (op != nullptr && op->storage.kind == StorageKind::kWorkspaceSlot) {
+      slots_.Release(op->storage.payload);
+    }
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+  }
+
+ private:
+  WasmAnnotations& annotations_;
+  SlotAllocator& slots_;
+};
+
+// Returns true if `call` is the indexing operator `_[_]` — the
+// CEL-spec function name for `m[k]`.  M3.F dispatches through this
+// helper at both layout and codegen time; the function string is
+// stable per langdef §"Operator overloads".
+bool IsIndexCall(const cel::CallExpr& call) {
+  return call.function() == "_[_]";
+}
+
+// Allocates one workspace slot per kMapExpr (the map's result) AND
+// one per kCallExpr(_[_]) (the lookup result).  Operand slots are
+// released after the parent acquires per the kSelect convention.
+//
+// Per-entry key/value scratch slots for kMapExpr are NOT pre-
+// reserved by the layout: each entry's sub-expression already gets
+// its own slot via the existing kSelect / future kCall visitors, or
+// resolves to a kStaticRodata offset if it's a kConst.  expr_lower
+// reads those operand slots and feeds them straight into
+// `cel_map_insert`; no extra layout work needed.
+class MapStorageVisitor : public cel::AstVisitorBase {
+ public:
+  MapStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
+      : annotations_(annotations), slots_(slots) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitMap(const cel::Expr& expr,
+                    const cel::MapExpr& m) override {
+    // Each entry's key + value exprs were laid out in their own
+    // post-visit; those slots are released as their values stop
+    // being live (after `cel_map_insert` consumes them at codegen
+    // time).  Release them here — the map's result slot supersedes.
+    for (const cel::MapExprEntry& e : m.entries()) {
+      ReleaseIfWorkspaceSlot(e.key().id());
+      ReleaseIfWorkspaceSlot(e.value().id());
+    }
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+  }
+
+  void PostVisitCall(const cel::Expr& expr,
+                     const cel::CallExpr& call) override {
+    if (!IsIndexCall(call)) return;  // M5 handles general kCall.
+    // Operand + index expressions hand their slots up to us; release
+    // them and acquire one for the lookup result.
+    for (const auto& arg : call.args()) {
+      ReleaseIfWorkspaceSlot(arg.id());
+    }
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+  }
+
+ private:
+  void ReleaseIfWorkspaceSlot(int64_t expr_id) {
+    const NodeAnnotation* a = annotations_.Find(expr_id);
+    if (a != nullptr && a->storage.kind == StorageKind::kWorkspaceSlot) {
+      slots_.Release(a->storage.payload);
+    }
+  }
+
+  WasmAnnotations& annotations_;
+  SlotAllocator& slots_;
+};
+
 }  // namespace
 
 // `resolved` is passed by value — its annotations + variables are
@@ -118,6 +211,7 @@ absl::StatusOr<StaticLayout> LayoutPass(
 
   StaticLayout layout;
   layout.annotations = std::move(resolved.annotations);
+  layout.attributes = std::move(resolved.attributes);
   layout.debug_mode = opts.debug_layout;
 
   // --- Pass A: pack every kConst into rodata. ---
@@ -155,7 +249,20 @@ absl::StatusOr<StaticLayout> LayoutPass(
       layout.annotations, static_cast<uint32_t>(resolved.variables.size()));
   cel::AstTraverse(ast.ast().root_expr(), ident_visitor);
 
-  layout.peak_slots = 0;
+  // --- Pass D: assign workspace slots to every kSelect node and
+  // every map-producing / map-indexing node (kMapExpr,
+  // kCallExpr(_[_])).  All four kinds share the same SlotAllocator
+  // so a kSelect inside a map literal's value, or a map indexing
+  // chained off a kSelect, recycles slots correctly.  The slot
+  // region sits immediately after the variable slots. ---
+  const uint32_t selects_base = layout.workspace_base + layout.workspace_bytes;
+  SlotAllocator slots(selects_base, opts.debug_layout);
+  SelectStorageVisitor select_visitor(layout.annotations, slots);
+  cel::AstTraverse(ast.ast().root_expr(), select_visitor);
+  MapStorageVisitor map_visitor(layout.annotations, slots);
+  cel::AstTraverse(ast.ast().root_expr(), map_visitor);
+  layout.workspace_bytes += slots.total_bytes();
+  layout.peak_slots = slots.peak_slots();
 
   // Arena grows forward from the first 8-aligned byte past workspace.
   layout.arena_base = RoundUp8(layout.workspace_base + layout.workspace_bytes);

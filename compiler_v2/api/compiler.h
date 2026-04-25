@@ -27,13 +27,6 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 
-// Forward-declare protobuf::Descriptor to keep protobuf out of the
-// header's transitive set.  Callers that build a Compiler with
-// RegisterMessageType already include protobuf headers.
-namespace google::protobuf {
-class Descriptor;
-}
-
 namespace cel {
 
 // One declared free variable: name + static type.  Introspected via
@@ -60,6 +53,14 @@ struct CompilerOptions {
   // (128 KiB) — matches cel_runtime.wasm's `--import-memory` min=2.
   // Raise this when an expression needs a larger arena.
   uint32_t mem_size_bytes = 128u * 1024u;
+
+  // Package container used for name resolution (CEL-Go `container` /
+  // CEL-Java `container`).  Forwarded verbatim to
+  // `CheckOptions::container`.  Empty (the default) means "no
+  // container" — every ident must be looked up by its globally-
+  // qualified name.  Populating this lets short-form idents inside
+  // a namespace resolve against `<container>.<name>` first.
+  std::string container;
 };
 
 class Compiler {
@@ -89,7 +90,7 @@ class Compiler {
   //                      handle yet
   //   - FailedPrecondition: binaryen validate failure
   ABSL_MUST_USE_RESULT absl::StatusOr<Program> Compile(
-      absl::string_view source, CompilerOptions opts = {}) const;
+      absl::string_view source, const CompilerOptions& opts = {}) const;
 
   // Introspection — declarations visible to this Compiler.
   absl::Span<const VariableDeclaration> declared_variables() const {
@@ -101,12 +102,6 @@ class Compiler {
   Compiler() = default;  // Builder constructs.
 
   std::vector<VariableDeclaration> declared_variables_;
-  // Non-owning descriptors registered via Builder::RegisterMessageType.
-  // M2 uses them for forward-compat introspection / later schema
-  // export; the checker itself looks up message types by FQN against
-  // the process-wide generated DescriptorPool (cc_proto_library-linked
-  // descriptors are reachable there, which covers every M2 call site).
-  std::vector<const google::protobuf::Descriptor*> registered_messages_;
 };
 
 class Compiler::Builder {
@@ -139,18 +134,15 @@ class Compiler::Builder {
   // mutates `*this` in place and returns an lvalue reference.
   Builder& DeclareVariable(const std::string& name, const CelType& type);
 
-  // Register a protobuf message type for use in declarations
-  // (`CelType::Message("fqn")`) and field reads.  Non-owning: `desc`
-  // must outlive any Program compiled from the resulting Compiler.
-  // M2 relies on the process-wide generated descriptor pool for
-  // lookup, so this call is only required for introspection /
-  // forward-compat — but calling it is the documented path and the
-  // surface is locked now.
-  Builder& RegisterMessageType(
-      const google::protobuf::Descriptor* absl_nonnull desc);
-
   // Materialises the Compiler.  Consumes the Builder — chain from a
   // named local with `std::move(b).Build()`.
+  //
+  // Message-typed declarations are resolved against the process-wide
+  // `google::protobuf::DescriptorPool::generated_pool()`; any
+  // statically-linked `cc_proto_library` descriptor is reachable
+  // there automatically.  For dynamic schemas (source `.proto` /
+  // `FileDescriptorSet`) see the internal `CheckOptions::schema`
+  // plumbing in `parse_and_check.cc`.
   //
   // Returns InvalidArgument on:
   //   - duplicate variable names declared on this Builder
@@ -160,7 +152,6 @@ class Compiler::Builder {
 
  private:
   std::vector<VariableDeclaration> declared_variables_;
-  std::vector<const google::protobuf::Descriptor*> registered_messages_;
 };
 
 }  // namespace cel
