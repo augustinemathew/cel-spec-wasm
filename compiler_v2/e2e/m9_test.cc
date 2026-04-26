@@ -218,16 +218,71 @@ TEST_F(TypeOfPrimitiveE2ETest, TypeOfErrorPropagates) {
   // langdef §"Error propagation": `type(<error>)` propagates the
   // error.  `1/0` produces a divide-by-zero CEL error value;
   // the `type(...)` helper's prelude detects CEL_ERROR and
-  // copies through.
+  // copies through.  Also exercises the downstream-`==`
+  // half of the absorbing-kind contract: outer `==` propagates
+  // the error too (Gap 3 from review).  Two assertions: bare
+  // `type(1/0)` is itself an Error Value AND `type(1/0) == int`
+  // is also an Error Value, NOT bool false.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(*compiler, "type(1/0) == int");
+  // Half 1: bare type(1/0) → Error.
+  {
+    auto instance = CompilePlan(*compiler, "type(1/0)");
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_THAT(v, IsOk());
+    EXPECT_TRUE(v->IsError())
+        << "bare `type(1/0)` should be Error per langdef "
+           "§\"Error propagation\"";
+  }
+  // Half 2: type(1/0) == int → still Error (NOT bool false).
+  {
+    auto instance = CompilePlan(*compiler, "type(1/0) == int");
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_THAT(v, IsOk());
+    EXPECT_TRUE(v->IsError())
+        << "`type(1/0) == int` should propagate Error through "
+           "downstream `==`, not return bool false";
+  }
+}
+
+TEST_F(TypeOfPrimitiveE2ETest, TypeOfBoundHostListIsList) {
+  // Gap 1 from review: bound-from-Activation list flows through
+  // CEL_LIST_HOST kind, which is a separate `cel_type_of_at_v`
+  // dispatch path from CEL_LIST_ARENA.  Per langdef §"Type Values":
+  // both shapes return `list`.
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "type(xs) == list");
   Activation a;
-  // Outer `==` propagates the error too.  Result is a CEL error
-  // value (not OK with bool false).
-  auto v = instance.Eval(a);
-  ASSERT_THAT(v, IsOk());
-  EXPECT_TRUE(v->IsError());
+  a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(TypeOfPrimitiveE2ETest, TypeOfBoundHostMapIsMap) {
+  // Gap 1 sibling: CEL_MAP_HOST kind path.  Per langdef same as
+  // CEL_MAP_ARENA — bare `map`.
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "type(m) == map");
+  Activation a;
+  a.Bind("m", Value::Map({{Value::String("k"), Value::Int(1)}}));
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(TypeOfPrimitiveE2ETest, TypeOfInsideComprehension) {
+  // Gap 2 from review: type(x) inside a comprehension iterating
+  // a homogeneous list.  Asserts the slot-allocation pattern is
+  // sound for a per-iteration CEL_TYPE write.  Comprehension
+  // shape lives in the M5 follow-on; this test is GTEST_SKIP'd
+  // until that lands.
+  GTEST_SKIP() << "comprehensions are M5 follow-on; enable once "
+                  "the comprehension lower lands";
 }
 
 TEST_F(TypeOfPrimitiveE2ETest, TypeOfUnknownPropagates) {
@@ -685,39 +740,66 @@ TEST_F(TypeRejectE2ETest, AsTypeOnNonTypeValueIsInvalidArgument) {
   EXPECT_EQ(t.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST_F(TypeRejectE2ETest, ConstructValueTypeWithUnknownNameBindsButPlanRejects) {
-  // `Value::Type("not_a_real_kind")` is accepted at the public
-  // factory (no validation; consistent with `Value::Message`).
-  // Bind'ing it and Eval'ing surfaces a Plan-or-runtime error
-  // because the name isn't in the per-Plan intern table — the
-  // gate is "every CEL_TYPE referenced at runtime must have an
-  // interned id".  Exact failure mode (Plan vs. runtime trap)
-  // is a §4.4 design choice; this test asserts that SOME
-  // failure surfaces — not a silent miscompare.
+TEST_F(TypeRejectE2ETest, ValueKindKTypeNumberingIsThirteen) {
+  // Gap 4 from review (R5 mitigation): pin the user-facing
+  // `Value::Kind::kType = 13` invariant.  The user enum
+  // numbering is independent of the wire `CelKind::CEL_TYPE = 11`
+  // (kDuration = 11, kTimestamp = 12 in the user enum).  A future
+  // renumbering would silently miscompile decoders / matchers
+  // that hard-code the numeric value; the static_assert catches
+  // it at compile time.
+  static_assert(static_cast<int>(Value::Kind::kType) == 13,
+                "Value::Kind::kType must be 13 (slot 11 is kDuration, "
+                "slot 12 is kTimestamp; M9.A picked 13 — see "
+                "m9-type-subsystem.md §4.7 + R5).");
+  // Runtime sanity: ValueKindName maps it to "type".
+  EXPECT_EQ(ValueKindName(Value::Kind::kType), "type");
+}
+
+TEST_F(TypeRejectE2ETest, StructurallyEqualsByteCompareNames) {
+  // Gap 5 from review: pin `StructurallyEquals` for kType is
+  // byte-equality of the name string (not interned-id, not
+  // lifetime-aware).  Direct unit assertion at the public surface,
+  // independent of the runtime equality kernel.
+  EXPECT_TRUE(Value::Type("int").StructurallyEquals(Value::Type("int")));
+  EXPECT_FALSE(Value::Type("int").StructurallyEquals(Value::Type("string")));
+  EXPECT_TRUE(Value::Type("celwasm.testdata.HostMsg3")
+                  .StructurallyEquals(Value::Type("celwasm.testdata.HostMsg3")));
+  EXPECT_FALSE(Value::Type("celwasm.testdata.HostMsg3")
+                   .StructurallyEquals(Value::Type("celwasm.testdata.HostMsg2")));
+  // Cross-kind: kType vs kString with the same byte sequence is
+  // NOT equal (kind differs).
+  EXPECT_FALSE(
+      Value::Type("int").StructurallyEquals(Value::String("int")));
+}
+
+TEST_F(TypeRejectE2ETest, ConstructValueTypeWithArbitraryNameRoundTrips) {
+  // Per the redesigned §4 (no intern table; CEL_TYPE payload is
+  // a CelSpan into linear memory): `Value::Type("not_a_real_kind")`
+  // is a perfectly valid value at every layer — the public API
+  // accepts the name verbatim, the activation encoder copies
+  // it into linear memory, the wire CEL_TYPE carries the span,
+  // the read-side decoder copies it back.  No name-validation
+  // gate exists.
+  //
+  // Equality follows: `t == int` is `false` because the bytes
+  // "not_a_real_kind" don't match "int", but the comparison is
+  // well-defined and surfaces a bool, not an error (Gap 6
+  // tightening: the test now requires this exact behaviour, not
+  // a hedged "either error or false").
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("t", CelType::Type());
   });
   ASSERT_THAT(compiler, IsOk());
-  auto program = compiler->Compile("t == int");
-  ASSERT_THAT(program, IsOk());
-  auto instance_or = GlobalEngine().Plan(*program);
-  ASSERT_THAT(instance_or, IsOk());
+  auto instance = CompilePlan(*compiler, "t == int");
   Activation a;
   a.Bind("t", Value::Type("not_a_real_kind"));
-  // Eval surfaces an error or a non-OK status; the failure mode
-  // is a M9.A design point (probably error-Value with a
-  // type-name-unknown payload — clean per langdef §"Error
-  // propagation" which makes this a runtime CEL error, not a
-  // host error).
-  auto v = instance_or->Eval(a);
-  if (v.ok()) {
-    EXPECT_TRUE(v->IsError())
-        << "expected error Value when binding an uninterned "
-           "type name; got kind="
-        << static_cast<int>(v->kind());
-  }
-  // (else: non-OK status is also acceptable per the §4.4 design
-  // choice; the load-bearing assertion is "not silently true".)
+  auto v = instance.Eval(a);
+  ASSERT_THAT(v, IsOk());
+  EXPECT_FALSE(v->IsError())
+      << "arbitrary type-name bytes are valid; equality should "
+         "return bool false, not an error";
+  EXPECT_EQ(*v->AsBool(), false);
 }
 
 TEST_F(TypeRejectE2ETest, TypeKeywordAsValueOfNonTypeOperand) {

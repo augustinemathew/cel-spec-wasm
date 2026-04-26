@@ -3,10 +3,13 @@
 Status: **plan — drafted 2026-04-25, not yet started.**
 
 > **What "done" looks like.**  Greening every test in
-> `compiler_v2/e2e/m9_test.cc` (TypeOfPrimitive ×11 boundaries,
-> TypeOfAggregate ×4, TypeOfMessage ×4, TypeOfNull, TypeIdentifier
-> ×11, TypeEquality ×8, TypeAsRhsOfEquality ×6, TypeReject ×4,
-> TypeActivation ×3) plus the conformance unlock targets in §1.
+> `compiler_v2/e2e/m9_test.cc` (TypeOfPrimitive ~22 boundary
+> rows, TypeOfMessage ×4, TypeIdentifierExpression ×11+,
+> TypeOfNullAndAggregate ×4 (1 SKIP'd until timestamps slice),
+> TypeEquality ×8, TypeAsRhsOfEquality ×7, TypeActivation ×3,
+> TypeReject ×4) plus the conformance unlock targets in §1.
+> Slice plan: M9.A → M9.B → M9.C → M9.D → M9.E → M9.F → M9.G
+> closeout (see §5).
 
 The plan covers the runtime value-of-`type` kind (`CEL_TYPE`) end-
 to-end: codegen for the `type(x)` standard function, codegen for
@@ -37,12 +40,12 @@ M8 wrappers.
 
 | Fixture | Today (PASS) | Post-M9 (estimate) | Driving slice |
 |---|---:|---:|---|
-| `dynamic.textproto` (`dyn(x)` rows whose value matcher is `type_value`) | 9 / 226 | +30 – +60 | M9.B + M9.E |
+| `dynamic.textproto` (`dyn(x)` rows whose value matcher is `type_value`) | 4 / 226 | +30 – +60 | M9.B + M9.E |
 | `enums.textproto` (`type(...)` rows) | 46 / 85 | +5 – +12 | M9.B (incl. enum values whose runtime type is `int`) |
 | `proto2.textproto` (`type(msg)` / `type(msg.field)` rows) | 55 / 118 | +6 – +12 | M9.C (message-FQN type idents) |
 | `proto3.textproto` (same) | 52 / 85 | +6 – +12 | M9.C |
 | `basic.textproto` (`type(x)` cohort + `[]` self-eval) | 37 / 43 | +3 – +5 | M9.B |
-| `comparisons.textproto` (`type(x) == type(y)` rows) | 334 / 406 | +5 – +12 | M9.D (CEL_TYPE equality) |
+| `comparisons.textproto` (`type(x) == type(y)` rows) | 325 / 406 | +5 – +12 | M9.D (CEL_TYPE equality) |
 | `type_deduction.textproto` (`typed_result:` matcher — no-eval check path) | 0 / 47 | +25 – +47 | M9.F (harness-only sub-slice) |
 | **Total projected** | — | **+80 – +160 PASS** | — |
 
@@ -271,46 +274,64 @@ that runs before `RejectDyn`:
        - Resolve the inner type's spec-name (per the §3.1 table —
          e.g. `IntType` → `"int"`, `MessageType(d)` → `d.full_name()`,
          `BoolType` → `"bool"`, `NullType` → `"null_type"`).
-       - Replace the node with a synthetic
-         `kCallExpr(__type_value_of__, [Constant(string=name)])`
-         that codegen lowers to a CEL_TYPE write.
+       - Rewrite the node in place as a `kConstantExpr` carrying
+         `string_value = <name>`.  The node's `Repr` annotation,
+         which is already `Repr::kType` per the existing
+         `ReprOf(cel::Type)` mapping at `typed_ast.cc:97-98`,
+         tells PackPass to write a **CEL_TYPE-kinded** CelValue
+         into rodata (not a CEL_STRING-kinded one).
 
-The synthetic call uses overload id `__type_value_of__` (a private
-codegen helper, not a user-visible function — the underscore prefix
-matches the convention of `__not_strictly_false__` from M5.I).
-That overload routes through a new `cel_make_type_value(out_slot,
-name_slot)` helper in `cel_runtime.c`.
+That's the entire frontend story.  No synthetic call, no overload
+seed, no runtime helper for the type-ident path: a constant
+type-name is just a different CelValue *shape* in rodata, and
+the existing kConstant codegen arm (`EmitKConstLoad`) emits the
+same `(i32.const <celvalue_offset>)` it always has.
 
-**Why a synthetic call rather than a special `kConstant` storage
-kind.**  Two reasons:
+### 3.3.1 Wire representation of `CEL_TYPE`
 
-  - The CEL `Constant` proto's payload union has no slot for a
-    type-value (only bool / int / uint / double / string / bytes /
-    null per `cel/expr/syntax.proto`).  Encoding a CEL_TYPE as a
-    `string_value` and adding a sidecar storage-kind annotation
-    would mean codegen has to remember the kind via a side-channel,
-    ResolvePass has to populate that side-channel, and the kConst
-    arm has to dispatch on it.  Three points of synchronisation
-    failure.
-  - The synthetic-call shape reuses the existing kCallExpr +
-    OverloadTable + cel_runtime.c machinery wholesale.  One new
-    seed in `kBuiltinSeeds`, one new helper body, no synchronisation
-    burden.
+`cel_data.h::CelValue.payload` already has a `CelSpan s` arm
+(used for `CEL_STRING`).  M9 reuses it for `CEL_TYPE`: the
+payload.s field stores `{ptr, len}` of the type-name string in
+linear memory.  No new payload field; no `payload.type_id`
+(today's stub field is renamed and repurposed — see §4.1).
+
+The string itself lives in one of three places, depending on
+where the CEL_TYPE value originated:
+
+  - **Rodata** for compile-time-knowable names.  PackPass writes
+    type-name bytes into the same data segment as string literals;
+    the rodata-resident CelValue carries the `(ptr, len)` into
+    that data segment.  Source: type-ident standalones (`int`,
+    `bool`, `<msg-FQN>`) AND the per-kind constant strings the
+    `cel_type_of_at_v` helper writes for primitive operands.
+  - **Per-Eval arena** for runtime-resolved names.  Source:
+    `type(<message>)` — the host trampoline writes the descriptor's
+    `full_name()` into the per-Eval arena and stamps the CelSpan
+    into out_slot.  Lives only for the duration of the Eval
+    (consistent with arena lifetime).
+  - **Activation-supplied workspace** for `Bind("t",
+    Value::Type(name))`.  The encoder copies the user-supplied
+    name into the variable's workspace region.
+
+All three are reachable from linear memory; consumers do not
+need to know the source.
 
 ### 3.4 Equality of type values (`langdef.md` §"Equality")
 
 > *"`type(1) == string` evaluates to `false` … `type(type(1)) ==
 > type(string)` evaluates to `true`"*
 
-Two CEL_TYPE values are equal iff their interned names are equal.
-Implementation choice (§4.3): keep the names interned per-Plan, and
-implement equality as integer comparison of the interned ids — the
-table is fixed at Plan time so any two CEL_TYPE values that came
-from the same Plan can be compared by id, and cross-Plan equality
-is undefined per the implementation contract (no fixture row
-crosses Plan boundaries).  An optional fallback for cross-Plan
-robustness (string compare) is left for a future milestone if it
-ever surfaces.
+Two `CEL_TYPE` values are equal iff their `payload.s` byte
+sequences are byte-equal.  The polymorphic `cel_equals` kernel
+(M5.B step 2) grows a CEL_TYPE arm: same-length + `memcmp` ==
+0.  Type names in M9's scope are pure ASCII (no normalisation
+nuance); a future spec ext that admits non-ASCII type names
+would still be byte-comparable since cel-cpp's checker passes
+through the source bytes verbatim.
+
+This is **trivially cross-Plan robust** — there is no per-Plan
+intern state to coordinate between two Plans' CEL_TYPE values.
+Two CEL_TYPE values from any source compare by name, full stop.
 
 Cross-CEL_TYPE-vs-non-CEL_TYPE equality is `false` per the spec's
 heterogeneous-equality rules — `type(1) == 1` is `false`, not an
@@ -335,8 +356,10 @@ the admissible set:
 
   - `dyn(type-value)` admits — same shape as scalar, just a CEL_TYPE
     instead of CEL_INT.  Trivial one-line addition: `t.has_type()`
-    arm in `ArgIsAdmissibleScalar`, and the `kType` Repr is added
-    to `IsScalarRepr` in `compiler_v2/ir/repr.h` (see §4.2).
+    arm in `ArgIsAdmissibleScalar` (`parse_and_check.cc:447`).
+    No sibling Repr-level helper is involved (`IsScalarRepr`
+    doesn't exist; the gate is purely at the cel-cpp type-spec
+    level).
   - **Considered and rejected: `dyn(message)` admission.**  Out of
     scope per `m7-proto-literals.md` §2.2 carve-out for reflective
     introspection.  An admitted `dyn(msg)` would invite
@@ -349,171 +372,201 @@ admission **plus** M9.B's `type(x)` codegen.
 
 ## 4. Architecture
 
-### 4.1 Codegen — `type(x)` arm in `expr_lower.cc`
+### 4.1 Wire payload — repurpose the `payload.s` arm
 
-Today `EmitGeneralCall` routes by `ann.overload_id`; the cel-cpp
-checker stamps `type` (the kBuiltinName for `type(...)`) onto the
-overload id, but our `OverloadTable` has `type` in
-`kExplicitlyUnimplementedIds` (`overload_table.cc:353`).  M9.B:
+`cel_data.h::CelValue` already has a `payload.s` field (`CelSpan`,
+8 bytes — `{ptr, len}`) used for `CEL_STRING`.  M9 reuses it for
+`CEL_TYPE` instead of inventing new wire shape:
 
-  1. Remove `"type"` from `kExplicitlyUnimplementedIds`.
+  - **Drop** the existing stub `uint32_t type_id;` field from the
+    payload union (it predated this design and was never read by
+    anyone; the conformance grep confirms zero call sites).
+  - **Document** in `cel_data.h`'s comment block that for `kind ==
+    CEL_TYPE`, `payload.s` carries `(ptr, len)` of the type-name
+    string in linear memory (rodata, per-Eval arena, or workspace,
+    depending on origin — see §3.3.1).
+
+The 24-byte `CelValue` size is unchanged; the `_Static_assert`
+at `cel_data.h:137` continues to hold.
+
+### 4.2 Codegen — `type(x)` arm + type-ident kConstant rewrite
+
+**`type(x)` codegen.**  Today `EmitGeneralCall` routes by
+`ann.overload_id`; the cel-cpp checker stamps `type` (the
+kBuiltinName for `type(...)`) onto the overload id, but our
+`OverloadTable` has `type` in `kExplicitlyUnimplementedIds`
+(`overload_table.cc:353`).  M9.B:
+
+  1. Remove `"type"` from `kExplicitlyUnimplementedIds` AND
+     update its `std::array<absl::string_view, N>` size constant
+     from 81 to 80 — the size is locked by template parameter,
+     not deduced.  See `overload_table.cc:268`.
   2. Add `Seed{"type", {ImportModule::kCelRuntime, "cel_type_of_at_v"}}`
-     to `kBuiltinSeeds`.
+     to `kBuiltinSeeds` AND bump its size constant from 85 to 86
+     (`overload_table.cc:82`).
   3. Implement `cel_type_of_at_v(out_slot, in_slot)` in
      `cel_runtime.c`.
 
 The codegen path is the standard `EmitGeneralCall` one — no
 special-case arm in `expr_lower.cc`.
 
-For the type-identifier-rewrite synthetic call (§3.3), add a second
-seed:
+**Type-ident rewrite** — `parse_and_check.cc` runs the new
+`InlineTypeIdentifierReferences` pass (§3.3) AFTER the existing
+`InlineConstantReferences` and BEFORE `RejectDyn`.  The
+rewriter replaces a kIdentExpr with a kConstantExpr carrying
+`string_value = <type-name>`.  The downstream pipeline:
 
-  - `Seed{"__type_value_of__", {ImportModule::kCelRuntime, "cel_make_type_value_at_v"}}`.
+  - **PopulateAnnotations** (`typed_ast.cc:170`) walks the
+    type_map and stamps `Repr::kType` on the rewritten node
+    (cel-cpp's checker still types it as `TypeType(...)`,
+    which `ReprOf(TypeSpec)` already maps to `Repr::kType`).
+    No change — already works.
+  - **PackPass** (the rodata packer; see
+    `compiler_v2/codegen/static_memory_builder.cc`) sees a
+    `kConstantExpr` with `Repr::kType` and writes a
+    `{kind: CEL_TYPE, payload.s: {ptr: <data_offset>, len}}`
+    CelValue into rodata (instead of the CEL_STRING shape it
+    writes for `Repr::kString`).  This is the **one new dispatch
+    arm** — PackPass must dispatch on `Repr` to pick the right
+    CelValue kind, not blindly assume kConst+string=CEL_STRING.
+  - **`EmitKConstLoad`** is unchanged: emits `(i32.const
+    <celvalue_offset>)`.  The rodata-resident CelValue's `kind`
+    field tells the consumer it's a CEL_TYPE.
 
-`cel_make_type_value_at_v(out_slot, name_slot)` reads a `CEL_STRING`
-at `name_slot`, looks up the interned id in the per-Plan table
-(via the `cel_host.cel_intern_type_name` trampoline), and writes
-`{kind: CEL_TYPE, payload.type_id: <id>}` into `out_slot`.
+This collapses §3.3's "synthetic call" design into a
+**zero-runtime-helper** path for type idents.  Compile-time-
+knowable type names cost exactly one rodata CelValue and one
+`(i32.const)` emit at codegen.
 
 **WAT-first.**  Per CLAUDE.md "WAT-first for ABI and codegen
 design", author two WAT traces under
 `doc/implementation-plan/rewrite/wat/`:
 
   - `14_type_of_scalar.wat` — the `cel_type_of_at_v` body for an
-    int operand (write CEL_TYPE with payload.type_id = id-of-`int`).
-  - `15_type_value_of_ident.wat` — the rewrite-target synthetic
-    call for `int` standalone.
+    int operand (read in.kind, write `{CEL_TYPE, payload.s:
+    rodata_span_for_int}`).
+  - `15_type_ident_kconst.wat` — the rodata-CelValue layout for
+    `int` standalone, plus the codegen emit (`i32.const
+    <offset>`).  No host call to validate.
 
-Walk both through `wat_runner` with stub `cel_intern_type_name`
-returning a fixed id, validate end-to-end before any expr_lower
-work.
+Walk both through `wat_runner`; `cel_type_of_at_v` is pure-runtime
+(no stubs needed) and the type-ident emit doesn't even reach
+wasm — it's just a rodata pre-pack that the consumer reads.
 
-### 4.2 ResolvePass + LayoutPass extensions
+### 4.3 ResolvePass + LayoutPass extensions
 
-  - **ResolvePass (`compiler_v2/codegen/resolve_pass.cc`).**
-    `MessageTypeIdVisitor` (M7.A) covers message FQNs from
-    `kStructExpr`; M9.A adds **`TypeIdVisitor`**, post-order, that
-    interns:
-       - one row per primitive type name actually referenced in the
-         AST (`int`, `bool`, ...) — into `cel.abi.type_names[]` (a
-         new table, see §4.3);
-       - one row per message FQN referenced as a type-identifier
-         ident (e.g. `TestAllTypes` standalone) — also into
-         `cel.abi.type_names[]`, sharing the same id-space as the
-         primitives.
+  - **No new ResolvePass visitor.**  M7.A's `MessageTypeIdVisitor`
+    handles `kStructExpr` for the constructable-message-type table.
+    M9 adds nothing to ResolvePass: type-ident standalones rewrite
+    to kConstants, which ResolvePass already handles; runtime
+    `type(x)` calls route through `EmitGeneralCall`'s overload-id
+    dispatch, also unchanged.  This is a direct consequence of
+    dropping the type-name intern table — there is no per-AST
+    "interesting type names" set to compute.
 
-    Reuses `cel.abi.types[]` (M7's table) is **rejected** — M7's
-    table is keyed on a constructable message type and resolves at
-    Plan time to a `Descriptor*`.  M9 needs a table keyed on a CEL
-    type-name string with no descriptor-handle requirement, and
-    that holds primitive names like `"int"` that aren't proto
-    types.  Sibling table is the right separation; same
-    `Engine::Plan` decode pattern.
+  - **PackPass dispatches on Repr for kConstants.**  Today
+    PackPass packs every `kConstant` with a `string_value` as a
+    `CEL_STRING`.  After M9.A: PackPass checks the node's
+    `Repr` annotation; if `Repr::kType`, the packed CelValue uses
+    `kind = CEL_TYPE` (payload still carries the same span — the
+    raw bytes pointed at by the rodata are reusable).  See
+    `static_memory_builder.cc::PackKConstant` (or the equivalent
+    method).  The bytes layout for the name string itself is
+    identical to the string-literal case — same data segment,
+    same `(ptr, len)` accounting.
 
-    The `TypeIdVisitor` runs **after** `InlineTypeIdentifierReferences`
-    (which is a frontend rewrite, not a ResolvePass step).  By the
-    time ResolvePass walks the tree, every type-identifier ident has
-    already been rewritten to a synthetic call carrying a string
-    constant — so what ResolvePass sees is just rodata strings, the
-    same shape M2 already handles.  The intern-into-`type_names[]`
-    step happens at the synthetic call site: the visitor recognises
-    `__type_value_of__` calls, reads the constant string operand,
-    interns it, and stamps the resolved id onto the call node's
-    annotation.
+  - **LayoutPass.**  No new arms.  `cel_type_of_at_v` calls allocate
+    a workspace slot via the existing kCallExpr path; rewritten
+    kConstant nodes get rodata storage via the existing kConst
+    path.
 
-  - **LayoutPass.**  No new arms.  Synthetic calls allocate a
-    workspace slot via the existing kCallExpr path; the string
-    operand is rodata-packed by the existing kConst path.  The
-    `cel_type_of_at_v` call (real `type(x)`) likewise allocates a
-    workspace slot via the existing kCallExpr path.
+  - **`Repr::kType`** is **already declared** at
+    `compiler_v2/ir/annotations.h:32` (predates M9).  `ReprName`
+    already returns `"type"` (`annotations.cc:38`); `ReprOf(cel::Type)`
+    already maps `TypeKind::kType → Repr::kType`
+    (`typed_ast.cc:97-98`); `ReprOf(cel::TypeSpec)` already maps
+    `type.has_type() → Repr::kType` (`typed_ast.cc:62`).  The
+    activation encoder already has a `case Repr::kType:` arm at
+    `instance.cc:590` returning Unimplemented.  M9.A's actual
+    work is **filling in the bodies** that today return
+    Unimplemented or are missing — not adding new enum values
+    or new switch arms.
 
-  - **`Repr::kType`** added to `compiler_v2/ir/repr.h`.  Mirrors
-    `Repr::kMessage` shape — small, scalar-ish, fixed-size.
-    `IsScalarRepr` returns true for `kType` (per §3.6).  Variable
-    declarations of type `TYPE` get `Repr::kType` per the existing
-    `ReprOf(...)` dispatch.
+  - **`dyn(type-value)` admission.**  `parse_and_check.cc::
+    ArgIsAdmissibleScalar` (line 447) currently returns true iff
+    the arg type `has_primitive() || has_null()`.  M9.A adds a
+    `t.has_type()` arm (one line).  No `IsScalarRepr` helper
+    needed — the gate is at the type-spec level, not the Repr
+    level.
 
-### 4.3 ABI surface — new `type_names[]` table
+### 4.4 ABI surface — no new ABI table
 
-Additive to `compiler_v2/abi/cel_abi.proto`:
+Significantly simpler than the M7 precedent: M9 adds **no rows**
+to `cel_abi.proto`.  The `TypeEntry` already carries
+constructable-message-type FQNs (M7.A's `cel.abi.types[]`); M9
+needs no parallel intern table because:
 
-```proto
-// One row of the type-name intern table — M9.A.  Populated when
-// ResolvePass first encounters a synthetic `__type_value_of__`
-// call (carrying a primitive type-name) OR a `kStructExpr` (M7.A —
-// reuses the existing `cel.abi.types[]` table for the message FQN).
-//
-// The two tables overlap intentionally on message FQNs:
-//   - `cel.abi.types[]` (M7.A) carries FQNs that are constructable
-//     message types — resolved to a `Descriptor*` at Plan time.
-//   - `cel.abi.type_names[]` (M9.A) carries every CEL type-name
-//     that appears as a runtime CEL_TYPE value — primitives,
-//     `null_type`, `list`, `map`, `type`, message FQNs, abstract
-//     names like `google.protobuf.Timestamp`.  Decoded at runtime
-//     by `cel_intern_type_name` to a uint32 id; the reverse is
-//     stored on Instance for the `Instance::Eval` decoder to
-//     produce a string out the read-side encoder.
-//
-//   id      dense index; 0 is the sentinel "no type-name id".
-//   name    e.g. "int", "google.api.expr.test.v1.proto3.TestAllTypes",
-//           "null_type".
-message TypeNameEntry {
-  uint32 id = 1;
-  string name = 2;
-}
+  - Compile-time-knowable type names live in rodata as
+    pre-packed CelValues (§4.2 PackPass dispatch).  Plan-time
+    decode is just data-segment loading — same path as string
+    literals.
+  - Runtime-resolved type names (the `type(message)` path) write
+    the descriptor's `full_name()` straight into per-Eval arena
+    memory; nothing to intern.
 
-// In CelAbi (additive — field number 6, locked):
-//   repeated TypeNameEntry type_names = 6;
-```
+Compared to the M7-style intern-table design: M9 ships **zero
+new ABI rows, zero new wire schema, zero Plan-time map
+construction, zero per-Instance reverse-map construction**.
 
-`Engine::Plan` builds two parallel maps from `type_names[]`: an
-`id → string` map for the read-side encoder, and a
-`string → id` map for the runtime trampoline (`cel_intern_type_name`).
+The earlier draft of this doc spec'd a `cel.abi.type_names[]`
+sibling table and a `cel_intern_type_name` host trampoline.
+Both are dropped: the CelSpan-in-payload design makes them
+unnecessary.  See "Plan-vs-execution delta" callout in §9 if
+this ever flips back (e.g. if a future feature needs Plan-time
+type-name resolution).
 
-**Why not extend `TypeEntry` with a `kind` field?**  Considered.
-`TypeEntry` carries an FQN keyed on "this is a constructable
-message type — resolve a Descriptor at Plan time".  Adding a
-`kind=primitive` discriminator would force every consumer of
-`TypeEntry` (today only Plan-time descriptor resolution) to filter
-on the discriminator, and the descriptor-resolution code would
-have to skip primitive rows.  Sibling table keeps each table's
-contract sharp and avoids retrofitting M7's consumers.
+### 4.5 Host primitives — one trampoline
 
-### 4.4 Host primitives — Layer-2 + Layer-3
-
-`compiler_v2/api/internal/cel_host.{h,cc}` grows one trampoline:
+`compiler_v2/api/internal/cel_host.{h,cc}` grows exactly **one**
+trampoline (down from the earlier draft's two):
 
 ```cpp
-// Looks up `name_slot` (a CEL_STRING) in the per-Instance type-name
-// intern map and writes {kind: CEL_TYPE, payload.type_id: <id>}
-// into out_slot.  Returns CEL_ERR_TYPE_MISMATCH if name_slot
-// isn't a CEL_STRING; returns a fresh kError if the name isn't in
-// the intern table (which is a Plan-time invariant violation —
-// an unrenamed assertion we leave loud).
-ABSL_MUST_USE_RESULT absl::Status CelInternTypeNameImpl(
-    uint32_t out_slot, uint32_t name_slot,
+// Resolves the FQN of the message at `in_slot` (a CEL_MESSAGE
+// CelValue whose payload.msg_slot indexes into the per-Instance
+// ExternrefTable), copies the FQN into the per-Eval arena, and
+// writes {kind: CEL_TYPE, payload.s: {arena_ptr, len}} into
+// out_slot.  Returns CEL_ERR_TYPE_MISMATCH if in_slot isn't a
+// CEL_MESSAGE; CEL_ERR_HOST_ADAPTER_ERROR if the externref
+// dereference fails.
+ABSL_MUST_USE_RESULT absl::Status CelHostResolveMessageTypeNameImpl(
+    uint32_t out_slot, uint32_t in_slot,
     const TrampolineContext& ctx);
 ```
 
-Layer-3 (`cel_host_wasmtime.cc` `RegisterCelHostImports`):
+Layer-3 (`cel_host_wasmtime.cc::RegisterCelHostImports`):
 
 ```cpp
-{"cel_intern_type_name", 2, &CelInternTypeNameTrampoline},
+{"cel_host_resolve_message_type_name", 2,
+ &CelHostResolveMessageTypeNameTrampoline},
 ```
 
-`compiler_v2/runtime/cel_runtime.c` adds the matching extern decl.
-The `cel_type_of_at_v(out_slot, in_slot)` and
-`cel_make_type_value_at_v(out_slot, name_slot)` bodies live in
-`cel_runtime.c` (pure-runtime — no host call needed for the body
-of `type_of`, just a `kind` read and a slot write; the
-host-trampoline call is only for `cel_make_type_value`'s string-
-to-id lookup).
+`cel_runtime.c` adds the matching extern decl.
 
-`cel_type_of_at_v` is **all-runtime** because the type-id of the
-operand's runtime kind is statically known per kind.  The runtime
-helper does:
+`cel_type_of_at_v(out_slot, in_slot)` is **all-runtime** for
+every primitive kind — it picks among 12 pre-baked rodata strings
+(see "primitive type-name table" below) and writes the matching
+CelSpan into out_slot.  Only `CEL_MESSAGE` operands hop to the
+host:
 
 ```c
+// Pre-baked rodata: 12 type-name CelValues, one per primitive
+// CelKind.  Linker emits the strings into .rodata; the CelValues
+// holding the spans into .rodata too.  Indexed by CelKind.
+extern const CelValue* const kPrimitiveTypeValues[];
+// {CEL_NULL: &type_null_type_celvalue,
+//  CEL_BOOL: &type_bool_celvalue,
+//  CEL_INT:  &type_int_celvalue, ... CEL_TYPE: &type_type_celvalue}.
+
 void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot) {
   CelValue* in = (CelValue*)((uint8_t*)__memory + in_slot);
   CelValue* out = (CelValue*)((uint8_t*)__memory + out_slot);
@@ -521,82 +574,60 @@ void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot) {
     *out = *in;  // propagate
     return;
   }
-  // Look up the kind's primitive type-id from the per-Plan
-  // primitive-id map (see below).  For CEL_MESSAGE, dispatch
-  // to a host trampoline that resolves the message's FQN to
-  // an id.
   if (in->kind == CEL_MESSAGE) {
-    // Host call: cel_host_resolve_message_type_id(out_slot, in_slot).
-    cel_host_resolve_message_type_id(out_slot, in_slot);
+    cel_host_resolve_message_type_name(out_slot, in_slot);
     return;
   }
-  out->kind = CEL_TYPE;
-  out->_pad = 0;
-  out->payload.type_id = primitive_type_id_for(in->kind);
+  // Every other kind has a pre-baked rodata CelValue.
+  *out = *kPrimitiveTypeValues[in->kind];
 }
 ```
 
-Two host trampolines vs one:
+The 12-slot table costs ~300 bytes of static rodata per module
+(12 × CelValue + 12 × short type-name string).  Acceptable;
+amortised across every `type(<scalar>)` call.
 
-  - `cel_intern_type_name(out, name)` — for the
-    `__type_value_of__` rewrite path (operand is a string
-    constant in rodata; resolve-once-then-cache shape).
-  - `cel_host_resolve_message_type_id(out, in)` — for the
-    `type(message)` runtime path (operand is a CEL_MESSAGE; need
-    the descriptor pool to resolve FQN → id at runtime).  Reuses
-    the `ExternrefTable` lookup machinery M3 established.
-
-`primitive_type_id_for(kind)` is a pure-runtime constant table:
-the M9.A ResolvePass guarantees that for every primitive kind in
-the AST, the corresponding type-name is interned with a stable
-small id.  We pre-populate the table for **every** primitive kind
-unconditionally (12 rows: int, uint, double, bool, string, bytes,
-null_type, list, map, type, google.protobuf.Timestamp, google.protobuf.Duration),
-so the runtime helper doesn't need to know whether a given
-primitive name appears in the AST — the per-Plan id is always
-present.  Cost: 12 × 24 bytes ≈ 300 bytes per Plan.  Acceptable.
-
-### 4.5 Activation marshalling
+### 4.6 Activation marshalling
 
   - **Bind a type value**: `Activation::Bind("t",
-    Value::Type("bool"))`.  `EncodeValue` for `kType` resolves the
-    name through the intern map and writes
-    `{CEL_TYPE, type_id: <id>}` into the variable's slot.
+    Value::Type("bool"))`.  `EncodeValue` for `kType` (the
+    existing-but-Unimplemented arm at `instance.cc:590`) copies
+    the user-supplied name into the variable's workspace region
+    of linear memory and writes `{CEL_TYPE, payload.s:
+    {workspace_ptr, len}}`.  No interning, no host call.
 
-  - **Decode a type value (read-side)**: `Instance::Eval`'s
-    `DecodeCelValueAt` for `CEL_TYPE` reads the type_id, looks up
-    the name through the per-Instance reverse-intern map, returns
-    `Value::Type(<name>)`.
+  - **Decode a type value (read-side)**: `DecodeCelValueAt` for
+    `CEL_TYPE` reads `payload.s`, copies the bytes out of
+    linear memory into a `std::string`, returns
+    `Value::Type(name)`.
 
 `compiler_v2/conformance/binding_marshal.cc::ValueFromProto` grows
 a `kTypeValue` arm: reads the proto's `type_value` (a string),
 returns `Value::Type(name)`.
 
-### 4.6 `cel::Value::Kind::kType` + `Value::Type(name)` factory
+### 4.7 `cel::Value::Kind::kType` + `Value::Type(name)` factory
 
 `compiler_v2/api/value.h`:
 
 ```cpp
 enum class Kind : uint8_t {
-  // ...
-  kType = 13,  // wire CEL_TYPE = 11; user-surface kType = 13
-              // (the user-facing enum has independent numbering;
-              // kDuration = 11 already).
+  // Numeric values: kDuration=11 (wire CEL_DURATION=12), kTimestamp=12
+  // (wire CEL_TIMESTAMP=13).  Slot 13 in the user enum is free; CEL_TYPE
+  // is wire-value 11 (predates this enum).  M9.A picks 13 to keep a
+  // stable user-facing layout; the user enum has always had numbering
+  // independent of the wire enum (see Kind::kDuration vs CelKind::CEL_DURATION).
+  kType = 13,
 };
 ```
 
 ```cpp
-static Value Type(std::string name);   // Construct from name.
+static Value Type(std::string name);
 absl::StatusOr<absl::string_view> AsType() const;
 ```
 
-Internal payload: a `std::string` (the name).  No interning at the
-`cel::Value` level — interning is a per-Plan ABI concern, not a
-user-surface one; user code hands names around as strings.  The
-type-id appears only inside the wire `CelValue`.
-
-`StructurallyEquals` for kType: equal iff the names are byte-equal.
-
+Internal payload: a `std::string` (the name) added to the existing
+`std::variant` payload alternatives.  `StructurallyEquals` for
+kType: equal iff `name == other.name` (byte-equality).
 `ValueKindName` adds `"type"` for `kType`.
 
 ### 4.7 Conformance runner — `CompareType` arm + `IsInM7Envelope` widen
@@ -657,141 +688,160 @@ that turns green.  Effort sized as small (one focused change,
 (cross-cutting change touching ResolvePass + LayoutPass + codegen +
 host + ABI + tests).
 
-### M9.A — `CEL_TYPE` runtime kind end-to-end + `Value::Type`
+### M9.A — `CEL_TYPE` payload + `Value::Type` + activation roundtrip
 
-Bring `CEL_TYPE` out of "wire-kind-allocated-but-unreachable" status.
-Land the public `Value::Kind::kType`, the `Value::Type(name)`
+Bring `CEL_TYPE` out of "wire-kind-allocated-but-unreachable"
+status.  Land the public `Value::Kind::kType`, the `Value::Type(name)`
 factory, the `AsType()` accessor, the `ValueKindName("type")`
-mapping, the `Repr::kType` IR mirror, the `cel.abi.type_names[]`
-ABI table, and the per-Instance intern map.  No codegen for
-`type(x)` yet — the runtime kind exists, can be bound through
-Activation, can be read out through `Instance::Eval`, can be
-compared via the runner.
+mapping, the `payload.s`-as-CEL_TYPE-name convention in
+`cel_data.h`, the activation encoder/decoder bodies, and the
+runner widen.  No codegen for `type(x)` yet — the runtime kind
+exists, can be bound through Activation, can be read out through
+`Instance::Eval`, can be compared via the runner.
 
   - **WAT-first.**  Author `wat/14_type_of_scalar.wat` sketching
-    the `cel_type_of_at_v` shape (operand-kind read + out-slot
-    write).  Stub `cel_intern_type_name` in `wat_runner`.
-  - **ABI.**  Add `TypeNameEntry` + `repeated TypeNameEntry
-    type_names = 6` to `cel_abi.proto`.  Update
-    `cel-host-surface.md` §6.
-  - **Runtime.**  Add `Repr::kType` to `repr.h`; extend
-    `IsScalarRepr` to include `kType`; extend `ReprOf` to map
-    `cel::TypeType` → `Repr::kType`.  Define
-    `primitive_type_id_for` in `cel_runtime.c` (12-row table).
+    `cel_type_of_at_v`'s pure-runtime shape (read in.kind, copy
+    rodata-resident type-name CelValue into out_slot).  No host
+    stubs needed.
+  - **`cel_data.h`.**  Drop the unused `uint32_t type_id;` field
+    from `CelValue.payload`.  Add a comment block clarifying that
+    for `kind == CEL_TYPE`, `payload.s` holds `(ptr, len)` of the
+    type-name string in linear memory.
   - **Public API.**  `Value::Type(name)`, `Value::AsType()`,
-    `Value::Kind::kType` (independent numbering — kType = 13;
-    kDuration is at 11 in the user-facing enum).  Update
-    `value.cc` payload (`std::string` arm).  `StructurallyEquals`
-    for kType.
-  - **Encoder / decoder.**  `EncodeValue` for `kType` writes
-    `{CEL_TYPE, type_id}`.  `DecodeCelValueAt` for `CEL_TYPE`
-    reads back through the per-Instance reverse map.
+    `Value::Kind::kType = 13`.  Add a `std::string` alternative
+    to the `Payload` variant (`value.h:200`-ish).
+    `StructurallyEquals` for kType: byte-equality of names.
+    `ValueKindName(kType) → "type"`.
+  - **Encoder / decoder.**  Fill in the existing-but-Unimplemented
+    `case Repr::kType:` arm at `instance.cc:590` (encoder writes
+    name into workspace, stamps `{CEL_TYPE, payload.s}`).  Add
+    a `case CEL_TYPE:` arm to `DecodeCelValueAt` (read payload.s,
+    copy into `std::string`, return `Value::Type(name)`).
   - **Activation marshalling.**  `binding_marshal::ValueFromProto`
-    `kTypeValue` arm.  `CelTypeFromProtoType` for `TYPE`.
+    `kTypeValue` arm: read proto string → `Value::Type(name)`.
+    `CelTypeFromProtoType` for `TYPE` decls in `type_env:`.
   - **Runner.**  `IsAggregateOrObjectMatcherKind` includes
     `kTypeValue`; `CompareValue` `kTypeValue` arm dispatching
-    to `CompareType`.  `EnvelopeRejectReason` no longer mentions
-    `type_value`.
+    to a new `CompareType` arm (assert `got.kind() == kType` +
+    `*got.AsType() == name`).  `EnvelopeRejectReason` no longer
+    mentions `type_value`.
   - **`dyn(type-value)` admission.**  `ArgIsAdmissibleScalar`
-    grows a `t.has_type()` arm.
+    grows a `t.has_type()` arm.  **Closing assertion of M9.A
+    (R8 mitigation):** `dyn(int) == int` MUST green before the
+    slice is marked done — but it depends on M9.D's equality
+    arm; defer the green to M9.D and pin only the
+    `ArgIsAdmissibleScalar` admit-but-no-rejection step at
+    M9.A.
   - **Tests.**  `Value::Type` / `AsType` unit
     (`compiler_v2/api/value_test.cc` — round-trip + invalid-kind
-    accessor + `StructurallyEquals`).  Wire-encoding unit
-    (`compiler_v2/api/instance_test.cc` — `Bind("t",
-    Value::Type("bool"))` → eval `t == t` returns true).  Runner
-    unit (`compiler_v2/conformance/binding_marshal_test.cc` —
-    `ValueFromProto` for `type_value` returns
-    `Value::Type(name)`).
-  - **Conformance unlock.**  ~+5 PASS — limited because no
-    code path produces a CEL_TYPE without M9.B (`type(x)`).
-    The wins here are the activation rows that
-    `Bind("t", Value::Type(...))` → `t == int` shape.
+    accessor + `StructurallyEquals` byte-equal + `static_assert
+    static_cast<int>(Value::Kind::kType) == 13` invariant).
+    Wire-encoding unit (`compiler_v2/api/instance_test.cc` —
+    `Bind("t", Value::Type("bool"))` → eval returns
+    `Value::Type("bool")` round-trip).  Runner unit
+    (`compiler_v2/conformance/binding_marshal_test.cc` —
+    `ValueFromProto` for `type_value`).
+  - **Conformance unlock.**  ~+5 PASS — limited because nothing
+    codegen-side produces a CEL_TYPE yet.  Activation-bound
+    `Bind("t", ...)` rows do, plus the harness's typed-result
+    decode.
   - **Effort.**  Large.
 
-### M9.B — `type(x)` codegen + per-kind helper
+### M9.B — `type(x)` codegen + 12-row primitive table
 
 Light up the `type(x)` standard function for every primitive-kind
 operand.
 
-  - **WAT-first.**  `wat/14_type_of_scalar.wat` — already drafted
-    in M9.A; finalise + run through `wat_runner` end-to-end.
+  - **WAT-first.**  `wat/14_type_of_scalar.wat` — finalise +
+    run through `wat_runner` end-to-end (no host stubs needed).
   - **OverloadTable.**  Remove `"type"` from
-    `kExplicitlyUnimplementedIds` (`overload_table.cc:353`);
-    add `Seed{"type", {ImportModule::kCelRuntime,
-    "cel_type_of_at_v"}}` to `kBuiltinSeeds` (size 85 → 86).
+    `kExplicitlyUnimplementedIds` (`overload_table.cc:353`) AND
+    fix the size constant (81 → 80, line 268); add
+    `Seed{"type", {ImportModule::kCelRuntime,
+    "cel_type_of_at_v"}}` to `kBuiltinSeeds` (size 85 → 86, line
+    82).
   - **Runtime.**  `cel_type_of_at_v` body in `cel_runtime.c` —
-    one switch over `in->kind`, write `{CEL_TYPE, primitive_id}`
-    into out.  Absorb CEL_ERROR / CEL_UNKNOWN.
+    pre-bake the 12-row `kPrimitiveTypeValues[]` table of
+    rodata CelValues (one per CelKind that's a primitive); body
+    is a kind-indexed table read + slot copy.  Absorbs
+    CEL_ERROR / CEL_UNKNOWN.  CEL_MESSAGE arm calls into the
+    M9.C host trampoline (declared as extern; stub in `wat_runner`
+    until M9.C lands the real body).
   - **Codegen.**  No `expr_lower.cc` change — routes through
     `EmitGeneralCall` automatically once the seed lands.
   - **Test matrix.**  Per `langdef.md` §"Type Values" + §3.2 of
-    this doc: `type(x)` for x = each of bool / int / uint /
-    double / string / bytes / null / list / map / type / error /
-    unknown.  12 cases, parameterised in
-    `m9_test.cc::TypeOfPrimitiveE2ETest`.  Plus boundary rows
-    for each numeric kind (INT_MIN/MAX, UINT_MAX, +0.0/-0.0,
-    NaN — all return the same type-id, but the test asserts
-    boundary stability).
+    this doc: `type(x)` for every primitive kind × representative
+    boundary values.  Parameterised in
+    `m9_test.cc::TypeOfPrimitiveE2ETest` (already drafted; ~22
+    rows).  Plus `type(<host-list>)` and `type(<host-map>)`
+    rows that exercise the CEL_LIST_HOST / CEL_MAP_HOST paths
+    via Activation binding (Gap 1 from review).
   - **Conformance unlock.**  ~+30–60 PASS in
     `dynamic.textproto` (the `type(dyn(<scalar>)) == "<name>"`
     cohort) + ~+5 in `enums.textproto` + ~+3 in
     `basic.textproto`.
   - **Effort.**  Medium.
 
-### M9.C — `type(message)` + message-FQN type idents
+### M9.C — `type(message)` + type-ident kConstant rewrite
 
-Land the `type(msg)` path that resolves the message's descriptor
-FQN at runtime, and the `MessageFqn` standalone-ident path that
-produces a CEL_TYPE for the FQN at compile time.
+Land the `type(msg)` host trampoline AND the
+`InlineTypeIdentifierReferences` frontend rewrite that lets
+`int` / `bool` / `<msg-FQN>` standalone produce a CEL_TYPE.
 
   - **WAT-first.**  `wat/15_type_of_message.wat` for the host
-    trampoline call shape.
+    trampoline call shape (operand → externref-table → Descriptor
+    → arena-write FQN → out_slot CelSpan stamp).
   - **Frontend rewrite.**  `parse_and_check.cc::
-    InlineTypeIdentifierReferences` pass.  Walks the AST, finds
-    `kIdentExpr` nodes whose `reference_map` entry has no
-    `value()` AND whose `type_map` entry is `TypeType(...)`.
-    Resolves the inner type name (per §3.1 table — primitives
+    InlineTypeIdentifierReferences` pass (runs after
+    `InlineConstantReferences`, before `RejectDyn`).  Walks the
+    AST, finds `kIdentExpr` nodes whose `reference_map` entry
+    has no `value()` AND whose `type_map` entry is
+    `TypeType(...)`.  Resolves the inner type name (primitives
     by enum tag, messages by `MessageType::full_name()`).
-    Replaces with synthetic `__type_value_of__(string)` call.
-  - **OverloadTable.**  Add `Seed{"__type_value_of__",
-    {ImportModule::kCelRuntime, "cel_make_type_value_at_v"}}`.
-  - **Host primitives.**  `CelInternTypeNameImpl`,
-    `CelMakeTypeValueImpl` (the runtime body's host call),
-    `CelHostResolveMessageTypeIdImpl` (the `type(message)`
-    runtime body's host call).  Trampolines wired through
-    `cel_host_wasmtime.cc::RegisterCelHostImports`.
-  - **ResolvePass.**  `TypeIdVisitor` recognises
-    `__type_value_of__` calls, interns the constant string,
-    stamps the resolved id.
-  - **Runtime.**  `cel_make_type_value_at_v` and the message-
-    resolution arm of `cel_type_of_at_v`.
+    **Rewrites in place to a `kConstantExpr` with `string_value
+    = <name>`** — no synthetic call, no overload seed.
+  - **PackPass dispatch on Repr.**  PackPass
+    (`static_memory_builder.cc::PackKConstant`) currently packs
+    every kConstant-with-string as `CEL_STRING`.  Add a
+    `Repr::kType` arm that packs the same string-bytes layout
+    but stamps `kind = CEL_TYPE` on the rodata-resident
+    CelValue.  This is the **only Codegen-pipeline change** for
+    type-idents.
+  - **Host primitive.**  `CelHostResolveMessageTypeNameImpl`
+    (Layer-2) + `CelHostResolveMessageTypeNameTrampoline`
+    (Layer-3 in `cel_host_wasmtime.cc`).  Reuses the
+    `ExternrefTable` lookup machinery M3 established.
+  - **Runtime.**  `cel_type_of_at_v`'s `CEL_MESSAGE` arm
+    transitions from "stub host call" (M9.B) to real
+    trampoline call.
   - **Test matrix.**  `m9_test.cc::TypeOfMessageE2ETest`
-    (`type(HostMsg3{}) == "celwasm.testdata.HostMsg3"`),
+    (`type(HostMsg3{}) == celwasm.testdata.HostMsg3`),
     `TypeIdentifierExpressionE2ETest` (each of the 11 spec
     type idents standalone — `int == int`, `bool == bool`, ...,
     `HostMsg3 == HostMsg3`).
   - **Conformance unlock.**  ~+6–12 PASS in `proto2` +
     `proto3` (`type(msg)` cohort) + ~+5 in
     `comparisons.textproto` (cross-shape `type(x) == type(y)`
-    rows that need both message-FQN and primitive-FQN).
+    rows that need both message-FQN and primitive-name).
   - **Effort.**  Medium.
 
 ### M9.D — CEL_TYPE equality + `type(x) == typename` ergonomic
 
 Polymorphic `cel_equals` kernel (M5.B step 2) grows a CEL_TYPE
-arm: equal iff `payload.type_id` matches.  This makes
-`type(x) == int`, `type(int) == type(string)`, `type(x) ==
+arm: equal iff `payload.s` byte sequences match (memcmp).  This
+makes `type(x) == int`, `type(int) == type(string)`, `type(x) ==
 type(y)` etc. work at runtime.
 
   - **Runtime.**  Extend `cel_equals` (in `cel_runtime.c`) with
-    a CEL_TYPE arm.  Cross-kind (`CEL_TYPE == CEL_INT`)
-    returns `false` (existing behaviour, just a sanity-check
-    test).
+    a CEL_TYPE arm: same-length + memcmp == 0.  Cross-kind
+    (`CEL_TYPE == CEL_INT`) returns `false` (existing kind-
+    mismatch short-circuit).
   - **Codegen.**  No change — `cel_equals` is the polymorphic
     dispatcher.
   - **Test matrix.**  `TypeEqualityE2ETest` (8 cases) +
     `TypeAsRhsOfEqualityE2ETest` (6 cases — `type(true) ==
-    bool`, `type(1) == int`, `type(b"a") == bytes`, ...).
+    bool`, `type(1) == int`, `type(b"a") == bytes`, ...) +
+    M9.A's deferred `dyn(int) == int` regression.
   - **Conformance unlock.**  ~+10–15 PASS — primarily the
     `comparisons.textproto` `type(x) == type(y)` rows whose
     operand chain reaches a CEL_TYPE on both sides.
@@ -989,17 +1039,19 @@ not the error strings).
 
 Ranked highest → lowest.
 
-  - **R1 — Per-Plan vs. per-Instance lifetime of the type-name
-    intern table.**  M7's `cel.abi.types[]` is decoded into the
-    Plan; descriptor pool resolution happens once.  M9's
-    type-name table is the same shape — decoded at Plan time.
-    But the *reverse* map (id → name, used by the read-side
-    decoder) lives on `Instance`, not `Plan`, because one Plan
-    can drive many Instances and the decoder runs per-Eval.
-    Mitigation: ResolvePass + ABI emit produce the table once;
-    Plan resolves it; Instance copies (or borrows under
-    shared_ptr) the resolved map.  Pin this in the design doc
-    delta sections of `cel-host-surface.md`.
+  - **R1 — `payload.s` lifetime in cross-Eval CEL_TYPE values.**
+    The CelSpan in a CEL_TYPE points into linear memory; the
+    pointed-at bytes live in rodata (compile-time constants),
+    workspace (activation-bound), or per-Eval arena (host-
+    resolved).  The arena-resident case has narrower lifetime
+    than the others — once `cel_reset` runs at the start of
+    a fresh Eval, the previous Eval's arena bytes are
+    overwritable.  Mitigation: `Instance::Eval`'s read-side
+    decoder COPIES `payload.s` bytes out to a `std::string`
+    in `Value::Type(name)` before returning, so user code
+    never holds a CelSpan into a stale arena.  Pin this in a
+    test (Eval, save the returned Value, run a second Eval,
+    inspect the saved Value's name).
 
   - **R2 — `InlineTypeIdentifierReferences` ordering vs M7.D's
     `InlineConstantReferences`.**  M7.D runs after the checker
@@ -1042,7 +1094,7 @@ Ranked highest → lowest.
 
   - **R6 — Static-subset gate interaction with type-typed
     operand of `==`.**  `int == int` after the rewrite is
-    `__type_value_of__("int") == __type_value_of__("int")` — a
+    `__type_value_of__(<id>) == __type_value_of__(<id>)` — a
     `kCallExpr` whose return type is `type` (CEL_TYPE).  The
     `==` overload's checker resolution gives an `equals` call
     with both operands typed `type`.  cel-cpp resolves this to
@@ -1051,6 +1103,29 @@ Ranked highest → lowest.
     the resulting AST.  Mitigation: TypeType isn't on the
     `UnacceptableLabel` rejection list; verify by probe in
     M9.A.
+
+  - **R8 — `dyn(type-value)` admission probe.**  After the
+    `t.has_type()` arm lands in `ArgIsAdmissibleScalar`, the
+    canonical regression `dyn(int) == int` MUST green.
+    Mitigation: pin this as the closing assertion of M9.A
+    (before any M9.B work begins).  If it red-fails, the
+    `dyn`-typed result of the dyn-passthrough call is reaching
+    a downstream operator that doesn't admit CEL_TYPE — a
+    bigger surface than the one-line admission expected.
+
+  - **R9 — Host-trampoline cost on `type(message)`.**  Every
+    `type(msg)` call hops to the host via
+    `cel_host_resolve_message_type_name` to walk the descriptor
+    pool.  For an expression like
+    `type(msg) == HostMsg3 || type(msg) == HostMsg2`, that's
+    two host calls per Eval against an unchanging FQN.
+    Mitigation tracked in §9 future work: a per-Instance
+    "msg_slot → arena-resident type-name span" memoization cache
+    — small bound, invalidated on `Instance::Reset()`.  Not
+    blocking M9.C, but surface if a perf bench shows hot-path
+    regressions.  Note this is the **only** host-trampoline cost
+    in the M9 design — type-ident standalones are pure
+    rodata-CelValue loads.
 
   - **R7 — `cel.abi.type_names[]` size bounded by per-Plan
     AST.**  Worst case: an AST that names every primitive
@@ -1094,7 +1169,22 @@ open at closeout.)
     new abstract types (langdef §"Abstract Types"); we don't
     expose a registration surface.  Embedder demand-driven.
 
-  - **Cross-Plan CEL_TYPE equality.**  Today CEL_TYPE equality
-    is by interned id; two CEL_TYPE values built under
-    different Plans aren't comparable.  No fixture row reaches
-    this; if one ever does, fall back to string-compare.
+  - **Per-Instance `type(message) → name` memoization** (R9).
+    Every `type(msg)` host trampoline today re-walks the
+    descriptor pool and re-allocates the FQN into the per-Eval
+    arena.  An Instance-scoped cache (key: msg_slot, value:
+    interned arena offset of the type-name) bounded by
+    ExternrefTable capacity would amortise the cost across a
+    tight loop.  Invalidate on `Instance::Reset()`.  Surface
+    only when a bench demonstrates measurable cost.
+
+  - **Plan-time type-name interning.**  This M9 design
+    intentionally avoids ABI-level interning (§4.4).  If a
+    future feature needs Plan-time type-name resolution
+    (e.g. checker-driven type-name canonicalisation across
+    sibling sub-expressions, or persistent plan artifacts that
+    benefit from de-duplicated rodata), reintroduce the
+    `cel.abi.type_names[]` table.  The wire layout (CelSpan
+    payload) is forward-compatible: an interned id can be
+    encoded as a span pointing into a Plan-resident name table
+    without changing CelValue size.
