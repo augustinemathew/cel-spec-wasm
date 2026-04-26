@@ -199,6 +199,29 @@ the envelope; the harness lets per-stage marshallers SKIP
 gracefully, so a single fixture can mix in-envelope tests with
 not-yet-supported ones.
 
+### SKIP-message taxonomy
+
+Every SKIP row carries a stable `category: detail` prefix so the
+output is greppable.  Categories (defined at the top of
+`runner.cc`):
+
+| Prefix | What it means | Source |
+|---|---|---|
+| `disable_check:` | Row carries `disable_check: true`.  **Out of conformance scope by design** — our pipeline runs cel-cpp's type-checker for every expression; supporting parse-only eval would require a separate codegen path with type-inference at lower time.  Roughly ~25 rows across the corpus. | `RunOne` early-out |
+| `check_only:` | Row carries `check_only: true` (typed_result matcher, no eval).  Harness follow-up — needs a `typed_result` comparator. | `RunOne` early-out |
+| `envelope:` | Matcher kind not in current scope (typed_result / unrecognised oneof / no matcher set). | `EnvelopeRejectReason` |
+| `static_subset:` | Compile rejected by `RejectDyn` — `dyn(...)` aggregate or heterogeneous-typed expression.  Most of `dynamic.textproto`. | `ClassifyCompileFailure` |
+| `compile unimplemented:` | Pipeline returned Unimplemented from a stage that's still stub.  Detail names the milestone (`expr_lower: kStructExpr` / `comprehensions are M5`). | `ClassifyCompileFailure` |
+| `<stage> unimplemented:` | Eval / PartialEval returned Unimplemented from a runtime stage stub. | `ClassifyEvalFailure` |
+| `<stage> trampoline stub:` | cel_host trampoline returned a marker `"stub:"` trap before the real body landed. | `ClassifyEvalFailure` |
+| `type_env:` / `bindings:` | binding-marshal rejected a type_env decl or bound value.  Detail forwards the binding-marshal status. | `RunOne` per-stage |
+
+Adding a new SKIP path: pick (or coin) a category prefix, document
+it in `runner.cc`'s header block AND in this table, and ALWAYS use
+the `category: detail` shape.  The fixture-author audience reads
+SKIP messages as the canonical answer to "why didn't this run" —
+short and stable matters.
+
 ## Per-fixture inventory
 
 Sorted: highest pass % first, then pure-SKIP fixtures, then
@@ -213,15 +236,15 @@ ext-lib FAIL-dominated fixtures.
 
 | Fixture | Total | Pass | Skip | Fail | Pass % | Blocker | Unlocks at |
 |---|---:|---:|---:|---:|---:|---|---|
-| `fp_math.textproto`         |   30 |  29 |    1 |   0 | 97% | 1 SKIP is `mod_not_support` (`47.5 % 5.5`) — `disable_check:true` with `eval_error` matcher (env gate ahead of envelope) | M5.D step 2 (host conversions) |
+| `fp_math.textproto`         |   30 |  29 |    1 |   0 | 97% | 1 SKIP is `mod_not_support` (`47.5 % 5.5`) — `disable_check:true`, out of conformance scope by design | Out-of-scope by design |
 | `basic.textproto`           |   43 |  37 |    6 |   0 | 86% | `[]` self-eval / `type(x)` (type subsystem) and message-typed shapes | M7 |
 | `string.textproto`          |   51 |  40 |    9 |   2 | 78% | 9 SKIPs are all `matches` regex (deferred — no regex engine wired); 2 FAILs are `size('multibyte')` mismatches (size returns int, matcher expects bytes) | regex `matches` ext-lib |
 | `parse.textproto`           |  219 | 157 |   45 |  17 | 72% | 34 SKIPs are envelope-rejected (`disable_check` receiver-function-name rows, parse-only AST matchers); 7 are `kStruct` (proto literals); 1 type_env list_type; 1 missing `uint64_to_int64` overload; 17 FAILs are string-keyed map self-eval | harness AST-matcher + M7 |
 | `comparisons.textproto`     |  406 | 334 |   54 |  18 | 82% | 47 of the 67 `kStruct` SKIPs graduated PASS via M7.A; remaining 18 FAILs are wrapper-equality (`eq_wrapper/*`) — the M8 peel surfaces these as compile-success / eval-FAIL today | M8 (wrapper `==` peel) |
-| `integer_math.textproto`    |   64 |  61 |    3 |   0 | 95% | 16 of the 19 `eval_error` rows now PASS via M4 `CompareEvalError`; 3 SKIPs remain on `disable_check:true` rows (`unary_minus_not_*`) | M5.D step 2 (host overload set) |
+| `integer_math.textproto`    |   64 |  61 |    3 |   0 | 95% | 16 of the 19 `eval_error` rows now PASS via M4 `CompareEvalError`; 3 SKIPs are `disable_check:true` rows (`unary_minus_not_*`) — out of conformance scope by design | Out-of-scope by design |
 | `lists.textproto`           |   39 |  34 |    3 |   2 | 87% | All 7 `eval_error` rows now PASS; 3 SKIPs are `dyn(aggregate)` rejections; 2 FAILs are bound-list operands | M5.D step 2 (bound-list ops) |
 | `plumbing.textproto`        |    5 |   4 |    1 |   0 | 80% | 1 SKIP is parse-phase protobuf round-trip; the `error_result` `eval_error` row now PASSes | M2+ (varies) |
-| `logic.textproto`           |   30 |  21 |    9 |   0 | 70% | All 5 `eval_error` rows now PASS (conditional / AND / OR `error_*`); 9 SKIPs remain on mixed-type ternary / type-mismatch operands | M5 follow-on (mixed-type 3VL) |
+| `logic.textproto`           |   30 |  21 |    9 |   0 | 70% | All 5 `eval_error` rows now PASS (conditional / AND / OR `error_*`); 9 SKIPs are all `disable_check:true` rows (`true ? 'cows' : 17`, `'cows' ? false : 17`, etc.) — out of conformance scope by design (parse-only eval) | Out-of-scope by design |
 | `fields.textproto`          |   60 |  26 |   28 |   6 | 43% | 7 `eval_error` rows now PASS (no_such_key / duplicate_key / bad_key_type); 13 SKIPs remain `dyn(aggregate)`; 5 are `type_env: map_type`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | map-type marshalling + M5.D step 2 |
 | `namespace.textproto`       |   14 |   4 |   10 |   0 | 29% | Most SKIPs are comprehension-shaped (`[0].exists(y, ...)`) — comprehension lowering is the M5 follow-on; remainder is `disable_check` self-eval | Comprehensions follow-on |
 | `unknowns.textproto`        |    0 |   0 |    0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |

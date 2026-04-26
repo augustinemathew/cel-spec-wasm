@@ -151,36 +151,41 @@ TEST(IsInM7EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
   EXPECT_TRUE(IsInM7Envelope(t));
 }
 
-TEST(IsInM7EnvelopeTest, RejectsEvalErrorWithDisableCheck) {
-  // `disable_check:true` short-circuits BEFORE the matcher gate —
-  // even a row whose matcher we now accept stays SKIP if the
-  // type-checker is disabled (the harness needs a checked AST).
-  // Several fixture rows (e.g. `unary_minus_not_uint` in
-  // integer_math) carry both `disable_check:true` and
-  // `eval_error:` and must remain SKIP.
+// `IsInM7Envelope` is now strictly a matcher-kind predicate.  It
+// returns TRUE for `disable_check:true` and `check_only:true` rows
+// whose matcher kind is otherwise in scope — those flags are
+// handled at the `RunOne` call site with their own dedicated
+// SKIP messages (see "SKIP-message taxonomy" in runner.cc).  The
+// previous "predicate-rejects-disable_check" assertion was
+// conflating two concerns and is no longer accurate; the
+// behavioural invariant ("`disable_check:true` rows SKIP") is
+// preserved, just enforced one layer up.
+TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresDisableCheckFlag) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
-        name: "skip_me"
+        name: "matcher_only_check"
         expr: "-(42u)"
         disable_check: true
         eval_error { errors { message: "no_such_overload" } }
       )pb",
       &t));
-  EXPECT_FALSE(IsInM7Envelope(t));
+  // Matcher kind is `eval_error` — in scope.  The `disable_check`
+  // flag is the call site's responsibility.
+  EXPECT_TRUE(IsInM7Envelope(t));
 }
 
-TEST(IsInM7EnvelopeTest, RejectsEvalErrorWithCheckOnly) {
+TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresCheckOnlyFlag) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
-        name: "skip_check_only"
+        name: "matcher_only_check"
         expr: "1/0"
         check_only: true
         eval_error { errors { message: "divide_by_zero" } }
       )pb",
       &t));
-  EXPECT_FALSE(IsInM7Envelope(t));
+  EXPECT_TRUE(IsInM7Envelope(t));
 }
 
 }  // namespace

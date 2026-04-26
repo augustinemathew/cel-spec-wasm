@@ -1,3 +1,39 @@
+// Conformance runner — drives every `SimpleTest` row through
+// Compile → Plan → Eval and classifies each outcome as
+// PASS / SKIP / FAIL.  SKIP rows always carry a `category: detail`
+// message string so the per-fixture diagnostic listings can be
+// grepped or tallied without reading source.
+//
+// SKIP-message taxonomy (stable category prefixes — grep these):
+//
+//   disable_check:     row carries `disable_check: true`.
+//                      Out of conformance scope by design — our
+//                      pipeline is checker-passed-only.  See
+//                      `RunOne` below.
+//   check_only:        row carries `check_only: true` (typed_result
+//                      matcher, no eval).  Harness follow-up.
+//   envelope:          matcher kind not in current scope (typed_result
+//                      / object_value-not-yet-supported / no
+//                      matcher set).  See `EnvelopeRejectReason`.
+//   static_subset:     compile rejected by `RejectDyn` — `dyn(...)`
+//                      aggregate / heterogeneous-typed expression.
+//   compile unimplemented:  pipeline returned Unimplemented from a
+//                      stage that's still stub (named milestone in
+//                      the trailing detail; e.g. "comprehensions
+//                      are M5").
+//   <stage> unimplemented:  Eval / PartialEval returned Unimplemented
+//                      from a runtime stage stub (e.g. activation
+//                      encoder for kEnum).
+//   <stage> trampoline stub:  cel_host trampoline returned a marker
+//                      "stub:" trap before the real body landed.
+//   type_env: <reason>:     binding-marshal rejected a type_env decl.
+//   bindings: <reason>:     binding-marshal rejected a bound value.
+//
+// Adding a new SKIP path: pick (or coin) a category prefix above,
+// document it here, and ALWAYS use `category: detail` shape.
+// The fixture-author audience reads SKIP messages as the canonical
+// answer to "why didn't this run" — short and stable matters.
+
 #include "compiler_v2/conformance/runner.h"
 
 #include <cctype>
@@ -85,18 +121,14 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
   }
 }
 
-// M3 — admit `map_value` matchers.  CompareMap iterates the
-// decoded `cel::Value`'s `HostMapBacking` and compares entries
-// order-agnostically against the proto matcher's `entries` list
-// (langdef § "Map equality").
-// M4 — additionally admit `list_value` matchers.  CompareList
-// walks the decoded `HostListBacking` ORDER-aware (lists are
-// ordered per langdef § "List equality").
-// M7 — additionally admit `object_value` (proto-message matcher,
-// compared via `MessageDifferencer::Equals` on the unpacked Any)
-// and `enum_value` (compared as an int per langdef §"Enumerated
-// Types") matchers.
-bool IsAggregateMatcherKindForM4(ProtoValue::KindCase k) {
+// True for every NON-scalar `cel.expr.Value` matcher kind the runner
+// can currently compare.  Widens as milestones land:
+//   M3: map_value (`CompareMap`, order-agnostic per langdef §"Map equality").
+//   M4: list_value (`CompareList`, order-aware per langdef §"List equality").
+//   M7: object_value (`CompareMessage` — Any-unpack + MessageDifferencer)
+//       and enum_value (`CompareEnum` — int compare per langdef
+//       §"Enumerated Types").
+bool IsAggregateOrObjectMatcherKind(ProtoValue::KindCase k) {
   return k == ProtoValue::kMapValue || k == ProtoValue::kListValue ||
          k == ProtoValue::kObjectValue || k == ProtoValue::kEnumValue;
 }
@@ -163,14 +195,53 @@ absl::string_view OutcomeName(Outcome o) {
   return "?";
 }
 
+// Strict matcher-kind envelope check.  `disable_check` / `check_only`
+// rows are out-of-conformance-scope by design and handled in
+// `RunOne` BEFORE this predicate is consulted, with their own
+// dedicated SKIP messages — see the SKIP-message taxonomy at the
+// top of this file.  Caller is responsible for those early-outs;
+// this predicate strictly answers "is the row's matcher kind one
+// the runner knows how to compare today".
 bool IsInM7Envelope(const SimpleTest& t) {
-  if (t.disable_check()) return false;
-  if (t.check_only()) return false;
   if (IsUnknownMatcher(t)) return true;
   if (IsEvalErrorMatcher(t)) return true;
   if (t.result_matcher_case() != SimpleTest::kValue) return false;
   const auto k = t.value().kind_case();
-  return IsScalarMatcherKind(k) || IsAggregateMatcherKindForM4(k);
+  return IsScalarMatcherKind(k) || IsAggregateOrObjectMatcherKind(k);
+}
+
+// Returns a SKIP-message-friendly string describing WHY `t` is out
+// of envelope.  Caller has verified `IsInM7Envelope(t) == false` and
+// already routed `disable_check` / `check_only` to their dedicated
+// SKIP messages; this function focuses on matcher-kind reasons.
+//
+// Matcher kind names mirror the textproto `result_matcher` oneof
+// case names so a reader can grep the SKIP listing back to the
+// fixture syntax that produced it.
+std::string EnvelopeRejectReason(const SimpleTest& t) {
+  switch (t.result_matcher_case()) {
+    case SimpleTest::RESULT_MATCHER_NOT_SET:
+      return "envelope: no result_matcher set on test";
+    case SimpleTest::kValue: {
+      const auto k = t.value().kind_case();
+      // Cast to int for a stable wire-tag in the SKIP output.
+      return absl::StrCat(
+          "envelope: value matcher kind ", static_cast<int>(k),
+          " not in M7 scope (today: scalar / list / map / object / enum)");
+    }
+    case SimpleTest::kEvalError:
+    case SimpleTest::kAnyEvalErrors:
+    case SimpleTest::kUnknown:
+    case SimpleTest::kAnyUnknowns:
+      // These matchers ARE in scope — IsInM7Envelope would have
+      // returned true.  Reaching here means an upstream early-out
+      // (disable_check / check_only) misclassified.  Defensive.
+      return "envelope: internal classifier mismatch (please file a bug)";
+    case SimpleTest::kTypedResult:
+      return "envelope: typed_result matcher requires no-eval check "
+             "path (harness follow-up)";
+  }
+  return "envelope: unrecognised result_matcher oneof case";
 }
 
 namespace {
@@ -511,7 +582,8 @@ Result ClassifyCompileFailure(const absl::Status& s) {
   }
   if (s.code() == absl::StatusCode::kInvalidArgument &&
       absl::StrContains(s.message(), "static subset")) {
-    return Unsupported("outside static subset (dyn)");
+    return Unsupported(
+        absl::StrCat("static_subset: ", s.message()));
   }
   return Fail("compile", s);
 }
@@ -615,7 +687,26 @@ Result RunEvalErrorBranch(cel::Instance& inst, const cel::Activation& act,
 
 Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
               const cel::Engine& engine) {
-  if (!IsInM7Envelope(t)) return Unsupported("outside M7 envelope");
+  // Conformance scope is "expressions that pass cel-cpp's
+  // type-checker."  Tests that explicitly disable the checker
+  // (`disable_check: true`) or that only run the checker without
+  // eval (`check_only: true`) are out of scope by design — our
+  // pipeline (parse_and_check.cc::ParseAndCheck) is a single
+  // checked-AST path; supporting parse-only eval would require a
+  // separate codegen path with type inference at lower time.
+  // Surface a specific SKIP reason so the per-fixture diagnostic
+  // listings don't conflate these with envelope mismatch.
+  if (t.disable_check()) {
+    return Unsupported(
+        "disable_check: parse-only eval out of conformance scope "
+        "(checker-passed expressions only)");
+  }
+  if (t.check_only()) {
+    return Unsupported(
+        "check_only: typed_result matcher requires no-eval check "
+        "path (harness follow-up)");
+  }
+  if (!IsInM7Envelope(t)) return Unsupported(EnvelopeRejectReason(t));
 
   // Marshal type_env / bindings before touching the compiler — both
   // can SKIP, and a failed marshal means we never burn a compile.
