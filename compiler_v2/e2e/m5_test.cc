@@ -1442,5 +1442,139 @@ TEST_F(CrossNumericOrderingE2ETest, SameKindStringInListOfStrings) {
   EXPECT_TRUE(EvalBool("\"a\" in [\"a\", \"b\"]"));
 }
 
+// ──────────────────────────────────────────────────────────────
+//  MessageEqualityE2ETest — proves the cel_message_eq kernel
+//  (M5.D step 2) computes the right answer for activation-bound
+//  messages.  The conformance corpus's message-equality rows all
+//  start with `Foo{...}` literal construction (kStructExpr, M7),
+//  which v2 codegen rejects today — so this fixture is the
+//  load-bearing coverage for the kernel itself until M7 lands.
+// ──────────────────────────────────────────────────────────────
+class MessageEqualityE2ETest : public ::testing::Test {
+ protected:
+  static absl::StatusOr<Compiler> CompilerWithTwoCustomers() {
+    return BuildCompiler([](Compiler::Builder& b) {
+      b.DeclareVariable("c1", CelType::Message("celwasm.testdata.Customer"));
+      b.DeclareVariable("c2", CelType::Message("celwasm.testdata.Customer"));
+    });
+  }
+};
+
+TEST_F(MessageEqualityE2ETest, EmptyMessagesAreEqual) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a, b;
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 != c2"), act).AsBool(), false);
+}
+
+TEST_F(MessageEqualityE2ETest, IdenticalScalarFieldsAreEqual) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.set_name("Alice");
+  a.set_age(30);
+  a.set_is_premium(true);
+  Customer b;
+  b.set_name("Alice");
+  b.set_age(30);
+  b.set_is_premium(true);
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 != c2"), act).AsBool(), false);
+}
+
+TEST_F(MessageEqualityE2ETest, DifferentStringFieldIsUnequal) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.set_name("Alice");
+  Customer b;
+  b.set_name("Bob");
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), false);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 != c2"), act).AsBool(), true);
+}
+
+TEST_F(MessageEqualityE2ETest, DifferentNumericFieldIsUnequal) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.set_age(30);
+  Customer b;
+  b.set_age(31);
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), false);
+}
+
+TEST_F(MessageEqualityE2ETest, EmptyVsPopulatedIsUnequal) {
+  // Per langdef §"Equality" — proto field equality treats unset
+  // and explicitly-default-set as equal (proto3); we set a non-
+  // default value on one side to force inequality regardless of
+  // the unset/default treatment.
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.set_name("populated");
+  Customer b;  // empty
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), false);
+}
+
+TEST_F(MessageEqualityE2ETest, NestedAddressEqual) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.mutable_billing_address()->set_city("NYC");
+  a.mutable_billing_address()->set_country("US");
+  Customer b;
+  b.mutable_billing_address()->set_city("NYC");
+  b.mutable_billing_address()->set_country("US");
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), true);
+}
+
+TEST_F(MessageEqualityE2ETest, NestedAddressDifferingFieldIsUnequal) {
+  auto compiler = CompilerWithTwoCustomers();
+  ASSERT_THAT(compiler, IsOk());
+  Customer a;
+  a.mutable_billing_address()->set_city("NYC");
+  Customer b;
+  b.mutable_billing_address()->set_city("SF");
+  Activation act;
+  act.Bind("c1", Value::Message(a));
+  act.Bind("c2", Value::Message(b));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c1 == c2"), act).AsBool(), false);
+}
+
+TEST_F(MessageEqualityE2ETest, MessageReflexiveEquality) {
+  // A bound message is always equal to itself.  Pin the obvious
+  // invariant — easy regression sentinel if the kernel ever drifts.
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  Customer m;
+  m.set_name("Anyone");
+  m.set_age(42);
+  Activation act;
+  act.Bind("c", Value::Message(m));
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c == c"), act).AsBool(), true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c != c"), act).AsBool(), false);
+}
+
 }  // namespace
 }  // namespace cel
