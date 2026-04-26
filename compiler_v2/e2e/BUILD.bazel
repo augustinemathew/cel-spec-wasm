@@ -110,6 +110,35 @@ cc_test(
     ],
 )
 
+# M9 e2e test suite — type subsystem (`type(x)` standard function +
+# type-identifier idents like `int` / `bool` / `<message-fqn>`
+# standalone + CEL_TYPE equality).  RED until M9.A lands the
+# `cel.abi.type_names[]` ABI table + `Value::Kind::kType`; greens
+# slice-by-slice through M9.A → M9.E per `m9-type-subsystem.md` §5.
+# Harness-side `typed_result:` matcher work (M9.F) lives in
+# `compiler_v2/conformance/runner_test.cc`, not here.
+cc_test(
+    name = "m9_test",
+    srcs = ["m9_test.cc"],
+    deps = [
+        "//compiler/testdata:host_fixture_proto2_cc_proto",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "eval_test",
     srcs = ["eval_test.cc"],
