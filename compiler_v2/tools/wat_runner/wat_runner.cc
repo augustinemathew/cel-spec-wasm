@@ -502,6 +502,14 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   static constexpr absl::string_view kThreeArg[] = {
       "cel_list_in", "cel_list_eq", "cel_list_concat",
       "cel_map_in",  "cel_map_eq",  "cel_message_eq",
+      // M7.B — `cel_set_field(msg_slot, field_ref_id, value_slot)`.
+      // 3-i32 args; binding a no-op suffices for any WAT that
+      // imports the surface but doesn't call it (or calls it
+      // expecting the side effect to be observable post-eval; the
+      // production trampoline carries the real semantics, tests
+      // that need them go through the full Compiler/Engine
+      // pipeline).
+      "cel_set_field",
   };
   for (absl::string_view name : kThreeArg) {
     if (auto st = RegisterCelHostThreeArgNoop(linker, name); !st.ok()) {
@@ -511,6 +519,17 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   static constexpr absl::string_view kTwoArg[] = {
       "cel_list_size",
       "cel_map_size",
+      // M7.A — `cel_make_message(type_id, out_slot)`.  The trampoline
+      // shape is two i32 args; binding a no-op suffices for any WAT
+      // that imports the surface but doesn't call it.  WATs that
+      // exercise the call (40_kstruct_make_message.wat) still link
+      // through this stub — the post-eval memory snapshot will show
+      // the out_slot untouched, which is sufficient for assembly /
+      // instantiation regression coverage.  The production
+      // trampoline (cel_host_wasmtime.cc::CelMakeMessageTrampoline)
+      // carries the real semantics; tests that need them go through
+      // the full Compiler/Engine pipeline.
+      "cel_make_message",
   };
   for (absl::string_view name : kTwoArg) {
     if (auto st = RegisterCelHostTwoArgNoop(linker, name); !st.ok()) {

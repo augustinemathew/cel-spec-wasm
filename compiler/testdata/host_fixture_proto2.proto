@@ -31,4 +31,23 @@ message HostMsg2 {
   optional Kind     kind     = 16;
   optional HostMsg2 inner    = 17;
   repeated int32    rep_i32  = 18;
+
+  // M7 §6.3 — proto2 explicit-default fields.  Reads on these
+  // return the descriptor-stated default when unset; `has(...)`
+  // returns true only after an explicit set.  Fields that
+  // M7-construction tests use to verify the eval-time read path
+  // honours `[default = X]`.
+  optional int32  default_i32  = 19 [default = 42];
+  optional string default_s    = 20 [default = "hello"];
+  optional bool   default_b    = 21 [default = true];
+
+  // M7 §6.2 — oneof discipline.  Setting one arm clears any
+  // sibling; `has(...)` returns true only on the most-recently-
+  // set arm.  Proto reflection enforces this on `SetField`; M7's
+  // cel_set_field inherits that for free, regression-asserted
+  // by ProtoLiteralOneofE2ETest.
+  oneof which {
+    int64  oneof_i64 = 22;
+    string oneof_s   = 23;
+  }
 }

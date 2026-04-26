@@ -45,6 +45,19 @@ struct AttributeEntryRow {
   std::vector<std::string> qualifiers;
 };
 
+// One row of the message-type intern table — one entry per distinct
+// fully-qualified message name constructed by `kStructExpr` across
+// the AST.  Indexed by `NodeAnnotation::message_type_id`; id 0 is
+// the sentinel "no type id" carried by every non-struct node.
+// Populated by `ResolvePass`'s `MessageTypeIdVisitor` (M7.A) walking
+// kStructExpr post-order.  `BuildCelAbi` serialises this into
+// `cel.abi.types[]`; `Engine::Plan` resolves each FQN against the
+// descriptor pool to populate the per-Instance type → Descriptor*
+// map the `cel_make_message` trampoline reads at eval time.
+struct MessageTypeRow {
+  std::string fully_qualified_name;
+};
+
 // Output of the first codegen pipeline pass.  `annotations` carries `repr`
 // (every typed node), `field_number` (select nodes, M2.C+), `overload_id`
 // (call nodes, M3+), `local_index` (ident nodes, M2.B+), `scope_id`
@@ -71,6 +84,12 @@ struct ResolveOutput {
   // `NodeAnnotation::attribute_id` on kIdent + kSelect nodes.
   // `BuildCelAbi` serialises this into `cel.abi.attributes[]`.
   std::vector<AttributeEntryRow> attributes;
+
+  // M7.A: message-type intern table.  Entry 0 is the reserved
+  // "no type" sentinel; entries [1..N] are referenced by
+  // `NodeAnnotation::message_type_id` on kStructExpr nodes.
+  // `BuildCelAbi` serialises this into `cel.abi.types[]`.
+  std::vector<MessageTypeRow> message_types;
 
   uint32_t max_scope_id = 0;
 };

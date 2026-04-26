@@ -358,6 +358,58 @@ class OverloadIdResolver : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
+// M7.A: walks every `kStructExpr` post-order, interns its `name()`
+// FQN into `output.message_types`, and stamps the dense id onto the
+// node's `NodeAnnotation::message_type_id`.  Index 0 is the
+// reserved sentinel; the first entry pushed by `RunAnnotationVisitors`.
+// Codegen reads the stamped id in the kStructExpr lowering arm to
+// emit `cel_host.cel_make_message(type_id, out_slot)`; the host
+// resolves `id → Descriptor*` against the descriptor pool at Plan
+// time.  See `m7-proto-literals.md` §4.2.
+//
+// `name()` is the message FQN cel-cpp's checker stamped on the
+// kStructExpr (e.g. `"celwasm.testdata.HostMsg3"`).  Empty `name()`
+// means "struct literal lowered as a map" (`design.md` §4.7.4) —
+// those nodes lower through `kMapExpr` at parse time and never
+// reach codegen as a kStructExpr.  We CHECK rather than tolerate
+// the empty case here so a parser regression that lets one
+// through fails loudly at intern time, not at trampoline-call
+// time with an opaque id-out-of-range.
+class MessageTypeIdVisitor : public cel::AstVisitorBase {
+ public:
+  MessageTypeIdVisitor(WasmAnnotations& annotations,
+                       std::vector<MessageTypeRow>& types)
+      : annotations_(annotations), types_(types) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitStruct(const cel::Expr& expr,
+                       const cel::StructExpr& s) override {
+    ABSL_CHECK(!s.name().empty())
+        << "ResolvePass: kStructExpr id=" << expr.id()
+        << " has empty name() — should have lowered as kMapExpr at parse "
+           "time per design.md §4.7.4";
+    auto it = fqn_to_id_.find(s.name());
+    uint32_t id = 0;
+    if (it == fqn_to_id_.end()) {
+      id = static_cast<uint32_t>(types_.size());
+      types_.push_back(MessageTypeRow{s.name()});
+      fqn_to_id_[s.name()] = id;
+    } else {
+      id = it->second;
+    }
+    annotations_[expr.id()].message_type_id = id;
+  }
+
+ private:
+  WasmAnnotations& annotations_;
+  std::vector<MessageTypeRow>& types_;
+  // FQN → dense id (excluding the sentinel at index 0; sentinel is
+  // pushed by `RunAnnotationVisitors` before this visitor runs).
+  absl::flat_hash_map<std::string, uint32_t> fqn_to_id_;
+};
+
 // Runs the per-kind annotation-stamping visitors on `output` over
 // `root`.  Each visitor is independent — sequencing matters only for
 // the dyn-passthrough forwarder, which runs last so every other
@@ -373,6 +425,12 @@ void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
   output.attributes.push_back(AttributeEntryRow{});
   AttributePathResolver attr_resolver(output.annotations, output.attributes);
   cel::AstTraverse(root, attr_resolver);
+
+  // M7.A: message-type intern table.  Sentinel at id 0; visitor
+  // populates ids 1..N for distinct kStructExpr FQNs.
+  output.message_types.push_back(MessageTypeRow{});
+  MessageTypeIdVisitor type_visitor(output.annotations, output.message_types);
+  cel::AstTraverse(root, type_visitor);
 
   MapOriginVisitor map_origin_visitor(output.annotations);
   cel::AstTraverse(root, map_origin_visitor);

@@ -17,30 +17,61 @@ No CI gate today.  Adding one is tracked under "Future work" below.
 
 ## Current state
 
-`total=2454 · pass=700 (28.5%) · skip=1274 (51.9%) · fail=480 (19.6%)`
-across 30 loadable fixtures.
+`total=2454 · pass=831 (33.9%) · skip=1052 (42.9%) · fail=571 (23.3%)`
+across 30 loadable fixtures.  M7.A–E shipped 2026-04-25
+(`+131` PASS vs the M7-plan estimate of `+250`; the gap is fully
+explained by §4.5 read-side encoder polish + M8 wrappers + Any —
+see "Plan-vs-execution delta for M7" below).
 
 The dominant remaining blockers, in approximate unlock order:
 
-  - **M7** (proto literals + wrappers + message bindings).
-    `proto2`, `proto3`, `wrappers`, the rest of `enums`,
-    `fields.object_value` bindings.  Also unlocks the 67 SKIPs in
-    `comparisons.textproto` that need `TestAllTypes{...}` literal
-    construction (`kStruct` codegen) — message equality kernel is
-    already shipped (M5.B step 2b), but no fixture row exercises
-    it without first building a message literal.  Biggest absolute
-    count if everything lights up.
+  - **M7 read-side `Instance::Eval` encoder for `kHostList` /
+    `kMap`** (the §4.5 polish bullet that was punted from M7's
+    landing slices).  Every `empty_field/repeated_*` and
+    `empty_field/map` row in `proto2`/`proto3` traps with
+    `"Eval returned a CelValue kind 17 not yet supported by
+    Instance::Eval"` (`kind=17` is `CEL_LIST_HOST`; `kind=9` is
+    `CEL_MAP_HOST`).  These are READ-side: `TestAllTypes{}` builds
+    fine (M7.A), the field read returns a `ProtoList` /
+    `ProtoMap` backing wrapped in a `kHostList` / `kMap`
+    CelValue, but `Instance::Eval`'s top-level decoder doesn't
+    have arms for those kinds.  Estimated unlock: ~8–12 rows
+    per fixture (32–48 across proto2/proto3/fields).  Small
+    scope; needs a `DecodeHostList` / `DecodeHostMap` arm in
+    `instance.cc`.
+  - **M8 wrappers** (auto-wrap on construction + wrapper-vs-
+    scalar `==` peel).  `wrappers.textproto` is now 18 SKIP / 18
+    FAIL — the M7.A wrapper-message construction path admits
+    `Int32Value{value: 5}` literal rows (so they reach FAIL
+    instead of envelope-SKIP), but the `==` peel + auto-wrap
+    paths required to make them PASS are M8.  Plus ~5 wrapper-
+    typed `Foo{w: 5}` rows in `proto2`/`proto3` that scalar
+    auto-wrap on construction unlocks.  See `m8-wrapper-types.md`.
+  - **`Any` packing** (out of scope per `m7-proto-literals.md`
+    §2.2).  `TestAllTypes{single_any: BoolValue{...}}`-shape rows
+    — currently `kUnsupported` (descriptor-mismatch guard
+    surfaces as Unimplemented).  ~5 rows across proto2/proto3.
+  - **M3 read-side null propagation through chained selects**.
+    `TestAllTypes{}.single_nested_message.bb` returns CEL_ERROR
+    instead of null per langdef §"Field Selection".  M7.A fixed
+    the immediate read (`{}.inner == null` → true), but chained
+    selects through an unset message still error.  1 row in
+    proto2 + 1 in proto3.
   - **`has({...}.k)` bool-on-map dispatch** — 6 FAILs in `fields`.
     The dispatcher exists in M5.D step 2; the open issue is the
     bool-on-map operand path returning a kind the decoder doesn't
     recognise.
-  - **`{kw}.kw` parse-time map-keyed-by-keyword** — 17 FAILs in
+  - **`{kw}.kw` parse-time map-keyed-by-keyword** — ~17 FAILs in
     `parse.textproto` `selectors/*` rows (`{ 'as': 1 }.as`); the
     map literal builds, the select returns `error` instead of the
     expected int.  Not yet root-caused — diagnostic candidate.
   - **`size('multibyte')` mismatch** — 2 FAILs in `string.textproto`
     (UTF-8 size returns codepoint count; matcher expects bytes).
     One-line fix once the spec is double-checked.
+  - **Enum-set-on-message read paths in `enums.textproto`** — 12
+    FAILs.  Pattern: `TestAllTypes{standalone_enum: ...}.standalone_enum`
+    — construction works (M7.B/D); the read trips an envelope/decoder
+    edge specific to enum field reads.  Diagnose post-§4.5.
   - **Comprehensions follow-on**.  `macros.textproto`,
     `macros2.textproto` three-arg forms.
   - **Extensions pass**.  `bindings_ext`, `block_ext`,
@@ -55,8 +86,35 @@ The dominant remaining blockers, in approximate unlock order:
   - **Static-subset rejection (`RejectDyn`)**: `dynamic.textproto`
     (226 tests) is permanently off the table by design.
 
-`comparisons.textproto` is now FAIL-free (every cross-kind ordering
-/ membership row that Slice 1.5 + 1.6 unlocked has graduated).
+`comparisons.textproto` graduated 47 rows during M7.A (the 67-SKIP
+`kStruct` cohort the message-eq kernel had been waiting on); 18
+FAILs remain, all in the wrapper-equality (`eq_wrapper/*`) cohort
+gated on M8.
+
+## Plan-vs-execution delta for M7
+
+The `m7-proto-literals.md` plan estimated `+250` PASS for M7.A–E.
+Actual landed: `+131`.  The `~119` gap maps cleanly to deferred
+work, not to defects in M7 codegen / trampolines:
+
+| Bucket | Rows | Status |
+|---|---:|---|
+| **§4.5 encoder polish** (`kHostList` / `kMap` in `Instance::Eval`) | ~32–48 | Punted from M7 landing; small follow-up |
+| **M8 wrapper auto-wrap + `==` peel** | ~36 | Whole next milestone |
+| **`Any` packing** | ~5 | Out of scope per `m7-proto-literals.md` §2.2 |
+| **Chained-null read** + enum-on-message-read edges | ~14 | Diagnostic-shaped, post-§4.5 |
+| Plan estimate ceiling overshoot in `enums` | ~30 | Plan §1 estimated `+50–70` for `enums`; M7.D landed +20 — the rest gates on the same encoder/null edges above |
+
+What M7.A–E actually delivered, by fixture:
+
+| Fixture | Pre-M7 | Post-M7 | Δ |
+|---|---:|---:|---:|
+| `proto2.textproto` | 0 | 29 | +29 |
+| `proto3.textproto` | 0 | 26 | +26 |
+| `comparisons.textproto` | 287 | 334 | +47 |
+| `enums.textproto` | 0 | 20 | +20 |
+| `dynamic.textproto` | 0 | 9 | +9 (`InlineConstantReferences` rewrite admits a few const-fold rows) |
+| `wrappers.textproto` | 0 PASS / 0 SKIP / 36 FAIL→envelope | 0 PASS / 18 SKIP / 18 FAIL | rows graduated from envelope-skip to compile-FAIL — visible progress, M8-blocked at compile |
 
 ## Running
 
@@ -139,7 +197,7 @@ ext-lib FAIL-dominated fixtures.
 | `basic.textproto`           |   43 |  37 |    6 |   0 | 86% | `[]` self-eval / `type(x)` (type subsystem) and message-typed shapes | M7 |
 | `string.textproto`          |   51 |  40 |    9 |   2 | 78% | 9 SKIPs are all `matches` regex (deferred — no regex engine wired); 2 FAILs are `size('multibyte')` mismatches (size returns int, matcher expects bytes) | regex `matches` ext-lib |
 | `parse.textproto`           |  219 | 157 |   45 |  17 | 72% | 34 SKIPs are envelope-rejected (`disable_check` receiver-function-name rows, parse-only AST matchers); 7 are `kStruct` (proto literals); 1 type_env list_type; 1 missing `uint64_to_int64` overload; 17 FAILs are string-keyed map self-eval | harness AST-matcher + M7 |
-| `comparisons.textproto`     |  406 | 287 |  119 |   0 | 71% | 67 SKIPs need proto literals (`TestAllTypes{...}`) — codegen rejects `kStruct`; 28 are `dyn(aggregate)` deliberate rejections (Slice 1.5); 21 envelope-rejected (cross-numeric without dyn, mixed-type list literals); 3 are aggregate `type_env` declarations | M7 (proto literals) + harness type_env aggregate marshalling |
+| `comparisons.textproto`     |  406 | 334 |   54 |  18 | 82% | 47 of the 67 `kStruct` SKIPs graduated PASS via M7.A; remaining 18 FAILs are wrapper-equality (`eq_wrapper/*`) — the M8 peel surfaces these as compile-success / eval-FAIL today | M8 (wrapper `==` peel) |
 | `integer_math.textproto`    |   64 |  61 |    3 |   0 | 95% | 16 of the 19 `eval_error` rows now PASS via M4 `CompareEvalError`; 3 SKIPs remain on `disable_check:true` rows (`unary_minus_not_*`) | M5.D step 2 (host overload set) |
 | `lists.textproto`           |   39 |  34 |    3 |   2 | 87% | All 7 `eval_error` rows now PASS; 3 SKIPs are `dyn(aggregate)` rejections; 2 FAILs are bound-list operands | M5.D step 2 (bound-list ops) |
 | `plumbing.textproto`        |    5 |   4 |    1 |   0 | 80% | 1 SKIP is parse-phase protobuf round-trip; the `error_result` `eval_error` row now PASSes | M2+ (varies) |
@@ -148,14 +206,14 @@ ext-lib FAIL-dominated fixtures.
 | `namespace.textproto`       |   14 |   4 |   10 |   0 | 29% | Most SKIPs are comprehension-shaped (`[0].exists(y, ...)`) — comprehension lowering is the M5 follow-on; remainder is `disable_check` self-eval | Comprehensions follow-on |
 | `unknowns.textproto`        |    0 |   0 |    0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `conversions.textproto`     |  109 |   0 |  109 |   0 |  0% | `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` — overload set not seeded | M5.D step 2 (host conversions) |
-| `dynamic.textproto`         |  226 |   0 |  226 |   0 |  0% | Every test uses `dyn(...)` aggregate — deliberately rejected by `RejectDyn` | Never (static subset) |
-| `enums.textproto`           |   85 |   0 |   65 |  20 |  0% | Enum value access on `TestAllTypes` — proto field reads + enum subsystem.  20 FAILs hit "variable not bound" / undeclared message refs (12 of those graduated SKIP→FAIL when the M4 `eval_error` envelope opened: rows previously skipped at the matcher gate now compile and surface the underlying ext-lib gap) | M7 |
+| `dynamic.textproto`         |  226 |   9 |  175 |  42 |  4% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`.  The 9 PASSes graduated via M7.D's `InlineConstantReferences` rewrite (some `dyn(constant)` rows fold to a constant before the gate) | Never (static subset) |
+| `enums.textproto`           |   85 |  20 |   53 |  12 | 24% | M7.D `InlineConstantReferences` lit up enum-name-as-constant + the `Foo{kind: 7}` write/read paths.  12 FAILs remain on enum-set-on-message read edges (`TestAllTypes{standalone_enum: ...}.standalone_enum` returns the wrong shape) — diagnose post-§4.5 | Read-side encoder polish + diagnose |
 | `macros.textproto`          |   44 |   0 |   44 |   0 |  0% | 33 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 envelope (`eval_error`/disable_check); 5 `dyn(aggregate)` rejections | Comprehensions follow-on |
-| `proto2.textproto`          |  118 |   0 |  118 |   0 |  0% | Proto2 message construction + field access | M7 |
-| `proto3.textproto`          |   85 |   0 |   85 |   0 |  0% | Proto3 message construction + field access | M7 |
+| `proto2.textproto`          |  118 |  29 |   80 |   9 | 25% | M7.A–E lit up the construction + read path for scalar/repeated-from-literal/map-from-literal/oneof/nested.  Of the 9 FAILs: 4 `empty_field/repeated_*` + 1 `empty_field/map` need the §4.5 `kHostList`/`kMap` decoder; 1 chained-null (`{}.single_nested_message.bb`); 3 `Any`-packing rows out-of-scope per §2.2 | §4.5 encoder polish + chained-null read |
+| `proto3.textproto`          |   85 |  26 |   50 |   9 | 31% | Same shape as proto2 — 9 FAILs split: 4 `empty_field/repeated_*` + 1 `empty_field/map` (§4.5 decoder); 1 chained-null; 3 `Any`/wrapper rows | §4.5 encoder polish |
 | `timestamps.textproto`      |   76 |   0 |   76 |   0 |  0% | `timestamp(...)` / `duration(...)` constructors, date arithmetic | Timestamps slice (post-M7) |
 | `type_deduction.textproto`  |   47 |   0 |   47 |   0 |  0% | All tests `check_only:true` with `typed_result:` matcher — envelope drops them | Harness: `typed_result` matcher |
-| `wrappers.textproto`        |   36 |   0 |   36 |   0 |  0% | Proto `*Value` wrapper types | M7 |
+| `wrappers.textproto`        |   36 |   0 |   18 |  18 |  0% | M7.A admits wrapper-type construction at the parse stage (rows graduated from envelope-skip to compile-FAIL); 18 FAILs all gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
 | `proto2_ext.textproto`      |   18 |   0 |   18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) | M7 + extensions pass |
 | `bindings_ext.textproto`    |    8 |   0 |    0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
 | `encoders_ext.textproto`    |    4 |   0 |    0 |   4 |  0% | `base64.encode` / `base64.decode` | Extensions pass |
@@ -166,7 +224,7 @@ ext-lib FAIL-dominated fixtures.
 | `optionals.textproto`       |   70 |   0 |    0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)`; 3 previously-SKIP `eval_error` rows now FAIL on the same root cause | Optionals pass (post-M5) |
 | `string_ext.textproto`      |  216 |   0 |  122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii`; 9 previously-SKIP `eval_error` rows now FAIL on the same root cause | Extensions pass |
 
-Sums (cross-check): pass = 700, skip = 1274, fail = 480, total = 2454.
+Sums (cross-check): pass = 831, skip = 1052, fail = 571, total = 2454.
 
 ## Forecast by remaining (open) milestone
 
@@ -176,16 +234,18 @@ prioritise, not to predict exact PASS counts.
 
 | Milestone | Fixture classes expected to move | Approx. tests unlocked |
 |---|---|---:|
+| **§4.5 encoder polish** (`Instance::Eval` decoder for `kHostList` / `kMap`) | `empty_field/repeated_*` + `empty_field/map` rows in `proto2`/`proto3`; `type_env: map_type` in `fields`; some `enums` read edges | ~+15–25 |
+| **M8 wrappers** (auto-wrap on construction + wrapper-vs-scalar `==` peel) | `wrappers.textproto` (36 rows) + the 18 `comparisons.eq_wrapper/*` FAILs + ~5 wrapper-typed field rows in `proto2`/`proto3` | ~+50–60 |
+| **Chained-null read fix** (M3 read-side null propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
+| **`Any` packing** (M7-future) | ~5 `TestAllTypes{single_any: ...}` rows in `proto2`/`proto3`; some downstream Any-comparison rows | ~+5–8 |
 | **Comprehensions follow-on** | `macros` (33), `macros2` three-arg forms, `namespace_shadowing/*` rows | ~+50–80 |
-| **M7** (proto literals + wrappers + message bindings) | `proto2`, `proto3`, `wrappers`, remaining `enums`, the 67 message-eq rows in `comparisons`, aggregates in `basic`, `fields.object_value` bindings | ~+350 |
-| **`kStruct` codegen alone** (subset of M7) | The 67 `Foo{...}` literal rows in `comparisons.textproto` — message equality kernel ships, just needs literal construction | ~+67 |
 | **Extensions pass** | `bindings_ext`, `block_ext`, `encoders_ext`, `math_ext`, `network_ext`, `optionals`, `string_ext`, `proto2_ext` | ~+680 |
 | **Timestamps** (not yet scheduled) | `timestamps` | ~76 |
 | **Harness: `typed_result` matcher** | `type_deduction` | ~47 |
 | **Map-type / aggregate `type_env` marshalling** | 5 SKIPs in `fields`, 1 in `parse`, 3 in `comparisons` | ~+10 |
 | **`matches` regex helper** | 9 SKIPs in `string.textproto`'s `matches/*` section | ~+9 |
 | **Classifier tightening** | Reclassifies most ext-lib FAILs (math/network/optionals/string-ext) as `kUnsupported` so `kFail==0` becomes a viable CI gate | 0 PASS, but unblocks CI |
-| **Never (by design)** | `dynamic.textproto` | 226 (deliberately-rejected `dyn(...)` aggregate forms) |
+| **Never (by design)** | `dynamic.textproto` | ~217 (deliberately-rejected `dyn(...)` aggregate forms; 9 fold via M7.D const-rewrite) |
 
 ## Extending the harness
 

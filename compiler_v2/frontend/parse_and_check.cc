@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -543,6 +544,85 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
   return result->ReleaseAst();
 }
 
+// M7.D: walk the AST in place and replace every kIdentExpr whose
+// `reference_map` entry carries a Constant value with a kConstantExpr
+// node holding that value.  cel-cpp's checker resolves enum-name
+// references like `TestAllTypes.NestedEnum.BAR` to a `VariableReference`
+// with `has_value()=true` and `value()` carrying the int constant; for
+// our pipeline (which has no runtime variable lookup that would
+// substitute a constant on read), the simplest correct path is to
+// inline the constant into the AST so the existing kConst codegen
+// (rodata pack + `i32.const` emit) handles it.
+//
+// Cross-reference: cel-cpp's runtime/reference_resolver does the same
+// rewrite under its `ReferenceResolverEnabled::kAlways` mode, but
+// requires pulling in the FlatExprBuilder runtime — we don't run that
+// runtime, so we re-implement the walk here in ~30 lines.
+//
+// Idempotent — running this on an AST without any constant idents is
+// a no-op.  Called after the checker returns and before
+// `RejectDyn` / annotation population so all later passes see the
+// rewritten kConstant nodes uniformly.
+void InlineConstantReferences(cel::Ast& ast) {
+  const cel::Ast::ReferenceMap& refs = ast.reference_map();
+  // Recursive in-place walker.  kIdent is always a leaf, so once
+  // rewritten to kConstant the recursion bottoms out without
+  // descending — children of a kConstant are empty.  Every other
+  // kind recurses into its children via mutable accessors.
+  std::function<void(cel::Expr&)> visit = [&](cel::Expr& expr) {
+    if (expr.has_ident_expr()) {
+      auto it = refs.find(expr.id());
+      if (it != refs.end()) {
+        const cel::Reference& ref = it->second;
+        if (ref.has_value()) {
+          expr.set_const_expr(ref.value());
+        }
+      }
+      return;
+    }
+    if (expr.has_select_expr()) {
+      visit(expr.mutable_select_expr().mutable_operand());
+      return;
+    }
+    if (expr.has_call_expr()) {
+      auto& call = expr.mutable_call_expr();
+      if (call.has_target()) visit(call.mutable_target());
+      for (auto& arg : call.mutable_args()) visit(arg);
+      return;
+    }
+    if (expr.has_list_expr()) {
+      for (auto& elem : expr.mutable_list_expr().mutable_elements()) {
+        visit(elem.mutable_expr());
+      }
+      return;
+    }
+    if (expr.has_map_expr()) {
+      for (auto& e : expr.mutable_map_expr().mutable_entries()) {
+        visit(e.mutable_key());
+        visit(e.mutable_value());
+      }
+      return;
+    }
+    if (expr.has_struct_expr()) {
+      for (auto& f : expr.mutable_struct_expr().mutable_fields()) {
+        visit(f.mutable_value());
+      }
+      return;
+    }
+    if (expr.has_comprehension_expr()) {
+      auto& c = expr.mutable_comprehension_expr();
+      visit(c.mutable_iter_range());
+      visit(c.mutable_accu_init());
+      visit(c.mutable_loop_condition());
+      visit(c.mutable_loop_step());
+      visit(c.mutable_result());
+      return;
+    }
+    // kConstant / kUnspecified — leaf, nothing to recurse into.
+  };
+  visit(ast.mutable_root_expr());
+}
+
 }  // namespace
 
 absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
@@ -565,6 +645,12 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
 
   auto checked_ast = RunTypeCheck(**checker, expression, opts.description);
   if (!checked_ast.ok()) return checked_ast.status();
+
+  // M7.D: inline `VariableReference::value()` constants (enum-name
+  // references) into the AST as kConstant nodes — must run before
+  // RejectDyn (which inspects every node's kind) and PopulateAnnotations
+  // (which seeds Repr from the kind-stamped type_map).
+  InlineConstantReferences(**checked_ast);
 
   // Static-subset gate: no DYN / ERROR / type-param / function / unset nodes.
   if (auto s = RejectDyn(**checked_ast); !s.ok()) return s;

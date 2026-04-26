@@ -86,6 +86,13 @@ struct NodeAnnotation {
   uint32_t local_index = 0;   // IdentExpr resolved wasm local (M2)
   uint32_t scope_id = 0;      // comprehension scope (later)
   uint32_t attribute_id = 0;  // interned AttributeId (M2.E); 0 = none
+  // M7.A: dense index into `cel.abi.types[]` populated by
+  // ResolvePass's MessageTypeIdVisitor for kStructExpr nodes; 0 = none
+  // (any non-struct node).  Codegen reads this in the kStructExpr
+  // arm to emit `cel_host.cel_make_message(type_id, out_slot)`; the
+  // host resolves the id → Descriptor* against the descriptor pool
+  // at Plan time.  See m7-proto-literals.md §4.2.
+  uint32_t message_type_id = 0;
   Storage storage;
   // Forward-compat hooks for map/list dispatch — see
   // m2-ident-select-unknowns.md §2.6 / §2.8.

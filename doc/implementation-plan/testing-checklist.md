@@ -1434,6 +1434,157 @@ that previously stomped any pre-eval `cel_alloc` allocations.  See
         (full per-fixture deltas in
         `compiler_v2/conformance/README.md` post-Slice-0 row).
 
+### Rewrite M7 — proto message literals (slices A–E shipped 2026-04-25)
+
+`m7-proto-literals.md` slices A–E delivered `kStructExpr` codegen
++ `cel_make_message` / `cel_set_field` host primitives + per-cpp_type
+scalar/repeated/map/oneof/enum/nested-message dispatch +
+`InlineConstantReferences` rewrite for cel-cpp's enum-name-as-constant
+resolution.  Conformance: **+131 PASS** (700 → 831).  Plan-vs-execution
+delta and remaining unblockers captured in `m7-proto-literals.md` §9.
+
+**M7.A — `kStructExpr` admission + `cel_make_message`**
+
+  - [x] `cel.abi.types[]` ABI table — `compiler_v2/abi/cel_abi.proto`
+        `TypeEntry { id, fully_qualified_name }` (FQN-only, descriptor
+        resolved at Plan time, mirroring `FieldEntry.owner_fqn`).
+        Serialized in `cel_abi_emit.cc::BuildCelAbi`.
+  - [x] `NodeAnnotation::message_type_id` (M7.A) — `ir/annotations.h`.
+  - [x] `MessageTypeIdVisitor` ResolvePass — walks kStructExpr post-order,
+        interns FQN, stamps id; sentinel id 0 pushed before traversal.
+        `codegen/resolve_pass.cc`.
+  - [x] `AggregateStorageVisitor::PostVisitStruct` allocates a
+        workspace slot per kStructExpr; releases entry-value slots
+        for the M7.B layered set-field calls.  `codegen/layout_pass.cc`.
+  - [x] `EmitKStructExpr` codegen arm — emits
+        `cel_host.cel_make_message(type_id, out_slot)` followed by
+        per-entry `cel_host.cel_set_field` calls.
+        `codegen/expr_lower.cc`.
+  - [x] `InstallStructImports` adds `cel_make_message` (2-arg) +
+        `cel_set_field` (3-arg) imports.  `compiler_v2/compile.cc`.
+  - [x] `OwnedProtoBacking` (composes `ProtoBacking` for read-side;
+        owns `unique_ptr<Message>`) + virtual `HostMessageBacking
+        ::message()` so `cel_message_eq` works for both M7-built and
+        M2.C-bound messages.  `api/internal/cel_host.{h,cc}`.
+  - [x] `CelMakeMessageImpl` Layer-2 — resolves type_id → Descriptor,
+        `MessageFactory::generated_factory()->GetPrototype(desc)
+        ->New()`, intern, write CEL_MESSAGE.
+        `api/internal/cel_host.cc`.
+  - [x] `CelMakeMessageTrampoline` Layer-3 (2-arg) registered in
+        `RegisterCelHostImports`.  `api/internal/cel_host_wasmtime.cc`.
+  - [x] `BuildCelHostBindings` resolves FQN → Descriptor* via
+        `DescriptorPool::generated_pool()` for every `cel.abi.types[]`
+        row.  `api/internal/cel_host_wasmtime.cc`.
+  - [x] M2 read-side null fix: `ProtoBacking::ReadField` on unset
+        singular message returns `Value::Null()` per langdef
+        §"Field Selection" (was returning default-instance backing).
+        `api/internal/cel_host.cc`.
+  - [x] `wat/40_kstruct_make_message.wat` + `wat-traces.md` §40.
+  - [x] E2E: `compiler_v2/e2e/m7_test.cc::ProtoLiteralEmptyE2ETest`
+        — 9/9 PASS (proto3 zero/explicit-default/null-submessage,
+        proto2 explicit-default×3, Customer empty).
+
+**M7.B — `cel_set_field` for scalar fields**
+
+  - [x] `kCelHostSetFieldInternalName` constant + 3-arg `cel_set_field`
+        import.  `codegen/expr_lower.h`, `compiler_v2/compile.cc`.
+  - [x] `EmitCelSetFieldCall` helper + per-entry emit loop in
+        `EmitKStructExpr`; field_ref_id interns per entry with
+        `field_number=0` + `name` + `owner_fqn=s.name()`.
+        `codegen/expr_lower.cc`.
+  - [x] `CelSetFieldImpl` Layer-2 — resolves OwnedProtoBacking via
+        `dynamic_cast` (host-bound `ProtoBacking` rejected — read-only
+        invariant), per-cpp_type dispatch via `SetScalarField`:
+        BOOL/INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE/STRING (TYPE_STRING
+        vs TYPE_BYTES)/ENUM.  `api/internal/cel_host.cc`.
+  - [x] `CelSetFieldTrampoline` Layer-3 (3-arg, reuses
+        `HostThreeArgTrampoline`).  `api/internal/cel_host_wasmtime.cc`.
+  - [x] `wat/41_kstruct_set_scalar.wat` + `wat-traces.md` §41.
+  - [x] E2E: `m7_test.cc::ProtoLiteralScalarE2ETest` — parameterized
+        scalar matrix (10 cpp_types × boundary values) + sint/fixed/
+        sfixed wire variants + ident/computed-expr source operands +
+        multi-entry literals; all PASS.
+
+**M7.C — repeated + map fields**
+
+  - [x] `ForEachArenaListElement` / `ForEachArenaMapEntry` walkers
+        (read `ArenaListHeader` / `ArenaMapHeader` + per-element
+        CelValue read via MemoryView).  `api/internal/cel_host.cc`.
+  - [x] `AppendRepeatedFromCelValue` (arena source) +
+        `AppendRepeatedFromHostListValue` (host source) — per-cpp_type
+        `Add...` dispatch incl. CPPTYPE_MESSAGE via
+        `AddMessage(...)` + `CopyFrom`.
+  - [x] `InsertArenaMapEntry` + `InsertHostMapEntry` — build a fresh
+        map-entry submessage via `Reflection::AddMessage` then populate
+        key + value via shared `SetScalarField` (arena) or per-cpp_type
+        (host) ladder.
+  - [x] `SetMapField` + `SetRepeatedField` route on `value_cv.kind`
+        (`CEL_LIST_ARENA`/`CEL_LIST_HOST`/`CEL_MAP_ARENA`/`CEL_MAP_HOST`).
+  - [x] `CelSetFieldImpl` calls `is_map()` then `is_repeated()`
+        before scalar dispatch (proto map fields are also `is_repeated()`
+        per descriptor.proto).
+  - [x] Descriptor-mismatch guard at every CopyFrom site so
+        `TestAllTypes{single_any: BoolValue{...}}`-shape rows fail
+        per-row instead of CHECK-aborting the conformance run.
+  - [x] E2E: `m7_test.cc::ProtoLiteralRepeatedE2ETest` (8/8 PASS) +
+        `ProtoLiteralMapE2ETest` (7/7 PASS) +
+        `ProtoLiteralOneofE2ETest` (proto2 + proto3 oneof clear-on-set,
+        all 6 PASS) + `ProtoLiteralActivationE2ETest`
+        (list-of-message binding flowing into construction).
+
+**M7.D — enum literals**
+
+  - [x] `parse_and_check.cc::InlineConstantReferences` — walks AST
+        in place after checker returns; replaces each `kIdentExpr`
+        whose `reference_map` entry has a Constant value
+        (cel-cpp's enum-name-as-constant resolution) with a
+        `kConstantExpr` carrying that value.  Idempotent; runs
+        before `RejectDyn` and `PopulateAnnotations`.
+  - [x] cel-cpp checker probe-spike resolved (m7-proto-literals.md
+        §3.3 R4): the checker emits a `Reference` with `value()`
+        carrying the int constant, NOT a Constant in-place.
+        Inline rewrite is the simplest correct path (cf. cel-cpp's
+        runtime/reference_resolver — same approach).
+  - [x] E2E: `m7_test.cc::ProtoLiteralEnumE2ETest` (4/4 PASS) —
+        `Foo.Kind.KIND_SEVEN` standalone, RHS-of-field-set, unset
+        reads as 0, int round-trip via `Foo{kind: 7}.kind == 7`.
+
+**M7.E — singular message field nesting**
+
+  - [x] `SetScalarField` CPPTYPE_MESSAGE arm — looks up source
+        backing via `ExternrefTable`, asserts descriptor matches
+        field's `message_type()`, `MutableMessage(msg, field)
+        ->CopyFrom(*src_msg)`.  `api/internal/cel_host.cc`.
+  - [x] Threaded `ExternrefTable* refs` parameter through
+        `SetScalarField` + every call site (singular dispatch +
+        `InsertArenaMapEntry`).
+  - [x] E2E: `m7_test.cc::ProtoLiteralNestedE2ETest` (4/5 PASS;
+        1 SKIP for the M8-blocked `Int32Value{value:5}.value`
+        wrapper-typed-expression-in-scalar-context test).
+  - [x] Equality unblock: `m7_test.cc::ProtoLiteralEqualityE2ETest`
+        passes (the cohort the M5.B `cel_message_eq` kernel was
+        waiting for, blocked since 2026-04-24 on M7.A construction).
+
+**M7.F — closeout (in progress)**
+
+  - [x] `compiler_v2/conformance/README.md` refreshed: headline
+        700 → 831 PASS; per-fixture inventory rows for `comparisons`
+        / `dynamic` / `enums` / `proto2` / `proto3` / `wrappers`;
+        forecast table reordered with §4.5 encoder polish + M8
+        wrappers + chained-null + Any as the next four unblockers;
+        plan-vs-execution delta callout added.
+  - [x] `m7-proto-literals.md` status flipped to `shipped 2026-04-25
+        (slices A–E)`; "What landed" / "What didn't land" callout +
+        Future-work §9 captures every unblocking work item with
+        rows-graduated estimates.
+  - [ ] Plan-doc reconciliation across siblings (`design.md` §4.7.1
+        / §4.7.5 / §11.5; `cel-host-surface.md` §6 for `cel.abi.types[]`)
+        — pending.
+  - [ ] `scripts/run_full_suite.sh` closeout gate run — pending; manual
+        verification done via `bazel test //compiler_v2/... --test_output=errors
+        --build_tests_only` (44/45 PASS — the 45th is `m7_test`'s 1
+        deliberate SKIP for M8 wrapper).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

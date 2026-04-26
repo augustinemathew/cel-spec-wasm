@@ -58,6 +58,13 @@ struct CelHostCallbackEnv {
   // Storage for bindings spans.  `bindings` references these.
   std::vector<FieldRefEntry> field_refs_storage;
   std::vector<AttributeEntry> attrs_storage;
+  // M7.A: type_id → resolved descriptor lookup, populated by
+  // `BuildCelHostBindings` from `cel.abi.types[]` + the embedder-
+  // supplied descriptor pool.  The trampoline reads this at
+  // `cel_make_message` call time; entries with `descriptor=nullptr`
+  // are FQNs the pool didn't recognise (kTypeMismatch CEL_ERROR
+  // surface).
+  std::vector<MessageTypeEntry> message_types_storage;
   CelHostBindings bindings;
 
   // Per-eval externref table — Reset() between Evals.

@@ -47,6 +47,21 @@ void InstallSelectImports(WasmModule& mod) {
                         "cel_has_field", host_params, BinaryenTypeNone());
 }
 
+// M7.A: cel_host.cel_make_message — `(type_id, out_slot)` → ().
+// M7.B: cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
+// → ().  Both always imported (no lazy tracking — CLAUDE.md);
+// codegen emits direct calls in the kStructExpr arm.
+void InstallStructImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType make_params[2] = {i32, i32};
+  mod.AddFunctionImport(std::string(kCelHostMakeMessageInternalName),
+                        "cel_host", "cel_make_message", make_params,
+                        BinaryenTypeNone());
+  const BinaryenType set_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelHostSetFieldInternalName), "cel_host",
+                        "cel_set_field", set_params, BinaryenTypeNone());
+}
+
 // M3.F: map literal + indexing runtime entry points.  `cel_map_*`
 // come from the runtime module; `cel_host.cel_map_lookup` is the
 // host trampoline arm of the kDynamic dispatcher (see
@@ -208,6 +223,7 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
   InstallSelectImports(mod);
   InstallMapImports(mod);
   InstallListImports(mod);
+  InstallStructImports(mod);
   return absl::OkStatus();
 }
 

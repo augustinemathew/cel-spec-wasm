@@ -50,6 +50,25 @@ inline constexpr absl::string_view kCelHostGetFieldInternalName =
 inline constexpr absl::string_view kCelHostHasFieldInternalName =
     "cel_has_field";
 
+// M7.A: cel_host.cel_make_message trampoline (Layer 3).  Two-arg
+// `(type_id, out_slot)` — the host resolves type_id against the
+// per-Instance `cel.abi.types[]` lookup table, allocates a default
+// proto via MessageFactory::GetPrototype()->New(), wraps it in an
+// owning HostMessageBacking, interns the backing, and writes a
+// CEL_MESSAGE CelValue with the interned msg_slot to out_slot.
+inline constexpr absl::string_view kCelHostMakeMessageInternalName =
+    "cel_make_message";
+
+// M7.B: cel_host.cel_set_field trampoline (Layer 3).  Three-arg
+// `(msg_slot, field_ref_id, value_slot)` — dispatches on the
+// resolved FieldDescriptor's cpp_type to pick the matching
+// Reflection setter (SetBool / SetInt32 / SetString / SetEnumValue
+// / etc.).  No out_slot — the message is mutated in place at the
+// OwnedProtoBacking carried by msg_slot.  Wasm trap on
+// repeated/map/message field types until M7.C/E ship those.
+inline constexpr absl::string_view kCelHostSetFieldInternalName =
+    "cel_set_field";
+
 // M3.F: runtime entry points for map literal construction +
 // indexing.  All three lookups carry signature
 // `(i32 out_slot, i32 map_slot, i32 key_slot) -> ()`.  cel_map_create

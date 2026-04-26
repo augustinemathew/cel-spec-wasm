@@ -55,4 +55,12 @@ message HostMsg3 {
   map<uint32, double> u32_to_f64 = 21;
   map<bool,   int64>  bool_to_i64 = 22;
   map<string, HostMsg3> str_to_msg = 23;
+
+  // M7 §6.2 — oneof discipline (proto3).  Same regression as
+  // HostMsg2.which; both syntax versions go through the same
+  // Reflection::SetField path so M7.C tests must cover both.
+  oneof which3 {
+    int64  oneof_i64 = 28;
+    string oneof_s   = 29;
+  }
 }

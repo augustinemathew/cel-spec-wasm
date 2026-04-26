@@ -28,8 +28,9 @@
 #include "compiler_v2/runtime/cel_data.h"
 
 namespace google::protobuf {
-class Message;
+class Descriptor;
 class FieldDescriptor;
+class Message;
 }  // namespace google::protobuf
 
 namespace celwasm {
@@ -57,6 +58,17 @@ class HostMessageBacking {
   // has(msg.field) per langdef proto2/proto3 presence rules.
   virtual bool HasField(int field_number,
                         absl::string_view field_name) const = 0;
+
+  // Optional access to the underlying proto message — proto backings
+  // (`ProtoBacking`, `OwnedProtoBacking`) return a non-null pointer;
+  // non-proto custom subclasses (JSON, struct-of-structs) inherit
+  // the nullptr default.  `CelMessageEqImpl` (M5.B) uses this to
+  // reach `MessageDifferencer` without dynamic_casting per concrete
+  // backing type — both M2.C-bound (`ProtoBacking`) and M7-built
+  // (`OwnedProtoBacking`) messages compare uniformly.
+  virtual const google::protobuf::Message* absl_nullable message() const {
+    return nullptr;
+  }
 };
 
 // Non-owning adapter over `google::protobuf::Message` — caller keeps the
@@ -72,12 +84,55 @@ class ProtoBacking final : public HostMessageBacking {
 
   bool HasField(int field_number, absl::string_view field_name) const override;
 
-  const google::protobuf::Message* absl_nonnull message() const {
+  const google::protobuf::Message* absl_nullable message() const override {
     return msg_;
   }
 
  private:
   const google::protobuf::Message* absl_nonnull msg_;
+};
+
+// M7.A: owning counterpart to `ProtoBacking` — wraps a
+// `unique_ptr<Message>` allocated by `MessageFactory::GetPrototype()
+// ->New()` inside `CelMakeMessageImpl`.  The runtime needs an owning
+// backing because the message has no host-side anchor (the literal
+// is constructed during eval, not bound by the caller); the
+// ExternrefTable holds a `shared_ptr<HostMessageBacking>` that frees
+// the message at `Reset()` between Evals.
+//
+// Read-side (ReadField / HasField) delegates to a composed
+// `ProtoBacking` over the owned message — no duplicated reflection
+// code; M7-constructed messages flow through the same M2.C kSelect
+// read path as host-bound proto messages.  M7.B's `cel_set_field`
+// will mutate the message in place via `mutable_message()`.
+class OwnedProtoBacking final : public HostMessageBacking {
+ public:
+  explicit OwnedProtoBacking(
+      std::unique_ptr<google::protobuf::Message> msg);
+
+  absl::StatusOr<cel::Value> ReadField(
+      int field_number, absl::string_view field_name,
+      const cel::CelType& expected_type) const override;
+
+  bool HasField(int field_number, absl::string_view field_name) const override;
+
+  // M7.B uses this for `Reflection::Set...`; M7.A doesn't call it
+  // (every empty `Foo{}` reads back through the read-side path).
+  google::protobuf::Message* absl_nonnull mutable_message() {
+    return msg_.get();
+  }
+
+  const google::protobuf::Message* absl_nullable message() const override {
+    return msg_.get();
+  }
+
+ private:
+  std::unique_ptr<google::protobuf::Message> msg_;
+  // Composed view over `msg_.get()` so the read-side ReadField /
+  // HasField overrides delegate without duplicating ProtoBacking's
+  // reflection logic.  Initialised after `msg_` (declaration order
+  // matters — `inner_` constructor reads `msg_.get()`).
+  ProtoBacking inner_;
 };
 
 // Plug-in point for a CEL map.  Two built-in concretes (below):
@@ -307,12 +362,28 @@ struct AttributeEntry {
   std::vector<std::string> qualifiers;
 };
 
+// M7.A: type_id → (FQN, Descriptor*).  Populated by `Engine::Plan`
+// from `cel.abi.types[]` by resolving each FQN against the
+// embedder-supplied descriptor pool.  `descriptor` is nullable —
+// nullable means "FQN was not in the pool"; the trampoline returns
+// CEL_ERROR (kFieldNotFound or a future kTypeNotFound) rather than
+// trapping so a corpus row referencing an unknown descriptor lands
+// as a clean per-row failure instead of bringing down Eval.
+struct MessageTypeEntry {
+  std::string fully_qualified_name;
+  const google::protobuf::Descriptor* absl_nullable descriptor = nullptr;
+};
+
 // Per-Plan runtime state.  Owned by InstanceImpl; borrowed by Layer 3.
 // `unknown_patterns` is non-empty only under PartialEval.
 struct CelHostBindings {
   absl::Span<const FieldRefEntry> field_refs;
   absl::Span<const AttributeEntry> attributes;
   absl::Span<const cel::AttributePattern> unknown_patterns;
+  // M7.A: type_id → resolved descriptor lookup.  Index 0 is the
+  // sentinel; rows [1..N] are the ids `cel_make_message` calls
+  // reference.
+  absl::Span<const MessageTypeEntry> message_types;
 };
 
 // Per-eval context; bundled to stay under the 6-param lint gate.
@@ -430,6 +501,58 @@ ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
 // dispatchers above.
 ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
     uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
+    const TrampolineContext& ctx);
+
+// M7.A: cel_host.cel_make_message — proto literal construction.
+//   1. Resolve `type_id` against `bindings.message_types` →
+//      `Descriptor*` (kTypeMismatch CEL_ERROR if id is the sentinel
+//      or out-of-range, or the descriptor was not in the pool).
+//   2. `MessageFactory::generated_factory()->GetPrototype(desc)
+//      ->New()` — allocates a default-constructed proto.
+//   3. Wrap in `OwnedProtoBacking(unique_ptr<Message>)` for owning
+//      lifetime semantics — the ExternrefTable's per-Eval `Reset()`
+//      drops the shared_ptr, freeing the message.
+//   4. `ctx.refs.Intern(shared_ptr<OwnedProtoBacking>)` → `slot`.
+//   5. Write `{ kind: CEL_MESSAGE, payload.msg_slot = slot }` to
+//      the `out_slot` cell in `ctx.mem`.
+// Non-OK Status only on infrastructure failure (descriptor pool
+// lookup mismatched against the FQN at Plan time but the
+// trampoline can't reach the pool now); spec-level errors travel
+// inside out_slot as CEL_ERROR.
+ABSL_MUST_USE_RESULT absl::Status CelMakeMessageImpl(
+    uint32_t type_id, uint32_t out_slot, const TrampolineContext& ctx);
+
+// M7.B: cel_host.cel_set_field — proto literal field set.
+//   1. Read `msg_cv` from `msg_slot` — must be CEL_MESSAGE; the
+//      msg_slot externref must point at an `OwnedProtoBacking`
+//      (cast via `dynamic_cast` so externally-bound, non-mutable
+//      ProtoBackings can't be mutated through this path —
+//      kTypeMismatch trap).
+//   2. Resolve `field_ref_id` against `bindings.field_refs` →
+//      `(field_number, field_name)`; the host then resolves the
+//      `FieldDescriptor*` by name on the message's descriptor
+//      (mirrors `ProtoBacking::ResolveFieldDescriptor`).
+//   3. Read `value_cv` from `value_slot`.  Dispatch on the
+//      field's `cpp_type`:
+//        BOOL  → SetBool   (value: CEL_BOOL)
+//        INT32 → SetInt32  (value: CEL_INT)
+//        INT64 → SetInt64  (value: CEL_INT)
+//        UINT32 → SetUInt32 (value: CEL_UINT)
+//        UINT64 → SetUInt64 (value: CEL_UINT)
+//        FLOAT  → SetFloat  (value: CEL_DOUBLE)
+//        DOUBLE → SetDouble (value: CEL_DOUBLE)
+//        STRING → SetString (value: CEL_STRING / CEL_BYTES depending
+//                            on field type — span bytes via mem)
+//        ENUM   → SetEnumValue (value: CEL_INT — langdef
+//                               §"Enumerated Types")
+//   4. Repeated, map, and singular-message field shapes are M7.C
+//      (lists/maps) and M7.E (nested messages); they return non-OK
+//      Status from this trampoline (wasm trap) until those slices
+//      ship.
+// Non-OK Status surfaces as a wasm trap; the conformance harness
+// records the row as failure without aborting the run.
+ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(
+    uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot,
     const TrampolineContext& ctx);
 
 }  // namespace celwasm

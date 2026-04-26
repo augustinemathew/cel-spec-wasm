@@ -16,6 +16,7 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/host/cel_log.h"
 #include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "google/protobuf/descriptor.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -320,7 +321,16 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // field_ref_id → (field_number, field_name) and attribute_id →
   // (root, qualifiers).  unknown_patterns stays empty for Eval();
   // PartialEval rebinds it per-call.
-  celwasm::BuildCelHostBindings(impl->abi, /*pool=*/nullptr, impl->host_env);
+  //
+  // M7.A: pass the generated descriptor pool so `BuildCelHostBindings`
+  // can resolve `cel.abi.types[]` FQNs to `Descriptor*` for
+  // `cel_make_message` lookups.  Statically-linked cc_proto_library
+  // descriptors are reachable through `generated_pool()`; dynamic
+  // schemas (SchemaProtoSource) are an M7.A-polish follow-up.
+  celwasm::BuildCelHostBindings(
+      impl->abi,
+      google::protobuf::DescriptorPool::generated_pool(),
+      impl->host_env);
 
   return Instance(wasmtime_, std::move(impl));
 }

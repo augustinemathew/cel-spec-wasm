@@ -63,6 +63,18 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     }
   }
 
+  // types[]: one row per distinct kStructExpr message FQN (M7.A).
+  // Index 0 is the sentinel (empty FQN); rows [1..N] are the ids
+  // codegen stamps via `NodeAnnotation::message_type_id` and the
+  // emitted `cel_make_message` calls reference.
+  abi.mutable_types()->Reserve(static_cast<int>(layout.message_types.size()));
+  for (uint32_t i = 0; i < layout.message_types.size(); ++i) {
+    const MessageTypeRow& row = layout.message_types[i];
+    celwasm::abi::TypeEntry* entry = abi.add_types();
+    entry->set_id(i);
+    entry->set_fully_qualified_name(row.fully_qualified_name);
+  }
+
   return abi;
 }
 

@@ -183,6 +183,29 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
         Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
+  // M7.A: kStructExpr — `Foo{...}` lowers to one
+  // `cel_host.cel_make_message(type_id, out_slot)` call followed by
+  // per-entry `cel_host.cel_set_field(...)` calls (M7.B).  The
+  // result slot stays live through every entry-set call, then is
+  // returned to the parent.  Each entry's value-slot is consumed by
+  // `cel_set_field` and released here so the kStructExpr's result
+  // slot can supersede in the same arena region — same discipline
+  // as kMapExpr / kListExpr.
+  //
+  // M7.A scope: the entries() loop is a no-op for empty `Foo{}`;
+  // expr_lower's M7.A arm CHECKs that entries() is empty (M7.B
+  // lights up the per-entry codegen).  Releasing here regardless
+  // of the M7.A vs M7.B distinction keeps the slot accounting
+  // correct as M7.B layers on without revisiting LayoutPass.
+  void PostVisitStruct(const cel::Expr& expr,
+                       const cel::StructExpr& s) override {
+    for (const cel::StructExprField& f : s.fields()) {
+      ReleaseIfWorkspaceSlot(f.value().id());
+    }
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+  }
+
   void PostVisitCall(const cel::Expr& expr,
                      const cel::CallExpr& call) override {
     // Slice 1.5 (dyn-passthrough-plan.md, Option A): a `dyn(scalar)`
@@ -276,6 +299,7 @@ absl::StatusOr<StaticLayout> LayoutPass(
   StaticLayout layout;
   layout.annotations = std::move(resolved.annotations);
   layout.attributes = std::move(resolved.attributes);
+  layout.message_types = std::move(resolved.message_types);
   layout.debug_mode = opts.debug_layout;
 
   // --- Pass A: pack every kConst into rodata. ---

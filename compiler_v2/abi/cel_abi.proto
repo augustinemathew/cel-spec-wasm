@@ -104,6 +104,23 @@ message AttributeEntry {
   repeated string qualifiers = 3;
 }
 
+// One row of the message-type intern table — M7.A.  Populated when
+// ResolvePass first encounters a `kStructExpr` with a non-empty
+// message_name; consumed by `Engine::Plan` to resolve
+// `fully_qualified_name` against the embedder-supplied
+// `DescriptorPool` (or `generated_pool()`).  Mirrors
+// `FieldEntry.owner_fqn`'s FQN-resolved-at-Plan-time discipline;
+// no descriptor handle on the wire.
+//
+//   id                     dense index; 0 is the sentinel "no type id".
+//   fully_qualified_name   e.g. "celwasm.testdata.HostMsg3" — the
+//                          checker-stamped message type name on the
+//                          kStructExpr node.
+message TypeEntry {
+  uint32 id = 1;
+  string fully_qualified_name = 2;
+}
+
 // Top-level payload of the `cel.abi` custom section.
 message CelAbi {
   // Bump on any field renumbering / removal.  Additive changes keep
@@ -122,4 +139,9 @@ message CelAbi {
 
   // Attribute intern table — M2.E.
   repeated AttributeEntry attributes = 4;
+
+  // Message-type intern table — M7.A.  One row per distinct message
+  // FQN constructed by `kStructExpr` in the program.  Index 0 is
+  // the reserved sentinel.
+  repeated TypeEntry types = 5;
 }

@@ -828,6 +828,131 @@ helper keeps `expr_lower` lean and the WAT shape regular.
 
 ---
 
+## 40. Proto message construction — `HostMsg3{}` (M7.A empty literal)
+
+`m7-proto-literals.md` §4.1 + §4.4: `kStructExpr` lowers to a
+`cel_host.cel_make_message(type_id, out_slot)` call.  Empty
+construction (no entries) is M7.A's baseline; per-entry
+`cel_set_field` calls layer in at M7.B, between the make-message
+call and the trailing `i32.const out_slot`.
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel_host" "cel_make_message"
+          (func $cel_make_message (param i32 i32)))
+
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 40) (i32.const 131072))
+    (call $cel_make_message (i32.const 1) (i32.const 16))
+    (i32.const 16))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+Memory layout (empty-construction case):
+
+  - `[ 0, 16)` reserved + arena cursor/limit
+  - `[16, 40)` workspace slot for the kStructExpr — out_slot
+  - `[40, mem_size)` bump arena (untouched for empty literal)
+
+Post-call, the workspace cell at offset 16 holds:
+`{ kind = CEL_MESSAGE, payload.msg_slot = <ExternrefTable index> }`.
+The externref points at an `OwnedProtoBacking` owning the
+default-constructed proto.
+
+ABI table addition: `cel.abi.types[]` — one row per distinct
+message FQN constructed by the program.  Each row is
+`{ id: u32, fully_qualified_name: string }`.  No descriptor
+handle on the wire — `Engine::Plan` resolves FQN against
+`DescriptorPool::generated_pool()` (or the embedder-supplied
+pool) at load time.  Mirrors `cel.abi.fields[]`'s
+`owner_fqn`-resolved-at-Plan-time discipline; descriptor
+duplication into the wire would just be a drift hazard.
+
+`cel_make_message` host primitive:
+
+  1. Resolve `type_id` against the per-Instance type table
+     (populated from `cel.abi.types[]` at Plan time) → `Descriptor*`.
+  2. `MessageFactory::generated_factory()->GetPrototype(desc)->New()`.
+  3. Wrap in `OwnedProtoBacking(unique_ptr<Message>)` — owning so
+     the externref-table cleanup at `Reset()` frees the message.
+  4. `ExternrefTable::Intern(shared_ptr<OwnedProtoBacking>)` →
+     `slot`.
+  5. Write `{ CEL_MESSAGE, msg_slot = slot }` to `out_slot`.
+
+`OwnedProtoBacking` composes a `ProtoBacking` over its owned
+message for the read-side `ReadField` / `HasField` overrides — no
+duplicated reflection code; M7.A reuses the M2.C kSelect read
+path verbatim against M7-constructed messages.
+
+---
+
+## 41. Proto field set — `HostMsg3{i32: 7}` (M7.B scalar entry)
+
+Layered on top of M7.A's `cel_make_message`: each entry of a
+non-empty literal lowers to a `cel_host.cel_set_field(msg_slot,
+field_ref_id, value_slot)` call after the make-message call.  The
+emit shape is regular — N entries layer N set-field calls between
+the make-message and the trailing `(i32.const out_slot)`.
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel_host" "cel_make_message"
+          (func $cel_make_message (param i32 i32)))
+  (import "cel_host" "cel_set_field"
+          (func $cel_set_field (param i32 i32 i32)))
+
+  (data (i32.const 64)
+        "\02\00\00\00\00\00\00\00\07\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $cel_make_message (i32.const 1) (i32.const 16))
+    (call $cel_set_field (i32.const 16) (i32.const 1) (i32.const 64))
+    (i32.const 16))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+`cel_set_field` arg layout:
+
+  - `msg_slot`     — offset of the 24B CelValue holding the
+    `{CEL_MESSAGE, msg_slot}` ref to the OwnedProtoBacking; the
+    backing exposes a `mutable_message()` for `Reflection::Set...`
+    in M7.B (M7.A only used the read-side accessor).
+  - `field_ref_id` — dense index into `cel.abi.fields[]` (the
+    same intern table M2.C populates for read-side kSelect).
+    M7.B reuses the `FieldRefRow` shape verbatim — the read and
+    write paths share the (`field_number`, `name`, `owner_fqn`)
+    row.  M7.B emits `field_number=0` so the host resolves the
+    FieldDescriptor by name on the bound message at trampoline
+    call time, matching the existing `ResolveFieldDescriptor`
+    fallback ProtoBacking already uses.
+  - `value_slot`   — offset of the 24B CelValue holding the
+    new field value.  The trampoline dispatches on the resolved
+    FieldDescriptor's `cpp_type` to pick the Reflection setter:
+    BOOL → `SetBool`, INT32/INT64 → `SetInt32`/`SetInt64`,
+    UINT32/UINT64 → `SetUInt32`/`SetUInt64`, FLOAT/DOUBLE →
+    `SetFloat`/`SetDouble`, STRING → `SetString` (TYPE_BYTES vs
+    TYPE_STRING distinguishes the encoding the value carries),
+    ENUM → `SetEnumValue` (CEL_INT-source per langdef
+    §"Enumerated Types").
+
+Repeated, map, and singular-message field shapes are M7.C/E and
+the trampoline returns a non-OK Status (wasm trap) until those
+slices ship — conformance rows that reach this stub fail the
+single row cleanly, not the run.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

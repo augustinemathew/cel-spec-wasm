@@ -75,7 +75,7 @@ void HostExternrefTable::Reset() {
 // ═══════════ BuildCelHostBindings ═══════════
 
 void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
-                          const google::protobuf::DescriptorPool* /*pool*/,
+                          const google::protobuf::DescriptorPool* pool,
                           CelHostCallbackEnv& out) {
   out.field_refs_storage.clear();
   out.field_refs_storage.reserve(static_cast<size_t>(abi.fields_size()));
@@ -93,6 +93,23 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
         AttributeEntry{a.variable(), std::move(qualifiers)});
   }
 
+  // M7.A: resolve `cel.abi.types[]` FQNs against the descriptor
+  // pool.  A null pool (kept here for legacy callers) leaves every
+  // entry's descriptor as nullptr; the trampoline surfaces those as
+  // a clean spec-level CEL_ERROR.  Sentinel id 0 entry is included
+  // so trampoline lookups can index by id directly.
+  out.message_types_storage.clear();
+  out.message_types_storage.reserve(static_cast<size_t>(abi.types_size()));
+  for (const celwasm::abi::TypeEntry& t : abi.types()) {
+    MessageTypeEntry entry;
+    entry.fully_qualified_name = t.fully_qualified_name();
+    entry.descriptor =
+        (pool != nullptr && !entry.fully_qualified_name.empty())
+            ? pool->FindMessageTypeByName(entry.fully_qualified_name)
+            : nullptr;
+    out.message_types_storage.push_back(std::move(entry));
+  }
+
   // unknown_patterns is populated per-call by PartialEval; left
   // empty here so the default Eval path stays a no-op in the
   // trampoline's MatchesAnyUnknownPattern.
@@ -100,6 +117,7 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
       absl::MakeConstSpan(out.field_refs_storage),
       absl::MakeConstSpan(out.attrs_storage),
       /*unknown_patterns=*/{},
+      absl::MakeConstSpan(out.message_types_storage),
   };
 }
 
@@ -296,6 +314,27 @@ extern "C" wasm_trap_t* CelMessageEqTrampoline(
   return HostThreeArgTrampoline<CelMessageEqImpl>(env_ptr, caller, args);
 }
 
+// M7.A: cel_host.cel_make_message — `(type_id, out_slot)` → ().
+// Same shape as `HostTwoArgTrampoline` but the impl arity matches
+// `(uint32_t type_id, uint32_t out_slot, const TrampolineContext&)`.
+extern "C" wasm_trap_t* CelMakeMessageTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelMakeMessageImpl>(env_ptr, caller, args);
+}
+
+// M7.B: cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
+// → ().  Three i32 args; reuses HostThreeArgTrampoline since the
+// impl signature `(uint32_t, uint32_t, uint32_t, const TrampolineContext&)`
+// matches the template's expected arity.
+extern "C" wasm_trap_t* CelSetFieldTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelSetFieldImpl>(env_ptr, caller, args);
+}
+
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
   for (auto& p : params) {
@@ -399,6 +438,12 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       {"cel_map_in", 3, &CelMapInTrampoline},
       {"cel_map_eq", 3, &CelMapEqTrampoline},
       {"cel_message_eq", 3, &CelMessageEqTrampoline},
+      // M7.A — proto literal construction.  Two i32 args
+      // `(type_id, out_slot)`; void result.
+      {"cel_make_message", 2, &CelMakeMessageTrampoline},
+      // M7.B — proto literal field set.  Three i32 args
+      // `(msg_slot, field_ref_id, value_slot)`; void result.
+      {"cel_set_field", 3, &CelSetFieldTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

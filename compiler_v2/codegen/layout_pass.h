@@ -79,6 +79,13 @@ struct StaticLayout {
   // (M2.E); LayoutPass neither reads nor mutates it.
   std::vector<AttributeEntryRow> attributes;
 
+  // M7.A: message-type intern table — carried forward from
+  // ResolveOutput so `BuildCelAbi` can serialise it into
+  // `cel.abi.types[]`.  Entry 0 is the reserved sentinel.
+  // Populated by ResolvePass's `MessageTypeIdVisitor` (M7.A);
+  // LayoutPass neither reads nor mutates it.
+  std::vector<MessageTypeRow> message_types;
+
   // NOLINTNEXTLINE(readability-redundant-member-init) — explicit defaults
   // satisfy cppcoreguidelines-pro-type-member-init on the aggregate
   // without forcing callers into a boilerplate constructor.

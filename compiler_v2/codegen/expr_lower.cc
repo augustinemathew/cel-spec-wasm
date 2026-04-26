@@ -377,6 +377,107 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
+// M7.A: emits `(call $cel_host.cel_make_message (i32.const type_id)
+// (i32.const out_slot))`.  Two i32 args, void result.  The trampoline
+// resolves type_id → Descriptor* against the per-Instance lookup
+// table (populated from `cel.abi.types[]` at Plan time), allocates a
+// default-constructed proto via MessageFactory::GetPrototype()->New(),
+// wraps in an owning HostMessageBacking, interns into the
+// ExternrefTable, and writes a CEL_MESSAGE CelValue with the interned
+// msg_slot to the out_slot cell.
+BinaryenExpressionRef EmitCelMakeMessageCall(WasmModule& mod,
+                                             uint32_t type_id,
+                                             uint32_t out_slot) {
+  BinaryenExpressionRef args[2] = {I32Const(mod, type_id),
+                                   I32Const(mod, out_slot)};
+  const std::string name(kCelHostMakeMessageInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+}
+
+// M7.B: emits `(call $cel_host.cel_set_field (i32.const msg_slot)
+// (i32.const field_ref_id) <value_expr>)`.  `value_expr` is an
+// i32-valued sub-expression whose value at runtime is the linear-
+// memory offset of the entry's value CelValue (rodata for kConst,
+// workspace slot for everything else).  The trampoline reads
+// value_slot's CelValue, resolves the FieldDescriptor by
+// (field_ref_id → name + owner_fqn), and dispatches on cpp_type to
+// pick the Reflection setter; no out_slot since the mutation
+// happens in-place on the OwnedProtoBacking carried by msg_slot.
+BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
+                                          uint32_t field_ref_id,
+                                          BinaryenExpressionRef value) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, msg_slot),
+                                   I32Const(mod, field_ref_id), value};
+  const std::string name(kCelHostSetFieldInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
+// Lowers a kStructExpr to:
+//   (call $cel_host.cel_make_message (i32.const type_id) (i32.const out_slot))
+//   for each entry e:
+//     <eval e.value>           -> i32 value_slot
+//     (call $cel_host.cel_set_field (i32.const out_slot)
+//                                   (i32.const field_ref_id)
+//                                   <value_slot>)
+//   (i32.const out_slot)
+// wrapped in a (block (result i32)) whose value is `out_slot`.
+//
+// M7.A: empty literal — entry loop is a no-op.
+// M7.B: scalar entry-set — Layer-2 dispatches per-cpp_type;
+//       repeated/map/message singular fields trap at the
+//       trampoline (M7.C/E will fill them in).  No codegen-time
+//       gating per field type — codegen here doesn't know the
+//       descriptor's shape; it trusts the checker for type
+//       compatibility and the trampoline to surface unsupported
+//       shapes as clean traps.
+absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::StructExpr& s,
+    const NodeAnnotation& ann) {
+  ABSL_CHECK(!s.name().empty())
+      << "expr_lower: kStructExpr expr_id=" << expr.id()
+      << " has empty name() — should have lowered as kMapExpr at parse "
+         "time per design.md §4.7.4";
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kStructExpr expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  ABSL_CHECK(ann.message_type_id != 0)
+      << "expr_lower: kStructExpr expr_id=" << expr.id()
+      << " has message_type_id=0 — ResolvePass MessageTypeIdVisitor "
+         "didn't intern the FQN (m7-proto-literals.md §4.2)";
+
+  const uint32_t out_slot = ann.storage.payload;
+  std::vector<BinaryenExpressionRef> instrs;
+  instrs.reserve(2u + s.fields().size());
+  instrs.push_back(
+      EmitCelMakeMessageCall(ctx.mod, ann.message_type_id, out_slot));
+
+  for (const cel::StructExprField& f : s.fields()) {
+    ABSL_CHECK(!f.optional())
+        << "expr_lower: kStructExpr expr_id=" << expr.id() << " field `"
+        << f.name() << "` is optional — stub until optionals slice";
+    auto value_or = Emit(ctx, f.value());
+    if (!value_or.ok()) return value_or.status();
+    // Append a fresh field-ref row.  M7.B emits field_number=0
+    // so the host resolves the FieldDescriptor by name against
+    // the bound message — matches the read-side fallback path
+    // ProtoBacking::ResolveFieldDescriptor already uses for
+    // non-proto backings (m2-ident-select-unknowns.md §2.4).
+    const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
+    ctx.field_refs.push_back(FieldRefRow{
+        /*field_number=*/0,
+        /*name=*/f.name(),
+        /*owner_fqn=*/s.name(),
+    });
+    instrs.push_back(EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id,
+                                         *value_or));
+  }
+
+  instrs.push_back(I32Const(ctx.mod, out_slot));
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
+                       static_cast<BinaryenIndex>(instrs.size()),
+                       BinaryenTypeInt32());
+}
+
 absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
     EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
     const NodeAnnotation& ann) {
@@ -869,6 +970,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kListExpr:
       return EmitKListExpr(ctx, expr, expr.list_expr(), *ann);
     case cel::ExprKindCase::kStructExpr:
+      return EmitKStructExpr(ctx, expr, expr.struct_expr(), *ann);
     case cel::ExprKindCase::kComprehensionExpr:
     case cel::ExprKindCase::kUnspecifiedExpr:
       return Unimplemented(expr.kind_case(), expr.id());
