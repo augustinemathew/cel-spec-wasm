@@ -92,16 +92,26 @@ TEST(ValueFromProto, MapUnimplemented) {
   EXPECT_THAT(ValueFromProto(v), StatusIs(absl::StatusCode::kUnimplemented));
 }
 
-TEST(ValueFromProto, ObjectUnimplemented) {
+TEST(ValueFromProto, ObjectUnknownTypeRejected) {
+  // M7: object_value with an unregistered type URL surfaces as
+  // InvalidArgument (the descriptor pool has no entry for the type).
   Value v;
-  v.mutable_object_value();
-  EXPECT_THAT(ValueFromProto(v), StatusIs(absl::StatusCode::kUnimplemented));
+  v.mutable_object_value()->set_type_url(
+      "type.googleapis.com/com.example.Unknown");
+  EXPECT_THAT(ValueFromProto(v),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(ValueFromProto, EnumUnimplemented) {
+TEST(ValueFromProto, EnumDecodesToInt) {
+  // M7: enum_value bindings decode to a kInt holding the numeric
+  // value (langdef §"Enumerated Types": enums are spec-typed as int).
   Value v;
   v.mutable_enum_value()->set_type("e.E");
-  EXPECT_THAT(ValueFromProto(v), StatusIs(absl::StatusCode::kUnimplemented));
+  v.mutable_enum_value()->set_value(7);
+  auto out = ValueFromProto(v);
+  ASSERT_TRUE(out.ok()) << out.status();
+  ASSERT_EQ(out->kind(), cel::Value::Kind::kInt);
+  EXPECT_EQ(*out->AsInt(), 7);
 }
 
 TEST(ValueFromProto, TypeUnimplemented) {
@@ -168,14 +178,17 @@ TEST(VariableSpecFromDecl, QualifiedNamePreserved) {
   EXPECT_EQ(*got, "x.y:bool");
 }
 
-TEST(VariableSpecFromDecl, MessageTypeUnimplemented) {
+TEST(VariableSpecFromDecl, MessageTypeFqnPreserved) {
+  // M7: message_type decls return `name:<FQN>`; the spec parser
+  // routes through ParseMessageType → DescriptorPool lookup.
   Decl d;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(name: "m"
            ident { type { message_type: "foo.Bar" } })pb",
       &d));
-  EXPECT_THAT(VariableSpecFromDecl(d),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto got = VariableSpecFromDecl(d);
+  ASSERT_THAT(got, IsOk());
+  EXPECT_EQ(*got, "m:foo.Bar");
 }
 
 TEST(VariableSpecFromDecl, ListTypeUnimplemented) {
@@ -286,7 +299,10 @@ TEST(PopulateVariableSpecs, AppendsScalarSpecs) {
   EXPECT_EQ(out[1], "y:string");
 }
 
-TEST(PopulateVariableSpecs, AggregateDeclSurfaceUnimplemented) {
+TEST(PopulateVariableSpecs, MessageTypeDeclEmitted) {
+  // M7: message_type decls now graduate from Unimplemented to a
+  // `name:<FQN>` spec the checker resolves against the descriptor
+  // pool.
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(type_env {
@@ -295,8 +311,9 @@ TEST(PopulateVariableSpecs, AggregateDeclSurfaceUnimplemented) {
            })pb",
       &t));
   std::vector<std::string> out;
-  EXPECT_THAT(PopulateVariableSpecs(t, out),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  ASSERT_THAT(PopulateVariableSpecs(t, out), IsOk());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0], "m:foo.Bar");
 }
 
 }  // namespace

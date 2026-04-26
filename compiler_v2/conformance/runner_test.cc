@@ -127,7 +127,7 @@ TEST(CompareEvalErrorTest, MismatchNullIsNotError) {
 
 // Envelope membership --------------------------------------------
 
-TEST(IsInM4EnvelopeTest, AdmitsEvalErrorMatcher) {
+TEST(IsInM7EnvelopeTest, AdmitsEvalErrorMatcher) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -136,10 +136,10 @@ TEST(IsInM4EnvelopeTest, AdmitsEvalErrorMatcher) {
         eval_error { errors { message: "divide_by_zero" } }
       )pb",
       &t));
-  EXPECT_TRUE(IsInM4Envelope(t));
+  EXPECT_TRUE(IsInM7Envelope(t));
 }
 
-TEST(IsInM4EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
+TEST(IsInM7EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -148,10 +148,10 @@ TEST(IsInM4EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
         any_eval_errors { errors { errors { message: "divide_by_zero" } } }
       )pb",
       &t));
-  EXPECT_TRUE(IsInM4Envelope(t));
+  EXPECT_TRUE(IsInM7Envelope(t));
 }
 
-TEST(IsInM4EnvelopeTest, RejectsEvalErrorWithDisableCheck) {
+TEST(IsInM7EnvelopeTest, RejectsEvalErrorWithDisableCheck) {
   // `disable_check:true` short-circuits BEFORE the matcher gate —
   // even a row whose matcher we now accept stays SKIP if the
   // type-checker is disabled (the harness needs a checked AST).
@@ -167,10 +167,10 @@ TEST(IsInM4EnvelopeTest, RejectsEvalErrorWithDisableCheck) {
         eval_error { errors { message: "no_such_overload" } }
       )pb",
       &t));
-  EXPECT_FALSE(IsInM4Envelope(t));
+  EXPECT_FALSE(IsInM7Envelope(t));
 }
 
-TEST(IsInM4EnvelopeTest, RejectsEvalErrorWithCheckOnly) {
+TEST(IsInM7EnvelopeTest, RejectsEvalErrorWithCheckOnly) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -180,7 +180,7 @@ TEST(IsInM4EnvelopeTest, RejectsEvalErrorWithCheckOnly) {
         eval_error { errors { message: "divide_by_zero" } }
       )pb",
       &t));
-  EXPECT_FALSE(IsInM4Envelope(t));
+  EXPECT_FALSE(IsInM7Envelope(t));
 }
 
 }  // namespace

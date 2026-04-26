@@ -36,6 +36,9 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/conformance/binding_marshal.h"
+#include "google/protobuf/message.h"
+#include "google/protobuf/util/message_differencer.h"
+#include "compiler_v2/conformance/binding_marshal.h"
 #include "google/protobuf/text_format.h"
 
 namespace celwasm::conformance {
@@ -89,8 +92,13 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
 // M4 — additionally admit `list_value` matchers.  CompareList
 // walks the decoded `HostListBacking` ORDER-aware (lists are
 // ordered per langdef § "List equality").
+// M7 — additionally admit `object_value` (proto-message matcher,
+// compared via `MessageDifferencer::Equals` on the unpacked Any)
+// and `enum_value` (compared as an int per langdef §"Enumerated
+// Types") matchers.
 bool IsAggregateMatcherKindForM4(ProtoValue::KindCase k) {
-  return k == ProtoValue::kMapValue || k == ProtoValue::kListValue;
+  return k == ProtoValue::kMapValue || k == ProtoValue::kListValue ||
+         k == ProtoValue::kObjectValue || k == ProtoValue::kEnumValue;
 }
 
 bool IsUnknownMatcher(const SimpleTest& t) {
@@ -155,7 +163,7 @@ absl::string_view OutcomeName(Outcome o) {
   return "?";
 }
 
-bool IsInM4Envelope(const SimpleTest& t) {
+bool IsInM7Envelope(const SimpleTest& t) {
   if (t.disable_check()) return false;
   if (t.check_only()) return false;
   if (IsUnknownMatcher(t)) return true;
@@ -212,12 +220,61 @@ absl::Status CompareScalar(const cel::Value& got, const ProtoValue& want) {
 
 }  // namespace
 
+// M7 — compare a returned `cel::Value::Message(...)` against an
+// `object_value` matcher (an Any wrapping the expected proto).
+// Unpacks the Any via `binding_marshal::UnpackAny` (uses the
+// generated descriptor pool the harness force-links into) and
+// runs `MessageDifferencer::Equals`.
+absl::Status CompareMessage(const cel::Value& got,
+                            const google::protobuf::Any& want) {
+  auto got_backing_or = got.MessageBacking();
+  if (!got_backing_or.ok()) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("want-kind=message got-kind=",
+                     ValueKindName(got.kind())));
+  }
+  const google::protobuf::Message* got_msg = (*got_backing_or)->message();
+  if (got_msg == nullptr) {
+    return absl::FailedPreconditionError(
+        "want-kind=message got non-proto backing");
+  }
+  auto want_or = celwasm::conformance::UnpackAny(want);
+  if (!want_or.ok()) return want_or.status();
+  if (!google::protobuf::util::MessageDifferencer::Equals(*got_msg,
+                                                          **want_or)) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "message mismatch: want=", (*want_or)->ShortDebugString(),
+        " got=", got_msg->ShortDebugString()));
+  }
+  return absl::OkStatus();
+}
+
+// M7 — compare a returned int (per langdef §"Enumerated Types"
+// enums are spec-typed as int) against an `enum_value` matcher.
+// The matcher carries a numeric value; ignore the type field
+// (we trust cel-cpp's checker to have rejected the cross-type
+// comparison upstream).
+absl::Status CompareEnum(const cel::Value& got,
+                         const cel::expr::EnumValue& want) {
+  auto i = got.AsInt();
+  if (!i.ok() || *i != want.value()) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "enum mismatch: want=", want.value(), " got-kind=",
+        ValueKindName(got.kind())));
+  }
+  return absl::OkStatus();
+}
+
 absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kMapValue:
       return CompareMap(got, want.map_value());
     case ProtoValue::kListValue:
       return CompareList(got, want.list_value());
+    case ProtoValue::kObjectValue:
+      return CompareMessage(got, want.object_value());
+    case ProtoValue::kEnumValue:
+      return CompareEnum(got, want.enum_value());
     default:
       // Scalar (or unrecognised — CompareScalar's default returns
       // InvalidArgument, matching the pre-M4 behaviour).
@@ -550,7 +607,7 @@ Result RunEvalErrorBranch(cel::Instance& inst, const cel::Activation& act,
 
 Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
               const cel::Engine& engine) {
-  if (!IsInM4Envelope(t)) return Unsupported("outside M4 envelope");
+  if (!IsInM7Envelope(t)) return Unsupported("outside M7 envelope");
 
   // Marshal type_env / bindings before touching the compiler — both
   // can SKIP, and a failed marshal means we never burn a compile.

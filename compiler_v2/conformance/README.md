@@ -17,12 +17,32 @@ No CI gate today.  Adding one is tracked under "Future work" below.
 
 ## Current state
 
-`total=2454 · pass=858 (35.0%) · skip=1052 (42.9%) · fail=544 (22.2%)`
+`total=2454 · pass=876 (35.7%) · skip=843 (34.4%) · fail=735 (29.9%)`
 across 30 loadable fixtures.  M7.A–E shipped 2026-04-25
 (`+131` PASS vs the M7-plan estimate of `+250`); §4.5 encoder
-polish + null-clear shipped 2026-04-25 (`+27` PASS, 831 → 858).
-See "Plan-vs-execution delta for M7" below for the remaining
-gap (M8 wrappers, Any, chained-null read).
+polish + null-clear shipped 2026-04-25 (`+27`, 831 → 858);
+M7 envelope + matcher widen shipped 2026-04-25 (`+18`, 858 → 876
+— but `~209` rows graduated SKIP→FAIL/PASS, surfacing previously-
+hidden work).  See "Plan-vs-execution delta for M7" below.
+
+The envelope-widen story: previously `IsInM7Envelope` SKIPped any
+row whose value matcher was `object_value` / `enum_value` and any
+row whose `type_env:` declared a `message_type` binding.  After
+M7.A–E the codegen could handle those rows, but the harness never
+ran them.  This commit:
+
+  - admits `object_value` + `enum_value` matchers in
+    `IsInM7Envelope`; `CompareValue` routes through new
+    `CompareMessage` (Any-unpack + `MessageDifferencer::Equals`)
+    + `CompareEnum` (int compare per langdef §"Enumerated Types") arms;
+  - `binding_marshal::ValueFromProto` lights up `kObjectValue`
+    (Any-unpack + `Value::OwnedMessage`) and `kEnumValue` (`Value::Int`);
+  - `binding_marshal::TypeSpecFragment` + `CelTypeFromProtoType`
+    light up `kMessageType` decls, emitting `name:<FQN>` for the
+    spec parser;
+  - `Value::OwnedMessage` impl moved out of value.cc's stub into
+    cel_host.cc (wraps `unique_ptr<Message>` in `OwnedProtoBacking`);
+  - shared `binding_marshal::UnpackAny` helper exposed via header.
 
 The dominant remaining blockers, in approximate unlock order:
 
@@ -207,10 +227,10 @@ ext-lib FAIL-dominated fixtures.
 | `unknowns.textproto`        |    0 |   0 |    0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `conversions.textproto`     |  109 |   0 |  109 |   0 |  0% | `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` — overload set not seeded | M5.D step 2 (host conversions) |
 | `dynamic.textproto`         |  226 |   9 |  175 |  42 |  4% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`.  The 9 PASSes graduated via M7.D's `InlineConstantReferences` rewrite (some `dyn(constant)` rows fold to a constant before the gate) | Never (static subset) |
-| `enums.textproto`           |   85 |  22 |   53 |  10 | 26% | M7.D `InlineConstantReferences` + §4.5 encoder polish carried 22 rows.  10 FAILs remain on `repeated_field_assign/*` and `single_field_assign/*` paths that still need diagnosis | Diagnose remaining edges |
+| `enums.textproto`           |   85 |  36 |   17 |  32 | 42% | M7.D `InlineConstantReferences` + §4.5 encoder polish + envelope widen carried 36 rows.  32 FAILs surfaced from the envelope widen (previously SKIPped) — most are dyn / wrapper / object-value-matcher rows now reachable but failing on M8 / dyn-typed deps | Diagnose ext-lib gaps |
 | `macros.textproto`          |   44 |   0 |   44 |   0 |  0% | 33 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 envelope (`eval_error`/disable_check); 5 `dyn(aggregate)` rejections | Comprehensions follow-on |
-| `proto2.textproto`          |  118 |  37 |   80 |   1 | 31% | M7.A–E + encoder polish + null-clear lit up scalar/repeated/map/oneof/nested + null-clear-on-set + host-backed read decode.  1 FAIL: `empty_field/nested_message_subfield` (`TestAllTypes{}.single_nested_message.bb`) — chained select on unset proto3-style message; needs cel-cpp's null-propagation-with-default-instance behaviour | Chained-null read fix |
-| `proto3.textproto`          |   85 |  34 |   50 |   1 | 40% | Same shape as proto2 — 1 FAIL is the same chained-null edge | Chained-null read fix |
+| `proto2.textproto`          |  118 |  39 |   49 |  30 | 33% | M7.A–E + polish + envelope widen.  Of the 30 FAILs (envelope previously hid these as SKIP): wrapper-typed rows (M8), dyn-typed rows (static-subset rejection), Any packing (M7-future), and the chained-null read edge | M8 + classifier tightening |
+| `proto3.textproto`          |   85 |  36 |   19 |  30 | 42% | Same shape as proto2 — 30 FAILs surfaced from envelope widen | M8 + classifier tightening |
 | `timestamps.textproto`      |   76 |   0 |   76 |   0 |  0% | `timestamp(...)` / `duration(...)` constructors, date arithmetic | Timestamps slice (post-M7) |
 | `type_deduction.textproto`  |   47 |   0 |   47 |   0 |  0% | All tests `check_only:true` with `typed_result:` matcher — envelope drops them | Harness: `typed_result` matcher |
 | `wrappers.textproto`        |   36 |   0 |   18 |  18 |  0% | M7.A admits wrapper-type construction at the parse stage (rows graduated from envelope-skip to compile-FAIL); 18 FAILs all gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
@@ -224,7 +244,7 @@ ext-lib FAIL-dominated fixtures.
 | `optionals.textproto`       |   70 |   0 |    0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)`; 3 previously-SKIP `eval_error` rows now FAIL on the same root cause | Optionals pass (post-M5) |
 | `string_ext.textproto`      |  216 |   0 |  122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii`; 9 previously-SKIP `eval_error` rows now FAIL on the same root cause | Extensions pass |
 
-Sums (cross-check): pass = 858, skip = 1052, fail = 544, total = 2454.
+Sums (cross-check): pass = 876, skip = 843, fail = 735, total = 2454.
 
 ## Forecast by remaining (open) milestone
 

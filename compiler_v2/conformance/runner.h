@@ -86,14 +86,14 @@ absl::string_view OutcomeName(Outcome o);
 // in-envelope tests graduate.
 //
 // A false here short-circuits to `kUnsupported` without compiling.
-bool IsInM4Envelope(const cel::expr::conformance::test::SimpleTest& t);
+bool IsInM7Envelope(const cel::expr::conformance::test::SimpleTest& t);
 
 // Compare a decoded `cel::Value` against the proto `cel.expr.Value`.
 // OK on equality, `FailedPrecondition` with a diff-ish payload on
 // mismatch, `InvalidArgument` if `want` is a kind the runner has no
 // comparison for (list_value / object_value / enum_value /
 // type_value — caller should have short-circuited via
-// `IsInM4Envelope` first).
+// `IsInM7Envelope` first).
 absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
 
 // Compare a `cel::Value` against an `UnknownSet` matcher.  OK iff

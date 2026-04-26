@@ -90,6 +90,10 @@ cc_test(
     deps = [
         ":binding_marshal",
         "//compiler_v2/api:activation",
+        # M7: Value::OwnedMessage impl lives in cel_host.cc (needs
+        # OwnedProtoBacking's complete definition).  Link cel_host
+        # so binding_marshal_test resolves the symbol.
+        "//compiler_v2/api:cel_host",
         "//compiler_v2/api:value",
         "//proto/cel/expr:checked_cc_proto",
         "//proto/cel/expr:eval_cc_proto",

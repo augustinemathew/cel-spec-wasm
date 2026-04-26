@@ -105,11 +105,8 @@ Value Value::Error(ErrorPayload payload) {
 //   Value Value::HostList(...)                       cel_host.cc
 //   Value Value::Map(std::vector<std::pair<...>>)    cel_host.cc
 //   Value Value::HostMap(...)                        cel_host.cc
-Value Value::OwnedMessage(std::unique_ptr<google::protobuf::Message> m) {
-  [[maybe_unused]] auto taken = std::move(m);
-  ABSL_CHECK(false)
-      << "Value::OwnedMessage is a stub until M7 (proto literal construction)";
-}
+// Defined in `api/internal/cel_host.cc` — needs `OwnedProtoBacking`'s
+// complete definition.  Same one-way dep rule as `Value::Message`.
 
 // HostMessage is the general-purpose message constructor — it takes
 // any `HostMessageBacking` subclass (`ProtoBacking` for proto,

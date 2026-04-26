@@ -19,6 +19,7 @@
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/any.pb.h"
+#include "google/protobuf/message.h"
 
 namespace celwasm::conformance {
 
@@ -40,6 +43,16 @@ namespace celwasm::conformance {
 // `InvalidArgument` if no `kind` is set on the proto.
 ABSL_MUST_USE_RESULT absl::StatusOr<cel::Value> ValueFromProto(
     const cel::expr::Value& v);
+
+// M7: unpack an Any-style `object_value` payload into a heap-owned
+// proto.  Caller's descriptor pool (the generated pool) must have
+// the type registered — the conformance harness force-links
+// TestAllTypes via `ForceLinkFixtureDescriptors` in `runner.cc`.
+// Used both by `ValueFromProto`'s kObjectValue arm (binding side)
+// and by `runner.cc::CompareMessage` (matcher side).
+ABSL_MUST_USE_RESULT absl::StatusOr<
+    std::unique_ptr<google::protobuf::Message>>
+UnpackAny(const google::protobuf::Any& any);
 
 // Convert a scalar `cel.expr.Decl` (IdentDecl with a primitive
 // `Type`) into a `name:type` spec string consumed by

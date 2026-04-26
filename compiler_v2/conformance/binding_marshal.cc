@@ -1,5 +1,6 @@
 #include "compiler_v2/conformance/binding_marshal.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -7,6 +8,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "cel/expr/checked.pb.h"
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/eval.pb.h"
@@ -15,6 +17,10 @@
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/any.pb.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/dynamic_message.h"
+#include "google/protobuf/message.h"
 
 namespace celwasm::conformance {
 
@@ -22,6 +28,56 @@ using ProtoValue = ::cel::expr::Value;
 using ProtoExprValue = ::cel::expr::ExprValue;
 using ProtoType = ::cel::expr::Type;
 using ProtoDecl = ::cel::expr::Decl;
+
+namespace {
+
+// Strip `type.googleapis.com/` (or `type.googleprod.com/`) prefix from
+// an Any's `type_url` to get the bare FQN.  Anything before the LAST
+// `/` is namespace; the FQN is everything after it.
+absl::string_view AnyTypeFqn(absl::string_view type_url) {
+  const size_t slash = type_url.rfind('/');
+  if (slash == absl::string_view::npos) return type_url;
+  return type_url.substr(slash + 1);
+}
+
+}  // namespace
+
+// Unpack an `Any`-shaped object_value into a heap-allocated proto.
+// Caller's descriptor pool must have the type registered (the
+// conformance harness force-links TestAllTypes via
+// `ForceLinkFixtureDescriptors`).  Returns `OwnedMessage` ready to
+// hand to `Activation::Bind` or `MessageDifferencer::Equals`.
+// NOLINTNEXTLINE(misc-use-internal-linkage) — public via header.
+absl::StatusOr<std::unique_ptr<google::protobuf::Message>> UnpackAny(
+    const google::protobuf::Any& any) {
+  const absl::string_view fqn = AnyTypeFqn(any.type_url());
+  const google::protobuf::DescriptorPool* pool =
+      google::protobuf::DescriptorPool::generated_pool();
+  const google::protobuf::Descriptor* desc =
+      pool->FindMessageTypeByName(std::string(fqn));
+  if (desc == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "binding_marshal: object_value type `", fqn,
+        "` not registered in generated descriptor pool"));
+  }
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
+  if (prototype == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "binding_marshal: generated_factory has no prototype for `", fqn,
+        "`"));
+  }
+  std::unique_ptr<google::protobuf::Message> msg(prototype->New());
+  if (msg == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "binding_marshal: prototype->New() returned null for `", fqn, "`"));
+  }
+  if (!msg->ParseFromString(any.value())) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "binding_marshal: failed to parse Any payload for `", fqn, "`"));
+  }
+  return msg;
+}
 
 absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
   switch (v.kind_case()) {
@@ -40,14 +96,19 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
     case ProtoValue::kBytesValue:
       return cel::Value::Bytes(v.bytes_value());
     case ProtoValue::kEnumValue:
-      // Enum binding is a kInt at the runtime level once a checker
-      // resolves the enum's underlying primitive; M7 lights up the
-      // proto-enum import path.  Until then, SKIP gracefully.
-      return absl::UnimplementedError(
-          "binding_marshal: enum_value bindings unimplemented (M7)");
-    case ProtoValue::kObjectValue:
-      return absl::UnimplementedError(
-          "binding_marshal: object_value bindings unimplemented (M7)");
+      // langdef §"Enumerated Types": enum values are spec-typed as
+      // int.  M7.D's InlineConstantReferences rewrite handles
+      // enum-name resolution into Constant(int) at the AST level;
+      // here we marshal an `enum_value`-typed binding the same way.
+      return cel::Value::Int(v.enum_value().value());
+    case ProtoValue::kObjectValue: {
+      // M7: unpack the Any-style object_value into a fresh proto
+      // wrapped in OwnedProtoBacking.  Same pattern the conformance
+      // matcher uses on the read side (CompareMessage in runner.cc).
+      auto msg_or = UnpackAny(v.object_value());
+      if (!msg_or.ok()) return msg_or.status();
+      return cel::Value::OwnedMessage(*std::move(msg_or));
+    }
     case ProtoValue::kMapValue:
       return absl::UnimplementedError(
           "binding_marshal: map_value bindings unimplemented (M6)");
@@ -120,8 +181,16 @@ absl::StatusOr<std::string> TypeSpecFragment(const ProtoType& t) {
       return absl::UnimplementedError(
           "binding_marshal: map_type type_env unimplemented (M6)");
     case ProtoType::kMessageType:
-      return absl::UnimplementedError(
-          "binding_marshal: message_type type_env unimplemented (M7)");
+      // M7: emit `<FQN>` so the checker spec parser routes through
+      // ParseMessageType → DescriptorPool::FindMessageTypeByName.
+      // Empty FQN is an invariant violation (the checker spec is
+      // ill-formed); fail loud so it doesn't manifest as an opaque
+      // checker error.
+      if (t.message_type().empty()) {
+        return absl::InvalidArgumentError(
+            "binding_marshal: message_type with empty name");
+      }
+      return std::string(t.message_type());
     case ProtoType::kFunction:
       return absl::UnimplementedError(
           "binding_marshal: function type_env unimplemented");
@@ -239,15 +308,25 @@ absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
   if (t.type_kind_case() == ProtoType::kPrimitive) {
     return CelTypeFromPrimitive(t.primitive());
   }
-  // Mirror `TypeSpecFragment`'s rejection list — anything non-scalar
-  // SKIPs.  Reusing the same helper would re-serialize then re-parse;
-  // instead just consult the same kind tag and return Unimplemented.
+  // M7: declare a message-typed variable through the typed CelType
+  // surface — same FQN that `TypeSpecFragment` returns for the spec-
+  // string path.
+  if (t.type_kind_case() == ProtoType::kMessageType) {
+    if (t.message_type().empty()) {
+      return absl::InvalidArgumentError(
+          "binding_marshal: message_type with empty name");
+    }
+    return cel::CelType::Message(t.message_type());
+  }
+  // Anything else (list_type / map_type / wrapper / well_known / dyn /
+  // ...) is still SKIP territory.  Re-use `TypeSpecFragment`'s
+  // Unimplemented status for a single source of truth.
   auto frag = TypeSpecFragment(t);
   if (frag.ok()) {
-    // Scalar primitive that wasn't kPrimitive — defensive: should not
-    // happen given the enumeration in TypeSpecFragment.
-    ABSL_CHECK(false) << "binding_marshal: TypeSpecFragment OK for non-"
-                         "primitive kind = "
+    // Defensive: TypeSpecFragment returned OK for a kind we didn't
+    // route here — invariant violation.
+    ABSL_CHECK(false) << "binding_marshal: TypeSpecFragment OK for "
+                         "unrouted kind = "
                       << static_cast<int>(t.type_kind_case());
   }
   return frag.status();

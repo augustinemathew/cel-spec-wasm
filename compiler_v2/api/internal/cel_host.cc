@@ -2419,6 +2419,12 @@ Value Value::Message(const google::protobuf::Message& m) {
   return Value::HostMessage(std::make_shared<celwasm::ProtoBacking>(&m));
 }
 
+Value Value::OwnedMessage(std::unique_ptr<google::protobuf::Message> m) {
+  ABSL_CHECK(m != nullptr) << "Value::OwnedMessage: message must not be null";
+  return Value::HostMessage(
+      std::make_shared<celwasm::OwnedProtoBacking>(std::move(m)));
+}
+
 Value Value::Map(std::vector<std::pair<Value, Value>> entries) {
   return Value::HostMap(std::make_shared<celwasm::HostMap>(std::move(entries)));
 }
