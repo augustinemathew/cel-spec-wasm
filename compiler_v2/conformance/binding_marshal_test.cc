@@ -118,7 +118,9 @@ TEST(ValueFromProto, NoKindSetIsInvalid) {
 TEST(VariableSpecFromDecl, BoolPrimitive) {
   Decl d;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(name: "x" ident { type { primitive: BOOL } })pb", &d));
+      R"pb(name: "x"
+           ident { type { primitive: BOOL } })pb",
+      &d));
   auto got = VariableSpecFromDecl(d);
   ASSERT_THAT(got, IsOk());
   EXPECT_EQ(*got, "x:bool");
@@ -130,11 +132,21 @@ TEST(VariableSpecFromDecl, AllScalarPrimitives) {
     std::string want;
   };
   const Case cases[] = {
-      {R"pb(name: "x" ident { type { primitive: INT64 } })pb", "x:int"},
-      {R"pb(name: "x" ident { type { primitive: UINT64 } })pb", "x:uint"},
-      {R"pb(name: "x" ident { type { primitive: DOUBLE } })pb", "x:double"},
-      {R"pb(name: "x" ident { type { primitive: STRING } })pb", "x:string"},
-      {R"pb(name: "x" ident { type { primitive: BYTES } })pb", "x:bytes"},
+      {R"pb(name: "x"
+            ident { type { primitive: INT64 } })pb",
+       "x:int"},
+      {R"pb(name: "x"
+            ident { type { primitive: UINT64 } })pb",
+       "x:uint"},
+      {R"pb(name: "x"
+            ident { type { primitive: DOUBLE } })pb",
+       "x:double"},
+      {R"pb(name: "x"
+            ident { type { primitive: STRING } })pb",
+       "x:string"},
+      {R"pb(name: "x"
+            ident { type { primitive: BYTES } })pb",
+       "x:bytes"},
   };
   for (const auto& c : cases) {
     Decl d;
@@ -148,7 +160,9 @@ TEST(VariableSpecFromDecl, AllScalarPrimitives) {
 TEST(VariableSpecFromDecl, QualifiedNamePreserved) {
   Decl d;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(name: "x.y" ident { type { primitive: BOOL } })pb", &d));
+      R"pb(name: "x.y"
+           ident { type { primitive: BOOL } })pb",
+      &d));
   auto got = VariableSpecFromDecl(d);
   ASSERT_THAT(got, IsOk());
   EXPECT_EQ(*got, "x.y:bool");
@@ -157,7 +171,9 @@ TEST(VariableSpecFromDecl, QualifiedNamePreserved) {
 TEST(VariableSpecFromDecl, MessageTypeUnimplemented) {
   Decl d;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(name: "m" ident { type { message_type: "foo.Bar" } })pb", &d));
+      R"pb(name: "m"
+           ident { type { message_type: "foo.Bar" } })pb",
+      &d));
   EXPECT_THAT(VariableSpecFromDecl(d),
               StatusIs(absl::StatusCode::kUnimplemented));
 }
@@ -175,7 +191,9 @@ TEST(VariableSpecFromDecl, ListTypeUnimplemented) {
 TEST(VariableSpecFromDecl, FunctionDeclUnimplemented) {
   Decl d;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(name: "f" function { overloads { overload_id: "f_int" } })pb", &d));
+      R"pb(name: "f"
+           function { overloads { overload_id: "f_int" } })pb",
+      &d));
   EXPECT_THAT(VariableSpecFromDecl(d),
               StatusIs(absl::StatusCode::kUnimplemented));
 }
@@ -184,9 +202,18 @@ TEST(PopulateActivation, ScalarsBoundCorrectly) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
-        bindings { key: "b" value { value { bool_value: true } } }
-        bindings { key: "i" value { value { int64_value: 7 } } }
-        bindings { key: "s" value { value { string_value: "hi" } } }
+        bindings {
+          key: "b"
+          value { value { bool_value: true } }
+        }
+        bindings {
+          key: "i"
+          value { value { int64_value: 7 } }
+        }
+        bindings {
+          key: "s"
+          value { value { string_value: "hi" } }
+        }
       )pb",
       &t));
   cel::Activation act;
@@ -202,7 +229,11 @@ TEST(PopulateActivation, ScalarsBoundCorrectly) {
 TEST(PopulateActivation, UnknownBindingIsUnimplemented) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(bindings { key: "u" value { unknown { exprs: 1 } } })pb", &t));
+      R"pb(bindings {
+             key: "u"
+             value { unknown { exprs: 1 } }
+           })pb",
+      &t));
   cel::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
@@ -211,7 +242,11 @@ TEST(PopulateActivation, UnknownBindingIsUnimplemented) {
 TEST(PopulateActivation, ErrorBindingIsUnimplemented) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(bindings { key: "e" value { error { errors {} } } })pb", &t));
+      R"pb(bindings {
+             key: "e"
+             value { error { errors {} } }
+           })pb",
+      &t));
   cel::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
@@ -220,7 +255,11 @@ TEST(PopulateActivation, ErrorBindingIsUnimplemented) {
 TEST(PopulateActivation, AggregateValueBindingIsUnimplemented) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(bindings { key: "l" value { value { list_value {} } } })pb", &t));
+      R"pb(bindings {
+             key: "l"
+             value { value { list_value {} } }
+           })pb",
+      &t));
   cel::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
@@ -230,8 +269,14 @@ TEST(PopulateVariableSpecs, AppendsScalarSpecs) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
-        type_env { name: "x" ident { type { primitive: INT64 } } }
-        type_env { name: "y" ident { type { primitive: STRING } } }
+        type_env {
+          name: "x"
+          ident { type { primitive: INT64 } }
+        }
+        type_env {
+          name: "y"
+          ident { type { primitive: STRING } }
+        }
       )pb",
       &t));
   std::vector<std::string> out;
@@ -244,7 +289,10 @@ TEST(PopulateVariableSpecs, AppendsScalarSpecs) {
 TEST(PopulateVariableSpecs, AggregateDeclSurfaceUnimplemented) {
   SimpleTest t;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(type_env { name: "m" ident { type { message_type: "foo.Bar" } } })pb",
+      R"pb(type_env {
+             name: "m"
+             ident { type { message_type: "foo.Bar" } }
+           })pb",
       &t));
   std::vector<std::string> out;
   EXPECT_THAT(PopulateVariableSpecs(t, out),

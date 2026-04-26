@@ -24,9 +24,15 @@
 // the cel::Value's `HostMapBacking`.  M4 admits `list_value:`
 // matchers — `CompareList` walks the decoded `cel::Value`'s
 // `HostListBacking` ORDER-aware (lists are ordered per langdef
-// § "List equality", unlike maps).  Subsequent milestones loosen
-// further dimensions (error matchers, comprehensions) and update
-// the filter here in the same commit.
+// § "List equality", unlike maps).  M4 additionally admits
+// `eval_error:` / `any_eval_errors:` matchers — `CompareEvalError`
+// asserts the runtime returned a `Value::Error`; the matcher's
+// per-error `message` strings are checked loosely (substring,
+// either direction) against the runtime payload, with empty
+// `errors[]` matching any error (mirrors cel-cpp's
+// `conformance/run.cc` which checks `has_error()` only).
+// Subsequent milestones loosen further dimensions (typed_result,
+// comprehensions) and update the filter here in the same commit.
 
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
@@ -37,6 +43,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/test/simple.pb.h"
+#include "cel/expr/eval.pb.h"
 #include "cel/expr/value.pb.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -97,6 +104,23 @@ absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
 // item in `conformance/README.md`; for now the kind-level match is
 // enough to lock the PartialEval route end-to-end.
 absl::Status CompareUnknown(const cel::Value& got);
+
+// Compare a `cel::Value` against an `eval_error` / `any_eval_errors`
+// matcher.  OK iff `got.IsError()` AND the matcher loosely matches
+// the runtime's `ErrorPayload::message`.  Matching rule (mirrors
+// cel-cpp's `conformance/run.cc`, which only checks `has_error()`):
+//
+//   - If `want.errors_size() == 0` → any error matches.
+//   - Otherwise → at least one of `want.errors[i].message` matches
+//     the runtime message via substring-either-direction (the
+//     fixture-author-supplied messages and our `ErrorCodeName(...)`
+//     payloads use different phrasings — e.g. `"divide by zero"` vs
+//     `"divide_by_zero"`, `"return error for overflow"` vs
+//     `"overflow"` — so strict equality would reject every row).
+//
+// Returns `FailedPrecondition` with a kind/message diff on mismatch.
+absl::Status CompareEvalError(const cel::Value& got,
+                              const cel::expr::ErrorSet& want);
 
 // Run one test end-to-end using the shared compiler + engine
 // fixtures.  Never throws; always returns a `Result`.

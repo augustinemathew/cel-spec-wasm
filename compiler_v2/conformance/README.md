@@ -17,7 +17,7 @@ No CI gate today.  Adding one is tracked under "Future work" below.
 
 ## Current state
 
-`total=2454 · pass=664 (27.1%) · skip=1362 (55.5%) · fail=428 (17.4%)`
+`total=2454 · pass=700 (28.5%) · skip=1274 (51.9%) · fail=480 (19.6%)`
 across 30 loadable fixtures.
 
 The dominant remaining blockers, in approximate unlock order:
@@ -41,11 +41,6 @@ The dominant remaining blockers, in approximate unlock order:
   - **`size('multibyte')` mismatch** — 2 FAILs in `string.textproto`
     (UTF-8 size returns codepoint count; matcher expects bytes).
     One-line fix once the spec is double-checked.
-  - **`eval_error` cross-fixture matchers** — ~50+ SKIPs across
-    `logic`, `integer_math`, parts of `comparisons` /
-    `lists` / `fields` / `parse`.  The harness drops these; teaching
-    `RunOne` to accept `eval_error` against a `Value::Error` result
-    unblocks all of them.
   - **Comprehensions follow-on**.  `macros.textproto`,
     `macros2.textproto` three-arg forms.
   - **Extensions pass**.  `bindings_ext`, `block_ext`,
@@ -105,11 +100,11 @@ What currently lands in `kUnsupported`:
     `type_value`) — `binding_marshal::ValueFromProto` returns
     Unimplemented.
   - `type_env:` declares a non-scalar / non-string / non-bytes type.
-  - `result_matcher` is `eval_error` / `any_eval_errors` (cross-
-    cutting; needs harness work + cleaner 3VL surfacing).
   - `value:` matcher is `object_value` / `enum_value` /
     `type_value`.  `list_value` / `map_value` matchers DO compare
-    today.
+    today.  `eval_error` / `any_eval_errors` matchers also compare
+    today (kind-only — see "Outcome taxonomy" → `CompareEvalError`
+    in `runner.cc`; mirrors cel-cpp's `conformance/run.cc` rule).
   - `disable_check` or `check_only` set.
   - Compile / eval returned `Unimplemented` — most commonly
     `expr_lower: expression kind 'struct' is not supported yet`
@@ -140,21 +135,21 @@ ext-lib FAIL-dominated fixtures.
 
 | Fixture | Total | Pass | Skip | Fail | Pass % | Blocker | Unlocks at |
 |---|---:|---:|---:|---:|---:|---|---|
-| `fp_math.textproto`         |   30 |  29 |    1 |   0 | 97% | 1 SKIP is `mod_not_support` (`47.5 % 5.5`) — `disable_check:true` with `eval_error` matcher | (cross-cutting `eval_error`) |
+| `fp_math.textproto`         |   30 |  29 |    1 |   0 | 97% | 1 SKIP is `mod_not_support` (`47.5 % 5.5`) — `disable_check:true` with `eval_error` matcher (env gate ahead of envelope) | M5.D step 2 (host conversions) |
 | `basic.textproto`           |   43 |  37 |    6 |   0 | 86% | `[]` self-eval / `type(x)` (type subsystem) and message-typed shapes | M7 |
 | `string.textproto`          |   51 |  40 |    9 |   2 | 78% | 9 SKIPs are all `matches` regex (deferred — no regex engine wired); 2 FAILs are `size('multibyte')` mismatches (size returns int, matcher expects bytes) | regex `matches` ext-lib |
-| `parse.textproto`           |  219 | 157 |   45 |  17 | 72% | 34 SKIPs are envelope-rejected (`eval_error` matchers, `disable_check` receiver-function-name rows, parse-only AST matchers); 7 are `kStruct` (proto literals); 1 type_env list_type; 1 missing `uint64_to_int64` overload; 17 FAILs are string-keyed map self-eval | harness AST-matcher + `eval_error` matcher + M7 |
+| `parse.textproto`           |  219 | 157 |   45 |  17 | 72% | 34 SKIPs are envelope-rejected (`disable_check` receiver-function-name rows, parse-only AST matchers); 7 are `kStruct` (proto literals); 1 type_env list_type; 1 missing `uint64_to_int64` overload; 17 FAILs are string-keyed map self-eval | harness AST-matcher + M7 |
 | `comparisons.textproto`     |  406 | 287 |  119 |   0 | 71% | 67 SKIPs need proto literals (`TestAllTypes{...}`) — codegen rejects `kStruct`; 28 are `dyn(aggregate)` deliberate rejections (Slice 1.5); 21 envelope-rejected (cross-numeric without dyn, mixed-type list literals); 3 are aggregate `type_env` declarations | M7 (proto literals) + harness type_env aggregate marshalling |
-| `integer_math.textproto`    |   64 |  45 |   19 |   0 | 70% | All 19 SKIPs are `eval_error` matchers (int overflow / div-by-zero / mod-zero / unary-minus-on-uint) | harness `eval_error` matcher |
-| `lists.textproto`           |   39 |  27 |   10 |   2 | 69% | 7 SKIPs are `eval_error` matchers (out-of-bounds index, bad index type); 3 are `dyn(aggregate)` rejections; 2 FAILs are bound-list operands | harness `eval_error` matcher + M5.D step 2 (bound-list ops) |
-| `plumbing.textproto`        |    5 |   3 |    2 |   0 | 60% | Non-scalar plumbing (parse-phase protobuf round-trips) | M2+ (varies) |
-| `logic.textproto`           |   30 |  16 |   14 |   0 | 53% | All 14 SKIPs are envelope-rejected: `eval_error` cross-fixture matchers + mixed-type ternary / type-mismatch in `&&`/`||` operands | harness `eval_error` matcher |
-| `fields.textproto`          |   60 |  19 |   35 |   6 | 32% | 17 SKIPs are envelope-rejected (`eval_error` matchers, `disable_check`, disallowed-key-kind rows); 13 are `dyn(aggregate)`; 5 are `type_env: map_type`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | harness `eval_error` matcher + map-type marshalling + M5.D step 2 |
+| `integer_math.textproto`    |   64 |  61 |    3 |   0 | 95% | 16 of the 19 `eval_error` rows now PASS via M4 `CompareEvalError`; 3 SKIPs remain on `disable_check:true` rows (`unary_minus_not_*`) | M5.D step 2 (host overload set) |
+| `lists.textproto`           |   39 |  34 |    3 |   2 | 87% | All 7 `eval_error` rows now PASS; 3 SKIPs are `dyn(aggregate)` rejections; 2 FAILs are bound-list operands | M5.D step 2 (bound-list ops) |
+| `plumbing.textproto`        |    5 |   4 |    1 |   0 | 80% | 1 SKIP is parse-phase protobuf round-trip; the `error_result` `eval_error` row now PASSes | M2+ (varies) |
+| `logic.textproto`           |   30 |  21 |    9 |   0 | 70% | All 5 `eval_error` rows now PASS (conditional / AND / OR `error_*`); 9 SKIPs remain on mixed-type ternary / type-mismatch operands | M5 follow-on (mixed-type 3VL) |
+| `fields.textproto`          |   60 |  26 |   28 |   6 | 43% | 7 `eval_error` rows now PASS (no_such_key / duplicate_key / bad_key_type); 13 SKIPs remain `dyn(aggregate)`; 5 are `type_env: map_type`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | map-type marshalling + M5.D step 2 |
 | `namespace.textproto`       |   14 |   4 |   10 |   0 | 29% | Most SKIPs are comprehension-shaped (`[0].exists(y, ...)`) — comprehension lowering is the M5 follow-on; remainder is `disable_check` self-eval | Comprehensions follow-on |
 | `unknowns.textproto`        |    0 |   0 |    0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `conversions.textproto`     |  109 |   0 |  109 |   0 |  0% | `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` — overload set not seeded | M5.D step 2 (host conversions) |
 | `dynamic.textproto`         |  226 |   0 |  226 |   0 |  0% | Every test uses `dyn(...)` aggregate — deliberately rejected by `RejectDyn` | Never (static subset) |
-| `enums.textproto`           |   85 |   0 |   77 |   8 |  0% | Enum value access on `TestAllTypes` — proto field reads + enum subsystem.  8 FAILs hit "variable not bound" | M7 |
+| `enums.textproto`           |   85 |   0 |   65 |  20 |  0% | Enum value access on `TestAllTypes` — proto field reads + enum subsystem.  20 FAILs hit "variable not bound" / undeclared message refs (12 of those graduated SKIP→FAIL when the M4 `eval_error` envelope opened: rows previously skipped at the matcher gate now compile and surface the underlying ext-lib gap) | M7 |
 | `macros.textproto`          |   44 |   0 |   44 |   0 |  0% | 33 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 envelope (`eval_error`/disable_check); 5 `dyn(aggregate)` rejections | Comprehensions follow-on |
 | `proto2.textproto`          |  118 |   0 |  118 |   0 |  0% | Proto2 message construction + field access | M7 |
 | `proto3.textproto`          |   85 |   0 |   85 |   0 |  0% | Proto3 message construction + field access | M7 |
@@ -165,13 +160,13 @@ ext-lib FAIL-dominated fixtures.
 | `bindings_ext.textproto`    |    8 |   0 |    0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
 | `encoders_ext.textproto`    |    4 |   0 |    0 |   4 |  0% | `base64.encode` / `base64.decode` | Extensions pass |
 | `block_ext.textproto`       |   37 |   0 |   11 |  26 |  0% | `cel.@block([args…], expr)` — CEL-internal block form | Extensions pass |
-| `macros2.textproto`         |   46 |   0 |    8 |  38 |  0% | Three-arg comprehension forms (`list.exists(i, v, pred)`) | Comprehensions follow-on |
-| `network_ext.textproto`     |   69 |   0 |    9 |  60 |  0% | `ip(...)` / `isIP` / CIDR parsing | Extensions pass |
-| `math_ext.textproto`        |  199 |   0 |  100 |  99 |  0% | `math.greatest` / `.least` / `.round` / `.trunc` / `.ceil` / `.floor` / `.sign` | Extensions pass |
-| `optionals.textproto`       |   70 |   0 |    3 |  67 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)` | Optionals pass (post-M5) |
-| `string_ext.textproto`      |  216 |   0 |  131 |  85 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii` | Extensions pass |
+| `macros2.textproto`         |   46 |   0 |    0 |  46 |  0% | Three-arg comprehension forms (`list.exists(i, v, pred)`); the 8 previously-SKIP `eval_error` rows now FAIL at compile (same root cause: undeclared three-arg form) | Comprehensions follow-on |
+| `network_ext.textproto`     |   69 |   0 |    0 |  69 |  0% | `ip(...)` / `isIP` / CIDR parsing; 9 previously-SKIP `eval_error` rows now FAIL on the same undeclared-symbol error | Extensions pass |
+| `math_ext.textproto`        |  199 |   0 |   83 | 116 |  0% | `math.greatest` / `.least` / `.round` / `.trunc` / `.ceil` / `.floor` / `.sign`; 17 previously-SKIP `eval_error` rows now FAIL on undeclared-symbol | Extensions pass |
+| `optionals.textproto`       |   70 |   0 |    0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)`; 3 previously-SKIP `eval_error` rows now FAIL on the same root cause | Optionals pass (post-M5) |
+| `string_ext.textproto`      |  216 |   0 |  122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii`; 9 previously-SKIP `eval_error` rows now FAIL on the same root cause | Extensions pass |
 
-Sums (cross-check): pass = 664, skip = 1362, fail = 428, total = 2454.
+Sums (cross-check): pass = 700, skip = 1274, fail = 480, total = 2454.
 
 ## Forecast by remaining (open) milestone
 
@@ -181,7 +176,6 @@ prioritise, not to predict exact PASS counts.
 
 | Milestone | Fixture classes expected to move | Approx. tests unlocked |
 |---|---|---:|
-| **Harness: `eval_error` matcher** | All-SKIP `logic` / `integer_math` rows + cross-cutting in `fields` / `lists` / `parse` / `comparisons` | ~+50–80 |
 | **Comprehensions follow-on** | `macros` (33), `macros2` three-arg forms, `namespace_shadowing/*` rows | ~+50–80 |
 | **M7** (proto literals + wrappers + message bindings) | `proto2`, `proto3`, `wrappers`, remaining `enums`, the 67 message-eq rows in `comparisons`, aggregates in `basic`, `fields.object_value` bindings | ~+350 |
 | **`kStruct` codegen alone** (subset of M7) | The 67 `Foo{...}` literal rows in `comparisons.textproto` — message equality kernel ships, just needs literal construction | ~+67 |

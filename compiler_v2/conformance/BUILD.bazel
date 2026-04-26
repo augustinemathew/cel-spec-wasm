@@ -29,6 +29,7 @@ cc_library(
         # all embed Any<proto{2,3}.TestAllTypes>).
         "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
         "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "//proto/cel/expr:eval_cc_proto",
         "//proto/cel/expr:value_cc_proto",
         "//proto/cel/expr/conformance/test:simple_cc_proto",
         "@com_google_absl//absl/log:absl_check",
@@ -63,6 +64,23 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "runner_test",
+    srcs = ["runner_test.cc"],
+    deps = [
+        ":runner",
+        "//compiler_v2/api:error",
+        "//compiler_v2/api:value",
+        "//proto/cel/expr:eval_cc_proto",
+        "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 
