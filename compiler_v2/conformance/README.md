@@ -222,6 +222,72 @@ the `category: detail` shape.  The fixture-author audience reads
 SKIP messages as the canonical answer to "why didn't this run" —
 short and stable matters.
 
+## Per-fixture SKIP breakdown by category
+
+Counts come from grepping the live conformance output's
+`category: detail` SKIP messages.  Use this table to answer "of
+the N SKIPs in this fixture, how many are out-of-scope-by-design
+vs how many are scope-not-yet-shipped?"
+
+  - **`disable_check`** + **`check_only`** + **`static_subset`**
+    are out-of-scope-by-design (parse-only eval / no-eval check
+    path / `dyn` rejection — see SKIP-message taxonomy above).
+  - **`envelope`** + **`compile unimpl`** + **`type_env`** +
+    **`bindings`** are scope-not-yet-shipped (capabilities a
+    future milestone will graduate).
+
+Fixtures with 0 SKIPs (basic-fail-only ext libs / fully-passing
+green) are omitted; see the inventory below for those.  Sorted
+by total SKIP count descending.
+
+| Fixture | Total | `static_subset` | `disable_check` | `envelope` | `compile unimpl` | `type_env` | `check_only` | other |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `string_ext.textproto`      | 122 | 0 | 44 | 78 | 0 | 0 | 0 | 0 |
+| `conversions.textproto`     | 109 | 0 | 1 | 22 | 86 | 0 | 0 | 0 |
+| `dynamic.textproto`         |  92 | 72 | 20 | 0 | 0 | 0 | 0 | 0 |
+| `math_ext.textproto`        |  83 | 0 | 0 | 83 | 0 | 0 | 0 | 0 |
+| `timestamps.textproto`      |  76 | 0 | 0 | 2 | 74 | 0 | 0 | 0 |
+| `comparisons.textproto`     |  54 | 28 | 21 | 0 | 2 | 3 | 0 | 0 |
+| `proto2.textproto`          |  49 | 19 | 6 | 18 | 6 | 0 | 0 | 0 |
+| `type_deduction.textproto`  |  47 | 0 | 0 | 22 | 0 | 0 | 25 | 0 |
+| `macros.textproto`          |  44 | 6 | 0 | 0 | 38 | 0 | 0 | 0 |
+| `fields.textproto`          |  28 | 15 | 5 | 0 | 0 | 8 | 0 | 0 |
+| `parse.textproto`           |  25 | 0 | 17 | 0 | 5 | 1 | 0 | 2 |
+| `proto3.textproto`          |  19 | 7 | 6 | 0 | 6 | 0 | 0 | 0 |
+| `proto2_ext.textproto`      |  18 | 0 | 0 | 18 | 0 | 0 | 0 | 0 |
+| `wrappers.textproto`        |  18 | 18 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `enums.textproto`           |  17 | 0 | 2 | 12 | 3 | 0 | 0 | 0 |
+| `namespace.textproto`       |  10 | 0 | 4 | 0 | 6 | 0 | 0 | 0 |
+| `string.textproto`          |   9 | 0 | 0 | 0 | 9 | 0 | 0 | 0 |
+| `logic.textproto`           |   9 | 0 | 9 | 0 | 0 | 0 | 0 | 0 |
+| `basic.textproto`           |   6 | 2 | 4 | 0 | 0 | 0 | 0 | 0 |
+| `integer_math.textproto`    |   3 | 0 | 3 | 0 | 0 | 0 | 0 | 0 |
+| `lists.textproto`           |   3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `fp_math.textproto`         |   1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| `plumbing.textproto`        |   1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+
+Aggregated (corpus-wide):
+
+| Category | Count | Disposition |
+|---|---:|---|
+| `static_subset`   | 170 | Out-of-scope by design (`RejectDyn`) |
+| `compile unimpl`  | 235 | Scope not yet shipped (named milestone in detail) |
+| `envelope`        | 255 | Scope not yet shipped (matcher kind not yet handled) |
+| `disable_check`   | 144 | Out-of-scope by design (parse-only eval) |
+| `check_only`      |  25 | Scope not yet shipped (typed_result matcher) |
+| `type_env`        |  12 | Scope not yet shipped (binding-marshal aggregate types) |
+| other             |   2 | Multi-line `expr:` rows the SKIP-output parser couldn't categorise (cosmetic) |
+| **Total** | **843** | |
+
+**Take-away.** Of the 843 SKIPs, ~314 are out-of-scope-by-design
+(`disable_check` + `static_subset`) and ~527 are scope-not-yet-
+shipped (the rest).  The biggest scope-not-yet-shipped buckets
+are `envelope` (255) and `compile unimpl` (235) — both are
+mostly extension-library-shaped (math/string/network/optionals
+helpers the checker rejects) and will largely move with a single
+classifier-tightening pass: see the README's "Future work"
+section.
+
 ## Per-fixture inventory
 
 Sorted: highest pass % first, then pure-SKIP fixtures, then
