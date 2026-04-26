@@ -85,6 +85,7 @@ absl::StatusOr<std::string> ReadMemString(wasmtime_context_t* ctx,
 
 absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
                                        const wasmtime_memory_t& mem,
+                                       const celwasm::ExternrefTable& refs,
                                        uint32_t offset);
 
 // Decode an arena list (CEL_LIST_ARENA) by reading its
@@ -95,6 +96,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // `cel::Value::List(...)` (vector-backed `HostList`).
 absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
                                         const wasmtime_memory_t& mem,
+                                        const celwasm::ExternrefTable& refs,
                                         uint32_t header_ptr) {
   ArenaListHeader header;
   if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
@@ -106,7 +108,7 @@ absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
   for (uint32_t i = 0; i < header.count; ++i) {
     const uint32_t elem_off =
         header.elements_offset + (i * kCelListEntryStride);
-    auto e_or = DecodeCelValueAt(ctx, mem, elem_off);
+    auto e_or = DecodeCelValueAt(ctx, mem, refs, elem_off);
     if (!e_or.ok()) return e_or.status();
     elements.push_back(*std::move(e_or));
   }
@@ -122,6 +124,7 @@ absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
 // in a `cel::Value::Map(...)` (vector-backed `HostMap`).
 absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
                                        const wasmtime_memory_t& mem,
+                                       const celwasm::ExternrefTable& refs,
                                        uint32_t header_ptr) {
   ArenaMapHeader header;
   if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
@@ -132,12 +135,57 @@ absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
   entries.reserve(header.count);
   for (uint32_t i = 0; i < header.count; ++i) {
     const uint32_t entry_off = header.entries_offset + (i * kCelMapEntryStride);
-    auto k_or = DecodeCelValueAt(ctx, mem, entry_off);
+    auto k_or = DecodeCelValueAt(ctx, mem, refs, entry_off);
     if (!k_or.ok()) return k_or.status();
-    auto v_or = DecodeCelValueAt(ctx, mem, entry_off + sizeof(CelValue));
+    auto v_or =
+        DecodeCelValueAt(ctx, mem, refs, entry_off + sizeof(CelValue));
     if (!v_or.ok()) return v_or.status();
     entries.emplace_back(*std::move(k_or), *std::move(v_or));
   }
+  return Value::Map(std::move(entries));
+}
+
+// M7.F (encoder polish): decode a CEL_LIST_HOST CelValue.  The
+// payload's `ref_slot` points at a `HostListBacking` interned by
+// the host trampoline (e.g. `ProtoList` from a proto repeated
+// field read).  Walk via `ForEach` to collect each element as a
+// `cel::Value`, then re-wrap in a fresh vector-backed `HostList`
+// for the user — the original backing's lifetime is per-Eval
+// (cleared on `ExternrefTable::Reset()`), so the decoded `Value`
+// must own its element-side state.
+absl::StatusOr<Value> DecodeHostListAt(const celwasm::ExternrefTable& refs,
+                                       uint32_t ref_slot) {
+  const celwasm::HostListBacking* backing = refs.LookupList(ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Eval: CEL_LIST_HOST ref_slot=", ref_slot,
+        " has no externref entry"));
+  }
+  std::vector<Value> elements;
+  elements.reserve(backing->Size());
+  backing->ForEach(
+      [&elements](const Value& v) { elements.push_back(v); });
+  return Value::List(std::move(elements));
+}
+
+// M7.F: decode a CEL_MAP_HOST CelValue.  Mirrors `DecodeHostListAt`
+// — walk via `ForEach((k, v))` and re-wrap in a vector-backed
+// `HostMap`.  Same per-Eval-lifetime concern: backing goes away on
+// `ExternrefTable::Reset()`, so the decoded entries must be owned
+// by the returned `Value`.
+absl::StatusOr<Value> DecodeHostMapAt(const celwasm::ExternrefTable& refs,
+                                      uint32_t ref_slot) {
+  const celwasm::HostMapBacking* backing = refs.LookupMap(ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Eval: CEL_MAP_HOST ref_slot=", ref_slot,
+        " has no externref entry"));
+  }
+  std::vector<std::pair<Value, Value>> entries;
+  entries.reserve(backing->Size());
+  backing->ForEach([&entries](const Value& k, const Value& v) {
+    entries.emplace_back(k, v);
+  });
   return Value::Map(std::move(entries));
 }
 
@@ -174,10 +222,12 @@ Value DecodeCelError(const CelValue& cv) {
 }
 
 // Decode a 24-byte CelValue at `offset` in linear memory into a
-// `cel::Value`.  Scalars + null + arena maps land in M1/M3; later
-// milestones add lists / messages / unknown / error.
+// `cel::Value`.  Scalars + null + arena maps + arena lists land in
+// M1/M3/M4; M7.F adds the host-backed list / map arms (via the
+// per-Instance ExternrefTable threaded through `refs`).
 absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
                                        const wasmtime_memory_t& mem,
+                                       const celwasm::ExternrefTable& refs,
                                        uint32_t offset) {
   CelValue cv;
   if (auto s = ReadMemBytes(ctx, mem, offset, sizeof(cv), &cv); !s.ok()) {
@@ -207,9 +257,15 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       return Value::Bytes(*std::move(bytes_or));
     }
     case CEL_LIST_ARENA:
-      return DecodeArenaListAt(ctx, mem, cv.payload.arena_list.header_ptr);
+      return DecodeArenaListAt(ctx, mem, refs,
+                               cv.payload.arena_list.header_ptr);
     case CEL_MAP_ARENA:
-      return DecodeArenaMapAt(ctx, mem, cv.payload.arena_map.header_ptr);
+      return DecodeArenaMapAt(ctx, mem, refs,
+                              cv.payload.arena_map.header_ptr);
+    case CEL_LIST_HOST:
+      return DecodeHostListAt(refs, cv.payload.ref_slot);
+    case CEL_MAP_HOST:
+      return DecodeHostMapAt(refs, cv.payload.ref_slot);
     case CEL_UNKNOWN:
       // M2.E: PartialEval surfaces CEL_UNKNOWN with the
       // attribute_id stamped in payload.unk.  Reconstruct an
@@ -648,7 +704,7 @@ absl::StatusOr<Value> Instance::Eval() {
         "Eval: $eval returned non-i32 (kind=", static_cast<int>(result.kind),
         ")"));
   }
-  return DecodeCelValueAt(ctx, impl_->memory,
+  return DecodeCelValueAt(ctx, impl_->memory, impl_->host_env.refs,
                           static_cast<uint32_t>(result.of.i32));
 }
 

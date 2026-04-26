@@ -1,20 +1,21 @@
 # M7 — Proto message literals
 
-Status: **shipped 2026-04-25 (slices A–E).**
+Status: **shipped 2026-04-25 (slices A–E + §4.5 encoder polish + null-clear).**
 
-> **What landed.**  M7.A–E shipped together on 2026-04-25:
+> **What landed.**  M7.A–E shipped 2026-04-25:
 > `kStructExpr` codegen + `cel_make_message` / `cel_set_field`
 > host primitives (Layer-2 + Layer-3) + `cel.abi.types[]` ABI
 > table + `OwnedProtoBacking` for owning M7-built proto messages
 > + per-cpp_type scalar/repeated/map/oneof/enum/nested-message
 > dispatch + `parse_and_check.cc::InlineConstantReferences`
 > rewrite for cel-cpp's enum-name-as-constant resolution.
-> Conformance: **+131 PASS** (700 → 831).  See
-> "Plan-vs-execution delta" callout below for why this is below
-> the plan's `+250` estimate (gap is fully explained by deferred
-> work, not codegen defects: §4.5 read-side encoder polish was
-> punted, M8 wrappers are a whole next milestone, Any-packing is
-> out-of-scope per §2.2).
+> Same-day follow-up shipped the §4.5 read-side `Instance::Eval`
+> decoder for `CEL_LIST_HOST` / `CEL_MAP_HOST` and the CEL_NULL
+> arm in `SetScalarField`'s CPPTYPE_MESSAGE path (clear-on-null-
+> set per langdef).  Conformance: **+158 PASS** (700 → 858).
+> See "Plan-vs-execution delta" callout below for the remaining
+> ~+92 vs the plan's `+250` (M8 wrappers, Any, chained-null read,
+> enum diagnosis).
 >
 > **What didn't land in M7.A–E.**  M7.F (formal closeout — see §5
 > M7.F) is partially done: this doc closed out + conformance README
@@ -699,33 +700,36 @@ graduates, and the milestone-or-slice that picks it up.
 
 ### Immediate unblockers (small scope, high yield)
 
-  - **§4.5 read-side encoder polish — `Instance::Eval` decoder
-    arms for `kHostList` / `kMap`** (~+15–25 PASS).  Every
-    `empty_field/repeated_*` and `empty_field/map` row in
-    `proto2`/`proto3` traps with `"Eval returned a CelValue
-    kind 17 not yet supported by Instance::Eval"`.  Construction
-    (`TestAllTypes{}`) succeeds; the field read returns a
-    `ProtoList`/`ProtoMap` backing wrapped in a `CEL_LIST_HOST`/
-    `CEL_MAP_HOST` CelValue; `Instance::Eval`'s top-level
-    decoder doesn't have arms for those kinds.  Fix: add
-    `DecodeHostList(CelValue, ExternrefTable&) -> Value::List(
-    {decoded elements})` and the matching map version in
-    `compiler_v2/api/instance.cc`.  Likely <100 LoC.  Same fix
-    unlocks the `type_env: map_type` SKIPs in `fields.textproto`
-    and the 12 `enums.textproto` enum-set-on-message read FAILs.
-    **This is the single highest-yield-per-LoC follow-up
-    available.**
+  - **§4.5 read-side encoder polish** — **shipped** (+10 PASS).
+    Added `DecodeHostListAt` + `DecodeHostMapAt` in
+    `compiler_v2/api/instance.cc`; thread `ExternrefTable&` through
+    the recursive decoder; new `CEL_LIST_HOST` / `CEL_MAP_HOST`
+    arms in `DecodeCelValueAt`.  Walks the per-Instance backing
+    via `ForEach`, wraps elements in fresh vector-backed
+    `Value::List` / `Value::Map`.  Graduated `empty_field/
+    repeated_*` and `empty_field/map` rows in proto2/proto3 (+8)
+    plus 2 in enums.
 
-  - **Chained-null read fix** (~+2 PASS).  M7.A added the
-    `!HasField(msg, &field) → Value::Null()` arm in
-    `ProtoBacking::ReadField` for the immediate read
+  - **Null-clear on singular message field set** — **shipped**
+    (+17 PASS).  Added `value.kind == CEL_NULL → ClearField`
+    arm in `SetScalarField`'s CPPTYPE_MESSAGE path so
+    `Foo{m: null} == Foo{}` per langdef + cel-cpp behaviour.
+    Graduated `set_null/single_message`, `set_null/single_any`,
+    `set_null/single_duration`, `set_null/single_timestamp`
+    rows in each of proto2/proto3 (8 rows × 2 fixtures + spillover).
+
+  - **Chained-null read fix** (~+2 PASS, *not yet shipped*).
+    M7.A added the `!HasField(msg, &field) → Value::Null()` arm
+    in `ProtoBacking::ReadField` for the immediate read
     (`{}.inner == null` → `true`).  But chained selects through
     the unset message — `TestAllTypes{}.single_nested_message.bb`
-    — return `CEL_ERROR` instead of `null`.  Per langdef §"Field
-    Selection" the inner select should propagate the null.  Fix
-    site: `cel_host.cc::CelGetFieldImpl` — when `msg_cv.kind ==
-    CEL_NULL`, write a fresh CEL_NULL to out_slot rather than
-    erroring.
+    — still return `CEL_ERROR` because `CelGetFieldImpl`'s
+    prelude rejects `msg_cv.kind != CEL_MESSAGE`.  cel-cpp's
+    behaviour is null-propagation-with-default-instance: select
+    on an unset-message returns the leaf field's default value
+    via the descriptor.  Fix is more involved than a simple
+    null arm — needs the descriptor of the leaf-most field
+    threaded through.  Tracked separately.
 
   - **`testing-checklist.md` row ticks** (~0 PASS but
     closeout-blocking).  Per CLAUDE.md "Closing out a planning

@@ -1729,6 +1729,14 @@ absl::Status SetScalarField(google::protobuf::Message& msg,
                          static_cast<int>(ReadInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_MESSAGE: {
+      // langdef §"Field Selection" + cel-cpp behaviour: assigning
+      // `null` to a singular message field clears it (equivalent
+      // to leaving it unset).  `Foo{m: null} == Foo{}` per the
+      // conformance corpus's `set_null/*` rows.
+      if (value.kind == CEL_NULL) {
+        refl->ClearField(&msg, &field);
+        return absl::OkStatus();
+      }
       // M7.E: nested singular message — `Foo{nested: Bar{...}}`.
       // The outer kStructExpr lowering recursively built `Bar{...}`
       // into a fresh OwnedProtoBacking and wrote a CEL_MESSAGE
