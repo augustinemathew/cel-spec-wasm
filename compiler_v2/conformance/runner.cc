@@ -218,16 +218,41 @@ bool IsInM7Envelope(const SimpleTest& t) {
 // Matcher kind names mirror the textproto `result_matcher` oneof
 // case names so a reader can grep the SKIP listing back to the
 // fixture syntax that produced it.
+std::string ValueMatcherKindName(ProtoValue::KindCase k) {
+  switch (k) {
+    case ProtoValue::kNullValue:    return "null_value";
+    case ProtoValue::kBoolValue:    return "bool_value";
+    case ProtoValue::kInt64Value:   return "int64_value";
+    case ProtoValue::kUint64Value:  return "uint64_value";
+    case ProtoValue::kDoubleValue:  return "double_value";
+    case ProtoValue::kStringValue:  return "string_value";
+    case ProtoValue::kBytesValue:   return "bytes_value";
+    case ProtoValue::kEnumValue:    return "enum_value";
+    case ProtoValue::kObjectValue:  return "object_value";
+    case ProtoValue::kMapValue:     return "map_value";
+    case ProtoValue::kListValue:    return "list_value";
+    case ProtoValue::kTypeValue:    return "type_value";
+    case ProtoValue::KIND_NOT_SET:  return "<unset>";
+  }
+  return "<unknown>";
+}
+
 std::string EnvelopeRejectReason(const SimpleTest& t) {
   switch (t.result_matcher_case()) {
     case SimpleTest::RESULT_MATCHER_NOT_SET:
       return "envelope: no result_matcher set on test";
     case SimpleTest::kValue: {
-      const auto k = t.value().kind_case();
-      // Cast to int for a stable wire-tag in the SKIP output.
+      // Most-common case: `value: { type_value: "bool" }` etc. on
+      // `type(...)` tests in `dynamic` / `enums` / `proto2` —
+      // currently no `CompareType` arm + no `type(...)` overload
+      // in OverloadTable.  Name the matcher kind so the reader
+      // doesn't need a wire-tag table.
       return absl::StrCat(
-          "envelope: value matcher kind ", static_cast<int>(k),
-          " not in M7 scope (today: scalar / list / map / object / enum)");
+          "envelope: value matcher kind `",
+          ValueMatcherKindName(t.value().kind_case()),
+          "` not in scope (today: null/bool/int/uint/double/string/"
+          "bytes/list/map/object/enum — type_value pending `type(...)` "
+          "support)");
     }
     case SimpleTest::kEvalError:
     case SimpleTest::kAnyEvalErrors:

@@ -209,7 +209,7 @@ output is greppable.  Categories (defined at the top of
 |---|---|---|
 | `disable_check:` | Row carries `disable_check: true`.  **Out of conformance scope by design** — our pipeline runs cel-cpp's type-checker for every expression; supporting parse-only eval would require a separate codegen path with type-inference at lower time.  Roughly ~25 rows across the corpus. | `RunOne` early-out |
 | `check_only:` | Row carries `check_only: true` (typed_result matcher, no eval).  Harness follow-up — needs a `typed_result` comparator. | `RunOne` early-out |
-| `envelope:` | Matcher kind not in current scope (typed_result / unrecognised oneof / no matcher set). | `EnvelopeRejectReason` |
+| `envelope:` | The harness has no comparator for this row's `value:` matcher kind.  Almost entirely (~253/255) `type_value` matchers — `type(...)` tests like `type(true)` whose expected result is the type-name string `"bool"`.  Needs a `type(...)` overload in `OverloadTable` AND a `CompareType` arm in `runner.cc`.  Plus 25 `typed_result:` rows in `type_deduction.textproto` that ask the harness to compare the deduced static type without evaluating (no-eval check path). | `EnvelopeRejectReason` |
 | `static_subset:` | Compile rejected by `RejectDyn` — `dyn(...)` aggregate or heterogeneous-typed expression.  Most of `dynamic.textproto`. | `ClassifyCompileFailure` |
 | `compile unimplemented:` | Pipeline returned Unimplemented from a stage that's still stub.  Detail names the milestone (`expr_lower: kStructExpr` / `comprehensions are M5`). | `ClassifyCompileFailure` |
 | `<stage> unimplemented:` | Eval / PartialEval returned Unimplemented from a runtime stage stub. | `ClassifyEvalFailure` |
