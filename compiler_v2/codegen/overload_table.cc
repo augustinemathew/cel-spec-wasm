@@ -1,5 +1,6 @@
 #include "compiler_v2/codegen/overload_table.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -30,14 +31,339 @@ absl::string_view ImportModuleName(ImportModule m) {
 
 namespace {
 
-// M1 ships with no built-in overloads — M3 fills this.  Using
-// `std::array` so a zero-length declaration is legal C++.  Every row
-// added here must name `ImportModule::kCelRuntime` explicitly; the
-// `kCelHost` module only appears via `RegisterCustom`.
-constexpr std::array<Seed, 0> kBuiltinSeeds{};
+// Built-in seeds populated at M5.E.  Maps every cel-cpp
+// `StandardOverloadIds::k*` constant the v2 runtime supports to
+// the wasm export that implements it.  Categories are grouped so a
+// reader can see at a glance what's covered:
+//
+//   - arithmetic same-kind (M5.B step 1)
+//   - same-kind ordering   (M5.B step 1)
+//   - container size + in  (M5.D step 1 arena fast paths,
+//                           M5.C string/bytes size)
+//   - container concat     (M5.B/C/D step 1)
+//   - string ops           (M5.C)
+//
+// Every other cel-cpp id is in `kExplicitlyUnimplementedIds` (see
+// below).  The two sets together cover the full
+// `StandardOverloadIds` surface — enforced by
+// `overload_table_test::CoverageTripwire`.
+//
+// Polymorphic equality (`equals` / `not_equals`), control flow
+// (`logical_*`, `conditional`), and `_[_]` indexing are deliberately
+// absent: the kCall arm in `expr_lower.cc` special-cases them
+// (M3/M4 for indexing; M5.G for control flow; M5.B step 2 for
+// polymorphic eq).  They appear in `kExplicitlyUnimplementedIds`
+// so the tripwire still classifies every cel-cpp id.
+//
+// **Aggregate-op design decision (Option B, 2026-04-25).**  The
+// `size_*` / `in_*` / `add_list` / aggregate-equality seeds name
+// the **kDynamic dispatcher** (e.g. `cel_list_size`, NOT
+// `cel_list_size_arena`).  The dispatcher branches on the operand's
+// runtime `kind` and `__attribute__((musttail))`-jumps to the
+// arena fast-path or the kHost trampoline.  Trade-off: one extra
+// runtime branch on every aggregate-op call, but the OverloadTable
+// stays a flat (id → helper-name) map and the codegen kCall arm
+// in `expr_lower.cc` can do a single lookup-and-emit (mirrors
+// arithmetic / compare).
+//
+// **Sequencing.**  These dispatcher names don't exist as runtime
+// exports yet — M5.D step 2 ships `cel_list_size` / `cel_list_in`
+// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` /
+// `cel_map_in` / `cel_map_eq`, plus the kHost trampolines they
+// tail-call into.  Until step 2 lands, expr modules that emit
+// these names link-fail at instantiation — by design (the
+// alternative was an arena-only seed that would silently
+// miscompile on host operands; see `(3>2)?proto.map:literal_map`).
+//
+// Why not Option A (special-case in expr_lower mirroring `_[_]`):
+// keeps the seed flat at the cost of one runtime branch per call
+// — small, predictable, and aligns with how arithmetic helpers
+// dispatch internally (`absorb_3vl_binary` + `require_kinds`).
+constexpr std::array<Seed, 85> kBuiltinSeeds{
+    // ── Arithmetic same-kind ──────────────────────────────────
+    Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
+    Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
+    Seed{"add_double", {ImportModule::kCelRuntime, "cel_double_add_at_vv"}},
+    Seed{"subtract_int64", {ImportModule::kCelRuntime, "cel_int_sub_at_vv"}},
+    Seed{"subtract_uint64", {ImportModule::kCelRuntime, "cel_uint_sub_at_vv"}},
+    Seed{"subtract_double",
+         {ImportModule::kCelRuntime, "cel_double_sub_at_vv"}},
+    Seed{"multiply_int64", {ImportModule::kCelRuntime, "cel_int_mul_at_vv"}},
+    Seed{"multiply_uint64", {ImportModule::kCelRuntime, "cel_uint_mul_at_vv"}},
+    Seed{"multiply_double",
+         {ImportModule::kCelRuntime, "cel_double_mul_at_vv"}},
+    Seed{"divide_int64", {ImportModule::kCelRuntime, "cel_int_div_at_vv"}},
+    Seed{"divide_uint64", {ImportModule::kCelRuntime, "cel_uint_div_at_vv"}},
+    Seed{"divide_double", {ImportModule::kCelRuntime, "cel_double_div_at_vv"}},
+    Seed{"modulo_int64", {ImportModule::kCelRuntime, "cel_int_mod_at_vv"}},
+    Seed{"modulo_uint64", {ImportModule::kCelRuntime, "cel_uint_mod_at_vv"}},
+    Seed{"negate_int64", {ImportModule::kCelRuntime, "cel_int_neg_at_v"}},
+    Seed{"negate_double", {ImportModule::kCelRuntime, "cel_double_neg_at_v"}},
+    // ── Concat (`_+_` for strings / bytes / lists) ────────────
+    Seed{"add_string", {ImportModule::kCelRuntime, "cel_string_concat_at_vv"}},
+    Seed{"add_bytes", {ImportModule::kCelRuntime, "cel_bytes_concat_at_vv"}},
+    // `add_list` names the kDynamic dispatcher (Option B).  Lands
+    // in M5.D step 2 alongside the kHost trampoline.
+    Seed{"add_list", {ImportModule::kCelRuntime, "cel_list_concat"}},
+    // ── Same-kind ordering (`_<_`, `_<=_`, `_>_`, `_>=_`) ─────
+    Seed{"less_int64", {ImportModule::kCelRuntime, "cel_int_lt_at_vv"}},
+    Seed{"less_uint64", {ImportModule::kCelRuntime, "cel_uint_lt_at_vv"}},
+    Seed{"less_double", {ImportModule::kCelRuntime, "cel_double_lt_at_vv"}},
+    Seed{"less_string", {ImportModule::kCelRuntime, "cel_string_lt_at_vv"}},
+    Seed{"less_bytes", {ImportModule::kCelRuntime, "cel_bytes_lt_at_vv"}},
+    Seed{"less_equals_int64", {ImportModule::kCelRuntime, "cel_int_le_at_vv"}},
+    Seed{"less_equals_uint64",
+         {ImportModule::kCelRuntime, "cel_uint_le_at_vv"}},
+    Seed{"less_equals_double",
+         {ImportModule::kCelRuntime, "cel_double_le_at_vv"}},
+    Seed{"greater_int64", {ImportModule::kCelRuntime, "cel_int_gt_at_vv"}},
+    Seed{"greater_uint64", {ImportModule::kCelRuntime, "cel_uint_gt_at_vv"}},
+    Seed{"greater_double", {ImportModule::kCelRuntime, "cel_double_gt_at_vv"}},
+    Seed{"greater_equals_int64",
+         {ImportModule::kCelRuntime, "cel_int_ge_at_vv"}},
+    Seed{"greater_equals_uint64",
+         {ImportModule::kCelRuntime, "cel_uint_ge_at_vv"}},
+    Seed{"greater_equals_double",
+         {ImportModule::kCelRuntime, "cel_double_ge_at_vv"}},
+    // ── Cross-type numeric ladder (M5.B step 2) ──────────────
+    // Every {int,uint,double} × {int,uint,double} cross-kind pair
+    // for `<`, `<=`, `>`, `>=`.  All six routes through the
+    // single `cel_numeric_<op>_at_vv` helper which dispatches on
+    // the operand kinds at runtime — see
+    // `cel_runtime.c::numeric_compare_kernel`.  Same-kind ladder
+    // ids stay on the per-kind helpers above (one less branch
+    // per call).
+    //
+    // Note: cel-cpp ships `greater_equals_uint_double` with `_uint`
+    // (no `64`) — see `third_party/cel-cpp/common/standard_definitions.h`
+    // line 212.  We mirror it verbatim; the coverage tripwire test
+    // does a byte-equal lookup against `S::kGreaterEqualsUintDouble`
+    // so any "fix" here would silently regress.
+    Seed{"less_int64_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_int64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_double_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_double_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_uint64_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_uint64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_lt_at_vv"}},
+    Seed{"less_equals_int64_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"less_equals_int64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"less_equals_double_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"less_equals_double_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"less_equals_uint64_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"less_equals_uint64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_le_at_vv"}},
+    Seed{"greater_int64_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_int64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_double_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_double_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_uint64_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_uint64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_gt_at_vv"}},
+    Seed{"greater_equals_int64_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    Seed{"greater_equals_int64_double",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    Seed{"greater_equals_double_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    Seed{"greater_equals_double_uint64",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    Seed{"greater_equals_uint64_int64",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    Seed{"greater_equals_uint_double",
+         {ImportModule::kCelRuntime, "cel_numeric_ge_at_vv"}},
+    // ── Bool ordering (`false < true` per langdef §"Booleans") ─
+    Seed{"less_bool", {ImportModule::kCelRuntime, "cel_bool_lt_at_vv"}},
+    Seed{"less_equals_bool", {ImportModule::kCelRuntime, "cel_bool_le_at_vv"}},
+    Seed{"greater_bool", {ImportModule::kCelRuntime, "cel_bool_gt_at_vv"}},
+    Seed{"greater_equals_bool",
+         {ImportModule::kCelRuntime, "cel_bool_ge_at_vv"}},
+    // ── String / bytes ordering tail (le / gt / ge) ───────────
+    Seed{"less_equals_string",
+         {ImportModule::kCelRuntime, "cel_string_le_at_vv"}},
+    Seed{"less_equals_bytes",
+         {ImportModule::kCelRuntime, "cel_bytes_le_at_vv"}},
+    Seed{"greater_string", {ImportModule::kCelRuntime, "cel_string_gt_at_vv"}},
+    Seed{"greater_bytes", {ImportModule::kCelRuntime, "cel_bytes_gt_at_vv"}},
+    Seed{"greater_equals_string",
+         {ImportModule::kCelRuntime, "cel_string_ge_at_vv"}},
+    Seed{"greater_equals_bytes",
+         {ImportModule::kCelRuntime, "cel_bytes_ge_at_vv"}},
+    // ── Container size (function + member-call ids share helpers) ──
+    // String / bytes have no origin (rodata or arena scalar
+    // payload); seed names the leaf helper directly.
+    Seed{"size_string", {ImportModule::kCelRuntime, "cel_string_size_at_v"}},
+    Seed{"string_size", {ImportModule::kCelRuntime, "cel_string_size_at_v"}},
+    Seed{"size_bytes", {ImportModule::kCelRuntime, "cel_bytes_size_at_v"}},
+    Seed{"bytes_size", {ImportModule::kCelRuntime, "cel_bytes_size_at_v"}},
+    // List / map size names the kDynamic dispatcher (Option B).
+    Seed{"size_list", {ImportModule::kCelRuntime, "cel_list_size"}},
+    Seed{"list_size", {ImportModule::kCelRuntime, "cel_list_size"}},
+    Seed{"size_map", {ImportModule::kCelRuntime, "cel_map_size"}},
+    Seed{"map_size", {ImportModule::kCelRuntime, "cel_map_size"}},
+    // ── Container `in` (kDynamic dispatcher) ─────────────────
+    Seed{"in_list", {ImportModule::kCelRuntime, "cel_list_in"}},
+    Seed{"in_map", {ImportModule::kCelRuntime, "cel_map_in"}},
+    // ── Polymorphic equals / not_equals (M5.B step 2b) ───────
+    // Single overload id per cel-cpp; the runtime helper switches
+    // on (a.kind, b.kind) and dispatches into same-kind / cross-
+    // numeric / aggregate / message arms.  Mismatched scalar
+    // kinds return `false`, NOT error (langdef §"Equality").
+    Seed{"equals", {ImportModule::kCelRuntime, "cel_equals_at_vv"}},
+    Seed{"not_equals", {ImportModule::kCelRuntime, "cel_not_equals_at_vv"}},
+    // ── 3VL / control-flow operators (M5.G — Slice 2) ─────────
+    // `_&&_` / `_||_` / `!_` route through the standard slot-out
+    // ABI; non-strict semantics + the 3VL truth table live entirely
+    // inside the runtime helper, so codegen treats them like any
+    // other call.  `conditional` (`_?_:_`) is the odd one out — its
+    // BinaryenIf-based lowering is special-cased in expr_lower and
+    // stays in `kExplicitlyUnimplementedIds` accordingly.
+    Seed{"logical_and", {ImportModule::kCelRuntime, "cel_and"}},
+    Seed{"logical_or", {ImportModule::kCelRuntime, "cel_or"}},
+    Seed{"logical_not", {ImportModule::kCelRuntime, "cel_not"}},
+    // ── String ops (`contains` / `startsWith` / `endsWith`) ───
+    Seed{"contains_string",
+         {ImportModule::kCelRuntime, "cel_string_contains_at_vv"}},
+    Seed{"starts_with_string",
+         {ImportModule::kCelRuntime, "cel_string_starts_with_at_vv"}},
+    Seed{"ends_with_string",
+         {ImportModule::kCelRuntime, "cel_string_ends_with_at_vv"}},
+};
+
+// Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
+// `StandardOverloadIds::k*` value is in either `kBuiltinSeeds`
+// above or this set; the tripwire test enforces the partition.
+//
+// Three reasons land an id here:
+//
+//   1. Special-cased in `expr_lower.cc` and not routed through the
+//      OverloadTable's general arm — `_[_]` indexing (M3/M4),
+//      `_&&_` / `_||_` / `!_` / `_?_:_` control flow (M5.G),
+//      `not_strictly_false` (M5.I comprehension internals),
+//      polymorphic `equals` / `not_equals` (M5.B step 2).
+//
+//   2. Deferred to a later v2 milestone — cross-type numeric
+//      ladder (M5.B step 2), timestamp / duration arithmetic
+//      (post-M5 small slice), regex `matches` (post-M5 regex slice).
+//
+//   3. Not on the v2 critical path — type conversions (`to_int`,
+//      `to_string`, ...) and timestamp / duration accessors
+//      (`getFullYear`, etc.); these graduate when an embedder asks
+//      for them.
+constexpr std::array<absl::string_view, 81> kExplicitlyUnimplementedIds{
+    // (1) Special-cased in expr_lower.cc.
+    "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
+    "not_strictly_false",
+    "__not_strictly_false__",  // M5.I.
+    "index_list",
+    "index_map",  // _[_] (M3/M4).
+    // (2b) Timestamp / duration arithmetic.
+    "add_duration_duration",
+    "add_duration_timestamp",
+    "add_timestamp_duration",
+    "subtract_duration_duration",
+    "subtract_timestamp_duration",
+    "subtract_timestamp_timestamp",
+    // (2b) Timestamp / duration ordering.
+    "less_duration",
+    "less_timestamp",
+    "less_equals_duration",
+    "less_equals_timestamp",
+    "greater_duration",
+    "greater_timestamp",
+    "greater_equals_duration",
+    "greater_equals_timestamp",
+    // (2c) Regex `matches`.
+    "matches",
+    "matches_string",
+    // (3) Timestamp / duration accessors.
+    "timestamp_to_year",
+    "timestamp_to_year_with_tz",
+    "timestamp_to_month",
+    "timestamp_to_month_with_tz",
+    "timestamp_to_day_of_year",
+    "timestamp_to_day_of_year_with_tz",
+    "timestamp_to_day_of_month",
+    "timestamp_to_day_of_month_with_tz",
+    "timestamp_to_day_of_week",
+    "timestamp_to_day_of_week_with_tz",
+    "timestamp_to_day_of_month_1_based",
+    "timestamp_to_day_of_month_1_based_with_tz",
+    "timestamp_to_hours",
+    "timestamp_to_hours_with_tz",
+    "duration_to_hours",
+    "timestamp_to_minutes",
+    "timestamp_to_minutes_with_tz",
+    "duration_to_minutes",
+    "timestamp_to_seconds",
+    "timestamp_to_seconds_tz",
+    "duration_to_seconds",
+    "timestamp_to_milliseconds",
+    "timestamp_to_milliseconds_with_tz",
+    "duration_to_milliseconds",
+    // (3) Type conversions.
+    "to_dyn",
+    "uint64_to_uint64",
+    "double_to_uint64",
+    "int64_to_uint64",
+    "string_to_uint64",
+    "uint64_to_int64",
+    "double_to_int64",
+    "int64_to_int64",
+    "string_to_int64",
+    "timestamp_to_int64",
+    "duration_to_int64",
+    "double_to_double",
+    "uint64_to_double",
+    "int64_to_double",
+    "string_to_double",
+    "bool_to_bool",
+    "string_to_bool",
+    "bytes_to_bytes",
+    "string_to_bytes",
+    "string_to_string",
+    "bytes_to_string",
+    "bool_to_string",
+    "double_to_string",
+    "int64_to_string",
+    "uint64_to_string",
+    "duration_to_string",
+    "timestamp_to_string",
+    "timestamp_to_timestamp",
+    "int64_to_timestamp",
+    "string_to_timestamp",
+    "duration_to_duration",
+    "int64_to_duration",
+    "string_to_duration",
+    "type",
+};
 
 }  // namespace
 
+bool OverloadTableIsExplicitlyUnimplemented(absl::string_view overload_id) {
+  return std::any_of(kExplicitlyUnimplementedIds.begin(),
+                     kExplicitlyUnimplementedIds.end(),
+                     [overload_id](absl::string_view id) {
+                       return id == overload_id;
+                     });
+}
+
+// NOLINTNEXTLINE(modernize-use-equals-default) — body seeds builtins, can't be defaulted
 OverloadTableBuilder::OverloadTableBuilder() {
   for (const Seed& s : kBuiltinSeeds) {
     // Built-ins use `constexpr` string_views — they point at stable

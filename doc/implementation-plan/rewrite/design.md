@@ -1,6 +1,43 @@
 # Rewrite: memory layout, symbol table, codegen simplification
 
-Status: **design — drafted 2026-04-21, not yet scheduled.**
+Status: **in flight — slices S1–S6 + S8 shipped 2026-04-22 → 2026-04-25; S7 / S9 / S10 / S11 / S12 pending.**
+Drafted 2026-04-21.  This doc describes the end-state design; each
+sub-section is annotated with shipping status where it has shipped
+and a plan-vs-execution callout where the as-shipped shape diverged.
+
+**Shipping snapshot (2026-04-25):**
+
+| design § | covered by | as-shipped | notes |
+|---|---|---|---|
+| §3.1 pipeline | S1 → S4 (M1 + M2) | shipped | parse → check → resolve → layout → emit; no M5 scope stack yet |
+| §3.2 memory regions | S1 (M1) | shipped | host-allocated `cel.memory` per-Plan; both modules import |
+| §4.1 `NodeAnnotation` | S3 (M1), extended at M2/M3/M4 | shipped | three new fields landed at M2/M3/M4 — see §4.1 update |
+| §4.2 uniform call ABI | S5 (M5) | partial — M5.F shipped general kCall arm | general `kCall` arm landed M5.F (2026-04-25); 7 dispatcher names (`cel_list_size` / `cel_list_in` / `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`) have runtime exports + kHost trampolines shipped (M5.D step 2 host/runtime halves), but codegen's `kPendingRuntimeExports` guard in `expr_lower.cc` keeps emitting `Unimplemented` for them until step 2's flip-the-guard commit lands; control-flow `&&` / `||` / `?:` pending M5.G |
+| §4.3 `OverloadTable` | S3 (M1), seeds at S5 | partial — M5.E + M5.B step 2 shipped seeds | `kBuiltinSeeds` populated with 80 entries (M5.E: 46; M5.B step 2: +34 cross-type numeric + bool/string/bytes ordering tail); `kExplicitlyUnimplementedIds` 86; coverage tripwire green |
+| §4.6 custom functions | S7 (post-M5) | not shipped | per-function imports + `RegisterFunction` plumbing pending |
+| §4.7.1 proto literals | S9 (M7) | not shipped | descriptor pool resolution + `cel_set_field` pending |
+| §4.7.2 map literals | S8 — shipped as M3 | **shipped** | as-shipped uses **three-path dispatch** (`map-list-dispatch.md`) — see §4.7.2 callout |
+| §4.7.3 list literals | S8 — shipped as M4 | **shipped** | same three-path dispatch + `create(out, count)` + `set(list, i, elem)` (no `append`/`grow`) — see §4.7.3 callout |
+| §4.7.6 host field reads | S4 (M2) | shipped | `cel_get_field` + `cel_has_field` Layer-1/2/3 split landed |
+| §5 ResolvePass | S3 → S4 | shipped + extended | M2 added `attribute_id`; M3/M4 added origin visitors; M4 added comprehension early-reject |
+| §6 LayoutPass | S3 → S4 | shipped — naive | no Sethi–Ullman yet (S10); workspace slot per node |
+| §7 codegen | S1 → S4 + S8 + partial S5 | partial | `kConst` / `kIdent` / `kSelect` / `kCallExpr(_[_])` / `kCreateMap` / `kCreateList` / general `kCall` (M5.F, 2026-04-25) arms green; `&&` / `||` / `?:` pending M5.G; `kCreateStruct`, `kComprehension` pending |
+| §8 runtime | S1 + S8 | shipped + extended | bytes-8/12 arena, map/list arena primitives, kDynamic dispatcher with `__attribute__((musttail))` |
+| §9 host runtime (Engine/Instance) | S1 (M1) | shipped | two-phase instantiation; per-Plan host-allocated memory |
+| §10 future-milestone absorption | M2 ✓ M3 ✓ M4 ✓ M5 pending | partial | §10.1 (M2) ticked; §10.3 (M3) + §10.4 (M4) added below; §10.2 (comprehensions) deferred to a follow-on milestone after M5 — `m5-kcall-comprehensions.md` ships kCall + control flow + msg-eq only |
+| §11.4 slice graph | S1–S4 + S8 done; S5 partial | partial | S5 partial — M5.A/B/C/D-step-1/E/F shipped 2026-04-25 (general kCall + arithmetic + comparison + string ops + aggregate kArena fast paths); S5 remainder (M5.D step 2 + M5.B step 2b + M5.G + M5.H) pending; S6 partial (`has` shipped, message-eq pending — lands with M5.D step 2); S7/S9/S10/S11/S12 pending |
+
+**Two retroactive design docs landed alongside the milestone work:**
+
+  - `two-phase-runtime-isolation.md` — Engine/Instance role split,
+    host-allocated memory, parsed-runtime caching.  Reconciled into
+    §9 + §3.2 as the runtime side of the design.
+  - `map-list-dispatch.md` — three-path origin dispatch (kArena /
+    kHost / kDynamic) for maps and lists.  **Supersedes §4.7.2 +
+    §4.7.3's simple "empty-then-populate" model.**  M3 (maps) +
+    M4 (lists) shipped this design.  Reconciled into §4.7 callouts;
+    fully folded into design.md as of 2026-04-25 (see
+    map-list-dispatch.md §11).
 
 Supersedes `predecessor-m-mem-static-layout-pass.md` and
 `predecessor-memory-ownership-flip.md` (both in this directory).
@@ -277,19 +314,86 @@ struct Storage {
   StorageKind kind = StorageKind::kNone;
   uint32_t    payload = 0;   // rodata offset | slot offset | local idx
 };
+
+// As-shipped (post-M4) Origin enum used for map_origin / list_origin.
+// See `map-list-dispatch.md`.
+enum class Origin : uint8_t {
+  kDynamic = 0,  // default — runtime dispatcher decides arena vs host
+  kArena   = 1,  // arena-built (kCreateMap / kCreateList)
+  kHost    = 2,  // host-backed (proto field / Activation::Bind)
+};
+
 struct NodeAnnotation {
-  Repr     repr           = Repr::kUnknown;   // existing
-  uint32_t field_number   = 0;                 // existing, M3 G2
-  uint32_t overload_id    = 0;                 // new, call_expr
-  uint32_t local_index    = 0;                 // new, ident_expr
-  uint32_t scope_id       = 0;                 // new, ident_expr
-  Storage  storage;                             // new, all kinds
+  Repr             repr         = Repr::kUnknown;
+  uint32_t         field_number = 0;            // SelectExpr (M2)
+  // CallExpr's resolved cel-cpp overload id, e.g. "add_int64".
+  // String_view points into cel-cpp's owned reference_map storage —
+  // lifetime tied to the surrounding `TypedAst`.  Empty on non-call
+  // nodes.  ResolvePass (M5.F `OverloadIdResolver`) stamps this from
+  // `cel::Ast::reference_map().overload_id().front()`; codegen looks
+  // it up in `OverloadTable::Lookup(string_view)` at emit time.
+  absl::string_view overload_id = {};            // CallExpr (M5.F+)
+  uint32_t         local_index  = 0;            // IdentExpr (M2)
+  uint32_t         scope_id     = 0;            // comprehensions (M5)
+  uint32_t         attribute_id = 0;             // SHIPPED M2 — interned
+                                                  //   (root, qualifiers) path
+                                                  //   id; 0 = none.  Read by
+                                                  //   the cel_host trampoline
+                                                  //   for unknown-pattern match.
+  Storage          storage;
+  // Forward-compat hooks added in M2; populated as of M3 (map_origin)
+  // and M4 (list_origin).
+  Origin           map_origin   = Origin::kDynamic;  // SHIPPED M3
+  Origin           list_origin  = Origin::kDynamic;  // SHIPPED M4
 };
 ```
 
 ResolvePass writes `repr` / `field_number` / `overload_id` /
-`local_index` / `scope_id`. LayoutPass writes `storage`. Codegen reads
+`local_index` / `scope_id` / `attribute_id` / `map_origin` /
+`list_origin`. LayoutPass writes `storage`. Codegen reads
 everything.
+
+> **Plan-vs-execution delta — `overload_id` is a `string_view`, not
+> an interned `uint32_t`.**  Original M1-locked schema named a
+> `uint32_t overload_id` populated via
+> `OverloadTable::InternOverloadId(...)` at ResolvePass and consumed
+> via `OverloadTable::LookupById(uint32_t)` at codegen — the
+> intern-id story §4.3 still describes for `LookupById` callers.
+> M5.F shipped the resolver as a verbatim `string_view` carrying
+> cel-cpp's owned overload-id string, looked up via the string-keyed
+> `OverloadTable::Lookup(string_view)` at emit time.  The intern
+> path (`InternOverloadId` / `LookupById`) still exists on the
+> `OverloadTable` (used by `compile.cc::InstallOverloadImports` to
+> walk every interned id and install the matching wasm import)
+> but **no longer sits on the resolve→emit hot path**.  Trade-off:
+> dropped a uint→string round-trip per call site at the cost of a
+> string_view copy on the annotation; under realistic CEL the
+> reference_map's id strings are short and the lookup is a
+> single hash on the same string identity, so no measurable
+> perf delta.
+
+> **Plan-vs-execution delta — three new fields beyond the original
+> §4.1 schema.**  Original M1-locked schema named `repr` /
+> `field_number` / `overload_id` / `local_index` / `scope_id` /
+> `storage`.  Three additional fields landed in subsequent
+> milestones, each driven by a host-side runtime concern that
+> couldn't be derived purely from the AST kind:
+>
+>   - **`attribute_id`** (M2) — the cel_host trampoline needs
+>     a stable id-per-call-site so the unknown-pattern matcher
+>     can distinguish two reads of the same field at different
+>     syntactic positions.  Interned in `ResolveOutput::attributes`.
+>   - **`map_origin` / `list_origin`** (M2 forward-compat,
+>     populated M3 + M4) — codegen dispatches the kCallExpr(`_[_]`)
+>     arm on operand origin (kArena → fast path, kHost → host
+>     trampoline, kDynamic → runtime dispatcher); ResolvePass
+>     stamps the origin from the operand's source node kind +
+>     declared type.
+>
+> The §10.1.3 "no new fields" invariant was relaxed in-place at
+> M2 close; the design's intent — *idents/selects/unknowns
+> need no schema change* — is intact since none of these three
+> fields encode ident/select/unknown facts.
 
 Zero sentinels cover "field irrelevant for this kind" — `overload_id`
 is 0 on non-call nodes, `local_index` / `scope_id` are 0 on non-ident
@@ -404,9 +508,16 @@ set. The shape is a builder that seeds built-ins unconditionally,
 accepts custom registrations with a hard collision check, and freezes
 into an immutable table.
 
+As-shipped (`compiler_v2/codegen/overload_table.h`, M5.E + M5.F):
+
 ```cpp
-struct Seed { absl::string_view overload_id; OverloadImpl impl; };
-constexpr Seed kBuiltinSeeds[] = { /* see 4.3.2 */ };
+struct Seed {
+  absl::string_view overload_id = {};
+  OverloadImpl impl = {};
+};
+// `compiler_v2/codegen/overload_table.cc`: 80 entries today (M5.E +
+// M5.B step 2 same-kind + cross-type numeric ladder).
+constexpr std::array<Seed, 80> kBuiltinSeeds{ /* see §4.3.2 */ };
 
 class OverloadTableBuilder {
  public:
@@ -426,25 +537,37 @@ class OverloadTableBuilder {
   OverloadTable Build() &&;
 
  private:
-  absl::flat_hash_map<std::string, OverloadImpl> entries_;
+  // Parallel arrays.  std::deque storage stays valid under push_back
+  // so the string_view keys in `index_` keep pointing at stable
+  // bytes after a custom registration grows the table.
+  std::deque<std::string> custom_ids_;
+  std::deque<std::string> custom_helper_names_;
+  std::vector<OverloadImpl> impls_;          // indexed by (interned_id - 1)
+  absl::flat_hash_map<absl::string_view, uint32_t> index_;
   absl::flat_hash_set<absl::string_view> builtin_ids_;  // for collision msgs
 };
 
 class OverloadTable {
  public:
-  // Returns nullptr if the overload isn't registered — codegen treats
+  // Codegen's hot-path lookup, called from `EmitGeneralCall` with the
+  // string_view stamped onto `NodeAnnotation::overload_id` by
+  // ResolvePass.  Returns nullptr if unregistered — codegen treats
   // this as Unimplemented and aborts the compile with the id in the
   // error message.
   const OverloadImpl* Lookup(absl::string_view overload_id) const;
 
-  // Dense 1-based id for fitting into NodeAnnotation.overload_id
-  // (a uint32_t). Zero reserved for "unresolved". Assigned at Build()
-  // time: built-ins first in kBuiltinSeeds order, then customs in
-  // registration order. Returns 0 if not registered.
+  // Dense 1-based id, kept on the table for the *import-installer*
+  // path — `InstallOverloadImports` walks `[1..size()]` and emits one
+  // `AddFunctionImport` per kCelRuntime helper actually present.  Not
+  // on the resolve→emit hot path: codegen never round-trips through
+  // an interned id (it stamps the verbatim string_view on the
+  // annotation and looks up by string at emit time).  Returns 0 if
+  // `overload_id` is not registered.
   uint32_t InternOverloadId(absl::string_view overload_id) const;
 
   // Reverse of InternOverloadId — called only with ids the builder
-  // itself handed out; returns a reference and DCHECKs.
+  // itself assigned (see `compile.cc::InstallOverloadImports`'s walk
+  // over `[1..size()]`).  CHECKs on out-of-range.
   const OverloadImpl& LookupById(uint32_t interned_id) const;
 
   // For import declaration: enumerate (module, helper_name) pairs
@@ -453,9 +576,14 @@ class OverloadTable {
   std::vector<std::pair<ImportModule, absl::string_view>> UsedImports(
       const absl::flat_hash_set<uint32_t>& used_ids) const;
 
+  size_t size() const;
+
  private:
-  // Parallel arrays, indexed by (interned_id - 1):
-  std::vector<std::string>    ids_;      // overload_id strings, owned
+  // Parallel arrays mirror the builder's; keys in `index_` point
+  // into the seed `constexpr` strings (built-ins) or the deques
+  // (customs).
+  std::deque<std::string>     custom_ids_;
+  std::deque<std::string>     custom_helper_names_;
   std::vector<OverloadImpl>   impls_;
   absl::flat_hash_map<absl::string_view, uint32_t> index_;
 };
@@ -473,14 +601,29 @@ silent last-one-wins when an embedder builds the registry in a loop).
 **Ownership of overload_id strings.** `kBuiltinSeeds` string_views
 point into cel-cpp's `constexpr` constants — stable for the process
 lifetime. `RegisterCustom` may receive a caller-owned string_view;
-the builder copies into `ids_` so the frozen table survives
-registration-callsite strings going out of scope. `index_` keys
-point into `ids_`, which is never resized after `Build()`.
+the builder copies into `custom_ids_` (a `std::deque<std::string>`
+so existing string_view keys in `index_` aren't invalidated by
+later pushes) so the frozen table survives registration-callsite
+strings going out of scope.
 
 **Why `Lookup` returns a pointer, not a reference.** Unresolved
 overloads are a compile error (codegen emits Unimplemented), not a
 crash. `LookupById(uint32_t)` — called only with ids the builder
-itself assigned — returns a reference and DCHECKs.
+itself assigned — returns a reference and CHECKs.
+
+> **Plan-vs-execution delta — the interned `uint32_t` is a
+> bookkeeping detail, not the resolve→emit pipe.**  The original
+> M1-locked schema named `NodeAnnotation::overload_id : uint32_t`
+> populated via `InternOverloadId` at ResolvePass and consumed via
+> `LookupById` at codegen.  M5.F shipped the resolver as a verbatim
+> `string_view` carrying cel-cpp's owned reference-map id, looked up
+> via `Lookup(string_view)` at emit time (see §4.4 + §4.1's
+> companion delta callout).  The dense id only matters now to
+> `InstallOverloadImports` — `compile.cc` walks `[1..table.size()]`
+> to emit one wasm import per shipped kCelRuntime helper.  The
+> `InternOverloadId` / `LookupById` pair stayed on the class so
+> the import-installer doesn't need a parallel walk over
+> `kBuiltinSeeds`.
 
 #### 4.3.2 Built-in seeds
 
@@ -528,61 +671,144 @@ Keys are the exact `string_view` constants from cel-cpp's
 is a compile error here, not a silent dispatch miss. Helper names use
 the `_at_v` / `_at_vv` suffix uniformly — slot-out convention, §4.2.
 
+> **Plan-vs-execution delta — Option B aggregate routing
+> (M5.E, 2026-04-25).**  The as-written design treats every
+> overload as routing to a single concrete helper.  Aggregate
+> ops (`size_list`, `size_map`, `in_list`, `in_map`, `add_list`,
+> aggregate `==`) instead seed the **kDynamic dispatcher**
+> name (e.g. `cel_list_size`, NOT `cel_list_size_arena`); the
+> dispatcher branches on the operand's runtime `kind` and
+> `__attribute__((musttail))`-jumps to the arena fast-path or
+> the kHost trampoline.  Trade-off: one extra runtime branch
+> per aggregate-op call site, vs. either bloating the
+> `OverloadTable` with `(id, origin)` pairs or special-casing
+> aggregate ops in `expr_lower.cc` like `_[_]` does.  Option B
+> won because it keeps the seed table flat and codegen's
+> `EmitGeneralCall` arm a single lookup-and-emit (mirroring
+> arithmetic / compare).
+>
+> The 7 dispatcher names (`cel_list_size`, `cel_list_in`,
+> `cel_list_eq`, `cel_list_concat`, `cel_map_size`, `cel_map_in`,
+> `cel_map_eq`) are surfaced as Unimplemented at codegen time
+> until M5.D step 2 ships their runtime exports + kHost
+> trampolines (§4.4.1).  See `overload_table.cc` head comment
+> for the full reasoning.
+
 ### 4.4 Codegen dispatch
 
 ```cpp
 const NodeAnnotation& a = *annotations.Find(expr.id());
-switch (expr.kind()) {
-  case kConst:  return EmitStorageLoad(ctx, a.storage);   // rodata
-  case kIdent:  return BinaryenLocalGet(ctx.mod, a.storage.payload, ...);
-  case kSelect: return EmitSelect(ctx, expr, a, child_refs[0]);
-  case kCall: {
-    const OverloadImpl& h = table.LookupById(a.overload_id);
+switch (expr.kind_case()) {
+  case kConstant: return EmitKConstLoad(mod, a);          // rodata
+  case kIdentExpr: return EmitKIdentLoad(mod, a);         // local
+  case kSelectExpr: return EmitKSelect(ctx, expr, sel, a);
+  case kCallExpr: {
+    // M5.F as-shipped (`expr_lower.cc::EmitGeneralCall`).  Special
+    // arms first: `_[_]` (M3/M4 indexing — origin-aware), control
+    // flow `_&&_` / `_||_` / `_?_:_` / `!_` (M5.G — branch-style,
+    // 3VL short-circuit doesn't fit slot-out).  Everything else
+    // reads `a.overload_id` (a string_view stamped by ResolvePass
+    // from cel-cpp's reference_map) and looks it up directly:
+    const OverloadImpl* impl = ctx.overload_table.Lookup(a.overload_id);
+    if (impl == nullptr || IsPendingRuntimeExport(impl->name)) {
+      return Unimplemented(...);
+    }
     DCHECK(a.storage.kind == StorageKind::kWorkspaceSlot);
-    // Uniform ABI (§4.2): (out_slot, args…) -> void. Built-ins and
-    // customs share one emitter — both are just a wasm `call $import`
-    // naming `h.module` / `h.name`.
-    return EmitHelperCallSlotOut(ctx, h, a.storage.payload, child_refs);
+    // Uniform ABI (§4.2): `(out_slot, args…) -> void`.  Built-ins
+    // and customs share one emitter — both are just a wasm
+    // `call $import` naming `impl->module` / `impl->name`.
+    return EmitGeneralCall(ctx, expr, call, a);
   }
   …
 }
 ```
 
 No built-in/custom branch: both rows look identical to codegen and
-resolve to a named wasm import via `h.module` + `h.name`. Node
-storage is deterministic from AST kind (literal → rodata, ident →
-local, everything else → workspace slot) so the dispatch table is
+resolve to a named wasm import via `impl->module` + `impl->name`.
+Node storage is deterministic from AST kind (literal → rodata, ident
+→ local, everything else → workspace slot) so the dispatch table is
 tiny.
 
-**Import declaration follows the table.** After codegen finishes
-walking, `table.UsedImports(used_ids)` returns the unique
-`(module, helper_name)` pairs the expr module references; the driver
-emits one `AddFunctionImport` per pair. The old `expr_lower.cc`
-pattern of `AddFunctionImport(name, "cel", …)` per-call disappears.
-A helper mis-classified as `kCelRuntime` when it actually lives on
-the host fails at link time (`--allow-undefined-file` rejects it);
-the table is the single source of truth.
+**Import declaration is eager, walked off the table.** Today's
+`compile.cc::InstallOverloadImports` walks `[1..table.size()]` and
+emits one `AddFunctionImport` per kCelRuntime helper that ships now,
+keyed by helper-name suffix to infer arity (`_at_vv` → 3 i32 args,
+`_at_v` → 2; the 7 kDynamic dispatcher names in
+`kPendingRuntimeExports` are skipped — see §4.4.1).  This is eager
+rather than the originally planned `UsedImports(used_ids)` filter:
+codegen never reports back the set of ids it actually emitted, and
+the entire table is small enough that the wasm validator + linker
+prunes unused imports at instantiation cost.  Customs (kCelHost)
+install via M6 — outside the M5 slice.
+
+##### 4.4.1 `kPendingRuntimeExports` guard (M5.F → M5.D step 2)
+
+`compiler_v2/codegen/expr_lower.cc` carries a 7-element
+`kPendingRuntimeExports` set:
+
+```cpp
+constexpr std::array<absl::string_view, 7> kPendingRuntimeExports = {
+    "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
+    "cel_map_size",  "cel_map_in",  "cel_map_eq",
+};
+```
+
+These are the kDynamic dispatcher names the M5.E seeds point at
+(Option B aggregate routing — see §4.3.2 callout).  As of
+2026-04-25 the **runtime exports** (`compiler_v2/runtime/cel_runtime.c`
++ `BUILD.bazel`'s `--export=` list) and the **kHost trampolines**
+(`compiler_v2/api/internal/cel_host_wasmtime.cc::RegisterCelHostImports`
+binds all twelve `cel_host.*` entries including the seven
+aggregate ops + `cel_message_eq`; corresponding `Cel*Impl` bodies
+in `cel_host.cc`) **have shipped** — the M5.D-step-2 host /
+runtime halves are done.  What remains is the codegen-side flip:
+`EmitGeneralCall` still returns `Unimplemented` whenever the
+resolved helper name is in this set, and `InstallOverloadImports`
+mirrors the same skip list.  Until those two sites empty,
+emitting an import for a dispatcher would link-fail against an
+expr module whose imports list doesn't include them — the guard
+keeps the two sites moving together.  Step 2's closing commit
+(an "M5.D step 2 agent" task captured in
+`m5d-step2-agent-prompt.md`) flips both lists to empty and adds
+the e2e suite that walks the now-unblocked aggregate ops.
+
+**Imports installer mirrors the guard.**  `compile.cc::InstallOverloadImports`
+holds the same 7-name list and skips installing imports for them
+— the codegen guard + installer skip list move together so the
+emitted module + the linker-side imports stay coherent.
 
 ### 4.5 Coverage invariant
 
-A unit test iterates every `k*` member of cel-cpp's
-`StandardOverloadIds` (via a generated list — see `overload_table_test.cc`
-in §11) and asserts either `InternOverloadId(k) != 0` (we have a
-helper) or `kExplicitlyUnimplemented.contains(k)` (we know we don't,
-codegen fails the expression with a clean Unimplemented status citing
-the overload id). A new constant added to cel-cpp must be classified
-in one of those two buckets before this test passes.
+`overload_table_test::CoverageTripwire` iterates every `k*` member of
+cel-cpp's `StandardOverloadIds` and asserts either
+`OverloadTable::Lookup(k) != nullptr` (we have a helper) or
+`OverloadTableIsExplicitlyUnimplemented(k) == true` (we know we
+don't, codegen fails the expression with a clean Unimplemented
+status citing the overload id).  A new constant added to cel-cpp
+must be classified in one of those two buckets before this test
+passes.  The "explicitly unimplemented" set lives in
+`overload_table.cc::kExplicitlyUnimplementedIds` (86 entries today)
+and is only readable through the free function
+`OverloadTableIsExplicitlyUnimplemented(absl::string_view)` —
+keeping the array internal so callers can't accidentally treat
+"deferred" as a richer state than "rejected".
 
-**What CEL permits vs forbids.** CEL's spec (`langdef.md`) says
-embedders **may restrict which standard functions are available** — a
-deployment may disallow `string.matches`, for instance. Our compile-
-time equivalent: `CompileOptions::allowed_overloads` filters the
-`OverloadTable` before freezing. A filtered-out overload behaves the
-same as an unimplemented one — `Lookup` returns nullptr, codegen
-emits Unimplemented with the overload id. `kExplicitlyUnimplemented`
-is our-side; `allowed_overloads` is embedder-side; both routes wind
-up at the same `nullptr` from `Lookup`, so codegen has one rejection
-path.
+> **Plan-vs-execution delta — `CompileOptions::allowed_overloads`
+> not shipped.**  The original design described embedder-side
+> filtering (`langdef.md`'s "embedders may restrict which standard
+> functions are available" rule) by adding `allowed_overloads` to
+> `CompileOptions` and pruning the table before freezing.  As of
+> 2026-04-25 (M5.F) `compiler_v2/compile.h::CompileOptions` carries
+> only `check`, `mem_size_bytes`, `eval_internal_name`,
+> `eval_export_name`, `validate`, `serialize` — no
+> `allowed_overloads` field.  Both rejection routes
+> (our-side `kExplicitlyUnimplementedIds` and the not-yet-shipped
+> embedder filter) bottom out at the same `Lookup() == nullptr`
+> path, so the design is forward-compat: a future M-something can
+> add the field without touching codegen.  Until it ships, the
+> only way to disable a built-in is to ship a fork that drops
+> rows from `kBuiltinSeeds` — fine for our current single-tenant
+> use, not fine for multi-tenant deployments.
 
 ### 4.6 Custom host functions
 
@@ -895,16 +1121,39 @@ host surface (§7.4), declared in `DeclareHostImports`. Compilers
 for code that uses proto literals always wire all four — no AST-
 gated import (per `feedback_no_lazy_imports`).
 
-#### 4.7.2 Map literals (`kCreateMap`)
+#### 4.7.2 Map literals (`kCreateMap`) — SHIPPED M3 (2026-04-24) via three-path dispatch
 
-**Representation.** `Repr::kMap`, a linear-memory `CelMap` header
-with a heap of key-value entries in the arena. Pure runtime — no
-host trip.
+> **Plan-vs-execution delta.**  The as-written §4.7.2 below describes
+> a single `cel_map_create` + `cel_map_insert` + `cel_map_lookup`
+> primitive set.  M3 shipped a richer **three-path origin dispatch**
+> design: maps come in two flavours at the wire level
+> (`CEL_MAP_ARENA` for literals, `CEL_MAP_HOST` for proto map
+> fields + `Activation::Bind(Value::Map)`); indexing routes through
+> `cel_map_lookup_arena` / `cel_host.cel_map_lookup` /
+> `cel.cel_map_lookup` (the dispatcher) per operand origin.  See
+> `map-list-dispatch.md` for the authoritative design and `m3-map-
+> literals.md` for the slice retro.  This sub-section now reads as
+> the M3 reconciliation; the empty-then-populate model is preserved
+> only for the **construction** half (`cel_map_create` +
+> `cel_map_insert`), which is per-arena and matches the original
+> design.
 
-**Codegen — empty-then-populate.** `{k1: v1, k2: v2}` lowers to:
+**Representation (as-shipped).** Two CelKinds:
+
+  - `CEL_MAP_ARENA` — a linear-memory `ArenaMapHeader` (16 B:
+    `count, capacity, entries_offset, _pad`) with `count*48` B
+    of `(key, value)` CelValue pairs in the arena.  Built by
+    `cel_map_create` + `cel_map_insert`.
+  - `CEL_MAP_HOST` — a host-side `HostMapBacking` (vector-backed
+    `HostMap` or proto-reflection-backed `ProtoMap`) interned in
+    the per-Instance `ExternrefTable`; the CelValue carries
+    `payload.ref_slot=<slot>`.
+
+**Codegen — `kCreateMap` empty-then-populate (kArena only).**
+`{k1: v1, k2: v2}` lowers to:
 
 ```
-  cel_map_create(out_slot)                           ;; (u32) -> void
+  cel_map_create(out_slot, capacity)                 ;; (u32, u32) -> void
   <emit k1> -> slot_k1
   <emit v1> -> slot_v1
   cel_map_insert(out_slot, slot_k1, slot_v1)         ;; (u32,u32,u32) -> void
@@ -913,57 +1162,188 @@ host trip.
   cel_map_insert(out_slot, slot_k2, slot_v2)
 ```
 
-**Runtime surface (`compiler/runtime/cel_runtime.h`).**
+**Codegen — `kCallExpr(_[_])` three-path dispatch.**  `m[k]` lowers
+based on `m`'s `map_origin` (M3 `MapOriginVisitor`):
+
+| `operand.map_origin` | emitted call |
+|---|---|
+| `kArena` (kCreateMap, ?: of arena arms) | `call $cel.cel_map_lookup_arena` |
+| `kHost`  (kIdent[map<>], kSelect on map field) | `call $cel_host.cel_map_lookup` |
+| `kDynamic` (mixed-origin ?:) | `call $cel.cel_map_lookup` (the dispatcher) |
+
+The kDynamic dispatcher in `cel_runtime.c` tail-calls into the
+arena or host arm via `__attribute__((musttail))` so the wasm
+stack never grows.  Toolchain config: `-mtail-call` (clang),
+`--enable-tail-call` (Binaryen), `wasmtime_config_wasm_tail_call_set`
+(wasmtime).
+
+**Runtime surface (as-shipped — `compiler_v2/runtime/cel_runtime.{h,c}`).**
 
 ```c
-void     cel_map_create(uint32_t out_slot);
-void     cel_map_insert(uint32_t map_slot, uint32_t key_slot,
-                        uint32_t value_slot);
-void     cel_map_lookup(uint32_t out_slot, uint32_t map_slot,
-                        uint32_t key_slot);   // out = ERROR if missing
-uint32_t cel_map_size  (uint32_t map_slot);   // plain i32 for size overload
+// Construction (arena-side; called from kCreateMap codegen).
+void cel_map_create(uint32_t out_slot, uint32_t initial_capacity);
+void cel_map_insert(uint32_t map_slot, uint32_t key_slot,
+                    uint32_t value_slot);
+void cel_map_grow(uint32_t map_slot);  // internal
+
+// Lookup — three paths.
+void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
+                          uint32_t key_slot);   // pure wasm fast path
+void cel_map_lookup      (uint32_t out_slot, uint32_t map_slot,
+                          uint32_t key_slot);   // kDynamic dispatcher
+extern void cel_host_cel_map_lookup(/*same shape*/)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_map_lookup")));  // kHost arm
+
+// `size(m)` and `k in m` are M5 overload-table work; not in M3.
 ```
 
-Each name is a near-mirror of cel-cpp's `runtime/standard/map_*.cc`
-so the parity invariant (§4.3) is trivial to uphold. Duplicate keys
-at insert are a spec error (`langdef.md`): the runtime writes an
-`ERROR` CelValue to `out_slot` on the second `cel_map_insert` with
-a duplicate key, and subsequent `cel_map_insert` on that now-ERROR
-map is a no-op (ERROR is absorbing).
+Duplicate keys at insert poison the map with `CEL_ERROR /
+CEL_ERR_DUPLICATE_KEY` per langdef §"Map creation"; missing key
+at lookup writes `CEL_ERROR / CEL_ERR_NO_SUCH_KEY` per
+§"Indexing".
 
-**Node storage.** `kWorkspaceSlot` on the `kCreateMap` node itself
-(holds the map `CelValue`). Per-entry key/value slots follow Sethi–
-Ullman and die at the end of the containing expression.
+**Host backings (`api/internal/cel_host.{h,cc}`).**
 
-**Why not in OverloadTable.** `create_map` and `insert_*` aren't
-cel-cpp overloads — they're codegen-side primitives. `size(map)`
-**is** a spec overload and *is* in the OverloadTable (routing to
-`cel_map_size`).
+```cpp
+class HostMapBacking { /* abstract */ };
+class HostMap final : public HostMapBacking { /* vector-backed */ };
+class ProtoMap final : public HostMapBacking { /* reflection-backed */ };
 
-#### 4.7.3 List literals (`kCreateList`)
-
-Same pattern as maps — empty-then-populate, pure runtime:
-
-```
-  cel_list_create(out_slot)                          ;; (u32) -> void
-  <emit elem_i> -> slot_i
-  cel_list_append(out_slot, slot_i)                  ;; (u32,u32) -> void
-  ;; …repeated per element
+absl::Status CelMapLookupImpl(
+    uint32_t out_slot, uint32_t map_slot, uint32_t key_slot,
+    TrampolineContext& ctx);   // Layer-2 trampoline body
 ```
 
-**Runtime surface.**
+`ProtoBacking::ReadField` on a MAP field returns
+`Value::HostMap(std::make_shared<ProtoMap>(msg, field))`; the
+Layer-2 trampoline interns this via `ExternrefTable::InternMap`
+when assembling the `CEL_MAP_HOST` CelValue.
+
+**Node storage.** `kWorkspaceSlot` on the `kCreateMap` node
+(holds the `CEL_MAP_ARENA` CelValue); per-entry key/value slots
+released after `cel_map_insert` consumes them.  `kCallExpr(_[_])`
+gets its own workspace slot for the lookup result.
+
+**Why not in OverloadTable.** `create_map` / `insert` / `lookup_*`
+aren't cel-cpp overloads — they're codegen-side primitives.
+`size(map)` / `k in m` / `m1 == m2` / `m1 + m2` **are** spec
+overloads but don't ship until M5 (the kCall built-in overload
+set), where they'll route through the OverloadTable.
+
+#### 4.7.3 List literals (`kCreateList`) — SHIPPED M4 (2026-04-25) via three-path dispatch
+
+> **Plan-vs-execution delta — two changes from the as-written design.**
+>
+>   1. **Three-path dispatch (mirror of M3 maps).**  Lists, like
+>      maps, come in two wire flavours: `CEL_LIST_ARENA` (literals)
+>      and `CEL_LIST_HOST` (proto repeated fields, vector-backed
+>      `Activation::Bind(Value::List)`).  Indexing routes through
+>      `cel_list_at_arena` / `cel_host.cel_list_at` / `cel.cel_list_at`
+>      (the dispatcher) per `list_origin`.
+>   2. **Construction primitive set is `create(out, count)` +
+>      `set(list, index, elem)`, NOT `create / append / grow`.**
+>      Per direct user direction during M4 ("the list is going to
+>      be of fixed length / we know what the list size is / we
+>      should have a way to set an element at an index / no grow").
+>      Codegen always knows the element count at lowering time, so
+>      `cel_list_create` zero-fills `count` element slots up front
+>      and `cel_list_set(index, elem)` writes each known position.
+>      Past-count `set` poisons the list with `CEL_ERR_OVERFLOW`.
+>      M5 comprehensions will need either `cel_list_clear` /
+>      `cel_list_set` over a pre-sized accumulator or a separate
+>      dynamic-list primitive; the M5 plan picks one.
+>
+> See `m4-list-literals.md` for the slice retro and
+> `map-list-dispatch.md §4.2 / §6 / §7` for the authoritative
+> shared design.
+
+**Representation (as-shipped).** Two CelKinds:
+
+  - `CEL_LIST_ARENA` (= 7) — linear-memory `ArenaListHeader`
+    (16 B: `count, capacity, elements_offset, _pad`) with
+    `count*24` B of element CelValues.  Built by `cel_list_create`
+    + `cel_list_set`.
+  - `CEL_LIST_HOST` (= 17) — host-side `HostListBacking`
+    (`HostList` vector-backed or `ProtoList` proto-reflection-
+    backed) interned in `ExternrefTable::list_backings_`; the
+    CelValue carries `payload.ref_slot=<slot>`.
+
+**Codegen — `kCreateList` (kArena only).**  `[e0, e1, e2]` lowers to:
+
+```
+  cel_list_create(out_slot, 3)                        ;; (u32, u32) -> void
+  <emit e0> -> slot_0;  cel_list_set(out_slot, 0, slot_0)
+  <emit e1> -> slot_1;  cel_list_set(out_slot, 1, slot_1)
+  <emit e2> -> slot_2;  cel_list_set(out_slot, 2, slot_2)
+```
+
+**Codegen — `kCallExpr(_[_])` three-path dispatch.**  Same shape
+as maps; codegen branches on `operand.list_origin` (M4
+`ListOriginVisitor`):
+
+| `operand.list_origin` | emitted call |
+|---|---|
+| `kArena` | `call $cel.cel_list_at_arena` |
+| `kHost` | `call $cel_host.cel_list_at` |
+| `kDynamic` | `call $cel.cel_list_at` (the dispatcher) |
+
+The dispatcher tail-calls into the arena or host arm via
+`__attribute__((musttail))`.
+
+**Runtime surface (as-shipped — `compiler_v2/runtime/cel_list.h`).**
 
 ```c
-void     cel_list_create(uint32_t out_slot);
-void     cel_list_append(uint32_t list_slot, uint32_t elem_slot);
-void     cel_list_at    (uint32_t out_slot, uint32_t list_slot,
-                          uint32_t index_slot);       // out = ERROR if OOB
-uint32_t cel_list_size  (uint32_t list_slot);
+// Construction.  All element slots zero-init to CEL_NULL; codegen
+// follows up with cel_list_set per known index.  No grow/append.
+void cel_list_create(uint32_t out_slot, uint32_t count);
+void cel_list_set   (uint32_t list_slot, uint32_t index,
+                     uint32_t elem_slot);
+
+// Lookup — three paths.
+void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
+                       uint32_t index_slot);   // pure wasm fast path
+void cel_list_at      (uint32_t out_slot, uint32_t list_slot,
+                       uint32_t index_slot);   // kDynamic dispatcher
+extern void cel_host_cel_list_at(/*same shape*/)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_list_at")));  // kHost arm
+
+// size / `in` / `==` / `+` are M5 overload-table work; not in M4.
 ```
 
-Lists are homogeneous at the type-checker level — the codegen emits
-no per-element type tag. Out-of-bounds `cel_list_at` writes an
-ERROR CelValue.
+Per langdef §"Indexing": list indices must be `CEL_INT` (uint /
+double / bool indices are checker errors); negative indices and
+indices `>= count` write `{CEL_ERROR, CEL_ERR_INDEX_OUT_OF_BOUNDS}`
+into out_slot.  Non-int index writes `CEL_ERR_TYPE_MISMATCH`.
+
+**Host backings (`api/internal/cel_host.{h,cc}`).**
+
+```cpp
+class HostListBacking { /* abstract — Size/At/ForEach */ };
+class HostList final : public HostListBacking { /* vector-backed */ };
+class ProtoList final : public HostListBacking { /* reflection-backed */ };
+
+absl::Status CelListAtImpl(
+    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot,
+    const TrampolineContext& ctx);   // Layer-2 trampoline body
+```
+
+`ProtoBacking::ReadField` on a REPEATED (non-map) field returns
+`Value::HostList(std::make_shared<ProtoList>(msg, field))`.
+
+**Node storage.** `kWorkspaceSlot` on the `kCreateList` node;
+per-element scratch slots released after `cel_list_set`
+consumes them.  `kCallExpr(_[_])` gets its own slot.
+
+**Activation marshal + Eval decoder.** `EncodeList`
+(`instance.cc`) interns a bound `Value::List` /
+`Value::HostList` via `ExternrefTable::InternList` and writes
+`{CEL_LIST_HOST, payload.ref_slot=<slot>}`; `DecodeArenaListAt`
+walks `ArenaListHeader` + `count×24B` and recursively decodes via
+`DecodeCelValueAt`.  `CEL_LIST_HOST` decode arm deferred —
+host-bound lists round-trip through the activation marshaller
+but never come back from Eval as a result.
 
 #### 4.7.4 Struct literals without `message_name`
 
@@ -1020,92 +1400,105 @@ The split is load-bearing: every host-side behaviour has one
 canonical implementation in the pure layer.  The trampolines do
 no CEL-semantic work — they only marshal.
 
-##### 4.7.6.1 Pure host logic
+##### 4.7.6.1 Pure host logic — `HostMessageBacking` virtual interface
+
+As-shipped, Layer 1 is a virtual interface whose subclasses each
+encapsulate a particular message provenance: `ProtoBacking` wraps a
+`google::protobuf::Message*`; embedders subclass for JSON / XML / …
+Two parallel hierarchies cover maps and lists (`HostMapBacking` →
+`HostMap` / `ProtoMap`; `HostListBacking` → `HostList` / `ProtoList`).
+Each backing returns a `cel::Value` (the public API leaf type, not a
+runtime `CelValue`); Layer 2 marshals that `Value` into the wire
+`CelValue` at `out_slot` using `MemoryView` + `ArenaAllocator` +
+`ExternrefTable` from the `TrampolineContext`.
 
 ```cpp
-// api/internal/cel_host.h
+// api/internal/cel_host.h (excerpt)
 namespace celwasm {
 
-// Reserves `len` bytes in the expr module's arena (via the
-// imported-back `cel_alloc`) and returns a host-addressable
-// pointer plus the arena-relative offset so the CelSpan's
-// `ptr` field matches what the module sees.  Returns nullptr
-// on allocation failure; `*out_offset` is undefined then.
-using ArenaAllocator = absl::AnyInvocable<
-    uint8_t* absl_nullable(size_t len,
-                           uint32_t* absl_nonnull out_offset)>;
+class HostMessageBacking {
+ public:
+  virtual ~HostMessageBacking() = default;
 
-// Interns `submessage` into the expr module's externref table
-// (`$cel_refs`) and returns the densely-assigned slot index
-// that a `CelValue{CEL_MESSAGE, payload.msg_slot:idx}` can
-// carry.  Backed by the expr module's `cel_ref_intern` export
-// when messages are in play; returns 0 (the reserved "no ref"
-// sentinel) for modules that haven't emitted the export
-// (no message selects).
-using MessageInterner = absl::AnyInvocable<
-    uint32_t(const google::protobuf::Message& submessage)>;
+  // `field_number == 0` means "resolve by name only" (non-proto
+  // backings).  Spec-level errors (missing field, repeated at M2)
+  // return `Value::Error(...)` inside the StatusOr's value;
+  // infrastructure failures return non-OK Status.
+  // `expected_type` comes from the FieldRefEntry's stamped CelType
+  // and lets the backing coerce / validate before marshalling
+  // (M2 ProtoBacking only validates; M5+ coercion paths reuse it).
+  virtual absl::StatusOr<cel::Value> ReadField(
+      int field_number, absl::string_view field_name,
+      const cel::CelType& expected_type) const = 0;
 
-// Read `msg.<field>` into `*out`.  Shape of `*out` is determined
-// by the FieldDescriptor's cpp_type per `langdef.md`:
-//
-//   BOOL               → CelValue{CEL_BOOL,    payload.b}
-//   INT{32,64}         → CelValue{CEL_INT,     payload.i}
-//   UINT{32,64}        → CelValue{CEL_UINT,    payload.u}
-//   FLOAT | DOUBLE     → CelValue{CEL_DOUBLE,  payload.d}
-//   ENUM               → CelValue{CEL_INT,     payload.i}     (spec: enums → int)
-//   STRING | BYTES     → CelValue{CEL_STRING,  payload.s={offset,len}} via `alloc`
-//   MESSAGE (singular) → CelValue{CEL_MESSAGE, payload.msg_slot=intern(submsg)}
-//   REPEATED | MAP     → CelValue{CEL_ERROR}                (M6 unlocks; checker
-//                                                              should have rejected,
-//                                                              runtime guard)
-//
-// `field_number == 0` is the "not proto-resolvable" sentinel
-// (forward-compat for JSON / map backings).  In that case the
-// reader falls back to `field_name` via `Descriptor::FindField
-// ByName`.  For proto-backed messages the compiler always emits
-// the concrete number, so the fast number-lookup path is taken.
-//
-// `field_name` is always populated — attribute-pattern matching
-// in the trampoline layer reads it regardless of how the
-// descriptor was resolved.
-//
-// An unresolvable field (unknown number AND unknown name) writes
-// `CelValue{CEL_ERROR}` to `*out`.  CEL treats "field not
-// present" as an evaluation error (absorbing), not a host fault,
-// so it travels through the same out-parameter shape as a
-// successful read.
-void ReadField(const google::protobuf::Message& msg,
-               int field_number,
-               absl::string_view field_name,
-               CelValue* absl_nonnull out,
-               ArenaAllocator& alloc,
-               MessageInterner& intern);
+  // True iff `msg.<field>` is set.  Proto2: explicit presence via
+  // Reflection::HasField; proto3 singular scalar: true iff not at
+  // type default; proto3 singular message: true iff set (implicit
+  // presence).  Unknown field returns false — checker normally
+  // rejects `has(msg.nope)`, this is defence-in-depth.
+  virtual bool HasField(int field_number,
+                        absl::string_view field_name) const = 0;
+};
 
-// True iff `msg.<field>` is set.  Proto2: explicit presence via
-// `Reflection::HasField` (matches CEL `has()` proto2 rule).
-// Proto3 singular scalar: true iff not at type default.  Proto3
-// singular message: true iff set (implicit presence).  Unknown
-// field (unresolvable by number or name) returns false — the
-// checker normally rejects `has(msg.nope)` earlier, so this path
-// is defence-in-depth.
-bool HasField(const google::protobuf::Message& msg,
-              int field_number,
-              absl::string_view field_name);
-
-}  // namespace celwasm
+class ProtoBacking final : public HostMessageBacking {
+ public:
+  explicit ProtoBacking(const google::protobuf::Message* absl_nonnull msg);
+  // ReadField + HasField bodies live in cel_host.cc.
+  // ...
+};
 ```
 
-These two functions are the entire read-side CEL contract.  The
-trampolines add no semantic logic beyond unwrap/dispatch/pack.
+The CelValue shape `Value` boxes per `FieldDescriptor::CppType`:
 
-##### 4.7.6.2 Per-Plan state
+| FieldDescriptor cpp_type | `cel::Value` |
+|---|---|
+| BOOL | `Value::Bool(...)` |
+| INT{32,64} | `Value::Int(...)` |
+| UINT{32,64} | `Value::Uint(...)` |
+| FLOAT \| DOUBLE | `Value::Double(...)` |
+| ENUM | `Value::Int(...)` (spec: enums → int) |
+| STRING \| BYTES | `Value::String(...)` / `Value::Bytes(...)` |
+| MESSAGE (singular) | `Value::HostMessage(std::make_shared<ProtoBacking>(submsg))` |
+| MAP | `Value::HostMap(std::make_shared<ProtoMap>(msg, field))` (M3 envelope flip) |
+| REPEATED non-map | `Value::HostList(std::make_shared<ProtoList>(msg, field))` (M4 envelope flip) |
+
+Layer 2 takes the returned `Value`, calls `Encode...At(out_slot,
+mem, refs, alloc)` on it, and writes the resulting `CelValue` bytes
+through `MemoryView::WriteCelValue`.  String / bytes payloads hit
+the arena via `ArenaAllocator::Alloc`; messages / maps / lists go
+through the appropriate `ExternrefTable::Intern{,Map,List}` and the
+returned `ref_slot` lands in the wire `CelValue`'s payload.
+
+> **Plan-vs-execution delta — Layer 1 is virtual, not free
+> functions.**  As-written §4.7.6.1 named two free functions
+> `ReadField(msg, field_number, field_name, &out, alloc, intern)`
+> and `HasField(msg, ...)` taking host-addressable callbacks for
+> arena allocation and externref interning.  The shipped design
+> hoisted those concerns into Layer 2 (`MemoryView` /
+> `ArenaAllocator` / `ExternrefTable` on `TrampolineContext`) and
+> made Layer 1 a polymorphic interface returning a runtime-
+> agnostic `cel::Value`.  Why: the original free-function shape
+> bound the host-arena / interner closures into Layer 1's
+> callsites, which then required every embedder-supplied backing
+> (JSON / XML / …) to also accept the same callbacks even though
+> only ProtoBacking actually used them.  Pulling them out leaves
+> backings purely declarative — they say what the field is, not
+> how to ship it across the wasm boundary.
+
+##### 4.7.6.2 Per-Plan state — split: runtime-agnostic vs wasmtime
+
+As-shipped, the per-Plan host state is split across two structs in
+two headers, so the runtime-agnostic Layer 2 (`cel_host.h`) is free
+of wasmtime headers (the smoke test fakes can substitute
+`MemoryView` / `ArenaAllocator` / `ExternrefTable` without linking
+wasmtime), and Layer 3 (`cel_host_wasmtime.h`) holds the wasmtime
+handles next to the linker-callback registration:
 
 ```cpp
-// Resolved entries decoded from `cel.abi` at Plan time.  Owned
-// by `InstanceImpl`; borrowed by the trampoline callbacks.
+// api/internal/cel_host.h — runtime-agnostic, used by Layer 2.
 
 struct FieldRefEntry {
-  uint32_t field_number;      // 0 = "not proto-resolvable" sentinel
+  uint32_t field_number = 0;  // 0 = "not proto-resolvable" sentinel
   std::string field_name;     // always populated
   // `FieldDescriptor*` is NOT cached here — the host resolves
   // against `msg.GetDescriptor()` on each call so the same
@@ -1128,84 +1521,151 @@ struct CelHostBindings {
   // Only populated by `Instance::PartialEval(activation, patterns)`.
   // Empty span for plain `Eval` — trampoline skips the check
   // without branching.
-  absl::Span<const AttributePattern> unknown_patterns;
+  absl::Span<const cel::AttributePattern> unknown_patterns;
+};
 
-  // Runtime-module handles cached once per Plan.
-  wasmtime_context_t* absl_nonnull ctx;
-  wasmtime_func_t cel_alloc;
-  wasmtime_func_t cel_ref_intern;   // zero-initialised if no message selects
-  wasmtime_memory_t memory;
+// Per-eval context bundled into one struct to stay under the
+// 6-param lint gate.  `alloc` is unused by has() but shared for
+// signature uniformity — Layer 2's entry points all take this.
+struct TrampolineContext {
+  const CelHostBindings& bindings;
+  MemoryView& mem;
+  ExternrefTable& refs;
+  ArenaAllocator& alloc;
 };
 ```
 
-`CelHostBindings` is passed by pointer as wasmtime callback-data
+```cpp
+// api/internal/cel_host_wasmtime.h — Layer 3, wasmtime handles +
+// the production ExternrefTable + per-Instance backing storage.
+
+class HostExternrefTable final : public ExternrefTable { /* ... */ };
+
+struct CelHostCallbackEnv {
+  // Storage for the bindings spans.  `bindings` references these.
+  std::vector<FieldRefEntry> field_refs_storage;
+  std::vector<AttributeEntry> attrs_storage;
+  CelHostBindings bindings;
+
+  // Per-eval externref table — Reset() between Evals.
+  HostExternrefTable refs;
+
+  // Filled by Engine::Plan after the runtime + expr instances are
+  // ready.  `memory` is the host-owned linear-memory handle both
+  // modules share; `cel_alloc_fn` is the runtime's cel_alloc
+  // export bound onto the linker.
+  wasmtime_memory_t memory = {};
+  wasmtime_func_t cel_alloc_fn = {};
+};
+```
+
+`CelHostCallbackEnv` is passed by pointer as wasmtime callback-data
 (not copied per call) so the address must outlive the store —
-`InstanceImpl` owns it.
+`InstanceImpl` owns it.  The Layer-3 callback bodies build a
+wasmtime-backed `MemoryView` and `ArenaAllocator` per call from
+`env->memory` + `env->cel_alloc_fn`, bundle them with `env->refs`
++ `env->bindings` into a stack-local `TrampolineContext`, and call
+into the appropriate Layer-2 `Cel*Impl` entry point.
+
+> **Plan-vs-execution delta — `cel_ref_intern` is gone.**  The
+> as-written `CelHostBindings` cached a `wasmtime_func_t
+> cel_ref_intern` for the trampoline to call back into wasm to
+> intern a host message into the expr module's externref table.
+> The shipped design pulls externref interning host-side: the
+> trampoline calls `env->refs.Intern(backing)` directly (an
+> in-process method on `HostExternrefTable`), no wasm round-trip.
+> The expr module never gets to see the slot index until the
+> trampoline writes the result `CelValue` back through
+> `MemoryView::WriteCelValue`.  Why: avoids a host→wasm→host
+> re-entry per message field read, simplifies the wasm runtime
+> surface (no `cel_ref_intern` export needed), and keeps
+> `HostExternrefTable` reset semantics tied to Plan/Eval lifetime
+> instead of trying to coordinate with wasm-side state.
 
 ##### 4.7.6.3 Wasmtime trampoline registration
 
 ```cpp
-// api/internal/cel_host.h (continued)
+// api/internal/cel_host_wasmtime.h
 namespace celwasm {
 
-// Registers `cel_host.cel_get_field` and `cel_host.cel_has_field`
-// on `linker`.  M4 extends with `cel_message_eq`; M7 extends
-// with `cel_make_message` + `cel_set_field`.  Must be called
-// before `wasmtime_linker_instantiate(linker, expr_module)`.
-// `bindings` is borrowed; caller (`Engine::Plan`) keeps it
-// alive for the lifetime of the Instance.
+// Registers cel_host.{cel_get_field, cel_has_field, cel_map_lookup,
+// cel_list_at} on `linker`.  Lands as four imports today; M5 (msg-
+// equality) and M7 (cel_make_message + cel_set_field) grow this
+// list.  Must be called before
+// `wasmtime_linker_instantiate(linker, expr_module)`.  `env` is
+// borrowed; caller (`Engine::Plan`) keeps it alive for the
+// lifetime of the Instance via ownership on `InstanceImpl`.
 ABSL_MUST_USE_RESULT absl::Status RegisterCelHostImports(
     wasmtime_linker_t* absl_nonnull linker,
-    CelHostBindings& bindings);
+    CelHostCallbackEnv* absl_nonnull env);
 
 }  // namespace celwasm
 ```
 
+The signature takes a `CelHostCallbackEnv*` (Layer 3's combined
+bindings + wasmtime handles + ExternrefTable bundle), not a bare
+`CelHostBindings&`, because every trampoline body needs the
+externref table + memory + cel_alloc handles in addition to the
+bindings spans.
+
 ##### 4.7.6.4 Trampoline body (`cel_get_field`)
 
 The `cel_get_field` trampoline is the load-bearing M2 code path.
-Executed per select-expression evaluation; ordering fixed:
+Executed per select-expression evaluation.  Layer-3
+(`cel_host_wasmtime.cc`) decodes wasmtime args and assembles a
+`TrampolineContext`; Layer-2 (`cel_host.cc::CelGetFieldImpl`)
+runs the body in a runtime-agnostic shape:
 
 ```
-cel_get_field(out_slot, msg_slot, field_ref_id, attribute_id):
+CelGetFieldImpl(out_slot, msg_slot, field_ref_id, attribute_id, ctx):
 
-  1. Read CelValue at msg_slot from linear memory.
+  1. Read CelValue at msg_slot via ctx.mem.ReadCelValue.
   2. Absorb UNKNOWN / ERROR:
-       if msg.kind == CEL_UNKNOWN: write UNKNOWN to out_slot; return.
-       if msg.kind == CEL_ERROR:   write ERROR to out_slot;   return.
+       if msg.kind == CEL_UNKNOWN: write UNKNOWN to out_slot; return OK.
+       if msg.kind == CEL_ERROR:   write ERROR to out_slot;   return OK.
      (Strict absorption per langdef.md — downstream `cel_unknown_merge`
      calls in generated code are redundant for this specific edge
-     but cheap; the trampoline absorbing here saves a descriptor
-     walk.)
+     but cheap; the trampoline absorbing here saves a backing
+     dispatch.)
 
   3. Type guard:
-       if msg.kind != CEL_MESSAGE: write ERROR to out_slot; return.
+       if msg.kind != CEL_MESSAGE: write ERROR(kTypeMismatch); return OK.
      (Checker should have rejected; runtime guard is defence.)
 
   4. Unknown-pattern check:
-       if attribute_id != 0 and !bindings.unknown_patterns.empty():
-         attr = bindings.attributes[attribute_id - 1]
-         for pattern in bindings.unknown_patterns:
+       if attribute_id != 0 and !ctx.bindings.unknown_patterns.empty():
+         attr = ctx.bindings.attributes[attribute_id - 1]
+         for pattern in ctx.bindings.unknown_patterns:
            if pattern.Matches(attr):
-             write CelValue{CEL_UNKNOWN, attribute_id} to out_slot; return.
-     Short-circuits the descriptor walk entirely on UNKNOWN — this is
+             write CelValue{CEL_UNKNOWN, attribute_id} to out_slot;
+             return OK.
+     Short-circuits the backing dispatch entirely on UNKNOWN — this is
      why the unknown check lives at the trampoline, not at codegen.
 
-  5. Field resolution:
-       field = bindings.field_refs[field_ref_id - 1]
-       msg_ptr = cel_refs.Lookup(msg.payload.msg_slot)  // wasmtime externref
-       if msg_ptr == nullptr: write ERROR; return.      // cel_refs corruption
+  5. Field-ref resolution:
+       field = ctx.bindings.field_refs[field_ref_id - 1]
+       backing = ctx.refs.Lookup(msg.payload.msg_slot)
+       if backing == nullptr:
+         write ERROR(kHostAdapterError); return OK.
 
   6. Dispatch:
-       ReadField(*msg_ptr, field.field_number, field.field_name,
-                 &out_staging, alloc_callback, intern_callback);
+       absl::StatusOr<cel::Value> result = backing->ReadField(
+           field.field_number, field.field_name, expected_type);
+       if (!result.ok()) return result.status();   // infra failure
 
-  7. Copy `out_staging` (24B CelValue) into linear memory at out_slot.
+  7. Marshal `*result` into a 24B CelValue at out_slot via
+     ctx.mem.WriteCelValue (scalars inline, spans through
+     ctx.alloc.Alloc, sub-messages through ctx.refs.Intern).
 ```
 
-Steps 1–3 and 7 are trampoline-side (pure marshal); step 6 is
-the entire CEL semantics.  Steps 4–5 are the M2-new layer (the
-unknown gate and the per-Plan field-ref table lookup).
+Steps 1–3 and 7 are trampoline-side (pure marshal); step 6 is the
+entire CEL semantics.  Steps 4–5 are the M2-new layer (the unknown
+gate and the per-Plan field-ref table lookup).  Non-OK Status is
+reserved for infrastructure failures (memory-view OOB, missing
+backing, reflection error); spec-level errors (field-not-found,
+wrong-type access) travel inside the marshalled CelValue at
+`out_slot` so the caller's `cel_unknown_merge` chain absorbs them
+uniformly.
 
 ##### 4.7.6.5 Trampoline body (`cel_has_field`)
 
@@ -1437,23 +1897,23 @@ loudly — not a design concern.
 
 #### 6.2.2 `SlotAllocator` — workspace assignment
 
+As-shipped (`compiler_v2/codegen/slot_allocator.h`):
+
 ```cpp
 namespace celwasm {
 
 class SlotAllocator {
  public:
+  // base_offset must be 8-byte aligned (CelValue alignment).
   SlotAllocator(uint32_t base_offset, bool debug_mode);
 
   uint32_t Acquire();                      // byte offset of a 24B cell
   void Release(uint32_t offset);           // no-op in debug_mode
 
-  // M5: comprehension-scope semantics (slots acquired inside a
-  // PushScope/PopScope pair all die at PopScope).
-  void PushScope();
-  void PopScope();
-
-  uint32_t peak_slots() const { return peak_slots_; }
-  uint32_t total_bytes() const { return peak_slots_ * 24; }
+  uint32_t peak_slots() const;
+  uint32_t total_bytes() const;            // peak_slots * 24
+  uint32_t base_offset() const;
+  bool debug_mode() const;
 };
 
 }  // namespace celwasm
@@ -1463,6 +1923,18 @@ Debug mode: `Release` is a no-op. Peak slots then equals the number
 of `kWorkspaceSlot` nodes in the tree. Memory cost: 24 B × nodes,
 bounded by expression size (realistic worst case: ~12 KB for 500
 nodes).
+
+> **Plan-vs-execution delta — comprehension scope methods deferred
+> to M5.**  The original §6.2.2 promised `PushScope` / `PopScope`
+> on `SlotAllocator` so per-iteration intermediate slots could die
+> at `PopScope` instead of leaking across iterations.  These
+> methods don't exist yet — `compiler_v2/codegen/slot_allocator.h`
+> ships only `Acquire` / `Release` / `peak_slots` / `total_bytes`.
+> Comprehension lowering moved to a follow-on milestone after M5
+> (`m5-comprehensions-followon.md`); the scope-aware allocator is
+> part of that scope.  Until it lands, the naive Sethi–Ullman path
+> (S10 still pending) means `Release` is the only mechanism for
+> slot reuse and `Acquire` monotonically bumps the cursor.
 
 ### 6.3 Slot-Strahler walk
 
@@ -1504,22 +1976,55 @@ is 2). Pathological (full balanced tree of depth N) hits `O(log N)`.
 
 ### 7.1 Interface
 
+As-shipped (`compiler_v2/codegen/expr_lower.h`, M5.F):
+
 ```cpp
 namespace celwasm {
 
+struct LoweringOptions {
+  // mem_size_bytes flows to the cel_reset(arena_base, arena_limit)
+  // call emitted at the top of every $eval body.  64 KiB default
+  // (one wasm page); compile.cc raises to 128 KiB to match the
+  // runtime's 2-page imported-memory minimum.
+  uint32_t mem_size_bytes = 64u * 1024u;
+};
+
+struct LoweredFunction {
+  BinaryenFunctionRef absl_nonnull func;        // () -> i32
+  std::vector<FieldRefRow> field_refs;          // serialised into cel.abi
+};
+
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
-    absl::string_view func_name, WasmModule& mod);
+    absl::string_view func_name, WasmModule& mod,
+    const OverloadTable& overload_table,
+    const LoweringOptions& opts = {});
 
 }  // namespace celwasm
 ```
 
-`LoweringContext` shrinks to a handful of fields: the module pointer,
-param indices, current local count, a reference to
-`layout.annotations`, a reference to the frozen `OverloadTable`.
-Gone: `idents`, `scratch_slot`, `prologue_setups`,
-`EmitCheckedArithmetic`, per-visitor helper-string plumbing. All of
-that data now lives in `NodeAnnotation` + `OverloadTable`.
+The internal `EmitCtx` (in `expr_lower.cc`) carries: the module
+reference, layout reference, overload-table reference, and the
+running field-refs intern table populated as `kSelect` arms emit.
+Gone from the v1 `LoweringContext`: `idents` (now read off
+`StaticLayout::variables` + `NodeAnnotation::storage` for
+kIdent), `scratch_slot` + `GetScratchSlotLocal` (slots come from
+`NodeAnnotation::storage` allocated by LayoutPass), `prologue_setups`
+(replaced by a fixed `cel_reset(arena_base, arena_limit)` + the
+ident workspace prelude), `EmitCheckedArithmetic` (deleted whole),
+per-visitor helper-string plumbing (replaced by
+`OverloadTable::Lookup(ann.overload_id)` in `EmitGeneralCall`).
+
+> **Plan-vs-execution delta — `LowerToEvalFunction` takes an
+> `OverloadTable&` + `LoweringOptions` shipped with M5.F.**  The
+> as-written §7.1 signature was `(ast, layout, func_name, mod)`.
+> M5.F threaded `const OverloadTable&` into the call so
+> `EmitGeneralCall` could resolve `ann.overload_id` without a
+> back-channel (the table is built once in `compile.cc` from
+> `OverloadTableBuilder().Build()`); `LoweringOptions` arrived
+> earlier (M2) so codegen could pick the `cel_reset` arena
+> limit at emit time.  Both additions are signature-final; the
+> deltas above don't ripple further.
 
 ### 7.2 `LowerExpr` — switch on kind, read annotations, emit
 
@@ -1556,15 +2061,22 @@ BinaryenExpressionRef LowerExpr(LoweringContext& ctx,
       // workspace slot the select's CelValue lands in.
       return EmitSelect(ctx, expr, a, child_refs[0]);
 
-    case kCall: {
-      const OverloadImpl& h = ctx.overloads.LookupById(a.overload_id);
+    case kCallExpr: {
+      // Special arms first (origin-aware indexing, branch-style
+      // control flow); see expr_lower.cc::Emit for the full set.
+      if (call.function() == "_[_]") return EmitKIndexCall(...);
+      if (IsControlFlow(call.function())) return Unimplemented(...);
+      const OverloadImpl* h = ctx.overload_table.Lookup(a.overload_id);
+      if (h == nullptr || IsPendingRuntimeExport(h->name)) {
+        return Unimplemented(...);
+      }
       DCHECK(a.storage.kind == StorageKind::kWorkspaceSlot);
       // Uniform ABI (§4.2): helper(out_slot, args…) -> void. Built-
       // ins and customs share one emitter — both resolve to a named
-      // wasm import via (h.module, h.name). No storage-kind branch,
+      // wasm import via (h->module, h->name). No storage-kind branch,
       // no built-in/custom branch — every call result is a workspace
       // slot, every helper is an import.
-      return EmitHelperCallSlotOut(ctx, h, a.storage.payload, child_refs);
+      return EmitGeneralCall(ctx, expr, call, a);
     }
 
     case kList:
@@ -1625,29 +2137,54 @@ they become dead code on the codegen path.
 ### 7.4 What stays
 
   - Import declarations — the scaffolding stays but the driver
-    changes. A new helper `DeclareImportsFromTable(mod, used_overloads,
-    table)` iterates each `overload_id` the codegen emitted, calls
-    `table.UsedImports(...)` to get unique `(ImportModule, name)`
-    pairs, and emits `AddFunctionImport(name, ImportModuleName(module),
-    name, …)` for each. The expr module ends up importing from two
-    modules: `"cel"` for runtime helpers and `"cel_host"` for each
-    referenced custom function + the fixed host functions (`get_field`,
-    `has_field`, `message_eq`, `cel_make_message`). The old
-    `ImportCel2` / per-helper-name hand-imports are gone.
-  - `DeclareHostImports` for the fixed host surface: `cel_get_field`,
-    `cel_has_field`, `cel_set_field`, `cel_message_eq`,
-    `cel_make_message` — still declared once up front (per
-    `feedback_no_lazy_imports`), not driven by the table, because
-    the table doesn't know about them (they aren't overloads).
-    Module name is hard-coded `"cel_host"` at this one site. Custom
-    functions are NOT declared here — each registered custom is an
-    overload-table row and comes through the
-    `DeclareImportsFromTable` path like any built-in.
+    changes.  As-shipped (`compiler_v2/compile.cc`,
+    `InstallOverloadImports` + the per-feature `Install*Imports`
+    helpers): `InstallHostAbi` first declares `cel.memory` +
+    `cel.cel_reset` + `cel.cel_alloc` + the fixed host surfaces
+    (`InstallSelectImports` for cel_get_field / cel_has_field;
+    `InstallMapImports` for cel_map_create / insert / lookup_arena
+    / lookup + the `cel_host_cel_map_lookup` re-export trampoline;
+    `InstallListImports` mirrors for lists).  Then
+    `InstallOverloadImports` walks `[1..table.size()]` and for each
+    kCelRuntime helper not already installed (and not in
+    `kPendingRuntimeExports` — §4.4.1), infers arity from the
+    `_at_v` / `_at_vv` suffix and emits one `AddFunctionImport`
+    under module `"cel"`.  The expr module ends up importing from
+    three modules today: `"cel"` (runtime helpers + arena + lookup
+    primitives), `"cel_host"` (cel_get_field / cel_has_field /
+    cel_map_lookup / cel_list_at), and `"cel_env"` (cel_log).
+    The old v1 `ImportCel2` / per-helper-name hand-imports are gone.
+  - `DeclareHostImports` for the fixed host surface — split into
+    `InstallSelectImports` / `InstallMapImports` /
+    `InstallListImports` in `compile.cc` (one site each).  Module
+    name `"cel_host"` is hard-coded at those sites.  Per
+    `feedback_no_lazy_imports`, the imports are declared up front
+    even when the AST doesn't reference them — the wasm validator
+    elides unused imports at instantiate time.  Custom functions
+    (M6) are NOT declared here — each registered custom will become
+    an overload-table row routed through `InstallOverloadImports`
+    like any built-in.
   - The `cel_env` logging import (`cel_log`) — one site in codegen,
     unchanged; not an overload, not a host function surface.
-  - The `cel.abi` custom section (M3), now extended with
-    `custom_functions[]` (§4.6).
-  - `cel_refs` table emission (already per-expr, unchanged).
+  - The `cel.abi` custom section (M2.B.2), serialised proto with
+    `variables[]`, `attributes[]`, `fields[]`, and `memory.*`
+    (rodata_base / workspace_base / arena_base) populated today;
+    M6 will extend with `host_custom_imports[]` (§4.6); M7 with
+    `types[]` (§4.7.1).
+  - `cel_refs` (the externref table) is host-side as of M3 (lives
+    on `HostExternrefTable` in `cel_host_wasmtime.h`), reset per
+    Eval — there is no in-wasm `cel_refs` table to emit anymore.
+
+> **Plan-vs-execution delta — `cel_message_eq` /
+> `cel_make_message` / `cel_set_field` not yet declared.**  The
+> as-written §7.4 listed all four extension imports as "still
+> declared once up front."  Today only `cel_get_field` +
+> `cel_has_field` (M2) + `cel_map_lookup` (M3) + `cel_list_at`
+> (M4) ship under `cel_host`.  Message equality lands with the
+> M5 kCall built-in overload set (it routes through the
+> OverloadTable, not the fixed host surface — see §6 / Slice 6
+> remainder); `cel_make_message` + `cel_set_field` land at M7
+> (proto literals).
 
 ## 8. Runtime changes — `compiler/runtime/*`
 
@@ -1697,32 +2234,48 @@ at known constant offsets; no wasm-globals machinery. Rationale:
     resolves to the imported memory, not to any shared runtime
     state.
 
-```c
-// compiler/runtime/cel_runtime.c — illustrative
-#define CEL_ARENA_CURSOR_OFFSET  8u
-#define CEL_ARENA_LIMIT_OFFSET   12u
+As-shipped (`compiler_v2/runtime/cel_runtime.c`, M1):
 
-static inline uint32_t cel_arena_cursor(void) {
-  return *(uint32_t*)CEL_ARENA_CURSOR_OFFSET;
+```c
+enum {
+  kBumpOffset  = 8u,
+  kLimitOffset = 12u,
+};
+
+// Aligned pointer load/store rather than memcpy: clang's wasm32
+// backend lowered memcpy(dst, &v, 4) as three byte-stores (high 3
+// bytes only) which left the cursor's LSB stale on every reset.
+// Explicit `*(uint32_t*)p = v` compiles to a single `i32.store`.
+static uint32_t load_u32(uint32_t off) {
+  return *(const uint32_t*)(cel_memory_base_() + off);
 }
-static inline void cel_arena_set_cursor(uint32_t v) {
-  *(uint32_t*)CEL_ARENA_CURSOR_OFFSET = v;
+static void store_u32(uint32_t off, uint32_t v) {
+  *(uint32_t*)(cel_memory_base_() + off) = v;
 }
-// Analogous for limit at offset 12.
 
 void cel_reset(uint32_t arena_base, uint32_t arena_limit) {
-  cel_arena_set_cursor(arena_base);
-  *(uint32_t*)CEL_ARENA_LIMIT_OFFSET = arena_limit;
+  store_u32(kBumpOffset,  arena_base);
+  store_u32(kLimitOffset, arena_limit);
 }
 
-uint32_t cel_alloc(uint32_t nbytes) {
-  uint32_t cur = cel_arena_cursor();
-  uint32_t next = cur + ((nbytes + 7u) & ~7u);
-  if (next > *(uint32_t*)CEL_ARENA_LIMIT_OFFSET) return 0;
-  cel_arena_set_cursor(next);
-  return cur;
+uint32_t cel_alloc(uint32_t n) {
+  uint32_t need = align_up(n, 8u);
+  if (need == 0) need = 8u;
+  uint32_t bump  = load_u32(kBumpOffset);
+  uint32_t limit = load_u32(kLimitOffset);
+  if (bump + need > limit) return 0;
+  store_u32(kBumpOffset, bump + need);
+  memset(cel_memory_base_() + bump, 0, need);
+  return bump;
 }
 ```
+
+`cel_memory_base_()` resolves to offset 0 of the imported
+`cel.memory` on wasm32 (via an inline-asm opacity barrier — see the
+file's head comment for why `(uint8_t*)0` is otherwise UB-elided
+under clang's wasm32 backend) and to a `static uint8_t g_memory[]`
+on the host build, so native tests exercise the same byte layout
+that the wasm runtime sees.
 
 **Codegen side.** Binaryen emits `i32.load offset=8` /
 `i32.store offset=8` directly — no import, no helper call. One
@@ -1798,14 +2351,13 @@ Survives slot reuse because the ERROR CelValue travels through slots
 ## 9. Host runtime — `compiler_v2/api/engine.{h,cc}`, `compiler_v2/api/instance.{h,cc}`
 
 The runtime side of the host surface lives across two classes:
-`Cel::Engine` (process-shared wasmtime fixture, owns the engine +
-parsed runtime module) and `Cel::Instance` (per-Plan execution
+`cel::Engine` (process-shared wasmtime fixture, owns the engine +
+parsed runtime module) and `cel::Instance` (per-Plan execution
 handle, owns store + memory + linker + instances).  `Plan` is the
-public entry point: `Cel::Engine::Plan(program, bindings)` — see
-`cel-host-surface.md` §2.2.5.  Plan validates the program (parses
-the ABI, runs the §4.6.2 cross-check on `bindings`), spins up the
-wasmtime store, instantiates both modules, and returns an
-Instance ready for `Eval`.
+public entry point: `cel::Engine::Plan(program)` — see
+`cel-host-surface.md` §2.2.5.  Plan parses the program's ABI,
+spins up the wasmtime store, instantiates both modules, and
+returns an Instance ready for `Eval`.
 
 `compiler_v2/host/host_loader.{h,cc}` was deleted in the runtime-
 isolation work.  Its earlier role (single-class wasmtime
@@ -1813,51 +2365,84 @@ boilerplate) is now split for clarity: Engine is the "what's
 shared across all Plans" half; Instance is the "what's owned per
 Plan" half.
 
+> **Plan-vs-execution delta — `Plan(program)` ships before
+> `Plan(program, bindings)`.**  The original §9 + §4.6.2 named
+> `Engine::Plan(program, bindings)` so customs / descriptor pools
+> could be wired at Plan time.  As of 2026-04-25 (M5.F)
+> `engine.h::Engine::Plan` takes only a `const Program&`;
+> `cel::RuntimeBindings` is documented in `cel-host-surface.md`
+> §2.4 as a future surface.  The current `Plan` carries enough
+> for M1–M5: it decodes the wasm `cel.abi` custom section
+> (variables / fields / attributes), builds a `CelHostBindings`,
+> and wires the cel_host trampolines via `RegisterCelHostImports`
+> against `Engine::Builder()` defaults (the global descriptor pool
+> at construction time).  M6 (customs) + M7 (proto literals)
+> introduce the second `Plan(program, bindings)` overload; the
+> existing zero-bindings overload stays for backward compat.
+
 ### 9.1 Two-phase instantiation (host-allocated memory)
 
+As-shipped (`compiler_v2/api/engine.cc::Engine::Plan`):
+
 ```cpp
-// Pseudocode.  Called internally by Cel::Engine::Plan; not a
-// public entry point.  Engine reuses a cached parsed cel_runtime
-// wasmtime_module_t across every call; only the per-Plan
-// resources are fresh.
-absl::StatusOr<Instance> Plan(const Program& program,
-                              const RuntimeBindings& bindings) {
-  // Per-Plan: store + host-allocated memory + linker.
-  wasmtime_store_t* store = wasmtime_store_new(engine_, ...);
-  wasmtime_memory_t mem = wasmtime_memory_new(ctx, /*pages=*/2);
-  wasmtime_linker_t* linker = wasmtime_linker_new(engine_);
+absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
+  auto impl = std::make_unique<celwasm::InstanceImpl>();
 
-  // Bind cel.memory + cel_env.cel_log + custom imports BEFORE
-  // either module instantiates.  Both expr and runtime import
-  // cel.memory; binding it once on the linker satisfies both.
-  RegisterCelLog(linker);
-  RegisterCustomImports(linker, bindings);  // M5+ no-op for M1
-  linker_define(linker, "cel", "memory", &mem);
+  // 1. Per-Plan: store + host-allocated memory.
+  if (auto s = InitStoreAndMemory(wasmtime_.get(), impl.get());
+      !s.ok()) return s;
 
-  // Phase 1: instantiate the runtime module.  Its imports are
-  // cel.memory + cel_env.cel_log — both already on the linker.
-  wasmtime_instance_t rt = wasmtime_linker_instantiate(linker, rt_mod_);
+  // 2. Linker setup: bind cel_env.cel_log; register the cel_host
+  //    trampolines (cel_get_field / cel_has_field / cel_map_lookup
+  //    / cel_list_at) against impl->host_env; bind cel.memory.
+  //    Both modules import cel.memory; binding it once satisfies
+  //    both.
+  if (auto s = InitLinker(wasmtime_.get(), impl.get()); !s.ok()) return s;
 
-  // Phase 2: bind runtime's cel_reset / cel_alloc exports back
-  // onto the linker as cel.cel_reset / cel.cel_alloc, then
-  // instantiate the expr module — its imports are now all
-  // resolved.
-  linker_define(linker, "cel", "cel_reset",
-                instance_export(rt, "cel_reset"));
-  linker_define(linker, "cel", "cel_alloc",
-                instance_export(rt, "cel_alloc"));
-  wasmtime_module_t* expr_mod = wasmtime_module_new(engine_, program.wasm_bytes());
-  wasmtime_instance_t expr = wasmtime_linker_instantiate(linker, expr_mod);
+  // 3. Phase 1: instantiate cel_runtime.wasm against the linker
+  //    (its imports are cel.memory + cel_env.cel_log + the
+  //    cel_host.* re-exports the runtime calls into for kHost
+  //    aggregate dispatch).  Then bind ~50+ runtime exports back
+  //    onto the linker under module "cel" (cel_reset, cel_alloc,
+  //    every kBuiltinSeeds helper that ships today, the map/list
+  //    primitives + dispatchers).  See `BindAllRuntimeExports`.
+  if (auto s = InstantiateRuntime(wasmtime_.get(), impl.get());
+      !s.ok()) return s;
 
-  return Instance(store, linker, mem, rt, expr,
-                  instance_export(expr, "eval"));
+  // 4. Phase 2: parse + instantiate the expr module against the
+  //    now-complete linker; cache the eval export.
+  if (auto s = InstantiateExpr(wasmtime_.get(), impl.get(),
+                               program.wasm_bytes());
+      !s.ok()) return s;
+
+  // 5. Decode the cel.abi custom section, populate CelHostBindings
+  //    from cel.abi.{fields, attributes}, and park on the Instance.
+  //    NotFound is tolerated for synthetic WAT fixtures.
+  // ...
+  return Instance(wasmtime_, std::move(impl));
 }
 ```
 
-The wiring order side-steps the expr↔runtime "circular import"
-the predecessor design wrestled with: trampolines + cel.memory
-are bound on the linker before either module instantiates, so
-neither has to exist before the other.
+The wiring order side-steps the expr↔runtime "circular import" the
+predecessor design wrestled with: trampolines + cel.memory are
+bound on the linker before either module instantiates, so neither
+has to exist before the other.
+
+> **Plan-vs-execution delta — eager `BindAllRuntimeExports`, not
+> lazy `UsedImports`.**  The as-written design imagined the host
+> binding only the runtime exports the expr module actually
+> imports, driven by `OverloadTable::UsedImports(used_ids)`.
+> As-shipped, `BindAllRuntimeExports` (`engine.cc`) carries a
+> hand-maintained list of every runtime export the expr module
+> *might* import — currently ~60 helpers — and binds them all
+> unconditionally.  Why: codegen never reports back the set of
+> ids it emitted, and the wasmtime linker is happy to leave
+> bindings for unreferenced names unused.  The trade-off is that
+> adding a runtime export requires touching three sites (the
+> runtime BUILD `--export=` list, `BindAllRuntimeExports`'s
+> hand-list, and the corresponding seed in `kBuiltinSeeds`); a
+> tripwire test in `cel_runtime_wasm_test` cross-checks the
+> first two.
 
 ### 9.2 Deletions
 
@@ -1912,8 +2497,9 @@ conformance forecast this unlocks.
     > free of wasmtime headers and the smoke-test harness can
     > substitute fakes without linking wasmtime.
   - `cel::Activation` — user-facing class on the public API
-    (`cel-host-surface.md` §2.6).  Carries `Bind(name, Value)`
-    and `BindLazy(...)`.
+    (`cel-host-surface.md` §2.6).  Carries `Bind(name, Value)`;
+    `BindLazy(...)` is signature-final but body-stubbed until a
+    later milestone exercises lazy resolution.
   - `Instance::PartialEval(activation, absl::Span<const
     AttributePattern>)` — second entry point on `Instance`
     (see `cel-host-surface.md` §2.3).  `AttributePattern`s are
@@ -2020,6 +2606,157 @@ M5 must preserve:
 
 If M5 cannot meet these, the design is wrong and this doc updates
 before M5 lands, not after.
+
+> **Plan-vs-execution delta — M4 added a comprehension early-reject
+> at the front of `ResolvePass`.**  The current `IdentResolver` is
+> scope-flat (one global name → local_index map).  cel-cpp's macro
+> expansion of comprehensions synthesises internal idents like
+> `@result` whose `Repr` legitimately differs across comprehension
+> forms (`exists` returns bool, `map` returns list).  Without scope
+> handling, the resolver's per-name Repr-agreement CHECK trips on
+> the first conformance test that contains both forms.  M4
+> short-circuits with `Unimplemented` on any AST that contains a
+> `kComprehensionExpr` so the conformance binary classifies them
+> as SKIP.  M5's first task is to replace this early-reject with
+> the §10.2.2 scope handler.
+
+### 10.3 Maps (M3) — how this design absorbs them
+
+**Status: shipped 2026-04-24.**  See `m3-map-literals.md` for the
+slice retro and `map-list-dispatch.md` for the authoritative
+three-path dispatch design.
+
+#### 10.3.1 What M3 added
+
+  - Wire-level CelKind split: `CEL_MAP_ARENA = 8` (literal-built,
+    16 B `ArenaMapHeader` + `capacity*48` B entries run in the
+    arena) and `CEL_MAP_HOST = 9` (host-table interned via
+    `ExternrefTable::list_backings_`-style namespace).  See §4.7.2.
+  - Runtime arena primitives: `cel_map_create` / `cel_map_insert`
+    / `cel_map_grow` / `cel_map_lookup_arena` in `cel_runtime.c`.
+  - kDynamic dispatcher: `cel_map_lookup` with
+    `__attribute__((musttail))` arms tail-calling into the arena
+    or host arm.  Toolchain config: `-mtail-call` (clang),
+    `--enable-tail-call` (Binaryen),
+    `wasmtime_config_wasm_tail_call_set` (wasmtime).
+  - Layer-1 host backings: `HostMap` (vector-backed) +
+    `ProtoMap` (proto reflection-backed).  Layer-2 trampoline
+    body `CelMapLookupImpl`.  Layer-3 wasmtime trampoline
+    registration via `RegisterCelHostImports`.
+  - `Value::Map` / `Value::HostMap` factories filled in;
+    `StructurallyEquals` kMap arm.
+  - Codegen: `kCreateMap` arm + `kCallExpr(_[_])` three-path
+    dispatch on `map_origin`.
+  - `ProtoBacking::ReadField` on MAP fields returns
+    `Value::HostMap(ProtoMap{...})` — first M2 envelope flip.
+  - Conformance harness widening: `IsInM3Envelope` admits
+    `map_value:` matchers; `CompareMap` order-agnostic.
+
+#### 10.3.2 How the annotations absorb it
+
+  - **`kCreateMap` storage.**  `kWorkspaceSlot` on the
+    kMapExpr node; per-entry key/value slots reused after
+    `cel_map_insert` consumes them.
+  - **`kCallExpr(_[_])` storage.**  Its own `kWorkspaceSlot` for
+    the lookup result.
+  - **`map_origin`** field on `NodeAnnotation` (added M2 forward-
+    compat, populated M3).  `MapOriginVisitor` walks the AST
+    bottom-up: `kCreateMap` → `kArena`; `kIdent` / `kSelect` with
+    `Repr::kMap` → `kHost`; everything else → `kDynamic` (the
+    safe default).  Codegen reads operand's `map_origin` at the
+    `_[_]` emission site and picks the right import target.
+
+#### 10.3.3 Future-compat invariants (verified at M3 close)
+
+  - **No new `StorageKind`.** ✓ Map results live in workspace
+    slots; map-host backings live in the externref table (not a
+    StorageKind concern).
+  - **`map_origin` is write-once.** ✓ ResolvePass is the single
+    writer; LayoutPass + codegen are read-only.
+  - **Codegen stays oblivious to runtime map-kind.** ✓ The same
+    lowered `$eval` body works for arena and host operands
+    without compile-time branching when origin is `kDynamic` —
+    the dispatcher decides at runtime via the operand's CelKind
+    tag.
+
+### 10.4 Lists (M4) — how this design absorbs them
+
+**Status: shipped 2026-04-25.**  Mirror of §10.3 with `map` → `list`
+substitutions and one runtime-API simplification.  See
+`m4-list-literals.md` for the slice retro.
+
+#### 10.4.1 What M4 added
+
+  - Wire-level CelKind split: `CEL_LIST_ARENA = 7` (kept the
+    pre-M4 slot to minimise ABI churn) and `CEL_LIST_HOST = 17`
+    (new tail value).  16 B `ArenaListHeader` (no key field;
+    24 B element stride) + new error code
+    `CEL_ERR_INDEX_OUT_OF_BOUNDS = 17`.
+  - Runtime arena primitives — **`cel_list_create(out, count)`
+    + `cel_list_set(list, index, elem)` instead of the
+    create/append/grow triple** the §4.7.3 plan named.
+    Codegen always knows the element count at lowering time;
+    fixed-length API is simpler and past-count `set` poisons
+    with `CEL_ERR_OVERFLOW` (same shape as the map literal's
+    past-capacity insert).  Plus `cel_list_at_arena` and the
+    kDynamic dispatcher `cel_list_at` (same shape as
+    `cel_map_lookup`).
+  - Layer-1 host backings: `HostList` (vector-backed) +
+    `ProtoList` (reflection-backed).  Layer-2 `CelListAtImpl`.
+    Layer-3 wasmtime trampoline registration extends
+    `RegisterCelHostImports`.  `HostExternrefTable::InternList`
+    /`LookupList` add a third namespace.
+  - `Value::List` / `Value::HostList` factories;
+    `StructurallyEquals` kList arm (pointer-identity at M4 —
+    richer comparator deferred to M5 comprehensions).
+  - Codegen: `kCreateList` arm + extended `kCallExpr(_[_])` arm
+    that now dispatches on operand's `repr` (kMap →
+    `MapLookupCallTarget`, kList → new `ListAtCallTarget`).
+    `MapStorageVisitor` generalised to `AggregateStorageVisitor`
+    with a `PostVisitList` arm.
+  - `ProtoBacking::ReadField` on REPEATED (non-map) fields
+    returns `Value::HostList(ProtoList{...})` — second M2
+    envelope flip.
+  - Activation marshal + Eval decoder: `EncodeList` interns
+    bound `Value::List` / `Value::HostList`; `DecodeArenaListAt`
+    walks the elements run.
+  - Conformance harness widening: `IsInM4Envelope` admits
+    `list_value:` matchers; `CompareList` order-aware (lists
+    are ordered per langdef § "List equality", unlike maps).
+    Conformance: 203 → 212 PASSes.
+
+#### 10.4.2 How the annotations absorb it
+
+  - **`list_origin`** field on `NodeAnnotation` (added M2
+    forward-compat, populated M4).  `ListOriginVisitor` mirrors
+    `MapOriginVisitor` — `kCreateList` → `kArena`;
+    `kIdent` / `kSelect` with `Repr::kList` → `kHost`;
+    everything else → `kDynamic`.
+  - **Storage** identical to map shape: `kCreateList` →
+    workspace slot, per-element scratch slots released after
+    `cel_list_set`, `kCallExpr(_[_])` → its own slot.
+
+#### 10.4.3 Future-compat invariants (verified at M4 close)
+
+  - **No new `StorageKind`.** ✓
+  - **`list_origin` is write-once.** ✓
+  - **Codegen stays oblivious to runtime list-kind.** ✓
+  - **M5 comprehensions need a dynamic-list primitive.**  M4's
+    `cel_list_create(out, count)` is fixed-length; comprehensions
+    that build a list whose size depends on the predicate's
+    runtime decisions (e.g. `xs.filter(e, e > 0)`) need either
+    a pre-sized accumulator + `cel_list_set` over a clearable
+    range or a separate `cel_list_create_dynamic` /
+    `cel_list_append` primitive.  Captured in
+    `m4-list-literals.md §8 risk #4`; M5 plan picks one.
+  - **`RejectDyn` gap.**  cel-cpp types both `[]` (no inferable
+    element) and `[1, "two"]` (heterogeneous) as `list<dyn>`;
+    our static-subset gate only catches explicit `dyn(...)`
+    calls, not implicit dyn from these list inferences.  Two
+    tests in `m4_test.cc::ListRejectionE2ETest` lock the current
+    pass-through behaviour with TODOs.  Likely a small
+    standalone slice before M5 (since comprehensions will
+    introduce more inference paths where dyn could leak).
 
 ## 11. Implementation plan
 
@@ -2197,45 +2934,60 @@ merged into their dependency-neighbours to keep PR overhead low.
 ```
   S1. Bootstrap (runtime + two-phase loader + int literal e2e)
          │    [runtime with bytes-8/12 arena, directory skeleton,
-         │     minimal codegen: -e "42" prints 42]
+         │     minimal codegen: -e "42" prints 42]                       [SHIPPED M1 2026-04-22]
          ▼
-  S2. All scalar literals (bool/int/uint/double/null/string/bytes)
+  S2. All scalar literals (bool/int/uint/double/null/string/bytes)       [SHIPPED M1 2026-04-22]
          │
          ▼
-  S3. Symbol table & pipeline scaffolding
+  S3. Symbol table & pipeline scaffolding                                [SHIPPED M1 2026-04-22]
          │  [NodeAnnotation schema + empty OverloadTable +
          │   ResolvePass (ident/field populating only) +
          │   LayoutPass scaffold. Codegen-inert; behavior unchanged.]
          ▼
-  S4. Idents + SelectExpr reads (M3 G2 parity in v2)
-         │  [resolve_pass populates local_index / field_number;
+  S4. Idents + SelectExpr reads (M3 G2 parity in v2)                     [SHIPPED M2 2026-04-25]
+         │  [resolve_pass populates local_index / field_number;          (+ M2.E PartialEval / Activation)
          │   kSelect → cel_host.cel_get_field]
          ▼
-  S5. OverloadTable seeding + full built-in overload set + uniform ABI
+  S5. OverloadTable seeding + full built-in overload set + uniform ABI   [SHIPPED 2026-04-25 — M5.A through M5.G all green]
          │  [kBuiltinSeeds covers every StandardOverloadIds::k*;
          │   every helper slot-out shape from day one; kCall wired;
-         │   coverage tripwire live]
+         │   coverage tripwire live; +three follow-on slices
+         │   (1.5 / 1.55 / 1.6) widened cross-numeric coverage]
          ▼
-  S6. has(msg.field) + message equality (M3 G3/G4 parity)
+  S6. has(msg.field) + message equality (M3 G3/G4 parity)                [SHIPPED — has() M2 2026-04-25;
+         │                                                                  msg-eq via CelMessageEqImpl + cel_host_cel_message_eq
+         │                                                                  + polymorphic dispatcher 2026-04-25]
          │
          ▼
-  S7. Custom functions (one wasm import per registered custom)
+  S7. Custom functions (one wasm import per registered custom)           [PENDING — post-M5]
          │
          ▼
-  S8. Map + list literals (runtime empty-then-populate primitives)
+  S8. Map + list literals (three-path dispatch — see §4.7.2 / §4.7.3)    [SHIPPED M3 (maps) 2026-04-24
+         │                                                                + M4 (lists) 2026-04-25]
+         ▼
+  S9. Proto literals (host primitives + descriptor-pool resolution)      [PENDING — M7]
          │
          ▼
-  S9. Proto literals (host empty-then-populate primitives)
-         │
-         ▼
-  S10. Sethi–Ullman slot allocation + debug layout + error provenance
+  S10. Sethi–Ullman slot allocation + debug layout + error provenance    [PENDING]
          │   [DEFERRED optimisation; lands after all features e2e-green]
          ▼
-  S11. v1 M3 tip parity audit + bench parity
+  S11. v1 M3 tip parity audit + bench parity                             [PENDING]
          │
          ▼
-  S12. Swap — `git mv compiler_v2 compiler`
+  S12. Swap — `git mv compiler_v2 compiler`                              [PENDING]
 ```
+
+**Re-ordered relative to as-written plan.**  S8 (maps + lists)
+shipped before S5 (full kCall built-in overload set) because the
+three-path dispatch design needed to be proven on one aggregate
+kind (M3) before duplicating for the other (M4); deferring the
+broader kCall arm + overload-table population to M5 keeps the
+dispatch contract locked before exercising it from many call
+sites.  Comprehension lowering — originally bundled with M5 —
+has since been split into a follow-on milestone that depends on
+M5's general kCall arm but is otherwise independent.  S6's `has()` half shipped
+during M2 (test_only kSelect dispatches to `cel_host.cel_has_field`);
+message equality remains pending.
 
 **Critical path is linear (S1 → S12).** No fan-out; v2 grows as a
 single trunk. The only parallelisable work is authoring within a
@@ -2278,7 +3030,7 @@ always "e2e check runs green and tests pass".
 
 ---
 
-#### Slice 1 — Bootstrap: `-e "42"` end-to-end (2 days)
+#### Slice 1 — Bootstrap: `-e "42"` end-to-end (2 days) — SHIPPED M1 2026-04-22
 
 **Scope.** Enough v2 to evaluate `42` under the v2 CLI.
 
@@ -2326,7 +3078,7 @@ accept this is the longest slice — pay the cost once.
 
 ---
 
-#### Slice 2 — All scalar literals (1 day)
+#### Slice 2 — All scalar literals (1 day) — SHIPPED M1 2026-04-22
 
 **Scope.** `StaticMemoryBuilder::AllocateBool` / `AllocateUint` /
 `AllocateDouble` / `AllocateNull`; `AllocateString` / `AllocateBytes`
@@ -2346,7 +3098,7 @@ after a span payload.
 
 ---
 
-#### Slice 3 — Symbol table & pipeline scaffolding (1.5 days)
+#### Slice 3 — Symbol table & pipeline scaffolding (1.5 days) — SHIPPED M1 2026-04-22
 
 **Scope.** Merge that prepares the pipeline but doesn't change
 executing behavior — codegen ignores the new fields until S4.
@@ -2379,7 +3131,15 @@ on fixture ASTs (ident + select); `layout_pass_test` no-op.
 
 ---
 
-#### Slice 4 — Idents + SelectExpr reads (M3 G2 parity) (2 days)
+#### Slice 4 — Idents + SelectExpr reads (M3 G2 parity) (2 days) — SHIPPED M2 2026-04-25
+
+> **As-shipped scope expanded vs plan.**  M2 absorbed the unknown-
+> propagation / partial-eval work that the original M1 plan had
+> queued for M4.  M2 ships idents + kSelect reads + `has()` + the
+> `Activation` surface + `Instance::PartialEval(activation,
+> patterns)` together, since `Activation` is the natural home for
+> attribute-pattern declarations.  See §10.1 for the absorption
+> notes and `m2-ident-select-unknowns.md` for the slice retro.
 
 **Scope.**
 
@@ -2414,7 +3174,19 @@ resolved while the pool is live (M3 Slice G2 lesson).
 
 ---
 
-#### Slice 5 — Full built-in overload set + kCall wired (3 days)
+#### Slice 5 — Full built-in overload set + kCall wired (3 days) — SHIPPED M5 2026-04-25
+
+> See `m5-kcall-comprehensions.md` for the closeout summary
+> (M5.A–M5.G, plus Slices 1.5 / 1.55 / 1.6 follow-ons).
+> Comprehension lowering carved out to a follow-on milestone
+> (`m5-comprehensions-followon.md` — not yet drafted) since
+> it's independent of the kCall arm once the OverloadTable is
+> populated.
+
+> **Re-ordered after S8.**  Originally scheduled before maps/lists,
+> moved after them so the three-path dispatch contract proves out
+> on one aggregate kind first (M3 maps).  S5 lands alongside M5
+> comprehensions because they reuse the same dispatch.
 
 **Scope.** The big slice. The uniform slot-out ABI is the only ABI
 that exists in v2, so there is no "migration" — every helper is
@@ -2459,7 +3231,20 @@ manual audit trail.
 
 ---
 
-#### Slice 6 — `has(msg.field)` + message equality (M3 G3/G4 parity) (1 day)
+#### Slice 6 — `has(msg.field)` + message equality (M3 G3/G4 parity) (1 day) — SHIPPED M2/M5 2026-04-25
+
+> `has()` shipped at M2 alongside idents + kSelect.  Message
+> equality lands at M5.D step 2: `CelMessageEqImpl` Layer-2
+> trampoline + `cel_host.cel_message_eq` Layer-3 binding +
+> polymorphic dispatcher arm in `cel_runtime.c`.
+
+> **`has()` half shipped early at M2.**  `kSelect.test_only`
+> dispatch to `cel_host.cel_has_field` landed alongside the M2
+> field-read work — both share the `cel_host.cel_get_field` /
+> `cel_has_field` Layer-1/2/3 split.  Message equality remains
+> on this slice; it lands when the kCall built-in overload set
+> ships (M5) since `_==_` on messages routes through the same
+> overload-table machinery as the rest of `==`.
 
 **Scope.** `expr_lower.cc` `kSelect` dispatches on `test_only`
 (reads → `cel_get_field`; tests → `cel_has_field`). `kCall` for
@@ -2477,7 +3262,7 @@ proto), `has(x.order.items)`.
 
 ---
 
-#### Slice 7 — Custom functions (per-function imports) (2 days)
+#### Slice 7 — Custom functions (per-function imports) (2 days) — PENDING (post-M5)
 
 **Scope.** Landing the split model defined in
 `cel-host-surface.md` §5: signatures on `Compiler`, impls on
@@ -2533,30 +3318,62 @@ imports.
 
 ---
 
-#### Slice 8 — Map + list literals (runtime primitives) (2 days)
+#### Slice 8 — Map + list literals (three-path dispatch) — SHIPPED M3 (maps) 2026-04-24 + M4 (lists) 2026-04-25
 
-**Scope.** `cel_runtime` gains `cel_map_create`, `cel_map_insert`,
-`cel_map_lookup`, `cel_map_size`; `cel_list_create`,
-`cel_list_append`, `cel_list_at`, `cel_list_size` (§4.7.2, §4.7.3).
-`expr_lower.cc` `kCreateMap` / `kList` arms: empty-then-populate
-emit sequence. Overload arms for `size`, `list[i]`, `map[k]`,
-`k in map`, `v in list`.
+> **As-shipped supersedes the as-written scope.**  Original §4.7.2
+> + §4.7.3 named simple `cel_map_*` / `cel_list_*` primitives plus
+> the `_[_]` / `size` / `in` overload arms in one slice.  The
+> shipped design splits this:
+>
+>   - **M3 (maps) + M4 (lists)** — wire-level CelKind splits
+>     (`CEL_MAP_ARENA` / `CEL_MAP_HOST` and `CEL_LIST_ARENA` /
+>     `CEL_LIST_HOST`); arena primitives + kDynamic dispatcher
+>     with `__attribute__((musttail))`; Layer-1/2/3 host
+>     trampolines for `cel_host.cel_map_lookup` /
+>     `cel_host.cel_list_at`; codegen kCreateMap + kCreateList
+>     arms; kCallExpr(`_[_]`) three-path dispatch on
+>     operand origin; conformance harness widening.  See
+>     `map-list-dispatch.md`, `m3-map-literals.md`, and
+>     `m4-list-literals.md` for the design + retro.
+>   - **M5 (kCall built-in overload set)** — `size(map)` /
+>     `size(list)` / `k in map` / `e in list` / `==` / `+`
+>     route through the OverloadTable to the same three-path
+>     dispatch.  Not yet shipped.
+>
+> Two notable runtime-API deviations from the as-written design:
+>
+>   1. **Lists use `create(out, count)` + `set(list, i, elem)`** —
+>      not `create / append / grow`.  Codegen always knows the
+>      element count.  See §4.7.3.
+>   2. **No `cel_list_size` / `cel_map_size` primitives shipped
+>      yet** — they require the OverloadTable population of
+>      `kSize{Map,List}`, which is M5 work.
 
-**E2E check.** `{"a": 1, "b": 2}.size() == 2`; `[1,2,3][1] == 2`;
-`"a" in {"a": 1}`; `2 in [1,2,3]`. Duplicate-key map → ERROR.
+**E2E check (M3 + M4).**
 
-**Tests.** `cel_runtime_test`: every map/list helper + duplicate
-key + OOB index; `e2e/eval_test`: spec-cited fixtures.
+  - `{"a": 1, "b": 2}` — round-trip kArena map literal.
+  - `{"a": 1}["a"]` → `1` — kArena fast path.
+  - `m["k"]` on bound map / `c.metadata["k"]` — kHost trampoline.
+  - `[1, 2, 3]` — kArena list literal.
+  - `[1, 2, 3][1]` → `2` — kArena fast path.
+  - `xs[0]` on bound list / `c.tags[2]` — kHost trampoline.
+  - Out-of-bounds + duplicate-key + non-int-index error paths
+    pinned via langdef-cited tests.
 
-**Risk.** Map semantics parity with cel-cpp. **Mitigation:** mirror
-`runtime/standard/map_functions.cc` exactly; parity comment cites
-source.
-
-**Effort.** 2 days.
+**Tests shipped.** `cel_map_test` + `cel_list_test` (runtime),
+`host_map_test` + `host_list_test` + `proto_map_test` +
+`proto_list_test` (host backings), `cel_map_lookup_impl_test` +
+`cel_list_at_impl_test` (Layer-2 trampolines), expanded
+`expr_lower_test` / `resolve_pass_test` / `layout_pass_test`
+(codegen pipeline), and new e2e suites `m3_test.cc` (16 tests) +
+`m4_test.cc` (41 tests, incl. ListRejectionE2ETest locking
+`RejectDyn` gaps).  WAT traces 06–15 in
+`doc/implementation-plan/rewrite/wat/` exercised by
+`wat_runner_test`.
 
 ---
 
-#### Slice 9 — Proto literals (host primitives) (2 days)
+#### Slice 9 — Proto literals (host primitives) (2 days) — PENDING (M7)
 
 **Scope.**
 
@@ -2583,7 +3400,7 @@ in frontend; host only handles checker-validated descriptors.
 
 ---
 
-#### Slice 10 — Sethi–Ullman + debug layout + error provenance (3 days)
+#### Slice 10 — Sethi–Ullman + debug layout + error provenance (3 days) — PENDING
 
 **Scope.** The deferred optimisation and quality-of-life features.
 Bundled because they all touch `LayoutPass` / `SlotAllocator`.
@@ -2626,7 +3443,7 @@ them. **Mitigation:**
 
 ---
 
-#### Slice 11 — v1 M3 tip parity audit + bench parity (2 days)
+#### Slice 11 — v1 M3 tip parity audit + bench parity (2 days) — PENDING
 
 **Scope.** No new features — close gaps.
 
@@ -2652,7 +3469,7 @@ construction.
 
 ---
 
-#### Slice 12 — Swap: `compiler_v2/` → `compiler/` (0.5 day)
+#### Slice 12 — Swap: `compiler_v2/` → `compiler/` (0.5 day) — PENDING
 
 **Scope.** One commit; no code changes, only renames.
 
@@ -2765,13 +3582,17 @@ is the plan's load-bearing artefact.
 
 The rewrite is done when:
 
-  - [ ] Slices 1–12 all `[x]` in §14.
+  - [x] Slices 1–4 + 8 (M1 + M2 + M3 + M4) shipped.
+  - [ ] Slices 5, 6 (msg-eq half), 7, 9, 10, 11, 12 all `[x]` in
+        §14.
   - [ ] Zero references to `LoweringContext::scratch_slot`,
         `prologue_setups`, `EmitCheckedArithmetic`, `_at_ii`,
-        `_at_uu` remain in `compiler/`.
-  - [ ] `rg cel_make_bool|cel_make_int|cel_make_uint|cel_make_double|cel_make_null compiler/codegen` returns zero hits (runtime/host boxing paths excluded).
+        `_at_uu` remain in `compiler_v2/` (or `compiler/` post-swap).
+  - [ ] `rg cel_make_bool|cel_make_int|cel_make_uint|cel_make_double|cel_make_null compiler_v2/codegen` returns zero hits (runtime/host boxing paths excluded).
   - [ ] Every `cel_*` helper in `cel_runtime.h` has a cel-cpp parity
-        comment pointing at the source-of-truth impl.
+        comment pointing at the source-of-truth impl.  (Map/list
+        primitives shipped at M3/M4 already carry these; full
+        scalar+string set lands with M5.)
   - [ ] `doc/wasm-compiler-design.md` §7.0 / §7.3 reflect the new
         pipeline (ResolvePass → LayoutPass → emit).
   - [ ] `m-mem-static-layout-pass.md` and `memory-ownership-flip.md`
@@ -2863,26 +3684,128 @@ A one-paragraph summary for the post-completion CLAUDE.md update:
 
 ## 14. Deliverables checklist
 
-On completion, these are the observable artefacts:
+Paths retargeted at `compiler_v2/` since the swap (S12) hasn't
+landed.  At swap, all `compiler_v2/...` paths become
+`compiler/...`.
 
-  - [ ] `compiler/ir/annotations.h` — extended `NodeAnnotation` +
-        `StorageKind` / `Storage`
-  - [ ] `compiler/codegen/overload_table.{h,cc,_test.cc}`
-  - [ ] `compiler/codegen/resolve_pass.{h,cc,_test.cc}`
-  - [ ] `compiler/codegen/layout_pass.{h,cc,_test.cc}`
-  - [ ] `compiler/codegen/static_memory_builder.{h,cc,_test.cc}`
-  - [ ] `compiler/codegen/slot_allocator.{h,cc,_test.cc}`
-  - [ ] `compiler/codegen/expr_lower.{h,cc}` — annotation-driven
-  - [ ] `compiler/codegen/module.{h,cc}` — `SetMemory` + active segment
-  - [ ] `compiler/runtime/cel_runtime.{h,c}` — slimmed helper set, §8 changes
-  - [ ] `compiler/runtime/BUILD.bazel` — `--import-memory`, explicit exports
-  - [ ] `compiler/runtime/wasm_imports.txt` — already exists (cel_log)
+**Shipped (M1–M4):**
+
+  - [x] `compiler_v2/ir/annotations.h` — extended `NodeAnnotation`
+        + `StorageKind` / `Storage` + `Origin` (M3/M4)
+  - [x] `compiler_v2/codegen/overload_table.{h,cc,_test.cc}` —
+        builder + frozen table; `kBuiltinSeeds` empty (M5 fills)
+  - [x] `compiler_v2/codegen/resolve_pass.{h,cc,_test.cc}` —
+        ident, field_number, attribute_id, map_origin, list_origin
+        (overload_id stays at zero until M5)
+  - [x] `compiler_v2/codegen/layout_pass.{h,cc,_test.cc}` — kConst
+        rodata; kIdent local; kSelect + kMapExpr + kListExpr +
+        kCallExpr(`_[_]`) workspace slots (naive allocator —
+        Sethi–Ullman is S10)
+  - [x] `compiler_v2/codegen/static_memory_builder.{h,cc,_test.cc}` —
+        every scalar kind + null
+  - [x] `compiler_v2/codegen/slot_allocator.{h,cc,_test.cc}` —
+        naive path (debug-layout style); `Release` is a no-op
+        until S10
+  - [x] `compiler_v2/codegen/expr_lower.{h,cc}` — annotation-driven;
+        kConst, kIdent, kSelect (incl. test_only), kCreateMap,
+        kCreateList, kCallExpr(`_[_]`) on map + list × 3 origins
+  - [x] `compiler_v2/codegen/module.{h,cc}` — memory import + active
+        rodata segment
+  - [x] `compiler_v2/runtime/cel_data.h` — CelKind split for maps
+        + lists; `ArenaMapHeader` + `ArenaListHeader`; CEL_ERR_*
+        codes incl. `INDEX_OUT_OF_BOUNDS`
+  - [x] `compiler_v2/runtime/cel_runtime.{h,c}` — `cel_reset` /
+        `cel_alloc` (M1) + map/list arena primitives + kDynamic
+        dispatchers with `__attribute__((musttail))` (M3/M4)
+  - [x] `compiler_v2/runtime/BUILD.bazel` — `--import-memory`,
+        explicit exports, `-mtail-call` for the dispatcher
+  - [x] `compiler_v2/runtime/wasm_imports.txt` — `cel_log` (M1) +
+        `cel_host.cel_get_field` / `cel_has_field` (M2) +
+        `cel_host.cel_map_lookup` (M3) + `cel_host.cel_list_at` (M4)
+  - [x] `compiler_v2/api/{compiler,program,engine,instance,
+        value,activation,attribute,type,error}.{h,cc,_test.cc}` —
+        public surface
   - [x] `compiler_v2/api/engine.{h,cc}` + `instance.{h,cc}` —
-        two-phase instantiation (replaces the planned
-        `compiler_v2/host/host_loader.{h,cc}`; see
-        `rewrite/two-phase-runtime-isolation.md`)
+        two-phase instantiation; replaces the planned
+        `compiler_v2/host/host_loader.{h,cc}`
+        (see `rewrite/two-phase-runtime-isolation.md`)
+  - [x] `compiler_v2/api/internal/cel_host.{h,cc,_test.cc}` —
+        Layer-1 backings (`HostMessageBacking` / `ProtoBacking` /
+        `HostMap` / `ProtoMap` / `HostList` / `ProtoList`) +
+        Layer-2 trampoline bodies (`CelGetFieldImpl` /
+        `CelHasFieldImpl` / `CelMapLookupImpl` /
+        `CelListAtImpl`) + `ExternrefTable`
+  - [x] `compiler_v2/api/internal/cel_host_wasmtime.{h,cc}` —
+        Layer-3 wasmtime trampoline registration via
+        `RegisterCelHostImports`
+  - [x] `compiler_v2/conformance/runner.{h,cc}` —
+        `IsInM4Envelope` + `CompareMap` + `CompareList`
+  - [x] `compiler_v2/tools/wat_runner/{wat_runner,wat_runner_test}.{h,cc}` —
+        WAT-first harness; binds map/list runtime exports + 3-arg
+        `cel_host.*` stubs
+  - [x] `doc/implementation-plan/rewrite/wat/0[1-9]_*.wat` +
+        `1[0-5]_*.wat` — WAT traces 01-15
+  - [x] `doc/implementation-plan/rewrite/wat-traces.md` — per-WAT
+        walkthroughs
+  - [x] `doc/implementation-plan/rewrite/two-phase-runtime-isolation.md`
+        — Engine/Instance role split + parsed-runtime caching
+  - [x] `doc/implementation-plan/rewrite/map-list-dispatch.md`
+        — three-path origin dispatch design (fully reconciled
+        into design.md 2026-04-25)
+  - [x] `doc/implementation-plan/per-component-test-coverage.md`
+        — per-component test scenarios + closeout gate
+  - [x] `doc/implementation-plan/testing-checklist.md` —
+        Rewrite M1 / M2 / M3 / M4 sections + ticked rows
+  - [x] `scripts/run_full_suite.sh` — closeout gate (default +
+        manual targets + conformance)
+
+**Pending (M5 → S10–S12):**
+
+  - [ ] `kBuiltinSeeds` populated for every
+        `StandardOverloadIds::k*` (or marked
+        `kExplicitlyUnimplemented`).  S5 work, lands with M5.
+  - [ ] `compiler_v2/runtime/cel_runtime.{h,c}` — full helper
+        set (`_add/sub/mul/div/mod/lt/le/gt/ge/eq/ne_at_vv` per
+        scalar kind; `_concat/_eq/_contains/_starts_with/
+        _ends_with/_matches_at_vv` for string/bytes;
+        `cel_size_{string,bytes,list,map}`; 3VL helpers from
+        v1 M4 Slice A transcribed).
+  - [ ] `expr_lower.cc` general `kCall` arm —
+        `OverloadTable::LookupById(a.overload_id)` →
+        `EmitHelperCallSlotOut(...)`.  Replaces the narrow
+        `_[_]`-only arm shipped for M3/M4.
+  - [ ] Custom functions (S7) — `Compiler::Builder::
+        RegisterFunction(FunctionDecl)` +
+        `RuntimeBindings::AddFunction(overload_id, impl)` +
+        `cel.abi.host_custom_imports[]` + per-function
+        wasm imports under `cel_host`.
+  - [ ] Proto literals (S9) — `cel_host.cel_make_message` +
+        `cel_host.cel_set_field` + `cel.abi.types[]` +
+        `kCreateStruct` codegen arm.
+  - [ ] `kComprehension` codegen arm + ResolvePass scope
+        handler (M5) — replaces M4's
+        `ComprehensionDetector` early-reject.
+  - [ ] Sethi–Ullman slot allocation + debug-layout mode +
+        error provenance (`CelErrorPayload.expr_id`) — S10.
+  - [ ] `compiler/...` v1 retirement (Slice 12) — `git mv
+        compiler_v2 compiler` after S11 parity audit.
+  - [ ] `RejectDyn` tightening — catch implicit dyn from
+        heterogeneous `[1, "two"]` and bare `[]` list
+        literals (the two TODO tests in
+        `m4_test::ListRejectionE2ETest` flip when this lands).
+  - [ ] String / bytes activation marshalling — host-arena
+        allocator that survives `cel_reset` so
+        `Activation::Bind("s", Value::String(...))` works
+        (currently SKIPped; same gap blocks
+        `list<string>` host bindings).
+  - [ ] M4 negative-index / OOB error surface — `Eval`
+        currently surfaces `CEL_ERROR / CEL_ERR_INDEX_OUT_OF_BOUNDS`
+        as a top-level decode error rather than a structured
+        `Value::Error(kIndexOutOfBounds)`.  Lands when the
+        Error matcher work ships (M4-error-surface-era).
   - [ ] `doc/wasm-compiler-design.md` §7.0 / §7.3 — rewritten
-  - [ ] `doc/implementation-plan/testing-checklist.md` — new rows
-  - [ ] This doc — marked `shipped`; `m-mem-static-layout-pass.md` +
-        `memory-ownership-flip.md` renamed `.obsolete.md` with a
-        one-line pointer to this doc.
+        to reflect the new pipeline.
+  - [ ] This doc marked `Status: shipped` at the top once
+        S5–S12 land; `m-mem-static-layout-pass.md` +
+        `memory-ownership-flip.md` renamed `.obsolete.md`
+        with a one-line pointer to this doc.

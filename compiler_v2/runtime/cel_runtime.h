@@ -37,12 +37,16 @@
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_
 
+#include "compiler_v2/runtime/cel_3vl.h"
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_arith.h"
+#include "compiler_v2/runtime/cel_compare.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_list.h"
 #include "compiler_v2/runtime/cel_log.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_map.h"
 #include "compiler_v2/runtime/cel_memory.h"
+#include "compiler_v2/runtime/cel_string_ops.h"
 
 #endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_

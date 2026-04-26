@@ -537,5 +537,95 @@ TEST(ParseAndCheckTest, RejectsTypeMismatch) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ---- Slice 1.5: dyn(scalar) passthrough ------------------------------------
+
+TEST(ParseAndCheckTest, RejectDynAdmitsDynScalarLiteral) {
+  // `dyn(1)` must pass RejectDyn — the call site is `dyn`-typed by the
+  // checker, but the underlying argument is a scalar `int`.  Slice 1.5
+  // recurses into the arg only.
+  auto r = ParseAndCheck("dyn(1)", {});
+  ASSERT_THAT(r, IsOk());
+}
+
+TEST(ParseAndCheckTest, RejectDynAdmitsDynIdent) {
+  CheckOptions opts;
+  opts.variable_specs = {"x:int"};
+  auto r = ParseAndCheck("dyn(x)", opts);
+  ASSERT_THAT(r, IsOk());
+}
+
+TEST(ParseAndCheckTest, RejectDynAdmitsNestedDyn) {
+  // `dyn(dyn(1))` — the outer call recurses into the inner call, which
+  // recurses into the literal.  Both `dyn(...)` nodes are themselves
+  // typed `dyn`; only the final scalar literal carries an admissible
+  // type entry.
+  auto r = ParseAndCheck("dyn(dyn(1))", {});
+  ASSERT_THAT(r, IsOk());
+}
+
+TEST(ParseAndCheckTest, RejectDynAdmitsDynScalarAcrossEqual) {
+  // The motivating shape: `dyn(int) == uint`.  Without Slice 1.5 the
+  // checker types the LHS as `dyn` and our gate rejects it; with the
+  // passthrough the LHS recurses to the int literal, the `_==_` call
+  // resolves cross-numeric, and the whole expression admits.
+  auto r = ParseAndCheck("dyn(1) == 1u", {});
+  ASSERT_THAT(r, IsOk());
+}
+
+TEST(ParseAndCheckTest, RejectDynStillRejectsDynVariable) {
+  // A variable whose declared type IS `dyn` — there is no `dyn(...)`
+  // wrapper to recurse through, so the ident itself fails the gate.
+  CheckOptions opts;
+  opts.variable_specs = {"x:dyn"};
+  EXPECT_THAT(ParseAndCheck("x", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseAndCheckTest, RejectDynStillRejectsDynList) {
+  // `dyn([1,2,3])` — list-typed argument is not a scalar; admission
+  // criterion fails, the call site falls through to the standard
+  // UnacceptableLabel dispatch, which rejects on `dyn` typing of the
+  // call site itself.
+  EXPECT_THAT(ParseAndCheck("dyn([1, 2, 3])", {}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseAndCheckTest, RejectDynStillRejectsDynMap) {
+  EXPECT_THAT(ParseAndCheck("dyn({\"a\": 1})", {}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseAndCheckTest, RejectDynStillRejectsDynMessage) {
+  // `dyn(msg)` — message-typed argument is not a scalar.  Admitting
+  // it would invite `dyn(msg).field` (M7-surface late-bound field
+  // reads that runtime cannot dispatch today).
+  CheckOptions opts;
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  EXPECT_THAT(ParseAndCheck("dyn(c)", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseAndCheckTest, RejectDynStillRejectsDynFieldAccess) {
+  // `dyn(msg).field` — the inner `dyn(msg)` already fails (above),
+  // and the outer Select node carries `dyn` typing.  Either gate
+  // catches the rejection.
+  CheckOptions opts;
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  EXPECT_THAT(ParseAndCheck("dyn(c).name", opts),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseAndCheckTest, RejectDynAdmitsScalarSelect) {
+  // `dyn(c.name)` — the argument is a scalar select (string); admits
+  // per Risk #1 in the plan (the field read is itself admissible).
+  CheckOptions opts;
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  auto r = ParseAndCheck("dyn(c.name)", opts);
+  ASSERT_THAT(r, IsOk());
+}
+
 }  // namespace
 }  // namespace celwasm

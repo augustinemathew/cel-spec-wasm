@@ -77,8 +77,10 @@ remaining list bullets in `map-list-dispatch.md §11`.
 called "M6 — list + map literals" got split: M3 shipped maps; M4
 ships lists.  The "kCall built-in overload set" (`size` / `in` /
 `==` / `+` / arithmetic / comparisons) — originally numbered M3 in
-the early plan — moves to M5 along with comprehensions, since the
-three-path dispatch they reuse is now proven by M3 and M4.
+the early plan — moves to M5, since the three-path dispatch they
+reuse is now proven by M3 and M4.  (Comprehension lowering, once
+bundled with M5, was further split into a follow-on milestone after
+M5; see `m5-kcall-comprehensions.md`.)
 
 ## 0. Why lists now
 
@@ -954,19 +956,15 @@ test-coverage rigour is now baked in (no rediscovery).
     branch of `cel_list_create`.  `cel_list_test` already covers
     that path at the runtime level.
   - **`RejectDyn` misses implicit-dyn from list literals.**
-    Surfaced while writing the M4 edge-case e2e tests
-    (`m4_test.cc::ListRejectionE2ETest`): cel-cpp's checker
-    types BOTH `[]` (no inferable element) AND `[1, "two"]`
-    (heterogeneous) as `list<dyn>`.  Our static-subset
-    `RejectDyn` only catches explicit `dyn(...)` calls, not
-    implicit dyn surfacing from these inferences.  Two tests
-    in `m4_test.cc` lock the current PASS-through behaviour
-    with `EXPECT_TRUE(program_or.ok())` and a TODO comment
-    (`BareEmptyListLiteralCurrentlyAcceptedTODO`,
-    `HeterogeneousListCurrentlyAcceptedTODO`); both flip to
-    `EXPECT_FALSE` once `RejectDyn` is tightened to walk every
-    type-map entry and reject any node whose static type
-    contains dyn (recursive: `list<dyn>`, `map<_, dyn>`,
-    `dyn`).  Probably worth doing as a small standalone slice
-    before M5, since comprehensions will introduce more
-    inference paths where dyn could leak.
+    ~~Open at M4 close.~~ **Closed by M5.A on 2026-04-25.**
+    `UnacceptableLabel` in `frontend/parse_and_check.cc` now
+    recurses through `list_type().elem_type()`,
+    `map_type().{key,value}_type()`, and
+    `abstract_type().parameter_types()`, so `[]`, `[1, "two"]`,
+    and bare `{}` all reject at the gate.  Tests
+    `BareEmptyListLiteralRejected` /
+    `HeterogeneousListRejected` flipped from `EXPECT_TRUE` to
+    `EXPECT_FALSE`.  Conformance dipped 212 → 207
+    (5 rows that previously slipped the gate now correctly
+    fail-compile); the M5.B-J slices grow the envelope back
+    and well past the M4 ceiling.

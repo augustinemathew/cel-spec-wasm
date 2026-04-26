@@ -13,12 +13,21 @@
 #include "common/expr.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
+#include "compiler_v2/codegen/overload_table.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
 
 namespace celwasm {
 
 namespace {
+
+// M5.D step 2 (shipped) — every aggregate-op dispatcher
+// (`cel_list_size` / `cel_list_in` / `cel_list_eq` / `cel_list_concat`
+// / `cel_map_size` / `cel_map_in` / `cel_map_eq`) now has a runtime
+// export AND a kHost trampoline, so codegen can emit calls into them
+// freely.  The `kPendingRuntimeExports` guard that previously
+// gated those names was deleted at M5.D step 2 ship; if a future
+// dispatcher needs a similar gate, reinstate the pattern here.
 
 // Human-readable name for an `ExprKindCase`, used in unimplemented
 // diagnostics so the error points at the offending kind by name rather
@@ -137,6 +146,10 @@ struct EmitCtx {
   const TypedAst& ast;
   const StaticLayout& layout;
   std::vector<FieldRefRow>& field_refs;
+  // M5.F: looked up at every general-arm `kCallExpr` to map the
+  // resolved cel-cpp `overload_id` (e.g. `add_int64`) onto the
+  // wasm helper this codegen emits a `BinaryenCall` to.
+  const OverloadTable& overload_table;
 };
 
 absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
@@ -364,10 +377,9 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
-absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(EmitCtx& ctx,
-                                                     const cel::Expr& expr,
-                                                     const cel::CallExpr& call,
-                                                     const NodeAnnotation& ann) {
+absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
+    const NodeAnnotation& ann) {
   // CEL's `_[_]` is a binary operator: args[0] = collection,
   // args[1] = index.  `target` (receiver) form is not used at M3 —
   // the parser materialises the operand as args[0].
@@ -408,10 +420,396 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(EmitCtx& ctx,
 
   BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot), *operand_or,
                                    *key_or};
-  BinaryenExpressionRef call_expr = BinaryenCall(
-      ctx.mod.raw(), target.c_str(), args, 3, BinaryenTypeNone());
+  BinaryenExpressionRef call_expr =
+      BinaryenCall(ctx.mod.raw(), target.c_str(), args, 3, BinaryenTypeNone());
 
-  BinaryenExpressionRef block_items[2] = {call_expr, I32Const(ctx.mod, out_slot)};
+  BinaryenExpressionRef block_items[2] = {call_expr,
+                                          I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
+// M5.F: lowers a general kCallExpr — every call that isn't `_[_]`
+// (M3/M4 indexing, special-cased above) and isn't control flow
+// (`_&&_` / `_||_` / `_?_:_`, M5.G — branch-style, slot-out has
+// 3VL semantics that don't fit the uniform vv/v ABI).
+//
+// Shape mirrors `EmitKIndexCall`: emit each arg sub-expression
+// (returns its CelValue offset), prepend the out_slot constant,
+// emit a single `BinaryenCall` to the helper named by
+// `OverloadTable::Lookup(ann.overload_id)->name`, then wrap in a
+// `(block (call …) (i32.const out_slot))` so the whole call
+// expression value-types as the i32 offset of its result CelValue.
+//
+// Receiver-form (`s.contains("foo")`) is parsed by cel-cpp into a
+// `CallExpr{target: s, function: "contains", args: ["foo"]}`; we
+// flatten that to `[target, ...args]` so the wasm helper sees a
+// uniform argument list — the `contains_string` helper signature
+// is `(out_slot, s_slot, sub_slot) → void`, identical to
+// `add_int64`'s `(out, a, b) → void`.
+// Slice 1.6: cross-numeric ordering re-pick.  cel-cpp's reference
+// map for a comparison call site whose operands span numeric kinds
+// (e.g. `dyn(int) < uint`) lists exactly one candidate — the same-
+// kind overload of the non-dyn operand's kind (`less_uint64` for
+// `dyn(int) < uint`).  That id routes to the per-kind helper
+// (`cel_uint_lt_at_vv`) which `require_kinds(..., CEL_UINT)` rejects
+// the int operand and poisons.  The fix: at codegen time, inspect
+// each operand's annotated `Repr`.  When the function is `_<_` /
+// `_<=_` / `_>_` / `_>=_` AND the operand Reprs span a cross-
+// numeric pair, override the overload id with the cross-numeric
+// id (`less_int64_uint64`, etc.) which routes to the polymorphic
+// `cel_numeric_<op>_at_vv` kernel.
+//
+// Why codegen and not resolve_pass: cel-cpp emits exactly ONE
+// candidate per call (probe spike, 2026-04-25) — there is no
+// candidate list to choose from.  ResolvePass can't synthesise an
+// id that cel-cpp didn't list; codegen has the operand Reprs in
+// hand (Slice 1.5's `DynPassthroughVisitor` forwards them onto
+// dyn calls) and a static table of cross-numeric ids
+// (`kBuiltinSeeds` rows 142–189).
+//
+// Same-kind operands pass through untouched (the per-kind helpers
+// are still preferred — one less branch per call).
+//
+// `@in` membership is handled via runtime element-equality
+// (`cel_value_eq_polymorphic` in `cel_runtime.c`), not via this
+// codegen re-pick — the `in_list` / `in_map` ids already route to
+// the polymorphic dispatcher; only the element-equality matcher
+// needed widening.
+bool IsCrossNumericOrderingFunction(absl::string_view fn) {
+  return fn == "_<_" || fn == "_<=_" || fn == "_>_" || fn == "_>=_";
+}
+
+// True iff `r` is one of the three CEL numeric Reprs.
+bool IsNumericRepr(Repr r) {
+  return r == Repr::kInt || r == Repr::kUint || r == Repr::kDouble;
+}
+
+// Pack a (Repr, Repr) cross-numeric pair into a small dense key.
+// Caller has already proven both Reprs are numeric (kInt / kUint /
+// kDouble) and a != b — so the six cross-pair shapes map onto six
+// distinct switch arms.  Mirrors `numeric_kind_pair` in
+// `cel_runtime.c::numeric_compare_kernel`.
+constexpr uint16_t PackReprPair(Repr a, Repr b) {
+  return static_cast<uint16_t>((static_cast<uint16_t>(a) << 8) |
+                               static_cast<uint16_t>(b));
+}
+
+// Maps a numeric (Repr, Repr) cross-pair to one of the six
+// cross-numeric overload-id stems for the `_<_` ladder.  The
+// other ordering ops (`_<=_`, `_>_`, `_>=_`) reuse the same key
+// space via per-op tables below.  Returns empty for same-kind
+// or non-cross-numeric pairs.
+absl::string_view CrossNumericLtId(Repr a, Repr b) {
+  switch (PackReprPair(a, b)) {
+    case PackReprPair(Repr::kInt, Repr::kUint):
+      return "less_int64_uint64";
+    case PackReprPair(Repr::kUint, Repr::kInt):
+      return "less_uint64_int64";
+    case PackReprPair(Repr::kInt, Repr::kDouble):
+      return "less_int64_double";
+    case PackReprPair(Repr::kDouble, Repr::kInt):
+      return "less_double_int64";
+    case PackReprPair(Repr::kUint, Repr::kDouble):
+      return "less_uint64_double";
+    case PackReprPair(Repr::kDouble, Repr::kUint):
+      return "less_double_uint64";
+    default:
+      return {};
+  }
+}
+
+absl::string_view CrossNumericLeId(Repr a, Repr b) {
+  switch (PackReprPair(a, b)) {
+    case PackReprPair(Repr::kInt, Repr::kUint):
+      return "less_equals_int64_uint64";
+    case PackReprPair(Repr::kUint, Repr::kInt):
+      return "less_equals_uint64_int64";
+    case PackReprPair(Repr::kInt, Repr::kDouble):
+      return "less_equals_int64_double";
+    case PackReprPair(Repr::kDouble, Repr::kInt):
+      return "less_equals_double_int64";
+    case PackReprPair(Repr::kUint, Repr::kDouble):
+      return "less_equals_uint64_double";
+    case PackReprPair(Repr::kDouble, Repr::kUint):
+      return "less_equals_double_uint64";
+    default:
+      return {};
+  }
+}
+
+absl::string_view CrossNumericGtId(Repr a, Repr b) {
+  switch (PackReprPair(a, b)) {
+    case PackReprPair(Repr::kInt, Repr::kUint):
+      return "greater_int64_uint64";
+    case PackReprPair(Repr::kUint, Repr::kInt):
+      return "greater_uint64_int64";
+    case PackReprPair(Repr::kInt, Repr::kDouble):
+      return "greater_int64_double";
+    case PackReprPair(Repr::kDouble, Repr::kInt):
+      return "greater_double_int64";
+    case PackReprPair(Repr::kUint, Repr::kDouble):
+      return "greater_uint64_double";
+    case PackReprPair(Repr::kDouble, Repr::kUint):
+      return "greater_double_uint64";
+    default:
+      return {};
+  }
+}
+
+// Note: cel-cpp's `greater_equals_uint_double` is spelled `_uint`
+// (no `64`) — see `overload_table.cc:188`.  Mirror that asymmetry.
+absl::string_view CrossNumericGeId(Repr a, Repr b) {
+  switch (PackReprPair(a, b)) {
+    case PackReprPair(Repr::kInt, Repr::kUint):
+      return "greater_equals_int64_uint64";
+    case PackReprPair(Repr::kUint, Repr::kInt):
+      return "greater_equals_uint64_int64";
+    case PackReprPair(Repr::kInt, Repr::kDouble):
+      return "greater_equals_int64_double";
+    case PackReprPair(Repr::kDouble, Repr::kInt):
+      return "greater_equals_double_int64";
+    case PackReprPair(Repr::kUint, Repr::kDouble):
+      return "greater_equals_uint_double";
+    case PackReprPair(Repr::kDouble, Repr::kUint):
+      return "greater_equals_double_uint64";
+    default:
+      return {};
+  }
+}
+
+// Maps a (function, operand_a_repr, operand_b_repr) tuple to the
+// matching cross-numeric overload id from `kBuiltinSeeds`.  Returns
+// empty string_view when the operands are same-kind or one is
+// non-numeric — the caller should fall back to the cel-cpp-picked
+// id in that case.
+absl::string_view CrossNumericOverloadId(absl::string_view fn, Repr a, Repr b) {
+  if (!IsNumericRepr(a) || !IsNumericRepr(b)) return {};
+  if (a == b) return {};  // Same-kind: per-kind helper is preferred.
+  if (fn == "_<_") return CrossNumericLtId(a, b);
+  if (fn == "_<=_") return CrossNumericLeId(a, b);
+  if (fn == "_>_") return CrossNumericGtId(a, b);
+  if (fn == "_>=_") return CrossNumericGeId(a, b);
+  return {};
+}
+
+// If `call` is a cross-numeric ordering call whose operand Reprs
+// span numeric kinds, return the cross-numeric overload id; else
+// empty.  Caller (`EmitGeneralCall`) substitutes the cel-cpp-picked
+// id when this returns non-empty.
+absl::string_view MaybeRepickCrossNumericOverload(
+    const WasmAnnotations& annotations, const cel::CallExpr& call) {
+  if (call.has_target() || call.args().size() != 2) return {};
+  if (!IsCrossNumericOrderingFunction(call.function())) return {};
+  const NodeAnnotation* a_ann = annotations.Find(call.args()[0].id());
+  const NodeAnnotation* b_ann = annotations.Find(call.args()[1].id());
+  if (a_ann == nullptr || b_ann == nullptr) return {};
+  return CrossNumericOverloadId(call.function(), a_ann->repr, b_ann->repr);
+}
+
+// Resolves `ann.overload_id` to a runtime helper name, returning an
+// `Unimplemented` Status if (a) the annotation is empty
+// (ResolvePass didn't stamp it — codegen invariant), (b) no entry
+// in OverloadTable matches, or (c) the resolved helper is one of
+// the M5.D-step-2 pending dispatchers.  The returned string_view
+// is the wasm import name codegen emits a `BinaryenCall` to.
+absl::StatusOr<absl::string_view> ResolveCallHelper(const OverloadTable& table,
+                                                    const cel::Expr& expr,
+                                                    const cel::CallExpr& call,
+                                                    const NodeAnnotation& ann) {
+  if (ann.overload_id.empty()) {
+    return absl::UnimplementedError(absl::StrCat(
+        "expr_lower: kCallExpr expr_id=", expr.id(), " function=`",
+        call.function(),
+        "` has empty overload_id (ResolvePass left the annotation unstamped)"));
+  }
+  const OverloadImpl* impl = table.Lookup(ann.overload_id);
+  if (impl == nullptr) {
+    return absl::UnimplementedError(
+        absl::StrCat("expr_lower: kCallExpr expr_id=", expr.id(), " function=`",
+                     call.function(), "` overload_id=`", ann.overload_id,
+                     "` not registered in OverloadTable"));
+  }
+  return impl->name;
+}
+
+// Emits the operand slot offsets a kCallExpr's helper consumes —
+// `[out_slot, target?, args...]`.  Receiver-form flattens `target`
+// to `args[0]`; wasm helpers see a uniform `(out, in0, in1, ...)`
+// signature.
+absl::StatusOr<std::vector<BinaryenExpressionRef>> EmitCallOperands(
+    EmitCtx& ctx, const cel::CallExpr& call, uint32_t out_slot) {
+  std::vector<BinaryenExpressionRef> out;
+  out.reserve(1u + (call.has_target() ? 1u : 0u) + call.args().size());
+  out.push_back(I32Const(ctx.mod, out_slot));
+  if (call.has_target()) {
+    auto t_or = Emit(ctx, call.target());
+    if (!t_or.ok()) return t_or.status();
+    out.push_back(*t_or);
+  }
+  for (const cel::Expr& arg : call.args()) {
+    auto a_or = Emit(ctx, arg);
+    if (!a_or.ok()) return a_or.status();
+    out.push_back(*a_or);
+  }
+  return out;
+}
+
+// Forward decl — `Emit` calls `EmitConditional`, `EmitConditional`
+// recurses through `Emit` for cond / then / else.
+absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
+
+// M5.G (Slice 2) — `_?_:_` lowering.  Per langdef §"Conditional
+// expression", only the chosen arm is evaluated; ERROR / UNKNOWN
+// on the cond propagate verbatim without dispatching to either
+// branch.  We materialise this with a nested BinaryenIf:
+//
+//   (block (result i32)
+//     (drop <eval cond>)
+//     (if (i32.eq (i32.load cond_slot) CEL_BOOL)
+//       (then
+//         (if (i32.ne (i32.load offset=8 cond_slot) 0)
+//           (then (drop <eval then>) (cel_copy_slot out then_slot))
+//           (else (drop <eval else>) (cel_copy_slot out else_slot))))
+//       (else (cel_copy_slot out cond_slot)))
+//     (i32.const out_slot))
+//
+// Sub-expressions write into their own pre-allocated annotated
+// slots; we drop the offset their `Emit` returns and copy from the
+// slot we already know.  Slot aliasing between out_slot and the
+// arms is harmless — `cel_copy_slot` self-copies safely.
+// Builds `cel_copy_slot(dst_slot, src_slot)` as a Binaryen call.
+BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
+                                      uint32_t src_slot) {
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, dst_slot),
+                                   I32Const(ctx.mod, src_slot)};
+  return BinaryenCall(ctx.mod.raw(), "cel_copy_slot", args, 2,
+                      BinaryenTypeNone());
+}
+
+// Builds `(eval; cel_copy_slot(out, arm_slot))` for one ternary arm.
+// Drops the i32 offset that `eval`'s `Emit` puts on the stack — the
+// arm's CelValue is already in `arm_slot` after `eval` runs.
+BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
+                                          BinaryenExpressionRef eval_expr,
+                                          uint32_t out_slot,
+                                          uint32_t arm_slot) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef items[2] = {BinaryenDrop(mod, eval_expr),
+                                    EmitCelCopySlot(ctx, out_slot, arm_slot)};
+  return BinaryenBlock(mod, /*name=*/nullptr, items, 2, BinaryenTypeNone());
+}
+
+// `(i32.eq (i32.load offset=N <slot>) <expected>)` — the CelValue
+// kind / payload probe used by the ternary's nested-if shape.
+BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
+                                    uint32_t offset, int32_t expected) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef load =
+      BinaryenLoad(mod, /*bytes=*/4, /*signed=*/0, offset, /*align=*/4,
+                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+  return BinaryenBinary(mod, BinaryenEqInt32(), load,
+                        BinaryenConst(mod, BinaryenLiteralInt32(expected)));
+}
+
+BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
+                                    uint32_t offset, int32_t expected) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef load =
+      BinaryenLoad(mod, /*bytes=*/4, /*signed=*/0, offset, /*align=*/4,
+                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+  return BinaryenBinary(mod, BinaryenNeInt32(), load,
+                        BinaryenConst(mod, BinaryenLiteralInt32(expected)));
+}
+
+absl::StatusOr<BinaryenExpressionRef> EmitConditional(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
+    const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: ternary expr_id=" << expr.id()
+      << " has non-workspace storage (LayoutPass didn't allocate a slot)";
+  if (call.args().size() != 3) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("expr_lower: ternary expr_id=", expr.id(),
+                     " expects 3 args, got ", call.args().size()));
+  }
+  const uint32_t out_slot = ann.storage.payload;
+
+  const cel::Expr& cond = call.args()[0];
+  const cel::Expr& then_branch = call.args()[1];
+  const cel::Expr& else_branch = call.args()[2];
+
+  auto cond_or = Emit(ctx, cond);
+  if (!cond_or.ok()) return cond_or.status();
+  auto then_or = Emit(ctx, then_branch);
+  if (!then_or.ok()) return then_or.status();
+  auto else_or = Emit(ctx, else_branch);
+  if (!else_or.ok()) return else_or.status();
+
+  const NodeAnnotation* cond_ann = ctx.layout.annotations.Find(cond.id());
+  const NodeAnnotation* then_ann =
+      ctx.layout.annotations.Find(then_branch.id());
+  const NodeAnnotation* else_ann =
+      ctx.layout.annotations.Find(else_branch.id());
+  ABSL_CHECK(cond_ann != nullptr && then_ann != nullptr && else_ann != nullptr)
+      << "expr_lower: ternary sub-expr missing NodeAnnotation";
+  const uint32_t cond_slot = cond_ann->storage.payload;
+  const uint32_t then_slot = then_ann->storage.payload;
+  const uint32_t else_slot = else_ann->storage.payload;
+
+  auto* mod = ctx.mod.raw();
+
+  // CelValue layout pinned by cel_data.h: kind:u32 at off 0,
+  // _pad:u32 at off 4, payload at off 8 (b at off 8 for CEL_BOOL).
+  // CEL_BOOL = 1.
+  BinaryenExpressionRef inner_if = BinaryenIf(
+      mod, LoadSlotI32Ne(ctx, cond_slot, /*offset=*/8, /*expected=*/0),
+      BuildConditionalArm(ctx, *then_or, out_slot, then_slot),
+      BuildConditionalArm(ctx, *else_or, out_slot, else_slot));
+  BinaryenExpressionRef outer_if = BinaryenIf(
+      mod, LoadSlotI32Eq(ctx, cond_slot, /*offset=*/0, /*expected=*/1),
+      inner_if, EmitCelCopySlot(ctx, out_slot, cond_slot));
+
+  BinaryenExpressionRef block_items[3] = {BinaryenDrop(mod, *cond_or), outer_if,
+                                          I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(mod, /*name=*/nullptr, block_items, 3,
+                       BinaryenTypeInt32());
+}
+
+absl::StatusOr<BinaryenExpressionRef> EmitGeneralCall(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
+    const NodeAnnotation& ann) {
+  ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
+      << "expr_lower: kCallExpr expr_id=" << expr.id() << " function=`"
+      << call.function()
+      << "` has non-workspace storage (LayoutPass didn't allocate a slot)";
+  const uint32_t out_slot = ann.storage.payload;
+
+  // Slice 1.6: cross-numeric ordering overload re-pick.  When operand
+  // Reprs span a numeric cross-pair, override the cel-cpp-picked id
+  // (which was the same-kind overload of one operand) with the
+  // cross-numeric id.  See `MaybeRepickCrossNumericOverload` above.
+  NodeAnnotation effective_ann = ann;
+  absl::string_view repicked =
+      MaybeRepickCrossNumericOverload(ctx.layout.annotations, call);
+  if (!repicked.empty()) {
+    effective_ann.overload_id = repicked;
+  }
+
+  auto helper_or =
+      ResolveCallHelper(ctx.overload_table, expr, call, effective_ann);
+  if (!helper_or.ok()) return helper_or.status();
+
+  auto operands_or = EmitCallOperands(ctx, call, out_slot);
+  if (!operands_or.ok()) return operands_or.status();
+
+  const std::string target(*helper_or);
+  BinaryenExpressionRef call_expr = BinaryenCall(
+      ctx.mod.raw(), target.c_str(), operands_or->data(),
+      static_cast<BinaryenIndex>(operands_or->size()), BinaryenTypeNone());
+
+  BinaryenExpressionRef block_items[2] = {call_expr,
+                                          I32Const(ctx.mod, out_slot)};
   return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
                        BinaryenTypeInt32());
 }
@@ -433,16 +831,39 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
       return EmitKIdentLoad(ctx.mod, *ann);
     case cel::ExprKindCase::kSelectExpr:
       return EmitKSelect(ctx, expr, expr.select_expr(), *ann);
-    case cel::ExprKindCase::kCallExpr:
-      // M3.F: only the indexing operator `_[_]` is lowered.  Other
-      // kCall variants (arithmetic, comparison, logical, custom)
-      // land at later milestones; surface as Unimplemented so the
-      // pipeline rejects deterministically rather than silently
-      // dropping the call.
-      if (expr.call_expr().function() == "_[_]") {
-        return EmitKIndexCall(ctx, expr, expr.call_expr(), *ann);
+    case cel::ExprKindCase::kCallExpr: {
+      const cel::CallExpr& call = expr.call_expr();
+      // Slice 1.5 (dyn-passthrough-plan.md): `dyn(scalar)` is the
+      // identity function at codegen — emit the argument directly.
+      // Annotation forwarding (ResolvePass + LayoutPass) ensured
+      // any consumer that reads this call's annotation sees the
+      // argument's repr / storage; this branch makes sure the call
+      // node itself doesn't drop a `cel_to_dyn` helper.
+      if (call.function() == "dyn" && call.args().size() == 1 &&
+          !call.has_target()) {
+        return Emit(ctx, call.args()[0]);
       }
-      return Unimplemented(expr.kind_case(), expr.id());
+      // M3.F: indexing operator `_[_]` is origin-aware (kArena fast
+      // path / kHost trampoline / kDynamic dispatcher) and pre-dates
+      // the OverloadTable; keep its bespoke arm.
+      if (call.function() == "_[_]") {
+        return EmitKIndexCall(ctx, expr, call, *ann);
+      }
+      // M5.G (Slice 2) ternary `_?_:_`: BinaryenIf-based lowering
+      // (only the chosen arm is evaluated, per langdef §"Conditional
+      // expression").  `_&&_` / `_||_` / `!_` route through the
+      // standard slot-out helper arm — non-strict 3VL semantics
+      // live entirely inside `cel_and` / `cel_or` / `cel_not`.
+      if (call.function() == "_?_:_") {
+        return EmitConditional(ctx, expr, call, *ann);
+      }
+      // M5.F general arm — arithmetic, comparison, string ops,
+      // receiver-style (`s.contains(…)`), and any custom function
+      // the embedder registered (M6).  Lookup is by
+      // `ann.overload_id` (cel-cpp's resolved overload string,
+      // stamped by ResolvePass).
+      return EmitGeneralCall(ctx, expr, call, *ann);
+    }
     case cel::ExprKindCase::kMapExpr:
       return EmitKMapExpr(ctx, expr, expr.map_expr(), *ann);
     case cel::ExprKindCase::kListExpr:
@@ -460,7 +881,8 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
 
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
-    absl::string_view func_name, WasmModule& mod, const LoweringOptions& opts) {
+    absl::string_view func_name, WasmModule& mod,
+    const OverloadTable& overload_table, const LoweringOptions& opts) {
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
@@ -469,7 +891,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   // select.
   std::vector<FieldRefRow> field_refs;
   field_refs.push_back(FieldRefRow{});
-  EmitCtx ctx{mod, ast, layout, field_refs};
+  EmitCtx ctx{mod, ast, layout, field_refs, overload_table};
 
   auto root_ref = Emit(ctx, ast.ast().root_expr());
   if (!root_ref.ok()) return root_ref.status();

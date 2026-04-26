@@ -159,8 +159,7 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
 
-  void PostVisitMap(const cel::Expr& expr,
-                    const cel::MapExpr& m) override {
+  void PostVisitMap(const cel::Expr& expr, const cel::MapExpr& m) override {
     // Each entry's key + value exprs were laid out in their own
     // post-visit; those slots are released as their values stop
     // being live (after `cel_map_insert` consumes them at codegen
@@ -173,8 +172,7 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
         Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
-  void PostVisitList(const cel::Expr& expr,
-                     const cel::ListExpr& l) override {
+  void PostVisitList(const cel::Expr& expr, const cel::ListExpr& l) override {
     // Each element expression's slot is consumed by `cel_list_set`
     // at codegen; release here so the list's result slot can
     // supersede in the same arena region.
@@ -187,9 +185,39 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
 
   void PostVisitCall(const cel::Expr& expr,
                      const cel::CallExpr& call) override {
-    if (!IsIndexCall(call)) return;  // M5 handles general kCall.
-    // Operand + index expressions hand their slots up to us; release
-    // them and acquire one for the lookup result.
+    // Slice 1.5 (dyn-passthrough-plan.md, Option A): a `dyn(scalar)`
+    // call lowers to its argument's slot directly.  ResolvePass has
+    // already forwarded the arg's non-storage annotation onto the
+    // call node; here we forward storage so consumers reading the
+    // call's `ann.storage` (e.g. the ternary's cond_slot lookup)
+    // see the arg's slot.  No fresh slot allocation, no release of
+    // the arg's slot — its lifetime continues through the dyn call.
+    if (call.function() == "dyn" && call.args().size() == 1 &&
+        !call.has_target()) {
+      const NodeAnnotation* arg_ann = annotations_.Find(call.args()[0].id());
+      if (arg_ann != nullptr) {
+        annotations_[expr.id()].storage = arg_ann->storage;
+        return;
+      }
+    }
+    // M5.G (Slice 2) control-flow operators.  `_&&_` / `_||_` /
+    // `_?_:_` / `!_` follow the standard slot-out shape: every arg
+    // sub-expression hands its slot up; release before acquiring
+    // this call's result slot so the arena region is reused.  The
+    // ternary's two branch-arm slots are allocated inside expr_lower
+    // (BinaryenIf wraps fresh per-arm slots that don't escape the
+    // call's scope), so LayoutPass only owns the call's result.
+    // _[_] (M3/M4 indexing) and the M5.F general arm both follow
+    // the same shape: every arg sub-expression hands its slot up
+    // to us; release before acquiring this call's result slot so
+    // the same arena region is reused.  Receiver-form `s.f(args)`
+    // also hands `target`'s slot up — release it too.
+    if (!IsIndexCall(call)) {
+      // General arm.  Receiver (target) participates in slot reuse.
+      if (call.has_target()) {
+        ReleaseIfWorkspaceSlot(call.target().id());
+      }
+    }
     for (const auto& arg : call.args()) {
       ReleaseIfWorkspaceSlot(arg.id());
     }
@@ -208,6 +236,28 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
   SlotAllocator& slots_;
 };
+
+// Reserve one 24-byte workspace slot per referenced variable and
+// fill `layout.variables`.  Workspace sits 8-aligned immediately
+// after rodata; each slot is 24 B, and 24 is a multiple of 8 so
+// every slot stays aligned.
+void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
+                          StaticLayout& layout) {
+  constexpr auto kSlotBytes = static_cast<uint32_t>(sizeof(CelValue));
+  static_assert(kSlotBytes == 24, "CelValue must remain 24 bytes");
+  static_assert(kSlotBytes % 8u == 0u, "CelValue must stay 8-aligned");
+
+  layout.workspace_base = RoundUp8(layout.rodata_base +
+                                   static_cast<uint32_t>(layout.rodata.size()));
+  layout.variables.reserve(variables.size());
+  for (const ResolvedVariable& rv : variables) {
+    const uint32_t slot_offset =
+        layout.workspace_base + (rv.local_index * kSlotBytes);
+    layout.variables.push_back(
+        LaidOutVariable{rv.name, rv.local_index, rv.repr, slot_offset});
+  }
+  layout.workspace_bytes = static_cast<uint32_t>(variables.size()) * kSlotBytes;
+}
 
 }  // namespace
 
@@ -234,41 +284,17 @@ absl::StatusOr<StaticLayout> LayoutPass(
   cel::AstTraverse(ast.ast().root_expr(), const_visitor);
   layout.rodata = std::move(builder).Finalize();
 
-  // --- Pass B: reserve one 24-byte workspace slot per referenced
-  // variable.  Workspace sits 8-aligned immediately after rodata; each
-  // slot is 24 bytes, and 24 is a multiple of 8 so every slot stays
-  // aligned.  Indexed by ResolveOutput::variables order (local_index). ---
-  layout.workspace_base = RoundUp8(layout.rodata_base +
-                                   static_cast<uint32_t>(layout.rodata.size()));
-
-  constexpr auto kSlotBytes = static_cast<uint32_t>(sizeof(CelValue));
-  static_assert(kSlotBytes == 24, "CelValue must remain 24 bytes");
-  static_assert(kSlotBytes % 8u == 0u, "CelValue must stay 8-aligned");
-
-  layout.variables.reserve(resolved.variables.size());
-  for (const ResolvedVariable& rv : resolved.variables) {
-    const uint32_t slot_offset =
-        layout.workspace_base + (rv.local_index * kSlotBytes);
-    layout.variables.push_back(
-        LaidOutVariable{rv.name, rv.local_index, rv.repr, slot_offset});
-  }
-  layout.workspace_bytes =
-      static_cast<uint32_t>(resolved.variables.size()) * kSlotBytes;
+  // --- Pass B: reserve one 24-byte workspace slot per variable. ---
+  ReserveVariableSlots(resolved.variables, layout);
 
   // --- Pass C: tag every kIdent with `{kLocal, local_index}`. ---
-  // The wasm-local → slot_offset mapping lives on layout.variables;
-  // expr_lower emits the `$eval` prelude that writes each slot
-  // offset into its local.
   IdentStorageVisitor ident_visitor(
       layout.annotations, static_cast<uint32_t>(resolved.variables.size()));
   cel::AstTraverse(ast.ast().root_expr(), ident_visitor);
 
   // --- Pass D: assign workspace slots to every kSelect node and
-  // every map-producing / map-indexing node (kMapExpr,
-  // kCallExpr(_[_])).  All four kinds share the same SlotAllocator
-  // so a kSelect inside a map literal's value, or a map indexing
-  // chained off a kSelect, recycles slots correctly.  The slot
-  // region sits immediately after the variable slots. ---
+  // every aggregate-producing / aggregate-indexing node.  All four
+  // kinds share the same SlotAllocator so slots recycle correctly. ---
   const uint32_t selects_base = layout.workspace_base + layout.workspace_bytes;
   SlotAllocator slots(selects_base, opts.debug_layout);
   SelectStorageVisitor select_visitor(layout.annotations, slots);

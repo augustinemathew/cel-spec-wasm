@@ -16,6 +16,7 @@
 #include "compiler_v2/api/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/message.h"
+#include "google/protobuf/util/message_differencer.h"
 
 namespace celwasm {
 
@@ -272,8 +273,7 @@ namespace {
 // (bool/int/uint/string) — every other kind returns nullopt and the
 // caller surfaces a TYPE_MISMATCH error to the wasm side.  Strings
 // dereference through the MemoryView so the cel::Value owns a copy.
-std::optional<cel::Value> DecodeKey(const CelValue& cv,
-                                    const MemoryView& mem) {
+std::optional<cel::Value> DecodeKey(const CelValue& cv, const MemoryView& mem) {
   switch (cv.kind) {
     case CEL_BOOL:
       return cel::Value::Bool(cv.payload.b != 0);
@@ -297,25 +297,33 @@ std::optional<cel::Value> DecodeKey(const CelValue& cv,
 // rather than dropping silently.
 uint32_t WireErrorCode(cel::ErrorCode c) {
   switch (c) {
-    case cel::ErrorCode::kOverflow:        return CEL_ERR_OVERFLOW;
-    case cel::ErrorCode::kDivideByZero:    return CEL_ERR_DIVIDE_BY_ZERO;
-    case cel::ErrorCode::kModulusByZero:   return CEL_ERR_MODULUS_BY_ZERO;
-    case cel::ErrorCode::kTypeMismatch:    return CEL_ERR_TYPE_MISMATCH;
-    case cel::ErrorCode::kTypeUnsupported: return CEL_ERR_TYPE_UNSUPPORTED;
-    case cel::ErrorCode::kKeyNotFound:     return CEL_ERR_NO_SUCH_KEY;
-    case cel::ErrorCode::kFieldNotFound:   return CEL_ERR_FIELD_NOT_FOUND;
-    case cel::ErrorCode::kIndexOutOfBounds: return CEL_ERR_INDEX_OUT_OF_BOUNDS;
+    case cel::ErrorCode::kOverflow:
+      return CEL_ERR_OVERFLOW;
+    case cel::ErrorCode::kDivideByZero:
+      return CEL_ERR_DIVIDE_BY_ZERO;
+    case cel::ErrorCode::kModulusByZero:
+      return CEL_ERR_MODULUS_BY_ZERO;
+    case cel::ErrorCode::kTypeMismatch:
+      return CEL_ERR_TYPE_MISMATCH;
+    case cel::ErrorCode::kTypeUnsupported:
+      return CEL_ERR_TYPE_UNSUPPORTED;
+    case cel::ErrorCode::kKeyNotFound:
+      return CEL_ERR_NO_SUCH_KEY;
+    case cel::ErrorCode::kFieldNotFound:
+      return CEL_ERR_FIELD_NOT_FOUND;
+    case cel::ErrorCode::kIndexOutOfBounds:
+      return CEL_ERR_INDEX_OUT_OF_BOUNDS;
     case cel::ErrorCode::kHostAdapterError:
       return CEL_ERR_HOST_ADAPTER_ERROR;
-    default:                               return CEL_ERR_TYPE_MISMATCH;
+    default:
+      return CEL_ERR_TYPE_MISMATCH;
   }
 }
 
 // Build a CEL_ERROR CelValue with the given wire code and write it
 // to `out_slot`.  Used by every Layer-2 arm that surfaces a
 // spec-level error in-wire (rather than returning non-OK Status).
-void WriteWireError(uint32_t wire_code, uint32_t out_slot,
-                    MemoryView& mem) {
+void WriteWireError(uint32_t wire_code, uint32_t out_slot, MemoryView& mem) {
   CelValue err{};
   err.kind = CEL_ERROR;
   err.payload.err = wire_code;
@@ -326,8 +334,7 @@ void WriteWireError(uint32_t wire_code, uint32_t out_slot,
 absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
                         ArenaAllocator& alloc) {
   using K = cel::Value::Kind;
-  absl::string_view s =
-      v.kind() == K::kString ? *v.AsString() : *v.AsBytes();
+  absl::string_view s = v.kind() == K::kString ? *v.AsString() : *v.AsBytes();
   uint32_t off = 0;
   uint8_t* p = alloc.Alloc(s.size(), &off);
   if (p == nullptr && !s.empty()) {
@@ -348,21 +355,28 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
                          ArenaAllocator& alloc) {
   using K = cel::Value::Kind;
   switch (v.kind()) {
-    case K::kNull:    out->kind = CEL_NULL; return absl::OkStatus();
-    case K::kBool:    out->kind = CEL_BOOL;
-                      out->payload.b = *v.AsBool() ? 1 : 0;
-                      return absl::OkStatus();
-    case K::kInt:     out->kind = CEL_INT;
-                      out->payload.i = *v.AsInt();
-                      return absl::OkStatus();
-    case K::kUint:    out->kind = CEL_UINT;
-                      out->payload.u = *v.AsUint();
-                      return absl::OkStatus();
-    case K::kDouble:  out->kind = CEL_DOUBLE;
-                      out->payload.d = *v.AsDouble();
-                      return absl::OkStatus();
+    case K::kNull:
+      out->kind = CEL_NULL;
+      return absl::OkStatus();
+    case K::kBool:
+      out->kind = CEL_BOOL;
+      out->payload.b = *v.AsBool() ? 1 : 0;
+      return absl::OkStatus();
+    case K::kInt:
+      out->kind = CEL_INT;
+      out->payload.i = *v.AsInt();
+      return absl::OkStatus();
+    case K::kUint:
+      out->kind = CEL_UINT;
+      out->payload.u = *v.AsUint();
+      return absl::OkStatus();
+    case K::kDouble:
+      out->kind = CEL_DOUBLE;
+      out->payload.d = *v.AsDouble();
+      return absl::OkStatus();
     case K::kString:
-    case K::kBytes:   return EncodeSpan(v, out, alloc);
+    case K::kBytes:
+      return EncodeSpan(v, out, alloc);
     case K::kError: {
       const cel::ErrorPayload* e = *v.ErrorInfo();
       out->kind = CEL_ERROR;
@@ -375,7 +389,7 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
       // PartialEval surfaces unknowns via a different path
       // (MatchesAnyUnknownPattern).
       ABSL_CHECK(false) << "EncodeValue: kUnknown is unreachable from "
-                          "Layer 1 returns";
+                           "Layer 1 returns";
     case K::kMessage:
     case K::kMap:
     case K::kList:
@@ -445,8 +459,7 @@ absl::Status EncodeFieldResult(const cel::Value& v, uint32_t out_slot,
 }  // namespace
 
 absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
-                           uint32_t index_slot,
-                           const TrampolineContext& ctx) {
+                           uint32_t index_slot, const TrampolineContext& ctx) {
   CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
   CelValue idx_cv = ctx.mem.ReadCelValue(index_slot);
 
@@ -497,8 +510,7 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
 }
 
 absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
-                              uint32_t key_slot,
-                              const TrampolineContext& ctx) {
+                              uint32_t key_slot, const TrampolineContext& ctx) {
   CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
   CelValue key_cv = ctx.mem.ReadCelValue(key_slot);
 
@@ -524,9 +536,9 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
 
   const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
   if (backing == nullptr) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "CelMapLookupImpl: map ref_slot ", map_cv.payload.ref_slot,
-        " not found in ExternrefTable"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelMapLookupImpl: map ref_slot ", map_cv.payload.ref_slot,
+                     " not found in ExternrefTable"));
   }
 
   std::optional<cel::Value> key = DecodeKey(key_cv, ctx.mem);
@@ -580,8 +592,7 @@ const google::protobuf::FieldDescriptor* absl_nonnull MapEntryField(
   const google::protobuf::FieldDescriptor* sub =
       entry->FindFieldByNumber(number);
   ABSL_CHECK(sub != nullptr)
-      << "ProtoMap: entry of `" << field.name() << "` missing field "
-      << number;
+      << "ProtoMap: entry of `" << field.name() << "` missing field " << number;
   return sub;
 }
 
@@ -601,8 +612,7 @@ size_t ProtoMap::Size() const {
 }
 
 absl::StatusOr<cel::Value> ProtoMap::Get(
-    const cel::Value& key,
-    const cel::CelType& /*expected_value_type*/) const {
+    const cel::Value& key, const cel::CelType& /*expected_value_type*/) const {
   if (!IsValidMapKeyKind(key.kind())) {
     return KeyTypeMismatch();
   }
@@ -642,8 +652,7 @@ bool ProtoMap::ContainsKey(const cel::Value& key) const {
 }
 
 void ProtoMap::ForEach(
-    absl::FunctionRef<void(const cel::Value&, const cel::Value&)> visit)
-    const {
+    absl::FunctionRef<void(const cel::Value&, const cel::Value&)> visit) const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   ABSL_CHECK(refl != nullptr) << "ProtoMap::ForEach: no reflection";
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(*field_, 1);
@@ -668,8 +677,8 @@ namespace {
 cel::Value IndexOutOfBounds(size_t index, size_t count) {
   return cel::Value::Error(cel::ErrorPayload{
       /*code=*/cel::ErrorCode::kIndexOutOfBounds,
-      /*message=*/absl::StrCat("index ", index, " out of range [0, ", count,
-                               ")"),
+      /*message=*/
+      absl::StrCat("index ", index, " out of range [0, ", count, ")"),
       /*expr_id=*/0,
   });
 }
@@ -691,8 +700,7 @@ absl::StatusOr<cel::Value> HostList::At(
   return elements_[index];
 }
 
-void HostList::ForEach(
-    absl::FunctionRef<void(const cel::Value&)> visit) const {
+void HostList::ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const {
   for (const cel::Value& v : elements_) {
     visit(v);
   }
@@ -750,22 +758,21 @@ absl::StatusOr<cel::Value> ReadRepeatedElement(
       return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
     }
   }
-  return absl::InternalError(absl::StrCat(
-      "ProtoList::At: unhandled cpp_type ",
-      static_cast<int>(field.cpp_type()), " on field `", field.name(), "`"));
+  return absl::InternalError(absl::StrCat("ProtoList::At: unhandled cpp_type ",
+                                          static_cast<int>(field.cpp_type()),
+                                          " on field `", field.name(), "`"));
 }
 
 }  // namespace
 
-ProtoList::ProtoList(const google::protobuf::Message* absl_nonnull owner,
-                     const google::protobuf::FieldDescriptor* absl_nonnull
-                         field)
+ProtoList::ProtoList(
+    const google::protobuf::Message* absl_nonnull owner,
+    const google::protobuf::FieldDescriptor* absl_nonnull field)
     : owner_(owner), field_(field) {
   ABSL_CHECK(field->is_repeated())
       << "ProtoList: field `" << field->name() << "` is not repeated";
-  ABSL_CHECK(!field->is_map())
-      << "ProtoList: field `" << field->name()
-      << "` is a map; use ProtoMap instead";
+  ABSL_CHECK(!field->is_map()) << "ProtoList: field `" << field->name()
+                               << "` is a map; use ProtoMap instead";
 }
 
 size_t ProtoList::Size() const {
@@ -784,8 +791,7 @@ absl::StatusOr<cel::Value> ProtoList::At(
   if (index >= count) {
     return IndexOutOfBounds(index, count);
   }
-  return ReadRepeatedElement(*refl, *owner_, *field_,
-                             static_cast<int>(index));
+  return ReadRepeatedElement(*refl, *owner_, *field_, static_cast<int>(index));
 }
 
 void ProtoList::ForEach(
@@ -839,8 +845,8 @@ const FieldRefEntry* absl_nullable ResolveFieldRef(
 // AttributeEntry.qualifiers are interned as strings (the CEL paths
 // are dotted-only at M2; no array indexing).  Returns nullopt if
 // `attribute_id` is the sentinel (0) or OOR.
-std::optional<cel::Attribute> ResolveAttribute(
-    const CelHostBindings& bindings, uint32_t attribute_id) {
+std::optional<cel::Attribute> ResolveAttribute(const CelHostBindings& bindings,
+                                               uint32_t attribute_id) {
   if (attribute_id == 0) return std::nullopt;
   if (attribute_id >= bindings.attributes.size()) return std::nullopt;
   const AttributeEntry& a = bindings.attributes[attribute_id];
@@ -924,8 +930,7 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
     return FieldDispatchPrelude{/*sentinel_handled=*/true};
   }
 
-  if (MatchesAnyUnknownPattern(ctx.bindings, attribute_id,
-                               field->field_name)) {
+  if (MatchesAnyUnknownPattern(ctx.bindings, attribute_id, field->field_name)) {
     CelValue unk{};
     unk.kind = CEL_UNKNOWN;
     unk.payload.unk = attribute_id;
@@ -947,8 +952,8 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
 absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
                              uint32_t field_ref_id, uint32_t attribute_id,
                              const TrampolineContext& ctx) {
-  auto prelude_or = RunFieldPrelude(out_slot, msg_slot, field_ref_id,
-                                    attribute_id, ctx);
+  auto prelude_or =
+      RunFieldPrelude(out_slot, msg_slot, field_ref_id, attribute_id, ctx);
   if (!prelude_or.ok()) return prelude_or.status();
   if (prelude_or->sentinel_handled) return absl::OkStatus();
 
@@ -966,8 +971,8 @@ absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
 absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
                              uint32_t field_ref_id, uint32_t attribute_id,
                              const TrampolineContext& ctx) {
-  auto prelude_or = RunFieldPrelude(out_slot, msg_slot, field_ref_id,
-                                    attribute_id, ctx);
+  auto prelude_or =
+      RunFieldPrelude(out_slot, msg_slot, field_ref_id, attribute_id, ctx);
   if (!prelude_or.ok()) return prelude_or.status();
   if (prelude_or->sentinel_handled) return absl::OkStatus();
 
@@ -977,6 +982,506 @@ absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
   out.kind = CEL_BOOL;
   out.payload.b = present ? 1 : 0;
   ctx.mem.WriteCelValue(out_slot, out);
+  return absl::OkStatus();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// M5.D step 2 — aggregate-op kHost trampolines.
+//
+// The seven dispatchers in `cel_runtime.c` (`cel_list_size` /
+// `cel_list_in` / `cel_list_eq` / `cel_list_concat` / `cel_map_size`
+// / `cel_map_in` / `cel_map_eq`) tail-call here when the operand
+// origin is `CEL_LIST_HOST` or `CEL_MAP_HOST`.  Each Impl reads its
+// operand backing(s) via `ctx.refs.LookupList` / `LookupMap`, runs
+// the corresponding spec-level operation, and writes the result
+// CelValue into `out_slot`.  Element/value equality reuses a
+// scalar-only matcher (`HostScalarValueEq`) consistent with the
+// arena fast paths in `cel_runtime.c::cel_value_eq` —
+// nested-aggregate equality (lists of lists, maps of messages, …)
+// returns false here for now and lands as M6 follow-up.
+// ══════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Scalar-equality matcher mirroring `cel_runtime.c::cel_value_eq`
+// + `map_keys_equal`: cross-type numeric per langdef §"Equality"
+// for int/uint/double; structural for bool / string / bytes / null.
+// Aggregate kinds (CEL_LIST_*, CEL_MAP_*, CEL_MESSAGE) return false —
+// the host arms only need scalar equality for `in` / `eq` element
+// matching.  Span operands ReadSpan via the MemoryView since both
+// arena spans (literal-built) and encoded backing-element spans
+// (allocated via the trampoline's ArenaAllocator) live in linear
+// memory.
+bool HostScalarSpanEq(const CelValue& a, const CelValue& b,
+                      const MemoryView& mem) {
+  if (a.payload.s.len != b.payload.s.len) return false;
+  absl::string_view sa = mem.ReadSpan(a.payload.s.ptr, a.payload.s.len);
+  absl::string_view sb = mem.ReadSpan(b.payload.s.ptr, b.payload.s.len);
+  return sa == sb;
+}
+
+bool HostScalarSameKindEq(const CelValue& a, const CelValue& b,
+                          const MemoryView& mem) {
+  switch (a.kind) {
+    case CEL_NULL:
+      return true;
+    case CEL_BOOL:
+      return a.payload.b == b.payload.b;
+    case CEL_INT:
+      return a.payload.i == b.payload.i;
+    case CEL_UINT:
+      return a.payload.u == b.payload.u;
+    case CEL_DOUBLE:
+      return a.payload.d == b.payload.d;
+    case CEL_STRING:
+    case CEL_BYTES:
+      return HostScalarSpanEq(a, b, mem);
+    default:
+      return false;
+  }
+}
+
+bool HostNumericCrossEq(const CelValue& a, const CelValue& b) {
+  // langdef §"Equality": int/uint/double compare by mathematical
+  // value across the type ladder.  Unrepresentable cross-type
+  // (e.g. int<0 vs uint) → false.
+  auto get_d = [](const CelValue& v, double* out) {
+    switch (v.kind) {
+      case CEL_INT:
+        *out = static_cast<double>(v.payload.i);
+        return true;
+      case CEL_UINT:
+        *out = static_cast<double>(v.payload.u);
+        return true;
+      case CEL_DOUBLE:
+        *out = v.payload.d;
+        return true;
+      default:
+        return false;
+    }
+  };
+  double da = 0;
+  double db = 0;
+  if (!get_d(a, &da) || !get_d(b, &db)) return false;
+  return da == db;
+}
+
+bool HostScalarValueEq(const CelValue& a, const CelValue& b,
+                       const MemoryView& mem) {
+  if (a.kind == b.kind) return HostScalarSameKindEq(a, b, mem);
+  return HostNumericCrossEq(a, b);
+}
+
+// Read the i-th element of a CEL_LIST_ARENA via the MemoryView.
+// `cv` must be CEL_LIST_ARENA; caller has verified.
+CelValue ReadArenaListElement(const CelValue& cv, uint32_t i,
+                              const MemoryView& mem) {
+  ArenaListHeader hdr{};
+  // ReadCelValue is also what reads ArenaListHeader-shaped runs —
+  // it's just memcpy(24) which truncates to the 16-byte header.
+  // Use a typed memcpy through ReadSpan for clarity.
+  absl::string_view hdr_bytes =
+      mem.ReadSpan(cv.payload.arena_list.header_ptr, sizeof(hdr));
+  std::memcpy(&hdr, hdr_bytes.data(), sizeof(hdr));
+  return mem.ReadCelValue(hdr.elements_offset +
+                          (i * static_cast<uint32_t>(kCelListEntryStride)));
+}
+
+uint32_t ReadArenaListCount(const CelValue& cv, const MemoryView& mem) {
+  ArenaListHeader hdr{};
+  absl::string_view hdr_bytes =
+      mem.ReadSpan(cv.payload.arena_list.header_ptr, sizeof(hdr));
+  std::memcpy(&hdr, hdr_bytes.data(), sizeof(hdr));
+  return hdr.count;
+}
+
+// Encode a backing-returned cel::Value into a CelValue.  Aggregate
+// returns POISON since aggregate element equality is out of scope
+// for this slice (M6 follow-up; mirrors arena fast path).
+absl::StatusOr<CelValue> EncodeBackingScalar(const cel::Value& v,
+                                             ArenaAllocator& alloc) {
+  using K = cel::Value::Kind;
+  if (v.kind() == K::kMessage || v.kind() == K::kMap || v.kind() == K::kList) {
+    CelValue err{};
+    err.kind = CEL_ERROR;
+    err.payload.err = CEL_ERR_TYPE_MISMATCH;
+    return err;
+  }
+  CelValue cv{};
+  if (auto s = EncodeValue(v, &cv, alloc); !s.ok()) return s;
+  return cv;
+}
+
+// Write CEL_BOOL into `out_slot`.  Used by every comparison Impl.
+void WriteWireBool(bool v, uint32_t out_slot, MemoryView& mem) {
+  CelValue cv{};
+  cv.kind = CEL_BOOL;
+  cv.payload.b = v ? 1 : 0;
+  mem.WriteCelValue(out_slot, cv);
+}
+
+// Write CEL_INT into `out_slot`.
+void WriteWireInt(int64_t v, uint32_t out_slot, MemoryView& mem) {
+  CelValue cv{};
+  cv.kind = CEL_INT;
+  cv.payload.i = v;
+  mem.WriteCelValue(out_slot, cv);
+}
+
+// 3VL absorption shared by every kHost Impl: if either operand is
+// UNKNOWN / ERROR, write it through and return true (skip work).
+// Mirrors `cel_runtime.c::absorb_3vl_binary` plus `_unary`.
+bool AbsorbUnary(const CelValue& a, uint32_t out_slot, MemoryView& mem) {
+  if (a.kind == CEL_UNKNOWN || a.kind == CEL_ERROR) {
+    mem.WriteCelValue(out_slot, a);
+    return true;
+  }
+  return false;
+}
+
+bool AbsorbBinary(const CelValue& a, const CelValue& b, uint32_t out_slot,
+                  MemoryView& mem) {
+  if (a.kind == CEL_UNKNOWN || a.kind == CEL_ERROR) {
+    mem.WriteCelValue(out_slot, a);
+    return true;
+  }
+  if (b.kind == CEL_UNKNOWN || b.kind == CEL_ERROR) {
+    mem.WriteCelValue(out_slot, b);
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+absl::Status CelListSizeImpl(uint32_t out_slot, uint32_t list_slot,
+                             const TrampolineContext& ctx) {
+  CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
+  if (AbsorbUnary(list_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  if (list_cv.kind != CEL_LIST_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostListBacking* backing =
+      ctx.refs.LookupList(list_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelListSizeImpl: list ref_slot ",
+                     list_cv.payload.ref_slot, " not found in ExternrefTable"));
+  }
+  WriteWireInt(static_cast<int64_t>(backing->Size()), out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+absl::Status CelListInImpl(uint32_t out_slot, uint32_t value_slot,
+                           uint32_t list_slot, const TrampolineContext& ctx) {
+  CelValue value_cv = ctx.mem.ReadCelValue(value_slot);
+  CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
+  if (AbsorbBinary(value_cv, list_cv, out_slot, ctx.mem)) {
+    return absl::OkStatus();
+  }
+  if (list_cv.kind != CEL_LIST_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostListBacking* backing =
+      ctx.refs.LookupList(list_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelListInImpl: list ref_slot ", list_cv.payload.ref_slot,
+                     " not found in ExternrefTable"));
+  }
+  const size_t n = backing->Size();
+  for (size_t i = 0; i < n; ++i) {
+    auto got = backing->At(i, cel::CelType::Int());
+    if (!got.ok()) return got.status();
+    auto enc_or = EncodeBackingScalar(*got, ctx.alloc);
+    if (!enc_or.ok()) return enc_or.status();
+    if (HostScalarValueEq(*enc_or, value_cv, ctx.mem)) {
+      WriteWireBool(true, out_slot, ctx.mem);
+      return absl::OkStatus();
+    }
+  }
+  WriteWireBool(false, out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+namespace {
+
+// Returns the count of `cv` whether arena or host.  Caller has
+// already verified kind ∈ {CEL_LIST_ARENA, CEL_LIST_HOST}.
+absl::StatusOr<size_t> ListLength(const CelValue& cv,
+                                  const TrampolineContext& ctx) {
+  if (cv.kind == CEL_LIST_ARENA) {
+    return static_cast<size_t>(ReadArenaListCount(cv, ctx.mem));
+  }
+  const HostListBacking* backing = ctx.refs.LookupList(cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "list ref_slot ", cv.payload.ref_slot, " not found in ExternrefTable"));
+  }
+  return backing->Size();
+}
+
+absl::StatusOr<CelValue> ReadListElementAt(const CelValue& cv, size_t i,
+                                           const TrampolineContext& ctx) {
+  if (cv.kind == CEL_LIST_ARENA) {
+    return ReadArenaListElement(cv, static_cast<uint32_t>(i), ctx.mem);
+  }
+  const HostListBacking* backing = ctx.refs.LookupList(cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "list ref_slot ", cv.payload.ref_slot, " not found in ExternrefTable"));
+  }
+  auto got = backing->At(i, cel::CelType::Int());
+  if (!got.ok()) return got.status();
+  return EncodeBackingScalar(*got, ctx.alloc);
+}
+
+}  // namespace
+
+namespace {
+
+// Element-wise equality walk for two list operands of any origin
+// pair (arena+arena, arena+host, host+host).  Caller has already
+// verified both kinds are list-shaped and verified equal lengths.
+// Returns OkStatus + `*equal` set; non-OK Status only on
+// infrastructure failure (bad ref_slot, backing->At error).
+absl::Status WalkListEq(const CelValue& a_cv, const CelValue& b_cv, size_t n,
+                        const TrampolineContext& ctx, bool* equal) {
+  for (size_t i = 0; i < n; ++i) {
+    auto ea_or = ReadListElementAt(a_cv, i, ctx);
+    if (!ea_or.ok()) return ea_or.status();
+    auto eb_or = ReadListElementAt(b_cv, i, ctx);
+    if (!eb_or.ok()) return eb_or.status();
+    if (!HostScalarValueEq(*ea_or, *eb_or, ctx.mem)) {
+      *equal = false;
+      return absl::OkStatus();
+    }
+  }
+  *equal = true;
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status CelListEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
+                           const TrampolineContext& ctx) {
+  CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
+  CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
+  if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  const bool a_ok = (a_cv.kind == CEL_LIST_ARENA || a_cv.kind == CEL_LIST_HOST);
+  const bool b_ok = (b_cv.kind == CEL_LIST_ARENA || b_cv.kind == CEL_LIST_HOST);
+  if (!a_ok || !b_ok) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  auto na_or = ListLength(a_cv, ctx);
+  if (!na_or.ok()) return na_or.status();
+  auto nb_or = ListLength(b_cv, ctx);
+  if (!nb_or.ok()) return nb_or.status();
+  if (*na_or != *nb_or) {
+    WriteWireBool(false, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  bool equal = true;
+  if (auto s = WalkListEq(a_cv, b_cv, *na_or, ctx, &equal); !s.ok()) return s;
+  WriteWireBool(equal, out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
+                               uint32_t b_slot, const TrampolineContext& ctx) {
+  CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
+  CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
+  if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  // ── Materialisation strategy (DESIGN, follow-up impl) ────────
+  //
+  // The shipping behaviour for mixed-origin / both-host list
+  // concat is to MATERIALISE the host operand(s) into the arena
+  // and then run the arena+arena fast path.  Concretely:
+  //
+  //   1. Allocate a fresh ArenaListHeader + elements run via
+  //      `cel_alloc`, sized `a_size + b_size`.  ArenaAllocator's
+  //      `Alloc` already reenters wasm for `cel_alloc`, so this
+  //      works from inside a host trampoline.
+  //   2. For each operand:
+  //        - If CEL_LIST_ARENA: memcpy the elements run into the
+  //          new run at the right offset.
+  //        - If CEL_LIST_HOST: walk `backing->ForEach`, encode each
+  //          `cel::Value` into a CelValue (via `EncodeBackingScalar`
+  //          extended for aggregates — the M6 work item), and
+  //          write into the destination run.
+  //   3. Write `{kind:CEL_LIST_ARENA, arena_list.header_ptr=hdr_off}`
+  //      into `out_slot`.  The result is observably an arena list,
+  //      which keeps downstream codegen on the fast path.
+  //
+  // This same strategy applies to mixed-origin map equality (see
+  // CelMapEqImpl) and to any future operator that needs to walk
+  // both operands as one origin: lift host into arena, then run
+  // the arena fast path.  Documented in
+  // `doc/implementation-plan/rewrite/m5-kcall-comprehensions.md
+  //  §"Cross-origin materialisation"` and
+  // `doc/implementation-plan/rewrite/map-list-dispatch.md §6`.
+  //
+  // M5.D step 2 ship state: nested-aggregate elements + the
+  // re-entrant arena allocation aren't fully exercised yet, so
+  // mixed-origin concat POISONs with TYPE_MISMATCH for now.  M6
+  // (or earlier follow-up) flips this to actual materialisation.
+  WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+absl::Status CelMapSizeImpl(uint32_t out_slot, uint32_t map_slot,
+                            const TrampolineContext& ctx) {
+  CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
+  if (AbsorbUnary(map_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  if (map_cv.kind != CEL_MAP_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelMapSizeImpl: map ref_slot ", map_cv.payload.ref_slot,
+                     " not found in ExternrefTable"));
+  }
+  WriteWireInt(static_cast<int64_t>(backing->Size()), out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+absl::Status CelMapInImpl(uint32_t out_slot, uint32_t key_slot,
+                          uint32_t map_slot, const TrampolineContext& ctx) {
+  CelValue key_cv = ctx.mem.ReadCelValue(key_slot);
+  CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
+  if (AbsorbBinary(key_cv, map_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  if (map_cv.kind != CEL_MAP_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelMapInImpl: map ref_slot ", map_cv.payload.ref_slot,
+                     " not found in ExternrefTable"));
+  }
+  std::optional<cel::Value> key = DecodeKey(key_cv, ctx.mem);
+  if (!key.has_value()) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  WriteWireBool(backing->ContainsKey(*key), out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+namespace {
+
+// Set-equality walk (langdef §"Equality" — map order is irrelevant).
+// For each entry in `a`, look up the same key in `b` and compare
+// values; any miss → unequal.  Both backings already verified
+// non-null and same Size().  `*equal` ends up false on any miss
+// or value mismatch; non-OK Status only on infrastructure failure.
+absl::Status WalkMapEq(const HostMapBacking& a, const HostMapBacking& b,
+                       const TrampolineContext& ctx, bool* equal) {
+  *equal = true;
+  absl::Status work_status = absl::OkStatus();
+  a.ForEach([&](const cel::Value& k, const cel::Value& va) {
+    if (!*equal || !work_status.ok()) return;
+    if (!b.ContainsKey(k)) {
+      *equal = false;
+      return;
+    }
+    auto vb_or = b.Get(k, cel::CelType::Int());
+    if (!vb_or.ok()) {
+      work_status = vb_or.status();
+      return;
+    }
+    auto enc_va_or = EncodeBackingScalar(va, ctx.alloc);
+    if (!enc_va_or.ok()) {
+      work_status = enc_va_or.status();
+      return;
+    }
+    auto enc_vb_or = EncodeBackingScalar(*vb_or, ctx.alloc);
+    if (!enc_vb_or.ok()) {
+      work_status = enc_vb_or.status();
+      return;
+    }
+    if (!HostScalarValueEq(*enc_va_or, *enc_vb_or, ctx.mem)) {
+      *equal = false;
+    }
+  });
+  return work_status;
+}
+
+}  // namespace
+
+absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
+                          const TrampolineContext& ctx) {
+  CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
+  CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
+  if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  // M5.D step 2 ship state: only both-host map equality is supported
+  // (mixed origins → TYPE_MISMATCH).  Same-arena routes through the
+  // dispatcher's arena fast path.  The shipping strategy for
+  // arena↔host pairs is to MATERIALISE the host operand into the
+  // arena (lift via ForEach + EncodeBackingScalar + cel_alloc) and
+  // then run the arena+arena equality walk — same lift-then-walk
+  // pattern documented in CelListConcatImpl and described in
+  // `m5-kcall-comprehensions.md §"Cross-origin materialisation"`.
+  // The lift body lands as an M6 follow-up.
+  if (a_cv.kind != CEL_MAP_HOST || b_cv.kind != CEL_MAP_HOST) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostMapBacking* a_backing = ctx.refs.LookupMap(a_cv.payload.ref_slot);
+  const HostMapBacking* b_backing = ctx.refs.LookupMap(b_cv.payload.ref_slot);
+  if (a_backing == nullptr || b_backing == nullptr) {
+    return absl::FailedPreconditionError(
+        "CelMapEqImpl: map ref_slot not found in ExternrefTable");
+  }
+  if (a_backing->Size() != b_backing->Size()) {
+    WriteWireBool(false, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  bool equal = true;
+  if (auto s = WalkMapEq(*a_backing, *b_backing, ctx, &equal); !s.ok()) {
+    return s;
+  }
+  WriteWireBool(equal, out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
+absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
+                              uint32_t b_slot, const TrampolineContext& ctx) {
+  CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
+  CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
+  if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  if (a_cv.kind != CEL_MESSAGE || b_cv.kind != CEL_MESSAGE) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostMessageBacking* a_backing = ctx.refs.Lookup(a_cv.payload.msg_slot);
+  const HostMessageBacking* b_backing = ctx.refs.Lookup(b_cv.payload.msg_slot);
+  if (a_backing == nullptr || b_backing == nullptr) {
+    return absl::FailedPreconditionError(
+        "CelMessageEqImpl: message msg_slot not found in ExternrefTable");
+  }
+  // M5.D step 2 ship state: ProtoBacking is the only concrete that
+  // exposes its underlying `google::protobuf::Message*`.  Custom
+  // embedder backings have no equality contract yet — POISON with
+  // TYPE_MISMATCH (M6 will define a virtual `Equals(other)` on
+  // HostMessageBacking).  MessageDifferencer handles cross-descriptor
+  // comparison by erroring out — our caller reads two ProtoBackings
+  // typed at the same descriptor, so this is the common case.
+  const auto* a_proto = dynamic_cast<const ProtoBacking*>(a_backing);
+  const auto* b_proto = dynamic_cast<const ProtoBacking*>(b_backing);
+  if (a_proto == nullptr || b_proto == nullptr) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const bool eq = google::protobuf::util::MessageDifferencer::Equals(
+      *a_proto->message(), *b_proto->message());
+  WriteWireBool(eq, out_slot, ctx.mem);
   return absl::OkStatus();
 }
 

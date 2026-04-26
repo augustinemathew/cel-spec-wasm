@@ -202,7 +202,7 @@ TEST(ResolvePassTest, KConstLeavesNonReprFieldsAtZero) {
   const NodeAnnotation* ann = r->annotations.Find(root_id);
   ASSERT_NE(ann, nullptr);
   EXPECT_EQ(ann->field_number, 0u);
-  EXPECT_EQ(ann->overload_id, 0u);
+  EXPECT_EQ(ann->overload_id, "");
   EXPECT_EQ(ann->local_index, 0u);
   EXPECT_EQ(ann->scope_id, 0u);
   EXPECT_EQ(ann->attribute_id, 0u);

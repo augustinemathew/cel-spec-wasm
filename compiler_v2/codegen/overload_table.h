@@ -49,12 +49,15 @@ struct OverloadImpl {
   // For built-ins this view points at a `constexpr` string in
   // `kBuiltinSeeds`; for customs it points into the frozen table's
   // owned storage (std::deque<std::string>, stable under move).
-  absl::string_view name;
+  // NOLINTNEXTLINE(readability-redundant-member-init) — `= {}` silences
+  // cppcoreguidelines-pro-type-member-init on the constructor.
+  absl::string_view name = {};
 };
 
 struct Seed {
-  absl::string_view overload_id;
-  OverloadImpl impl;
+  // NOLINTNEXTLINE(readability-redundant-member-init) — see OverloadImpl::name.
+  absl::string_view overload_id = {};
+  OverloadImpl impl = {};
 };
 
 class OverloadTable;
@@ -94,12 +97,22 @@ class OverloadTableBuilder {
   OverloadTable Build() &&;
 
  private:
-  std::deque<std::string> custom_ids_;  // owns custom overload-id strings
-  std::deque<std::string>
-      custom_helper_names_;          // owns custom helper-name strings
-  std::vector<OverloadImpl> impls_;  // indexed by (interned_id - 1)
-  absl::flat_hash_map<absl::string_view, uint32_t> index_;  // id → interned_id
-  absl::flat_hash_set<absl::string_view> builtin_ids_;  // for collision msgs
+  // `= {}` silences cppcoreguidelines-pro-type-member-init on the
+  // constructor body; readability-redundant-member-init is the
+  // contradicting twin (see NOLINTs on each line).
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::deque<std::string> custom_ids_ = {};  // owns custom overload-id strings
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::deque<std::string> custom_helper_names_ =
+      {};  // owns custom helper-name strings
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::vector<OverloadImpl> impls_ = {};  // indexed by (interned_id - 1)
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  absl::flat_hash_map<absl::string_view, uint32_t> index_ =
+      {};  // id → interned_id
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  absl::flat_hash_set<absl::string_view> builtin_ids_ =
+      {};  // for collision msgs
 };
 
 class OverloadTable {
@@ -141,11 +154,33 @@ class OverloadTable {
                 std::vector<OverloadImpl> impls,
                 absl::flat_hash_map<absl::string_view, uint32_t> index);
 
-  std::deque<std::string> custom_ids_;
-  std::deque<std::string> custom_helper_names_;
-  std::vector<OverloadImpl> impls_;
-  absl::flat_hash_map<absl::string_view, uint32_t> index_;
+  // `= {}` silences cppcoreguidelines-pro-type-member-init false
+  // positives — the constructor uses an init list that does cover
+  // every member, but clang-tidy mis-tracks that with mem-init NOLINTs
+  // alone, so prefer brace-init at the declarators.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::deque<std::string> custom_ids_ = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::deque<std::string> custom_helper_names_ = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::vector<OverloadImpl> impls_ = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  absl::flat_hash_map<absl::string_view, uint32_t> index_ = {};
 };
+
+// Returns true iff `overload_id` matches a `StandardOverloadIds`
+// entry that the v2 OverloadTable deliberately doesn't seed.  Three
+// reasons land an id here: (1) special-cased in `expr_lower.cc`
+// (control flow, `_[_]`, polymorphic `equals` / `not_equals`);
+// (2) deferred to a later v2 milestone (cross-type numeric
+// ladder, timestamp / duration arithmetic, regex `matches`);
+// (3) not on the v2 critical path (type conversions, timestamp
+// accessors).  See the `kExplicitlyUnimplementedIds` list in
+// `overload_table.cc` for the complete set.  The
+// `overload_table_test::CoverageTripwire` test asserts every
+// cel-cpp `StandardOverloadIds::k*` value is either resolvable
+// here via `OverloadTable::Lookup` or in this set.
+bool OverloadTableIsExplicitlyUnimplemented(absl::string_view overload_id);
 
 }  // namespace celwasm
 

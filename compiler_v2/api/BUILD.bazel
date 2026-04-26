@@ -471,6 +471,7 @@ cc_library(
         ":attribute",
         ":cel_host",
         ":cel_host_wasmtime",
+        ":error",
         ":instance_impl",
         ":value",
         ":wasmtime_engine_state",

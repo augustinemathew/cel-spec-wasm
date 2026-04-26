@@ -196,10 +196,10 @@ std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
 }
 
 struct TypeParser {
-  absl::string_view src;
+  absl::string_view src{};
   size_t pos = 0;
-  google::protobuf::Arena* arena;
-  const google::protobuf::DescriptorPool* pool;
+  google::protobuf::Arena* arena = nullptr;
+  const google::protobuf::DescriptorPool* pool = nullptr;
 
   void SkipWhitespace() {
     while (pos < src.size() && absl::ascii_isspace(src[pos])) {
@@ -283,8 +283,8 @@ struct TypeParser {
 };
 
 struct ParsedSpec {
-  cel::VariableDecl decl;
-  Repr repr;
+  cel::VariableDecl decl{};
+  Repr repr = Repr::kUnknown;
 };
 
 absl::StatusOr<ParsedSpec> ParseVariableSpec(
@@ -318,9 +318,9 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
 // --- Static-subset enforcement (folded from v1's ir/static_subset) ---------
 
 struct Violation {
-  int64_t expr_id;
-  const char* kind;
-  std::string detail;
+  int64_t expr_id = 0;
+  const char* kind = nullptr;
+  std::string detail{};
 };
 
 const char* UnacceptableLabel(const cel::TypeSpec& type) {
@@ -331,6 +331,24 @@ const char* UnacceptableLabel(const cel::TypeSpec& type) {
   if (absl::holds_alternative<cel::FunctionTypeSpec>(k)) return "function";
   if (absl::holds_alternative<cel::ParamTypeSpec>(k)) return "type-param";
   if (absl::holds_alternative<cel::UnsetTypeSpec>(k)) return "unset";
+  // Recurse through container types — list<dyn>, map<_, dyn>, map<dyn, _>,
+  // and abstract<...,dyn,...> all carry implicit dyn that the static-subset
+  // gate must reject (`m5-kcall-comprehensions.md §5` M5.A).
+  if (type.has_list_type()) {
+    return UnacceptableLabel(type.list_type().elem_type());
+  }
+  if (type.has_map_type()) {
+    if (const char* l = UnacceptableLabel(type.map_type().key_type());
+        l != nullptr) {
+      return l;
+    }
+    return UnacceptableLabel(type.map_type().value_type());
+  }
+  if (type.has_abstract_type()) {
+    for (const auto& p : type.abstract_type().parameter_types()) {
+      if (const char* l = UnacceptableLabel(p); l != nullptr) return l;
+    }
+  }
   return nullptr;
 }
 
@@ -350,6 +368,20 @@ void CheckSubsetMap(const cel::MapExpr& map, const cel::Ast::TypeMap& types,
   for (const auto& entry : map.entries()) {
     if (entry.has_key()) CheckSubsetNode(entry.key(), types, out);
     if (entry.has_value()) CheckSubsetNode(entry.value(), types, out);
+  }
+}
+
+void CheckSubsetList(const cel::ListExpr& list, const cel::Ast::TypeMap& types,
+                     std::vector<Violation>& out) {
+  for (const auto& elem : list.elements()) {
+    if (elem.has_expr()) CheckSubsetNode(elem.expr(), types, out);
+  }
+}
+
+void CheckSubsetStruct(const cel::StructExpr& s, const cel::Ast::TypeMap& types,
+                       std::vector<Violation>& out) {
+  for (const auto& field : s.fields()) {
+    if (field.has_value()) CheckSubsetNode(field.value(), types, out);
   }
 }
 
@@ -381,14 +413,10 @@ void CheckSubsetChildren(const cel::Expr& node, const cel::Ast::TypeMap& types,
       CheckSubsetCall(node.call_expr(), types, out);
       return;
     case cel::ExprKindCase::kListExpr:
-      for (const auto& elem : node.list_expr().elements()) {
-        if (elem.has_expr()) CheckSubsetNode(elem.expr(), types, out);
-      }
+      CheckSubsetList(node.list_expr(), types, out);
       return;
     case cel::ExprKindCase::kStructExpr:
-      for (const auto& field : node.struct_expr().fields()) {
-        if (field.has_value()) CheckSubsetNode(field.value(), types, out);
-      }
+      CheckSubsetStruct(node.struct_expr(), types, out);
       return;
     case cel::ExprKindCase::kMapExpr:
       CheckSubsetMap(node.map_expr(), types, out);
@@ -399,8 +427,53 @@ void CheckSubsetChildren(const cel::Expr& node, const cel::Ast::TypeMap& types,
   }
 }
 
+// Slice 1.5 (dyn-passthrough-plan.md): admit `dyn(scalar)` as a no-op
+// type-check escape so the conformance corpus's `dyn(scalar) == other_kind`
+// rows reach the runtime kernel that already implements polymorphic
+// equality.  The call site itself is typed `dyn` by cel-cpp's checker
+// (verified via probe spike, plan §"Risk #3"), so we recurse into the
+// argument only — the argument's type drives admissibility.  Every
+// other `dyn`-typed shape (variables, list/map element types,
+// aggregate operands, field reads) continues to fall through to the
+// `UnacceptableLabel` dispatch and reject as before.
+//
+// Scope of admission (plan §"What gets admitted"):
+//   - argument's checker-assigned type is a primitive scalar or null;
+//   - or argument is itself a `dyn(...)` call (recursive collapse).
+// Aggregate / message / dyn-typed arguments stay rejected: an admitted
+// `dyn(msg)` would invite `dyn(msg).field` (late-bound message field
+// reads, M7+ surface), which today crashes codegen.
+bool ArgIsAdmissibleScalar(const cel::Expr& arg,
+                           const cel::Ast::TypeMap& types) {
+  auto it = types.find(arg.id());
+  if (it == types.end()) return false;
+  const auto& t = it->second;
+  return t.has_primitive() || t.has_null();
+}
+
+bool IsDynPassthroughCall(const cel::Expr& node,
+                          const cel::Ast::TypeMap& types) {
+  if (!node.has_call_expr()) return false;
+  const auto& call = node.call_expr();
+  if (call.function() != "dyn" || call.args().size() != 1 ||
+      call.has_target()) {
+    return false;
+  }
+  const auto& arg = call.args()[0];
+  // Recursive collapse: `dyn(dyn(x))` admits iff the inner call admits.
+  if (arg.has_call_expr() && arg.call_expr().function() == "dyn" &&
+      arg.call_expr().args().size() == 1) {
+    return IsDynPassthroughCall(arg, types);
+  }
+  return ArgIsAdmissibleScalar(arg, types);
+}
+
 void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out) {
+  if (IsDynPassthroughCall(node, types)) {
+    CheckSubsetNode(node.call_expr().args()[0], types, out);
+    return;
+  }
   const int64_t id = node.id();
   if (id != 0) {
     auto it = types.find(id);

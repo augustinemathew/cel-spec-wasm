@@ -15,6 +15,7 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
@@ -25,6 +26,7 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "gmock/gmock.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
@@ -387,13 +389,11 @@ TEST(InstancePartialEvalTest, EmptyPatternSetBehavesLikeEval) {
 // pure-literal path (map value) flow through `DecodeArenaMapAt`.
 // ────────────────────────────────────────────────────────────────────
 
-TEST_F(InstanceEvalTest, EvalsEmptyMapLiteralReturnsEmptyMap) {
-  Value v = EvalLiteral("{}");
-  ASSERT_EQ(v.kind(), Value::Kind::kMap);
-  auto bk_or = v.MapBacking();
-  ASSERT_TRUE(bk_or.ok()) << bk_or.status();
-  EXPECT_EQ((*bk_or)->Size(), 0u);
-}
+// M5.A removed the `{}` empty-map round-trip because bare `{}`
+// types as `map<dyn, dyn>` and is rejected by the static-subset
+// gate.  When M5.I lands, an internal-AST harness can re-add empty-
+// map decoder coverage (the path stays reachable through
+// comprehension `accu_init = {}` lowering).
 
 TEST_F(InstanceEvalTest, EvalsScalarMapLiteralRoundTrips) {
   Value v = EvalLiteral(R"({"a": 1, "b": 2})");
@@ -487,6 +487,175 @@ TEST_F(InstanceEvalTest, EvalsLiteralListIndexingProducesScalarValue) {
   Value v = EvalLiteral("[10, 20, 30][1]");
   ASSERT_EQ(v.kind(), Value::Kind::kInt);
   EXPECT_EQ(*v.AsInt(), 20);
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Slice 0 — kString / kBytes activation encoder direct unit
+//  coverage.  Drives `Instance::Eval(Activation)` with a
+//  string-bound variable, but the body is just `s` itself so the
+//  decoder reads the very CelValue the encoder wrote — exercising
+//  the encoder + the host arena placement (above `arena_limit`)
+//  without any string-helper plumbing in between.
+// ──────────────────────────────────────────────────────────────
+
+namespace {
+
+// Compile + plan `expr` against a fresh single-string-variable
+// Compiler.  Returns the ready-to-Eval Instance.
+Instance PlanWithStringVar(Engine& engine, absl::string_view var_name,
+                           absl::string_view expr) {
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable(std::string(var_name), CelType::String());
+  auto compiler_or = std::move(builder).Build();
+  ABSL_CHECK_OK(compiler_or);
+  auto prog_or = compiler_or->Compile(expr);
+  ABSL_CHECK_OK(prog_or) << expr;
+  auto inst_or = engine.Plan(*prog_or);
+  ABSL_CHECK_OK(inst_or) << expr;
+  return *std::move(inst_or);
+}
+
+Instance PlanWithBytesVar(Engine& engine, absl::string_view var_name,
+                          absl::string_view expr) {
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable(std::string(var_name), CelType::Bytes());
+  auto compiler_or = std::move(builder).Build();
+  ABSL_CHECK_OK(compiler_or);
+  auto prog_or = compiler_or->Compile(expr);
+  ABSL_CHECK_OK(prog_or) << expr;
+  auto inst_or = engine.Plan(*prog_or);
+  ABSL_CHECK_OK(inst_or) << expr;
+  return *std::move(inst_or);
+}
+
+}  // namespace
+
+// Round-trip a non-empty string: bind, eval the bare ident, decode.
+// The decoded Value::String must be byte-equal to the bound input.
+TEST(InstanceActivationStringEncoderTest, NonEmptyStringRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  Activation a;
+  a.Bind("s", Value::String("hello"));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kString);
+  EXPECT_EQ(*v_or->AsString(), "hello");
+}
+
+TEST(InstanceActivationStringEncoderTest, EmptyStringRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  Activation a;
+  a.Bind("s", Value::String(""));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kString);
+  EXPECT_TRUE(v_or->AsString()->empty());
+}
+
+// langdef §"Strings" — strings are byte-clean, embedded NULs round-
+// trip both into AND out of the wire format.
+TEST(InstanceActivationStringEncoderTest, EmbeddedNulSurvives) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  Activation a;
+  a.Bind("s", Value::String(std::string("a\0b\0\0c", 6)));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kString);
+  EXPECT_EQ(*v_or->AsString(), absl::string_view("a\0b\0\0c", 6));
+}
+
+// Multibyte UTF-8 round-trips bytewise — the encoder copies byte-
+// for-byte; CEL `size()` returns byte count, not char count
+// (langdef §"size() over strings").
+TEST(InstanceActivationStringEncoderTest, MultibyteUtf8RoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  Activation a;
+  // "héllo" — é is 0xC3 0xA9 (2 bytes), total 6 bytes.
+  a.Bind("s", Value::String("h\xC3\xA9llo"));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kString);
+  EXPECT_EQ(*v_or->AsString(), "h\xC3\xA9llo");
+  EXPECT_EQ(v_or->AsString()->size(), 6u);
+}
+
+// kBytes mirrors kString's encoder path — same arena, different
+// `kind` tag.  Verify the round-trip plus that `Value::Kind::kBytes`
+// (not kString) is what the decoder yields.
+TEST(InstanceActivationBytesEncoderTest, NonEmptyBytesRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithBytesVar(*engine_or, "b", "b");
+
+  Activation a;
+  a.Bind("b", Value::Bytes(std::string("\x00\x01\xFE\xFF", 4)));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kBytes);
+  EXPECT_EQ(*v_or->AsBytes(), absl::string_view("\x00\x01\xFE\xFF", 4));
+}
+
+TEST(InstanceActivationBytesEncoderTest, EmptyBytesRoundTrips) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithBytesVar(*engine_or, "b", "b");
+
+  Activation a;
+  a.Bind("b", Value::Bytes(std::string{}));
+  auto v_or = inst.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kBytes);
+  EXPECT_TRUE(v_or->AsBytes()->empty());
+}
+
+// Negative path: bind a kInt where a kString is declared — must
+// surface InvalidArgument with a "declared string, bound int"
+// message via `KindMismatch`.
+TEST(InstanceActivationStringEncoderTest, KindMismatchRejected) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  Activation a;
+  a.Bind("s", Value::Int(7));
+  auto v_or = inst.Eval(a);
+  ASSERT_FALSE(v_or.ok());
+  EXPECT_EQ(v_or.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(std::string(v_or.status().message()),
+              ::testing::HasSubstr("declared string"));
+}
+
+// The same Instance, eval'd repeatedly with different string-bound
+// activations, must NOT leak data across Evals — each Eval rewinds
+// the host string arena's cursor so the second bind overwrites the
+// first.  Plan once, eval N times.
+TEST(InstanceActivationStringEncoderTest, ArenaRewindsBetweenEvals) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  Instance inst = PlanWithStringVar(*engine_or, "s", "s");
+
+  for (const std::string& candidate :
+       {std::string("alpha"), std::string("beta"), std::string("gamma"),
+        std::string("a really really really long string ......")}) {
+    Activation a;
+    a.Bind("s", Value::String(candidate));
+    auto v_or = inst.Eval(a);
+    ASSERT_TRUE(v_or.ok()) << v_or.status() << "; bound=" << candidate;
+    ASSERT_EQ(v_or->kind(), Value::Kind::kString);
+    EXPECT_EQ(*v_or->AsString(), candidate);
+  }
 }
 
 }  // namespace

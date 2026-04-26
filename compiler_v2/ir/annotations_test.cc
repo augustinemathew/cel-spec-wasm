@@ -48,7 +48,7 @@ TEST(WasmAnnotationsTest, OperatorIndexCreatesDefaultEntry) {
   NodeAnnotation& node = a[42];
   EXPECT_EQ(node.repr, Repr::kUnknown);
   EXPECT_EQ(node.field_number, 0u);
-  EXPECT_EQ(node.overload_id, 0u);
+  EXPECT_EQ(node.overload_id, "");
   EXPECT_EQ(node.local_index, 0u);
   EXPECT_EQ(node.scope_id, 0u);
   EXPECT_EQ(node.storage.kind, StorageKind::kNone);
@@ -78,7 +78,7 @@ TEST(WasmAnnotationsTest, AllFieldsRoundTrip) {
   WasmAnnotations a;
   a[1].repr = Repr::kBool;
   a[1].field_number = 5;
-  a[1].overload_id = 17;
+  a[1].overload_id = "add_int64";
   a[1].local_index = 3;
   a[1].scope_id = 2;
   a[1].storage = {StorageKind::kWorkspaceSlot, 128};
@@ -86,7 +86,7 @@ TEST(WasmAnnotationsTest, AllFieldsRoundTrip) {
   ASSERT_NE(n, nullptr);
   EXPECT_EQ(n->repr, Repr::kBool);
   EXPECT_EQ(n->field_number, 5u);
-  EXPECT_EQ(n->overload_id, 17u);
+  EXPECT_EQ(n->overload_id, "add_int64");
   EXPECT_EQ(n->local_index, 3u);
   EXPECT_EQ(n->scope_id, 2u);
   EXPECT_EQ(n->storage.kind, StorageKind::kWorkspaceSlot);

@@ -287,6 +287,30 @@ static int spans_equal(CelSpan a, CelSpan b) {
   return 1;
 }
 
+// Tri-state numeric comparison result, hoisted up here so
+// `map_keys_equal` (Slice 1.6) and `cel_value_eq_polymorphic` can
+// consult `numeric_compare_kernel`.  The kernel + per-pair
+// comparators (`cmp_i64` etc.) live in the M5.B step 2 section
+// below; only the typedef + signature need to be visible here.
+typedef enum {
+  kCmpLess = 0,
+  kCmpEqual = 1,
+  kCmpGreater = 2,
+  kCmpNanInequal = 3,
+} CmpResult;
+
+static CmpResult numeric_compare_kernel(const CelValue* a, const CelValue* b);
+static int is_numeric_kind(uint32_t kind);
+
+// Slice 1.6: numeric-key map equality consults the polymorphic
+// `numeric_compare_kernel` — handles every {int, uint, double}
+// pair, including double-typed *queries* against int/uint keys.
+// `double` is NOT a valid map-key kind (`is_valid_map_key_kind`
+// rejects it on `cel_map_insert`), but it CAN appear on the
+// query side: `1.0 in {1: "a"}` is allowed.  `numeric_keys_equal`
+// already handled the int↔uint cross-kind case via mathematical
+// comparison; the polymorphic kernel adds double↔int / double↔uint.
+
 static int map_keys_equal(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_BOOL && b->kind == CEL_BOOL) {
     return (a->payload.b != 0) == (b->payload.b != 0);
@@ -294,7 +318,10 @@ static int map_keys_equal(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_STRING && b->kind == CEL_STRING) {
     return spans_equal(a->payload.s, b->payload.s);
   }
-  return numeric_keys_equal(a, b);
+  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
+    return numeric_compare_kernel(a, b) == kCmpEqual;
+  }
+  return 0;
 }
 
 static ArenaMapHeader* arena_map_header(const CelValue* m) {
@@ -562,8 +589,8 @@ extern void cel_host_cel_list_at(uint32_t out_slot, uint32_t list_slot,
                                  uint32_t index_slot)
     __attribute__((import_module("cel_host"), import_name("cel_list_at")));
 #else
-__attribute__((weak)) void
-cel_host_cel_list_at(  // NOLINT(misc-use-internal-linkage)
+__attribute__((
+    weak)) void cel_host_cel_list_at(  // NOLINT(misc-use-internal-linkage)
     uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
   (void)list_slot;
   (void)index_slot;
@@ -588,6 +615,1735 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
   }
   // Checker should have rejected; defence in depth.
   poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+// =====================================================================
+// M5.D step 1 — aggregate-op kArena fast paths (size / in / eq /
+// concat for lists, size / in / eq for maps).  No host trip; pure
+// wasm.  kHost trampolines + the kDynamic dispatchers land in
+// step 2.  See `m5-kcall-comprehensions.md §2.1`.
+// =====================================================================
+
+// Forward decls — bodies live in the M5.B section below (3VL
+// absorber + write_* writers are shared across every M5 helper
+// family).  Pre-declaring keeps them callable from M5.D's helpers
+// without reshuffling the file.
+static int absorb_3vl_binary(CelValue* out, const CelValue* a,
+                             const CelValue* b);
+static int absorb_3vl_unary(CelValue* out, const CelValue* a);
+static void write_int(CelValue* out, int64_t v);
+static void write_bool(CelValue* out, int b);
+
+// Slice 1.6 — polymorphic element-equality matcher.  Used by
+// `cel_list_in_arena` / `cel_map_in_arena` to test whether a
+// scalar query equals any element / key under langdef §"Equality"
+// semantics.  Differs from a same-kind matcher by routing every
+// numeric pair through `numeric_compare_kernel` (defined further
+// down in the M5.B step 2 section) — so `1 in [1.0]` returns true,
+// matching the conformance corpus' `int_in_doubles` row.
+//
+// Returns 1 (equal), 0 (unequal-or-different-shape).  Caller has
+// already absorbed 3VL on the operands; this matcher does not
+// surface ERROR / UNKNOWN.
+//
+// Nested aggregates (CEL_LIST_*, CEL_MAP_*, CEL_MESSAGE) still
+// return 0 here — the arena fast path is correct only for scalar
+// element types; codegen gates routing accordingly.
+//
+// Forward-decls land at the top of the M5.B step 2 section; the
+// kernel + predicate live below in this same TU and resolve at
+// link-within-translation-unit time.
+static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b);
+
+// Pre-Slice-1.6 same-kind matcher.  Retained as a thin alias around
+// the polymorphic matcher so other callers (cel_list_eq_arena /
+// cel_map_eq_arena value comparison) inherit the polymorphic
+// behaviour automatically — list equality is element-wise polymorphic
+// per langdef §"Equality" too.  No callsites depend on the old
+// "no implicit promotion" behaviour.
+static int cel_value_eq(const CelValue* a, const CelValue* b) {
+  return cel_value_eq_polymorphic(a, b);
+}
+
+void cel_list_size_arena(uint32_t out_slot, uint32_t list_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* l = cel_value_at(list_slot);
+  if (absorb_3vl_unary(out, l)) return;
+  if (l->kind != CEL_LIST_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaListHeader* hdr = arena_list_header(l);
+  write_int(out, (int64_t)hdr->count);
+}
+
+void cel_list_in_arena(uint32_t out_slot, uint32_t value_slot,
+                       uint32_t list_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* v = cel_value_at(value_slot);
+  const CelValue* l = cel_value_at(list_slot);
+  if (absorb_3vl_binary(out, v, l)) return;
+  if (l->kind != CEL_LIST_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaListHeader* hdr = arena_list_header(l);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (cel_value_eq(arena_list_element(hdr, i), v)) {
+      write_bool(out, 1);
+      return;
+    }
+  }
+  write_bool(out, 0);
+}
+
+void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (a->kind != CEL_LIST_ARENA || b->kind != CEL_LIST_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaListHeader* ha = arena_list_header(a);
+  ArenaListHeader* hb = arena_list_header(b);
+  if (ha->count != hb->count) {
+    write_bool(out, 0);
+    return;
+  }
+  for (uint32_t i = 0; i < ha->count; ++i) {
+    if (!cel_value_eq(arena_list_element(ha, i), arena_list_element(hb, i))) {
+      write_bool(out, 0);
+      return;
+    }
+  }
+  write_bool(out, 1);
+}
+
+// Allocates header + elements arena for a fresh CEL_LIST_ARENA of
+// `total` elements.  Returns the header offset, or 0 on OOM (with
+// `out` poisoned with `CEL_ERR_OVERFLOW`).  Caller fills in the
+// elements run.
+static uint32_t alloc_concat_list(CelValue* out, uint32_t total) {
+  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaListHeader));
+  if (hdr_off == 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return 0;
+  }
+  uint32_t elements_off = 0;
+  if (total > 0) {
+    elements_off = cel_alloc((uint32_t)((size_t)kCelListEntryStride * total));
+    if (elements_off == 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return 0;
+    }
+  }
+  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
+  hdr->count = total;
+  hdr->capacity = total;
+  hdr->elements_offset = elements_off;
+  hdr->_pad = 0;
+  return hdr_off;
+}
+
+static void copy_elements(uint32_t elements_off, uint32_t dst_index,
+                          ArenaListHeader* src) {
+  for (uint32_t i = 0; i < src->count; ++i) {
+    *(CelValue*)(cel_memory_base_() + elements_off +
+                 ((size_t)kCelListEntryStride * (dst_index + i))) =
+        *arena_list_element(src, i);
+  }
+}
+
+void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot,
+                           uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (a->kind != CEL_LIST_ARENA || b->kind != CEL_LIST_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaListHeader* ha = arena_list_header(a);
+  ArenaListHeader* hb = arena_list_header(b);
+  uint32_t hdr_off = alloc_concat_list(out, ha->count + hb->count);
+  if (hdr_off == 0) return;  // OOM, out already poisoned.
+  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
+  copy_elements(hdr->elements_offset, 0, ha);
+  copy_elements(hdr->elements_offset, ha->count, hb);
+  out->kind = CEL_LIST_ARENA;
+  out->payload.arena_list.header_ptr = hdr_off;
+}
+
+void cel_map_size_arena(uint32_t out_slot, uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* m = cel_value_at(map_slot);
+  if (absorb_3vl_unary(out, m)) return;
+  if (m->kind != CEL_MAP_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  write_int(out, (int64_t)hdr->count);
+}
+
+void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* k = cel_value_at(key_slot);
+  const CelValue* m = cel_value_at(map_slot);
+  if (absorb_3vl_binary(out, k, m)) return;
+  if (m->kind != CEL_MAP_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (map_keys_equal(arena_map_entry_key(hdr, i), k)) {
+      write_bool(out, 1);
+      return;
+    }
+  }
+  write_bool(out, 0);
+}
+
+// Returns 1 iff entry `i` of `ha` is structurally equal to some
+// entry of `hb`.  Caller has confirmed both maps have the same
+// entry count, so a missing match means the maps differ.
+static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
+                                   ArenaMapHeader* hb) {
+  const CelValue* ka = arena_map_entry_key(ha, i);
+  const CelValue* va = arena_map_entry_val(ha, i);
+  for (uint32_t j = 0; j < hb->count; ++j) {
+    if (map_keys_equal(ka, arena_map_entry_key(hb, j))) {
+      return cel_value_eq(va, arena_map_entry_val(hb, j));
+    }
+  }
+  return 0;
+}
+
+void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (a->kind != CEL_MAP_ARENA || b->kind != CEL_MAP_ARENA) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* ha = arena_map_header(a);
+  ArenaMapHeader* hb = arena_map_header(b);
+  if (ha->count != hb->count) {
+    write_bool(out, 0);
+    return;
+  }
+  // Map equality is set-equality on entries (langdef §"Equality":
+  // map order is irrelevant).  For each entry in a, find a matching
+  // key in b and compare values.
+  for (uint32_t i = 0; i < ha->count; ++i) {
+    if (!arena_map_entry_matches(ha, i, hb)) {
+      write_bool(out, 0);
+      return;
+    }
+  }
+  write_bool(out, 1);
+}
+
+// =====================================================================
+// M5.D step 2 — kDynamic dispatchers + kHost extern decls for
+// aggregate ops (size / in / eq / concat for lists; size / in / eq
+// for maps) plus the polymorphic `cel_message_eq` host helper.
+// Each dispatcher mirrors the `cel_map_lookup` shape at line 434:
+// 3VL absorption → branch on operand kind → `__attribute__((musttail))`
+// to either an arena fast path (M5.D step 1) or a kHost trampoline.
+// The kHost arms link to `cel_host.cel_*` imports on the wasm
+// build; the host build supplies weak no-op stubs that poison
+// with TYPE_MISMATCH so an accidental host invocation surfaces
+// at the assertion boundary.  See `m5-kcall-comprehensions.md §2.1`.
+// =====================================================================
+
+#ifdef __wasm__
+extern void cel_host_cel_list_size(uint32_t out_slot, uint32_t list_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_size")));
+extern void cel_host_cel_list_in(uint32_t out_slot, uint32_t value_slot,
+                                 uint32_t list_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_in")));
+extern void cel_host_cel_list_eq(uint32_t out_slot, uint32_t a_slot,
+                                 uint32_t b_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_eq")));
+extern void cel_host_cel_list_concat(uint32_t out_slot, uint32_t a_slot,
+                                     uint32_t b_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_concat")));
+extern void cel_host_cel_map_size(uint32_t out_slot, uint32_t map_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_map_size")));
+extern void cel_host_cel_map_in(uint32_t out_slot, uint32_t key_slot,
+                                uint32_t map_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_map_in")));
+extern void cel_host_cel_map_eq(uint32_t out_slot, uint32_t a_slot,
+                                uint32_t b_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_map_eq")));
+extern void cel_host_cel_message_eq(uint32_t out_slot, uint32_t a_slot,
+                                    uint32_t b_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_message_eq")));
+#else
+__attribute__((
+    weak)) void cel_host_cel_list_size(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t list_slot) {
+  (void)list_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_list_in(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t value_slot, uint32_t list_slot) {
+  (void)value_slot;
+  (void)list_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_list_eq(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  (void)a_slot;
+  (void)b_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_list_concat(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  (void)a_slot;
+  (void)b_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_map_size(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t map_slot) {
+  (void)map_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_map_in(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
+  (void)key_slot;
+  (void)map_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_map_eq(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  (void)a_slot;
+  (void)b_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+__attribute__((weak)) void
+cel_host_cel_message_eq(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  (void)a_slot;
+  (void)b_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+#endif
+
+void cel_list_size(uint32_t out_slot, uint32_t list_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind == CEL_UNKNOWN || l->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *l;
+    return;
+  }
+  if (l->kind == CEL_LIST_ARENA) {
+    __attribute__((musttail)) return cel_list_size_arena(out_slot, list_slot);
+  }
+  if (l->kind == CEL_LIST_HOST) {
+    __attribute__((musttail)) return cel_host_cel_list_size(out_slot,
+                                                            list_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_list_in(uint32_t out_slot, uint32_t value_slot, uint32_t list_slot) {
+  CEL_LOG("enter");
+  CelValue* v = cel_value_at(value_slot);
+  CelValue* l = cel_value_at(list_slot);
+  if (v->kind == CEL_UNKNOWN || v->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *v;
+    return;
+  }
+  if (l->kind == CEL_UNKNOWN || l->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *l;
+    return;
+  }
+  if (l->kind == CEL_LIST_ARENA) {
+    __attribute__((musttail)) return cel_list_in_arena(out_slot, value_slot,
+                                                       list_slot);
+  }
+  if (l->kind == CEL_LIST_HOST) {
+    __attribute__((musttail)) return cel_host_cel_list_in(out_slot, value_slot,
+                                                          list_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_list_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* a = cel_value_at(a_slot);
+  CelValue* b = cel_value_at(b_slot);
+  if (a->kind == CEL_UNKNOWN || a->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *a;
+    return;
+  }
+  if (b->kind == CEL_UNKNOWN || b->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *b;
+    return;
+  }
+  // Both arena → fast path; otherwise host trampoline materialises
+  // both sides via the appropriate backing methods.  Cross-origin
+  // (one arena, one host) routes to the host trampoline which
+  // POISONs with TYPE_MISMATCH for now (M6 follow-up).
+  if (a->kind == CEL_LIST_ARENA && b->kind == CEL_LIST_ARENA) {
+    __attribute__((musttail)) return cel_list_eq_arena(out_slot, a_slot,
+                                                       b_slot);
+  }
+  if ((a->kind == CEL_LIST_ARENA || a->kind == CEL_LIST_HOST) &&
+      (b->kind == CEL_LIST_ARENA || b->kind == CEL_LIST_HOST)) {
+    __attribute__((musttail)) return cel_host_cel_list_eq(out_slot, a_slot,
+                                                          b_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_list_concat(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* a = cel_value_at(a_slot);
+  CelValue* b = cel_value_at(b_slot);
+  if (a->kind == CEL_UNKNOWN || a->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *a;
+    return;
+  }
+  if (b->kind == CEL_UNKNOWN || b->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *b;
+    return;
+  }
+  if (a->kind == CEL_LIST_ARENA && b->kind == CEL_LIST_ARENA) {
+    __attribute__((musttail)) return cel_list_concat_arena(out_slot, a_slot,
+                                                           b_slot);
+  }
+  // Mixed-origin or both-host: route to host trampoline.  For this
+  // slice the host trampoline POISONs with TYPE_MISMATCH on either
+  // mixed origins or both-host (full materialisation lands as a
+  // follow-up).  Documented in CelListConcatImpl.
+  if ((a->kind == CEL_LIST_ARENA || a->kind == CEL_LIST_HOST) &&
+      (b->kind == CEL_LIST_ARENA || b->kind == CEL_LIST_HOST)) {
+    __attribute__((musttail)) return cel_host_cel_list_concat(out_slot, a_slot,
+                                                              b_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_map_size(uint32_t out_slot, uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind == CEL_UNKNOWN || m->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *m;
+    return;
+  }
+  if (m->kind == CEL_MAP_ARENA) {
+    __attribute__((musttail)) return cel_map_size_arena(out_slot, map_slot);
+  }
+  if (m->kind == CEL_MAP_HOST) {
+    __attribute__((musttail)) return cel_host_cel_map_size(out_slot, map_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_map_in(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* k = cel_value_at(key_slot);
+  CelValue* m = cel_value_at(map_slot);
+  if (k->kind == CEL_UNKNOWN || k->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *k;
+    return;
+  }
+  if (m->kind == CEL_UNKNOWN || m->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *m;
+    return;
+  }
+  if (m->kind == CEL_MAP_ARENA) {
+    __attribute__((musttail)) return cel_map_in_arena(out_slot, key_slot,
+                                                      map_slot);
+  }
+  if (m->kind == CEL_MAP_HOST) {
+    __attribute__((musttail)) return cel_host_cel_map_in(out_slot, key_slot,
+                                                         map_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* a = cel_value_at(a_slot);
+  CelValue* b = cel_value_at(b_slot);
+  if (a->kind == CEL_UNKNOWN || a->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *a;
+    return;
+  }
+  if (b->kind == CEL_UNKNOWN || b->kind == CEL_ERROR) {
+    *cel_value_at(out_slot) = *b;
+    return;
+  }
+  if (a->kind == CEL_MAP_ARENA && b->kind == CEL_MAP_ARENA) {
+    __attribute__((musttail)) return cel_map_eq_arena(out_slot, a_slot, b_slot);
+  }
+  if ((a->kind == CEL_MAP_ARENA || a->kind == CEL_MAP_HOST) &&
+      (b->kind == CEL_MAP_ARENA || b->kind == CEL_MAP_HOST)) {
+    __attribute__((musttail)) return cel_host_cel_map_eq(out_slot, a_slot,
+                                                         b_slot);
+  }
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+
+// =====================================================================
+// M5.B — arithmetic + comparison helpers (slot-out helper ABI).
+// Each helper's signature is `(out_slot, arg_slots...) -> void`; the
+// caller already knows the result lives at `out_slot`, so there's no
+// return value.  Cel-cpp parity citations point at
+// `third_party/cel-cpp/runtime/standard/{arithmetic,equality,
+// comparison}_functions.cc`.  See `m5-kcall-comprehensions.md §2.1`
+// for the design rationale and the WAT traces 16-17 for the wire
+// shape.
+// =====================================================================
+
+// 3VL absorption shared by every binary arith / compare helper.
+// Returns 1 (and overwrites *out) if either operand is ERROR /
+// UNKNOWN, in which case the caller must NOT proceed to the
+// type-check + math.  Left-bias for both ERROR and UNKNOWN — a
+// proper UNKNOWN+UNKNOWN merge lives in `cel_unknown_merge`
+// (M5.G when control-flow lowering needs it).  Mirrors cel-cpp's
+// `EquivalentTypeOrError` envelope.
+static int absorb_3vl_binary(CelValue* out, const CelValue* a,
+                             const CelValue* b) {
+  if (a->kind == CEL_ERROR) {
+    *out = *a;
+    return 1;
+  }
+  if (b->kind == CEL_ERROR) {
+    *out = *b;
+    return 1;
+  }
+  if (a->kind == CEL_UNKNOWN) {
+    *out = *a;
+    return 1;
+  }
+  if (b->kind == CEL_UNKNOWN) {
+    *out = *b;
+    return 1;
+  }
+  return 0;
+}
+
+static int absorb_3vl_unary(CelValue* out, const CelValue* a) {
+  if (a->kind == CEL_ERROR || a->kind == CEL_UNKNOWN) {
+    *out = *a;
+    return 1;
+  }
+  return 0;
+}
+
+// Helper: same-kind type check.  Wrong kind on either operand →
+// poison and return 1 (skip math).
+static int require_kinds(CelValue* out, const CelValue* a, const CelValue* b,
+                         uint32_t want) {
+  if (a->kind != want || b->kind != want) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  return 0;
+}
+
+static void write_int(CelValue* out, int64_t v) {
+  out->kind = CEL_INT;
+  out->payload.i = v;
+}
+static void write_uint(CelValue* out, uint64_t v) {
+  out->kind = CEL_UINT;
+  out->payload.u = v;
+}
+static void write_double(CelValue* out, double v) {
+  out->kind = CEL_DOUBLE;
+  out->payload.d = v;
+}
+static void write_bool(CelValue* out, int b) {
+  out->kind = CEL_BOOL;
+  out->payload.b = b ? 1 : 0;
+}
+
+// Manual u64 multiply-overflow detection via split 32×32→64
+// partial products.  We avoid `__builtin_mul_overflow` for 64-bit
+// operands because clang lowers it through `__multi3` (a 128-bit
+// multiply from compiler-rt) — and the wasm32 freestanding build
+// doesn't link compiler-rt by design.  We avoid the divide-by-b
+// bounds-check shape too: clang's optimiser recognises it and
+// re-folds it back into a `__multi3` call.  Splitting into
+// 32-bit halves means every multiply here is a 32×32→64 op the
+// wasm32 backend lowers natively as `i64.mul`, with no high-half
+// reasoning the optimiser can lift to 128-bit math.
+//
+// Logic:
+//   a*b = (ah*2^32 + al) * (bh*2^32 + bl)
+//       = al*bl + (ah*bl + al*bh)*2^32 + ah*bh*2^64
+//   Overflow iff (ah * bh) != 0
+//                OR (ah*bl + al*bh) overflows 32 bits
+//                OR adding the shifted middle to al*bl overflows.
+static int uint64_mul_overflows(uint64_t a, uint64_t b, uint64_t* r) {
+  uint64_t ah = a >> 32;
+  uint64_t al = a & 0xFFFFFFFFULL;
+  uint64_t bh = b >> 32;
+  uint64_t bl = b & 0xFFFFFFFFULL;
+  if (ah != 0 && bh != 0) return 1;
+  uint64_t mid = (ah * bl) + (al * bh);  // operands ≤32 bits, sum may carry
+  if ((mid >> 32) != 0) return 1;
+  uint64_t lo = al * bl;
+  uint64_t result = lo + (mid << 32);
+  if (result < lo) return 1;  // unsigned add overflow → product > UINT64_MAX
+  *r = result;
+  return 0;
+}
+
+// Signed int64 mul overflow on top of the unsigned check: take
+// magnitudes, run the unsigned check, then validate the signed
+// range against INT64_MIN / INT64_MAX based on operand signs.
+static int int64_mul_overflows(int64_t a, int64_t b, int64_t* r) {
+  if (a == 0 || b == 0) {
+    *r = 0;
+    return 0;
+  }
+  // INT64_MIN handled specially: |INT64_MIN| > INT64_MAX, so the
+  // standard magnitude trick can't represent it.  Only INT64_MIN*1
+  // and INT64_MIN*0 don't overflow; we already handled 0 above.
+  if (a == INT64_MIN) return b != 1 ? 1 : (*r = INT64_MIN, 0);
+  if (b == INT64_MIN) return a != 1 ? 1 : (*r = INT64_MIN, 0);
+  uint64_t ua = (uint64_t)(a < 0 ? -a : a);
+  uint64_t ub = (uint64_t)(b < 0 ? -b : b);
+  uint64_t up;
+  if (uint64_mul_overflows(ua, ub, &up)) return 1;
+  // Signs determine whether result is +/-.  Range:
+  //   positive: [0, INT64_MAX]
+  //   negative: [INT64_MIN, 0]   (so |result| ≤ -(INT64_MIN+1)+1 = INT64_MAX+1)
+  int negative = (a < 0) ^ (b < 0);
+  if (negative) {
+    if (up > (uint64_t)INT64_MAX + 1ULL) return 1;
+    *r = -(int64_t)up;
+  } else {
+    if (up > (uint64_t)INT64_MAX) return 1;
+    *r = (int64_t)up;
+  }
+  return 0;
+}
+
+// ---- int64 arithmetic ----------------------------------------------------
+// cel-cpp parity:
+//   third_party/cel-cpp/runtime/standard/arithmetic_functions.cc::
+//     add_int64 / sub_int64 / mul_int64 / div_int64 / mod_int64 /
+//     negate_int64
+
+void cel_int_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_INT)) return;
+  int64_t r;
+  if (__builtin_add_overflow(a->payload.i, b->payload.i, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, r);
+}
+
+void cel_int_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_INT)) return;
+  int64_t r;
+  if (__builtin_sub_overflow(a->payload.i, b->payload.i, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, r);
+}
+
+void cel_int_mul_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_INT)) return;
+  int64_t r;
+  if (int64_mul_overflows(a->payload.i, b->payload.i, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, r);
+}
+
+void cel_int_div_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_INT)) return;
+  if (b->payload.i == 0) {
+    poison(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  // INT64_MIN / -1 overflows in two's complement.
+  if (a->payload.i == INT64_MIN && b->payload.i == -1) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, a->payload.i / b->payload.i);
+}
+
+void cel_int_mod_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_INT)) return;
+  if (b->payload.i == 0) {
+    poison(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  // INT64_MIN % -1 is undefined behaviour in C; cel-cpp returns 0
+  // for this case explicitly (the mathematically-correct result).
+  if (a->payload.i == INT64_MIN && b->payload.i == -1) {
+    write_int(out, 0);
+    return;
+  }
+  write_int(out, a->payload.i % b->payload.i);
+}
+
+void cel_int_neg_at_v(uint32_t out_slot, uint32_t v_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* v = cel_value_at(v_slot);
+  if (absorb_3vl_unary(out, v)) return;
+  if (v->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (v->payload.i == INT64_MIN) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, -v->payload.i);
+}
+
+// ---- uint64 arithmetic ---------------------------------------------------
+
+void cel_uint_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_UINT)) return;
+  uint64_t r;
+  if (__builtin_add_overflow(a->payload.u, b->payload.u, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, r);
+}
+
+void cel_uint_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_UINT)) return;
+  uint64_t r;
+  if (__builtin_sub_overflow(a->payload.u, b->payload.u, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, r);
+}
+
+void cel_uint_mul_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_UINT)) return;
+  uint64_t r;
+  if (uint64_mul_overflows(a->payload.u, b->payload.u, &r)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, r);
+}
+
+void cel_uint_div_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_UINT)) return;
+  if (b->payload.u == 0) {
+    poison(out, CEL_ERR_DIVIDE_BY_ZERO);
+    return;
+  }
+  write_uint(out, a->payload.u / b->payload.u);
+}
+
+void cel_uint_mod_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_UINT)) return;
+  if (b->payload.u == 0) {
+    poison(out, CEL_ERR_MODULUS_BY_ZERO);
+    return;
+  }
+  write_uint(out, a->payload.u % b->payload.u);
+}
+
+// ---- double arithmetic ---------------------------------------------------
+// Per langdef §"Numeric values": double follows IEEE 754.  No
+// overflow / div-by-zero errors — inf/nan results are valid.
+
+void cel_double_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_DOUBLE)) return;
+  write_double(out, a->payload.d + b->payload.d);
+}
+
+void cel_double_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_DOUBLE)) return;
+  write_double(out, a->payload.d - b->payload.d);
+}
+
+void cel_double_mul_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_DOUBLE)) return;
+  write_double(out, a->payload.d * b->payload.d);
+}
+
+void cel_double_div_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_DOUBLE)) return;
+  write_double(out, a->payload.d / b->payload.d);
+}
+
+void cel_double_neg_at_v(uint32_t out_slot, uint32_t v_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* v = cel_value_at(v_slot);
+  if (absorb_3vl_unary(out, v)) return;
+  if (v->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  write_double(out, -v->payload.d);
+}
+
+// ---- comparison helpers --------------------------------------------------
+// Same-kind only — cross-type numeric ladder lives in a separate
+// `cel_numeric_*` set added with the kCall arm's ladder dispatch
+// (M5.B step 2).  Each helper writes a CEL_BOOL CelValue.
+// cel-cpp parity:
+//   third_party/cel-cpp/runtime/standard/equality_functions.cc
+//   third_party/cel-cpp/runtime/standard/comparison_functions.cc
+
+#define DEFINE_CMP_VV(name, kind, field, op)                       \
+  void name(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) { \
+    CelValue* out = cel_value_at(out_slot);                        \
+    const CelValue* a = cel_value_at(a_slot);                      \
+    const CelValue* b = cel_value_at(b_slot);                      \
+    if (absorb_3vl_binary(out, a, b)) return;                      \
+    if (require_kinds(out, a, b, kind)) return;                    \
+    write_bool(out, a->payload.field op b->payload.field);         \
+  }
+
+DEFINE_CMP_VV(cel_int_eq_at_vv, CEL_INT, i, ==)
+DEFINE_CMP_VV(cel_int_ne_at_vv, CEL_INT, i, !=)
+DEFINE_CMP_VV(cel_int_lt_at_vv, CEL_INT, i, <)
+DEFINE_CMP_VV(cel_int_le_at_vv, CEL_INT, i, <=)
+DEFINE_CMP_VV(cel_int_gt_at_vv, CEL_INT, i, >)
+DEFINE_CMP_VV(cel_int_ge_at_vv, CEL_INT, i, >=)
+
+DEFINE_CMP_VV(cel_uint_eq_at_vv, CEL_UINT, u, ==)
+DEFINE_CMP_VV(cel_uint_ne_at_vv, CEL_UINT, u, !=)
+DEFINE_CMP_VV(cel_uint_lt_at_vv, CEL_UINT, u, <)
+DEFINE_CMP_VV(cel_uint_le_at_vv, CEL_UINT, u, <=)
+DEFINE_CMP_VV(cel_uint_gt_at_vv, CEL_UINT, u, >)
+DEFINE_CMP_VV(cel_uint_ge_at_vv, CEL_UINT, u, >=)
+
+// Double: `==` / `!=` follow IEEE 754 (NaN != NaN, NaN == NaN
+// false).  C's `==` and `!=` operators implement this directly.
+// Ordering operators (<, <=, >, >=) likewise return false for any
+// NaN-bearing comparison per IEEE.
+DEFINE_CMP_VV(cel_double_eq_at_vv, CEL_DOUBLE, d, ==)
+DEFINE_CMP_VV(cel_double_ne_at_vv, CEL_DOUBLE, d, !=)
+DEFINE_CMP_VV(cel_double_lt_at_vv, CEL_DOUBLE, d, <)
+DEFINE_CMP_VV(cel_double_le_at_vv, CEL_DOUBLE, d, <=)
+DEFINE_CMP_VV(cel_double_gt_at_vv, CEL_DOUBLE, d, >)
+DEFINE_CMP_VV(cel_double_ge_at_vv, CEL_DOUBLE, d, >=)
+
+DEFINE_CMP_VV(cel_bool_eq_at_vv, CEL_BOOL, b, ==)
+DEFINE_CMP_VV(cel_bool_ne_at_vv, CEL_BOOL, b, !=)
+// Bool ordering — `false < true` per langdef §"Booleans".  Since
+// `payload.b` is normalised to 0/1 by `write_bool` and
+// `cel_make_bool`, the integer relational operators give the
+// langdef order directly.
+DEFINE_CMP_VV(cel_bool_lt_at_vv, CEL_BOOL, b, <)
+DEFINE_CMP_VV(cel_bool_le_at_vv, CEL_BOOL, b, <=)
+DEFINE_CMP_VV(cel_bool_gt_at_vv, CEL_BOOL, b, >)
+DEFINE_CMP_VV(cel_bool_ge_at_vv, CEL_BOOL, b, >=)
+
+#undef DEFINE_CMP_VV
+
+// =====================================================================
+// M5.B step 2 — cross-type numeric comparison ladder.
+//
+// Each helper accepts any combination of {CEL_INT, CEL_UINT,
+// CEL_DOUBLE} on either operand.  The shared `numeric_compare_kernel`
+// returns a tri-state result {kLess, kEqual, kGreater, kNanInequal}
+// mirroring cel-cpp's `internal/number.h::ComparisonResult`.  Each
+// op then collapses that tri-state to a CEL_BOOL.
+//
+// Boundary handling (cel-cpp parity, `internal/number.h` lines
+// 25-44 / 95-165):
+//   - int vs uint: negative int is always < any uint; otherwise
+//     compare as uint64.
+//   - int vs double: if double > kInt64Max → double > int; if
+//     double < kInt64Min → double < int; otherwise IEEE-compare
+//     (double)int vs double.
+//   - uint vs double: if double > kUint64Max → double > uint; if
+//     double < 0 → double < uint; otherwise IEEE-compare
+//     (double)uint vs double.
+//   - NaN: any comparison involving NaN returns kNanInequal so all
+//     six op wrappers answer false (matches IEEE / langdef "NaN
+//     compares unequal in every direction").
+//
+// Wasm32 freestanding constraint: this code MUST avoid `__multi3` /
+// other compiler-rt 128-bit intrinsics (mirrors the M5.B step 1
+// `int64_mul_overflows` precedent).  Only operations used here are
+// 64-bit comparisons + a single int↔uint cast that the wasm32 backend
+// lowers natively as `i64.lt_s` / `i64.lt_u` / `f64.lt`.  The
+// `noinline` attribute on the kernel keeps clang from re-deriving a
+// 128-bit fold across the leaf wrappers.
+//
+// `CmpResult` typedef + the kernel forward decl + `is_numeric_kind`
+// were hoisted up to the M5.D-step-1 section of this file at Slice
+// 1.6 so `map_keys_equal` / `cel_value_eq_polymorphic` (the
+// element-equality matchers used by `_in_` membership) can call
+// the kernel.  The full kernel body lands here unchanged.
+
+// Per-pair comparators.  Each takes raw operands of one of three
+// scalar shapes and returns the tri-state result.  Pulled out of
+// the kernel both to keep each function under the lint size gate
+// and to keep the rationale beside the boundary checks they encode
+// (cel-cpp parity, `internal/number.h:25-165`).
+
+static CmpResult cmp_i64(int64_t a, int64_t b) {
+  if (a < b) return kCmpLess;
+  if (a > b) return kCmpGreater;
+  return kCmpEqual;
+}
+
+static CmpResult cmp_u64(uint64_t a, uint64_t b) {
+  if (a < b) return kCmpLess;
+  if (a > b) return kCmpGreater;
+  return kCmpEqual;
+}
+
+static CmpResult cmp_double(double a, double b) {
+  // IEEE: any NaN comparison is unordered.
+  if (a != a || b != b) return kCmpNanInequal;
+  if (a < b) return kCmpLess;
+  if (a > b) return kCmpGreater;
+  return kCmpEqual;
+}
+
+// int vs uint: negative int is always less than any uint;
+// otherwise compare via uint64 cast.
+static CmpResult cmp_int_vs_uint(int64_t a, uint64_t b) {
+  if (a < 0) return kCmpLess;
+  return cmp_u64((uint64_t)a, b);
+}
+
+// int vs double: boundary check before any narrowing cast.  See
+// `third_party/cel-cpp/internal/number.h:127-143`.
+static CmpResult cmp_int_vs_double(int64_t a, double b) {
+  if (b != b) return kCmpNanInequal;
+  if (b > (double)INT64_MAX) return kCmpLess;
+  if (b < (double)INT64_MIN) return kCmpGreater;
+  return cmp_double((double)a, b);
+}
+
+// uint vs double: any negative double is less than every uint;
+// any double > UINT64_MAX is greater than every uint.
+static CmpResult cmp_uint_vs_double(uint64_t a, double b) {
+  if (b != b) return kCmpNanInequal;
+  if (b > (double)UINT64_MAX) return kCmpLess;
+  if (b < 0.0) return kCmpGreater;
+  return cmp_double((double)a, b);
+}
+
+// Flip a tri-state result for the swapped-operand convention.  Used
+// when we have a comparator for `a vs b` and need `b vs a`.
+static CmpResult cmp_flip(CmpResult r) {
+  if (r == kCmpLess) return kCmpGreater;
+  if (r == kCmpGreater) return kCmpLess;
+  return r;
+}
+
+// Pack the two operand kinds into a small dense key so the kernel
+// dispatch is a single switch.  Caller has already verified both
+// operands are numeric.
+static uint32_t numeric_kind_pair(uint32_t a_kind, uint32_t b_kind) {
+  return (a_kind << 8) | b_kind;
+}
+
+// Boundary constants — same byte-for-byte as
+// `third_party/cel-cpp/internal/number.h:25-44`.  Inline rather than
+// macros so each helper sees the type the wasm32 backend can type-
+// check.
+static __attribute__((noinline)) CmpResult
+numeric_compare_kernel(const CelValue* a, const CelValue* b) {
+  switch (numeric_kind_pair(a->kind, b->kind)) {
+    case (CEL_INT << 8) | CEL_INT:
+      return cmp_i64(a->payload.i, b->payload.i);
+    case (CEL_UINT << 8) | CEL_UINT:
+      return cmp_u64(a->payload.u, b->payload.u);
+    case (CEL_DOUBLE << 8) | CEL_DOUBLE:
+      return cmp_double(a->payload.d, b->payload.d);
+    case (CEL_INT << 8) | CEL_UINT:
+      return cmp_int_vs_uint(a->payload.i, b->payload.u);
+    case (CEL_UINT << 8) | CEL_INT:
+      return cmp_flip(cmp_int_vs_uint(b->payload.i, a->payload.u));
+    case (CEL_INT << 8) | CEL_DOUBLE:
+      return cmp_int_vs_double(a->payload.i, b->payload.d);
+    case (CEL_DOUBLE << 8) | CEL_INT:
+      return cmp_flip(cmp_int_vs_double(b->payload.i, a->payload.d));
+    case (CEL_UINT << 8) | CEL_DOUBLE:
+      return cmp_uint_vs_double(a->payload.u, b->payload.d);
+    case (CEL_DOUBLE << 8) | CEL_UINT:
+      return cmp_flip(cmp_uint_vs_double(b->payload.u, a->payload.d));
+    default:
+      // Caller (`numeric_prelude`) already filters non-numeric kinds;
+      // a non-numeric pair reaching the kernel is an invariant
+      // violation.  Return kNanInequal so all six op wrappers answer
+      // false rather than miscompiling silently.
+      return kCmpNanInequal;
+  }
+}
+
+// True iff both operand kinds are numeric (int / uint / double).
+static int is_numeric_kind(uint32_t kind) {
+  return kind == CEL_INT || kind == CEL_UINT || kind == CEL_DOUBLE;
+}
+
+// Slice 1.6 — definition of the polymorphic element-equality matcher
+// forward-declared at the top of the M5.D section.  Routes any
+// numeric pair (cross-kind included) through `numeric_compare_kernel`
+// so `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
+// §"List Membership (in)" + §"Equality" + the conformance corpus'
+// `int_in_doubles` / `uint_in_ints` rows.
+static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
+  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
+    return numeric_compare_kernel(a, b) == kCmpEqual;
+  }
+  if (a->kind == CEL_BYTES && b->kind == CEL_BYTES) {
+    return spans_equal(a->payload.s, b->payload.s);
+  }
+  if (a->kind == CEL_NULL && b->kind == CEL_NULL) {
+    return 1;
+  }
+  // Bool / string / cross-kind non-numeric fall through to
+  // `map_keys_equal` which itself routes numerics polymorphically
+  // (Slice 1.6 update below) and returns 0 for kind mismatches.
+  return map_keys_equal(a, b);
+}
+
+// Shared prelude for the cross-type numeric helpers: 3VL absorption
+// then a numeric-kind check on each operand (any non-numeric → type
+// mismatch).  Returns 1 when out_slot has been written and the
+// caller should skip the kernel.
+static int numeric_prelude(CelValue* out, const CelValue* a,
+                           const CelValue* b) {
+  if (absorb_3vl_binary(out, a, b)) return 1;
+  if (!is_numeric_kind(a->kind) || !is_numeric_kind(b->kind)) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  return 0;
+}
+
+void cel_numeric_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  write_bool(out, r == kCmpEqual);
+}
+
+void cel_numeric_ne_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  // NaN-touching inequality returns TRUE — matches cel-cpp's
+  // `Inequal<double>` default
+  // (`runtime/standard/equality_functions.cc:78`), which is the
+  // IEEE `lhs != rhs` semantic where `NaN != NaN` is true.  An
+  // earlier version of this kernel returned false on
+  // `kCmpNanInequal`; the prior comment claiming langdef
+  // mandated false was a spec misread.  Slice 1.55 (2026-04-25)
+  // flipped to `r != kCmpEqual` so every non-equal tri-state
+  // (less / greater / nan-inequal) yields true.
+  write_bool(out, r != kCmpEqual);
+}
+
+void cel_numeric_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  write_bool(out, r == kCmpLess);
+}
+
+void cel_numeric_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  write_bool(out, r == kCmpLess || r == kCmpEqual);
+}
+
+void cel_numeric_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  write_bool(out, r == kCmpGreater);
+}
+
+void cel_numeric_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (numeric_prelude(out, a, b)) return;
+  CmpResult r = numeric_compare_kernel(a, b);
+  write_bool(out, r == kCmpGreater || r == kCmpEqual);
+}
+
+void cel_null_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  if (require_kinds(out, a, b, CEL_NULL)) return;
+  write_bool(out, 1);  // null == null is always true.
+}
+
+// =====================================================================
+// M5.B step 2b — polymorphic equality dispatcher.
+//
+// `cel_equals_at_vv` and `cel_not_equals_at_vv` resolve every cel-cpp
+// `equals` / `not_equals` overload at runtime via operand-kind
+// switch.  Per langdef §"Equality":
+//
+//   - Numeric kinds (int / uint / double) compare cross-type by
+//     mathematical value via the M5.B step 2 numeric ladder.
+//   - Same-kind bool / string / bytes / null use the existing
+//     `cel_*_eq_at_vv` helpers.
+//   - Aggregate kinds (list / map) tail-call the M5.D step 2
+//     dispatcher (`cel_list_eq` / `cel_map_eq`), which handles
+//     arena vs host origin internally.
+//   - CEL_MESSAGE values delegate to the kHost
+//     `cel_host_cel_message_eq` import (M5.D step 2).
+//   - Mismatched kinds return `false` per langdef
+//     ("comparing incompatible types is not an error"), with one
+//     exception: numeric ↔ non-numeric is also `false`.
+//   - 3VL: any UNKNOWN / ERROR operand short-circuits via
+//     `absorb_3vl_binary`.
+//
+// `not_equals` is `equals` with the result flipped; share a kernel
+// to keep the dispatch ladder authoritative in one place.
+//
+// cel-cpp parity:
+//   third_party/cel-cpp/runtime/standard/equality_functions.cc
+// =====================================================================
+
+// 1 if `kind` is one of the three numeric kinds: int, uint, double.
+// Lifted to a dedicated helper so the polymorphic dispatcher's
+// branch table reads as a single conjunction per ladder rung.
+static int is_numeric(uint32_t kind) {
+  return kind == CEL_INT || kind == CEL_UINT || kind == CEL_DOUBLE;
+}
+
+// 1 if both operands are list-shaped (arena or host).  Mixed-origin
+// pairs route through `cel_list_eq` which absorbs the origin
+// difference via its dispatcher.
+static int both_lists(uint32_t ka, uint32_t kb) {
+  return (ka == CEL_LIST_ARENA || ka == CEL_LIST_HOST) &&
+         (kb == CEL_LIST_ARENA || kb == CEL_LIST_HOST);
+}
+
+static int both_maps(uint32_t ka, uint32_t kb) {
+  return (ka == CEL_MAP_ARENA || ka == CEL_MAP_HOST) &&
+         (kb == CEL_MAP_ARENA || kb == CEL_MAP_HOST);
+}
+
+// Forward decls — these helpers live further down the M5.C section
+// of this file but are reachable from the equality kernel above.
+void cel_string_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+void cel_bytes_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+
+// Polymorphic equality kernel.  Writes a CEL_BOOL into `out_slot`,
+// or propagates 3VL.  Aggregate / message arms tail-call into their
+// dispatchers, which write CEL_BOOL themselves; `cel_not_equals`
+// re-reads `out_slot` after a tail-call'd helper returns and flips.
+static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
+                            uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (absorb_3vl_binary(out, a, b)) return;
+  // Numeric ladder — cross-type allowed.
+  if (is_numeric(a->kind) && is_numeric(b->kind)) {
+    cel_numeric_eq_at_vv(out_slot, a_slot, b_slot);
+    return;
+  }
+  // Same-kind scalar arms.  Each handles its own type-check; we've
+  // already proven kinds match.
+  if (a->kind == b->kind) {
+    switch (a->kind) {
+      case CEL_NULL:
+        cel_null_eq_at_vv(out_slot, a_slot, b_slot);
+        return;
+      case CEL_BOOL:
+        cel_bool_eq_at_vv(out_slot, a_slot, b_slot);
+        return;
+      case CEL_STRING:
+        cel_string_eq_at_vv(out_slot, a_slot, b_slot);
+        return;
+      case CEL_BYTES:
+        cel_bytes_eq_at_vv(out_slot, a_slot, b_slot);
+        return;
+      default:
+        break;  // Aggregates fall through to the polymorphic arms.
+    }
+  }
+  // Aggregates: dispatcher absorbs origin difference.
+  if (both_lists(a->kind, b->kind)) {
+    cel_list_eq(out_slot, a_slot, b_slot);
+    return;
+  }
+  if (both_maps(a->kind, b->kind)) {
+    cel_map_eq(out_slot, a_slot, b_slot);
+    return;
+  }
+  if (a->kind == CEL_MESSAGE && b->kind == CEL_MESSAGE) {
+    cel_host_cel_message_eq(out_slot, a_slot, b_slot);
+    return;
+  }
+  // Cross-kind without a matching ladder rung: `false` per langdef
+  // (NOT type-mismatch error).  E.g. `1 == "1"`, `[] == {}`,
+  // `null == 0`.
+  write_bool(out, 0);
+}
+
+void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  equality_kernel(out_slot, a_slot, b_slot);
+}
+
+void cel_not_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  equality_kernel(out_slot, a_slot, b_slot);
+  // 3VL absorption already wrote the operand through if either was
+  // UNKNOWN / ERROR — leave that as-is.  Otherwise flip the bool.
+  CelValue* out = cel_value_at(out_slot);
+  if (out->kind == CEL_BOOL) {
+    out->payload.b = out->payload.b ? 0 : 1;
+  }
+}
+
+// =====================================================================
+// M5.C — string + bytes operation helpers (slot-out helper ABI).
+// Concat is the only allocator: writes a fresh payload into the
+// arena.  Other helpers read operand spans without allocating.
+// 3VL + type-mismatch envelope mirrors `cel_arith.h` / `cel_compare.h`.
+// cel-cpp parity:
+//   third_party/cel-cpp/runtime/standard/string_functions.cc
+// =====================================================================
+
+// Span equality byte-for-byte.  CEL strings are UTF-8 byte arrays
+// at the langdef level; equality is byte equality (no Unicode
+// normalisation).  Same shape works for bytes operands.
+static int span_eq(const CelSpan* a, const CelSpan* b) {
+  if (a->len != b->len) return 0;
+  const uint8_t* pa = cel_memory_base_() + a->ptr;
+  const uint8_t* pb = cel_memory_base_() + b->ptr;
+  for (uint32_t i = 0; i < a->len; ++i) {
+    if (pa[i] != pb[i]) return 0;
+  }
+  return 1;
+}
+
+// Span lexicographic <.  Per langdef §"String / bytes": compare
+// by Unicode code-point order, but since strings are stored as
+// UTF-8 byte sequences, byte-lex order matches code-point order.
+// cel-cpp's `LessThan::String` operates on byte-views identically.
+static int span_lt(const CelSpan* a, const CelSpan* b) {
+  uint32_t n = a->len < b->len ? a->len : b->len;
+  const uint8_t* pa = cel_memory_base_() + a->ptr;
+  const uint8_t* pb = cel_memory_base_() + b->ptr;
+  for (uint32_t i = 0; i < n; ++i) {
+    if (pa[i] != pb[i]) return pa[i] < pb[i];
+  }
+  return a->len < b->len;
+}
+
+// Returns 1 iff `hay[off..off+sub.len)` matches `sub` byte-for-byte.
+// `off` MUST satisfy `off + sub.len <= hay.len` — caller checks.
+static int span_match_at(const CelSpan* hay, uint32_t off, const CelSpan* sub) {
+  const uint8_t* ph = cel_memory_base_() + hay->ptr + off;
+  const uint8_t* ps = cel_memory_base_() + sub->ptr;
+  for (uint32_t i = 0; i < sub->len; ++i) {
+    if (ph[i] != ps[i]) return 0;
+  }
+  return 1;
+}
+
+// Linear-scan substring search.  langdef pins string ops to byte
+// granularity; we don't need a fancy search algorithm because
+// CEL fixtures are short.  Mirrors cel-cpp's
+// `StringContains::Apply` (also a linear scan).
+static int span_contains(const CelSpan* hay, const CelSpan* sub) {
+  if (sub->len == 0) return 1;
+  if (sub->len > hay->len) return 0;
+  uint32_t last = hay->len - sub->len;
+  for (uint32_t i = 0; i <= last; ++i) {
+    if (span_match_at(hay, i, sub)) return 1;
+  }
+  return 0;
+}
+
+// Wrap up the per-helper string/bytes header check + 3VL + alloc
+// in one place.  `kind` is CEL_STRING or CEL_BYTES.  Returns 1
+// (skip math) when out_slot has been written with an absorbed
+// 3VL value or a type-mismatch error.
+static int span_op_prelude(CelValue* out, const CelValue* a, const CelValue* b,
+                           uint32_t kind) {
+  if (absorb_3vl_binary(out, a, b)) return 1;
+  if (require_kinds(out, a, b, kind)) return 1;
+  return 0;
+}
+
+static void concat_into_out(CelValue* out, const CelSpan* a, const CelSpan* b,
+                            uint32_t kind) {
+  uint32_t total = a->len + b->len;
+  uint32_t off = 0;
+  if (total > 0) {
+    off = cel_alloc(total);
+    if (off == 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+    uint8_t* dst = cel_memory_base_() + off;
+    memcpy(dst, cel_memory_base_() + a->ptr, a->len);
+    memcpy(dst + a->len, cel_memory_base_() + b->ptr, b->len);
+  }
+  out->kind = kind;
+  out->payload.s.ptr = off;
+  out->payload.s.len = total;
+}
+
+void cel_string_concat_at_vv(uint32_t out_slot, uint32_t a_slot,
+                             uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_STRING)) return;
+  concat_into_out(out, &a->payload.s, &b->payload.s, CEL_STRING);
+}
+
+void cel_bytes_concat_at_vv(uint32_t out_slot, uint32_t a_slot,
+                            uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_BYTES)) return;
+  concat_into_out(out, &a->payload.s, &b->payload.s, CEL_BYTES);
+}
+
+static void size_at(CelValue* out, uint32_t v_slot, uint32_t kind) {
+  const CelValue* v = cel_value_at(v_slot);
+  if (absorb_3vl_unary(out, v)) return;
+  if (v->kind != kind) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  write_int(out, (int64_t)v->payload.s.len);
+}
+
+void cel_string_size_at_v(uint32_t out_slot, uint32_t v_slot) {
+  size_at(cel_value_at(out_slot), v_slot, CEL_STRING);
+}
+
+void cel_bytes_size_at_v(uint32_t out_slot, uint32_t v_slot) {
+  size_at(cel_value_at(out_slot), v_slot, CEL_BYTES);
+}
+
+void cel_string_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_STRING)) return;
+  write_bool(out, span_eq(&a->payload.s, &b->payload.s));
+}
+
+void cel_string_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_STRING)) return;
+  write_bool(out, span_lt(&a->payload.s, &b->payload.s));
+}
+
+void cel_bytes_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_BYTES)) return;
+  write_bool(out, span_eq(&a->payload.s, &b->payload.s));
+}
+
+void cel_bytes_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (span_op_prelude(out, a, b, CEL_BYTES)) return;
+  write_bool(out, span_lt(&a->payload.s, &b->payload.s));
+}
+
+// String / bytes le/gt/ge — express each in terms of the existing
+// `span_lt` byte-lex comparator.  Identities (cel-cpp parity,
+// `runtime/standard/comparison_functions.cc`):
+//   a <= b  ↔  !(b <  a)
+//   a >  b  ↔   (b <  a)
+//   a >= b  ↔  !(a <  b)
+#define DEFINE_SPAN_CMP_VV(name, kind, body)                       \
+  void name(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) { \
+    CelValue* out = cel_value_at(out_slot);                        \
+    const CelValue* a = cel_value_at(a_slot);                      \
+    const CelValue* b = cel_value_at(b_slot);                      \
+    if (span_op_prelude(out, a, b, kind)) return;                  \
+    write_bool(out, body);                                         \
+  }
+
+DEFINE_SPAN_CMP_VV(cel_string_le_at_vv, CEL_STRING,
+                   !span_lt(&b->payload.s, &a->payload.s))
+DEFINE_SPAN_CMP_VV(cel_string_gt_at_vv, CEL_STRING,
+                   span_lt(&b->payload.s, &a->payload.s))
+DEFINE_SPAN_CMP_VV(cel_string_ge_at_vv, CEL_STRING,
+                   !span_lt(&a->payload.s, &b->payload.s))
+DEFINE_SPAN_CMP_VV(cel_bytes_le_at_vv, CEL_BYTES,
+                   !span_lt(&b->payload.s, &a->payload.s))
+DEFINE_SPAN_CMP_VV(cel_bytes_gt_at_vv, CEL_BYTES,
+                   span_lt(&b->payload.s, &a->payload.s))
+DEFINE_SPAN_CMP_VV(cel_bytes_ge_at_vv, CEL_BYTES,
+                   !span_lt(&a->payload.s, &b->payload.s))
+
+#undef DEFINE_SPAN_CMP_VV
+
+void cel_string_contains_at_vv(uint32_t out_slot, uint32_t s_slot,
+                               uint32_t sub_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* s = cel_value_at(s_slot);
+  const CelValue* sub = cel_value_at(sub_slot);
+  if (span_op_prelude(out, s, sub, CEL_STRING)) return;
+  write_bool(out, span_contains(&s->payload.s, &sub->payload.s));
+}
+
+void cel_string_starts_with_at_vv(uint32_t out_slot, uint32_t s_slot,
+                                  uint32_t pfx_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* s = cel_value_at(s_slot);
+  const CelValue* pfx = cel_value_at(pfx_slot);
+  if (span_op_prelude(out, s, pfx, CEL_STRING)) return;
+  if (pfx->payload.s.len > s->payload.s.len) {
+    write_bool(out, 0);
+    return;
+  }
+  write_bool(out, span_match_at(&s->payload.s, 0, &pfx->payload.s));
+}
+
+void cel_string_ends_with_at_vv(uint32_t out_slot, uint32_t s_slot,
+                                uint32_t sfx_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* s = cel_value_at(s_slot);
+  const CelValue* sfx = cel_value_at(sfx_slot);
+  if (span_op_prelude(out, s, sfx, CEL_STRING)) return;
+  if (sfx->payload.s.len > s->payload.s.len) {
+    write_bool(out, 0);
+    return;
+  }
+  uint32_t off = s->payload.s.len - sfx->payload.s.len;
+  write_bool(out, span_match_at(&s->payload.s, off, &sfx->payload.s));
+}
+
+// ---- 3VL / control-flow helpers (M5.G — Slice 2) -------------------------
+
+// Sorted-deduplicated merge walk over two pre-sorted u32 id arrays.
+// Mirrors v1's `merge_sorted_ids` shape (compiler/runtime/cel_runtime.c).
+// Returns the post-dedup length; never reads past the input bounds.
+static uint32_t merge_sorted_id_arrays(const uint32_t* ids_a, uint32_t len_a,
+                                       const uint32_t* ids_b, uint32_t len_b,
+                                       uint32_t* out) {
+  uint32_t i = 0;
+  uint32_t j = 0;
+  uint32_t k = 0;
+  while (i < len_a && j < len_b) {
+    uint32_t ai = ids_a[i];
+    uint32_t bj = ids_b[j];
+    if (ai < bj) {
+      out[k++] = ai;
+      ++i;
+    } else if (ai > bj) {
+      out[k++] = bj;
+      ++j;
+    } else {
+      out[k++] = ai;
+      ++i;
+      ++j;
+    }
+  }
+  while (i < len_a)
+    out[k++] = ids_a[i++];
+  while (j < len_b)
+    out[k++] = ids_b[j++];
+  return k;
+}
+
+// Allocates a fresh 2-word UnknownSet descriptor `{ids_off, len}` in
+// the bump arena and returns its byte offset, or 0 on out-of-arena.
+static uint32_t alloc_unknown_descriptor(uint32_t ids_off, uint32_t len) {
+  uint32_t desc_off = cel_alloc(2u * (uint32_t)sizeof(uint32_t));
+  if (desc_off == 0) return 0;
+  uint32_t* desc = (uint32_t*)(cel_memory_base_() + desc_off);
+  desc[0] = ids_off;
+  desc[1] = len;
+  return desc_off;
+}
+
+// Walks two non-empty UnknownSet descriptors at `set_a`/`set_b`, mints a
+// fresh sorted-deduped descriptor in the bump arena, and returns its
+// byte offset.  Returns 0 on out-of-arena.  Snapshots descriptor scalars
+// before any cel_alloc — wasm32 `memory.grow` can relocate the linear
+// memory base, so pointers must be re-derived after each bump.
+static uint32_t merge_unknown_descriptors(uint32_t set_a, uint32_t set_b) {
+  uint32_t* desc_a = (uint32_t*)(cel_memory_base_() + set_a);
+  uint32_t ids_a_off = desc_a[0];
+  uint32_t len_a = desc_a[1];
+  uint32_t* desc_b = (uint32_t*)(cel_memory_base_() + set_b);
+  uint32_t ids_b_off = desc_b[0];
+  uint32_t len_b = desc_b[1];
+
+  uint32_t max_total = len_a + len_b;
+  uint32_t bytes = max_total * (uint32_t)sizeof(uint32_t);
+  if (bytes == 0) bytes = (uint32_t)sizeof(uint32_t);
+  uint32_t out_ids = cel_alloc(bytes);
+  if (out_ids == 0) return 0;
+
+  const uint32_t* ids_a = (const uint32_t*)(cel_memory_base_() + ids_a_off);
+  const uint32_t* ids_b = (const uint32_t*)(cel_memory_base_() + ids_b_off);
+  uint32_t* dst = (uint32_t*)(cel_memory_base_() + out_ids);
+  uint32_t k = merge_sorted_id_arrays(ids_a, len_a, ids_b, len_b, dst);
+  return alloc_unknown_descriptor(out_ids, k);
+}
+
+// Writes `(CEL_UNKNOWN, payload.unk = desc_off)` into the slot.  Re-derives
+// the slot pointer because `cel_alloc` may have relocated linear memory.
+static void write_unknown_at(uint32_t out_slot, uint32_t desc_off) {
+  CelValue* out = cel_value_at(out_slot);
+  out->kind = CEL_UNKNOWN;
+  out->payload.unk = desc_off;
+}
+
+void cel_unknown_merge(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (a->kind != CEL_UNKNOWN || b->kind != CEL_UNKNOWN) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  uint32_t set_a = a->payload.unk;
+  uint32_t set_b = b->payload.unk;
+  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN — the
+  // host `get_field` trampoline mints UNKNOWNs that way for FULL
+  // attribute-pattern matches before per-id provenance is wired.
+  // Treat an empty side as "no new ids to contribute"; both empty
+  // → empty UNKNOWN.
+  if (set_a == 0 && set_b == 0) {
+    write_unknown_at(out_slot, 0);
+    return;
+  }
+  if (set_a == 0) {
+    write_unknown_at(out_slot, set_b);
+    return;
+  }
+  if (set_b == 0) {
+    write_unknown_at(out_slot, set_a);
+    return;
+  }
+  uint32_t desc_off = merge_unknown_descriptors(set_a, set_b);
+  if (desc_off == 0) {
+    // Re-derive `out` after the failed cel_alloc: memory.grow may have
+    // relocated base before the failure.
+    poison(cel_value_at(out_slot), CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_unknown_at(out_slot, desc_off);
+}
+
+void cel_copy_slot(uint32_t dst_slot, uint32_t src_slot) {
+  CelValue* dst = cel_value_at(dst_slot);
+  const CelValue* src = cel_value_at(src_slot);
+  *dst = *src;
+}
+
+static int is_3vl_kind(uint32_t k) {
+  return k == CEL_BOOL || k == CEL_UNKNOWN || k == CEL_ERROR;
+}
+
+// 3VL truth table for `&&` (langdef §"Logical operators").
+// Non-strict semantics: `false && X = false` for any X, including
+// ERROR / UNKNOWN / non-3VL; symmetric on the right.  Once both
+// operands are known to be 3VL (and neither is OK(false)),
+// `true && X = X`, ERROR > UNKNOWN dominates, and both UNKNOWN
+// merges the attribute-id sets via `cel_unknown_merge`.  A non-3VL
+// operand survives only via the OK(false) absorber; otherwise the
+// result is a type error.
+void cel_and(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  // OK(false) absorbs everything — including a non-3VL other side.
+  if (a->kind == CEL_BOOL && a->payload.b == 0) {
+    write_bool(out, 0);
+    return;
+  }
+  if (b->kind == CEL_BOOL && b->payload.b == 0) {
+    write_bool(out, 0);
+    return;
+  }
+  // Past the absorber: every operand must be a valid 3VL kind.
+  if (!is_3vl_kind(a->kind) || !is_3vl_kind(b->kind)) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (a->kind == CEL_BOOL) {
+    *out = *b;
+    return;
+  }  // a == true → result = b
+  if (b->kind == CEL_BOOL) {
+    *out = *a;
+    return;
+  }  // b == true → result = a
+  if (a->kind == CEL_ERROR) {
+    *out = *a;
+    return;
+  }  // ERROR > UNKNOWN
+  if (b->kind == CEL_ERROR) {
+    *out = *b;
+    return;
+  }
+  cel_unknown_merge(out_slot, a_slot, b_slot);
+}
+
+// Symmetric to `cel_and`: `true || X = true`; `false || X = X`.
+void cel_or(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (a->kind == CEL_BOOL && a->payload.b != 0) {
+    write_bool(out, 1);
+    return;
+  }
+  if (b->kind == CEL_BOOL && b->payload.b != 0) {
+    write_bool(out, 1);
+    return;
+  }
+  if (!is_3vl_kind(a->kind) || !is_3vl_kind(b->kind)) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (a->kind == CEL_BOOL) {
+    *out = *b;
+    return;
+  }  // a == false → result = b
+  if (b->kind == CEL_BOOL) {
+    *out = *a;
+    return;
+  }
+  if (a->kind == CEL_ERROR) {
+    *out = *a;
+    return;
+  }
+  if (b->kind == CEL_ERROR) {
+    *out = *b;
+    return;
+  }
+  cel_unknown_merge(out_slot, a_slot, b_slot);
+}
+
+void cel_not(uint32_t out_slot, uint32_t a_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  if (a->kind == CEL_BOOL) {
+    write_bool(out, a->payload.b ? 0 : 1);
+    return;
+  }
+  if (a->kind == CEL_UNKNOWN || a->kind == CEL_ERROR) {
+    *out = *a;
+    return;
+  }
+  poison(out, CEL_ERR_TYPE_MISMATCH);
 }
 
 // ---- cel_log trampoline --------------------------------------------------

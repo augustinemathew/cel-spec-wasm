@@ -388,7 +388,7 @@ string-escape row become load-bearing once M3 lowers
 **Waiting on later milestones** (don't try to close in M2):
   - `kListExpr`, `kMapExpr`, `kStructExpr` — codegen + e2e rows
     `[ ]`.  Unblocked by M5 (collections).
-  - `kComprehensionExpr` × 4 variants + nested shadowing — M3/M5.
+  - `kComprehensionExpr` × 4 variants + nested shadowing — comprehensions follow-on milestone (post-M5).
   - Arithmetic-overflow / divide-by-zero / NaN-unordered / string
     coercion / unknown-propagation e2e — M4 (three-valued logic).
   - Partial-eval commutativity for `unknown && false → false` — M4.
@@ -474,6 +474,122 @@ variant to the right `Repr`. `RejectDyn` tests live in
 - [x] `ErrorTypeSpec`, `FunctionTypeSpec`, `ParamTypeSpec`, `UnsetTypeSpec`
       each rejected with the correct label.
 - [x] Checked expression with no DYN returns OK.
+- [x] **Rewrite M5.A** — implicit dyn from container element types
+      rejected: `[]` (typed `list<dyn>`), `[1, "two"]` (heterogeneous
+      list), bare `{}` (`map<dyn, dyn>`).  Locked via
+      `m4_test.cc::ListRejectionE2ETest::{BareEmptyListLiteralRejected,
+      HeterogeneousListRejected}` and `compile_test::CompileMapTest::
+      EmptyMapLiteralRejected`.  Recursion covers `list_type`,
+      `map_type` (key + value), and `abstract_type.parameter_types`.
+- [x] **Rewrite M5.B step 1** — same-kind arithmetic + comparison
+      runtime helpers.  `cel_arith.h` (int / uint / double × add /
+      sub / mul / div / mod + neg for int / double) + `cel_compare.h`
+      (per-kind eq / ne / lt / le / gt / ge + bool eq / ne + null eq).
+      Bodies in `cel_runtime.c` with cel-cpp parity citations.
+      `uint64_mul_overflows` / `int64_mul_overflows` use a split
+      32×32→64 partial-product shape to avoid `__multi3` (compiler-rt
+      128-bit multiply) which the wasm32 freestanding build doesn't
+      link.  Locked in `compiler_v2/runtime/cel_arith_test.cc` (23
+      tests) + `compiler_v2/runtime/cel_compare_test.cc` (initial
+      same-kind matrix; cross-type added in step 2).  WATs 16
+      (`arith_int_add`) + 17 (`compare_int_eq`) lock the slot-out
+      helper ABI shape end-to-end through `wat_runner`.  47 helper
+      exports added to `cel_runtime.wasm` and the `wat_runner`
+      `kRuntimeExports` array.
+- [x] **Rewrite M5.B step 2** — cross-type numeric ladder + bool /
+      string / bytes ordering tail.  16 helpers added: 6 cross-type
+      numeric (`cel_numeric_{eq,ne,lt,le,gt,ge}_at_vv`) implementing
+      the int↔uint↔double ladder per langdef §"Equality" /
+      §"Comparison"; 4 bool ordering (`cel_bool_{lt,le,gt,ge}_at_vv`)
+      via `DEFINE_CMP_VV`; 6 string / bytes ordering tail
+      (`cel_string_{le,gt,ge}_at_vv` + `cel_bytes_{le,gt,ge}_at_vv`)
+      via a new `DEFINE_SPAN_CMP_VV` macro.  34 ids moved from
+      `kExplicitlyUnimplementedIds` to `kBuiltinSeeds`; seed count
+      46 → 80; unimplemented count 120 → 86.  64 new test cases
+      across `compiler_v2/runtime/cel_compare_test.cc` (28 total) +
+      `compiler_v2/runtime/cel_string_ops_test.cc` (27 total).
+      One cel-cpp parity edge case mirrored verbatim:
+      `kGreaterEqualsUintDouble` (typo missing `64`) at
+      `third_party/cel-cpp/common/standard_definitions.h:212`.
+      Polymorphic `equals` / `not_equals` deferred to step 2b after
+      M5.D step 2 ships aggregate eq + `cel_message_eq`.
+- [x] **Rewrite M5.C** — string / bytes ops runtime helpers.
+      `cel_string_ops.h` — string concat / size / eq / lt / contains /
+      startsWith / endsWith + bytes concat / size / eq / lt (no
+      contains / startsWith / endsWith on bytes per langdef).  Bodies
+      in `cel_runtime.c` share `span_eq` / `span_lt` / `span_contains` /
+      `span_match_at` so each per-helper body is two lines.  WAT 18
+      (`string_concat`) locks the arena-alloc slot-out shape; concat
+      is the only M5.C helper that calls `cel_alloc`.  Locked in
+      `compiler_v2/runtime/cel_string_ops_test.cc` (initial 18 tests
+      covering happy path, empty / multi-byte UTF-8 / embedded-NUL,
+      byte-vs-string lt unsigned ordering, 3VL / type-mismatch
+      envelope; step 2 added 9 more for the le/gt/ge tail).  11 helper
+      exports added; regex `matches` deferred per
+      `m5-kcall-comprehensions.md §1.2`.
+- [x] **Rewrite M5.D step 1** — aggregate-op kArena fast paths.
+      7 helpers (`cel_list_size_arena`, `cel_list_in_arena`,
+      `cel_list_eq_arena`, `cel_list_concat_arena`,
+      `cel_map_size_arena`, `cel_map_in_arena`, `cel_map_eq_arena`);
+      decls split between `cel_list.h` and `cel_map.h`, bodies in
+      `cel_runtime.c`.  Shared scalar matcher `cel_value_eq` builds
+      on the existing `map_keys_equal` ladder (int↔uint cross-type,
+      bool / string), adds same-kind double / bytes / null branches.
+      Cross-type numeric involving double defers to M5.B step 2's
+      `cel_numeric_*` ladder.  WATs 21 (`size_list`) + 22 (`in_list`)
+      lock the 1-operand and 2-operand slot-out shapes end-to-end
+      through `wat_runner`.  Locked in
+      `compiler_v2/runtime/cel_aggregate_arena_test.cc` (21 tests)
+      covering per-helper happy path × empty boundary × cross-type
+      numeric `in` × map order-irrelevance × 3VL absorption × type
+      mismatch.  kDynamic dispatchers + 7 kHost trampolines +
+      `cel_message_eq` deferred to M5.D step 2.
+- [x] **Rewrite M5.E** — `OverloadTable::kBuiltinSeeds` populated
+      (46 entries: arithmetic same-kind / concat / same-kind ordering
+      / container size / container `in` / string ops) +
+      `kExplicitlyUnimplementedIds` populated (120 entries: special-
+      cased in `expr_lower`, deferred-to-M5.B-step-2 cross-type
+      numeric ladder + bool/string/bytes ordering tail, timestamp /
+      duration arithmetic + ordering, regex `matches`, timestamp /
+      duration accessors, type conversions).  Coverage tripwire
+      `CoverageTripwireClassifiesEveryStandardId` asserts every
+      cel-cpp `StandardOverloadIds::k*` is either resolvable via
+      `InternOverloadId` or in `kExplicitlyUnimplementedIds` —
+      forcing-function for the next vendoring of cel-cpp.  Locked
+      in `compiler_v2/codegen/overload_table_test.cc`.
+- [x] **Rewrite M5.F** — general kCall arm (`EmitGeneralCall`)
+      wires `OverloadTable::Lookup(ann.overload_id)` into
+      `expr_lower.cc`.  Arithmetic / same-kind comparison /
+      string ops / receiver-form ops compile end-to-end through
+      `Compile → Plan → Eval`.  M5.G control-flow operators
+      (`_&&_` / `_||_` / `_?_:_` / `!_`) and M5.D-step-2 pending
+      dispatchers (`size_list` / `size_map` / `add_list` / `in_list` /
+      `in_map`) surface as Unimplemented.  Conformance: 207 → 391
+      PASS.  Locked in `compiler_v2/codegen/expr_lower_test.cc`
+      (9 new lowering tests) + `compiler_v2/e2e/m5_test.cc`
+      (32 e2e tests across arithmetic, comparison, string ops,
+      bytes, bound vars, proto fields, pending guards).
+
+- [x] **Rewrite Slice 1.6** — cross-numeric ordering / membership
+      ladder.  `EmitGeneralCall` re-picks the cross-numeric overload
+      id (`less_int64_uint64`, etc.) when operand Reprs span numeric
+      kinds — cel-cpp's reference_map only lists the same-kind
+      overload of the non-dyn operand, so the re-pick is mandatory
+      for `dyn(int) < uint` to route to `cel_numeric_lt_at_vv` rather
+      than `cel_uint_lt_at_vv` (which would type-mismatch).
+      `cel_value_eq_polymorphic` extracts a polymorphic element-
+      equality matcher used by `cel_list_in_arena` /
+      `cel_map_in_arena`, and `map_keys_equal` widens to consult
+      `numeric_compare_kernel` for any numeric pair.  Conformance:
+      562 → 664 PASS (+102); `comparisons.textproto` 189 → 287,
+      `lists.textproto` 23 → 27.  Locked in
+      `compiler_v2/codegen/expr_lower_test.cc` (3 re-pick tests),
+      `compiler_v2/runtime/cel_aggregate_arena_test.cc` (8
+      polymorphic membership tests), `compiler_v2/e2e/m5_test.cc`
+      (`CrossNumericOrderingE2ETest` — 152 tests across the full
+      operand-kind × operator × dyn-position matrix + boundary +
+      NaN matrix + membership matrix + same-kind regression
+      guards).
 
 ## Front-end semantic coverage (beyond the grids)
 
@@ -1258,8 +1374,9 @@ direct user direction.  Past-count `set` poisons.  See
         moved 203 → 212 PASSes (`lists.textproto` 0 → 4,
         `parse.textproto` 148 → 150, `fields.textproto` 13 → 14).
         Unrelated guard added: `ResolvePass` early-rejects
-        `kComprehensionExpr`-bearing programs (M5 will replace
-        with scope-aware resolution); fixes a crash that
+        `kComprehensionExpr`-bearing programs (the comprehensions
+        follow-on milestone will replace with scope-aware
+        resolution; M5 keeps the gate in place); fixes a crash that
         previously aborted the conformance binary on
         comprehension-bearing list_value tests.
   - [x] M4.J e2e suite — `compiler_v2/e2e/m4_test.cc` (16 tests
@@ -1284,6 +1401,38 @@ direct user direction.  Past-count `set` poisons.  See
         `cel_host_test.cc::Layer2{Absorption,Dispatch,Aliasing,UnknownPattern,HasField,CrossBacking}`
         currently FAIL against the stub and will graduate when
         the bodies land.
+
+### Conformance unlock — Slice 0 (kString / kBytes activation encoder, shipped 2026-04-25)
+
+`compiler_v2/api/instance.cc::EncodeBoundValue` now routes
+`Repr::kString` and `Repr::kBytes` to a new `EncodeStringOrBytes`
+arm.  Payload bytes land in a host-managed arena above
+`arena_limit` (codegen's `cel_reset` ceiling), grown via
+`wasmtime_memory_grow` on demand — bypasses the `cel_reset` rewind
+that previously stomped any pre-eval `cel_alloc` allocations.  See
+`doc/implementation-plan/rewrite/conformance-unlock-plan.md` Slice 0.
+
+  - [x] String round-trip through Activation::Bind →
+        `Instance::Eval(Activation)` →
+        `compiler_v2/api/instance_test.cc::InstanceActivationStringEncoderTest::
+        {NonEmptyStringRoundTrips,EmptyStringRoundTrips,
+        EmbeddedNulSurvives,MultibyteUtf8RoundTrips,
+        ArenaRewindsBetweenEvals}`
+  - [x] Bytes round-trip (parallel of the string path) →
+        `instance_test.cc::InstanceActivationBytesEncoderTest::
+        {NonEmptyBytesRoundTrips,EmptyBytesRoundTrips}`
+  - [x] Kind-mismatch (declared string, bound int) → InvalidArgument →
+        `instance_test.cc::InstanceActivationStringEncoderTest::
+        KindMismatchRejected`
+  - [x] E2E composing string-bound activation with `+` / `size()` →
+        `compiler_v2/e2e/m5_test.cc::StringBytesActivationE2ETest::
+        {BindStringPlusLiteral,BindBytesSize,BindEmptyString,
+        BindEmbeddedNul,BindMultibyteUtf8,BindTwoStringsConcat,
+        RebindAcrossEvalsRewindsArena,BindBytesWithNul}`
+  - [x] Conformance harness flips kString-blocked SKIPs to live
+        Eval — `namespace.textproto` 3 → 4 PASS; total 486 → 490
+        (full per-fixture deltas in
+        `compiler_v2/conformance/README.md` post-Slice-0 row).
 
 ## How to update
 

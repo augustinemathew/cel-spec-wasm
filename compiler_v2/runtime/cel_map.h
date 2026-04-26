@@ -64,6 +64,32 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
 // `wasmtime::Config::wasm_tail_call(true)`.
 void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 
+// =====================================================================
+// M5.D step 1 — aggregate-op kArena fast paths for maps.
+//
+// `cel_map_size_arena` writes a CEL_INT.  `cel_map_in_arena`
+// reuses the existing `map_keys_equal` matcher used by
+// `cel_map_lookup_arena`.  `cel_map_eq_arena` walks both maps
+// pairwise — entry order is allowed to differ (langdef map
+// equality is set-equality on entries).
+// =====================================================================
+
+void cel_map_size_arena(uint32_t out_slot, uint32_t map_slot);
+void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
+void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+
+// =====================================================================
+// M5.D step 2 — kDynamic dispatchers for aggregate map ops.  Same
+// musttail-dispatch shape as `cel_map_lookup` (line 65): 3VL absorb,
+// branch on operand kind, tail-call the kArena fast path or the kHost
+// trampoline.  Codegen emits a `call` to these when ResolvePass
+// cannot prove a single origin.
+// =====================================================================
+
+void cel_map_size(uint32_t out_slot, uint32_t map_slot);
+void cel_map_in(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
+void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+
 #ifdef __cplusplus
 }
 #endif

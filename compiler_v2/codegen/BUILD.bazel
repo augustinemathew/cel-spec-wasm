@@ -23,6 +23,7 @@ cc_test(
     srcs = ["overload_table_test.cc"],
     deps = [
         ":overload_table",
+        "@cel-cpp//common:standard_definitions",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
@@ -115,7 +116,6 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
-
 # Pipeline stage 2: memory layout (rodata, workspace slots, locals).
 cc_library(
     name = "layout_pass",

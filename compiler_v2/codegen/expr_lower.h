@@ -30,6 +30,7 @@
 #include "binaryen-c.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
+#include "compiler_v2/codegen/overload_table.h"
 #include "compiler_v2/ir/typed_ast.h"
 
 namespace celwasm {
@@ -54,10 +55,8 @@ inline constexpr absl::string_view kCelHostHasFieldInternalName =
 // `(i32 out_slot, i32 map_slot, i32 key_slot) -> ()`.  cel_map_create
 // is `(i32 out_slot, i32 capacity) -> ()`; cel_map_insert is
 // `(i32 map_slot, i32 key_slot, i32 value_slot) -> ()`.
-inline constexpr absl::string_view kCelMapCreateInternalName =
-    "cel_map_create";
-inline constexpr absl::string_view kCelMapInsertInternalName =
-    "cel_map_insert";
+inline constexpr absl::string_view kCelMapCreateInternalName = "cel_map_create";
+inline constexpr absl::string_view kCelMapInsertInternalName = "cel_map_insert";
 inline constexpr absl::string_view kCelMapLookupArenaInternalName =
     "cel_map_lookup_arena";
 inline constexpr absl::string_view kCelMapLookupInternalName =
@@ -129,7 +128,7 @@ struct LoweredFunction {
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
-    const LoweringOptions& opts = {});
+    const OverloadTable& overload_table, const LoweringOptions& opts = {});
 
 }  // namespace celwasm
 

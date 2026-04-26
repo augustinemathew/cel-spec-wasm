@@ -178,11 +178,10 @@ TEST(LayoutPassTest, DebugLayoutOptionForwardedToStaticLayout) {
 }
 
 // --- Multi-kConst AST: every kConst gets storage --------------------------
-// `1 + 2` type-checks: root is a kCall over two kConst operands.  M1's
-// expr_lower will later reject the kCall, but LayoutPass still needs to
-// pack both literals into rodata so M3's call lowering has them available
-// without re-visiting.  Root kCall stays at kNone — expr_lower fails before
-// anything consumes it.
+// `1 + 2` type-checks: root is a kCall over two kConst operands.  Both
+// literals pack into rodata; the kCall root gets a workspace slot
+// (M5.F: `EmitGeneralCall` writes the result CelValue into that slot
+// before returning its offset to the parent).
 TEST(LayoutPassTest, PacksAllKConstsInMultiNodeAst) {
   auto ta = ParseAndCheck("1 + 2", {});
   ASSERT_THAT(ta, IsOk());
@@ -200,11 +199,14 @@ TEST(LayoutPassTest, PacksAllKConstsInMultiNodeAst) {
   }
   EXPECT_EQ(kconst_with_rodata, 2);
 
-  // Root kCall has no storage at M1.
+  // Root kCall gets a workspace slot at M5.F (general-arm result
+  // CelValue).  Slot lives in the workspace region, past variables.
   const int64_t root_id = ta->ast().root_expr().id();
   const NodeAnnotation* root_ann = layout->annotations.Find(root_id);
   ASSERT_NE(root_ann, nullptr);
-  EXPECT_EQ(root_ann->storage.kind, StorageKind::kNone);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
+  EXPECT_GE(root_ann->storage.payload,
+            layout->workspace_base + (layout->variables.size() * 24u));
 
   // Two 24-byte frames; padding to 8 is a no-op here.
   EXPECT_EQ(layout->rodata.size(), 48u);
@@ -271,13 +273,20 @@ TEST(LayoutPassVariableTest,
 }
 
 TEST(LayoutPassVariableTest, SlotOffsetsAreContiguousAndEightAligned) {
+  // `x + y + z` type-checks; M5.F lights up the kCall arms, so two
+  // call slots (one per `_+_`) sit past the variable slots.  This
+  // test only asserts the variable region's contiguity / alignment;
+  // workspace_bytes covers variables + call slots together.
   auto layout = LayoutWithVars("x + y + z", {"x:int", "y:int", "z:int"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 3u);
   EXPECT_EQ(layout->variables[0].slot_offset, layout->workspace_base);
   EXPECT_EQ(layout->variables[1].slot_offset, layout->workspace_base + 24u);
   EXPECT_EQ(layout->variables[2].slot_offset, layout->workspace_base + 48u);
-  EXPECT_EQ(layout->workspace_bytes, 72u);
+  // Variables alone occupy 72 bytes (3 × 24); kCall result slots add
+  // more.  Stop short of pinning a specific total — that's the
+  // SlotAllocator's job and changes when Sethi–Ullman lands at M8.
+  EXPECT_GE(layout->workspace_bytes, 72u);
   EXPECT_EQ(layout->workspace_base % 8u, 0u);
   EXPECT_EQ(layout->variables[1].slot_offset % 8u, 0u);
   EXPECT_EQ(layout->variables[2].slot_offset % 8u, 0u);
@@ -428,30 +437,18 @@ TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
 // MapStorageVisitor in `layout_pass.cc` allocates these out of the
 // shared SlotAllocator so they coexist with kSelect's slots.
 
-TEST(LayoutPassMapTest, EmptyMapLiteralGetsOneWorkspaceSlot) {
-  auto ta = ParseAndCheck("{}", {});
-  ASSERT_THAT(ta, IsOk());
-  auto resolved = ResolvePass(*ta);
-  ASSERT_THAT(resolved, IsOk());
-  auto layout = LayoutPass(*ta, *std::move(resolved));
-  ASSERT_THAT(layout, IsOk());
-
-  // No variables; one kCreateMap → one slot.
-  EXPECT_EQ(layout->workspace_bytes, 24u);
-  EXPECT_EQ(layout->peak_slots, 1u);
-
-  const auto* root_ann =
-      layout->annotations.Find(ta->ast().root_expr().id());
-  ASSERT_NE(root_ann, nullptr);
-  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
-}
+// M5.A removed direct unit coverage of N=0 map layout because bare
+// `{}` is now rejected by the static-subset gate.  The path stays
+// reachable indirectly through M5.I comprehension lowering
+// (`accu_init = {}` macro expansion).  When that lands, add an
+// internal-AST test here that constructs a zero-entry `kMapExpr`
+// and asserts the single-slot workspace shape locked previously.
 
 TEST(LayoutPassMapTest, ScalarMapLiteralGetsOneSlotRegardlessOfEntryCount) {
   // Per dispatch-doc §4: the kCreateMap result slot is a single
   // 24B CelValue (the wire shape).  Entry storage lives in the
   // arena (allocated by `cel_map_insert`), not the workspace.
-  auto ta = ParseAndCheck("{\"a\": 1, \"b\": 2, \"c\": 3}", {});
+  auto ta = ParseAndCheck(R"({"a": 1, "b": 2, "c": 3})", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
@@ -463,7 +460,7 @@ TEST(LayoutPassMapTest, ScalarMapLiteralGetsOneSlotRegardlessOfEntryCount) {
 TEST(LayoutPassMapTest, MapLiteralIndexingGetsTwoContiguousSlots) {
   // `{"a":1}["a"]` — kCreateMap result slot followed by the
   // kCallExpr(`_[_]`) lookup-result slot.
-  auto ta = ParseAndCheck("{\"a\": 1}[\"a\"]", {});
+  auto ta = ParseAndCheck(R"({"a": 1}["a"])", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
@@ -473,8 +470,7 @@ TEST(LayoutPassMapTest, MapLiteralIndexingGetsTwoContiguousSlots) {
   EXPECT_EQ(layout->peak_slots, 2u);
 
   // Root is the kCallExpr; its slot lands second.
-  const auto* root_ann =
-      layout->annotations.Find(ta->ast().root_expr().id());
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
   EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
@@ -507,7 +503,7 @@ TEST(LayoutPassMapTest, MultipleMapLiteralsGetDistinctSlots) {
   // that distinct kCreateMap nodes don't share slots.
   CheckOptions opts;
   opts.variable_specs = {"k:string"};
-  auto ta = ParseAndCheck("{\"a\": 1, \"b\": 2}[k]", opts);
+  auto ta = ParseAndCheck(R"({"a": 1, "b": 2}[k])", opts);
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
@@ -527,7 +523,7 @@ TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
   // aligned, regardless of map content.  This invariant is what
   // lets `cel_map_insert` bump-allocate entry storage past the
   // last workspace slot.
-  auto ta = ParseAndCheck("{\"a\": 1}[\"a\"]", {});
+  auto ta = ParseAndCheck(R"({"a": 1}["a"])", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
@@ -564,8 +560,7 @@ TEST(LayoutPassListTest, EmptyListLiteralGetsOneWorkspaceSlot) {
   EXPECT_EQ(layout->workspace_bytes, 24u);
   EXPECT_EQ(layout->peak_slots, 1u);
 
-  const auto* root_ann =
-      layout->annotations.Find(ta->ast().root_expr().id());
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
   EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
@@ -598,8 +593,7 @@ TEST(LayoutPassListTest, ListLiteralIndexingGetsTwoContiguousSlots) {
   EXPECT_EQ(layout->peak_slots, 2u);
 
   // Root is the kCallExpr; its slot lands second.
-  const auto* root_ann =
-      layout->annotations.Find(ta->ast().root_expr().id());
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
   EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
@@ -635,6 +629,49 @@ TEST(LayoutPassListTest, ArenaBaseFollowsListWorkspace) {
   EXPECT_EQ(layout->arena_base,
             layout->workspace_base + layout->workspace_bytes);
   EXPECT_EQ(layout->arena_base % 8u, 0u);
+}
+
+// ── M5.G control-flow operators ─────────────────────────────────
+//
+// `_&&_` / `_||_` / `_?_:_` / `!_` follow the same slot-out shape as
+// every other kCall: each call gets exactly one workspace slot for
+// the result.  Branch-arm slots inside the ternary are allocated
+// inside expr_lower (BinaryenIf-scoped) and don't leak into
+// LayoutPass's accounting.
+
+TEST(LayoutPassControlFlowTest, LogicalAndGetsOneCallSlot) {
+  // `true && false` is two literal kConsts (rodata) plus the
+  // kCallExpr result slot.
+  auto ta = ParseAndCheck("true && false", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+}
+
+TEST(LayoutPassControlFlowTest, LogicalNotGetsOneCallSlot) {
+  auto ta = ParseAndCheck("!true", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
+}
+
+TEST(LayoutPassControlFlowTest, ConditionalGetsOneCallSlot) {
+  // `true ? 1 : 2` — three rodata kConsts plus one kCallExpr slot.
+  // The two branch-arm slots are emitted inline inside the
+  // BinaryenIf and don't appear in LayoutPass's allocation.
+  auto ta = ParseAndCheck("true ? 1 : 2", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->peak_slots, 1u);
 }
 
 }  // namespace

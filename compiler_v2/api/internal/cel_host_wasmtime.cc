@@ -136,48 +136,19 @@ class WasmtimeMemoryView final : public MemoryView {
   wasmtime_memory_t mem_;
 };
 
-// Calls the runtime's `cel_alloc(size) -> offset` wasm export.
-// Reentrant into wasm from inside a host trampoline — wasmtime
-// supports this.  A trap from cel_alloc (OOM, ill-formed state)
-// surfaces as `nullptr` from Alloc; Layer 2 turns that into
-// ResourceExhausted.
-class WasmtimeArenaAllocator final : public ArenaAllocator {
- public:
-  WasmtimeArenaAllocator(wasmtime_context_t* ctx, wasmtime_func_t fn,
-                         wasmtime_memory_t mem)
-      : ctx_(ctx), fn_(fn), mem_(mem) {}
-
-  uint8_t* absl_nullable Alloc(size_t len,
-                               uint32_t* absl_nonnull out_offset) override {
-    wasmtime_val_t arg;
-    arg.kind = WASMTIME_I32;
-    arg.of.i32 = static_cast<int32_t>(len);
-    wasmtime_val_t result;
-    wasm_trap_t* trap = nullptr;
-    wasmtime_error_t* err =
-        wasmtime_func_call(ctx_, &fn_, &arg, 1, &result, 1, &trap);
-    if (err != nullptr) {
-      wasmtime_error_delete(err);
-      return nullptr;
-    }
-    if (trap != nullptr) {
-      wasm_trap_delete(trap);
-      return nullptr;
-    }
-    if (result.kind != WASMTIME_I32 || result.of.i32 == 0) {
-      return nullptr;
-    }
-    const auto offset = static_cast<uint32_t>(result.of.i32);
-    *out_offset = offset;
-    wasmtime_memory_t m = mem_;
-    return wasmtime_memory_data(ctx_, &m) + offset;
-  }
-
- private:
-  wasmtime_context_t* ctx_;
-  wasmtime_func_t fn_;
-  wasmtime_memory_t mem_;
-};
+// `WasmtimeArenaAllocator::Alloc` — calls the runtime's
+// `cel_alloc(size) -> offset` wasm export.  Reentrant into wasm
+// from inside a host trampoline — wasmtime supports this.  A trap
+// from cel_alloc (OOM, ill-formed state) surfaces as `nullptr` from
+// Alloc; Layer 2 turns that into ResourceExhausted.  The contract
+// matches `EncodeSpan` in cel_host.cc: zero-byte alloc returns a
+// valid (possibly null-derefable on offset==0) pointer with a
+// stamped `out_offset`; the caller must skip the memcpy when len==0.
+//
+// Definition lives outside the anonymous namespace (in the
+// `celwasm` namespace) because `instance.cc` reuses this allocator
+// for Activation-side kString / kBytes encoding (Slice 0 of the
+// conformance unlock plan).
 
 // Convert an absl::Status from Layer 2 into a wasmtime trap.
 // Infrastructure failures (null backing, OOM, malformed input) bubble
@@ -207,15 +178,15 @@ wasm_trap_t* HostFieldTrampoline(void* env_ptr, wasmtime_caller_t* caller,
 
 extern "C" wasm_trap_t* CelGetFieldTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/,
-    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
   return HostFieldTrampoline<CelGetFieldImpl>(env_ptr, caller, args);
 }
 
 extern "C" wasm_trap_t* CelHasFieldTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/,
-    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
   return HostFieldTrampoline<CelHasFieldImpl>(env_ptr, caller, args);
 }
 
@@ -241,16 +212,88 @@ wasm_trap_t* HostThreeArgTrampoline(void* absl_nonnull env_ptr,
 
 extern "C" wasm_trap_t* CelMapLookupTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/,
-    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
   return HostThreeArgTrampoline<CelMapLookupImpl>(env_ptr, caller, args);
 }
 
 extern "C" wasm_trap_t* CelListAtTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/,
-    wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
   return HostThreeArgTrampoline<CelListAtImpl>(env_ptr, caller, args);
+}
+
+// M5.D step 2 — aggregate-op kHost trampolines.  Three-arg helpers
+// (in/eq/concat) reuse `HostThreeArgTrampoline`; size helpers take
+// two args and reach Impls of arity-2 directly.
+template <auto Impl>
+wasm_trap_t* HostTwoArgTrampoline(void* absl_nonnull env_ptr,
+                                  wasmtime_caller_t* absl_nonnull caller,
+                                  const wasmtime_val_t* args) {
+  auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  WasmtimeMemoryView mem(ctx, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
+  return StatusToTrap(Impl(static_cast<uint32_t>(args[0].of.i32),
+                           static_cast<uint32_t>(args[1].of.i32), tctx));
+}
+
+extern "C" wasm_trap_t* CelListSizeTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelListSizeImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelListInTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelListInImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelListEqTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelListEqImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelListConcatTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelListConcatImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelMapSizeTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelMapSizeImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelMapInTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelMapInImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelMapEqTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelMapEqImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelMessageEqTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelMessageEqImpl>(env_ptr, caller, args);
 }
 
 wasm_functype_t* NI32sToVoid(size_t n) {
@@ -288,25 +331,76 @@ absl::Status DefineHostFunc(wasmtime_linker_t* linker, absl::string_view name,
 
 }  // namespace
 
+namespace {
+
+struct HostImportEntry {
+  absl::string_view name;
+  size_t arity;
+  wasmtime_func_callback_t cb;
+};
+
+absl::Status DefineAll(wasmtime_linker_t* linker, CelHostCallbackEnv* env,
+                       absl::Span<const HostImportEntry> entries) {
+  for (const HostImportEntry& e : entries) {
+    if (auto s = DefineHostFunc(linker, e.name, e.arity, e.cb, env); !s.ok()) {
+      return s;
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+// ═══════════ WasmtimeArenaAllocator (named-namespace export) ═══════════
+
+uint8_t* absl_nullable WasmtimeArenaAllocator::Alloc(
+    size_t len, uint32_t* absl_nonnull out_offset) {
+  wasmtime_val_t arg;
+  arg.kind = WASMTIME_I32;
+  arg.of.i32 = static_cast<int32_t>(len);
+  wasmtime_val_t result;
+  wasm_trap_t* trap = nullptr;
+  wasmtime_error_t* err =
+      wasmtime_func_call(ctx_, &fn_, &arg, 1, &result, 1, &trap);
+  if (err != nullptr) {
+    wasmtime_error_delete(err);
+    return nullptr;
+  }
+  if (trap != nullptr) {
+    wasm_trap_delete(trap);
+    return nullptr;
+  }
+  if (result.kind != WASMTIME_I32 || result.of.i32 == 0) {
+    return nullptr;
+  }
+  const auto offset = static_cast<uint32_t>(result.of.i32);
+  *out_offset = offset;
+  wasmtime_memory_t m = mem_;
+  return wasmtime_memory_data(ctx_, &m) + offset;
+}
+
 absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
                                     CelHostCallbackEnv* env) {
-  if (auto s = DefineHostFunc(linker, "cel_get_field", /*arity=*/4,
-                              CelGetFieldTrampoline, env);
-      !s.ok()) {
-    return s;
-  }
-  if (auto s = DefineHostFunc(linker, "cel_has_field", /*arity=*/4,
-                              CelHasFieldTrampoline, env);
-      !s.ok()) {
-    return s;
-  }
-  if (auto s = DefineHostFunc(linker, "cel_map_lookup", /*arity=*/3,
-                              CelMapLookupTrampoline, env);
-      !s.ok()) {
-    return s;
-  }
-  return DefineHostFunc(linker, "cel_list_at", /*arity=*/3,
-                        CelListAtTrampoline, env);
+  // Register every cel_host.* import the runtime module declares.
+  // Arities: get/has_field are 4-arg (msg + field_ref + attr + out);
+  // every other cel_host.* helper is slot-out (out + N operands).
+  // M5.D step 2 added the seven aggregate-op kHost arms plus the
+  // standalone `cel_message_eq` helper.
+  static constexpr HostImportEntry kEntries[] = {
+      {"cel_get_field", 4, &CelGetFieldTrampoline},
+      {"cel_has_field", 4, &CelHasFieldTrampoline},
+      {"cel_map_lookup", 3, &CelMapLookupTrampoline},
+      {"cel_list_at", 3, &CelListAtTrampoline},
+      {"cel_list_size", 2, &CelListSizeTrampoline},
+      {"cel_list_in", 3, &CelListInTrampoline},
+      {"cel_list_eq", 3, &CelListEqTrampoline},
+      {"cel_list_concat", 3, &CelListConcatTrampoline},
+      {"cel_map_size", 2, &CelMapSizeTrampoline},
+      {"cel_map_in", 3, &CelMapInTrampoline},
+      {"cel_map_eq", 3, &CelMapEqTrampoline},
+      {"cel_message_eq", 3, &CelMessageEqTrampoline},
+  };
+  return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }
 
 }  // namespace celwasm

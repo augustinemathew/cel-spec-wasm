@@ -21,6 +21,8 @@ absl::string_view ErrorCodeName(ErrorCode c) {
       return "field_not_found";
     case ErrorCode::kKeyNotFound:
       return "key_not_found";
+    case ErrorCode::kDuplicateKey:
+      return "duplicate_key";
     case ErrorCode::kIndexOutOfBounds:
       return "index_out_of_bounds";
     case ErrorCode::kUnknownType:

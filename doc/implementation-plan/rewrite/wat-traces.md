@@ -618,6 +618,214 @@ field (`ProtoBacking::ReadField` returns
 The `Customer.tags = repeated string` field was added at M4.J
 for the e2e suite (`m4_test::ProtoRepeatedE2ETest`).
 
+## 16. Arithmetic — `1 + 2` (M5.B slot-out helper ABI)
+
+`wat/16_arith_int_add.wat`.  First WAT for the M5 general kCall
+arm.  Locks the uniform helper ABI shape every M5 helper uses:
+
+```
+(i32 out_slot, i32 arg0, ..., i32 argN-1) -> void
+```
+
+Helpers read operand CelValues out of `arg*_slot`s, compute, write
+the result CelValue into `out_slot`.  No return value — the caller
+already knows the result lives at `out_slot`.
+
+`cel_int_add_at_vv(out_slot, a_slot, b_slot)`:
+
+  - reads a / b as CEL_INT (any other kind on either operand →
+    `out_slot = {CEL_ERROR, err = CEL_ERR_TYPE_MISMATCH}`);
+  - 3VL absorption — UNKNOWN/ERROR on either operand propagates
+    verbatim into `out_slot`;
+  - signed overflow → `CEL_ERR_OVERFLOW` per langdef §"Numeric
+    values" (NOT wrap).  `__builtin_add_overflow` detects;
+  - happy path: `out_slot = {CEL_INT, _pad=0, i = a+b}`.
+
+Memory map:
+  - rodata [16, 40) + [40, 64) — two CEL_INT kConsts.
+  - workspace [64, 88) — kCall(`_+_`) result slot.
+  - arena [88, …).
+
+Mul on int64 is the load-bearing implementation detail: the
+runtime helper avoids `__builtin_mul_overflow` because clang
+lowers it through `__multi3` (compiler-rt 128-bit multiply, not
+linked into the wasm32 freestanding build).  Instead the runtime
+splits operands into 32-bit halves and assembles the 128-bit
+product manually using only 32×32→64 partial multiplies that the
+wasm32 backend lowers natively as `i64.mul`.  See
+`cel_runtime.c::uint64_mul_overflows`.
+
+## 17. Comparison — `1 == 2` (M5.B slot-out compare ABI)
+
+`wat/17_compare_int_eq.wat`.  Companion to 16 — same slot-out
+shape, only the result kind differs (CEL_BOOL instead of CEL_INT).
+Locks that comparison and arithmetic share the helper ABI.
+
+`cel_int_eq_at_vv(out_slot, a_slot, b_slot)`:
+
+  - reads a / b as CEL_INT (cross-type numeric equality
+    `1 == 1u` / `1 == 1.0` routes through a separate
+    `cel_numeric_*` ladder added in M5.B step 2);
+  - 3VL absorption matches the arith helpers;
+  - happy path: `out_slot = {CEL_BOOL, b = (a==b ? 1 : 0)}`.
+
+Same memory map as 16.  Runtime exports cover the full per-kind
+matrix (eq/ne/lt/le/gt/ge × int/uint/double + bool eq/ne + null
+eq); the WAT exercises one representative.
+
+## 18. String concat — `"ab" + "cd"` (M5.C arena-alloc helper ABI)
+
+`wat/18_string_concat.wat`.  M5.C's WAT representative.  Locks
+the slot-out shape for helpers that allocate output bytes in the
+arena: same `(out_slot, args…) → ()` signature as M5.B, but the
+helper's effect is to extend a CelSpan to point at fresh arena
+bytes rather than rewrite a fixed-size scalar payload.
+
+`cel_string_concat_at_vv(out_slot, a_slot, b_slot)`:
+
+  - reads a / b as CEL_STRING (other kind on either operand →
+    CEL_ERR_TYPE_MISMATCH);
+  - 3VL absorption matches the arith / compare envelope;
+  - allocates `a.len + b.len` bytes via `cel_alloc`.  OOM →
+    `out_slot = {CEL_ERROR, err = CEL_ERR_OVERFLOW}`;
+  - copies a.bytes then b.bytes into the new buffer;
+  - writes `out_slot = {CEL_STRING, payload.s = {ptr=<new>, len}}`.
+
+Memory map:
+  - rodata [16, 40) + [40, 64) — two CEL_STRING kConsts pointing
+    into payload bytes at [64, 68).
+  - workspace [72, 96) — kCall(`_+_`) result slot.
+  - arena [96, …) — concat target lives here.
+
+The new payload is owned by the arena `cel_reset` rewinds at the
+top of the next $eval, mirroring M1's `cel_make_string` lifetime
+contract exactly.
+
+The other M5.C string helpers (size, eq, lt, contains,
+startsWith, endsWith) and bytes helpers (concat, size, eq, lt)
+share the same slot-out shape but don't allocate — size writes
+CEL_INT, the predicates write CEL_BOOL.  Only concat exercises
+the arena-alloc path the WAT locks here.
+
+## 21. List size — `size([1, 2, 3])` (M5.D step 1 kArena)
+
+`wat/21_size_list.wat`.  First WAT for the M5.D aggregate-op
+kArena fast path.  Same slot-out shape as the M3/M4 dispatchers,
+but the helper now reports a derived value (count) instead of
+returning a slice of operand state.
+
+`cel_list_size_arena(out_slot, list_slot) — i32×2 → ()`:
+
+  - reads l as CEL_LIST_ARENA (other kind → CEL_ERR_TYPE_MISMATCH);
+  - 3VL absorption — UNKNOWN/ERROR propagates;
+  - happy path: writes `{CEL_INT, i = ArenaListHeader.count}`.
+
+The kHost / kDynamic siblings land in M5.D step 2 (the kHost
+trampoline goes through `cel_host.cel_list_size`; the kDynamic
+dispatcher uses `__attribute__((musttail))` arms exactly like
+`cel_list_at`).  Codegen routes via `list_origin` annotation per
+`map-list-dispatch.md §6`.
+
+## 22. List `in` — `2 in [1, 2, 3]` (M5.D step 1 kArena)
+
+`wat/22_in_list.wat`.  Two-operand companion to 21.  Locks the
+`(out_slot, value_slot, list_slot)` shape.
+
+`cel_list_in_arena(out_slot, value_slot, list_slot) — i32×3 → ()`:
+
+  - reads l as CEL_LIST_ARENA;
+  - 3VL absorption on BOTH operands;
+  - element comparison via `cel_value_eq` — the shared scalar
+    matcher used by both `list_in_arena` and `list_eq_arena`.
+    Reuses `map_keys_equal`'s int↔uint cross-type ladder, plus
+    same-kind double / bytes / null branches that map keys
+    don't need;
+  - happy path: writes `{CEL_BOOL, b = (needle ∈ list ? 1 : 0)}`.
+
+The 7 M5.D step 1 helpers (`cel_{list,map}_{size,in,eq}_arena` +
+`cel_list_concat_arena`) all share this shape — slot-out, scalar
+result, kArena-only.  WATs 21 / 22 lock the two operand-count
+shapes (1-operand `size`, 2-operand `in`); the rest is mechanical
+mirror.
+
+---
+
+## 30. Logical AND — `true && false` (M5.G eager-eval helper)
+
+`wat/30_logical_and.wat`.  Locks the slot-out shape for `_&&_`.
+Both operands are eagerly evaluated into their own slots; the
+helper then runs the 3VL truth table and writes the result into
+`out_slot`.  No short-circuit branching at the wasm level —
+non-strict semantics force full eval (`false && (1/0)` must
+succeed at `false`, not propagate the divide-by-zero), and the
+truth table itself runs entirely inside `cel_and`.
+
+`cel_and(out_slot, a_slot, b_slot) — i32×3 → ()` (parity with
+cel-cpp `runtime/standard/logical_functions.cc::LogicalAnd`):
+
+  - OK(false) on EITHER side absorbs everything (including a
+    non-3VL other operand) → `false && X = false`.
+  - Past the absorber: any non-3VL operand → CEL_ERROR with
+    code `CEL_ERR_TYPE_MISMATCH`.
+  - OK(true) && X = X (with X ∈ {bool, error, unknown}).
+  - ERROR > UNKNOWN dominance.
+  - Both UNKNOWN → sorted-deduplicated union of attribute-id
+    sets via `cel_unknown_merge`.
+
+## 31. Logical OR — `false || true` (M5.G eager-eval helper)
+
+`wat/31_logical_or.wat`.  Symmetric companion to 30.  Mirrors
+`cel_and` with the OK(false) / OK(true) absorbers swapped:
+`true || X = true (any X)`; `false || X = X` (with the same
+downstream type-check + ERROR/UNKNOWN dominance).
+
+## 32. Logical NOT — `!true` (M5.G unary helper)
+
+`wat/32_logical_not.wat`.  Unary slot-out helper.  ABI mirrors
+the unary arithmetic helpers (`cel_int_neg_at_v`, etc.):
+`(out_slot, v_slot) → ()`.
+
+`cel_not(out_slot, v_slot)`:
+
+  - bool true  → bool false
+  - bool false → bool true
+  - ERROR / UNKNOWN → propagate verbatim (24-byte copy).
+  - Any other kind → CEL_ERROR with `CEL_ERR_TYPE_MISMATCH`.
+
+## 33. Conditional — `true ? 1 : 2` (M5.G inline branching)
+
+`wat/33_conditional.wat`.  Unlike the eager-eval helpers for
+`_&&_` / `_||_`, ternary lowers to **inline branching wasm**:
+only the selected arm is evaluated, side effects on the dropped
+arm are skipped, and the result is materialised into `out_slot`
+via `cel_copy_slot`.  This is correct under langdef
+§"Conditional expression": "If c is an error or unknown, the
+result is c.  Otherwise, only the chosen branch is evaluated."
+
+Branch shape (codegen target):
+
+```
+if (cond.kind == CEL_BOOL) {
+  if (cond.payload.b != 0) {
+    <eval then-branch into then_slot>
+    cel_copy_slot(out, then_slot);
+  } else {
+    <eval else-branch into else_slot>
+    cel_copy_slot(out, else_slot);
+  }
+} else {
+  // ERROR / UNKNOWN propagate verbatim.
+  cel_copy_slot(out, cond_slot);
+}
+```
+
+`cel_copy_slot(dst_slot, src_slot)` is a tiny memcpy helper —
+24-byte CelValue copy.  The ternary lowering is the only caller
+today; future helpers (e.g. an explicit `as`-cast slot move)
+could reuse it without growing the runtime surface.  Codegen
+could inline a `BinaryenMemoryCopy` instead, but a runtime-side
+helper keeps `expr_lower` lean and the WAT shape regular.
+
 ---
 
 ## Future entries (stubs)

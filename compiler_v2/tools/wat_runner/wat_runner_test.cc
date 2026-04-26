@@ -211,7 +211,8 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
 
   // Inspect the saved offsets.  Second alloc should sit 24 bytes
   // past the first.
-  uint32_t first = 0, second = 0;
+  uint32_t first = 0;
+  uint32_t second = 0;
   std::memcpy(&first, out->memory_after.data() + 200, sizeof(first));
   std::memcpy(&second, out->memory_after.data() + 204, sizeof(second));
   EXPECT_EQ(first, 16u);
@@ -277,8 +278,7 @@ TEST(WatRunnerTest, SelectCNameStubEndToEndRoundTripsFourArgAbi) {
   in.pre_writes = {{16u, EncodeMessageCelValue(0x1234)}};
   in.cel_get_field_stub =
       [capture](uint32_t out_slot, uint32_t msg_slot, uint32_t field_ref_id,
-                uint32_t attribute_id, uint8_t* memory,
-                size_t /*mem_size*/) {
+                uint32_t attribute_id, uint8_t* memory, size_t /*mem_size*/) {
         ++capture->calls;
         capture->out_slot = out_slot;
         capture->msg_slot = msg_slot;
@@ -323,9 +323,8 @@ TEST(WatRunnerTest, SelectWithStubWritingUnknownCelValue) {
   in.wat = kSelectCNameWat;
   in.pre_writes = {{16u, EncodeMessageCelValue(0xdead)}};
   in.cel_get_field_stub = [](uint32_t out_slot, uint32_t /*msg_slot*/,
-                             uint32_t /*field_ref_id*/,
-                             uint32_t attribute_id, uint8_t* memory,
-                             size_t /*mem_size*/) {
+                             uint32_t /*field_ref_id*/, uint32_t attribute_id,
+                             uint8_t* memory, size_t /*mem_size*/) {
     CelValue out{};
     out.kind = CEL_UNKNOWN;
     out.payload.unk = attribute_id;
@@ -476,19 +475,19 @@ TEST(WatRunnerMapTest, MapIndexHostInvokesTrampolineStub) {
   in.pre_writes = {{16u, EncodeMapHostCelValue(42u)}};
   bool stub_fired = false;
   uint32_t observed_ref_slot = 0;
-  in.cel_host_cel_map_lookup_stub =
-      [&stub_fired, &observed_ref_slot](uint32_t out_slot, uint32_t map_slot,
-                                        uint32_t /*key_slot*/,
-                                        uint8_t* memory, size_t /*size*/) {
-        stub_fired = true;
-        CelValue map_cv = ReadCelValue(memory, map_slot);
-        observed_ref_slot = map_cv.payload.ref_slot;
-        // Simulate HostMap::Get returning Value::Int(99).
-        CelValue result{};
-        result.kind = CEL_INT;
-        result.payload.i = 99;
-        WriteCelValue(memory, out_slot, result);
-      };
+  in.cel_host_cel_map_lookup_stub = [&stub_fired, &observed_ref_slot](
+                                        uint32_t out_slot, uint32_t map_slot,
+                                        uint32_t /*key_slot*/, uint8_t* memory,
+                                        size_t /*size*/) {
+    stub_fired = true;
+    CelValue map_cv = ReadCelValue(memory, map_slot);
+    observed_ref_slot = map_cv.payload.ref_slot;
+    // Simulate HostMap::Get returning Value::Int(99).
+    CelValue result{};
+    result.kind = CEL_INT;
+    result.payload.i = 99;
+    WriteCelValue(memory, out_slot, result);
+  };
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
   EXPECT_TRUE(stub_fired);
@@ -563,25 +562,24 @@ TEST(WatRunnerMapTest, ProtoMapFieldChainsSelectThenLookup) {
   bool lookup_fired = false;
   // The WAT also imports cel_has_field; supply a no-op so the
   // module instantiates (the body never calls it).
-  in.cel_has_field_stub = [](uint32_t, uint32_t, uint32_t, uint32_t,
-                              uint8_t*, size_t) {};
-  in.cel_get_field_stub =
-      [&select_fired](uint32_t out_slot, uint32_t /*msg_slot*/,
-                      uint32_t field_ref_id, uint32_t /*attribute_id*/,
-                      uint8_t* memory, size_t /*size*/) {
-        select_fired = true;
-        EXPECT_EQ(field_ref_id, 1u);  // "metadata"
-        // Simulate ProtoBacking::ReadField → MAP arm → InternMap
-        // returning ref_slot=99.
-        CelValue cv{};
-        cv.kind = CEL_MAP_HOST;
-        cv.payload.ref_slot = 99;
-        WriteCelValue(memory, out_slot, cv);
-      };
+  in.cel_has_field_stub = [](uint32_t, uint32_t, uint32_t, uint32_t, uint8_t*,
+                             size_t) {};
+  in.cel_get_field_stub = [&select_fired](
+                              uint32_t out_slot, uint32_t /*msg_slot*/,
+                              uint32_t field_ref_id, uint32_t /*attribute_id*/,
+                              uint8_t* memory, size_t /*size*/) {
+    select_fired = true;
+    EXPECT_EQ(field_ref_id, 1u);  // "metadata"
+    // Simulate ProtoBacking::ReadField → MAP arm → InternMap
+    // returning ref_slot=99.
+    CelValue cv{};
+    cv.kind = CEL_MAP_HOST;
+    cv.payload.ref_slot = 99;
+    WriteCelValue(memory, out_slot, cv);
+  };
   in.cel_host_cel_map_lookup_stub =
       [&lookup_fired](uint32_t out_slot, uint32_t map_slot,
-                      uint32_t /*key_slot*/, uint8_t* memory,
-                      size_t /*size*/) {
+                      uint32_t /*key_slot*/, uint8_t* memory, size_t /*size*/) {
         lookup_fired = true;
         // The map_slot should point at a CEL_MAP_HOST CelValue
         // the kSelect just wrote (ref_slot=99).
@@ -659,18 +657,18 @@ TEST(WatRunnerListTest, ListIndexHostInvokesTrampolineStub) {
   in.pre_writes = {{16u, EncodeListHostCelValue(7u)}};
   bool stub_fired = false;
   uint32_t observed_ref_slot = 0;
-  in.cel_host_cel_list_at_stub =
-      [&stub_fired, &observed_ref_slot](uint32_t out_slot, uint32_t list_slot,
-                                        uint32_t /*idx_slot*/,
-                                        uint8_t* memory, size_t /*size*/) {
-        stub_fired = true;
-        CelValue lst = ReadCelValue(memory, list_slot);
-        observed_ref_slot = lst.payload.ref_slot;
-        CelValue result{};
-        result.kind = CEL_INT;
-        result.payload.i = 42;
-        WriteCelValue(memory, out_slot, result);
-      };
+  in.cel_host_cel_list_at_stub = [&stub_fired, &observed_ref_slot](
+                                     uint32_t out_slot, uint32_t list_slot,
+                                     uint32_t /*idx_slot*/, uint8_t* memory,
+                                     size_t /*size*/) {
+    stub_fired = true;
+    CelValue lst = ReadCelValue(memory, list_slot);
+    observed_ref_slot = lst.payload.ref_slot;
+    CelValue result{};
+    result.kind = CEL_INT;
+    result.payload.i = 42;
+    WriteCelValue(memory, out_slot, result);
+  };
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
   EXPECT_TRUE(stub_fired);
@@ -713,39 +711,182 @@ TEST(WatRunnerListTest, ProtoRepeatedFieldChainsSelectThenLookup) {
 
   bool select_fired = false;
   bool list_at_fired = false;
-  in.cel_has_field_stub = [](uint32_t, uint32_t, uint32_t, uint32_t,
-                              uint8_t*, size_t) {};
-  in.cel_get_field_stub =
-      [&select_fired](uint32_t out_slot, uint32_t /*msg_slot*/,
-                      uint32_t field_ref_id, uint32_t /*attribute_id*/,
-                      uint8_t* memory, size_t /*size*/) {
-        select_fired = true;
-        EXPECT_EQ(field_ref_id, 1u);  // "tags"
-        CelValue cv{};
-        cv.kind = CEL_LIST_HOST;
-        cv.payload.ref_slot = 55;
-        WriteCelValue(memory, out_slot, cv);
-      };
-  in.cel_host_cel_list_at_stub =
-      [&list_at_fired](uint32_t out_slot, uint32_t list_slot,
-                       uint32_t /*idx_slot*/, uint8_t* memory,
-                       size_t /*size*/) {
-        list_at_fired = true;
-        CelValue lst = ReadCelValue(memory, list_slot);
-        EXPECT_EQ(lst.kind, CEL_LIST_HOST);
-        EXPECT_EQ(lst.payload.ref_slot, 55u);
-        // Element is a CEL_STRING — payload offsets unimportant
-        // for this test.
-        CelValue cv{};
-        cv.kind = CEL_STRING;
-        WriteCelValue(memory, out_slot, cv);
-      };
+  in.cel_has_field_stub = [](uint32_t, uint32_t, uint32_t, uint32_t, uint8_t*,
+                             size_t) {};
+  in.cel_get_field_stub = [&select_fired](
+                              uint32_t out_slot, uint32_t /*msg_slot*/,
+                              uint32_t field_ref_id, uint32_t /*attribute_id*/,
+                              uint8_t* memory, size_t /*size*/) {
+    select_fired = true;
+    EXPECT_EQ(field_ref_id, 1u);  // "tags"
+    CelValue cv{};
+    cv.kind = CEL_LIST_HOST;
+    cv.payload.ref_slot = 55;
+    WriteCelValue(memory, out_slot, cv);
+  };
+  in.cel_host_cel_list_at_stub = [&list_at_fired](
+                                     uint32_t out_slot, uint32_t list_slot,
+                                     uint32_t /*idx_slot*/, uint8_t* memory,
+                                     size_t /*size*/) {
+    list_at_fired = true;
+    CelValue lst = ReadCelValue(memory, list_slot);
+    EXPECT_EQ(lst.kind, CEL_LIST_HOST);
+    EXPECT_EQ(lst.payload.ref_slot, 55u);
+    // Element is a CEL_STRING — payload offsets unimportant
+    // for this test.
+    CelValue cv{};
+    cv.kind = CEL_STRING;
+    WriteCelValue(memory, out_slot, cv);
+  };
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
   EXPECT_TRUE(select_fired);
   EXPECT_TRUE(list_at_fired);
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_STRING);
+}
+
+// ─────────────────────────────────────────────────────────
+// M5.B — slot-out helper ABI for arithmetic + comparison.  The
+// WATs lock the wire shape `(i32 out, i32 a, i32 b) -> ()` that
+// every M5 helper uses; the runtime exports the helper from
+// cel_runtime.wasm so the harness binds it without any host
+// stub.  See `m5-kcall-comprehensions.md §2.1`.
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerArithCompareTest, IntAddProducesSum) {
+  auto wat = LoadWat("16_arith_int_add.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 3);
+}
+
+TEST(WatRunnerArithCompareTest, IntEqProducesBoolFalse) {
+  auto wat = LoadWat("17_compare_int_eq.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BOOL);
+  EXPECT_EQ(cv.payload.b, 0);  // 1 == 2 is false.
+}
+
+TEST(WatRunnerStringOpsTest, StringConcatBuildsArenaPayload) {
+  auto wat = LoadWat("18_string_concat.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 72u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_STRING);
+  EXPECT_EQ(cv.payload.s.len, 4u);
+  // Concat target lives in the arena (>= arena_base = 96).
+  EXPECT_GE(cv.payload.s.ptr, 96u);
+  // Decode the concatenated bytes.
+  EXPECT_EQ(ReadSpan(out->memory_after, cv.payload.s), "abcd");
+}
+
+// ─────────────────────────────────────────────────────────
+// M5.D step 1 — aggregate-op kArena fast paths.  WATs 21/22
+// build a 3-element list with cel_list_create+set, then call
+// the aggregate helper.  Locks the (out_slot, list_slot) /
+// (out_slot, value_slot, list_slot) ABIs.
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerAggregateOpsTest, ListSizeArenaProducesIntCount) {
+  auto wat = LoadWat("21_size_list.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 112u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 3);
+}
+
+TEST(WatRunnerAggregateOpsTest, ListInArenaFindsValue) {
+  auto wat = LoadWat("22_in_list.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 136u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BOOL);
+  EXPECT_EQ(cv.payload.b, 1);  // 2 ∈ [1, 2, 3].
+}
+
+// ─────────────────────────────────────────────────────────
+// M5.G (Slice 2) — 3VL / control-flow.  Locks the wasm shapes for
+// `_&&_` / `_||_` / `!_` / `_?_:_` end-to-end through the real
+// runtime exports (no stubs — `cel_and` / `cel_or` / `cel_not` /
+// `cel_copy_slot` ship as native runtime helpers).
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerControlFlowTest, LogicalAndAbsorbsFalse) {
+  auto wat = LoadWat("30_logical_and.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BOOL);
+  EXPECT_EQ(cv.payload.b, 0);  // true && false → false
+}
+
+TEST(WatRunnerControlFlowTest, LogicalOrAbsorbsTrue) {
+  auto wat = LoadWat("31_logical_or.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BOOL);
+  EXPECT_EQ(cv.payload.b, 1);  // false || true → true
+}
+
+TEST(WatRunnerControlFlowTest, LogicalNotInverts) {
+  auto wat = LoadWat("32_logical_not.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BOOL);
+  EXPECT_EQ(cv.payload.b, 0);  // !true → false
+}
+
+TEST(WatRunnerControlFlowTest, ConditionalSelectsThenArm) {
+  auto wat = LoadWat("33_conditional.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 88u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 1);  // true ? 1 : 2 → 1
 }
 
 }  // namespace

@@ -1,3 +1,11 @@
 cel_log
 cel_host_cel_map_lookup
 cel_host_cel_list_at
+cel_host_cel_list_size
+cel_host_cel_list_in
+cel_host_cel_list_eq
+cel_host_cel_list_concat
+cel_host_cel_map_size
+cel_host_cel_map_in
+cel_host_cel_map_eq
+cel_host_cel_message_eq

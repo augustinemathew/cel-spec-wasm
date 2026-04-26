@@ -63,13 +63,14 @@ class ComprehensionDetector : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
 
-  void PostVisitComprehension(
-      const cel::Expr& /*expr*/,
-      const cel::ComprehensionExpr& /*comp*/) override {
+  void PostVisitComprehension(const cel::Expr& /*expr*/,
+                              const cel::ComprehensionExpr& /*comp*/) override {
     found_ = true;
   }
 
-  bool found() const { return found_; }
+  bool found() const {
+    return found_;
+  }
 
  private:
   bool found_ = false;
@@ -214,8 +215,7 @@ class MapOriginVisitor : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
 
-  void PostVisitMap(const cel::Expr& expr,
-                    const cel::MapExpr& /*m*/) override {
+  void PostVisitMap(const cel::Expr& expr, const cel::MapExpr& /*m*/) override {
     annotations_[expr.id()].map_origin = Origin::kArena;
   }
 
@@ -279,6 +279,115 @@ class ListOriginVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
+// Slice 1.5 (dyn-passthrough-plan.md, Option A): for every `dyn(scalar)`
+// call admitted by the static-subset gate, copy the argument's
+// non-storage annotation fields onto the call node so downstream
+// consumers (operand reads in `==`, comprehension scope walks, the
+// attribute-pattern matcher) see the underlying scalar type — the
+// call site's checker-assigned `dyn` type would otherwise leave the
+// annotation at `Repr::kUnknown` with empty `attribute_id` /
+// `overload_id`.  Storage forwarding lives in LayoutPass: ResolvePass
+// runs before slots are assigned, so we cannot copy `storage` here.
+class DynPassthroughVisitor : public cel::AstVisitorBase {
+ public:
+  explicit DynPassthroughVisitor(WasmAnnotations& annotations)
+      : annotations_(annotations) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitCall(const cel::Expr& expr,
+                     const cel::CallExpr& call) override {
+    if (call.function() != "dyn" || call.args().size() != 1 ||
+        call.has_target()) {
+      return;
+    }
+    const cel::Expr& arg = call.args()[0];
+    const NodeAnnotation* arg_ann = annotations_.Find(arg.id());
+    if (arg_ann == nullptr) return;
+    NodeAnnotation& self = annotations_[expr.id()];
+    self.repr = arg_ann->repr;
+    self.field_number = arg_ann->field_number;
+    self.overload_id = arg_ann->overload_id;
+    self.local_index = arg_ann->local_index;
+    self.attribute_id = arg_ann->attribute_id;
+    self.map_origin = arg_ann->map_origin;
+    self.list_origin = arg_ann->list_origin;
+  }
+
+ private:
+  WasmAnnotations& annotations_;
+};
+
+// M5.F: stamps `overload_id` on every kCallExpr from cel-cpp's
+// `Ast::reference_map`.  cel-cpp's checker writes a Reference for
+// each call node listing the resolved standard-library overload
+// (e.g. "add_int64" for `1+2`); we copy the first entry as a
+// string_view pointing into cel-cpp's owned storage (lifetime
+// tied to the surrounding TypedAst).  Codegen reads this in
+// `EmitGeneralCall` to pick the wasm helper from `OverloadTable`.
+//
+// Empty `overload_id` is the legitimate default for
+// special-cased calls (`_[_]`, `_&&_`, `_||_`, `_?_:_`) which
+// don't go through the table — `expr_lower.cc` dispatches on
+// `call.function()` for those before consulting the annotation.
+class OverloadIdResolver : public cel::AstVisitorBase {
+ public:
+  OverloadIdResolver(const cel::Ast::ReferenceMap& reference_map,
+                     WasmAnnotations& annotations)
+      : reference_map_(reference_map), annotations_(annotations) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitCall(const cel::Expr& expr,
+                     const cel::CallExpr& /*call*/) override {
+    auto it = reference_map_.find(expr.id());
+    if (it == reference_map_.end()) return;
+    const auto& overloads = it->second.overload_id();
+    if (overloads.empty()) return;
+    // string_view points into cel-cpp's `Reference::overload_id_`
+    // (a `std::vector<std::string>`).  The Reference is owned by
+    // `Ast::reference_map_`; lifetime is the surrounding TypedAst,
+    // which lives through codegen.
+    annotations_[expr.id()].overload_id = absl::string_view(overloads.front());
+  }
+
+ private:
+  const cel::Ast::ReferenceMap& reference_map_;
+  WasmAnnotations& annotations_;
+};
+
+// Runs the per-kind annotation-stamping visitors on `output` over
+// `root`.  Each visitor is independent — sequencing matters only for
+// the dyn-passthrough forwarder, which runs last so every other
+// visitor's writes on the argument are visible to copy.
+void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
+                           ResolveOutput& output) {
+  KConstReprAudit audit(output.annotations);
+  cel::AstTraverse(root, audit);
+
+  IdentResolver ident_resolver(output.annotations, output.variables);
+  cel::AstTraverse(root, ident_resolver);
+
+  output.attributes.push_back(AttributeEntryRow{});
+  AttributePathResolver attr_resolver(output.annotations, output.attributes);
+  cel::AstTraverse(root, attr_resolver);
+
+  MapOriginVisitor map_origin_visitor(output.annotations);
+  cel::AstTraverse(root, map_origin_visitor);
+
+  ListOriginVisitor list_origin_visitor(output.annotations);
+  cel::AstTraverse(root, list_origin_visitor);
+
+  OverloadIdResolver overload_resolver(checked.reference_map(),
+                                       output.annotations);
+  cel::AstTraverse(root, overload_resolver);
+
+  DynPassthroughVisitor dyn_visitor(output.annotations);
+  cel::AstTraverse(root, dyn_visitor);
+}
+
 }  // namespace
 
 absl::StatusOr<ResolveOutput> ResolvePass(const TypedAst& ast) {
@@ -302,49 +411,12 @@ absl::StatusOr<ResolveOutput> ResolvePass(const TypedAst& ast) {
   // `repr` from the type_map and `field_number` from descriptor
   // resolution on every kSelect (see frontend/parse_and_check.cc →
   // ir/typed_ast.cc::PopulateAnnotations).  ResolvePass then adds
-  // `local_index` for kIdent nodes and — later — `overload_id`
-  // (M3), `scope_id` (M5), `attribute_id` (M2.E).
+  // `local_index` for kIdent nodes and other per-kind fields.
   for (const auto& [expr_id, ann] : ast.annotations().nodes()) {
     output.annotations[expr_id] = ann;
   }
 
-  // Second: audit — every kConst now has a non-kUnknown repr.
-  // Failure crashes with a message naming the offending expr id.
-  KConstReprAudit audit(output.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), audit);
-
-  // Third: intern every kIdent name, assign a dense local_index,
-  // populate `NodeAnnotation::local_index`, and fill `variables`.
-  // The count of entries in `variables` is also the count of wasm
-  // locals the lowered `$eval` carries — one i32 per referenced
-  // variable, per the M2.B dispatch (m2-ident-select-unknowns.md
-  // §2.6: `BinaryenLocalGet(local_index, i32)` in the kIdent arm,
-  // matched by a prelude `BinaryenLocalSet(local_index, <slot>)`).
-  IdentResolver ident_resolver(output.annotations, output.variables);
-  cel::AstTraverse(ast.ast().root_expr(), ident_resolver);
-
-  // Fourth: intern every kIdent/kSelect's attribute path and stamp
-  // `NodeAnnotation::attribute_id`.  Entry 0 is the "no attribute"
-  // sentinel; real paths start at 1.  Codegen reads the operand's
-  // attribute_id at each kSelect emission site.
-  output.attributes.push_back(AttributeEntryRow{});
-  AttributePathResolver attr_resolver(output.annotations, output.attributes);
-  cel::AstTraverse(ast.ast().root_expr(), attr_resolver);
-
-  // Fifth (M3.F): stamp `map_origin = kArena` on every kMapExpr.
-  // M2 already wrote `kHost` on map-typed kSelect / kIdent nodes;
-  // kCreateMap is the third source of map values and is always
-  // arena-backed.  Branch-coalescing rules for ?: / && / || over
-  // map operands stay deferred to M5.
-  MapOriginVisitor map_origin_visitor(output.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), map_origin_visitor);
-
-  // Sixth (M4.F): mirror MapOriginVisitor for lists — stamp
-  // `list_origin = kArena` on every kListExpr; M2 already wrote
-  // `kHost` on list-typed kSelect / kIdent nodes.
-  ListOriginVisitor list_origin_visitor(output.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), list_origin_visitor);
-
+  RunAnnotationVisitors(ast.ast(), ast.ast().root_expr(), output);
   return output;
 }
 

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -10,6 +12,7 @@
 #include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
+#include "compiler_v2/codegen/overload_table.h"
 #include "compiler_v2/codegen/resolve_pass.h"
 #include "compiler_v2/frontend/parse_and_check.h"
 #include "compiler_v2/ir/typed_ast.h"
@@ -20,6 +23,10 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+
+// Forward decl — body lives below at the first call site that
+// originally needed it (`ExprLowerMapTest`'s indexing tests).
+bool BodyContainsCallTo(BinaryenExpressionRef expr, const char* name);
 
 // Force generated-pool registration of descriptors referenced by
 // tests below.  Runs once at static init per test binary.
@@ -56,6 +63,81 @@ Pipeline RunPipelineWithVars(absl::string_view expression,
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   return Pipeline{*std::move(ta), *std::move(layout)};
+}
+
+// Per-test OverloadTable.  Tests that don't need customs can reuse
+// the default-built table; tests that exercise `RegisterCustom`
+// (none in this file today; M6 territory) build their own.
+OverloadTable DefaultOverloadTable() {
+  return OverloadTableBuilder().Build();
+}
+
+// Convenience: lower the pipeline through `LowerToEvalFunction` with
+// a default-seeded OverloadTable.  Most tests don't care about the
+// table contents past "the built-ins resolve".
+absl::StatusOr<LoweredFunction> LowerWithDefaultOverloads(
+    const TypedAst& ast, const StaticLayout& layout,
+    absl::string_view func_name, WasmModule& mod,
+    const LoweringOptions& opts = {}) {
+  static const auto* const kTable = new OverloadTable(DefaultOverloadTable());
+  return LowerToEvalFunction(ast, layout, func_name, mod, *kTable, opts);
+}
+
+// Install one wasm import per built-in `cel_*` helper in the
+// default OverloadTable that ships a runtime export today (mirror
+// of `compile.cc::InstallOverloadImports`).  The unit-test
+// fixtures reach codegen without going through Compile(), so we
+// have to redo the install or `BinaryenValidate` will reject.
+void InstallOverloadImportsForTest(WasmModule& m) {
+  static constexpr absl::string_view kPending[] = {
+      "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
+      "cel_map_size",  "cel_map_in",  "cel_map_eq",
+  };
+  auto is_pending = [](absl::string_view n) {
+    for (absl::string_view p : kPending) {
+      if (p == n) return true;
+    }
+    return false;
+  };
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType vv_params[3] = {i32, i32, i32};
+  const BinaryenType v_params[2] = {i32, i32};
+
+  static const auto* const kTable = new OverloadTable(DefaultOverloadTable());
+  std::vector<std::string> seen;
+  for (uint32_t id = 1; id <= kTable->size(); ++id) {
+    const OverloadImpl& impl = kTable->LookupById(id);
+    if (impl.module != ImportModule::kCelRuntime) continue;
+    const std::string name(impl.name);
+    bool already = false;
+    for (const auto& s : seen) {
+      if (s == name) {
+        already = true;
+        break;
+      }
+    }
+    if (already) continue;
+    if (is_pending(impl.name)) continue;
+    const bool is_vv =
+        name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv";
+    const bool is_v =
+        !is_vv && name.size() >= 5 && name.substr(name.size() - 5) == "_at_v";
+    // M5.G control-flow helpers don't follow the `_at_*` suffix.
+    // Mirror compile.cc::OverloadHelperArity's hand-rolled table.
+    const bool is_three_arg_dispatcher = name == "cel_and" || name == "cel_or";
+    const bool is_two_arg_dispatcher = name == "cel_not";
+    if (is_vv || is_three_arg_dispatcher) {
+      m.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
+    } else if (is_v || is_two_arg_dispatcher) {
+      m.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
+    }
+    seen.push_back(name);
+  }
+  // M5.G ternary lowering imports `cel_copy_slot` directly (not via
+  // OverloadTable) — install unconditionally to mirror
+  // compile.cc::InstallOverloadImports.
+  m.AddFunctionImport("cel_copy_slot", "cel", "cel_copy_slot", v_params,
+                      BinaryenTypeNone());
 }
 
 // Installs the memory + `cel.cel_reset` import shape every lowered
@@ -101,10 +183,13 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_list_set", list3_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
                       "cel_list_at_arena", list3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelListAtInternalName), "cel",
-                      "cel_list_at", list3_params, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAtInternalName), "cel", "cel_list_at",
+                      list3_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
                       "cel_list_at", list3_params, BinaryenTypeNone());
+  // M5.F: every kCelRuntime helper in the OverloadTable that
+  // ships a runtime export today.  Mirrors compile.cc.
+  InstallOverloadImportsForTest(m);
 }
 
 // --- kConst lowering per scalar kind ------------------------------------
@@ -113,7 +198,7 @@ TEST(ExprLowerTest, KConstBoolLowers) {
   Pipeline p = RunPipeline("true");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
@@ -122,7 +207,7 @@ TEST(ExprLowerTest, KConstIntLowers) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -130,7 +215,7 @@ TEST(ExprLowerTest, KConstUintLowers) {
   Pipeline p = RunPipeline("42u");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -138,7 +223,7 @@ TEST(ExprLowerTest, KConstDoubleLowers) {
   Pipeline p = RunPipeline("3.14");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -146,7 +231,7 @@ TEST(ExprLowerTest, KConstNullLowers) {
   Pipeline p = RunPipeline("null");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -154,7 +239,7 @@ TEST(ExprLowerTest, KConstStringLowers) {
   Pipeline p = RunPipeline("\"hi\"");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -162,7 +247,7 @@ TEST(ExprLowerTest, KConstBytesLowers) {
   Pipeline p = RunPipeline("b\"x\"");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
@@ -172,7 +257,7 @@ TEST(ExprLowerTest, EvalFunctionIsNullaryReturningI32) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_EQ(BinaryenFunctionGetParams(lowered->func), BinaryenTypeNone());
   EXPECT_EQ(BinaryenFunctionGetResults(lowered->func), BinaryenTypeInt32());
@@ -182,7 +267,7 @@ TEST(ExprLowerTest, EvalFunctionNameIsHonoured) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "my_eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "my_eval", m), IsOk());
   EXPECT_NE(BinaryenGetFunction(m.raw(), "my_eval"), nullptr);
 }
 
@@ -192,7 +277,7 @@ TEST(ExprLowerTest, BodyReturnsRodataOffsetOfRootKConst) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
@@ -217,7 +302,7 @@ TEST(ExprLowerTest, EmittedModuleSerializesSuccessfully) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   m.ExportFunction("$eval", "eval");
   ASSERT_THAT(m.Validate(), IsOk());
   auto bytes_or = m.Serialize();
@@ -233,7 +318,7 @@ TEST(ExprLowerTest, MemSizeBytesFlowsIntoCelResetSecondArg) {
   PrepareHostModule(m, p.layout);
   LoweringOptions opts;
   opts.mem_size_bytes = 128u * 1024u;
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m, opts);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m, opts);
   ASSERT_THAT(lowered, IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
@@ -244,14 +329,123 @@ TEST(ExprLowerTest, MemSizeBytesFlowsIntoCelResetSecondArg) {
 
 // --- Unimplemented kinds return UnimplementedError -----------------------
 
-TEST(ExprLowerTest, KCallReturnsUnimplemented) {
-  // `1 + 2` type-checks but its root is a kCall; M2 expr_lower
-  // rejects kCall roots (M3 lights them up).
-  Pipeline p = RunPipeline("1 + 2");
+// M5.G (Slice 2) — `_&&_` lowers to a slot-out call into `cel_and`.
+// The runtime owns the 3VL truth table; codegen just routes
+// operands and the result slot.  Originally a pending-Unimplemented
+// fixture; rewritten as positive coverage at the M5.G enabling
+// commit (kept under the same TEST name historically — see git blame).
+TEST(ExprLowerTest, KCallLogicalAndLowersToHelper) {
+  Pipeline p = RunPipeline("true && false");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  EXPECT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_and"));
+}
+
+TEST(ExprLowerTest, KCallLogicalNotLowersToHelper) {
+  Pipeline p = RunPipeline("!true");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_not"));
+}
+
+// Slice 1.5 (dyn-passthrough-plan.md): `dyn(scalar)` is the
+// identity function at codegen time.  `dyn(1) == 1u` lowers to a
+// single `cel_equals_at_vv` call whose operands are the rodata
+// slots of `1` and `1u` directly — no helper function exists for
+// `dyn(...)` and none should be emitted.
+TEST(ExprLowerTest, KCallDynPassthroughEmitsArgumentSlot) {
+  Pipeline p = RunPipeline("dyn(1) == 1u");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_equals_at_vv"));
+  // Sanity: there is no runtime helper for `dyn(...)` — the
+  // common typo / placeholder names should never appear.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_to_dyn"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_dyn"));
+}
+
+// Slice 1.6 — codegen-time cross-numeric ordering re-pick.  cel-cpp's
+// reference_map for `dyn(int) < uint` lists exactly one candidate
+// (`less_uint64`, the same-kind overload of the non-dyn operand),
+// which would route to `cel_uint_lt_at_vv` and reject the int
+// operand as TYPE_MISMATCH.  `MaybeRepickCrossNumericOverload` in
+// `expr_lower.cc` overrides the cel-cpp pick with the cross-numeric
+// id (`less_int64_uint64`), routing the call to
+// `cel_numeric_lt_at_vv`.
+TEST(ExprLowerTest, KCallCrossNumericOrderingRepicksToNumericKernel) {
+  Pipeline p = RunPipeline("dyn(1) < 2u");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  // The re-pick must route through the cross-numeric kernel.
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_numeric_lt_at_vv"));
+  // And NOT the same-kind helper cel-cpp's reference_map originally
+  // pointed at (`less_uint64` → `cel_uint_lt_at_vv`), which would
+  // type-mismatch on the int operand.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_uint_lt_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_int_lt_at_vv"));
+}
+
+// Same-kind ordering must still take the per-kind fast path
+// (`cel_int_lt_at_vv`) — the re-pick triggers only when operand
+// Reprs span numeric kinds.  Pre-Slice-1.6 regression guard.
+TEST(ExprLowerTest, KCallSameKindOrderingKeepsPerKindHelper) {
+  Pipeline p = RunPipeline("1 < 2");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_lt_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_numeric_lt_at_vv"));
+}
+
+// `dyn(1.0) >= 2u` must re-pick the cross-numeric `_>=_` helper.
+// Covers a different op-arm to confirm the re-pick predicate
+// generalises across the four ordering ops.
+TEST(ExprLowerTest, KCallCrossNumericGeRepicksToNumericKernel) {
+  Pipeline p = RunPipeline("dyn(1.0) >= 2u");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_numeric_ge_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_uint_ge_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_double_ge_at_vv"));
+}
+
+// `_?_:_` lowers to a BinaryenIf-based shape (only the chosen arm
+// is evaluated, per langdef §"Conditional expression").  The body
+// imports `cel_copy_slot` to materialise the chosen arm into the
+// expression's out_slot, NOT a `cel_conditional` runtime helper.
+TEST(ExprLowerTest, KCallConditionalLowersToBranchedIf) {
+  Pipeline p = RunPipeline("true ? 1 : 2");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_copy_slot"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_conditional"));
 }
 
 // ============================================================
@@ -272,7 +466,7 @@ TEST(ExprLowerIdentTest, RootIdentLowersToLocalGet) {
   Pipeline p = RunPipelineWithVars("x", {"x:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
 
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
@@ -306,7 +500,7 @@ TEST(ExprLowerIdentTest, EvalFunctionDeclaresOneLocalPerVariable) {
   Pipeline p = RunPipelineWithVars("x", {"x:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_EQ(BinaryenFunctionGetNumVars(lowered->func), 1u);
   EXPECT_EQ(BinaryenFunctionGetVar(lowered->func, 0), BinaryenTypeInt32());
@@ -325,7 +519,7 @@ TEST(ExprLowerIdentTest, PreludePresentEvenWhenOnlyKConstIsUsed) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_EQ(BinaryenFunctionGetNumVars(lowered->func), 0u)
       << "literal-only program declares no wasm locals";
@@ -342,7 +536,7 @@ TEST(ExprLowerIdentTest, EmittedModuleSerializesAndValidates) {
   Pipeline p = RunPipelineWithVars("x", {"x:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  ASSERT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m), IsOk());
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
   m.ExportFunction("$eval", "eval");
   ASSERT_THAT(m.Validate(), IsOk());
   EXPECT_THAT(m.Serialize(), IsOk());
@@ -385,7 +579,7 @@ TEST(ExprLowerSelectTest, SingleSelectEmitsCall) {
   Pipeline p = RunPipelineWithVars("c.name", {"c:celwasm.testdata.Customer"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -423,7 +617,7 @@ TEST(ExprLowerSelectTest, NestedSelectRecursesOperandFirst) {
                                    {"c:celwasm.testdata.Customer"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -471,28 +665,34 @@ bool BodyContainsCallTo(BinaryenExpressionRef expr, const char* name) {
       }
     }
   }
+  // Walk into BinaryenIf branches — M5.G ternary lowering wraps
+  // `cel_copy_slot` calls inside (if … then … else …).
+  if (BinaryenExpressionGetId(expr) == BinaryenIfId()) {
+    if (BodyContainsCallTo(BinaryenIfGetCondition(expr), name)) return true;
+    if (BodyContainsCallTo(BinaryenIfGetIfTrue(expr), name)) return true;
+    BinaryenExpressionRef if_false = BinaryenIfGetIfFalse(expr);
+    if (if_false != nullptr && BodyContainsCallTo(if_false, name)) return true;
+  }
+  // Walk into Drop's value to catch calls inside dropped sub-exprs.
+  if (BinaryenExpressionGetId(expr) == BinaryenDropId()) {
+    if (BodyContainsCallTo(BinaryenDropGetValue(expr), name)) return true;
+  }
   return false;
 }
 
-TEST(ExprLowerMapTest, EmptyMapLiteralLowers) {
-  Pipeline p = RunPipeline("{}");
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-  // Body must call cel_map_create; no inserts since N=0.
-  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_map_create"));
-  EXPECT_FALSE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                  "cel_map_insert"));
-}
+// M5.A removed direct unit coverage of N=0 map codegen because bare
+// `{}` is now rejected by the static-subset gate (types as
+// `map<dyn, dyn>`).  The N=0 codegen path stays — it's exercised
+// indirectly by M5.I comprehension lowering (`accu_init = {}` after
+// macro expansion).  When M5.I lands, add an internal-AST test here
+// that constructs a `kMapExpr` with zero entries and asserts
+// `cel_map_create` is emitted with no `cel_map_insert`.
 
 TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
   Pipeline p = RunPipeline("{1: 10, 2: 20, 3: 30}");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -514,7 +714,10 @@ TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
   // Capacity is the second operand to cel_map_create; pin N=3.
   EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(create, 1)), 3);
 
-  for (BinaryenIndex i = 1; i <= 3; ++i) {
+  // `++i` increments via the for-clause; clang-tidy mistakes this
+  // for an infinite loop because `BinaryenIndex` is an opaque alias
+  // for `uint32_t`.
+  for (BinaryenIndex i = 1; i <= 3; ++i) {  // NOLINT(bugprone-infinite-loop)
     BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, i);
     ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
     EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_map_insert");
@@ -528,7 +731,7 @@ TEST(ExprLowerMapTest, MapIndexOnLiteralEmitsArenaFastPath) {
   Pipeline p = RunPipeline("{1: 10}[1]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -547,7 +750,7 @@ TEST(ExprLowerMapTest, MapIndexOnHostBoundIdentEmitsHostTrampoline) {
   Pipeline p = RunPipelineWithVars("m[1]", {"m:map<int,int>"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -556,14 +759,18 @@ TEST(ExprLowerMapTest, MapIndexOnHostBoundIdentEmitsHostTrampoline) {
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_lookup_arena"));
 }
 
-TEST(ExprLowerMapTest, NonIndexCallStillUnimplemented) {
-  // Make sure scoping the kCallExpr arm to `_[_]` only didn't
-  // accidentally light up other call kinds.
-  Pipeline p = RunPipeline("1 + 2");
+// M5.G (Slice 2) — `_||_` symmetric to `_&&_`.  Rewritten from
+// pending-Unimplemented at the M5.G enabling commit (kept under the
+// same fixture historically).
+TEST(ExprLowerMapTest, KCallLogicalOrLowersToHelper) {
+  Pipeline p = RunPipeline("true || false");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  EXPECT_THAT(LowerToEvalFunction(p.ast, p.layout, "$eval", m),
-              StatusIs(absl::StatusCode::kUnimplemented));
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_or"));
 }
 
 // --------------------------------------------------------------
@@ -577,7 +784,7 @@ TEST(ExprLowerListTest, EmptyListLiteralLowers) {
   Pipeline p = RunPipeline("[1][0]");  // `[1]` exercises a 1-element create.
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
   EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
@@ -590,7 +797,7 @@ TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndSets) {
   Pipeline p = RunPipeline("[10, 20, 30]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -614,7 +821,8 @@ TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndSets) {
   // count is the second arg — pin N=3.
   EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(create, 1)), 3);
 
-  for (BinaryenIndex i = 1; i <= 3; ++i) {
+  // See NOLINT note in ScalarMapLiteralEmitsCreateAndInserts above.
+  for (BinaryenIndex i = 1; i <= 3; ++i) {  // NOLINT(bugprone-infinite-loop)
     BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, i);
     ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
     EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_list_set");
@@ -630,7 +838,7 @@ TEST(ExprLowerListTest, ListIndexOnLiteralEmitsArenaFastPath) {
   Pipeline p = RunPipeline("[1, 2, 3][1]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -648,13 +856,152 @@ TEST(ExprLowerListTest, ListIndexOnHostBoundIdentEmitsHostTrampoline) {
   Pipeline p = RunPipelineWithVars("xs[0]", {"xs:list<int>"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  auto lowered = LowerToEvalFunction(p.ast, p.layout, "$eval", m);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_host_cel_list_at"));
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_at_arena"));
+}
+
+// ============================================================
+// M5.F — general kCallExpr arm (OverloadTable wiring).
+// ============================================================
+//
+// Each test asserts one shape invariant of the emitted IR for a
+// kCall that goes through `EmitGeneralCall`.  Tests that need the
+// helper-name-by-overload bridge (e.g. `add_int64` →
+// `cel_int_add_at_vv`) read it via `BodyContainsCallTo`.
+
+TEST(ExprLowerCallTest, KCallIntAddLowersToHelperCall) {
+  // `1 + 2` is the cleanest M5.F sanity — same-kind int arithmetic
+  // resolves to `add_int64` → `cel_int_add_at_vv`.
+  Pipeline p = RunPipeline("1 + 2");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_int_add_at_vv"));
+}
+
+TEST(ExprLowerCallTest, KCallDoubleSubLowersToHelperCall) {
+  Pipeline p = RunPipeline("3.5 - 1.25");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_double_sub_at_vv"));
+}
+
+TEST(ExprLowerCallTest, KCallIntLessThanLowersToHelperCall) {
+  Pipeline p = RunPipeline("1 < 2");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_int_lt_at_vv"));
+}
+
+TEST(ExprLowerCallTest, KCallStringConcatLowersToHelperCall) {
+  Pipeline p = RunPipeline(R"("a" + "b")");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_string_concat_at_vv"));
+}
+
+TEST(ExprLowerCallTest, KCallReceiverFormStringContainsFlattens) {
+  // `s.contains("foo")` parses with target=s, args=["foo"]; the
+  // helper signature `cel_string_contains_at_vv(out, s, sub)` takes
+  // them flattened.  Verify the emitted call has 3 operands.
+  Pipeline p = RunPipelineWithVars(R"(s.contains("foo"))", {"s:string"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_string_contains_at_vv"));
+
+  // Drill into the root (last child of $eval body) and find the
+  // helper call inside.  Root shape: (block (call cel_string_contains
+  //   <out> <s_local_get> <sub_rodata>) (i32.const out)).
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  ASSERT_EQ(BinaryenExpressionGetId(root), BinaryenBlockId());
+  ASSERT_EQ(BinaryenBlockGetNumChildren(root), 2u);
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, 0);
+  ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_string_contains_at_vv");
+  EXPECT_EQ(BinaryenCallGetNumOperands(call), 3u)
+      << "out_slot + receiver(s) + arg(\"foo\") flattened";
+}
+
+TEST(ExprLowerCallTest, KCallSizeOnArenaListEmitsDispatcherCall) {
+  // `size([1,2,3])` resolves to `size_list` → kDynamic dispatcher
+  // `cel_list_size`, which M5.D step 2 ships (the dispatcher
+  // tail-calls into the arena fast path on a CEL_LIST_ARENA
+  // operand).  EmitGeneralCall emits a `BinaryenCall` to
+  // `cel_list_size`.
+  Pipeline p = RunPipeline("size([1, 2, 3])");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_list_size"));
+}
+
+TEST(ExprLowerCallTest, KCallEqualsLowersToPolymorphicHelper) {
+  // M5.B step 2b: `_==_` resolves to overload id `equals` →
+  // `cel_equals_at_vv`, the polymorphic dispatcher that branches
+  // on operand kinds at runtime.  Codegen just emits a single
+  // call site; the kind-switch is in cel_runtime.c.
+  Pipeline p = RunPipeline("1 == 1");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
+                                 "cel_equals_at_vv"));
+}
+
+TEST(ExprLowerCallTest, KCallEvalFunctionValidatesEndToEnd) {
+  // Module-level invariant: a complete arithmetic program emits a
+  // module BinaryenValidate accepts (eager imports cover the helper).
+  Pipeline p = RunPipelineWithVars("x + 1", {"x:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  ASSERT_THAT(LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m), IsOk());
+  m.ExportFunction("$eval", "eval");
+  EXPECT_THAT(m.Validate(), IsOk());
+}
+
+TEST(ExprLowerCallTest, KCallNestedArithmetic) {
+  // `(1 + 2) * 3` — nested kCall.  Outer call needs both args
+  // emitted; the inner call emits its own (block …) yielding the
+  // workspace-slot offset for the multiplication's left operand.
+  // Verifies recursion through `Emit` for kCall args.
+  Pipeline p = RunPipeline("(1 + 2) * 3");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_mul_at_vv"));
 }
 
 }  // namespace

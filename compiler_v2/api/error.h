@@ -16,8 +16,9 @@
 namespace cel {
 
 // Extensible error-code catalogue.  Numeric values are stable on
-// the wire — mirrored in `runtime/cel_data.h::CEL_ERR_*` where
-// applicable.  Add new entries at the end; never renumber.
+// the wire and MUST mirror `runtime/cel_data.h::CEL_ERR_*` so a
+// `Value::Error` decoded from a CelValue is `static_cast`-equivalent
+// to the wire byte.  Add new entries at the end; never renumber.
 // In-memory size is u8; the on-wire `CelValue.payload.err` encoding
 // promotes to u16 for alignment.
 enum class ErrorCode : uint8_t {
@@ -29,9 +30,20 @@ enum class ErrorCode : uint8_t {
   // until M6 lifts the envelope — mirrors `CEL_ERR_TYPE_UNSUPPORTED`
   // in `runtime/cel_data.h` (m2-ident-select-unknowns.md §2.8).
   kTypeUnsupported = 14,
+  // Mirrors `CEL_ERR_NO_SUCH_KEY` (cel_data.h).  Returned by
+  // `cel_map_lookup_arena` when the key is absent — per langdef
+  // §"Indexing", map indexing on a missing key is a no_such_key
+  // error, not null.
+  kKeyNotFound = 15,
+  // Mirrors `CEL_ERR_DUPLICATE_KEY`.  Returned by `cel_map_insert`
+  // when a literal contains a duplicate key — per langdef §"Map
+  // literals", repeated keys are an error captured at construction.
+  kDuplicateKey = 16,
+  // Mirrors `CEL_ERR_INDEX_OUT_OF_BOUNDS`.  Returned by
+  // `cel_list_at_arena` (and the kDynamic dispatcher's arena arm)
+  // when the index is outside `[0, count)`.
+  kIndexOutOfBounds = 17,
   kFieldNotFound = 20,
-  kKeyNotFound = 21,
-  kIndexOutOfBounds = 22,
   kUnknownType = 30,
   kCustomFnFailed = 40,
   kHostAdapterError = 41,

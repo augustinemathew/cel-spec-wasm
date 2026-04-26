@@ -39,6 +39,10 @@ ABSL_FLAG(std::vector<std::string>, file, {},
           "Explicit textproto paths to run.  Empty = run the built-in "
           "list covering the whole `tests/simple/testdata/` corpus.");
 
+ABSL_FLAG(std::uint32_t, max_skip_examples, 0,
+          "Per-fixture cap on SKIP reasons printed.  0 means no SKIP "
+          "details — use a non-zero value when diagnosing why a "
+          "fixture's PASS count isn't budging.");
 ABSL_FLAG(std::uint32_t, max_fail_examples, 5,
           "Per-file cap on fail-detail lines printed.");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
@@ -95,10 +99,12 @@ struct FileTally {
   std::size_t skip = 0;
   std::size_t fail = 0;
   std::vector<std::string> fail_details;
+  std::vector<std::string> skip_details;
 };
 
 FileTally RunFile(absl::string_view path, const cel::Compiler& compiler,
-                  const cel::Engine& engine, std::uint32_t max_examples) {
+                  const cel::Engine& engine, std::uint32_t max_fail_examples,
+                  std::uint32_t max_skip_examples) {
   FileTally out{.path = std::string(path)};
   cel::expr::conformance::test::SimpleTestFile file;
   if (auto s = celwasm::conformance::LoadTestFile(path, file); !s.ok()) {
@@ -115,10 +121,15 @@ FileTally RunFile(absl::string_view path, const cel::Compiler& compiler,
           break;
         case celwasm::conformance::Outcome::kUnsupported:
           ++out.skip;
+          if (out.skip_details.size() < max_skip_examples) {
+            out.skip_details.push_back(absl::StrCat(section.name(), "/",
+                                                    t.name(), " `", t.expr(),
+                                                    "` — ", r.detail));
+          }
           break;
         case celwasm::conformance::Outcome::kFail:
           ++out.fail;
-          if (out.fail_details.size() < max_examples) {
+          if (out.fail_details.size() < max_fail_examples) {
             out.fail_details.push_back(absl::StrCat(section.name(), "/",
                                                     t.name(), " `", t.expr(),
                                                     "` — ", r.detail));
@@ -134,6 +145,9 @@ void PrintTally(const FileTally& f) {
   std::cout << absl::StrCat("  ", f.path, "\n", "    total=", f.total,
                             "  pass=", f.pass, "  skip=", f.skip,
                             "  fail=", f.fail, "\n");
+  for (const auto& d : f.skip_details) {
+    std::cout << "      SKIP " << d << "\n";
+  }
   for (const auto& d : f.fail_details) {
     std::cout << "      FAIL " << d << "\n";
   }
@@ -154,7 +168,8 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   const auto& paths = absl::GetFlag(FLAGS_file).empty()
                           ? DefaultCorpus()
                           : absl::GetFlag(FLAGS_file);
-  const std::uint32_t max_examples = absl::GetFlag(FLAGS_max_fail_examples);
+  const std::uint32_t max_fail = absl::GetFlag(FLAGS_max_fail_examples);
+  const std::uint32_t max_skip = absl::GetFlag(FLAGS_max_skip_examples);
 
   std::size_t total = 0;
   std::size_t pass = 0;
@@ -163,7 +178,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
 
   std::cout << "compiler_v2 conformance run (M3-scope)\n";
   for (const auto& path : paths) {
-    FileTally t = RunFile(path, compiler, engine, max_examples);
+    FileTally t = RunFile(path, compiler, engine, max_fail, max_skip);
     PrintTally(t);
     total += t.total;
     pass += t.pass;

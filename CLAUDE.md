@@ -318,3 +318,12 @@ When a bug is fixed, add a regression test *in the same commit*.
     testing checklist.
   - Don't introduce dynamic typing; the compiler only accepts the static
     subset.  `RejectDyn` is the gate.
+  - **Don't create work for later milestones without being explicitly
+    asked.**  Stay inside the slice / milestone the user asked for.
+    Don't draft "follow-up" plan docs, file deferred-work bullets,
+    spawn planning subagents, or write `// TODO(M7): ...` callouts
+    unprompted.  If something genuinely belongs in a later milestone
+    and you discover it mid-slice, surface it once in your end-of-turn
+    summary so the user can decide; don't pre-commit to it in a doc
+    or task list.  The user owns scope; jumping ahead burns their
+    context and dilutes the current slice.

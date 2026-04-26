@@ -8,12 +8,14 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
+#include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/abi_decode.h"
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/internal/instance_impl.h"
@@ -139,6 +141,38 @@ absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
   return Value::Map(std::move(entries));
 }
 
+// Decodes a CEL_ERROR-kind CelValue into a `Value::Error`.  Runtime
+// `CEL_ERR_*` numerics mirror host `ErrorCode` 1:1 (cel_data.h ↔
+// error.h), so a direct cast is correct; an unknown wire byte falls
+// through to `kHostAdapterError` rather than crashing the decoder.
+Value DecodeCelError(const CelValue& cv) {
+  ErrorPayload p;
+  const auto code = static_cast<ErrorCode>(cv.payload.err);
+  switch (code) {
+    case ErrorCode::kOverflow:
+    case ErrorCode::kDivideByZero:
+    case ErrorCode::kModulusByZero:
+    case ErrorCode::kTypeMismatch:
+    case ErrorCode::kTypeUnsupported:
+    case ErrorCode::kKeyNotFound:
+    case ErrorCode::kDuplicateKey:
+    case ErrorCode::kIndexOutOfBounds:
+    case ErrorCode::kFieldNotFound:
+    case ErrorCode::kUnknownType:
+    case ErrorCode::kCustomFnFailed:
+    case ErrorCode::kHostAdapterError:
+    case ErrorCode::kTimeout:
+      p.code = code;
+      p.message = std::string(ErrorCodeName(code));
+      break;
+    default:
+      p.code = ErrorCode::kHostAdapterError;
+      p.message = absl::StrCat("runtime error code ", cv.payload.err);
+      break;
+  }
+  return Value::Error(std::move(p));
+}
+
 // Decode a 24-byte CelValue at `offset` in linear memory into a
 // `cel::Value`.  Scalars + null + arena maps land in M1/M3; later
 // milestones add lists / messages / unknown / error.
@@ -182,6 +216,8 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       // AttributeId carrying that wire id; embedders compare it
       // against the slot they queried via PartialEval.
       return Value::Unknown(AttributeId{cv.payload.unk});
+    case CEL_ERROR:
+      return DecodeCelError(cv);
     default:
       return absl::InvalidArgumentError(absl::StrCat(
           "Eval returned a CelValue kind ", static_cast<int>(cv.kind),
@@ -195,17 +231,128 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // For each declared variable the ABI lists, look up in the
 // activation, encode the Value into a 24-byte CelValue, and write
 // it into the variable's workspace slot.  Scalars (bool / int /
-// uint / double / null) encode inline; strings and bytes need
-// `cel_alloc` — but cel_alloc bumps the ARENA cursor (bytes
-// [8, 12)), which `$eval`'s first real instruction (cel_reset)
-// resets.  So any span payload we allocate here would get stomped
-// on by cel_reset.  Avoid that by deferring string/bytes support
-// until we have a cleaner way to host-allocate persistent
-// payloads — M3 / M5-era work.  Scalars work end-to-end today.
+// uint / double / null) encode inline; aggregates (kMessage / kList)
+// route through `ExternrefTable`.
 //
-// Repr::kMessage + aggregates land in M2.C / M6; fail loud until
-// then.
+// String / bytes — Slice 0 of the conformance unlock plan:
+// the bound payload bytes can NOT live in the wasm-side `cel_alloc`
+// arena, because `$eval`'s prelude calls `cel_reset` which rewinds
+// the bump pointer to `arena_base`, and the first in-eval
+// `cel_alloc` then zero-fills the bytes we just wrote there.
+// Instead, we maintain a **host-managed string arena** in linear
+// memory above `arena_limit` (the codegen's `cel_reset` second arg
+// — set to the same value as the host's initial memory size).
+// `wasmtime_memory_grow` extends linear memory beyond that
+// threshold; the runtime never touches the tail because every
+// `cel_alloc` bounds-checks against `arena_limit`.  See
+// `EnsureHostStringArenaCapacity` below.
+//
+// Repr::kMap / kDuration / kTimestamp / kEnum / kType / kUnknown
+// activation marshalling lands in M7-era work; fail loud until then.
 // ─────────────────────────────────────────────────────────────
+
+// Wasm pages are always 64KiB.  Mirror the `wasmtime_memorytype_new`
+// `page_size_log2=16` choice in engine.cc.
+constexpr uint32_t kWasmPageSize = 64u * 1024u;
+
+// Round `bytes` up to the next multiple of `kWasmPageSize`.
+uint32_t RoundUpToPage(uint64_t bytes) {
+  return static_cast<uint32_t>(((bytes + kWasmPageSize - 1) / kWasmPageSize) *
+                               kWasmPageSize);
+}
+
+// Ensure the host-side string arena is initialized + has at least
+// `needed` bytes of capacity above the arena_limit floor.  Captures
+// `arena_floor` lazily on first call (= the byte size of the host
+// memory at instantiation, which is exactly what codegen baked into
+// `cel_reset(arena_base, arena_limit)`'s second arg).  Grows the
+// memory by whole pages on demand.  Returns ResourceExhausted if
+// `wasmtime_memory_grow` rejects the request (engine memorytype was
+// created with `max_present=false`, so this should only happen on
+// genuine address-space exhaustion).
+absl::Status EnsureHostStringArenaCapacity(wasmtime_context_t* ctx,
+                                           const wasmtime_memory_t& mem,
+                                           absl::string_view first_var_name,
+                                           uint32_t* absl_nonnull floor,
+                                           uint32_t* absl_nonnull capacity,
+                                           uint32_t needed) {
+  wasmtime_memory_t m = mem;
+  if (*floor == 0) {
+    // First call — record the initial mem size (= arena_limit).
+    *floor = static_cast<uint32_t>(wasmtime_memory_data_size(ctx, &m));
+  }
+  if (needed <= *capacity) return absl::OkStatus();
+
+  const uint32_t new_capacity = RoundUpToPage(needed);
+  const uint32_t delta_bytes = new_capacity - *capacity;
+  const uint32_t delta_pages = delta_bytes / kWasmPageSize;
+  uint64_t prev_pages = 0;
+  wasmtime_error_t* err =
+      wasmtime_memory_grow(ctx, &m, delta_pages, &prev_pages);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        absl::StrCat("Activation[", first_var_name,
+                     "]: host-arena memory.grow(", delta_pages, " pages)"),
+        err);
+  }
+  *capacity = new_capacity;
+  return absl::OkStatus();
+}
+
+// Forward decl — defined further down with the other per-Repr
+// encoders.  EncodeStringOrBytes ships its own kind check via this.
+absl::Status KindMismatch(absl::string_view name, absl::string_view declared,
+                          Value::Kind got);
+
+// Bundle of host arena state that the kString / kBytes encoder
+// reads + advances.  Kept here (not on `EncoderContext` below) so a
+// caller that doesn't drive the arena (every other Repr) doesn't
+// have to fabricate an unused slot.
+struct HostStringArena {
+  wasmtime_context_t* absl_nonnull ctx;
+  wasmtime_memory_t mem;
+  uint32_t floor;
+  uint32_t capacity;
+  uint32_t* absl_nonnull cursor;  // bytes used since `floor`.
+};
+
+// Encode a kString / kBytes value: copy the payload bytes into the
+// host string arena and write the offset+len into the CelValue.
+// `arena.cursor` advances by `aligned_len` so the next encoder
+// starts at a clean 8-byte boundary.
+absl::Status EncodeStringOrBytes(const Value& v, absl::string_view name,
+                                 celwasm::Repr repr, CelValue* dst,
+                                 HostStringArena arena) {
+  const Value::Kind expected = repr == celwasm::Repr::kString
+                                   ? Value::Kind::kString
+                                   : Value::Kind::kBytes;
+  if (v.kind() != expected) {
+    return KindMismatch(
+        name, repr == celwasm::Repr::kString ? "string" : "bytes", v.kind());
+  }
+  auto sv_or = repr == celwasm::Repr::kString ? v.AsString() : v.AsBytes();
+  if (!sv_or.ok()) return sv_or.status();
+  const absl::string_view sv = *sv_or;
+  const auto len = static_cast<uint32_t>(sv.size());
+  const uint32_t aligned = (len + 7u) & ~uint32_t{7u};
+
+  if (static_cast<uint64_t>(*arena.cursor) + aligned > arena.capacity) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        "Activation[", name, "]: host string arena OOM (need ", aligned,
+        " bytes; cursor=", *arena.cursor, ", capacity=", arena.capacity, ")"));
+  }
+  const uint32_t offset = arena.floor + *arena.cursor;
+  if (len > 0) {
+    wasmtime_memory_t m = arena.mem;
+    uint8_t* base = wasmtime_memory_data(arena.ctx, &m);
+    std::memcpy(base + offset, sv.data(), len);
+  }
+  *arena.cursor += aligned;
+  dst->kind = repr == celwasm::Repr::kString ? CEL_STRING : CEL_BYTES;
+  dst->payload.s.ptr = offset;
+  dst->payload.s.len = len;
+  return absl::OkStatus();
+}
 
 // Per-Repr encoder helpers.  Each returns OK on type match +
 // successful write, InvalidArgument on kind mismatch.  Only the
@@ -279,8 +426,7 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
 // the table between Evals so slot indices don't leak across
 // invocations.
 absl::Status EncodeMessage(const Value& v, absl::string_view name,
-                           CelValue* dst,
-                           celwasm::ExternrefTable& refs) {
+                           CelValue* dst, celwasm::ExternrefTable& refs) {
   if (v.kind() != Value::Kind::kMessage) {
     return KindMismatch(name, "message", v.kind());
   }
@@ -299,8 +445,7 @@ absl::Status EncodeMessage(const Value& v, absl::string_view name,
 // resulting slot lives in `payload.ref_slot`.  Same shape as
 // `EncodeMessage`, but routes through `InternList` so the
 // trampoline's `LookupList` finds it.
-absl::Status EncodeList(const Value& v, absl::string_view name,
-                        CelValue* dst,
+absl::Status EncodeList(const Value& v, absl::string_view name, CelValue* dst,
                         celwasm::ExternrefTable& refs) {
   if (v.kind() != Value::Kind::kList) {
     return KindMismatch(name, "list", v.kind());
@@ -313,14 +458,23 @@ absl::Status EncodeList(const Value& v, absl::string_view name,
   return absl::OkStatus();
 }
 
-// Dispatch a declared Repr to the right per-kind encoder.  M2.B
-// ships scalars; M2.C adds kMessage.  String/bytes activation
-// marshalling stays unimplemented (it needs a host-side arena
-// allocator that survives the `cel_reset` $eval prelude — pending
-// follow-up).
-absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
-                               absl::string_view name, CelValue* dst,
-                               celwasm::ExternrefTable& refs) {
+// Bundle of host-side state the variable encoder needs.  Reduces
+// the per-Repr dispatch's parameter count below the lint gate; only
+// the kString / kBytes path actually consults `arena`, but the
+// bundle keeps the call sites uniform.
+struct EncoderContext {
+  celwasm::ExternrefTable& refs;
+  HostStringArena arena;
+};
+
+// Dispatch a declared Repr to the right per-kind encoder.  Slice 0
+// adds the kString / kBytes arms — payload bytes land in the host
+// string arena above `arena_limit`.  kMap / kDuration /
+// kTimestamp / kEnum / kType / kUnknown stay unimplemented pending
+// later milestones.
+absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
+                              absl::string_view name, CelValue* dst,
+                              EncoderContext& ec) {
   switch (repr) {
     case celwasm::Repr::kNull:
       return EncodeNull(v, name, dst);
@@ -333,11 +487,12 @@ absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kDouble:
       return EncodeDouble(v, name, dst);
     case celwasm::Repr::kMessage:
-      return EncodeMessage(v, name, dst, refs);
+      return EncodeMessage(v, name, dst, ec.refs);
     case celwasm::Repr::kList:
-      return EncodeList(v, name, dst, refs);
+      return EncodeList(v, name, dst, ec.refs);
     case celwasm::Repr::kString:
     case celwasm::Repr::kBytes:
+      return EncodeStringOrBytes(v, name, repr, dst, ec.arena);
     case celwasm::Repr::kMap:
     case celwasm::Repr::kDuration:
     case celwasm::Repr::kTimestamp:
@@ -346,9 +501,8 @@ absl::Status EncodeScalarValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kUnknown:
       return absl::UnimplementedError(
           absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
-                       " marshal not implemented (pending host-arena work "
-                       "for kString/kBytes; later milestones for "
-                       "list/map/duration/timestamp/enum/type)"));
+                       " marshal not implemented (later milestones for "
+                       "map/duration/timestamp/enum/type/unknown)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));
@@ -363,15 +517,72 @@ void WriteCelValueAt(wasmtime_context_t* ctx, const wasmtime_memory_t& mem,
   std::memcpy(base + offset, &cv, sizeof(cv));
 }
 
+// Sum the aligned-up byte sizes of every kString / kBytes
+// activation binding.  Used pre-pass to know how much host arena to
+// reserve before any encoder writes — growing memory mid-loop would
+// invalidate any previously-cached `wasmtime_memory_data` pointer.
+uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
+                              const Activation& activation) {
+  uint32_t total = 0;
+  for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
+    const celwasm::Repr repr = celwasm::DecodeRepr(dv.repr());
+    if (repr != celwasm::Repr::kString && repr != celwasm::Repr::kBytes) {
+      continue;
+    }
+    const Value* bound = activation.Find(dv.name());
+    if (bound == nullptr) continue;  // missing variable surfaces below.
+    if (repr == celwasm::Repr::kString &&
+        bound->kind() == Value::Kind::kString) {
+      total += static_cast<uint32_t>(bound->AsString()->size());
+    } else if (repr == celwasm::Repr::kBytes &&
+               bound->kind() == Value::Kind::kBytes) {
+      total += static_cast<uint32_t>(bound->AsBytes()->size());
+    }
+    total = (total + 7u) & ~uint32_t{7u};
+  }
+  return total;
+}
+
 // For every variable declared in the decoded ABI, look up its bound
 // Value in the activation, encode, and write to its workspace slot.
 // Missing variable → FailedPrecondition.  Type mismatch between
 // declared Repr and bound Value::Kind → InvalidArgument.
-absl::Status MarshalActivation(wasmtime_context_t* ctx,
-                               const wasmtime_memory_t& mem,
-                               const celwasm::abi::CelAbi& abi,
-                               const Activation& activation,
-                               celwasm::ExternrefTable& refs) {
+//
+// Takes the whole `InstanceImpl` so the host-string-arena bookkeeping
+// (`host_string_arena_floor` / `host_string_arena_capacity`) lives at
+// instance scope without inflating MarshalActivation's parameter list
+// past the lint gate.
+absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
+                               celwasm::InstanceImpl* absl_nonnull impl,
+                               const Activation& activation) {
+  const wasmtime_memory_t& mem = impl->memory;
+  const celwasm::abi::CelAbi& abi = impl->abi;
+
+  // Pre-pass: ensure host string arena has room for every kString /
+  // kBytes payload before any encoder runs.  Memory.grow can move
+  // wasmtime_memory_data's pointer; doing the grow up-front means
+  // every per-variable encoder sees a stable base pointer.
+  const uint32_t need = TotalHostStringBytes(abi, activation);
+  if (need > 0) {
+    const absl::string_view first_name = abi.variables_size() > 0
+                                             ? abi.variables(0).name()
+                                             : absl::string_view{};
+    if (auto s = EnsureHostStringArenaCapacity(
+            ctx, mem, first_name, &impl->host_string_arena_floor,
+            &impl->host_string_arena_capacity, need);
+        !s.ok()) {
+      return s;
+    }
+  }
+  uint32_t arena_cursor = 0;
+  EncoderContext ec{
+      impl->host_env.refs,
+      HostStringArena{ctx, mem, impl->host_string_arena_floor,
+                      impl->host_string_arena_capacity, &arena_cursor}};
+
+  // Re-read mem_size AFTER any grow — workspace bounds checks below
+  // need the fresh size, and the slot offsets are below `arena_floor`
+  // so they always live in the original memory region.
   const size_t mem_size = [&]() {
     wasmtime_memory_t m = mem;
     return wasmtime_memory_data_size(ctx, &m);
@@ -391,8 +602,8 @@ absl::Status MarshalActivation(wasmtime_context_t* ctx,
                        "` declared on Compiler but not bound on Activation"));
     }
     CelValue cv{};
-    if (auto s = EncodeScalarValue(*bound, celwasm::DecodeRepr(dv.repr()),
-                                   dv.name(), &cv, refs);
+    if (auto s = EncodeBoundValue(*bound, celwasm::DecodeRepr(dv.repr()),
+                                  dv.name(), &cv, ec);
         !s.ok()) {
       return s;
     }
@@ -457,17 +668,14 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
   // slot offset into a wasm local, then the body reads
   // `local.get local_index` to get the offset of the CelValue we
   // just placed.
-  if (auto s = MarshalActivation(ctx, impl_->memory, impl_->abi, activation,
-                                 impl_->host_env.refs);
-      !s.ok()) {
+  if (auto s = MarshalActivation(ctx, impl_.get(), activation); !s.ok()) {
     return s;
   }
   return Eval();
 }
 
 absl::StatusOr<Value> Instance::PartialEval(
-    const Activation& activation,
-    absl::Span<const AttributePattern> unknowns) {
+    const Activation& activation, absl::Span<const AttributePattern> unknowns) {
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
 
   // Reset per-eval state.  Unlike Eval(), we then populate
@@ -476,9 +684,7 @@ absl::StatusOr<Value> Instance::PartialEval(
   impl_->host_env.refs.Reset();
   impl_->host_env.bindings.unknown_patterns = unknowns;
 
-  if (auto s = MarshalActivation(ctx, impl_->memory, impl_->abi, activation,
-                                 impl_->host_env.refs);
-      !s.ok()) {
+  if (auto s = MarshalActivation(ctx, impl_.get(), activation); !s.ok()) {
     // Reset before bailing — the next call must see a clean state
     // even on this failure path.
     impl_->host_env.bindings.unknown_patterns = {};

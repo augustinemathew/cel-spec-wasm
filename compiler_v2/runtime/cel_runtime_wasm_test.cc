@@ -73,8 +73,8 @@ wasm_trap_t* NoopCelLog(void*, wasmtime_caller_t*, const wasmtime_val_t*,
 // instantiate without these bound, even though these tests don't
 // exercise the kHost paths — a no-op suffices.
 wasm_trap_t* NoopCelHostThreeArg(void*, wasmtime_caller_t*,
-                                 const wasmtime_val_t*, size_t,
-                                 wasmtime_val_t*, size_t) {
+                                 const wasmtime_val_t*, size_t, wasmtime_val_t*,
+                                 size_t) {
   return nullptr;
 }
 
@@ -98,6 +98,18 @@ wasm_functype_t* HostThreeArgFuncType() {
     p = wasm_valtype_new(WASM_I32);
   }
   wasm_valtype_vec_new(&params, 3, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+wasm_functype_t* HostTwoArgFuncType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[2];
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
+  wasm_valtype_vec_new(&params, 2, param_arr);
   wasm_valtype_vec_new_empty(&results);
   return wasm_functype_new(&params, &results);
 }
@@ -200,10 +212,9 @@ struct RuntimeHarness {
            << "define cel_env.cel_log: " << WasmtimeErrorMsg(err);
   }
   wasm_functype_t* mlft = HostThreeArgFuncType();
-  err = wasmtime_linker_define_func(
-      h->linker, "cel_host", 8, "cel_map_lookup", 14, mlft,
-      NoopCelHostThreeArg,
-      /*data=*/nullptr, /*finalizer=*/nullptr);
+  err = wasmtime_linker_define_func(h->linker, "cel_host", 8, "cel_map_lookup",
+                                    14, mlft, NoopCelHostThreeArg,
+                                    /*data=*/nullptr, /*finalizer=*/nullptr);
   wasm_functype_delete(mlft);
   if (err != nullptr) {
     return ::testing::AssertionFailure()
@@ -211,14 +222,39 @@ struct RuntimeHarness {
   }
   // M4.C: same shape for `cel_host.cel_list_at`.
   wasm_functype_t* llft = HostThreeArgFuncType();
-  err = wasmtime_linker_define_func(
-      h->linker, "cel_host", 8, "cel_list_at", 11, llft,
-      NoopCelHostThreeArg,
-      /*data=*/nullptr, /*finalizer=*/nullptr);
+  err = wasmtime_linker_define_func(h->linker, "cel_host", 8, "cel_list_at", 11,
+                                    llft, NoopCelHostThreeArg,
+                                    /*data=*/nullptr, /*finalizer=*/nullptr);
   wasm_functype_delete(llft);
   if (err != nullptr) {
     return ::testing::AssertionFailure()
            << "define cel_host.cel_list_at: " << WasmtimeErrorMsg(err);
+  }
+  // M5.D step 2: aggregate-op kHost imports.  size helpers are
+  // 2-arg, in/eq/concat (and cel_message_eq) are 3-arg.  Tests
+  // here don't exercise the kHost path; no-op stubs suffice.
+  struct Entry {
+    const char* name;
+    size_t name_len;
+    int arity;
+  };
+  static const Entry kEntries[] = {
+      {"cel_list_size", 13, 2}, {"cel_list_in", 11, 3},
+      {"cel_list_eq", 11, 3},   {"cel_list_concat", 15, 3},
+      {"cel_map_size", 12, 2},  {"cel_map_in", 10, 3},
+      {"cel_map_eq", 10, 3},    {"cel_message_eq", 14, 3},
+  };
+  for (const auto& e : kEntries) {
+    wasm_functype_t* ft =
+        e.arity == 2 ? HostTwoArgFuncType() : HostThreeArgFuncType();
+    err = wasmtime_linker_define_func(h->linker, "cel_host", 8, e.name,
+                                      e.name_len, ft, NoopCelHostThreeArg,
+                                      /*data=*/nullptr, /*finalizer=*/nullptr);
+    wasm_functype_delete(ft);
+    if (err != nullptr) {
+      return ::testing::AssertionFailure()
+             << "define cel_host." << e.name << ": " << WasmtimeErrorMsg(err);
+    }
   }
   wasmtime_extern_t ext;
   ext.kind = WASMTIME_EXTERN_MEMORY;

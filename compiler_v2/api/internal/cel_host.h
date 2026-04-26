@@ -197,10 +197,8 @@ class HostList final : public HostListBacking {
 
   size_t Size() const override;
   absl::StatusOr<cel::Value> At(
-      size_t index,
-      const cel::CelType& expected_element_type) const override;
-  void ForEach(
-      absl::FunctionRef<void(const cel::Value&)> visit) const override;
+      size_t index, const cel::CelType& expected_element_type) const override;
+  void ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const override;
 
  private:
   std::vector<cel::Value> elements_;
@@ -219,10 +217,8 @@ class ProtoList final : public HostListBacking {
 
   size_t Size() const override;
   absl::StatusOr<cel::Value> At(
-      size_t index,
-      const cel::CelType& expected_element_type) const override;
-  void ForEach(
-      absl::FunctionRef<void(const cel::Value&)> visit) const override;
+      size_t index, const cel::CelType& expected_element_type) const override;
+  void ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const override;
 
  private:
   const google::protobuf::Message* absl_nonnull owner_;
@@ -367,8 +363,73 @@ ABSL_MUST_USE_RESULT absl::Status CelMapLookupImpl(
 // `backing->At(index)`, and marshals the returned `cel::Value` into
 // `out_slot`.  Absorbs UNKNOWN / ERROR on either operand.  Same
 // non-OK Status contract as CelMapLookupImpl.
-ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(
-    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot,
+ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(uint32_t out_slot,
+                                                uint32_t list_slot,
+                                                uint32_t index_slot,
+                                                const TrampolineContext& ctx);
+
+// M5.D step 2 — Layer-2 entry points for the kHost arms of the
+// aggregate-op runtime dispatchers (`cel_list_size` / `cel_list_in`
+// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in`
+// / `cel_map_eq`).  Each absorbs UNKNOWN / ERROR on its operands,
+// dereferences the kHost backing via `ctx.refs.LookupList` /
+// `LookupMap`, runs the spec-level operation, and writes the result
+// CelValue into `out_slot`.  Spec-level errors (no_such_key,
+// kind-mismatched element, …) travel inside the CelValue;
+// non-OK Status only on infrastructure failure.  See
+// `m5-kcall-comprehensions.md §2.1` for routing.
+//
+// Each Impl uses the 3-arg trampoline shape (out + 2 operands) so
+// the existing `HostThreeArgTrampoline<Impl>` template fits.
+// `CelListSizeImpl` and `CelMapSizeImpl` ignore the third arg; the
+// dispatcher omits the third arg entirely (2-arg call), and the
+// linker registers them as 2-arg host functions.
+ABSL_MUST_USE_RESULT absl::Status CelListSizeImpl(uint32_t out_slot,
+                                                  uint32_t list_slot,
+                                                  const TrampolineContext& ctx);
+
+ABSL_MUST_USE_RESULT absl::Status CelListInImpl(uint32_t out_slot,
+                                                uint32_t value_slot,
+                                                uint32_t list_slot,
+                                                const TrampolineContext& ctx);
+
+ABSL_MUST_USE_RESULT absl::Status CelListEqImpl(uint32_t out_slot,
+                                                uint32_t a_slot,
+                                                uint32_t b_slot,
+                                                const TrampolineContext& ctx);
+
+// Cross-origin (one CEL_LIST_ARENA + one CEL_LIST_HOST) and
+// both-host concat materialise into a fresh arena list under
+// the runtime's `cel_alloc`.  For M5.D step 2 ship state, mixed
+// origins POISON with TYPE_MISMATCH; full materialisation is
+// follow-up work tracked in the M5 doc.
+ABSL_MUST_USE_RESULT absl::Status CelListConcatImpl(
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
+    const TrampolineContext& ctx);
+
+ABSL_MUST_USE_RESULT absl::Status CelMapSizeImpl(uint32_t out_slot,
+                                                 uint32_t map_slot,
+                                                 const TrampolineContext& ctx);
+
+ABSL_MUST_USE_RESULT absl::Status CelMapInImpl(uint32_t out_slot,
+                                               uint32_t key_slot,
+                                               uint32_t map_slot,
+                                               const TrampolineContext& ctx);
+
+ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
+                                               uint32_t a_slot, uint32_t b_slot,
+                                               const TrampolineContext& ctx);
+
+// Polymorphic message equality.  Both operands must be
+// `CEL_MESSAGE` with valid `payload.msg_slot` ref-slots; either
+// operand UNKNOWN / ERROR propagates 3VL.  Uses
+// `google::protobuf::util::MessageDifferencer::Equals` over the
+// underlying `HostMessageBacking::Message()` per langdef §"Equality".
+// `cel_message_eq` is a standalone helper for M5.B step 2b's
+// polymorphic `cel_equals_at_vv` ladder; not one of the seven
+// dispatchers above.
+ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
+    uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
     const TrampolineContext& ctx);
 
 }  // namespace celwasm

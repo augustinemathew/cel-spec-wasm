@@ -440,7 +440,8 @@ the registration step in (2).
 | **M3-follow-up (lists)** | Replay the M3 pattern for lists: `CEL_LIST_ARENA` / `CEL_LIST_HOST` split; `ArenaListHeader`; `HostList` + `ProtoList` concretes; `kCreateList` + `kCallExpr(_[_])` on list × 3 origins; envelope flip for REPEATED fields. Ticks the list bullets in §11. |
 | **Next milestone** (`kCall` + built-in overload set) | `size`, `in`, `==`, `+` on maps + lists reuse M3's three-path origin dispatch per §6.  `OverloadTable::kBuiltinSeeds` populated.  No new data-structure work. |
 | **Later milestone** (proto literals) | `cel_host.cel_make_message` trampoline + `cel.abi.message_ctors[]` + `kCreateStruct` codegen arm.  Orthogonal to this doc's map/list dispatch; no changes to the three-path design. |
-| **M5** (comprehensions + customs + 3VL) | Origin rule for `kComprehension` folding into a map/list → `kArena`.  `cel_map_insert` / `cel_list_append` exercised as comprehension side effects.  Custom-function return trampoline's map/list wrapping defined; `kCall.map_origin = kHost`. |
+| **M5** (kCall built-in overload set + control flow + msg-eq) | `size` / `in` / `==` / `+` aggregate seeds in `kBuiltinSeeds` use the kDynamic dispatcher (Option B, 2026-04-25); routing branches on operand `kind` at runtime.  `kCall.map_origin = kHost` defined for the eventual custom-function return trampoline.  As of M5.F (2026-04-25): aggregate kArena fast paths shipped; the 7 kDynamic dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`) + kHost trampolines + `cel_message_eq` ship in M5.D step 2. |
+| **Comprehensions follow-on** (post-M5) | Origin rule for `kComprehension` folding into a map/list → `kArena`.  `cel_map_insert` / `cel_list_append` exercised as comprehension side effects. |
 
 M2's stub work is what keeps M3 additive rather than
 structural — the interface is declared before the body is

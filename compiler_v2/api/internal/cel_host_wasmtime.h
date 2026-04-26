@@ -38,10 +38,8 @@ class HostExternrefTable final : public ExternrefTable {
   const HostMapBacking* absl_nullable LookupMap(uint32_t slot) const override;
 
   // M4.E: independent slot namespace for list backings.
-  uint32_t InternList(
-      std::shared_ptr<const HostListBacking> backing) override;
-  const HostListBacking* absl_nullable LookupList(
-      uint32_t slot) const override;
+  uint32_t InternList(std::shared_ptr<const HostListBacking> backing) override;
+  const HostListBacking* absl_nullable LookupList(uint32_t slot) const override;
 
   void Reset() override;
 
@@ -71,6 +69,30 @@ struct CelHostCallbackEnv {
   // the linker at InstantiateRuntime time.
   wasmtime_memory_t memory = {};
   wasmtime_func_t cel_alloc_fn = {};
+};
+
+// Wasmtime-backed `ArenaAllocator` — calls the runtime's
+// `cel_alloc(size) -> offset` wasm export by reentering wasm from
+// the host.  Originally lived in the anonymous namespace inside
+// cel_host_wasmtime.cc, used only by host trampolines; promoted to
+// the header for Slice 0 so `Instance::Eval(Activation)` can reuse
+// the canonical reentry pattern when marshalling kString / kBytes
+// activation values.  Slot-into-`out_offset` contract matches
+// `EncodeSpan` in cel_host.cc — zero-byte alloc still succeeds with
+// a valid offset; OOM / trap returns nullptr.
+class WasmtimeArenaAllocator final : public ArenaAllocator {
+ public:
+  WasmtimeArenaAllocator(wasmtime_context_t* absl_nonnull ctx,
+                         wasmtime_func_t fn, wasmtime_memory_t mem)
+      : ctx_(ctx), fn_(fn), mem_(mem) {}
+
+  uint8_t* absl_nullable Alloc(size_t len,
+                               uint32_t* absl_nonnull out_offset) override;
+
+ private:
+  wasmtime_context_t* absl_nonnull ctx_;
+  wasmtime_func_t fn_;
+  wasmtime_memory_t mem_;
 };
 
 // Build bindings from a decoded CelAbi.  `pool` is consulted only

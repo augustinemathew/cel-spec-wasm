@@ -58,6 +58,32 @@ cc_test(
     ],
 )
 
+# M5 e2e test suite — general kCall arm (M5.F).  Locks every
+# arithmetic / comparison / string-op surface that M5.F lights
+# up, plus the M5.G-pending control-flow rejection edge.
+cc_test(
+    name = "m5_test",
+    srcs = ["m5_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:attribute",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "eval_test",
     srcs = ["eval_test.cc"],

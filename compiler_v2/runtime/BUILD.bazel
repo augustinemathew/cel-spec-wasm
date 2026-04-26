@@ -8,7 +8,10 @@ cc_library(
     name = "cel_runtime",
     srcs = ["cel_runtime.c"],
     hdrs = [
+        "cel_3vl.h",
         "cel_arena.h",
+        "cel_arith.h",
+        "cel_compare.h",
         "cel_data.h",
         "cel_list.h",
         "cel_log.h",
@@ -16,6 +19,7 @@ cc_library(
         "cel_map.h",
         "cel_memory.h",
         "cel_runtime.h",
+        "cel_string_ops.h",
     ],
     copts = [
         "-std=c11",
@@ -82,6 +86,51 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "cel_arith_test",
+    srcs = ["cel_arith_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_compare_test",
+    srcs = ["cel_compare_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_string_ops_test",
+    srcs = ["cel_string_ops_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_aggregate_arena_test",
+    srcs = ["cel_aggregate_arena_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_3vl_test",
+    srcs = ["cel_3vl_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Locks the runtime null-pointer-elision bug closed.  Loads the
 # cross-compiled cel_runtime.wasm under wasmtime and asserts
 # cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
@@ -107,7 +156,10 @@ cc_test(
 genrule(
     name = "cel_runtime_wasm_file",
     srcs = [
+        "cel_3vl.h",
         "cel_arena.h",
+        "cel_arith.h",
+        "cel_compare.h",
         "cel_data.h",
         "cel_list.h",
         "cel_log.h",
@@ -116,6 +168,7 @@ genrule(
         "cel_memory.h",
         "cel_runtime.c",
         "cel_runtime.h",
+        "cel_string_ops.h",
         "wasm_imports.txt",
     ],
     outs = ["cel_runtime.wasm"],
@@ -146,6 +199,100 @@ genrule(
         "-Wl,--export=cel_list_set",
         "-Wl,--export=cel_list_at",
         "-Wl,--export=cel_list_at_arena",
+        # M5.B: arithmetic helpers (int / uint / double × add/sub/mul/div/mod/neg).
+        "-Wl,--export=cel_int_add_at_vv",
+        "-Wl,--export=cel_int_sub_at_vv",
+        "-Wl,--export=cel_int_mul_at_vv",
+        "-Wl,--export=cel_int_div_at_vv",
+        "-Wl,--export=cel_int_mod_at_vv",
+        "-Wl,--export=cel_int_neg_at_v",
+        "-Wl,--export=cel_uint_add_at_vv",
+        "-Wl,--export=cel_uint_sub_at_vv",
+        "-Wl,--export=cel_uint_mul_at_vv",
+        "-Wl,--export=cel_uint_div_at_vv",
+        "-Wl,--export=cel_uint_mod_at_vv",
+        "-Wl,--export=cel_double_add_at_vv",
+        "-Wl,--export=cel_double_sub_at_vv",
+        "-Wl,--export=cel_double_mul_at_vv",
+        "-Wl,--export=cel_double_div_at_vv",
+        "-Wl,--export=cel_double_neg_at_v",
+        # M5.B: comparison helpers (per-kind eq/ne/lt/le/gt/ge + bool/null).
+        "-Wl,--export=cel_int_eq_at_vv",
+        "-Wl,--export=cel_int_ne_at_vv",
+        "-Wl,--export=cel_int_lt_at_vv",
+        "-Wl,--export=cel_int_le_at_vv",
+        "-Wl,--export=cel_int_gt_at_vv",
+        "-Wl,--export=cel_int_ge_at_vv",
+        "-Wl,--export=cel_uint_eq_at_vv",
+        "-Wl,--export=cel_uint_ne_at_vv",
+        "-Wl,--export=cel_uint_lt_at_vv",
+        "-Wl,--export=cel_uint_le_at_vv",
+        "-Wl,--export=cel_uint_gt_at_vv",
+        "-Wl,--export=cel_uint_ge_at_vv",
+        "-Wl,--export=cel_double_eq_at_vv",
+        "-Wl,--export=cel_double_ne_at_vv",
+        "-Wl,--export=cel_double_lt_at_vv",
+        "-Wl,--export=cel_double_le_at_vv",
+        "-Wl,--export=cel_double_gt_at_vv",
+        "-Wl,--export=cel_double_ge_at_vv",
+        "-Wl,--export=cel_bool_eq_at_vv",
+        "-Wl,--export=cel_bool_ne_at_vv",
+        "-Wl,--export=cel_bool_lt_at_vv",
+        "-Wl,--export=cel_bool_le_at_vv",
+        "-Wl,--export=cel_bool_gt_at_vv",
+        "-Wl,--export=cel_bool_ge_at_vv",
+        "-Wl,--export=cel_null_eq_at_vv",
+        # M5.B step 2: cross-type numeric ladder (eq/ne/lt/le/gt/ge).
+        "-Wl,--export=cel_numeric_eq_at_vv",
+        "-Wl,--export=cel_numeric_ne_at_vv",
+        "-Wl,--export=cel_numeric_lt_at_vv",
+        "-Wl,--export=cel_numeric_le_at_vv",
+        "-Wl,--export=cel_numeric_gt_at_vv",
+        "-Wl,--export=cel_numeric_ge_at_vv",
+        # M5.C: string + bytes ops (concat allocates; rest read-only).
+        "-Wl,--export=cel_string_concat_at_vv",
+        "-Wl,--export=cel_string_size_at_v",
+        "-Wl,--export=cel_string_eq_at_vv",
+        "-Wl,--export=cel_string_lt_at_vv",
+        "-Wl,--export=cel_string_le_at_vv",
+        "-Wl,--export=cel_string_gt_at_vv",
+        "-Wl,--export=cel_string_ge_at_vv",
+        "-Wl,--export=cel_string_contains_at_vv",
+        "-Wl,--export=cel_string_starts_with_at_vv",
+        "-Wl,--export=cel_string_ends_with_at_vv",
+        "-Wl,--export=cel_bytes_concat_at_vv",
+        "-Wl,--export=cel_bytes_size_at_v",
+        "-Wl,--export=cel_bytes_eq_at_vv",
+        "-Wl,--export=cel_bytes_lt_at_vv",
+        "-Wl,--export=cel_bytes_le_at_vv",
+        "-Wl,--export=cel_bytes_gt_at_vv",
+        "-Wl,--export=cel_bytes_ge_at_vv",
+        # M5.D step 1: aggregate arena fast paths.
+        "-Wl,--export=cel_list_size_arena",
+        "-Wl,--export=cel_list_in_arena",
+        "-Wl,--export=cel_list_eq_arena",
+        "-Wl,--export=cel_list_concat_arena",
+        "-Wl,--export=cel_map_size_arena",
+        "-Wl,--export=cel_map_in_arena",
+        "-Wl,--export=cel_map_eq_arena",
+        # M5.D step 2: kDynamic dispatchers.  Each tail-calls into
+        # the corresponding _arena fast path or the cel_host.* import.
+        "-Wl,--export=cel_list_size",
+        "-Wl,--export=cel_list_in",
+        "-Wl,--export=cel_list_eq",
+        "-Wl,--export=cel_list_concat",
+        "-Wl,--export=cel_map_size",
+        "-Wl,--export=cel_map_in",
+        "-Wl,--export=cel_map_eq",
+        # M5.B step 2b: polymorphic equality.
+        "-Wl,--export=cel_equals_at_vv",
+        "-Wl,--export=cel_not_equals_at_vv",
+        # M5.G (Slice 2): 3VL / control-flow helpers.
+        "-Wl,--export=cel_and",
+        "-Wl,--export=cel_or",
+        "-Wl,--export=cel_not",
+        "-Wl,--export=cel_unknown_merge",
+        "-Wl,--export=cel_copy_slot",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

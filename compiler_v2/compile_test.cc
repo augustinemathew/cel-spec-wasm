@@ -53,10 +53,14 @@ TEST(CompileTest, CompilesScalarBytes) {
 
 // --- Error propagation ---------------------------------------------------
 
-TEST(CompileTest, NonKConstRootSurfacesAsUnimplemented) {
-  // `1 + 2` type-checks but its root is a kCall; expr_lower rejects
-  // non-kConst roots at M1, and the facade passes that through.
-  EXPECT_THAT(Compile("1 + 2"), StatusIs(absl::StatusCode::kUnimplemented));
+TEST(CompileTest, ControlFlowKCallCompilesGreen) {
+  // M5.G (Slice 2) lit up `_&&_` / `_||_` / `!_` / `_?_:_`.
+  // Originally a pending-Unimplemented fixture; rewritten as
+  // positive coverage at the M5.G enabling commit.
+  EXPECT_THAT(Compile("true && false").status(), IsOk());
+  EXPECT_THAT(Compile("true || false").status(), IsOk());
+  EXPECT_THAT(Compile("!true").status(), IsOk());
+  EXPECT_THAT(Compile("true ? 1 : 2").status(), IsOk());
 }
 
 TEST(CompileTest, ParseFailureSurfacesAsInvalidArgument) {
@@ -214,8 +218,13 @@ bool ModuleImports(BinaryenModuleRef raw, absl::string_view module_name,
 
 }  // namespace
 
-TEST(CompileMapTest, EmptyMapLiteralCompiles) {
-  EXPECT_THAT(Compile("{}").status(), IsOk());
+TEST(CompileMapTest, EmptyMapLiteralRejected) {
+  // Bare `{}` types as `map<dyn, dyn>`; the M5.A static-subset gate
+  // walks list/map element types recursively and rejects implicit
+  // dyn (m5-kcall-comprehensions.md §5).  The internal N=0 codegen
+  // path stays in place — it's reached from M5.I comprehensions
+  // whose `accu_init` is `{}` / `[]` after macro expansion.
+  EXPECT_FALSE(Compile("{}").status().ok());
 }
 
 TEST(CompileMapTest, ScalarMapLiteralCompiles) {
@@ -266,8 +275,7 @@ TEST(CompileMapTest, ModuleImportsRuntimeMapEntryPoints) {
   BinaryenModuleRef raw = art_or->module.raw();
   for (const char* fn : {"cel_map_create", "cel_map_insert",
                          "cel_map_lookup_arena", "cel_map_lookup"}) {
-    EXPECT_TRUE(ModuleImports(raw, "cel", fn))
-        << "missing import cel." << fn;
+    EXPECT_TRUE(ModuleImports(raw, "cel", fn)) << "missing import cel." << fn;
   }
 }
 
@@ -284,9 +292,12 @@ TEST(CompileMapTest, ModuleImportsHostMapLookup) {
 }
 
 TEST(CompileMapTest, RuntimeImportsAlsoPresentForLiteralOnlyMap) {
-  // Even a bare `{}` (no indexing) ends up with the cel_host import
-  // — codegen never decides to omit it based on AST shape.
-  auto art_or = Compile("{}");
+  // A literal-only (non-indexed) map still drags in the cel_host
+  // import — codegen never decides to omit it based on AST shape.
+  // M5.A note: bare `{}` was the original probe but is now correctly
+  // rejected by the static-subset gate; switch to a typed literal
+  // that covers the same "no indexing" shape.
+  auto art_or = Compile("{\"a\": 1}");
   ASSERT_THAT(art_or, IsOk());
   EXPECT_TRUE(
       ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));
@@ -353,8 +364,7 @@ namespace {
 // fixture has `map<string,string> metadata` + `map<int32,int32>
 // tier_quotas`).  Uses the generated descriptor pool so no
 // SchemaProtoSource path is needed at test time.
-absl::StatusOr<CompiledArtifact> CompileWithCustomer(
-    absl::string_view expr) {
+absl::StatusOr<CompiledArtifact> CompileWithCustomer(absl::string_view expr) {
   CompileOptions opts;
   opts.check.variable_specs = {"c:celwasm.testdata.Customer"};
   return Compile(expr, opts);

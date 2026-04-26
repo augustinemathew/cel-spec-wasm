@@ -77,7 +77,12 @@ absl::string_view OriginName(Origin o);
 struct NodeAnnotation {
   Repr repr = Repr::kUnknown;
   uint32_t field_number = 0;  // SelectExpr proto field number (M2)
-  uint32_t overload_id = 0;   // CallExpr interned into OverloadTable (M3)
+  // CallExpr's resolved cel-cpp overload id, e.g. "add_int64".  M5.F
+  // ResolvePass populates this from `cel::Ast::reference_map()`'s
+  // first overload string; codegen looks it up in `OverloadTable`.
+  // Empty for non-call nodes.  String_view points into cel-cpp's
+  // owned reference_map storage; lifetime tied to the TypedAst.
+  absl::string_view overload_id = {};
   uint32_t local_index = 0;   // IdentExpr resolved wasm local (M2)
   uint32_t scope_id = 0;      // comprehension scope (later)
   uint32_t attribute_id = 0;  // interned AttributeId (M2.E); 0 = none

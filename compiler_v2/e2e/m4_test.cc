@@ -243,19 +243,21 @@ TEST_F(ListLiteralE2ETest, IndexLiteralFirstAndLast) {
   }
 }
 
-// Out-of-bounds: cel_list_at_arena writes a CEL_ERROR / CEL_ERR_INDEX_OUT_OF_BOUNDS
-// CelValue into the result slot.  At M4 the Eval-side decoder maps
-// CEL_ERROR to a top-level decode failure (the explicit Error
-// wrapping arrives with the M4-error matcher work).  Locking the
-// failure surface here so a future widening doesn't silently
-// swallow OOB.
+// Out-of-bounds: cel_list_at_arena writes a CEL_ERROR /
+// CEL_ERR_INDEX_OUT_OF_BOUNDS CelValue into the result slot.
+// Pre-Slice-2, Instance::Eval surfaced this as a top-level decode
+// failure (status::InvalidArgument); Slice 2 added a CEL_ERROR
+// decoder arm (control-flow operators need to surface ERROR
+// through Eval as a Value), so the failure is now a `Value::Error`
+// and `Eval()` returns OK.
 TEST_F(ListLiteralE2ETest, OutOfBoundsIndexReturnsError) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[10, 20, 30][3]");
   Activation a;
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 TEST_F(ListLiteralE2ETest, NegativeIndexReturnsError) {
@@ -266,7 +268,8 @@ TEST_F(ListLiteralE2ETest, NegativeIndexReturnsError) {
   auto instance = CompilePlan(*compiler, "[10, 20, 30][-1]");
   Activation a;
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -311,8 +314,7 @@ TEST_F(ListLiteralE2ETest, ListOfMap) {
 TEST_F(ListLiteralE2ETest, ListOfMapChainedIndex) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"([{"a": 1}, {"a": 2}][1]["a"])");
+  auto instance = CompilePlan(*compiler, R"([{"a": 1}, {"a": 2}][1]["a"])");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
 }
@@ -367,46 +369,31 @@ TEST_F(ListRejectionE2ETest, StringIndexOnIntListRejectedAtCompile) {
 
 // Bare empty literal `[]` — cel-cpp's checker types it as
 // `list<dyn>` (no element type to infer; dyn is the top type).
-// Our static-subset `RejectDyn` gate SHOULD reject it, same as
-// the heterogeneous-list case below — but at M4 close it does
-// NOT.  This test locks the current PASS-through behaviour so
-// the test flips when `RejectDyn` is tightened.
-//
-// See `m4-list-literals.md` "Future work" — "RejectDyn doesn't
-// catch implicit dyn from heterogeneous list literals."  Same
-// fix applies here.
-TEST_F(ListRejectionE2ETest, BareEmptyListLiteralCurrentlyAcceptedTODO) {
+// Our static-subset `RejectDyn` gate rejects it because the
+// recursive walk added in M5.A traverses `list_type().elem_type()`
+// and finds `dyn`.
+TEST_F(ListRejectionE2ETest, BareEmptyListLiteralRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto program_or = compiler->Compile("[]");
-  // CURRENT behaviour — flips to EXPECT_FALSE once RejectDyn is
-  // tightened.
-  EXPECT_TRUE(program_or.ok())
-      << "bare `[]` types as list<dyn>; RejectDyn doesn't catch "
-         "this yet (M4 future-work item — same gap as "
-         "HeterogeneousListCurrentlyAcceptedTODO)";
+  EXPECT_FALSE(program_or.ok())
+      << "bare `[]` types as list<dyn>; RejectDyn must catch the "
+         "implicit dyn (M5.A — m5-kcall-comprehensions.md §5)";
 }
 
 // Heterogeneous list `[1, "two"]` — cel-cpp's checker types it
 // as `list<dyn>` (CEL semantics permit it; `dyn` is the top
-// type).  Our static-subset `RejectDyn` gate SHOULD reject it
-// because dyn travels under the hood, but at M4 close it does
-// NOT (the gate only flags explicit `dyn(...)` calls).  This
-// test locks the current PASS-through behaviour with a TODO so
-// the test flips when the gate is tightened.
-//
-// See `m4-list-literals.md` "Future work" — "RejectDyn doesn't
-// catch implicit dyn from heterogeneous list literals."
-TEST_F(ListRejectionE2ETest, HeterogeneousListCurrentlyAcceptedTODO) {
+// type).  Our static-subset `RejectDyn` gate rejects it because
+// dyn travels under the hood (M5.A — recursive walk of
+// list_type().elem_type()).
+TEST_F(ListRejectionE2ETest, HeterogeneousListRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto program_or = compiler->Compile(R"([1, "two"])");
-  // CURRENT behaviour — flips to EXPECT_FALSE once RejectDyn is
-  // tightened.  This isn't asserting correctness; it documents
-  // the gap so a tightening change shows up as a test diff.
-  EXPECT_TRUE(program_or.ok())
+  EXPECT_FALSE(program_or.ok())
       << "heterogeneous list literal types as list<dyn>; RejectDyn "
-         "doesn't catch this yet (M4 future-work item)";
+         "must catch the implicit dyn (M5.A — "
+         "m5-kcall-comprehensions.md §5)";
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -421,10 +408,9 @@ TEST_F(ListRejectionE2ETest, HeterogeneousListCurrentlyAcceptedTODO) {
 class ListBindingE2ETest : public ::testing::Test {};
 
 TEST_F(ListBindingE2ETest, BoundIntListIndexed) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Int()));
-      });
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+  });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "xs[1]");
   Activation a;
@@ -433,10 +419,9 @@ TEST_F(ListBindingE2ETest, BoundIntListIndexed) {
 }
 
 TEST_F(ListBindingE2ETest, BoundUintListIndexed) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Uint()));
-      });
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Uint()));
+  });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "xs[0]");
   Activation a;
@@ -445,10 +430,9 @@ TEST_F(ListBindingE2ETest, BoundUintListIndexed) {
 }
 
 TEST_F(ListBindingE2ETest, BoundDoubleListIndexed) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Double()));
-      });
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Double()));
+  });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "xs[1]");
   Activation a;
@@ -457,15 +441,14 @@ TEST_F(ListBindingE2ETest, BoundDoubleListIndexed) {
 }
 
 TEST_F(ListBindingE2ETest, BoundBoolListIndexed) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Bool()));
-      });
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Bool()));
+  });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "xs[2]");
   Activation a;
-  a.Bind("xs", Value::List({Value::Bool(true), Value::Bool(false),
-                            Value::Bool(true)}));
+  a.Bind("xs", Value::List(
+                   {Value::Bool(true), Value::Bool(false), Value::Bool(true)}));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
@@ -482,16 +465,16 @@ TEST_F(ListBindingE2ETest, BoundStringListUnimplemented) {
 }
 
 TEST_F(ListBindingE2ETest, OutOfBoundsOnBoundListFails) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Int()));
-      });
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+  });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "xs[5]");
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -508,20 +491,20 @@ TEST_F(ListBindingE2ETest, OutOfBoundsOnBoundListFails) {
 
 class DispatcherE2ETest : public ::testing::Test {};
 
-TEST_F(DispatcherE2ETest, ConditionalListOperandUnimplementedAtM4) {
-  auto compiler =
-      BuildCompiler([](Compiler::Builder& b) {
-        b.DeclareVariable("xs", CelType::List(CelType::Int()));
-        b.DeclareVariable("cond", CelType::Bool());
-      });
+TEST_F(DispatcherE2ETest, ConditionalListOperandLowersGreen) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("cond", CelType::Bool());
+  });
   ASSERT_THAT(compiler, IsOk());
-  // `cond ? [1,2] : xs` — the ternary needs M5; assert the
-  // compile-time rejection so we notice when M5 lights it up
-  // and can flip this to a real green dispatcher test.
+  // M5.G (Slice 2) lit up `_?_:_`.  The ternary's two arms are
+  // mixed-origin (kArena from the literal, kHost from the bound
+  // list); ListOriginVisitor coalesces to kDynamic and `_[_]`
+  // routes through `cel_list_at`.  Rewritten from
+  // `ConditionalListOperandUnimplementedAtM4` at the M5.G enabling
+  // commit.
   auto program_or = compiler->Compile("(cond ? [1, 2] : xs)[0]");
-  EXPECT_FALSE(program_or.ok())
-      << "ternary `_?_:_` codegen lands at M5; flip this test to "
-         "EXPECT_TRUE + assert kDynamic dispatch then.";
+  ASSERT_THAT(program_or, IsOk());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -582,7 +565,8 @@ TEST_F(ProtoRepeatedE2ETest, OutOfBoundsIndexFails) {
   Activation a;
   a.Bind("c", Value::Message(msg));
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 TEST_F(ProtoRepeatedE2ETest, NegativeIndexFails) {
@@ -592,7 +576,8 @@ TEST_F(ProtoRepeatedE2ETest, NegativeIndexFails) {
   Activation a;
   a.Bind("c", Value::Message(msg));
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 TEST_F(ProtoRepeatedE2ETest, EmptyRepeatedFieldFailsOnIndexZero) {
@@ -601,7 +586,8 @@ TEST_F(ProtoRepeatedE2ETest, EmptyRepeatedFieldFailsOnIndexZero) {
   Activation a;
   a.Bind("c", Value::Message(msg));
   auto v_or = instance.Eval(a);
-  EXPECT_FALSE(v_or.ok());
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 // Repeated-int-typed field (rep_i32 on HostMsg3) — exercises the

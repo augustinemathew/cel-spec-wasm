@@ -1,13 +1,52 @@
 # M4 Slice F — 3VL absorption in comparisons, arithmetic, and other
 # non-absorbing intermediate ops
 
-Status: **planning doc; not started.**  Blocks: none (self-contained
-ABI change).  Unblocks: nothing load-bearing — M5 comprehensions do
-need UNKNOWN / ERROR absorption, but only through `&&` / `||`, which
-already works (slice A + 3b2).  Slice F closes the *semantic* gap
-between what CEL's spec requires and what our codegen delivers; M5
-can ship without it if we're willing to eat the documented breaks
-below.
+Status: **superseded by the v2 rewrite (`compiler_v2/`).**  This is
+a v1 (`compiler/`) plan from 2026-04-20.  v2's call ABI was designed
+slot-out / CelValue-offset (`(out_slot, a_slot, b_slot) -> void`)
+from M1 onward — exactly the "uniform boxed ABI" that this doc's
+Slice F-uniform plan landed on after F1 / F2 / F3 / F4 collapsed.
+There is no scalar-vs-boxed dispatch in v2; every helper consumes
+and produces CelValue offsets, so 3VL absorption falls out of the
+ABI shape and the spec-breaking rows in §"Spec-breaking test cases"
+no longer apply.
+
+The historical content below is preserved verbatim — useful as
+context for why v2's `_at_vv` ABI looks the way it does — but
+nothing here drives current implementation.  v2's per-helper
+coverage lives in `compiler_v2/runtime/cel_arith_test.cc` /
+`cel_compare_test.cc` / `cel_string_ops_test.cc` /
+`cel_3vl_test.cc`; the 22-row 3VL absorption matrix is folded into
+those files plus the `m5_test.cc` `ControlFlowE2ETest` /
+`PolymorphicEqualsE2ETest` fixtures.
+
+The post-Slice-1.5 / 1.55 / 1.6 deltas show the slot-out ABI
+delivering on this doc's intent:
+
+  - Cross-numeric `==` / `!=` (Slice 1, M5.B step 2b) — kernel
+    handles every pair via `cel_equals_at_vv`.
+  - `dyn(scalar)` admission (Slice 1.5) — admits the corpus's
+    polymorphic-equality shapes at the static-subset gate.
+  - NaN-not-equal-self IEEE behaviour (Slice 1.55) — fixed in
+    `cel_numeric_ne_at_vv`.
+  - Cross-numeric ordering / membership (Slice 1.6) — codegen-time
+    overload re-pick + `cel_value_eq_polymorphic` for `_in_`.
+
+For v2's milestone status, see
+`doc/implementation-plan/rewrite/m5-kcall-comprehensions.md` and
+`doc/implementation-plan/rewrite/conformance-unlock-plan.md`.
+
+---
+
+## Historical content (v1 plan, preserved as context)
+
+Original status: **planning doc; not started.**  Blocks: none
+(self-contained ABI change).  Unblocks: nothing load-bearing — M5
+comprehensions do need UNKNOWN / ERROR absorption, but only through
+`&&` / `||`, which already works (slice A + 3b2).  Slice F closes
+the *semantic* gap between what CEL's spec requires and what our
+codegen delivers; M5 can ship without it if we're willing to eat
+the documented breaks below.
 
 ## The gap
 

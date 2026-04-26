@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -17,6 +18,7 @@
 #include "compiler_v2/codegen/expr_lower.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
+#include "compiler_v2/codegen/overload_table.h"
 #include "compiler_v2/codegen/resolve_pass.h"
 #include "compiler_v2/frontend/parse_and_check.h"
 #include "compiler_v2/ir/typed_ast.h"
@@ -85,6 +87,95 @@ void InstallListImports(WasmModule& mod) {
                         "cel_list_at", list3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
                         "cel_list_at", list3_params, BinaryenTypeNone());
+}
+
+// M5.F: install one wasm function import per OverloadTable seed
+// whose runtime export is shipped today.  Per CLAUDE.md "no lazy
+// tracking of runtime imports" — every helper the table can name
+// gets imported regardless of whether the AST happens to reach it.
+//
+// Helper signatures: names ending in `_at_vv` take 3 args
+// (`out_slot, a_slot, b_slot`); names ending in `_at_v` take 2
+// (`out_slot, v_slot`).  M5.D step 2 added the seven aggregate-op
+// dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
+// `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`),
+// which don't follow the `_at_*` suffix convention; they get
+// special-cased below.
+//
+// Sets are deduplicated by helper-name: two cel-cpp overload ids
+// can resolve to the same wasm helper (every cross-type numeric
+// `less_*` resolves to `cel_numeric_lt_at_vv`); we only install
+// the import once.
+// Returns the helper arity inferred from the overload-helper name:
+// `_at_vv` → 3-arg, `_at_v` → 2-arg, M5.D step 2 dispatchers
+// (`cel_list_size`/etc.) carry no suffix and use a hand-rolled
+// table.  Returns 0 for "not a helper we install here".
+int OverloadHelperArity(absl::string_view name) {
+  if (name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv") {
+    return 3;
+  }
+  if (name.size() >= 5 && name.substr(name.size() - 5) == "_at_v") {
+    return 2;
+  }
+  static constexpr struct {
+    absl::string_view name;
+    int arity;
+  } kDispatchers[] = {
+      {"cel_list_size", 2},
+      {"cel_list_in", 3},
+      {"cel_list_eq", 3},
+      {"cel_list_concat", 3},
+      {"cel_map_size", 2},
+      {"cel_map_in", 3},
+      {"cel_map_eq", 3},
+      // M5.G (Slice 2): 3VL / control-flow helpers.  cel_and / cel_or
+      // are 3-arg; cel_not is 2-arg.  cel_unknown_merge is reachable
+      // only through cel_and / cel_or internally so it doesn't need
+      // an expr-side import; cel_copy_slot is installed unconditionally
+      // by InstallOverloadImports below for the ternary lowering.
+      {"cel_and", 3},
+      {"cel_or", 3},
+      {"cel_not", 2},
+  };
+  for (const auto& d : kDispatchers) {
+    if (d.name == name) return d.arity;
+  }
+  return 0;
+}
+
+void InstallOverloadImports(WasmModule& mod,
+                            const OverloadTable& overload_table) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType vv_params[3] = {i32, i32, i32};
+  const BinaryenType v_params[2] = {i32, i32};
+  absl::flat_hash_set<std::string> installed;
+  for (uint32_t id = 1; id <= overload_table.size(); ++id) {
+    const OverloadImpl& impl = overload_table.LookupById(id);
+    if (impl.module != ImportModule::kCelRuntime) continue;
+    const std::string name(impl.name);
+    if (installed.contains(name)) continue;
+    const int arity = OverloadHelperArity(impl.name);
+    if (arity == 3) {
+      mod.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
+    } else if (arity == 2) {
+      mod.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
+    }
+    installed.insert(name);
+  }
+
+  // M5.G (Slice 2): `cel_copy_slot` is emitted directly by
+  // expr_lower's ternary lowering (BinaryenIf branches that copy
+  // the chosen arm into out_slot).  Not seeded in OverloadTable —
+  // the table maps cel-cpp overload ids to helpers, and ternary's
+  // overload id `conditional` is special-cased above.  Install
+  // unconditionally so every emitted module imports it; the no-lazy-
+  // imports rule (CLAUDE.md) applies — better to import once and
+  // never use than to gate on AST inspection.
+  if (!installed.contains("cel_copy_slot")) {
+    mod.AddFunctionImport("cel_copy_slot", "cel", "cel_copy_slot", v_params,
+                          BinaryenTypeNone());
+    installed.insert("cel_copy_slot");
+  }
 }
 
 // Installs the expr module's host-ABI shape: imports `cel.memory`
@@ -188,10 +279,20 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
     return s;
   }
 
+  // M5.F: build the OverloadTable (built-ins only — M6 ships
+  // RegisterFunction for embedder customs) and install one wasm
+  // import per shipped helper before lowering.  expr_lower's
+  // general-arm `BinaryenCall` references these imports by
+  // internal name; if an import is missing the module won't
+  // validate.
+  OverloadTable overload_table = OverloadTableBuilder().Build();
+  InstallOverloadImports(out.module, overload_table);
+
   LoweringOptions lower_opts;
   lower_opts.mem_size_bytes = opts.mem_size_bytes;
-  auto lowered_or = LowerToEvalFunction(
-      out.ast, out.layout, opts.eval_internal_name, out.module, lower_opts);
+  auto lowered_or =
+      LowerToEvalFunction(out.ast, out.layout, opts.eval_internal_name,
+                          out.module, overload_table, lower_opts);
   if (!lowered_or.ok()) return lowered_or.status();
   out.eval_fn = *std::move(lowered_or);
 

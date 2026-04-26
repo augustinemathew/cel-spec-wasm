@@ -201,7 +201,7 @@ For each new feature touching parse / check:
     `NotFound` on M1-era modules without the section; callers
     fall back to an empty `CelAbi`.
 
-### 3.8 Runtime (`runtime/{cel_data,cel_make,cel_arena,cel_memory,cel_map}_test.cc`, `cel_runtime_wasm_test.cc`)
+### 3.8 Runtime (`runtime/{cel_data,cel_make,cel_arena,cel_memory,cel_map,cel_list,cel_arith,cel_compare,cel_string_ops,cel_aggregate_arena}_test.cc`, `cel_runtime_wasm_test.cc`)
 
   - **Wire stability** — every `CelKind` enum value pinned by
     `_Static_assert`s in `cel_data.h` and asserted in

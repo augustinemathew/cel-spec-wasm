@@ -74,7 +74,14 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 
 // Allocates the per-Plan store + a 2-page host-owned memory.  Two
 // pages matches cel_runtime.wasm's --import-memory min=2 (per
-// runtime/BUILD.bazel).
+// runtime/BUILD.bazel).  `max_present=false` so `wasmtime_memory_grow`
+// can extend the memory beyond the initial reservation — Slice 0 of
+// the conformance unlock plan needs a host-managed region above
+// `mem_size_bytes` (= the codegen's `arena_limit`) to host
+// activation-marshalled string / bytes payloads that survive
+// `cel_reset` and subsequent `cel_alloc` calls inside `$eval`.
+// Wasm-side `cel_alloc`'s bounds check stays at `arena_limit`, so
+// the runtime never reaches into the grown tail.
 absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
                                 celwasm::InstanceImpl* impl) {
   impl->store = wasmtime_store_new(state->engine, nullptr, nullptr);
@@ -84,7 +91,7 @@ absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   wasm_memorytype_t* mty = nullptr;
   wasmtime_error_t* err = wasmtime_memorytype_new(
-      /*min=*/2, /*max_present=*/true, /*max=*/2, /*is_64=*/false,
+      /*min=*/2, /*max_present=*/false, /*max=*/0, /*is_64=*/false,
       /*shared=*/false, /*page_size_log2=*/16, &mty);
   if (err != nullptr) return WasmtimeErrorToStatus("memorytype_new", err);
   err = wasmtime_memory_new(ctx, mty, &impl->memory);
@@ -110,8 +117,7 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
     return absl::InternalError("wasmtime_linker_new returned null");
   }
   if (auto s = celwasm::RegisterCelLog(impl->linker); !s.ok()) return s;
-  if (auto s =
-          celwasm::RegisterCelHostImports(impl->linker, &impl->host_env);
+  if (auto s = celwasm::RegisterCelHostImports(impl->linker, &impl->host_env);
       !s.ok()) {
     return s;
   }
@@ -149,6 +155,64 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
+// Every runtime export the expr module may import.  No lazy
+// tracking — codegen always links the runtime fully (per repo
+// rule); a missing entry here surfaces as
+// `instantiate(expr): unknown import: cel::<name>`.
+//
+// M5.F adds every kBuiltinSeeds helper that ships a runtime
+// export today.  M5.D step 2 added the seven aggregate-op
+// dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
+// `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`),
+// each `__attribute__((musttail))`-dispatching to either an
+// `_arena` fast path or a `cel_host.*` import.
+absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
+                                   wasmtime_context_t* ctx) {
+  static const char* const kRuntimeExports[] = {
+      "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
+      "cel_map_lookup_arena", "cel_map_lookup", "cel_list_create",
+      "cel_list_set", "cel_list_at_arena", "cel_list_at",
+      // M5.B step 1: arithmetic helpers.
+      "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
+      "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
+      "cel_uint_add_at_vv", "cel_uint_sub_at_vv", "cel_uint_mul_at_vv",
+      "cel_uint_div_at_vv", "cel_uint_mod_at_vv", "cel_double_add_at_vv",
+      "cel_double_sub_at_vv", "cel_double_mul_at_vv", "cel_double_div_at_vv",
+      "cel_double_neg_at_v",
+      // M5.B step 1: comparison helpers.
+      "cel_int_lt_at_vv", "cel_int_le_at_vv", "cel_int_gt_at_vv",
+      "cel_int_ge_at_vv", "cel_uint_lt_at_vv", "cel_uint_le_at_vv",
+      "cel_uint_gt_at_vv", "cel_uint_ge_at_vv", "cel_double_lt_at_vv",
+      "cel_double_le_at_vv", "cel_double_gt_at_vv", "cel_double_ge_at_vv",
+      "cel_bool_lt_at_vv", "cel_bool_le_at_vv", "cel_bool_gt_at_vv",
+      "cel_bool_ge_at_vv",
+      // M5.B step 2: cross-type numeric ladder.
+      "cel_numeric_lt_at_vv", "cel_numeric_le_at_vv", "cel_numeric_gt_at_vv",
+      "cel_numeric_ge_at_vv",
+      // M5.C: string + bytes ops.
+      "cel_string_concat_at_vv", "cel_string_size_at_v", "cel_string_lt_at_vv",
+      "cel_string_le_at_vv", "cel_string_gt_at_vv", "cel_string_ge_at_vv",
+      "cel_string_contains_at_vv", "cel_string_starts_with_at_vv",
+      "cel_string_ends_with_at_vv", "cel_bytes_concat_at_vv",
+      "cel_bytes_size_at_v", "cel_bytes_lt_at_vv", "cel_bytes_le_at_vv",
+      "cel_bytes_gt_at_vv", "cel_bytes_ge_at_vv",
+      // M5.D step 2: aggregate kDynamic dispatchers.
+      "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
+      "cel_map_size", "cel_map_in", "cel_map_eq",
+      // M5.B step 2b: polymorphic equality.
+      "cel_equals_at_vv", "cel_not_equals_at_vv",
+      // M5.G (Slice 2): 3VL / control-flow helpers.
+      "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot"};
+  for (const char* name : kRuntimeExports) {
+    if (auto s =
+            BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);
+        !s.ok()) {
+      return s;
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
                                 celwasm::InstanceImpl* impl) {
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
@@ -159,21 +223,7 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  // Every runtime export the expr module may import.  No lazy
-  // tracking — codegen always links the runtime fully (per repo
-  // rule); a missing entry here surfaces as
-  // `instantiate(expr): unknown import: cel::<name>`.
-  for (const char* name : {"cel_reset", "cel_alloc", "cel_map_create",
-                           "cel_map_insert", "cel_map_lookup_arena",
-                           "cel_map_lookup", "cel_list_create",
-                           "cel_list_set", "cel_list_at_arena",
-                           "cel_list_at"}) {
-    if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
-                                   name);
-        !s.ok()) {
-      return s;
-    }
-  }
+  if (auto s = BindAllRuntimeExports(impl, ctx); !s.ok()) return s;
 
   // Populate the layer-3 callback env now that the runtime
   // instance is live: the cel_host trampolines need a func handle
@@ -182,8 +232,8 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   // this store; resetting the table happens per-Eval.
   impl->host_env.memory = impl->memory;
   wasmtime_extern_t alloc_ext;
-  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance,
-                                    "cel_alloc", 9, &alloc_ext)) {
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "cel_alloc",
+                                    9, &alloc_ext)) {
     return absl::FailedPreconditionError(
         "runtime instance has no export `cel_alloc` (cel_host needs it)");
   }

@@ -1,5 +1,6 @@
 #include "compiler_v2/tools/wat_runner/wat_runner.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +21,122 @@
 namespace celwasm {
 
 namespace {
+
+// Names of every helper exported by `cel_runtime.wasm` that the
+// harness's expr modules may import.  Bound onto the linker by
+// `InstantiateRuntime` after instantiation — mirrors the
+// "always link the runtime fully" rule from CLAUDE.md
+// (api/engine.cc::Engine::Plan does the same).  Append-only as
+// the runtime grows; dropping a name silently breaks WATs that
+// rely on it, which is the point.
+constexpr std::array<absl::string_view, 95> kRuntimeExports = {
+    // M1 baseline.
+    "cel_reset",
+    "cel_alloc",
+    // M3: map runtime helpers.
+    "cel_map_create",
+    "cel_map_insert",
+    "cel_map_lookup_arena",
+    "cel_map_lookup",
+    // M4: list runtime helpers.
+    "cel_list_create",
+    "cel_list_set",
+    "cel_list_at_arena",
+    "cel_list_at",
+    // M5.B: arithmetic helpers.
+    "cel_int_add_at_vv",
+    "cel_int_sub_at_vv",
+    "cel_int_mul_at_vv",
+    "cel_int_div_at_vv",
+    "cel_int_mod_at_vv",
+    "cel_int_neg_at_v",
+    "cel_uint_add_at_vv",
+    "cel_uint_sub_at_vv",
+    "cel_uint_mul_at_vv",
+    "cel_uint_div_at_vv",
+    "cel_uint_mod_at_vv",
+    "cel_double_add_at_vv",
+    "cel_double_sub_at_vv",
+    "cel_double_mul_at_vv",
+    "cel_double_div_at_vv",
+    "cel_double_neg_at_v",
+    // M5.B: comparison helpers.
+    "cel_int_eq_at_vv",
+    "cel_int_ne_at_vv",
+    "cel_int_lt_at_vv",
+    "cel_int_le_at_vv",
+    "cel_int_gt_at_vv",
+    "cel_int_ge_at_vv",
+    "cel_uint_eq_at_vv",
+    "cel_uint_ne_at_vv",
+    "cel_uint_lt_at_vv",
+    "cel_uint_le_at_vv",
+    "cel_uint_gt_at_vv",
+    "cel_uint_ge_at_vv",
+    "cel_double_eq_at_vv",
+    "cel_double_ne_at_vv",
+    "cel_double_lt_at_vv",
+    "cel_double_le_at_vv",
+    "cel_double_gt_at_vv",
+    "cel_double_ge_at_vv",
+    "cel_bool_eq_at_vv",
+    "cel_bool_ne_at_vv",
+    "cel_bool_lt_at_vv",
+    "cel_bool_le_at_vv",
+    "cel_bool_gt_at_vv",
+    "cel_bool_ge_at_vv",
+    "cel_null_eq_at_vv",
+    // M5.B step 2: cross-type numeric ladder.
+    "cel_numeric_eq_at_vv",
+    "cel_numeric_ne_at_vv",
+    "cel_numeric_lt_at_vv",
+    "cel_numeric_le_at_vv",
+    "cel_numeric_gt_at_vv",
+    "cel_numeric_ge_at_vv",
+    // M5.C: string + bytes ops.
+    "cel_string_concat_at_vv",
+    "cel_string_size_at_v",
+    "cel_string_eq_at_vv",
+    "cel_string_lt_at_vv",
+    "cel_string_le_at_vv",
+    "cel_string_gt_at_vv",
+    "cel_string_ge_at_vv",
+    "cel_string_contains_at_vv",
+    "cel_string_starts_with_at_vv",
+    "cel_string_ends_with_at_vv",
+    "cel_bytes_concat_at_vv",
+    "cel_bytes_size_at_v",
+    "cel_bytes_eq_at_vv",
+    "cel_bytes_lt_at_vv",
+    "cel_bytes_le_at_vv",
+    "cel_bytes_gt_at_vv",
+    "cel_bytes_ge_at_vv",
+    // M5.D step 1: aggregate arena fast paths.
+    "cel_list_size_arena",
+    "cel_list_in_arena",
+    "cel_list_eq_arena",
+    "cel_list_concat_arena",
+    "cel_map_size_arena",
+    "cel_map_in_arena",
+    "cel_map_eq_arena",
+    // M5.D step 2: aggregate kDynamic dispatchers.
+    "cel_list_size",
+    "cel_list_in",
+    "cel_list_eq",
+    "cel_list_concat",
+    "cel_map_size",
+    "cel_map_in",
+    "cel_map_eq",
+    // M5.B step 2b: polymorphic equality.
+    "cel_equals_at_vv",
+    "cel_not_equals_at_vv",
+    // M5.G (Slice 2): 3VL / control-flow helpers.
+    "cel_and",
+    "cel_or",
+    "cel_not",
+    "cel_unknown_merge",
+    "cel_copy_slot",
+};
 
 // ── Status helpers — mirror cel::Engine's shape ─────────────
 
@@ -51,8 +168,7 @@ struct StubEnv {
 
 wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
                             const wasmtime_val_t* args, size_t nargs,
-                            wasmtime_val_t* /*results*/,
-                            size_t /*nresults*/) {
+                            wasmtime_val_t* /*results*/, size_t /*nresults*/) {
   if (nargs != 4 || args[0].kind != WASMTIME_I32 ||
       args[1].kind != WASMTIME_I32 || args[2].kind != WASMTIME_I32 ||
       args[3].kind != WASMTIME_I32) {
@@ -66,10 +182,10 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
-  const uint32_t out_slot = static_cast<uint32_t>(args[0].of.i32);
-  const uint32_t msg_slot = static_cast<uint32_t>(args[1].of.i32);
-  const uint32_t field_ref_id = static_cast<uint32_t>(args[2].of.i32);
-  const uint32_t attribute_id = static_cast<uint32_t>(args[3].of.i32);
+  const auto out_slot = static_cast<uint32_t>(args[0].of.i32);
+  const auto msg_slot = static_cast<uint32_t>(args[1].of.i32);
+  const auto field_ref_id = static_cast<uint32_t>(args[2].of.i32);
+  const auto attribute_id = static_cast<uint32_t>(args[3].of.i32);
 
   // Reach the caller's memory through its `memory` export.
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
@@ -101,8 +217,8 @@ void DeleteStubEnv(void* env) {
 // runtime won't instantiate without these bound.  WAT fixtures
 // don't exercise the kHost paths, so a no-op suffices.
 wasm_trap_t* NoopCelHostThreeArg(void*, wasmtime_caller_t*,
-                                 const wasmtime_val_t*, size_t,
-                                 wasmtime_val_t*, size_t) {
+                                 const wasmtime_val_t*, size_t, wasmtime_val_t*,
+                                 size_t) {
   return nullptr;
 }
 
@@ -110,8 +226,22 @@ wasm_functype_t* HostThreeArgTrampolineType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
   wasm_valtype_t* param_arr[3];
-  for (auto& p : param_arr) p = wasm_valtype_new(WASM_I32);
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
   wasm_valtype_vec_new(&params, 3, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+wasm_functype_t* HostTwoArgTrampolineType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[2];
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
+  wasm_valtype_vec_new(&params, 2, param_arr);
   wasm_valtype_vec_new_empty(&results);
   return wasm_functype_new(&params, &results);
 }
@@ -130,12 +260,28 @@ absl::Status RegisterCelHostThreeArgNoop(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
+absl::Status RegisterCelHostTwoArgNoop(wasmtime_linker_t* linker,
+                                       absl::string_view name) {
+  wasm_functype_t* type = HostTwoArgTrampolineType();
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, "cel_host", 8, name.data(), name.size(), type,
+      NoopCelHostThreeArg, nullptr, nullptr);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        absl::StrCat("linker.define(cel_host.", name, ")"), err);
+  }
+  return absl::OkStatus();
+}
+
 // Four-i32-in, zero-out — the M2 cel_host trampoline signature.
 wasm_functype_t* CelHostTrampolineType() {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_t results;
   wasm_valtype_t* param_arr[4];
-  for (auto& p : param_arr) p = wasm_valtype_new(WASM_I32);
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
   wasm_valtype_vec_new(&params, 4, param_arr);
   wasm_valtype_vec_new_empty(&results);
   return wasm_functype_new(&params, &results);
@@ -179,9 +325,9 @@ wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
-  const uint32_t out_slot = static_cast<uint32_t>(args[0].of.i32);
-  const uint32_t operand_slot = static_cast<uint32_t>(args[1].of.i32);
-  const uint32_t key_slot = static_cast<uint32_t>(args[2].of.i32);
+  const auto out_slot = static_cast<uint32_t>(args[0].of.i32);
+  const auto operand_slot = static_cast<uint32_t>(args[1].of.i32);
+  const auto key_slot = static_cast<uint32_t>(args[2].of.i32);
 
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   wasmtime_extern_t ext;
@@ -274,9 +420,9 @@ absl::Status InitEngineAndModules(RunState& s,
   if (s.engine == nullptr) {
     return absl::InternalError("wasm_engine_new_with_config returned null");
   }
-  wasmtime_error_t* err = wasmtime_module_new(
-      s.engine, kCelRuntimeWasmBytes, kCelRuntimeWasmBytesSize,
-      &s.runtime_module);
+  wasmtime_error_t* err =
+      wasmtime_module_new(s.engine, kCelRuntimeWasmBytes,
+                          kCelRuntimeWasmBytesSize, &s.runtime_module);
   if (err != nullptr) return WasmtimeErrorToStatus("module_new(runtime)", err);
   err = wasmtime_module_new(s.engine, expr_bytes.data(), expr_bytes.size(),
                             &s.expr_module);
@@ -301,60 +447,98 @@ absl::Status InitStoreAndMemory(RunState& s) {
   return absl::OkStatus();
 }
 
-absl::Status InitLinker(RunState& s, const WatRunInput& input) {
-  s.linker = wasmtime_linker_new(s.engine);
-  if (s.linker == nullptr) {
-    return absl::InternalError("wasmtime_linker_new returned null");
-  }
-  if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
-  // 3-arg cel_host trampolines.  Caller may supply a stub to
-  // simulate the host-table dispatch (kHost path tests); otherwise
-  // a no-op binds so kArena WATs that link cel_host imports but
-  // never call them still instantiate.
-  if (input.cel_host_cel_map_lookup_stub) {
-    if (auto st = RegisterCelHostThreeArgStub(
-            s.linker, "cel_map_lookup", input.cel_host_cel_map_lookup_stub);
-        !st.ok()) {
-      return st;
-    }
-  } else {
-    if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_map_lookup");
-        !st.ok()) return st;
-  }
-  if (input.cel_host_cel_list_at_stub) {
-    if (auto st = RegisterCelHostThreeArgStub(
-            s.linker, "cel_list_at", input.cel_host_cel_list_at_stub);
-        !st.ok()) {
-      return st;
-    }
-  } else {
-    if (auto st = RegisterCelHostThreeArgNoop(s.linker, "cel_list_at");
-        !st.ok()) return st;
-  }
-  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
-  wasmtime_extern_t mem_ext;
-  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
-  mem_ext.of.memory = s.memory;
-  wasmtime_error_t* err = wasmtime_linker_define(
-      s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
-  if (err != nullptr) {
-    return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
-  }
+// Register the optional 4-arg cel_host stubs (cel_get_field /
+// cel_has_field).  Pulling these out of InitLinker to keep its
+// per-function footprint under the lint gate.
+absl::Status RegisterCelHostFourArgStubs(wasmtime_linker_t* linker,
+                                         const WatRunInput& input) {
   if (input.cel_get_field_stub) {
-    if (auto st = RegisterCelHostStub(s.linker, "cel_get_field",
+    if (auto st = RegisterCelHostStub(linker, "cel_get_field",
                                       input.cel_get_field_stub);
         !st.ok()) {
       return st;
     }
   }
   if (input.cel_has_field_stub) {
-    if (auto st = RegisterCelHostStub(s.linker, "cel_has_field",
+    if (auto st = RegisterCelHostStub(linker, "cel_has_field",
                                       input.cel_has_field_stub);
         !st.ok()) {
       return st;
     }
   }
   return absl::OkStatus();
+}
+
+// Register the 3-arg cel_host trampolines (cel_map_lookup /
+// cel_list_at).  Caller may supply a stub to simulate host-table
+// dispatch (kHost-path tests); otherwise a no-op binds so kArena
+// WATs that link the cel_host imports but never call them still
+// instantiate.
+absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
+                                                const WatRunInput& input) {
+  if (input.cel_host_cel_map_lookup_stub) {
+    if (auto st = RegisterCelHostThreeArgStub(
+            linker, "cel_map_lookup", input.cel_host_cel_map_lookup_stub);
+        !st.ok()) {
+      return st;
+    }
+  } else if (auto st = RegisterCelHostThreeArgNoop(linker, "cel_map_lookup");
+             !st.ok()) {
+    return st;
+  }
+  if (input.cel_host_cel_list_at_stub) {
+    if (auto st = RegisterCelHostThreeArgStub(linker, "cel_list_at",
+                                              input.cel_host_cel_list_at_stub);
+        !st.ok()) {
+      return st;
+    }
+  } else if (auto st = RegisterCelHostThreeArgNoop(linker, "cel_list_at");
+             !st.ok()) {
+    return st;
+  }
+  // M5.D step 2: aggregate-op kHost imports.  Tests link the
+  // dispatchers but don't exercise the host arms; no-op stubs
+  // suffice (tests that need behaviour will plug in via input).
+  static constexpr absl::string_view kThreeArg[] = {
+      "cel_list_in", "cel_list_eq", "cel_list_concat",
+      "cel_map_in",  "cel_map_eq",  "cel_message_eq",
+  };
+  for (absl::string_view name : kThreeArg) {
+    if (auto st = RegisterCelHostThreeArgNoop(linker, name); !st.ok()) {
+      return st;
+    }
+  }
+  static constexpr absl::string_view kTwoArg[] = {
+      "cel_list_size",
+      "cel_map_size",
+  };
+  for (absl::string_view name : kTwoArg) {
+    if (auto st = RegisterCelHostTwoArgNoop(linker, name); !st.ok()) {
+      return st;
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InitLinker(RunState& s, const WatRunInput& input) {
+  s.linker = wasmtime_linker_new(s.engine);
+  if (s.linker == nullptr) {
+    return absl::InternalError("wasmtime_linker_new returned null");
+  }
+  if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
+  if (auto st = RegisterCelHostThreeArgTrampolines(s.linker, input); !st.ok()) {
+    return st;
+  }
+  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
+  wasmtime_extern_t mem_ext;
+  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
+  mem_ext.of.memory = s.memory;
+  wasmtime_error_t* err =
+      wasmtime_linker_define(s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
+  }
+  return RegisterCelHostFourArgStubs(s.linker, input);
 }
 
 absl::Status BindExport(wasmtime_linker_t* linker, wasmtime_context_t* ctx,
@@ -389,18 +573,7 @@ absl::Status InstantiateRuntime(RunState& s) {
   // so any WAT that imports them resolves at instantiate time —
   // mirrors the "always link the runtime fully" rule from
   // CLAUDE.md (api/engine.cc::Engine::Plan does the same).
-  for (absl::string_view name : {
-           absl::string_view("cel_reset"),
-           absl::string_view("cel_alloc"),
-           absl::string_view("cel_map_create"),
-           absl::string_view("cel_map_insert"),
-           absl::string_view("cel_map_lookup_arena"),
-           absl::string_view("cel_map_lookup"),
-           absl::string_view("cel_list_create"),
-           absl::string_view("cel_list_set"),
-           absl::string_view("cel_list_at_arena"),
-           absl::string_view("cel_list_at"),
-       }) {
+  for (absl::string_view name : kRuntimeExports) {
     if (auto st = BindExport(s.linker, ctx, s.runtime_instance, name);
         !st.ok()) {
       return st;
@@ -473,6 +646,7 @@ std::vector<uint8_t> SnapshotMemory(RunState& s) {
 
 }  // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — public API, declared in the header.
 absl::StatusOr<WatRunOutput> RunWat(const WatRunInput& input) {
   auto expr_bytes_or = Wat2Wasm(input.wat);
   if (!expr_bytes_or.ok()) return expr_bytes_or.status();
