@@ -240,6 +240,14 @@ absl::Status CompareMessage(const cel::Value& got,
   }
   auto want_or = celwasm::conformance::UnpackAny(want);
   if (!want_or.ok()) return want_or.status();
+  // MessageDifferencer::Equals CHECK-fails on cross-descriptor
+  // compare; pre-screen so a mismatch surfaces as a clean
+  // FailedPrecondition instead of aborting the whole run.
+  if (got_msg->GetDescriptor() != (*want_or)->GetDescriptor()) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "message type mismatch: want=", (*want_or)->GetDescriptor()->full_name(),
+        " got=", got_msg->GetDescriptor()->full_name()));
+  }
   if (!google::protobuf::util::MessageDifferencer::Equals(*got_msg,
                                                           **want_or)) {
     return absl::FailedPreconditionError(absl::StrCat(

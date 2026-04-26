@@ -15,6 +15,8 @@
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
 #include "google/protobuf/descriptor.h"
+#include "google/protobuf/descriptor.pb.h"
+#include "google/protobuf/descriptor_legacy.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/util/message_differencer.h"
 
@@ -91,20 +93,22 @@ absl::StatusOr<cel::Value> ReadScalarField(
     return cel::Value::String(std::string(s));
   }
   if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
-    // langdef §"Field Selection": an unset singular message field
-    // reads as `null` (both proto2 and proto3).  `Reflection::HasField`
-    // returns false for an unset message; only when present do we
-    // surface the sub-message backing.  Without this check
-    // `GetMessage` would return the default instance, breaking
-    // `msg.unset_message == null` (M7.A regression test
-    // `ProtoLiteralEmptyE2ETest.EmptyProto3MessageHasNullForUnsetSubmessage`).
-    if (!refl->HasField(msg, &field)) {
+    // langdef §"Field Selection": proto3 unset singular message
+    // reads as `null`; proto2 reads as the descriptor's default
+    // instance.  Protobuf's `Reflection::GetMessage` already
+    // returns the default-instance for unset fields in both
+    // syntaxes, so the proto2 path is just "wrap GetMessage".
+    // The only override is proto3-null on unset.
+    const google::protobuf::FileDescriptor* file =
+        field.containing_type()->file();
+    const bool is_proto3 =
+        file != nullptr &&
+        google::protobuf::FileDescriptorLegacy(file).edition() ==
+            google::protobuf::EDITION_PROTO3;
+    if (is_proto3 && !refl->HasField(msg, &field)) {
       return cel::Value::Null();
     }
     const google::protobuf::Message& sub = refl->GetMessage(msg, &field);
-    // Wrap the sub-message in a fresh ProtoBacking.  Non-owning
-    // pointer — the root message's lifetime covers every nested
-    // field per protobuf contract.
     return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
   }
   return absl::InternalError(absl::StrCat(

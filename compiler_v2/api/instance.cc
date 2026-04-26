@@ -20,6 +20,7 @@
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
+#include "google/protobuf/message.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/runtime/cel_data.h"
@@ -168,6 +169,37 @@ absl::StatusOr<Value> DecodeHostListAt(const celwasm::ExternrefTable& refs,
   return Value::List(std::move(elements));
 }
 
+// M7.F: decode a CEL_MESSAGE CelValue.  The payload's `msg_slot`
+// points at a `HostMessageBacking` interned by the host trampoline
+// (e.g. `OwnedProtoBacking` from a `cel_make_message` literal, or
+// `ProtoBacking` from an Activation::Bind).  Per-Eval lifetime: the
+// backing goes away on `ExternrefTable::Reset()` between Evals, so
+// the decoded `Value` must own its message — `CopyFrom` into a
+// fresh heap message wrapped in `Value::OwnedMessage`.
+//
+// Conformance rows like `TestAllTypes{single_int32: -34}` (with no
+// trailing field read) hit this path: $eval's root is the
+// constructed message itself; without this arm `Instance::Eval`
+// would trap with "kind 10 not yet supported".
+absl::StatusOr<Value> DecodeHostMessageAt(
+    const celwasm::ExternrefTable& refs, uint32_t ref_slot) {
+  const celwasm::HostMessageBacking* backing = refs.Lookup(ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
+        " has no externref entry"));
+  }
+  const google::protobuf::Message* src = backing->message();
+  if (src == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
+        " backing has no proto message"));
+  }
+  std::unique_ptr<google::protobuf::Message> copy(src->New());
+  copy->CopyFrom(*src);
+  return Value::OwnedMessage(std::move(copy));
+}
+
 // M7.F: decode a CEL_MAP_HOST CelValue.  Mirrors `DecodeHostListAt`
 // — walk via `ForEach((k, v))` and re-wrap in a vector-backed
 // `HostMap`.  Same per-Eval-lifetime concern: backing goes away on
@@ -266,6 +298,8 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       return DecodeHostListAt(refs, cv.payload.ref_slot);
     case CEL_MAP_HOST:
       return DecodeHostMapAt(refs, cv.payload.ref_slot);
+    case CEL_MESSAGE:
+      return DecodeHostMessageAt(refs, cv.payload.msg_slot);
     case CEL_UNKNOWN:
       // M2.E: PartialEval surfaces CEL_UNKNOWN with the
       // attribute_id stamped in payload.unk.  Reconstruct an

@@ -17,7 +17,7 @@ No CI gate today.  Adding one is tracked under "Future work" below.
 
 ## Current state
 
-`total=2454 · pass=876 (35.7%) · skip=843 (34.4%) · fail=735 (29.9%)`
+`total=2454 · pass=921 (37.5%) · skip=843 (34.4%) · fail=690 (28.1%)`
 across 30 loadable fixtures.  M7.A–E shipped 2026-04-25
 (`+131` PASS vs the M7-plan estimate of `+250`); §4.5 encoder
 polish + null-clear shipped 2026-04-25 (`+27`, 831 → 858);
@@ -227,10 +227,10 @@ ext-lib FAIL-dominated fixtures.
 | `unknowns.textproto`        |    0 |   0 |    0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `conversions.textproto`     |  109 |   0 |  109 |   0 |  0% | `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` — overload set not seeded | M5.D step 2 (host conversions) |
 | `dynamic.textproto`         |  226 |   9 |  175 |  42 |  4% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`.  The 9 PASSes graduated via M7.D's `InlineConstantReferences` rewrite (some `dyn(constant)` rows fold to a constant before the gate) | Never (static subset) |
-| `enums.textproto`           |   85 |  36 |   17 |  32 | 42% | M7.D `InlineConstantReferences` + §4.5 encoder polish + envelope widen carried 36 rows.  32 FAILs surfaced from the envelope widen (previously SKIPped) — most are dyn / wrapper / object-value-matcher rows now reachable but failing on M8 / dyn-typed deps | Diagnose ext-lib gaps |
+| `enums.textproto`           |   85 |  46 |   17 |  22 | 54% | M7.D `InlineConstantReferences` + §4.5 polish + envelope widen + CEL_MESSAGE decoder arm.  22 FAILs remain on dyn / wrapper / repeated-enum-as-object-value paths | Classifier tightening + M8 |
 | `macros.textproto`          |   44 |   0 |   44 |   0 |  0% | 33 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 envelope (`eval_error`/disable_check); 5 `dyn(aggregate)` rejections | Comprehensions follow-on |
-| `proto2.textproto`          |  118 |  39 |   49 |  30 | 33% | M7.A–E + polish + envelope widen.  Of the 30 FAILs (envelope previously hid these as SKIP): wrapper-typed rows (M8), dyn-typed rows (static-subset rejection), Any packing (M7-future), and the chained-null read edge | M8 + classifier tightening |
-| `proto3.textproto`          |   85 |  36 |   19 |  30 | 42% | Same shape as proto2 — 30 FAILs surfaced from envelope widen | M8 + classifier tightening |
+| `proto2.textproto`          |  118 |  55 |   49 |  14 | 47% | M7.A–E + polish + envelope widen + CEL_MESSAGE root decoder + proto2 unset-message default-instance fix.  14 FAILs: ~9 wrapper-typed (M8), ~3 Any/Struct/Value pack (M7-future), ~2 misc | M8 + Any |
+| `proto3.textproto`          |   85 |  52 |   19 |  14 | 61% | Same shape as proto2 — 14 FAILs split similarly | M8 + Any |
 | `timestamps.textproto`      |   76 |   0 |   76 |   0 |  0% | `timestamp(...)` / `duration(...)` constructors, date arithmetic | Timestamps slice (post-M7) |
 | `type_deduction.textproto`  |   47 |   0 |   47 |   0 |  0% | All tests `check_only:true` with `typed_result:` matcher — envelope drops them | Harness: `typed_result` matcher |
 | `wrappers.textproto`        |   36 |   0 |   18 |  18 |  0% | M7.A admits wrapper-type construction at the parse stage (rows graduated from envelope-skip to compile-FAIL); 18 FAILs all gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
@@ -244,7 +244,7 @@ ext-lib FAIL-dominated fixtures.
 | `optionals.textproto`       |   70 |   0 |    0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)`; 3 previously-SKIP `eval_error` rows now FAIL on the same root cause | Optionals pass (post-M5) |
 | `string_ext.textproto`      |  216 |   0 |  122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii`; 9 previously-SKIP `eval_error` rows now FAIL on the same root cause | Extensions pass |
 
-Sums (cross-check): pass = 876, skip = 843, fail = 735, total = 2454.
+Sums (cross-check): pass = 921, skip = 843, fail = 690, total = 2454.
 
 ## Forecast by remaining (open) milestone
 
