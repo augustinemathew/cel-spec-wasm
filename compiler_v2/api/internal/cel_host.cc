@@ -463,7 +463,7 @@ absl::StatusOr<bool> EncodeAggregateIfAny(const cel::Value& v,
     auto sub_or = v.SharedMessageBacking();
     if (!sub_or.ok()) return sub_or.status();
     cv.kind = CEL_MESSAGE;
-    cv.payload.msg_slot = ctx.refs.Intern(*std::move(sub_or));
+    cv.payload.ref_slot = ctx.refs.Intern(*std::move(sub_or));
   } else if (v.kind() == K::kMap) {
     auto sub_or = v.SharedMapBacking();
     if (!sub_or.ok()) return sub_or.status();
@@ -979,7 +979,7 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
     return FieldDispatchPrelude{/*sentinel_handled=*/true};
   }
 
-  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.msg_slot);
+  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.ref_slot);
   if (backing == nullptr) {
     WriteWireError(CEL_ERR_HOST_ADAPTER_ERROR, out_slot, ctx.mem);
     return FieldDispatchPrelude{/*sentinel_handled=*/true};
@@ -1501,11 +1501,11 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  const HostMessageBacking* a_backing = ctx.refs.Lookup(a_cv.payload.msg_slot);
-  const HostMessageBacking* b_backing = ctx.refs.Lookup(b_cv.payload.msg_slot);
+  const HostMessageBacking* a_backing = ctx.refs.Lookup(a_cv.payload.ref_slot);
+  const HostMessageBacking* b_backing = ctx.refs.Lookup(b_cv.payload.ref_slot);
   if (a_backing == nullptr || b_backing == nullptr) {
     return absl::FailedPreconditionError(
-        "CelMessageEqImpl: message msg_slot not found in ExternrefTable");
+        "CelMessageEqImpl: message ref_slot not found in ExternrefTable");
   }
   // M5.D step 2 ship state: ProtoBacking is the only concrete that
   // exposes its underlying `google::protobuf::Message*`.  Custom
@@ -1582,7 +1582,7 @@ absl::Status CelMakeMessageImpl(uint32_t type_id, uint32_t out_slot,
   const uint32_t slot = ctx.refs.Intern(std::move(backing));
   CelValue out{};
   out.kind = CEL_MESSAGE;
-  out.payload.msg_slot = slot;
+  out.payload.ref_slot = slot;
   ctx.mem.WriteCelValue(out_slot, out);
   return absl::OkStatus();
 }
@@ -1760,7 +1760,7 @@ absl::Status SetScalarField(google::protobuf::Message& msg,
             "` is MESSAGE but no ExternrefTable supplied "
             "(M7.E call-site bug)"));
       }
-      const HostMessageBacking* src = refs->Lookup(value.payload.msg_slot);
+      const HostMessageBacking* src = refs->Lookup(value.payload.ref_slot);
       if (src == nullptr) {
         return absl::InvalidArgumentError(absl::StrCat(
             "CelSetFieldImpl: field `", field.name(),
@@ -1937,7 +1937,7 @@ absl::Status AppendRepeatedFromCelValue(
             "CelSetFieldImpl: repeated message `", field.name(),
             "` element kind=", static_cast<int>(cv.kind)));
       }
-      const HostMessageBacking* src = refs.Lookup(cv.payload.msg_slot);
+      const HostMessageBacking* src = refs.Lookup(cv.payload.ref_slot);
       if (src == nullptr) {
         return absl::InvalidArgumentError(absl::StrCat(
             "CelSetFieldImpl: repeated message `", field.name(),
@@ -2132,7 +2132,7 @@ absl::Status InsertArenaMapEntry(
           val_fd->name(), "`> value kind=",
           static_cast<int>(val_cv.kind)));
     }
-    const HostMessageBacking* src = refs.Lookup(val_cv.payload.msg_slot);
+    const HostMessageBacking* src = refs.Lookup(val_cv.payload.ref_slot);
     if (src == nullptr || src->message() == nullptr) {
       return absl::InvalidArgumentError(
           "CelSetFieldImpl: map message-value source has no backing");
@@ -2343,7 +2343,7 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
         "CelSetFieldImpl: msg_slot kind is ",
         static_cast<int>(msg_cv.kind), " (expected CEL_MESSAGE)"));
   }
-  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.msg_slot);
+  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.ref_slot);
   if (backing == nullptr) {
     return absl::InvalidArgumentError(
         "CelSetFieldImpl: msg_slot has no externref entry");

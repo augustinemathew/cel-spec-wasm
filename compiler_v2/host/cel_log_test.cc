@@ -327,7 +327,7 @@ TEST(CelLogTest, ValueMessageKind) {
   const uint32_t cv_off = 512;
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
-  cv.payload.msg_slot = 11;
+  cv.payload.ref_slot = 11;
   mem.WriteCelValue(cv_off, cv);
   const uint32_t argv_off = 256;
   mem.WriteSlot(argv_off, CEL_LOG_TAG_VALUE, cv_off);

@@ -207,7 +207,7 @@ void FormatValueKind(absl::Span<const uint8_t> mem, const CelValue& cv,
       FormatSpanPayload(mem, cv.payload.s, "bytes", out);
       return;
     case CEL_MESSAGE:
-      absl::StrAppendFormat(out, "message(slot=%u)", cv.payload.msg_slot);
+      absl::StrAppendFormat(out, "message(slot=%u)", cv.payload.ref_slot);
       return;
     case CEL_TYPE:
       absl::StrAppendFormat(out, "type(id=%u)", cv.payload.type_id);

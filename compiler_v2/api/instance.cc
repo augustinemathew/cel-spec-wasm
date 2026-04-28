@@ -169,7 +169,7 @@ absl::StatusOr<Value> DecodeHostListAt(const celwasm::ExternrefTable& refs,
   return Value::List(std::move(elements));
 }
 
-// M7.F: decode a CEL_MESSAGE CelValue.  The payload's `msg_slot`
+// M7.F: decode a CEL_MESSAGE CelValue.  The payload's `ref_slot`
 // points at a `HostMessageBacking` interned by the host trampoline
 // (e.g. `OwnedProtoBacking` from a `cel_make_message` literal, or
 // `ProtoBacking` from an Activation::Bind).  Per-Eval lifetime: the
@@ -186,13 +186,13 @@ absl::StatusOr<Value> DecodeHostMessageAt(
   const celwasm::HostMessageBacking* backing = refs.Lookup(ref_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
+        "Eval: CEL_MESSAGE ref_slot=", ref_slot,
         " has no externref entry"));
   }
   const google::protobuf::Message* src = backing->message();
   if (src == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
+        "Eval: CEL_MESSAGE ref_slot=", ref_slot,
         " backing has no proto message"));
   }
   std::unique_ptr<google::protobuf::Message> copy(src->New());
@@ -299,7 +299,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
     case CEL_MAP_HOST:
       return DecodeHostMapAt(refs, cv.payload.ref_slot);
     case CEL_MESSAGE:
-      return DecodeHostMessageAt(refs, cv.payload.msg_slot);
+      return DecodeHostMessageAt(refs, cv.payload.ref_slot);
     case CEL_UNKNOWN:
       // M2.E: PartialEval surfaces CEL_UNKNOWN with the
       // attribute_id stamped in payload.unk.  Reconstruct an
@@ -512,7 +512,7 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
 // M2.C: encode a Value::Message-bound variable into a CEL_MESSAGE
 // CelValue.  The bound `HostMessageBacking` is interned into the
 // per-Instance `ExternrefTable` and the resulting slot lives in
-// `payload.msg_slot`.  The caller is responsible for resetting
+// `payload.ref_slot`.  The caller is responsible for resetting
 // the table between Evals so slot indices don't leak across
 // invocations.
 absl::Status EncodeMessage(const Value& v, absl::string_view name,
@@ -524,7 +524,7 @@ absl::Status EncodeMessage(const Value& v, absl::string_view name,
   if (!backing_or.ok()) return backing_or.status();
   const uint32_t slot = refs.Intern(*std::move(backing_or));
   dst->kind = CEL_MESSAGE;
-  dst->payload.msg_slot = slot;
+  dst->payload.ref_slot = slot;
   return absl::OkStatus();
 }
 

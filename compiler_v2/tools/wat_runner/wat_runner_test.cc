@@ -73,7 +73,7 @@ std::vector<uint8_t> EncodeIntCelValue(int64_t value) {
 std::vector<uint8_t> EncodeMessageCelValue(uint32_t msg_slot) {
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
-  cv.payload.msg_slot = msg_slot;
+  cv.payload.ref_slot = msg_slot;
   std::vector<uint8_t> out(sizeof(cv));
   std::memcpy(out.data(), &cv, sizeof(cv));
   return out;

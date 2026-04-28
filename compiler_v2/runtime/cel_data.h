@@ -119,12 +119,9 @@ struct CelValue {
     CelArray list;
     ArenaMapRef arena_map;    // CEL_MAP_ARENA
     ArenaListRef arena_list;  // CEL_LIST_ARENA
-    uint32_t ref_slot;        // CEL_MAP_HOST + CEL_LIST_HOST (and any
-                              // future host aggregates; CEL_MESSAGE
-                              // has its own `msg_slot` for now to
-                              // keep cel_host call sites unchanged
-                              // since M3.A).
-    uint32_t msg_slot;
+    uint32_t ref_slot;        // CEL_MAP_HOST + CEL_LIST_HOST + CEL_MESSAGE
+                              // (and any future host-backed aggregate).
+                              // Index into the host's ExternrefTable.
     uint32_t type_id;
     CelDurTs dur;
     CelDurTs ts;

@@ -220,7 +220,7 @@ TEST(CelListAtImplTest, NestedMessageElementInternsToMessageSlot) {
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
   CelValue out = f.mem.ReadCelValue(f.out_slot);
   EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_MESSAGE));
-  EXPECT_NE(f.refs.Lookup(out.payload.msg_slot), nullptr);
+  EXPECT_NE(f.refs.Lookup(out.payload.ref_slot), nullptr);
 }
 
 TEST(CelListAtImplTest, NestedListElementInternsToListSlot) {

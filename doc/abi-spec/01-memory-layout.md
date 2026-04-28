@@ -62,9 +62,17 @@ imports it. Lifetime is per-`Instance`. Layout (low offset → high):
     compile-time constant baked into the wasm as the first arg of
     `cel_reset`. The host does not compute it.
 
-  - **A015 [ASSUMED]** Initial linear-memory size is 1 page = 64
-    KiB. Larger programs negotiate more pages via the (future) ABI
-    section; M1–M4 hardcode 1 page.
+  - **A015 [ASSUMED]** Initial linear-memory size is `ceil(mem_size_bytes
+    / 65536)` wasm pages, where `mem_size_bytes` is a `CompileOptions`
+    field defaulting to `128 * 1024` → 2 pages. The minimum is 2
+    pages: `cel_runtime.wasm` is built with
+    `--import-memory=cel,memory` and links against an imported
+    memory of `min=2` (`compiler_v2/runtime/BUILD.bazel:191`,
+    confirmed by `cel_runtime_wasm_test.cc:159`); a single-page
+    expr module would fail to instantiate against it. The
+    `mem_size_bytes` value is also passed as the second arg of the
+    `cel_reset(base, limit)` call emitted at the top of `eval()`,
+    fixing the arena ceiling per Instance.
 
 ## 3. Arena
 
@@ -103,8 +111,15 @@ imports it. Lifetime is per-`Instance`. Layout (low offset → high):
     ```
 
   - **A032 [ASSUMED]** The 4-byte `_pad` at offset 4 is always
-    written as zero. Host decoders MAY ignore it; producers MUST
-    zero it.
+    written as zero. Two write paths exist and both zero it:
+    (1) `cel_alloc` zero-fills the returned region (A023), so any
+    `CelValue` reached via `alloc_cv` starts at zero and the
+    payload writes that follow never touch offsets [4,8); (2)
+    `StaticMemoryBuilder::OpenFrame` (codegen-emitted rodata
+    `CelValue`s) writes the `_pad` slot explicitly with
+    `AppendU32LE(buf_, 0u);` immediately after the `kind` (see
+    `static_memory_builder.cc:60-61`). Host decoders MAY ignore it;
+    producers MUST zero it.
 
   - **A033 [ASSUMED]** Payload union starts at offset 8 and
     occupies 16 bytes. All payload variants fit in 16 bytes; no
@@ -149,17 +164,22 @@ imports it. Lifetime is per-`Instance`. Layout (low offset → high):
     8–11 hold `u32 header_ptr` — a linear-memory offset to an
     `ArenaMapHeader` (§5.1). Bytes 12–23 are zero.
 
-  - **A049 [ASSUMED]** `kind == CEL_MAP_HOST` (9): payload bytes
-    8–11 hold `u32 ref_slot` — an index into the host-side
-    `ExternrefTable`. Bytes 12–23 are zero. The host owns the
-    backing object; wasm code MUST NOT dereference `ref_slot`
-    directly.
+  - **A049 [ASSUMED]** Host-backed kinds — `CEL_MAP_HOST` (9),
+    `CEL_MESSAGE` (10), `CEL_LIST_HOST` (17) — share an identical
+    payload shape: bytes 8–11 hold `u32 ref_slot`, an index into
+    the host-side `ExternrefTable`. Bytes 12–23 are zero. The host
+    owns the backing object; wasm code MUST NOT dereference
+    `ref_slot` directly. The CelKind tag is the only on-wire
+    distinction; per L4 invariant (forthcoming), the three kinds
+    are interchangeable from a CEL program's perspective and
+    differ only in observer dispatch (map lookup vs list indexing
+    vs field selection).
 
-  - **A050 [ASSUMED]** `kind == CEL_MESSAGE` (10): payload bytes
-    8–11 hold `u32 msg_slot` — an externref-table index. Bytes
-    12–23 are zero. (`msg_slot` is named separately from `ref_slot`
-    for historical reasons; both are externref indices and a
-    future cleanup may unify them. See `cel_data.h:124-128`.)
+  - **A050 [RESERVED]** *(Was: separate CEL_MESSAGE assumption with
+    a `msg_slot` union name. Collapsed into A049; the distinct
+    `msg_slot` member was renamed to `ref_slot` in `cel_data.h`,
+    making all three host-backed kinds share one union member. ID
+    retained for table stability.)*
 
   - **A051 [ASSUMED]** `kind == CEL_TYPE` (11): payload bytes 8–11
     hold `u32 type_id` — an index into a compile-time type table.
@@ -187,9 +207,10 @@ imports it. Lifetime is per-`Instance`. Layout (low offset → high):
     Bytes 12–23 are zero. No string message is carried on the wire;
     the host pretty-prints from the code.
 
-  - **A057 [ASSUMED]** `kind == CEL_LIST_HOST` (17): payload bytes
-    8–11 hold `u32 ref_slot` — externref-table index. Bytes 12–23
-    are zero. Same backing model as `CEL_MAP_HOST`.
+  - **A057 [RESERVED]** *(Was: separate CEL_LIST_HOST assumption.
+    Folded into A049 — `CEL_LIST_HOST` (17) shares the host-backed
+    `ref_slot` payload shape with `CEL_MAP_HOST` and `CEL_MESSAGE`.
+    ID retained for table stability.)*
 
 ## 5. Aggregate headers
 
@@ -278,10 +299,10 @@ Cross-check that L1 covers every type in langdef §"Values":
 | `bool`             | CEL_BOOL (1)            | A041                        |
 | `string`           | CEL_STRING (5)          | A045                        |
 | `bytes`            | CEL_BYTES (6)           | A046                        |
-| `list`             | CEL_LIST_ARENA (7) **or** CEL_LIST_HOST (17) | A047, A057; dispatch by origin |
+| `list`             | CEL_LIST_ARENA (7) **or** CEL_LIST_HOST (17) | A047, A049; dispatch by origin |
 | `map`              | CEL_MAP_ARENA (8) **or** CEL_MAP_HOST (9)    | A048, A049; dispatch by origin |
 | `null_type`        | CEL_NULL (0)            | A040                        |
-| message names      | CEL_MESSAGE (10)        | A050                        |
+| message names      | CEL_MESSAGE (10)        | A049                        |
 | `type`             | CEL_TYPE (11)           | A051                        |
 | Duration (abstract) | CEL_DURATION (12)      | A052                        |
 | Timestamp (abstract) | CEL_TIMESTAMP (13)    | A053                        |
@@ -299,12 +320,12 @@ Implementation extras not in langdef:
     origin-tagged) CelKind values. There is no spec value type
     without a CelKind.
 
-  - **A081 [ASSUMED]** `CEL_LIST_ARENA` vs `CEL_LIST_HOST` (and
-    `CEL_MAP_ARENA` vs `CEL_MAP_HOST`) are interchangeable from the
-    CEL program's perspective — they evaluate identically under
-    `==`, `size()`, indexing. The split is purely about origin
-    (literal vs proto-reflected / Activation-bound) and ownership
-    (arena vs host externref).
+  - **A081 [MOVED to L4]** *(Was: arena-backed and host-backed
+    list/map kinds are observably equivalent under CEL semantics.
+    This is a behavioural claim — it depends on how comparison,
+    indexing, and `size()` dispatch — and properly belongs in the
+    L4 semantics layer. Tracked as a forward reference; L1 only
+    documents that the wire shapes coexist.)*
 
 ## 8. Out of scope for L1
 
@@ -334,7 +355,7 @@ specified here:
 | A012 | limit at offset 12 | `cel_runtime.c:70` | TODO |
 | A013 | rodata begins at offset 16 | `cel_memory.h:12-13` | TODO |
 | A014 | rodata-end is compile-time const | `cel_arena.h:5-9` | TODO |
-| A015 | initial memory = 1 page (64 KiB) | `cel_runtime.c:48-52` | TODO |
+| A015 | initial memory = `ceil(mem_size_bytes/65536)` pages, default 2, min 2 | `compile.h:50`; `runtime/BUILD.bazel:191`; `cel_runtime_wasm_test.cc:159` | TODO |
 | A020 | `cel_reset` is the only initialiser | `cel_runtime.c:100-104` | TODO |
 | A021 | `cel_alloc` 8-aligned, 0 on OOM | `cel_runtime.c:106-116` | TODO |
 | A022 | `cel_alloc(0)` returns 8-aligned | `cel_runtime.c:108-109` | TODO |
@@ -342,7 +363,7 @@ specified here:
 | A024 | no individual free | `cel_arena.h:1` | TODO |
 | A030 | `sizeof(CelValue) == 24` | `cel_data.h:137` `_Static_assert`; `cel_data_test.cc`; `cel_arena_test.cc:27` | DONE — references existing tests |
 | A031 | byte layout 0/4/8 (kind/pad/payload) | `cel_data.h:108-135` | TODO |
-| A032 | `_pad` always zero | `cel_runtime.c:137` etc. | TODO |
+| A032 | `_pad` always zero (cel_alloc memset + OpenFrame explicit write) | `cel_runtime.c:114`; `static_memory_builder.cc:60-61` | TODO |
 | A033 | payload at offset 8, 16 bytes | `cel_data.h:112` | TODO |
 | A040 | CEL_NULL = 0, no payload | `cel_data.h:32`; `cel_runtime.c:132-139` | TODO |
 | A041 | CEL_BOOL = 1, i32 payload {0,1} | `cel_data.h:33`; `cel_runtime.c:141-149` | TODO |
@@ -353,15 +374,15 @@ specified here:
 | A046 | CEL_BYTES = 6, CelSpan payload | `cel_data.h:38`; `cel_runtime.c:202-205` | TODO |
 | A047 | CEL_LIST_ARENA = 7, header_ptr | `cel_data.h:39`; `cel_data_test.cc:54-62` | DONE |
 | A048 | CEL_MAP_ARENA = 8, header_ptr | `cel_data.h:40`; `cel_data_test.cc:44-52` | DONE |
-| A049 | CEL_MAP_HOST = 9, ref_slot | `cel_data.h:41`; `cel_data_test.cc:64-72` | partial — covers shape, not lifetime |
-| A050 | CEL_MESSAGE = 10, msg_slot | `cel_data.h:42` | TODO |
+| A049 | host-backed kinds (MAP_HOST/MESSAGE/LIST_HOST) share `ref_slot` payload | `cel_data.h:41-42, 49`; `cel_data_test.cc:64-72` | partial — covers MAP_HOST/LIST_HOST shape; needs MESSAGE shape test + cross-kind equivalence |
+| A050 | RESERVED — folded into A049 (msg_slot/ref_slot collapse) | n/a | n/a |
 | A051 | CEL_TYPE = 11, type_id | `cel_data.h:43` | TODO |
 | A052 | CEL_DURATION = 12, CelDurTs | `cel_data.h:44, 102-106` | TODO |
 | A053 | CEL_TIMESTAMP = 13, CelDurTs | `cel_data.h:45` | TODO |
 | A054 | CEL_OPTIONAL = 14, opt offset | `cel_data.h:46` | TODO |
 | A055 | CEL_UNKNOWN = 15, attr id | `cel_data.h:47` | TODO |
 | A056 | CEL_ERROR = 16, err code | `cel_data.h:48` | TODO |
-| A057 | CEL_LIST_HOST = 17, ref_slot | `cel_data.h:49` | DONE — `cel_data_test.cc:64` |
+| A057 | RESERVED — folded into A049 | n/a | n/a |
 | A060 | `sizeof(ArenaMapHeader) == 16` | `cel_data.h:76` `_Static_assert`; `cel_data_test.cc:29` | DONE |
 | A061 | ArenaMapHeader field offsets | `cel_data.h:69-74`; `cel_data_test.cc:30-32` | DONE |
 | A062 | `entries_offset == 0` legal | `cel_runtime.c:350` | TODO |
@@ -375,9 +396,9 @@ specified here:
 | A071 | codes are append-only | doc claim | not testable as code; repo policy |
 | A072 | `cel::ErrorCode` mirrors `CEL_ERR_*` | `api/error.h:24-51` | TODO — needs cross-enum equality test |
 | A080 | every langdef value type maps to a CelKind | langdef §"Values" + §7 above | TODO — coverage test |
-| A081 | arena/host kinds are CEL-equivalent | `map-list-dispatch.md`, langdef §"Equality" | TODO — behavioral; may belong in L4 |
+| A081 | MOVED to L4 — arena/host kinds are CEL-equivalent (behavioral) | `map-list-dispatch.md`, langdef §"Equality" | tracked in L4 |
 
-**Status counts:** DONE 10, partial 2, TODO 36 (of 49 total assumptions).
+**Status counts:** DONE 9, partial 3, TODO 33, RESERVED 2, MOVED 1 (of 47 active L1 assumptions; A050/A057 retained as table-stable RESERVED placeholders, A081 moved to L4).
 
 The next pass writes / extends `compiler_v2/abi/spec_test.cc` to
 turn each TODO into a concrete test, embedding the assumption ID in

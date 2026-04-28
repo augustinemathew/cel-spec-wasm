@@ -326,7 +326,7 @@ struct Layer2Fixture {
     const uint32_t slot = refs.Intern(std::move(backing));
     CelValue cv{};
     cv.kind = CEL_MESSAGE;
-    cv.payload.msg_slot = slot;
+    cv.payload.ref_slot = slot;
     mem.WriteCelValue(kMsgSlot, cv);
     field_refs.push_back(FieldRefEntry{field_number, std::string(field_name)});
     return slot;
@@ -411,7 +411,7 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
   f.field_refs.push_back(FieldRefEntry{1, "any"});
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
-  cv.payload.msg_slot = 9999;  // never interned
+  cv.payload.ref_slot = 9999;  // never interned
   f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
 
   const CelValue out = f.Get();
@@ -488,13 +488,13 @@ TEST(Layer2DispatchTest, NestedMessageInternsSubBacking) {
 
   const CelValue out = f.Get();
   ASSERT_EQ(out.kind, CEL_MESSAGE);
-  EXPECT_NE(out.payload.msg_slot, 0u);
-  EXPECT_NE(out.payload.msg_slot, parent_slot);
+  EXPECT_NE(out.payload.ref_slot, 0u);
+  EXPECT_NE(out.payload.ref_slot, parent_slot);
 
   // Second hop: feed sub_slot back in as msg_slot, read city.
   CelValue sub{};
   sub.kind = CEL_MESSAGE;
-  sub.payload.msg_slot = out.payload.msg_slot;
+  sub.payload.ref_slot = out.payload.ref_slot;
   f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, sub);
   f.field_refs.clear();
   f.field_refs.push_back(FieldRefEntry{});

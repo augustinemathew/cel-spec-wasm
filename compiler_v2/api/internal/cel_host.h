@@ -298,7 +298,7 @@ class MemoryView {
   virtual absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const = 0;
 };
 
-// Opaque u32 slots back `CelValue.payload.msg_slot`.  Intern is
+// Opaque u32 slots back `CelValue.payload.ref_slot`.  Intern is
 // monotonic per Eval; Reset() clears between Evals.
 class ExternrefTable {
  public:
@@ -492,7 +492,7 @@ ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
                                                const TrampolineContext& ctx);
 
 // Polymorphic message equality.  Both operands must be
-// `CEL_MESSAGE` with valid `payload.msg_slot` ref-slots; either
+// `CEL_MESSAGE` with valid `payload.ref_slot` indices; either
 // operand UNKNOWN / ERROR propagates 3VL.  Uses
 // `google::protobuf::util::MessageDifferencer::Equals` over the
 // underlying `HostMessageBacking::Message()` per langdef §"Equality".
@@ -513,7 +513,7 @@ ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
 //      lifetime semantics — the ExternrefTable's per-Eval `Reset()`
 //      drops the shared_ptr, freeing the message.
 //   4. `ctx.refs.Intern(shared_ptr<OwnedProtoBacking>)` → `slot`.
-//   5. Write `{ kind: CEL_MESSAGE, payload.msg_slot = slot }` to
+//   5. Write `{ kind: CEL_MESSAGE, payload.ref_slot = slot }` to
 //      the `out_slot` cell in `ctx.mem`.
 // Non-OK Status only on infrastructure failure (descriptor pool
 // lookup mismatched against the FQN at Plan time but the
