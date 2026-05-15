@@ -1926,6 +1926,54 @@ Baseline numbers captured in `compiler_v2/bench/README.md`.
         (`{..}[k]` vs `c.metadata[k]`).
   - [ ] wasm32-side bench — Google Benchmark doesn't link
         freestanding; native-host numbers are the only baseline today.
+
+**Optimization-lever pass (2026-05-15) — second baseline.**
+
+Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
++ closeout doc refresh):
+
+  - [x] **Native cc_library `-O3 + -flto`** — kernel µbench numbers
+        dropped 60–80% across the leaf kernels (LTO inlines
+        cel_internal.h's static-inline helpers and lets per-topic
+        .c files cross-inline).  Latent-bug fix: `cel_memory.c`'s
+        `g_memory` buffer got `_Alignas(8)` after -O3 surfaced a
+        previously-accidental linker alignment.
+  - [x] **wasm32 genrule `-O3 + -flto`** — pipeline Eval numbers
+        mostly flat (Cranelift was already producing efficient
+        native code from unoptimized wasm); the real pipeline
+        lever turned out to be Binaryen, not wasm32 build flags.
+  - [x] **`WasmModule::Optimize(level)` + `CompileOptions::
+        optimize_level`** — wraps `BinaryenModuleOptimize` between
+        Validate and Serialize.  Default 0 preserves byte-identical
+        output; opt=2 trade is **+121–159% Compile / −52% Eval**
+        on the 20-term-compare chain.  Crossover ~163 Evals — well
+        below any production amortisation window for a reused
+        Program.
+  - [x] **`module_test::WasmModuleOptimizeTest`** — three rows:
+        `LevelZeroIsByteIdentical` (locks the default-off
+        invariant), `LevelTwoStillValidatesAndShrinksDeadCode`
+        (proves the pass list actually runs), and
+        `LevelOutOfRangeIsInvalidArgument` (closed-range
+        contract).
+  - [x] **`compiler_v2/e2e/optimize_test`** (manual-tagged) — 21
+        representative expressions run at both opt=0 and opt=2
+        with CelValue-identity asserted.  The "Binaryen
+        miscompile" gate; 9/9 manual targets now green in
+        `scripts/run_full_suite.sh`.
+  - [x] **`pipeline_bench` opt2 pairs** —
+        `BM_{Compile,Eval}_{ThreeTermArith,TwentyTermCompare}_Opt2`
+        capturing the compile-up / eval-down trade-off in the
+        bench README.
+  - [x] **`bench/README.md` refresh** — adds
+        Build-configuration overview, How-JIT-compilation-fits-in
+        section, side-by-side `-O2` vs `-O3 + -flto` columns for
+        every kernel row, three-column pipeline table including
+        the opt=2 variants, and Cranelift / pre-compile-cache
+        notes.
+  - [ ] CI bench lane — bench numbers are still captured one-off
+        via `bazel run -c opt`.  A stable-environment CI lane
+        (or `--benchmark_repetitions`-driven daily run) is the
+        natural next step when perf becomes load-bearing.
         Future work; not a milestone blocker (host trampoline cost
         dominates pipeline numbers per the README table).
   - [ ] Comprehension benches — slated for M11 alongside the

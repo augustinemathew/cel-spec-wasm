@@ -28,7 +28,48 @@ Useful flags:
   - `--benchmark_repetitions=5 --benchmark_report_aggregates_only=true`
     — get mean / median / stddev across multiple runs of each bench.
 
-## Baseline numbers (2026-05-14, darwin-arm64, Apple M-series)
+## Build configuration
+
+Two orthogonal axes affect every number in this file:
+
+  - **Runtime build flags.**  As of 2026-05-15 both the native
+    `cc_library` and the wasm32 cross-compile genrule build with
+    `-O3 + -flto`.  Pre-2026-05-15 the build was `-O2` (no LTO).
+    LTO is genuinely load-bearing after the `cel_runtime.c` split
+    shipped 2026-05-14: the per-topic `.c` files (cel_arith /
+    cel_compare / cel_3vl / cel_convert / cel_string_ops / cel_make
+    / cel_memory / cel_log / cel_type) only cross-inline through
+    LTO.
+  - **Binaryen `optimize_level`**
+    (`cel::CompilerOptions::optimize_level`).  Runs the canonical
+    `wasm-opt -O<n>` pass list on the emitted expr module before
+    Cranelift sees it.  Default `0` (no-op, byte-identical output);
+    production callers typically want `2` — see the trade-off
+    table further down.
+
+## How JIT compilation fits in
+
+`cel::Engine::Plan` is where Cranelift translates wasm bytes to
+native machine code (~240–300 µs of the per-Plan cost).  Every
+`$eval` body and every imported `cel_*` helper is native code by
+the time `Instance::Eval()` runs — no interpreter loop in the hot
+path.  Concretely:
+
+  - **Kernel µbenches** (`BM_IntAdd` etc.) bypass wasmtime entirely
+    — they link the native `cc_library` and call kernels directly.
+    These numbers are the raw kernel cost; the delta vs the
+    matching Eval bench is the trampoline + codegen wrapper, NOT
+    interpretation overhead.
+  - **Pipeline Eval benches** (`BM_Eval_*`) call through
+    wasmtime's host-to-wasm trampoline into Cranelift-emitted
+    native code that in turn calls the imported `cel_*` helpers.
+
+No Winch / Pulley / AOT cache today — pure Cranelift at the
+default "speed" setting.  `Engine::precompile_module` + caching
+the module bytes is the natural lever if Plan cost ever becomes
+load-bearing (per `engine.h:24`'s existing docstring).
+
+## Baseline numbers (2026-05-15, darwin-arm64, Apple M-series)
 
 Captured at `--benchmark_min_time=0.05s` (smoke run; tighten with
 repetitions when investigating a suspected regression).  Reported as
@@ -36,41 +77,58 @@ ns/call unless otherwise noted.
 
 ### Runtime kernel microbenches
 
-| Bench                          | Time (ns) | Notes                                            |
-| ------------------------------ | --------: | ------------------------------------------------ |
-| `BM_IntAdd`                    |       8.3 | overflow-checked happy path                      |
-| `BM_IntMul`                    |       8.9 | overflow-checked happy path                      |
-| `BM_IntDiv`                    |       8.1 | happy path                                       |
-| `BM_IntDivByZero`              |       8.2 | error-envelope fast-reject                       |
-| `BM_DoubleAdd`                 |       8.2 | IEEE 754; no overflow check                      |
-| `BM_IntEq`                     |       8.5 | same-kind comparison                             |
-| `BM_NumericEqIntUint`          |       8.8 | cross-type ladder (`1 == 1u`)                    |
-| `BM_NumericEqIntDouble`        |       9.6 | cross-type ladder (`1 == 1.0`)                   |
-| `BM_StringEq/8`                |      10.9 | 0.70 GiB/s; `memcmp` on tiny operands            |
-| `BM_StringEq/64`               |      24.3 | 2.46 GiB/s                                       |
-| `BM_StringEq/4096`             |       967 | 3.95 GiB/s; saturates memcmp                     |
-| `BM_BytesEq/8` /`/64` /`/4096` | 10.9 / 25 / 965 | tracks string_eq within noise              |
-| `BM_MapLookupArenaHit`         |      12.9 | linear scan, hit at slot 0                       |
-| `BM_MapLookupArenaMiss`        |      20.1 | linear scan, full walk                           |
-| `BM_ListAtArena`               |      10.3 | bounds-check + slot load                         |
-| `BM_ListEqDispatchArena`       |      32.5 | kDynamic dispatcher + arena fast path            |
-| `BM_MapEqDispatchArena`        |      68.7 | kDynamic dispatcher + arena fast path            |
-| `BM_AndBoolBool`               |       9.5 | bool×bool 3VL truth-table                        |
-| `BM_OrBoolBool`                |       9.0 | bool×bool 3VL truth-table                        |
-| `BM_UnknownMerge`              |      25.9 | 1-id+1-id merge + arena alloc                    |
-| `BM_UintToInt`                 |       7.2 | overflow-check leaf                              |
-| `BM_DoubleToInt`               |       7.2 | NaN + range check                                |
-| `BM_StringToInt/1`             |       8.4 | hand-rolled parser, single digit                 |
-| `BM_StringToInt/5`             |       9.4 |                                                  |
-| `BM_StringToInt/19`            |      17.5 | max int64 digit count                            |
-| `BM_IntToString`               |      18.6 | itoa + arena alloc                               |
-| `BM_DoubleToString`            |      52.9 | fractional decomposition                         |
-| `BM_StringConcat/8`            |      18.3 | arena alloc + copy                               |
-| `BM_StringConcat/64`           |      18.7 | 6.4 GiB/s                                        |
-| `BM_StringConcat/4096`         |       147 | 51 GiB/s (cache-resident copy)                   |
-| `BM_StringContains/8`          |      16.2 | brute-force scan, hit at tail                    |
-| `BM_StringContains/64`         |      84.4 |                                                  |
-| `BM_StringContains/4096`       |      4726 | 0.83 GiB/s; linear naive search                  |
+Two columns — **2026-05-14 (`-O2`, no LTO)** and **2026-05-15
+(`-O3 + -flto`)** — make the runtime-flag delta visible.  Most
+leaf kernels dropped 60–80% on the upgrade.  LTO inlines the
+static-inline helpers in `cel_internal.h` (`poison` /
+`absorb_3vl_*` / `write_*` / `require_kinds`) into kernel call
+sites AND lets the per-topic `.c` files cross-inline; `-O3`
+widens loop / branch optimization aggressiveness for the parse
+loops + `utf8_valid`.
+
+| Bench                          | -O2 (ns) | -O3 + -flto (ns) | Δ      | Notes                                            |
+| ------------------------------ | -------: | ---------------: | -----: | ------------------------------------------------ |
+| `BM_IntAdd`                    |      8.3 |             2.29 | −72%   | overflow-checked happy path                      |
+| `BM_IntMul`                    |      8.9 |             3.30 | −63%   | overflow-checked happy path                      |
+| `BM_IntDiv`                    |      8.1 |             1.91 | −76%   | happy path                                       |
+| `BM_IntDivByZero`              |      8.2 |             2.08 | −75%   | error-envelope fast-reject                       |
+| `BM_DoubleAdd`                 |      8.2 |             2.09 | −74%   | IEEE 754; no overflow check                      |
+| `BM_IntEq`                     |      8.5 |             2.16 | −75%   | same-kind comparison                             |
+| `BM_NumericEqIntUint`          |      8.8 |             3.00 | −66%   | cross-type ladder (`1 == 1u`)                    |
+| `BM_NumericEqIntDouble`        |      9.6 |             3.50 | −64%   | cross-type ladder (`1 == 1.0`)                   |
+| `BM_StringEq/8`                |     10.9 |             3.76 | −65%   | tiny-operand `memcmp`                            |
+| `BM_StringEq/64`               |     24.3 |             17.0 | −30%   | 3.50 GiB/s                                       |
+| `BM_StringEq/4096`             |      967 |              949 | −2%    | 4.02 GiB/s; saturates memcmp                     |
+| `BM_BytesEq/8` /`/64` /`/4096` | 10.9 / 25 / 965 | 3.57 / 16.8 / 952 | — | tracks string_eq within noise           |
+| `BM_MapLookupArenaHit`         |     12.9 |             3.60 | −72%   | linear scan, hit at slot 0                       |
+| `BM_MapLookupArenaMiss`        |     20.1 |             9.78 | −51%   | linear scan, full walk                           |
+| `BM_ListAtArena`               |     10.3 |             2.08 | −80%   | bounds-check + slot load                         |
+| `BM_ListEqDispatchArena`       |     32.5 |             10.1 | −69%   | kDynamic dispatcher + arena fast path            |
+| `BM_MapEqDispatchArena`        |     68.7 |             32.2 | −53%   | kDynamic dispatcher + arena fast path            |
+| `BM_AndBoolBool`               |      9.5 |             1.65 | **−83%** | bool×bool 3VL truth-table                        |
+| `BM_OrBoolBool`                |      9.0 |             1.44 | **−84%** | bool×bool 3VL truth-table                        |
+| `BM_UnknownMerge`              |     25.9 |             5.21 | −80%   | 1-id+1-id merge + arena alloc                    |
+| `BM_UintToInt`                 |      7.2 |             1.42 | −80%   | overflow-check leaf                              |
+| `BM_DoubleToInt`               |      7.2 |             1.65 | −77%   | NaN + range check                                |
+| `BM_StringToInt/1`             |      8.4 |             2.14 | −75%   | hand-rolled parser, single digit                 |
+| `BM_StringToInt/5`             |      9.4 |             3.93 | −58%   |                                                  |
+| `BM_StringToInt/19`            |     17.5 |             12.0 | −31%   | max int64 digit count                            |
+| `BM_IntToString`               |     18.6 |             9.29 | −50%   | itoa + arena alloc                               |
+| `BM_DoubleToString`            |     52.9 |             36.8 | −30%   | fractional decomposition                         |
+| `BM_StringConcat/8`            |     18.3 |             8.08 | −56%   | arena alloc + copy                               |
+| `BM_StringConcat/64`           |     18.7 |             8.30 | −56%   | 14 GiB/s                                         |
+| `BM_StringConcat/4096`         |      147 |              156 | +6%    | 49 GiB/s; memcpy noise                           |
+| `BM_StringContains/8`          |     16.2 |             4.86 | −70%   | brute-force scan, hit at tail                    |
+| `BM_StringContains/64`         |     84.4 |             17.9 | −79%   |                                                  |
+| `BM_StringContains/4096`       |     4726 |              984 | −79%   | 3.88 GiB/s; linear naive search                  |
+
+### Pipeline benches
+
+Pipeline Eval numbers barely moved on the wasm32 `-O3 + -flto`
+upgrade — Cranelift was already producing efficient native code
+from the unoptimized wasm.  See the **Binaryen optimize_level**
+trade-off section below for the pipeline lever that actually
+moves the needle.
 
 ### Pipeline benches
 
