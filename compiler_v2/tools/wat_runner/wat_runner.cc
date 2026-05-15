@@ -530,6 +530,12 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
       // carries the real semantics; tests that need them go through
       // the full Compiler/Engine pipeline.
       "cel_make_message",
+      // M9.B — `resolve_message_type_name(out_slot, in_slot)` for
+      // `type(<message>)`.  Same rationale as `cel_make_message`:
+      // declared by the runtime's wasm_imports.txt, so any WAT
+      // assembled with the runtime included must define it for the
+      // module to instantiate.
+      "resolve_message_type_name",
   };
   for (absl::string_view name : kTwoArg) {
     if (auto st = RegisterCelHostTwoArgNoop(linker, name); !st.ok()) {

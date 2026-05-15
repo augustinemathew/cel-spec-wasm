@@ -243,6 +243,11 @@ struct RuntimeHarness {
       {"cel_list_eq", 11, 3},   {"cel_list_concat", 15, 3},
       {"cel_map_size", 12, 2},  {"cel_map_in", 10, 3},
       {"cel_map_eq", 10, 3},    {"cel_message_eq", 14, 3},
+      // M9.B: `type(message)` descriptor-FQN resolver.  Tests here
+      // don't exercise the CEL_MESSAGE arm of `cel_type_of_at_v`,
+      // but the wasm module imports the symbol unconditionally so
+      // the stub still has to land.
+      {"resolve_message_type_name", 25, 2},
   };
   for (const auto& e : kEntries) {
     wasm_functype_t* ft =

@@ -1,12 +1,42 @@
 # M10 — Type conversions (`int(x)`, `string(x)`, `double(x)`, ...)
 
-Status: **plan — drafted 2026-04-26, not yet started.**
+Status: **shipped 2026-05-14 (slices A–E + closeout).**
 
-> **What "done" looks like.**  Greening every test in
-> `compiler_v2/e2e/m10_test.cc` (BoolFamily ×4, IntFamily ×~20
-> boundary rows, UintFamily ×~12, DoubleFamily ×~12, StringFamily
-> ×~16, BytesFamily ×4, RejectFamily ×8) plus the conformance
-> unlock targets in §1.
+> **What landed.**  All five implementation slices A–E shipped
+> end-to-end against the as-written plan, with two execution
+> deltas worth flagging:
+>
+>   1. **`bool → int` / `bool → uint` / `bool → double` dropped.**
+>      The plan §4.2 listed `bool_to_int64` / `bool_to_uint64` /
+>      `bool_to_double` as in-scope, but cel-cpp's CHECKER does
+>      NOT declare these overloads (only the runtime registers
+>      them).  `int(true)` therefore checker-rejects, and the two
+>      rows that exercised it were dropped from
+>      `m10_test.cc::IntFamilyE2ETest`'s parameterized table.  A
+>      v2-side checker extension for bool conversions is tracked
+>      as future work in §9.
+>   2. **`CEL_ERR_INVALID_ARGUMENT` deferred.**  The plan §4.5
+>      proposed adding `CEL_ERR_INVALID_UTF8` (and by parallel
+>      `CEL_ERR_INVALID_ARGUMENT` for parse-failure rows).  As
+>      shipped, M10.C / M10.E reuse the existing
+>      `CEL_ERR_OVERFLOW` code — semantically "can't represent
+>      the result as the target type", which already covers the
+>      M10.B numeric-conversion overflows.  The dedicated codes
+>      land alongside the `api/error.h` mirror in a separate
+>      slice.
+>
+> **As-shipped surface.**  `m10_test.cc` green: 87/87 rows
+> (Identity ×6, IntFamily parameterized 7 + reject 5, UintFamily
+> 8, DoubleFamily 6, StringParse ~20 admit + reject,
+> StringParseBool parameterized truth-table, NumberFormat 10,
+> BytesFamily 8 incl. UTF-8 reject matrix).
+> `scripts/run_full_suite.sh --quick`: 8/8 PASS (M9 regression
+> in `cel_runtime_wasm_test` / `wat_runner_test` from the
+> `resolve_message_type_name` import was cleared by adding the
+> matching no-op stub in both test harnesses).
+> Conformance: `975 → 1058 PASS` (+83), `781 → 693 SKIP` (−88),
+> `698 → 703 FAIL` (+5 — mostly classifier-tightening surface
+> per `conformance-unlock-plan.md` Slice 3).
 
 The plan covers every spec-named type-conversion overload whose
 operand and result types are both already shippable in the v2

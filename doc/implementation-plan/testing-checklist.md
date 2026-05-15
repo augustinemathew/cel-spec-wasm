@@ -1585,6 +1585,136 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         --build_tests_only` (44/45 PASS — the 45th is `m7_test`'s 1
         deliberate SKIP for M8 wrapper).
 
+### Rewrite M10 — type conversions (slices A–E shipped 2026-05-14)
+
+`m10-conversions.md` slices A–E delivered the type-conversion
+overload surface: `bool` / `int` / `uint` / `double` / `string` /
+`bytes` inter-conversions plus identity arms, all pure-runtime
+helpers (no host trampolines).  `m10_test.cc` 87/87 PASS;
+conformance `975 → 1058 PASS` (+83).
+
+**M10.A — identity overloads (6 seeds)**
+
+  - [x] `bool_to_bool` / `int64_to_int64` / `uint64_to_uint64` /
+        `double_to_double` / `string_to_string` / `bytes_to_bytes`
+        graduated from `kExplicitlyUnimplementedIds` to
+        `kBuiltinSeeds`, all pointing at `cel_copy_slot` (the
+        M5.G Slice 2 helper — its `(dst, src) → void` ABI is
+        bit-identical to the unary conversion shape, and the
+        24-byte CelValue memcpy preserves CEL_UNKNOWN / CEL_ERROR
+        absorbing semantics for free).
+  - [x] `InstallOverloadImports` bug fix — `cel_copy_slot`
+        doesn't match the `_at_v` suffix convention, so the
+        arity-lookup loop never declared the import.  Added it to
+        `kDispatchers` with arity 2.
+  - [x] `m10_test.cc::IdentityE2ETest` 6/6 PASS.
+
+**M10.B — numeric inter-conversions (6 kernels)**
+
+  - [x] `cel_uint_to_int_at_v` / `cel_double_to_int_at_v` /
+        `cel_int_to_uint_at_v` / `cel_double_to_uint_at_v` /
+        `cel_int_to_double_at_v` / `cel_uint_to_double_at_v` —
+        each with `absorb_3vl_unary` prelude + kind-check +
+        per-conversion body + write_*; overflow / NaN /
+        negative-source poisons `CEL_ERR_OVERFLOW`.
+  - [x] Double bounds use exact-representable boundaries
+        `-2^63` / `2^63` / `2^64`; NaN check via `v != v` (no
+        `<math.h>` in freestanding wasm32).
+  - [x] BUILD exports (6) + engine.cc binds (6) + OverloadTable
+        seeds (6).
+  - [x] `m10_test.cc::IntFamilyE2ETest` / `UintFamilyE2ETest` /
+        `DoubleFamilyE2ETest` — admit + reject (overflow / NaN /
+        Inf / negative-into-uint).
+  - [x] `overload_table_test::UsedImportsSilentlySkipsUnknownIds`
+        — magic-number 99 replaced with
+        `kBuiltinSeedCount + 1000` (the test used to hardcode 99
+        as "unknown" but M10.B's six new seeds made 99 real).
+
+**M10.C — string parsing (4 kernels + 3 subroutines)**
+
+  - [x] `cel_string_to_int_at_v` / `cel_string_to_uint_at_v` /
+        `cel_string_to_double_at_v` / `cel_string_to_bool_at_v`.
+  - [x] Subroutines: `parse_int64_str` (manual overflow check —
+        `__builtin_mul_overflow` on 64-bit needs `__multi3` which
+        the freestanding wasm32 build doesn't link, per the M5.B
+        precedent), `parse_uint64_str` (rejects leading `-`),
+        `parse_double_str` (admits
+        `[+-]?digits(.digits)?([eE][+-]?digits)?` plus `inf` /
+        `infinity` / `nan` case-insensitive), `parse_bool_str`
+        (exact-byte match against cel-cpp's 10-row truth table).
+  - [x] BUILD exports (4) + engine.cc binds (4) + OverloadTable
+        seeds (4).
+  - [x] `m10_test.cc::StringParseE2ETest` (~20 admit + reject)
+        + `StringParseBoolE2ETest` (parameterized truth-table).
+
+**M10.D — number / bool → string formatting (4 kernels)**
+
+  - [x] `cel_int_to_string_at_v` / `cel_uint_to_string_at_v` /
+        `cel_bool_to_string_at_v` / `cel_double_to_string_at_v`.
+        Outputs arena-allocated via `cel_alloc(n)` and stamped
+        as `{CEL_STRING, payload.s}` — same lifetime model as
+        M9.B `cel_type_of_at_v`.
+  - [x] Subroutines: `write_uint_decimal` (no-leading-zero itoa
+        via reverse-then-reverse buffer), `write_int_decimal`
+        (handles INT64_MIN via uint64 promotion),
+        `append_double_fraction` (digit-by-digit fractional
+        decomposition + trailing-zero trim), `stamp_string`
+        (common arena-alloc + memcpy + CelValue stamp).
+  - [x] `cel_double_to_string_at_v` per §4.4: NaN → "nan";
+        ±Inf → "+Inf" / "-Inf"; ±0 → "0"; integer-valued doubles
+        in safe-cast range → exact via int path; mid-magnitude
+        → integer + "." + fractional digits; very large / very
+        small magnitudes → scientific with normalized mantissa.
+        Byte-exact match against cel-cpp's `to_chars` is NOT a
+        contract — round-trip safety is.  Grisu/Ryu body swap
+        deferred to §9 if a conformance row demands it.
+  - [x] BUILD exports (4) + engine.cc binds (4) + OverloadTable
+        seeds (4).
+  - [x] `m10_test.cc::NumberFormatE2ETest` 10/10 PASS.
+
+**M10.E — bytes ↔ string + UTF-8 validation (2 kernels)**
+
+  - [x] `cel_string_to_bytes_at_v` / `cel_bytes_to_string_at_v`
+        — both share the source's `payload.s` span (no arena
+        copy) and flip the kind tag.  Aliased slots
+        (`out_slot == in_slot`) handled by reading the span
+        into a local before writing.
+  - [x] `utf8_valid` RFC3629 byte-wise validator — rejects
+        orphan continuation bytes, overlong encodings (2/3/4
+        byte), truncated sequences, UTF-16 surrogates
+        (`0xED 0xA0..0xBF`), code points beyond U+10FFFF
+        (`0xF4 0x90..0xBF +`, `0xF5..0xFF` leader).
+  - [x] BUILD exports (2) + engine.cc binds (2) + OverloadTable
+        seeds (2).
+  - [x] `m10_test.cc::BytesFamilyE2ETest` 8/8 PASS (ascii /
+        empty / UTF-8 round-trip + invalid-leading / orphan-cont
+        / truncated / surrogate / overlong-NUL rejection).
+  - [x] Two stale rows from `IntFamilyE2ETest`'s parameterized
+        table — `int(true) == 1` / `int(false) == 0` — dropped:
+        cel-cpp's runtime registers `bool → int` but its checker
+        does NOT, so the rows check-fail.  Tracked in §9.
+
+**M10.F — closeout**
+
+  - [x] `m9_test.cc` regression in `cel_runtime_wasm_test` /
+        `wat_runner_test` (the M9.B
+        `cel_host::resolve_message_type_name` import wasn't
+        declared in the C-API test harnesses) cleared by adding
+        a 2-arg no-op stub in each.
+  - [x] `m10-conversions.md` status flipped to `shipped
+        2026-05-14` with as-shipped summary + plan-vs-execution
+        deltas.
+  - [x] `testing-checklist.md` — this section.
+  - [x] `scripts/run_full_suite.sh --quick`: 8/8 PASS.
+  - [x] Conformance: `bazel run
+        //compiler_v2/conformance:run_conformance` →
+        `pass=1058 / skip=693 / fail=703` (was `975 / 781 / 698`
+        pre-M10; +83 PASS / −88 SKIP / +5 FAIL).  README refresh
+        + Slice 3 classifier-tightening pass land separately.
+  - [ ] `cel_runtime.c` split (now ~3300 lines) — `cel-runtime-c-split-plan.md`
+        is the authoritative plan; dispatched to a subagent as
+        a separate closeout slice (does not block M10 ship).
+
 ### Rewrite M9 — type subsystem (slices A–F shipped 2026-05-14)
 
 `m9-type-subsystem.md` slices A–F delivered the `CEL_TYPE` value-of-types
