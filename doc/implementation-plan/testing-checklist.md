@@ -1896,6 +1896,41 @@ the small set of internal-extern decls (`cel_memory_base_`,
 `cel_value_eq`, `map_keys_equal`).  No tests directly target the
 header — it's exercised indirectly by every runtime test.
 
+### Bench (post-M10) — first baseline shipped 2026-05-14
+
+Two `manual`-tagged Google Benchmark binaries under
+`compiler_v2/bench/`.  Out of the default test suite — run explicitly
+via `bazel run -c opt //compiler_v2/bench:{kernel,pipeline}_bench`.
+Baseline numbers captured in `compiler_v2/bench/README.md`.
+
+  - [x] `kernel_bench.cc` — runtime kernel microbenches covering
+        arithmetic (`cel_int_add` / `_mul` / `_div`, `cel_double_add`),
+        comparison (`cel_int_eq`, cross-type ladder
+        `cel_numeric_eq_at_vv`, `cel_string_eq`, `cel_bytes_eq`),
+        aggregate (`cel_map_lookup_arena` hit/miss, `cel_list_at_arena`,
+        kDynamic `cel_list_eq` / `cel_map_eq` dispatchers), 3VL
+        (`cel_and`, `cel_or`, `cel_unknown_merge`), conversion
+        (`cel_uint_to_int`, `cel_double_to_int`, `cel_string_to_int`
+        sized × 3, `cel_int_to_string`, `cel_double_to_string`), and
+        string ops (`cel_string_concat` sized × 3,
+        `cel_string_contains` sized × 3).
+  - [x] `pipeline_bench.cc` — end-to-end pipeline benches against the
+        public `cel::Compiler::Compile` / `cel::Engine::Plan` /
+        `cel::Instance::Eval` surface.  Caches Compiler across Compile
+        iterations; pre-stages Program + Instance for Eval-only
+        steady-state.  Covers `kConstantExpr`, `kSelectExpr`,
+        `kCallExpr` (3-term arith, 20-term compare chain,
+        `type(x) == int`, `int(string(123))`), `kCreateList`,
+        `kCreateMap`, `kStructExpr`, plus the arena-vs-proto crossover
+        for list indexing (`[..][2]` vs `c.tags[2]`) and map lookup
+        (`{..}[k]` vs `c.metadata[k]`).
+  - [ ] wasm32-side bench — Google Benchmark doesn't link
+        freestanding; native-host numbers are the only baseline today.
+        Future work; not a milestone blocker (host trampoline cost
+        dominates pipeline numbers per the README table).
+  - [ ] Comprehension benches — slated for M11 alongside the
+        comprehension AST kind.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

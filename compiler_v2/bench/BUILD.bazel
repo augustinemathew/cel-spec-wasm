@@ -2,4 +2,53 @@ load("@rules_cc//cc:defs.bzl", "cc_binary")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
-# Placeholder — benches land at M8 (Sethi–Ullman parity).
+# Bench targets are `manual`-tagged so they don't run in CI by default
+# (`bazel test //compiler_v2/...` skips them).  Run explicitly when
+# you want numbers:
+#
+#   bazel run -c opt //compiler_v2/bench:kernel_bench
+#   bazel run -c opt //compiler_v2/bench:pipeline_bench
+#
+# Always pass `-c opt`; debug builds with sanitizers blow the timing
+# numbers up by ~10x and are useless as a baseline.
+
+# Deliverable A — runtime kernel microbenches.  Each BM_* function
+# stages operands once outside the loop and times one tight call to a
+# single cel_runtime.c helper.  Covers arithmetic, comparison,
+# aggregate, 3VL, conversion, and string-op kernels.
+cc_binary(
+    name = "kernel_bench",
+    srcs = ["kernel_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+# Deliverable B — end-to-end pipeline wall-clock benches.  Measures
+# the public Compiler::Compile + Engine::Plan + Instance::Eval surface
+# with proper caching boundaries (Compiler shared across iterations of
+# a Compile bench; Compile+Plan pre-staged for an Eval-only steady
+# state bench).  One representative expression per AST kind.
+cc_binary(
+    name = "pipeline_bench",
+    srcs = ["pipeline_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
