@@ -16,6 +16,7 @@ cc_library(
         "cel_make.c",
         "cel_memory.c",
         "cel_runtime.c",
+        "cel_string_ops.c",
         "cel_type.c",
     ],
     hdrs = [
@@ -208,6 +209,7 @@ genrule(
         "cel_memory.h",
         "cel_runtime.c",
         "cel_runtime.h",
+        "cel_string_ops.c",
         "cel_string_ops.h",
         "cel_type.c",
         "cel_type.h",
@@ -368,6 +370,7 @@ genrule(
         "$(location :cel_make.c)",
         "$(location :cel_memory.c)",
         "$(location :cel_runtime.c)",
+        "$(location :cel_string_ops.c)",
         "$(location :cel_type.c)",
     ]),
     tags = [
