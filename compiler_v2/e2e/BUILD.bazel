@@ -139,6 +139,32 @@ cc_test(
     ],
 )
 
+# M10 e2e test suite — type-conversion overloads (`bool(x)` /
+# `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` and
+# their inter-conversions).  RED until M10.A lifts every conversion
+# id out of `OverloadTable::kExplicitlyUnimplementedIds` and lands
+# the matching runtime helpers; greens slice-by-slice through
+# M10.A → M10.E per `m10-conversions.md` §5.  Timestamp / duration
+# conversions are out of scope per §2.2 (separate timestamps slice).
+cc_test(
+    name = "m10_test",
+    srcs = ["m10_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "eval_test",
     srcs = ["eval_test.cc"],
