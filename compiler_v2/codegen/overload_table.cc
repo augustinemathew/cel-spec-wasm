@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 102> kBuiltinSeeds{
+constexpr std::array<Seed, 106> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -291,6 +291,20 @@ constexpr std::array<Seed, 102> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_to_double_at_v"}},
     Seed{"string_to_bool",
          {ImportModule::kCelRuntime, "cel_string_to_bool_at_v"}},
+    // M10.D — number/bool to string.  Arena-allocates the output
+    // string bytes; lifetime model identical to the M9.B
+    // `cel_type_of_at_v` per-Eval-arena pattern.  `double_to_string`
+    // is "round-trip safe for typical magnitudes" — byte-exact match
+    // against cel-cpp's `to_chars` general format is not guaranteed
+    // (see m10-conversions.md §4.4).
+    Seed{"int64_to_string",
+         {ImportModule::kCelRuntime, "cel_int_to_string_at_v"}},
+    Seed{"uint64_to_string",
+         {ImportModule::kCelRuntime, "cel_uint_to_string_at_v"}},
+    Seed{"bool_to_string",
+         {ImportModule::kCelRuntime, "cel_bool_to_string_at_v"}},
+    Seed{"double_to_string",
+         {ImportModule::kCelRuntime, "cel_double_to_string_at_v"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -313,7 +327,7 @@ constexpr std::array<Seed, 102> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 64> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 60> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -379,14 +393,13 @@ constexpr std::array<absl::string_view, 64> kExplicitlyUnimplementedIds{
     // M10.C: string-parse ids (`string_to_int64`,
     // `string_to_uint64`, `string_to_double`, `string_to_bool`)
     // graduated to `kBuiltinSeeds`; size dropped 68 → 64.
+    // M10.D: number/bool→string ids (`bool_to_string`,
+    // `double_to_string`, `int64_to_string`, `uint64_to_string`)
+    // graduated to `kBuiltinSeeds`; size dropped 64 → 60.
     "timestamp_to_int64",
     "duration_to_int64",
     "string_to_bytes",
     "bytes_to_string",
-    "bool_to_string",
-    "double_to_string",
-    "int64_to_string",
-    "uint64_to_string",
     "duration_to_string",
     "timestamp_to_string",
     "timestamp_to_timestamp",

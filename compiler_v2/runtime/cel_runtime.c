@@ -2967,3 +2967,251 @@ void cel_string_to_bool_at_v(uint32_t out_slot, uint32_t in_slot) {
   }
   write_bool(out, v);
 }
+
+// ─────────────────────────────────────────────────────────────
+// M10.D: number / bool → string formatting helpers.
+//
+// Four unary kernels.  Output strings are allocated in the per-Eval
+// arena via `cel_alloc(n)` and stamped as `{CEL_STRING, payload.s}`
+// — same lifetime model as the M9.B `cel_type_of_at_v` helper.
+//
+//   cel_int_to_string_at_v     int64_to_string   string(int)
+//   cel_uint_to_string_at_v    uint64_to_string  string(uint)
+//   cel_bool_to_string_at_v    bool_to_string    string(bool)
+//   cel_double_to_string_at_v  double_to_string  string(double)
+//
+// `string(double)` is "correct for the common cases, round-trip
+// safe for typical magnitudes" per m10-conversions.md §4.4.  The
+// hand-rolled formatter handles NaN / ±Inf / ±0 specials, integer-
+// valued doubles via the int path, and otherwise a digit-by-digit
+// integer + fractional decomposition.  Byte-exact match against
+// cel-cpp's `to_chars` general format is NOT a hard requirement;
+// the test contract (m10_test.cc::NumberFormatE2ETest) is round-
+// trip identity (`double(string(d)) == d`).  A Grisu / Ryu
+// upgrade can swap the helper body later if a conformance row
+// demands byte parity.
+// ─────────────────────────────────────────────────────────────
+
+// Write decimal digits of a uint64 into `dst`, returning the count.
+// No leading zeros (except for value 0 itself).
+static uint32_t write_uint_decimal(uint8_t* dst, uint64_t v) {
+  if (v == 0) {
+    dst[0] = '0';
+    return 1;
+  }
+  uint8_t buf[20];  // ceil(log10(UINT64_MAX)) = 20
+  uint32_t n = 0;
+  while (v > 0) {
+    buf[n++] = (uint8_t)('0' + (v % 10ULL));
+    v /= 10ULL;
+  }
+  // Reverse into dst.
+  for (uint32_t i = 0; i < n; ++i) {
+    dst[i] = buf[n - 1 - i];
+  }
+  return n;
+}
+
+// Write decimal digits of an int64 into `dst`, with leading `-` for
+// negatives.  Handles INT64_MIN by promoting through the |v| route.
+static uint32_t write_int_decimal(uint8_t* dst, int64_t v) {
+  if (v >= 0) {
+    return write_uint_decimal(dst, (uint64_t)v);
+  }
+  dst[0] = '-';
+  // `-(int64_t)INT64_MIN` would UB; route via uint64 cast.
+  uint64_t abs_v = (v == INT64_MIN) ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)(-v);
+  return 1u + write_uint_decimal(dst + 1, abs_v);
+}
+
+// Common allocate-and-stamp for the small string outputs.  Returns
+// 1 on success; on arena OOM poisons out_slot and returns 0.
+static int stamp_string(CelValue* out, const uint8_t* src, uint32_t len) {
+  uint32_t off = cel_alloc(len);
+  if (off == 0 && len > 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return 0;
+  }
+  uint8_t* dst = cel_memory_base_() + off;
+  for (uint32_t i = 0; i < len; ++i) {
+    dst[i] = src[i];
+  }
+  out->kind = CEL_STRING;
+  out->_pad = 0;
+  out->payload.s.ptr = off;
+  out->payload.s.len = len;
+  return 1;
+}
+
+void cel_int_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  uint8_t buf[21];  // 20 digits + sign
+  uint32_t n = write_int_decimal(buf, a->payload.i);
+  (void)stamp_string(out, buf, n);
+}
+
+void cel_uint_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_UINT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  uint8_t buf[20];
+  uint32_t n = write_uint_decimal(buf, a->payload.u);
+  (void)stamp_string(out, buf, n);
+}
+
+void cel_bool_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_BOOL) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  static const uint8_t kTrue[4] = {'t', 'r', 'u', 'e'};
+  static const uint8_t kFalse[5] = {'f', 'a', 'l', 's', 'e'};
+  if (a->payload.b) {
+    (void)stamp_string(out, kTrue, 4);
+  } else {
+    (void)stamp_string(out, kFalse, 5);
+  }
+}
+
+// Write the fractional digits of `frac` (which is in [0, 1)) into
+// `dst`, up to `max_digits`.  Trims trailing zeros and a trailing
+// `.`.  Caller pre-writes the integer-part bytes and a `.`; this
+// function returns the count of bytes appended (which may be 0 if
+// every fractional digit was a trailing zero).
+static uint32_t append_double_fraction(uint8_t* dst, double frac,
+                                       uint32_t max_digits) {
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < max_digits && frac > 0.0; ++i) {
+    frac *= 10.0;
+    uint32_t digit = (uint32_t)frac;
+    if (digit > 9) digit = 9;
+    dst[n++] = (uint8_t)('0' + digit);
+    frac -= (double)digit;
+  }
+  // Trim trailing zeros.
+  while (n > 0 && dst[n - 1] == '0') --n;
+  return n;
+}
+
+void cel_double_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const double v = a->payload.d;
+  // Specials.  NaN check via `v != v`; infinities via direct compare.
+  if (v != v) {
+    static const uint8_t kNan[3] = {'n', 'a', 'n'};
+    (void)stamp_string(out, kNan, 3);
+    return;
+  }
+  const double kPosInf = __builtin_inf();
+  if (v == kPosInf) {
+    static const uint8_t kPI[4] = {'+', 'I', 'n', 'f'};
+    (void)stamp_string(out, kPI, 4);
+    return;
+  }
+  if (v == -kPosInf) {
+    static const uint8_t kNI[4] = {'-', 'I', 'n', 'f'};
+    (void)stamp_string(out, kNI, 4);
+    return;
+  }
+  if (v == 0.0) {
+    static const uint8_t kZero[1] = {'0'};
+    (void)stamp_string(out, kZero, 1);
+    return;
+  }
+  // General case.  Buffer sized for sign + 20-digit integer + `.` +
+  // 17-digit fractional = 39, rounded up.
+  uint8_t buf[48];
+  uint32_t k = 0;
+  double av = v;
+  if (av < 0.0) {
+    buf[k++] = '-';
+    av = -av;
+  }
+  // Integer-valued doubles in safe-cast range get the int path —
+  // exact byte representation, no fractional rounding.
+  if (av < 1e18 && av == (double)(uint64_t)av) {
+    k += write_uint_decimal(buf + k, (uint64_t)av);
+    (void)stamp_string(out, buf, k);
+    return;
+  }
+  // Mixed integer + fractional path.  For magnitudes inside the
+  // uint64 range we can extract the integer part exactly; very
+  // large or very small magnitudes fall through to the scientific
+  // path below.
+  if (av < 1e18 && av >= 1e-4) {
+    uint64_t iv = (uint64_t)av;
+    k += write_uint_decimal(buf + k, iv);
+    double frac = av - (double)iv;
+    if (frac > 0.0) {
+      buf[k++] = '.';
+      uint32_t fn = append_double_fraction(buf + k, frac, 17);
+      if (fn == 0) {
+        --k;  // strip the dangling `.`
+      } else {
+        k += fn;
+      }
+    }
+    (void)stamp_string(out, buf, k);
+    return;
+  }
+  // Scientific notation fallback.  Normalize to 1 <= m < 10, count
+  // the decimal exponent.  Iterative *10 / /10 — slow but bounded
+  // (~300 iterations even at IEEE 754 extremes).
+  int exp = 0;
+  double m = av;
+  while (m >= 10.0) {
+    m /= 10.0;
+    ++exp;
+  }
+  while (m < 1.0) {
+    m *= 10.0;
+    --exp;
+  }
+  // Mantissa: digit + `.` + up to 16 fractional digits.
+  uint32_t digit = (uint32_t)m;
+  if (digit > 9) digit = 9;
+  buf[k++] = (uint8_t)('0' + digit);
+  double frac = m - (double)digit;
+  if (frac > 0.0) {
+    buf[k++] = '.';
+    uint32_t fn = append_double_fraction(buf + k, frac, 16);
+    if (fn == 0) {
+      --k;
+    } else {
+      k += fn;
+    }
+  }
+  // `e<sign><digits>` exponent suffix.
+  buf[k++] = 'e';
+  if (exp < 0) {
+    buf[k++] = '-';
+    exp = -exp;
+  } else {
+    buf[k++] = '+';
+  }
+  k += write_uint_decimal(buf + k, (uint64_t)exp);
+  (void)stamp_string(out, buf, k);
+}
