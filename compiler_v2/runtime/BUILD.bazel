@@ -7,6 +7,7 @@ package(default_visibility = ["//compiler_v2:__subpackages__"])
 cc_library(
     name = "cel_runtime",
     srcs = [
+        "cel_3vl.c",
         "cel_arena.c",
         "cel_internal.h",
         "cel_log.c",
@@ -164,6 +165,7 @@ cc_test(
 genrule(
     name = "cel_runtime_wasm_file",
     srcs = [
+        "cel_3vl.c",
         "cel_3vl.h",
         "cel_arena.c",
         "cel_arena.h",
@@ -332,6 +334,7 @@ genrule(
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
+        "$(location :cel_3vl.c)",
         "$(location :cel_arena.c)",
         "$(location :cel_log.c)",
         "$(location :cel_make.c)",
