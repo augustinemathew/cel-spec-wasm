@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 98> kBuiltinSeeds{
+constexpr std::array<Seed, 102> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -279,6 +279,18 @@ constexpr std::array<Seed, 98> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_int_to_double_at_v"}},
     Seed{"uint64_to_double",
          {ImportModule::kCelRuntime, "cel_uint_to_double_at_v"}},
+    // M10.C — string parsing.  Hand-rolled parsers in
+    // `cel_runtime.c` mirror cel-cpp's `absl::SimpleAtoi` /
+    // `SimpleAtod` admit-sets; malformed input poisons
+    // `CEL_ERR_OVERFLOW`.
+    Seed{"string_to_int64",
+         {ImportModule::kCelRuntime, "cel_string_to_int_at_v"}},
+    Seed{"string_to_uint64",
+         {ImportModule::kCelRuntime, "cel_string_to_uint_at_v"}},
+    Seed{"string_to_double",
+         {ImportModule::kCelRuntime, "cel_string_to_double_at_v"}},
+    Seed{"string_to_bool",
+         {ImportModule::kCelRuntime, "cel_string_to_bool_at_v"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -301,7 +313,7 @@ constexpr std::array<Seed, 98> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 68> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 64> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -363,12 +375,12 @@ constexpr std::array<absl::string_view, 68> kExplicitlyUnimplementedIds{
     // `double_to_int64`, `int64_to_uint64`, `double_to_uint64`,
     // `int64_to_double`, `uint64_to_double`) graduated to
     // `kBuiltinSeeds`; size dropped 74 → 68.
-    "string_to_uint64",
-    "string_to_int64",
+    //
+    // M10.C: string-parse ids (`string_to_int64`,
+    // `string_to_uint64`, `string_to_double`, `string_to_bool`)
+    // graduated to `kBuiltinSeeds`; size dropped 68 → 64.
     "timestamp_to_int64",
     "duration_to_int64",
-    "string_to_double",
-    "string_to_bool",
     "string_to_bytes",
     "bytes_to_string",
     "bool_to_string",

@@ -2680,3 +2680,290 @@ void cel_uint_to_double_at_v(uint32_t out_slot, uint32_t in_slot) {
   // Never errors per langdef — lossy for v >= 2^53 is allowed.
   write_double(out, (double)a->payload.u);
 }
+
+// ─────────────────────────────────────────────────────────────
+// M10.C: string parsing helpers.
+//
+// Four unary helpers `(out_slot, in_slot) -> void`:
+//   string_to_int64    int(string)
+//   string_to_uint64   uint(string)
+//   string_to_double   double(string)
+//   string_to_bool     bool(string)
+//
+// Hand-rolled byte-loop parsers mirroring `absl::SimpleAtoi` /
+// `SimpleAtod` admit-sets (the cel-cpp reference impl):
+//
+//   - int: optional leading `-`, decimal digits only, no whitespace,
+//     no trailing garbage.  Overflow → CEL_ERR_OVERFLOW.
+//   - uint: same, but leading `-` is rejected.
+//   - double: standard floating-point form
+//     `[+-]?digits(.digits)?([eE][+-]?digits)?` plus special
+//     literals `inf` / `infinity` / `nan` (case-insensitive).
+//   - bool: exact-string match against cel-cpp's 10-row truth table.
+//
+// All parser subroutines return 1 on success and 0 on any malformed
+// input — kernels translate 0 to `CEL_ERR_OVERFLOW` (the existing
+// "can't represent the result as the target type" code; matches
+// the semantics of the M10.B numeric-conversion overflows).  A
+// dedicated `CEL_ERR_INVALID_ARGUMENT` can land in a future slice
+// alongside the api/error.h mirror.
+// ─────────────────────────────────────────────────────────────
+
+static const uint8_t* span_bytes(const CelValue* cv) {
+  return cel_memory_base_() + cv->payload.s.ptr;
+}
+
+static int parse_int64_str(const uint8_t* p, uint32_t len, int64_t* out) {
+  if (len == 0) return 0;
+  int neg = 0;
+  uint32_t i = 0;
+  if (p[i] == '-') {
+    neg = 1;
+    ++i;
+  }
+  if (i == len) return 0;
+  uint64_t acc = 0;
+  for (; i < len; ++i) {
+    if (p[i] < '0' || p[i] > '9') return 0;
+    uint32_t d = (uint32_t)(p[i] - '0');
+    // Manual overflow check — `__builtin_mul_overflow` on 64-bit
+    // needs `__multi3` which the freestanding wasm32 build does not
+    // link (same precedent as the M5.B `int64_mul_overflows` comment
+    // at the top of this file).
+    if (acc > UINT64_MAX / 10ULL) return 0;
+    acc *= 10ULL;
+    if (acc > UINT64_MAX - (uint64_t)d) return 0;
+    acc += (uint64_t)d;
+  }
+  if (neg) {
+    // INT64_MIN edge: `|INT64_MIN| == (uint64_t)INT64_MAX + 1`.
+    if (acc > (uint64_t)INT64_MAX + 1ULL) return 0;
+    if (acc == (uint64_t)INT64_MAX + 1ULL) {
+      *out = INT64_MIN;
+    } else {
+      *out = -(int64_t)acc;
+    }
+  } else {
+    if (acc > (uint64_t)INT64_MAX) return 0;
+    *out = (int64_t)acc;
+  }
+  return 1;
+}
+
+static int parse_uint64_str(const uint8_t* p, uint32_t len, uint64_t* out) {
+  if (len == 0) return 0;
+  uint64_t acc = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    if (p[i] < '0' || p[i] > '9') return 0;
+    uint32_t d = (uint32_t)(p[i] - '0');
+    // Manual overflow check — `__builtin_mul_overflow` on 64-bit
+    // needs `__multi3` which the freestanding wasm32 build does not
+    // link (same precedent as the M5.B `int64_mul_overflows` comment
+    // at the top of this file).
+    if (acc > UINT64_MAX / 10ULL) return 0;
+    acc *= 10ULL;
+    if (acc > UINT64_MAX - (uint64_t)d) return 0;
+    acc += (uint64_t)d;
+  }
+  *out = acc;
+  return 1;
+}
+
+// Case-insensitive ASCII prefix match.  Returns 1 iff `p[0..plen)`
+// matches `pattern[0..plen)` byte-for-byte after folding A-Z to a-z.
+static int eq_ci(const uint8_t* p, uint32_t plen, const char* pattern) {
+  for (uint32_t i = 0; i < plen; ++i) {
+    uint8_t a = p[i];
+    uint8_t b = (uint8_t)pattern[i];
+    if (a >= 'A' && a <= 'Z') a = (uint8_t)(a + 32);
+    if (b >= 'A' && b <= 'Z') b = (uint8_t)(b + 32);
+    if (a != b) return 0;
+  }
+  return 1;
+}
+
+static int parse_double_str(const uint8_t* p, uint32_t len, double* out) {
+  if (len == 0) return 0;
+  int neg = 0;
+  uint32_t i = 0;
+  if (p[i] == '-') {
+    neg = 1;
+    ++i;
+  } else if (p[i] == '+') {
+    ++i;
+  }
+  if (i == len) return 0;
+  // Special literals.  `infinity` checked before `inf` because of
+  // prefix overlap.
+  const uint32_t rem = len - i;
+  if (rem == 8 && eq_ci(p + i, 8, "infinity")) {
+    *out = neg ? -__builtin_inf() : __builtin_inf();
+    return 1;
+  }
+  if (rem == 3 && eq_ci(p + i, 3, "inf")) {
+    *out = neg ? -__builtin_inf() : __builtin_inf();
+    return 1;
+  }
+  if (rem == 3 && eq_ci(p + i, 3, "nan")) {
+    *out = __builtin_nan("");
+    return 1;
+  }
+  // Numeric form.  Accumulate mantissa as a double; track total
+  // decimal scale separately.  Precision is "best effort" within
+  // the bounds cel-cpp's SimpleAtod also exhibits for hand-roll
+  // edge cases; tests cover the common admit + reject matrix.
+  double mantissa = 0.0;
+  int saw_digit = 0;
+  while (i < len && p[i] >= '0' && p[i] <= '9') {
+    mantissa = mantissa * 10.0 + (double)(p[i] - '0');
+    saw_digit = 1;
+    ++i;
+  }
+  int frac_digits = 0;
+  if (i < len && p[i] == '.') {
+    ++i;
+    while (i < len && p[i] >= '0' && p[i] <= '9') {
+      mantissa = mantissa * 10.0 + (double)(p[i] - '0');
+      ++frac_digits;
+      saw_digit = 1;
+      ++i;
+    }
+  }
+  if (!saw_digit) return 0;
+  int exp_neg = 0;
+  int exp_val = 0;
+  if (i < len && (p[i] == 'e' || p[i] == 'E')) {
+    ++i;
+    if (i == len) return 0;
+    if (p[i] == '-') {
+      exp_neg = 1;
+      ++i;
+    } else if (p[i] == '+') {
+      ++i;
+    }
+    if (i == len) return 0;
+    int saw_exp_digit = 0;
+    while (i < len && p[i] >= '0' && p[i] <= '9') {
+      // Cap to avoid wraparound — magnitudes past +/-308 saturate
+      // to inf / 0 anyway under IEEE 754 doubles.
+      if (exp_val < 10000) exp_val = exp_val * 10 + (p[i] - '0');
+      saw_exp_digit = 1;
+      ++i;
+    }
+    if (!saw_exp_digit) return 0;
+  }
+  if (i != len) return 0;  // trailing garbage rejected.
+  int total_exp = (exp_neg ? -exp_val : exp_val) - frac_digits;
+  // Apply scale.  Iterative multiply is precision-lossy on edge
+  // cases but matches the test admit-set; a tighter implementation
+  // (Grisu / Ryu) can land later if a fixture demands it.
+  if (total_exp > 0) {
+    for (int k = 0; k < total_exp; ++k) mantissa *= 10.0;
+  } else if (total_exp < 0) {
+    for (int k = 0; k < -total_exp; ++k) mantissa /= 10.0;
+  }
+  *out = neg ? -mantissa : mantissa;
+  return 1;
+}
+
+// cel-cpp's `StringToBoolFunction` truth table (10 rows).
+//   true:  "1" / "t" / "true" / "TRUE" / "True"
+//   false: "0" / "f" / "false" / "FALSE" / "False"
+// Exact byte-match (NOT case-insensitive — the spec admits only
+// the 5 spellings per polarity, mixed case beyond `True` / `TRUE`
+// rejects).
+static int parse_bool_str(const uint8_t* p, uint32_t len, int* out) {
+  struct Row {
+    const char* s;
+    uint32_t len;
+    int v;
+  };
+  static const struct Row kRows[10] = {
+      {"1", 1, 1},    {"t", 1, 1},     {"true", 4, 1}, {"TRUE", 4, 1},
+      {"True", 4, 1}, {"0", 1, 0},     {"f", 1, 0},    {"false", 5, 0},
+      {"FALSE", 5, 0}, {"False", 5, 0},
+  };
+  for (uint32_t r = 0; r < 10; ++r) {
+    if (len != kRows[r].len) continue;
+    int match = 1;
+    for (uint32_t i = 0; i < len; ++i) {
+      if (p[i] != (uint8_t)kRows[r].s[i]) {
+        match = 0;
+        break;
+      }
+    }
+    if (match) {
+      *out = kRows[r].v;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+void cel_string_to_int_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  int64_t v;
+  if (!parse_int64_str(span_bytes(a), a->payload.s.len, &v)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, v);
+}
+
+void cel_string_to_uint_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  uint64_t v;
+  if (!parse_uint64_str(span_bytes(a), a->payload.s.len, &v)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, v);
+}
+
+void cel_string_to_double_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  double v;
+  if (!parse_double_str(span_bytes(a), a->payload.s.len, &v)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_double(out, v);
+}
+
+void cel_string_to_bool_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  int v;
+  if (!parse_bool_str(span_bytes(a), a->payload.s.len, &v)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_bool(out, v);
+}

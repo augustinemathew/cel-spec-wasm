@@ -209,7 +209,10 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
       // M10.B: numeric inter-conversion helpers.
       "cel_uint_to_int_at_v", "cel_double_to_int_at_v",
       "cel_int_to_uint_at_v", "cel_double_to_uint_at_v",
-      "cel_int_to_double_at_v", "cel_uint_to_double_at_v"};
+      "cel_int_to_double_at_v", "cel_uint_to_double_at_v",
+      // M10.C: string-parse helpers.
+      "cel_string_to_int_at_v", "cel_string_to_uint_at_v",
+      "cel_string_to_double_at_v", "cel_string_to_bool_at_v"};
   for (const char* name : kRuntimeExports) {
     if (auto s =
             BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);

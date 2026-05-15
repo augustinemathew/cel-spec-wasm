@@ -304,6 +304,11 @@ genrule(
         "-Wl,--export=cel_double_to_uint_at_v",
         "-Wl,--export=cel_int_to_double_at_v",
         "-Wl,--export=cel_uint_to_double_at_v",
+        # M10.C: string-parse helpers.
+        "-Wl,--export=cel_string_to_int_at_v",
+        "-Wl,--export=cel_string_to_uint_at_v",
+        "-Wl,--export=cel_string_to_double_at_v",
+        "-Wl,--export=cel_string_to_bool_at_v",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
