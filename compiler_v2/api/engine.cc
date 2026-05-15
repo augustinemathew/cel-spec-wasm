@@ -205,7 +205,11 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
       // M5.G (Slice 2): 3VL / control-flow helpers.
       "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
       // M9.B: type-of helper.
-      "cel_type_of_at_v"};
+      "cel_type_of_at_v",
+      // M10.B: numeric inter-conversion helpers.
+      "cel_uint_to_int_at_v", "cel_double_to_int_at_v",
+      "cel_int_to_uint_at_v", "cel_double_to_uint_at_v",
+      "cel_int_to_double_at_v", "cel_uint_to_double_at_v"};
   for (const char* name : kRuntimeExports) {
     if (auto s =
             BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);

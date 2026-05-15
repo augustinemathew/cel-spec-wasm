@@ -2546,3 +2546,137 @@ void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot) {
   out->payload.s.ptr = off;
   out->payload.s.len = len;
 }
+
+// ─────────────────────────────────────────────────────────────
+// M10.B: numeric inter-conversion kernels.
+//
+// Six unary helpers (`(out_slot, in_slot) -> void`) for the cel-cpp
+// overload ids:
+//   uint64_to_int64    int(uint)
+//   double_to_int64    int(double)
+//   int64_to_uint64    uint(int)
+//   double_to_uint64   uint(double)
+//   int64_to_double    double(int)
+//   uint64_to_double   double(uint)
+//
+// Each absorbs CEL_ERROR / CEL_UNKNOWN per the standard slot-out
+// helper contract.  Overflow / NaN / negative-source rejections
+// poison out_slot with `CEL_ERR_OVERFLOW`, matching the spec
+// "errors if out of range" wording (langdef §"int" / §"uint" /
+// §"double") and cel-cpp's `Checked*ToInt64` / `Checked*ToUint64`
+// helpers (`third_party/cel-cpp/internal/overflow.cc`).
+//
+// Double bounds for int / uint use the exact-representable
+// boundaries 2^63 and 2^64.  Per cel-cpp's `CheckedDoubleToInt64`,
+// `INT64_MIN` is admitted (it's exactly representable as a double),
+// but `INT64_MAX + 1 == 2^63` is rejected — the largest admissible
+// double is `2^63 - 1024` (the next-lower representable below 2^63).
+// NaN is rejected via the `v != v` idiom (works without <math.h>
+// which the freestanding wasm32 build does not link).
+// ─────────────────────────────────────────────────────────────
+
+// Exact-representable double bounds.  `kDoubleInt64Min == -2^63`
+// exactly; `kDoubleInt64MaxPlus1 == 2^63` exactly.  Compare with
+// `<` / `>=` to admit the inclusive int64 range and reject the
+// out-of-range edge cleanly.
+static const double kDoubleInt64Min = -9223372036854775808.0;
+static const double kDoubleInt64MaxPlus1 = 9223372036854775808.0;
+static const double kDoubleUint64MaxPlus1 = 18446744073709551616.0;
+
+void cel_uint_to_int_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_UINT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const uint64_t v = a->payload.u;
+  if (v > (uint64_t)INT64_MAX) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_int(out, (int64_t)v);
+}
+
+void cel_double_to_int_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const double v = a->payload.d;
+  // NaN check (v != v) + range gate using exact-representable
+  // boundaries.  Rejects [-inf, -2^63), [2^63, +inf], and NaN.
+  if (v != v || v < kDoubleInt64Min || v >= kDoubleInt64MaxPlus1) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  // C99 cast truncates toward zero — matches langdef §"int"
+  // "rounds toward zero".
+  write_int(out, (int64_t)v);
+}
+
+void cel_int_to_uint_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const int64_t v = a->payload.i;
+  if (v < 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, (uint64_t)v);
+}
+
+void cel_double_to_uint_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const double v = a->payload.d;
+  if (v != v || v < 0.0 || v >= kDoubleUint64MaxPlus1) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_uint(out, (uint64_t)v);
+}
+
+void cel_int_to_double_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // Never errors per langdef — lossy for |v| >= 2^53 is allowed.
+  write_double(out, (double)a->payload.i);
+}
+
+void cel_uint_to_double_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_UINT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // Never errors per langdef — lossy for v >= 2^53 is allowed.
+  write_double(out, (double)a->payload.u);
+}

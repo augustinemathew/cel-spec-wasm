@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 92> kBuiltinSeeds{
+constexpr std::array<Seed, 98> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -263,6 +263,22 @@ constexpr std::array<Seed, 92> kBuiltinSeeds{
     Seed{"double_to_double", {ImportModule::kCelRuntime, "cel_copy_slot"}},
     Seed{"string_to_string", {ImportModule::kCelRuntime, "cel_copy_slot"}},
     Seed{"bytes_to_bytes", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    // M10.B — numeric inter-conversions.  Each helper is a unary
+    // slot-out kernel with the standard 3VL absorb prelude;
+    // overflow / NaN / negative-source rejections poison with
+    // CEL_ERR_OVERFLOW per langdef §"int" / §"uint" / §"double".
+    Seed{"uint64_to_int64",
+         {ImportModule::kCelRuntime, "cel_uint_to_int_at_v"}},
+    Seed{"double_to_int64",
+         {ImportModule::kCelRuntime, "cel_double_to_int_at_v"}},
+    Seed{"int64_to_uint64",
+         {ImportModule::kCelRuntime, "cel_int_to_uint_at_v"}},
+    Seed{"double_to_uint64",
+         {ImportModule::kCelRuntime, "cel_double_to_uint_at_v"}},
+    Seed{"int64_to_double",
+         {ImportModule::kCelRuntime, "cel_int_to_double_at_v"}},
+    Seed{"uint64_to_double",
+         {ImportModule::kCelRuntime, "cel_uint_to_double_at_v"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -285,7 +301,7 @@ constexpr std::array<Seed, 92> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 74> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 68> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -342,16 +358,15 @@ constexpr std::array<absl::string_view, 74> kExplicitlyUnimplementedIds{
     // `int64_to_int64`, `uint64_to_uint64`, `double_to_double`,
     // `string_to_string`, `bytes_to_bytes`) graduated to
     // `kBuiltinSeeds` above; size dropped 80 → 74 to match.
-    "double_to_uint64",
-    "int64_to_uint64",
+    //
+    // M10.B: numeric inter-conversion ids (`uint64_to_int64`,
+    // `double_to_int64`, `int64_to_uint64`, `double_to_uint64`,
+    // `int64_to_double`, `uint64_to_double`) graduated to
+    // `kBuiltinSeeds`; size dropped 74 → 68.
     "string_to_uint64",
-    "uint64_to_int64",
-    "double_to_int64",
     "string_to_int64",
     "timestamp_to_int64",
     "duration_to_int64",
-    "uint64_to_double",
-    "int64_to_double",
     "string_to_double",
     "string_to_bool",
     "string_to_bytes",

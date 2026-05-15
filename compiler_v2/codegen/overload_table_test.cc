@@ -42,7 +42,10 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // M10.A: 86 → 92 — added 6 identity-conversion seeds
 // (`<kind>_to_<kind>` for bool/int64/uint64/double/string/bytes),
 // all pointing at `cel_copy_slot`.
-constexpr size_t kBuiltinSeedCount = 92;
+// M10.B: 92 → 98 — added 6 numeric inter-conversion seeds
+// (`uint64_to_int64` / `double_to_int64` / `int64_to_uint64` /
+// `double_to_uint64` / `int64_to_double` / `uint64_to_double`).
+constexpr size_t kBuiltinSeedCount = 98;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard
@@ -223,7 +226,13 @@ TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
                                      "my_upper_string"),
               IsOk());
   OverloadTable table = std::move(builder).Build();
-  const absl::flat_hash_set<uint32_t> used = {0u, 99u};
+  // M10.B note: id `99` used to be a safe "unknown" placeholder when
+  // kBuiltinSeeds was at 92 (one custom registered → id 93, leaving
+  // 99 unused).  M10.B grew kBuiltinSeeds to 98, so 99 now names the
+  // first custom and the test would fail.  Use a far-out value
+  // (`kBuiltinSeedCount + 1000`) to stay unknown as more seeds land.
+  const absl::flat_hash_set<uint32_t> used = {
+      0u, static_cast<uint32_t>(kBuiltinSeedCount + 1000)};
   const auto imports = table.UsedImports(used);
   EXPECT_TRUE(imports.empty());
 }

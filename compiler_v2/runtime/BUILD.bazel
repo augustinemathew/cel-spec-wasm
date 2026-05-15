@@ -297,6 +297,13 @@ genrule(
         "-Wl,--export=cel_copy_slot",
         # M9.B: type-of helper.
         "-Wl,--export=cel_type_of_at_v",
+        # M10.B: numeric inter-conversion helpers.
+        "-Wl,--export=cel_uint_to_int_at_v",
+        "-Wl,--export=cel_double_to_int_at_v",
+        "-Wl,--export=cel_int_to_uint_at_v",
+        "-Wl,--export=cel_double_to_uint_at_v",
+        "-Wl,--export=cel_int_to_double_at_v",
+        "-Wl,--export=cel_uint_to_double_at_v",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
