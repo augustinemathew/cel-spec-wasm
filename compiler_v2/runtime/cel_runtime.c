@@ -30,7 +30,8 @@ static int is_valid_map_key_kind(uint32_t kind) {
 // already handled the int↔uint cross-kind case via mathematical
 // comparison; the polymorphic kernel adds double↔int / double↔uint.
 
-static int map_keys_equal(const CelValue* a, const CelValue* b) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int map_keys_equal(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_BOOL && b->kind == CEL_BOOL) {
     return (a->payload.b != 0) == (b->payload.b != 0);
   }
@@ -392,7 +393,8 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
 // behaviour automatically — list equality is element-wise polymorphic
 // per langdef §"Equality" too.  No callsites depend on the old
 // "no implicit promotion" behaviour.
-static int cel_value_eq(const CelValue* a, const CelValue* b) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int cel_value_eq(const CelValue* a, const CelValue* b) {
   return cel_value_eq_polymorphic(a, b);
 }
 

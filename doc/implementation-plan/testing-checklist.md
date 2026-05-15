@@ -1847,6 +1847,55 @@ capability matrix and unlocks the `type_value:` envelope cohort
         new `resolve_message_type_name` trampoline) — deferred
         to next closeout sweep (does not block M9 ship).
 
+### Runtime carving (post-M10) — split-plan P1-P8 shipped 2026-05-14
+
+Source: `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md`.
+
+Coverage delta (each carved TU now has its own per-topic test file
+where one did not already exist; existing per-topic tests stay green):
+
+  - [x] `cel_log.c` carved (P1) — covered by host-side overrides in
+        `host/cel_log_test.cc` (pre-existing).
+  - [x] `cel_memory.c` carved (P2) — covered by
+        `runtime/cel_memory_test.cc` (pre-existing).
+  - [x] `cel_arena.c` carved (P3) — covered by
+        `runtime/cel_arena_test.cc` (pre-existing).
+  - [x] `cel_make.c` carved (P4) — covered by
+        `runtime/cel_make_test.cc` (pre-existing).
+  - [x] `cel_3vl.c` carved (P5) — covered by
+        `runtime/cel_3vl_test.cc` (pre-existing).
+  - [x] `cel_type.c` carved (new, M9.B body) — covered by
+        new `runtime/cel_type_test.cc` (15 cases: 12 primitive
+        type-name rows + 3VL absorbs + CEL_OPTIONAL reject +
+        CEL_MESSAGE host-stub fall-through).
+  - [x] `cel_convert.c` carved (new, M10.B/C/D/E bodies) —
+        covered by new `runtime/cel_convert_test.cc` (~60 cases:
+        numeric inter-conversion matrix incl. INT64_MIN/MAX +
+        UINT64_MAX + NaN + ±Inf + ±0 + overflow boundaries;
+        string parse matrix incl. 10-row parameterized bool truth
+        table + sign / scientific / trailing-garbage rejects;
+        number→string formatter matrix incl. INT64_MIN edge +
+        scientific/mixed/integer paths; UTF-8 RFC3629 reject
+        matrix incl. orphan continuation / overlong / truncated /
+        surrogate / >U+10FFFF / invalid leader + valid 2/3/4-byte
+        code points).
+  - [x] `cel_arith.c` carved (P6) — covered by
+        `runtime/cel_arith_test.cc` (pre-existing).
+  - [x] `cel_string_ops.c` carved (P7) — covered by
+        `runtime/cel_string_ops_test.cc` (pre-existing).
+  - [x] `cel_compare.c` carved (P8) — covered by
+        `runtime/cel_compare_test.cc` (pre-existing).
+  - [ ] `cel_list.c` + `cel_map.c` (P9) — punted.  See
+        split-plan §"Future work".
+
+`cel_internal.h` introduced as the shared umbrella for cross-TU
+static-inline helpers (`poison`, `absorb_3vl_*`, `require_kinds`,
+`write_*`, `spans_equal`, `cv_at`, wasm-side `memcpy`/`memset`) plus
+the small set of internal-extern decls (`cel_memory_base_`,
+`cel_memory_size_`, `numeric_compare_kernel`, `is_numeric_kind`,
+`cel_value_eq`, `map_keys_equal`).  No tests directly target the
+header — it's exercised indirectly by every runtime test.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

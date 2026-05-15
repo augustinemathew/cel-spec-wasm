@@ -1,11 +1,66 @@
 # cel_runtime.c split plan
 
-Status: **plan — drafted 2026-04-25, not yet started.**
+Status: **shipped 2026-05-14 (P1-P8 carved; P9 punted — see Future work).**
 
-`compiler_v2/runtime/cel_runtime.c` is now ~2284 lines.  Each topic
-already has its own header; this doc plans the corresponding `.c`
-split, ordered by extraction difficulty so the easy carves ship
-first.
+## What landed (2026-05-14)
+
+Eight of the nine planned carves shipped.  `compiler_v2/runtime/cel_runtime.c`
+shrank from ~3330 lines (post-M9 + M10) to ~1000 lines.  Each carved
+topic now owns its own `.c` translation unit alongside the existing
+header, plus a shared `cel_internal.h` umbrella for cross-TU
+inlines + extern decls.
+
+Carves (in landing order):
+
+| Carve | File | What moved |
+|---|---|---|
+| **P1** | `cel_log.c` | `cel_log` weak host stub + `cel_log_emit` (both build arms) |
+| **P2** | `cel_memory.c` | `cel_memory_base_` (wasm opacity-barrier version + host g_memory version) + `cel_memory_size_` + public `cel_mem_base`/`cel_mem_size` |
+| **P3** | `cel_arena.c` | `cel_reset` + `cel_alloc` + `cel_value_at` + private `load_u32`/`store_u32`/`align_up` + the `kBumpOffset`/`kLimitOffset` enum |
+| **P4** | `cel_make.c` | All `cel_make_*` scalar/span constructors + private `alloc_cv`/`make_span_copy`/`make_span_view` |
+| **P5** | `cel_3vl.c` | `cel_unknown_merge` / `cel_copy_slot` / `cel_and` / `cel_or` / `cel_not` + private `merge_sorted_id_arrays` / `alloc_unknown_descriptor` / `merge_unknown_descriptors` / `write_unknown_at` / `is_3vl_kind` |
+| **(new)** | `cel_type.c` | M9.B `cel_type_of_at_v` + `kPrimitiveTypeName` + `cel_host_resolve_message_type_name` weak host stub |
+| **(new)** | `cel_convert.c` | M10.B (6 numeric inter-conversion kernels) + M10.C (4 string parsers + 4 helper subroutines) + M10.D (4 number/bool→string formatters + 5 helper subroutines factored to satisfy the function-size gate) + M10.E (2 bytes↔string + RFC3629 UTF-8 validator factored into per-length helpers) |
+| **P6** | `cel_arith.c` | 14 int/uint/double arithmetic kernels + private `uint64_mul_overflows`/`int64_mul_overflows` |
+| **P7** | `cel_string_ops.c` | 19 string + bytes kernels (concat/size/eq/lt/le/gt/ge for both, plus contains/starts_with/ends_with) + private `span_eq`/`span_lt`/`span_match_at`/`span_contains`/`span_op_prelude`/`concat_into_out`/`size_at` |
+| **P8** | `cel_compare.c` | 24 same-kind comparisons via `DEFINE_CMP_VV` macro + cross-type numeric ladder (`cmp_i64`/`u64`/`double`/`int_vs_uint`/`int_vs_double`/`uint_vs_double`/`flip` + `numeric_kind_pair` + `numeric_compare_kernel` + `numeric_prelude`) + `cel_numeric_eq/ne/lt/le/gt/ge_at_vv` + `cel_null_eq_at_vv` |
+
+New header: `cel_internal.h` (umbrella decision per Open Question #1 in the
+original plan, "one umbrella vs per-topic internals") carries:
+
+  - `static inline` shared helpers: `cv_at`, `poison`, `absorb_3vl_binary`,
+    `absorb_3vl_unary`, `require_kinds`, `write_int`, `write_uint`,
+    `write_double`, `write_bool`, `spans_equal`
+  - On wasm, `static inline` byte-loop `memcpy` / `memset` shadowing
+    libc (per-TU copies; clang dead-strips unused ones)
+  - `extern` decls for `cel_memory_base_`, `cel_memory_size_`,
+    `numeric_compare_kernel`, `is_numeric_kind`, `cel_value_eq`,
+    `map_keys_equal` — the small set genuinely shared across TUs
+
+New tests:
+
+  - `cel_type_test.cc` — 12 primitive type-name rows + 3VL absorbs +
+    `CEL_OPTIONAL` reject + `CEL_MESSAGE` host-stub fall-through.
+  - `cel_convert_test.cc` — numeric matrix (every overload with
+    boundary cases INT64_MIN/MAX, UINT64_MAX, NaN, ±Inf, ±0,
+    overflow boundary) + parse matrix (every spec admit/reject
+    spelling including the 10-row bool truth table parameterized) +
+    formatter matrix (every overload, INT64_MIN edge,
+    scientific/mixed path coverage) + UTF-8 reject matrix per
+    RFC3629 (orphan continuation, overlong 2-byte, truncated,
+    surrogate, beyond U+10FFFF, invalid leader) + valid 2/3/4-byte
+    code points.
+
+Per CLAUDE.md "Closing out a planning doc": all section markers in
+the original plan body have been left intact below for the record;
+the deltas above tell the as-shipped story.
+
+> Plan-vs-execution delta: The original plan §1 catalog and §3
+> phase ordering pre-dated M9 + M10.  The plan was drafted at the
+> ~2284-line mark; cel_runtime.c had grown to ~3330 lines by the
+> time this work started.  The cel_type and cel_convert carves
+> were added on top of the §3 phase ordering as natural new
+> carves; otherwise the easiest-first sequence held up.
 
 ## 1. Function / static catalog
 
@@ -259,3 +314,44 @@ at symbols by name so they work no matter which TU contributes them.
 - `compiler_v2/runtime/cel_log.h`
 - `compiler_v2/runtime/cel_runtime.h` (umbrella)
 - `compiler_v2/runtime/cel_data.h`
+
+## Future work
+
+- **P9 — `cel_list.c` + `cel_map.c` split.**  The remaining
+  ~1000 lines of `cel_runtime.c` are the mutually-entangled
+  list+map+equality_kernel chain: `cel_map_create`/`_insert`/
+  `_lookup_arena`/`_lookup`, `cel_list_create`/`_set`/`_at_arena`/
+  `_at`, `cel_value_eq` / `cel_value_eq_polymorphic` /
+  `map_keys_equal`, the `cel_list_size_arena`/`_in_arena`/`_eq_arena`/
+  `_concat_arena` + `cel_map_size_arena`/`_in_arena`/`_eq_arena`
+  fast paths, the eight `cel_host_cel_*` host trampoline weak
+  stubs (extern decls on wasm, weak no-ops on host), the kDynamic
+  dispatchers (`cel_list_size`/`_in`/`_eq`/`_concat` and
+  `cel_map_size`/`_in`/`_eq`), and `equality_kernel` /
+  `cel_equals_at_vv` / `cel_not_equals_at_vv` / `type_eq_at_vv`.
+
+  P8 already promoted `numeric_compare_kernel` + `is_numeric_kind`
+  + `cel_value_eq` + `map_keys_equal` to internal-extern in
+  `cel_internal.h`.  The split is mechanically possible — the
+  remaining work is auditing which weak host stubs belong with
+  which TU, deciding whether `equality_kernel` moves with the
+  message-eq trampoline (currently in cel_runtime.c) or stays
+  alongside the list/map dispatchers, and verifying that the
+  `__attribute__((musttail))` patterns in the kDynamic
+  dispatchers (which tail-call same-TU `_arena` fast paths AND
+  cross-TU host imports) survive the split.  Punted from the
+  2026-05-14 work to keep the slice closed.
+
+- **`cel_internal.h` callsite cleanup.**  A handful of
+  cel_runtime.c functions still maintain forward decls or comments
+  pointing at the (now-relocated) bodies (e.g. "defined further down
+  in this file" notes near `cel_value_eq_polymorphic` /
+  `numeric_compare_kernel`).  These are stale but harmless.  Clean
+  up alongside P9.
+
+- **Same-kind comparison test coverage.**  `cel_compare_test.cc`
+  exists and is comprehensive for the cross-type numeric ladder
+  and polymorphic equality; the 24 `DEFINE_CMP_VV` expansions are
+  covered transitively via the existing arithmetic + comparison
+  tests.  Worth a pass to fold the matrix into a single TEST_P if
+  any future kernel-shape change needs it.

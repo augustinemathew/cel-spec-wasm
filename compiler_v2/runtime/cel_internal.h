@@ -51,6 +51,17 @@ typedef enum {
 CmpResult numeric_compare_kernel(const CelValue* a, const CelValue* b);
 int is_numeric_kind(uint32_t kind);
 
+// Polymorphic value equality.  Defined in cel_compare.c; referenced
+// by cel_list_eq_arena (cel_list.c) and cel_map_eq_arena (cel_map.c)
+// for element / value comparisons.  Routes numeric pairs through the
+// cross-type numeric ladder per langdef §"Equality".
+int cel_value_eq(const CelValue* a, const CelValue* b);
+
+// Map-key equality (bool / int / uint / string + cross-type numeric).
+// Defined in cel_map.c; referenced by cel_compare.c's
+// cel_value_eq_polymorphic for cross-kind non-numeric fallthrough.
+int map_keys_equal(const CelValue* a, const CelValue* b);
+
 // Freestanding wasm32 cross-compile has no libc; the host build has
 // <string.h>.  Use byte-loop fallbacks on wasm so each TU is
 // self-contained without pulling compiler-rt.  These are
