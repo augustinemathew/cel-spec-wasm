@@ -39,7 +39,10 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // table didn't unexpectedly grow / shrink.  Update with the seed
 // list itself.
 // M9.B: 85 → 86 — added `type` seed pointing at `cel_type_of_at_v`.
-constexpr size_t kBuiltinSeedCount = 86;
+// M10.A: 86 → 92 — added 6 identity-conversion seeds
+// (`<kind>_to_<kind>` for bool/int64/uint64/double/string/bytes),
+// all pointing at `cel_copy_slot`.
+constexpr size_t kBuiltinSeedCount = 92;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 86> kBuiltinSeeds{
+constexpr std::array<Seed, 92> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -249,6 +249,20 @@ constexpr std::array<Seed, 86> kBuiltinSeeds{
     // CelValue.  CEL_MESSAGE arm dispatches to the M9.C host
     // trampoline `cel_host_resolve_message_type_name`.
     Seed{"type", {ImportModule::kCelRuntime, "cel_type_of_at_v"}},
+    // M10.A — identity conversions.  cel-cpp's standard library
+    // registers `<kind>(<kind>)` overloads for every scalar kind;
+    // each is a no-op at runtime.  Reuse `cel_copy_slot` (the
+    // 24-byte CelValue memcpy from M5.G Slice 2's ternary lowering)
+    // — its `(dst, src) -> void` ABI is bit-identical to the
+    // conversion `(out_slot, in_slot) -> void` shape, and the
+    // full-CelValue copy automatically propagates CEL_UNKNOWN /
+    // CEL_ERROR absorbing-kind semantics verbatim.
+    Seed{"bool_to_bool", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"int64_to_int64", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"uint64_to_uint64", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"double_to_double", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"string_to_string", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"bytes_to_bytes", {ImportModule::kCelRuntime, "cel_copy_slot"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -271,7 +285,7 @@ constexpr std::array<Seed, 86> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 80> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 74> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -324,25 +338,23 @@ constexpr std::array<absl::string_view, 80> kExplicitlyUnimplementedIds{
     "duration_to_milliseconds",
     // (3) Type conversions.
     "to_dyn",
-    "uint64_to_uint64",
+    // M10.A: identity-conversion ids (`bool_to_bool`,
+    // `int64_to_int64`, `uint64_to_uint64`, `double_to_double`,
+    // `string_to_string`, `bytes_to_bytes`) graduated to
+    // `kBuiltinSeeds` above; size dropped 80 → 74 to match.
     "double_to_uint64",
     "int64_to_uint64",
     "string_to_uint64",
     "uint64_to_int64",
     "double_to_int64",
-    "int64_to_int64",
     "string_to_int64",
     "timestamp_to_int64",
     "duration_to_int64",
-    "double_to_double",
     "uint64_to_double",
     "int64_to_double",
     "string_to_double",
-    "bool_to_bool",
     "string_to_bool",
-    "bytes_to_bytes",
     "string_to_bytes",
-    "string_to_string",
     "bytes_to_string",
     "bool_to_string",
     "double_to_string",

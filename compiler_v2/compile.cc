@@ -151,6 +151,12 @@ int OverloadHelperArity(absl::string_view name) {
       {"cel_and", 3},
       {"cel_or", 3},
       {"cel_not", 2},
+      // M10.A: `cel_copy_slot` is the kernel for identity conversions
+      // (`bool(bool)` / `int(int)` / ...).  Its `(dst, src) → void`
+      // signature is 2-arg; it doesn't follow the `_at_v` suffix
+      // convention because pre-M10 it was emitted directly by the
+      // ternary lowering, not via OverloadTable seeding.
+      {"cel_copy_slot", 2},
   };
   for (const auto& d : kDispatchers) {
     if (d.name == name) return d.arity;
