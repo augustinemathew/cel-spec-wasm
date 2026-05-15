@@ -835,7 +835,7 @@ absl::StatusOr<cel::Value> ProtoList::At(
   if (refl == nullptr) {
     return absl::InternalError("ProtoList::At: no reflection");
   }
-  const size_t count = static_cast<size_t>(refl->FieldSize(*owner_, field_));
+  const auto count = static_cast<size_t>(refl->FieldSize(*owner_, field_));
   if (index >= count) {
     return IndexOutOfBounds(index, count);
   }
@@ -919,8 +919,7 @@ cel::Attribute EffectiveSelectAttribute(const cel::Attribute& operand_attr,
       operand_attr.qualifier_path().begin(),
       operand_attr.qualifier_path().end());
   path.push_back(cel::AttributeQualifier::OfString(std::string(field_name)));
-  return cel::Attribute(std::string(operand_attr.variable_name()),
-                        std::move(path));
+  return {std::string(operand_attr.variable_name()), std::move(path)};
 }
 
 // Returns true iff any pattern in `unknown_patterns` `kFull`-matches
@@ -936,12 +935,11 @@ bool MatchesAnyUnknownPattern(const CelHostBindings& bindings,
   auto attr = ResolveAttribute(bindings, attribute_id);
   if (!attr.has_value()) return false;
   const cel::Attribute eff = EffectiveSelectAttribute(*attr, field_name);
-  for (const cel::AttributePattern& pat : bindings.unknown_patterns) {
-    if (pat.IsMatch(eff) == cel::AttributePattern::MatchType::kFull) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(
+      bindings.unknown_patterns.begin(), bindings.unknown_patterns.end(),
+      [&eff](const cel::AttributePattern& pat) {
+        return pat.IsMatch(eff) == cel::AttributePattern::MatchType::kFull;
+      });
 }
 
 // Shared prelude for Get / Has.  Returns:
@@ -2359,6 +2357,14 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   // dynamic_cast distinguishes; mismatch is a checker regression
   // (a `Foo{...}` literal must construct a fresh OwnedProtoBacking,
   // never feed an Activation::Bind binding through here).
+  //
+  // The const-cast is required because `ExternrefTable::Lookup`
+  // returns a `const HostMessageBacking*` for read-side use, but
+  // `cel_set_field` owns mutating writes to OwnedProtoBacking's
+  // wrapped proto.  Lookup is the only API surface that hands out
+  // the backing; widening the table return type to non-const would
+  // leak mutability into every read site.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
   auto* owned_backing = const_cast<OwnedProtoBacking*>(
       dynamic_cast<const OwnedProtoBacking*>(backing));
   if (owned_backing == nullptr) {

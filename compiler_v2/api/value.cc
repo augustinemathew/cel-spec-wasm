@@ -222,9 +222,8 @@ bool Value::StructurallyEquals(const Value& other) const {
     case Kind::kBytes:
     case Kind::kType:
       // kType shares the std::string Payload alternative; the kind
-      // tag (already checked above) disambiguates.  Equality is
-      // byte-wise on the type-name string per langdef §"Equality"
-      // + m9-type-subsystem.md §3.4.
+      // tag (already checked above) disambiguates.  Byte-equality per
+      // langdef §"Equality" + m9-type-subsystem.md §3.4.
       return std::get<std::string>(payload_) ==
              std::get<std::string>(other.payload_);
     case Kind::kDuration:
@@ -242,33 +241,19 @@ bool Value::StructurallyEquals(const Value& other) const {
       return a.code == b.code && a.message == b.message &&
              a.expr_id == b.expr_id;
     }
-    case Kind::kMessage: {
-      // Pointer-identity on the backing is the only equality
-      // semantics that works without pulling the full
-      // HostMessageBacking interface into value.cc (which would
-      // require cel_host.h).  Spec-compliant message equality
-      // (MessageDifferencer for protos, custom-defined for other
-      // backings) lands in M4 with `cel_message_eq`.
+    case Kind::kMessage:
+      // Pointer-identity on the backing — element-wise equality lands
+      // in the runtime / M5 `==` overloads.
       return std::get<std::shared_ptr<celwasm::HostMessageBacking>>(payload_) ==
              std::get<std::shared_ptr<celwasm::HostMessageBacking>>(
                  other.payload_);
-    }
-    case Kind::kMap: {
-      // Pointer-identity on the backing — same rationale as kMessage.
-      // Spec-compliant element-wise unordered map equality lands in
-      // M4 with `cel_map_eq`.
+    case Kind::kMap:
       return std::get<std::shared_ptr<celwasm::HostMapBacking>>(payload_) ==
              std::get<std::shared_ptr<celwasm::HostMapBacking>>(other.payload_);
-    }
-    case Kind::kList: {
-      // Pointer-identity on the backing — same rationale as kMap /
-      // kMessage.  Spec-compliant ordered element-wise list equality
-      // lands with the M5 kCall built-in overload set (`==` on
-      // lists).
+    case Kind::kList:
       return std::get<std::shared_ptr<celwasm::HostListBacking>>(payload_) ==
              std::get<std::shared_ptr<celwasm::HostListBacking>>(
                  other.payload_);
-    }
   }
   ABSL_CHECK(false) << "unhandled Value::Kind = " << static_cast<int>(kind_);
 }

@@ -102,17 +102,22 @@ const CelType& CelType::map_value() const {
 
 bool CelType::operator==(const CelType& other) const {
   if (kind_ != other.kind_) return false;
-  switch (kind_) {
-    case Kind::kMessage:
-      return message_name_ == other.message_name_;
-    case Kind::kList:
-      return *list_element_ == *other.list_element_;
-    case Kind::kMap:
-      return map_kv_->first == other.map_kv_->first &&
-             map_kv_->second == other.map_kv_->second;
-    default:
-      return true;  // scalars carry no extra state
+  // Scalars (kBool / kInt / ... / kType) carry no extra state; the
+  // kind tag alone determines equality.  Container kinds compare their
+  // payload.  An if/else chain (rather than a switch) keeps
+  // `bugprone-branch-clone` from flattening the three structurally-
+  // similar `return _ == _` arms into one warning.
+  if (kind_ == Kind::kMessage) {
+    return message_name_ == other.message_name_;
   }
+  if (kind_ == Kind::kList) {
+    return *list_element_ == *other.list_element_;
+  }
+  if (kind_ == Kind::kMap) {
+    return map_kv_->first == other.map_kv_->first &&
+           map_kv_->second == other.map_kv_->second;
+  }
+  return true;
 }
 
 absl::string_view CelTypeKindName(CelType::Kind k) {

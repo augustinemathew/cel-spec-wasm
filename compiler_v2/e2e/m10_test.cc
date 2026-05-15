@@ -470,7 +470,8 @@ TEST_F(StringParseE2ETest, IntFromOverflowStringIsError) {
 TEST_F(StringParseE2ETest, IntFromFractionalStringIsError) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectEvalError(*compiler, R"(int("1.5"))", "fractional rejected by SimpleAtoi");
+  ExpectEvalError(*compiler, R"(int("1.5"))",
+                  "fractional rejected by SimpleAtoi");
 }
 
 // — uint(string) admit / reject —
@@ -540,11 +541,11 @@ TEST_F(StringParseE2ETest, DoubleFromGarbageStringIsError) {
 struct BoolStringCase {
   std::string label;
   std::string input;
-  bool expected;
+  bool expected = false;
 };
 
-class StringParseBoolE2ETest
-    : public ::testing::TestWithParam<BoolStringCase> {};
+class StringParseBoolE2ETest : public ::testing::TestWithParam<BoolStringCase> {
+};
 
 TEST_P(StringParseBoolE2ETest, ParsesPerCelCppTruthTable) {
   const auto& p = GetParam();
@@ -559,17 +560,16 @@ TEST_P(StringParseBoolE2ETest, ParsesPerCelCppTruthTable) {
 
 INSTANTIATE_TEST_SUITE_P(
     BoolTruthTable, StringParseBoolE2ETest,
-    ::testing::Values(
-        BoolStringCase{"True", "true", true},
-        BoolStringCase{"TitleTrue", "True", true},
-        BoolStringCase{"UpperTRUE", "TRUE", true},
-        BoolStringCase{"LowerT", "t", true},
-        BoolStringCase{"DigitOne", "1", true},
-        BoolStringCase{"False", "false", false},
-        BoolStringCase{"TitleFalse", "False", false},
-        BoolStringCase{"UpperFALSE", "FALSE", false},
-        BoolStringCase{"LowerF", "f", false},
-        BoolStringCase{"DigitZero", "0", false}),
+    ::testing::Values(BoolStringCase{"True", "true", true},
+                      BoolStringCase{"TitleTrue", "True", true},
+                      BoolStringCase{"UpperTRUE", "TRUE", true},
+                      BoolStringCase{"LowerT", "t", true},
+                      BoolStringCase{"DigitOne", "1", true},
+                      BoolStringCase{"False", "false", false},
+                      BoolStringCase{"TitleFalse", "False", false},
+                      BoolStringCase{"UpperFALSE", "FALSE", false},
+                      BoolStringCase{"LowerF", "f", false},
+                      BoolStringCase{"DigitZero", "0", false}),
     [](const ::testing::TestParamInfo<BoolStringCase>& info) {
       return info.param.label;
     });
@@ -676,8 +676,8 @@ TEST_F(NumberFormatE2ETest, DoubleZeroFormatsCleanly) {
   // Pin the trivial-zero spelling.  Either "0" or "0.0" is
   // acceptable per cel-cpp's `to_chars` general format; the test
   // asserts round-trip + that the result IS a string.
-  auto instance =
-      CompilePlan(*compiler, "size(string(0.0)) > 0 && double(string(0.0)) == 0.0");
+  auto instance = CompilePlan(
+      *compiler, "size(string(0.0)) > 0 && double(string(0.0)) == 0.0");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -724,8 +724,7 @@ TEST_F(BytesFamilyE2ETest, BytesFromUtf8String) {
   // Snowman (U+2603) — 3-byte UTF-8 (0xe2 0x98 0x83).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"(bytes("☃") == b"\xe2\x98\x83")");
+  auto instance = CompilePlan(*compiler, R"(bytes("☃") == b"\xe2\x98\x83")");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -741,8 +740,7 @@ TEST_F(BytesFamilyE2ETest, StringFromAsciiBytes) {
 TEST_F(BytesFamilyE2ETest, StringFromValidUtf8Bytes) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"(string(b"\xe2\x98\x83") == "☃")");
+  auto instance = CompilePlan(*compiler, R"(string(b"\xe2\x98\x83") == "☃")");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -800,15 +798,13 @@ TEST_F(RejectE2ETest, IntOfListIsCheckerRejected) {
   // No `int(list)` overload in cel-cpp's set; checker rejects.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler, "int([1, 2, 3])",
-                     "no overload int(list)");
+  ExpectCompileFails(*compiler, "int([1, 2, 3])", "no overload int(list)");
 }
 
 TEST_F(RejectE2ETest, IntOfMapIsCheckerRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler, R"(int({"k": 1}))",
-                     "no overload int(map)");
+  ExpectCompileFails(*compiler, R"(int({"k": 1}))", "no overload int(map)");
 }
 
 TEST_F(RejectE2ETest, StringOfListIsCheckerRejected) {
@@ -822,8 +818,7 @@ TEST_F(RejectE2ETest, BoolOfIntIsCheckerRejected) {
   // No `bool(int)` overload — only bool(bool) and bool(string).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler, "bool(1)",
-                     "no overload bool(int)");
+  ExpectCompileFails(*compiler, "bool(1)", "no overload bool(int)");
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -838,15 +833,18 @@ TEST_F(RejectE2ETest, BoolOfIntIsCheckerRejected) {
 class DeferredTimestampE2ETest : public ::testing::Test {};
 
 TEST_F(DeferredTimestampE2ETest, IntFromTimestamp) {
-  GTEST_SKIP() << "int(timestamp(...)) is the timestamps slice — out of M10 scope";
+  GTEST_SKIP()
+      << "int(timestamp(...)) is the timestamps slice — out of M10 scope";
 }
 
 TEST_F(DeferredTimestampE2ETest, StringFromDuration) {
-  GTEST_SKIP() << "string(duration(...)) is the timestamps slice — out of M10 scope";
+  GTEST_SKIP()
+      << "string(duration(...)) is the timestamps slice — out of M10 scope";
 }
 
 TEST_F(DeferredTimestampE2ETest, TimestampFromString) {
-  GTEST_SKIP() << "timestamp(string) is the timestamps slice — out of M10 scope";
+  GTEST_SKIP()
+      << "timestamp(string) is the timestamps slice — out of M10 scope";
 }
 
 TEST_F(DeferredTimestampE2ETest, DurationFromString) {

@@ -25,9 +25,11 @@ constexpr size_t kMemBytes = 4096;
 // struct copies) makes every offset visible in the test body.
 class Scratch {
  public:
-  Scratch() {
-    bytes_.assign(kMemBytes, 0);
-  }
+  // NSDMI sizes `bytes_` to kMemBytes of zeroes — equivalent to
+  // `bytes_.assign(kMemBytes, 0)` in the body, but lets the ctor be
+  // `= default` (modernize-use-equals-default) and silences
+  // cppcoreguidelines-pro-type-member-init on the std::vector field.
+  Scratch() = default;
 
   absl::Span<const uint8_t> mem() const {
     return {bytes_.data(), bytes_.size()};
@@ -79,7 +81,7 @@ class Scratch {
   }
 
  private:
-  std::vector<uint8_t> bytes_;
+  std::vector<uint8_t> bytes_ = std::vector<uint8_t>(kMemBytes, 0);
 };
 
 // Convenience: build and decode a call with `fmt` + caller-supplied

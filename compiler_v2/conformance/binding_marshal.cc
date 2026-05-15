@@ -91,9 +91,18 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
     case ProtoValue::kDoubleValue:
       return cel::Value::Double(v.double_value());
     case ProtoValue::kStringValue:
-      return cel::Value::String(v.string_value());
-    case ProtoValue::kBytesValue:
-      return cel::Value::Bytes(v.bytes_value());
+    case ProtoValue::kBytesValue: {
+      // Spec semantics differ (string interns UTF-8, bytes is opaque),
+      // but the marshaller treats both as opaque byte payloads.  One
+      // arm collapses what `bugprone-branch-clone` would otherwise flag
+      // as two identical-shaped `cel::Value::X(v.X_value())` cases.
+      auto kind = v.kind_case();
+      const std::string& bytes = (kind == ProtoValue::kStringValue)
+                                     ? v.string_value()
+                                     : v.bytes_value();
+      return (kind == ProtoValue::kStringValue) ? cel::Value::String(bytes)
+                                                : cel::Value::Bytes(bytes);
+    }
     case ProtoValue::kEnumValue:
       // langdef §"Enumerated Types": enum values are spec-typed as
       // int.  M7.D's InlineConstantReferences rewrite handles
@@ -134,24 +143,24 @@ namespace {
 
 // `name:type` spec for the closed set of primitive kinds the M2
 // checker accepts.  Aggregate / wrapper / well-known kinds bail
-// with Unimplemented at the call site.
+// with Unimplemented at the call site.  Table-driven so that the
+// six structurally-identical `case X: return std::string("y")` arms
+// — which trip `bugprone-branch-clone` — collapse into one expression.
 absl::StatusOr<std::string> PrimitiveSpec(ProtoType::PrimitiveType p) {
-  switch (p) {
-    case ProtoType::BOOL:
-      return std::string("bool");
-    case ProtoType::INT64:
-      return std::string("int");
-    case ProtoType::UINT64:
-      return std::string("uint");
-    case ProtoType::DOUBLE:
-      return std::string("double");
-    case ProtoType::STRING:
-      return std::string("string");
-    case ProtoType::BYTES:
-      return std::string("bytes");
-    case ProtoType::PRIMITIVE_TYPE_UNSPECIFIED:
-      return absl::InvalidArgumentError(
-          "binding_marshal: PrimitiveType is UNSPECIFIED");
+  static constexpr struct {
+    ProtoType::PrimitiveType kind;
+    const char* spec;
+  } kTable[] = {
+      {ProtoType::BOOL, "bool"},     {ProtoType::INT64, "int"},
+      {ProtoType::UINT64, "uint"},   {ProtoType::DOUBLE, "double"},
+      {ProtoType::STRING, "string"}, {ProtoType::BYTES, "bytes"},
+  };
+  for (const auto& row : kTable) {
+    if (row.kind == p) return std::string(row.spec);
+  }
+  if (p == ProtoType::PRIMITIVE_TYPE_UNSPECIFIED) {
+    return absl::InvalidArgumentError(
+        "binding_marshal: PrimitiveType is UNSPECIFIED");
   }
   ABSL_CHECK(false) << "binding_marshal: unhandled ProtoType::PrimitiveType = "
                     << static_cast<int>(p);
@@ -220,6 +229,11 @@ absl::StatusOr<std::string> TypeSpecFragment(const ProtoType& t) {
 
 }  // namespace
 
+// Declared in `binding_marshal.h` and called from
+// `binding_marshal_test.cc` + `runner.cc`; `misc-use-internal-linkage`
+// can't see the cross-TU callers and would otherwise hide this from
+// the header API.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::StatusOr<std::string> VariableSpecFromDecl(const ProtoDecl& d) {
   if (d.decl_kind_case() != ProtoDecl::kIdent) {
     return absl::UnimplementedError(
@@ -266,6 +280,9 @@ absl::Status PopulateActivation(
   return absl::OkStatus();
 }
 
+// Declared in `binding_marshal.h` and called from `runner.cc`; see
+// `VariableSpecFromDecl` above for the NOLINT rationale.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::Status PopulateVariableSpecs(
     const cel::expr::conformance::test::SimpleTest& t,
     std::vector<std::string>& out) {

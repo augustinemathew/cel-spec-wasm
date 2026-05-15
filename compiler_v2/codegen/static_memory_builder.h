@@ -106,7 +106,7 @@ class StaticMemoryBuilder {
   uint32_t AllocateSpan(CelKind kind, absl::string_view bytes);
 
   std::vector<uint8_t> buf_;
-  uint32_t base_offset_;
+  uint32_t base_offset_ = 0;
 };
 
 }  // namespace celwasm

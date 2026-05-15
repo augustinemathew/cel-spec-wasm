@@ -40,6 +40,7 @@
 #include <cmath>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -753,10 +754,11 @@ Result RunEvalErrorBranch(cel::Instance& inst, const cel::Activation& act,
   return Fail("compare", last);
 }
 
-}  // namespace
-
-Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
-              const cel::Engine& engine) {
+// Returns a SKIP/FAIL Result if `t` is outside the conformance scope
+// (checker-disabled / check-only / not in the M7 envelope) — else
+// std::nullopt.  Pulled out of `RunOne` to keep that under the lint
+// size gate.
+std::optional<Result> ScopeReject(const SimpleTest& t) {
   // Conformance scope is "expressions that pass cel-cpp's
   // type-checker."  Tests that explicitly disable the checker
   // (`disable_check: true`) or that only run the checker without
@@ -764,8 +766,6 @@ Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
   // pipeline (parse_and_check.cc::ParseAndCheck) is a single
   // checked-AST path; supporting parse-only eval would require a
   // separate codegen path with type inference at lower time.
-  // Surface a specific SKIP reason so the per-fixture diagnostic
-  // listings don't conflate these with envelope mismatch.
   if (t.disable_check()) {
     return Unsupported(
         "disable_check: parse-only eval out of conformance scope "
@@ -777,6 +777,37 @@ Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
         "path (harness follow-up)");
   }
   if (!IsInM7Envelope(t)) return Unsupported(EnvelopeRejectReason(t));
+  return std::nullopt;
+}
+
+// Run the typed_result-matcher arm of `RunOne` against `inst` + `act`.
+// Pulled out to keep RunOne under the lint size gate.
+Result RunTypedResultBranch(cel::Instance& inst, const cel::Activation& act,
+                            const SimpleTest& t) {
+  // M9.F: typed_result rows route through the standard value
+  // comparator using the embedded `result` value.  The
+  // `deduced_type` arm is intentionally unchecked at this slice —
+  // most rows are unique on the value alone, and a follow-up harness
+  // slice can add the type comparison once the AST type_map is
+  // exposed through the public `Compiler::Compile` surface.
+  if (!t.typed_result().has_result()) {
+    return Unsupported(
+        "envelope: typed_result matcher with no `result` value "
+        "(deduced_type-only comparison is harness follow-up)");
+  }
+  auto val_or = inst.Eval(act);
+  if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
+  if (auto s = CompareValue(*val_or, t.typed_result().result()); !s.ok()) {
+    return Fail("compare", s);
+  }
+  return {Outcome::kPass, ""};
+}
+
+}  // namespace
+
+Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
+              const cel::Engine& engine) {
+  if (auto skip = ScopeReject(t)) return *skip;
 
   // Marshal type_env / bindings before touching the compiler — both
   // can SKIP, and a failed marshal means we never burn a compile.
@@ -806,24 +837,8 @@ Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
   cel::Instance inst = *std::move(inst_or);
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
-  // M9.F: typed_result rows route through the standard value
-  // comparator using the embedded `result` value.  The
-  // `deduced_type` arm is intentionally unchecked at this slice —
-  // most rows are unique on the value alone, and a follow-up
-  // harness slice can add the type comparison once the AST type_map
-  // is exposed through the public `Compiler::Compile` surface.
   if (t.result_matcher_case() == SimpleTest::kTypedResult) {
-    if (!t.typed_result().has_result()) {
-      return Unsupported(
-          "envelope: typed_result matcher with no `result` value "
-          "(deduced_type-only comparison is harness follow-up)");
-    }
-    auto val_or = inst.Eval(act);
-    if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
-    if (auto s = CompareValue(*val_or, t.typed_result().result()); !s.ok()) {
-      return Fail("compare", s);
-    }
-    return {Outcome::kPass, ""};
+    return RunTypedResultBranch(inst, act, t);
   }
   return RunValueBranch(inst, act, t);
 }

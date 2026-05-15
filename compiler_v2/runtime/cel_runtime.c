@@ -1822,10 +1822,10 @@ static int both_maps(uint32_t ka, uint32_t kb) {
          (kb == CEL_MAP_ARENA || kb == CEL_MAP_HOST);
 }
 
-// Forward decls — these helpers live further down the M5.C section
-// of this file but are reachable from the equality kernel above.
-void cel_string_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
-void cel_bytes_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// `cel_string_eq_at_vv` / `cel_bytes_eq_at_vv` live further down in
+// this file and are reachable from the equality kernel above; their
+// declarations come in transitively via cel_runtime.h →
+// cel_string_ops.h (readability-redundant-declaration).
 
 // Polymorphic equality kernel.  Writes a CEL_BOOL into `out_slot`,
 // or propagates 3VL.  Aggregate / message arms tail-call into their
@@ -1909,11 +1909,19 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
   write_bool(out, 0);
 }
 
+// Wasm-exported via `-Wl,--export=cel_equals_at_vv` in
+// compiler_v2/runtime/BUILD.bazel; `misc-use-internal-linkage` is
+// silenced because internal linkage would hide it from the wasm
+// export table.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   equality_kernel(out_slot, a_slot, b_slot);
 }
 
+// Wasm-exported via `-Wl,--export=cel_not_equals_at_vv` — see
+// `cel_equals_at_vv` above for the linkage rationale.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void cel_not_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   equality_kernel(out_slot, a_slot, b_slot);
@@ -2176,10 +2184,12 @@ static uint32_t merge_sorted_id_arrays(const uint32_t* ids_a, uint32_t len_a,
       ++j;
     }
   }
-  while (i < len_a)
+  while (i < len_a) {
     out[k++] = ids_a[i++];
-  while (j < len_b)
+  }
+  while (j < len_b) {
     out[k++] = ids_b[j++];
+  }
   return k;
 }
 

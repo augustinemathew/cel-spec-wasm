@@ -203,7 +203,7 @@ std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
 }
 
 struct TypeParser {
-  absl::string_view src{};
+  absl::string_view src;
   size_t pos = 0;
   google::protobuf::Arena* arena = nullptr;
   const google::protobuf::DescriptorPool* pool = nullptr;
@@ -327,7 +327,7 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
 struct Violation {
   int64_t expr_id = 0;
   const char* kind = nullptr;
-  std::string detail{};
+  std::string detail;
 };
 
 const char* UnacceptableLabel(const cel::TypeSpec& type) {
@@ -574,12 +574,61 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
 // a no-op.  Called after the checker returns and before
 // `RejectDyn` / annotation population so all later passes see the
 // rewritten kConstant nodes uniformly.
+// Recurse into the immediate children of `expr` and apply `visit` to
+// each — split out of `InlineConstantReferences` to keep that function
+// under the lint size gate.  Caller is responsible for handling the
+// kIdent rewrite at the parent; this only descends.
+void VisitInlineConstantChildren(cel::Expr& expr,
+                                 const std::function<void(cel::Expr&)>& visit) {
+  if (expr.has_select_expr()) {
+    visit(expr.mutable_select_expr().mutable_operand());
+    return;
+  }
+  if (expr.has_call_expr()) {
+    auto& call = expr.mutable_call_expr();
+    if (call.has_target()) visit(call.mutable_target());
+    for (auto& arg : call.mutable_args()) {
+      visit(arg);
+    }
+    return;
+  }
+  if (expr.has_list_expr()) {
+    for (auto& elem : expr.mutable_list_expr().mutable_elements()) {
+      visit(elem.mutable_expr());
+    }
+    return;
+  }
+  if (expr.has_map_expr()) {
+    for (auto& e : expr.mutable_map_expr().mutable_entries()) {
+      visit(e.mutable_key());
+      visit(e.mutable_value());
+    }
+    return;
+  }
+  if (expr.has_struct_expr()) {
+    for (auto& f : expr.mutable_struct_expr().mutable_fields()) {
+      visit(f.mutable_value());
+    }
+    return;
+  }
+  if (expr.has_comprehension_expr()) {
+    auto& c = expr.mutable_comprehension_expr();
+    visit(c.mutable_iter_range());
+    visit(c.mutable_accu_init());
+    visit(c.mutable_loop_condition());
+    visit(c.mutable_loop_step());
+    visit(c.mutable_result());
+    return;
+  }
+  // kConstant / kUnspecified / kIdent — leaf, nothing to recurse into.
+}
+
 void InlineConstantReferences(cel::Ast& ast) {
   const cel::Ast::ReferenceMap& refs = ast.reference_map();
   // Recursive in-place walker.  kIdent is always a leaf, so once
   // rewritten to kConstant the recursion bottoms out without
   // descending — children of a kConstant are empty.  Every other
-  // kind recurses into its children via mutable accessors.
+  // kind delegates to `VisitInlineConstantChildren`.
   std::function<void(cel::Expr&)> visit = [&](cel::Expr& expr) {
     if (expr.has_ident_expr()) {
       auto it = refs.find(expr.id());
@@ -591,46 +640,7 @@ void InlineConstantReferences(cel::Ast& ast) {
       }
       return;
     }
-    if (expr.has_select_expr()) {
-      visit(expr.mutable_select_expr().mutable_operand());
-      return;
-    }
-    if (expr.has_call_expr()) {
-      auto& call = expr.mutable_call_expr();
-      if (call.has_target()) visit(call.mutable_target());
-      for (auto& arg : call.mutable_args())
-        visit(arg);
-      return;
-    }
-    if (expr.has_list_expr()) {
-      for (auto& elem : expr.mutable_list_expr().mutable_elements()) {
-        visit(elem.mutable_expr());
-      }
-      return;
-    }
-    if (expr.has_map_expr()) {
-      for (auto& e : expr.mutable_map_expr().mutable_entries()) {
-        visit(e.mutable_key());
-        visit(e.mutable_value());
-      }
-      return;
-    }
-    if (expr.has_struct_expr()) {
-      for (auto& f : expr.mutable_struct_expr().mutable_fields()) {
-        visit(f.mutable_value());
-      }
-      return;
-    }
-    if (expr.has_comprehension_expr()) {
-      auto& c = expr.mutable_comprehension_expr();
-      visit(c.mutable_iter_range());
-      visit(c.mutable_accu_init());
-      visit(c.mutable_loop_condition());
-      visit(c.mutable_loop_step());
-      visit(c.mutable_result());
-      return;
-    }
-    // kConstant / kUnspecified — leaf, nothing to recurse into.
+    VisitInlineConstantChildren(expr, visit);
   };
   visit(ast.mutable_root_expr());
 }
@@ -761,72 +771,42 @@ std::optional<std::string> SpecTypeName(const cel::TypeSpec& inner) {
 //
 // Idempotent — running this on an AST without any type-ident
 // idents is a no-op.
+// Rewrite a single kIdent node into a kConstant carrying its spec
+// type-name, if the reference/type maps identify it as a type-ident.
+// Returns true if a rewrite happened (caller skips the children
+// recursion).  Lifted out of `InlineTypeIdentifierReferences` to keep
+// that function under the lint size gate.
+bool MaybeRewriteTypeIdent(cel::Expr& expr, const cel::Ast::ReferenceMap& refs,
+                           const cel::Ast::TypeMap& types) {
+  if (!expr.has_ident_expr()) return false;
+  auto refs_it = refs.find(expr.id());
+  auto types_it = types.find(expr.id());
+  if (refs_it == refs.end() || types_it == types.end()) return true;
+  const cel::Reference& ref = refs_it->second;
+  const cel::TypeSpec& outer = types_it->second;
+  // Defensive: M7.D's InlineConstantReferences already handled
+  // the value-bearing path; assert we don't double-rewrite.
+  if (ref.has_value()) return true;
+  if (!outer.has_type()) return true;
+  auto name = SpecTypeName(outer.type());
+  if (!name.has_value()) return true;  // out-of-scope inner kind
+  // Replace the kIdent with a kConstantExpr carrying the spec
+  // type-name.  PopulateAnnotations + PackPass will see a kConstant
+  // whose stamped Repr is kType (because the type_map entry is
+  // unchanged — still TypeType(inner) — and ReprOf(TypeSpec) already
+  // maps `has_type()` → Repr::kType).
+  cel::Constant c;
+  c.set_string_value(*std::move(name));
+  expr.set_const_expr(std::move(c));
+  return true;
+}
+
 void InlineTypeIdentifierReferences(cel::Ast& ast) {
   const cel::Ast::ReferenceMap& refs = ast.reference_map();
   const cel::Ast::TypeMap& types = ast.type_map();
   std::function<void(cel::Expr&)> visit = [&](cel::Expr& expr) {
-    if (expr.has_ident_expr()) {
-      auto refs_it = refs.find(expr.id());
-      auto types_it = types.find(expr.id());
-      if (refs_it == refs.end() || types_it == types.end()) return;
-      const cel::Reference& ref = refs_it->second;
-      const cel::TypeSpec& outer = types_it->second;
-      // Defensive: M7.D's InlineConstantReferences already handled
-      // the value-bearing path; assert we don't double-rewrite.
-      if (ref.has_value()) return;
-      if (!outer.has_type()) return;
-      auto name = SpecTypeName(outer.type());
-      if (!name.has_value()) return;  // out-of-scope inner kind
-      // Replace the kIdent with a kConstantExpr carrying the
-      // spec type-name.  PopulateAnnotations + PackPass will see
-      // a kConstant whose stamped Repr is kType (because the
-      // type_map entry is unchanged — still TypeType(inner) —
-      // and ReprOf(TypeSpec) already maps `has_type()` →
-      // Repr::kType).
-      cel::Constant c;
-      c.set_string_value(*std::move(name));
-      expr.set_const_expr(std::move(c));
-      return;
-    }
-    if (expr.has_select_expr()) {
-      visit(expr.mutable_select_expr().mutable_operand());
-      return;
-    }
-    if (expr.has_call_expr()) {
-      auto& call = expr.mutable_call_expr();
-      if (call.has_target()) visit(call.mutable_target());
-      for (auto& arg : call.mutable_args())
-        visit(arg);
-      return;
-    }
-    if (expr.has_list_expr()) {
-      for (auto& elem : expr.mutable_list_expr().mutable_elements()) {
-        visit(elem.mutable_expr());
-      }
-      return;
-    }
-    if (expr.has_map_expr()) {
-      for (auto& e : expr.mutable_map_expr().mutable_entries()) {
-        visit(e.mutable_key());
-        visit(e.mutable_value());
-      }
-      return;
-    }
-    if (expr.has_struct_expr()) {
-      for (auto& f : expr.mutable_struct_expr().mutable_fields()) {
-        visit(f.mutable_value());
-      }
-      return;
-    }
-    if (expr.has_comprehension_expr()) {
-      auto& c = expr.mutable_comprehension_expr();
-      visit(c.mutable_iter_range());
-      visit(c.mutable_accu_init());
-      visit(c.mutable_loop_condition());
-      visit(c.mutable_loop_step());
-      visit(c.mutable_result());
-      return;
-    }
+    if (MaybeRewriteTypeIdent(expr, refs, types)) return;
+    VisitInlineConstantChildren(expr, visit);
   };
   visit(ast.mutable_root_expr());
 }
