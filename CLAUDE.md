@@ -154,6 +154,44 @@ Before every commit run, in order:
   3. Update `doc/implementation-plan/testing-checklist.md` and the
      active milestone doc (see "Authoritative docs" above).
 
+**Running lint correctly — and the PCH gotcha.**  `scripts/lint.sh`
+always tries to use a precompiled header (PCH) to amortise the absl +
+protobuf header parse across every C++ TU it touches; without it,
+clang-tidy is so much slower that the full repo lint pass becomes
+unusable, **and the warning set itself changes**:
+
+  - The PCH lives at `.lint-cache/lint_pch.h.pch` and is built from
+    `scripts/lint_pch.h` (the union of absl + protobuf headers
+    referenced by `compiler_v2/`).
+  - `scripts/build_lint_pch.sh` rebuilds the PCH iff `lint_pch.h` or
+    `compile_commands.json` is newer than the cached PCH.  Update
+    `lint_pch.h` whenever a new absl / protobuf header lands in
+    `compiler_v2/`; run `scripts/refresh_compile_db.sh` after a bazel
+    dep update so the PCH rebuilds against the right paths.
+  - **PCH NOT loading is silent and changes warnings.**  When PCH
+    fails to load (most commonly because the build/release
+    mismatched the clang-tidy version, or because lint.sh's
+    `-include-pch <path>` flag form regresses), clang-tidy still
+    finishes — but it emits a different warning set.  Specifically:
+    `cppcoreguidelines-pro-type-member-init` false-fires on every
+    `std::string` / `std::vector` / `std::shared_ptr` field
+    "without an initializer", because clang-tidy can't see the
+    default ctors of those types.  If you start seeing a flood of
+    `pro-type-member-init` warnings, **check the PCH is loading**
+    before fixing them: a clean lint with PCH loaded will not flag
+    those fields, and adding NSDMI defaults (`field_{}`) will
+    instead trip `readability-redundant-member-init` once the PCH
+    is restored.  The canary is the PCH error in the lint output:
+    `'-pch=...' file not found` means PCH isn't loading; absence of
+    that error means it is.
+
+The two-argument form `--extra-arg-before=-include-pch` +
+`--extra-arg-before=<path>` (as two separate flags) is the correct
+way to pass clang's `-include-pch` through clang-tidy; the joined
+form `--extra-arg-before=-include-pch=<path>` is parsed by clang's
+driver as `-pch=<path>` (the `-include` prefix is stripped before
+the equals splitter sees it) and the PCH never loads.
+
 **Function-size gate.**  `readability-function-size` is on with tight
 thresholds (60 lines / 40 statements / 15 branches / 6 params / 5
 nesting levels).  Functions do ONE thing and are short enough to

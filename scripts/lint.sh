@@ -120,7 +120,14 @@ declare -a cpp_pch_args=()
 if [[ -x scripts/build_lint_pch.sh && -f compile_commands.json ]]; then
   if scripts/build_lint_pch.sh; then
     if [[ -f "$PCH_PATH" ]]; then
-      cpp_pch_args+=("--extra-arg-before=-include-pch=$(pwd)/$PCH_PATH")
+      # clang's `-include-pch` takes the path as a separate argument;
+      # the `--extra-arg-before=-include-pch=PATH` joined form gets
+      # parsed by clang's driver as `-pch=PATH` (the `-include` prefix
+      # is stripped before the equals splitter sees it), which then
+      # surfaces as `'-pch=...' file not found`.  Pass the flag and
+      # its value as two separate --extra-arg-before entries.
+      cpp_pch_args+=("--extra-arg-before=-include-pch")
+      cpp_pch_args+=("--extra-arg-before=$(pwd)/$PCH_PATH")
     fi
   else
     echo "lint.sh: warning — PCH build failed; continuing without it." >&2
