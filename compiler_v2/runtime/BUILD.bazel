@@ -6,7 +6,10 @@ package(default_visibility = ["//compiler_v2:__subpackages__"])
 # code that needs the CelValue layout (codegen, cel_log, tests).
 cc_library(
     name = "cel_runtime",
-    srcs = ["cel_runtime.c"],
+    srcs = [
+        "cel_log.c",
+        "cel_runtime.c",
+    ],
     hdrs = [
         "cel_3vl.h",
         "cel_arena.h",
@@ -163,6 +166,7 @@ genrule(
         "cel_compare.h",
         "cel_data.h",
         "cel_list.h",
+        "cel_log.c",
         "cel_log.h",
         "cel_make.h",
         "cel_map.h",
@@ -320,6 +324,7 @@ genrule(
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
+        "$(location :cel_log.c)",
         "$(location :cel_runtime.c)",
     ]),
     tags = [

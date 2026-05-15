@@ -2384,52 +2384,6 @@ void cel_not(uint32_t out_slot, uint32_t a_slot) {
   poison(out, CEL_ERR_TYPE_MISMATCH);
 }
 
-// ---- cel_log trampoline --------------------------------------------------
-
-// Emit layer.  On wasm this posts args as u32 offsets into linear memory.
-// On host it is a weak no-op — tests that want to capture runtime-native
-// log lines override `cel_log` directly with a strong definition.
-// Parameter counts on `cel_log` and `cel_log_emit` are fixed by the
-// `cel_env.cel_log` wasm import signature (9 i32s); they cannot be
-// reduced by packing into a struct without changing the ABI.  Suppress
-// the function-size gate at the two declaration sites.
-#ifdef __wasm__
-// NOLINTNEXTLINE(readability-function-size)
-void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
-                  uint32_t fn_len, uint32_t line, const char* fmt,
-                  uint32_t fmt_len, const uint64_t* argv, uint32_t argc) {
-  cel_log((uint32_t)(uintptr_t)file, file_len, (uint32_t)(uintptr_t)fn, fn_len,
-          line, (uint32_t)(uintptr_t)fmt, fmt_len, (uint32_t)(uintptr_t)argv,
-          argc);
-}
-#else
-// NOLINTNEXTLINE(readability-function-size)
-__attribute__((weak)) void cel_log(uint32_t file_ptr, uint32_t file_len,
-                                   uint32_t fn_ptr, uint32_t fn_len,
-                                   uint32_t line, uint32_t fmt_ptr,
-                                   uint32_t fmt_len, uint32_t argv_ptr,
-                                   uint32_t argc) {
-  (void)file_ptr;
-  (void)file_len;
-  (void)fn_ptr;
-  (void)fn_len;
-  (void)line;
-  (void)fmt_ptr;
-  (void)fmt_len;
-  (void)argv_ptr;
-  (void)argc;
-}
-
-// NOLINTNEXTLINE(readability-function-size)
-void cel_log_emit(const char* file, uint32_t file_len, const char* fn,
-                  uint32_t fn_len, uint32_t line, const char* fmt,
-                  uint32_t fmt_len, const uint64_t* argv, uint32_t argc) {
-  cel_log((uint32_t)(uintptr_t)file, file_len, (uint32_t)(uintptr_t)fn, fn_len,
-          line, (uint32_t)(uintptr_t)fmt, fmt_len, (uint32_t)(uintptr_t)argv,
-          argc);
-}
-#endif
-
 // ─────────────────────────────────────────────────────────────
 // M9.B: type(x) helper.
 //
@@ -2858,9 +2812,11 @@ static int parse_double_str(const uint8_t* p, uint32_t len, double* out) {
   // cases but matches the test admit-set; a tighter implementation
   // (Grisu / Ryu) can land later if a fixture demands it.
   if (total_exp > 0) {
-    for (int k = 0; k < total_exp; ++k) mantissa *= 10.0;
+    for (int k = 0; k < total_exp; ++k)
+      mantissa *= 10.0;
   } else if (total_exp < 0) {
-    for (int k = 0; k < -total_exp; ++k) mantissa /= 10.0;
+    for (int k = 0; k < -total_exp; ++k)
+      mantissa /= 10.0;
   }
   *out = neg ? -mantissa : mantissa;
   return 1;
@@ -2879,8 +2835,8 @@ static int parse_bool_str(const uint8_t* p, uint32_t len, int* out) {
     int v;
   };
   static const struct Row kRows[10] = {
-      {"1", 1, 1},    {"t", 1, 1},     {"true", 4, 1}, {"TRUE", 4, 1},
-      {"True", 4, 1}, {"0", 1, 0},     {"f", 1, 0},    {"false", 5, 0},
+      {"1", 1, 1},     {"t", 1, 1},     {"true", 4, 1}, {"TRUE", 4, 1},
+      {"True", 4, 1},  {"0", 1, 0},     {"f", 1, 0},    {"false", 5, 0},
       {"FALSE", 5, 0}, {"False", 5, 0},
   };
   for (uint32_t r = 0; r < 10; ++r) {
@@ -3020,7 +2976,8 @@ static uint32_t write_int_decimal(uint8_t* dst, int64_t v) {
   }
   dst[0] = '-';
   // `-(int64_t)INT64_MIN` would UB; route via uint64 cast.
-  uint64_t abs_v = (v == INT64_MIN) ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)(-v);
+  uint64_t abs_v =
+      (v == INT64_MIN) ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)(-v);
   return 1u + write_uint_decimal(dst + 1, abs_v);
 }
 
@@ -3105,7 +3062,8 @@ static uint32_t append_double_fraction(uint8_t* dst, double frac,
     frac -= (double)digit;
   }
   // Trim trailing zeros.
-  while (n > 0 && dst[n - 1] == '0') --n;
+  while (n > 0 && dst[n - 1] == '0')
+    --n;
   return n;
 }
 
