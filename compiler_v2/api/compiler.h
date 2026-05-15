@@ -44,14 +44,27 @@ struct VariableDeclaration {
 };
 
 // Per-compilation tunables.  Per cel-host-surface.md §2.1:
-// declarations live on the Compiler/Builder; opts only tunes how
-// a specific expression is lowered.  M1 carries one knob; future
-// commits add debug_layout, allowed_overloads, etc.
+// declarations live on the Compiler/Builder; this struct only tunes
+// how a specific expression is lowered.
+//
+// Scope.  These knobs control the EXPR module (the per-expression
+// wasm bytes emitted by `Compile`).  They do NOT control the runtime
+// module (`cel_runtime.wasm`), which is compiled once at build time
+// with `-O3 -flto` unconditionally — see `compiler_v2/runtime/BUILD.
+// bazel` for the rationale.
+//
+// All three fields below are forwarded into the internal
+// `celwasm::CompileOptions` (compile.h); the internal struct has
+// additional pipeline-only knobs (`eval_internal_name`,
+// `eval_export_name`, `validate`, `serialize`) that public callers
+// can't and shouldn't tune.
 struct CompilerOptions {
   // Total linear-memory size in bytes, forwarded to the underlying
   // pipeline's `mem_size_bytes`.  Default is two wasm pages
   // (128 KiB) — matches cel_runtime.wasm's `--import-memory` min=2.
-  // Raise this when an expression needs a larger arena.
+  // Raise this when an expression needs a larger arena (e.g. heavy
+  // string concatenation or list construction inside a single Eval).
+  // Rounded up to the next wasm page (64 KiB) at module-emit time.
   uint32_t mem_size_bytes = 128u * 1024u;
 
   // Package container used for name resolution (CEL-Go `container` /
@@ -62,14 +75,28 @@ struct CompilerOptions {
   // a namespace resolve against `<container>.<name>` first.
   std::string container;
 
-  // Binaryen optimization level for the emitted wasm module.  Mirrors
-  // `wasm-opt -O<n>`: 0 = no-op (byte-identical output), 1 = light,
-  // 2 = balanced (canonical pipeline), 3 = aggressive.  Default 0
-  // preserves today's behaviour byte-for-byte.  Production callers
-  // typically want 2: Compile time goes up ~2-5×, but the emitted
-  // wasm is tighter and Cranelift's JIT'd native code is faster per
-  // Eval — the trade-off rewards the Engine's program-cache model
-  // (compile once, eval many).
+  // Binaryen optimization level for the emitted EXPR wasm module
+  // (the runtime is unconditionally `-O3 -flto`; see struct-level
+  // docblock).  Mirrors `wasm-opt -O<n>`:
+  //
+  //   0 — no-op; byte-identical output to a pre-Optimize build.
+  //       Today's default; chosen so existing codegen golden tests
+  //       stay byte-identical.
+  //   1 — light pass list; fast Compile, modest Eval win.
+  //   2 — balanced (canonical `wasm-opt -O2` pipeline); ~2-3×
+  //       Compile cost vs level 0, -50% Eval on chain-heavy bodies
+  //       (e.g. 20-term comparison chain: 11.2 us → 5.4 us per Eval
+  //       on darwin-arm64, see compiler_v2/bench/README.md).  Short
+  //       bodies (3-term arith) are a wash on Eval but still pay
+  //       the Compile penalty.
+  //   3 — aggressive; some passes have superlinear cost.  Rarely
+  //       worth it over 2 in practice.
+  //
+  // Recommended production setting is 2 on the request path —
+  // Compile cost amortises across many Eval calls via the
+  // Engine::Plan / Instance caching model (compile once, eval many).
+  // Use 0 for hot-reload paths where Compile latency dominates.
+  // Levels outside [0, 3] are rejected with `InvalidArgument`.
   int optimize_level = 0;
 };
 
@@ -90,15 +117,23 @@ class Compiler {
 
   // Compile a CEL source string to a Program (wasm bytes).  Runs the
   // full pipeline (parse → check → resolve → layout → module → lower
-  // → assemble).  No wasmtime involvement; the Program is just
-  // bytes + ABI.
+  // → assemble → optionally optimize).  No wasmtime involvement; the
+  // Program is just bytes + ABI.
   //
   // Status mapping flows through from the underlying pipeline:
-  //   - InvalidArgument: parse / check failure, or a static-subset
-  //     violation
-  //   - Unimplemented:   AST shape the current milestone doesn't
-  //                      handle yet
-  //   - FailedPrecondition: binaryen validate failure
+  //
+  //   - InvalidArgument:    parse failure, type-check failure, a
+  //                         static-subset violation (DYN / unbound
+  //                         function / type-param), or an
+  //                         `optimize_level` outside [0, 3].
+  //   - Unimplemented:      AST shape the current milestone doesn't
+  //                         handle yet (e.g. comprehensions pre-M11).
+  //   - FailedPrecondition: Binaryen validate failure (compiler bug —
+  //                         should never escape; file a regression).
+  //
+  // See `compiler_v2/README.md` for the high-level compile / plan /
+  // eval lifecycle and the runtime build-time flags that frame
+  // these compile-time knobs.
   ABSL_MUST_USE_RESULT absl::StatusOr<Program> Compile(
       absl::string_view source, const CompilerOptions& opts = {}) const;
 
