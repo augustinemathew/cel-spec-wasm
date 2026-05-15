@@ -366,7 +366,114 @@ recompile on runtime upgrade.  The `cel.abi` custom section carries
 enough metadata to plumb a version field through; that's a future-
 milestone slice.
 
-### 7. CLI
+### 7. How big are the artifacts?
+
+Measured numbers as of 2026-05-15, darwin-arm64, `-c opt` build.
+Reproduce via `bazel run -c opt //compiler_v2/bench:program_size_main`.
+
+#### Compiled program (per-expression wasm bytes) vs. CEL AST proto
+
+The most useful comparison for save/reload: how big is our compiled
+wasm module vs. the `cel.expr.CheckedExpr` proto that other CEL
+implementations (cel-go, cel-java, cel-cpp) cache and ship?
+
+**Always set `optimize_level = 2` when storing or shipping a
+compiled program.**  Unopt modules are dominated by import-table
+boilerplate (every `cel.cel_*` runtime symbol is declared even if
+the body doesn't call it, per the "codegen always links the runtime
+fully" rule); Binaryen's `remove-unused-module-elements` DCE's the
+imports the body doesn't call, so the optimized size is dominated
+by the actual expression body.
+
+| Expression                       | AST proto | wasm opt=0 | wasm opt=2 | opt2 / AST |
+| -------------------------------- | --------: | ---------: | ---------: | ---------: |
+| `42` (literal int)               |    36 B   |   2516 B   |   **136 B** | 3.78× |
+| `"hello"` (literal string)       |    41 B   |   2524 B   |   **144 B** | 3.51× |
+| `"hello, " + s` (string concat)  |   123 B   |   2557 B   |   **207 B** | 1.68× |
+| `s.contains("world")`            |   136 B   |   2557 B   |   **209 B** | 1.54× |
+| `int(string(123))` (M10 conv)    |   148 B   |   2531 B   |   **209 B** | 1.41× |
+| `[1,2,3,4,5]` (list lit, 5 elt)  |   148 B   |   2669 B   |   **336 B** | 2.27× |
+| `{"a":1, "b":2}` (map lit, 2 e.) |   152 B   |   2633 B   |   **301 B** | 1.98× |
+| `type(x) == int` (M9 type)       |   176 B   |   2565 B   |   **231 B** | 1.31× |
+| `a + b + c` (3-term arith)       |   204 B   |   2580 B   |   **191 B** | **0.94×** |
+| `{...3 entries...}["b"]` (lookup)|   279 B   |   2745 B   |   **440 B** | 1.58× |
+| 20-term `a<b && b<c && …` chain  |  3094 B   |   3339 B   |   **933 B** | **0.30×** |
+
+The crossover is at expression size ~200 B AST.  **Below that, the
+AST proto is smaller; above, our opt=2 wasm is smaller** (and the
+margin grows with expression complexity — the 20-term chain is over
+3× smaller as wasm).
+
+Why the AST proto loses on big expressions: every `Expr` node in
+the proto carries a node-id, an entry in `type_map`, and an entry
+in `reference_map` (with the resolved overload / decl name).  The
+20-term chain has ~80 AST nodes; the per-node overhead dominates.
+The wasm body is a flat sequence of `local.get` + `i32.lt_s` +
+`i32.and` instructions — 2-3 bytes per AST node after lowering.
+
+Why the AST proto wins on tiny expressions: a single literal is
+3 nodes (the literal + its id + its type); our wasm has unavoidable
+fixed overhead from the module preamble, `cel.abi` custom section,
+memory declaration, and `$eval` function header.  Floor at
+`optimize_level=2` is ~130 B regardless of body content.
+
+**Practical takeaway.**  Cache / ship the wasm bytes for any real
+expression — they're at most ~1 KB for typical workloads, and the
+reload path is `Program(bytes) → Plan` which skips parsing, type-
+checking, AST-rewriting, and codegen.  Caching the AST proto only
+makes sense if you also need to do post-load transformations (e.g.
+re-target a different runtime); the per-Eval reload cost is higher
+because you have to re-run the full Compile pipeline.
+
+#### Runtime module (one-time cost per process)
+
+| Artifact                       | Size    | Notes |
+| ------------------------------ | ------: | ----- |
+| `cel_runtime.wasm`             | **49,611 B** (~48 KB) | What `Engine::Builder::Build` parses once at process start.  Imported by every expr module via `(import "cel" ...)`. |
+| `libcel_runtime.a` (native)    | **128,296 B** (~125 KB) | Static archive of the same C source for in-process callers (kernel_bench, runtime unit tests, host trampolines).  Larger than the wasm because it carries x86_64 / arm64 native code, not the more compact wasm encoding. |
+
+Both are built unconditionally with `-O3 -flto` (see "Build-time vs.
+compile-time knobs" below).
+
+#### In-memory C++ objects
+
+The handles you pass around are small; the storage they own is what
+matters.  All sizes are `sizeof()`:
+
+| Type                | sizeof | What it owns / points to |
+| ------------------- | -----: | ------------------------ |
+| `cel::Program`      |  24 B  | + `std::vector<uint8_t>` data (~140 B - 1 KB per expr at opt2; see table above). |
+| `cel::Compiler`     |  24 B  | + `std::vector<VariableDeclaration>` (one per `DeclareVariable` call). |
+| `cel::CompilerOptions` | 40 B | Plain-old-data, copy freely. |
+| `cel::Value`        |  40 B  | Discriminated union; aggregates (List/Map/Message) own a shared_ptr to a backing. |
+| `cel::Activation`   |  32 B  | + a `flat_hash_map<string, Value>` for bound variables. |
+| `CelValue` (wire)   |  24 B  | Arena-resident; size pinned by `static_assert`.  This is the 24-byte slot every codegen-emitted load/store reads & writes. |
+
+#### Eval-time memory footprint (per Instance)
+
+Each `cel::Instance` owns a wasmtime store + linear memory.  The
+linear memory's size is set by `CompilerOptions::mem_size_bytes`,
+rounded up to the next wasm page:
+
+| `mem_size_bytes` setting | Actual allocation | Use case |
+| -----------------------: | ----------------: | -------- |
+| **128 KiB (default)**    | 2 wasm pages = 128 KiB | Most workloads — fits scalar / small-aggregate evals comfortably. |
+| 256 KiB                  | 4 pages = 256 KiB | Heavy string concat or 100s-of-element list construction. |
+| 1 MiB                    | 16 pages = 1 MiB | Stress / fuzzing; not a realistic production setting. |
+
+The bottom ~16 bytes of every memory are reserved for the arena
+cursor; the next ~`rodata_size` bytes (typically 100-500 B at
+`optimize_level=2`) hold compile-time constants; the rest is the
+bump arena `cel_reset` rewinds at the top of every Eval.
+
+A wasm page is 64 KiB by spec; you can't allocate fractional pages.
+That makes the minimum per-Instance memory cost ~128 KiB even for a
+program that evaluates a single literal.  If you instantiate
+thousands of Instances concurrently this is the per-tenant memory
+budget to track — share an Engine, but `Plan` a fresh Instance per
+request and let it drop at end-of-request.
+
+### 8. CLI
 
 For a one-off "does this expression even compile" check without
 writing C++, use the legacy `celwasmc` CLI under `compiler/cli/`
