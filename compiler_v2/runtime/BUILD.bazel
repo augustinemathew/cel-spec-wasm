@@ -7,7 +7,11 @@ package(default_visibility = ["//compiler_v2:__subpackages__"])
 cc_library(
     name = "cel_runtime",
     srcs = [
+        "cel_arena.c",
+        "cel_internal.h",
         "cel_log.c",
+        "cel_make.c",
+        "cel_memory.c",
         "cel_runtime.c",
     ],
     hdrs = [
@@ -161,15 +165,19 @@ genrule(
     name = "cel_runtime_wasm_file",
     srcs = [
         "cel_3vl.h",
+        "cel_arena.c",
         "cel_arena.h",
         "cel_arith.h",
         "cel_compare.h",
         "cel_data.h",
+        "cel_internal.h",
         "cel_list.h",
         "cel_log.c",
         "cel_log.h",
+        "cel_make.c",
         "cel_make.h",
         "cel_map.h",
+        "cel_memory.c",
         "cel_memory.h",
         "cel_runtime.c",
         "cel_runtime.h",
@@ -324,7 +332,10 @@ genrule(
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",
+        "$(location :cel_arena.c)",
         "$(location :cel_log.c)",
+        "$(location :cel_make.c)",
+        "$(location :cel_memory.c)",
         "$(location :cel_runtime.c)",
     ]),
     tags = [
