@@ -9,6 +9,7 @@ cc_library(
     srcs = [
         "cel_3vl.c",
         "cel_arena.c",
+        "cel_arith.c",
         "cel_convert.c",
         "cel_internal.h",
         "cel_log.c",
@@ -190,6 +191,7 @@ genrule(
         "cel_3vl.h",
         "cel_arena.c",
         "cel_arena.h",
+        "cel_arith.c",
         "cel_arith.h",
         "cel_compare.h",
         "cel_convert.c",
@@ -360,6 +362,7 @@ genrule(
         "-o $@",
         "$(location :cel_3vl.c)",
         "$(location :cel_arena.c)",
+        "$(location :cel_arith.c)",
         "$(location :cel_convert.c)",
         "$(location :cel_log.c)",
         "$(location :cel_make.c)",
