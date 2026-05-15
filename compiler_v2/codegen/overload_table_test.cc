@@ -51,7 +51,9 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // M10.D: 102 → 106 — added 4 number/bool→string seeds
 // (`int64_to_string` / `uint64_to_string` / `bool_to_string` /
 // `double_to_string`).
-constexpr size_t kBuiltinSeedCount = 106;
+// M10.E: 106 → 108 — added 2 bytes/string interconversion seeds
+// (`string_to_bytes` / `bytes_to_string`).
+constexpr size_t kBuiltinSeedCount = 108;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

@@ -210,9 +210,15 @@ TEST_P(IntFamilyE2ETest, ConvertsAndCompares) {
 INSTANTIATE_TEST_SUITE_P(
     IntConversions, IntFamilyE2ETest,
     ::testing::Values(
-        // bool → int.
-        IntCase{"BoolTrue", "int(true) == 1"},
-        IntCase{"BoolFalse", "int(false) == 0"},
+        // Note: `int(bool)` is registered by cel-cpp's runtime
+        // (`type_conversion_functions.cc::RegisterIntConversionFunctions`)
+        // but NOT by its checker (`checker/standard_library.cc` does
+        // not declare a BoolType→IntType overload).  So `int(true)`
+        // is checker-rejected; the row was dropped from this matrix.
+        // Bool→int / bool→uint / bool→double conversions land if
+        // we ship a v2-side checker extension; tracked as future
+        // work in m10-conversions.md §9.
+        //
         // uint → int (in-range).
         IntCase{"UintZero", "int(0u) == 0"},
         IntCase{"UintMidrange", "int(123u) == 123"},

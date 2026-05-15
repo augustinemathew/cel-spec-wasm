@@ -3215,3 +3215,116 @@ void cel_double_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
   k += write_uint_decimal(buf + k, (uint64_t)exp);
   (void)stamp_string(out, buf, k);
 }
+
+// ─────────────────────────────────────────────────────────────
+// M10.E: bytes ↔ string interconversion.
+//
+// `bytes(string)` — share the span verbatim, flip the kind tag.
+// CEL strings are by construction valid UTF-8 (cel-cpp's parser
+// rejects invalid literals), so no validation is needed.
+//
+// `string(bytes)` — validate UTF-8 per RFC3629, then share the
+// span and flip the kind tag.  Invalid UTF-8 → CEL_ERR_OVERFLOW
+// (the dedicated `CEL_ERR_INVALID_UTF8` error code per
+// m10-conversions.md §4.5 is deferred to the api/error.h mirror
+// slice; the test contract is "IsError", not error-code-specific).
+//
+// Both helpers share the source's `payload.s` (no arena copy) —
+// safe because the underlying bytes are immutable for the
+// lifetime of the CelValue.  Aliased slots (`out_slot ==
+// in_slot`) are handled by reading the span into a local before
+// writing.
+// ─────────────────────────────────────────────────────────────
+
+// RFC3629 UTF-8 byte-wise validator.  Rejects:
+//   - Orphan continuation bytes (0x80-0xBF outside a multibyte).
+//   - Overlong encodings (`0xC0`/`0xC1` 2-byte, `0xE0 0x80..0x9F`
+//     3-byte, `0xF0 0x80..0x8F` 4-byte).
+//   - Truncated sequences (multibyte leader without the right
+//     number of continuation bytes).
+//   - UTF-16 surrogates (`U+D800..U+DFFF`, encoded as
+//     `0xED 0xA0..0xBF + cont`).
+//   - Code points beyond U+10FFFF (`0xF4 0x90..0xBF +`,
+//     `0xF5..0xFF` leader).
+//
+// Returns 1 if every byte is valid, 0 otherwise.
+static int utf8_valid(const uint8_t* p, uint32_t len) {
+  uint32_t i = 0;
+  while (i < len) {
+    uint8_t b = p[i];
+    if (b < 0x80) {
+      ++i;
+      continue;
+    }
+    if (b < 0xC2) return 0;  // orphan continuation OR overlong 2-byte
+    if (b < 0xE0) {
+      // 2-byte: 0xC2-0xDF + cont.
+      if (i + 1 >= len) return 0;
+      if ((p[i + 1] & 0xC0) != 0x80) return 0;
+      i += 2;
+      continue;
+    }
+    if (b < 0xF0) {
+      // 3-byte: 0xE0-0xEF + 2 cont.
+      if (i + 2 >= len) return 0;
+      uint8_t b1 = p[i + 1];
+      uint8_t b2 = p[i + 2];
+      if ((b1 & 0xC0) != 0x80) return 0;
+      if ((b2 & 0xC0) != 0x80) return 0;
+      if (b == 0xE0 && b1 < 0xA0) return 0;   // overlong
+      if (b == 0xED && b1 >= 0xA0) return 0;  // surrogate
+      i += 3;
+      continue;
+    }
+    if (b < 0xF5) {
+      // 4-byte: 0xF0-0xF4 + 3 cont.
+      if (i + 3 >= len) return 0;
+      uint8_t b1 = p[i + 1];
+      uint8_t b2 = p[i + 2];
+      uint8_t b3 = p[i + 3];
+      if ((b1 & 0xC0) != 0x80) return 0;
+      if ((b2 & 0xC0) != 0x80) return 0;
+      if ((b3 & 0xC0) != 0x80) return 0;
+      if (b == 0xF0 && b1 < 0x90) return 0;   // overlong
+      if (b == 0xF4 && b1 >= 0x90) return 0;  // > U+10FFFF
+      i += 4;
+      continue;
+    }
+    return 0;  // 0xF5-0xFF: invalid leading byte
+  }
+  return 1;
+}
+
+void cel_string_to_bytes_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const CelSpan span = a->payload.s;  // read first (alias-safe).
+  out->kind = CEL_BYTES;
+  out->_pad = 0;
+  out->payload.s = span;
+}
+
+void cel_bytes_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
+  CEL_LOG("enter");
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(in_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_BYTES) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const CelSpan span = a->payload.s;
+  if (!utf8_valid(cel_memory_base_() + span.ptr, span.len)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  out->kind = CEL_STRING;
+  out->_pad = 0;
+  out->payload.s = span;
+}

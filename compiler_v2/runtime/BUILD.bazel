@@ -314,6 +314,9 @@ genrule(
         "-Wl,--export=cel_uint_to_string_at_v",
         "-Wl,--export=cel_bool_to_string_at_v",
         "-Wl,--export=cel_double_to_string_at_v",
+        # M10.E: bytes <-> string with UTF-8 validation.
+        "-Wl,--export=cel_string_to_bytes_at_v",
+        "-Wl,--export=cel_bytes_to_string_at_v",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

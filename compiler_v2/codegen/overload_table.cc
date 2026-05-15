@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 106> kBuiltinSeeds{
+constexpr std::array<Seed, 108> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -305,6 +305,13 @@ constexpr std::array<Seed, 106> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_bool_to_string_at_v"}},
     Seed{"double_to_string",
          {ImportModule::kCelRuntime, "cel_double_to_string_at_v"}},
+    // M10.E — bytes <-> string with UTF-8 validation.  Both share
+    // the source's payload.s span (no arena copy); the kind tag in
+    // CelValue disambiguates the byte semantics.
+    Seed{"string_to_bytes",
+         {ImportModule::kCelRuntime, "cel_string_to_bytes_at_v"}},
+    Seed{"bytes_to_string",
+         {ImportModule::kCelRuntime, "cel_bytes_to_string_at_v"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -327,7 +334,7 @@ constexpr std::array<Seed, 106> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 60> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 58> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -396,10 +403,11 @@ constexpr std::array<absl::string_view, 60> kExplicitlyUnimplementedIds{
     // M10.D: number/bool→string ids (`bool_to_string`,
     // `double_to_string`, `int64_to_string`, `uint64_to_string`)
     // graduated to `kBuiltinSeeds`; size dropped 64 → 60.
+    //
+    // M10.E: bytes <-> string ids (`string_to_bytes`,
+    // `bytes_to_string`) graduated; size dropped 60 → 58.
     "timestamp_to_int64",
     "duration_to_int64",
-    "string_to_bytes",
-    "bytes_to_string",
     "duration_to_string",
     "timestamp_to_string",
     "timestamp_to_timestamp",
