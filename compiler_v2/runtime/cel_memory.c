@@ -44,7 +44,13 @@ uint32_t cel_memory_size_(void) {  // NOLINT(misc-use-internal-linkage)
 #ifndef CELWASM_ARENA_BYTES
 #define CELWASM_ARENA_BYTES (64u * 1024u)
 #endif
-static uint8_t g_memory[CELWASM_ARENA_BYTES];
+// `_Alignas(8)` is load-bearing: every CelValue is 8-aligned (see
+// `cel_memory_test::BaseIsEightByteAligned`), so the host-side backing
+// buffer must be too — otherwise a CelValue* derived from
+// `cel_memory_base_() + k * sizeof(CelValue)` is mis-aligned and the
+// load/store traps on platforms that enforce alignment.  At -O2 the
+// linker happened to pad this to 8; at -O3 + -flto it doesn't.
+_Alignas(8) static uint8_t g_memory[CELWASM_ARENA_BYTES];
 uint8_t* cel_memory_base_(void) {  // NOLINT(misc-use-internal-linkage)
   return g_memory;
 }

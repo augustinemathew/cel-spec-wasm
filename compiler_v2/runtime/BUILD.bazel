@@ -41,6 +41,19 @@ cc_library(
         "-Wall",
         "-Wextra",
         "-Wno-unused-parameter",
+        # Speed knobs.  -O3 + -flto let the linker inline across the
+        # per-topic .c files split out by `cel-runtime-c-split-plan.md`.
+        # The static-inline helpers in cel_internal.h (`poison` /
+        # `absorb_3vl_*` / `write_*` / `require_kinds`) already inline at
+        # -O2; -O3 widens aggressiveness on vectorisable inner loops
+        # (`utf8_valid`, `write_uint_decimal`, parse loops), and LTO
+        # lets `cel_int_add_at_vv` inline its kind-check into call
+        # sites in `cel_arith.c` callers across TU boundaries.
+        "-O3",
+        "-flto",
+    ],
+    linkopts = [
+        "-flto",
     ],
 )
 
@@ -223,7 +236,15 @@ genrule(
         "--target=wasm32",
         "-ffreestanding",
         "-nostdlib",
-        "-O2",
+        # Speed knobs — mirror the native cc_library above.  After the
+        # cel_runtime.c split shipped 2026-05-14, the runtime is ~10
+        # per-topic .c files; -flto lets wasm-ld inline across them so
+        # the leaf kernels (cel_int_add_at_vv, cel_string_eq_at_vv,
+        # parse_*) fold into their call sites in the emitted module.
+        # -O3 widens the loop / branch optimization aggressiveness that
+        # the parse-loops and utf8_valid in cel_convert.c benefit from.
+        "-O3",
+        "-flto",
         # M3.C: `__attribute__((musttail))` requires the wasm tail-call
         # feature to lower as `return_call`.  Without `-mtail-call`
         # clang errors out rather than silently downgrading — that's
