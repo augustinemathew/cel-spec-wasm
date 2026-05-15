@@ -38,6 +38,19 @@ extern "C" {
 uint8_t* cel_memory_base_(void);
 uint32_t cel_memory_size_(void);
 
+// Cross-type numeric tri-state compare result.  Defined in
+// cel_compare.c (file-extern so callers in cel_runtime.c list/map
+// equality + cel_compare.c numeric helpers all share the same body).
+typedef enum {
+  kCmpLess = 0,
+  kCmpEqual = 1,
+  kCmpGreater = 2,
+  kCmpNanInequal = 3,
+} CmpResult;
+
+CmpResult numeric_compare_kernel(const CelValue* a, const CelValue* b);
+int is_numeric_kind(uint32_t kind);
+
 // Freestanding wasm32 cross-compile has no libc; the host build has
 // <string.h>.  Use byte-loop fallbacks on wasm so each TU is
 // self-contained without pulling compiler-rt.  These are

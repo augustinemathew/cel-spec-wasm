@@ -18,20 +18,8 @@ static int is_valid_map_key_kind(uint32_t kind) {
          kind == CEL_STRING;
 }
 
-// Tri-state numeric comparison result, hoisted up here so
-// `map_keys_equal` (Slice 1.6) and `cel_value_eq_polymorphic` can
-// consult `numeric_compare_kernel`.  The kernel + per-pair
-// comparators (`cmp_i64` etc.) live in the M5.B step 2 section
-// below; only the typedef + signature need to be visible here.
-typedef enum {
-  kCmpLess = 0,
-  kCmpEqual = 1,
-  kCmpGreater = 2,
-  kCmpNanInequal = 3,
-} CmpResult;
-
-static CmpResult numeric_compare_kernel(const CelValue* a, const CelValue* b);
-static int is_numeric_kind(uint32_t kind);
+// `CmpResult` + `numeric_compare_kernel` + `is_numeric_kind` come
+// from cel_internal.h (defined in cel_compare.c).
 
 // Slice 1.6: numeric-key map equality consults the polymorphic
 // `numeric_compare_kernel` — handles every {int, uint, double}
@@ -376,7 +364,27 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 // Forward-decls land at the top of the M5.B step 2 section; the
 // kernel + predicate live below in this same TU and resolve at
 // link-within-translation-unit time.
-static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b);
+// Slice 1.6 — polymorphic element-equality matcher.  Routes any
+// numeric pair (cross-kind included) through `numeric_compare_kernel`
+// (defined in cel_compare.c, visible via cel_internal.h's extern) so
+// `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
+// §"List Membership (in)" + §"Equality" + the conformance corpus'
+// `int_in_doubles` / `uint_in_ints` rows.
+static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
+  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
+    return numeric_compare_kernel(a, b) == kCmpEqual;
+  }
+  if (a->kind == CEL_BYTES && b->kind == CEL_BYTES) {
+    return spans_equal(a->payload.s, b->payload.s);
+  }
+  if (a->kind == CEL_NULL && b->kind == CEL_NULL) {
+    return 1;
+  }
+  // Bool / string / cross-kind non-numeric fall through to
+  // `map_keys_equal` which itself routes numerics polymorphically
+  // and returns 0 for kind mismatches.
+  return map_keys_equal(a, b);
+}
 
 // Pre-Slice-1.6 same-kind matcher.  Retained as a thin alias around
 // the polymorphic matcher so other callers (cel_list_eq_arena /
@@ -829,312 +837,6 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
                                                          b_slot);
   }
   poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
-}
-
-// ---- comparison helpers --------------------------------------------------
-// Same-kind only — cross-type numeric ladder lives in a separate
-// `cel_numeric_*` set added with the kCall arm's ladder dispatch
-// (M5.B step 2).  Each helper writes a CEL_BOOL CelValue.
-// cel-cpp parity:
-//   third_party/cel-cpp/runtime/standard/equality_functions.cc
-//   third_party/cel-cpp/runtime/standard/comparison_functions.cc
-
-#define DEFINE_CMP_VV(name, kind, field, op)                       \
-  void name(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) { \
-    CelValue* out = cel_value_at(out_slot);                        \
-    const CelValue* a = cel_value_at(a_slot);                      \
-    const CelValue* b = cel_value_at(b_slot);                      \
-    if (absorb_3vl_binary(out, a, b)) return;                      \
-    if (require_kinds(out, a, b, kind)) return;                    \
-    write_bool(out, a->payload.field op b->payload.field);         \
-  }
-
-DEFINE_CMP_VV(cel_int_eq_at_vv, CEL_INT, i, ==)
-DEFINE_CMP_VV(cel_int_ne_at_vv, CEL_INT, i, !=)
-DEFINE_CMP_VV(cel_int_lt_at_vv, CEL_INT, i, <)
-DEFINE_CMP_VV(cel_int_le_at_vv, CEL_INT, i, <=)
-DEFINE_CMP_VV(cel_int_gt_at_vv, CEL_INT, i, >)
-DEFINE_CMP_VV(cel_int_ge_at_vv, CEL_INT, i, >=)
-
-DEFINE_CMP_VV(cel_uint_eq_at_vv, CEL_UINT, u, ==)
-DEFINE_CMP_VV(cel_uint_ne_at_vv, CEL_UINT, u, !=)
-DEFINE_CMP_VV(cel_uint_lt_at_vv, CEL_UINT, u, <)
-DEFINE_CMP_VV(cel_uint_le_at_vv, CEL_UINT, u, <=)
-DEFINE_CMP_VV(cel_uint_gt_at_vv, CEL_UINT, u, >)
-DEFINE_CMP_VV(cel_uint_ge_at_vv, CEL_UINT, u, >=)
-
-// Double: `==` / `!=` follow IEEE 754 (NaN != NaN, NaN == NaN
-// false).  C's `==` and `!=` operators implement this directly.
-// Ordering operators (<, <=, >, >=) likewise return false for any
-// NaN-bearing comparison per IEEE.
-DEFINE_CMP_VV(cel_double_eq_at_vv, CEL_DOUBLE, d, ==)
-DEFINE_CMP_VV(cel_double_ne_at_vv, CEL_DOUBLE, d, !=)
-DEFINE_CMP_VV(cel_double_lt_at_vv, CEL_DOUBLE, d, <)
-DEFINE_CMP_VV(cel_double_le_at_vv, CEL_DOUBLE, d, <=)
-DEFINE_CMP_VV(cel_double_gt_at_vv, CEL_DOUBLE, d, >)
-DEFINE_CMP_VV(cel_double_ge_at_vv, CEL_DOUBLE, d, >=)
-
-DEFINE_CMP_VV(cel_bool_eq_at_vv, CEL_BOOL, b, ==)
-DEFINE_CMP_VV(cel_bool_ne_at_vv, CEL_BOOL, b, !=)
-// Bool ordering — `false < true` per langdef §"Booleans".  Since
-// `payload.b` is normalised to 0/1 by `write_bool` and
-// `cel_make_bool`, the integer relational operators give the
-// langdef order directly.
-DEFINE_CMP_VV(cel_bool_lt_at_vv, CEL_BOOL, b, <)
-DEFINE_CMP_VV(cel_bool_le_at_vv, CEL_BOOL, b, <=)
-DEFINE_CMP_VV(cel_bool_gt_at_vv, CEL_BOOL, b, >)
-DEFINE_CMP_VV(cel_bool_ge_at_vv, CEL_BOOL, b, >=)
-
-#undef DEFINE_CMP_VV
-
-// =====================================================================
-// M5.B step 2 — cross-type numeric comparison ladder.
-//
-// Each helper accepts any combination of {CEL_INT, CEL_UINT,
-// CEL_DOUBLE} on either operand.  The shared `numeric_compare_kernel`
-// returns a tri-state result {kLess, kEqual, kGreater, kNanInequal}
-// mirroring cel-cpp's `internal/number.h::ComparisonResult`.  Each
-// op then collapses that tri-state to a CEL_BOOL.
-//
-// Boundary handling (cel-cpp parity, `internal/number.h` lines
-// 25-44 / 95-165):
-//   - int vs uint: negative int is always < any uint; otherwise
-//     compare as uint64.
-//   - int vs double: if double > kInt64Max → double > int; if
-//     double < kInt64Min → double < int; otherwise IEEE-compare
-//     (double)int vs double.
-//   - uint vs double: if double > kUint64Max → double > uint; if
-//     double < 0 → double < uint; otherwise IEEE-compare
-//     (double)uint vs double.
-//   - NaN: any comparison involving NaN returns kNanInequal so all
-//     six op wrappers answer false (matches IEEE / langdef "NaN
-//     compares unequal in every direction").
-//
-// Wasm32 freestanding constraint: this code MUST avoid `__multi3` /
-// other compiler-rt 128-bit intrinsics (mirrors the M5.B step 1
-// `int64_mul_overflows` precedent).  Only operations used here are
-// 64-bit comparisons + a single int↔uint cast that the wasm32 backend
-// lowers natively as `i64.lt_s` / `i64.lt_u` / `f64.lt`.  The
-// `noinline` attribute on the kernel keeps clang from re-deriving a
-// 128-bit fold across the leaf wrappers.
-//
-// `CmpResult` typedef + the kernel forward decl + `is_numeric_kind`
-// were hoisted up to the M5.D-step-1 section of this file at Slice
-// 1.6 so `map_keys_equal` / `cel_value_eq_polymorphic` (the
-// element-equality matchers used by `_in_` membership) can call
-// the kernel.  The full kernel body lands here unchanged.
-
-// Per-pair comparators.  Each takes raw operands of one of three
-// scalar shapes and returns the tri-state result.  Pulled out of
-// the kernel both to keep each function under the lint size gate
-// and to keep the rationale beside the boundary checks they encode
-// (cel-cpp parity, `internal/number.h:25-165`).
-
-static CmpResult cmp_i64(int64_t a, int64_t b) {
-  if (a < b) return kCmpLess;
-  if (a > b) return kCmpGreater;
-  return kCmpEqual;
-}
-
-static CmpResult cmp_u64(uint64_t a, uint64_t b) {
-  if (a < b) return kCmpLess;
-  if (a > b) return kCmpGreater;
-  return kCmpEqual;
-}
-
-static CmpResult cmp_double(double a, double b) {
-  // IEEE: any NaN comparison is unordered.
-  if (a != a || b != b) return kCmpNanInequal;
-  if (a < b) return kCmpLess;
-  if (a > b) return kCmpGreater;
-  return kCmpEqual;
-}
-
-// int vs uint: negative int is always less than any uint;
-// otherwise compare via uint64 cast.
-static CmpResult cmp_int_vs_uint(int64_t a, uint64_t b) {
-  if (a < 0) return kCmpLess;
-  return cmp_u64((uint64_t)a, b);
-}
-
-// int vs double: boundary check before any narrowing cast.  See
-// `third_party/cel-cpp/internal/number.h:127-143`.
-static CmpResult cmp_int_vs_double(int64_t a, double b) {
-  if (b != b) return kCmpNanInequal;
-  if (b > (double)INT64_MAX) return kCmpLess;
-  if (b < (double)INT64_MIN) return kCmpGreater;
-  return cmp_double((double)a, b);
-}
-
-// uint vs double: any negative double is less than every uint;
-// any double > UINT64_MAX is greater than every uint.
-static CmpResult cmp_uint_vs_double(uint64_t a, double b) {
-  if (b != b) return kCmpNanInequal;
-  if (b > (double)UINT64_MAX) return kCmpLess;
-  if (b < 0.0) return kCmpGreater;
-  return cmp_double((double)a, b);
-}
-
-// Flip a tri-state result for the swapped-operand convention.  Used
-// when we have a comparator for `a vs b` and need `b vs a`.
-static CmpResult cmp_flip(CmpResult r) {
-  if (r == kCmpLess) return kCmpGreater;
-  if (r == kCmpGreater) return kCmpLess;
-  return r;
-}
-
-// Pack the two operand kinds into a small dense key so the kernel
-// dispatch is a single switch.  Caller has already verified both
-// operands are numeric.
-static uint32_t numeric_kind_pair(uint32_t a_kind, uint32_t b_kind) {
-  return (a_kind << 8) | b_kind;
-}
-
-// Boundary constants — same byte-for-byte as
-// `third_party/cel-cpp/internal/number.h:25-44`.  Inline rather than
-// macros so each helper sees the type the wasm32 backend can type-
-// check.
-static __attribute__((noinline)) CmpResult
-numeric_compare_kernel(const CelValue* a, const CelValue* b) {
-  switch (numeric_kind_pair(a->kind, b->kind)) {
-    case (CEL_INT << 8) | CEL_INT:
-      return cmp_i64(a->payload.i, b->payload.i);
-    case (CEL_UINT << 8) | CEL_UINT:
-      return cmp_u64(a->payload.u, b->payload.u);
-    case (CEL_DOUBLE << 8) | CEL_DOUBLE:
-      return cmp_double(a->payload.d, b->payload.d);
-    case (CEL_INT << 8) | CEL_UINT:
-      return cmp_int_vs_uint(a->payload.i, b->payload.u);
-    case (CEL_UINT << 8) | CEL_INT:
-      return cmp_flip(cmp_int_vs_uint(b->payload.i, a->payload.u));
-    case (CEL_INT << 8) | CEL_DOUBLE:
-      return cmp_int_vs_double(a->payload.i, b->payload.d);
-    case (CEL_DOUBLE << 8) | CEL_INT:
-      return cmp_flip(cmp_int_vs_double(b->payload.i, a->payload.d));
-    case (CEL_UINT << 8) | CEL_DOUBLE:
-      return cmp_uint_vs_double(a->payload.u, b->payload.d);
-    case (CEL_DOUBLE << 8) | CEL_UINT:
-      return cmp_flip(cmp_uint_vs_double(b->payload.u, a->payload.d));
-    default:
-      // Caller (`numeric_prelude`) already filters non-numeric kinds;
-      // a non-numeric pair reaching the kernel is an invariant
-      // violation.  Return kNanInequal so all six op wrappers answer
-      // false rather than miscompiling silently.
-      return kCmpNanInequal;
-  }
-}
-
-// True iff both operand kinds are numeric (int / uint / double).
-static int is_numeric_kind(uint32_t kind) {
-  return kind == CEL_INT || kind == CEL_UINT || kind == CEL_DOUBLE;
-}
-
-// Slice 1.6 — definition of the polymorphic element-equality matcher
-// forward-declared at the top of the M5.D section.  Routes any
-// numeric pair (cross-kind included) through `numeric_compare_kernel`
-// so `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
-// §"List Membership (in)" + §"Equality" + the conformance corpus'
-// `int_in_doubles` / `uint_in_ints` rows.
-static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
-  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
-    return numeric_compare_kernel(a, b) == kCmpEqual;
-  }
-  if (a->kind == CEL_BYTES && b->kind == CEL_BYTES) {
-    return spans_equal(a->payload.s, b->payload.s);
-  }
-  if (a->kind == CEL_NULL && b->kind == CEL_NULL) {
-    return 1;
-  }
-  // Bool / string / cross-kind non-numeric fall through to
-  // `map_keys_equal` which itself routes numerics polymorphically
-  // (Slice 1.6 update below) and returns 0 for kind mismatches.
-  return map_keys_equal(a, b);
-}
-
-// Shared prelude for the cross-type numeric helpers: 3VL absorption
-// then a numeric-kind check on each operand (any non-numeric → type
-// mismatch).  Returns 1 when out_slot has been written and the
-// caller should skip the kernel.
-static int numeric_prelude(CelValue* out, const CelValue* a,
-                           const CelValue* b) {
-  if (absorb_3vl_binary(out, a, b)) return 1;
-  if (!is_numeric_kind(a->kind) || !is_numeric_kind(b->kind)) {
-    poison(out, CEL_ERR_TYPE_MISMATCH);
-    return 1;
-  }
-  return 0;
-}
-
-void cel_numeric_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  write_bool(out, r == kCmpEqual);
-}
-
-void cel_numeric_ne_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  // NaN-touching inequality returns TRUE — matches cel-cpp's
-  // `Inequal<double>` default
-  // (`runtime/standard/equality_functions.cc:78`), which is the
-  // IEEE `lhs != rhs` semantic where `NaN != NaN` is true.  An
-  // earlier version of this kernel returned false on
-  // `kCmpNanInequal`; the prior comment claiming langdef
-  // mandated false was a spec misread.  Slice 1.55 (2026-04-25)
-  // flipped to `r != kCmpEqual` so every non-equal tri-state
-  // (less / greater / nan-inequal) yields true.
-  write_bool(out, r != kCmpEqual);
-}
-
-void cel_numeric_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  write_bool(out, r == kCmpLess);
-}
-
-void cel_numeric_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  write_bool(out, r == kCmpLess || r == kCmpEqual);
-}
-
-void cel_numeric_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  write_bool(out, r == kCmpGreater);
-}
-
-void cel_numeric_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  write_bool(out, r == kCmpGreater || r == kCmpEqual);
-}
-
-void cel_null_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (absorb_3vl_binary(out, a, b)) return;
-  if (require_kinds(out, a, b, CEL_NULL)) return;
-  write_bool(out, 1);  // null == null is always true.
 }
 
 // =====================================================================
