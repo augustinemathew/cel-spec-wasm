@@ -271,7 +271,102 @@ switch (v->kind()) {
 }
 ```
 
-### 6. CLI
+### 6. Saving and reloading a Program
+
+A `cel::Program` is **pure data**: the compiled wasm bytes plus the
+embedded `cel.abi` custom section.  No wasmtime state, no descriptor
+pool, no engine handles — everything needed to evaluate the program
+lives in the byte buffer.  That makes save/reload a thin wrapper
+around two existing API surfaces:
+
+  - **Save**: `program.wasm_bytes()` returns a `Span<const uint8_t>`.
+    Copy into your storage of choice — disk, an in-memory cache, a
+    remote object store, a database BLOB column, the wire to another
+    process.
+  - **Reload**: `cel::Program(std::vector<uint8_t> bytes)` reconstructs
+    a Program from the saved bytes.  The constructor is intentionally
+    non-validating; the wasmtime parse happens later in
+    `Engine::Plan`, which surfaces malformed bytes as a
+    `FailedPrecondition` rather than a crash.
+
+```cpp
+#include <fstream>
+#include "compiler_v2/api/program.h"
+// … other includes from snippet 1 …
+
+// Compile once, save to disk.
+cel::Compiler::Builder cb;
+cb.DeclareVariable("user_age", cel::CelType::Int());
+auto compiler = std::move(cb).Build();
+ABSL_CHECK_OK(compiler);
+
+cel::CompilerOptions opts;
+opts.optimize_level = 2;  // Optimized bytes round-trip cleanly too.
+auto program = compiler->Compile("user_age >= 18", opts);
+ABSL_CHECK_OK(program);
+
+// --- Save ---
+{
+  auto bytes = program->wasm_bytes();
+  std::ofstream out("/var/cache/rules/age_check.wasm", std::ios::binary);
+  out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+// --- Reload (potentially in a different process / next day) ---
+std::vector<uint8_t> bytes;
+{
+  std::ifstream in("/var/cache/rules/age_check.wasm", std::ios::binary);
+  bytes.assign(std::istreambuf_iterator<char>(in),
+               std::istreambuf_iterator<char>());
+}
+cel::Program reloaded(std::move(bytes));
+
+// Plan + Eval as usual — no Compile needed.
+auto engine = cel::Engine::NewBuilder().Build();
+ABSL_CHECK_OK(engine);
+auto instance = engine->Plan(reloaded);
+ABSL_CHECK_OK(instance);
+
+cel::Activation a;
+a.Bind("user_age", cel::Value::Int(20));
+auto v = instance->Eval(a);
+ABSL_CHECK_OK(v);
+ABSL_CHECK(*v->AsBool());
+```
+
+What the round-trip preserves (the load-bearing assertion lives at
+`compiler_v2/e2e/program_roundtrip_test.cc`):
+
+  - The complete compiled module — codegen output + cel.abi section.
+  - The declared-variable schema (it's encoded in cel.abi).
+  - The Binaryen optimization that was applied at Compile time — the
+    saved bytes ARE the optimized bytes; no re-optimization at reload.
+
+What the round-trip does NOT preserve (these are host-state, never
+in the bytes):
+
+  - The `cel::Engine` (wasm engine + parsed runtime module) — build
+    one per process / tenant, shared across reloads.
+  - The `cel::Activation` (per-eval variable bindings) — built fresh
+    per Eval call.
+  - The protobuf descriptor pool — message types referenced by the
+    program must be linked into the reload-side process (the same
+    way they had to be linked into the Compile-side process).  If
+    you compile against `generated_pool()` and reload against
+    `generated_pool()`, this is automatic.
+
+**Versioning caveat.**  The wasm bytes encode the runtime ABI version
+implicitly via the symbols they import from `cel.cel_*`.  If a future
+runtime bump renames or removes an import (e.g. a later milestone
+reshapes `cel_unknown_merge`), reloading a Program compiled against
+the old ABI will fail at `Engine::Plan` time with a missing-import
+error.  In practice this means: keep saved bytes paired with a
+runtime-version marker (e.g. a sidecar file or a key prefix), and
+recompile on runtime upgrade.  The `cel.abi` custom section carries
+enough metadata to plumb a version field through; that's a future-
+milestone slice.
+
+### 7. CLI
 
 For a one-off "does this expression even compile" check without
 writing C++, use the legacy `celwasmc` CLI under `compiler/cli/`

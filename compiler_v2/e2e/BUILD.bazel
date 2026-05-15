@@ -165,6 +165,31 @@ cc_test(
     ],
 )
 
+# Program save / reload round-trip e2e — proves the wasm bytes from
+# Compiler::Compile round-trip through `Program(std::vector<uint8_t>)`
+# reconstruction, Plan, and Eval to bit-identical Values.  Locks the
+# cross-process / cache-eviction deployment shape (a Program written
+# to disk, shipped to another host, or pulled from a cache must still
+# evaluate identically).  Manual-tagged because it goes through the
+# full wasmtime pipeline.
+cc_test(
+    name = "program_roundtrip_test",
+    srcs = ["program_roundtrip_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Optimization-on validation e2e — runs every representative
 # expression through Compile + Plan + Eval at both optimize_level=0
 # and optimize_level=2 and asserts the resulting Values are

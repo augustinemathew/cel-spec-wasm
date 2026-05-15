@@ -37,6 +37,7 @@ MANUAL_TARGETS=(
   //compiler_v2/e2e:m4_test
   //compiler_v2/e2e:m5_test
   //compiler_v2/e2e:optimize_test
+  //compiler_v2/e2e:program_roundtrip_test
   //compiler_v2/runtime:cel_runtime_wasm_test
   //compiler_v2/tools/wat_runner:wat_runner_test
 )
