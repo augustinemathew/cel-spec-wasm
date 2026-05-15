@@ -239,6 +239,27 @@ absl::Status WasmModule::Validate() const {
   return absl::OkStatus();
 }
 
+absl::Status WasmModule::Optimize(int level) {
+  if (level < 0 || level > 3) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "WasmModule::Optimize: level out of range; got ", level,
+        ", want 0..3"));
+  }
+  if (level == 0) {
+    // Caller asked for no-op explicitly; preserve byte-for-byte output
+    // (existing codegen golden tests depend on level-0 being a no-op).
+    return absl::OkStatus();
+  }
+  // ShrinkLevel = 0: perf-only, do not trade speed for size.  The expr
+  // module is Cranelift's input — its serialized size is irrelevant in
+  // a JIT-instantiate flow; what matters is the native code Cranelift
+  // produces.  Smaller-but-slower wasm is the wrong trade-off here.
+  BinaryenSetOptimizeLevel(level);
+  BinaryenSetShrinkLevel(0);
+  BinaryenModuleOptimize(module_);
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::vector<uint8_t>> WasmModule::Serialize() const {
   BinaryenModuleAllocateAndWriteResult written =
       BinaryenModuleAllocateAndWrite(module_, /*sourceMapUrl=*/nullptr);

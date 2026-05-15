@@ -61,6 +61,16 @@ struct CompilerOptions {
   // qualified name.  Populating this lets short-form idents inside
   // a namespace resolve against `<container>.<name>` first.
   std::string container;
+
+  // Binaryen optimization level for the emitted wasm module.  Mirrors
+  // `wasm-opt -O<n>`: 0 = no-op (byte-identical output), 1 = light,
+  // 2 = balanced (canonical pipeline), 3 = aggressive.  Default 0
+  // preserves today's behaviour byte-for-byte.  Production callers
+  // typically want 2: Compile time goes up ~2-5×, but the emitted
+  // wasm is tighter and Cranelift's JIT'd native code is faster per
+  // Eval — the trade-off rewards the Engine's program-cache model
+  // (compile once, eval many).
+  int optimize_level = 0;
 };
 
 class Compiler {

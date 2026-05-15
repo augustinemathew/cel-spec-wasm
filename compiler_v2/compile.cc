@@ -273,12 +273,19 @@ absl::StatusOr<CompiledArtifact> RunFrontAndLayout(absl::string_view expression,
   };
 }
 
-// Validate + optionally serialize the emitted module.  Back half of
-// the pipeline.
+// Validate + optionally optimize + optionally serialize the emitted
+// module.  Back half of the pipeline.  Order matters: validate FIRST
+// (proves the module is well-formed before the optimizer touches it),
+// then optimize (mutates IR — would invalidate validator state),
+// then serialize.
 absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
   if (opts.validate) {
     auto v = out.module.Validate();
     if (!v.ok()) return v;
+  }
+  if (opts.optimize_level > 0) {
+    auto o = out.module.Optimize(opts.optimize_level);
+    if (!o.ok()) return o;
   }
   if (opts.serialize) {
     auto bytes_or = out.module.Serialize();

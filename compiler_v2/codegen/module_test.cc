@@ -229,5 +229,74 @@ TEST(TupleTypeTest, MultipleElementsReturnsInternedTuple) {
   EXPECT_NE(TupleType(a), i32);
 }
 
+// ── WasmModule::Optimize ─────────────────────────────────────────
+
+// Helper: builds a tiny module with a function whose body contains
+// an obviously-dead local + a constant-foldable expression Binaryen
+// should rewrite at -O2.  Used by the Optimize tests below.
+WasmModule BuildOptimizableModule() {
+  WasmModule m;
+  // `(local.set $x (i32.const 7))   ; dead store — never read
+  //  (return (i32.add (i32.const 2) (i32.const 3)))`
+  // The dead local should DCE; the constant add should fold to 5.
+  BinaryenType i32 = BinaryenTypeInt32();
+  BinaryenExpressionRef dead =
+      BinaryenLocalSet(m.raw(), 0,
+                       BinaryenConst(m.raw(), BinaryenLiteralInt32(7)));
+  BinaryenExpressionRef ret = BinaryenReturn(
+      m.raw(), BinaryenBinary(m.raw(), BinaryenAddInt32(),
+                              BinaryenConst(m.raw(), BinaryenLiteralInt32(2)),
+                              BinaryenConst(m.raw(), BinaryenLiteralInt32(3))));
+  BinaryenExpressionRef body_parts[2] = {dead, ret};
+  BinaryenExpressionRef body =
+      BinaryenBlock(m.raw(), nullptr, body_parts, 2, BinaryenTypeNone());
+  const BinaryenType locals[1] = {i32};
+  m.AddFunction("opt_target", {}, i32, absl::MakeConstSpan(locals), body);
+  return m;
+}
+
+TEST(WasmModuleOptimizeTest, LevelZeroIsByteIdentical) {
+  // The opt=0 contract — invoking Optimize with level 0 must not
+  // touch the module.  Locks the default-off invariant so existing
+  // codegen golden tests stay green when this method is wired into
+  // FinaliseModule.
+  WasmModule a = BuildOptimizableModule();
+  WasmModule b = BuildOptimizableModule();
+  auto baseline_or = a.Serialize();
+  ASSERT_THAT(baseline_or, IsOk());
+  EXPECT_THAT(b.Optimize(0), IsOk());
+  auto after_or = b.Serialize();
+  ASSERT_THAT(after_or, IsOk());
+  EXPECT_EQ(*baseline_or, *after_or);
+}
+
+TEST(WasmModuleOptimizeTest, LevelTwoStillValidatesAndShrinksDeadCode) {
+  // -O2 must produce a still-valid module AND must DCE or fold at
+  // least one of the dead-local / constant-fold seeds.  Asserting
+  // strict-less-than on serialized size is the load-bearing proof
+  // that the pass list actually ran.
+  WasmModule unopt = BuildOptimizableModule();
+  WasmModule opt = BuildOptimizableModule();
+  auto unopt_bytes_or = unopt.Serialize();
+  ASSERT_THAT(unopt_bytes_or, IsOk());
+  EXPECT_THAT(opt.Optimize(2), IsOk());
+  EXPECT_THAT(opt.Validate(), IsOk());
+  auto opt_bytes_or = opt.Serialize();
+  ASSERT_THAT(opt_bytes_or, IsOk());
+  EXPECT_LT(opt_bytes_or->size(), unopt_bytes_or->size())
+      << "Optimize(2) failed to shrink a module with a dead local + a "
+         "foldable constant add; the pass list must not have run.";
+}
+
+TEST(WasmModuleOptimizeTest, LevelOutOfRangeIsInvalidArgument) {
+  // Closed-range contract: 0..3.  -1 / 4 should error explicitly so
+  // a misspelled CLI flag surfaces at the boundary.
+  WasmModule m = BuildOptimizableModule();
+  EXPECT_THAT(m.Optimize(-1),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(m.Optimize(4),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
 }  // namespace
 }  // namespace celwasm

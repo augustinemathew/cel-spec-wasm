@@ -136,6 +136,7 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
   celwasm::CompileOptions inner;
   inner.mem_size_bytes = opts.mem_size_bytes;
   inner.check.container = opts.container;
+  inner.optimize_level = opts.optimize_level;
   inner.check.variable_specs.reserve(declared_variables_.size());
   for (const auto& decl : declared_variables_) {
     inner.check.variable_specs.push_back(

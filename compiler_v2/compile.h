@@ -61,6 +61,18 @@ struct CompileOptions {
   // useful only for tests that exercise the validate-failure path.
   bool validate = true;
 
+  // Binaryen optimization level run on the emitted module before
+  // serializing.  Mirrors `wasm-opt -O<n>` semantics:
+  //   0 — no-op (today's default; preserves byte-identical output).
+  //   1 — light; fast compile, modest perf win.
+  //   2 — balanced (the canonical pipeline); ~2-5× the unoptimized
+  //       Compile cost, single-digit-percent Eval speed-up on
+  //       arithmetic-heavy expressions, larger on chains.
+  //   3 — aggressive; some passes have superlinear cost.
+  // Default 0 keeps existing codegen golden tests byte-identical.
+  // Recommended setting for production is 2.
+  int optimize_level = 0;
+
   // When true, serialize the module into `wasm_bytes` in the result.
   // False keeps the artifact alive as a Binaryen IR handle for callers
   // that only need to inspect / transform the module.

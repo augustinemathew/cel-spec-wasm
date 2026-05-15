@@ -116,6 +116,28 @@ class WasmModule {
   // call returns; we do not intercept them.
   ABSL_MUST_USE_RESULT absl::Status Validate() const;
 
+  // Runs the default Binaryen optimization pipeline (DCE + constant
+  // folding + simplify-locals + vacuum + merge-blocks + reorder-
+  // functions, etc.) at the given level.  `level` mirrors Binaryen's
+  // CLI `-O` flag: 0 → no-op; 1 → light; 2 → balanced (the canonical
+  // `wasm-opt -O2` pipeline); 3 → aggressive.  ShrinkLevel is held at
+  // 0 because the expr module's perf wins more than its bytes:
+  // Cranelift JITs once at instantiate time, so a 20 KB → 18 KB
+  // module-size cut is irrelevant, but fewer locals + folded
+  // constants directly tighten the native code Cranelift produces.
+  //
+  // **Thread-safety caveat.**  Binaryen's optimization knobs are
+  // process-global state — `BinaryenSetOptimizeLevel` and
+  // `BinaryenSetShrinkLevel` mutate static variables in the library.
+  // Concurrent calls from multiple threads to `Optimize` with
+  // different levels would race.  Today every caller is on the
+  // Compile thread and serialised by `cel::Compiler` ownership;
+  // surface this here so a future async-compile slice doesn't miss
+  // it.  A future-cleaner shape would be `BinaryenModuleRunPasses`
+  // with an explicit pass list (no global state); deferred until a
+  // caller actually needs it.
+  ABSL_MUST_USE_RESULT absl::Status Optimize(int level);
+
   // Serialises the module to its canonical `.wasm` byte encoding.
   ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>> Serialize() const;
 
