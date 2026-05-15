@@ -335,6 +335,21 @@ extern "C" wasm_trap_t* CelSetFieldTrampoline(
   return HostThreeArgTrampoline<CelSetFieldImpl>(env_ptr, caller, args);
 }
 
+// M9.B: cel_host.resolve_message_type_name — `(out_slot, in_slot)`
+// → ().  Two i32 args.  M9.B registers the trampoline as a stub so
+// the wasm module instantiates cleanly even before M9.C lands the
+// real impl; the stub's Layer-2 body lives in `cel_host.cc` and
+// poisons out_slot with kTypeMismatch.  M9.C replaces the impl body
+// with the real descriptor-pool walk; the trampoline registration
+// here doesn't change.
+extern "C" wasm_trap_t* CelResolveMessageTypeNameTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelResolveMessageTypeNameImpl>(env_ptr, caller,
+                                                             args);
+}
+
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
   for (auto& p : params) {
@@ -444,6 +459,10 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       // M7.B — proto literal field set.  Three i32 args
       // `(msg_slot, field_ref_id, value_slot)`; void result.
       {"cel_set_field", 3, &CelSetFieldTrampoline},
+      // M9.B — type(message) descriptor-FQN resolver.  Two i32 args
+      // `(out_slot, in_slot)`; void result.  Stub impl in M9.B
+      // poisons; M9.C replaces with the real descriptor walk.
+      {"resolve_message_type_name", 2, &CelResolveMessageTypeNameTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

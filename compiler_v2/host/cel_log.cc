@@ -123,10 +123,13 @@ bool ReadCelValue(absl::Span<const uint8_t> mem, uint32_t off, CelValue* out) {
 void FormatSpanPayload(absl::Span<const uint8_t> mem, const CelSpan& s,
                        absl::string_view kind, std::string* out) {
   absl::Span<const uint8_t> bytes = SafeBytes(mem, s.ptr, s.len);
-  if (kind == "string") {
+  if (kind == "string" || kind == "type") {
+    // M9: type-name strings are pure ASCII (per the spec type-name
+    // set in m9-type-subsystem.md §3.1) — render verbatim like a
+    // string but with the `kind` label.
     absl::string_view sv(reinterpret_cast<const char*>(bytes.data()),
                          bytes.size());
-    absl::StrAppendFormat(out, "string(%s)", absl::CEscape(sv));
+    absl::StrAppendFormat(out, "%s(%s)", kind, absl::CEscape(sv));
     return;
   }
   absl::StrAppendFormat(out, "bytes(%u bytes)", s.len);
@@ -210,7 +213,9 @@ void FormatValueKind(absl::Span<const uint8_t> mem, const CelValue& cv,
       absl::StrAppendFormat(out, "message(slot=%u)", cv.payload.msg_slot);
       return;
     case CEL_TYPE:
-      absl::StrAppendFormat(out, "type(id=%u)", cv.payload.type_id);
+      // M9: payload.s carries (ptr, len) of the type-name string in
+      // linear memory.  Pretty-print as `type(<name>)`.
+      FormatSpanPayload(mem, cv.payload.s, "type", out);
       return;
     case CEL_DURATION:
       absl::StrAppendFormat(out, "duration(s=%d,ns=%d)", cv.payload.dur.seconds,

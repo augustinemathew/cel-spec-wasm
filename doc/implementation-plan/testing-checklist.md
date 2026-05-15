@@ -1585,6 +1585,138 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         --build_tests_only` (44/45 PASS — the 45th is `m7_test`'s 1
         deliberate SKIP for M8 wrapper).
 
+### Rewrite M9 — type subsystem (slices A–F shipped 2026-05-14)
+
+`m9-type-subsystem.md` slices A–F delivered the `CEL_TYPE` value-of-types
+end-to-end: runtime helper `cel_type_of_at_v` + 12-row primitive
+type-name table, `InlineTypeIdentifierReferences` frontend rewrite,
+`Repr::kType` packing path, host trampoline for `type(<message>)`,
+polymorphic `cel_equals` arm, plus the runner's `kTypeValue` matcher
+and `typed_result:` harness routing.  Greens the `m9_test.cc`
+capability matrix and unlocks the `type_value:` envelope cohort
+(largest scope-not-yet-shipped bucket pre-M9 per §1 of the plan).
+
+**M9.A — `CEL_TYPE` payload + `Value::Type` + activation roundtrip**
+
+  - [x] `Value::Kind::kType = 13` + `Value::Type(name)` factory +
+        `Value::AsType()` accessor + `TypeTag` ctor sharing the
+        `std::string` Payload alternative with kString / kBytes;
+        `StructurallyEquals` byte-compare arm; `ValueKindName(kType)
+        → "type"`.  `api/value.{h,cc}`.
+  - [x] `CelType::Kind::kType = 13` + `CelType::Type()` factory +
+        `CelTypeKindName(kType) → "type"`.  `api/type.{h,cc}`.
+  - [x] `CelTypeToSpec(kType) → "type"` for the public Compiler spec.
+        `api/compiler.cc`.
+  - [x] `cel_data.h`: removed unused `payload.type_id` field; CEL_TYPE
+        values now reuse `payload.s` (CelSpan into linear memory).
+  - [x] `instance.cc::DecodeCelValueAt` CEL_TYPE arm — read
+        `payload.s`, copy into owned `std::string`, return
+        `Value::Type(name)`.
+  - [x] `instance.cc::EncodeType` + `Repr::kType` arm in
+        `EncodeBoundValue` + `TotalHostStringBytes` widened to
+        include kType binding sizes.  Bytes land in the host string
+        arena (same lifetime as kString / kBytes).
+  - [x] `binding_marshal::ValueFromProto kTypeValue` arm decodes
+        `proto.type_value` to `Value::Type(name)`.
+  - [x] `binding_marshal::TypeSpecFragment` + `CelTypeFromProtoType`
+        admit `ProtoType::kType` (`"type"` spec keyword;
+        `CelType::Type()`).
+  - [x] `parse_and_check.cc::ParsePrimitiveType("type") →
+        cel::TypeType{}` — `Activation::Bind("t", Value::Type(...))`
+        round-trips through the variable_specs CelType.
+  - [x] `ArgIsAdmissibleScalar` admits `t.has_type()` (so
+        `dyn(type-value)` passes the static-subset gate).
+  - [x] `cel_log.cc::FormatSpanPayload` widened to print
+        `type(<name>)` from `payload.s`; old `type(id=N)`
+        formatting removed.
+  - [x] Unit: `binding_marshal_test::TypeProducesValueType`.
+  - [x] Unit: `cel_log_test::ValueTypeKind` updated for the new
+        `type(<name>)` format (in-memory bytes path).
+
+**M9.B — `type(x)` codegen + primitive table**
+
+  - [x] `cel_runtime.c::cel_type_of_at_v` — 18-slot
+        `kPrimitiveTypeName[]` indexed by CelKind (null_type / bool
+        / int / uint / double / string / bytes / list / map / type /
+        google.protobuf.Duration / google.protobuf.Timestamp);
+        CEL_MESSAGE arm dispatches to the host trampoline; absorbs
+        3VL (CEL_UNKNOWN / CEL_ERROR); arena-allocates the name
+        bytes per call.  Declared in `cel_type.h` (new file).
+  - [x] `OverloadTable::kBuiltinSeeds` 85 → 86 (added
+        `Seed{"type", cel_type_of_at_v}`);
+        `kExplicitlyUnimplementedIds` 81 → 80 (removed `"type"`).
+        `codegen/overload_table.cc`; `overload_table_test.cc`
+        `kBuiltinSeedCount` bumped.
+  - [x] Runtime export list: `cel_type_of_at_v` exported from
+        `cel_runtime.wasm` (BUILD.bazel `--export=` + bound in
+        `engine.cc::BindAllRuntimeExports`).
+  - [x] `wasm_imports.txt` — `cel_host_resolve_message_type_name`
+        declared so the wasm module instantiates cleanly.
+
+**M9.C — `type(message)` + type-ident kConstant rewrite**
+
+  - [x] `parse_and_check.cc::InlineTypeIdentifierReferences` —
+        rewrites bare `kIdentExpr` nodes (whose Reference has no
+        `value()` AND whose TypeSpec has `has_type()`) to
+        `kConstantExpr` with `string_value = <spec type-name>`;
+        runs after `InlineConstantReferences` (M7.D), before
+        `RejectDyn`.  Covers primitive / wrapper / well-known /
+        null / message-FQN / list / map / type-param inner kinds.
+  - [x] `StaticMemoryBuilder::AllocateType` — same payload layout
+        as `AllocateString` but stamps `kind = CEL_TYPE` on the
+        rodata CelValue.
+  - [x] `LayoutPass::ConstLayoutVisitor::Pack` dispatches on the
+        annotation's `Repr::kType` before the proto-oneof ladder,
+        invariant-checks that the constant has `string_value`.
+  - [x] `CelResolveMessageTypeNameImpl` Layer-2 + Layer-3
+        trampoline (`HostTwoArgTrampoline`) registered as
+        `cel_host.resolve_message_type_name` (2 args).  Reads the
+        CEL_MESSAGE backing via `ExternrefTable`, walks
+        `GetDescriptor()->full_name()`, arena-copies the FQN,
+        stamps `{CEL_TYPE, payload.s}`.  Defends against
+        non-proto / unmapped backings with
+        `CEL_ERR_HOST_ADAPTER_ERROR`.
+
+**M9.D — CEL_TYPE equality kernel**
+
+  - [x] `cel_runtime.c::equality_kernel` CEL_TYPE × CEL_TYPE arm
+        — memcmp on `payload.s` bytes (length check, then byte
+        loop reading through `cel_memory_base_()`).  Cross-kind
+        (`CEL_TYPE == CEL_INT`) short-circuits to `false` via
+        the existing kind-mismatch path.
+
+**M9.E — `type(null)` / `type(list)` / `type(map)` polish**
+
+  - [x] Names land verbatim in `kPrimitiveTypeName[]`:
+        `null_type` / `list` / `map`.  Timestamp / duration
+        names also pinned in the table for once construction is
+        unblocked.
+
+**M9.F — `typed_result:` matcher (harness)**
+
+  - [x] `runner.cc::IsAggregateOrObjectMatcherKind` admits
+        `kTypeValue`; `CompareValue` routes to new `CompareType`
+        (kind check + byte-equal on the type-name string).
+  - [x] `runner.cc::RunOne` routes `SimpleTest::kTypedResult` to
+        the value-comparison path using
+        `t.typed_result().result()`; rejects rows lacking a
+        `result` value with a clean Unsupported reason (the
+        deduced-type-only branch is a follow-up harness slice).
+
+**M9.G — closeout**
+
+  - [x] `m9-type-subsystem.md` status header flipped to `shipped
+        2026-05-14` with as-shipped summary.
+  - [x] `testing-checklist.md` — this section.
+  - [x] Default suite + manual-tagged closeout gate via
+        `scripts/run_full_suite.sh --quick`: 46/47 PASS (the
+        47th is the M10 failing-by-design placeholder per the
+        plan-doc precedent set by 7c61682).
+  - [ ] Sibling-doc reconciliation (`design.md` §"Shipping
+        snapshot" row for M9; `cel-host-surface.md` for the
+        new `resolve_message_type_name` trampoline) — deferred
+        to next closeout sweep (does not block M9 ship).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

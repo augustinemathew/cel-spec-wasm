@@ -56,16 +56,15 @@ absl::StatusOr<std::unique_ptr<google::protobuf::Message>> UnpackAny(
   const google::protobuf::Descriptor* desc =
       pool->FindMessageTypeByName(std::string(fqn));
   if (desc == nullptr) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "binding_marshal: object_value type `", fqn,
-        "` not registered in generated descriptor pool"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("binding_marshal: object_value type `", fqn,
+                     "` not registered in generated descriptor pool"));
   }
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
   if (prototype == nullptr) {
     return absl::InvalidArgumentError(absl::StrCat(
-        "binding_marshal: generated_factory has no prototype for `", fqn,
-        "`"));
+        "binding_marshal: generated_factory has no prototype for `", fqn, "`"));
   }
   std::unique_ptr<google::protobuf::Message> msg(prototype->New());
   if (msg == nullptr) {
@@ -116,8 +115,11 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
       return absl::UnimplementedError(
           "binding_marshal: list_value bindings unimplemented (M6)");
     case ProtoValue::kTypeValue:
-      return absl::UnimplementedError(
-          "binding_marshal: type_value bindings unimplemented");
+      // M9.A: type-value bindings — proto carries the spec type-name
+      // string verbatim (`"int"`, `"bool"`, `"<msg-FQN>"`, ...).
+      // No name validation; the read-side comparator does byte-equal
+      // matching against the matcher.
+      return cel::Value::Type(v.type_value());
     case ProtoValue::KIND_NOT_SET:
       return absl::InvalidArgumentError(
           "binding_marshal: cel.expr.Value has no kind set");
@@ -151,9 +153,8 @@ absl::StatusOr<std::string> PrimitiveSpec(ProtoType::PrimitiveType p) {
       return absl::InvalidArgumentError(
           "binding_marshal: PrimitiveType is UNSPECIFIED");
   }
-  ABSL_CHECK(false)
-      << "binding_marshal: unhandled ProtoType::PrimitiveType = "
-      << static_cast<int>(p);
+  ABSL_CHECK(false) << "binding_marshal: unhandled ProtoType::PrimitiveType = "
+                    << static_cast<int>(p);
 }
 
 // Decode an `IdentDecl.type` into a checker spec fragment (without
@@ -197,12 +198,17 @@ absl::StatusOr<std::string> TypeSpecFragment(const ProtoType& t) {
     case ProtoType::kAbstractType:
       return absl::UnimplementedError(
           "binding_marshal: abstract_type type_env unimplemented");
-    case ProtoType::kTypeParam:
     case ProtoType::kType:
+      // M9.A: `type` declared as a variable type — emit `type` as
+      // the checker spec-string keyword.  `parse_and_check.cc::
+      // ParsePrimitiveType` already maps `"type"` → `cel::TypeType`
+      // via the cel-cpp checker's standard library registration.
+      return std::string("type");
+    case ProtoType::kTypeParam:
     case ProtoType::kError:
     case ProtoType::kDyn:
       return absl::UnimplementedError(
-          "binding_marshal: dyn / type / type_param / error type_env "
+          "binding_marshal: dyn / type_param / error type_env "
           "unimplemented (out of static-subset)");
     case ProtoType::TYPE_KIND_NOT_SET:
       return absl::InvalidArgumentError(
@@ -220,12 +226,10 @@ absl::StatusOr<std::string> VariableSpecFromDecl(const ProtoDecl& d) {
         "binding_marshal: function decls unimplemented");
   }
   if (d.name().empty()) {
-    return absl::InvalidArgumentError(
-        "binding_marshal: Decl has empty name");
+    return absl::InvalidArgumentError("binding_marshal: Decl has empty name");
   }
   if (!d.ident().has_type()) {
-    return absl::InvalidArgumentError(
-        "binding_marshal: IdentDecl has no type");
+    return absl::InvalidArgumentError("binding_marshal: IdentDecl has no type");
   }
   auto frag = TypeSpecFragment(d.ident().type());
   if (!frag.ok()) return frag.status();
@@ -244,16 +248,16 @@ absl::Status PopulateActivation(
         break;
       }
       case ProtoExprValue::kError:
-        return absl::UnimplementedError(absl::StrCat(
-            "binding_marshal: ExprValue.error binding for `", kv.first,
-            "` unimplemented"));
+        return absl::UnimplementedError(
+            absl::StrCat("binding_marshal: ExprValue.error binding for `",
+                         kv.first, "` unimplemented"));
       case ProtoExprValue::kUnknown:
         // Routing this requires a per-test expr-id → AttributeId map
         // the harness doesn't plumb today; future-work item in
         // README.md.
-        return absl::UnimplementedError(absl::StrCat(
-            "binding_marshal: ExprValue.unknown binding for `", kv.first,
-            "` unimplemented"));
+        return absl::UnimplementedError(
+            absl::StrCat("binding_marshal: ExprValue.unknown binding for `",
+                         kv.first, "` unimplemented"));
       case ProtoExprValue::KIND_NOT_SET:
         return absl::InvalidArgumentError(absl::StrCat(
             "binding_marshal: ExprValue for `", kv.first, "` has no kind set"));
@@ -280,8 +284,7 @@ namespace {
 // for the `DeclareVariablesOnBuilder` path that doesn't want to
 // round-trip through the spec-string parser.  Aggregates / WKTs all
 // SKIP — the matching arms in `TypeSpecFragment` already gate them.
-absl::StatusOr<cel::CelType> CelTypeFromPrimitive(
-    ProtoType::PrimitiveType p) {
+absl::StatusOr<cel::CelType> CelTypeFromPrimitive(ProtoType::PrimitiveType p) {
   switch (p) {
     case ProtoType::BOOL:
       return cel::CelType::Bool();
@@ -299,9 +302,8 @@ absl::StatusOr<cel::CelType> CelTypeFromPrimitive(
       return absl::InvalidArgumentError(
           "binding_marshal: PrimitiveType is UNSPECIFIED");
   }
-  ABSL_CHECK(false)
-      << "binding_marshal: unhandled ProtoType::PrimitiveType = "
-      << static_cast<int>(p);
+  ABSL_CHECK(false) << "binding_marshal: unhandled ProtoType::PrimitiveType = "
+                    << static_cast<int>(p);
 }
 
 absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
@@ -317,6 +319,11 @@ absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
           "binding_marshal: message_type with empty name");
     }
     return cel::CelType::Message(t.message_type());
+  }
+  // M9.A: `type` declarable as a variable type.  No payload to
+  // unpack — the type-of-types is uninhabited as a distinct shape.
+  if (t.type_kind_case() == ProtoType::kType) {
+    return cel::CelType::Type();
   }
   // Anything else (list_type / map_type / wrapper / well_known / dyn /
   // ...) is still SKIP territory.  Re-use `TypeSpecFragment`'s
@@ -343,8 +350,7 @@ absl::Status DeclareVariablesOnBuilder(
           "binding_marshal: function decls unimplemented");
     }
     if (d.name().empty()) {
-      return absl::InvalidArgumentError(
-          "binding_marshal: Decl has empty name");
+      return absl::InvalidArgumentError("binding_marshal: Decl has empty name");
     }
     if (!d.ident().has_type()) {
       return absl::InvalidArgumentError(

@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 85> kBuiltinSeeds{
+constexpr std::array<Seed, 86> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -243,6 +243,12 @@ constexpr std::array<Seed, 85> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_starts_with_at_vv"}},
     Seed{"ends_with_string",
          {ImportModule::kCelRuntime, "cel_string_ends_with_at_vv"}},
+    // M9.B — `type(x)` standard function.  Pure-runtime helper that
+    // reads the operand kind, looks up the spec type-name in the
+    // 12-row table in `cel_runtime.c`, and writes a CEL_TYPE
+    // CelValue.  CEL_MESSAGE arm dispatches to the M9.C host
+    // trampoline `cel_host_resolve_message_type_name`.
+    Seed{"type", {ImportModule::kCelRuntime, "cel_type_of_at_v"}},
 };
 
 // Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
@@ -265,7 +271,7 @@ constexpr std::array<Seed, 85> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 81> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 80> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -350,7 +356,9 @@ constexpr std::array<absl::string_view, 81> kExplicitlyUnimplementedIds{
     "duration_to_duration",
     "int64_to_duration",
     "string_to_duration",
-    "type",
+    // M9.B: `"type"` is now seeded in kBuiltinSeeds above; removed
+    // from this unimplemented-list (and the array size dropped from
+    // 81 → 80 to match).
 };
 
 }  // namespace

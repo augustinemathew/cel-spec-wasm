@@ -203,7 +203,9 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
       // M5.B step 2b: polymorphic equality.
       "cel_equals_at_vv", "cel_not_equals_at_vv",
       // M5.G (Slice 2): 3VL / control-flow helpers.
-      "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot"};
+      "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
+      // M9.B: type-of helper.
+      "cel_type_of_at_v"};
   for (const char* name : kRuntimeExports) {
     if (auto s =
             BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);
@@ -328,8 +330,7 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // descriptors are reachable through `generated_pool()`; dynamic
   // schemas (SchemaProtoSource) are an M7.A-polish follow-up.
   celwasm::BuildCelHostBindings(
-      impl->abi,
-      google::protobuf::DescriptorPool::generated_pool(),
+      impl->abi, google::protobuf::DescriptorPool::generated_pool(),
       impl->host_env);
 
   return Instance(wasmtime_, std::move(impl));

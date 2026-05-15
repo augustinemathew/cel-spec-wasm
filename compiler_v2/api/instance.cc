@@ -20,10 +20,10 @@
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
-#include "google/protobuf/message.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "google/protobuf/message.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -138,8 +138,7 @@ absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
     const uint32_t entry_off = header.entries_offset + (i * kCelMapEntryStride);
     auto k_or = DecodeCelValueAt(ctx, mem, refs, entry_off);
     if (!k_or.ok()) return k_or.status();
-    auto v_or =
-        DecodeCelValueAt(ctx, mem, refs, entry_off + sizeof(CelValue));
+    auto v_or = DecodeCelValueAt(ctx, mem, refs, entry_off + sizeof(CelValue));
     if (!v_or.ok()) return v_or.status();
     entries.emplace_back(*std::move(k_or), *std::move(v_or));
   }
@@ -159,13 +158,13 @@ absl::StatusOr<Value> DecodeHostListAt(const celwasm::ExternrefTable& refs,
   const celwasm::HostListBacking* backing = refs.LookupList(ref_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_LIST_HOST ref_slot=", ref_slot,
-        " has no externref entry"));
+        "Eval: CEL_LIST_HOST ref_slot=", ref_slot, " has no externref entry"));
   }
   std::vector<Value> elements;
   elements.reserve(backing->Size());
-  backing->ForEach(
-      [&elements](const Value& v) { elements.push_back(v); });
+  backing->ForEach([&elements](const Value& v) {
+    elements.push_back(v);
+  });
   return Value::List(std::move(elements));
 }
 
@@ -181,19 +180,18 @@ absl::StatusOr<Value> DecodeHostListAt(const celwasm::ExternrefTable& refs,
 // trailing field read) hit this path: $eval's root is the
 // constructed message itself; without this arm `Instance::Eval`
 // would trap with "kind 10 not yet supported".
-absl::StatusOr<Value> DecodeHostMessageAt(
-    const celwasm::ExternrefTable& refs, uint32_t ref_slot) {
+absl::StatusOr<Value> DecodeHostMessageAt(const celwasm::ExternrefTable& refs,
+                                          uint32_t ref_slot) {
   const celwasm::HostMessageBacking* backing = refs.Lookup(ref_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
-        " has no externref entry"));
+        "Eval: CEL_MESSAGE msg_slot=", ref_slot, " has no externref entry"));
   }
   const google::protobuf::Message* src = backing->message();
   if (src == nullptr) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_MESSAGE msg_slot=", ref_slot,
-        " backing has no proto message"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("Eval: CEL_MESSAGE msg_slot=", ref_slot,
+                     " backing has no proto message"));
   }
   std::unique_ptr<google::protobuf::Message> copy(src->New());
   copy->CopyFrom(*src);
@@ -210,8 +208,7 @@ absl::StatusOr<Value> DecodeHostMapAt(const celwasm::ExternrefTable& refs,
   const celwasm::HostMapBacking* backing = refs.LookupMap(ref_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: CEL_MAP_HOST ref_slot=", ref_slot,
-        " has no externref entry"));
+        "Eval: CEL_MAP_HOST ref_slot=", ref_slot, " has no externref entry"));
   }
   std::vector<std::pair<Value, Value>> entries;
   entries.reserve(backing->Size());
@@ -292,8 +289,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       return DecodeArenaListAt(ctx, mem, refs,
                                cv.payload.arena_list.header_ptr);
     case CEL_MAP_ARENA:
-      return DecodeArenaMapAt(ctx, mem, refs,
-                              cv.payload.arena_map.header_ptr);
+      return DecodeArenaMapAt(ctx, mem, refs, cv.payload.arena_map.header_ptr);
     case CEL_LIST_HOST:
       return DecodeHostListAt(refs, cv.payload.ref_slot);
     case CEL_MAP_HOST:
@@ -308,6 +304,16 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       return Value::Unknown(AttributeId{cv.payload.unk});
     case CEL_ERROR:
       return DecodeCelError(cv);
+    case CEL_TYPE: {
+      // M9.A: type-of-types — payload.s carries (ptr, len) of the
+      // type-name string in linear memory.  Copy bytes out into an
+      // owned std::string so the returned Value is detachable from
+      // the per-Eval arena lifetime.
+      auto bytes_or =
+          ReadMemString(ctx, mem, cv.payload.s.ptr, cv.payload.s.len);
+      if (!bytes_or.ok()) return bytes_or.status();
+      return Value::Type(*std::move(bytes_or));
+    }
     default:
       return absl::InvalidArgumentError(absl::StrCat(
           "Eval returned a CelValue kind ", static_cast<int>(cv.kind),
@@ -548,6 +554,42 @@ absl::Status EncodeList(const Value& v, absl::string_view name, CelValue* dst,
   return absl::OkStatus();
 }
 
+// M9.A: encode a Value::Type-bound variable into a CEL_TYPE CelValue.
+// The bound name string is copied into the host string arena above
+// `arena_limit` (same arena kString / kBytes use); the resulting
+// CelSpan lives in `payload.s`.  Same lifetime as kString — bytes
+// outlive `cel_reset` because the arena floor is fixed at instantiation
+// time.
+absl::Status EncodeType(const Value& v, absl::string_view name, CelValue* dst,
+                        HostStringArena arena) {
+  if (v.kind() != Value::Kind::kType) {
+    return KindMismatch(name, "type", v.kind());
+  }
+  auto sv_or = v.AsType();
+  if (!sv_or.ok()) return sv_or.status();
+  const absl::string_view sv = *sv_or;
+  const auto len = static_cast<uint32_t>(sv.size());
+  const uint32_t aligned = (len + 7u) & ~uint32_t{7u};
+
+  if (static_cast<uint64_t>(*arena.cursor) + aligned > arena.capacity) {
+    return absl::ResourceExhaustedError(
+        absl::StrCat("Activation[", name, "]: host string arena OOM (need ",
+                     aligned, " bytes for type name; cursor=", *arena.cursor,
+                     ", capacity=", arena.capacity, ")"));
+  }
+  const uint32_t offset = arena.floor + *arena.cursor;
+  if (len > 0) {
+    wasmtime_memory_t m = arena.mem;
+    uint8_t* base = wasmtime_memory_data(arena.ctx, &m);
+    std::memcpy(base + offset, sv.data(), len);
+  }
+  *arena.cursor += aligned;
+  dst->kind = CEL_TYPE;
+  dst->payload.s.ptr = offset;
+  dst->payload.s.len = len;
+  return absl::OkStatus();
+}
+
 // Bundle of host-side state the variable encoder needs.  Reduces
 // the per-Repr dispatch's parameter count below the lint gate; only
 // the kString / kBytes path actually consults `arena`, but the
@@ -583,16 +625,19 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kString:
     case celwasm::Repr::kBytes:
       return EncodeStringOrBytes(v, name, repr, dst, ec.arena);
+    case celwasm::Repr::kType:
+      // M9.A: type-of-types bind through the host string arena
+      // (same path as kString / kBytes — see `EncodeType`).
+      return EncodeType(v, name, dst, ec.arena);
     case celwasm::Repr::kMap:
     case celwasm::Repr::kDuration:
     case celwasm::Repr::kTimestamp:
     case celwasm::Repr::kEnum:
-    case celwasm::Repr::kType:
     case celwasm::Repr::kUnknown:
       return absl::UnimplementedError(
           absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
                        " marshal not implemented (later milestones for "
-                       "map/duration/timestamp/enum/type/unknown)"));
+                       "map/duration/timestamp/enum/unknown)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));
@@ -607,7 +652,7 @@ void WriteCelValueAt(wasmtime_context_t* ctx, const wasmtime_memory_t& mem,
   std::memcpy(base + offset, &cv, sizeof(cv));
 }
 
-// Sum the aligned-up byte sizes of every kString / kBytes
+// Sum the aligned-up byte sizes of every kString / kBytes / kType
 // activation binding.  Used pre-pass to know how much host arena to
 // reserve before any encoder writes — growing memory mid-loop would
 // invalidate any previously-cached `wasmtime_memory_data` pointer.
@@ -616,7 +661,8 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
   uint32_t total = 0;
   for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
     const celwasm::Repr repr = celwasm::DecodeRepr(dv.repr());
-    if (repr != celwasm::Repr::kString && repr != celwasm::Repr::kBytes) {
+    if (repr != celwasm::Repr::kString && repr != celwasm::Repr::kBytes &&
+        repr != celwasm::Repr::kType) {
       continue;
     }
     const Value* bound = activation.Find(dv.name());
@@ -627,6 +673,11 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
     } else if (repr == celwasm::Repr::kBytes &&
                bound->kind() == Value::Kind::kBytes) {
       total += static_cast<uint32_t>(bound->AsBytes()->size());
+    } else if (repr == celwasm::Repr::kType &&
+               bound->kind() == Value::Kind::kType) {
+      // M9.A: type-name strings live in the same host arena as
+      // kString/kBytes payloads (see EncodeType in cel_host.cc).
+      total += static_cast<uint32_t>(bound->AsType()->size());
     }
     total = (total + 7u) & ~uint32_t{7u};
   }

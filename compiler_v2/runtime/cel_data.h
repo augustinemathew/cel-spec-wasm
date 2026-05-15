@@ -125,7 +125,17 @@ struct CelValue {
                               // keep cel_host call sites unchanged
                               // since M3.A).
     uint32_t msg_slot;
-    uint32_t type_id;
+    // CEL_TYPE values reuse the `s` arm above (CelSpan = ptr+len).
+    // The bytes pointed at are the spec type-name string ("int",
+    // "bool", "<message-FQN>", "null_type", "list", "map", "type",
+    // "google.protobuf.Timestamp", ...) living in rodata (compile-
+    // time-knowable names), per-Eval arena (host-resolved
+    // `type(<message>)`), or workspace (`Activation::Bind` for a
+    // `Value::Type(name)`-typed binding).  See M9.A in
+    // `doc/implementation-plan/rewrite/m9-type-subsystem.md` §3.3.1
+    // for the lifetime model.  No `type_id` field — there is no
+    // intern table; equality of CEL_TYPE values is `memcmp` on the
+    // payload.s bytes (M9.D in `cel_runtime.c::cel_equals`).
     CelDurTs dur;
     CelDurTs ts;
     uint32_t opt;

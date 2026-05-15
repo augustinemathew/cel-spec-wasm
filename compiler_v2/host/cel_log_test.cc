@@ -336,16 +336,19 @@ TEST(CelLogTest, ValueMessageKind) {
 }
 
 TEST(CelLogTest, ValueTypeKind) {
+  // M9: CEL_TYPE payload is a CelSpan into linear memory carrying
+  // the type-name bytes.  Pretty-printer reads them via FormatSpanPayload.
   Scratch mem;
+  const uint32_t payload_off = 600;
+  mem.WriteStr(payload_off, "int");
   const uint32_t cv_off = 512;
   CelValue cv{};
   cv.kind = CEL_TYPE;
-  cv.payload.type_id = 9;
+  cv.payload.s = CelSpan{payload_off, 3};
   mem.WriteCelValue(cv_off, cv);
   const uint32_t argv_off = 256;
   mem.WriteSlot(argv_off, CEL_LOG_TAG_VALUE, cv_off);
-  EXPECT_EQ(DecodeOne(mem, "%v", argv_off, 1),
-            "[test.cc:17 TestFn] type(id=9)");
+  EXPECT_EQ(DecodeOne(mem, "%v", argv_off, 1), "[test.cc:17 TestFn] type(int)");
 }
 
 TEST(CelLogTest, ValueDurationKind) {

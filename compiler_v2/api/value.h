@@ -64,6 +64,10 @@ class Value {
     kMessage = 9,
     kDuration = 11,
     kTimestamp = 12,
+    // M9.A: type values.  Wire `CelKind::CEL_TYPE = 11`; user-facing
+    // numbering is independent (kDuration already occupies 11 here).
+    // Slot 13 was free.
+    kType = 13,
     kUnknown = 14,
     kError = 15,
   };
@@ -82,6 +86,13 @@ class Value {
   static Value Bytes(std::string v);
   static Value Duration(absl::Duration v);
   static Value Timestamp(absl::Time v);
+  // M9.A: type-of-types.  `name` is the spec type-name (`"int"`,
+  // `"bool"`, `"<message-FQN>"`, `"null_type"`, `"list"`, `"map"`,
+  // `"type"`, `"google.protobuf.Timestamp"`, ...).  Per langdef
+  // §"Type Values" these are the values of expressions like `int`
+  // standalone or `type(x)`.  No name validation — arbitrary bytes
+  // are accepted (consistent with `Value::Message`).
+  static Value Type(std::string name);
   static Value Unknown(AttributeId attr);
   static Value Error(ErrorPayload payload);
 
@@ -158,6 +169,9 @@ class Value {
   absl::StatusOr<absl::string_view> AsBytes() const;
   absl::StatusOr<absl::Duration> AsDuration() const;
   absl::StatusOr<absl::Time> AsTimestamp() const;
+  // M9.A: returns the type-name string for a kType Value.
+  // InvalidArgument on any other kind.
+  absl::StatusOr<absl::string_view> AsType() const;
   absl::StatusOr<AttributeId> UnknownAttribute() const;
   absl::StatusOr<const ErrorPayload*> ErrorInfo() const;
 
@@ -220,8 +234,12 @@ class Value {
   // colliding.
   struct StringTag {};
   struct BytesTag {};
+  // M9.A: kType values share the std::string Payload alternative
+  // with kString / kBytes; the kind_ tag disambiguates.
+  struct TypeTag {};
   Value(StringTag, std::string s);
   Value(BytesTag, std::string s);
+  Value(TypeTag, std::string s);
 };
 
 absl::string_view ValueKindName(Value::Kind k);

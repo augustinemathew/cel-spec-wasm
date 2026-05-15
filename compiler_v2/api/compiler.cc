@@ -47,6 +47,11 @@ std::string CelTypeToSpec(const CelType& t) {
       return "duration";
     case CelType::Kind::kTimestamp:
       return "timestamp";
+    case CelType::Kind::kType:
+      // M9.A: `type` is a primitive-shaped declaration — the spec
+      // parser maps `"type"` to `cel::TypeType` via cel-cpp's
+      // standard library variable registration.
+      return "type";
     case CelType::Kind::kMessage:
       return std::string(t.message_fully_qualified_name());
     case CelType::Kind::kList:

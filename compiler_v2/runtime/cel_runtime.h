@@ -48,5 +48,6 @@
 #include "compiler_v2/runtime/cel_map.h"
 #include "compiler_v2/runtime/cel_memory.h"
 #include "compiler_v2/runtime/cel_string_ops.h"
+#include "compiler_v2/runtime/cel_type.h"
 
 #endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_

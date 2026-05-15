@@ -193,6 +193,12 @@ std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
   if (name == "duration") return cel::Type(cel::DurationType{});
   if (name == "any") return cel::Type(cel::AnyType{});
   if (name == "dyn") return cel::Type(cel::DynType{});
+  // M9.A: `type` declarable as a variable type (the type-of-types).
+  // The cel-cpp `TypeType` constructor takes an optional inner type;
+  // a default-constructed TypeType corresponds to "untyped type" —
+  // sufficient for variable declarations whose values are arbitrary
+  // CEL_TYPE Values.
+  if (name == "type") return cel::Type(cel::TypeType{});
   return std::nullopt;
 }
 
@@ -449,7 +455,12 @@ bool ArgIsAdmissibleScalar(const cel::Expr& arg,
   auto it = types.find(arg.id());
   if (it == types.end()) return false;
   const auto& t = it->second;
-  return t.has_primitive() || t.has_null();
+  // M9.A: `dyn(type-value)` admits — CEL_TYPE is a scalar wire shape
+  // (`payload.s` is a CelSpan into linear memory), and downstream
+  // operators (`==` via `cel_equals` CEL_TYPE arm in M9.D) handle
+  // it correctly.  Excluded: `dyn(message)` — out of scope per
+  // m7-proto-literals.md §2.2 (reflective introspection).
+  return t.has_primitive() || t.has_null() || t.has_type();
 }
 
 bool IsDynPassthroughCall(const cel::Expr& node,
@@ -587,7 +598,8 @@ void InlineConstantReferences(cel::Ast& ast) {
     if (expr.has_call_expr()) {
       auto& call = expr.mutable_call_expr();
       if (call.has_target()) visit(call.mutable_target());
-      for (auto& arg : call.mutable_args()) visit(arg);
+      for (auto& arg : call.mutable_args())
+        visit(arg);
       return;
     }
     if (expr.has_list_expr()) {
@@ -623,6 +635,202 @@ void InlineConstantReferences(cel::Ast& ast) {
   visit(ast.mutable_root_expr());
 }
 
+// M9.C: resolve the spec type-name for a `cel.expr.Type` whose
+// outer kind is `kType` (the type-of-types).  Returns the spec
+// type-name per langdef §"Type Values" + m9-type-subsystem.md §3.1.
+//
+// Returns std::nullopt for inner kinds we deliberately do NOT
+// rewrite at this slice — `function` / `error` / `dyn` / abstract
+// type-params we haven't yet pinned a name for.  Caller treats
+// nullopt as "leave the kIdent alone; downstream codegen will
+// surface its own diagnostic for a bound-variable miss".  This
+// is a small, named set; everything else has a concrete name and
+// CHECK-fails on an unrecognised enum value (CLAUDE.md
+// "unreachable switch defaults" rule).
+std::optional<std::string> PrimitiveTypeName(cel::PrimitiveType p) {
+  switch (p) {
+    case cel::PrimitiveType::kBool:
+      return std::string("bool");
+    case cel::PrimitiveType::kInt64:
+      return std::string("int");
+    case cel::PrimitiveType::kUint64:
+      return std::string("uint");
+    case cel::PrimitiveType::kDouble:
+      return std::string("double");
+    case cel::PrimitiveType::kString:
+      return std::string("string");
+    case cel::PrimitiveType::kBytes:
+      return std::string("bytes");
+    case cel::PrimitiveType::kPrimitiveTypeUnspecified:
+      // The checker doesn't emit UNSPECIFIED for resolved types;
+      // reaching here is an invariant violation upstream.
+      ABSL_CHECK(false)
+          << "InlineTypeIdentifierReferences: PrimitiveType is UNSPECIFIED";
+  }
+  ABSL_CHECK(false)
+      << "InlineTypeIdentifierReferences: unhandled PrimitiveType="
+      << static_cast<int>(p);
+}
+
+std::optional<std::string> WrapperTypeName(cel::PrimitiveType p) {
+  switch (p) {
+    case cel::PrimitiveType::kBool:
+      return std::string("google.protobuf.BoolValue");
+    case cel::PrimitiveType::kInt64:
+      return std::string("google.protobuf.Int64Value");
+    case cel::PrimitiveType::kUint64:
+      return std::string("google.protobuf.UInt64Value");
+    case cel::PrimitiveType::kDouble:
+      return std::string("google.protobuf.DoubleValue");
+    case cel::PrimitiveType::kString:
+      return std::string("google.protobuf.StringValue");
+    case cel::PrimitiveType::kBytes:
+      return std::string("google.protobuf.BytesValue");
+    case cel::PrimitiveType::kPrimitiveTypeUnspecified:
+      ABSL_CHECK(false)
+          << "InlineTypeIdentifierReferences: wrapper PrimitiveType "
+             "is UNSPECIFIED";
+  }
+  ABSL_CHECK(false)
+      << "InlineTypeIdentifierReferences: unhandled wrapper PrimitiveType="
+      << static_cast<int>(p);
+}
+
+std::optional<std::string> WellKnownTypeName(cel::WellKnownTypeSpec w) {
+  switch (w) {
+    case cel::WellKnownTypeSpec::kAny:
+      return std::string("google.protobuf.Any");
+    case cel::WellKnownTypeSpec::kTimestamp:
+      return std::string("google.protobuf.Timestamp");
+    case cel::WellKnownTypeSpec::kDuration:
+      return std::string("google.protobuf.Duration");
+    case cel::WellKnownTypeSpec::kWellKnownTypeUnspecified:
+      ABSL_CHECK(false)
+          << "InlineTypeIdentifierReferences: WellKnownType is UNSPECIFIED";
+  }
+  ABSL_CHECK(false)
+      << "InlineTypeIdentifierReferences: unhandled WellKnownType="
+      << static_cast<int>(w);
+}
+
+std::optional<std::string> SpecTypeName(const cel::TypeSpec& inner) {
+  if (inner.has_primitive()) return PrimitiveTypeName(inner.primitive());
+  if (inner.has_wrapper()) return WrapperTypeName(inner.wrapper());
+  if (inner.has_well_known()) return WellKnownTypeName(inner.well_known());
+  if (inner.has_null()) return std::string("null_type");
+  if (inner.has_message_type()) return std::string(inner.message_type().type());
+  if (inner.has_list_type()) return std::string("list");
+  if (inner.has_map_type()) return std::string("map");
+  if (inner.has_type()) return std::string("type");
+  if (inner.has_type_param()) {
+    // `list` / `map` / `type` standalone idents wrap their abstract
+    // `T` parameter through TypeType.  The outer-being-TypeType
+    // means the value IS a type — render as `type` (the only
+    // standalone ident whose body is a bare type-param).
+    return std::string("type");
+  }
+  // Out-of-scope inner kinds (`function`, `error`, `dyn`,
+  // `abstract_type`).  Don't rewrite; let the original kIdent
+  // surface its own downstream diagnostic.
+  return std::nullopt;
+}
+
+// M9.C: walk the AST and rewrite every `kIdentExpr` whose
+// `reference_map` entry resolves to a checker-registered global
+// type-name variable (`int`, `bool`, `<message-FQN>`, ...) to a
+// `kConstantExpr` carrying `string_value = <spec type-name>`.
+//
+// Detection criterion: the `Reference` for the kIdent has NO
+// `value()` set (M7.D's `InlineConstantReferences` already handled
+// the constant-value case — enum-name resolution), AND the node's
+// checker-assigned type in `type_map` is `TypeType(<inner>)`
+// (i.e. `has_type()` returns true on the outer TypeSpec).  These
+// are precisely the type-identifier idents — the standard library
+// registers them at `checker/standard_library.cc:799-829`.
+//
+// Downstream: PopulateAnnotations reads `type_map` and stamps the
+// rewritten kConstant node with `Repr::kType` (already correct via
+// the existing `ReprOf(TypeSpec)` path).  PackPass then uses the
+// `Repr::kType` annotation to write a CEL_TYPE-kinded rodata
+// CelValue (instead of the default CEL_STRING).  See
+// m9-type-subsystem.md §4.2 + §3.3.
+//
+// MUST run AFTER `InlineConstantReferences` (R2 mitigation) — the
+// constant-value rewrite happens first; type-ident rewriter sees
+// only kIdent nodes whose Reference is value-less.
+//
+// Idempotent — running this on an AST without any type-ident
+// idents is a no-op.
+void InlineTypeIdentifierReferences(cel::Ast& ast) {
+  const cel::Ast::ReferenceMap& refs = ast.reference_map();
+  const cel::Ast::TypeMap& types = ast.type_map();
+  std::function<void(cel::Expr&)> visit = [&](cel::Expr& expr) {
+    if (expr.has_ident_expr()) {
+      auto refs_it = refs.find(expr.id());
+      auto types_it = types.find(expr.id());
+      if (refs_it == refs.end() || types_it == types.end()) return;
+      const cel::Reference& ref = refs_it->second;
+      const cel::TypeSpec& outer = types_it->second;
+      // Defensive: M7.D's InlineConstantReferences already handled
+      // the value-bearing path; assert we don't double-rewrite.
+      if (ref.has_value()) return;
+      if (!outer.has_type()) return;
+      auto name = SpecTypeName(outer.type());
+      if (!name.has_value()) return;  // out-of-scope inner kind
+      // Replace the kIdent with a kConstantExpr carrying the
+      // spec type-name.  PopulateAnnotations + PackPass will see
+      // a kConstant whose stamped Repr is kType (because the
+      // type_map entry is unchanged — still TypeType(inner) —
+      // and ReprOf(TypeSpec) already maps `has_type()` →
+      // Repr::kType).
+      cel::Constant c;
+      c.set_string_value(*std::move(name));
+      expr.set_const_expr(std::move(c));
+      return;
+    }
+    if (expr.has_select_expr()) {
+      visit(expr.mutable_select_expr().mutable_operand());
+      return;
+    }
+    if (expr.has_call_expr()) {
+      auto& call = expr.mutable_call_expr();
+      if (call.has_target()) visit(call.mutable_target());
+      for (auto& arg : call.mutable_args())
+        visit(arg);
+      return;
+    }
+    if (expr.has_list_expr()) {
+      for (auto& elem : expr.mutable_list_expr().mutable_elements()) {
+        visit(elem.mutable_expr());
+      }
+      return;
+    }
+    if (expr.has_map_expr()) {
+      for (auto& e : expr.mutable_map_expr().mutable_entries()) {
+        visit(e.mutable_key());
+        visit(e.mutable_value());
+      }
+      return;
+    }
+    if (expr.has_struct_expr()) {
+      for (auto& f : expr.mutable_struct_expr().mutable_fields()) {
+        visit(f.mutable_value());
+      }
+      return;
+    }
+    if (expr.has_comprehension_expr()) {
+      auto& c = expr.mutable_comprehension_expr();
+      visit(c.mutable_iter_range());
+      visit(c.mutable_accu_init());
+      visit(c.mutable_loop_condition());
+      visit(c.mutable_loop_step());
+      visit(c.mutable_result());
+      return;
+    }
+  };
+  visit(ast.mutable_root_expr());
+}
+
 }  // namespace
 
 absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
@@ -651,6 +859,12 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   // RejectDyn (which inspects every node's kind) and PopulateAnnotations
   // (which seeds Repr from the kind-stamped type_map).
   InlineConstantReferences(**checked_ast);
+
+  // M9.C: rewrite type-identifier idents (`int`, `bool`,
+  // `<message-FQN>` standalone) to kConstantExpr nodes carrying
+  // the spec type-name string.  MUST run AFTER
+  // InlineConstantReferences (per m9-type-subsystem.md §7 R2).
+  InlineTypeIdentifierReferences(**checked_ast);
 
   // Static-subset gate: no DYN / ERROR / type-param / function / unset nodes.
   if (auto s = RejectDyn(**checked_ast); !s.ok()) return s;

@@ -1,15 +1,27 @@
 # M9 — Type subsystem (`type(x)` + type identifiers as values)
 
-Status: **plan — drafted 2026-04-25, not yet started.**
+Status: **shipped 2026-05-14 (slices A–F + closeout).**
 
-> **What "done" looks like.**  Greening every test in
-> `compiler_v2/e2e/m9_test.cc` (TypeOfPrimitive ~22 boundary
-> rows, TypeOfMessage ×4, TypeIdentifierExpression ×11+,
-> TypeOfNullAndAggregate ×4 (1 SKIP'd until timestamps slice),
-> TypeEquality ×8, TypeAsRhsOfEquality ×7, TypeActivation ×3,
-> TypeReject ×4) plus the conformance unlock targets in §1.
-> Slice plan: M9.A → M9.B → M9.C → M9.D → M9.E → M9.F → M9.G
-> closeout (see §5).
+> **What landed.**  All six implementation slices A–F shipped against
+> the as-written plan with no architectural delta — `Value::Type` +
+> `payload.s` CelSpan replaced the unused `payload.type_id` field
+> (§3.3.1); `cel_type_of_at_v` 12-row primitive table + CEL_MESSAGE
+> host trampoline (§4.5); `InlineTypeIdentifierReferences` rewrites
+> bare type-idents to `kConstantExpr` with `Repr::kType` packing
+> (§4.2); `cel_equals` CEL_TYPE arm does memcmp on `payload.s`
+> bytes (§3.4); runner widened for `kTypeValue` (`CompareType`) and
+> `typed_result` matcher (§4.7).  M9.G closeout — this header
+> flip, testing-checklist tick, manual-tagged suite run — wraps
+> the milestone.
+>
+> **As-shipped surface:** `m9_test.cc` (all rows green except the
+> 1 GTEST_SKIP for the timestamps-slice cohort, by plan); 47/47
+> default-suite + manual-tagged tests pass (the 48th is the
+> deliberately-failing M10 placeholder per §"Future work").
+> Conformance: live numbers move from M7 baseline as M9 unlocks
+> the `type_value:` matcher cohort and the `typed_result:`
+> harness path; per-fixture deltas land in the next conformance
+> README refresh.
 
 The plan covers the runtime value-of-`type` kind (`CEL_TYPE`) end-
 to-end: codegen for the `type(x)` standard function, codegen for

@@ -38,7 +38,8 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // compute the first available custom id and to assert the seed
 // table didn't unexpectedly grow / shrink.  Update with the seed
 // list itself.
-constexpr size_t kBuiltinSeedCount = 85;
+// M9.B: 85 → 86 — added `type` seed pointing at `cel_type_of_at_v`.
+constexpr size_t kBuiltinSeedCount = 86;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

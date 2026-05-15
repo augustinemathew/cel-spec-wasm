@@ -131,6 +131,11 @@ uint32_t StaticMemoryBuilder::AllocateBytes(absl::string_view b) {
   return AllocateSpan(CEL_BYTES, b);
 }
 
+uint32_t StaticMemoryBuilder::AllocateType(absl::string_view name) {
+  // Identical payload to AllocateString — only the kind tag differs.
+  return AllocateSpan(CEL_TYPE, name);
+}
+
 uint32_t StaticMemoryBuilder::AllocateList(
     absl::Span<const uint32_t> element_offsets) {
   (void)element_offsets;

@@ -107,8 +107,7 @@ class ProtoBacking final : public HostMessageBacking {
 // will mutate the message in place via `mutable_message()`.
 class OwnedProtoBacking final : public HostMessageBacking {
  public:
-  explicit OwnedProtoBacking(
-      std::unique_ptr<google::protobuf::Message> msg);
+  explicit OwnedProtoBacking(std::unique_ptr<google::protobuf::Message> msg);
 
   absl::StatusOr<cel::Value> ReadField(
       int field_number, absl::string_view field_name,
@@ -522,6 +521,21 @@ ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
 ABSL_MUST_USE_RESULT absl::Status CelMakeMessageImpl(
     uint32_t type_id, uint32_t out_slot, const TrampolineContext& ctx);
 
+// M9.B: cel_host.resolve_message_type_name — descriptor-FQN
+// resolution for `type(<message>)`.  Reads the CEL_MESSAGE
+// CelValue at `in_slot`, dereferences `payload.msg_slot` against
+// `ctx.refs` to recover the `HostMessageBacking`, walks to the
+// proto's `GetDescriptor()->full_name()`, copies the FQN bytes
+// into the per-Eval arena via `ctx.alloc`, stamps
+// `{kind: CEL_TYPE, payload.s: {arena_off, len}}` into out_slot.
+//
+// M9.B ships the function as a stub that poisons out_slot with
+// kTypeMismatch — registration of the trampoline is what makes
+// the runtime instantiate cleanly.  M9.C replaces the body with
+// the real descriptor walk.
+ABSL_MUST_USE_RESULT absl::Status CelResolveMessageTypeNameImpl(
+    uint32_t out_slot, uint32_t in_slot, const TrampolineContext& ctx);
+
 // M7.B: cel_host.cel_set_field — proto literal field set.
 //   1. Read `msg_cv` from `msg_slot` — must be CEL_MESSAGE; the
 //      msg_slot externref must point at an `OwnedProtoBacking`
@@ -551,9 +565,10 @@ ABSL_MUST_USE_RESULT absl::Status CelMakeMessageImpl(
 //      ship.
 // Non-OK Status surfaces as a wasm trap; the conformance harness
 // records the row as failure without aborting the run.
-ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(
-    uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot,
-    const TrampolineContext& ctx);
+ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(uint32_t msg_slot,
+                                                  uint32_t field_ref_id,
+                                                  uint32_t value_slot,
+                                                  const TrampolineContext& ctx);
 
 }  // namespace celwasm
 

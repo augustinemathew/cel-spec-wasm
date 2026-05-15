@@ -33,6 +33,8 @@ Value::Value(StringTag, std::string s)
     : kind_(Kind::kString), payload_(std::move(s)) {}
 Value::Value(BytesTag, std::string s)
     : kind_(Kind::kBytes), payload_(std::move(s)) {}
+Value::Value(TypeTag, std::string s)
+    : kind_(Kind::kType), payload_(std::move(s)) {}
 
 Value Value::Null() {
   return {};
@@ -78,6 +80,9 @@ Value Value::Timestamp(absl::Time v) {
   r.kind_ = Kind::kTimestamp;
   r.payload_ = v;
   return r;
+}
+Value Value::Type(std::string name) {
+  return Value(TypeTag{}, std::move(name));
 }
 Value Value::Unknown(AttributeId attr) {
   Value r;
@@ -157,6 +162,10 @@ absl::StatusOr<absl::Time> Value::AsTimestamp() const {
   if (kind_ != Kind::kTimestamp) return KindMismatch("timestamp", kind_);
   return std::get<absl::Time>(payload_);
 }
+absl::StatusOr<absl::string_view> Value::AsType() const {
+  if (kind_ != Kind::kType) return KindMismatch("type", kind_);
+  return absl::string_view(std::get<std::string>(payload_));
+}
 absl::StatusOr<AttributeId> Value::UnknownAttribute() const {
   if (kind_ != Kind::kUnknown) return KindMismatch("unknown", kind_);
   return std::get<AttributeId>(payload_);
@@ -211,6 +220,11 @@ bool Value::StructurallyEquals(const Value& other) const {
       return std::get<double>(payload_) == std::get<double>(other.payload_);
     case Kind::kString:
     case Kind::kBytes:
+    case Kind::kType:
+      // kType shares the std::string Payload alternative; the kind
+      // tag (already checked above) disambiguates.  Equality is
+      // byte-wise on the type-name string per langdef §"Equality"
+      // + m9-type-subsystem.md §3.4.
       return std::get<std::string>(payload_) ==
              std::get<std::string>(other.payload_);
     case Kind::kDuration:
@@ -252,7 +266,8 @@ bool Value::StructurallyEquals(const Value& other) const {
       // lands with the M5 kCall built-in overload set (`==` on
       // lists).
       return std::get<std::shared_ptr<celwasm::HostListBacking>>(payload_) ==
-             std::get<std::shared_ptr<celwasm::HostListBacking>>(other.payload_);
+             std::get<std::shared_ptr<celwasm::HostListBacking>>(
+                 other.payload_);
     }
   }
   ABSL_CHECK(false) << "unhandled Value::Kind = " << static_cast<int>(kind_);
@@ -284,6 +299,8 @@ absl::string_view ValueKindName(Value::Kind k) {
       return "duration";
     case Value::Kind::kTimestamp:
       return "timestamp";
+    case Value::Kind::kType:
+      return "type";
     case Value::Kind::kUnknown:
       return "unknown";
     case Value::Kind::kError:

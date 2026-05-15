@@ -20,6 +20,7 @@ cc_library(
         "cel_memory.h",
         "cel_runtime.h",
         "cel_string_ops.h",
+        "cel_type.h",
     ],
     copts = [
         "-std=c11",
@@ -169,6 +170,7 @@ genrule(
         "cel_runtime.c",
         "cel_runtime.h",
         "cel_string_ops.h",
+        "cel_type.h",
         "wasm_imports.txt",
     ],
     outs = ["cel_runtime.wasm"],
@@ -293,6 +295,8 @@ genrule(
         "-Wl,--export=cel_not",
         "-Wl,--export=cel_unknown_merge",
         "-Wl,--export=cel_copy_slot",
+        # M9.B: type-of helper.
+        "-Wl,--export=cel_type_of_at_v",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

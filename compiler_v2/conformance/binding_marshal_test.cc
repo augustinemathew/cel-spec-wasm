@@ -98,8 +98,7 @@ TEST(ValueFromProto, ObjectUnknownTypeRejected) {
   Value v;
   v.mutable_object_value()->set_type_url(
       "type.googleapis.com/com.example.Unknown");
-  EXPECT_THAT(ValueFromProto(v),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(ValueFromProto(v), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(ValueFromProto, EnumDecodesToInt) {
@@ -114,10 +113,16 @@ TEST(ValueFromProto, EnumDecodesToInt) {
   EXPECT_EQ(*out->AsInt(), 7);
 }
 
-TEST(ValueFromProto, TypeUnimplemented) {
+TEST(ValueFromProto, TypeProducesValueType) {
+  // M9.A: type_value bindings now decode to Value::Type(name) — the
+  // proto string maps verbatim to the kType payload (no name validation).
   Value v;
   v.set_type_value("int");
-  EXPECT_THAT(ValueFromProto(v), StatusIs(absl::StatusCode::kUnimplemented));
+  auto out_or = ValueFromProto(v);
+  ASSERT_THAT(out_or, IsOk());
+  ASSERT_EQ(out_or->kind(), cel::Value::Kind::kType);
+  ASSERT_THAT(out_or->AsType(), IsOk());
+  EXPECT_EQ(*out_or->AsType(), "int");
 }
 
 TEST(ValueFromProto, NoKindSetIsInvalid) {

@@ -49,6 +49,11 @@ CelType CelType::Timestamp() {
   t.kind_ = Kind::kTimestamp;
   return t;
 }
+CelType CelType::Type() {
+  CelType t;
+  t.kind_ = Kind::kType;
+  return t;
+}
 
 CelType CelType::Message(std::string fully_qualified_name) {
   CelType t;
@@ -136,6 +141,8 @@ absl::string_view CelTypeKindName(CelType::Kind k) {
       return "duration";
     case CelType::Kind::kTimestamp:
       return "timestamp";
+    case CelType::Kind::kType:
+      return "type";
   }
   ABSL_CHECK(false) << "unhandled CelType::Kind = " << static_cast<int>(k);
 }

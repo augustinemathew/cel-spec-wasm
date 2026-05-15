@@ -9,3 +9,4 @@ cel_host_cel_map_size
 cel_host_cel_map_in
 cel_host_cel_map_eq
 cel_host_cel_message_eq
+cel_host_resolve_message_type_name

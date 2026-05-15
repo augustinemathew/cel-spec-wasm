@@ -73,9 +73,8 @@
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/conformance/binding_marshal.h"
 #include "google/protobuf/message.h"
-#include "google/protobuf/util/message_differencer.h"
-#include "compiler_v2/conformance/binding_marshal.h"
 #include "google/protobuf/text_format.h"
+#include "google/protobuf/util/message_differencer.h"
 
 namespace celwasm::conformance {
 
@@ -128,9 +127,12 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
 //   M7: object_value (`CompareMessage` — Any-unpack + MessageDifferencer)
 //       and enum_value (`CompareEnum` — int compare per langdef
 //       §"Enumerated Types").
+//   M9: type_value (`CompareType` — byte-equal type-name string per
+//       langdef §"Type Values").
 bool IsAggregateOrObjectMatcherKind(ProtoValue::KindCase k) {
   return k == ProtoValue::kMapValue || k == ProtoValue::kListValue ||
-         k == ProtoValue::kObjectValue || k == ProtoValue::kEnumValue;
+         k == ProtoValue::kObjectValue || k == ProtoValue::kEnumValue ||
+         k == ProtoValue::kTypeValue;
 }
 
 bool IsUnknownMatcher(const SimpleTest& t) {
@@ -202,9 +204,17 @@ absl::string_view OutcomeName(Outcome o) {
 // top of this file.  Caller is responsible for those early-outs;
 // this predicate strictly answers "is the row's matcher kind one
 // the runner knows how to compare today".
+//
+// M9.F admits `typed_result:` matchers — the harness routes them
+// through the value-comparison path using the embedded
+// `typed_result.result` value, ignoring the `deduced_type` arm
+// (which a future harness slice may compare against the AST's
+// recovered type_map).  Most rows in `type_deduction.textproto`
+// pass on the value alone.
 bool IsInM7Envelope(const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return true;
   if (IsEvalErrorMatcher(t)) return true;
+  if (t.result_matcher_case() == SimpleTest::kTypedResult) return true;
   if (t.result_matcher_case() != SimpleTest::kValue) return false;
   const auto k = t.value().kind_case();
   return IsScalarMatcherKind(k) || IsAggregateOrObjectMatcherKind(k);
@@ -220,19 +230,32 @@ bool IsInM7Envelope(const SimpleTest& t) {
 // fixture syntax that produced it.
 std::string ValueMatcherKindName(ProtoValue::KindCase k) {
   switch (k) {
-    case ProtoValue::kNullValue:    return "null_value";
-    case ProtoValue::kBoolValue:    return "bool_value";
-    case ProtoValue::kInt64Value:   return "int64_value";
-    case ProtoValue::kUint64Value:  return "uint64_value";
-    case ProtoValue::kDoubleValue:  return "double_value";
-    case ProtoValue::kStringValue:  return "string_value";
-    case ProtoValue::kBytesValue:   return "bytes_value";
-    case ProtoValue::kEnumValue:    return "enum_value";
-    case ProtoValue::kObjectValue:  return "object_value";
-    case ProtoValue::kMapValue:     return "map_value";
-    case ProtoValue::kListValue:    return "list_value";
-    case ProtoValue::kTypeValue:    return "type_value";
-    case ProtoValue::KIND_NOT_SET:  return "<unset>";
+    case ProtoValue::kNullValue:
+      return "null_value";
+    case ProtoValue::kBoolValue:
+      return "bool_value";
+    case ProtoValue::kInt64Value:
+      return "int64_value";
+    case ProtoValue::kUint64Value:
+      return "uint64_value";
+    case ProtoValue::kDoubleValue:
+      return "double_value";
+    case ProtoValue::kStringValue:
+      return "string_value";
+    case ProtoValue::kBytesValue:
+      return "bytes_value";
+    case ProtoValue::kEnumValue:
+      return "enum_value";
+    case ProtoValue::kObjectValue:
+      return "object_value";
+    case ProtoValue::kMapValue:
+      return "map_value";
+    case ProtoValue::kListValue:
+      return "list_value";
+    case ProtoValue::kTypeValue:
+      return "type_value";
+    case ProtoValue::KIND_NOT_SET:
+      return "<unset>";
   }
   return "<unknown>";
 }
@@ -251,8 +274,7 @@ std::string EnvelopeRejectReason(const SimpleTest& t) {
           "envelope: value matcher kind `",
           ValueMatcherKindName(t.value().kind_case()),
           "` not in scope (today: null/bool/int/uint/double/string/"
-          "bytes/list/map/object/enum — type_value pending `type(...)` "
-          "support)");
+          "bytes/list/map/object/enum/type)");
     }
     case SimpleTest::kEvalError:
     case SimpleTest::kAnyEvalErrors:
@@ -263,8 +285,12 @@ std::string EnvelopeRejectReason(const SimpleTest& t) {
       // (disable_check / check_only) misclassified.  Defensive.
       return "envelope: internal classifier mismatch (please file a bug)";
     case SimpleTest::kTypedResult:
-      return "envelope: typed_result matcher requires no-eval check "
-             "path (harness follow-up)";
+      // M9.F admits this matcher; the only path that still routes
+      // here is a `typed_result` whose embedded `result` is missing
+      // (deduced_type-only).  Surface as envelope so it's clear
+      // why the row was skipped vs. compared.
+      return "envelope: typed_result matcher with no `result` value "
+             "(deduced_type-only comparison is harness follow-up)";
   }
   return "envelope: unrecognised result_matcher oneof case";
 }
@@ -326,8 +352,7 @@ absl::Status CompareMessage(const cel::Value& got,
   auto got_backing_or = got.MessageBacking();
   if (!got_backing_or.ok()) {
     return absl::FailedPreconditionError(
-        absl::StrCat("want-kind=message got-kind=",
-                     ValueKindName(got.kind())));
+        absl::StrCat("want-kind=message got-kind=", ValueKindName(got.kind())));
   }
   const google::protobuf::Message* got_msg = (*got_backing_or)->message();
   if (got_msg == nullptr) {
@@ -340,15 +365,16 @@ absl::Status CompareMessage(const cel::Value& got,
   // compare; pre-screen so a mismatch surfaces as a clean
   // FailedPrecondition instead of aborting the whole run.
   if (got_msg->GetDescriptor() != (*want_or)->GetDescriptor()) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "message type mismatch: want=", (*want_or)->GetDescriptor()->full_name(),
-        " got=", got_msg->GetDescriptor()->full_name()));
+    return absl::FailedPreconditionError(
+        absl::StrCat("message type mismatch: want=",
+                     (*want_or)->GetDescriptor()->full_name(),
+                     " got=", got_msg->GetDescriptor()->full_name()));
   }
   if (!google::protobuf::util::MessageDifferencer::Equals(*got_msg,
                                                           **want_or)) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "message mismatch: want=", (*want_or)->ShortDebugString(),
-        " got=", got_msg->ShortDebugString()));
+    return absl::FailedPreconditionError(
+        absl::StrCat("message mismatch: want=", (*want_or)->ShortDebugString(),
+                     " got=", got_msg->ShortDebugString()));
   }
   return absl::OkStatus();
 }
@@ -362,9 +388,27 @@ absl::Status CompareEnum(const cel::Value& got,
                          const cel::expr::EnumValue& want) {
   auto i = got.AsInt();
   if (!i.ok() || *i != want.value()) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "enum mismatch: want=", want.value(), " got-kind=",
-        ValueKindName(got.kind())));
+    return absl::FailedPreconditionError(
+        absl::StrCat("enum mismatch: want=", want.value(),
+                     " got-kind=", ValueKindName(got.kind())));
+  }
+  return absl::OkStatus();
+}
+
+// M9.A — compare a returned `cel::Value::Type(name)` against a
+// `type_value` matcher (a `string` per `cel.expr.Value`'s
+// `type_value` field).  Equality is byte-equal on the spec
+// type-name string per langdef §"Type Values" + m9-type-subsystem.md
+// §3.4.
+absl::Status CompareType(const cel::Value& got, absl::string_view want) {
+  auto name_or = got.AsType();
+  if (!name_or.ok()) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("want-kind=type got-kind=", ValueKindName(got.kind())));
+  }
+  if (*name_or != want) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("type mismatch: want=`", want, "` got=`", *name_or, "`"));
   }
   return absl::OkStatus();
 }
@@ -379,6 +423,8 @@ absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
       return CompareMessage(got, want.object_value());
     case ProtoValue::kEnumValue:
       return CompareEnum(got, want.enum_value());
+    case ProtoValue::kTypeValue:
+      return CompareType(got, want.type_value());
     default:
       // Scalar (or unrecognised — CompareScalar's default returns
       // InvalidArgument, matching the pre-M4 behaviour).
@@ -607,8 +653,7 @@ Result ClassifyCompileFailure(const absl::Status& s) {
   }
   if (s.code() == absl::StatusCode::kInvalidArgument &&
       absl::StrContains(s.message(), "static subset")) {
-    return Unsupported(
-        absl::StrCat("static_subset: ", s.message()));
+    return Unsupported(absl::StrCat("static_subset: ", s.message()));
   }
   return Fail("compile", s);
 }
@@ -761,6 +806,25 @@ Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
   cel::Instance inst = *std::move(inst_or);
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
+  // M9.F: typed_result rows route through the standard value
+  // comparator using the embedded `result` value.  The
+  // `deduced_type` arm is intentionally unchecked at this slice —
+  // most rows are unique on the value alone, and a follow-up
+  // harness slice can add the type comparison once the AST type_map
+  // is exposed through the public `Compiler::Compile` surface.
+  if (t.result_matcher_case() == SimpleTest::kTypedResult) {
+    if (!t.typed_result().has_result()) {
+      return Unsupported(
+          "envelope: typed_result matcher with no `result` value "
+          "(deduced_type-only comparison is harness follow-up)");
+    }
+    auto val_or = inst.Eval(act);
+    if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
+    if (auto s = CompareValue(*val_or, t.typed_result().result()); !s.ok()) {
+      return Fail("compare", s);
+    }
+    return {Outcome::kPass, ""};
+  }
   return RunValueBranch(inst, act, t);
 }
 

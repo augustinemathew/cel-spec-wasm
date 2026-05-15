@@ -41,13 +41,29 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
   void PostVisitExpr(const cel::Expr&) override {}
 
   void PostVisitConst(const cel::Expr& expr, const cel::Constant& c) override {
-    const uint32_t offset = Pack(c);
+    const uint32_t offset = Pack(expr, c);
     annotations_[expr.id()].storage =
         Storage{StorageKind::kStaticRodata, offset};
   }
 
  private:
-  uint32_t Pack(const cel::Constant& c) {
+  uint32_t Pack(const cel::Expr& expr, const cel::Constant& c) {
+    // M9.C: a `kConstant` whose annotation Repr is `kType` is the
+    // rewrite target of `InlineTypeIdentifierReferences` — it
+    // carries a string_value that names a CEL type.  Pack as a
+    // CEL_TYPE-kinded CelValue (same span layout as a string) so
+    // the runtime sees `{kind: CEL_TYPE, payload.s: ...}` instead
+    // of CEL_STRING.  Dispatch on Repr here (not on the Constant
+    // proto's oneof) because the proto has no slot for a
+    // type-value — see m9-type-subsystem.md §3.3 + §4.2.
+    auto ann_it = annotations_.Find(expr.id());
+    if (ann_it != nullptr && ann_it->repr == Repr::kType) {
+      ABSL_CHECK(c.has_string_value())
+          << "LayoutPass: kConstant expr_id=" << expr.id()
+          << " has Repr::kType but no string_value (M9.C "
+             "InlineTypeIdentifierReferences invariant violation)";
+      return builder_.AllocateType(c.string_value());
+    }
     if (c.has_null_value()) return builder_.AllocateNull();
     if (c.has_bool_value()) return builder_.AllocateBool(c.bool_value());
     if (c.has_int_value()) return builder_.AllocateInt(c.int_value());
