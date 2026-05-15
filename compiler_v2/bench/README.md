@@ -129,6 +129,33 @@ If you suspect a regression in any of those layers, the matching
 `BM_Compile_` / `BM_Plan_` / `BM_Eval_` numbers should localise it
 before you start `perf`-ing.
 
+### Binaryen `optimize_level` trade-off (2026-05-15)
+
+Each `_Opt2` row compiles the same expression at `CompilerOptions.
+optimize_level = 2` (runs Binaryen's canonical `wasm-opt -O2` pass
+list: DCE + constant folding + simplify-locals + vacuum + merge-blocks
++ reorder-functions etc., shrink-level pinned at 0).  Default is still
+0 (byte-identical output); production callers should set 2 when the
+expression body has nontrivial structure.
+
+| Bench                                | Default | Opt2  | Delta             |
+| ------------------------------------ | ------: | ----: | ----------------- |
+| `BM_Compile_ThreeTermArith`          |  255 us | 662 us | **Compile +159%** |
+| `BM_Compile_TwentyTermCompare`       |  381 us | 842 us | **Compile +121%** |
+| `BM_Eval_ThreeTermArith`             |  716 ns | 696 ns | -3% (within noise) |
+| `BM_Eval_TwentyTermCompare`          | 11186 ns | 5414 ns | **Eval -52%**    |
+
+Reading the table: opt2 is a clear win for chain-heavy bodies — the
+20-term compare chain pays ~2.2× the Compile cost ONCE in exchange
+for cutting every Eval roughly in half.  Short bodies (3-term arith)
+have nothing for the optimizer to fold; opt2 is a wash on Eval and
+pure Compile-time penalty.
+
+Production rule of thumb: enable opt2 unconditionally on the request
+path (Compile is amortised across many Evals via `Engine::Plan`
+caching); disable opt2 for one-off / hot-reload compiles where Compile
+latency dominates.
+
 ## How to interpret a regression
 
   - **Kernel microbenches.**  A >10% slowdown on a single kernel

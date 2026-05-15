@@ -120,6 +120,15 @@ Program CompileOrDie(const Compiler& c, absl::string_view src) {
   return *std::move(p);
 }
 
+Program CompileOrDieAt(const Compiler& c, absl::string_view src,
+                       int optimize_level) {
+  CompilerOptions opts;
+  opts.optimize_level = optimize_level;
+  auto p = c.Compile(src, opts);
+  ABSL_CHECK_OK(p) << src;
+  return *std::move(p);
+}
+
 Instance PlanOrDie(const Program& p) {
   auto i = GlobalEngine().Plan(p);
   ABSL_CHECK_OK(i);
@@ -437,6 +446,85 @@ void BM_Eval_IntFromString(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_Eval_IntFromString);
+
+// ============================================================
+// Binaryen-optimization benches.  Pair each `_Opt2` bench with its
+// existing unoptimized counterpart so the README can show the
+// Compile-up / Eval-down trade-off in side-by-side columns.
+// `optimize_level = 2` runs Binaryen's canonical pass list (DCE +
+// constant folding + simplify-locals + vacuum + merge-blocks +
+// reorder-functions, etc.) before serializing the module.
+// ============================================================
+
+void BM_Compile_ThreeTermArith_Opt2(benchmark::State& state) {
+  Compiler c = MakeCompilerWithThreeInts();
+  for (auto _ : state) {
+    auto p = c.Compile("a + b + c", [] {
+      CompilerOptions o;
+      o.optimize_level = 2;
+      return o;
+    }());
+    ABSL_CHECK_OK(p);
+    benchmark::DoNotOptimize(*p);
+  }
+}
+BENCHMARK(BM_Compile_ThreeTermArith_Opt2);
+
+void BM_Compile_TwentyTermCompare_Opt2(benchmark::State& state) {
+  Compiler c = MakeCompilerWith20Ints();
+  std::string src;
+  for (char ch = 'a'; ch < 't'; ++ch) {
+    if (!src.empty()) src.append(" + ");
+    src.append(1, ch);
+  }
+  src.append(" == ");
+  src.append(1, 't');
+  CompilerOptions opts;
+  opts.optimize_level = 2;
+  for (auto _ : state) {
+    auto p = c.Compile(src, opts);
+    ABSL_CHECK_OK(p);
+    benchmark::DoNotOptimize(*p);
+  }
+}
+BENCHMARK(BM_Compile_TwentyTermCompare_Opt2);
+
+void BM_Eval_ThreeTermArith_Opt2(benchmark::State& state) {
+  Compiler c = MakeCompilerWithThreeInts();
+  Instance inst = PlanOrDie(CompileOrDieAt(c, "a + b + c", /*opt=*/2));
+  Activation act;
+  act.Bind("a", Value::Int(1));
+  act.Bind("b", Value::Int(2));
+  act.Bind("c", Value::Int(3));
+  for (auto _ : state) {
+    auto v = inst.Eval(act);
+    ABSL_CHECK_OK(v);
+    benchmark::DoNotOptimize(v);
+  }
+}
+BENCHMARK(BM_Eval_ThreeTermArith_Opt2);
+
+void BM_Eval_TwentyTermCompare_Opt2(benchmark::State& state) {
+  Compiler c = MakeCompilerWith20Ints();
+  std::string src;
+  for (char ch = 'a'; ch < 't'; ++ch) {
+    if (!src.empty()) src.append(" + ");
+    src.append(1, ch);
+  }
+  src.append(" == ");
+  src.append(1, 't');
+  Instance inst = PlanOrDie(CompileOrDieAt(c, src, /*opt=*/2));
+  Activation act;
+  for (char ch = 'a'; ch <= 't'; ++ch) {
+    act.Bind(std::string(1, ch), Value::Int(1));
+  }
+  for (auto _ : state) {
+    auto v = inst.Eval(act);
+    ABSL_CHECK_OK(v);
+    benchmark::DoNotOptimize(v);
+  }
+}
+BENCHMARK(BM_Eval_TwentyTermCompare_Opt2);
 
 }  // namespace
 }  // namespace cel

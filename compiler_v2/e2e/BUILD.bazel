@@ -165,6 +165,35 @@ cc_test(
     ],
 )
 
+# Optimization-on validation e2e — runs every representative
+# expression through Compile + Plan + Eval at both optimize_level=0
+# and optimize_level=2 and asserts the resulting Values are
+# identical.  Manual-tagged because it compiles each row twice (~2x
+# the cost of the slowest other e2e suite); intended as a closeout
+# gate when the Binaryen pass list or runtime build flags move, not
+# a per-PR check.
+cc_test(
+    name = "optimize_test",
+    srcs = ["optimize_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "eval_test",
     srcs = ["eval_test.cc"],
