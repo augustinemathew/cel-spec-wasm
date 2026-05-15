@@ -41,6 +41,7 @@
 #include "compiler_v2/runtime/cel_arena.h"
 #include "compiler_v2/runtime/cel_arith.h"
 #include "compiler_v2/runtime/cel_compare.h"
+#include "compiler_v2/runtime/cel_convert.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_list.h"
 #include "compiler_v2/runtime/cel_log.h"

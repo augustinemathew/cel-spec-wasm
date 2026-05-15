@@ -9,17 +9,20 @@ cc_library(
     srcs = [
         "cel_3vl.c",
         "cel_arena.c",
+        "cel_convert.c",
         "cel_internal.h",
         "cel_log.c",
         "cel_make.c",
         "cel_memory.c",
         "cel_runtime.c",
+        "cel_type.c",
     ],
     hdrs = [
         "cel_3vl.h",
         "cel_arena.h",
         "cel_arith.h",
         "cel_compare.h",
+        "cel_convert.h",
         "cel_data.h",
         "cel_list.h",
         "cel_log.h",
@@ -140,6 +143,24 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "cel_type_test",
+    srcs = ["cel_type_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_convert_test",
+    srcs = ["cel_convert_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Locks the runtime null-pointer-elision bug closed.  Loads the
 # cross-compiled cel_runtime.wasm under wasmtime and asserts
 # cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
@@ -171,6 +192,8 @@ genrule(
         "cel_arena.h",
         "cel_arith.h",
         "cel_compare.h",
+        "cel_convert.c",
+        "cel_convert.h",
         "cel_data.h",
         "cel_internal.h",
         "cel_list.h",
@@ -184,6 +207,7 @@ genrule(
         "cel_runtime.c",
         "cel_runtime.h",
         "cel_string_ops.h",
+        "cel_type.c",
         "cel_type.h",
         "wasm_imports.txt",
     ],
@@ -336,10 +360,12 @@ genrule(
         "-o $@",
         "$(location :cel_3vl.c)",
         "$(location :cel_arena.c)",
+        "$(location :cel_convert.c)",
         "$(location :cel_log.c)",
         "$(location :cel_make.c)",
         "$(location :cel_memory.c)",
         "$(location :cel_runtime.c)",
+        "$(location :cel_type.c)",
     ]),
     tags = [
         "manual",
