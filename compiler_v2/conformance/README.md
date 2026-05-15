@@ -8,16 +8,26 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=921 (37.5%) · skip=843 (34.4%) · fail=690 (28.1%)`
-across 30 loadable fixtures.  The most recent landings: M7.A–E proto
-literal construction (+131), §4.5 encoder polish + null-clear (+27),
-M7 envelope + matcher widen (+18), and proto2 unblock + CEL_MESSAGE
-root decoder (+45).  See `doc/implementation-plan/rewrite/m7-proto-literals.md`
-§9 for the M7 plan-vs-execution delta.  M9 (type subsystem) is being
-scoped — its prompt at `doc/implementation-plan/rewrite/m9-type-subsystem-prompt.md`
-targets the 255-row `envelope: type_value` bucket plus the 47-row
-`typed_result` bucket, the single biggest scope-not-yet-shipped
-category in the corpus.
+`total=2454 · pass=1058 (43.1%) · skip=693 (28.2%) · fail=703 (28.6%)`
+across 30 loadable fixtures.  The most recent landings:
+
+  - **M10 type conversions** (slices A–E, 2026-05-14): +83 PASS.
+    `bool` / `int` / `uint` / `double` / `string` / `bytes`
+    inter-conversions + identity arms.  `conversions.textproto`
+    moved from 0% → 91% pass.  See
+    `doc/implementation-plan/rewrite/m10-conversions.md`.
+  - **M9 type subsystem** (slices A–F, 2026-05-14): +54 PASS.
+    `type(x)` standard function + type-identifier idents (`int`,
+    `<message-FQN>`, ...) + `CEL_TYPE` equality + runner
+    `kTypeValue` matcher graduation.  The 255-row
+    `envelope: type_value` bucket dropped to 197 (rest pending
+    Slice 3 classifier-tightening).  See
+    `doc/implementation-plan/rewrite/m9-type-subsystem.md`.
+  - **M7 proto literal construction** (slices A–E + §4.5 polish,
+    2026-04-25): +221 PASS.  See `m7-proto-literals.md`.
+
+Pre-M9+M10 headline (post-M7, 2026-04-25): `921 / 843 / 690`.
+Pre-M7 headline (post-M5.D step 2, 2026-04-25): `664 / 1362 / 428`.
 
 ## Running
 
@@ -73,10 +83,16 @@ What currently lands in `kUnsupported` (per `runner.cc` + `binding_marshal.cc`):
     Primitive scalars and `message_type` decls are in scope.
   - Compile returned `Unimplemented` — most commonly comprehensions
     (`ResolvePass: comprehensions are M5 — reject until scope
-    handling lands`), `int(x)` / `uint(x)` / `double(x)` /
-    `string(x)` / `bytes(x)` / `bytes(x)` conversions (overload
-    set not seeded), `matches` regex, `timestamp(...)` /
-    `duration(...)` constructors.
+    handling lands`; 44 SKIPs across `macros` + `namespace`),
+    `matches` regex (9 SKIPs in `string`), `timestamp(...)` /
+    `duration(...)` constructors + arithmetic + accessors
+    (~50 SKIPs across `timestamps` + scattered).  M10
+    graduated the scalar conversion overload set
+    (`int(x)` / `uint(x)` / `double(x)` / `string(x)` /
+    `bytes(x)` etc.); the remainder of the SKIP set in
+    `conversions.textproto` is the timestamp / duration
+    conversion arms carved out per
+    `m10-conversions.md` §2.2.
   - Compile returned `InvalidArgument` containing `"static subset"`
     (the `RejectDyn` gate).
   - Eval / PartialEval returned `Unimplemented`, OR a wasm trap
@@ -135,50 +151,50 @@ vs how many are scope-not-yet-shipped?"
 Fixtures with 0 SKIPs are omitted; see the inventory below for
 those.  Sorted by total SKIP count descending.
 
-| Fixture | Total | `static_subset` | `disable_check` | `envelope` | `compile unimpl` | `type_env` | `check_only` | other |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `string_ext.textproto`      | 122 |  0 | 44 | 78 |  0 | 0 |  0 | 0 |
-| `conversions.textproto`     | 109 |  0 |  1 | 22 | 86 | 0 |  0 | 0 |
-| `dynamic.textproto`         |  92 | 72 | 20 |  0 |  0 | 0 |  0 | 0 |
-| `math_ext.textproto`        |  83 |  0 |  0 | 83 |  0 | 0 |  0 | 0 |
-| `timestamps.textproto`      |  76 |  0 |  0 |  2 | 74 | 0 |  0 | 0 |
-| `comparisons.textproto`     |  54 | 28 | 21 |  0 |  2 | 3 |  0 | 0 |
-| `proto2.textproto`          |  49 | 19 |  6 | 18 |  6 | 0 |  0 | 0 |
-| `type_deduction.textproto`  |  47 |  0 |  0 | 22 |  0 | 0 | 25 | 0 |
-| `macros.textproto`          |  44 |  6 |  0 |  0 | 38 | 0 |  0 | 0 |
-| `fields.textproto`          |  28 | 15 |  5 |  0 |  0 | 8 |  0 | 0 |
-| `parse.textproto`           |  25 |  0 | 17 |  0 |  3 | 1 |  0 | 4 |
-| `proto3.textproto`          |  19 |  7 |  6 |  0 |  6 | 0 |  0 | 0 |
-| `proto2_ext.textproto`      |  18 |  0 |  0 | 18 |  0 | 0 |  0 | 0 |
-| `wrappers.textproto`        |  18 | 18 |  0 |  0 |  0 | 0 |  0 | 0 |
-| `enums.textproto`           |  17 |  0 |  2 | 12 |  3 | 0 |  0 | 0 |
-| `namespace.textproto`       |  10 |  0 |  4 |  0 |  6 | 0 |  0 | 0 |
-| `string.textproto`          |   9 |  0 |  0 |  0 |  9 | 0 |  0 | 0 |
-| `logic.textproto`           |   9 |  0 |  9 |  0 |  0 | 0 |  0 | 0 |
-| `basic.textproto`           |   6 |  2 |  4 |  0 |  0 | 0 |  0 | 0 |
-| `integer_math.textproto`    |   3 |  0 |  3 |  0 |  0 | 0 |  0 | 0 |
-| `lists.textproto`           |   3 |  3 |  0 |  0 |  0 | 0 |  0 | 0 |
-| `fp_math.textproto`         |   1 |  0 |  1 |  0 |  0 | 0 |  0 | 0 |
-| `plumbing.textproto`        |   1 |  0 |  1 |  0 |  0 | 0 |  0 | 0 |
+| Fixture | Total | `static_subset` | `disable_check` | `envelope` | `compile unimpl` | `type_env` | `check_only` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `string_ext.textproto`      | 122 |  0 | 44 | 78 |  0 | 0 |  0 |
+| `dynamic.textproto`         |  92 | 72 | 20 |  0 |  0 | 0 |  0 |
+| `math_ext.textproto`        |  83 |  0 |  0 | 83 |  0 | 0 |  0 |
+| `timestamps.textproto`      |  76 |  0 |  0 |  2 | 74 | 0 |  0 |
+| `comparisons.textproto`     |  52 | 28 | 21 |  0 |  0 | 3 |  0 |
+| `proto2.textproto`          |  49 | 19 |  6 | 18 |  6 | 0 |  0 |
+| `type_deduction.textproto`  |  47 |  0 |  0 | 22 |  0 | 0 | 25 |
+| `macros.textproto`          |  44 |  6 |  0 |  0 | 38 | 0 |  0 |
+| `fields.textproto`          |  28 | 15 |  5 |  0 |  0 | 8 |  0 |
+| `proto3.textproto`          |  19 |  7 |  6 |  0 |  6 | 0 |  0 |
+| `proto2_ext.textproto`      |  18 |  0 |  0 | 18 |  0 | 0 |  0 |
+| `wrappers.textproto`        |  18 | 18 |  0 |  0 |  0 | 0 |  0 |
+| `parse.textproto`           |  18 |  0 | 17 |  0 |  0 | 1 |  0 |
+| `namespace.textproto`       |  10 |  0 |  4 |  0 |  6 | 0 |  0 |
+| `string.textproto`          |   9 |  0 |  0 |  0 |  9 | 0 |  0 |
+| `logic.textproto`           |   9 |  0 |  9 |  0 |  0 | 0 |  0 |
+| `basic.textproto`           |   6 |  2 |  4 |  0 |  0 | 0 |  0 |
+| `conversions.textproto`     |   5 |  0 |  1 |  0 |  4 | 0 |  0 |
+| `integer_math.textproto`    |   3 |  0 |  3 |  0 |  0 | 0 |  0 |
+| `lists.textproto`           |   3 |  3 |  0 |  0 |  0 | 0 |  0 |
+| `enums.textproto`           |   2 |  0 |  2 |  0 |  0 | 0 |  0 |
+| `fp_math.textproto`         |   1 |  0 |  1 |  0 |  0 | 0 |  0 |
+| `plumbing.textproto`        |   1 |  0 |  1 |  0 |  0 | 0 |  0 |
 
 Aggregated (corpus-wide):
 
 | Category | Count | Disposition |
 |---|---:|---|
-| `envelope`        | 255 | Scope not yet shipped (matcher kind not yet handled — M9 target) |
-| `compile unimpl`  | 233 | Scope not yet shipped (named milestone in detail) |
-| `static_subset`   | 170 | Out-of-scope by design (`RejectDyn`) |
+| `envelope`        | 197 | Scope not yet shipped (matcher kind not yet handled — remaining bucket targets the `enum` / `proto2_ext` / `string_ext` envelope tails and `type_deduction` typed-result rows that the M9.F harness graduation doesn't reach via the `check_only:true` early-out path) |
+| `static_subset`   | 171 | Out-of-scope by design (`RejectDyn`) |
+| `compile unimpl`  | 144 | Scope not yet shipped — top sub-buckets: 44 comprehensions (`ResolvePass: comprehensions are M5`), 9 `matches` regex, ~50 timestamp/duration construction + arithmetic + accessors, scattered remainder |
 | `disable_check`   | 144 | Out-of-scope by design (parse-only eval) |
-| `check_only`      |  25 | Scope not yet shipped (`typed_result` matcher — M9 target) |
+| `check_only`      |  25 | Scope not yet shipped (`typed_result` matcher with `check_only:true` — the M9.F runner change graduated `kTypedResult` for eval-style rows but the 25 `type_deduction` rows that combine it with `check_only:true` still early-out before reaching the comparator) |
 | `type_env`        |  12 | Scope not yet shipped (binding-marshal aggregate types) |
-| other             |   4 | Multi-line `expr:` rows the SKIP-output parser couldn't categorise (cosmetic) |
-| **Total** | **843** | |
+| **Total** | **693** | |
 
-Of the 843 SKIPs, ~314 are out-of-scope-by-design (`disable_check`
-+ `static_subset`) and ~525 are scope-not-yet-shipped (the rest).
-The biggest scope-not-yet-shipped buckets are `envelope` (255) and
-`compile unimpl` (233); the M9 type subsystem targets the bulk of
-the envelope bucket plus the 25 `check_only` rows.
+Of the 693 SKIPs, ~315 are out-of-scope-by-design (`disable_check`
++ `static_subset`) and ~378 are scope-not-yet-shipped (the rest).
+The biggest scope-not-yet-shipped buckets are `envelope` (197 —
+dominated by extensions / proto2_ext, ext-libs likely move via the
+extensions pass) and `compile unimpl` (144 — split across
+comprehensions / regex / timestamps).
 
 ## Per-fixture inventory
 
@@ -196,26 +212,26 @@ ext-lib FAIL-dominated fixtures.
 |---|---:|---:|---:|---:|---:|---|---|
 | `fp_math.textproto`         |  30 |  29 |   1 |   0 | 97% | 1 SKIP is `mod_not_support` — `disable_check:true`, out of conformance scope by design | Out-of-scope by design |
 | `integer_math.textproto`    |  64 |  61 |   3 |   0 | 95% | 3 SKIPs are `disable_check:true` rows (`unary_minus_not_*`) — out of conformance scope by design | Out-of-scope by design |
+| `conversions.textproto`     | 109 |  99 |   5 |   5 | 91% | 4 of 5 SKIPs are timestamp / duration conversion arms (`int(timestamp)`, `string(duration)`, ...) carved out of M10 per §2.2; 5 FAILs are bool→int/uint/double rows that cel-cpp's checker doesn't declare (only its runtime registers them) | Timestamps slice + v2 checker extension |
 | `lists.textproto`           |  39 |  34 |   3 |   2 | 87% | 3 SKIPs are `dyn(aggregate)` rejections; 2 FAILs are bound-list operands | M5.D step 2 (bound-list ops) |
-| `basic.textproto`           |  43 |  37 |   6 |   0 | 86% | `[]` self-eval / `type(x)` (type subsystem) and message-typed shapes | M9 |
-| `comparisons.textproto`     | 406 | 325 |  54 |  27 | 80% | 27 FAILs in the wrapper-equality (`eq_wrapper/*`) cohort gated on M8 | M8 (wrapper `==` peel) |
+| `basic.textproto`           |  43 |  37 |   6 |   0 | 86% | 6 SKIPs are `[]` / `{}` self-eval `disable_check`+ `static_subset` (out-of-scope by design) | — |
+| `parse.textproto`           | 219 | 181 |  18 |  20 | 83% | 17 SKIPs are `disable_check`-rejected receiver-function-name rows; 20 FAILs include keyword-keyed map self-eval | harness AST-matcher + classifier |
+| `comparisons.textproto`     | 406 | 327 |  52 |  27 | 81% | 27 FAILs in the wrapper-equality (`eq_wrapper/*`) cohort gated on M8 | M8 (wrapper `==` peel) |
 | `plumbing.textproto`        |   5 |   4 |   1 |   0 | 80% | 1 SKIP is parse-phase protobuf round-trip | M2+ (varies) |
-| `parse.textproto`           | 219 | 174 |  25 |  20 | 80% | 17 SKIPs are `disable_check`-rejected receiver-function-name rows; 20 FAILs include keyword-keyed map self-eval | harness AST-matcher + classifier |
 | `string.textproto`          |  51 |  40 |   9 |   2 | 78% | 9 SKIPs are all `matches` regex (deferred — no regex engine); 2 FAILs are `size('multibyte')` UTF-8 vs bytes mismatches | regex `matches` ext-lib |
 | `logic.textproto`           |  30 |  21 |   9 |   0 | 70% | 9 SKIPs are all `disable_check:true` rows (parse-only conditional / AND / OR coercion tests) | Out-of-scope by design |
+| `enums.textproto`           |  85 |  55 |   2 |  28 | 65% | M9 graduated 15 `type_value` envelope SKIPs (12 → 0); 28 FAILs persist on dyn / wrapper / repeated-enum-as-object-value paths | classifier tightening + M8 |
 | `proto3.textproto`          |  85 |  52 |  19 |  14 | 61% | 14 FAILs split across wrapper-typed (M8), Any-pack (M7-future), enum-on-message-read | M8 + Any |
-| `enums.textproto`           |  85 |  46 |  17 |  22 | 54% | 22 FAILs on dyn / wrapper / repeated-enum-as-object-value paths; 12 SKIPs are `type_value` envelope | M9 + classifier tightening + M8 |
-| `proto2.textproto`          | 118 |  55 |  49 |  14 | 47% | 14 FAILs: ~9 wrapper-typed (M8), ~3 Any/Struct/Value pack (M7-future), ~2 misc; 18 SKIPs are `type_value` envelope | M9 + M8 + Any |
+| `proto2.textproto`          | 118 |  55 |  49 |  14 | 47% | 14 FAILs: ~9 wrapper-typed (M8), ~3 Any/Struct/Value pack (M7-future), ~2 misc; 18 SKIPs still in `type_value` envelope | M8 + Any |
 | `fields.textproto`          |  60 |  26 |  28 |   6 | 43% | 13 SKIPs `dyn(aggregate)`; 8 `type_env: map_type`; 5 `disable_check`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | map-type marshalling + M5.D step 2 |
 | `namespace.textproto`       |  14 |   4 |  10 |   0 | 29% | 6 SKIPs are comprehension-shaped (`[0].exists(y, ...)`); 4 are `disable_check` self-eval | Comprehensions follow-on |
 | `wrappers.textproto`        |  36 |   9 |  18 |   9 | 25% | 9 PASSes via wrapper construction; 9 FAILs and 18 `static_subset`-classified SKIPs gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
 | `dynamic.textproto`         | 226 |   4 |  92 | 130 |  2% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`; 130 FAILs are dyn-shaped construction reaching past the gate | Never (static subset) + classifier tightening |
 | `unknowns.textproto`        |   0 |   0 |   0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
-| `conversions.textproto`     | 109 |   0 | 109 |   0 |  0% | `int(x)` / `uint(x)` / `double(x)` / `string(x)` / `bytes(x)` — overload set not seeded | M5.D step 2 (host conversions) |
 | `macros.textproto`          |  44 |   0 |  44 |   0 |  0% | 38 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 `dyn(aggregate)` rejections | Comprehensions follow-on |
 | `timestamps.textproto`      |  76 |   0 |  76 |   0 |  0% | `timestamp(...)` / `duration(...)` constructors, date arithmetic | Timestamps slice (post-M7) |
-| `type_deduction.textproto`  |  47 |   0 |  47 |   0 |  0% | All tests `check_only:true` with `typed_result:` matcher — envelope drops them | M9 (`typed_result` matcher) |
-| `proto2_ext.textproto`      |  18 |   0 |  18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) — `type_value` envelope SKIP | M9 + extensions pass |
+| `type_deduction.textproto`  |  47 |  20 |  25 |   2 | 43% | M9.F's `kTypedResult` matcher graduates eval-style rows; the 25 remaining SKIPs are `check_only:true` typed-result rows that early-out before reaching the comparator | M9 follow-up (check_only typed-result path) |
+| `proto2_ext.textproto`      |  18 |   0 |  18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) — `type_value` envelope SKIP | extensions pass |
 | `bindings_ext.textproto`    |   8 |   0 |   0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
 | `encoders_ext.textproto`    |   4 |   0 |   0 |   4 |  0% | `base64.encode` / `base64.decode` | Extensions pass |
 | `block_ext.textproto`       |  37 |   0 |   0 |  37 |  0% | `cel.@block([args…], expr)` — CEL-internal block form | Extensions pass |
@@ -225,7 +241,7 @@ ext-lib FAIL-dominated fixtures.
 | `optionals.textproto`       |  70 |   0 |   0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)` | Optionals pass (post-M5) |
 | `string_ext.textproto`      | 216 |   0 | 122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii` | Extensions pass |
 
-Sums (cross-check): pass = 921, skip = 843, fail = 690, total = 2454.
+Sums (cross-check): pass = 1058, skip = 693, fail = 703, total = 2454.
 
 ## Top remaining unlock buckets
 
@@ -235,26 +251,34 @@ for ceilings.
   1. **Extensions pass** (~+680) — math/network/optionals/string-ext
      fixtures all fail at "undeclared reference to `<extension symbol>`".
      Whole next-tier milestone.
-  2. **M9 type subsystem** (in-flight scoping; see
-     `m9-type-subsystem-prompt.md`) — targets the 255-row `envelope:
-     type_value` bucket plus the 25 `check_only` /
-     `typed_result` rows in `type_deduction`.
-  3. **Comprehensions follow-on** (~+50–80) — `macros` (38
+  2. **Comprehensions follow-on** (~+50–80) — `macros` (38
      comprehension SKIPs), `macros2` three-arg forms (46 FAILs),
      `namespace` exists/all rows.
-  4. **M8 wrappers** (~+50–60) — `wrappers.textproto` (27 non-
+  3. **M8 wrappers** (~+50–60) — `wrappers.textproto` (27 non-
      passing rows) + the 27 `comparisons.eq_wrapper/*` FAILs +
      wrapper-typed field rows in `proto2`/`proto3`.
-  5. **Timestamps slice** (~+76) — `timestamp(...)` / `duration(...)`
-     constructors, date arithmetic.
-  6. **Classifier tightening** — reclassifies most ext-lib FAILs
-     (math/network/optionals/string-ext) as `kUnsupported` so
-     `kFail==0` becomes a viable CI gate; 0 PASS impact but
+  4. **Timestamps slice** (~+76) — `timestamp(...)` / `duration(...)`
+     constructors, date arithmetic.  Also unblocks 4 of 5 remaining
+     `conversions` SKIPs (timestamp / duration conversion arms
+     carved out per `m10-conversions.md` §2.2).
+  5. **Classifier tightening** (Slice 3 of
+     `conformance-unlock-plan.md`) — reclassifies most ext-lib
+     FAILs (math/network/optionals/string-ext) as `kUnsupported`
+     so `kFail==0` becomes a viable CI gate; 0 PASS impact but
      unblocks a corpus-wide regression test.
-  7. **Map-type / aggregate `type_env` marshalling** (~+10) —
+  6. **M9 follow-up** (~+25) — the 25 `check_only:true`
+     `typed_result` rows in `type_deduction`.  M9.F's
+     `kTypedResult` matcher graduated eval-style rows
+     (20 PASS); the `check_only` cohort needs the no-eval
+     deduced-type comparison path.
+  7. **Map-type / aggregate `type_env` marshalling** (~+12) —
      8 SKIPs in `fields`, 1 in `parse`, 3 in `comparisons`.
   8. **`matches` regex helper** (~+9) — 9 SKIPs in
      `string.textproto`'s `matches/*` section.
+  9. **v2 checker extension for bool→{int,uint,double}
+     conversions** (~+5) — cel-cpp's runtime declares the
+     overloads but its checker doesn't; M10 dropped the rows
+     rather than ship a v2-side extension.
 
 ## Forecast by open milestone
 
@@ -265,17 +289,35 @@ not to predict exact PASS counts.
 | Milestone | Fixture classes expected to move | Approx. tests unlocked |
 |---|---|---:|
 | **M8 wrappers** (auto-wrap on construction + wrapper-vs-scalar `==` peel) | `wrappers.textproto` (27 rows) + the 27 `comparisons.eq_wrapper/*` FAILs + wrapper-typed field rows in `proto2`/`proto3` | ~+50–60 |
-| **M9 type subsystem** (in-flight scoping — `m9-type-subsystem-prompt.md`) | `envelope: type_value` SKIPs across `enums` (12), `proto2` (18), `proto2_ext` (18), `string_ext` (78), `math_ext` (83), `conversions` (22), `timestamps` (2), `type_deduction` (22) + the 25 `check_only` / `typed_result` rows | TBD (pending plan) |
+| **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
+| **Timestamps** (not yet scheduled) | `timestamps.textproto` (76 rows) + 4 of 5 remaining `conversions.textproto` SKIPs (timestamp / duration conversion arms carved out of M10) + timestamp/duration `compile unimpl` SKIPs scattered across `proto2` / `proto3` (~50 rows) | ~+90 |
 | **Chained-null read fix** (cel-cpp's null-propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
 | **`Any` packing** (M7-future) | `wrappers.textproto` to_any rows + downstream Any-comparison rows | ~+5–9 |
 | **Enum-set-on-message diagnosis** | FAILs in `enums.textproto` `repeated_field_assign/*` + `single_field_assign/*` | ~+5–10 |
-| **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
 | **Extensions pass** | `bindings_ext`, `block_ext`, `encoders_ext`, `math_ext`, `network_ext`, `optionals`, `string_ext`, `proto2_ext` | ~+680 |
-| **Timestamps** (not yet scheduled) | `timestamps` | ~+76 |
-| **Map-type / aggregate `type_env` marshalling** | 8 SKIPs in `fields`, 1 in `parse`, 3 in `comparisons` | ~+10 |
+| **M9 follow-up** (`check_only:true` + `typed_result:` matcher) | 25 SKIPs in `type_deduction.textproto` (the M9.F runner change graduated the eval-style typed-result cohort; the check-only cohort still early-outs) | ~+25 |
+| **v2 checker extension** (bool → {int, uint, double} conversion overloads) | The 5 `conversions.textproto` FAIL rows that cel-cpp's runtime registers but its checker doesn't | ~+5 |
+| **Map-type / aggregate `type_env` marshalling** | 8 SKIPs in `fields`, 1 in `parse`, 3 in `comparisons` | ~+12 |
 | **`matches` regex helper** | 9 SKIPs in `string.textproto`'s `matches/*` section | ~+9 |
-| **Classifier tightening** | Reclassifies most ext-lib FAILs (math/network/optionals/string-ext) as `kUnsupported` so `kFail==0` becomes a viable CI gate | 0 PASS, but unblocks CI |
+| **Classifier tightening** (Slice 3 of `conformance-unlock-plan.md`) | Reclassifies most ext-lib FAILs (math/network/optionals/string-ext) as `kUnsupported` so `kFail==0` becomes a viable CI gate | 0 PASS, but unblocks CI |
 | **Never (by design)** | `dynamic.textproto` | ~217 (deliberately-rejected `dyn(...)` aggregate forms; 4 fold via M7.D const-rewrite) |
+
+**Closed milestones** (no longer in this forecast):
+
+  - **M7 proto literals** (shipped 2026-04-25 across slices A–E +
+    §4.5 polish + envelope/matcher widen + proto2 unblock):
+    +221 PASS.
+  - **M9 type subsystem** (shipped 2026-05-14 across slices A–F):
+    +54 PASS.  Graduated `type(x)` codegen + 58 of 255 `envelope:
+    type_value` SKIPs + 20 of 47 `type_deduction` rows.
+    Remainder of the envelope bucket is in ext-libs (M9 covers
+    the spec types; ext-lib type names land with the extensions
+    pass).
+  - **M10 type conversions** (shipped 2026-05-14 across slices
+    A–E): +83 PASS.  Graduated `conversions.textproto` from
+    0% → 91%; remaining 5 SKIPs are timestamp/duration arms
+    (`m10-conversions.md` §2.2 carve-out) and 5 FAILs are
+    bool→{int,uint,double} (v2 checker extension above).
 
 ## Extending the harness
 
@@ -307,10 +349,14 @@ not to predict exact PASS counts.
     tightening), or a pinned-count test that asserts `(pass, fail)`
     tuples per fixture (catches both regressions and silent
     graduations).
-  - **`typed_result` matcher.**  `type_deduction.textproto`'s 47
-    tests are all `check_only:true` with a `typed_result:` matcher;
-    teaching `RunOne` to compare the deduced type would unlock
-    them.  Tracked under M9.
+  - **`typed_result` matcher (`check_only:true` path).**  M9.F
+    graduated the eval-style `kTypedResult` matcher cohort
+    (20 of 47 rows in `type_deduction.textproto`).  The remaining
+    25 SKIPs are `check_only:true` rows that early-out in
+    `RunOne` before reaching the comparator; teaching the
+    check-only branch to recover the deduced type from
+    `cel::Ast::TypeMap` and compare against the matcher would
+    unlock them.
   - **`unknown:` ExprValue bindings.**  The marshaller refuses
     `bindings:` whose value is an `unknown:` UnknownSet because
     there is no per-test expr-id → `AttributeId` map plumbed
