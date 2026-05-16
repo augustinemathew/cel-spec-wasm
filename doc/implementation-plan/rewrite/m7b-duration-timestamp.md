@@ -1515,47 +1515,52 @@ before "Future entries").  Both files mirror the existing
 `16_arith_int_add.wat` / `08_map_index_host.wat` shape exactly —
 slot-out ABI, rodata layout, codegen call-site comment.
 
-### 11.3 Benchmarks — `compiler_v2/bench/m7b_time_bench.cc`
+### 11.3 Benchmarks — collocated in `kernel_bench.cc`
 
-New ~270-line file alongside `kernel_bench.cc` /
-`pipeline_bench.cc`.  Distinct binary so the M7B-specific
-benches don't increase `kernel_bench`'s linker churn for every
-slice that touches an unrelated kernel.  Today most BMs are
-guarded behind `CELWASM_M7B_SHIPPED`; the file compiles green
-and the BUILD target `//compiler_v2/bench:m7b_time_bench`
-validates.
+Per the bench discipline (one binary per bench tier; kernel
+microbenches in `kernel_bench`, pipeline-shaped scenarios in
+`pipeline_bench`), M7B benches live in
+`compiler_v2/bench/kernel_bench.cc` alongside the existing
+kernel BMs — NOT a separate binary per milestone.  All M7B BMs
+are gated by `#ifdef CELWASM_M7B_SHIPPED` today; they turn on
+row-by-row as M7B.B / M7B.C land.
 
 Bench cohort (per the README "M7B time benchmarks" section):
 
-  - **Sanity baseline.**  `BM_IntAddBaseline` — duplicates
-    `kernel_bench::BM_IntAdd` so the M7B numbers can be read
-    against a tight integer baseline without cross-referencing
-    a second bench file.  Active today (no guard).
   - **Arithmetic** (M7B.B).  `BM_DurationAdd`, `BM_DurationSub`,
-    `BM_TimestampSubTimestamp`, `BM_TimestampAddDuration`.
-    Each exercises one of the §4.3 pure-wasm kernels.  Expected
-    cost: within ~2× of `BM_IntAddBaseline`.
+    `BM_TimestampSubTimestamp`, `BM_TimestampAddDuration`.  Each
+    exercises one of the §4.3 pure-wasm kernels.  Expected cost:
+    within ~2× of `kernel_bench::BM_IntAdd` (the existing tight
+    integer baseline).  No duplicate `BM_IntAddBaseline` — the
+    M7B numbers should be read directly against `BM_IntAdd`
+    since they live in the same bench output.
   - **UTC accessor** (M7B.C).  `BM_TimestampYearUtc` (langdef
     example, typical civil walk), `BM_TimestampYearUtcLangdefMax`
     (Y9999 worst-case `era` arm), `BM_TimestampDayOfWeekUtc`
-    (different field projection out of same `CelCivil`).
-    Expected cost: 5–10× a numeric kernel call (integer-divide
-    cascade in `cel_civil_from_seconds`).
+    (different field projection out of the same `CelCivil`).
+    Expected cost: 5–10× a numeric kernel call (the integer-
+    divide cascade in `cel_civil_from_seconds`).
   - **Duration accessor** (M7B.C).  `BM_DurationHours` —
-    truncating int division, no civil walk.  Expected: same
-    band as `BM_IntAddBaseline`.
+    truncating int division, no civil walk.  Expected: same band
+    as `BM_IntAdd`.
 
-The host-trampoline parse bench
-(`cel_host.cel_timestamp_parse` for M7B.D) is sketched in the
-file under `#ifdef CELWASM_M7B_PIPELINE_BENCH_SHIPPED` but
-belongs in `pipeline_bench.cc` rather than this kernel-bench
-because the trampoline is only reachable through wasmtime.  The
-1–2-orders-of-magnitude gap vs the kernel benches is the
-documented expectation; the bench captures the boundary-cross
-cost in a load-bearing way.
+The host-trampoline parse bench (`cel_host.cel_timestamp_parse`
+for M7B.D) belongs in `pipeline_bench.cc` because the trampoline
+is only reachable through wasmtime.  Not added today — lands
+when M7B.D ships, alongside the wired-through Layer-2 impl that
+makes the call observable end-to-end.  Expected: 1–2 orders of
+magnitude slower than the kernel benches (per-call wasm↔host
+boundary cross + `absl::ParseTime` state machine + Layer-2
+post-validation against the CEL admit-set identified by
+Probe B).
 
-Build target: `bazel build //compiler_v2/bench:m7b_time_bench`
-(green 2026-05-16).
+Build target: `bazel build -c opt //compiler_v2/bench:kernel_bench`
+(green 2026-05-16).  Run M7B + M7-A kernel benches together:
+
+```bash
+bazel run -c opt //compiler_v2/bench:kernel_bench -- \
+    --benchmark_filter='BM_(Duration|Timestamp|Any)'
+```
 
 ### 11.4 Production-code touchpoints (pending implementation)
 
