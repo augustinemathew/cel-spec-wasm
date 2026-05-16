@@ -12,6 +12,10 @@ package(default_visibility = [
 proto_library(
     name = "e2e_fixture_proto",
     srcs = ["e2e_fixture.proto"],
+    deps = [
+        "@com_google_protobuf//:duration_proto",
+        "@com_google_protobuf//:timestamp_proto",
+    ],
 )
 
 cc_proto_library(

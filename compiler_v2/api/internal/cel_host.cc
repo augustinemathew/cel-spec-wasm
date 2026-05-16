@@ -11,6 +11,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
@@ -102,6 +103,39 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
   return cel::Value::OwnedMessage(std::move(sub));
 }
 
+// m7b §4.8 — well-known time-type normaliser for proto field reads.
+// When a singular CPPTYPE_MESSAGE field resolves to
+// `google.protobuf.Timestamp` / `google.protobuf.Duration`, peel the
+// (seconds, nanos) pair via reflection (field numbers 1 and 2 are
+// pinned by the well-known type definitions) and return the matching
+// cel::Value::Timestamp / Duration.  Returns nullopt for any other
+// message type — caller falls back to `HostMessage(ProtoBacking)`.
+//
+// Reflection-based on purpose: works for both generated-class
+// messages (via DynamicCastToGenerated downcast) and dynamic
+// messages loaded from a runtime descriptor pool.
+std::optional<cel::Value> UnpackWellKnownTimeMessage(
+    const google::protobuf::Message& sub) {
+  const google::protobuf::Descriptor* d = sub.GetDescriptor();
+  if (d == nullptr) return std::nullopt;
+  const absl::string_view fqn = d->full_name();
+  const bool is_timestamp = (fqn == "google.protobuf.Timestamp");
+  const bool is_duration = (fqn == "google.protobuf.Duration");
+  if (!is_timestamp && !is_duration) return std::nullopt;
+  const google::protobuf::Reflection* refl = sub.GetReflection();
+  if (refl == nullptr) return std::nullopt;
+  const google::protobuf::FieldDescriptor* sf = d->FindFieldByNumber(1);
+  const google::protobuf::FieldDescriptor* nf = d->FindFieldByNumber(2);
+  if (sf == nullptr || nf == nullptr) return std::nullopt;
+  const int64_t s = refl->GetInt64(sub, sf);
+  const int32_t ns = refl->GetInt32(sub, nf);
+  if (is_timestamp) {
+    return cel::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
+                                 absl::Nanoseconds(ns));
+  }
+  return cel::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
+}
+
 // Port of v1 `ReadNumericField` — dispatches on the field's
 // `cpp_type` to build a `cel::Value` of the matching scalar kind.
 // Returns `std::nullopt` on non-numeric fields; the caller handles
@@ -183,6 +217,16 @@ absl::StatusOr<cel::Value> ReadScalarField(
     if (field.message_type() != nullptr &&
         field.message_type()->full_name() == "google.protobuf.Any") {
       return UnpackAnyToValue(sub, field.message_type()->file()->pool());
+    }
+    // m7b §4.8: Timestamp / Duration well-known-type fields normalise
+    // on read to cel::Value::Timestamp / cel::Value::Duration so they
+    // downstream-encode as CEL_TIMESTAMP / CEL_DURATION (vs the
+    // CEL_MESSAGE arm just below).  Bridges the cross-form
+    // equivalence in §3.4: a `Timestamp{seconds: 1}` literal field
+    // read back here returns the same kind as `timestamp("...")`
+    // when constructed.
+    if (auto wkt = UnpackWellKnownTimeMessage(sub); wkt.has_value()) {
+      return *std::move(wkt);
     }
     return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
   }
@@ -463,6 +507,34 @@ absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
   return absl::OkStatus();
 }
 
+// m7b §3.1 / Probe D — sign-correlated `(seconds, nanos)` decomposition.
+// Shared by `EncodeDurationValue` and `EncodeTimestampValue` below;
+// `absl::IDivDuration` rewrites its remainder argument, so two calls
+// yield the integer-second + sub-second-nanos pair the proto Duration
+// / Timestamp text format use.
+void DecomposeAbslDuration(absl::Duration d, CelDurTs* out) {
+  out->seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
+  out->nanos =
+      static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
+  out->_pad = 0;
+}
+
+absl::Status EncodeDurationValue(const cel::Value& v, CelValue* out) {
+  auto d_or = v.AsDuration();
+  if (!d_or.ok()) return d_or.status();
+  out->kind = CEL_DURATION;
+  DecomposeAbslDuration(*d_or, &out->payload.dur);
+  return absl::OkStatus();
+}
+
+absl::Status EncodeTimestampValue(const cel::Value& v, CelValue* out) {
+  auto t_or = v.AsTimestamp();
+  if (!t_or.ok()) return t_or.status();
+  out->kind = CEL_TIMESTAMP;
+  DecomposeAbslDuration(*t_or - absl::UnixEpoch(), &out->payload.ts);
+  return absl::OkStatus();
+}
+
 // Encode a cel::Value into a CelValue, allocating string/bytes
 // payloads through the per-eval ArenaAllocator.  Returns non-OK
 // Status on infrastructure failure (arena OOM); spec-level errors
@@ -516,9 +588,9 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
                         << static_cast<int>(v.kind())
                         << " must route through EncodeFieldResult";
     case K::kDuration:
+      return EncodeDurationValue(v, out);
     case K::kTimestamp:
-      ABSL_CHECK(false) << "EncodeValue: kind " << static_cast<int>(v.kind())
-                        << " is a stub until later milestone";
+      return EncodeTimestampValue(v, out);
     case K::kType:
       // M9: Layer-1 backings don't return type-values — `type(x)` is
       // always lowered to the standard `cel_type_of_at_v` runtime

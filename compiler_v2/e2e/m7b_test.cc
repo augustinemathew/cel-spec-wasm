@@ -66,6 +66,7 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -73,12 +74,23 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
 namespace {
 
 using ::absl_testing::IsOk;
+
+// Force generated-pool registration of descriptors referenced by the
+// well-known-type field-read tests below.  Runs once at static init.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
+      return 0;
+    }();
 
 Engine& GlobalEngine() {
   static Engine* engine = [] {
@@ -128,6 +140,25 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
       << "expected `" << source << "` to fail at compile (" << why << ")";
 }
 
+// Build a Compiler that declares a single variable of the given type.
+// Helper for the §6.1 round-trip matrix — every test there compiles
+// the bare identifier `v` against this compiler.
+Compiler CompilerWithVar(absl::string_view name, const CelType& type) {
+  auto compiler_or = BuildCompiler([&](Compiler::Builder& b) {
+    b.DeclareVariable(std::string(name), type);
+  });
+  ABSL_CHECK_OK(compiler_or);
+  return *std::move(compiler_or);
+}
+
+// Build a Compiler that declares `c` as the Customer fixture.  Mirrors
+// `PlanAgainstCustomer` in instance_test.cc; reused by every WKT-
+// field-read test below.
+Compiler CompilerWithCustomer() {
+  return CompilerWithVar("c",
+                         CelType::Message("celwasm.testdata.Customer"));
+}
+
 // ──────────────────────────────────────────────────────────────
 // 1. RoundTripE2ETest  (M7B.A — activation marshalling + decoder)
 //
@@ -153,8 +184,28 @@ struct RoundTripCase {
 class RoundTripE2ETest : public ::testing::TestWithParam<RoundTripCase> {};
 
 TEST_P(RoundTripE2ETest, BindReturnDecode) {
-  GTEST_SKIP() << "M7B.A not yet shipped — activation marshalling + "
-                  "decoder arms for kDuration / kTimestamp are stubs.";
+  const RoundTripCase& p = GetParam();
+  const absl::Duration delta =
+      absl::Seconds(p.seconds) + absl::Nanoseconds(p.nanos);
+  Compiler compiler = CompilerWithVar(
+      "v", p.is_timestamp ? CelType::Timestamp() : CelType::Duration());
+  Instance inst = CompilePlan(compiler, "v");
+  Activation act;
+  act.Bind("v", p.is_timestamp
+                    ? Value::Timestamp(absl::UnixEpoch() + delta)
+                    : Value::Duration(delta));
+  Value got = EvalOk(inst, act);
+  if (p.is_timestamp) {
+    ASSERT_EQ(got.kind(), Value::Kind::kTimestamp) << p.label;
+    auto t = got.AsTimestamp();
+    ASSERT_TRUE(t.ok()) << p.label;
+    EXPECT_EQ(*t, absl::UnixEpoch() + delta) << p.label;
+  } else {
+    ASSERT_EQ(got.kind(), Value::Kind::kDuration) << p.label;
+    auto d = got.AsDuration();
+    ASSERT_TRUE(d.ok()) << p.label;
+    EXPECT_EQ(*d, delta) << p.label;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -180,30 +231,55 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-// One-off: bind a duration via activation and assert the SDK-side
-// decoder produces a matching absl::Duration after Eval returns.
-// Distinct from the TEST_P table above which evaluates a CEL
-// expression — this exercises the bind + return-value path only.
+// One-off: bind a langdef-example timestamp via activation, assert
+// SDK-side decoder reconstructs the matching absl::Time.  Distinct
+// from the TEST_P table above which is structurally parameterised —
+// this version pins the langdef worked example as a single literal.
 TEST_F(RoundTripE2ETest, ActivationBindReturnTimestamp) {
-  GTEST_SKIP() << "M7B.A not yet shipped — EncodeBoundValue / "
-                  "DecodeCelValueAt kTimestamp arms are stubs.";
+  const absl::Time t =
+      absl::UnixEpoch() + absl::Seconds(1234567890) + absl::Nanoseconds(500);
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  Instance inst = CompilePlan(compiler, "t");
+  Activation act;
+  act.Bind("t", Value::Timestamp(t));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kTimestamp);
+  EXPECT_EQ(*got.AsTimestamp(), t);
 }
 
 TEST_F(RoundTripE2ETest, ActivationBindReturnDuration) {
-  GTEST_SKIP() << "M7B.A not yet shipped — EncodeBoundValue / "
-                  "DecodeCelValueAt kDuration arms are stubs.";
+  const absl::Duration d =
+      absl::Seconds(3600) + absl::Nanoseconds(123'456'789);
+  Compiler compiler = CompilerWithVar("d", CelType::Duration());
+  Instance inst = CompilePlan(compiler, "d");
+  Activation act;
+  act.Bind("d", Value::Duration(d));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kDuration);
+  EXPECT_EQ(*got.AsDuration(), d);
 }
 
 // Bind declared-but-mismatched: declared kDuration, bound Value::Int
-// → encoder must reject.  Pins §6.8 rejection row #1.
+// → encoder must reject at Eval-time.  Pins §6.8 rejection row #1.
 TEST_F(RoundTripE2ETest, BindMismatchDurationVsInt) {
-  GTEST_SKIP() << "M7B.A not yet shipped — EncodeBoundValue type-"
-                  "mismatch arm is a stub.";
+  Compiler compiler = CompilerWithVar("d", CelType::Duration());
+  Instance inst = CompilePlan(compiler, "d");
+  Activation act;
+  act.Bind("d", Value::Int(5));
+  auto val_or = inst.Eval(act);
+  EXPECT_FALSE(val_or.ok())
+      << "expected duration/int bind-mismatch to fail at Eval";
 }
 
 TEST_F(RoundTripE2ETest, BindMismatchTimestampVsString) {
-  GTEST_SKIP() << "M7B.A not yet shipped — EncodeBoundValue type-"
-                  "mismatch arm is a stub.";
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  Instance inst = CompilePlan(compiler, "t");
+  Activation act;
+  act.Bind("t", Value::String("2009-02-13T23:31:30Z"));
+  auto val_or = inst.Eval(act);
+  EXPECT_FALSE(val_or.ok())
+      << "expected timestamp/string bind-mismatch to fail at Eval — "
+         "user must call timestamp(string) inside the expression";
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -219,21 +295,51 @@ TEST_F(RoundTripE2ETest, BindMismatchTimestampVsString) {
 class WellKnownFieldReadE2ETest : public ::testing::Test {};
 
 TEST_F(WellKnownFieldReadE2ETest, ReadTimestampFieldYieldsCelTimestampKind) {
-  GTEST_SKIP() << "M7B.A not yet shipped — CelGetFieldImpl well-"
-                  "known-type normaliser is a stub.";
+  celwasm::testdata::Customer c;
+  c.mutable_created_at()->set_seconds(1234567890);
+  c.mutable_created_at()->set_nanos(500);
+  Compiler compiler = CompilerWithCustomer();
+  Instance inst = CompilePlan(compiler, "c.created_at");
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kTimestamp);
+  EXPECT_EQ(*got.AsTimestamp(),
+            absl::UnixEpoch() + absl::Seconds(1234567890) +
+                absl::Nanoseconds(500));
 }
 
 TEST_F(WellKnownFieldReadE2ETest, ReadDurationFieldYieldsCelDurationKind) {
-  GTEST_SKIP() << "M7B.A not yet shipped — CelGetFieldImpl well-"
-                  "known-type normaliser is a stub.";
+  celwasm::testdata::Customer c;
+  c.mutable_session_length()->set_seconds(3600);
+  c.mutable_session_length()->set_nanos(123'456'789);
+  Compiler compiler = CompilerWithCustomer();
+  Instance inst = CompilePlan(compiler, "c.session_length");
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kDuration);
+  EXPECT_EQ(*got.AsDuration(),
+            absl::Seconds(3600) + absl::Nanoseconds(123'456'789));
 }
 
 TEST_F(WellKnownFieldReadE2ETest, NonWellKnownMessageFieldStillYieldsMessage) {
   // Regression: the normaliser MUST only fire for the two well-known
-  // types it knows about.  Other singular-message fields stay
-  // CEL_MESSAGE so the M2.C read path keeps working.
-  GTEST_SKIP() << "M7B.A not yet shipped — verify normaliser is "
-                  "scoped to Timestamp / Duration only.";
+  // types it knows about.  Other singular-message fields stay routed
+  // through `cel::Value::HostMessage` so the M2.C read path keeps
+  // working unchanged.  Verified indirectly: a sub-field select on
+  // billing_address still produces a string, which only works if the
+  // intermediate value was a message backing rather than a normalised
+  // CEL_TIMESTAMP / CEL_DURATION.
+  celwasm::testdata::Customer c;
+  c.mutable_billing_address()->set_city("Seattle");
+  Compiler compiler = CompilerWithCustomer();
+  Instance inst = CompilePlan(compiler, "c.billing_address.city");
+  Activation act;
+  act.Bind("c", Value::Message(c));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kString);
+  EXPECT_EQ(*got.AsString(), "Seattle");
 }
 
 // ──────────────────────────────────────────────────────────────

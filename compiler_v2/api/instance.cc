@@ -13,6 +13,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/error.h"
@@ -314,6 +315,17 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       if (!bytes_or.ok()) return bytes_or.status();
       return Value::Type(*std::move(bytes_or));
     }
+    case CEL_DURATION:
+      // m7b §4.6 — CelDurTs uses sign-correlated (seconds, nanos)
+      // per Probe D; absl::Seconds(s) + absl::Nanoseconds(ns) is the
+      // canonical reconstruction since absl::Duration shares the
+      // sign-correlated convention with proto Duration text format.
+      return Value::Duration(absl::Seconds(cv.payload.dur.seconds) +
+                             absl::Nanoseconds(cv.payload.dur.nanos));
+    case CEL_TIMESTAMP:
+      return Value::Timestamp(absl::UnixEpoch() +
+                              absl::Seconds(cv.payload.ts.seconds) +
+                              absl::Nanoseconds(cv.payload.ts.nanos));
     default:
       return absl::InvalidArgumentError(absl::StrCat(
           "Eval returned a CelValue kind ", static_cast<int>(cv.kind),
@@ -515,6 +527,51 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
   return absl::OkStatus();
 }
 
+// Decompose an `absl::Duration` into the proto Duration text format's
+// sign-correlated `(seconds, nanos)` pair, per m7b §3.1 / Probe D.
+// `absl::IDivDuration` writes the remainder back to `*d` on each call,
+// so the second IDiv naturally returns the sub-second remainder.
+//
+// IDivDuration's contract for negative inputs matches the proto
+// convention (seconds and nanos share sign), which is what we want —
+// see the §10.4 Probe D table.  The alternative Timespec convention
+// (Unix-floor seconds, nanos always non-negative) is NOT what proto
+// Duration / Timestamp use.
+void DecomposeAbslDuration(absl::Duration d, int64_t* seconds,
+                           int32_t* nanos) {
+  *seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
+  *nanos = static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
+}
+
+absl::Status EncodeDuration(const Value& v, absl::string_view name,
+                            CelValue* dst) {
+  if (v.kind() != Value::Kind::kDuration) {
+    return KindMismatch(name, "duration", v.kind());
+  }
+  auto d_or = v.AsDuration();
+  if (!d_or.ok()) return d_or.status();
+  CelDurTs payload{};
+  DecomposeAbslDuration(*d_or, &payload.seconds, &payload.nanos);
+  dst->kind = CEL_DURATION;
+  dst->payload.dur = payload;
+  return absl::OkStatus();
+}
+
+absl::Status EncodeTimestamp(const Value& v, absl::string_view name,
+                             CelValue* dst) {
+  if (v.kind() != Value::Kind::kTimestamp) {
+    return KindMismatch(name, "timestamp", v.kind());
+  }
+  auto t_or = v.AsTimestamp();
+  if (!t_or.ok()) return t_or.status();
+  CelDurTs payload{};
+  DecomposeAbslDuration(*t_or - absl::UnixEpoch(), &payload.seconds,
+                        &payload.nanos);
+  dst->kind = CEL_TIMESTAMP;
+  dst->payload.ts = payload;
+  return absl::OkStatus();
+}
+
 // M2.C: encode a Value::Message-bound variable into a CEL_MESSAGE
 // CelValue.  The bound `HostMessageBacking` is interned into the
 // per-Instance `ExternrefTable` and the resulting slot lives in
@@ -629,15 +686,17 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
       // M9.A: type-of-types bind through the host string arena
       // (same path as kString / kBytes — see `EncodeType`).
       return EncodeType(v, name, dst, ec.arena);
-    case celwasm::Repr::kMap:
     case celwasm::Repr::kDuration:
+      return EncodeDuration(v, name, dst);
     case celwasm::Repr::kTimestamp:
+      return EncodeTimestamp(v, name, dst);
+    case celwasm::Repr::kMap:
     case celwasm::Repr::kEnum:
     case celwasm::Repr::kUnknown:
-      return absl::UnimplementedError(
-          absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
-                       " marshal not implemented (later milestones for "
-                       "map/duration/timestamp/enum/unknown)"));
+      return absl::UnimplementedError(absl::StrCat(
+          "Activation[", name, "]: Repr=", celwasm::ReprName(repr),
+          " marshal not implemented (later milestones for "
+          "map/enum/unknown)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));
