@@ -8,9 +8,16 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1058 (43.1%) · skip=693 (28.2%) · fail=703 (28.6%)`
+`total=2454 · pass=1062 (43.3%) · skip=693 (28.2%) · fail=699 (28.5%)`
 across 30 loadable fixtures.  The most recent landings:
 
+  - **M7-A.A Any pack arm** (2026-05-16): +4 PASS.  `WriteMessageOrPack`
+    helper threaded through 4 cpp_type-MESSAGE call sites (singular,
+    repeated arena, repeated host, map host); `single_any /
+    repeated_any / map_str_to_any` fixture fields added to HostMsg3.
+    Read-side unwrap (M7-A.B) and `cel_message_eq` peel (M7-A.C) still
+    pending; `wrappers.textproto :: */to_any` rows remain FAIL with
+    "want primitive kind, got message" until M7-A.B lands.
   - **M10 type conversions** (slices A–E, 2026-05-14): +83 PASS.
     `bool` / `int` / `uint` / `double` / `string` / `bytes`
     inter-conversions + identity arms.  `conversions.textproto`

@@ -24,6 +24,7 @@ cc_proto_library(
 proto_library(
     name = "host_fixture_proto3_proto",
     srcs = ["host_fixture_proto3.proto"],
+    deps = ["@com_google_protobuf//:any_proto"],
 )
 
 cc_proto_library(

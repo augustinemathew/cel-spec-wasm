@@ -10,6 +10,8 @@ syntax = "proto3";
 
 package celwasm.testdata;
 
+import "google/protobuf/any.proto";
+
 message HostMsg3 {
   enum Kind {
     KIND_UNSPECIFIED = 0;
@@ -63,4 +65,11 @@ message HostMsg3 {
     int64  oneof_i64 = 28;
     string oneof_s   = 29;
   }
+
+  // M7-A — google.protobuf.Any pack / unpack coverage.  Singular,
+  // repeated, and map<string, Any> shapes so the AssignMessageOrPack
+  // helper is exercised through every cpp_type-MESSAGE call site.
+  google.protobuf.Any            single_any    = 30;
+  repeated google.protobuf.Any   repeated_any  = 31;
+  map<string, google.protobuf.Any> map_str_to_any = 32;
 }

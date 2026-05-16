@@ -645,6 +645,221 @@ TEST(Layer2CrossBackingTest, JsonLikeBackingDispatches) {
 // scoped to the trampoline / wasmtime-edge tests it was originally
 // shaped around.
 
+// ═══════════ Layer 2 — CelSetFieldImpl pack arm (M7-A.A) ═══════════
+//
+// Exercises WriteMessageOrPack across every cpp_type-MESSAGE call
+// site: singular, repeated arena-source, repeated host-source, map
+// arena-source, map host-source.  Byte-level invariants (type_url
+// suffix, value bytes round-trip, empty-payload corner) live here
+// because cel-cpp's checker types every selection through an Any-
+// typed field as `dyn` and rejects v2 lowering — the e2e path can't
+// reach the same assertion.  See m7a-any.md §11 / §10.3 + the
+// `m7a_test.cc` AnyPackE2ETest section header.
+
+namespace {
+
+// Minimal harness for pack-side trampoline tests.  Stages an
+// OwnedProtoBacking<HostMsg3> as the mutable outer message, exposes
+// a non-owning raw pointer for reflection-side readback, and bundles
+// the rest of the Layer-2 context.
+class PackHarness {
+ public:
+  PackHarness() {
+    auto outer = std::make_unique<HostMsg3>();
+    outer_ = outer.get();
+    auto backing = std::make_shared<OwnedProtoBacking>(std::move(outer));
+    outer_slot_ = f_.refs.Intern(backing);
+    CelValue msg_cv{};
+    msg_cv.kind = CEL_MESSAGE;
+    msg_cv.payload.msg_slot = outer_slot_;
+    f_.mem.WriteCelValue(kOuterMsgSlot, msg_cv);
+  }
+
+  // Stage a typed-message src in the externref table and wire a
+  // CEL_MESSAGE CelValue at kSrcSlot pointing at it.  Returns the
+  // backing pointer for the caller to keep alive if desired.
+  template <typename M>
+  void StageMessageSrc(std::unique_ptr<M> msg) {
+    auto src_backing = std::make_shared<OwnedProtoBacking>(std::move(msg));
+    const uint32_t src_slot = f_.refs.Intern(std::move(src_backing));
+    CelValue cv{};
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = src_slot;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a null src at kSrcSlot — exercises the null-clear arm
+  // ordering (must not reach WriteMessageOrPack).
+  void StageNullSrc() {
+    CelValue cv{};
+    cv.kind = CEL_NULL;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a HostList-backed src (vector of cel::Value::Message) and
+  // wire a CEL_LIST_HOST CelValue at kSrcSlot.
+  void StageHostListSrc(std::vector<cel::Value> elements) {
+    auto list_backing = std::make_shared<HostList>(std::move(elements));
+    const uint32_t slot = f_.refs.InternList(std::move(list_backing));
+    CelValue cv{};
+    cv.kind = CEL_LIST_HOST;
+    cv.payload.ref_slot = slot;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a HostMap-backed src (vector of <key, value> cel::Value
+  // pairs) and wire a CEL_MAP_HOST CelValue at kSrcSlot.
+  void StageHostMapSrc(std::vector<std::pair<cel::Value, cel::Value>> entries) {
+    auto map_backing = std::make_shared<HostMap>(std::move(entries));
+    const uint32_t slot = f_.refs.InternMap(std::move(map_backing));
+    CelValue cv{};
+    cv.kind = CEL_MAP_HOST;
+    cv.payload.ref_slot = slot;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Drive CelSetFieldImpl pointing at `field_name`.  Returns the
+  // trampoline's Status; on OK the caller reads back via outer().
+  absl::Status SetField(uint32_t field_number, absl::string_view field_name) {
+    f_.field_refs.push_back(
+        FieldRefEntry{field_number, std::string(field_name)});
+    const auto field_ref_id = static_cast<uint32_t>(f_.field_refs.size() - 1);
+    return CelSetFieldImpl(kOuterMsgSlot, field_ref_id, kSrcSlot, f_.Ctx());
+  }
+
+  HostMsg3* outer() {
+    return outer_;
+  }
+
+ private:
+  static constexpr uint32_t kOuterMsgSlot = 16;
+  static constexpr uint32_t kSrcSlot = 48;
+  Layer2Fixture f_;
+  HostMsg3* outer_ = nullptr;
+  uint32_t outer_slot_ = 0;
+};
+
+// Expected type_url for HostMsg3 / HostMsg2.
+constexpr absl::string_view kHostMsg3Url =
+    "type.googleapis.com/celwasm.testdata.HostMsg3";
+constexpr absl::string_view kHostMsg2Url =
+    "type.googleapis.com/celwasm.testdata.HostMsg2";
+
+}  // namespace
+
+// (1) Singular Any pack: type_url has the src FQN suffix; value
+// bytes round-trip via ParseFromString back to the original proto.
+TEST(CelSetFieldAnyPackTest, SingularAnyPackRoundTrips) {
+  PackHarness h;
+  auto src = std::make_unique<HostMsg3>();
+  src->set_i32(7);
+  h.StageMessageSrc(std::move(src));
+  ASSERT_THAT(h.SetField(/*field_number=*/30, "single_any"), IsOk());
+  EXPECT_TRUE(h.outer()->has_single_any());
+  EXPECT_EQ(h.outer()->single_any().type_url(), kHostMsg3Url);
+  HostMsg3 round;
+  ASSERT_TRUE(round.ParseFromString(h.outer()->single_any().value()));
+  EXPECT_EQ(round.i32(), 7);
+}
+
+// (2) Empty payload: SerializeAsString on a default-constructed
+// HostMsg3 returns the empty string; type_url is still set.
+TEST(CelSetFieldAnyPackTest, SingularAnyEmptyPayload) {
+  PackHarness h;
+  h.StageMessageSrc(std::make_unique<HostMsg3>());
+  ASSERT_THAT(h.SetField(30, "single_any"), IsOk());
+  EXPECT_TRUE(h.outer()->has_single_any());
+  EXPECT_EQ(h.outer()->single_any().type_url(), kHostMsg3Url);
+  EXPECT_TRUE(h.outer()->single_any().value().empty());
+}
+
+// (3) Cross-syntax: pack a proto2 message into a proto3 outer's Any.
+TEST(CelSetFieldAnyPackTest, CrossSyntaxProto2SrcPacks) {
+  PackHarness h;
+  h.StageMessageSrc(std::make_unique<HostMsg2>());
+  ASSERT_THAT(h.SetField(30, "single_any"), IsOk());
+  EXPECT_EQ(h.outer()->single_any().type_url(), kHostMsg2Url);
+}
+
+// (4) Non-Any descriptor match takes the CopyFrom branch — pin that
+// the helper doesn't accidentally Any-pack a HostMsg3 into the
+// HostMsg3-typed `inner` field.
+TEST(CelSetFieldAnyPackTest, NonAnyDescriptorMatchCopies) {
+  PackHarness h;
+  auto src = std::make_unique<HostMsg3>();
+  src->set_i32(9);
+  h.StageMessageSrc(std::move(src));
+  ASSERT_THAT(h.SetField(/*field_number=*/17, "inner"), IsOk());
+  EXPECT_EQ(h.outer()->inner().i32(), 9);
+  EXPECT_FALSE(h.outer()->has_single_any());  // no pack side-effect.
+}
+
+// (5) Wrapper-shaped mismatch (src ≠ dst and dst is not Any): the
+// helper surfaces Unimplemented for M8 to clear.  Pin that M7-A.A
+// didn't accidentally graduate the wrapper-shaped case.
+TEST(CelSetFieldAnyPackTest, WrapperShapedMismatchSurfacesUnimplemented) {
+  PackHarness h;
+  // Source is a HostMsg2 but the dst field is the HostMsg3-typed
+  // `inner` — neither descriptor matches nor is the dst Any.
+  h.StageMessageSrc(std::make_unique<HostMsg2>());
+  EXPECT_EQ(h.SetField(/*field_number=*/17, "inner").code(),
+            absl::StatusCode::kUnimplemented);
+}
+
+// (6) Null-clear ordering: CEL_NULL on a singular Any reaches the
+// switch's null arm before the pack helper.  Pin that the field
+// stays unset and type_url is empty.
+TEST(CelSetFieldAnyPackTest, NullSrcClearsSingularAny) {
+  PackHarness h;
+  h.StageNullSrc();
+  ASSERT_THAT(h.SetField(30, "single_any"), IsOk());
+  EXPECT_FALSE(h.outer()->has_single_any());
+  EXPECT_TRUE(h.outer()->single_any().type_url().empty());
+}
+
+// (7) Repeated-Any host-source pack: two heterogeneous elements
+// (proto3 + proto2) each get their own type_url.
+TEST(CelSetFieldAnyPackTest, RepeatedAnyHostSourcePacksTwoElements) {
+  PackHarness h;
+  auto e0 = std::make_unique<HostMsg3>();
+  e0->set_i32(11);
+  auto e1 = std::make_unique<HostMsg2>();
+  std::vector<cel::Value> elems;
+  elems.push_back(cel::Value::OwnedMessage(std::move(e0)));
+  elems.push_back(cel::Value::OwnedMessage(std::move(e1)));
+  h.StageHostListSrc(std::move(elems));
+  ASSERT_THAT(h.SetField(/*field_number=*/31, "repeated_any"), IsOk());
+  ASSERT_EQ(h.outer()->repeated_any_size(), 2);
+  EXPECT_EQ(h.outer()->repeated_any(0).type_url(), kHostMsg3Url);
+  EXPECT_EQ(h.outer()->repeated_any(1).type_url(), kHostMsg2Url);
+  HostMsg3 round;
+  ASSERT_TRUE(round.ParseFromString(h.outer()->repeated_any(0).value()));
+  EXPECT_EQ(round.i32(), 11);
+}
+
+// (8) Map<string, Any> host-source pack: two entries, each with a
+// distinct type_url.  The proto map_field iteration order isn't
+// stable so we look up by key.
+TEST(CelSetFieldAnyPackTest, MapStringToAnyHostSourcePacksTwoEntries) {
+  PackHarness h;
+  auto va = std::make_unique<HostMsg3>();
+  va->set_i32(1);
+  auto vb = std::make_unique<HostMsg2>();
+  std::vector<std::pair<cel::Value, cel::Value>> entries;
+  entries.emplace_back(cel::Value::String("a"),
+                       cel::Value::OwnedMessage(std::move(va)));
+  entries.emplace_back(cel::Value::String("b"),
+                       cel::Value::OwnedMessage(std::move(vb)));
+  h.StageHostMapSrc(std::move(entries));
+  ASSERT_THAT(h.SetField(/*field_number=*/32, "map_str_to_any"), IsOk());
+  ASSERT_EQ(h.outer()->map_str_to_any_size(), 2);
+  EXPECT_EQ(h.outer()->map_str_to_any().at("a").type_url(), kHostMsg3Url);
+  EXPECT_EQ(h.outer()->map_str_to_any().at("b").type_url(), kHostMsg2Url);
+  HostMsg3 round;
+  ASSERT_TRUE(
+      round.ParseFromString(h.outer()->map_str_to_any().at("a").value()));
+  EXPECT_EQ(round.i32(), 1);
+}
 
 }  // namespace
 }  // namespace celwasm

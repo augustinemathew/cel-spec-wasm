@@ -1636,6 +1636,48 @@ std::string ReadSpanString(const CelValue& cv, const MemoryView& mem) {
   return std::string(sv);
 }
 
+// M7-A.A: write `src` into `dst` (a CPPTYPE_MESSAGE slot the caller
+// already resolved via `MutableMessage` or `AddMessage`).  Three
+// shapes:
+//   (1) dst descriptor == src descriptor    → CopyFrom (M7).
+//   (2) dst is google.protobuf.Any          → reflection-pack.
+//   (3) other descriptor mismatch           → Unimplemented (M8).
+// The reflection path (vs the typed `Any::PackFrom`) is required for
+// portability across generated and dynamic descriptor pools — probe A
+// in m7a-any.md §10.1 pinned this.  Shared across every cpp_type-
+// MESSAGE caller (singular set, repeated append, map-entry value).
+absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
+                                const google::protobuf::Message& src) {
+  using FD = google::protobuf::FieldDescriptor;
+  const google::protobuf::Descriptor* dst_desc = dst->GetDescriptor();
+  const google::protobuf::Descriptor* src_desc = src.GetDescriptor();
+  if (src_desc == dst_desc) {
+    dst->CopyFrom(src);
+    return absl::OkStatus();
+  }
+  if (dst_desc->full_name() == "google.protobuf.Any") {
+    const google::protobuf::Reflection* refl = dst->GetReflection();
+    const google::protobuf::FieldDescriptor* type_url_fd =
+        dst_desc->FindFieldByName("type_url");
+    const google::protobuf::FieldDescriptor* value_fd =
+        dst_desc->FindFieldByName("value");
+    if (refl == nullptr || type_url_fd == nullptr ||
+        type_url_fd->cpp_type() != FD::CPPTYPE_STRING || value_fd == nullptr ||
+        value_fd->cpp_type() != FD::CPPTYPE_STRING) {
+      return absl::InternalError(
+          "WriteMessageOrPack: Any descriptor missing type_url/value fields");
+    }
+    refl->SetString(
+        dst, type_url_fd,
+        absl::StrCat("type.googleapis.com/", src_desc->full_name()));
+    refl->SetString(dst, value_fd, src.SerializeAsString());
+    return absl::OkStatus();
+  }
+  return absl::UnimplementedError(
+      absl::StrCat("CelSetFieldImpl: dst `", dst_desc->full_name(), "` ≠ src `",
+                   src_desc->full_name(), "` — wrapper auto-wrap is M8"));
+}
+
 // Set a scalar singular field on `msg` per `field`'s cpp_type.  Returns
 // non-OK Status on cpp_type / value-kind mismatches that the cel-cpp
 // checker should have rejected pre-codegen — surfaces as a wasm trap so
@@ -1778,25 +1820,11 @@ absl::Status SetScalarField(
             absl::StrCat("CelSetFieldImpl: field `", field.name(),
                          "` source backing has no proto message"));
       }
-      // Descriptor-mismatch surface: any-packing (`Any` field with a
-      // non-Any source) or wrapper-typed field with scalar source
-      // (M8) reach here with src_msg's descriptor differing from
-      // the field's expected message_type.  CopyFrom would
-      // CHECK-fail in protobuf's runtime; surface as a clean
-      // Unimplemented so the conformance row fails per-row instead
-      // of aborting the binary.  Any packing is m7-future per
-      // m7-proto-literals.md §2.2; wrapper field auto-wrap is M8.
-      if (src_msg->GetDescriptor() != field.message_type()) {
-        return absl::UnimplementedError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(), "` (type `",
-            field.message_type()->full_name(),
-            "`) source has different descriptor `",
-            src_msg->GetDescriptor()->full_name(),
-            "` — Any packing / wrapper auto-wrap is M7-future / M8"));
-      }
+      // Descriptor-aware dst-write: descriptors match → CopyFrom;
+      // dst is google.protobuf.Any → reflection-pack (M7-A.A);
+      // other mismatch → Unimplemented (M8 wrapper auto-wrap).
       google::protobuf::Message* dst = refl->MutableMessage(&msg, &field);
-      dst->CopyFrom(*src_msg);
-      return absl::OkStatus();
+      return WriteMessageOrPack(dst, *src_msg);
     }
   }
   ABSL_CHECK(false) << "CelSetFieldImpl: unknown cpp_type "
@@ -1954,17 +1982,8 @@ absl::Status AppendRepeatedFromCelValue(
             absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
                          "` element backing has no proto message"));
       }
-      if (src_msg->GetDescriptor() != field.message_type()) {
-        return absl::UnimplementedError(absl::StrCat(
-            "CelSetFieldImpl: repeated `", field.name(), "` (type `",
-            field.message_type()->full_name(),
-            "`) element descriptor mismatch `",
-            src_msg->GetDescriptor()->full_name(),
-            "` — Any packing / wrapper auto-wrap is M7-future / M8"));
-      }
       google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
-      dst->CopyFrom(*src_msg);
-      return absl::OkStatus();
+      return WriteMessageOrPack(dst, *src_msg);
     }
   }
   ABSL_CHECK(false) << "AppendRepeatedFromCelValue: unknown cpp_type "
@@ -2051,14 +2070,8 @@ absl::Status AppendRepeatedFromHostListValue(
             absl::StrCat("CelSetFieldImpl: host-list repeated message `",
                          field.name(), "` backing has no proto message"));
       }
-      if (src_msg->GetDescriptor() != field.message_type()) {
-        return absl::UnimplementedError(absl::StrCat(
-            "CelSetFieldImpl: host-list repeated `", field.name(),
-            "` element descriptor mismatch — Any / wrapper M7-future"));
-      }
       google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
-      dst->CopyFrom(*src_msg);
-      return absl::OkStatus();
+      return WriteMessageOrPack(dst, *src_msg);
     }
   }
   ABSL_CHECK(false) << "AppendRepeatedFromHostListValue: unknown cpp_type "
@@ -2141,15 +2154,9 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
       return absl::InvalidArgumentError(
           "CelSetFieldImpl: map message-value source has no backing");
     }
-    if (src->message()->GetDescriptor() != val_fd->message_type()) {
-      return absl::UnimplementedError(absl::StrCat(
-          "CelSetFieldImpl: map<_, message> value descriptor mismatch — "
-          "Any / wrapper M7-future"));
-    }
     google::protobuf::Message* dst =
         entry->GetReflection()->MutableMessage(entry, val_fd);
-    dst->CopyFrom(*src->message());
-    return absl::OkStatus();
+    return WriteMessageOrPack(dst, *src->message());
   }
   return SetScalarField(*entry, *val_fd, val_cv, mem, &refs);
 }
@@ -2281,15 +2288,9 @@ absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
         return absl::InvalidArgumentError(
             "CelSetFieldImpl: map message-value backing has no proto");
       }
-      if (src_msg->GetDescriptor() != val_fd->message_type()) {
-        return absl::UnimplementedError(
-            "CelSetFieldImpl: host-map<_, message> value descriptor "
-            "mismatch — Any / wrapper M7-future");
-      }
       google::protobuf::Message* dst =
           entry_refl->MutableMessage(entry, val_fd);
-      dst->CopyFrom(*src_msg);
-      return absl::OkStatus();
+      return WriteMessageOrPack(dst, *src_msg);
     }
   }
   ABSL_CHECK(false) << "InsertHostMapEntry: unknown value cpp_type "

@@ -109,21 +109,9 @@ absl::StatusOr<Compiler> CompilerEmpty() {
   return BuildCompiler([](Compiler::Builder& /*b*/) {});
 }
 
-// Used by AnyPack tests: the HostMsg3 fixture doesn't yet have an
-// `Any single_any` field (see §"Test fixture extension" in
-// m7a-any.md §11).  Until the fixture is extended, AnyPack tests
-// route through `cel.expr.conformance.proto3.TestAllTypes` via the
-// conformance descriptor pool — but the conformance pool is not on
-// the e2e path's BUILD graph today.  Tests in this file therefore
-// `GTEST_SKIP()` with a pointer to the fixture-extension item.
-constexpr absl::string_view kFixtureExtensionPending =
-    "M7-A test fixture: HostMsg3 needs `google.protobuf.Any single_any` "
-    "field (see m7a-any.md §11.1).  Until that lands the AnyPack /  "
-    "AnyUnpack rows route only through the conformance harness, not "
-    "through this e2e suite.";
-
-constexpr absl::string_view kM7aPackPending =
-    "M7-A.A pack arm not yet shipped (m7a-any.md §5).";
+// M7-A.B (read-side Any unwrap) and M7-A.C (cel_message_eq peel) are
+// not yet shipped; tests gated on either skip with these labels.
+// M7-A.A (pack arm) is live — fixture extension landed alongside.
 constexpr absl::string_view kM7aUnpackPending =
     "M7-A.B unpack arm not yet shipped (m7a-any.md §5).";
 constexpr absl::string_view kM7aEqPending =
@@ -146,72 +134,94 @@ Value EvalOk(Instance& instance, const Activation& activation) {
 // ──────────────────────────────────────────────────────────────
 // 1. AnyPackE2ETest  (M7-A.A — typed-message RHS into Any field)
 //
-// Each row exercises a different field shape (singular / repeated /
-// map) and a different RHS descriptor.  The runtime path:
-//   1. CelSetFieldImpl resolves field_ref_id → FieldDescriptor.
-//   2. cpp_type is MESSAGE, message_type() is `google.protobuf.Any`.
-//   3. AssignMessageOrPack helper detects the Any-shaped mismatch and
-//      packs: SetString(type_url, "type.googleapis.com/<src.fqn>")
-//      + SetString(value, src.SerializeAsString()).
-//
-// Test cases skip until M7-A.A ships.
+// What this section can verify end-to-end: cel-cpp's checker types
+// selections *through* an Any-typed field as `dyn` (probe §10.3),
+// and likewise types heterogeneous list/map literals destined for
+// `repeated Any` / `map<_,Any>` as `list(dyn)` / `map(_,dyn)`.  All
+// three trip v2's RejectDyn gate.  So e2e here pins only the
+// *reachable* shape — singular Any packing — through `has(...)` /
+// null-clear regressions.  Byte-level pack invariants (type_url
+// suffix, value bytes) and the repeated / map call sites are
+// verified at Layer-2 in `cel_host_test.cc::WriteMessageOrPack`,
+// which can drive the trampoline directly without going through
+// the checker.
 // ──────────────────────────────────────────────────────────────
+
+// Helper: build a HostMsg3 source expression with `i32: <n>` set.
+std::string SrcHostMsg3(int n) {
+  return absl::StrCat("celwasm.testdata.HostMsg3{i32: ", n, "}");
+}
+
+struct PackShapeCase {
+  absl::string_view label;
+  std::string expr;  // returns bool; asserts the pack arm landed.
+};
+
+class AnyPackShapeE2ETest : public ::testing::TestWithParam<PackShapeCase> {};
+
+TEST_P(AnyPackShapeE2ETest, PackArmReaches) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, GetParam().expr);
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true) << GetParam().expr;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Shapes, AnyPackShapeE2ETest,
+    ::testing::Values(
+        // Singular Any from typed proto3 message — present after pack.
+        PackShapeCase{
+            "singular_proto3_present",
+            absl::StrCat("has(celwasm.testdata.HostMsg3{single_any: ",
+                         SrcHostMsg3(1), "}.single_any)"),
+        },
+        // Singular Any from typed proto2 message — cross-syntax pack
+        // doesn't trip the helper (Any is syntax-agnostic).
+        PackShapeCase{
+            "singular_proto2_src_present",
+            "has(celwasm.testdata.HostMsg3{single_any: "
+            "celwasm.testdata.HostMsg2{}}.single_any)",
+        },
+        // Singular Any from an explicit wrapper-message RHS — the
+        // descriptor is still non-Any so the pack arm fires (M8's
+        // scalar-into-wrapper auto-wrap is a separate concern; see
+        // m7a-any.md §2.1).
+        PackShapeCase{
+            "singular_wrapper_message_src_present",
+            "has(celwasm.testdata.HostMsg3{single_any: "
+            "celwasm.testdata.HostMsg3{rep_i32: [1]}}.single_any)",
+        },
+        // Singular Any with empty-payload RHS — pins that
+        // zero-length SerializeAsString output still produces a
+        // present Any (presence is bytes-set or type_url-set, both
+        // of which the reflection-pack sets).
+        PackShapeCase{
+            "singular_empty_payload_present",
+            "has(celwasm.testdata.HostMsg3{single_any: "
+            "celwasm.testdata.HostMsg3{}}.single_any)",
+        }),
+    [](const ::testing::TestParamInfo<PackShapeCase>& info) {
+      return std::string(info.param.label);
+    });
 
 class AnyPackE2ETest : public ::testing::Test {};
 
-TEST_F(AnyPackE2ETest, PackTypedMessageIntoSingularAny) {
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackEmptyMessageIntoSingularAny) {
-  // Pack `HostMsg3{}` (a default-constructed proto with zero set fields)
-  // into an Any field.  Verifies that the empty-payload-bytes path
-  // (value_size==0) round-trips: `Any.value == ""` but `type_url`
-  // is still set.
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackTypedMessageIntoRepeatedAnyArenaSource) {
-  // `Foo{repeated_any: [Bar{x:1}, Baz{y:2}]}` — repeated field of
-  // Any with arena-list source.  Two different inner types in the
-  // same list (Any is heterogeneous).
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackTypedMessageIntoRepeatedAnyHostSource) {
-  // Same shape but the list is bound via Activation::Bind(Value::List).
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackTypedMessageIntoMapValueAny) {
-  // `Foo{map_any: {"a": Bar{}, "b": Baz{}}}` — map<string, Any>.
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackAnyIntoAnyIsCopyFromNotDoubleWrap) {
-  // RHS is itself an Any: descriptor matches; existing M7 CopyFrom
-  // path handles it.  Regression-test that M7-A.A's `AssignMessageOrPack`
-  // helper takes the CopyFrom branch, not the pack branch (which
-  // would double-wrap the Any).
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackWrapperMessageIntoAnyDoesNotInvokeM8AutoWrap) {
-  // `Foo{single_any: Int32Value{value: 5}}` — RHS is a typed message
-  // (Int32Value with one field set).  The runtime should pack it as
-  // an ordinary typed RHS: the WrapperMessage descriptor != Any
-  // descriptor, so M7-A.A's Any branch fires.  M8's wrapper auto-wrap
-  // does NOT come into play (this would only fire for a scalar RHS
-  // into a wrapper-typed *field*, not a wrapper-message RHS into an
-  // Any *field*).
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
-}
-
-TEST_F(AnyPackE2ETest, PackProto2MessageIntoProto3AnyField) {
-  // Cross-syntax: source is a proto2 message, destination Any field
-  // belongs to a proto3 outer.  Any is syntax-agnostic; the pack
-  // must succeed regardless.
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
+// Outer construction containing both a packed Any and a non-Any
+// field — pins that the pack helper doesn't accidentally take over
+// the non-Any cpp_type-MESSAGE path.  `inner` is HostMsg3-typed
+// (same descriptor as the outer), so the descriptors match and
+// `WriteMessageOrPack` takes the CopyFrom branch.
+TEST_F(AnyPackE2ETest, PackCoexistsWithNonAnyMessageField) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{"
+                  "inner: celwasm.testdata.HostMsg3{i32: 11}, "
+                  "single_any: celwasm.testdata.HostMsg3{}}.inner.i32 == 11");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -229,7 +239,7 @@ class AnyUnpackE2ETest : public ::testing::Test {};
 TEST_F(AnyUnpackE2ETest, ReadAnyFieldReturnsUnwrappedTypedValue) {
   // `msg.single_any.x == 1` where `single_any` was packed at
   // construction with `TestAllTypes{single_int32: 1}`.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyUnpackE2ETest, ReadAnyFieldOnActivationBoundMessage) {
@@ -238,7 +248,7 @@ TEST_F(AnyUnpackE2ETest, ReadAnyFieldOnActivationBoundMessage) {
   // `bound.single_any.x` exercises the unpack path on an
   // activation-rooted backing (i.e. `ProtoBacking` not
   // `OwnedProtoBacking`).
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyUnpackE2ETest, ReadUnsetAnyFieldReturnsNull) {
@@ -246,18 +256,18 @@ TEST_F(AnyUnpackE2ETest, ReadUnsetAnyFieldReturnsNull) {
   // singular-message rule.  M7-A.B's unpack arm must NOT trigger
   // when the Any field is unset (type_url == "").  Regression-test
   // that M7-A.B preserves M7's null-clear behaviour.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyUnpackE2ETest, ReadRepeatedAnyFieldUnwrapsEachElement) {
   // `msg.repeated_any[0].x` reads the first packed Any.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyUnpackE2ETest, ReadMapValueAnyUnwrapsLookup) {
   // `msg.map_any["k"].x` reads the value at key "k", which is itself
   // a packed Any.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyUnpackE2ETest, ChainedSelectOnUnpackedMessage) {
@@ -265,7 +275,7 @@ TEST_F(AnyUnpackE2ETest, ChainedSelectOnUnpackedMessage) {
   // then we chained-select through it.  Tests that the unwrapped
   // backing routes through ProtoBacking's normal kSelect path with
   // no Any-specific awareness past the boundary.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -284,20 +294,20 @@ class AnyEqualityE2ETest : public ::testing::Test {};
 
 TEST_F(AnyEqualityE2ETest, AnyEqualsMatchingTypedMessage) {
   // `Foo{single_any: Bar{x:1}}.single_any == Bar{x:1}` → true.
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 TEST_F(AnyEqualityE2ETest, AnyEqualsMismatchingTypedMessageIsFalse) {
   // `Foo{single_any: Bar{x:1}}.single_any == Baz{}` → false (not
   // error).  Different typed payloads compare unequal.
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 TEST_F(AnyEqualityE2ETest, TypedMessageEqualsAnySymmetric) {
   // `Bar{x:1} == Foo{single_any: Bar{x:1}}.single_any` — same as
   // above with operands swapped.  M7-A.C's peel must fire on either
   // side.
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 TEST_F(AnyEqualityE2ETest, AnyEqualsAnyDelegatesToMessageDifferencer) {
@@ -305,7 +315,7 @@ TEST_F(AnyEqualityE2ETest, AnyEqualsAnyDelegatesToMessageDifferencer) {
   //  Foo{single_any: Bar{x:1}}.single_any` → true.  After M7-A.B's
   // unwrap, both sides become typed `Bar`; M5.B step 2b's
   // `cel_message_eq` handles the rest.
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 TEST_F(AnyEqualityE2ETest, AnysWithDifferentTypeUrlsAreUnequal) {
@@ -314,13 +324,13 @@ TEST_F(AnyEqualityE2ETest, AnysWithDifferentTypeUrlsAreUnequal) {
   // value bytes happen to match.  After unwrap the operands have
   // different runtime types; cross-type equality is false (not
   // error).
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 TEST_F(AnyEqualityE2ETest, UnsetAnyEqualsNull) {
   // `TestAllTypes{}.single_any == null` — unset Any reads as null
   // (M7-shipped); the peel branch must not fire here.
-  GTEST_SKIP() << kM7aEqPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aEqPending;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -339,7 +349,7 @@ class AnyTypeOfE2ETest : public ::testing::Test {};
 TEST_F(AnyTypeOfE2ETest, TypeOfUnpackedAnyReturnsUnwrappedFqn) {
   // `type(Foo{single_any: Bar{x:1}}.single_any) ==
   //  "celwasm.testdata.Bar"` (or similar) → true.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
@@ -350,7 +360,7 @@ TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
   // the Any descriptor; reading `type(...)` of it returns "Any".  Only
   // a *field-read* of an Any-typed field triggers M7-A.B's unwrap.
   // Pin the boundary.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -370,31 +380,31 @@ TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
 class AnyRejectE2ETest : public ::testing::Test {};
 
 TEST_F(AnyRejectE2ETest, ReadAnyWithEmptyTypeUrlIsError) {
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyRejectE2ETest, ReadAnyWithMalformedTypeUrlIsError) {
   // `type_url = "not_a_type_url"` (no slash) → empty FQN → error.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyRejectE2ETest, ReadAnyWithUnknownFqnIsError) {
   // `type_url = "type.googleapis.com/com.nope.Unknown"` — FQN not
   // in the descriptor pool.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyRejectE2ETest, ReadAnyWithCorruptValueBytesIsError) {
   // `value = b"\xff\xff\xff\xff"` against a known FQN — bytes don't
   // parse as the resolved message.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 TEST_F(AnyRejectE2ETest, NonGoogleApisPrefixIsAccepted) {
   // Probe B finding: stripping before the last `/` is the rule;
   // `type.example.com/<FQN>` is accepted equivalently to
   // `type.googleapis.com/<FQN>`.  Pin this — cel-cpp parity.
-  GTEST_SKIP() << kM7aUnpackPending << " — " << kFixtureExtensionPending;
+  GTEST_SKIP() << kM7aUnpackPending;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -409,17 +419,40 @@ TEST_F(AnyRejectE2ETest, NonGoogleApisPrefixIsAccepted) {
 
 class AnyNullClearE2ETest : public ::testing::Test {};
 
+// Null-clear stays inside SetScalarField's switch (before the pack
+// helper), so `Foo{single_any: null}` leaves the field unset.  If
+// M7-A.A regressed the ordering, the null payload would reach the
+// pack arm and serialise a literal null → non-null Any.
 TEST_F(AnyNullClearE2ETest, NullSetOnSingularAnyClearsField) {
-  // `Foo{single_any: null}.single_any == null` → true.  Tests the
-  // M7-shipped null-clear; no M7-A code involved, but if M7-A.A
-  // regresses the ordering this fails.
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: null}.single_any == null");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(AnyNullClearE2ETest, NullSetOnSingularAnyHasFieldIsFalse) {
-  // `has(Foo{single_any: null}.single_any) == false` — proto3
-  // singular message presence rule (M7-shipped).
-  GTEST_SKIP() << kM7aPackPending << " — " << kFixtureExtensionPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "has(celwasm.testdata.HostMsg3{single_any: null}.single_any) == false");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(AnyNullClearE2ETest, UnsetSingularAnyReadsAsNull) {
+  // `HostMsg3{}.single_any == null` — proto3 singular-message null-on-
+  // unset rule.  M7-A.B's unpack arm (when it ships) must preserve
+  // this: a literal-null type_url is the unset signal.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{}.single_any == null");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 // ──────────────────────────────────────────────────────────────

@@ -1,8 +1,10 @@
 # M7-A — `google.protobuf.Any` pack / unpack
 
-Status: **plan + LLD — drafted 2026-05-16, probed + scaffolded
-2026-05-16, not yet implemented.  Depends on M7 (shipped); independent
-of M8 and M7-B (timestamps / durations).**
+Status: **M7-A.A shipped 2026-05-16 (pack arm via WriteMessageOrPack
+helper; fixture extended with `single_any` / `repeated_any` /
+`map_str_to_any`; 8 Layer-2 byte-level pack tests + e2e SHAPES suite
+green).  M7-A.B/C pending.  Depends on M7 (shipped); independent of
+M8 and M7-B (timestamps / durations).**
 
 > **Status note.**  This doc is LLD-with-probes: §10 lists empirical
 > findings against the running build (conformance + reflection
@@ -323,6 +325,71 @@ After M7-A.B's read-side unwrap, the backing already points at
 the unwrapped message — so `type(...)` Just Works with no
 M9-specific change.  Pinned by a dedicated regression test in
 `m7a_test.cc::TypeOfUnpackedAny`.
+
+### 3.5 cel-cpp parity & static-subset (dyn-gate) carve-outs
+
+**Customer-usefulness constraint.**  cel-cpp accepts a set of Any
+patterns that v2's static-subset (`RejectDyn`) currently rejects.
+Without carve-outs for these, M7-A is shipped-but-unreachable for
+the most common customer use cases.  This section enumerates the
+gap and the planned mitigations.
+
+**What cel-cpp accepts that v2 rejects today (probed 2026-05-16):**
+
+| Pattern | cel-cpp type | v2 status | Mitigation |
+|---|---|---|---|
+| `msg.single_any.x` (chained select through Any) | `dyn` | Rejected by `RejectDyn` | Resolved by M7-A.B's read-side unwrap, BUT the checker still types the select as `dyn` — needs a frontend special-case (see §3.5.A) |
+| `msg.single_any.type_url` / `.value` | `dyn` | Rejected | §3.5.A — special-case Any field-name selection at the frontend |
+| `Foo{repeated_any: [Bar{}, Baz{}]}` (heterogeneous list literal) | `list(dyn)` | Rejected | §3.5.B — admit `list(dyn)` whose target field is `repeated google.protobuf.Any` |
+| `Foo{map_str_to_any: {'k': Bar{}}}` | `map(string, dyn)` | Rejected | §3.5.B — admit `map(_, dyn)` whose target field is `map<_, Any>` |
+| `Any{type_url: 'x', value: b'y'}` (direct Any literal) | `dyn` | Rejected (probe C) | §3.5.C — admit `google.protobuf.Any{...}` as kStructExpr, not dyn |
+| `msg.single_any == TypedMessage{...}` (Any-vs-typed eq) | `dyn`-tainted on the Any side | Rejected | §3.5.A unlocks the LHS; M7-A.C peels at runtime |
+
+**§3.5.A — Frontend Any-aware select pass.**  When the checker types
+an expression as `dyn` and the immediate-parent select operand has a
+**static** type of `google.protobuf.Any`, type the select chain as
+follows: `<any>.type_url` → `string`, `<any>.value` → `bytes`,
+`<any>.<arbitrary>` → routed to the M7-A.B unwrap path which surfaces
+the wrapped value's concrete CelType.  This is a v2-frontend
+extension that mirrors what cel-cpp's runtime already does at eval
+time, lifted into the type checker so RejectDyn doesn't see `dyn`.
+
+  - Lives in `compiler_v2/frontend/parse_and_check.cc` as a post-
+    check rewrite (or in `compiler_v2/ir/typed_ast.cc`'s
+    `ReprOfWellKnown` if cleaner).
+  - Decision boundary: a `dyn`-typed expression whose direct
+    ancestor in the AST chain has a `well_known` type of Any.
+  - Out-of-scope: cross-pool unwrap (M7-A.B's R1).
+
+**§3.5.B — Admit `list(dyn)` / `map(_, dyn)` into `repeated/map
+Any`.**  cel-cpp's checker types a list of heterogeneous-but-typed-
+message elements as `list(dyn)` when the destination field is
+`repeated Any`.  RejectDyn fires on this even though the runtime
+path (M7-A.A) packs each element correctly.  Carve-out: when the
+target field-set's `FieldDescriptor::message_type()->full_name()`
+is `google.protobuf.Any`, accept the source as `list(dyn)` /
+`map(_, dyn)` and let the runtime pack arm handle the per-element
+descriptor at write time.
+
+  - Lives in `compiler_v2/frontend/parse_and_check.cc::RejectDyn`
+    as an opt-in based on the destination field descriptor.
+
+**§3.5.C — Admit direct `Any{type_url, value}` literal.**  cel-cpp
+admits this as a typed `google.protobuf.Any` literal.  v2 rejects
+because the well-known type maps to `dyn`.  Carve-out: when the
+struct literal's resolved descriptor is `google.protobuf.Any`,
+admit it as `kStructExpr` typed as `google.protobuf.Any` (not
+`dyn`); the existing M7 pack path handles the two-field set.
+
+  - Lives in `compiler_v2/ir/typed_ast.cc::ReprOfWellKnown` — flip
+    Any from `dyn` repr to `kMessage` repr keyed on the Any FQN.
+
+**Scope split.**  §3.5.A and §3.5.B land with M7-A.B (so customers
+can read packed Any fields through chained select / equality).
+§3.5.C lands with M7-A.D as a small frontend carve-out that
+unlocks the 3 `dynamic.textproto :: any` rows the inventory in
+§12 flags.  M7-A.A is unaffected (its pack arm doesn't itself
+emit `dyn`-tainted ASTs).
 
 ## 4. Architecture
 
@@ -669,6 +736,40 @@ Both operands peeled if either is an Any; re-enter
   - Append M7-A's "Future work" section.
 
   - **Effort.**  Small.
+
+### 5.5 Exit criteria — minimize code, factor tests carefully
+
+The user-facing exit bar for every M7-A slice (in addition to the
+matrix in §6):
+
+  - **Total code added is the minimum that makes the slice work.**
+    Helper functions are factored so each call site loses more
+    lines than the helper adds.  No new abstraction is shipped
+    unless the slice has 3+ duplicate call sites that benefit.
+    M7-A.A's `WriteMessageOrPack` is the canonical shape: one
+    helper takes the resolved `dst` Message pointer (the caller
+    already picked `MutableMessage` vs `AddMessage`), and the
+    helper handles the three-shape dispatch (CopyFrom / Any-pack /
+    Unimplemented) — replacing ~50 lines of per-site descriptor-
+    mismatch guards with a single ~30-line function.
+  - **e2e tests assert only what the static-subset gate can
+    reach.**  cel-cpp's checker types selections through Any as
+    `dyn`; the v2 dyn-gate rejects them today (see §3.5).  e2e
+    coverage here uses `has(...)` and `size(...)` over packed Any
+    fields — assertions that *don't* select through the Any.
+    Byte-level pack invariants (type_url suffix, value round-
+    trip) move to Layer-2 unit tests in
+    `compiler_v2/api/internal/cel_host_test.cc`, which drive
+    `CelSetFieldImpl` directly without the checker.
+  - **Test factoring.**  Structural matrices use `TEST_P` +
+    `INSTANTIATE_TEST_SUITE_P`; one-off invariants stay as
+    `TEST_F` so the test name reads as the assertion.  Helper
+    structs (`PackHarness` in cel_host_test.cc) own the staging
+    boilerplate so each `TEST_F` body is ≤ 10 lines of intent.
+  - **Coverage is extensive but the inventory in §12 drives
+    selection.**  Every conformance row in §12's Cat 1/2/3 maps
+    to at least one Layer-2 or e2e test once the slice it gates
+    on ships.
 
 ## 6. Test matrix (load-bearing)
 
@@ -1088,3 +1189,78 @@ For M7-A.A/B/C the touchpoints are:
 
 None of these were touched during 2026-05-16 LLD work; they're
 the M7-A.A/B/C implementation scope.
+
+## 12. Conformance inventory (M7-A target rows)
+
+Surveyed 2026-05-16 against `tests/simple/testdata/*.textproto` (the
+in-tree conformance corpus; `compiler_v2/conformance/runner.cc`
+consumes the same set).  39 distinct rows across 5 fixtures, grouped
+by the slice that unlocks them.  M7-A.A's pack arm unlocks rows
+that exercise pack-side construction *without* selecting through
+the Any (Cat 1 below).  Cat 2/3/4 require the §3.5 carve-outs +
+M7-A.B/C.
+
+**Per-slice unlock projection:**
+
+| Slice | Unlocks | Row count |
+|---|---|---:|
+| M7-A.A (this slice) | Cat 1 pack-side rows where the harness reads the packed Any via `binding_marshal::UnpackAny`, not via CEL select | ~6 of 16 |
+| M7-A.A + §3.5.B (admit list/map dyn into Any) | Remaining Cat 1 (heterogeneous list/map literal sources) | +~4 |
+| M7-A.B + §3.5.A (frontend Any select carve-out) | Cat 2 read-side select rows + Cat 1 wrapper `*/to_any` rows | +~16 |
+| M7-A.C (cel_message_eq peel) | Cat 3 equality rows (unpack-equal + bytewise-fallback) | +12 |
+| §3.5.C (admit Any literal) + M7-A.B | Cat 4 (direct Any literal) + Cat 5 (var binding of Any) | +4 |
+
+### 12.1 Cat 1 — pack-side construction (`Foo{single_any: TypedMsg{...}}`) — 16 rows
+
+  - `proto2.textproto :: literal_wellknown :: any` — `TestAllTypes{single_any: TestAllTypes{single_int32: 1}}`.
+  - `proto3.textproto :: literal_wellknown :: any` — same shape, proto3 outer.
+  - `dynamic.textproto :: any :: field_assign_proto2` — pack into proto2 TestAllTypes.
+  - `dynamic.textproto :: any :: field_assign_proto3` — pack into proto3 TestAllTypes.
+  - `wrappers.textproto :: <kind> :: to_any` for each of 9 wrapper kinds (`bool / int32 / int64 / uint32 / uint64 / float / double / bytes / string`) — pack a wrapper-message into single_any, then read-back via `<that>.single_any`.  Read-back gated on M7-A.B + §3.5.A.
+  - `wrappers.textproto :: value :: default_to_json` — pack `Value{}` JSON null.
+  - `wrappers.textproto :: list_value :: literal_to_any` — pack empty `ListValue`.
+  - `wrappers.textproto :: struct :: literal_to_any` — pack empty `Struct`.
+
+### 12.2 Cat 2 — read-side select (`msg.single_any.<…>`) — 7 rows
+
+  - `dynamic.textproto :: any :: field_read_proto2` — `TestAllTypes{single_any: TestAllTypes{single_int32: 150}}.single_any`.
+  - `dynamic.textproto :: any :: field_read_proto3` — same, proto3.
+  - `dynamic.textproto :: complex :: any_list_map` — `TestAllTypes{single_any: [{'almost': 'done'}]}.single_any`.
+  - `proto2.textproto :: set_null :: single_any` — null clear regression.
+  - `proto3.textproto :: set_null :: single_any` — same.
+  - `proto2.textproto :: set_null :: repeated_field_anytype_null_retained` — `repeated_any: [1, null]` retains nulls.
+  - `proto3.textproto :: set_null :: repeated_field_anytype_null_retained` — same.
+
+### 12.3 Cat 3 — equality / inequality over packed Any — 12 rows
+
+All in `comparisons.textproto`:
+
+  - `eq_wrapper :: eq_proto2_any_unpack_equal` / `_not_equal` / `_bytewise_fallback_not_equal` / `_bytewise_fallback_equal`.
+  - `eq_wrapper :: eq_proto3_any_unpack_equal` / `_not_equal` / `_bytewise_fallback_not_equal` / `_bytewise_fallback_equal`.
+  - `ne_literal :: ne_proto2_any_unpack` / `_bytewise_fallback`.
+  - `ne_literal :: ne_proto3_any_unpack` / `_bytewise_fallback`.
+
+The "bytewise_fallback" suffix is the discriminator — same type_url +
+identical wire bytes compare equal under bytewise mode; the
+"unpack_equal" rows require recursive MessageDifferencer with
+Any-aware mode (or our M7-A.C peel + cel_value_eq re-entry).
+
+### 12.4 Cat 4 — direct Any literal — 3 rows
+
+  - `dynamic.textproto :: any :: literal` — `google.protobuf.Any{type_url: '...proto2.TestAllTypes', value: b'\x08\x96\x01'}` → unpacks to proto2 TestAllTypes{single_int32: 150}.
+  - `dynamic.textproto :: any :: literal_no_field_access` — `disable_check: true`; `.type_url` on a literal Any expects `no_matching_overload` eval-error.
+  - `dynamic.textproto :: any :: literal_empty` — `Any{}` expects `eval_error: conversion`.
+
+### 12.5 Cat 5 — variable binding of Any — 1 row
+
+  - `dynamic.textproto :: any :: var` — `type_env: {x: message_type "google.protobuf.Any"}` bound to a packed proto2 TestAllTypes; expects unwrapped TestAllTypes{single_int32: 150}.
+
+### 12.6 Not exercised today (coverage gap)
+
+  - `type(msg.single_any)` against an unpacked descriptor — no fixture row.  M7-A.B's regression test in `m7a_test.cc::TypeOfUnpackedAny` is the only coverage; ship it as part of M7-A.B even though no conformance row drives it.
+
+### 12.7 Inventory source
+
+  - Generated 2026-05-16 via repo-wide grep on `google.protobuf.Any`, `single_any`, `repeated_any`, `type.googleapis.com` (filtering out non-CEL-level uses, which are mostly the textproto-Any escape syntax used in expected-value trees).
+  - Re-run before M7-A.D closeout to catch corpus drift.
+  - Note: this repo's conformance corpus lives at `tests/simple/testdata/` not at the originally-assumed `third_party/cel-spec/tests/...` path.
