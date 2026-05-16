@@ -127,6 +127,7 @@ cc_test(
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
         "//compiler_v2/api:engine",
+        "//compiler_v2/api:error",
         "//compiler_v2/api:instance",
         "//compiler_v2/api:program",
         "//compiler_v2/api:type",

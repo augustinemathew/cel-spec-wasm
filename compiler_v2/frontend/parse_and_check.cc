@@ -463,6 +463,35 @@ bool ArgIsAdmissibleScalar(const cel::Expr& arg,
   return t.has_primitive() || t.has_null() || t.has_type();
 }
 
+// M7-A.B §3.5.A: admit a SelectExpr whose operand types as
+// `google.protobuf.Any` even when the select itself types as `dyn`.
+// cel-cpp's checker types reads through Any as dyn (the runtime
+// unwrap target isn't statically known); v2's runtime DOES know how
+// to unwrap at eval time (ProtoBacking::ReadField), so blocking
+// these at the static-subset gate makes Any unusable for customers
+// without buying any safety.
+//
+// Recursive: a select whose operand is itself a select-through-Any
+// admits transitively, so `msg.single_any.x.y` lands after the
+// first carve-out fires.
+bool IsSelectThroughAny(const cel::Expr& node,
+                        const cel::Ast::TypeMap& types) {
+  if (!node.has_select_expr()) return false;
+  const auto& sel = node.select_expr();
+  if (!sel.has_operand()) return false;
+  auto it = types.find(sel.operand().id());
+  if (it == types.end()) return false;
+  const auto& t = it->second;
+  if (t.has_well_known() && t.well_known() == cel::WellKnownTypeSpec::kAny) {
+    return true;
+  }
+  if (t.has_message_type() &&
+      t.message_type().type() == "google.protobuf.Any") {
+    return true;
+  }
+  return IsSelectThroughAny(sel.operand(), types);
+}
+
 bool IsDynPassthroughCall(const cel::Expr& node,
                           const cel::Ast::TypeMap& types) {
   if (!node.has_call_expr()) return false;
@@ -484,6 +513,14 @@ void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out) {
   if (IsDynPassthroughCall(node, types)) {
     CheckSubsetNode(node.call_expr().args()[0], types, out);
+    return;
+  }
+  if (IsSelectThroughAny(node, types)) {
+    // Skip the dyn violation at this node and recurse into the
+    // operand (which by construction is admissible — either Any-typed
+    // or itself a select-through-Any).  The runtime unwrap arm in
+    // ProtoBacking::ReadField handles the resolution at eval time.
+    CheckSubsetNode(node.select_expr().operand(), types, out);
     return;
   }
   const int64_t id = node.id();

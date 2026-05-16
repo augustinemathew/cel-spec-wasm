@@ -1,10 +1,12 @@
 # M7-A — `google.protobuf.Any` pack / unpack
 
-Status: **M7-A.A shipped 2026-05-16 (pack arm via WriteMessageOrPack
-helper; fixture extended with `single_any` / `repeated_any` /
-`map_str_to_any`; 8 Layer-2 byte-level pack tests + e2e SHAPES suite
-green).  M7-A.B/C pending.  Depends on M7 (shipped); independent of
-M8 and M7-B (timestamps / durations).**
+Status: **M7-A.A + M7-A.B shipped 2026-05-16.  Pack arm via
+`WriteMessageOrPack`; read-side unwrap via `UnpackAnyToValue` in
+`ProtoBacking::ReadField`; frontend §3.5.A select-through-Any
+carve-out admits `msg.single_any.x` past `RejectDyn`.  Fixture
+extended with `single_any / repeated_any / map_str_to_any`.
+Conformance: 1058 → 1065 (+7 PASS).  M7-A.C (cel_message_eq peel)
+pending.  Depends on M7 (shipped); independent of M8 and M7-B.**
 
 > **Status note.**  This doc is LLD-with-probes: §10 lists empirical
 > findings against the running build (conformance + reflection

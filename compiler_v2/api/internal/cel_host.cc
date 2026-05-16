@@ -36,6 +36,72 @@ cel::Value FieldNotFound(absl::string_view name) {
   });
 }
 
+// Helper: `Value::Error` with a chosen code, formatted message.
+cel::Value MakeError(cel::ErrorCode code, std::string message) {
+  return cel::Value::Error(cel::ErrorPayload{
+      /*code=*/code,
+      /*message=*/std::move(message),
+      /*expr_id=*/0,
+  });
+}
+
+// M7-A.B: parse `any.type_url`, look up the wrapped FQN in `pool`,
+// parse `any.value` against that descriptor, return an owning
+// backing.  Returns a `cel::Value`:
+//   - `null` when type_url is empty (probe B; matches the M7-shipped
+//     null-on-unset rule and serves as the "Any not populated" signal).
+//   - `Error(kFieldNotFound)` when the FQN isn't in the pool.
+//   - `Error(kTypeMismatch)` when value bytes don't parse.
+//   - `HostMessage(OwnedProtoBacking(unwrapped))` on success.
+cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
+                            const google::protobuf::DescriptorPool* pool) {
+  const google::protobuf::Descriptor* any_desc = any.GetDescriptor();
+  const google::protobuf::Reflection* any_refl = any.GetReflection();
+  const google::protobuf::FieldDescriptor* type_url_fd =
+      any_desc->FindFieldByName("type_url");
+  const google::protobuf::FieldDescriptor* value_fd =
+      any_desc->FindFieldByName("value");
+  ABSL_CHECK(any_refl != nullptr && type_url_fd != nullptr &&
+             value_fd != nullptr)
+      << "UnpackAnyToValue: Any descriptor missing type_url/value/reflection";
+  std::string url_scratch;
+  std::string val_scratch;
+  const std::string& type_url =
+      any_refl->GetStringReference(any, type_url_fd, &url_scratch);
+  if (type_url.empty()) return cel::Value::Null();
+  // FQN = substring after the last '/'.  No slash → FQN is the whole
+  // string (probe B); subsequent pool lookup either resolves or fails.
+  const size_t slash = type_url.rfind('/');
+  const absl::string_view fqn = (slash == absl::string_view::npos)
+                                    ? absl::string_view(type_url)
+                                    : absl::string_view(type_url).substr(
+                                          slash + 1);
+  const google::protobuf::Descriptor* sub_desc =
+      pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
+  if (sub_desc == nullptr) {
+    return MakeError(cel::ErrorCode::kFieldNotFound,
+                     absl::StrCat("Any type_url FQN `", fqn,
+                                  "` not registered in descriptor pool"));
+  }
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(
+          sub_desc);
+  if (prototype == nullptr) {
+    return MakeError(cel::ErrorCode::kFieldNotFound,
+                     absl::StrCat("Any type `", fqn,
+                                  "` has no generated_factory prototype"));
+  }
+  std::unique_ptr<google::protobuf::Message> sub(prototype->New());
+  const std::string& bytes =
+      any_refl->GetStringReference(any, value_fd, &val_scratch);
+  if (!sub->ParseFromString(bytes)) {
+    return MakeError(cel::ErrorCode::kTypeMismatch,
+                     absl::StrCat("Any payload bytes don't parse against `",
+                                  fqn, "`"));
+  }
+  return cel::Value::OwnedMessage(std::move(sub));
+}
+
 // Port of v1 `ReadNumericField` — dispatches on the field's
 // `cpp_type` to build a `cel::Value` of the matching scalar kind.
 // Returns `std::nullopt` on non-numeric fields; the caller handles
@@ -109,6 +175,15 @@ absl::StatusOr<cel::Value> ReadScalarField(
       return cel::Value::Null();
     }
     const google::protobuf::Message& sub = refl->GetMessage(msg, &field);
+    // M7-A.B: Any-typed singular fields unwrap on read — return the
+    // wrapped value as-if-of-the-wrapped-type per langdef §"Protocol
+    // Buffer Data Conversion".  Unpack pool is the Any descriptor's
+    // own pool, which matches whatever pool the embedder loaded the
+    // outer schema from.
+    if (field.message_type() != nullptr &&
+        field.message_type()->full_name() == "google.protobuf.Any") {
+      return UnpackAnyToValue(sub, field.message_type()->file()->pool());
+    }
     return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
   }
   return absl::InternalError(absl::StrCat(

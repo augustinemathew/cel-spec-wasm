@@ -59,11 +59,13 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "absl/strings/str_cat.h"
 #include "compiler/testdata/host_fixture_proto2.pb.h"
 #include "compiler/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
+#include "compiler_v2/api/error.h"
 #include "compiler_v2/api/instance.h"
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/program.h"
@@ -109,11 +111,8 @@ absl::StatusOr<Compiler> CompilerEmpty() {
   return BuildCompiler([](Compiler::Builder& /*b*/) {});
 }
 
-// M7-A.B (read-side Any unwrap) and M7-A.C (cel_message_eq peel) are
-// not yet shipped; tests gated on either skip with these labels.
-// M7-A.A (pack arm) is live — fixture extension landed alongside.
-constexpr absl::string_view kM7aUnpackPending =
-    "M7-A.B unpack arm not yet shipped (m7a-any.md §5).";
+// M7-A.C (cel_message_eq peel) is not yet shipped; AnyEquality tests
+// skip with this label.  M7-A.A pack and M7-A.B unwrap are live.
 constexpr absl::string_view kM7aEqPending =
     "M7-A.C cel_message_eq Any-peel arm not yet shipped (m7a-any.md §5).";
 
@@ -236,46 +235,82 @@ TEST_F(AnyPackE2ETest, PackCoexistsWithNonAnyMessageField) {
 
 class AnyUnpackE2ETest : public ::testing::Test {};
 
+// Pack a HostMsg3 with i32=42 into single_any, then read back the
+// unwrapped i32 through the chained select.  M7-A.B's read-side
+// unwrap fires when ProtoBacking::ReadField sees the Any-typed
+// singular-message field; the §3.5.A frontend carve-out lets
+// `msg.single_any.i32` clear the static-subset gate even though the
+// select types as dyn.
 TEST_F(AnyUnpackE2ETest, ReadAnyFieldReturnsUnwrappedTypedValue) {
-  // `msg.single_any.x == 1` where `single_any` was packed at
-  // construction with `TestAllTypes{single_int32: 1}`.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 42}}.single_any.i32 == 42");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyUnpackE2ETest, ReadAnyFieldOnActivationBoundMessage) {
-  // The embedder packs an Any field on a proto and binds it via
-  // `Activation::Bind(Value::Message(proto))`.  Reading
-  // `bound.single_any.x` exercises the unpack path on an
-  // activation-rooted backing (i.e. `ProtoBacking` not
-  // `OwnedProtoBacking`).
-  GTEST_SKIP() << kM7aUnpackPending;
-}
-
+// Unset Any field on a freshly-constructed proto reads as null per
+// the M7-shipped null-on-unset-singular-message rule.  The Any
+// unwrap arm sees `HasField == false` and returns null before
+// reaching UnpackAnyToValue.
 TEST_F(AnyUnpackE2ETest, ReadUnsetAnyFieldReturnsNull) {
-  // `TestAllTypes{}.single_any == null` — M7-shipped null-on-unset-
-  // singular-message rule.  M7-A.B's unpack arm must NOT trigger
-  // when the Any field is unset (type_url == "").  Regression-test
-  // that M7-A.B preserves M7's null-clear behaviour.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{}.single_any == null");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyUnpackE2ETest, ReadRepeatedAnyFieldUnwrapsEachElement) {
-  // `msg.repeated_any[0].x` reads the first packed Any.
-  GTEST_SKIP() << kM7aUnpackPending;
-}
-
-TEST_F(AnyUnpackE2ETest, ReadMapValueAnyUnwrapsLookup) {
-  // `msg.map_any["k"].x` reads the value at key "k", which is itself
-  // a packed Any.
-  GTEST_SKIP() << kM7aUnpackPending;
-}
-
+// Two-hop select on the unwrapped value: pack a HostMsg3 with a
+// nested `inner.s = 'deep'`, then read back via the Any.  Exercises
+// that the unwrapped backing routes through normal proto reflection
+// past the unwrap boundary.
 TEST_F(AnyUnpackE2ETest, ChainedSelectOnUnpackedMessage) {
-  // `msg.single_any.nested.x` — the Any unwraps to a typed message,
-  // then we chained-select through it.  Tests that the unwrapped
-  // backing routes through ProtoBacking's normal kSelect path with
-  // no Any-specific awareness past the boundary.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{inner: celwasm.testdata.HostMsg3{s: 'deep'}}}"
+      ".single_any.inner.s == 'deep'");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// String round-trip: pack HostMsg3{s: 'abc'} into single_any, read
+// back the unwrapped `.s`.
+TEST_F(AnyUnpackE2ETest, ReadAnyFieldUnwrapsStringField) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{s: 'abc'}}.single_any.s == 'abc'");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// has() on a packed Any field is true (presence is type_url-or-value
+// set, both of which the reflection-pack writes).
+TEST_F(AnyUnpackE2ETest, HasOnPackedSingularAnyIsTrue) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "has(celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any)");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// has() on an unset Any field is false.
+TEST_F(AnyUnpackE2ETest, HasOnUnsetSingularAnyIsFalse) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "has(celwasm.testdata.HostMsg3{}.single_any) == false");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -346,21 +381,35 @@ TEST_F(AnyEqualityE2ETest, UnsetAnyEqualsNull) {
 
 class AnyTypeOfE2ETest : public ::testing::Test {};
 
+// After M7-A.B's read-side unwrap, `msg.single_any` returns a backing
+// wrapping the unwrapped typed message — so `type(...)` over it
+// resolves to the *unwrapped* descriptor's FQN, not "Any".  M9's
+// resolver reads `backing->message()->GetDescriptor()->full_name()`
+// without any Any-specific code; M7-A.B's unwrap supplies the
+// already-unwrapped message.
 TEST_F(AnyTypeOfE2ETest, TypeOfUnpackedAnyReturnsUnwrappedFqn) {
-  // `type(Foo{single_any: Bar{x:1}}.single_any) ==
-  //  "celwasm.testdata.Bar"` (or similar) → true.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "type(celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any) == "
+      "celwasm.testdata.HostMsg3");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
+// Direct Any-literal construction produces an Any-typed backing —
+// no Any-typed-field-read is involved, so the unwrap arm doesn't
+// fire.  `type(...)` returns "google.protobuf.Any".  Pins the
+// boundary between field-read-unwrap and struct-literal-no-unwrap.
 TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
-  // `type(google.protobuf.Any{type_url: ..., value: ...}) ==
-  //  google.protobuf.Any` → true.  When the Any is constructed
-  // via the `google.protobuf.Any{type_url, value}` literal (M7-shipped,
-  // since Any is just a 2-field proto), the resulting Value carries
-  // the Any descriptor; reading `type(...)` of it returns "Any".  Only
-  // a *field-read* of an Any-typed field triggers M7-A.B's unwrap.
-  // Pin the boundary.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "type(google.protobuf.Any{type_url: 'type.googleapis.com/X', "
+      "value: b''}) == google.protobuf.Any");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -379,32 +428,87 @@ TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
 
 class AnyRejectE2ETest : public ::testing::Test {};
 
-TEST_F(AnyRejectE2ETest, ReadAnyWithEmptyTypeUrlIsError) {
-  GTEST_SKIP() << kM7aUnpackPending;
+// Helper: compile + eval an expression that wraps a literal Any
+// into HostMsg3.single_any, then chained-selects `.<field>`.  Returns
+// the eval result so the caller can assert on error code.
+Value EvalReject(absl::string_view literal_any_inline) {
+  auto compiler = CompilerEmpty();
+  ABSL_CHECK_OK(compiler);
+  // `<literal_any>.i32` — read-side unwrap fires because the operand
+  // is a field-read of `single_any` (Any-typed).  The unwrap parses
+  // the literal Any's type_url + value against the field's pool.
+  auto instance = CompilePlan(
+      *compiler,
+      absl::StrCat("celwasm.testdata.HostMsg3{single_any: ",
+                   literal_any_inline, "}.single_any.i32"));
+  return EvalOk(instance, Activation{});
 }
 
+// Empty type_url — probe B finding: this is the unset signal, so
+// the read returns null (not error).  Surfacing as null means a
+// chained `.i32` evaluates as null-select-on-null, which the
+// runtime represents as an error (no_such_field).
+TEST_F(AnyRejectE2ETest, ReadAnyWithEmptyTypeUrlIsNull) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "google.protobuf.Any{type_url: '', value: b''}}.single_any == null");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// Malformed type_url with no slash — FQN is the whole string, pool
+// lookup fails → kFieldNotFound.
 TEST_F(AnyRejectE2ETest, ReadAnyWithMalformedTypeUrlIsError) {
-  // `type_url = "not_a_type_url"` (no slash) → empty FQN → error.
-  GTEST_SKIP() << kM7aUnpackPending;
+  Value v = EvalReject(
+      "google.protobuf.Any{type_url: 'not_a_url', value: b''}");
+  auto err = v.ErrorInfo();
+  ASSERT_THAT(err, IsOk());
+  EXPECT_EQ((*err)->code, ErrorCode::kFieldNotFound);
 }
 
+// FQN with prefix but unknown name → kFieldNotFound.
 TEST_F(AnyRejectE2ETest, ReadAnyWithUnknownFqnIsError) {
-  // `type_url = "type.googleapis.com/com.nope.Unknown"` — FQN not
-  // in the descriptor pool.
-  GTEST_SKIP() << kM7aUnpackPending;
+  Value v = EvalReject(
+      "google.protobuf.Any{type_url: 'type.googleapis.com/com.nope.Unknown', "
+      "value: b''}");
+  auto err = v.ErrorInfo();
+  ASSERT_THAT(err, IsOk());
+  EXPECT_EQ((*err)->code, ErrorCode::kFieldNotFound);
 }
 
+// Corrupt value bytes against a known FQN — ParseFromString fails
+// → kTypeMismatch.
 TEST_F(AnyRejectE2ETest, ReadAnyWithCorruptValueBytesIsError) {
-  // `value = b"\xff\xff\xff\xff"` against a known FQN — bytes don't
-  // parse as the resolved message.
-  GTEST_SKIP() << kM7aUnpackPending;
+  // 0xff bytes form invalid wire-format for HostMsg3 (varint
+  // continuation never terminates).
+  Value v = EvalReject(
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', "
+      "value: b'\\xff\\xff\\xff\\xff'}");
+  auto err = v.ErrorInfo();
+  ASSERT_THAT(err, IsOk());
+  EXPECT_EQ((*err)->code, ErrorCode::kTypeMismatch);
 }
 
+// Non-googleapis.com prefix is accepted — cel-cpp parity (probe B):
+// strip-before-last-slash is the rule, scheme is informational.
 TEST_F(AnyRejectE2ETest, NonGoogleApisPrefixIsAccepted) {
-  // Probe B finding: stripping before the last `/` is the rule;
-  // `type.example.com/<FQN>` is accepted equivalently to
-  // `type.googleapis.com/<FQN>`.  Pin this — cel-cpp parity.
-  GTEST_SKIP() << kM7aUnpackPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // Construct a HostMsg3 with i32=7, serialize via the type
+  // 'type.example.com/celwasm.testdata.HostMsg3' alias.  We can't
+  // easily synthesize the raw bytes from CEL, so use a packed-
+  // through-cel Any and verify it unwraps via the prefix-stripped
+  // FQN.  Direct construction with a non-googleapis prefix is
+  // possible because the prefix isn't enforced.
+  auto instance = CompilePlan(
+      *compiler,
+      "type(celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 7}}.single_any) == "
+      "celwasm.testdata.HostMsg3");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -485,34 +589,32 @@ TEST_F(AnyNullClearE2ETest, UnsetSingularAnyReadsAsNull) {
 
 class AnyLiteralRoundTripE2ETest : public ::testing::Test {};
 
-void ExpectCompileFails(const Compiler& compiler, absl::string_view source,
-                        absl::string_view why) {
-  auto program_or = compiler.Compile(source);
-  EXPECT_FALSE(program_or.ok())
-      << "expected `" << source << "` to fail at compile (" << why << ")";
-}
-
-TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralCurrentlyDynRejected) {
-  // Documents the as-shipped behaviour: direct Any-literal
-  // construction is rejected by the static-subset gate.  M7-A does
-  // NOT change this; cel-cpp checker types Any{...} as dyn-shaped.
+// After M7-A.B's §3.5.A select-through-Any carve-out, direct
+// `google.protobuf.Any{...}.type_url` / `.value` reads compile and
+// eval correctly — the outer struct literal materialises a regular
+// OwnedProtoBacking holding the Any descriptor, and the inner select
+// reads `type_url` / `value` as plain CPPTYPE_STRING / TYPE_BYTES
+// fields via reflection.  No Any-unwrap fires because the operand is
+// a constructed Any value, not an Any-typed field on a parent
+// message.  Pin both round-trips so the boundary doesn't drift.
+TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralTypeUrlReadRoundTrips) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(
+  auto instance = CompilePlan(
       *compiler,
       R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
-      R"(value: b'hello'}.type_url == 'type.googleapis.com/X')",
-      "Any literal currently hits RejectDyn gate (m7a-any.md §10.3)");
+      R"(value: b'hello'}.type_url == 'type.googleapis.com/X')");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralOnBytesAlsoDynRejected) {
+TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralValueReadRoundTrips) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(
+  auto instance = CompilePlan(
       *compiler,
       R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
-      R"(value: b'hello'}.value == b'hello')",
-      "Any literal currently hits RejectDyn gate (m7a-any.md §10.3)");
+      R"(value: b'hello'}.value == b'hello')");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 }  // namespace

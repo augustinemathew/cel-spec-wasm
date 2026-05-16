@@ -8,16 +8,22 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1062 (43.3%) · skip=693 (28.2%) · fail=699 (28.5%)`
+`total=2454 · pass=1065 (43.4%) · skip=693 (28.2%) · fail=696 (28.4%)`
 across 30 loadable fixtures.  The most recent landings:
 
+  - **M7-A.B Any read-side unwrap** (2026-05-16): +3 PASS.
+    `ProtoBacking::ReadField` now detects `google.protobuf.Any`-typed
+    singular-message fields and unwraps via `UnpackAnyToValue`
+    (type_url parse → pool lookup → ParseFromString) using the Any
+    field's own descriptor pool.  Frontend §3.5.A select-through-Any
+    carve-out admits the dyn-typed chained selects (`msg.single_any.x`)
+    that cel-cpp accepts.  `wrappers.textproto :: */to_any` rows
+    remain FAIL because they require M8's wrapper auto-unwrap (the
+    inner step that turns `Int32Value{value:1}` into `1`).
   - **M7-A.A Any pack arm** (2026-05-16): +4 PASS.  `WriteMessageOrPack`
     helper threaded through 4 cpp_type-MESSAGE call sites (singular,
     repeated arena, repeated host, map host); `single_any /
     repeated_any / map_str_to_any` fixture fields added to HostMsg3.
-    Read-side unwrap (M7-A.B) and `cel_message_eq` peel (M7-A.C) still
-    pending; `wrappers.textproto :: */to_any` rows remain FAIL with
-    "want primitive kind, got message" until M7-A.B lands.
   - **M10 type conversions** (slices A–E, 2026-05-14): +83 PASS.
     `bool` / `int` / `uint` / `double` / `string` / `bytes`
     inter-conversions + identity arms.  `conversions.textproto`
