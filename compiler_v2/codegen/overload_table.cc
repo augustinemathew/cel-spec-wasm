@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 108> kBuiltinSeeds{
+constexpr std::array<Seed, 122> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -236,6 +236,42 @@ constexpr std::array<Seed, 108> kBuiltinSeeds{
     Seed{"logical_and", {ImportModule::kCelRuntime, "cel_and"}},
     Seed{"logical_or", {ImportModule::kCelRuntime, "cel_or"}},
     Seed{"logical_not", {ImportModule::kCelRuntime, "cel_not"}},
+    // ── Timestamp / Duration arithmetic (M7B.B) ──────────────
+    // Pure-wasm kernels in cel_time.c.  Result kinds:
+    //   (dur, dur) -> dur                          : add, sub
+    //   (ts, dur) -> ts                            : add, sub
+    //   (dur, ts) -> ts                            : add (commutative)
+    //   (ts, ts) -> dur                            : sub  (delta)
+    Seed{"add_duration_duration",
+         {ImportModule::kCelRuntime, "cel_dur_add_at_vv"}},
+    Seed{"add_duration_timestamp",
+         {ImportModule::kCelRuntime, "cel_dur_ts_add_at_vv"}},
+    Seed{"add_timestamp_duration",
+         {ImportModule::kCelRuntime, "cel_ts_dur_add_at_vv"}},
+    Seed{"subtract_duration_duration",
+         {ImportModule::kCelRuntime, "cel_dur_sub_at_vv"}},
+    Seed{"subtract_timestamp_duration",
+         {ImportModule::kCelRuntime, "cel_ts_dur_sub_at_vv"}},
+    Seed{"subtract_timestamp_timestamp",
+         {ImportModule::kCelRuntime, "cel_ts_ts_sub_at_vv"}},
+    // ── Timestamp / Duration ordering (M7B.B) ────────────────
+    // Lexicographic (seconds, nanos) compare on the sign-correlated
+    // CelDurTs payload.  Equality / inequality route through the
+    // standard `equals` / `not_equals` seeds above; the
+    // cel_value_eq_polymorphic kernel in cel_runtime.c gained
+    // CEL_DURATION / CEL_TIMESTAMP arms in the same slice.
+    Seed{"less_duration", {ImportModule::kCelRuntime, "cel_dur_lt_at_vv"}},
+    Seed{"less_timestamp", {ImportModule::kCelRuntime, "cel_ts_lt_at_vv"}},
+    Seed{"less_equals_duration",
+         {ImportModule::kCelRuntime, "cel_dur_le_at_vv"}},
+    Seed{"less_equals_timestamp",
+         {ImportModule::kCelRuntime, "cel_ts_le_at_vv"}},
+    Seed{"greater_duration", {ImportModule::kCelRuntime, "cel_dur_gt_at_vv"}},
+    Seed{"greater_timestamp", {ImportModule::kCelRuntime, "cel_ts_gt_at_vv"}},
+    Seed{"greater_equals_duration",
+         {ImportModule::kCelRuntime, "cel_dur_ge_at_vv"}},
+    Seed{"greater_equals_timestamp",
+         {ImportModule::kCelRuntime, "cel_ts_ge_at_vv"}},
     // ── String ops (`contains` / `startsWith` / `endsWith`) ───
     Seed{"contains_string",
          {ImportModule::kCelRuntime, "cel_string_contains_at_vv"}},
@@ -334,29 +370,15 @@ constexpr std::array<Seed, 108> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 58> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 44> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
     "__not_strictly_false__",  // M5.I.
     "index_list",
     "index_map",  // _[_] (M3/M4).
-    // (2b) Timestamp / duration arithmetic.
-    "add_duration_duration",
-    "add_duration_timestamp",
-    "add_timestamp_duration",
-    "subtract_duration_duration",
-    "subtract_timestamp_duration",
-    "subtract_timestamp_timestamp",
-    // (2b) Timestamp / duration ordering.
-    "less_duration",
-    "less_timestamp",
-    "less_equals_duration",
-    "less_equals_timestamp",
-    "greater_duration",
-    "greater_timestamp",
-    "greater_equals_duration",
-    "greater_equals_timestamp",
+    // (2b) Timestamp / duration arithmetic + ordering graduated to
+    // `kBuiltinSeeds` above in M7B.B; size dropped 58 → 44.
     // (2c) Regex `matches`.
     "matches",
     "matches_string",

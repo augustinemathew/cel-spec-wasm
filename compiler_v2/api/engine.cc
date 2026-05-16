@@ -166,58 +166,67 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
 // `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`),
 // each `__attribute__((musttail))`-dispatching to either an
-// `_arena` fast path or a `cel_host.*` import.
+// `_arena` fast path or a `cel_host.*` import.  The list is data,
+// not code — kept at file scope so the function body is just the
+// loop and stays under the lint function-size gate.
+constexpr const char* kRuntimeExports[] = {
+    "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
+    "cel_map_lookup_arena", "cel_map_lookup", "cel_list_create",
+    "cel_list_set", "cel_list_at_arena", "cel_list_at",
+    // M5.B step 1: arithmetic helpers.
+    "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
+    "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
+    "cel_uint_add_at_vv", "cel_uint_sub_at_vv", "cel_uint_mul_at_vv",
+    "cel_uint_div_at_vv", "cel_uint_mod_at_vv", "cel_double_add_at_vv",
+    "cel_double_sub_at_vv", "cel_double_mul_at_vv", "cel_double_div_at_vv",
+    "cel_double_neg_at_v",
+    // M5.B step 1: comparison helpers.
+    "cel_int_lt_at_vv", "cel_int_le_at_vv", "cel_int_gt_at_vv",
+    "cel_int_ge_at_vv", "cel_uint_lt_at_vv", "cel_uint_le_at_vv",
+    "cel_uint_gt_at_vv", "cel_uint_ge_at_vv", "cel_double_lt_at_vv",
+    "cel_double_le_at_vv", "cel_double_gt_at_vv", "cel_double_ge_at_vv",
+    "cel_bool_lt_at_vv", "cel_bool_le_at_vv", "cel_bool_gt_at_vv",
+    "cel_bool_ge_at_vv",
+    // M5.B step 2: cross-type numeric ladder.
+    "cel_numeric_lt_at_vv", "cel_numeric_le_at_vv", "cel_numeric_gt_at_vv",
+    "cel_numeric_ge_at_vv",
+    // M5.C: string + bytes ops.
+    "cel_string_concat_at_vv", "cel_string_size_at_v", "cel_string_lt_at_vv",
+    "cel_string_le_at_vv", "cel_string_gt_at_vv", "cel_string_ge_at_vv",
+    "cel_string_contains_at_vv", "cel_string_starts_with_at_vv",
+    "cel_string_ends_with_at_vv", "cel_bytes_concat_at_vv",
+    "cel_bytes_size_at_v", "cel_bytes_lt_at_vv", "cel_bytes_le_at_vv",
+    "cel_bytes_gt_at_vv", "cel_bytes_ge_at_vv",
+    // M5.D step 2: aggregate kDynamic dispatchers.
+    "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
+    "cel_map_size", "cel_map_in", "cel_map_eq",
+    // M5.B step 2b: polymorphic equality.
+    "cel_equals_at_vv", "cel_not_equals_at_vv",
+    // M5.G (Slice 2): 3VL / control-flow helpers.
+    "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
+    // M9.B: type-of helper.
+    "cel_type_of_at_v",
+    // M10.B: numeric inter-conversion helpers.
+    "cel_uint_to_int_at_v", "cel_double_to_int_at_v", "cel_int_to_uint_at_v",
+    "cel_double_to_uint_at_v", "cel_int_to_double_at_v",
+    "cel_uint_to_double_at_v",
+    // M10.C: string-parse helpers.
+    "cel_string_to_int_at_v", "cel_string_to_uint_at_v",
+    "cel_string_to_double_at_v", "cel_string_to_bool_at_v",
+    // M10.D: number/bool-to-string formatters.
+    "cel_int_to_string_at_v", "cel_uint_to_string_at_v",
+    "cel_bool_to_string_at_v", "cel_double_to_string_at_v",
+    // M10.E: bytes <-> string with UTF-8 validation.
+    "cel_string_to_bytes_at_v", "cel_bytes_to_string_at_v",
+    // M7B.B: timestamp / duration arithmetic + ordering kernels.
+    "cel_dur_add_at_vv", "cel_dur_sub_at_vv", "cel_ts_dur_add_at_vv",
+    "cel_dur_ts_add_at_vv", "cel_ts_dur_sub_at_vv", "cel_ts_ts_sub_at_vv",
+    "cel_dur_lt_at_vv", "cel_dur_le_at_vv", "cel_dur_gt_at_vv",
+    "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv",
+    "cel_ts_gt_at_vv", "cel_ts_ge_at_vv"};
+
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {
-  static const char* const kRuntimeExports[] = {
-      "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
-      "cel_map_lookup_arena", "cel_map_lookup", "cel_list_create",
-      "cel_list_set", "cel_list_at_arena", "cel_list_at",
-      // M5.B step 1: arithmetic helpers.
-      "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
-      "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
-      "cel_uint_add_at_vv", "cel_uint_sub_at_vv", "cel_uint_mul_at_vv",
-      "cel_uint_div_at_vv", "cel_uint_mod_at_vv", "cel_double_add_at_vv",
-      "cel_double_sub_at_vv", "cel_double_mul_at_vv", "cel_double_div_at_vv",
-      "cel_double_neg_at_v",
-      // M5.B step 1: comparison helpers.
-      "cel_int_lt_at_vv", "cel_int_le_at_vv", "cel_int_gt_at_vv",
-      "cel_int_ge_at_vv", "cel_uint_lt_at_vv", "cel_uint_le_at_vv",
-      "cel_uint_gt_at_vv", "cel_uint_ge_at_vv", "cel_double_lt_at_vv",
-      "cel_double_le_at_vv", "cel_double_gt_at_vv", "cel_double_ge_at_vv",
-      "cel_bool_lt_at_vv", "cel_bool_le_at_vv", "cel_bool_gt_at_vv",
-      "cel_bool_ge_at_vv",
-      // M5.B step 2: cross-type numeric ladder.
-      "cel_numeric_lt_at_vv", "cel_numeric_le_at_vv", "cel_numeric_gt_at_vv",
-      "cel_numeric_ge_at_vv",
-      // M5.C: string + bytes ops.
-      "cel_string_concat_at_vv", "cel_string_size_at_v", "cel_string_lt_at_vv",
-      "cel_string_le_at_vv", "cel_string_gt_at_vv", "cel_string_ge_at_vv",
-      "cel_string_contains_at_vv", "cel_string_starts_with_at_vv",
-      "cel_string_ends_with_at_vv", "cel_bytes_concat_at_vv",
-      "cel_bytes_size_at_v", "cel_bytes_lt_at_vv", "cel_bytes_le_at_vv",
-      "cel_bytes_gt_at_vv", "cel_bytes_ge_at_vv",
-      // M5.D step 2: aggregate kDynamic dispatchers.
-      "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
-      "cel_map_size", "cel_map_in", "cel_map_eq",
-      // M5.B step 2b: polymorphic equality.
-      "cel_equals_at_vv", "cel_not_equals_at_vv",
-      // M5.G (Slice 2): 3VL / control-flow helpers.
-      "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
-      // M9.B: type-of helper.
-      "cel_type_of_at_v",
-      // M10.B: numeric inter-conversion helpers.
-      "cel_uint_to_int_at_v", "cel_double_to_int_at_v",
-      "cel_int_to_uint_at_v", "cel_double_to_uint_at_v",
-      "cel_int_to_double_at_v", "cel_uint_to_double_at_v",
-      // M10.C: string-parse helpers.
-      "cel_string_to_int_at_v", "cel_string_to_uint_at_v",
-      "cel_string_to_double_at_v", "cel_string_to_bool_at_v",
-      // M10.D: number/bool-to-string formatters.
-      "cel_int_to_string_at_v", "cel_uint_to_string_at_v",
-      "cel_bool_to_string_at_v", "cel_double_to_string_at_v",
-      // M10.E: bytes <-> string with UTF-8 validation.
-      "cel_string_to_bytes_at_v", "cel_bytes_to_string_at_v"};
   for (const char* name : kRuntimeExports) {
     if (auto s =
             BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);

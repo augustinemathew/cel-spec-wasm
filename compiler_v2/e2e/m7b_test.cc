@@ -64,6 +64,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "compiler/testdata/e2e_fixture.pb.h"
@@ -374,9 +375,79 @@ struct ArithCase {
 
 class ArithmeticE2ETest : public ::testing::TestWithParam<ArithCase> {};
 
+namespace {
+
+// Per ArithOp, give back: operand types, operand kinds, the source
+// expression to compile, and the expected result kind.  Centralises
+// the per-op decode so the test body is the same for all six rows.
+struct ArithDispatch {
+  CelType a_type;
+  CelType b_type;
+  bool a_is_timestamp;
+  bool b_is_timestamp;
+  absl::string_view source;
+  bool result_is_timestamp;
+};
+
+ArithDispatch DispatchArith(ArithOp op) {
+  switch (op) {
+    case ArithOp::kDurAddDur:
+      return {CelType::Duration(), CelType::Duration(), false, false, "a + b",
+              false};
+    case ArithOp::kDurSubDur:
+      return {CelType::Duration(), CelType::Duration(), false, false, "a - b",
+              false};
+    case ArithOp::kTsAddDur:
+      return {CelType::Timestamp(), CelType::Duration(), true, false, "a + b",
+              true};
+    case ArithOp::kDurAddTs:
+      return {CelType::Duration(), CelType::Timestamp(), false, true, "a + b",
+              true};
+    case ArithOp::kTsSubDur:
+      return {CelType::Timestamp(), CelType::Duration(), true, false, "a - b",
+              true};
+    case ArithOp::kTsSubTs:
+      return {CelType::Timestamp(), CelType::Timestamp(), true, true, "a - b",
+              false};
+  }
+  ABSL_CHECK(false) << "DispatchArith: unhandled op";
+}
+
+Value MakeDurOrTs(int64_t seconds, int32_t nanos, bool is_timestamp) {
+  const absl::Duration d =
+      absl::Seconds(seconds) + absl::Nanoseconds(nanos);
+  return is_timestamp ? Value::Timestamp(absl::UnixEpoch() + d)
+                      : Value::Duration(d);
+}
+
+}  // namespace
+
 TEST_P(ArithmeticE2ETest, BoundaryMatrix) {
-  GTEST_SKIP() << "M7B.B not yet shipped — arithmetic helpers "
-                  "(cel_dur_add_at_vv etc.) are not registered.";
+  const ArithCase& p = GetParam();
+  const ArithDispatch d = DispatchArith(p.op);
+  auto compiler_or = BuildCompiler([&](Compiler::Builder& b) {
+    b.DeclareVariable("a", d.a_type);
+    b.DeclareVariable("b", d.b_type);
+  });
+  ABSL_CHECK_OK(compiler_or) << p.label;
+  Instance inst = CompilePlan(*compiler_or, d.source);
+  Activation act;
+  act.Bind("a", MakeDurOrTs(p.a_seconds, p.a_nanos, d.a_is_timestamp));
+  act.Bind("b", MakeDurOrTs(p.b_seconds, p.b_nanos, d.b_is_timestamp));
+  Value got = EvalOk(inst, act);
+  if (p.expect_overflow) {
+    ASSERT_EQ(got.kind(), Value::Kind::kError) << p.label;
+    return;
+  }
+  const absl::Duration delta =
+      absl::Seconds(p.expected_seconds) + absl::Nanoseconds(p.expected_nanos);
+  if (d.result_is_timestamp) {
+    ASSERT_EQ(got.kind(), Value::Kind::kTimestamp) << p.label;
+    EXPECT_EQ(*got.AsTimestamp(), absl::UnixEpoch() + delta) << p.label;
+  } else {
+    ASSERT_EQ(got.kind(), Value::Kind::kDuration) << p.label;
+    EXPECT_EQ(*got.AsDuration(), delta) << p.label;
+  }
 }
 
 // Shorthand for the six-helper × six-boundary matrix.  Each row is
@@ -405,7 +476,7 @@ INSTANTIATE_TEST_SUITE_P(
         ArithCase{"DurSubDur_Borrow", ArithOp::kDurSubDur, 1, 0, 0, 1, false, 0,
                   999'999'999},
         ArithCase{"DurSubDur_Underflow", ArithOp::kDurSubDur,
-                  std::numeric_limits<int64_t>::min(), 0, 0, 1, true, 0, 0},
+                  std::numeric_limits<int64_t>::min(), 0, 1, 0, true, 0, 0},
         ArithCase{"DurSubDur_NegResult", ArithOp::kDurSubDur, 1, 0, 2, 0, false,
                   -1, 0},
         // ── ts + dur ─────────────────────────────────────
@@ -440,13 +511,21 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Checker-rejection (no overload) — ts + ts must reject at compile.
 TEST_F(ArithmeticE2ETest, CheckerRejectsTimestampPlusTimestamp) {
-  GTEST_SKIP() << "M7B.B not yet shipped — pin regression that the "
-                  "checker (not codegen) rejects ts+ts.";
+  auto compiler_or = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Timestamp());
+    b.DeclareVariable("b", CelType::Timestamp());
+  });
+  ABSL_CHECK_OK(compiler_or);
+  ExpectCompileFails(*compiler_or, "a + b", "ts+ts has no overload");
 }
 
 TEST_F(ArithmeticE2ETest, CheckerRejectsDurationMinusTimestamp) {
-  GTEST_SKIP() << "M7B.B not yet shipped — pin regression that the "
-                  "checker rejects dur-ts (only ts-dur exists).";
+  auto compiler_or = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Duration());
+    b.DeclareVariable("b", CelType::Timestamp());
+  });
+  ABSL_CHECK_OK(compiler_or);
+  ExpectCompileFails(*compiler_or, "a - b", "dur-ts has no overload");
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -474,9 +553,41 @@ struct CmpCase {
 
 class OrderingE2ETest : public ::testing::TestWithParam<CmpCase> {};
 
+namespace {
+
+absl::string_view OpToken(CmpOp op) {
+  switch (op) {
+    case CmpOp::kLt:
+      return "<";
+    case CmpOp::kLe:
+      return "<=";
+    case CmpOp::kGt:
+      return ">";
+    case CmpOp::kGe:
+      return ">=";
+  }
+  ABSL_CHECK(false) << "OpToken: unhandled op";
+}
+
+}  // namespace
+
 TEST_P(OrderingE2ETest, LexicographicCompare) {
-  GTEST_SKIP() << "M7B.B not yet shipped — ordering helpers "
-                  "(cel_dur_lt_at_vv etc.) not registered.";
+  const CmpCase& p = GetParam();
+  const CelType ty =
+      p.is_timestamp ? CelType::Timestamp() : CelType::Duration();
+  auto compiler_or = BuildCompiler([&](Compiler::Builder& b) {
+    b.DeclareVariable("a", ty);
+    b.DeclareVariable("b", ty);
+  });
+  ABSL_CHECK_OK(compiler_or);
+  const std::string source = absl::StrCat("a ", OpToken(p.op), " b");
+  Instance inst = CompilePlan(*compiler_or, source);
+  Activation act;
+  act.Bind("a", MakeDurOrTs(p.a_seconds, p.a_nanos, p.is_timestamp));
+  act.Bind("b", MakeDurOrTs(p.b_seconds, p.b_nanos, p.is_timestamp));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kBool) << p.label;
+  EXPECT_EQ(*got.AsBool(), p.expected) << p.label;
 }
 
 INSTANTIATE_TEST_SUITE_P(

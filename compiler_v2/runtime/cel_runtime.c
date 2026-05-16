@@ -381,6 +381,19 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_NULL && b->kind == CEL_NULL) {
     return 1;
   }
+  // m7b.B — duration / timestamp equality is a 12-byte payload
+  // compare on the sign-correlated (seconds, nanos) CelDurTs arm
+  // (per the proto Duration / Timestamp text format Probe D pinned).
+  // CEL_DURATION and CEL_TIMESTAMP are distinct kinds; cross-kind
+  // returns 0 via the kind guards below.
+  if (a->kind == CEL_DURATION && b->kind == CEL_DURATION) {
+    return a->payload.dur.seconds == b->payload.dur.seconds &&
+           a->payload.dur.nanos == b->payload.dur.nanos;
+  }
+  if (a->kind == CEL_TIMESTAMP && b->kind == CEL_TIMESTAMP) {
+    return a->payload.ts.seconds == b->payload.ts.seconds &&
+           a->payload.ts.nanos == b->payload.ts.nanos;
+  }
   // Bool / string / cross-kind non-numeric fall through to
   // `map_keys_equal` which itself routes numerics polymorphically
   // and returns 0 for kind mismatches.
