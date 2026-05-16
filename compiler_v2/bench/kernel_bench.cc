@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "benchmark/benchmark.h"
 #include "compiler_v2/runtime/cel_3vl.h"
 #include "compiler_v2/runtime/cel_arena.h"
@@ -511,6 +512,337 @@ void BM_StringContains(benchmark::State& state) {
   state.SetBytesProcessed(state.iterations() * n);
 }
 BENCHMARK(BM_StringContains)->Arg(8)->Arg(64)->Arg(4096);
+
+// ============================================================
+// M7B duration / timestamp microbenches.
+//
+// Coverage (per `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`
+// §11):
+//
+//   - Arithmetic     — BM_DurationAdd, BM_DurationSub,
+//                      BM_TimestampSubTimestamp, BM_TimestampAddDuration.
+//                      Compare against BM_IntAdd above; duration arith
+//                      should land within ~2× of int arith (one extra
+//                      carry + overflow check).
+//   - Accessor       — BM_TimestampYearUtc, BM_TimestampYearUtcLangdefMax,
+//                      BM_TimestampDayOfWeekUtc, BM_DurationHours.
+//                      Pure-wasm civil-calendar walk; the hot-path
+//                      perf budget for any expr that chains
+//                      `.getYear()` / `.getMonth()` etc.  Expected
+//                      cost: ~5-10× a numeric kernel call because of
+//                      the integer-divide cascade in
+//                      cel_civil_from_seconds.
+//   - Host trampoline — BM_TimestampParseHost.  Belongs in
+//                      pipeline_bench.cc shape (Compile + Plan + Eval).
+//                      Sketch only — pipeline scaffold lands when
+//                      M7B.D ships.
+//
+// Today (M7B not yet shipped) the kernels are guarded behind
+// `CELWASM_M7B_SHIPPED`.  The bench file compiles green so the BUILD
+// target validates; the actual benches turn on when the helpers land.
+// ============================================================
+
+// Stage a CEL_DURATION CelValue into the arena, returning its offset.
+// Returns 0 today (no slot allocated) when M7B not shipped — the
+// benches that consume this are themselves guarded.
+[[maybe_unused]] uint32_t MakeDuration(int64_t seconds, int32_t nanos) {
+#ifdef CELWASM_M7B_SHIPPED
+  uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  CelValue* v = reinterpret_cast<CelValue*>(
+      reinterpret_cast<uint8_t*>(cel_mem_base()) + off);
+  v->kind = CEL_DURATION;
+  v->_pad = 0;
+  v->payload.dur.seconds = seconds;
+  v->payload.dur.nanos = nanos;
+  v->payload.dur._pad = 0;
+  return off;
+#else
+  (void)seconds;
+  (void)nanos;
+  return 0u;
+#endif
+}
+
+[[maybe_unused]] uint32_t MakeTimestamp(int64_t seconds, int32_t nanos) {
+#ifdef CELWASM_M7B_SHIPPED
+  uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  CelValue* v = reinterpret_cast<CelValue*>(
+      reinterpret_cast<uint8_t*>(cel_mem_base()) + off);
+  v->kind = CEL_TIMESTAMP;
+  v->_pad = 0;
+  v->payload.ts.seconds = seconds;
+  v->payload.ts.nanos = nanos;
+  v->payload.ts._pad = 0;
+  return off;
+#else
+  (void)seconds;
+  (void)nanos;
+  return 0u;
+#endif
+}
+
+#ifdef CELWASM_M7B_SHIPPED
+
+void BM_DurationAdd(benchmark::State& state) {
+  ResetArena();
+  uint32_t a = MakeDuration(60, 500'000'000);
+  uint32_t b = MakeDuration(120, 750'000'000);  // exercises nanos-carry
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_dur_add_at_vv(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_DurationAdd);
+
+void BM_DurationSub(benchmark::State& state) {
+  ResetArena();
+  uint32_t a = MakeDuration(120, 0);
+  uint32_t b = MakeDuration(60, 1);  // exercises borrow
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_dur_sub_at_vv(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_DurationSub);
+
+void BM_TimestampSubTimestamp(benchmark::State& state) {
+  ResetArena();
+  uint32_t a = MakeTimestamp(1234567950, 0);
+  uint32_t b = MakeTimestamp(1234567890, 0);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_ts_ts_sub_at_vv(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_TimestampSubTimestamp);
+
+void BM_TimestampAddDuration(benchmark::State& state) {
+  ResetArena();
+  uint32_t a = MakeTimestamp(1234567890, 0);
+  uint32_t b = MakeDuration(60, 0);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_ts_dur_add_at_vv(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_TimestampAddDuration);
+
+void BM_TimestampYearUtc(benchmark::State& state) {
+  ResetArena();
+  uint32_t ts = MakeTimestamp(1234567890, 0);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_ts_year_utc(out, ts);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_TimestampYearUtc);
+
+void BM_TimestampYearUtcLangdefMax(benchmark::State& state) {
+  ResetArena();
+  uint32_t ts = MakeTimestamp(253402300799LL, 0);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_ts_year_utc(out, ts);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_TimestampYearUtcLangdefMax);
+
+void BM_TimestampDayOfWeekUtc(benchmark::State& state) {
+  ResetArena();
+  uint32_t ts = MakeTimestamp(1234567890, 0);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_ts_day_of_week_utc(out, ts);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_TimestampDayOfWeekUtc);
+
+void BM_DurationHours(benchmark::State& state) {
+  ResetArena();
+  uint32_t d = MakeDuration(36000, 0);  // 10h
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_dur_hours(out, d);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_DurationHours);
+
+#endif  // CELWASM_M7B_SHIPPED
+
+// BM_TimestampParseHost belongs in pipeline_bench.cc — host trampolines
+// only reach through wasmtime, so the bench needs Compile+Plan+Eval
+// pre-staged.  Sketched in m7b-duration-timestamp.md §11; lands when
+// M7B.D ships.
+
+// ============================================================
+// M7-A google.protobuf.Any pack/unpack/equality scaffolds.
+//
+// Every BM_AnyPack_* / BM_AnyUnpack_* / BM_AnyEq_* below is gated by
+// `kM7aShipped = false` — they `state.SkipWithError` until M7-A.A/B/C
+// ship.  The doc (m7a-any.md §11.3) lists expected baselines vs
+// deltas; flip the flag and the suite produces real numbers.  The
+// BM_AnyTypeUrlParse_* benches are pure kernels that run today (they
+// only exercise the string-slice rfind('/') logic the unpack path
+// uses).
+//
+// Rationale for collocating with the other kernel microbenches:
+// every BM_* here measures a single tight call to a runtime/host
+// kernel.  Pipeline-shaped Any benches (Compile+Plan+Eval of an
+// expression that pack-unpacks) belong in pipeline_bench.cc when
+// M7-A ships.
+// ============================================================
+
+constexpr bool kM7aShipped = false;
+constexpr const char* kAnyNotShippedMsg =
+    "M7-A not yet shipped — scaffold bench, see m7a-any.md §11.3.";
+
+void BM_AnyPack_SingularField_Reflection(benchmark::State& state) {
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  // When M7-A.A ships: stage a default outer + `Bar{x:42}` source,
+  // call CelSetFieldImpl pack op (SerializeAsString + 2x SetString).
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyPack_SingularField_Reflection);
+
+void BM_AnyPack_SingularField_TypedCast(benchmark::State& state) {
+  // Comparand: typed Any::PackFrom path.  Skips the per-call
+  // FindFieldByName.  Probe A finding (m7a-any.md §10.1): identical
+  // output bytes; perf delta is what this bench will reveal.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyPack_SingularField_TypedCast);
+
+void BM_AnyPack_SingularField_BaselineCopyFrom(benchmark::State& state) {
+  // Baseline: M7-shipped CopyFrom on a non-Any message field.  Delta
+  // against BM_AnyPack_SingularField_Reflection = pack overhead.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyPack_SingularField_BaselineCopyFrom);
+
+void BM_AnyUnpack_SingularRead(benchmark::State& state) {
+  // ProtoBacking::ReadField on a pre-packed Any field.  Hot ops:
+  // FindMessageTypeByName + GetPrototype + ParseFromString.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyUnpack_SingularRead);
+
+void BM_AnyUnpack_SingularRead_BaselineNonAny(benchmark::State& state) {
+  // Baseline: M2.C-shipped ReadField on a non-Any message field.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyUnpack_SingularRead_BaselineNonAny);
+
+void BM_AnyUnpack_RepeatedAnyForEach(benchmark::State& state) {
+  // Walk a 10-element repeated-of-Any; each element unwraps to a
+  // different typed message.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyUnpack_RepeatedAnyForEach);
+
+void BM_AnyEq_AnyVsTyped(benchmark::State& state) {
+  // cel_message_eq with one Any operand — single-side peel.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyEq_AnyVsTyped);
+
+void BM_AnyEq_AnyVsAny(benchmark::State& state) {
+  // Both-side peel.  Expected ~2x unpack cost + 1x MessageDifferencer.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyEq_AnyVsAny);
+
+void BM_AnyEq_BaselineNonAny(benchmark::State& state) {
+  // Baseline: M5.B step 2b's cel_message_eq on non-Any operands.
+  if (!kM7aShipped) {
+    state.SkipWithError(kAnyNotShippedMsg);
+    return;
+  }
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(0);
+  }
+}
+BENCHMARK(BM_AnyEq_BaselineNonAny);
+
+// TypeUrl parse — pure kernels that run today (no production-code
+// dependency).  Probe D in m7a-any.md §10.4 reports 10.6 ns
+// happy-path / 3.64 ns no-slash on opt build.
+absl::string_view AnyTypeUrlFqn(absl::string_view type_url) {
+  auto slash = type_url.rfind('/');
+  if (slash == absl::string_view::npos) return type_url;
+  return type_url.substr(slash + 1);
+}
+
+void BM_AnyTypeUrlParse_HappyPath(benchmark::State& state) {
+  const std::string url =
+      "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes";
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(AnyTypeUrlFqn(url));
+  }
+}
+BENCHMARK(BM_AnyTypeUrlParse_HappyPath);
+
+void BM_AnyTypeUrlParse_NoSlash(benchmark::State& state) {
+  const std::string url = "TestAllTypes";
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(AnyTypeUrlFqn(url));
+  }
+}
+BENCHMARK(BM_AnyTypeUrlParse_NoSlash);
 
 }  // namespace
 }  // namespace celwasm

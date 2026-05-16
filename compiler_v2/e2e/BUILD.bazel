@@ -110,6 +110,62 @@ cc_test(
     ],
 )
 
+# M7-A e2e test suite — google.protobuf.Any pack / unpack / equality.
+# Sits beside m7_test (M7 proto literals shipped); M7-A is the
+# follow-up that removes M7's descriptor-mismatch tripwire for
+# Any-shaped mismatches.  Most tests SKIP today (M7-A.A/B/C not yet
+# shipped); the regression-cohort (`AnyLiteralRoundTripE2ETest`) is
+# active and pins M7-shipped Any-as-2-field-proto behaviour.  See
+# `m7a-any.md` for slice plan and matrix.
+cc_test(
+    name = "m7a_test",
+    srcs = ["m7a_test.cc"],
+    deps = [
+        "//compiler/testdata:host_fixture_proto2_cc_proto",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# M7B e2e test suite — timestamp / duration surfaces (constructors,
+# arithmetic, ordering, UTC accessors, TZ-aware accessors,
+# conversions).  RED today (every test GTEST_SKIPs); turns on row-
+# by-row as M7B.A → M7B.E slices ship per
+# `doc/implementation-plan/rewrite/m7b-duration-timestamp.md` §5.
+# Conformance unlock target: +78..+94 PASS per the m7b plan §1.
+cc_test(
+    name = "m7b_test",
+    srcs = ["m7b_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M9 e2e test suite — type subsystem (`type(x)` standard function +
 # type-identifier idents like `int` / `bool` / `<message-fqn>`
 # standalone + CEL_TYPE equality).  RED until M9.A lands the

@@ -953,6 +953,116 @@ single row cleanly, not the run.
 
 ---
 
+## 42. Timestamp parse — `timestamp("2009-02-13T23:31:30Z")` (M7B.D)
+
+Per `m7b-duration-timestamp.md` §4.3 (Option C — split runtime/host),
+constructors and formatters that genuinely need a library trampoline
+to the host.  RFC3339 parsing is one of those — Probe B in
+`m7b-duration-timestamp.md` §10 confirmed `absl::ParseTime` admits
+inputs CEL rejects (lowercase `z`, year > 9999, leap-second `23:59:60`,
+two-digit year), so the Layer-2 impl post-validates after absl.
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel_host" "cel_timestamp_parse"
+          (func $cel_timestamp_parse (param i32 i32)))
+
+  (data (i32.const 16)
+        "\05\00\00\00\00\00\00\00\28\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00")
+  (data (i32.const 40) "2009-02-13T23:31:30Z")
+
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $cel_timestamp_parse (i32.const 64) (i32.const 16))
+    (i32.const 64))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+`cel_timestamp_parse` arg layout:
+
+  - `out_slot` — 24B CelValue cell that will receive the parsed
+    `{CEL_TIMESTAMP(13), payload.ts = CelDurTs{seconds, nanos, _pad}}`.
+    On parse failure the Layer-2 impl writes `{CEL_ERROR,
+    CEL_ERR_INVALID_ARG}` here instead — no trap.
+  - `str_slot` — 24B CelValue with `kind = CEL_STRING(5)` and
+    span pointing to the source body.  Any non-string in this slot
+    routes to `{CEL_ERROR, CEL_ERR_TYPE_MISMATCH}`.
+
+The companion overloads — `cel_host.cel_duration_parse`,
+`cel_host.cel_timestamp_format`, `cel_host.cel_duration_format` —
+follow the same shape with body-specific Layer-2 dispatch.  Spec-
+parity admit/reject pinned by `m7b-duration-timestamp.md` §6.2.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/42_timestamp_parse.wat`.
+
+---
+
+## 43. Timestamp UTC accessor — `ts.getDate()` (M7B.C)
+
+The pure-wasm half of the Option-C split.  Per
+`m7b-duration-timestamp.md` §4.8, all 10 UTC accessor overloads
+project a field of the shared `CelCivil` struct that
+`cel_civil_from_seconds` produces — Probe A in §10 confirmed
+Hinnant's `civil_from_days` algorithm is bit-identical to
+`absl::ToCivilSecond(UTCTimeZone())` across the §6.4 quirk grid
+(Y2K leap-divisible-400, century-not-leap, langdef Y0001 lower
+bound, Y9999 upper bound).  No host trampoline; the runtime kernel
+stays descriptor-free per `design.md` §4.7.6.
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_ts_day_of_month_1_utc"
+          (func $cel_ts_day_of_month_1_utc (param i32 i32)))
+
+  (func $eval (result i32)
+    (local $ts_off i32)
+    (local.set $ts_off (i32.const 16))
+    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $cel_ts_day_of_month_1_utc
+          (i32.const 40)
+          (local.get $ts_off))
+    (i32.const 40))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+`cel_ts_day_of_month_1_utc` arg layout:
+
+  - `out_slot` — 24B CelValue cell receiving `{CEL_INT(2), i = day_1}`
+    where `day_1 ∈ [1, 31]` per langdef §"Timestamps and Durations".
+  - `ts_slot` — 24B CelValue with `kind = CEL_TIMESTAMP(13)`.  Other
+    kinds route to `CEL_ERROR(TYPE_MISMATCH)`.
+
+The 9 sibling UTC accessor helpers (`cel_ts_year_utc`,
+`cel_ts_month_utc`, `cel_ts_day_of_month_utc`,
+`cel_ts_day_of_year_utc`, `cel_ts_day_of_week_utc`,
+`cel_ts_hours_utc`, `cel_ts_minutes_utc`, `cel_ts_seconds_utc`,
+`cel_ts_milliseconds_utc`) follow this exact shape — same 2-arg
+ABI, same `cel_civil_from_seconds` core, different `CelCivil`
+field projection.  The duration accessor helpers (`cel_dur_hours`,
+`cel_dur_minutes`, `cel_dur_seconds`, `cel_dur_milliseconds`) are
+the same shape with integer-truncating division on `seconds` /
+`nanos` instead of the civil-calendar walk.
+
+The companion two-arg form `ts.getDate('America/Los_Angeles')`
+(M7B.E) does need a host trampoline because the IANA tzdata
+database lives on the host — that lowers to
+`cel_host.cel_timestamp_tz_accessor(out, ts, tz, kind=2)`, an
+Option-C tradeoff documented in `m7b-duration-timestamp.md` §4.3.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/43_timestamp_accessor.wat`.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

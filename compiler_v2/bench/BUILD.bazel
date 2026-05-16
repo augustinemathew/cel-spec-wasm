@@ -23,6 +23,7 @@ cc_binary(
     tags = ["manual"],
     deps = [
         "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
         "@com_google_benchmark//:benchmark_main",
     ],
 )
@@ -52,6 +53,7 @@ cc_binary(
         "@com_google_benchmark//:benchmark_main",
     ],
 )
+
 
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table

@@ -238,6 +238,89 @@ regression that doesn't show up in any kernel is the wasmtime
 trampoline or the host marshal path; a regression that DOES show up
 in a kernel is the kernel's fault.
 
+## M7B time benchmarks
+
+The runtime-kernel microbenches for the timestamp / duration surface
+scoped in
+[`doc/implementation-plan/rewrite/m7b-duration-timestamp.md`][m7b]
+live in **`bench/kernel_bench.cc`** (`//compiler_v2/bench:kernel_bench`)
+alongside the other runtime-kernel BMs.  No separate bench binary
+per milestone: kernels go in `kernel_bench`, pipeline scenarios go
+in `pipeline_bench`.  Today most M7B kernel BMs are guarded behind
+`CELWASM_M7B_SHIPPED` since the kernels themselves don't exist yet;
+they turn on row-by-row as M7B.B / M7B.C land.
+
+Bench names + per-bench purpose:
+
+  - `BM_DurationAdd` (M7B.B) — `dur(60.5s) + dur(120.75s)`, exercises
+    the nanos-carry arm of `cel_dur_add_at_vv`.  Expected: within
+    ~2× of `BM_IntAddBaseline`.
+  - `BM_DurationSub` (M7B.B) — `dur(120s) - dur(60.000000001s)`,
+    exercises the nanos-borrow arm.
+  - `BM_TimestampSubTimestamp` (M7B.B) — `ts - ts → dur` returning a
+    full normalised duration; baseline for the
+    `subtract_timestamp_timestamp` overload-id path.
+  - `BM_TimestampAddDuration` (M7B.B) — the most common ts+dur shape
+    a CEL policy can hit (rate-limit-style `ts + dur('1m')`).
+  - `BM_TimestampYearUtc` (M7B.C) — pure-wasm civil-calendar walk
+    via `cel_civil_from_seconds` projected to `getYear()`.  The
+    hot-path perf budget for any expression that chains UTC
+    accessors.  Expected: 5–10× a numeric kernel call (the integer-
+    divide cascade in `civil_from_days`).  Probe A confirmed
+    bit-correctness vs `absl::ToCivilSecond`; this bench measures
+    the cost.
+  - `BM_TimestampYearUtcLangdefMax` (M7B.C) — Y9999 worst-case
+    civil walk.  Surfaces any era-loop hotspot at the upper bound;
+    sibling-deviation from `BM_TimestampYearUtc` >2× indicates an
+    algorithmic asymmetry.
+  - `BM_TimestampDayOfWeekUtc` (M7B.C) — different field projection
+    out of the same `CelCivil` struct.  Should sit in the same cost
+    band as `BM_TimestampYearUtc`.
+  - `BM_DurationHours` (M7B.C) — truncating int-division on
+    `seconds`.  No civil walk; should sit in the
+    `BM_IntAddBaseline` cost band.
+
+The host-trampoline parse bench (`cel_host.cel_timestamp_parse` for
+M7B.D) belongs in `pipeline_bench.cc` because the trampoline is only
+reachable through wasmtime; it lands when M7B.D ships.  Expected per
+the plan §11: 1–2 orders of magnitude slower than the kernel benches
+(per-call wasm↔host boundary cross + `absl::ParseTime` state machine
++ Layer-2 post-validation against the CEL admit-set identified by
+Probe B).
+
+## M7-A Any pack / unpack benchmarks
+
+The runtime-kernel microbenches for `google.protobuf.Any` pack /
+unpack / equality scoped in
+[`doc/implementation-plan/rewrite/m7a-any.md`][m7a] also live in
+`bench/kernel_bench.cc`.  Gated by `kM7aShipped = false` today;
+turn on when M7-A.A/B/C ship.  Cohort:
+
+  - `BM_AnyPack_SingularField_Reflection` — recommended pack path
+    (probe A; reflection-via-SetString).
+  - `BM_AnyPack_SingularField_TypedCast` — comparand (typed
+    `dynamic_cast<Any*>` + `PackFrom`).  Faster for generated
+    descriptors but fails on dynamic pools; bench measures the
+    delta to decide whether to grow a fast-path.
+  - `BM_AnyPack_SingularField_BaselineCopyFrom` — non-Any baseline.
+  - `BM_AnyUnpack_SingularRead`, `_BaselineNonAny`,
+    `_RepeatedAnyForEach` — read-side unwrap costs.
+  - `BM_AnyEq_AnyVsTyped`, `_AnyVsAny`, `_BaselineNonAny` — the
+    peel + recursive `cel_value_eq` cost vs M5.B step 2b baseline.
+  - `BM_AnyTypeUrlParse_HappyPath`, `_NoSlash` — active today; pure
+    string-slice kernel.  Probe D measured ~10.5 ns / 3.6 ns
+    (well below the descriptor-pool / factory costs).
+
+[m7a]: ../../doc/implementation-plan/rewrite/m7a-any.md
+[m7b]: ../../doc/implementation-plan/rewrite/m7b-duration-timestamp.md
+
+Run M7B + M7-A kernel benches together:
+
+```bash
+bazel run -c opt //compiler_v2/bench:kernel_bench -- \
+    --benchmark_filter='BM_(Duration|Timestamp|Any)'
+```
+
 ## Future work
 
   - **wasm32-side bench.**  Google Benchmark doesn't trivially link
