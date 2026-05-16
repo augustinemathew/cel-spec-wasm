@@ -55,6 +55,43 @@ cc_binary(
 )
 
 
+# Throwaway baseline benchmark for M7B (Timestamp/Duration).  Times
+# the cel-cpp interpreter on a curated cohort drawn from the
+# conformance corpus; gives us a number to compete against when
+# M7B's pure-wasm kernels + host trampolines land.  Delete when M7B
+# ships a paired bench.
+#
+#   bazel run -c opt //compiler_v2/bench:cel_cpp_ts_dur_bench -- \
+#       --benchmark_min_time=0.1s
+cc_binary(
+    name = "cel_cpp_ts_dur_bench",
+    srcs = ["cel_cpp_ts_dur_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "@cel-cpp//checker:validation_result",
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_proto",
+        "@cel-cpp//common:value",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:runtime_builder",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_benchmark//:benchmark_main",
+        "//proto/cel/expr:checked_cc_proto",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in compiler_v2/README.md.  Not a benchmark (no timing); just a
