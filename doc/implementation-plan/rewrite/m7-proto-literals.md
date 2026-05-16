@@ -753,13 +753,12 @@ graduates, and the milestone-or-slice that picks it up.
 
 ### Out-of-scope-per-plan deferrals (still future work)
 
-  - **`Any` pack/unpack** (~+5–8 PASS).  M7.A–E install a
-    descriptor-mismatch guard at every `CopyFrom` site so
-    `TestAllTypes{single_any: BoolValue{...}}`-shaped rows fail
-    per-row instead of CHECK-aborting the conformance run.
-    Production `Any` packing requires a runtime descriptor-pool
-    handle exposed through `cel_host`; non-trivial and worth
-    its own milestone.
+  - **`Any` pack/unpack** — **shipped at M7-A** (2026-05-16, +7
+    PASS).  `WriteMessageOrPack` replaces the M7 descriptor-mismatch
+    guards on the pack side; `UnpackAnyToValue` in
+    `ProtoBacking::ReadField` handles read-side unwrap;
+    `PeelAnyForEq` in `CelMessageEqImpl` handles direct-Any-literal
+    equality.  See `m7a-any.md`.
 
   - **Extensions support** (`proto2_ext.textproto` graduation).
     Adds a host import `cel_get_extension(out_slot, msg_slot,

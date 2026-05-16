@@ -1,19 +1,49 @@
 # M7-A — `google.protobuf.Any` pack / unpack
 
-Status: **M7-A.A + M7-A.B + M7-A.C shipped 2026-05-16.**
+Status: **shipped 2026-05-16 across slices A/B/C/D.**
 
-  - **M7-A.A** — pack arm via `WriteMessageOrPack`; fixture extended.
+  - **M7-A.A** — pack arm via `WriteMessageOrPack`; fixture
+    extended with `single_any / repeated_any / map_str_to_any`.
   - **M7-A.B** — read-side unwrap via `UnpackAnyToValue` in
     `ProtoBacking::ReadField`; frontend §3.5.A select-through-Any
     carve-out admits `msg.single_any.x` past `RejectDyn`.
   - **M7-A.C** — `PeelAnyForEq` prelude in `CelMessageEqImpl` lets
     direct Any-literal operands compare against typed messages and
-    other Any-literals (Any-vs-typed, Any-vs-Any cross-descriptor,
-    same-descriptor-different-byte payload).
+    other Any-literals.
+  - **M7-A.D** — sibling docs reconciled (`m7-proto-literals.md`
+    §9, `m8-wrapper-types.md` §2.2, `conformance/README.md`
+    forecast + closed-milestones, `testing-checklist.md`
+    "Rewrite M7-A" section).
 
-Conformance: 1058 → 1065 (+7 PASS) for M7-A as a whole.  M7-A.D
-closeout follows.  Depends on M7 (shipped); independent of M8
-and M7-B.
+Conformance: 1058 → 1065 (+7 PASS) for M7-A as a whole.
+
+**Plan-vs-execution deltas.**
+
+  - **CelHostBindings.descriptor_pool field NOT added.**  §4.4
+    proposed adding a raw `DescriptorPool*` field; §10.5
+    recommended Option A.  As-shipped, M7-A.B uses the Any
+    field's *own* pool via `field->message_type()->file()->pool()`
+    — equivalent reach without the new field.  The cross-pool
+    case (embedder pool ≠ Any-field pool) lands in Future Work
+    when an actual schema-source-pool fixture needs it.
+  - **§3.5.A frontend carve-out scope expanded.**  The plan
+    framed §3.5.A as type-the-select-as-string/bytes for the
+    well-known fields and route the rest through unwrap.
+    As-shipped, the carve-out is simpler: admit ANY select
+    whose operand types as `google.protobuf.Any` (recursive
+    for chained selects), letting the runtime handle the
+    field resolution.  The well-known type_url/value paths
+    naturally fall out of the regular CPPTYPE_STRING reflection
+    arm — no special-casing needed.
+  - **MessageDifferencer's default Any-aware mode handles the
+    common conformance rows** (`comparisons.textproto ::
+    eq_proto*_any_unpack_*`) at the outer-message level.
+    M7-A.C's `PeelAnyForEq` is needed for direct-Any-literal
+    operands that don't pass through the outer
+    `MessageDifferencer::Equals` — pinned by
+    `AnyEqualityE2ETest::DirectAnyLiteralEqualsTypedMessageViaPeel`.
+
+Depends on M7 (shipped); independent of M8 and M7-B.
 
 > **Status note.**  This doc is LLD-with-probes: §10 lists empirical
 > findings against the running build (conformance + reflection
@@ -931,12 +961,33 @@ Ranked highest → lowest.
 
 ## 9. Future work
 
+  - **`wrappers.textproto :: */to_any` rows (9 wrapper kinds).**
+    After M7-A.B unwraps the Any to a wrapper-typed message
+    (e.g. `Int32Value{value: 1}`), the conformance row expects
+    the further-unwrapped primitive (`1`).  This second
+    auto-unwrap is M8's job (wrapper-message read returns the
+    scalar).  Tracked as the lead unlock for M8.
   - **Wrapper auto-wrap into Any** (`Foo{single_any: 5}` →
     pack into `Int32Value{value: 5}` → pack THAT into Any).
     Out-of-scope; depends on M8.A landing first.  Once M8.A
-    is in, the same `AssignMessageOrPack` helper grows a
+    is in, the same `WriteMessageOrPack` helper grows a
     "scalar RHS + wrapper field" arm; the Any branch reaches
     through it for free.
+  - **§3.5.B carve-out** — admit `list(dyn)` / `map(_, dyn)`
+    whose target field is `repeated Any` / `map<_,Any>`.
+    Today the heterogeneous-list-into-repeated-Any pattern
+    (e.g. `TestAllTypes{repeated_any: [Bar{}, Baz{}]}`) hits
+    `RejectDyn` at the frontend before the runtime sees it.
+    M7-A.A's pack arm already handles the runtime side (the
+    Layer-2 `CelSetFieldAnyPackTest::RepeatedAnyHostSourcePacksTwoElements`
+    test pins it); only the frontend gate needs the carve-out.
+  - **§3.5.C carve-out** — admit direct `Any{type_url, value}`
+    as kStructExpr typed `google.protobuf.Any` (not dyn).
+    Today the carve-out at §3.5.A handles selects through
+    Any-literals; this is the narrower frontend tweak that
+    would let `dynamic.textproto :: any :: literal` rows
+    compile cleanly without leaning on the §3.5.A select
+    carve-out.
   - **Cross-pool unwrap.**  When `SchemaProtoSource` /
     `SchemaDescriptorSet` plumbs a non-generated pool through
     `BuildCelHostBindings`, M7-A.B's resolution needs a

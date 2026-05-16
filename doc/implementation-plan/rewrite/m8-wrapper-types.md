@@ -82,8 +82,15 @@ plan) because:
     → `3`).  cel-cpp ships this; conformance fixtures rarely
     exercise it.  Out of scope for M8; revisit if a fixture row
     surfaces.
-  - **`Any` containing a wrapper.**  Any unpacking is a separate
-    milestone.
+  - **`Any` containing a wrapper.**  Any unpacking shipped at
+    M7-A (`UnpackAnyToValue` in `ProtoBacking::ReadField`); a
+    wrapper-typed message read from an Any field today returns the
+    typed wrapper message (e.g. `Int32Value{value: 1}`) rather than
+    auto-unwrapping to the scalar.  M8.A's `WriteMessageOrPack`
+    extension (the seam M7-A.A factored) is the natural place to
+    add the wrapper auto-unwrap arm — the helper already dispatches
+    on src/dst descriptors and can grow a `wrapper-message + scalar-
+    field` arm without rewriting the cpp_type table.
 
 ## 3. Spec-mandated semantics
 

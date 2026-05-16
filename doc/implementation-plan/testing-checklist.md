@@ -1979,6 +1979,52 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
   - [ ] Comprehension benches — slated for M11 alongside the
         comprehension AST kind.
 
+### Rewrite M7-A — google.protobuf.Any pack/unpack/equality (shipped 2026-05-16)
+
+  - [x] **M7-A.A pack arm** — `WriteMessageOrPack` helper in
+        `compiler_v2/api/internal/cel_host.cc` threaded through
+        4 cpp_type-MESSAGE call sites (singular set, repeated
+        arena append, repeated host append, host-map insert).
+        One helper, three shapes (CopyFrom / Any reflection-pack /
+        M8 wrapper-mismatch).
+  - [x] **Fixture extension** — `compiler/testdata/host_fixture_proto3.proto`
+        gains `single_any = 30`, `repeated_any = 31`,
+        `map_str_to_any = 32`; `BUILD.bazel` depends on
+        `@com_google_protobuf//:any_proto`.
+  - [x] **M7-A.B read-side unwrap** — `UnpackAnyToValue` in
+        `compiler_v2/api/internal/cel_host.cc` parses type_url +
+        value against the Any descriptor's own pool; wired into
+        `ProtoBacking::ReadField`'s CPPTYPE_MESSAGE arm.  Error
+        envelope per probe B: empty type_url → null, FQN
+        unresolved → `kFieldNotFound`, corrupt bytes →
+        `kTypeMismatch`.
+  - [x] **Frontend §3.5.A carve-out** — `IsSelectThroughAny` in
+        `compiler_v2/frontend/parse_and_check.cc` admits SelectExpr
+        nodes whose operand types as `google.protobuf.Any`,
+        recursive so chained selects through Any land too.  This
+        is the dyn-gate concession that makes Any usable for
+        customers (cel-cpp parity).
+  - [x] **M7-A.C equality peel** — `PeelAnyForEq` in
+        `CelMessageEqImpl` unpacks Any operands before
+        `MessageDifferencer::Equals`; handles Any-vs-typed,
+        typed-vs-Any (symmetric), Any-vs-Any cross-descriptor.
+  - [x] **Layer-2 byte-level tests** — 8 cases in
+        `cel_host_test.cc::CelSetFieldAnyPackTest` (round-trip,
+        empty payload, cross-syntax, CopyFrom branch, M8 mismatch
+        rejection, null-clear ordering, repeated-host, map-host).
+  - [x] **E2E coverage** — `compiler_v2/e2e/m7a_test.cc`:
+        AnyPackShape (4 parameterised + 1 TEST_F), AnyUnpack (6),
+        AnyTypeOf (2), AnyReject (5 — probe-B error envelope),
+        AnyEquality (9 — Any-vs-typed, symmetric, two-field-reads,
+        outer-outer, unset, direct-literal-peel, two-Any-literals,
+        different-type_url-unequal), AnyNullClear (3),
+        AnyLiteralRoundTrip (2).
+  - [x] **Conformance unlock** — 1058 → 1065 (+7 PASS).
+        `wrappers.textproto :: */to_any` rows remain FAIL — they
+        require M8's wrapper auto-unwrap (`Int32Value → int`)
+        which is the inner step after M7-A.B unwraps Any to
+        `Int32Value`.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

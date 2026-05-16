@@ -243,8 +243,8 @@ ext-lib FAIL-dominated fixtures.
 | `string.textproto`          |  51 |  40 |   9 |   2 | 78% | 9 SKIPs are all `matches` regex (deferred — no regex engine); 2 FAILs are `size('multibyte')` UTF-8 vs bytes mismatches | regex `matches` ext-lib |
 | `logic.textproto`           |  30 |  21 |   9 |   0 | 70% | 9 SKIPs are all `disable_check:true` rows (parse-only conditional / AND / OR coercion tests) | Out-of-scope by design |
 | `enums.textproto`           |  85 |  55 |   2 |  28 | 65% | M9 graduated 15 `type_value` envelope SKIPs (12 → 0); 28 FAILs persist on dyn / wrapper / repeated-enum-as-object-value paths | classifier tightening + M8 |
-| `proto3.textproto`          |  85 |  52 |  19 |  14 | 61% | 14 FAILs split across wrapper-typed (M8), Any-pack (M7-future), enum-on-message-read | M8 + Any |
-| `proto2.textproto`          | 118 |  55 |  49 |  14 | 47% | 14 FAILs: ~9 wrapper-typed (M8), ~3 Any/Struct/Value pack (M7-future), ~2 misc; 18 SKIPs still in `type_value` envelope | M8 + Any |
+| `proto3.textproto`          |  85 |  53 |  19 |  13 | 62% | 13 FAILs split across wrapper-typed (M8) and enum-on-message-read; Any pack/unpack landed at M7-A | M8 |
+| `proto2.textproto`          | 118 |  56 |  49 |  13 | 47% | 13 FAILs: ~9 wrapper-typed (M8), ~2 Struct/Value pack (M7-future), ~2 misc; 18 SKIPs still in `type_value` envelope; Any pack/unpack landed at M7-A | M8 |
 | `fields.textproto`          |  60 |  26 |  28 |   6 | 43% | 13 SKIPs `dyn(aggregate)`; 8 `type_env: map_type`; 5 `disable_check`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | map-type marshalling + M5.D step 2 |
 | `namespace.textproto`       |  14 |   4 |  10 |   0 | 29% | 6 SKIPs are comprehension-shaped (`[0].exists(y, ...)`); 4 are `disable_check` self-eval | Comprehensions follow-on |
 | `wrappers.textproto`        |  36 |   9 |  18 |   9 | 25% | 9 PASSes via wrapper construction; 9 FAILs and 18 `static_subset`-classified SKIPs gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
@@ -314,7 +314,6 @@ not to predict exact PASS counts.
 | **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
 | **Timestamps** (not yet scheduled) | `timestamps.textproto` (76 rows) + 4 of 5 remaining `conversions.textproto` SKIPs (timestamp / duration conversion arms carved out of M10) + timestamp/duration `compile unimpl` SKIPs scattered across `proto2` / `proto3` (~50 rows) | ~+90 |
 | **Chained-null read fix** (cel-cpp's null-propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
-| **`Any` packing** (M7-future) | `wrappers.textproto` to_any rows + downstream Any-comparison rows | ~+5–9 |
 | **Enum-set-on-message diagnosis** | FAILs in `enums.textproto` `repeated_field_assign/*` + `single_field_assign/*` | ~+5–10 |
 | **Extensions pass** | `bindings_ext`, `block_ext`, `encoders_ext`, `math_ext`, `network_ext`, `optionals`, `string_ext`, `proto2_ext` | ~+680 |
 | **M9 follow-up** (`check_only:true` + `typed_result:` matcher) | 25 SKIPs in `type_deduction.textproto` (the M9.F runner change graduated the eval-style typed-result cohort; the check-only cohort still early-outs) | ~+25 |
@@ -326,6 +325,11 @@ not to predict exact PASS counts.
 
 **Closed milestones** (no longer in this forecast):
 
+  - **M7-A google.protobuf.Any** (shipped 2026-05-16 across slices
+    A/B/C): +7 PASS.  Pack (WriteMessageOrPack), read-side unwrap
+    (UnpackAnyToValue + frontend §3.5.A select-through-Any
+    carve-out), equality peel (PeelAnyForEq).  Most `wrappers.textproto :: */to_any`
+    rows still FAIL — they require M8's wrapper auto-unwrap.
   - **M7 proto literals** (shipped 2026-04-25 across slices A–E +
     §4.5 polish + envelope/matcher widen + proto2 unblock):
     +221 PASS.
