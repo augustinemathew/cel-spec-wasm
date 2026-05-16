@@ -802,7 +802,8 @@ Ranked highest → lowest.
 ## 8. Out-of-scope (re-stated)
 
   - Timestamp / duration conversions — sibling timestamps
-    slice (§2.2).
+    slice (§2.2).  *Shipped at M7B (2026-05-16); see
+    `m7b-duration-timestamp.md` for the full surface.*
   - `type(x)` / `dyn(x)` — already shipped (M9 / M5).
   - Hex / octal / binary integer string parsing — cel-cpp
     deviation territory.
@@ -813,9 +814,11 @@ Ranked highest → lowest.
 ## 9. Future work
 
   - **Timestamp / duration conversions** (~30 conversion arms)
-    — bundled into the timestamps slice plan.  Includes the
-    `int64_to_timestamp`, `string_to_timestamp`,
-    `timestamp_to_string`, and matching duration variants.
+    — **shipped at M7B (2026-05-16)**.  M7B.D landed the 12
+    conversion ids (`int64_to_timestamp` /
+    `string_to_timestamp` / `timestamp_to_string` / identity /
+    matching duration variants); M7B.B-E landed the arithmetic,
+    ordering, and accessor surfaces.
   - **Hex float string parsing** — `0x1p10` and friends.
     Surface if a fixture row demands it.
   - **Shortest-round-trip `double_to_string` (Grisu/Ryu)** —

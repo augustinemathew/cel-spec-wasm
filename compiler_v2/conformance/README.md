@@ -8,7 +8,8 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1065 (43.4%) · skip=693 (28.2%) · fail=696 (28.4%)`
+`total=2454 · pass=1137 (46.3%) · skip=602 (24.5%) · fail=715 (29.1%)`
+(post-M7B, 2026-05-16; +79 PASS vs the M10-closeout 1058 baseline)
 across 30 loadable fixtures.  The most recent landings:
 
   - **M7-A.C cel_message_eq Any-peel** (2026-05-16): 0 conformance-row
@@ -178,7 +179,7 @@ those.  Sorted by total SKIP count descending.
 | `string_ext.textproto`      | 122 |  0 | 44 | 78 |  0 | 0 |  0 |
 | `dynamic.textproto`         |  92 | 72 | 20 |  0 |  0 | 0 |  0 |
 | `math_ext.textproto`        |  83 |  0 |  0 | 83 |  0 | 0 |  0 |
-| `timestamps.textproto`      |  76 |  0 |  0 |  2 | 74 | 0 |  0 |
+| `timestamps.textproto`      |   0 |  0 |  0 |  0 |  0 | 0 |  0 |
 | `comparisons.textproto`     |  52 | 28 | 21 |  0 |  0 | 3 |  0 |
 | `proto2.textproto`          |  49 | 19 |  6 | 18 |  6 | 0 |  0 |
 | `type_deduction.textproto`  |  47 |  0 |  0 | 22 |  0 | 0 | 25 |
@@ -251,7 +252,7 @@ ext-lib FAIL-dominated fixtures.
 | `dynamic.textproto`         | 226 |   4 |  92 | 130 |  2% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`; 130 FAILs are dyn-shaped construction reaching past the gate | Never (static subset) + classifier tightening |
 | `unknowns.textproto`        |   0 |   0 |   0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `macros.textproto`          |  44 |   0 |  44 |   0 |  0% | 38 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 `dyn(aggregate)` rejections | Comprehensions follow-on |
-| `timestamps.textproto`      |  76 |   0 |  76 |   0 |  0% | `timestamp(...)` / `duration(...)` constructors, date arithmetic | Timestamps slice (post-M7) |
+| `timestamps.textproto`      |  76 |  69 |   0 |   7 | 91% | 7 FAILs in the `*_range/*` over/under cohort — results just past the proto-Duration ±10,000-year boundary that cel-cpp considers overflow but our int64 representation accepts (e.g. `ts(year-1) - ts(year-9999)` yields ~-315.5B seconds; cel-cpp's range check uses a slightly tighter bound).  Otherwise all 69 rows pass post-M7B | M7B shipped 2026-05-16 (M7B.A-E) |
 | `type_deduction.textproto`  |  47 |  20 |  25 |   2 | 43% | M9.F's `kTypedResult` matcher graduates eval-style rows; the 25 remaining SKIPs are `check_only:true` typed-result rows that early-out before reaching the comparator | M9 follow-up (check_only typed-result path) |
 | `proto2_ext.textproto`      |  18 |   0 |  18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) — `type_value` envelope SKIP | extensions pass |
 | `bindings_ext.textproto`    |   8 |   0 |   0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
@@ -312,7 +313,7 @@ not to predict exact PASS counts.
 |---|---|---:|
 | **M8 wrappers** (auto-wrap on construction + wrapper-vs-scalar `==` peel) | `wrappers.textproto` (27 rows) + the 27 `comparisons.eq_wrapper/*` FAILs + wrapper-typed field rows in `proto2`/`proto3` | ~+50–60 |
 | **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
-| **Timestamps** (not yet scheduled) | `timestamps.textproto` (76 rows) + 4 of 5 remaining `conversions.textproto` SKIPs (timestamp / duration conversion arms carved out of M10) + timestamp/duration `compile unimpl` SKIPs scattered across `proto2` / `proto3` (~50 rows) | ~+90 |
+| **Timestamps** (shipped M7B, 2026-05-16) | `timestamps.textproto`: 0/76 → 69/76 (7 FAILs on proto-Duration boundary corners — see fixture row); scattered timestamp/duration `compile unimpl` SKIPs across `proto2` / `proto3` / `conversions` graduated.  Net corpus delta: pass 1058 → 1137 (**+79**). | shipped +79 |
 | **Chained-null read fix** (cel-cpp's null-propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
 | **Enum-set-on-message diagnosis** | FAILs in `enums.textproto` `repeated_field_assign/*` + `single_field_assign/*` | ~+5–10 |
 | **Extensions pass** | `bindings_ext`, `block_ext`, `encoders_ext`, `math_ext`, `network_ext`, `optionals`, `string_ext`, `proto2_ext` | ~+680 |

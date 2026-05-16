@@ -27,8 +27,18 @@
 #define TIMESTAMP_MIN_SECONDS (-62135596800LL)
 #define TIMESTAMP_MAX_SECONDS (253402300799LL)
 
+// proto Duration text format range — 10,000 years.  Per cel-cpp /
+// langdef, arithmetic results outside this range produce an error
+// (mirrors `google.protobuf.Duration`'s documented seconds bound).
+#define DURATION_MIN_SECONDS (-315576000000LL)
+#define DURATION_MAX_SECONDS (315576000000LL)
+
 static inline int timestamp_in_range(int64_t seconds) {
   return seconds >= TIMESTAMP_MIN_SECONDS && seconds <= TIMESTAMP_MAX_SECONDS;
+}
+
+static inline int duration_in_range(int64_t seconds) {
+  return seconds >= DURATION_MIN_SECONDS && seconds <= DURATION_MAX_SECONDS;
 }
 
 // ----- shared helpers (file-local) ----------------------------------------
@@ -118,6 +128,10 @@ static void run_arith(CelValue* out, const CelValue* a, const CelValue* b,
     return;
   }
   if (spec.result_kind == CEL_TIMESTAMP && !timestamp_in_range(r.seconds)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  if (spec.result_kind == CEL_DURATION && !duration_in_range(r.seconds)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -522,9 +536,10 @@ void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
     poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  // Any int64 fits a valid duration's seconds slot (no langdef
-  // range check; the proto-Duration ±315B range is enforced only
-  // at the parse-trampoline boundary).
+  if (!duration_in_range(a->payload.i)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
   out->kind = CEL_DURATION;
   out->payload.dur =
       (CelDurTs){.seconds = a->payload.i, .nanos = 0, ._pad = 0};

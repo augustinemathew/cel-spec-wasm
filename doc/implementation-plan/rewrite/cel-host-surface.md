@@ -1115,7 +1115,7 @@ message FunctionSet {
   repeated string runtime_imports = 1;
 
   // cel_host.* fixed host imports (field read/has/set/make/eq +
-  // log).  Host binds these.
+  // log + M7B parse/format/tz-accessor).  Host binds these.
   repeated string host_fixed_imports = 2;
 
   // cel_host.* custom imports (registered by the embedder).  Host

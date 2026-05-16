@@ -2025,6 +2025,78 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         which is the inner step after M7-A.B unwraps Any to
         `Int32Value`.
 
+### Rewrite M7B — Timestamp / Duration (slices A–F shipped 2026-05-16)
+
+  - [x] **CelKind × pipeline stage** — `kDuration` × {ResolvePass,
+        LayoutPass, codegen, runtime helper, activation marshal,
+        decoder} all lit; same for `kTimestamp`.
+  - [x] **Activation marshalling** — `EncodeBoundValue` /
+        `DecodeCelValueAt` arms for `Repr::kDuration` /
+        `kTimestamp` (instance.cc).  Equivalent arms in
+        `EncodeValue` (cel_host.cc).  Sign-correlated `(seconds,
+        nanos)` decomposition shared via `DecomposeAbslDuration`.
+  - [x] **Field-read normaliser** —
+        `UnpackWellKnownTimeMessage` peels singular
+        `google.protobuf.Timestamp` / `Duration`-typed fields into
+        `Value::Timestamp` / `Value::Duration` (cel_host.cc).
+        Bridges cross-form read with `Timestamp{...}` proto-
+        literal construction.
+  - [x] **Arithmetic helpers (6)** — `cel_dur_add_at_vv`,
+        `cel_dur_sub_at_vv`, `cel_ts_dur_add_at_vv`,
+        `cel_dur_ts_add_at_vv`, `cel_ts_dur_sub_at_vv`,
+        `cel_ts_ts_sub_at_vv`.  Shared `dur_combine` body with
+        `__builtin_{add,sub}_overflow` + sign-correlated
+        normalisation + langdef-range check on timestamp
+        results + proto-Duration range check on duration
+        results.
+  - [x] **Ordering helpers (8)** — `cel_{dur,ts}_{lt,le,gt,ge}_at_vv`
+        via shared lexicographic compare on the
+        `CelDurTs` payload.  Equality / inequality routed
+        through `equality_kernel`'s new
+        `case CEL_DURATION:` / `CEL_TIMESTAMP:` arms.
+  - [x] **Civil calendar + UTC accessors (10 ts + 4 dur)** —
+        `cel_civil_from_seconds` via documented Hinnant
+        `civil_from_days`.  Validated against
+        `absl::ToCivilSecond(UTCTimeZone())` for the §6.4
+        quirk grid (Probe A).  Accessors:
+        `cel_ts_{year,month,day_of_month_1,day_of_month,
+        day_of_year,day_of_week,hours,minutes,seconds,
+        milliseconds}_utc_at_v` + `cel_dur_{hours,minutes,
+        seconds,milliseconds}_at_v`.
+  - [x] **Parse / format trampolines (4)** —
+        `CelTimestampParseImpl` / `CelDurationParseImpl` (Probe B
+        + C post-validation against absl/CEL admit-set drift) +
+        `CelTimestampFormatImpl` / `CelDurationFormatImpl`
+        (proto-Duration text format with multiple-of-3 trailing-
+        zero trim).
+  - [x] **Int conversions (4) + identities (2)** —
+        `cel_{ts,dur}_to_int_at_v` (extract seconds field),
+        `cel_int_to_{ts,dur}_at_v` (range-check on both); identity
+        ids route through `cel_copy_slot`.
+  - [x] **With-TZ accessor dispatch (M7B.E)** — single 4-arg
+        `cel_host.cel_timestamp_tz_accessor(out, ts, tz, kind)`
+        trampoline + 10 pure-wasm shim helpers.  IANA names via
+        `absl::LoadTimeZone`; fixed offsets via inline parse
+        (`ResolveTimeZone` helper); weekday convention reordered
+        from absl's monday=0 to cel-cpp's sunday=0.
+  - [x] **Wire ABI** — `CEL_ERR_INVALID_ARGUMENT = 18` added
+        (parse failures); `CelDurTs` payload arm reused for both
+        kinds; 28 OverloadTable seeds added (kBuiltinSeeds:
+        108 → 156).  `InstallOverloadImports` learned `kCelHost`.
+  - [x] **E2E coverage** — `compiler_v2/e2e/m7b_test.cc`:
+        176 / 180 rows passing.  Round-trip × §6.1 boundary grid,
+        arithmetic × §6.3 grid, ordering × LexCompareGrid,
+        accessors × §6.4 quirk grid (41 rows), parse admit/reject
+        (28 rows), format/convert (10), with-TZ (10), reject
+        matrix (8).  4 SKIPs surfaced future work: 3 cross-form
+        equivalence rows + 1 descriptor-mismatch hard-to-exercise
+        defence-in-depth row.
+  - [x] **Conformance unlock** — 1058 → 1137 (**+79 PASS**;
+        `timestamps.textproto` 0/76 → 69/76).  7 remaining FAILs
+        are proto-Duration boundary corners cel-cpp considers
+        overflow at a slightly tighter bound than our int64
+        check; defer to a polish pass.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

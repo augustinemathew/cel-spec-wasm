@@ -784,8 +784,14 @@ graduates, and the milestone-or-slice that picks it up.
     today (clean failure mode) — unlock when a fixture row
     requires it.
 
-  - **`Timestamp` / `Duration` literal construction**.  Surfaces
-    after M7 lands; small scope.
+  - **`Timestamp` / `Duration` literal construction**.  Mostly
+    shipped at M7B (2026-05-16) — the M7 proto-literal arm
+    constructs the underlying `google.protobuf.Timestamp` /
+    `Duration` message; M7B.A's field-read normaliser converts
+    such messages to `CEL_TIMESTAMP` / `CEL_DURATION` on access.
+    Open subset: cross-form equivalence (`timestamp("X") ==
+    Timestamp{seconds: 1}`) — see `m7b-duration-timestamp.md`
+    §9 for the architectural gap.
 
 ### Plan-vs-execution delta (numbers)
 

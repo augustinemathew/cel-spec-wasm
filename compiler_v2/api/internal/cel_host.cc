@@ -2836,6 +2836,17 @@ absl::Status CelDurationParseImpl(uint32_t out_slot, uint32_t str_slot,
   }
   CelValue out_cv{};
   WriteDurTsPayload(d, CEL_DURATION, &out_cv);
+  // proto-Duration range check: cel-cpp's
+  // `EncodeDurationToJson` rejects > ±315B seconds.  Without this
+  // check, `duration("320000000000s")` parses cleanly and
+  // produces a CelValue that the runtime arithmetic kernel would
+  // then reject — surfacing the error at the parse boundary
+  // matches cel-cpp's wire surface.
+  if (out_cv.payload.dur.seconds < -315576000000LL ||
+      out_cv.payload.dur.seconds > 315576000000LL) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
   ctx.mem.WriteCelValue(out_slot, out_cv);
   return absl::OkStatus();
 }

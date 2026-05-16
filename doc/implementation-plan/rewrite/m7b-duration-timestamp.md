@@ -1,7 +1,41 @@
 # M7B — Timestamp and Duration
 
-Status: **in flight — A/B/C/D/E shipped 2026-05-16; F (closeout)
-pending.  Depends on M7 (shipped), independent of M8.**
+Status: **shipped 2026-05-16.**  All six slices (A/B/C/D/E/F) on
+master.  Conformance corpus: pass 1058 → 1137 (**+79**;
+`timestamps.textproto` 0/76 → 69/76).  Depends on M7 (shipped),
+independent of M8.
+
+What landed:
+  - M7B.A — `EncodeBoundValue` / `DecodeCelValueAt` arms +
+    `UnpackWellKnownTimeMessage` field-read normaliser.
+  - M7B.B — 6 arithmetic + 8 ordering kernels in
+    `cel_time.{h,c}`; equality arms added to both
+    `cel_value_eq_polymorphic` and the top-level
+    `equality_kernel` dispatcher.
+  - M7B.C — civil-calendar helper (`cel_civil_from_seconds`,
+    Hinnant algorithm) + 10 UTC + 4 duration accessor kernels.
+  - M7B.D — 4 host parse/format trampolines + 6 pure-wasm
+    int<->ts/dur kernels + 2 identity ids via `cel_copy_slot`;
+    `CEL_ERR_INVALID_ARGUMENT` wire code added; Probe-B/C
+    drift-fix post-validations.
+  - M7B.E — single 4-arg with-TZ dispatch trampoline + 10
+    pure-wasm shim helpers; fixed-offset TZ parsing inline.
+  - M7B.F — closeout (this commit): conformance README updated,
+    proto-Duration range check added (reduced timestamps fixture
+    fails by 6).
+
+What's left as future work (§9):
+  - **Cross-form equivalence** between `timestamp("X")` and
+    `Timestamp{seconds: ...}` — 3 e2e tests SKIPed pending an
+    architectural decision (extend kStructExpr arm OR
+    normalise-on-equality).  Doesn't block any current
+    conformance row.
+  - **7 timestamps.textproto `*_range/*` fails** — corner cases
+    where our int64-bound representation accepts values that
+    cel-cpp's bound rejects.  Sub-linear unlock; defer to a
+    targeted polish pass.
+  - **`now()`**, extension-library time ops, leap-second
+    modelling — pre-existing future work.
 
 > **Plan-vs-execution deltas surfaced during M7B.A–D** (read this
 > first if you haven't tracked the slices as they shipped):
@@ -1003,7 +1037,7 @@ the bare-string-constructor surfaces (`timestamp(string)` /
     remaining timestamp/duration SKIPs graduate.
   - **Effort.**  Medium.
 
-### M7B.E — host trampoline for with-TZ accessors  *(shipped 2026-05-16; commit pending below)*
+### M7B.E — host trampoline for with-TZ accessors  *(shipped 2026-05-16, f50e1c2)*
 
 Land the single `cel_timestamp_tz_accessor(out_slot, ts_slot,
 tz_slot, accessor_kind)` trampoline + the 10 overload-id
@@ -1047,7 +1081,7 @@ import name with a fixed `accessor_kind` u32 immediate.
     fixture.
   - **Effort.**  Small.
 
-### M7B.F — closeout
+### M7B.F — closeout  *(shipped 2026-05-16; commit pending below)*
 
   - Run `bazel run //compiler_v2/conformance:run_conformance`
     and record the post-M7B deltas in
