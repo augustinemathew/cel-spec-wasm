@@ -953,14 +953,159 @@ single row cleanly, not the run.
 
 ---
 
-## 42. Timestamp parse — `timestamp("2009-02-13T23:31:30Z")` (M7B.D)
+## 50. Duration + timestamp arithmetic — `dur + dur` and `ts - ts` (M7B.B)
+
+Pure-wasm arithmetic kernels.  Per `m7b-duration-timestamp.md` §4.3
+(Option C — split runtime/host), the 6 arithmetic helpers
+(`cel_dur_add_at_vv`, `cel_dur_sub_at_vv`, `cel_ts_dur_add_at_vv`,
+`cel_dur_ts_add_at_vv`, `cel_ts_dur_sub_at_vv`, `cel_ts_ts_sub_at_vv`)
+plus the 8 ordering helpers stay in pure wasm — all they need is
+`__builtin_add_overflow` on the seconds + nanos-carry, no library
+dependency.  The slot-out ABI is byte-for-byte identical to
+`cel_int_add_at_vv` (see §16).
+
+Two kernels are traced together to lock both the (dur, dur) → dur
+and (ts, ts) → dur signatures — the two "interesting" arithmetic
+shapes.  The other 4 helpers are structurally identical with the
+kind tag swapped between CEL_DURATION(12) and CEL_TIMESTAMP(13).
+
+| Region | Offset | Contents |
+|---|---|---|
+| rodata | `[16, 40)` | `CelValue{CEL_DURATION, dur={3600, 0}}` — `duration("3600s")` |
+| rodata | `[40, 64)` | `CelValue{CEL_DURATION, dur={60, 0}}` — `duration("60s")` |
+| workspace | `[64, 88)` | `cel_dur_add_at_vv` out_slot → `{CEL_DURATION, dur={3660, 0}}` |
+| rodata | `[88, 112)` | `CelValue{CEL_TIMESTAMP, ts={1234567890, 0}}` — `"2009-02-13T23:31:30Z"` |
+| rodata | `[112, 136)` | `CelValue{CEL_TIMESTAMP, ts={1234567889, 0}}` — `"2009-02-13T23:31:29Z"` |
+| workspace | `[136, 160)` | `cel_ts_ts_sub_at_vv` out_slot → `{CEL_DURATION, dur={1, 0}}` |
+| arena | `[160, ...)` | bump |
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_dur_add_at_vv"
+          (func $cel_dur_add_at_vv (param i32 i32 i32)))
+  (import "cel" "cel_ts_ts_sub_at_vv"
+          (func $cel_ts_ts_sub_at_vv (param i32 i32 i32)))
+  ;; rodata at 16/40/88/112 elided for brevity — see the file.
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 160) (i32.const 131072))
+    (call $cel_dur_add_at_vv  (i32.const 64) (i32.const 16) (i32.const 40))
+    (call $cel_ts_ts_sub_at_vv (i32.const 136) (i32.const 88) (i32.const 112))
+    (i32.const 64))
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+Invariants the shape locks:
+
+  - Slot-out ABI `(i32 out_slot, i32 a_slot, i32 b_slot) -> ()` is
+    byte-identical to the M5.B `cel_int_add_at_vv` shape — codegen
+    can reuse `expr_lower.cc::EmitGeneralCall` unchanged once
+    `add_duration_duration` / `subtract_timestamp_timestamp`
+    graduate from `kExplicitlyUnimplementedIds`.
+  - Both helpers write a 24-byte CelValue at out_slot.  The
+    `_pad` field after `nanos` in `CelDurTs` must stay zero —
+    `cel_equals_at_vv` will compare CelDurTs as a 16-byte unit
+    once the M7B.A CEL_DURATION arm lands.
+  - Overflow → `{CEL_ERROR, CEL_ERR_OVERFLOW}` per langdef
+    §"Timestamps and Durations" (NOT wrap).
+  - 3VL absorption mirrors the existing v1 M4 Slice A semantics.
+
+Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+(M7B.B work), table-driven from the OverloadTable.  Reuses the
+M5.B slot-out lowering machinery verbatim.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/50_duration_arithmetic.wat`.
+
+---
+
+## 51. Timestamp UTC accessor — `ts.getFullYear()` (M7B.C)
+
+The pure-wasm half of the Option-C split.  Per
+`m7b-duration-timestamp.md` §4.9, all 10 UTC accessor overloads
+project a field of the shared `CelCivil` struct that
+`cel_civil_from_seconds` produces — Probe A in §10.1 confirmed
+Hinnant's `civil_from_days` algorithm is bit-identical to
+`absl::ToCivilSecond(UTCTimeZone())` across the §6.4 quirk grid
+(Y2K leap-divisible-400, century-not-leap, langdef Y0001 lower
+bound, Y9999 upper bound).  No host trampoline; the runtime kernel
+stays descriptor-free per `design.md` §4.7.6.
+
+This trace pins the 2-arg `(out_slot, v_slot) -> ()` shape for all
+14 accessor helpers — the 10 timestamp UTC accessors AND the 4
+duration accessors (`cel_dur_hours`, `cel_dur_minutes`, `cel_dur_seconds`,
+`cel_dur_milliseconds`).  Only the field projection or division
+ladder differs per-helper.
+
+| Region | Offset | Contents |
+|---|---|---|
+| workspace | `[16, 40)` | bound `ts` slot → `{CEL_TIMESTAMP, ts={1234567890, 0}}` |
+| workspace | `[40, 64)` | `cel_ts_year_utc` out_slot → `{CEL_INT, i=2009}` |
+| arena | `[64, ...)` | bump |
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_ts_year_utc"
+          (func $cel_ts_year_utc (param i32 i32)))
+  (func $eval (result i32)
+    (local $ts_off i32)
+    (local.set $ts_off (i32.const 16))
+    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $cel_ts_year_utc
+          (i32.const 40)
+          (local.get $ts_off))
+    (i32.const 40))
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+`cel_ts_year_utc` arg layout:
+
+  - `out_slot` — 24B CelValue cell receiving `{CEL_INT(2), i = year}`
+    where `year ∈ [1, 9999]` per langdef §"Timestamps and Durations".
+  - `ts_slot` — 24B CelValue with `kind = CEL_TIMESTAMP(13)`.  Other
+    kinds route to `CEL_ERROR(TYPE_MISMATCH)`; UNKNOWN/ERROR pass
+    through verbatim.
+
+Invariants the shape locks:
+
+  - 2-arg `(out, v)` slot-out form; nanos field is read but ignored
+    by the year accessor (resolves to year-level only).
+  - `cel_civil_from_seconds` is a shared internal helper, NOT a
+    public ABI export — the 10 timestamp UTC accessors are the
+    public surface.
+  - The companion two-arg form `ts.getFullYear('America/Los_Angeles')`
+    goes through a different (host trampoline) ABI surface — see §54.
+
+Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+(M7B.C work).  The 9 sibling timestamp UTC accessors AND the 4
+duration accessors use this same lowering shape with a different
+helper name.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/51_timestamp_year_utc.wat`.
+
+---
+
+## 52. Timestamp parse — `timestamp("2009-02-13T23:31:30Z")` (M7B.D)
 
 Per `m7b-duration-timestamp.md` §4.3 (Option C — split runtime/host),
 constructors and formatters that genuinely need a library trampoline
 to the host.  RFC3339 parsing is one of those — Probe B in
-`m7b-duration-timestamp.md` §10 confirmed `absl::ParseTime` admits
+`m7b-duration-timestamp.md` §10.2 confirmed `absl::ParseTime` admits
 inputs CEL rejects (lowercase `z`, year > 9999, leap-second `23:59:60`,
 two-digit year), so the Layer-2 impl post-validates after absl.
+
+| Region | Offset | Contents |
+|---|---|---|
+| rodata | `[16, 40)` | `CelValue{CEL_STRING, span={ptr=40, len=20}}` |
+| rodata | `[40, 60)` | `"2009-02-13T23:31:30Z"` |
+| workspace | `[64, 88)` | `cel_timestamp_parse` out_slot → `{CEL_TIMESTAMP, ts={1234567890, 0}}` |
+| arena | `[88, ...)` | bump |
 
 ```wat
 (module
@@ -992,74 +1137,212 @@ two-digit year), so the Layer-2 impl post-validates after absl.
     span pointing to the source body.  Any non-string in this slot
     routes to `{CEL_ERROR, CEL_ERR_TYPE_MISMATCH}`.
 
-The companion overloads — `cel_host.cel_duration_parse`,
-`cel_host.cel_timestamp_format`, `cel_host.cel_duration_format` —
-follow the same shape with body-specific Layer-2 dispatch.  Spec-
-parity admit/reject pinned by `m7b-duration-timestamp.md` §6.2.
+Invariants the shape locks:
+
+  - 2-arg slot-out form, module `cel_host` (not `cel`) — locks the
+    host-vs-runtime split.
+  - Post-absl validation runs in Layer-2 against the CEL admit-set
+    identified by Probe B; the trampoline never traps.
+  - The companion overloads `cel_host.cel_duration_parse`,
+    `cel_host.cel_timestamp_format` use the same 2-arg shape.
+
+Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+once `string_to_timestamp` / `timestamp_to_timestamp` graduate from
+`kExplicitlyUnimplementedIds`.
 
 Authored alongside the WAT file at
-`doc/implementation-plan/rewrite/wat/42_timestamp_parse.wat`.
+`doc/implementation-plan/rewrite/wat/52_timestamp_parse.wat`.
 
 ---
 
-## 43. Timestamp UTC accessor — `ts.getDate()` (M7B.C)
+## 53. Duration format — `string(duration("3600s"))` (M7B.D)
 
-The pure-wasm half of the Option-C split.  Per
-`m7b-duration-timestamp.md` §4.8, all 10 UTC accessor overloads
-project a field of the shared `CelCivil` struct that
-`cel_civil_from_seconds` produces — Probe A in §10 confirmed
-Hinnant's `civil_from_days` algorithm is bit-identical to
-`absl::ToCivilSecond(UTCTimeZone())` across the §6.4 quirk grid
-(Y2K leap-divisible-400, century-not-leap, langdef Y0001 lower
-bound, Y9999 upper bound).  No host trampoline; the runtime kernel
-stays descriptor-free per `design.md` §4.7.6.
+The partner of §52.  Format-side of the Option-C split: the proto
+Duration canonical text format ("3600s", "0.001s", "0.000000001s")
+requires the same fractional-zero-suppression logic cel-cpp
+delegates to `internal::EncodeDurationToJson`.  Layer-2 `*Impl`
+in `cel_host.cc` will own that body; the wasm side just emits the
+trampoline call.
+
+| Region | Offset | Contents |
+|---|---|---|
+| rodata | `[16, 40)` | `CelValue{CEL_DURATION, dur={3600, 0}}` |
+| workspace | `[40, 64)` | `cel_duration_format` out_slot → `{CEL_STRING, span={arena_off, 5}}` for `"3600s"` |
+| arena | `[64, ...)` | bump (Layer-2 cel_allocs the formatted body here) |
 
 ```wat
 (module
   (import "cel" "memory" (memory 2))
   (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_ts_day_of_month_1_utc"
-          (func $cel_ts_day_of_month_1_utc (param i32 i32)))
-
+  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel_host" "cel_duration_format"
+          (func $cel_duration_format (param i32 i32)))
+  ;; rodata @ 16: CEL_DURATION{3600, 0} — elided.
   (func $eval (result i32)
-    (local $ts_off i32)
-    (local.set $ts_off (i32.const 16))
     (call $cel_reset (i32.const 64) (i32.const 131072))
-    (call $cel_ts_day_of_month_1_utc
-          (i32.const 40)
-          (local.get $ts_off))
+    (call $cel_duration_format
+          (i32.const 40)        ;; out_slot
+          (i32.const 16))       ;; dur_slot
     (i32.const 40))
-
   (export "eval" (func $eval))
   (export "memory" (memory 0)))
 ```
 
-`cel_ts_day_of_month_1_utc` arg layout:
+`cel_duration_format` arg layout:
 
-  - `out_slot` — 24B CelValue cell receiving `{CEL_INT(2), i = day_1}`
-    where `day_1 ∈ [1, 31]` per langdef §"Timestamps and Durations".
-  - `ts_slot` — 24B CelValue with `kind = CEL_TIMESTAMP(13)`.  Other
-    kinds route to `CEL_ERROR(TYPE_MISMATCH)`.
+  - `out_slot` — receives `{CEL_STRING(5), span={ptr=<arena_off>,
+    len=<formatted bytes>}}`.  The formatted bytes are cel_alloc'd
+    into the per-Eval arena by the Layer-2 trampoline body.
+  - `dur_slot` — read as CEL_DURATION; any other kind → CEL_ERROR.
 
-The 9 sibling UTC accessor helpers (`cel_ts_year_utc`,
-`cel_ts_month_utc`, `cel_ts_day_of_month_utc`,
-`cel_ts_day_of_year_utc`, `cel_ts_day_of_week_utc`,
-`cel_ts_hours_utc`, `cel_ts_minutes_utc`, `cel_ts_seconds_utc`,
-`cel_ts_milliseconds_utc`) follow this exact shape — same 2-arg
-ABI, same `cel_civil_from_seconds` core, different `CelCivil`
-field projection.  The duration accessor helpers (`cel_dur_hours`,
-`cel_dur_minutes`, `cel_dur_seconds`, `cel_dur_milliseconds`) are
-the same shape with integer-truncating division on `seconds` /
-`nanos` instead of the civil-calendar walk.
+Invariants the shape locks:
 
-The companion two-arg form `ts.getDate('America/Los_Angeles')`
-(M7B.E) does need a host trampoline because the IANA tzdata
-database lives on the host — that lowers to
-`cel_host.cel_timestamp_tz_accessor(out, ts, tz, kind=2)`, an
-Option-C tradeoff documented in `m7b-duration-timestamp.md` §4.3.
+  - Layer-2 trampoline owns arena writes via `cel_alloc(len)`.
+    The wasm caller never sees the formatted bytes pre-cel-alloc.
+  - Trailing-zero suppression follows proto canonical form
+    ("3600s" not "3600.000s") — cel-cpp parity (Probe E).
+  - Same 2-arg slot-out shape as §52 — Layer-2 dispatch tells the
+    parse and format apart by name only.
+
+Codegen call-site: `expr_lower.cc::EmitGeneralCall` once
+`duration_to_string` graduates from `kExplicitlyUnimplementedIds`.
 
 Authored alongside the WAT file at
-`doc/implementation-plan/rewrite/wat/43_timestamp_accessor.wat`.
+`doc/implementation-plan/rewrite/wat/53_duration_format.wat`.
+
+---
+
+## 54. Timestamp accessor with IANA TZ — `ts.getFullYear("America/Los_Angeles")` (M7B.E)
+
+The 10-into-1 dispatch trampoline for with-TZ accessors.  Per
+`m7b-duration-timestamp.md` §4.3, with-TZ accessors fold to ONE
+host import (`cel_host.cel_timestamp_tz_accessor`) parameterised by
+an `accessor_kind` u32 enum — keeps the cel_host ABI surface
+bounded.  The IANA tzdata database lives on the host
+(`absl::TimeZone::Load`); pure wasm has no way to evaluate
+"America/Los_Angeles" without bundling tzdata.
+
+`accessor_kind` enum (matches plan §4.3 / §5 M7B.E):
+
+| Value | Kind | Source method |
+|---:|---|---|
+| 0 | `kYear` | `getFullYear()` |
+| 1 | `kMonth` | `getMonth()` (0-based) |
+| 2 | `kDate` | `getDate()` (1-based) |
+| 3 | `kDayOfMonth` | `getDayOfMonth()` (0-based) |
+| 4 | `kDayOfYear` | `getDayOfYear()` (0-based) |
+| 5 | `kDayOfWeek` | `getDayOfWeek()` (0=Sunday) |
+| 6 | `kHours` | `getHours()` |
+| 7 | `kMinutes` | `getMinutes()` |
+| 8 | `kSeconds` | `getSeconds()` |
+| 9 | `kMilliseconds` | `getMilliseconds()` |
+
+This trace exercises `accessor_kind=0` (kYear) with an IANA name.
+The fixed-offset shape through the same trampoline is in §55.
+
+| Region | Offset | Contents |
+|---|---|---|
+| rodata | `[16, 40)` | `CelValue{CEL_TIMESTAMP, ts={1234567890, 0}}` |
+| rodata | `[40, 64)` | `CelValue{CEL_STRING, span={ptr=64, len=19}}` |
+| rodata | `[64, 83)` | `"America/Los_Angeles"` |
+| workspace | `[88, 112)` | out_slot → `{CEL_INT, i=2009}` |
+| arena | `[112, ...)` | bump |
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel_host" "cel_timestamp_tz_accessor"
+          (func $cel_timestamp_tz_accessor (param i32 i32 i32 i32)))
+  ;; rodata @ 16/40/64 elided.
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 112) (i32.const 131072))
+    (call $cel_timestamp_tz_accessor
+          (i32.const 88)        ;; out_slot
+          (i32.const 16)        ;; ts_slot
+          (i32.const 40)        ;; tz_slot
+          (i32.const 0))        ;; accessor_kind = kYear
+    (i32.const 88))
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+Invariants the shape locks:
+
+  - 4-arg slot-out form `(out, ts, tz, kind)` — same wire shape as
+    the M2 `cel_host.cel_get_field` trampoline.
+  - 10 with-TZ overloads share one host import; `accessor_kind` is
+    an OverloadTable-supplied u32 constant per call site, not a
+    runtime input.
+  - tz string is a regular CEL_STRING — no special encoding.
+  - tz load failure (unknown IANA, malformed offset) → CEL_ERROR
+    at out_slot; the trampoline never traps.
+
+Codegen call-site: `expr_lower.cc::EmitGeneralCall`; the
+OverloadTable carries the per-overload `accessor_kind` constant.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/54_timestamp_year_with_tz.wat`.
+
+---
+
+## 55. Timestamp accessor with fixed-offset TZ — `ts.getHours("+02:00")` (M7B.E)
+
+Fixed-offset flavour of §54.  Same host trampoline, different
+`accessor_kind` (6 = kHours) and tz body ("+02:00" vs IANA name).
+`absl::TimeZone::Load("+02:00")` parses the offset directly without
+touching tzdata, but the trampoline reads it through the same
+`absl::TimeZone` handle — a single Layer-2 impl covers both
+flavours.  Pinning both flavours in WATs forces the trampoline to
+exercise both code paths in the cohort tests.
+
+23:31:30Z + 02:00 = 01:31:30 next day → `getHours = 1`.  This is
+the dateline-cross edge that motivates the with-TZ form at all —
+the no-TZ UTC accessor on the same timestamp gives `getHours = 23`.
+
+| Region | Offset | Contents |
+|---|---|---|
+| rodata | `[16, 40)` | `CelValue{CEL_TIMESTAMP, ts={1234567890, 0}}` |
+| rodata | `[40, 64)` | `CelValue{CEL_STRING, span={ptr=64, len=6}}` |
+| rodata | `[64, 70)` | `"+02:00"` |
+| workspace | `[72, 96)` | out_slot → `{CEL_INT, i=1}` |
+| arena | `[96, ...)` | bump |
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel_host" "cel_timestamp_tz_accessor"
+          (func $cel_timestamp_tz_accessor (param i32 i32 i32 i32)))
+  ;; rodata elided.
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 96) (i32.const 131072))
+    (call $cel_timestamp_tz_accessor
+          (i32.const 72)        ;; out_slot
+          (i32.const 16)        ;; ts_slot
+          (i32.const 40)        ;; tz_slot ("+02:00")
+          (i32.const 6))        ;; accessor_kind = kHours
+    (i32.const 72))
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+Invariants the shape locks:
+
+  - Same trampoline as §54 — fixed-offset tz strings flow through
+    the identical wire shape.
+  - `accessor_kind` constant differs per overload; codegen reads it
+    from the OverloadTable, not from operand-level runtime data.
+  - "+02:00" form goes through `absl::TimeZone::Load` but bypasses
+    the tzdata lookup — Layer-2 should not branch on tz format,
+    absl handles both.
+
+Codegen call-site: same as §54 (`expr_lower.cc::EmitGeneralCall`);
+this WAT just locks the second tz-string shape so the trampoline
+is exercised on both absl branches.
+
+Authored alongside the WAT file at
+`doc/implementation-plan/rewrite/wat/55_timestamp_hours_fixed_offset.wat`.
 
 ---
 

@@ -1623,20 +1623,44 @@ references:
 
 ### 11.2 WAT traces
 
-Two files added under `doc/implementation-plan/rewrite/wat/`,
-both `wasm-as` cleanly:
+Six files added under `doc/implementation-plan/rewrite/wat/`,
+all `wasm-as` cleanly and all instantiating through `wat_runner`
+via no-op stubs registered in
+`compiler_v2/tools/wat_runner/wat_runner.cc::RegisterPendingM7BImports`
+(stubs move to real bindings as each kernel/trampoline ships).
+File numbering matches `§6.9` of this doc:
 
-  - `42_timestamp_parse.wat` — `cel_host.cel_timestamp_parse(out_slot,
+  - `50_duration_arithmetic.wat` — pure-wasm `cel_dur_add_at_vv` +
+    `cel_ts_ts_sub_at_vv` for `duration("3600s") + duration("60s")`
+    and `timestamp(...) - timestamp(...)` (M7B.B).  Two helpers
+    in one $eval to lock both (dur, dur) → dur and (ts, ts) → dur
+    signatures.
+  - `51_timestamp_year_utc.wat` — pure-wasm `cel_ts_year_utc(out_slot,
+    ts_slot)` for `ts.getFullYear()` (M7B.C).  Load-bearing pin for
+    all 14 UTC accessor helpers (10 ts + 4 dur) — structurally
+    identical 2-arg slot-out shape, differs only in field
+    projection / division ladder.
+  - `52_timestamp_parse.wat` — `cel_host.cel_timestamp_parse(out_slot,
     str_slot)` for `timestamp("2009-02-13T23:31:30Z")`.  Host
-    trampoline; codegen emits the call shape after M7B.D ships.
-  - `43_timestamp_accessor.wat` — pure-wasm
-    `cel_ts_day_of_month_1_utc(out_slot, ts_slot)` for
-    `ts.getDate()`.  No host trampoline (UTC-only accessor path
-    per Option C + Probe A's civil-calendar-correctness
-    confirmation).
+    trampoline (M7B.D); codegen emits the call shape after M7B.D
+    ships.
+  - `53_duration_format.wat` — `cel_host.cel_duration_format(out_slot,
+    dur_slot)` for `string(duration("3600s"))`.  Format-side host
+    trampoline (M7B.D); Layer-2 cel_allocs the formatted bytes into
+    the arena and writes the span into out_slot.
+  - `54_timestamp_year_with_tz.wat` — `cel_host.cel_timestamp_tz_accessor(
+    out_slot, ts_slot, tz_slot, accessor_kind=0)` for
+    `ts.getFullYear("America/Los_Angeles")` (M7B.E).  4-arg
+    dispatch trampoline folding all 10 with-TZ accessors into one
+    host import; pins the IANA-name code path.
+  - `55_timestamp_hours_fixed_offset.wat` — same trampoline,
+    `accessor_kind=6` (kHours), tz `"+02:00"` for
+    `ts.getHours("+02:00")` (M7B.E).  Pins the fixed-offset code
+    path through `absl::TimeZone::Load` — exercises a different
+    absl branch than §54 with the same trampoline.
 
-Walkthroughs added in `wat-traces.md` §42 / §43 (immediately
-before "Future entries").  Both files mirror the existing
+Walkthroughs added in `wat-traces.md` §50–§55 (immediately
+before "Future entries").  All files mirror the existing
 `16_arith_int_add.wat` / `08_map_index_host.wat` shape exactly —
 slot-out ABI, rodata layout, codegen call-site comment.
 

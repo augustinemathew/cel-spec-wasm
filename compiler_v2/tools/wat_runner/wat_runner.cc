@@ -545,6 +545,89 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
+// Bind no-op fallbacks for M7B (duration/timestamp) imports that
+// the WAT traces under doc/.../wat/50-55 declare but whose real
+// impls land in M7B.B–E.  Kernel kernels live in module "cel"
+// (alongside cel_int_add_at_vv etc.); host trampolines in module
+// "cel_host".  As each kernel/trampoline ships, the corresponding
+// entry should move from this no-op table into either
+// `kRuntimeExports` (for cel.* kernels exported by
+// cel_runtime.wasm) or a real stub-registration call (for cel_host.*
+// trampolines).
+//
+// Without these, the M7B WATs fail to instantiate via wat_runner
+// (the imports resolve to nothing).  With them, the WATs round-trip
+// through `wasm-as` AND through wasmtime instantiation; callers that
+// want end-to-end execution against a meaningful result wire a stub
+// at the call site.
+absl::Status RegisterPendingM7BImports(wasmtime_linker_t* linker) {
+  // 3-arg `cel.cel_*_at_vv` kernels (M7B.B arithmetic + ordering).
+  static constexpr absl::string_view kCelThreeArg[] = {
+      "cel_dur_add_at_vv",
+      "cel_ts_ts_sub_at_vv",
+  };
+  for (absl::string_view name : kCelThreeArg) {
+    wasm_functype_t* type = HostThreeArgTrampolineType();
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "cel", 3, name.data(), name.size(), type,
+        NoopCelHostThreeArg, nullptr, nullptr);
+    wasm_functype_delete(type);
+    if (err != nullptr) {
+      return WasmtimeErrorToStatus(
+          absl::StrCat("linker.define(cel.", name, ")"), err);
+    }
+  }
+  // 2-arg `cel.cel_ts_*_utc` accessor kernels (M7B.C).  This is the
+  // representative for all 14 accessor helpers — see
+  // `wat/51_timestamp_year_utc.wat` header for the matrix.
+  static constexpr absl::string_view kCelTwoArg[] = {
+      "cel_ts_year_utc",
+  };
+  for (absl::string_view name : kCelTwoArg) {
+    wasm_functype_t* type = HostTwoArgTrampolineType();
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "cel", 3, name.data(), name.size(), type,
+        NoopCelHostThreeArg, nullptr, nullptr);
+    wasm_functype_delete(type);
+    if (err != nullptr) {
+      return WasmtimeErrorToStatus(
+          absl::StrCat("linker.define(cel.", name, ")"), err);
+    }
+  }
+  // 2-arg `cel_host.*` parse/format trampolines (M7B.D).  Each WAT
+  // assumes `(out_slot, in_slot) -> ()`.  Production Layer-2 impls
+  // land in `compiler_v2/api/internal/cel_host.cc`.
+  static constexpr absl::string_view kCelHostTwoArg[] = {
+      "cel_timestamp_parse",
+      "cel_duration_parse",
+      "cel_timestamp_format",
+      "cel_duration_format",
+  };
+  for (absl::string_view name : kCelHostTwoArg) {
+    if (auto st = RegisterCelHostTwoArgNoop(linker, name); !st.ok()) {
+      return st;
+    }
+  }
+  // 4-arg `cel_host.cel_timestamp_tz_accessor` dispatch trampoline
+  // (M7B.E).  Same wire shape as the M2 `cel_host.cel_get_field`
+  // trampoline (`(i32, i32, i32, i32) -> ()`).  Binding a no-op
+  // here keeps WATs that import this name instantiable; production
+  // Layer-2 impl lives in cel_host.cc once M7B.E ships.
+  {
+    wasm_functype_t* type = CelHostTrampolineType();
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "cel_host", 8, "cel_timestamp_tz_accessor",
+        sizeof("cel_timestamp_tz_accessor") - 1, type,
+        NoopCelHostThreeArg, nullptr, nullptr);
+    wasm_functype_delete(type);
+    if (err != nullptr) {
+      return WasmtimeErrorToStatus(
+          "linker.define(cel_host.cel_timestamp_tz_accessor)", err);
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status InitLinker(RunState& s, const WatRunInput& input) {
   s.linker = wasmtime_linker_new(s.engine);
   if (s.linker == nullptr) {
@@ -554,6 +637,7 @@ absl::Status InitLinker(RunState& s, const WatRunInput& input) {
   if (auto st = RegisterCelHostThreeArgTrampolines(s.linker, input); !st.ok()) {
     return st;
   }
+  if (auto st = RegisterPendingM7BImports(s.linker); !st.ok()) return st;
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;
