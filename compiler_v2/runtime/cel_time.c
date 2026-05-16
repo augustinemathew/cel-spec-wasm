@@ -33,12 +33,28 @@
 #define DURATION_MIN_SECONDS (-315576000000LL)
 #define DURATION_MAX_SECONDS (315576000000LL)
 
-static inline int timestamp_in_range(int64_t seconds) {
-  return seconds >= TIMESTAMP_MIN_SECONDS && seconds <= TIMESTAMP_MAX_SECONDS;
+// Sign-correlated (seconds, nanos) range check.  The "raw" form
+// (just seconds) misses corners where seconds is exactly at MIN /
+// MAX and nanos has the same sign (which pushes the real value
+// past the bound).  Used for both timestamp and duration kinds.
+static inline int payload_in_range(int64_t seconds, int32_t nanos,
+                                   int64_t lo, int64_t hi) {
+  if (seconds > hi || seconds < lo) return 0;
+  // Boundary refinement: at MAX a positive nanos overflows; at MIN
+  // a negative nanos overflows.
+  if (seconds == hi && nanos > 0) return 0;
+  if (seconds == lo && nanos < 0) return 0;
+  return 1;
 }
 
-static inline int duration_in_range(int64_t seconds) {
-  return seconds >= DURATION_MIN_SECONDS && seconds <= DURATION_MAX_SECONDS;
+static inline int timestamp_in_range(int64_t seconds, int32_t nanos) {
+  return payload_in_range(seconds, nanos, TIMESTAMP_MIN_SECONDS,
+                          TIMESTAMP_MAX_SECONDS);
+}
+
+static inline int duration_in_range(int64_t seconds, int32_t nanos) {
+  return payload_in_range(seconds, nanos, DURATION_MIN_SECONDS,
+                          DURATION_MAX_SECONDS);
 }
 
 // ----- shared helpers (file-local) ----------------------------------------
@@ -127,11 +143,13 @@ static void run_arith(CelValue* out, const CelValue* a, const CelValue* b,
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
-  if (spec.result_kind == CEL_TIMESTAMP && !timestamp_in_range(r.seconds)) {
+  if (spec.result_kind == CEL_TIMESTAMP &&
+      !timestamp_in_range(r.seconds, r.nanos)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
-  if (spec.result_kind == CEL_DURATION && !duration_in_range(r.seconds)) {
+  if (spec.result_kind == CEL_DURATION &&
+      !duration_in_range(r.seconds, r.nanos)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -469,7 +487,7 @@ void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot) {
   // a CelValue that downstream accessors would interpret out-of-
   // range.
   const int64_t s = a->payload.i;
-  if (!timestamp_in_range(s)) {
+  if (!timestamp_in_range(s, 0)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -536,7 +554,7 @@ void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
     poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  if (!duration_in_range(a->payload.i)) {
+  if (!duration_in_range(a->payload.i, 0)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -549,20 +567,10 @@ void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(d_slot);
   if (duration_accessor_prelude(out, a)) return;
-  // cel-cpp's `duration_to_milliseconds` returns the *whole* duration
-  // in ms: `IDivDuration(d, absl::Milliseconds(1))`.  Combine seconds
-  // and the millisecond-resolution nanos via 64-bit math.  Range-
-  // check `seconds * 1000` manually rather than via
-  // `__builtin_mul_overflow` — that intrinsic lowers to `__multi3`
-  // (compiler-rt 128-bit multiply) on wasm32, which the freestanding
-  // build doesn't link.  C99 integer division truncates toward zero
-  // so `INT64_MIN / 1000` and `INT64_MAX / 1000` give us the exact
-  // representable-seconds bounds.
-  const int64_t s = a->payload.dur.seconds;
-  if (s > INT64_MAX / 1000 || s < INT64_MIN / 1000) {
-    poison(out, CEL_ERR_OVERFLOW);
-    return;
-  }
-  // |nanos / 1e6| ≤ 999 so the post-multiply add can't overflow.
-  write_int(out, (s * 1000) + (a->payload.dur.nanos / 1000000));
+  // cel-cpp / spec: Duration `getMilliseconds` returns the
+  // *millisecond component* (sub-second ms in [-999, 999]),
+  // NOT the total duration in milliseconds.  Sign-preserved.
+  // The conformance test's description pins this: "this is not
+  // the same as converting the duration to milliseconds".
+  write_int(out, a->payload.dur.nanos / 1000000);
 }

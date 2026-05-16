@@ -1,9 +1,9 @@
 # M7B — Timestamp and Duration
 
 Status: **shipped 2026-05-16.**  All six slices (A/B/C/D/E/F) on
-master.  Conformance corpus: pass 1058 → 1137 (**+79**;
-`timestamps.textproto` 0/76 → 69/76).  Depends on M7 (shipped),
-independent of M8.
+master + a polish round.  Conformance corpus: pass 1058 → 1142
+(**+84**; `timestamps.textproto` 0/76 → 74/76).  Depends on M7
+(shipped), independent of M8.
 
 What landed:
   - M7B.A — `EncodeBoundValue` / `DecodeCelValueAt` arms +

@@ -351,7 +351,7 @@ TEST_F(WellKnownFieldReadE2ETest, NonWellKnownMessageFieldStillYieldsMessage) {
 //    bound (so the test is independent of M7B.D's parse arm).
 // ──────────────────────────────────────────────────────────────
 
-enum class ArithOp {
+enum class ArithOp : uint8_t {
   kDurAddDur,
   kDurSubDur,
   kTsAddDur,
@@ -538,7 +538,7 @@ TEST_F(ArithmeticE2ETest, CheckerRejectsDurationMinusTimestamp) {
 //    CrossFormEquivalenceE2ETest below.
 // ──────────────────────────────────────────────────────────────
 
-enum class CmpOp { kLt, kLe, kGt, kGe };
+enum class CmpOp : uint8_t { kLt, kLe, kGt, kGe };
 
 struct CmpCase {
   std::string label;
@@ -636,7 +636,7 @@ INSTANTIATE_TEST_SUITE_P(
 //    bit-for-bit across this grid; this is the e2e pin of that.
 // ──────────────────────────────────────────────────────────────
 
-enum class TsAccessor {
+enum class TsAccessor : uint8_t {
   kYear,
   kFullYear,  // cel-cpp alias for kYear
   kMonth,
@@ -772,7 +772,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 // ── Duration accessors (4 helpers; truncating int division) ──
 
-enum class DurAccessor {
+enum class DurAccessor : uint8_t {
   kHours,
   kMinutes,
   kSeconds,
@@ -841,8 +841,11 @@ INSTANTIATE_TEST_SUITE_P(
         DurAccessorCase{"Zero_Millis", DurAccessor::kMilliseconds, 0, 0, 0},
         DurAccessorCase{"FiveHundredMs_Millis", DurAccessor::kMilliseconds, 0,
                         500'000'000, 500},
+        // cel-cpp / spec: `getMilliseconds` returns the sub-second
+        // ms component (not the total).  See the duration
+        // accessor body comment + cel_time_test for spec citation.
         DurAccessorCase{"OneSecFiveHundredMs_Millis", DurAccessor::kMilliseconds,
-                        1, 500'000'000, 1500},
+                        1, 500'000'000, 500},
         DurAccessorCase{"NegHalf_Millis", DurAccessor::kMilliseconds, 0,
                         -500'000'000, -500}),
     [](const ::testing::TestParamInfo<DurAccessorCase>& info) {
@@ -944,10 +947,11 @@ INSTANTIATE_TEST_SUITE_P(
                   R"(duration("0s") == duration("0s"))", true},
         ParseCase{"DurAdmit_Million",
                   R"(duration("1000000s") == duration("1000000s"))", true},
+        // sub-second ms component per cel-cpp spec (not total ms).
         ParseCase{"DurAdmit_Fractional",
-                  R"(duration("1.5s").getMilliseconds() == 1500)", true},
+                  R"(duration("1.5s").getMilliseconds() == 500)", true},
         ParseCase{"DurAdmit_NanosPrecision",
-                  R"(duration("1.000000001s").getMilliseconds() == 1000)",
+                  R"(duration("1.000000001s").getMilliseconds() == 0)",
                   true},
         ParseCase{"DurAdmit_Compound",
                   R"(duration("1h2m3s") == duration("3723s"))", true},
@@ -993,18 +997,17 @@ TEST_F(FormatConvertE2ETest, TimestampToString) {
   Value v = EvalClosedExpression(
       R"(string(timestamp("2009-02-13T23:31:30Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
-  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30+00:00");
+  // proto Timestamp text format / cel-cpp surface uses `Z` for UTC,
+  // not absl::RFC3339_full's `+00:00`.  The format trampoline
+  // rewrites the offset suffix.
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30Z");
 }
 
 TEST_F(FormatConvertE2ETest, TimestampToStringNanos) {
   Value v = EvalClosedExpression(
       R"(string(timestamp("2009-02-13T23:31:30.500Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
-  // absl::RFC3339_full emits the fractional seconds; format is the
-  // canonical RFC3339 form `+00:00`.  Exact framing is what cel-cpp
-  // / absl produce — pinned here so any future change reads as a
-  // deliberate format flip.
-  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30.5+00:00");
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30.5Z");
 }
 
 TEST_F(FormatConvertE2ETest, DurationToString) {
@@ -1030,7 +1033,7 @@ TEST_F(FormatConvertE2ETest, Int64ToTimestamp) {
   // `timestamp(int)` builds (seconds, 0); cross-check by formatting.
   Value v = EvalClosedExpression(R"(string(timestamp(1234567890)))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
-  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30+00:00");
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30Z");
 }
 
 TEST_F(FormatConvertE2ETest, Int64ToDuration) {

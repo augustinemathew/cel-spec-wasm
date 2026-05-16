@@ -527,48 +527,40 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
   return absl::OkStatus();
 }
 
-// Decompose an `absl::Duration` into the proto Duration text format's
-// sign-correlated `(seconds, nanos)` pair, per m7b §3.1 / Probe D.
-// `absl::IDivDuration` writes the remainder back to `*d` on each call,
-// so the second IDiv naturally returns the sub-second remainder.
-//
-// IDivDuration's contract for negative inputs matches the proto
-// convention (seconds and nanos share sign), which is what we want —
-// see the §10.4 Probe D table.  The alternative Timespec convention
-// (Unix-floor seconds, nanos always non-negative) is NOT what proto
-// Duration / Timestamp use.
-void DecomposeAbslDuration(absl::Duration d, int64_t* seconds,
-                           int32_t* nanos) {
-  *seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
-  *nanos = static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
-}
+// Forward decl of the WKT-message coercion helper defined just
+// below `EncodeMessage`.
+bool TryEncodeWktTimeMessage(const Value& v, uint32_t want_kind,
+                             CelValue* dst);
 
 absl::Status EncodeDuration(const Value& v, absl::string_view name,
                             CelValue* dst) {
+  // Accept Value::Message(google.protobuf.Duration) too — the type
+  // checker treats it as the same surface as Value::Duration.
+  if (TryEncodeWktTimeMessage(v, CEL_DURATION, dst)) {
+    return absl::OkStatus();
+  }
   if (v.kind() != Value::Kind::kDuration) {
     return KindMismatch(name, "duration", v.kind());
   }
   auto d_or = v.AsDuration();
   if (!d_or.ok()) return d_or.status();
-  CelDurTs payload{};
-  DecomposeAbslDuration(*d_or, &payload.seconds, &payload.nanos);
   dst->kind = CEL_DURATION;
-  dst->payload.dur = payload;
+  celwasm::DecomposeAbslDuration(*d_or, &dst->payload.dur);
   return absl::OkStatus();
 }
 
 absl::Status EncodeTimestamp(const Value& v, absl::string_view name,
                              CelValue* dst) {
+  if (TryEncodeWktTimeMessage(v, CEL_TIMESTAMP, dst)) {
+    return absl::OkStatus();
+  }
   if (v.kind() != Value::Kind::kTimestamp) {
     return KindMismatch(name, "timestamp", v.kind());
   }
   auto t_or = v.AsTimestamp();
   if (!t_or.ok()) return t_or.status();
-  CelDurTs payload{};
-  DecomposeAbslDuration(*t_or - absl::UnixEpoch(), &payload.seconds,
-                        &payload.nanos);
   dst->kind = CEL_TIMESTAMP;
-  dst->payload.ts = payload;
+  celwasm::DecomposeAbslDuration(*t_or - absl::UnixEpoch(), &dst->payload.ts);
   return absl::OkStatus();
 }
 
@@ -578,6 +570,40 @@ absl::Status EncodeTimestamp(const Value& v, absl::string_view name,
 // `payload.msg_slot`.  The caller is responsible for resetting
 // the table between Evals so slot indices don't leak across
 // invocations.
+// m7b §3.4 — well-known-type bind normaliser.  When a variable is
+// declared `google.protobuf.Timestamp` / `Duration` and the bound
+// Value is a `Value::Message` carrying the matching WKT proto,
+// peel (seconds, nanos) into a CelDurTs payload so the variable
+// arrives at codegen as the matching `CEL_TIMESTAMP` /
+// `CEL_DURATION` kind.  Returns true and writes `dst` on hit;
+// false (so the caller falls through to its normal kind-mismatch
+// error path) on miss.
+bool TryEncodeWktTimeMessage(const Value& v, uint32_t want_kind,
+                             CelValue* dst) {
+  if (v.kind() != Value::Kind::kMessage) return false;
+  auto backing_or = v.SharedMessageBacking();
+  if (!backing_or.ok()) return false;
+  const google::protobuf::Message* msg = (*backing_or)->message();
+  if (msg == nullptr) return false;
+  const google::protobuf::Descriptor* d = msg->GetDescriptor();
+  if (d == nullptr) return false;
+  const absl::string_view fqn = d->full_name();
+  const bool is_timestamp = want_kind == CEL_TIMESTAMP &&
+                            fqn == "google.protobuf.Timestamp";
+  const bool is_duration = want_kind == CEL_DURATION &&
+                           fqn == "google.protobuf.Duration";
+  if (!is_timestamp && !is_duration) return false;
+  const google::protobuf::Reflection* refl = msg->GetReflection();
+  const google::protobuf::FieldDescriptor* sf = d->FindFieldByNumber(1);
+  const google::protobuf::FieldDescriptor* nf = d->FindFieldByNumber(2);
+  if (refl == nullptr || sf == nullptr || nf == nullptr) return false;
+  dst->kind = want_kind;
+  dst->payload.dur = CelDurTs{.seconds = refl->GetInt64(*msg, sf),
+                              .nanos = refl->GetInt32(*msg, nf),
+                              ._pad = 0};
+  return true;
+}
+
 absl::Status EncodeMessage(const Value& v, absl::string_view name,
                            CelValue* dst, celwasm::ExternrefTable& refs) {
   if (v.kind() != Value::Kind::kMessage) {

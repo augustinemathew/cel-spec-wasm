@@ -335,10 +335,14 @@ TEST_F(TimeTest, DurationGetSecondsReturnsWholeField) {
   EXPECT_EQ(At(out)->payload.i, 42);
 }
 
-TEST_F(TimeTest, DurationGetMillisecondsCombinesSecondsAndNanos) {
+TEST_F(TimeTest, DurationGetMillisecondsReturnsSubSecondComponent) {
+  // cel-cpp / spec: `getMilliseconds` returns the millisecond
+  // *component* of the duration (sub-second ms in [-999, 999]),
+  // NOT the total milliseconds.  Pinned by
+  // `timestamps.textproto :: duration_converters/get_milliseconds`.
   const uint32_t out = MakeSlot();
   cel_dur_milliseconds_at_v(out, MakeDur(3, 500'000'000));
-  EXPECT_EQ(At(out)->payload.i, 3500);
+  EXPECT_EQ(At(out)->payload.i, 500);
 }
 
 TEST_F(TimeTest, TimestampGetMillisecondsReturnsSubSecond) {

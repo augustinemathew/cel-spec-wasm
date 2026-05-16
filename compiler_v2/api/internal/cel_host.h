@@ -21,6 +21,7 @@
 #include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/type.h"
@@ -599,6 +600,21 @@ ABSL_MUST_USE_RESULT absl::Status CelDurationFormatImpl(
 ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
     uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
     uint32_t accessor_kind, const TrampolineContext& ctx);
+
+// m7b §3.1 / Probe D — sign-correlated (seconds, nanos)
+// decomposition for an absl::Duration.  Shared between the
+// host-side encoders (`EncodeDurationValue` / `EncodeTimestampValue`
+// in cel_host.cc and the matching `EncodeDuration` /
+// `EncodeTimestamp` in instance.cc).  `absl::IDivDuration` writes
+// the remainder back to its argument; two calls yield the
+// integer-second + sub-second-nanos pair matching the proto
+// Duration / Timestamp text format convention.
+inline void DecomposeAbslDuration(absl::Duration d, CelDurTs* out) {
+  out->seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
+  out->nanos =
+      static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
+  out->_pad = 0;
+}
 
 }  // namespace celwasm
 

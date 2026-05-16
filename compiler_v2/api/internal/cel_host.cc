@@ -11,6 +11,7 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "compiler_v2/api/error.h"
@@ -510,17 +511,8 @@ absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
   return absl::OkStatus();
 }
 
-// m7b §3.1 / Probe D — sign-correlated `(seconds, nanos)` decomposition.
-// Shared by `EncodeDurationValue` and `EncodeTimestampValue` below;
-// `absl::IDivDuration` rewrites its remainder argument, so two calls
-// yield the integer-second + sub-second-nanos pair the proto Duration
-// / Timestamp text format use.
-void DecomposeAbslDuration(absl::Duration d, CelDurTs* out) {
-  out->seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
-  out->nanos =
-      static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
-  out->_pad = 0;
-}
+// m7b §3.1 / Probe D — `DecomposeAbslDuration` lives in
+// `cel_host.h` (header-inline) so instance.cc shares it.
 
 absl::Status EncodeDurationValue(const cel::Value& v, CelValue* out) {
   auto d_or = v.AsDuration();
@@ -2713,11 +2705,8 @@ void WriteOverflowError(uint32_t out_slot, MemoryView& mem) {
 // EncodeTimestampValue above; declared inline here so the parse
 // trampolines don't have to repeat the IDivDuration ladder.
 void WriteDurTsPayload(absl::Duration d, uint32_t kind, CelValue* out) {
-  const int64_t s = absl::IDivDuration(d, absl::Seconds(1), &d);
-  const int32_t ns =
-      static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
   out->kind = kind;
-  out->payload.dur = CelDurTs{.seconds = s, .nanos = ns, ._pad = 0};
+  DecomposeAbslDuration(d, &out->payload.dur);
 }
 
 // langdef-pinned bounds from m7b §3.2 / cel_time.c.
@@ -2922,8 +2911,16 @@ absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
   const absl::Time t = absl::UnixEpoch() +
                        absl::Seconds(in.payload.ts.seconds) +
                        absl::Nanoseconds(in.payload.ts.nanos);
-  const std::string s =
-      absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
+  std::string s = absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
+  // RFC3339 spec admits both `Z` and `+00:00` for UTC; cel-cpp /
+  // proto Timestamp text format use `Z`.  absl::FormatTime emits
+  // `+00:00`; rewrite the trailing offset.
+  constexpr absl::string_view kUtcOffset = "+00:00";
+  if (s.size() > kUtcOffset.size() &&
+      absl::EndsWith(s, kUtcOffset)) {
+    s.resize(s.size() - kUtcOffset.size());
+    s.push_back('Z');
+  }
   return WriteStringResult(s, out_slot, ctx);
 }
 
@@ -2957,7 +2954,7 @@ absl::Status CelDurationFormatImpl(uint32_t out_slot, uint32_t dur_slot,
 namespace {
 
 // Mirrors `CelTzAccessorKind` in cel_time.h.  Append-only.
-enum class TzAccessorKind : uint32_t {
+enum class TzAccessorKind : uint8_t {
   kYear = 0,
   kMonth = 1,
   kDayOfMonth1 = 2,
@@ -3020,14 +3017,23 @@ bool ResolveTimeZone(absl::string_view name, absl::TimeZone* out) {
     *out = absl::UTCTimeZone();
     return true;
   }
-  if (name.size() == 6 && (name[0] == '+' || name[0] == '-') &&
-      name[3] == ':' && std::isdigit(static_cast<unsigned char>(name[1])) &&
-      std::isdigit(static_cast<unsigned char>(name[2])) &&
-      std::isdigit(static_cast<unsigned char>(name[4])) &&
-      std::isdigit(static_cast<unsigned char>(name[5]))) {
-    const int sign = name[0] == '+' ? 1 : -1;
-    const int hours = ((name[1] - '0') * 10) + (name[2] - '0');
-    const int minutes = ((name[4] - '0') * 10) + (name[5] - '0');
+  // Fixed offset: `+HH:MM` / `-HH:MM` / `HH:MM` (no sign = +).
+  // cel-cpp admits the unsigned form per
+  // `runtime/standard/time_functions.cc`.  Trim the sign prefix
+  // if present, then validate HH:MM digit layout.
+  int sign = 1;
+  absl::string_view rest = name;
+  if (!rest.empty() && (rest[0] == '+' || rest[0] == '-')) {
+    sign = rest[0] == '+' ? 1 : -1;
+    rest.remove_prefix(1);
+  }
+  if (rest.size() == 5 && rest[2] == ':' &&
+      std::isdigit(static_cast<unsigned char>(rest[0])) &&
+      std::isdigit(static_cast<unsigned char>(rest[1])) &&
+      std::isdigit(static_cast<unsigned char>(rest[3])) &&
+      std::isdigit(static_cast<unsigned char>(rest[4]))) {
+    const int hours = ((rest[0] - '0') * 10) + (rest[1] - '0');
+    const int minutes = ((rest[3] - '0') * 10) + (rest[4] - '0');
     if (hours > 23 || minutes > 59) return false;
     *out = absl::FixedTimeZone(sign * ((hours * 3600) + (minutes * 60)));
     return true;
