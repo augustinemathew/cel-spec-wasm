@@ -1572,6 +1572,31 @@ absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
   return absl::OkStatus();
 }
 
+// M7-A.C: if `m` is a google.protobuf.Any, unpack its type_url +
+// value against the Any descriptor's own pool and return a fresh
+// typed-message clone (stashed in `owner` so the caller can keep it
+// alive).  Returns the original `m` when it's not an Any; returns
+// nullptr on Any-unpack failure (malformed type_url / unknown FQN /
+// corrupt bytes).  Used by CelMessageEqImpl to compare an Any
+// against either a typed message or another Any uniformly.
+static const google::protobuf::Message* absl_nullable PeelAnyForEq(
+    const google::protobuf::Message* m,
+    std::unique_ptr<google::protobuf::Message>& owner) {
+  if (m->GetDescriptor() == nullptr ||
+      m->GetDescriptor()->full_name() != "google.protobuf.Any") {
+    return m;
+  }
+  cel::Value peeled =
+      UnpackAnyToValue(*m, m->GetDescriptor()->file()->pool());
+  if (peeled.kind() != cel::Value::Kind::kMessage) return nullptr;
+  auto backing_or = peeled.MessageBacking();
+  if (!backing_or.ok() || (*backing_or)->message() == nullptr) return nullptr;
+  const google::protobuf::Message* src = (*backing_or)->message();
+  owner.reset(src->New());
+  owner->CopyFrom(*src);
+  return owner.get();
+}
+
 absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
                               uint32_t b_slot, const TrampolineContext& ctx) {
   CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
@@ -1587,25 +1612,39 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
     return absl::FailedPreconditionError(
         "CelMessageEqImpl: message msg_slot not found in ExternrefTable");
   }
-  // M5.D step 2 ship state: ProtoBacking is the only concrete that
-  // exposes its underlying `google::protobuf::Message*`.  Custom
-  // embedder backings have no equality contract yet — POISON with
-  // TYPE_MISMATCH (M6 will define a virtual `Equals(other)` on
   // HostMessageBacking exposes its underlying Message* via the
   // virtual `message()` introduced at M7.A so both `ProtoBacking`
   // (host-bound) and `OwnedProtoBacking` (M7-built) participate
   // uniformly.  Custom non-proto backings return nullptr from
   // `message()` and surface kTypeMismatch (proto-vs-non-proto eq is
-  // a spec error per langdef §"Equality").  MessageDifferencer
-  // handles cross-descriptor mismatches internally.
+  // a spec error per langdef §"Equality").
   const google::protobuf::Message* a_msg = a_backing->message();
   const google::protobuf::Message* b_msg = b_backing->message();
   if (a_msg == nullptr || b_msg == nullptr) {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
+  // M7-A.C: peel either operand if it's a google.protobuf.Any
+  // (typical shape: a direct `Any{...}` literal that didn't pass
+  // through ProtoBacking::ReadField's M7-A.B unwrap arm).  The
+  // peeled owners live for the duration of this call.
+  std::unique_ptr<google::protobuf::Message> a_owner;
+  std::unique_ptr<google::protobuf::Message> b_owner;
+  const google::protobuf::Message* a_cmp = PeelAnyForEq(a_msg, a_owner);
+  const google::protobuf::Message* b_cmp = PeelAnyForEq(b_msg, b_owner);
+  if (a_cmp == nullptr || b_cmp == nullptr) {
+    // Any with malformed type_url / unknown FQN / corrupt bytes —
+    // equality is undefined; surface as Error.
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  if (a_cmp->GetDescriptor() != b_cmp->GetDescriptor()) {
+    // Cross-descriptor mismatch after peel → unequal, not error.
+    WriteWireBool(false, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
   const bool eq =
-      google::protobuf::util::MessageDifferencer::Equals(*a_msg, *b_msg);
+      google::protobuf::util::MessageDifferencer::Equals(*a_cmp, *b_cmp);
   WriteWireBool(eq, out_slot, ctx.mem);
   return absl::OkStatus();
 }

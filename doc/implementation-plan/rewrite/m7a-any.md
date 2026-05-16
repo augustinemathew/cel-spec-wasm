@@ -1,12 +1,19 @@
 # M7-A — `google.protobuf.Any` pack / unpack
 
-Status: **M7-A.A + M7-A.B shipped 2026-05-16.  Pack arm via
-`WriteMessageOrPack`; read-side unwrap via `UnpackAnyToValue` in
-`ProtoBacking::ReadField`; frontend §3.5.A select-through-Any
-carve-out admits `msg.single_any.x` past `RejectDyn`.  Fixture
-extended with `single_any / repeated_any / map_str_to_any`.
-Conformance: 1058 → 1065 (+7 PASS).  M7-A.C (cel_message_eq peel)
-pending.  Depends on M7 (shipped); independent of M8 and M7-B.**
+Status: **M7-A.A + M7-A.B + M7-A.C shipped 2026-05-16.**
+
+  - **M7-A.A** — pack arm via `WriteMessageOrPack`; fixture extended.
+  - **M7-A.B** — read-side unwrap via `UnpackAnyToValue` in
+    `ProtoBacking::ReadField`; frontend §3.5.A select-through-Any
+    carve-out admits `msg.single_any.x` past `RejectDyn`.
+  - **M7-A.C** — `PeelAnyForEq` prelude in `CelMessageEqImpl` lets
+    direct Any-literal operands compare against typed messages and
+    other Any-literals (Any-vs-typed, Any-vs-Any cross-descriptor,
+    same-descriptor-different-byte payload).
+
+Conformance: 1058 → 1065 (+7 PASS) for M7-A as a whole.  M7-A.D
+closeout follows.  Depends on M7 (shipped); independent of M8
+and M7-B.
 
 > **Status note.**  This doc is LLD-with-probes: §10 lists empirical
 > findings against the running build (conformance + reflection

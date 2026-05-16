@@ -11,6 +11,15 @@ against each test's `cel.expr.Value` matcher.
 `total=2454 · pass=1065 (43.4%) · skip=693 (28.2%) · fail=696 (28.4%)`
 across 30 loadable fixtures.  The most recent landings:
 
+  - **M7-A.C cel_message_eq Any-peel** (2026-05-16): 0 conformance-row
+    delta but unlocks direct Any-literal equality patterns
+    (Any-vs-typed, Any-vs-Any cross-descriptor) that customers depend
+    on per the user's "must work like cel-cpp" requirement.  The
+    conformance rows that exercise this (comparisons.textproto
+    eq_proto*_any_unpack_*) already passed via the outer
+    MessageDifferencer path after M7-A.B; M7-A.C closes the
+    direct-literal gap pinned by e2e tests in
+    `AnyEqualityE2ETest::Direct*ViaPeel`.
   - **M7-A.B Any read-side unwrap** (2026-05-16): +3 PASS.
     `ProtoBacking::ReadField` now detects `google.protobuf.Any`-typed
     singular-message fields and unwraps via `UnpackAnyToValue`

@@ -327,45 +327,148 @@ TEST_F(AnyUnpackE2ETest, HasOnUnsetSingularAnyIsFalse) {
 
 class AnyEqualityE2ETest : public ::testing::Test {};
 
-TEST_F(AnyEqualityE2ETest, AnyEqualsMatchingTypedMessage) {
-  // `Foo{single_any: Bar{x:1}}.single_any == Bar{x:1}` → true.
-  GTEST_SKIP() << kM7aEqPending;
+// After M7-A.B, msg.single_any returns the unwrapped backing.  The
+// outer == then compares (unwrapped Bar) vs (typed Bar) via
+// CelMessageEqImpl's existing MessageDifferencer path — same
+// descriptor, so equality reduces to message-structural equality.
+// M7-A.C's peel arm is only needed when the wrapped operand is NOT
+// reached through a field read (e.g. direct `Any{}` literal).
+TEST_F(AnyEqualityE2ETest, AnyFieldReadEqualsMatchingTypedMessage) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+      "celwasm.testdata.HostMsg3{i32: 1}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyEqualityE2ETest, AnyEqualsMismatchingTypedMessageIsFalse) {
-  // `Foo{single_any: Bar{x:1}}.single_any == Baz{}` → false (not
-  // error).  Different typed payloads compare unequal.
-  GTEST_SKIP() << kM7aEqPending;
+TEST_F(AnyEqualityE2ETest, AnyFieldReadUnequalToMismatchingTypedMessage) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+      "celwasm.testdata.HostMsg3{i32: 2}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), false);
 }
 
-TEST_F(AnyEqualityE2ETest, TypedMessageEqualsAnySymmetric) {
-  // `Bar{x:1} == Foo{single_any: Bar{x:1}}.single_any` — same as
-  // above with operands swapped.  M7-A.C's peel must fire on either
-  // side.
-  GTEST_SKIP() << kM7aEqPending;
+TEST_F(AnyEqualityE2ETest, TypedMessageEqualsAnyFieldReadSymmetric) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{i32: 1} == "
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyEqualityE2ETest, AnyEqualsAnyDelegatesToMessageDifferencer) {
-  // `Foo{single_any: Bar{x:1}}.single_any ==
-  //  Foo{single_any: Bar{x:1}}.single_any` → true.  After M7-A.B's
-  // unwrap, both sides become typed `Bar`; M5.B step 2b's
-  // `cel_message_eq` handles the rest.
-  GTEST_SKIP() << kM7aEqPending;
+// Two unwrapped values on both sides — both are unpacked Bars by
+// M7-A.B and compared directly.
+TEST_F(AnyEqualityE2ETest, TwoAnyFieldReadsEqual) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
-TEST_F(AnyEqualityE2ETest, AnysWithDifferentTypeUrlsAreUnequal) {
-  // `Any{type_url: "...Bar", value: ...} ==
-  //  Any{type_url: "...Baz", value: <same bytes>}` → false even if
-  // value bytes happen to match.  After unwrap the operands have
-  // different runtime types; cross-type equality is false (not
-  // error).
-  GTEST_SKIP() << kM7aEqPending;
+// Outer-outer eq: TestAllTypes-vs-TestAllTypes where both carry the
+// same packed Any.  CelMessageEqImpl invokes MessageDifferencer on
+// the outer descriptor; the embedded Any sub-field compares
+// recursively.  Protobuf's MessageDifferencer is Any-aware by
+// default in modern protobuf, so this passes even if the inner
+// wire bytes are byte-different (semantically-equal payloads).
+TEST_F(AnyEqualityE2ETest, OuterMessageEqualityCarryingPackedAny) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}} == "
+      "celwasm.testdata.HostMsg3{single_any: "
+      "celwasm.testdata.HostMsg3{i32: 1}}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
+// Unset Any field reads as null per M7-shipped null-on-unset rule;
+// the peel branch must not fire.
 TEST_F(AnyEqualityE2ETest, UnsetAnyEqualsNull) {
-  // `TestAllTypes{}.single_any == null` — unset Any reads as null
-  // (M7-shipped); the peel branch must not fire here.
-  GTEST_SKIP() << kM7aEqPending;
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{}.single_any == null");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// Direct Any literal == typed message — operand on LHS is NOT a
+// field-read of an Any field, so M7-A.B's read-side unwrap does
+// NOT fire.  The LHS is an Any-typed backing; the RHS is a typed
+// HostMsg3 backing.  Without an Any-peel in CelMessageEqImpl this
+// would compare two different descriptors and return false.  M7-A.C
+// peels the Any operand and re-enters equality with the unwrapped
+// value.
+TEST_F(AnyEqualityE2ETest, DirectAnyLiteralEqualsTypedMessageViaPeel) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // Construct an Any wrapping HostMsg3{} via the bytes path; compare
+  // with the typed empty HostMsg3.  Empty proto serializes to empty
+  // bytes — predictable round-trip.
+  auto instance = CompilePlan(
+      *compiler,
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', value: b''} == "
+      "celwasm.testdata.HostMsg3{}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// Symmetric peel: typed-message LHS, Any-literal RHS.
+TEST_F(AnyEqualityE2ETest, TypedMessageEqualsDirectAnyLiteralViaPeel) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "celwasm.testdata.HostMsg3{} == "
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', value: b''}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// Two Any literals with the same type_url + same bytes compare equal
+// — MessageDifferencer handles this directly (both descriptors are
+// Any; protobuf's default Any-aware mode unpacks).
+TEST_F(AnyEqualityE2ETest, TwoAnyLiteralsEqual) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', value: b''} == "
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', value: b''}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+}
+
+// Two Any literals with different type_urls are unequal (cross-type
+// after peel).
+TEST_F(AnyEqualityE2ETest, AnysWithDifferentTypeUrlsAreUnequal) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg3', value: b''} == "
+      "google.protobuf.Any{type_url: "
+      "'type.googleapis.com/celwasm.testdata.HostMsg2', value: b''}");
+  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), false);
 }
 
 // ──────────────────────────────────────────────────────────────
