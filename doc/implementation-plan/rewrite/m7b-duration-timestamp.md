@@ -1081,7 +1081,7 @@ import name with a fixed `accessor_kind` u32 immediate.
     fixture.
   - **Effort.**  Small.
 
-### M7B.F — closeout  *(shipped 2026-05-16; commit pending below)*
+### M7B.F — closeout  *(shipped 2026-05-16, 2cb833a)*
 
   - Run `bazel run //compiler_v2/conformance:run_conformance`
     and record the post-M7B deltas in
