@@ -245,5 +245,121 @@ TEST_F(TimeTest, DurLtTreatsNegativeSecondsAsLess) {
   EXPECT_EQ(At(out)->payload.b, 1);
 }
 
+// ── §6.4 civil-calendar quirk matrix (M7B.C) ───────────────────
+
+struct CivilCase {
+  const char* label;
+  int64_t epoch_seconds;
+  int32_t expect_year;
+  int32_t expect_month_0;
+  int32_t expect_day_1;
+  int32_t expect_day_of_year;
+  int32_t expect_day_of_week;
+};
+
+class CivilQuirkTest : public TimeTest,
+                       public ::testing::WithParamInterface<CivilCase> {};
+
+TEST_P(CivilQuirkTest, AllAccessorsProjectCorrectly) {
+  const CivilCase& c = GetParam();
+  const uint32_t ts = MakeTs(c.epoch_seconds, 0);
+  const uint32_t y = MakeSlot();
+  const uint32_t m = MakeSlot();
+  const uint32_t d1 = MakeSlot();
+  const uint32_t doy = MakeSlot();
+  const uint32_t dow = MakeSlot();
+  cel_ts_year_utc_at_v(y, ts);
+  cel_ts_month_utc_at_v(m, ts);
+  cel_ts_day_of_month_1_utc_at_v(d1, ts);
+  cel_ts_day_of_year_utc_at_v(doy, ts);
+  cel_ts_day_of_week_utc_at_v(dow, ts);
+  EXPECT_EQ(At(y)->payload.i, c.expect_year) << c.label;
+  EXPECT_EQ(At(m)->payload.i, c.expect_month_0) << c.label;
+  EXPECT_EQ(At(d1)->payload.i, c.expect_day_1) << c.label;
+  EXPECT_EQ(At(doy)->payload.i, c.expect_day_of_year) << c.label;
+  EXPECT_EQ(At(dow)->payload.i, c.expect_day_of_week) << c.label;
+}
+
+// Quirk grid from m7b §6.4 (Probe A cross-checks each against
+// absl::ToCivilSecond(UTCTimeZone()) — see plan §10.1).
+// month_0 is 0-based, day_1 is 1-based, day_of_year is 0-based
+// (Jan 1 = 0), day_of_week is 0-based (Sunday = 0).
+INSTANTIATE_TEST_SUITE_P(
+    QuirkGrid, CivilQuirkTest,
+    ::testing::Values(
+        CivilCase{"EpochZero", 0, 1970, 0, 1, 0, 4 /*Thu*/},
+        CivilCase{"NegOneSec", -1, 1969, 11, 31, 364, 3 /*Wed*/},
+        CivilCase{"Y2KLeap", 946'684'800LL, 2000, 0, 1, 0, 6 /*Sat*/},
+        CivilCase{"LangdefSample", 1'234'567'890LL, 2009, 1, 13, 43,
+                  5 /*Fri*/},
+        CivilCase{"Y2024Feb29", 1'709'164'800LL, 2024, 1, 29, 59, 4 /*Thu*/},
+        CivilCase{"Y2024LastDay", 1'735'689'599LL, 2024, 11, 31, 365,
+                  2 /*Tue*/},
+        CivilCase{"Y2023LastDay", 1'704'067'199LL, 2023, 11, 31, 364,
+                  0 /*Sun*/},
+        CivilCase{"Y9999LangdefMax", 253'402'300'799LL, 9999, 11, 31, 364,
+                  5 /*Fri*/}),
+    [](const ::testing::TestParamInfo<CivilCase>& info) {
+      return info.param.label;
+    });
+
+// One row outside the langdef range — exercises the Hinnant
+// algorithm's generality (the M7B.B arithmetic gate prevents this
+// timestamp from being produced in practice, but the accessor
+// kernel itself is range-agnostic).
+TEST_F(TimeTest, CivilFromSeconds_Y0001ProducesLangdefLower) {
+  const uint32_t ts = MakeTs(-62135596800LL, 0);
+  const uint32_t y = MakeSlot();
+  cel_ts_year_utc_at_v(y, ts);
+  EXPECT_EQ(At(y)->payload.i, 1);
+}
+
+// ── Duration accessor matrix (M7B.C) ───────────────────────────
+
+TEST_F(TimeTest, DurationGetHoursTruncatesTowardZero) {
+  const uint32_t out = MakeSlot();
+  cel_dur_hours_at_v(out, MakeDur(7200, 999'999'999));
+  EXPECT_EQ(At(out)->kind, CEL_INT);
+  EXPECT_EQ(At(out)->payload.i, 2);
+}
+
+TEST_F(TimeTest, DurationGetHoursOnNegativeSeconds) {
+  const uint32_t out = MakeSlot();
+  cel_dur_hours_at_v(out, MakeDur(-3601, 0));
+  EXPECT_EQ(At(out)->payload.i, -1);  // truncates toward zero
+}
+
+TEST_F(TimeTest, DurationGetSecondsReturnsWholeField) {
+  const uint32_t out = MakeSlot();
+  cel_dur_seconds_at_v(out, MakeDur(42, 999'999'999));
+  EXPECT_EQ(At(out)->payload.i, 42);
+}
+
+TEST_F(TimeTest, DurationGetMillisecondsCombinesSecondsAndNanos) {
+  const uint32_t out = MakeSlot();
+  cel_dur_milliseconds_at_v(out, MakeDur(3, 500'000'000));
+  EXPECT_EQ(At(out)->payload.i, 3500);
+}
+
+TEST_F(TimeTest, TimestampGetMillisecondsReturnsSubSecond) {
+  const uint32_t out = MakeSlot();
+  cel_ts_milliseconds_utc_at_v(out, MakeTs(1'234'567'890LL, 500'000'000));
+  EXPECT_EQ(At(out)->payload.i, 500);
+}
+
+TEST_F(TimeTest, TimestampAccessorRejectsDurationOperand) {
+  const uint32_t out = MakeSlot();
+  cel_ts_year_utc_at_v(out, MakeDur(0, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(TimeTest, DurationAccessorRejectsTimestampOperand) {
+  const uint32_t out = MakeSlot();
+  cel_dur_hours_at_v(out, MakeTs(0, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
 }  // namespace
 }  // namespace celwasm

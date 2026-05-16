@@ -219,3 +219,221 @@ void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   run_compare(cel_value_at(out_slot), cel_value_at(a_slot),
               cel_value_at(b_slot), CEL_TIMESTAMP, pred_ge);
 }
+
+// ─── M7B.C: civil-calendar helper + UTC accessor family ─────────────────
+//
+// `cel_civil_from_seconds` projects an int64 epoch seconds value to
+// the Gregorian (year, month, day, hour, minute, second, day_of_year,
+// day_of_week) tuple via the documented Howard Hinnant
+// `civil_from_days` algorithm
+// (http://howardhinnant.github.io/date_algorithms.html#civil_from_days).
+// Pure integer arithmetic; correct across the full langdef
+// timestamp range and beyond.  Validated against
+// `absl::ToCivilSecond(UTCTimeZone())` for the §6.4 quirk grid in
+// Probe A of the m7b plan.
+//
+// Day-of-week + day-of-year are computed alongside the y/m/d so a
+// single helper call serves every UTC-accessor projection.
+
+#define SECONDS_PER_DAY 86400LL
+#define DAYS_FROM_EPOCH_TO_HINNANT_EPOCH 719468LL
+#define DAYS_PER_ERA 146097LL  // 400 Gregorian years
+#define ERA_BIAS 146096LL      // for negative-floor div
+
+typedef struct {
+  int32_t year;        // Gregorian year (negative possible if input below year 0)
+  int32_t month_0;     // 0-based, 0=Jan ... 11=Dec  (cel-cpp's getMonth)
+  int32_t day_1;       // 1-based, 1..31             (cel-cpp's getDate)
+  int32_t day_0;       // 0-based, 0..30             (cel-cpp's getDayOfMonth)
+  int32_t hour;        // 0..23
+  int32_t minute;      // 0..59
+  int32_t second;      // 0..59
+  int32_t day_of_year; // 0-based, Jan 1 = 0
+  int32_t day_of_week; // 0-based, Sunday = 0
+} CelCivil;
+
+// 0-indexed cumulative days at the start of each month.  Used to
+// convert the Hinnant-form day-of-year (March 1 = 0) to the
+// CEL-spec day-of-year (Jan 1 = 0).
+static const int32_t kCumulativeDaysBeforeMonthNonLeap[12] = {
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+static const int32_t kCumulativeDaysBeforeMonthLeap[12] = {
+    0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335};
+
+static inline int is_leap_year(int32_t year) {
+  if (year % 4 != 0) return 0;
+  if (year % 100 != 0) return 1;
+  return (year % 400 == 0) ? 1 : 0;
+}
+
+// Floor-divide epoch seconds into (days, day_secs) such that
+// `epoch_seconds = days * 86400 + day_secs` and `0 <= day_secs < 86400`.
+// C's `/` truncates toward zero; for negative epochs we adjust to
+// make `days` a true floor.
+static void split_days(int64_t epoch_seconds, int64_t* days,
+                       int64_t* day_secs) {
+  int64_t d = epoch_seconds / SECONDS_PER_DAY;
+  int64_t r = epoch_seconds - d * SECONDS_PER_DAY;
+  if (r < 0) {
+    d -= 1;
+    r += SECONDS_PER_DAY;
+  }
+  *days = d;
+  *day_secs = r;
+}
+
+static void cel_civil_from_seconds(int64_t epoch_seconds, CelCivil* out) {
+  int64_t days;
+  int64_t day_secs;
+  split_days(epoch_seconds, &days, &day_secs);
+
+  out->hour = (int32_t)(day_secs / 3600);
+  out->minute = (int32_t)((day_secs % 3600) / 60);
+  out->second = (int32_t)(day_secs % 60);
+
+  // Day of week: Jan 1, 1970 = Thursday = 4.  Adding 7 inside the
+  // modulus normalises the C-defined truncated mod into [0, 6].
+  int32_t dow = (int32_t)(((days % 7) + 4 + 7) % 7);
+  out->day_of_week = dow;
+
+  // Hinnant civil_from_days.  Shifts epoch so that day 0 is March 1
+  // of year 0, which puts the Feb-29 leap-day on the LAST day of
+  // each year-cycle and lets the era / yoe / mp formulas avoid
+  // branching.
+  int64_t z = days + DAYS_FROM_EPOCH_TO_HINNANT_EPOCH;
+  int64_t era = (z >= 0 ? z : z - ERA_BIAS) / DAYS_PER_ERA;
+  uint32_t doe = (uint32_t)(z - (era * DAYS_PER_ERA));
+  uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int32_t y = (int32_t)((int64_t)yoe + (era * 400));
+  uint32_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100));
+  uint32_t mp = ((5 * doy) + 2) / 153;
+  uint32_t d = doy - (((153 * mp) + 2) / 5) + 1;
+  uint32_t m = mp < 10 ? mp + 3 : mp - 9;
+  y += (m <= 2);
+  out->year = y;
+  out->month_0 = (int32_t)m - 1;
+  out->day_1 = (int32_t)d;
+  out->day_0 = (int32_t)d - 1;
+
+  // Day of year (Jan 1 = 0) — convert from the y/m/d we just
+  // computed using the cumulative-days table.  Cheaper than
+  // recovering the doe form because we already have y/m/d.
+  const int32_t* table = is_leap_year(y) ? kCumulativeDaysBeforeMonthLeap
+                                         : kCumulativeDaysBeforeMonthNonLeap;
+  out->day_of_year = table[out->month_0] + (int32_t)d - 1;
+}
+
+// Common preamble for every UTC accessor: 3VL absorb + kind guard,
+// then compute the civil tuple.  Returns 1 if the result has already
+// been written (3VL absorbed or kind mismatch); 0 to continue.
+static int ts_accessor_prelude(CelValue* out, const CelValue* a,
+                               CelCivil* civil) {
+  if (absorb_3vl_unary(out, a)) return 1;
+  if (a->kind != CEL_TIMESTAMP) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  cel_civil_from_seconds(a->payload.ts.seconds, civil);
+  return 0;
+}
+
+#define DEFINE_TS_ACCESSOR(name, projection)                                 \
+  void name(uint32_t out_slot, uint32_t ts_slot) {                            \
+    CelValue* out = cel_value_at(out_slot);                                   \
+    const CelValue* a = cel_value_at(ts_slot);                                \
+    CelCivil c;                                                               \
+    if (ts_accessor_prelude(out, a, &c)) return;                              \
+    write_int(out, projection);                                               \
+  }
+
+DEFINE_TS_ACCESSOR(cel_ts_year_utc_at_v, c.year)
+DEFINE_TS_ACCESSOR(cel_ts_month_utc_at_v, c.month_0)
+DEFINE_TS_ACCESSOR(cel_ts_day_of_month_1_utc_at_v, c.day_1)
+DEFINE_TS_ACCESSOR(cel_ts_day_of_month_utc_at_v, c.day_0)
+DEFINE_TS_ACCESSOR(cel_ts_day_of_year_utc_at_v, c.day_of_year)
+DEFINE_TS_ACCESSOR(cel_ts_day_of_week_utc_at_v, c.day_of_week)
+DEFINE_TS_ACCESSOR(cel_ts_hours_utc_at_v, c.hour)
+DEFINE_TS_ACCESSOR(cel_ts_minutes_utc_at_v, c.minute)
+DEFINE_TS_ACCESSOR(cel_ts_seconds_utc_at_v, c.second)
+
+#undef DEFINE_TS_ACCESSOR
+
+// Milliseconds is the one ts accessor that reads the nanos field
+// instead of projecting the civil tuple — kept inline rather than
+// folded into the macro.
+void cel_ts_milliseconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(ts_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_TIMESTAMP) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // cel-cpp / langdef: getMilliseconds returns the ms component
+  // within the current civil second (always [0, 999]), not the
+  // absolute milliseconds since epoch.  For pre-epoch timestamps
+  // our sign-correlated CelDurTs stores nanos negative; convert
+  // to the unix-floor form (positive nanos in [0, 1e9)) before
+  // dividing.  This matches cel-cpp's
+  // `ToInt64Milliseconds(t - FloorToSecond(t))`.
+  int32_t n = a->payload.ts.nanos;
+  if (n < 0) n += 1000000000;
+  write_int(out, n / 1000000);
+}
+
+// ─── Duration accessors (4 helpers) ─────────────────────────────────────
+
+static int duration_accessor_prelude(CelValue* out, const CelValue* a) {
+  if (absorb_3vl_unary(out, a)) return 1;
+  if (a->kind != CEL_DURATION) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 1;
+  }
+  return 0;
+}
+
+void cel_dur_hours_at_v(uint32_t out_slot, uint32_t d_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(d_slot);
+  if (duration_accessor_prelude(out, a)) return;
+  // C99 integer division truncates toward zero — matches cel-cpp's
+  // `duration_to_hours` which uses `IDivDuration(d, absl::Hours(1))`
+  // for the sign-preserving truncated form.
+  write_int(out, a->payload.dur.seconds / 3600);
+}
+
+void cel_dur_minutes_at_v(uint32_t out_slot, uint32_t d_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(d_slot);
+  if (duration_accessor_prelude(out, a)) return;
+  write_int(out, a->payload.dur.seconds / 60);
+}
+
+void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(d_slot);
+  if (duration_accessor_prelude(out, a)) return;
+  write_int(out, a->payload.dur.seconds);
+}
+
+void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(d_slot);
+  if (duration_accessor_prelude(out, a)) return;
+  // cel-cpp's `duration_to_milliseconds` returns the *whole* duration
+  // in ms: `IDivDuration(d, absl::Milliseconds(1))`.  Combine seconds
+  // and the millisecond-resolution nanos via 64-bit math.  Range-
+  // check `seconds * 1000` manually rather than via
+  // `__builtin_mul_overflow` — that intrinsic lowers to `__multi3`
+  // (compiler-rt 128-bit multiply) on wasm32, which the freestanding
+  // build doesn't link.  C99 integer division truncates toward zero
+  // so `INT64_MIN / 1000` and `INT64_MAX / 1000` give us the exact
+  // representable-seconds bounds.
+  const int64_t s = a->payload.dur.seconds;
+  if (s > INT64_MAX / 1000 || s < INT64_MIN / 1000) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  // |nanos / 1e6| ≤ 999 so the post-multiply add can't overflow.
+  write_int(out, (s * 1000) + (a->payload.dur.nanos / 1000000));
+}

@@ -55,7 +55,9 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // (`string_to_bytes` / `bytes_to_string`).
 // M7B.B: 108 → 122 — added 14 timestamp/duration seeds (6 arithmetic
 // helpers + 8 ordering helpers).
-constexpr size_t kBuiltinSeedCount = 122;
+// M7B.C: 122 → 136 — added 14 accessor seeds (10 ts UTC + 4 dur
+// accessors).
+constexpr size_t kBuiltinSeedCount = 136;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

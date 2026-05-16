@@ -223,7 +223,15 @@ constexpr const char* kRuntimeExports[] = {
     "cel_dur_ts_add_at_vv", "cel_ts_dur_sub_at_vv", "cel_ts_ts_sub_at_vv",
     "cel_dur_lt_at_vv", "cel_dur_le_at_vv", "cel_dur_gt_at_vv",
     "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv",
-    "cel_ts_gt_at_vv", "cel_ts_ge_at_vv"};
+    "cel_ts_gt_at_vv", "cel_ts_ge_at_vv",
+    // M7B.C: timestamp UTC accessors + duration accessors.
+    "cel_ts_year_utc_at_v", "cel_ts_month_utc_at_v",
+    "cel_ts_day_of_month_1_utc_at_v", "cel_ts_day_of_month_utc_at_v",
+    "cel_ts_day_of_year_utc_at_v", "cel_ts_day_of_week_utc_at_v",
+    "cel_ts_hours_utc_at_v", "cel_ts_minutes_utc_at_v",
+    "cel_ts_seconds_utc_at_v", "cel_ts_milliseconds_utc_at_v",
+    "cel_dur_hours_at_v", "cel_dur_minutes_at_v", "cel_dur_seconds_at_v",
+    "cel_dur_milliseconds_at_v"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {

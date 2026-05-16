@@ -73,6 +73,50 @@ void cel_ts_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 void cel_ts_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
+// ----- UTC timestamp accessors (10 helpers) --------------------------------
+// All take a single Timestamp operand and write the matching int64
+// projection.  No TZ argument — UTC by definition; the with-TZ variants
+// (M7B.E) route through a single dispatch trampoline on the host.
+//
+// Result kinds + ranges per langdef + cel-cpp's
+// `runtime/standard/time_functions.cc`:
+//   year       : int  (Gregorian year, e.g. 2009)
+//   month      : int  (0-based per cel-cpp; Jan = 0, Dec = 11)
+//   day_of_month_1 : int  (1-based, 1..31; matches `getDate`)
+//   day_of_month   : int  (0-based, 0..30; matches `getDayOfMonth`)
+//   day_of_year    : int  (0-based, Jan 1 = 0)
+//   day_of_week    : int  (0-based, Sunday = 0)
+//   hours / minutes / seconds : int (0..23 / 0..59 / 0..59)
+//   milliseconds   : int  (nanos / 1_000_000, truncating)
+
+void cel_ts_year_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_month_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_day_of_month_1_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_day_of_month_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_day_of_year_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_day_of_week_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_hours_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_minutes_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_seconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_ts_milliseconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+
+// ----- Duration accessors (4 helpers) --------------------------------------
+// Truncating int division on the duration value; sign preserved.
+//
+//   getHours        : seconds / 3600
+//   getMinutes      : seconds / 60
+//   getSeconds      : seconds                  (whole seconds)
+//   getMilliseconds : (seconds * 1000) + (nanos / 1_000_000)
+//                     (NB: this is *within the current second* per
+//                     cel-cpp's `duration_to_milliseconds`; whole
+//                     duration in ms is `Duration / 1ms` and shipped
+//                     as `getMilliseconds` only on the in-second part).
+
+void cel_dur_hours_at_v(uint32_t out_slot, uint32_t d_slot);
+void cel_dur_minutes_at_v(uint32_t out_slot, uint32_t d_slot);
+void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot);
+void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

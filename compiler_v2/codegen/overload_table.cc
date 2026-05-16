@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 122> kBuiltinSeeds{
+constexpr std::array<Seed, 136> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -272,6 +272,39 @@ constexpr std::array<Seed, 122> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_dur_ge_at_vv"}},
     Seed{"greater_equals_timestamp",
          {ImportModule::kCelRuntime, "cel_ts_ge_at_vv"}},
+    // ── Timestamp UTC accessors (M7B.C) ──────────────────────
+    // Pure-wasm kernels over the Hinnant civil-calendar helper in
+    // cel_time.c.  No TZ argument — UTC by definition; with-TZ
+    // variants route through a single dispatch trampoline at M7B.E.
+    Seed{"timestamp_to_year",
+         {ImportModule::kCelRuntime, "cel_ts_year_utc_at_v"}},
+    Seed{"timestamp_to_month",
+         {ImportModule::kCelRuntime, "cel_ts_month_utc_at_v"}},
+    Seed{"timestamp_to_day_of_month_1_based",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_month_1_utc_at_v"}},
+    Seed{"timestamp_to_day_of_month",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_month_utc_at_v"}},
+    Seed{"timestamp_to_day_of_year",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_year_utc_at_v"}},
+    Seed{"timestamp_to_day_of_week",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_week_utc_at_v"}},
+    Seed{"timestamp_to_hours",
+         {ImportModule::kCelRuntime, "cel_ts_hours_utc_at_v"}},
+    Seed{"timestamp_to_minutes",
+         {ImportModule::kCelRuntime, "cel_ts_minutes_utc_at_v"}},
+    Seed{"timestamp_to_seconds",
+         {ImportModule::kCelRuntime, "cel_ts_seconds_utc_at_v"}},
+    Seed{"timestamp_to_milliseconds",
+         {ImportModule::kCelRuntime, "cel_ts_milliseconds_utc_at_v"}},
+    // ── Duration accessors (M7B.C) ───────────────────────────
+    // Truncating integer divisions on the sign-correlated payload.
+    Seed{"duration_to_hours", {ImportModule::kCelRuntime, "cel_dur_hours_at_v"}},
+    Seed{"duration_to_minutes",
+         {ImportModule::kCelRuntime, "cel_dur_minutes_at_v"}},
+    Seed{"duration_to_seconds",
+         {ImportModule::kCelRuntime, "cel_dur_seconds_at_v"}},
+    Seed{"duration_to_milliseconds",
+         {ImportModule::kCelRuntime, "cel_dur_milliseconds_at_v"}},
     // ── String ops (`contains` / `startsWith` / `endsWith`) ───
     Seed{"contains_string",
          {ImportModule::kCelRuntime, "cel_string_contains_at_vv"}},
@@ -370,7 +403,7 @@ constexpr std::array<Seed, 122> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 44> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 30> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -382,31 +415,19 @@ constexpr std::array<absl::string_view, 44> kExplicitlyUnimplementedIds{
     // (2c) Regex `matches`.
     "matches",
     "matches_string",
-    // (3) Timestamp / duration accessors.
-    "timestamp_to_year",
+    // (3) Timestamp UTC accessors graduated to `kBuiltinSeeds` in
+    // M7B.C (10 ts + 4 dur ids); size dropped 44 → 30.  With-TZ
+    // variants stay unimplemented pending M7B.E.
     "timestamp_to_year_with_tz",
-    "timestamp_to_month",
     "timestamp_to_month_with_tz",
-    "timestamp_to_day_of_year",
     "timestamp_to_day_of_year_with_tz",
-    "timestamp_to_day_of_month",
     "timestamp_to_day_of_month_with_tz",
-    "timestamp_to_day_of_week",
     "timestamp_to_day_of_week_with_tz",
-    "timestamp_to_day_of_month_1_based",
     "timestamp_to_day_of_month_1_based_with_tz",
-    "timestamp_to_hours",
     "timestamp_to_hours_with_tz",
-    "duration_to_hours",
-    "timestamp_to_minutes",
     "timestamp_to_minutes_with_tz",
-    "duration_to_minutes",
-    "timestamp_to_seconds",
     "timestamp_to_seconds_tz",
-    "duration_to_seconds",
-    "timestamp_to_milliseconds",
     "timestamp_to_milliseconds_with_tz",
-    "duration_to_milliseconds",
     // (3) Type conversions.
     "to_dyn",
     // M10.A: identity-conversion ids (`bool_to_bool`,

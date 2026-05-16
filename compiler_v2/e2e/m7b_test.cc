@@ -660,9 +660,49 @@ struct TsAccessorCase {
 
 class UtcAccessorE2ETest : public ::testing::TestWithParam<TsAccessorCase> {};
 
+namespace {
+
+absl::string_view AccessorMethod(TsAccessor a) {
+  switch (a) {
+    case TsAccessor::kYear:
+    case TsAccessor::kFullYear:
+      return "getFullYear";
+    case TsAccessor::kMonth:
+      return "getMonth";
+    case TsAccessor::kDate:
+      return "getDate";
+    case TsAccessor::kDayOfMonth:
+      return "getDayOfMonth";
+    case TsAccessor::kDayOfYear:
+      return "getDayOfYear";
+    case TsAccessor::kDayOfWeek:
+      return "getDayOfWeek";
+    case TsAccessor::kHours:
+      return "getHours";
+    case TsAccessor::kMinutes:
+      return "getMinutes";
+    case TsAccessor::kSeconds:
+      return "getSeconds";
+    case TsAccessor::kMilliseconds:
+      return "getMilliseconds";
+  }
+  ABSL_CHECK(false) << "AccessorMethod: unhandled";
+}
+
+}  // namespace
+
 TEST_P(UtcAccessorE2ETest, ProjectField) {
-  GTEST_SKIP() << "M7B.C not yet shipped — pure-wasm UTC accessor "
-                  "helpers + cel_civil_from_seconds are stubs.";
+  const TsAccessorCase& p = GetParam();
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  const std::string source = absl::StrCat("t.", AccessorMethod(p.accessor), "()");
+  Instance inst = CompilePlan(compiler, source);
+  Activation act;
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
+                                  absl::Seconds(p.ts_seconds) +
+                                  absl::Nanoseconds(p.ts_nanos)));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
+  EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -750,10 +790,36 @@ struct DurAccessorCase {
 class DurationAccessorE2ETest
     : public ::testing::TestWithParam<DurAccessorCase> {};
 
+namespace {
+
+absl::string_view DurAccessorMethod(DurAccessor a) {
+  switch (a) {
+    case DurAccessor::kHours:
+      return "getHours";
+    case DurAccessor::kMinutes:
+      return "getMinutes";
+    case DurAccessor::kSeconds:
+      return "getSeconds";
+    case DurAccessor::kMilliseconds:
+      return "getMilliseconds";
+  }
+  ABSL_CHECK(false) << "DurAccessorMethod: unhandled";
+}
+
+}  // namespace
+
 TEST_P(DurationAccessorE2ETest, ProjectField) {
-  GTEST_SKIP() << "M7B.C not yet shipped — duration accessor helpers "
-                  "(cel_dur_hours / minutes / seconds / milliseconds) "
-                  "are stubs.";
+  const DurAccessorCase& p = GetParam();
+  Compiler compiler = CompilerWithVar("d", CelType::Duration());
+  const std::string source =
+      absl::StrCat("d.", DurAccessorMethod(p.accessor), "()");
+  Instance inst = CompilePlan(compiler, source);
+  Activation act;
+  act.Bind("d", Value::Duration(absl::Seconds(p.dur_seconds) +
+                                 absl::Nanoseconds(p.dur_nanos)));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
+  EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
 }
 
 INSTANTIATE_TEST_SUITE_P(
