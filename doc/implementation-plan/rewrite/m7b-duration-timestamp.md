@@ -540,6 +540,14 @@ under Option C and 3 host trampolines under Option B.  At 100 ns
 per wasm call vs 200 ns per trampoline, the difference is
 ~300 ns vs ~600 ns — 2× per accessor chain.
 
+> Probe E (§10.5) cross-check: cel-cpp's *interpreter* runs a
+> single UTC accessor at ~230 ns Eval (with Activation lookup
+> overhead included).  That's a useful upper bound on the
+> "compute itself" cost; our pure-wasm path should beat that by
+> the wasm-call ÷ interpreter-dispatch ratio.  The 100 ns /
+> 200 ns figures above remain estimates until M7B.E lands and
+> pipeline_bench can take paired measurements.
+
 **Q2: Is the assumption that "wasm32 has no libc" still true?**
 
 Checked `compiler_v2/runtime/cel_internal.h:65–88`, current state:
@@ -1173,6 +1181,11 @@ Ranked highest → lowest.
     behaviour, not just absl's.  Mitigation: golden table from
     cel-cpp's `runtime/standard/time_functions_test.cc`; if a
     fixture row disagrees, surface during M7B.D.
+    **Probe E (§10.5 Finding 3) shows the post-validation walk
+    is free in the latency picture** — `reject_*` Eval cost
+    matches admit-path Eval cost on the cel-cpp side, so the
+    Probe-B drift fix (lowercase z, year>9999, leap-second,
+    two-digit year) can be added without hot-path concern.
   - **R3 — IANA `tzdata` availability on host.**  Different host
     OSes ship different tz database versions; some embedded
     targets ship none.  `absl::TimeZone::Load("Africa/Cairo")`
@@ -1182,6 +1195,12 @@ Ranked highest → lowest.
     `cel-host-surface.md` that the host's tzdata is the source
     of truth for TZ resolution; recommend distro-provided
     tzdata as a deploy requirement.
+    **Probe E (§10.5 Finding 1) confirms `absl::TimeZone::Load`
+    has a process-wide cache** — IANA accessor Eval costs match
+    UTC accessor Eval costs after the first warmup call, so
+    repeated TZ lookups in one evaluation are NOT a steady-
+    state perf concern.  Availability remains the real R3
+    risk; latency does not.
   - **R4 — Cross-form equivalence cost.**  The §4.7 field-read
     normaliser adds a per-field-read `full_name()` string
     compare for any singular message-typed field.  Hot-path
@@ -1437,6 +1456,112 @@ the matching assertion to the §6.1 round-trip matrix's
 and round-trips through Eval, surfacing any
 EncodeBoundValue → DecodeCelValueAt convention drift.
 
+### 10.5 Probe E — cel-cpp baseline on the M7B cohort
+
+**Question.**  Before committing to Option C's split, what is
+cel-cpp's actual per-case cost on the curated M7B cohort, and
+do any of the §4.4 assumption-challenged claims need revising
+against measured cel-cpp numbers rather than the eyeballed
+~150-200 ns trampoline-cost figure used in §4.4 Q1?
+
+**Method.**  Throwaway baseline bench at
+`//compiler_v2/bench:cel_cpp_ts_dur_bench` (`manual`-tagged;
+shipped under a separate PR — see the "throwaway" branch
+referenced in the milestone tracker, not on master).  22
+curated expressions drawn from `timestamps.textproto` +
+scattered rows in `conversions/proto2/proto3`.  Each case
+measured at Compile (`Compiler::Compile`) / Plan
+(`CreateAstFromCheckedExpr` + `Runtime::CreateProgram`) / Eval
+(`Program::Evaluate` on a prepared `Activation`).  Darwin
+arm64, `-c opt`, `--benchmark_min_time=0.1s`.  Absolute numbers
+are laptop-dependent; the *ratios* are what feed the §4 design.
+
+**Result.**
+
+| Case | Compile (ns) | Plan (ns) | Eval (ns) |
+|---|---:|---:|---:|
+| parse_ts_utc | 5825 | 1005 | 155 |
+| parse_ts_nanos_max | 5744 | 1018 | 204 |
+| parse_ts_offset | 5657 | 1018 | 213 |
+| parse_dur_seconds | 5455 | 947 | 76 |
+| parse_dur_nanos | 5403 | 940 | 76 |
+| reject_ts_underflow | 5632 | 981 | 157 |
+| reject_ts_overflow | 5694 | 995 | 159 |
+| arith_dur_plus_dur | 17961 | 2550 | 192 |
+| arith_ts_minus_ts | 17904 | 2650 | 376 |
+| arith_ts_plus_dur | 18290 | 2635 | 375 |
+| arith_overflow | 11723 | 1867 | 237 |
+| utc_getFullYear | 7810 | 1293 | 230 |
+| utc_getDayOfYear | 8067 | 1292 | 224 |
+| utc_getMilliseconds | 8315 | 1373 | 275 |
+| tz_iana_getDate | 10244 | 1570 | 230 |
+| tz_offset_getDayOfMonth | 10241 | 1535 | 332 |
+| tz_iana_kathmandu_getMinutes | 10383 | 1541 | 233 |
+| fmt_string_ts | 8595 | 1378 | 384 |
+| fmt_string_dur | 8393 | 1300 | 124 |
+| fmt_int_ts | 8383 | 1353 | 179 |
+| compound_policy | 30658 | 4142 | 608 |
+| crossform_ts_eq_struct | 13033 | 1770 | 313 |
+
+**Implications — what this changes about the §4 design.**
+
+  - **Finding 1: IANA TZ Eval ≈ UTC accessor Eval (~230 ns).**
+    Three IANA / fixed-offset rows (`tz_iana_getDate`,
+    `tz_offset_getDayOfMonth`, `tz_iana_kathmandu_getMinutes`)
+    land at 230 / 332 / 233 ns — indistinguishable from the
+    pure-UTC accessor rows (224-275 ns) once the first
+    `absl::TimeZone::Load` call warms its process-wide cache.
+    **What this means for §4 Option C:** the latency argument
+    for splitting "UTC pure-wasm, IANA host" is genuinely
+    about the wasm↔host trampoline crossing in OUR engine,
+    NOT about absl-side TZ resolution being slow.  Probe E
+    does NOT change the Option C recommendation — the
+    trampoline-crossing cost is still real and unmeasured here
+    — but it does narrow the gap that Option C is claiming
+    to close.  Q1's ~200 ns trampoline-cost figure remains an
+    *estimate* until M7B.E lands and pipeline_bench can take
+    paired wasm-side measurements.  **What this means for
+    §7 R3 (tzdata availability):** R3 is the real concern, not
+    per-call TZ cost.  Updated inline below.
+  - **Finding 2: Duration parse Eval ≪ Timestamp parse Eval
+    (~76 ns vs ~155 ns).**  RFC3339 lexing dominates the
+    timestamp parser; the proto Duration text format is
+    comparatively trivial.  This is a useful asymmetry for
+    sizing M7B.D's two parse trampolines — `cel_duration_parse`
+    is roughly 2× cheaper per call than `cel_timestamp_parse`.
+    No design change; sets bench expectations for §11.3.
+  - **Finding 3: Range-rejection path ≡ admit path (~157 ns
+    vs ~155 ns).**  `reject_ts_underflow` /
+    `reject_ts_overflow` Eval costs are within noise of the
+    admit-path `parse_ts_utc`.  **What this means for §7 R2
+    (RFC3339 admit-set drift):** the post-validation walk for
+    the four cel-cpp/absl drift cases (lowercase z, year>9999,
+    leap-second, two-digit year — see Probe B) can be added
+    without hot-path cost concern.  Updated inline below.
+  - **Finding 4: Arithmetic overflow ≈ arithmetic admit
+    (~237 ns vs ~192-376 ns range).**  `__builtin_add_overflow`
+    on the seconds field is free in the latency picture.
+    Pins R5 cleanly — no separate fast-path needed.
+  - **Finding 5: Compound policy at 608 ns Eval.**  The
+    `compound_policy` row (year-equal AND timestamp-diff >
+    duration) is the closest real-world shape in the cohort.
+    Becomes M7B's end-to-end pipeline target — §11.3's
+    `pipeline_bench`-side M7B BMs should match or beat this
+    once the wasm-side bench cohort lands.
+  - **Finding 6: cel-cpp Compile / Plan one-shot scale.**
+    Compile 5-31 µs (parse + check), Plan ~1-4 µs (AST→program).
+    Both are one-shot; informative as context for sizing
+    M7B's pipeline benches.  Per the README "How JIT
+    compilation fits in" framing, our equivalent Plan cost
+    sits behind a different boundary — Cranelift codegen at
+    Plan time vs absl-side AST traversal here.
+
+**No architectural revision.**  Probe E *validates* Option
+C's split rather than challenging it.  The estimated
+trampoline-crossing cost in §4.4 Q1 remains the load-bearing
+unmeasured quantity; M7B.E pipeline_bench measurements (per
+§11.3) will close that gap once the with-TZ trampoline ships.
+
 ## 11. Implementation scaffolding (in tree as of 2026-05-16)
 
 ### 11.1 E2e tests — `compiler_v2/e2e/m7b_test.cc`
@@ -1553,6 +1678,22 @@ magnitude slower than the kernel benches (per-call wasm↔host
 boundary cross + `absl::ParseTime` state machine + Layer-2
 post-validation against the CEL admit-set identified by
 Probe B).
+
+**cel-cpp baselines to beat (per Probe E §10.5).**  Targets for
+the paired pipeline_bench rows when M7B ships:
+
+| Scenario | cel-cpp Eval | M7B target |
+|---|---:|---|
+| Duration parse | ~76 ns | aim for ≤ this; pure parse, no Activation lookup |
+| Timestamp parse (RFC3339) | ~155 ns | aim for ≤ this |
+| Single UTC accessor | ~230 ns | aim well below (~3-4× lower); pure-wasm kernel beats interpreter dispatch |
+| Single IANA TZ accessor | ~230 ns | aim within ~2× (one wasm↔host crossing tax) |
+| Duration arithmetic (`a + b`) | ~192 ns | aim well below (~3× lower); pure-wasm kernel |
+| Timestamp arithmetic (`ts - ts`) | ~376 ns | aim well below |
+| Compound policy (year-eq AND ts-diff > dur) | ~608 ns | match or beat — real-world target |
+
+Numbers above are darwin-arm64 `-c opt`; the M7B paired bench
+must run on the same host to make the comparison fair.
 
 Build target: `bazel build -c opt //compiler_v2/bench:kernel_bench`
 (green 2026-05-16).  Run M7B + M7-A kernel benches together:
