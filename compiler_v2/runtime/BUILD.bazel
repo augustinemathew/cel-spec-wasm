@@ -425,6 +425,11 @@ genrule(
         "-Wl,--export=cel_dur_minutes_at_v",
         "-Wl,--export=cel_dur_seconds_at_v",
         "-Wl,--export=cel_dur_milliseconds_at_v",
+        # M7B.D pure-wasm half: int <-> ts/dur conversions.
+        "-Wl,--export=cel_ts_to_int_at_v",
+        "-Wl,--export=cel_dur_to_int_at_v",
+        "-Wl,--export=cel_int_to_ts_at_v",
+        "-Wl,--export=cel_int_to_dur_at_v",
         "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
         "-I.",
         "-o $@",

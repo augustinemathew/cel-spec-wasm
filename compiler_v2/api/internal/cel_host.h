@@ -570,6 +570,24 @@ ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(uint32_t msg_slot,
                                                   uint32_t value_slot,
                                                   const TrampolineContext& ctx);
 
+// M7B.D: cel_host parse + format trampolines.  All four are
+// `(out_slot, in_slot)` shape — read the input CelValue at
+// `in_slot` (string for parse, ts/dur for format), run the
+// appropriate absl::ParseTime / ParseDuration / FormatTime / proto-
+// Duration text-format kernel, write the result CelValue at
+// `out_slot`.  Spec-level failures (parse error, lowercase z,
+// out-of-range, unordered compound units) write a `CEL_ERROR`
+// with `CEL_ERR_INVALID_ARGUMENT`; non-OK Status reserved for
+// infrastructure failures.  See m7b §4.3 for the split rationale.
+ABSL_MUST_USE_RESULT absl::Status CelTimestampParseImpl(
+    uint32_t out_slot, uint32_t str_slot, const TrampolineContext& ctx);
+ABSL_MUST_USE_RESULT absl::Status CelDurationParseImpl(
+    uint32_t out_slot, uint32_t str_slot, const TrampolineContext& ctx);
+ABSL_MUST_USE_RESULT absl::Status CelTimestampFormatImpl(
+    uint32_t out_slot, uint32_t ts_slot, const TrampolineContext& ctx);
+ABSL_MUST_USE_RESULT absl::Status CelDurationFormatImpl(
+    uint32_t out_slot, uint32_t dur_slot, const TrampolineContext& ctx);
+
 }  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_

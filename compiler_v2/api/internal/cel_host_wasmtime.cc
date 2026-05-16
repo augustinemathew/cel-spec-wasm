@@ -350,6 +350,37 @@ extern "C" wasm_trap_t* CelResolveMessageTypeNameTrampoline(
                                                              args);
 }
 
+// M7B.D: four 2-arg `(out_slot, in_slot)` trampolines — parse / format
+// for timestamp + duration.  Bodies live in cel_host.cc; here we
+// just pin the wasmtime signature.
+extern "C" wasm_trap_t* CelTimestampParseTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelTimestampParseImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelDurationParseTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelDurationParseImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelTimestampFormatTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelTimestampFormatImpl>(env_ptr, caller, args);
+}
+
+extern "C" wasm_trap_t* CelDurationFormatTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelDurationFormatImpl>(env_ptr, caller, args);
+}
+
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
   for (auto& p : params) {
@@ -463,6 +494,16 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       // `(out_slot, in_slot)`; void result.  Stub impl in M9.B
       // poisons; M9.C replaces with the real descriptor walk.
       {"resolve_message_type_name", 2, &CelResolveMessageTypeNameTrampoline},
+      // M7B.D — timestamp / duration parse + format.  All 2-arg
+      // `(out_slot, in_slot)`; bodies in cel_host.cc thread through
+      // absl::ParseTime / ParseDuration / FormatTime + a hand-rolled
+      // proto-Duration text formatter.  Spec-level errors surface
+      // via CEL_ERR_INVALID_ARGUMENT / CEL_ERR_OVERFLOW in the
+      // out_slot, NOT a wasmtime trap.
+      {"cel_timestamp_parse", 2, &CelTimestampParseTrampoline},
+      {"cel_duration_parse", 2, &CelDurationParseTrampoline},
+      {"cel_timestamp_format", 2, &CelTimestampFormatTrampoline},
+      {"cel_duration_format", 2, &CelDurationFormatTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

@@ -117,6 +117,21 @@ void cel_dur_minutes_at_v(uint32_t out_slot, uint32_t d_slot);
 void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot);
 void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
 
+// ----- Conversions (4 helpers, M7B.D pure-wasm half) -----------------------
+// String <-> timestamp/duration parse + format are host trampolines
+// (RFC3339 / proto-Duration text format need a real parser); the
+// int-direction conversions are pure-wasm.
+//
+//   timestamp_to_int64 : seconds field, ignoring nanos
+//   duration_to_int64  : seconds field, truncating nanos toward zero
+//   int64_to_timestamp : (seconds, 0) with langdef-range check
+//   int64_to_duration  : (seconds, 0); no range check (any int64 fits)
+
+void cel_ts_to_int_at_v(uint32_t out_slot, uint32_t ts_slot);
+void cel_dur_to_int_at_v(uint32_t out_slot, uint32_t dur_slot);
+void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot);
+void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

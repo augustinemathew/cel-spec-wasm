@@ -57,7 +57,10 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // helpers + 8 ordering helpers).
 // M7B.C: 122 → 136 — added 14 accessor seeds (10 ts UTC + 4 dur
 // accessors).
-constexpr size_t kBuiltinSeedCount = 136;
+// M7B.D: 136 → 146 — added 10 conversion seeds (4 int<->ts/dur
+// pure-wasm + 2 identities via cel_copy_slot + 4 host parse/format
+// trampolines).
+constexpr size_t kBuiltinSeedCount = 146;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

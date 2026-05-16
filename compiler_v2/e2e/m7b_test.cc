@@ -870,8 +870,35 @@ struct ParseCase {
 class ParseFormatE2ETest : public ::testing::TestWithParam<ParseCase> {};
 
 TEST_P(ParseFormatE2ETest, AdmitOrReject) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_timestamp_parse / "
-                  "cel_duration_parse host trampolines are stubs.";
+  const ParseCase& p = GetParam();
+  // Empty compiler — `timestamp(string)` / `duration(string)` need
+  // no variables.  Activation is also empty.
+  auto compiler_or = BuildCompiler([](Compiler::Builder&) {});
+  ABSL_CHECK_OK(compiler_or);
+  auto program_or = compiler_or->Compile(p.source);
+  if (p.expect_admit) {
+    ASSERT_TRUE(program_or.ok())
+        << p.label << ": compile failed: " << program_or.status();
+  } else {
+    if (!program_or.ok()) {
+      // Checker / static-subset rejection counts as "admit=false".
+      return;
+    }
+  }
+  auto inst_or = GlobalEngine().Plan(*program_or);
+  ABSL_CHECK_OK(inst_or) << p.label;
+  Instance inst = *std::move(inst_or);
+  Activation act;
+  auto v_or = inst.Eval(act);
+  ABSL_CHECK_OK(v_or) << p.label;
+  if (p.expect_admit) {
+    // Admit rows are written as boolean-result expressions (e.g.
+    // `timestamp(...) == timestamp(...)`); the value must be true.
+    ASSERT_EQ(v_or->kind(), Value::Kind::kBool) << p.label;
+    EXPECT_EQ(*v_or->AsBool(), true) << p.label;
+  } else {
+    EXPECT_EQ(v_or->kind(), Value::Kind::kError) << p.label;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -947,56 +974,91 @@ INSTANTIATE_TEST_SUITE_P(
 // because the expression shape is different.
 class FormatConvertE2ETest : public ::testing::Test {};
 
+namespace {
+
+// Compile-eval shorthand for the standalone TEST_F format/convert
+// rows below.  Empty compiler, empty activation; the expression is
+// fully closed (constant-foldable timestamp/duration constructors).
+Value EvalClosedExpression(absl::string_view source) {
+  auto compiler_or = BuildCompiler([](Compiler::Builder&) {});
+  ABSL_CHECK_OK(compiler_or);
+  Instance inst = CompilePlan(*compiler_or, source);
+  Activation act;
+  return EvalOk(inst, act);
+}
+
+}  // namespace
+
 TEST_F(FormatConvertE2ETest, TimestampToString) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_timestamp_format "
-                  "host trampoline is a stub.";
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("2009-02-13T23:31:30Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30+00:00");
 }
 
 TEST_F(FormatConvertE2ETest, TimestampToStringNanos) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_timestamp_format "
-                  "host trampoline is a stub.";
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("2009-02-13T23:31:30.500Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  // absl::RFC3339_full emits the fractional seconds; format is the
+  // canonical RFC3339 form `+00:00`.  Exact framing is what cel-cpp
+  // / absl produce — pinned here so any future change reads as a
+  // deliberate format flip.
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30.5+00:00");
 }
 
 TEST_F(FormatConvertE2ETest, DurationToString) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_duration_format "
-                  "host trampoline is a stub.";
+  Value v = EvalClosedExpression(R"(string(duration("3600s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "3600s");
 }
 
 TEST_F(FormatConvertE2ETest, TimestampToInt64) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_ts_to_int_at_v not "
-                  "registered.";
+  Value v = EvalClosedExpression(
+      R"(int(timestamp("2009-02-13T23:31:30Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v.AsInt(), 1234567890);
 }
 
 TEST_F(FormatConvertE2ETest, DurationToInt64) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_dur_to_int_at_v not "
-                  "registered.";
+  Value v = EvalClosedExpression(R"(int(duration("3600s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v.AsInt(), 3600);
 }
 
 TEST_F(FormatConvertE2ETest, Int64ToTimestamp) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_int_to_ts_at_v not "
-                  "registered.";
+  // `timestamp(int)` builds (seconds, 0); cross-check by formatting.
+  Value v = EvalClosedExpression(R"(string(timestamp(1234567890)))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30+00:00");
 }
 
 TEST_F(FormatConvertE2ETest, Int64ToDuration) {
-  GTEST_SKIP() << "M7B.D not yet shipped — cel_int_to_dur_at_v not "
-                  "registered.";
+  Value v = EvalClosedExpression(R"(string(duration(60)))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "60s");
 }
 
 TEST_F(FormatConvertE2ETest, TimestampIdentity) {
-  GTEST_SKIP() << "M7B.D not yet shipped — timestamp_to_timestamp "
-                  "identity not registered.";
+  Value v = EvalClosedExpression(
+      R"(timestamp(timestamp("2009-02-13T23:31:30Z")) ==
+         timestamp("2009-02-13T23:31:30Z"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(FormatConvertE2ETest, DurationIdentity) {
-  GTEST_SKIP() << "M7B.D not yet shipped — duration_to_duration "
-                  "identity not registered.";
+  Value v = EvalClosedExpression(
+      R"(duration(duration("60s")) == duration("60s"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(FormatConvertE2ETest, Int64ToTimestampOverflow) {
-  // langdef: timestamp seconds range is bounded; int(INT64_MAX) →
-  // timestamp must overflow.
-  GTEST_SKIP() << "M7B.D not yet shipped — overflow guard on "
-                  "int64_to_timestamp.";
+  // langdef: int → timestamp range-checks against [year 1, year 9999].
+  // INT64_MAX is well above year 9999 → CEL_ERROR (kOverflow).
+  Value v = EvalClosedExpression(R"(timestamp(9223372036854775807))");
+  EXPECT_EQ(v.kind(), Value::Kind::kError);
 }
 
 // ──────────────────────────────────────────────────────────────

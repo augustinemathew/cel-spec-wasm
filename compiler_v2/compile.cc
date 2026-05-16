@@ -157,6 +157,16 @@ int OverloadHelperArity(absl::string_view name) {
       // convention because pre-M10 it was emitted directly by the
       // ternary lowering, not via OverloadTable seeding.
       {"cel_copy_slot", 2},
+      // M7B.D: cel_host parse + format trampolines.  Names match
+      // the m7b plan §4.3 canonical form (`cel_timestamp_parse`
+      // etc., not `cel_timestamp_parse_at_v`) — the `_at_v` suffix
+      // is a runtime-side convention; host trampolines stay
+      // unsuffixed for consistency with cel_get_field /
+      // cel_make_message / cel_map_lookup.
+      {"cel_timestamp_parse", 2},
+      {"cel_duration_parse", 2},
+      {"cel_timestamp_format", 2},
+      {"cel_duration_format", 2},
   };
   for (const auto& d : kDispatchers) {
     if (d.name == name) return d.arity;
@@ -172,14 +182,31 @@ void InstallOverloadImports(WasmModule& mod,
   absl::flat_hash_set<std::string> installed;
   for (uint32_t id = 1; id <= overload_table.size(); ++id) {
     const OverloadImpl& impl = overload_table.LookupById(id);
-    if (impl.module != ImportModule::kCelRuntime) continue;
+    // M7B.D: kCelHost seeds install with import_module="cel_host"
+    // (parse / format trampolines).  The binaryen function symbol
+    // matches the helper name regardless of module — helper names
+    // are globally unique (the kCelHost trampoline names start
+    // with `cel_timestamp_` / `cel_duration_`, the kCelRuntime
+    // helpers with `cel_int_` / `cel_string_` / etc).
+    const char* module_name = nullptr;
+    switch (impl.module) {
+      case ImportModule::kCelRuntime:
+        module_name = "cel";
+        break;
+      case ImportModule::kCelHost:
+        module_name = "cel_host";
+        break;
+    }
+    if (module_name == nullptr) continue;
     const std::string name(impl.name);
     if (installed.contains(name)) continue;
     const int arity = OverloadHelperArity(impl.name);
     if (arity == 3) {
-      mod.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
+      mod.AddFunctionImport(name, module_name, name, vv_params,
+                            BinaryenTypeNone());
     } else if (arity == 2) {
-      mod.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
+      mod.AddFunctionImport(name, module_name, name, v_params,
+                            BinaryenTypeNone());
     }
     installed.insert(name);
   }

@@ -473,6 +473,8 @@ uint32_t WireErrorCode(cel::ErrorCode c) {
       return CEL_ERR_FIELD_NOT_FOUND;
     case cel::ErrorCode::kIndexOutOfBounds:
       return CEL_ERR_INDEX_OUT_OF_BOUNDS;
+    case cel::ErrorCode::kInvalidArgument:
+      return CEL_ERR_INVALID_ARGUMENT;
     case cel::ErrorCode::kHostAdapterError:
       return CEL_ERR_HOST_ADAPTER_ERROR;
     default:
@@ -2671,6 +2673,262 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
   out_cv.payload.s.len = static_cast<uint32_t>(fqn.size());
   ctx.mem.WriteCelValue(out_slot, out_cv);
   return absl::OkStatus();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// M7B.D: timestamp / duration parse + format trampolines.
+// ══════════════════════════════════════════════════════════════════
+//
+// Layer-2 routes for the four ids that absl can implement cleanly
+// (RFC3339 parse / format, proto-Duration text format).  Per m7b
+// §4.3 the runtime kernel stays descriptor-free; these trampolines
+// are the only piece that links absl::ParseTime / ParseDuration.
+// Probe-B (§10.2) found 4 admit-set drifts between absl and CEL
+// for timestamps; CelTimestampParseImpl post-validates against the
+// drift patterns.  Probe-C (§10.3) found 1 drift for durations
+// (`1s2h` admitted as `2h1s`); CelDurationParseImpl rejects out-of-
+// order compound forms.
+
+namespace {
+
+// Write a CEL_ERROR{kind:CEL_ERROR, err:wire_code} into out_slot.
+// Mirrors the runtime-side `poison` shape; we don't include
+// cel_internal.h here because that's a C-only header.
+void WriteInvalidArgumentError(uint32_t out_slot, MemoryView& mem) {
+  CelValue cv{};
+  cv.kind = CEL_ERROR;
+  cv.payload.err = WireErrorCode(cel::ErrorCode::kInvalidArgument);
+  mem.WriteCelValue(out_slot, cv);
+}
+
+void WriteOverflowError(uint32_t out_slot, MemoryView& mem) {
+  CelValue cv{};
+  cv.kind = CEL_ERROR;
+  cv.payload.err = CEL_ERR_OVERFLOW;
+  mem.WriteCelValue(out_slot, cv);
+}
+
+// Sign-correlated decomposition shared with EncodeDurationValue /
+// EncodeTimestampValue above; declared inline here so the parse
+// trampolines don't have to repeat the IDivDuration ladder.
+void WriteDurTsPayload(absl::Duration d, uint32_t kind, CelValue* out) {
+  const int64_t s = absl::IDivDuration(d, absl::Seconds(1), &d);
+  const int32_t ns =
+      static_cast<int32_t>(absl::IDivDuration(d, absl::Nanoseconds(1), &d));
+  out->kind = kind;
+  out->payload.dur = CelDurTs{.seconds = s, .nanos = ns, ._pad = 0};
+}
+
+// langdef-pinned bounds from m7b §3.2 / cel_time.c.
+constexpr int64_t kTimestampMinSeconds = -62135596800LL;
+constexpr int64_t kTimestampMaxSeconds = 253402300799LL;
+
+// Probe B post-validation: absl is laxer than CEL on lowercase z,
+// year>9999, leap-second `:60`, and two-digit year inputs.  Walks
+// the input once and rejects each pattern explicitly.  Called
+// AFTER absl::ParseTime succeeds.
+bool RejectsAsTimestampPerCEL(absl::string_view input) {
+  // Lowercase trailing z: cel-cpp requires uppercase Z.
+  if (!input.empty() && input.back() == 'z') return true;
+  // Leap-second `:60`: cel-cpp rejects.  Scan for the pattern.
+  // Position the `:60` indicator before the trailing TZ/offset.
+  // Loose check: any substring `:60`.
+  if (input.find(":60") != absl::string_view::npos) return true;
+  // Two-digit year: cel-cpp requires four digits.  The RFC3339
+  // shape starts with `YYYY-MM-DD`.  If the position of the first
+  // `-` is < 4, the year is too short.
+  const size_t dash = input.find('-');
+  return dash == absl::string_view::npos || dash < 4;
+}
+
+// Probe C post-validation: absl admits `1s2h` (as 2h1s); CEL
+// rejects.  Walks the compound-duration input and asserts unit
+// order is strictly decreasing.  Unit ranks below — higher rank =
+// larger unit.  Called only on compound forms (single-unit forms
+// like `3600s` aren't checked because there's nothing to order).
+int UnitRank(char first, char second_or_zero) {
+  // `ns`, `us`, `ms`, `s`, `m`, `h`.  The compound-units we admit
+  // come from absl::ParseDuration; the rank is the proto-Duration
+  // text format order: h > m > s > ms > us > ns.
+  if (first == 'h') return 5;
+  if (first == 'm' && second_or_zero == 0) return 4;
+  if (first == 's' && second_or_zero == 0) return 3;
+  if (first == 'm' && second_or_zero == 's') return 2;
+  if (first == 'u' && second_or_zero == 's') return 1;
+  if (first == 'n' && second_or_zero == 's') return 0;
+  return -1;
+}
+
+bool RejectsAsDurationPerCEL(absl::string_view input) {
+  // Walk the unit suffixes; track the previous rank.  Each unit
+  // suffix follows a numeric chunk; we don't need to parse the
+  // numbers — just the unit letters.  Skip leading sign + first
+  // numeric chunk.
+  int prev_rank = INT32_MAX;
+  for (size_t i = 0; i < input.size();) {
+    const char c = input[i];
+    if (c == '-' || (c >= '0' && c <= '9') || c == '.') {
+      ++i;
+      continue;
+    }
+    // Hit a non-digit: must be a unit letter.
+    const char next = i + 1 < input.size() ? input[i + 1] : 0;
+    const int rank = UnitRank(c, next == 's' ? 's' : 0);
+    if (rank < 0) return true;  // unknown unit
+    if (rank >= prev_rank) return true;  // not strictly decreasing
+    prev_rank = rank;
+    i += (rank == 0 || rank == 1 || rank == 2) ? 2 : 1;  // 2-char ms/us/ns
+  }
+  return false;
+}
+
+}  // namespace
+
+absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
+                                    const TrampolineContext& ctx) {
+  CelValue in = ctx.mem.ReadCelValue(str_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_STRING) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const absl::string_view s = ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
+  absl::Time t;
+  std::string err;
+  if (!absl::ParseTime(absl::RFC3339_full, s, &t, &err) ||
+      RejectsAsTimestampPerCEL(s)) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const absl::Duration since_epoch = t - absl::UnixEpoch();
+  CelValue out_cv{};
+  WriteDurTsPayload(since_epoch, CEL_TIMESTAMP, &out_cv);
+  // langdef range check — also rejects absl's lax year>9999 admit.
+  if (out_cv.payload.ts.seconds < kTimestampMinSeconds ||
+      out_cv.payload.ts.seconds > kTimestampMaxSeconds) {
+    WriteOverflowError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  ctx.mem.WriteCelValue(out_slot, out_cv);
+  return absl::OkStatus();
+}
+
+absl::Status CelDurationParseImpl(uint32_t out_slot, uint32_t str_slot,
+                                   const TrampolineContext& ctx) {
+  CelValue in = ctx.mem.ReadCelValue(str_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_STRING) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const absl::string_view s = ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
+  absl::Duration d;
+  if (!absl::ParseDuration(s, &d) || RejectsAsDurationPerCEL(s)) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  CelValue out_cv{};
+  WriteDurTsPayload(d, CEL_DURATION, &out_cv);
+  ctx.mem.WriteCelValue(out_slot, out_cv);
+  return absl::OkStatus();
+}
+
+namespace {
+
+// Allocate a string in the per-Eval arena, copy bytes, return a
+// CEL_STRING CelValue.  Used by both format trampolines.
+absl::Status WriteStringResult(absl::string_view s, uint32_t out_slot,
+                               const TrampolineContext& ctx) {
+  uint32_t off = 0;
+  uint8_t* p = ctx.alloc.Alloc(s.size(), &off);
+  if (p == nullptr && !s.empty()) {
+    return absl::ResourceExhaustedError(
+        "arena OOM in CelTimestampFormatImpl/CelDurationFormatImpl");
+  }
+  if (!s.empty()) std::memcpy(p, s.data(), s.size());
+  CelValue cv{};
+  cv.kind = CEL_STRING;
+  cv.payload.s.ptr = off;
+  cv.payload.s.len = static_cast<uint32_t>(s.size());
+  ctx.mem.WriteCelValue(out_slot, cv);
+  return absl::OkStatus();
+}
+
+// proto Duration text format per
+// google/protobuf/duration.proto:
+//   "[-]<seconds>[.<frac>]s"
+// where frac is 3/6/9 digits (trimmed to multiples of 3 by trailing
+// zero strip).  Sign-correlated input → at most one of `(s<0, n<0)`
+// is true.
+std::string FormatProtoDuration(int64_t seconds, int32_t nanos) {
+  std::string out;
+  const bool negative = seconds < 0 || nanos < 0;
+  if (negative) out.push_back('-');
+  // Absolute values; INT64_MIN handled via uint64 cast.
+  const uint64_t abs_s = seconds < 0
+                             ? static_cast<uint64_t>(-(seconds + 1)) + 1
+                             : static_cast<uint64_t>(seconds);
+  const uint32_t abs_n = nanos < 0 ? static_cast<uint32_t>(-nanos)
+                                    : static_cast<uint32_t>(nanos);
+  absl::StrAppend(&out, abs_s);
+  if (abs_n != 0) {
+    out.push_back('.');
+    // 9-digit zero-padded fraction, then trim trailing zeros to a
+    // multiple-of-3 length (matches proto JSON encoding).
+    char buf[10];
+    std::snprintf(buf, sizeof(buf), "%09u", abs_n);
+    size_t frac_len = 9;
+    while (frac_len > 3 && buf[frac_len - 1] == '0' &&
+           buf[frac_len - 2] == '0' && buf[frac_len - 3] == '0') {
+      frac_len -= 3;
+    }
+    out.append(buf, frac_len);
+  }
+  out.push_back('s');
+  return out;
+}
+
+}  // namespace
+
+absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
+                                     const TrampolineContext& ctx) {
+  CelValue in = ctx.mem.ReadCelValue(ts_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_TIMESTAMP) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const absl::Time t = absl::UnixEpoch() +
+                       absl::Seconds(in.payload.ts.seconds) +
+                       absl::Nanoseconds(in.payload.ts.nanos);
+  const std::string s =
+      absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
+  return WriteStringResult(s, out_slot, ctx);
+}
+
+absl::Status CelDurationFormatImpl(uint32_t out_slot, uint32_t dur_slot,
+                                    const TrampolineContext& ctx) {
+  CelValue in = ctx.mem.ReadCelValue(dur_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_DURATION) {
+    WriteInvalidArgumentError(out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const std::string s =
+      FormatProtoDuration(in.payload.dur.seconds, in.payload.dur.nanos);
+  return WriteStringResult(s, out_slot, ctx);
 }
 
 }  // namespace celwasm

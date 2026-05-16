@@ -25,6 +25,8 @@ absl::string_view ErrorCodeName(ErrorCode c) {
       return "duplicate_key";
     case ErrorCode::kIndexOutOfBounds:
       return "index_out_of_bounds";
+    case ErrorCode::kInvalidArgument:
+      return "invalid_argument";
     case ErrorCode::kUnknownType:
       return "unknown_type";
     case ErrorCode::kCustomFnFailed:

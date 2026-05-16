@@ -416,6 +416,69 @@ void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot) {
   write_int(out, a->payload.dur.seconds);
 }
 
+// ─── M7B.D pure-wasm half: int <-> ts/dur conversions ──────────────────
+
+void cel_ts_to_int_at_v(uint32_t out_slot, uint32_t ts_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(ts_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_TIMESTAMP) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // langdef + cel-cpp: int(timestamp) returns the epoch-seconds
+  // field; nanos are truncated.
+  write_int(out, a->payload.ts.seconds);
+}
+
+void cel_dur_to_int_at_v(uint32_t out_slot, uint32_t dur_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(dur_slot);
+  if (duration_accessor_prelude(out, a)) return;
+  // langdef + cel-cpp: int(duration) returns whole seconds,
+  // truncating toward zero — the sign-correlated form (Probe D)
+  // makes this just the seconds field as-is.
+  write_int(out, a->payload.dur.seconds);
+}
+
+void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(int_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // langdef-pinned timestamp range — same gate run_arith uses for
+  // arithmetic results, applied here so that
+  // `timestamp(INT64_MAX)` poisons cleanly rather than producing
+  // a CelValue that downstream accessors would interpret out-of-
+  // range.
+  const int64_t s = a->payload.i;
+  if (!timestamp_in_range(s)) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  out->kind = CEL_TIMESTAMP;
+  out->payload.ts = (CelDurTs){.seconds = s, .nanos = 0, ._pad = 0};
+}
+
+void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(int_slot);
+  if (absorb_3vl_unary(out, a)) return;
+  if (a->kind != CEL_INT) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  // Any int64 fits a valid duration's seconds slot (no langdef
+  // range check; the proto-Duration ±315B range is enforced only
+  // at the parse-trampoline boundary).
+  out->kind = CEL_DURATION;
+  out->payload.dur =
+      (CelDurTs){.seconds = a->payload.i, .nanos = 0, ._pad = 0};
+}
+
 void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(d_slot);

@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 136> kBuiltinSeeds{
+constexpr std::array<Seed, 146> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -305,6 +305,38 @@ constexpr std::array<Seed, 136> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_dur_seconds_at_v"}},
     Seed{"duration_to_milliseconds",
          {ImportModule::kCelRuntime, "cel_dur_milliseconds_at_v"}},
+    // ── Timestamp / Duration <-> int conversions (M7B.D pure-wasm) ─
+    // langdef: `int(timestamp)` returns epoch-seconds; `int(duration)`
+    // returns whole seconds.  Reverse builds `(seconds, 0)`; the
+    // timestamp form additionally range-checks the langdef [year 1,
+    // year 9999] bound.
+    Seed{"timestamp_to_int64",
+         {ImportModule::kCelRuntime, "cel_ts_to_int_at_v"}},
+    Seed{"duration_to_int64",
+         {ImportModule::kCelRuntime, "cel_dur_to_int_at_v"}},
+    Seed{"int64_to_timestamp",
+         {ImportModule::kCelRuntime, "cel_int_to_ts_at_v"}},
+    Seed{"int64_to_duration",
+         {ImportModule::kCelRuntime, "cel_int_to_dur_at_v"}},
+    // ── Identity conversions (M7B.D) ─────────────────────────
+    // `timestamp(timestamp)` / `duration(duration)` are the same
+    // `cel_copy_slot` shape M10.A's other identity ids use.
+    Seed{"timestamp_to_timestamp",
+         {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    Seed{"duration_to_duration",
+         {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    // ── String <-> Timestamp / Duration (M7B.D host trampolines) ─
+    // RFC3339 parse / proto-Duration text-format parse + format.
+    // Layer-2 impls in api/internal/cel_host.cc; runtime stays
+    // descriptor-free per design.md §4.7.6.
+    Seed{"string_to_timestamp",
+         {ImportModule::kCelHost, "cel_timestamp_parse"}},
+    Seed{"string_to_duration",
+         {ImportModule::kCelHost, "cel_duration_parse"}},
+    Seed{"timestamp_to_string",
+         {ImportModule::kCelHost, "cel_timestamp_format"}},
+    Seed{"duration_to_string",
+         {ImportModule::kCelHost, "cel_duration_format"}},
     // ── String ops (`contains` / `startsWith` / `endsWith`) ───
     Seed{"contains_string",
          {ImportModule::kCelRuntime, "cel_string_contains_at_vv"}},
@@ -403,7 +435,7 @@ constexpr std::array<Seed, 136> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 30> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 20> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -428,6 +460,10 @@ constexpr std::array<absl::string_view, 30> kExplicitlyUnimplementedIds{
     "timestamp_to_minutes_with_tz",
     "timestamp_to_seconds_tz",
     "timestamp_to_milliseconds_with_tz",
+    // (3) Timestamp / duration parse / format / int conversions
+    // graduated to `kBuiltinSeeds` in M7B.D (10 ids: 6 conversion +
+    // 2 identity + 4 host parse/format trampolines); size dropped
+    // 30 → 20.
     // (3) Type conversions.
     "to_dyn",
     // M10.A: identity-conversion ids (`bool_to_bool`,
@@ -449,16 +485,13 @@ constexpr std::array<absl::string_view, 30> kExplicitlyUnimplementedIds{
     //
     // M10.E: bytes <-> string ids (`string_to_bytes`,
     // `bytes_to_string`) graduated; size dropped 60 → 58.
-    "timestamp_to_int64",
-    "duration_to_int64",
-    "duration_to_string",
-    "timestamp_to_string",
-    "timestamp_to_timestamp",
-    "int64_to_timestamp",
-    "string_to_timestamp",
-    "duration_to_duration",
-    "int64_to_duration",
-    "string_to_duration",
+    // M7B.D: 10 timestamp/duration parse + format + int conversion
+    // + identity ids (`timestamp_to_int64`, `duration_to_int64`,
+    // `timestamp_to_string`, `duration_to_string`,
+    // `timestamp_to_timestamp`, `duration_to_duration`,
+    // `int64_to_timestamp`, `int64_to_duration`,
+    // `string_to_timestamp`, `string_to_duration`) graduated to
+    // `kBuiltinSeeds`; size dropped 30 → 20.
     // M9.B: `"type"` is now seeded in kBuiltinSeeds above; removed
     // from this unimplemented-list (and the array size dropped from
     // 81 → 80 to match).

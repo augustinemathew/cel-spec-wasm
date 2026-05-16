@@ -967,6 +967,16 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
       case CEL_TYPE:
         type_eq_at_vv(out_slot, a_slot, b_slot);
         return;
+      case CEL_DURATION:
+      case CEL_TIMESTAMP:
+        // m7b.B: 12-byte payload compare on the sign-correlated
+        // CelDurTs arm — equivalent to comparing the absl::Duration
+        // values themselves once both are normalised.  `dur` and
+        // `ts` are the same union arm; reading either reads the
+        // same CelDurTs bytes.
+        write_bool(out, a->payload.dur.seconds == b->payload.dur.seconds &&
+                            a->payload.dur.nanos == b->payload.dur.nanos);
+        return;
       default:
         break;  // Aggregates fall through to the polymorphic arms.
     }

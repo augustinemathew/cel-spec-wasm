@@ -43,6 +43,9 @@ enum class ErrorCode : uint8_t {
   // `cel_list_at_arena` (and the kDynamic dispatcher's arena arm)
   // when the index is outside `[0, count)`.
   kIndexOutOfBounds = 17,
+  // M7B.D: parse failures on `timestamp(str)` / `duration(str)`.
+  // Wire-mirrors `CEL_ERR_INVALID_ARGUMENT` (cel_data.h).
+  kInvalidArgument = 18,
   kFieldNotFound = 20,
   kUnknownType = 30,
   kCustomFnFailed = 40,

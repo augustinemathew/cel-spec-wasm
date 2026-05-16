@@ -1,7 +1,60 @@
 # M7B — Timestamp and Duration
 
-Status: **plan — drafted 2026-05-16, not yet started.  Depends on M7
-(shipped), independent of M8.**
+Status: **in flight — A/B/C/D shipped 2026-05-16; E pending.
+Depends on M7 (shipped), independent of M8.**
+
+> **Plan-vs-execution deltas surfaced during M7B.A–D** (read this
+> first if you haven't tracked the slices as they shipped):
+>
+>   - **Equality was NOT already lit.**  The plan's §3.4 claim
+>     "Equality already lit via the existing `cel_equals_at_vv`
+>     kind-then-payload memcmp" was wrong — `equality_kernel` had
+>     no arms for `CEL_DURATION` / `CEL_TIMESTAMP` and routed to
+>     `write_bool(out, 0)` (cross-kind fallback).  M7B.B added
+>     arms to both `cel_value_eq_polymorphic` (used by aggregate
+>     equality) AND `equality_kernel` (the top-level dispatcher).
+>     Two distinct edits — the polymorphic kernel and the dispatcher
+>     don't share dispatch code today.
+>   - **`CEL_ERR_INVALID_ARGUMENT` did not exist.**  Probes B/C
+>     specified parse-failure errors as "kInvalidArgument" but no
+>     such wire code existed.  M7B.D added it at value 18 (between
+>     `kIndexOutOfBounds=17` and `kFieldNotFound=20`) with matching
+>     entries in `api/error.h` / `error.cc` / the WireErrorCode
+>     mapping.
+>   - **`__builtin_mul_overflow(int64, int64)` lowers to `__multi3`
+>     on wasm32.**  Freestanding wasm32 doesn't link compiler-rt.
+>     `cel_dur_milliseconds_at_v` and any future int64 multiply
+>     in cel_time.c MUST use the manual range-check pattern that
+>     `cel_arith.c::uint64_mul_overflows` established.  Plan §4.9
+>     didn't flag this — added inline in the M7B.C body.
+>   - **Langdef range check on `int(timestamp(...))`.**  Plan §3.2
+>     mentions the [year 1, year 9999] range but didn't pin where
+>     it's enforced.  M7B.B's `run_arith` already gates timestamp
+>     results; M7B.D's `cel_int_to_ts_at_v` reuses the same gate.
+>     `cel_int_to_dur_at_v` does NOT range-check (any int64
+>     seconds is a valid duration; proto-Duration's ±315B-second
+>     range only matters at parse-trampoline boundary).
+>   - **`equality_kernel` and `EncodeValue` are in the lint backlog.**
+>     Both pre-existed M7B; my edits stayed at or below their prior
+>     sizes via helper extraction.  The proper cleanup is a per-
+>     CelKind helper ladder (analogous to instance.cc's
+>     `EncodeBool`/`EncodeInt`/...); deferred to the next sweep.
+>   - **`InstallOverloadImports` learned `kCelHost`.**  Pre-M7B.D the
+>     installer only handled `kCelRuntime` seeds; M7B.D extended it
+>     to also install `kCelHost` seeds.  This is the right shape —
+>     no need for a dedicated `InstallTimeImports` like the M2-M7
+>     trampolines used.  Lookup goes through `OverloadHelperArity`
+>     which is also extended with the 4 new parse/format names.
+>   - **`engine.cc:kRuntimeExports` refactored to file scope.**  My
+>     M7B.B edit pushed `BindAllRuntimeExports` over the lint
+>     function-size gate; pulling the (data) export-name list out as
+>     a `constexpr` at file scope brings the function body down to
+>     the loop only.  Applies prospectively — every future kernel
+>     addition just appends a string.
+>
+> No architectural revisions.  Option C still stands; the
+> trampoline-cost picture (§4.4 Q1) and IANA-TZ caching finding
+> (§10.5 Probe E) are unchanged.
 
 The plan covers the `google.protobuf.Timestamp` /
 `google.protobuf.Duration` surface that M7 and M10 explicitly carved
@@ -764,7 +817,7 @@ Six slices, each shippable independently.  Effort sized as small
 (one focused change, ≤200 LoC + tests) / medium (≤500 LoC + tests
 + WAT trace) / large (cross-cutting change).
 
-### M7B.A — data shape + activation marshalling + decoder + field-read normaliser
+### M7B.A — data shape + activation marshalling + decoder + field-read normaliser  *(shipped 2026-05-16, f354e88)*
 
 The user-facing surface light-up: every code path that today
 fails loud on `CEL_DURATION` / `CEL_TIMESTAMP` now round-trips
@@ -799,7 +852,7 @@ arms).
     bound value graduate).
   - **Effort.**  Small.
 
-### M7B.B — pure-wasm arithmetic + ordering kernels
+### M7B.B — pure-wasm arithmetic + ordering kernels  *(shipped 2026-05-16, ffb7256)*
 
 Land the 6 arithmetic + 8 ordering helpers in
 `compiler_v2/runtime/cel_time.{h,c}`.  Equality already works
@@ -836,7 +889,7 @@ post-M7B.A through `cel_equals_at_vv`.  Move the 6 arithmetic
     bind both operands via activation).
   - **Effort.**  Medium.
 
-### M7B.C — pure-wasm UTC accessors
+### M7B.C — pure-wasm UTC accessors  *(shipped 2026-05-16, 3bffb8e)*
 
 Land the 10 timestamp-UTC + 4 duration accessors, plus the
 shared `cel_civil_from_seconds` helper per §4.8.  Move the 14
@@ -869,7 +922,7 @@ ids into `kBuiltinSeeds`.
     the largest single cluster).
   - **Effort.**  Medium.
 
-### M7B.D — host trampolines for parse + format
+### M7B.D — host trampolines for parse + format  *(shipped 2026-05-16; commit pending below)*
 
 Land the 4 host trampolines per §4.3: `cel_timestamp_parse`,
 `cel_duration_parse`, `cel_timestamp_format`,

@@ -231,7 +231,10 @@ constexpr const char* kRuntimeExports[] = {
     "cel_ts_hours_utc_at_v", "cel_ts_minutes_utc_at_v",
     "cel_ts_seconds_utc_at_v", "cel_ts_milliseconds_utc_at_v",
     "cel_dur_hours_at_v", "cel_dur_minutes_at_v", "cel_dur_seconds_at_v",
-    "cel_dur_milliseconds_at_v"};
+    "cel_dur_milliseconds_at_v",
+    // M7B.D pure-wasm half: int <-> ts/dur conversions.
+    "cel_ts_to_int_at_v", "cel_dur_to_int_at_v", "cel_int_to_ts_at_v",
+    "cel_int_to_dur_at_v"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {

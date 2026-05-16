@@ -203,6 +203,12 @@ enum {
   // an error (not Python-style wrap-around).  Wire value mirrors
   // `cel::ErrorCode::kIndexOutOfBounds` (api/error.h).
   CEL_ERR_INDEX_OUT_OF_BOUNDS = 17,
+  // M7B.D: parse failures on `timestamp(str)` / `duration(str)` —
+  // bad input (lowercase `z`, unordered compound, unknown unit,
+  // leap-second `:60`, two-digit year, …) per Probes B/C in the
+  // m7b plan.  Distinct from kTypeMismatch (which signals wrong
+  // operand kind, not bad-string contents).
+  CEL_ERR_INVALID_ARGUMENT = 18,
   // M2.C: Layer-2 trampoline (`CelGetFieldImpl` / `CelHasFieldImpl`)
   // returns this when the resolver can't find a FieldDescriptor for
   // the (field_number, field_name) pair the AST referenced — usually
