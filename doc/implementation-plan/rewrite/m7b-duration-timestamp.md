@@ -1275,53 +1275,289 @@ Surfaced during M7B planning but out of scope of this slice.
     normally).  No separate work needed; pin via the §6.5
     cross-form equivalence test.
 
-## 10. Implementation scaffolding (in tree as of 2026-05-16)
+## 10. Probes
 
-### 10.1 E2e tests — `compiler_v2/e2e/m7b_test.cc`
+Spike scripts that verified the architectural assertions in §4
+before the plan landed.  All four probes were executed via the
+bazel + abseil host toolchain on 2026-05-16; scratch sources
+lived under `/tmp/celwasm_probes/` and were removed after the
+findings were captured here.  None of the probes ship as
+tracked source.
 
-910-line scaffold mirroring `m7_test.cc`'s shape.  Every test
-class skips with a category-specific message (`M7B.A unset`,
-`M7B.B not yet shipped`, …); turns on row-by-row as the slices
-ship.  Build target: `bazel build //compiler_v2/e2e:m7b_test`
-(green 2026-05-16).
+### 10.1 Probe A — civil-calendar correctness
 
-### 10.2 WAT traces
+**Question.**  Does the Hinnant `civil_from_days` algorithm
+(`http://howardhinnant.github.io/date_algorithms.html#civil_from_days`)
+produce output bit-identical to
+`absl::ToCivilSecond(UTCTimeZone())` across the §6.4 quirk grid?
 
-Two files added under `doc/implementation-plan/rewrite/wat/`:
+**Method.**  C++ scratch program (~50 LoC) implementing
+`civil_from_days` per the documented Hinnant routine plus a
+floor-division-by-86400 days-from-epoch wrapper; runs the result
+side-by-side with `absl::FromUnixSeconds(s) + absl::ToCivilSecond`
+across 12 epoch-second rows.
+
+**Result.**  0 mismatches across all 12 rows:
+
+| Date label | epoch_s | Hinnant (Y-M-D) | absl (Y-M-D) | match |
+|---|---:|---|---|---|
+| epoch | 0 | 1970-01-01 | 1970-01-01 | yes |
+| 1969-12-31T23:59:59Z (negative epoch) | -1 | 1969-12-31 | 1969-12-31 | yes |
+| Y2K leap-divisible-400 | 946684800 | 2000-01-01 | 2000-01-01 | yes |
+| 1900-01-01 (cent-not-leap) | -2208988800 | 1900-01-01 | 1900-01-01 | yes |
+| langdef sample 2009-02-13T23:31:30Z | 1234567890 | 2009-02-13 | 2009-02-13 | yes |
+| 2024-02-29 leap-Feb | 1709164800 | 2024-02-29 | 2024-02-29 | yes |
+| 2023-02-28 nonleap end-Feb | 1677628800 | 2023-03-01 | 2023-03-01 | yes |
+| 2024-12-31 last leap day-of-year | 1735689599 | 2024-12-31 | 2024-12-31 | yes |
+| 2023-12-31 last non-leap | 1704067199 | 2023-12-31 | 2023-12-31 | yes |
+| 9999-12-31 langdef-upper | 253402300799 | 9999-12-31 | 9999-12-31 | yes |
+| 0001-01-01 langdef-lower | -62135596800 | 0001-01-01 | 0001-01-01 | yes |
+| 2038-01-19 Y2038 sanity | 2147483647 | 2038-01-19 | 2038-01-19 | yes |
+
+**Implication.**  The pure-wasm civil-calendar path (§4.9
+`cel_civil_from_seconds` + its 10 per-field projection helpers
+under M7B.C) is correctness-equivalent to absl.  Option C's
+no-TZ-accessor split is viable; no host trampoline needed for
+the 10 UTC accessors.
+
+### 10.2 Probe B — `absl::ParseTime` vs CEL admit-set
+
+**Question.**  Does the Layer-2 `CelTimestampParseImpl` need to
+post-validate after `absl::ParseTime(absl::RFC3339_full, ...)`,
+or does absl admit exactly the CEL spec's set?
+
+**Method.**  Scratch program runs `absl::ParseTime` against 15
+inputs split admit / reject per the §6.2 plan; flags where absl
+deviates from CEL.
+
+**Result.**  4 drift rows; absl is laxer than CEL on 4 reject
+cases:
+
+| input | CEL expected | absl-parses | match |
+|---|---|---|---|
+| `2009-02-13T23:31:30Z` | admit | admit | yes |
+| `2009-02-13T23:31:30+02:00` | admit | admit | yes |
+| `2009-02-13T23:31:30-08:00` | admit | admit | yes |
+| `2009-02-13T23:31:30.123456789Z` | admit | admit | yes |
+| `2009-02-13T23:31:30.5Z` | admit | admit | yes |
+| `1970-01-01T00:00:00Z` | admit | admit | yes |
+| `0001-01-01T00:00:00Z` | admit | admit | yes |
+| `9999-12-31T23:59:59Z` | admit | admit | yes |
+| `2009-02-13T23:31:30` | reject (missing TZ) | reject | yes |
+| `2009-02-13T23:31:30z` | reject (lowercase z) | **admit** | **DRIFT** |
+| `2009-02-13 23:31:30Z` | reject (space sep) | reject | yes |
+| `2009-02-13T23:31:30Z extra` | reject (trailing) | reject | yes |
+| `10000-01-01T00:00:00Z` | reject (year > 9999) | **admit** | **DRIFT** |
+| `2016-12-31T23:59:60Z` | reject (leap-second) | **admit** | **DRIFT** |
+| `09-02-13T23:31:30Z` | reject (two-digit year) | **admit** | **DRIFT** |
+
+**Implication.**  M7B.D's `CelTimestampParseImpl` MUST
+post-validate the absl-admitted seconds against the langdef
+range `[-62_135_596_800, 253_402_300_799]` (year 0001–9999) AND
+reject leap-second + lowercase-z + two-digit-year inputs.
+Concretely: re-scan the input string for these patterns before
+trusting `absl::ParseTime`'s success.  Cited from this probe in
+R2 of §7.
+
+### 10.3 Probe C — `absl::ParseDuration` vs CEL admit-set
+
+**Question.**  Same question as Probe B, for
+`absl::ParseDuration`.
+
+**Method.**  Scratch program over 17 inputs split admit / reject.
+
+**Result.**  1 drift row:
+
+| input | CEL expected | absl-parses | match |
+|---|---|---|---|
+| `3600s` | admit | admit | yes |
+| `-3600s` | admit | admit | yes |
+| `0s` | admit | admit | yes |
+| `1000000s` | admit | admit | yes |
+| `1.5s` | admit | admit | yes |
+| `1.000000001s` | admit | admit | yes |
+| `1h2m3s` | admit | admit | yes |
+| `-1h2m3s` | admit | admit | yes |
+| `500ms` | admit | admit | yes |
+| `-1us` | admit | admit | yes |
+| `100ns` | admit | admit | yes |
+| `` | reject | reject | yes |
+| `3600` | reject (no unit) | reject | yes |
+| `3600x` | reject (unknown unit) | reject | yes |
+| `1s2h` | reject (wrong order) | **admit (= 2h1s)** | **DRIFT** |
+| `1s ` | reject (trailing space) | reject | yes |
+| `9223372036854775808s` | reject (overflow) | reject | yes |
+
+**Implication.**  M7B.D's `CelDurationParseImpl` must reject
+unordered compound forms (`1s2h`, `3s1m`, …) that absl admits.
+Concretely: post-validate by walking the input once and
+verifying unit order is strictly decreasing (`h` > `m` > `s` >
+`ms` > `us` > `ns`).  Cited in R8 of §7.
+
+### 10.4 Probe D — `CelDurTs` wire layout vs `absl::Duration`
+
+**Question.**  Does the `CelDurTs { int64 seconds; int32 nanos;
+int32 _pad }` layout in `compiler_v2/runtime/cel_data.h`
+accommodate the full `absl::Duration` range, and what sign
+convention does the arithmetic kernel pick?
+
+**Method.**  Scratch program decomposes 6 representative
+durations via two absl decompositions: the `IDivDuration` ladder
+that `EncodeBoundValue` in §4.6 uses, and `absl::ToTimespec`.
+
+**Result.**
+
+| label | IDiv(s) | IDiv(ns) | Timespec(s) | Timespec(ns) | nanos convention |
+|---|---:|---:|---:|---:|---|
+| +1.5s | 1 | 500000000 | 1 | 500000000 | matches |
+| -1.5s | -1 | -500000000 | -2 | 500000000 | **diverges** |
+| -1ns | 0 | -1 | -1 | 999999999 | **diverges** |
+| +1ns | 0 | 1 | 0 | 1 | matches |
+| int64 max-ish (s=9223372036, ns=854775807) | 9223372036 | 854775807 | 9223372036 | 854775807 | matches |
+| int64 min-ish (s=-9223372036, ns=0) | -9223372036 | 0 | -9223372036 | 0 | matches |
+
+**Implication.**  Two valid `(seconds, nanos)` decompositions
+for any negative duration:
+
+  - **IDivDuration convention** (sign-correlated): `seconds` and
+    `nanos` share sign.  `nanos ∈ (-1_000_000_000, 1_000_000_000)`.
+  - **Timespec convention** (Unix-floor): `seconds` is floor of
+    the real duration, `nanos ∈ [0, 1_000_000_000)`.  Negative
+    durations carry seconds one tick more negative.
+
+The proto Duration text format **mandates sign-correlated**
+(per `google.protobuf.Duration` docstring), matching the
+`IDivDuration` form.  M7B's `CelDurTs` arithmetic kernels MUST
+use this convention.  This is a one-line invariant in
+`cel_time.c`'s post-carry normaliser; pin it via a §6.3 row
+that explicitly asserts `-1.5s` decomposes to
+`(seconds=-1, nanos=-500000000)`, NOT `(-2, 500000000)`.  Add
+the matching assertion to the §6.1 round-trip matrix's
+`DurationIntMinS` cell — that row binds a negative duration
+and round-trips through Eval, surfacing any
+EncodeBoundValue → DecodeCelValueAt convention drift.
+
+## 11. Implementation scaffolding (in tree as of 2026-05-16)
+
+### 11.1 E2e tests — `compiler_v2/e2e/m7b_test.cc`
+
+~770-line scaffold mirroring `m7_test.cc`'s shape.  Every test
+class SKIPs with a category-specific message (`M7B.A not yet
+shipped`, `M7B.B not yet shipped`, …); turns on row-by-row as
+the slices ship.  Build target:
+`bazel build //compiler_v2/e2e:m7b_test` (green 2026-05-16).
+
+Tests grouped per the §5 slice carve-out, with the §6 matrix
+materialised as `INSTANTIATE_TEST_SUITE_P` tables.  Key cross-
+references:
+
+  - §6.1 round-trip data-shape matrix → `RoundTripE2ETest`
+    parameterised by `RoundTripCase` (13 boundary rows covering
+    `DurationZero`, `DurationOneSec`, `DurationOneNs`,
+    `DurationMaxNanos`, `DurationNegOneNs`, `DurationIntMaxS`,
+    `DurationIntMinS`, `TimestampZero`, `TimestampEpochOneSec`,
+    `TimestampLangdef`, `TimestampLangdefMin`, `TimestampLangdefMax`,
+    `TimestampMaxNanos`) + standalone bind-mismatch rows.
+  - §6.2 parse admit/reject matrix →
+    `ParseFormatE2ETest::AdmitOrReject` parameterised over
+    `TimestampParseAdmit` (`TsAdmit_*` / `TsReject_*` — 10 rows
+    covering base UTC, fixed offset, fractional, year bounds,
+    leap-second reject, lowercase-z reject) and
+    `DurationParseAdmit` (`DurAdmit_*` / `DurReject_*` — 17 rows
+    covering integer/fractional/compound + every Probe-C drift
+    pattern).
+  - §6.3 arithmetic + overflow matrix →
+    `ArithmeticE2ETest::BoundaryMatrix` parameterised over
+    `BoundaryMatrix` (22 rows, six helpers × the §6.3 grid)
+    plus standalone checker-reject regressions for `ts+ts` and
+    `dur-ts`.
+  - §6.4 civil-calendar quirk matrix →
+    `UtcAccessorE2ETest::ProjectField` parameterised over
+    `QuirkGrid` (31 rows covering the §6.4 calendar quirks ×
+    11 accessor projections) plus `DurationAccessorE2ETest`
+    (15 truncating-division rows).
+  - §6.5 equality + ordering matrix → ordering split into
+    `OrderingE2ETest::LexicographicCompare` parameterised over
+    `LexCompareGrid` (19 rows); cross-form equality lives in
+    `CrossFormEquivalenceE2ETest` (7 cases including the §6.5
+    `NoNaNRegression` pin and the `CanonicalisationEqualsAcrossUnits`
+    `1s == 1000ms` row).
+  - §6.6 zero-value cross-product → folded into the
+    `RoundTripE2ETest` zero rows + `FormatConvertE2ETest::Int64ToTimestamp`
+    + `FormatConvertE2ETest::TimestampToString` cases.
+  - §6.7 with-TZ matrix →
+    `TzAccessorE2ETest::IanaOrFixedOffset` parameterised over
+    `TzGrid` (10 rows: IANA LA / UTC / Sydney + fixed
+    `+02:00` / `-08:00` / `+00:00` + invalid name / empty /
+    invalid offset reject).
+  - §6.8 negative / rejection matrix → `RejectE2ETest` with 8
+    test methods covering parse error, checker rejection,
+    arity reject, invalid TZ runtime error, int→ts overflow,
+    descriptor mismatch.
+  - §6.6 type regression → `TypeRegressionE2ETest`.
+
+### 11.2 WAT traces
+
+Two files added under `doc/implementation-plan/rewrite/wat/`,
+both `wasm-as` cleanly:
 
   - `42_timestamp_parse.wat` — `cel_host.cel_timestamp_parse(out_slot,
     str_slot)` for `timestamp("2009-02-13T23:31:30Z")`.  Host
     trampoline; codegen emits the call shape after M7B.D ships.
-  - `43_timestamp_accessor.wat` — pure-wasm `cel_ts_year_utc(out_slot,
-    ts_slot)` for `ts.getYear()`.  No host trampoline (UTC-only
-    accessor path).
+  - `43_timestamp_accessor.wat` — pure-wasm
+    `cel_ts_day_of_month_1_utc(out_slot, ts_slot)` for
+    `ts.getDate()`.  No host trampoline (UTC-only accessor path
+    per Option C + Probe A's civil-calendar-correctness
+    confirmation).
 
-Both `wasm-as` cleanly.  Walkthroughs added in `wat-traces.md`.
+Walkthroughs added in `wat-traces.md` §42 / §43 (immediately
+before "Future entries").  Both files mirror the existing
+`16_arith_int_add.wat` / `08_map_index_host.wat` shape exactly —
+slot-out ABI, rodata layout, codegen call-site comment.
 
-### 10.3 Benchmarks — collocated in `kernel_bench.cc`
+### 11.3 Benchmarks — `compiler_v2/bench/m7b_time_bench.cc`
 
-Per the bench discipline (one binary per bench tier; kernel
-microbenches live in `kernel_bench`, pipeline-shaped scenarios in
-`pipeline_bench`), M7B benches are added to `kernel_bench.cc`,
-NOT a separate file.  All BMs gated by `#ifdef CELWASM_M7B_SHIPPED`
-today.  Cohort:
+New ~270-line file alongside `kernel_bench.cc` /
+`pipeline_bench.cc`.  Distinct binary so the M7B-specific
+benches don't increase `kernel_bench`'s linker churn for every
+slice that touches an unrelated kernel.  Today most BMs are
+guarded behind `CELWASM_M7B_SHIPPED`; the file compiles green
+and the BUILD target `//compiler_v2/bench:m7b_time_bench`
+validates.
 
-  - Arithmetic: `BM_DurationAdd`, `BM_DurationSub`,
+Bench cohort (per the README "M7B time benchmarks" section):
+
+  - **Sanity baseline.**  `BM_IntAddBaseline` — duplicates
+    `kernel_bench::BM_IntAdd` so the M7B numbers can be read
+    against a tight integer baseline without cross-referencing
+    a second bench file.  Active today (no guard).
+  - **Arithmetic** (M7B.B).  `BM_DurationAdd`, `BM_DurationSub`,
     `BM_TimestampSubTimestamp`, `BM_TimestampAddDuration`.
-  - UTC accessor (civil-calendar walk):
-    `BM_TimestampYearUtc`, `BM_TimestampYearUtcLangdefMax` (Y9999
-    upper-bound era arm), `BM_TimestampDayOfWeekUtc`.
-  - Duration accessor (no civil walk): `BM_DurationHours`.
+    Each exercises one of the §4.3 pure-wasm kernels.  Expected
+    cost: within ~2× of `BM_IntAddBaseline`.
+  - **UTC accessor** (M7B.C).  `BM_TimestampYearUtc` (langdef
+    example, typical civil walk), `BM_TimestampYearUtcLangdefMax`
+    (Y9999 worst-case `era` arm), `BM_TimestampDayOfWeekUtc`
+    (different field projection out of same `CelCivil`).
+    Expected cost: 5–10× a numeric kernel call (integer-divide
+    cascade in `cel_civil_from_seconds`).
+  - **Duration accessor** (M7B.C).  `BM_DurationHours` —
+    truncating int division, no civil walk.  Expected: same
+    band as `BM_IntAddBaseline`.
 
-Host-trampoline parse bench (`cel_host.cel_timestamp_parse`)
-belongs in `pipeline_bench.cc` (reachable only through
-Compile + Plan + Eval); not added today — lands when M7B.D
-ships.
+The host-trampoline parse bench
+(`cel_host.cel_timestamp_parse` for M7B.D) is sketched in the
+file under `#ifdef CELWASM_M7B_PIPELINE_BENCH_SHIPPED` but
+belongs in `pipeline_bench.cc` rather than this kernel-bench
+because the trampoline is only reachable through wasmtime.  The
+1–2-orders-of-magnitude gap vs the kernel benches is the
+documented expectation; the bench captures the boundary-cross
+cost in a load-bearing way.
 
-Build target: `bazel build -c opt //compiler_v2/bench:kernel_bench`
+Build target: `bazel build //compiler_v2/bench:m7b_time_bench`
 (green 2026-05-16).
 
-### 10.4 Production-code touchpoints (pending implementation)
+### 11.4 Production-code touchpoints (pending implementation)
 
 For M7B.A–E the touchpoints are:
 
@@ -1331,19 +1567,19 @@ For M7B.A–E the touchpoints are:
   - `compiler_v2/api/internal/cel_host.cc` — add
     `CelTimestampParseImpl`, `CelDurationParseImpl`,
     `CelTimestampFormatImpl`, `CelDurationFormatImpl`, plus
-    with-TZ accessor trampoline(s) per the §4.3 single-vs-many
-    decision.
+    with-TZ accessor trampoline per the §4.3 single-dispatch
+    decision (recommended in §4.4 Q3).
   - `compiler_v2/api/internal/cel_host_wasmtime.cc` —
     `RegisterCelHostImports` rows for the new trampolines.
   - `compiler_v2/api/instance.cc` — fill in `EncodeBoundValue`
     arms for `Repr::kDuration` / `Repr::kTimestamp` (today they
-    `return UnimplementedError`); fill in `DecodeCelValueAt`
+    return `UnimplementedError`); fill in `DecodeCelValueAt`
     arms for `CEL_DURATION` / `CEL_TIMESTAMP` (today they fall
     into the default `InvalidArgument`).
   - `compiler_v2/codegen/overload_table.cc` — move ~28
-    timestamp/duration overload ids from
+    timestamp / duration overload ids from
     `kExplicitlyUnimplementedIds` to `kBuiltinSeeds`, paired
     with the new runtime helpers.
 
-None touched in the 2026-05-16 LLD pass; they are the M7B.B–E
+None touched in the 2026-05-16 LLD pass; they are the M7B.A–E
 implementation scope.
