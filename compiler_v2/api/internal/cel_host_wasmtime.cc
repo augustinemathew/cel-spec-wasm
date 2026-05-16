@@ -381,6 +381,27 @@ extern "C" wasm_trap_t* CelDurationFormatTrampoline(
   return HostTwoArgTrampoline<CelDurationFormatImpl>(env_ptr, caller, args);
 }
 
+// M7B.E — 4-arg `(out_slot, ts_slot, tz_slot, accessor_kind)`
+// dispatch trampoline for all 10 with-TZ accessor overloads.  The
+// 4-arg shape is unique; no other host trampoline today takes
+// more than 3 slot indices + optional state.  Helper template
+// inlined locally.
+extern "C" wasm_trap_t* CelTimestampTzAccessorTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  WasmtimeMemoryView mem(ctx, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
+  return StatusToTrap(CelTimestampTzAccessorImpl(
+      static_cast<uint32_t>(args[0].of.i32),
+      static_cast<uint32_t>(args[1].of.i32),
+      static_cast<uint32_t>(args[2].of.i32),
+      static_cast<uint32_t>(args[3].of.i32), tctx));
+}
+
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
   for (auto& p : params) {
@@ -504,6 +525,10 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       {"cel_duration_parse", 2, &CelDurationParseTrampoline},
       {"cel_timestamp_format", 2, &CelTimestampFormatTrampoline},
       {"cel_duration_format", 2, &CelDurationFormatTrampoline},
+      // M7B.E — single 4-arg dispatch trampoline for the 10 with-TZ
+      // accessor overloads.  See m7b §4.3 + §4.4 Q3 for the
+      // surface-count rationale.
+      {"cel_timestamp_tz_accessor", 4, &CelTimestampTzAccessorTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

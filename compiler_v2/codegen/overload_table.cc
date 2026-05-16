@@ -79,7 +79,7 @@ namespace {
 // keeps the seed flat at the cost of one runtime branch per call
 // — small, predictable, and aligns with how arithmetic helpers
 // dispatch internally (`absorb_3vl_binary` + `require_kinds`).
-constexpr std::array<Seed, 146> kBuiltinSeeds{
+constexpr std::array<Seed, 156> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -337,6 +337,37 @@ constexpr std::array<Seed, 146> kBuiltinSeeds{
          {ImportModule::kCelHost, "cel_timestamp_format"}},
     Seed{"duration_to_string",
          {ImportModule::kCelHost, "cel_duration_format"}},
+    // ── With-TZ accessor shims (M7B.E) ───────────────────────
+    // Each id seeds to a pure-wasm shim helper that calls the
+    // single `cel_host.cel_timestamp_tz_accessor(out, ts, tz, kind)`
+    // host trampoline with a fixed `accessor_kind` constant.  The
+    // shim shape `_at_vv` (3-arg: out + ts + tz) matches the
+    // standard helper ABI; the kind constant is supplied by the
+    // shim, not the codegen.  See m7b §4.3 + §4.4 Q3.
+    Seed{"timestamp_to_year_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_year_with_tz_at_vv"}},
+    Seed{"timestamp_to_month_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_month_with_tz_at_vv"}},
+    Seed{"timestamp_to_day_of_month_1_based_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_month_1_with_tz_at_vv"}},
+    Seed{"timestamp_to_day_of_month_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_month_with_tz_at_vv"}},
+    Seed{"timestamp_to_day_of_year_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_year_with_tz_at_vv"}},
+    Seed{"timestamp_to_day_of_week_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_day_of_week_with_tz_at_vv"}},
+    Seed{"timestamp_to_hours_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_hours_with_tz_at_vv"}},
+    Seed{"timestamp_to_minutes_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_minutes_with_tz_at_vv"}},
+    // cel-cpp ships this overload-id with `_tz` suffix (not
+    // `_with_tz`); mirror verbatim — the coverage tripwire test
+    // does a byte-equal lookup, so a "fix" here would silently
+    // regress.  See `standard_definitions.h` in cel-cpp.
+    Seed{"timestamp_to_seconds_tz",
+         {ImportModule::kCelRuntime, "cel_ts_seconds_with_tz_at_vv"}},
+    Seed{"timestamp_to_milliseconds_with_tz",
+         {ImportModule::kCelRuntime, "cel_ts_milliseconds_with_tz_at_vv"}},
     // ── String ops (`contains` / `startsWith` / `endsWith`) ───
     Seed{"contains_string",
          {ImportModule::kCelRuntime, "cel_string_contains_at_vv"}},
@@ -435,7 +466,7 @@ constexpr std::array<Seed, 146> kBuiltinSeeds{
 //      `to_string`, ...) and timestamp / duration accessors
 //      (`getFullYear`, etc.); these graduate when an embedder asks
 //      for them.
-constexpr std::array<absl::string_view, 20> kExplicitlyUnimplementedIds{
+constexpr std::array<absl::string_view, 10> kExplicitlyUnimplementedIds{
     // (1) Special-cased in expr_lower.cc.
     "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
     "not_strictly_false",
@@ -448,18 +479,11 @@ constexpr std::array<absl::string_view, 20> kExplicitlyUnimplementedIds{
     "matches",
     "matches_string",
     // (3) Timestamp UTC accessors graduated to `kBuiltinSeeds` in
-    // M7B.C (10 ts + 4 dur ids); size dropped 44 → 30.  With-TZ
-    // variants stay unimplemented pending M7B.E.
-    "timestamp_to_year_with_tz",
-    "timestamp_to_month_with_tz",
-    "timestamp_to_day_of_year_with_tz",
-    "timestamp_to_day_of_month_with_tz",
-    "timestamp_to_day_of_week_with_tz",
-    "timestamp_to_day_of_month_1_based_with_tz",
-    "timestamp_to_hours_with_tz",
-    "timestamp_to_minutes_with_tz",
-    "timestamp_to_seconds_tz",
-    "timestamp_to_milliseconds_with_tz",
+    // M7B.C (10 ts + 4 dur ids); size dropped 44 → 30.
+    // (4) Timestamp with-TZ accessors graduated in M7B.E (10 ids
+    // routing through pure-wasm shims over the single host
+    // dispatch trampoline `cel_host.cel_timestamp_tz_accessor`);
+    // size dropped 30 → 20.
     // (3) Timestamp / duration parse / format / int conversions
     // graduated to `kBuiltinSeeds` in M7B.D (10 ids: 6 conversion +
     // 2 identity + 4 host parse/format trampolines); size dropped

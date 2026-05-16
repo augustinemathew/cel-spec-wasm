@@ -1082,8 +1082,21 @@ struct TzCase {
 class TzAccessorE2ETest : public ::testing::TestWithParam<TzCase> {};
 
 TEST_P(TzAccessorE2ETest, IanaOrFixedOffset) {
-  GTEST_SKIP() << "M7B.E not yet shipped — cel_timestamp_tz_accessor "
-                  "host trampoline is a stub.";
+  const TzCase& p = GetParam();
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  const std::string source = absl::StrCat(
+      "t.", AccessorMethod(p.accessor), "(\"", p.tz, "\")");
+  Instance inst = CompilePlan(compiler, source);
+  Activation act;
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
+                                  absl::Seconds(p.ts_seconds)));
+  Value got = EvalOk(inst, act);
+  if (p.expect_error) {
+    EXPECT_EQ(got.kind(), Value::Kind::kError) << p.label;
+  } else {
+    ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
+    EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1130,42 +1143,58 @@ INSTANTIATE_TEST_SUITE_P(
 class CrossFormEquivalenceE2ETest : public ::testing::Test {};
 
 TEST_F(CrossFormEquivalenceE2ETest, DurationConstructEquality) {
-  GTEST_SKIP() << "M7B.D not yet shipped — duration(string) needed "
-                  "to construct both sides.";
+  Value v = EvalClosedExpression(
+      R"(duration("1s") == duration("1s"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, TimestampConstructEquality) {
-  GTEST_SKIP() << "M7B.D not yet shipped — timestamp(string) needed.";
+  Value v = EvalClosedExpression(
+      R"(timestamp("1970-01-01T00:00:01Z") ==
+         timestamp("1970-01-01T00:00:01Z"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, DurationVsProtoLiteral) {
-  // duration("1s") == Duration{seconds: 1}
-  GTEST_SKIP() << "M7B.A+D not yet shipped — needs both well-known-"
-                  "type read normaliser + duration parse.";
+  // Plan §3.4 cross-form equivalence: `duration("1s")` produces
+  // CEL_DURATION; `google.protobuf.Duration{seconds: 1}` currently
+  // produces CEL_MESSAGE via M7's proto-literal arm.  The M7B.A
+  // field-read normaliser fires only when reading the message
+  // *back through a field selector*, not on the literal itself —
+  // so cross-form equality reduces to cross-kind compare which is
+  // `false`.  Lighting this up requires either (a) extending the
+  // proto-literal arm to emit CEL_TIMESTAMP / CEL_DURATION directly
+  // for the two well-known time types, or (b) a normalise-on-
+  // equality step.  Deferred — surfaced as future work in §9.
+  GTEST_SKIP() << "Cross-form equivalence: proto-literal arm emits "
+                  "CEL_MESSAGE, not CEL_DURATION; needs follow-up.";
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, TimestampVsProtoLiteral) {
-  // timestamp("1970-01-01T00:00:01Z") == Timestamp{seconds: 1}
-  GTEST_SKIP() << "M7B.A+D not yet shipped — needs both well-known-"
-                  "type read normaliser + timestamp parse.";
+  GTEST_SKIP() << "Cross-form equivalence: see DurationVsProtoLiteral.";
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, OrderingAcrossForms) {
-  // timestamp("1970-01-01T00:00:01Z") < Timestamp{seconds: 2}
-  GTEST_SKIP() << "M7B.A+B+D not yet shipped — needs all of "
-                  "well-known-type normaliser + ordering + parse.";
+  GTEST_SKIP() << "Cross-form ordering: same architectural gap as "
+                  "the equality test.";
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, CanonicalisationEqualsAcrossUnits) {
-  // duration("1s") == duration("1000ms")
-  GTEST_SKIP() << "M7B.D not yet shipped — duration parse needed.";
+  Value v = EvalClosedExpression(
+      R"(duration("1s") == duration("1000ms"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, NoNaNRegression) {
   // Per §6.5: durations / timestamps are integer pairs.  The IEEE-
-  // style NaN-not-equal-to-self pattern does NOT apply.  Pin
-  // explicitly: `dur('1s') == dur('1s')` is true.
-  GTEST_SKIP() << "M7B.D not yet shipped — duration parse needed.";
+  // style NaN-not-equal-to-self pattern does NOT apply — a duration
+  // that's "the same value" compares equal to itself, always.
+  Value v = EvalClosedExpression(R"(duration("1s") == duration("1s"))");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1180,20 +1209,31 @@ TEST_F(CrossFormEquivalenceE2ETest, NoNaNRegression) {
 class TypeRegressionE2ETest : public ::testing::Test {};
 
 TEST_F(TypeRegressionE2ETest, TypeOfTimestamp) {
-  GTEST_SKIP() << "M7B.D not yet shipped — timestamp(string) needed.";
+  Value v = EvalClosedExpression(
+      R"(type(timestamp("2009-02-13T23:31:30Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kType);
+  EXPECT_EQ(*v.AsType(), "google.protobuf.Timestamp");
 }
 
 TEST_F(TypeRegressionE2ETest, TypeOfDuration) {
-  GTEST_SKIP() << "M7B.D not yet shipped — duration(string) needed.";
+  Value v = EvalClosedExpression(R"(type(duration("3600s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kType);
+  EXPECT_EQ(*v.AsType(), "google.protobuf.Duration");
 }
 
 TEST_F(TypeRegressionE2ETest, TypeComparisonTimestamp) {
-  // `google.protobuf.Timestamp == type(timestamp("..."))`
-  GTEST_SKIP() << "M7B.D not yet shipped — timestamp(string) needed.";
+  Value v = EvalClosedExpression(
+      R"(type(timestamp("2009-02-13T23:31:30Z")) ==
+         google.protobuf.Timestamp)");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(TypeRegressionE2ETest, TypeComparisonDuration) {
-  GTEST_SKIP() << "M7B.D not yet shipped — duration(string) needed.";
+  Value v = EvalClosedExpression(
+      R"(type(duration("3600s")) == google.protobuf.Duration)");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1208,39 +1248,52 @@ TEST_F(TypeRegressionE2ETest, TypeComparisonDuration) {
 class RejectE2ETest : public ::testing::Test {};
 
 TEST_F(RejectE2ETest, DurationParseError) {
-  GTEST_SKIP() << "M7B.D not yet shipped — duration parse error "
-                  "path is a stub.";
+  Value v = EvalClosedExpression(R"(duration("3600x"))");
+  EXPECT_EQ(v.kind(), Value::Kind::kError);
 }
 
 TEST_F(RejectE2ETest, TimestampParseError) {
-  GTEST_SKIP() << "M7B.D not yet shipped — timestamp parse error "
-                  "path is a stub.";
+  Value v = EvalClosedExpression(R"(timestamp("not-an-rfc3339-string"))");
+  EXPECT_EQ(v.kind(), Value::Kind::kError);
 }
 
 TEST_F(RejectE2ETest, TimestampPlusTimestampCheckerReject) {
-  GTEST_SKIP() << "M7B.B not yet shipped — pin checker (not codegen) "
-                  "rejection of ts+ts.";
+  auto compiler_or = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Timestamp());
+    b.DeclareVariable("b", CelType::Timestamp());
+  });
+  ABSL_CHECK_OK(compiler_or);
+  ExpectCompileFails(*compiler_or, "a + b", "ts+ts has no overload");
 }
 
 TEST_F(RejectE2ETest, TimestampPlusIntCheckerReject) {
-  // No overload exists for ts + int.
-  GTEST_SKIP() << "M7B.B not yet shipped — pin checker rejection of "
-                  "ts+int (no overload).";
+  auto compiler_or = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Timestamp());
+    b.DeclareVariable("b", CelType::Int());
+  });
+  ABSL_CHECK_OK(compiler_or);
+  ExpectCompileFails(*compiler_or, "a + b", "ts+int has no overload");
 }
 
 TEST_F(RejectE2ETest, TzAccessorWrongArityCheckerReject) {
-  GTEST_SKIP() << "M7B.E not yet shipped — pin checker rejection of "
-                  "ts.getYear(tz, extra).";
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  ExpectCompileFails(compiler, R"(t.getYear("UTC", "extra"))",
+                      "with-TZ accessor takes only one arg");
 }
 
 TEST_F(RejectE2ETest, TzAccessorInvalidNameRuntimeError) {
-  GTEST_SKIP() << "M7B.E not yet shipped — runtime CEL_ERROR on "
-                  "unloadable IANA name.";
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  Instance inst = CompilePlan(compiler, R"(t.getFullYear("NotARealZone"))");
+  Activation act;
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
+                                  absl::Seconds(1234567890)));
+  Value got = EvalOk(inst, act);
+  EXPECT_EQ(got.kind(), Value::Kind::kError);
 }
 
 TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
-  GTEST_SKIP() << "M7B.D not yet shipped — int(INT64_MAX) → timestamp "
-                  "is out of the langdef Timestamp range.";
+  Value v = EvalClosedExpression(R"(timestamp(9223372036854775807))");
+  EXPECT_EQ(v.kind(), Value::Kind::kError);
 }
 
 TEST_F(RejectE2ETest, DescriptorMismatchOnFieldRead) {

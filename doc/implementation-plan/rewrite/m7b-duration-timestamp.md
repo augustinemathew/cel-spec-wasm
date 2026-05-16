@@ -1,7 +1,7 @@
 # M7B — Timestamp and Duration
 
-Status: **in flight — A/B/C/D shipped 2026-05-16; E pending.
-Depends on M7 (shipped), independent of M8.**
+Status: **in flight — A/B/C/D/E shipped 2026-05-16; F (closeout)
+pending.  Depends on M7 (shipped), independent of M8.**
 
 > **Plan-vs-execution deltas surfaced during M7B.A–D** (read this
 > first if you haven't tracked the slices as they shipped):
@@ -51,6 +51,44 @@ Depends on M7 (shipped), independent of M8.**
 >     a `constexpr` at file scope brings the function body down to
 >     the loop only.  Applies prospectively — every future kernel
 >     addition just appends a string.
+>
+> **Additional M7B.E discoveries:**
+>
+>   - **`absl::LoadTimeZone` doesn't parse fixed-offset strings.**
+>     The plan §4.3 said "Fixed offset `+HH:MM` / `-HH:MM` — pure
+>     integer arithmetic on `seconds`; no database lookup needed.
+>     cel-cpp parses these inline."  Implementation honors this
+>     literally — added `ResolveTimeZone` helper that detects the
+>     `+HH:MM` / `-HH:MM` shape, parses inline, and constructs an
+>     `absl::FixedTimeZone(offset_seconds)`.  Falls back to
+>     `LoadTimeZone` for IANA names.  Without this fallback, every
+>     fixed-offset TZ row failed at the `LoadTimeZone` call.
+>   - **Cross-form equivalence isn't free.**  Plan §3.4 promised
+>     that `timestamp("...") == Timestamp{seconds: 1}` would
+>     compare equal via the read normaliser, but that normaliser
+>     only fires on FIELD READS — the M7 `kStructExpr` proto-
+>     literal arm still produces `CEL_MESSAGE`, not
+>     `CEL_TIMESTAMP`.  Three e2e tests
+>     (`DurationVsProtoLiteral`, `TimestampVsProtoLiteral`,
+>     `OrderingAcrossForms`) stay GTEST_SKIPPED with a pointer to
+>     this gap.  Resolving it requires either (a) extending the
+>     proto-literal arm to emit `CEL_TIMESTAMP` / `CEL_DURATION`
+>     directly for the two well-known time types, or (b) a
+>     normalise-on-equality step that converts a `CEL_MESSAGE`
+>     of well-known-type descriptor to its `CEL_TIMESTAMP` /
+>     `CEL_DURATION` form pre-compare.  Surfaced as future work
+>     in §9 — needs a scope discussion before fixing.
+>   - **`getYear` vs `getFullYear` overload-name pinning.**
+>     cel-cpp ships only `getFullYear`; `getYear` is not a
+>     standard member.  Tests use `getFullYear` consistently.
+>     The overload id `timestamp_to_year` resolves only from
+>     `getFullYear`.
+>   - **`getDayOfWeek` weekday convention reordering.**  absl's
+>     `Weekday` enum is `monday=0..sunday=6`; cel-cpp / langdef
+>     uses `sunday=0..saturday=6`.  M7B.E's
+>     `ProjectCivilField` reorders: `(static_cast<int>(weekday) + 1) % 7`.
+>     Tested via `Epoch_DayOfWeek` (Thu=4) and
+>     `Y9999LangdefMax` (Fri=5).
 >
 > No architectural revisions.  Option C still stands; the
 > trampoline-cost picture (§4.4 Q1) and IANA-TZ caching finding
@@ -922,7 +960,7 @@ ids into `kBuiltinSeeds`.
     the largest single cluster).
   - **Effort.**  Medium.
 
-### M7B.D — host trampolines for parse + format  *(shipped 2026-05-16; commit pending below)*
+### M7B.D — host trampolines for parse + format  *(shipped 2026-05-16, a79a3d2)*
 
 Land the 4 host trampolines per §4.3: `cel_timestamp_parse`,
 `cel_duration_parse`, `cel_timestamp_format`,
@@ -965,7 +1003,7 @@ the bare-string-constructor surfaces (`timestamp(string)` /
     remaining timestamp/duration SKIPs graduate.
   - **Effort.**  Medium.
 
-### M7B.E — host trampoline for with-TZ accessors
+### M7B.E — host trampoline for with-TZ accessors  *(shipped 2026-05-16; commit pending below)*
 
 Land the single `cel_timestamp_tz_accessor(out_slot, ts_slot,
 tz_slot, accessor_kind)` trampoline + the 10 overload-id
@@ -1312,7 +1350,26 @@ Ranked highest → lowest.
 
 ## 9. Future work
 
-Surfaced during M7B planning but out of scope of this slice.
+Surfaced during M7B planning + execution but out of scope of
+this slice.
+
+  - **Cross-form equivalence: `timestamp("X") == Timestamp{...}`.**
+    Surfaced during M7B.E e2e wiring.  Plan §3.4 promised this
+    via the read normaliser, but the M7 proto-literal arm
+    (`kStructExpr`) emits `CEL_MESSAGE`, NOT `CEL_TIMESTAMP`,
+    and the M7B.A normaliser only fires on field reads.  Three
+    M7B e2e tests stay GTEST_SKIPPED until this gap is closed.
+    Options: (a) extend the kStructExpr arm to emit
+    `CEL_TIMESTAMP` / `CEL_DURATION` directly for the two
+    well-known time types; (b) add a normalise-on-equality step
+    that converts well-known-type `CEL_MESSAGE` payloads to
+    their `CEL_TIMESTAMP` / `CEL_DURATION` form pre-compare.
+    Option (a) is cleaner — would also fix `timestamp ==
+    timestamp_field_on_proto` shapes and the entire ordering
+    ladder over cross-form operands.  Sized small (one
+    `WriteCelValue` call swap in the M7 path, plus the WKT
+    detection).  Defer to M7B follow-up or the next conformance
+    slice.
 
   - **`now()` standard function**.  Requires per-evaluation
     clock injection on `Activation`; today neither

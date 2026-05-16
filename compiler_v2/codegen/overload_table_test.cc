@@ -60,7 +60,10 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // M7B.D: 136 → 146 — added 10 conversion seeds (4 int<->ts/dur
 // pure-wasm + 2 identities via cel_copy_slot + 4 host parse/format
 // trampolines).
-constexpr size_t kBuiltinSeedCount = 146;
+// M7B.E: 146 → 156 — added 10 with-TZ accessor shim seeds; all
+// route through the single `cel_host.cel_timestamp_tz_accessor`
+// trampoline with a per-shim `accessor_kind` constant.
+constexpr size_t kBuiltinSeedCount = 156;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

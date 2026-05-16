@@ -132,6 +132,51 @@ void cel_dur_to_int_at_v(uint32_t out_slot, uint32_t dur_slot);
 void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot);
 void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot);
 
+// ----- With-TZ accessor shims (10 helpers, M7B.E) --------------------------
+// Each shim takes `(out_slot, ts_slot, tz_slot)` and delegates to
+// `cel_host.cel_timestamp_tz_accessor(out, ts, tz, accessor_kind)`
+// with a fixed accessor_kind constant per shim.  Single host
+// trampoline absorbs all 10 surfaces — see m7b §4.3 "single
+// dispatch trampoline".
+
+void cel_ts_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                uint32_t tz_slot);
+void cel_ts_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                 uint32_t tz_slot);
+void cel_ts_day_of_month_1_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                          uint32_t tz_slot);
+void cel_ts_day_of_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                        uint32_t tz_slot);
+void cel_ts_day_of_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                       uint32_t tz_slot);
+void cel_ts_day_of_week_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                       uint32_t tz_slot);
+void cel_ts_hours_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                 uint32_t tz_slot);
+void cel_ts_minutes_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                   uint32_t tz_slot);
+void cel_ts_seconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                   uint32_t tz_slot);
+void cel_ts_milliseconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
+                                        uint32_t tz_slot);
+
+// `accessor_kind` enum — wire contract for the single dispatch
+// trampoline.  Closed, append-only.  Used by both the cel_time.c
+// shims AND the Layer-2 `CelTimestampTzAccessorImpl` switch; keep
+// these in lockstep.
+typedef enum {
+  CEL_TZ_ACC_YEAR = 0,
+  CEL_TZ_ACC_MONTH = 1,
+  CEL_TZ_ACC_DAY_OF_MONTH_1 = 2,
+  CEL_TZ_ACC_DAY_OF_MONTH = 3,
+  CEL_TZ_ACC_DAY_OF_YEAR = 4,
+  CEL_TZ_ACC_DAY_OF_WEEK = 5,
+  CEL_TZ_ACC_HOURS = 6,
+  CEL_TZ_ACC_MINUTES = 7,
+  CEL_TZ_ACC_SECONDS = 8,
+  CEL_TZ_ACC_MILLISECONDS = 9,
+} CelTzAccessorKind;
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

@@ -588,6 +588,18 @@ ABSL_MUST_USE_RESULT absl::Status CelTimestampFormatImpl(
 ABSL_MUST_USE_RESULT absl::Status CelDurationFormatImpl(
     uint32_t out_slot, uint32_t dur_slot, const TrampolineContext& ctx);
 
+// M7B.E: single dispatch trampoline for the 10 with-TZ accessor
+// overloads.  Reads the timestamp + TZ-name string operands; loads
+// the IANA / fixed-offset zone via `absl::TimeZone::Load`; projects
+// the requested civil-time field per `accessor_kind` (matches
+// `CelTzAccessorKind` enum in cel_time.h).  Invalid TZ name →
+// CEL_ERROR(kInvalidArgument).  Bad accessor_kind →
+// CEL_ERROR(kTypeMismatch) (defence in depth; codegen wouldn't
+// emit an unknown kind).
+ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
+    uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
+    uint32_t accessor_kind, const TrampolineContext& ctx);
+
 }  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_

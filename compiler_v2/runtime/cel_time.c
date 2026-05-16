@@ -463,6 +463,57 @@ void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot) {
   out->payload.ts = (CelDurTs){.seconds = s, .nanos = 0, ._pad = 0};
 }
 
+// ─── M7B.E with-TZ accessor shims ─────────────────────────────────────
+//
+// Each shim is a thin wrapper over the host trampoline.  The
+// `cel_host.cel_timestamp_tz_accessor` import is declared with
+// `import_module/import_name` on wasm32 and resolved at instantiate
+// time; on the host build (unit tests that link cel_runtime as a
+// cc_library), a weak no-op stub poisons out_slot so the build
+// links cleanly.  Identical pattern to
+// `cel_host_resolve_message_type_name` in cel_type.c.
+
+#ifdef __wasm__
+extern void cel_host_cel_timestamp_tz_accessor(uint32_t out_slot,
+                                               uint32_t ts_slot,
+                                               uint32_t tz_slot,
+                                               uint32_t accessor_kind)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_timestamp_tz_accessor")));
+#else
+__attribute__((weak)) void cel_host_cel_timestamp_tz_accessor(
+    uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
+    uint32_t accessor_kind) {
+  (void)ts_slot;
+  (void)tz_slot;
+  (void)accessor_kind;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+#endif
+
+#define DEFINE_TZ_ACCESSOR_SHIM(name, kind)                                   \
+  void name(uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot) {           \
+    cel_host_cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot, (kind));    \
+  }
+
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_year_with_tz_at_vv, CEL_TZ_ACC_YEAR)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_month_with_tz_at_vv, CEL_TZ_ACC_MONTH)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_day_of_month_1_with_tz_at_vv,
+                        CEL_TZ_ACC_DAY_OF_MONTH_1)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_day_of_month_with_tz_at_vv,
+                        CEL_TZ_ACC_DAY_OF_MONTH)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_day_of_year_with_tz_at_vv,
+                        CEL_TZ_ACC_DAY_OF_YEAR)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_day_of_week_with_tz_at_vv,
+                        CEL_TZ_ACC_DAY_OF_WEEK)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_hours_with_tz_at_vv, CEL_TZ_ACC_HOURS)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_minutes_with_tz_at_vv, CEL_TZ_ACC_MINUTES)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_seconds_with_tz_at_vv, CEL_TZ_ACC_SECONDS)
+DEFINE_TZ_ACCESSOR_SHIM(cel_ts_milliseconds_with_tz_at_vv,
+                        CEL_TZ_ACC_MILLISECONDS)
+
+#undef DEFINE_TZ_ACCESSOR_SHIM
+
 void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(int_slot);
