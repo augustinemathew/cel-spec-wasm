@@ -33,11 +33,12 @@ namespace celwasm {
 namespace {
 
 class AggregateArenaTest : public ::testing::Test {
- public:  // public so parameterized lambdas can use the helpers.
+ protected:
   void SetUp() override {
     cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
   }
 
+ public:  // public so parameterized lambdas can use the helpers.
   uint32_t MakeOut() {
     return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
@@ -52,9 +53,8 @@ class AggregateArenaTest : public ::testing::Test {
   uint32_t MakeIntList(std::initializer_list<int64_t> elems) {
     uint32_t list = MakeOut();
     cel_list_create(list, static_cast<uint32_t>(elems.size()));
-    uint32_t i = 0;
     for (int64_t v : elems) {
-      cel_list_set(list, i++, cel_make_int(v));
+      cel_list_append_at(list, cel_make_int(v));
     }
     return list;
   }
@@ -360,6 +360,7 @@ TEST_P(ListConcatSizeTest, ProducesExpectedSize) {
   cel_list_concat_arena(out, c.lhs(*this), c.rhs(*this));
   ASSERT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_LIST_ARENA)) << c.name;
   uint32_t size_out = MakeOut();
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   cel_list_size_arena(size_out, out);
   EXPECT_EQ(ReadInt(size_out), c.expected_size) << c.name;
 }
@@ -434,10 +435,12 @@ TEST_F(AggregateArenaTest, ListConcatAppendsElementsInOrder) {
   cel_list_concat_arena(out, a, b);
   ASSERT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_LIST_ARENA));
   uint32_t size_out = MakeOut();
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   cel_list_size_arena(size_out, out);
   EXPECT_EQ(ReadInt(size_out), 4);
   uint32_t e_out = MakeOut();
   for (int64_t i = 0; i < 4; ++i) {
+    // NOLINTNEXTLINE(readability-suspicious-call-argument)
     cel_list_at_arena(e_out, out, cel_make_int(i));
     EXPECT_EQ(ReadInt(e_out), i + 1);
   }
@@ -504,18 +507,16 @@ class CrossNumericMembershipArenaTest : public AggregateArenaTest {
   uint32_t MakeDoubleList(std::initializer_list<double> elems) {
     uint32_t l = MakeOut();
     cel_list_create(l, static_cast<uint32_t>(elems.size()));
-    uint32_t i = 0;
     for (double v : elems) {
-      cel_list_set(l, i++, cel_make_double(v));
+      cel_list_append_at(l, cel_make_double(v));
     }
     return l;
   }
   uint32_t MakeUintList(std::initializer_list<uint64_t> elems) {
     uint32_t l = MakeOut();
     cel_list_create(l, static_cast<uint32_t>(elems.size()));
-    uint32_t i = 0;
     for (uint64_t v : elems) {
-      cel_list_set(l, i++, cel_make_uint(v));
+      cel_list_append_at(l, cel_make_uint(v));
     }
     return l;
   }
@@ -558,9 +559,13 @@ TEST_F(CrossNumericMembershipArenaTest, FractionalDoubleNotInListOfInts) {
 // `NaN in [NaN, 1.0]` — NaN matcher returns false on every element,
 // including NaN itself.  IEEE 754: `NaN == NaN` is false.
 TEST_F(CrossNumericMembershipArenaTest, NaNNotInListOfDoubles) {
+  // NOLINTBEGIN(misc-redundant-expression) -- `0.0/0.0` is the
+  // language-portable NaN idiom; the linter's "both sides equivalent"
+  // flag is the intended behaviour.
   uint32_t l = MakeDoubleList({0.0 / 0.0, 1.0});
   uint32_t out = MakeOut();
   cel_list_in_arena(out, cel_make_double(0.0 / 0.0), l);
+  // NOLINTEND(misc-redundant-expression)
   EXPECT_FALSE(ReadBool(out));
 }
 

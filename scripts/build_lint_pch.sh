@@ -21,6 +21,21 @@ if [[ ! -f compile_commands.json ]]; then
   exit 0
 fi
 
+# Keep execroot/_main/external/<repo> symlinks live for clang-tidy's
+# per-TU `-iquote external/...` resolution.  Bazel populates external
+# symlinks lazily; a recent narrow `bazel test` evicts repos that
+# target doesn't depend on.  When those symlinks vanish, clang-tidy
+# hits header-not-found AND cascades into a flood of error-recovery
+# false positives (non-const-parameter on `std::vector<>*` params,
+# pro-type-member-init on aggregate structs, misc-use-internal-linkage
+# on extern entry points).  Build the superset that
+# compile_commands.json's -iquote paths reference.  Runs BEFORE the
+# PCH-fresh gate below — the symlinks decay independently of the PCH
+# inputs, so the gate would skip this step on warm cache.  Sub-2s on
+# warm bazel cache.
+bazel build //compiler_v2/... //compiler_v2/bench:kernel_bench \
+  >/dev/null 2>&1 || true
+
 if [[ -f "$PCH_OUT" \
       && "$PCH_OUT" -nt "$PCH_HEADER" \
       && "$PCH_OUT" -nt compile_commands.json ]]; then
@@ -40,16 +55,6 @@ if [[ ! -x "$CLANG" ]]; then
 fi
 
 echo "build_lint_pch.sh: building $PCH_OUT"
-
-# Bazel populates execroot/_main/external/<repo> symlinks lazily — only
-# repos used by the most-recent build target are present.  After a
-# `bazel test` of a target that doesn't depend on absl, the absl
-# symlink may be missing and clang can't resolve absl headers via
-# `-iquote external/abseil-cpp~`.  A quick `bazel build` of a target
-# that uses absl + protobuf re-populates them; cached builds are <2s.
-# Best-effort: if the build target doesn't exist we proceed anyway and
-# clang will surface the include-not-found error.
-bazel build //compiler_v2/api:engine >/dev/null 2>&1 || true
 
 python3 - "$PCH_HEADER_ABS" "$PCH_OUT_ABS" "$CLANG" <<'PY'
 import json, os, subprocess, sys

@@ -22,7 +22,6 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::absl_testing::StatusIs;
 
 // Forward decl — body lives below at the first call site that
 // originally needed it (`ExprLowerMapTest`'s indexing tests).
@@ -88,54 +87,51 @@ absl::StatusOr<LoweredFunction> LowerWithDefaultOverloads(
 // of `compile.cc::InstallOverloadImports`).  The unit-test
 // fixtures reach codegen without going through Compile(), so we
 // have to redo the install or `BinaryenValidate` will reject.
-void InstallOverloadImportsForTest(WasmModule& m) {
+bool IsPendingOverloadImpl(absl::string_view n) {
   static constexpr absl::string_view kPending[] = {
       "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
       "cel_map_size",  "cel_map_in",  "cel_map_eq",
   };
-  auto is_pending = [](absl::string_view n) {
-    for (absl::string_view p : kPending) {
-      if (p == n) return true;
-    }
-    return false;
-  };
+  return std::any_of(std::begin(kPending), std::end(kPending),
+                     [&](absl::string_view p) {
+                       return p == n;
+                     });
+}
+
+void InstallOneOverloadImport(WasmModule& m, const std::string& name) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType vv_params[3] = {i32, i32, i32};
   const BinaryenType v_params[2] = {i32, i32};
+  const bool is_vv =
+      name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv";
+  const bool is_v =
+      !is_vv && name.size() >= 5 && name.substr(name.size() - 5) == "_at_v";
+  const bool is_three_arg = name == "cel_and" || name == "cel_or";
+  const bool is_two_arg = name == "cel_not";
+  if (is_vv || is_three_arg) {
+    m.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
+  } else if (is_v || is_two_arg) {
+    m.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
+  }
+}
 
+void InstallOverloadImportsForTest(WasmModule& m) {
   static const auto* const kTable = new OverloadTable(DefaultOverloadTable());
   std::vector<std::string> seen;
   for (uint32_t id = 1; id <= kTable->size(); ++id) {
     const OverloadImpl& impl = kTable->LookupById(id);
     if (impl.module != ImportModule::kCelRuntime) continue;
     const std::string name(impl.name);
-    bool already = false;
-    for (const auto& s : seen) {
-      if (s == name) {
-        already = true;
-        break;
-      }
+    if (std::any_of(seen.begin(), seen.end(), [&](const std::string& s) {
+          return s == name;
+        })) {
+      continue;
     }
-    if (already) continue;
-    if (is_pending(impl.name)) continue;
-    const bool is_vv =
-        name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv";
-    const bool is_v =
-        !is_vv && name.size() >= 5 && name.substr(name.size() - 5) == "_at_v";
-    // M5.G control-flow helpers don't follow the `_at_*` suffix.
-    // Mirror compile.cc::OverloadHelperArity's hand-rolled table.
-    const bool is_three_arg_dispatcher = name == "cel_and" || name == "cel_or";
-    const bool is_two_arg_dispatcher = name == "cel_not";
-    if (is_vv || is_three_arg_dispatcher) {
-      m.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
-    } else if (is_v || is_two_arg_dispatcher) {
-      m.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
-    }
+    if (IsPendingOverloadImpl(impl.name)) continue;
+    InstallOneOverloadImport(m, name);
     seen.push_back(name);
   }
-  // M5.G ternary lowering imports `cel_copy_slot` directly (not via
-  // OverloadTable) — install unconditionally to mirror
-  // compile.cc::InstallOverloadImports.
+  const BinaryenType v_params[2] = {BinaryenTypeInt32(), BinaryenTypeInt32()};
   m.AddFunctionImport("cel_copy_slot", "cel", "cel_copy_slot", v_params,
                       BinaryenTypeNone());
 }
@@ -178,9 +174,9 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
   m.AddFunctionImport(std::string(kCelListCreateInternalName), "cel",
                       "cel_list_create", list_create_params,
                       BinaryenTypeNone());
+  m.AddFunctionImport("cel_list_append_at", "cel", "cel_list_append_at",
+                      list_create_params, BinaryenTypeNone());
   const BinaryenType list3_params[3] = {i32, i32, i32};
-  m.AddFunctionImport(std::string(kCelListSetInternalName), "cel",
-                      "cel_list_set", list3_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
                       "cel_list_at_arena", list3_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelListAtInternalName), "cel", "cel_list_at",
@@ -790,10 +786,10 @@ TEST(ExprLowerListTest, EmptyListLiteralLowers) {
   EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
                                  "cel_list_create"));
   EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_list_set"));
+                                 "cel_list_append_at"));
 }
 
-TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndSets) {
+TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndAppends) {
   Pipeline p = RunPipeline("[10, 20, 30]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
@@ -802,33 +798,29 @@ TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndSets) {
   EXPECT_THAT(m.Validate(), IsOk());
 
   // The kListExpr root materialises as:
-  //   (block (call $cel_list_create out N)
-  //          (call $cel_list_set out 0 e0)
-  //          (call $cel_list_set out 1 e1)
-  //          (call $cel_list_set out 2 e2)
+  //   (block (call $cel_list_create out N)        ;; capacity=N, count=0
+  //          (call $cel_list_append_at out e0)
+  //          (call $cel_list_append_at out e1)
+  //          (call $cel_list_append_at out e2)
   //          (i32.const out))
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   BinaryenExpressionRef root =
       BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
   ASSERT_EQ(BinaryenExpressionGetId(root), BinaryenBlockId())
       << "kListExpr lowers to a block";
-  // 1 create + 3 sets + 1 i32.const trailer = 5 children.
+  // 1 create + 3 appends + 1 i32.const trailer = 5 children.
   EXPECT_EQ(BinaryenBlockGetNumChildren(root), 5u);
 
   BinaryenExpressionRef create = BinaryenBlockGetChildAt(root, 0);
   ASSERT_EQ(BinaryenExpressionGetId(create), BinaryenCallId());
   EXPECT_STREQ(BinaryenCallGetTarget(create), "cel_list_create");
-  // count is the second arg — pin N=3.
+  // capacity is the second arg — pin N=3.
   EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(create, 1)), 3);
 
-  // See NOLINT note in ScalarMapLiteralEmitsCreateAndInserts above.
   for (BinaryenIndex i = 1; i <= 3; ++i) {  // NOLINT(bugprone-infinite-loop)
     BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, i);
     ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-    EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_list_set");
-    // Second arg of cel_list_set is the index — must increment 0,1,2.
-    EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 1)),
-              static_cast<int32_t>(i - 1));
+    EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_list_append_at");
   }
 }
 

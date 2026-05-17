@@ -23,32 +23,32 @@
 extern "C" {
 #endif
 
-// Construction.  Allocates a fresh `ArenaListHeader` plus an elements
-// array of exactly `count` slots in the bump arena, writes a
-// `{CEL_LIST_ARENA, header_ptr}` CelValue into `out_slot`.  All
-// element slots are zero-initialized to `{CEL_NULL}` — codegen then
-// follows up with `cel_list_set` for each element.  List literals
-// are fixed-length: codegen knows the exact element count at build
-// time, so there is no growth path and no separate append-and-bump
-// counter.  On OOM poisons `out_slot` with
-// `{CEL_ERROR, CEL_ERR_OVERFLOW}`.
-void cel_list_create(uint32_t out_slot, uint32_t count);
+// Allocates a fresh `ArenaListHeader` plus an elements array of
+// `capacity` slots in the bump arena; `count = 0`.  Writes a
+// `{CEL_LIST_ARENA, header_ptr}` CelValue into `out_slot`.
+// Single constructor for both list literals and comprehension
+// accumulators:
+//   - Literals: codegen knows the element count statically →
+//     passes it as capacity, then emits N `cel_list_append_at`
+//     in index order.  Final `count == capacity`.
+//   - Comprehension accus (map/filter/transformList): codegen
+//     loads `iter_range.count` at runtime → passes it as
+//     capacity (the source-size bound: map produces exactly N,
+//     filter ≤ N, per followon §10.A); per-iter appends.
+//     Final `count ≤ capacity`.
+// On OOM poisons `out_slot` with `{CEL_ERROR, CEL_ERR_OVERFLOW}`.
+void cel_list_create(uint32_t out_slot, uint32_t capacity);
 
-// Writes the CelValue at `elem_slot` into the list at `list_slot`
-// at the given (codegen-determined) `index`.  If the list is
-// poisoned (already an error), the set is a no-op — error sticks.
-// `index >= count` is a codegen invariant violation; the list is
-// poisoned with `CEL_ERR_OVERFLOW` rather than scribbling past the
-// elements arena.
-void cel_list_set(uint32_t list_slot, uint32_t index, uint32_t elem_slot);
-
-// M5.B Slice D — dynamic-list append, used by `map` / `filter` /
-// `transformList` accumulators.  Grows the elements run
-// geometrically (2× capacity, min 4) when full; copies existing
-// entries into the new run; the old run is abandoned in the
-// forward-only arena.  On OOM poisons `list_slot` with
-// `CEL_ERR_OVERFLOW`.  Subsequent appends on a poisoned list are
-// silent no-ops (error sticks).
+// Append the value at `value_slot` to the arena list at
+// `list_slot`, bumping `hdr->count`.  Universal write primitive
+// — used by both literal codegen and comprehension accu codegen
+// (see `cel_list_create` above for the contract).
+// PRESIZE_INVARIANT: traps via `__builtin_trap()` if
+// `count >= capacity` — capacity is sized by codegen, exceeding
+// it is a codegen regression we want to surface immediately.
+// 3VL: ERROR / UNKNOWN value propagates verbatim into the list
+// slot; subsequent appends see the error kind and become silent
+// no-ops.
 void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
 
 // M5.B Slice D — predicate-gated append for `filter(v, p)` /

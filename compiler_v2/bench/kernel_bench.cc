@@ -48,6 +48,14 @@
 #include "compiler_v2/runtime/cel_memory.h"
 #include "compiler_v2/runtime/cel_string_ops.h"
 
+// NOLINTBEGIN(clang-analyzer-deadcode.DeadStores)
+// `for (auto _ : state)` is the standard Google Benchmark loop
+// idiom — the loop variable is intentionally unused, the loop
+// body's side effects (the kernel under test) are the
+// observation.  The clang-static-analyzer's dead-store warning
+// fires on every benchmark in the file; suppressed file-level
+// here since the idiom is uniform across the suite.
+
 namespace celwasm {
 namespace {
 
@@ -255,10 +263,10 @@ BENCHMARK(BM_MapLookupArenaMiss);
 void BM_ListAtArena(benchmark::State& state) {
   ResetArena();
   uint32_t l = AllocSlot();
-  cel_list_create(l, /*count=*/8);
+  cel_list_create(l, /*capacity=*/8);
   for (int i = 0; i < 8; ++i) {
     uint32_t v = cel_make_int(static_cast<int64_t>(i) * 10);
-    cel_list_set(l, static_cast<uint32_t>(i), v);
+    cel_list_append_at(l, v);
   }
   uint32_t idx = cel_make_int(3);
   uint32_t out = AllocSlot();
@@ -276,13 +284,13 @@ void BM_ListEqDispatchArena(benchmark::State& state) {
   ResetArena();
   uint32_t a = AllocSlot();
   uint32_t b = AllocSlot();
-  cel_list_create(a, /*count=*/4);
-  cel_list_create(b, /*count=*/4);
+  cel_list_create(a, /*capacity=*/4);
+  cel_list_create(b, /*capacity=*/4);
   for (int i = 0; i < 4; ++i) {
     uint32_t va = cel_make_int(i);
     uint32_t vb = cel_make_int(i);
-    cel_list_set(a, static_cast<uint32_t>(i), va);
-    cel_list_set(b, static_cast<uint32_t>(i), vb);
+    cel_list_append_at(a, va);
+    cel_list_append_at(b, vb);
   }
   uint32_t out = AllocSlot();
   for (auto _ : state) {
@@ -846,5 +854,6 @@ BENCHMARK(BM_AnyTypeUrlParse_NoSlash);
 
 }  // namespace
 }  // namespace celwasm
+// NOLINTEND(clang-analyzer-deadcode.DeadStores)
 
 BENCHMARK_MAIN();

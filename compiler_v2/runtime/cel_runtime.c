@@ -133,26 +133,6 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
 //   3. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
 //      the error verbatim into the map slot; subsequent inserts
 //      are silent no-ops (error sticks).
-// Grow the arena-map entries run geometrically (2× capacity, min 4).
-// Returns 0 on success, non-zero CelErrCode on OOM.
-static uint32_t arena_map_grow(CelValue* m, ArenaMapHeader* hdr) {
-  uint32_t new_cap = hdr->capacity == 0 ? 4u : hdr->capacity * 2u;
-  uint32_t new_off =
-      cel_alloc((uint32_t)((size_t)kCelMapEntryStride * new_cap));
-  if (new_off == 0) {
-    poison(m, CEL_ERR_OVERFLOW);
-    return CEL_ERR_OVERFLOW;
-  }
-  if (hdr->count > 0) {
-    memcpy(cel_memory_base_() + new_off,
-           cel_memory_base_() + hdr->entries_offset,
-           (size_t)kCelMapEntryStride * hdr->count);
-  }
-  hdr->entries_offset = new_off;
-  hdr->capacity = new_cap;
-  return 0;
-}
-
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot) {
   CEL_LOG("enter");
@@ -179,7 +159,10 @@ void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
       return;
     }
   }
-  if (hdr->count >= hdr->capacity && arena_map_grow(m, hdr) != 0) return;
+  // PRESIZE_INVARIANT: capacity is sized by codegen — N for
+  // literals, iter_range.count for accus.  Trap rather than
+  // grow / poison so a codegen regression surfaces here.
+  if (hdr->count >= hdr->capacity) __builtin_trap();
   *arena_map_entry_key(hdr, hdr->count) = *key;
   *arena_map_entry_val(hdr, hdr->count) = *val;
   hdr->count++;
@@ -269,13 +252,18 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
 //   - kHost    : `cel_host.cel_list_at`     (host trampoline, called direct)
 //   - kDynamic : `cel_list_at`              (this dispatcher, tail-calls)
 //
-// List literals construct via `cel_list_create(out, count)` followed
-// by `cel_list_set(out, i, elem)` for each i in [0, count); both
-// only ever produce CEL_LIST_ARENA values — kHost values originate
-// from proto reflection (REPEATED fields) or `Activation::Bind`,
-// never from emitted codegen.  The list shape is fixed-length —
-// codegen knows the element count up front, so there is no growth
-// path (no `cel_list_grow` / `cel_list_append`).
+// All arena lists — literal AND comprehension-accumulator — share
+// one constructor `cel_list_create(out, capacity)` and one writer
+// `cel_list_append_at(out, elem)`.  Literals: codegen knows the
+// element count statically, passes it as capacity, then emits N
+// appends in index order; final count == capacity.  Comprehension
+// accus: codegen loads `iter_range.count` at runtime, passes it
+// as capacity (collection-producing macros are bounded above by
+// source size, see m5-comprehensions-followon.md §10.A); appends
+// run per-iter; final count ≤ capacity.  No growth path — the
+// capacity is sufficient by construction, and the append's
+// `count >= capacity` invariant traps via `__builtin_trap` if
+// codegen ever drops the pre-size.
 
 static ArenaListHeader* arena_list_header(const CelValue* l) {
   return (ArenaListHeader*)(cel_memory_base_() +
@@ -287,7 +275,7 @@ static CelValue* arena_list_element(ArenaListHeader* hdr, uint32_t i) {
                      ((size_t)kCelListEntryStride * i));
 }
 
-void cel_list_create(uint32_t out_slot, uint32_t count) {
+void cel_list_create(uint32_t out_slot, uint32_t capacity) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
   uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaListHeader));
@@ -296,92 +284,50 @@ void cel_list_create(uint32_t out_slot, uint32_t count) {
     return;
   }
   uint32_t elements_off = 0;
-  if (count > 0) {
-    elements_off = cel_alloc((uint32_t)((size_t)kCelListEntryStride * count));
+  if (capacity > 0) {
+    elements_off =
+        cel_alloc((uint32_t)((size_t)kCelListEntryStride * capacity));
     if (elements_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;
     }
-    // cel_alloc zero-fills, leaving every CelValue with kind=CEL_NULL
-    // (CEL_NULL == 0 by the enum order), so an unset element reads as
-    // null rather than a garbage kind.  Any codegen-correct emit
-    // overwrites every slot via cel_list_set before the list is used.
   }
   ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
-  hdr->count = count;
-  hdr->capacity = count;
+  hdr->count = 0;
+  hdr->capacity = capacity;
   hdr->elements_offset = elements_off;
   hdr->_pad = 0;
   out->kind = CEL_LIST_ARENA;
   out->payload.arena_list.header_ptr = hdr_off;
 }
 
-void cel_list_set(uint32_t list_slot, uint32_t index, uint32_t elem_slot) {
-  CEL_LOG("enter");
-  CelValue* l = cel_value_at(list_slot);
-  // If the list is already poisoned, every subsequent set is a no-op
-  // — error sticks.
-  if (l->kind != CEL_LIST_ARENA) {
-    return;
-  }
-  ArenaListHeader* hdr = arena_list_header(l);
-  // List literals are fixed-length — codegen knows `index < count`
-  // because both are compile-time constants.  An out-of-range index
-  // means codegen drifted out of sync with the runtime; poison
-  // defensively so the bug surfaces at the first observable boundary
-  // instead of silently scribbling past the elements arena.
-  if (index >= hdr->count) {
-    poison(l, CEL_ERR_OVERFLOW);
-    return;
-  }
-  *arena_list_element(hdr, index) = *cel_value_at(elem_slot);
-}
-
-// M5.B Slice D — dynamic-list append.  Used by `map` / `filter` /
-// `transformList` accumulators, which start at `[]` and grow.
-// Geometric 2× capacity growth amortises to O(N) total work for N
-// appends.  On growth: allocates a fresh elements run via
-// cel_alloc, copies existing entries, abandons the old run in the
-// arena (forward-only bump — short-lived comprehension tolerable).
-// On OOM: poisons the list with CEL_ERR_OVERFLOW; subsequent
-// appends are silent no-ops (error sticks).
+// Append the value at `value_slot` to the arena list at
+// `list_slot`, bumping `hdr->count`.  Universal write primitive
+// for arena lists — used by both literal codegen (N appends in
+// index order, final count == capacity) and comprehension accu
+// codegen (per-iter, final count ≤ capacity).  Capacity is a
+// codegen invariant; see `cel_list_create` above and followon
+// §10.A.  PRESIZE_INVARIANT: trap if `count >= capacity`.
 void cel_list_append_at(uint32_t list_slot, uint32_t value_slot) {
   CEL_LOG("enter");
   CelValue* l = cel_value_at(list_slot);
   if (l->kind != CEL_LIST_ARENA) {
     // Wrong kind or already poisoned — silent no-op so an upstream
-    // accu_init error sticks all the way to `result`.
+    // accu_init / append error sticks all the way to `result`.
     return;
   }
   CelValue* v = cel_value_at(value_slot);
   if (v->kind == CEL_ERROR || v->kind == CEL_UNKNOWN) {
     // Per design §3.2: any error in `loop_step` aborts the
-    // comprehension and becomes the result.  Propagate the
-    // ERROR / UNKNOWN verbatim into the list slot; subsequent
-    // append calls on this iteration's later iters become
-    // silent no-ops (the kind-check above stops them).  The
-    // comprehension's `result = @result` then surfaces the
-    // error / unknown as the comp's value.
+    // comprehension and becomes the result.
     *l = *v;
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
-  if (hdr->count >= hdr->capacity) {
-    uint32_t new_cap = hdr->capacity == 0 ? 4u : hdr->capacity * 2u;
-    uint32_t new_elements_off =
-        cel_alloc((uint32_t)((size_t)kCelListEntryStride * new_cap));
-    if (new_elements_off == 0) {
-      poison(l, CEL_ERR_OVERFLOW);
-      return;
-    }
-    if (hdr->count > 0) {
-      memcpy(cel_memory_base_() + new_elements_off,
-             cel_memory_base_() + hdr->elements_offset,
-             (size_t)kCelListEntryStride * hdr->count);
-    }
-    hdr->elements_offset = new_elements_off;
-    hdr->capacity = new_cap;
-  }
+  // PRESIZE_INVARIANT: capacity is sized by codegen — N for
+  // literals, iter_range.count for accus.  Trap rather than
+  // grow / poison so a codegen regression surfaces here.
+  if (hdr->count >= hdr->capacity) __builtin_trap();
   *arena_list_element(hdr, hdr->count) = *cel_value_at(value_slot);
   ++hdr->count;
 }

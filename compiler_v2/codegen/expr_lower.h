@@ -112,13 +112,14 @@ inline constexpr absl::string_view kCelHostMapLookupInternalName =
     "cel_host_cel_map_lookup";  // kHost arm import
 
 // M4.F: runtime entry points for list literal construction +
-// indexing.  cel_list_create is `(i32 out_slot, i32 count) -> ()`;
-// cel_list_set is `(i32 list_slot, i32 index, i32 elem_slot) -> ()`.
-// All three indexers carry signature
-// `(i32 out_slot, i32 list_slot, i32 index_slot) -> ()`.
+// indexing.  `cel_list_create` is
+// `(i32 out_slot, i32 capacity) -> ()`; the universal append
+// `cel_list_append_at` is `(i32 list_slot, i32 elem_slot) -> ()`
+// and is used for both literal fills (N appends in index order)
+// and comprehension accu appends.  All three indexers carry
+// signature `(i32 out_slot, i32 list_slot, i32 index_slot) -> ()`.
 inline constexpr absl::string_view kCelListCreateInternalName =
     "cel_list_create";
-inline constexpr absl::string_view kCelListSetInternalName = "cel_list_set";
 inline constexpr absl::string_view kCelListAtArenaInternalName =
     "cel_list_at_arena";
 inline constexpr absl::string_view kCelListAtInternalName =

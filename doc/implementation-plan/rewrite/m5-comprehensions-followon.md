@@ -530,36 +530,45 @@ complexity for our wasm runtime (where every `cel_alloc` rounds
 to slot size).  **Choose Option β.**  See WAT
 `63_comprehension_exists_map.wat` for the shape.
 
-### 3.6 Dynamic-list primitive (Slice D)
+### 3.6 List primitive — unified create + append (Slice D, consolidated 2026-05-17)
 
-`map` and `filter` accumulators start at `[]` and grow.  Today
-the runtime has only static-size lists (`cel_list_create(slot,
-count)` is one-shot).  Add:
+> Plan-vs-execution delta: the as-written plan introduced a
+> separate `cel_list_create_with_capacity` for comprehension
+> accumulators and kept the growth branch inside
+> `cel_list_append_at` (geometric 2× capacity, ~24 KB worst case
+> per kilo-element list, ~O(N log N) arena bytes total).  Mid-
+> slice review concluded the dual API was a wart: literals wrote
+> via `cel_list_set(list, INDEX, elem)` while accus wrote via
+> `cel_list_append_at(list, elem)`, with two creates carrying
+> different `count`-at-create semantics.  The as-shipped shape
+> collapses to **one create + one write**:
+>
+> ```c
+> // capacity = N for literals, iter_range.count for accus.
+> // count = 0 at create time in both cases.
+> void cel_list_create(uint32_t out_slot, uint32_t capacity);
+>
+> // bumps hdr->count; PRESIZE_INVARIANT traps via
+> // __builtin_trap() if count >= capacity.
+> void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
+> ```
+>
+> `cel_list_set` is deleted.  List-literal codegen
+> (`EmitKListExpr`) writes via N sequential `cel_list_append_at`
+> calls in index order — byte-identical observable state to the
+> old positional `cel_list_set` path.  Comprehension accu codegen
+> calls `cel_list_create(slot, iter_range.count)` in the prologue
+> (per §10.A) and `cel_list_append_at` per loop step; the growth
+> branch is gone entirely.  See `compiler_v2/runtime/cel_list.h`
+> and `compiler_v2/runtime/cel_runtime.c` for the as-shipped
+> bodies; commits 5060b78 (Slice G land) + the consolidation
+> commit (this one).
 
-```c
-void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
-```
-
-Semantics:
-  - If `list_slot`'s payload pointer is null or list-size is 0,
-    allocate a small initial payload from the arena.
-  - On growth, allocate a new payload at 2× capacity and copy
-    the existing entries.  The arena allocator is forward-only
-    so the old payload is simply abandoned (its slots become
-    dead arena bytes — acceptable for short-lived comprehensions).
-  - Update list header in-place: capacity, length.
-
-Arena cost: each comprehension that produces a list of length N
-consumes O(N log N) total payload bytes due to the geometric
-growth.  For a 1k-element list this is ~24 KB.  Acceptable for
-our typical-program target.
-
-Alternative considered and rejected: pre-allocate
-`cel_list_size(iter_range)` capacity at `accu_init` time.  This
-is exactly correct for `map` (every iter produces one element)
-but over-allocates for `filter` (some iters are skipped).  The
-codegen would need to specialise per-form, which complicates the
-lowering arm.  Not worth it for the 24 KB best-case savings.
+The original plan's "alternative considered and rejected"
+paragraph — pre-allocate `iter_range.count` at accu_init — has
+been ADOPTED instead.  See §10.A for the rationale shift; the
+per-form codegen specialisation it warned against is contained
+to one helper (`EmitPresizeAccu`) and amounts to ~10 LoC.
 
 ### 3.7 `cel.bind` registration (Slice G)
 
@@ -983,6 +992,25 @@ Independent of Slice I.
 
 ### Slice G — `transformMap` (map accumulator)
 
+> **Plan-vs-execution delta (shipped 2026-05-17, commits 5060b78
+> + consolidation):**  The runtime helper `cel_map_insert_at`
+> shipped without the geometric growth + rehash described below
+> — it traps via `__builtin_trap()` if `count >= capacity`.
+> The map accumulator is pre-sized to `iter_range.count` in the
+> comprehension prologue (see §10.A and §3.6), so growth is
+> unreachable in steady state.  `cel_map_create` (the existing
+> map literal constructor) is reused as the accu creator — no
+> separate `cel_map_create_with_capacity` shipped.  The two
+> insert helpers stay distinct by design: `cel_map_insert`
+> (literals, poison-on-duplicate per langdef map-literal rule)
+> and `cel_map_insert_at` (accus, last-write-wins per langdef
+> comprehension rule); the semantic split is langdef-mandated
+> and cannot collapse.  `ComprehensionsV2CheckerLibrary` had to
+> be registered (in addition to the parser macro registry) so
+> the `cel.@mapInsert` overload type-checks; without it,
+> transformMap source fails type-checking with "no matching
+> overload."
+
 **Owner:** primary agent.  **Size:** 0.5 session.  **Depends
 on:** Slice F (iter_var2) + Slice E (map iteration).
 
@@ -1348,13 +1376,60 @@ keystone gate:
 
 ## 10 Future work (post-shipping)
 
-  - **Pre-size list accumulators to `iter_range.count`
-    (REQUIRED — defer to milestone closeout).**  Discussed
-    during Slice D, 2026-05-17.  See §10.A below for the full
-    rationale, implementation sketch, and why we shipped the
-    dynamic-growth path first.
+  - **Pre-size list AND map accumulators to `iter_range.count`
+    — SHIPPED 2026-05-17** (this milestone, post-Slice-G
+    consolidation commit).  Was originally going to be
+    deferred to milestone closeout; user-driven mid-slice
+    review collapsed it into the milestone instead so the
+    runtime API would land in its final shape.  See §10.A
+    below for the as-shipped writeup; original deferral
+    rationale + implementation plan kept for historical
+    context.
   - **Inline `cel.bind` fast path (Slice G.2).**  Ship if
     bench shows >20% win on cel.bind-heavy programs.
+  - **Remove `IsShapeC` / `LowerShapeC` cel.bind escape hatch
+    once the generic loop_step path handles `kLocal` storage**
+    (surfaced 2026-05-17, mid-consolidation review).  Slice I's
+    commit message framed `IsShapeC` as a ~30% perf win on
+    cel.bind-heavy programs (cel-cpp benchmark number), but the
+    real reason it exists is a codegen correctness escape, not
+    a perf optimisation: cel.bind's `loop_step` references the
+    bound value via `kLocal` storage (the value lives in a wasm
+    local, not a workspace slot).  The generic
+    `EmitCompLoopStep` emits the `loop_step` instructions into
+    the wasm body regardless of whether the loop body executes
+    at runtime — Binaryen's wasm validator type-checks them
+    statically, and the kLocal storage shape fails the
+    `StorageKind::kWorkspaceSlot` ABSL_CHECK in the generic
+    arm.  Removing `IsShapeC` therefore requires teaching the
+    generic loop_step emit to handle kLocal-storage operands.
+    Not a small change, and the current escape works.  The perf
+    win is real but small in the one-shot-codegen / per-eval
+    runtime model (one wasm function call + a count==0
+    comparison per cel.bind eval).  Right cleanup is "fix
+    generic path, then delete `IsShapeC`" — defer to a future
+    codegen refactor.  Note: the new pre-sizing detector
+    (`IsPresizableCollectionAccu`, §10.A) DOES handle the
+    cel.bind-with-`[]`-value edge case correctly without
+    needing IsShapeC, because `LowerComprehension` dispatches
+    IsShapeC *before* `EmitCompPrologue` runs (the predicate
+    can't fire spuriously).
+  - **Arena compaction for under-filled accus** (surfaced
+    2026-05-17 mid-consolidation review).  `filter` /
+    `transformList`-with-predicate / 4-arg `transformMap` end
+    with `count < capacity`; the unused trailing slots sit
+    dead in the bump arena until `cel_reset` at next eval.
+    For a `filter` that excludes 99% of N=1000 entries, ~24KB
+    of arena bytes per eval are wasted.  Move-back compaction
+    (decrement arena bump_ptr by `(capacity - count) * 24`
+    after the loop) would reclaim them, BUT requires proving
+    no other allocations happened during the comprehension
+    body — true for simple cases, false for any nested call
+    that allocated a string / intermediate.  Not worth the
+    safety analysis for transient waste freed at the next
+    `cel_reset` (microseconds later).  Trigger to revisit:
+    measured arena pressure in production workloads or a
+    long-lived comprehension scenario.
   - **Compact-at-end for dynamic lists.**  If R3 bites,
     ship a compaction pass.
   - **Streaming comprehension** (very long-term, post-M-ext):
@@ -1491,7 +1566,62 @@ keystone gate:
     operands is implemented (`m5-kcall-comprehensions.md`
     follow-up or a dedicated kSelect-dispatch slice).
 
-### 10.A Pre-size list AND map accumulators — required follow-up
+### 10.A Pre-sized list AND map accumulators — SHIPPED 2026-05-17
+
+**Status: shipped in this milestone** (post-Slice-G consolidation
+commit).  Original plan deferred this to closeout (or a follow-on
+milestone); user-driven mid-Slice-G review redirected to ship now
+so the runtime API would land in its final shape rather than
+churning twice.
+
+**As shipped:**
+
+  - Codegen (`compiler_v2/codegen/expr_lower.cc`):
+    `ResolveCompContext` returns a plain `CompContext` (no flags
+    carried).  `EmitCompPrologue` inlines a
+    `IsPresizableCollectionAccu(comp, init_ann)` predicate at the
+    consumer site; when matched, calls `EmitPresizeAccu` which
+    emits `cel_list_create` (list accu) or `cel_map_create` (map
+    accu) with `capacity = iter_range.count` loaded at runtime
+    from the source's arena header (offset 0 of header pointed
+    to by source slot's payload offset 8 — uniform layout for
+    both arena-list and arena-map).  Shape-C (cel.bind) is
+    dispatched in `LowerComprehension` BEFORE `EmitCompPrologue`
+    runs, so the predicate cannot fire spuriously for a bind
+    whose `value` happens to be `[]`.
+  - Runtime (`compiler_v2/runtime/cel_runtime.c`):
+    `cel_list_create` (collapsed; see §3.6) and `cel_map_create`
+    (unchanged signature, count=0 at create) are the universal
+    creates.  `cel_list_append_at` and `cel_map_insert_at` use
+    PRESIZE_INVARIANT: `if (count >= capacity) __builtin_trap()`
+    — a codegen regression that drops pre-sizing surfaces as a
+    wasm trap at the call site, not silent memory corruption.
+    The geometric-growth branches that previously lived inside
+    both helpers are deleted.
+  - List API consolidation: see §3.6.  `cel_list_set` and
+    `cel_list_create_with_capacity` (the latter introduced
+    mid-Slice-G then immediately retired) are gone.
+
+**What this means in steady state:**
+  - Every list-producing comprehension allocates exactly
+    `iter_range.count * 24` bytes for elements once, never
+    grows.  `map`: count == capacity at end.  `filter` /
+    `transformList`-with-predicate: count ≤ capacity; the
+    unused trailing slots sit dead in the bump arena until
+    `cel_reset` at next eval.
+  - Every map-producing comprehension allocates exactly
+    `iter_range.count * kCelMapEntryStride` bytes for entries.
+    `transformMap` 3-arg: count == capacity unless predicate
+    filters; 4-arg: count ≤ capacity by the predicate.
+    `transformMapEntry` single-entry-literal: same bound as
+    transformMap; multi-entry literal would exceed and trap (see
+    "Out of scope" below — Slice H ships single-entry pattern
+    only).
+  - The runtime ABI is now stable: literals and accus share
+    creators and writers, so the next codegen feature (e.g.
+    streaming) drops into the same primitives.
+
+**The observation that triggered this** (review note, 2026-05-17):
 
 **Status**: deferred to milestone closeout (Slice J or after).
 Discussed mid-Slice-D 2026-05-17; chosen to ship dynamic-growth

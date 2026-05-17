@@ -172,8 +172,8 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 constexpr const char* kRuntimeExports[] = {
     "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
     "cel_map_insert_at", "cel_map_lookup_arena", "cel_map_lookup",
-    "cel_list_create", "cel_list_set", "cel_list_append_at",
-    "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
+    "cel_list_create", "cel_list_append_at", "cel_list_append_at_if_bool",
+    "cel_list_at_arena", "cel_list_at",
     // M5.B step 1: arithmetic helpers.
     "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
     "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",

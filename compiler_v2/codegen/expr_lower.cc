@@ -334,25 +334,27 @@ BinaryenExpressionRef EmitCelListCreateCall(WasmModule& mod, uint32_t out_slot,
   return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
 }
 
-// Emits `(call $cel.cel_list_set <list_slot> (i32.const index) <elem_expr>)`.
-// `elem_expr` is an i32-valued sub-expression whose value at runtime
-// is the linear-memory offset of the element's CelValue.
-BinaryenExpressionRef EmitCelListSetCall(WasmModule& mod, uint32_t list_slot,
-                                         uint32_t index,
-                                         BinaryenExpressionRef elem) {
-  BinaryenExpressionRef args[3] = {I32Const(mod, list_slot),
-                                   I32Const(mod, index), elem};
-  const std::string name(kCelListSetInternalName);
-  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+// Emits `(call $cel.cel_list_append_at <list_slot> <elem_eval>)`.
+// `elem_eval` is an i32-valued sub-expression whose value at runtime
+// is the linear-memory offset of the element's CelValue.  Universal
+// write for arena lists — shared between kListExpr literal codegen
+// and comprehension accu codegen.
+BinaryenExpressionRef EmitCelListAppendCall(EmitCtx& ctx, uint32_t list_slot,
+                                            BinaryenExpressionRef elem_eval) {
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, list_slot), elem_eval};
+  return BinaryenCall(ctx.mod.raw(), "cel_list_append_at", args, 2,
+                      BinaryenTypeNone());
 }
 
 // Lowers a kListExpr to:
-//   (call $cel.cel_list_create out_slot N)
+//   (call $cel.cel_list_create out_slot N)   ;; capacity=N, count=0
 //   for i in [0, N):
 //     <eval element>      -> i32 elem_offset
-//     (call $cel.cel_list_set out_slot i elem_offset)
+//     (call $cel.cel_list_append_at out_slot elem_offset)
 //   (i32.const out_slot)
 // wrapped in a (block (result i32)) whose value is `out_slot`.
+// Final `count == capacity == N`.  Append is the universal write
+// for arena lists — shared with comprehension accu codegen.
 absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                                                     const cel::Expr& expr,
                                                     const cel::ListExpr& l,
@@ -374,7 +376,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
         << " element index=" << i << " is optional — stub until M5";
     auto elem_or = Emit(ctx, e.expr());
     if (!elem_or.ok()) return elem_or.status();
-    instrs.push_back(EmitCelListSetCall(ctx.mod, out_slot, i, *elem_or));
+    instrs.push_back(EmitCelListAppendCall(ctx, out_slot, *elem_or));
   }
 
   instrs.push_back(I32Const(ctx.mod, out_slot));
@@ -1142,6 +1144,28 @@ void BindCompVariables(EmitCtx& ctx, const cel::Expr& expr,
                                 << comp.accu_var() << "` has no workspace slot";
 }
 
+// followon §10.A: collection-shaped accu (list or map) with an
+// empty-literal accu_init — i.e. one of the standard / v2
+// collection-producing macros (`map`, `filter`, `transformList`,
+// `transformMap`, `transformMapEntry`).  These get the pre-sized
+// prologue (`cel_list_create` / `cel_map_create` with
+// capacity=iter_range.count); everything else falls back to the
+// generic `Emit(accu_init) + cel_copy_slot` path.  Caller MUST gate
+// on `!IsShapeC(comp)` — a bind with `value = []` would otherwise
+// match this shape spuriously.
+bool IsPresizableCollectionAccu(const cel::ComprehensionExpr& comp,
+                                const NodeAnnotation& init_ann) {
+  if (init_ann.repr != Repr::kList && init_ann.repr != Repr::kMap) return false;
+  const auto& accu_init = comp.accu_init();
+  if (accu_init.kind_case() == cel::ExprKindCase::kListExpr) {
+    return accu_init.list_expr().elements().empty();
+  }
+  if (accu_init.kind_case() == cel::ExprKindCase::kMapExpr) {
+    return accu_init.map_expr().entries().empty();
+  }
+  return false;
+}
+
 absl::StatusOr<CompContext> ResolveCompContext(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const NodeAnnotation& ann) {
@@ -1260,14 +1284,57 @@ void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
   }
 }
 
-void EmitCompPrologue(EmitCtx& ctx, const CompContext& c,
-                      BinaryenExpressionRef range_value,
+// followon §10.A: load `iter_range.count` from the source's
+// arena header at runtime.  Both arena-list and arena-map headers
+// store the live count at offset 0 of the header, and both CelValue
+// payloads place the header pointer at offset 8 of the source slot.
+// Returns a fresh i32 expression (the loaded count); caller owns
+// further composition.
+BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef hdr_ptr =
+      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                   /*align=*/4, BinaryenTypeInt32(),
+                   I32Const(ctx.mod, c.source_slot), "memory");
+  return BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
+                      /*align=*/4, BinaryenTypeInt32(), hdr_ptr, "memory");
+}
+
+// followon §10.A: emit the pre-sizing call that replaces the
+// normal `Emit(accu_init) + cel_copy_slot(accu, init_src)` for
+// list/map accumulators.  Calls `cel_list_create_with_capacity` or
+// `cel_map_create` with capacity=iter_range.count loaded at
+// runtime from the source's arena header.  The downstream runtime
+// helpers (`cel_list_append_at`, `cel_map_insert_at`) rely on this
+// pre-sizing for their bounded-write invariant.
+void EmitPresizeAccu(EmitCtx& ctx, const CompContext& c, bool is_map,
+                     std::vector<BinaryenExpressionRef>* instrs) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef count = EmitLoadSourceCount(ctx, c);
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, c.accu_slot), count};
+  const char* helper = is_map ? "cel_map_create" : "cel_list_create";
+  instrs->push_back(BinaryenCall(mod, helper, args, 2, BinaryenTypeNone()));
+}
+
+void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
+                      const CompContext& c, BinaryenExpressionRef range_value,
                       BinaryenExpressionRef init_value,
                       std::vector<BinaryenExpressionRef>* instrs) {
   auto* mod = ctx.mod.raw();
   instrs->push_back(BinaryenDrop(mod, range_value));
   instrs->push_back(BinaryenDrop(mod, init_value));
-  instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
+  // followon §10.A: collection-shaped accu with empty-literal
+  // accu_init → pre-size from iter_range.count.  Predicate
+  // inlined here (not stored on CompContext) so the decision
+  // lives at the consumer site; caller guarantees we're not on
+  // the Shape-C path (LowerComprehension dispatches that earlier).
+  const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
+  ABSL_CHECK(init_ann != nullptr);
+  if (IsPresizableCollectionAccu(comp, *init_ann)) {
+    EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap, instrs);
+  } else {
+    instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
+  }
   instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
                                      I32Const(ctx.mod, c.accu_slot)));
   if (c.map_source) {
@@ -1379,15 +1446,6 @@ bool TryMatchAccuConditionalAppendOne(const cel::Expr& expr,
 
 // Emits `cel_list_append_at(accu_slot, <elem_eval>)`.  The eval is
 // an i32-valued expression whose runtime value is the source slot's
-// byte offset (works uniformly for kIdent local.get, kConst
-// i32.const, and kCall block-returning-i32).
-BinaryenExpressionRef EmitCelListAppendCall(EmitCtx& ctx, uint32_t accu_slot,
-                                            BinaryenExpressionRef elem_eval) {
-  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, accu_slot), elem_eval};
-  return BinaryenCall(ctx.mod.raw(), "cel_list_append_at", args, 2,
-                      BinaryenTypeNone());
-}
-
 // Three lowering modes for loop_step:
 //   1. Append-one (`map(v, t)` step) — emit cel_list_append_at
 //      directly.  Skip the kCreateList and kCall(_+_) entirely; the
@@ -1688,7 +1746,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
   auto init_or = Emit(ctx, comp.accu_init());
   if (!init_or.ok()) return init_or.status();
   std::vector<BinaryenExpressionRef> instrs;
-  EmitCompPrologue(ctx, c, *range_or, *init_or, &instrs);
+  EmitCompPrologue(ctx, comp, c, *range_or, *init_or, &instrs);
   auto loop_or = BuildCompLoop(ctx, expr, comp, c);
   if (!loop_or.ok()) return loop_or.status();
   instrs.push_back(*loop_or);
