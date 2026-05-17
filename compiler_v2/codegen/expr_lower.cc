@@ -1398,33 +1398,134 @@ BinaryenExpressionRef EmitCelListAppendCall(EmitCtx& ctx, uint32_t accu_slot,
 //   3. General path — Emit(loop_step) into a temp slot, then
 //      cel_copy_slot.  Used by exists / all / exists_one /
 //      cel.bind / transformMap accumulators.
+// Slice G: `transformMap(k, v, t)` loop_step is
+// `cel.@mapInsert(@result, k, t)` — cel-cpp's macro factory
+// emits exactly this shape (extensions/comprehensions_v2_macros.cc).
+// On match, sets `*key_out` / `*value_out` to the second / third
+// args.
+bool TryMatchAccuMapInsert(const cel::Expr& expr, absl::string_view accu_name,
+                           const cel::Expr** key_out,
+                           const cel::Expr** value_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "cel.@mapInsert") return false;
+  if (call.args().size() != 3) return false;
+  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
+  *key_out = &call.args()[1];
+  *value_out = &call.args()[2];
+  return true;
+}
+
+// `kCall(_?_:_, p, cel.@mapInsert(...), kIdent(accu))` —
+// conditional `transformMap(k, v, p, t)` step.
+bool TryMatchAccuConditionalMapInsert(const cel::Expr& expr,
+                                      absl::string_view accu_name,
+                                      const cel::Expr** pred_out,
+                                      const cel::Expr** key_out,
+                                      const cel::Expr** value_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "_?_:_" || call.args().size() != 3) return false;
+  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
+  if (!TryMatchAccuMapInsert(call.args()[1], accu_name, key_out, value_out)) {
+    return false;
+  }
+  *pred_out = call.args().data();
+  return true;
+}
+
+// Slice D append-shape: `_+_(@result, [t])`.
+absl::Status EmitAppendStep(EmitCtx& ctx, const CompContext& c,
+                            const cel::Expr& elem,
+                            std::vector<BinaryenExpressionRef>* body) {
+  auto elem_or = Emit(ctx, elem);
+  if (!elem_or.ok()) return elem_or.status();
+  body->push_back(EmitCelListAppendCall(ctx, c.accu_slot, *elem_or));
+  return absl::OkStatus();
+}
+
+// Slice D filter-shape: `p ? _+_(@result, [t]) : @result`.
+absl::Status EmitConditionalAppendStep(
+    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
+    const cel::Expr& elem, std::vector<BinaryenExpressionRef>* body) {
+  auto pred_or = Emit(ctx, pred);
+  if (!pred_or.ok()) return pred_or.status();
+  auto elem_or = Emit(ctx, elem);
+  if (!elem_or.ok()) return elem_or.status();
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
+                                   *elem_or};
+  body->push_back(BinaryenCall(ctx.mod.raw(), "cel_list_append_at_if_bool",
+                               args, 3, BinaryenTypeNone()));
+  return absl::OkStatus();
+}
+
+// Slice G transformMap step: `cel.@mapInsert(@result, k, t)`.
+absl::Status EmitMapInsertStep(EmitCtx& ctx, const CompContext& c,
+                               const cel::Expr& key, const cel::Expr& value,
+                               std::vector<BinaryenExpressionRef>* body) {
+  auto key_or = Emit(ctx, key);
+  if (!key_or.ok()) return key_or.status();
+  auto value_or = Emit(ctx, value);
+  if (!value_or.ok()) return value_or.status();
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *key_or,
+                                   *value_or};
+  body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_insert_at", args, 3,
+                               BinaryenTypeNone()));
+  return absl::OkStatus();
+}
+
+// Slice G conditional transformMap step:
+// `p ? cel.@mapInsert(@result, k, t) : @result`.
+absl::Status EmitConditionalMapInsertStep(
+    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
+    const cel::Expr& key, const cel::Expr& value,
+    std::vector<BinaryenExpressionRef>* body) {
+  auto pred_or = Emit(ctx, pred);
+  if (!pred_or.ok()) return pred_or.status();
+  auto key_or = Emit(ctx, key);
+  if (!key_or.ok()) return key_or.status();
+  auto value_or = Emit(ctx, value);
+  if (!value_or.ok()) return value_or.status();
+  // Pred 3VL: defer the `cel_map_insert_at_if_bool` parallel to
+  // `cel_list_append_at_if_bool` until a failing corpus row
+  // surfaces.  See followon §3.8 plan-vs-execution note.
+  const auto* pred_ann = ctx.layout.annotations.Find(pred.id());
+  ABSL_CHECK(pred_ann != nullptr);
+  const uint32_t pred_slot = pred_ann->storage.payload;
+  BinaryenExpressionRef insert_args[3] = {I32Const(ctx.mod, c.accu_slot),
+                                          *key_or, *value_or};
+  body->push_back(BinaryenDrop(ctx.mod.raw(), *pred_or));
+  body->push_back(
+      BinaryenIf(ctx.mod.raw(),
+                 LoadSlotI32Ne(ctx, pred_slot, /*offset=*/8, /*expected=*/0),
+                 BinaryenCall(ctx.mod.raw(), "cel_map_insert_at", insert_args,
+                              3, BinaryenTypeNone()),
+                 /*ifFalse=*/nullptr));
+  return absl::OkStatus();
+}
+
 absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
                               const CompContext& c,
                               std::vector<BinaryenExpressionRef>* body) {
-  auto* mod = ctx.mod.raw();
   const cel::Expr* elem = nullptr;
   if (TryMatchAccuAppendOne(comp.loop_step(), comp.accu_var(), &elem)) {
-    auto elem_or = Emit(ctx, *elem);
-    if (!elem_or.ok()) return elem_or.status();
-    body->push_back(EmitCelListAppendCall(ctx, c.accu_slot, *elem_or));
-    return absl::OkStatus();
+    return EmitAppendStep(ctx, c, *elem, body);
   }
   const cel::Expr* pred = nullptr;
   if (TryMatchAccuConditionalAppendOne(comp.loop_step(), comp.accu_var(), &pred,
                                        &elem)) {
-    auto pred_or = Emit(ctx, *pred);
-    if (!pred_or.ok()) return pred_or.status();
-    auto elem_or = Emit(ctx, *elem);
-    if (!elem_or.ok()) return elem_or.status();
-    // `cel_list_append_at_if_bool(accu_slot, pred_eval, elem_eval)`
-    // — the runtime helper encapsulates 3VL: error / unknown
-    // predicates propagate to the list slot, false skips, true
-    // appends (with value-side error propagation via append_at).
-    BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
-                                     *elem_or};
-    body->push_back(BinaryenCall(mod, "cel_list_append_at_if_bool", args, 3,
-                                 BinaryenTypeNone()));
-    return absl::OkStatus();
+    return EmitConditionalAppendStep(ctx, c, *pred, *elem, body);
+  }
+  const cel::Expr* tm_key = nullptr;
+  const cel::Expr* tm_value = nullptr;
+  if (TryMatchAccuMapInsert(comp.loop_step(), comp.accu_var(), &tm_key,
+                            &tm_value)) {
+    return EmitMapInsertStep(ctx, c, *tm_key, *tm_value, body);
+  }
+  if (TryMatchAccuConditionalMapInsert(comp.loop_step(), comp.accu_var(), &pred,
+                                       &tm_key, &tm_value)) {
+    return EmitConditionalMapInsertStep(ctx, c, *pred, *tm_key, *tm_value,
+                                        body);
   }
   auto step_or = Emit(ctx, comp.loop_step());
   if (!step_or.ok()) return step_or.status();
@@ -1432,7 +1533,7 @@ absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   ABSL_CHECK(step_ann != nullptr &&
              step_ann->storage.kind == StorageKind::kWorkspaceSlot)
       << "LowerComprehension: loop_step storage kind mismatch";
-  body->push_back(BinaryenDrop(mod, *step_or));
+  body->push_back(BinaryenDrop(ctx.mod.raw(), *step_or));
   body->push_back(EmitCelCopySlot(ctx, c.accu_slot, step_ann->storage.payload));
   return absl::OkStatus();
 }

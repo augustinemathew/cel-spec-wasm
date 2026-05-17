@@ -1364,8 +1364,134 @@ keystone gate:
     accumulators through iterations; unblock the deferred
     `unknowns:` ExprValue binding case in
     `binding_marshal.cc`.
+  - **Public-namespace consistency — collapse `celwasm::api`
+    aliases (REQUIRED — defer to milestone closeout or
+    immediately after).**  Surfaced 2026-05-17 mid-Slice-I.
+    Phase X (commit ecf355d) moved the four classes that
+    previously lived directly under `namespace cel` (`Value`,
+    `Program`, `Activation`, `Compiler`) into
+    `namespace celwasm::api` to break a duplicate-symbol
+    collision with cel-cpp's same-named classes (`cel::Value`,
+    `cel::Compiler`, …) that became visible the moment
+    `compiler_v2/frontend/parse_and_check.cc` started linking
+    against `@cel-cpp//extensions:comprehensions_v2` (which
+    transitively pulls in `@cel-cpp//common:value`).  The
+    minimum-disruption fix was to add backward-compat
+    `using ::celwasm::api::Value;` (etc.) inside
+    `namespace cel`, so every existing caller — tests, the
+    CLI, internal pipeline code — could keep writing
+    `cel::Value`, `cel::Activation`, … unchanged.  That
+    shim is now load-bearing for ~40 source files but
+    has two costs: (a) the public API namespace is misleading
+    — a reader looking at `compiler_v2/api/value.h` sees
+    `namespace celwasm::api { class Value … }` but every
+    call site writes `cel::Value`, so there's a permanent
+    cognitive bridge to cross; and (b) when we eventually
+    expose another type that collides with cel-cpp (very
+    likely as we adopt more cel-cpp surface), the same
+    workaround has to be re-applied per type rather than
+    being structurally impossible.  The clean shape is to
+    rename `namespace cel { … }` declarations in
+    `compiler_v2/api/`, `compiler_v2/cli/`, `compiler_v2/e2e/`,
+    `compiler_v2/internal/`, `compiler_v2/tools/` to either
+    `namespace celwasm` (drop the `api` segment — short, no
+    risk of further cel-cpp collisions since cel-cpp doesn't
+    use this namespace) or commit to `namespace celwasm::api`
+    everywhere.  The bulk operation is mechanical
+    (`s/cel::Value/celwasm::Value/g` across non-third-party
+    files, then drop the `using` shim) but touches every test
+    file and the CLI — best done as a single atomic commit
+    once the m5b test surface settles, so the rename diff
+    isn't entangled with feature work.  **Scoping inventory
+    (subagent run 2026-05-17)**: 35 files declare
+    `namespace cel { … }`, all isolated to the public-API
+    layer.  Breakdown:
+      - 8 API headers (`compiler_v2/api/{value,program,
+        activation,compiler}.h`) contain the load-bearing
+        `using ::celwasm::api::X;` aliases — the rename's
+        primary action is deleting these EOF blocks.
+      - 4 additional API headers (`error.h`, `attribute.h`,
+        `type.h`, `engine.h`) declare `ErrorPayload`,
+        `Attribute*`, `CelType`, `Engine` *directly* in
+        `namespace cel` — these don't collide with cel-cpp
+        today and could either be left alone or moved
+        wholesale; the cleaner shape is to move them under
+        `namespace celwasm` too so the public surface is
+        uniform.
+      - 8 API impl + test files (`value_test.cc`,
+        `program_test.cc`, `compiler_test.cc`,
+        `activation_test.cc`, `error_test.cc`,
+        `type_test.cc`, `attribute_test.cc`, `engine_test.cc`,
+        plus `instance_test.cc`) open `namespace cel { … }`
+        for the test fixtures — rewrite to
+        `namespace celwasm`.
+      - 11 e2e test files (`m{2,4,5,5b,7a,7b,8,9,10}_test.cc`,
+        `optimize_test.cc`, `program_roundtrip_test.cc`) and
+        2 benchmark files open `namespace cel` for harness
+        scaffolding — same rewrite.
+      - **Zero `using namespace cel;` lines exist** anywhere
+        in `compiler_v2/`; every reference is qualified
+        (`cel::Value`, `cel::Activation`, …), so the rename
+        is a mechanical `s/cel::/celwasm::/g` over the four
+        target classes plus the namespace-open lines.
+      - **No published `.h` aggregate or CLI public contract**
+        — `compiler_v2/cli/celwasmc_v2.cc` is a standalone
+        demo; nothing under `compiler_v2/` is exposed as a
+        shared library / SDK header.  So the rename has
+        zero external blast radius.
+    **Triggers**: any future class that collides with
+    cel-cpp; any contributor confusion when first reading
+    `compiler_v2/api/`; or simply doing it once Slice J
+    ships and the diff has no feature-work to fight with.
+    Estimated effort: one focused agent session, ~35 files
+    touched, single atomic commit.
+  - **`TransformMapKeyCollisionLastWriteWins` is malformed
+    against the actual cel-cpp `transformMap` semantics
+    (surfaced 2026-05-17, mid-Slice-G).**  The test as
+    written invokes
+    `{"a":1,"b":2,"c":3}.transformMap(k, v, "x", v).size()`
+    — the speculative reading was that the 4-arg
+    `transformMap(k, v, p, t)` lets `p` (or `t`) re-map the
+    key, so a constant slot `"x"` would collapse all entries
+    to a single bucket and force the collision-overwrite
+    semantics.  cel-cpp's actual signature is `(k, v, p, t)`
+    where `p` is a `bool` predicate (filter) and `t` is the
+    value transform; the key is **never** remapped by
+    `transformMap`.  Key remapping is the contract of
+    `transformMapEntry` (Slice H, where the loop_step
+    inserts the entire `{k': t}` map and the user controls
+    `k'`).  Net: this test belongs in Slice H's
+    `transformMapEntry` test fixture, written as e.g.
+    `{"a":1,"b":2,"c":3}.transformMapEntry(k, v,
+    {"x": v}).size()` — every iter inserts `{"x":v}` into
+    the accu, the third write wins, and result size is `1`.
+    Action: SKIP the test in Slice G with a note pointing
+    at this bullet; rewrite it under Slice H once
+    `cel.@mapInsert` codegen lands and re-include it in
+    `ComprehensionTransformMapEntryE2ETest`.  Lock the
+    collision-contract assertion either way — last-write
+    wins on identical key, runtime helper
+    `cel_map_insert_at` already enforces this and
+    `cel_map_test.cc::MapInsertCollision` covers the unit
+    side.
+  - **`x.y` shorthand for map field access** (surfaced
+    2026-05-17 during Slice I e2e).  Currently every kSelect
+    lowers to `cel_host.cel_get_field`, the proto-message read
+    path.  For a map-typed operand (e.g. `cel.bind(x, {"y": 0},
+    x.y == 0)`) the host trampoline expects a message backing
+    and poisons with TYPE_MISMATCH.  Workaround in
+    `CelBindE2ETest.BindWithMapAccu`: use the explicit
+    `x["y"]` index form, which routes through `cel_map_lookup`
+    correctly.  Per langdef §"Field Selection": for map
+    operands `m.f` is equivalent to `m["f"]` when `"f"` is a
+    legal identifier-shaped key — codegen should dispatch on
+    `kSelect.operand`'s annotated repr (`kMap` → map lookup;
+    otherwise → proto field read).  Tracked separately from
+    comprehensions; lands when host-side `kSelect` over map
+    operands is implemented (`m5-kcall-comprehensions.md`
+    follow-up or a dedicated kSelect-dispatch slice).
 
-### 10.A Pre-size list accumulators — required follow-up
+### 10.A Pre-size list AND map accumulators — required follow-up
 
 **Status**: deferred to milestone closeout (Slice J or after).
 Discussed mid-Slice-D 2026-05-17; chosen to ship dynamic-growth
@@ -1383,7 +1509,33 @@ above by `iter_range.count`:
   - `xs.transformList(i, v, t)` / `xs.transformList(i, v, p, t)`:
     same bounds as `map` / `filter` respectively.
 
-So **we never need to grow beyond N**.  Pre-allocating capacity
+The same bound applies to **map-producing** comprehensions
+(observed 2026-05-17, Slice G review):
+  - `m.transformMap(k, v, t)`: result size ≤ `m.size()`.
+    Exactly `m.size()` when every key is unique post-transform
+    (the 3-arg form never changes keys, so equality is the
+    same as for the source); strictly less only when the
+    4-arg form's predicate filters iters out.
+  - `m.transformMap(k, v, p, t)`: result size ≤ `m.size()`
+    (filtered).
+  - `m.transformMapEntry(k, v, entry)`: result size ≤
+    `m.size() * max_entry_count`.  For the by-far-dominant
+    single-entry-literal case (`{k': t}`), each iter inserts
+    exactly one entry, so the bound collapses to ≤ `m.size()`
+    — the same as `transformMap`.  General-case bound is the
+    sum of per-iter entry counts; the codegen can choose
+    between (a) pre-sizing to `m.size()` for the dominant
+    pattern + falling back to growth if the entry literal
+    contains more than one key, or (b) detecting at codegen
+    time that the entry literal is a single-key map and
+    pre-sizing to `m.size()` unconditionally for that shape.
+  - `xs.transformMap{,Entry}` (list source): bounded by
+    `xs.size()` (or `xs.size() * 1` for the single-entry
+    case) — symmetric to the map-source case above.
+
+So **we never need to grow beyond the source size in any
+list- or map-producing comprehension built from the
+standard / v2 macros.**  Pre-allocating capacity
 = `iter_range.count` at accu_init time would:
   - Eliminate the growth + copy path entirely (zero waste on
     `map`, ≤50% over-allocation on `filter` in the worst case).
@@ -1465,15 +1617,63 @@ matching prologue specialisation.
     `MapLargeListGrowthPath` e2e test is the canary).
   - Customer reports of high arena memory under
     comprehension-heavy programs.
-  - When `transformMap` lands (Slice G), a similar pre-sizing
-    opportunity exists for map accumulators; doing both
-    together is cleaner.
+  - **Both** `transformMap` (Slice G, shipped 2026-05-17) and
+    `transformMapEntry` (Slice H, shipping next in this
+    milestone) use map accumulators with the same `count ≤
+    source.size()` bound described above.  The map-side
+    pre-sizing primitive and the list-side primitive can be
+    designed together; doing both in one follow-up commit is
+    structurally cleaner than splitting the patch.
+
+**Map-accu version of the implementation sketch** (parallel
+to the list-side §10.A.1 above):
+
+  1. Add `cel_map_create_with_capacity(uint32_t slot,
+     uint32_t capacity)` to `cel_map.{h,c}`.  Body: allocate
+     an `ArenaMapHeader` with `count=0`, `capacity=capacity`,
+     `entries_offset = cel_alloc(capacity * kCelMapEntryStride)`.
+     OOM → poison with `CEL_ERR_OVERFLOW`.
+  2. Export it from `cel_runtime.wasm` and wire it through
+     wat_runner / api / compile.cc identically to
+     `cel_map_insert_at` (the existing landed helper).
+  3. In `LowerComprehension`, after `ResolveCompContext`,
+     detect the map-accu case (accu_init is
+     `kCreateMap(entries=[])` AND `accu_var`'s Repr is
+     `Repr::kMap`).  Replace the normal
+     `Emit(comp.accu_init())` + `cel_copy_slot(accu_slot,
+     init_src_slot)` prologue with:
+     - Load `iter_range.count` (for map source: load the
+       map header's `count` field; already loaded into a
+       temp during EmitMapPrologue — reuse it.  For list
+       source feeding a transformMap-on-list-via-v2-macro:
+       load `iter_range`'s list-header count, also already
+       loaded by EmitListPrologue).
+     - Call `cel_map_create_with_capacity(accu_slot,
+       count)`.
+  4. Optionally drop the growth branch in
+     `cel_map_insert_at` (the new `arena_map_grow` static
+     helper) — when ResolvePass + LayoutPass can prove the
+     map was pre-sized AND the codegen knows the comp
+     inserts exactly one entry per iter (transformMap, NOT
+     transformMapEntry-with-variable-entry-size), call a
+     thinner `cel_map_push_at`.  Not strictly needed since
+     pre-sized maps never trip the growth branch at
+     runtime in that case.
+  5. Bench symmetric to the list side:
+     `{"a":1,"b":2,...1000 entries}.transformMap(k, v, v*2)`
+     end-to-end; expect arena bytes used to drop ~50% and
+     per-iter wasm op count to drop by the growth-check
+     overhead.
+  6. Re-run all `ComprehensionTransformMapE2ETest` and
+     `ComprehensionTransformMapEntryE2ETest` cases;
+     confirm they pass unchanged.
 
 **Out of scope even for the follow-up**:
   - Streaming / lazy comprehensions (separate milestone).
-  - Pre-sizing the `map` accumulator from a non-list source
-    (e.g. `transformMap` over a `map` source — that's a map
-    accu, separate primitive).
+  - Pre-sizing `transformMapEntry` when the per-iter entry
+    literal can contain more than one key (general case).
+    Defer until perf-critical; the single-key shape is by
+    far the dominant pattern and covered above.
 
 ## 11 Dependencies and sequencing
 

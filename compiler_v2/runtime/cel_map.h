@@ -42,6 +42,14 @@ void cel_map_create(uint32_t out_slot, uint32_t capacity);
 // resizes; the literal's entry count is fixed at compile time.
 void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 
+// M5.B Slice G — dynamic-map insert for `transformMap` /
+// `transformMapEntry` accumulators.  Unlike `cel_map_insert`:
+// geometric 2× growth on full; collisions overwrite (last-write-
+// wins per design §9.6); CEL_ERROR / CEL_UNKNOWN in key OR value
+// propagates verbatim into the map slot.
+void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
+                       uint32_t value_slot);
+
 // Arena fast path — codegen calls this directly when ResolvePass
 // proved the operand origin is `kArena`.  No host trip; pure wasm
 // linear scan.  Cross-type numeric key equality follows langdef

@@ -92,6 +92,9 @@ void InstallMapImports(WasmModule& mod) {
   const BinaryenType map3_params[3] = {i32, i32, i32};
   mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
                         "cel_map_insert", map3_params, BinaryenTypeNone());
+  // M5.B Slice G: dynamic-map insert for transformMap accumulators.
+  mod.AddFunctionImport("cel_map_insert_at", "cel", "cel_map_insert_at",
+                        map3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
                         "cel_map_lookup_arena", map3_params,
                         BinaryenTypeNone());

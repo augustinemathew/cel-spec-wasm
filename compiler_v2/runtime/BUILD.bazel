@@ -273,6 +273,7 @@ genrule(
         "-Wl,--export=cel_reset",
         "-Wl,--export=cel_map_create",
         "-Wl,--export=cel_map_insert",
+        "-Wl,--export=cel_map_insert_at",
         "-Wl,--export=cel_map_lookup",
         "-Wl,--export=cel_map_lookup_arena",
         "-Wl,--export=cel_list_create",

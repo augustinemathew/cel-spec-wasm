@@ -29,13 +29,14 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 101> kRuntimeExports = {
+constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     // M1 baseline.
     "cel_reset",
     "cel_alloc",
     // M3: map runtime helpers.
     "cel_map_create",
     "cel_map_insert",
+    "cel_map_insert_at",
     "cel_map_lookup_arena",
     "cel_map_lookup",
     // M4: list runtime helpers.

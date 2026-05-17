@@ -120,6 +120,71 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   hdr->count++;
 }
 
+// M5.B Slice G — dynamic-map insert for `transformMap` /
+// `transformMapEntry` accumulators.  Differs from `cel_map_insert`
+// in three ways:
+//   1. Geometric growth (2× capacity, min 4) when full; copies
+//      existing entries into the new bucket array.  Old run is
+//      abandoned in the forward-only arena (same trade-off as
+//      cel_list_append_at).
+//   2. Key-collision OVERWRITES the existing entry's value
+//      (last-write-wins, matching cel-cpp's transformMap runtime
+//      behaviour — see design §9.6).
+//   3. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
+//      the error verbatim into the map slot; subsequent inserts
+//      are silent no-ops (error sticks).
+// Grow the arena-map entries run geometrically (2× capacity, min 4).
+// Returns 0 on success, non-zero CelErrCode on OOM.
+static uint32_t arena_map_grow(CelValue* m, ArenaMapHeader* hdr) {
+  uint32_t new_cap = hdr->capacity == 0 ? 4u : hdr->capacity * 2u;
+  uint32_t new_off =
+      cel_alloc((uint32_t)((size_t)kCelMapEntryStride * new_cap));
+  if (new_off == 0) {
+    poison(m, CEL_ERR_OVERFLOW);
+    return CEL_ERR_OVERFLOW;
+  }
+  if (hdr->count > 0) {
+    memcpy(cel_memory_base_() + new_off,
+           cel_memory_base_() + hdr->entries_offset,
+           (size_t)kCelMapEntryStride * hdr->count);
+  }
+  hdr->entries_offset = new_off;
+  hdr->capacity = new_cap;
+  return 0;
+}
+
+void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
+                       uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* key = cel_value_at(key_slot);
+  CelValue* val = cel_value_at(value_slot);
+  if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
+    *m = *key;
+    return;
+  }
+  if (val->kind == CEL_ERROR || val->kind == CEL_UNKNOWN) {
+    *m = *val;
+    return;
+  }
+  if (!is_valid_map_key_kind(key->kind)) {
+    poison(m, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+      *arena_map_entry_val(hdr, i) = *val;
+      return;
+    }
+  }
+  if (hdr->count >= hdr->capacity && arena_map_grow(m, hdr) != 0) return;
+  *arena_map_entry_key(hdr, hdr->count) = *key;
+  *arena_map_entry_val(hdr, hdr->count) = *val;
+  hdr->count++;
+}
+
 void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
                           uint32_t key_slot) {
   CEL_LOG("enter");

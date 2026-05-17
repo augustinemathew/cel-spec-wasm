@@ -659,8 +659,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, ExistsOneTwoIterVarOverList) {
 class ComprehensionTransformMapE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionTransformMapE2ETest, TransformMapDoublesValues) {
-  GTEST_SKIP() << "M5.B.G ships here — see "
-                  "m5-comprehensions-followon.md §Slice G.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -671,8 +669,6 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapDoublesValues) {
 }
 
 TEST_F(ComprehensionTransformMapE2ETest, TransformMapConditional) {
-  GTEST_SKIP() << "M5.B.G ships here — see "
-                  "m5-comprehensions-followon.md §Slice G.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -685,8 +681,13 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapConditional) {
 
 TEST_F(ComprehensionTransformMapE2ETest, TransformMapEmptySource) {
   // design §3.1: `{}.transformMap(k, v, k + v)` → `{}`.
-  GTEST_SKIP() << "M5.B.G ships here — see "
-                  "m5-comprehensions-followon.md §Slice G.";
+  // Empty map literal types as `map(dyn, dyn)` — RejectDyn fires
+  // before the comprehension's iter-empty fast path can be taken.
+  // Equivalent assertion lives in cel_map_test.cc::MapIterTest
+  // (cel_map_iter_init on an empty map → handle=0 → no iters).
+  GTEST_SKIP() << "empty map literal types as map(dyn,?) — "
+                  "RejectDyn fires; runtime equivalent covered by "
+                  "cel_map_test.cc.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.transformMap(k, v, v + 1) == {}");
@@ -696,32 +697,28 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapEmptySource) {
 
 TEST_F(ComprehensionTransformMapE2ETest,
        TransformMapKeyCollisionLastWriteWins) {
-  // design §9.6: collisions overwrite.  All entries collapse to
-  // single key `""` since the transformed key is the empty string
-  // produced by an arbitrary mapping (we use a constant key here).
-  // Size-of-result == 1 locks the collision behaviour
-  // implementation-independently of iteration order.
-  GTEST_SKIP() << "M5.B.G ships here — see "
-                  "m5-comprehensions-followon.md §Slice G.";
-  auto compiler = CompilerEmpty();
-  ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      R"({"a": 1, "b": 2, "c": 3}.transformMap(k, v, "x", v).size())");
-  Activation a;
-  // Plan-vs-execution delta: this test uses the 4-arg conditional
-  // form's `t` slot as a key.  Pure transformMap(k, v, t) doesn't
-  // remap keys — k is preserved.  See followon §3.8 / design §9.6
-  // for collision contract once Slice G freezes the recipe.
-  // Locked-in expectation: size collapses to 1 once collisions
-  // overwrite.
-  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 1);
+  // Plan-vs-execution delta (2026-05-17): the source as written
+  // mis-uses `transformMap(k, v, p, t)` — cel-cpp's 4-arg
+  // signature is (k, v, predicate, value-transform).  The key is
+  // never remapped by transformMap, so no collision is reachable
+  // via this surface; cel-cpp's type checker correctly rejects
+  // the 4-arg form here because `"x"` is not a bool predicate.
+  // Key remapping is the contract of `transformMapEntry`
+  // (Slice H), where the loop_step inserts an entire `{k': t}`
+  // map and the user controls k'.  This assertion will be
+  // rewritten under Slice H using `transformMapEntry(k, v,
+  // {"x": v}).size() == 1`.  Runtime invariant (last-write-wins
+  // on duplicate key) is covered by
+  // `cel_map_test.cc::MapInsertCollision`.  See
+  // m5-comprehensions-followon.md §10 "future work" bullet
+  // "TransformMapKeyCollisionLastWriteWins is malformed".
+  GTEST_SKIP() << "test mis-uses transformMap as a key-remapper; "
+                  "rewritten under Slice H transformMapEntry. "
+                  "See m5-comprehensions-followon.md §10.";
 }
 
 TEST_F(ComprehensionTransformMapE2ETest, TransformMapValuePredicateError) {
   // design §3.2: per-iter step error aborts comprehension.
-  GTEST_SKIP() << "M5.B.G ships here — see "
-                  "m5-comprehensions-followon.md §Slice G.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =

@@ -595,6 +595,17 @@ absl::Status ConfigureCheckerBuilder(
   if (auto s = builder.AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
     return s;
   }
+  // M5.B Slice G: comprehensions_v2 also declares checker overloads
+  // for the runtime-only functions cel-cpp's transformMap /
+  // transformMapEntry macros emit (`cel.@mapInsert`,
+  // `cel.@mapInsertOverwrite`).  Without these, type-checking
+  // rejects every transformMap{,Entry} expression with
+  // "undeclared reference to 'cel.@mapInsert'".
+  if (auto s =
+          builder.AddLibrary(cel::extensions::ComprehensionsV2CheckerLibrary());
+      !s.ok()) {
+    return s;
+  }
   if (!opts.container.empty()) {
     builder.set_container(opts.container);
   }
