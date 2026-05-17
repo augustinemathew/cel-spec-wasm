@@ -68,9 +68,12 @@ absl::Status Unimplemented(cel::ExprKindCase kind, int64_t id) {
                    "` is not supported yet (expr id ", id, ")"));
 }
 
-// Helper: wrap an i32 literal offset as a Binaryen `(i32.const <n>)`.
 }  // namespace
 
+// Wrap an i32 literal offset as a Binaryen `(i32.const <n>)`.
+// Hoisted out of the anonymous namespace post-split (commit
+// fb55b7f) so expr_lower_comprehension.cc can reach it via the
+// shared internal header.
 BinaryenExpressionRef I32Const(WasmModule& mod, uint32_t value) {
   return BinaryenConst(mod.raw(),
                        BinaryenLiteralInt32(static_cast<int32_t>(value)));
@@ -857,8 +860,6 @@ BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
                       BinaryenTypeNone());
 }
 
-namespace {
-
 // Builds `cel_copy_slot(out, <eval>)` for one ternary arm.  The
 // eval expression returns the slot offset of the arm's CelValue at
 // runtime — whatever the arm's storage kind (rodata / workspace /
@@ -867,8 +868,6 @@ namespace {
 // is a local index, NOT a slot offset.  M5.B Slice C surfaced the
 // kIdent-arm case via `exists_one`'s loop_step `p ? accu+1 : accu`
 // (else-arm is a bare `kIdent(@result)`).
-}  // namespace
-
 BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                                           BinaryenExpressionRef eval_expr,
                                           uint32_t out_slot) {
@@ -877,12 +876,9 @@ BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                       BinaryenTypeNone());
 }
 
-namespace {
-
 // `(i32.eq (i32.load offset=N <slot>) <expected>)` — the CelValue
-// kind / payload probe used by the ternary's nested-if shape.
-}  // namespace
-
+// kind / payload probe used by the ternary's nested-if shape and the
+// comprehension loop-cond peephole.
 BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
@@ -892,8 +888,6 @@ BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
   return BinaryenBinary(mod, BinaryenEqInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
-
-namespace {}  // namespace
 
 BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
@@ -995,16 +989,15 @@ absl::StatusOr<BinaryenExpressionRef> EmitGeneralCall(
                        BinaryenTypeInt32());
 }
 
-// Comprehension codegen moved to expr_lower_comprehension.cc
-// post-M5.B (commit 90a01cc); see expr_lower_internal.h for
-// the shared EmitCtx + helper surface and
-// expr_lower_comprehension.cc for LowerComprehension itself,
-// which is dispatched from the kComprehensionExpr arm of
-// `Emit` below.
-
-// always the linear-memory offset of that expression's CelValue.
 }  // namespace
 
+// Top-level expression dispatcher.  Returns an i32-valued Binaryen
+// expression whose runtime value is the linear-memory offset of the
+// emitted node's CelValue (rodata for kConst, workspace slot for
+// kIdent + most aggregates, block-returning-i32 for nested ops).
+// Comprehension codegen lives in expr_lower_comprehension.cc;
+// `LowerComprehension` is called from the kComprehensionExpr arm
+// below and shares state via the EmitCtx threaded through here.
 absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
                                            const cel::Expr& expr) {
   const NodeAnnotation* ann = ctx.layout.annotations.Find(expr.id());
@@ -1067,8 +1060,6 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
   ABSL_CHECK(false) << "Emit: unknown ExprKindCase "
                     << static_cast<int>(expr.kind_case());
 }
-
-namespace {}  // namespace
 
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
