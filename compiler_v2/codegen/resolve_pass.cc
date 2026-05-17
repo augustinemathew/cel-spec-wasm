@@ -49,48 +49,48 @@ class KConstReprAudit : public cel::AstVisitorBase {
   const WasmAnnotations& annotations_;
 };
 
-// Detects any `kComprehensionExpr` in the AST.  Comprehensions are
-// M5 work and introduce scope-local idents (cel-cpp's macro
-// expansion uses names like `@result` / `@iter` whose Repr varies
-// per comprehension form — `exists` yields bool, `map` yields list,
-// etc.).  The current `IdentResolver` is scope-flat and would CHECK
-// on the cross-form Repr clash, crashing the binary instead of
-// reporting a clean Unimplemented.  Until M5 lands scope handling,
-// reject comprehension-bearing programs at the front of the resolve
-// pass with a Status the conformance runner classifies as SKIP.
-class ComprehensionDetector : public cel::AstVisitorBase {
- public:
-  void PreVisitExpr(const cel::Expr&) override {}
-  void PostVisitExpr(const cel::Expr&) override {}
-
-  void PostVisitComprehension(const cel::Expr& /*expr*/,
-                              const cel::ComprehensionExpr& /*comp*/) override {
-    found_ = true;
-  }
-
-  bool found() const {
-    return found_;
-  }
-
- private:
-  bool found_ = false;
-};
-
 // Walks every `kIdentExpr` in the AST, interns the name into a dense
 // table (`local_index` 0, 1, 2, ... in first-seen order), and writes
-// the index onto the node's `NodeAnnotation::local_index`.
+// the index onto the node's `NodeAnnotation::local_index`.  Maintains
+// a scope stack so comprehension iter / accu names shadow outer
+// bindings (M5.B Slice A).
 //
-// `variables_` accumulates one entry per distinct name, with the
-// Repr taken from the checker's type_map (seeded into
-// `annotations[id].repr` by the first pass).  The result fuels
-// LayoutPass (which assigns a workspace slot per entry) and the
-// cel.abi custom section (which names the variables the host marshal
-// must populate at Eval time).
-class IdentResolver : public cel::AstVisitorBase {
+// `variables_` accumulates one entry per distinct *binding* — free
+// variables AND comprehension-scope iter / accu vars.  Each entry's
+// `kind` tells the downstream pipeline whether it's an
+// Activation-bound free variable (set in the function prelude) or a
+// comprehension-scope local (set by the comprehension's loop
+// prologue).
+//
+// Per the cel-cpp probe (2026-05-17): cel-cpp's comprehension macros
+// emit `accu_var = "@result"` and `iter_var` per the user-written
+// name (`v`, `k`, etc., or `"#unused"` for `cel.bind`).  Nested
+// comprehensions in cel-cpp may use suffixed names (`@result0`,
+// `@result1`, …); the scope stack accommodates either by storing a
+// per-frame name→binding map and walking innermost-first.
+//
+// Scope discipline per ast_traverse.cc:250-269 (subexpression order
+// ITER_RANGE → ACCU_INIT → LOOP_CONDITION → LOOP_STEP → RESULT):
+//   - `iter_range`, `accu_init` evaluated in the OUTER scope (no
+//     iter / accu binding yet).
+//   - `loop_condition`, `loop_step` evaluated in the inner scope
+//     with iter_var (+ iter_var2 if non-empty) + accu_var bound.
+//   - `result` evaluated in an inner scope with ONLY accu_var
+//     bound — iter binding has been popped.
+//
+// Comprehension-scope idents get `ann.scope_id = depth` where depth
+// is the 1-based comprehension nesting count.  Free-variable idents
+// keep `scope_id = 0`.  Downstream visitors that semantically apply
+// only to free vars (MapOriginVisitor / ListOriginVisitor /
+// AttributePathResolver) use `scope_id == 0` as the discriminator.
+class ScopedIdentResolver : public cel::AstVisitorBase {
  public:
-  IdentResolver(WasmAnnotations& annotations,
-                std::vector<ResolvedVariable>& variables)
-      : annotations_(annotations), variables_(variables) {}
+  ScopedIdentResolver(WasmAnnotations& annotations,
+                      std::vector<ResolvedVariable>& variables,
+                      uint32_t& max_scope_id)
+      : annotations_(annotations),
+        variables_(variables),
+        max_scope_id_(max_scope_id) {}
 
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
@@ -107,19 +107,39 @@ class IdentResolver : public cel::AstVisitorBase {
         << ident.name() << "` has Repr::kUnknown "
         << "(checker left the type_map entry absent or non-mappable)";
 
-    auto it = name_to_index_.find(ident.name());
+    // Walk scope stack innermost-first.  Inner binding wins (shadow).
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      auto found = it->frame.find(ident.name());
+      if (found != it->frame.end()) {
+        const uint32_t local_index = found->second;
+        ResolvedVariable& v = variables_[local_index];
+        if (v.repr == Repr::kUnknown) {
+          // First reference inside the comprehension body resolves
+          // the binding's Repr from the checker's annotation on
+          // this kIdent.  Subsequent references CHECK match.
+          v.repr = ann.repr;
+        } else {
+          ABSL_CHECK(v.repr == ann.repr)
+              << "ResolvePass: kIdent name=`" << ident.name()
+              << "` (scope-bound) appears with mismatched Repr ("
+              << ReprName(v.repr) << " vs " << ReprName(ann.repr) << ")";
+        }
+        ann.local_index = local_index;
+        ann.scope_id = it->depth;
+        return;
+      }
+    }
+    // Free-variable fall-through — flat intern table.
+    auto it = free_name_to_index_.find(ident.name());
     uint32_t local_index;
-    if (it == name_to_index_.end()) {
+    if (it == free_name_to_index_.end()) {
       local_index = static_cast<uint32_t>(variables_.size());
       variables_.push_back(
-          ResolvedVariable{ident.name(), local_index, ann.repr});
-      name_to_index_.emplace(ident.name(), local_index);
+          ResolvedVariable{ident.name(), local_index, ann.repr,
+                           ResolvedVariableKind::kFreeVariable});
+      free_name_to_index_.emplace(ident.name(), local_index);
     } else {
       local_index = it->second;
-      // Sanity: a second reference to the same variable must agree
-      // with the Repr of the first reference.  A mismatch here
-      // would mean the checker assigned two different types to
-      // ident nodes with the same name — invariant violation.
       ABSL_CHECK(variables_[local_index].repr == ann.repr)
           << "ResolvePass: kIdent name=`" << ident.name()
           << "` appears with mismatched Repr ("
@@ -127,12 +147,115 @@ class IdentResolver : public cel::AstVisitorBase {
           << ReprName(ann.repr) << ")";
     }
     ann.local_index = local_index;
+    ann.scope_id = 0;
+  }
+
+  void PreVisitComprehension(const cel::Expr& /*expr*/,
+                             const cel::ComprehensionExpr& comp) override {
+    // Allocate iter / iter2 / accu bindings up front.  Their Reprs
+    // start at kUnknown and resolve lazily on first kIdent
+    // reference in the loop body (PostVisitIdent above).  This
+    // sidesteps having to introspect the iter_range's element type
+    // ourselves — the checker already knows it and stamped every
+    // kIdent inside the body.
+    CompFrame f;
+    f.iter_var = std::string(comp.iter_var());
+    f.iter_var2 = std::string(comp.iter_var2());
+    f.accu_var = std::string(comp.accu_var());
+    f.iter_local_index = static_cast<uint32_t>(variables_.size());
+    variables_.push_back(
+        ResolvedVariable{f.iter_var, f.iter_local_index, Repr::kUnknown,
+                         ResolvedVariableKind::kComprehensionIter});
+    if (!f.iter_var2.empty()) {
+      f.iter_local_index2 = static_cast<uint32_t>(variables_.size());
+      // List two-iter-var binds iter_var → index (synthesized int)
+      // and iter_var2 → element; map two-iter-var binds iter_var
+      // → key and iter_var2 → value.  Codegen (Slice F) discriminates
+      // by iter_range repr.  At ResolvePass we just allocate both
+      // bindings; the `kind` tag stays `kComprehensionIter` for now
+      // (LayoutPass / EmitVariablePrelude treat both the same as
+      // they're loop-prologue-set, not function-prelude-set).
+      variables_.push_back(
+          ResolvedVariable{f.iter_var2, f.iter_local_index2, Repr::kUnknown,
+                           ResolvedVariableKind::kComprehensionIter});
+    }
+    f.accu_local_index = static_cast<uint32_t>(variables_.size());
+    variables_.push_back(
+        ResolvedVariable{f.accu_var, f.accu_local_index, Repr::kUnknown,
+                         ResolvedVariableKind::kComprehensionAccu});
+    comp_frames_.push_back(std::move(f));
+  }
+
+  void PreVisitComprehensionSubexpression(
+      const cel::Expr& /*expr*/, const cel::ComprehensionExpr& /*comp*/,
+      cel::ComprehensionArg arg) override {
+    CompFrame& f = comp_frames_.back();
+    if (arg == cel::ComprehensionArg::LOOP_CONDITION) {
+      // Enter the inner (iter+accu) scope for cond + step.
+      const uint32_t depth = static_cast<uint32_t>(scopes_.size()) + 1;
+      max_scope_id_ = std::max(max_scope_id_, depth);
+      ScopeFrame frame;
+      frame.depth = depth;
+      frame.frame.emplace(f.iter_var, f.iter_local_index);
+      if (!f.iter_var2.empty()) {
+        frame.frame.emplace(f.iter_var2, f.iter_local_index2);
+      }
+      frame.frame.emplace(f.accu_var, f.accu_local_index);
+      scopes_.push_back(std::move(frame));
+    } else if (arg == cel::ComprehensionArg::RESULT) {
+      // Enter the inner (accu-only) scope for `result`.
+      const uint32_t depth = static_cast<uint32_t>(scopes_.size()) + 1;
+      max_scope_id_ = std::max(max_scope_id_, depth);
+      ScopeFrame frame;
+      frame.depth = depth;
+      frame.frame.emplace(f.accu_var, f.accu_local_index);
+      scopes_.push_back(std::move(frame));
+    }
+  }
+
+  void PostVisitComprehensionSubexpression(
+      const cel::Expr& /*expr*/, const cel::ComprehensionExpr& /*comp*/,
+      cel::ComprehensionArg arg) override {
+    // Both LOOP_STEP and RESULT close their pushed scope.  The
+    // LOOP_CONDITION pre-push is balanced by LOOP_STEP's pop because
+    // the same frame covers both subexpressions per spec; we
+    // therefore do nothing on PostVisit(LOOP_CONDITION).
+    if (arg == cel::ComprehensionArg::LOOP_STEP ||
+        arg == cel::ComprehensionArg::RESULT) {
+      ABSL_CHECK(!scopes_.empty())
+          << "ResolvePass: scope underflow at comprehension subexpression "
+          << static_cast<int>(arg);
+      scopes_.pop_back();
+    }
+  }
+
+  void PostVisitComprehension(const cel::Expr& /*expr*/,
+                              const cel::ComprehensionExpr& /*comp*/) override {
+    ABSL_CHECK(!comp_frames_.empty())
+        << "ResolvePass: comprehension frame underflow";
+    comp_frames_.pop_back();
   }
 
  private:
+  struct ScopeFrame {
+    absl::flat_hash_map<std::string, uint32_t> frame;
+    uint32_t depth = 0;
+  };
+  struct CompFrame {
+    std::string iter_var;
+    std::string iter_var2;
+    std::string accu_var;
+    uint32_t iter_local_index = 0;
+    uint32_t iter_local_index2 = 0;
+    uint32_t accu_local_index = 0;
+  };
+
   WasmAnnotations& annotations_;
   std::vector<ResolvedVariable>& variables_;
-  absl::flat_hash_map<std::string, uint32_t> name_to_index_;
+  uint32_t& max_scope_id_;
+  absl::flat_hash_map<std::string, uint32_t> free_name_to_index_;
+  std::vector<ScopeFrame> scopes_;
+  std::vector<CompFrame> comp_frames_;
 };
 
 // Walks kIdent + kSelect post-order.  Each node gets its attribute
@@ -160,7 +283,16 @@ class AttributePathResolver : public cel::AstVisitorBase {
 
   void PostVisitIdent(const cel::Expr& expr,
                       const cel::IdentExpr& ident) override {
-    annotations_[expr.id()].attribute_id = Intern(ident.name(), {});
+    NodeAnnotation& ann = annotations_[expr.id()];
+    // Comprehension-scope idents are not attribute roots — they are
+    // bound per-iteration by the comprehension's loop prologue, not
+    // by `Activation::Bind`.  Unknown-pattern matching applies only
+    // to free-variable attribute paths.
+    if (ann.scope_id != 0) {
+      ann.attribute_id = 0;
+      return;
+    }
+    ann.attribute_id = Intern(ident.name(), {});
   }
 
   void PostVisitSelect(const cel::Expr& expr,
@@ -232,7 +364,17 @@ class MapOriginVisitor : public cel::AstVisitorBase {
  private:
   void StampHostIfMapTyped(const cel::Expr& expr) {
     NodeAnnotation* ann = &annotations_[expr.id()];
-    if (ann->repr == Repr::kMap) ann->map_origin = Origin::kHost;
+    if (ann->repr != Repr::kMap) return;
+    // M5.B Slice A: a comprehension-scope ident binding to a
+    // map-typed value (e.g. `[[m1, m2]].exists(m, ...)` where `m`
+    // is a map) reads its bytes out of the OUTER list's arena
+    // payload — not a host backing.  Leaving origin at the default
+    // `kDynamic` lets codegen fall through to the runtime
+    // dispatcher, which inspects the CelValue kind tag at runtime.
+    // (For Slice A's tested matrix — scalar iter_vars over list
+    // literals — this branch is unreachable.)
+    if (ann->scope_id != 0) return;
+    ann->map_origin = Origin::kHost;
   }
   WasmAnnotations& annotations_;
 };
@@ -274,7 +416,11 @@ class ListOriginVisitor : public cel::AstVisitorBase {
  private:
   void StampHostIfListTyped(const cel::Expr& expr) {
     NodeAnnotation* ann = &annotations_[expr.id()];
-    if (ann->repr == Repr::kList) ann->list_origin = Origin::kHost;
+    if (ann->repr != Repr::kList) return;
+    // Mirror of MapOriginVisitor: comp-scope idents binding a
+    // list-typed value live in arena, not a host backing.
+    if (ann->scope_id != 0) return;
+    ann->list_origin = Origin::kHost;
   }
   WasmAnnotations& annotations_;
 };
@@ -419,16 +565,24 @@ void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
   KConstReprAudit audit(output.annotations);
   cel::AstTraverse(root, audit);
 
-  IdentResolver ident_resolver(output.annotations, output.variables);
-  cel::AstTraverse(root, ident_resolver);
+  ScopedIdentResolver ident_resolver(output.annotations, output.variables,
+                                     output.max_scope_id);
+  // Comprehension subexpression callbacks are OFF by default in
+  // cel-cpp's traversal; enable them so the scope stack push/pop
+  // hooks (PreVisitComprehensionSubexpression / PostVisit…) fire
+  // and the iter / accu bindings are visible during the body walk.
+  // Without this, every comp-scoped kIdent falls through to the
+  // free-variable path and the scope is invisible to codegen.
+  cel::AstTraverse(root, ident_resolver,
+                   cel::TraversalOptions{.use_comprehension_callbacks = true});
 
-  output.attributes.push_back(AttributeEntryRow{});
+  output.attributes.emplace_back();
   AttributePathResolver attr_resolver(output.annotations, output.attributes);
   cel::AstTraverse(root, attr_resolver);
 
   // M7.A: message-type intern table.  Sentinel at id 0; visitor
   // populates ids 1..N for distinct kStructExpr FQNs.
-  output.message_types.push_back(MessageTypeRow{});
+  output.message_types.emplace_back();
   MessageTypeIdVisitor type_visitor(output.annotations, output.message_types);
   cel::AstTraverse(root, type_visitor);
 
@@ -450,18 +604,6 @@ void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
 
 absl::StatusOr<ResolveOutput> ResolvePass(const TypedAst& ast) {
   ABSL_CHECK(ast.has_ast()) << "ResolvePass: TypedAst has no checked cel::Ast";
-
-  // Comprehensions are M5; bail early so the kIdent resolver doesn't
-  // see the macro-introduced `@result` / `@iter` idents (whose Reprs
-  // legitimately vary per comprehension form and would trip the
-  // resolver's per-name Repr-agreement CHECK).
-  ComprehensionDetector comprehension_detector;
-  cel::AstTraverse(ast.ast().root_expr(), comprehension_detector);
-  if (comprehension_detector.found()) {
-    return absl::UnimplementedError(
-        "ResolvePass: comprehensions are M5 — reject until scope handling "
-        "lands");
-  }
 
   ResolveOutput output;
 

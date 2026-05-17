@@ -679,5 +679,201 @@ TEST(ResolvePassListOriginTest, ListLiteralIndexOperandStaysArena) {
   EXPECT_TRUE(found_arena_list);
 }
 
+// ============================================================
+// 10. ResolvePassComprehensionScopeTest — M5.B Slice A
+//
+//     Locks: ComprehensionDetector early-reject is GONE; comprehension
+//     iter / accu names get their own ResolvedVariable entries (with
+//     `kind != kFreeVariable`); kIdent annotations inside the body
+//     resolve through the scope stack; `scope_id` is set; nested
+//     comprehensions stack scopes correctly with shadowing; the
+//     attribute / origin visitors skip scope-bound idents.
+// ============================================================
+
+namespace {
+
+// Walks `output.variables` for an entry by name + expected kind.
+const ResolvedVariable* FindVarOfKind(const ResolveOutput& r,
+                                      absl::string_view name,
+                                      ResolvedVariableKind kind) {
+  for (const auto& v : r.variables) {
+    if (v.name == name && v.kind == kind) return &v;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(ResolvePassComprehensionScopeTest, SingleIterListExistsAdmitted) {
+  // `[1, 2, 3].exists(v, v > 0)` — was REJECTED by the early-rejecter
+  // pre-Slice-A; now resolves to a non-error ResolveOutput.
+  auto r = ResolveWithVars("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(r, IsOk());
+
+  // iter_var `v` and accu_var `@result` get their own entries with
+  // the right kind tags.
+  const ResolvedVariable* v_iter =
+      FindVarOfKind(*r, "v", ResolvedVariableKind::kComprehensionIter);
+  ASSERT_NE(v_iter, nullptr) << "iter_var `v` missing from variables";
+  EXPECT_EQ(v_iter->repr, Repr::kInt)
+      << "iter_var `v` Repr should be kInt (list element type)";
+
+  const ResolvedVariable* accu =
+      FindVarOfKind(*r, "@result", ResolvedVariableKind::kComprehensionAccu);
+  ASSERT_NE(accu, nullptr)
+      << "accu_var `@result` missing from variables (probe confirmed cel-cpp "
+         "uses `@result` not `__result__`)";
+  EXPECT_EQ(accu->repr, Repr::kBool)
+      << "accu_var Repr should be kBool (exists' accumulator type)";
+
+  // No free variables — the expression has no Activation-bound names.
+  for (const auto& var : r->variables) {
+    EXPECT_NE(var.kind, ResolvedVariableKind::kFreeVariable)
+        << "unexpected free variable `" << var.name
+        << "` in literal-only "
+           "comprehension";
+  }
+
+  // At least one scope was pushed.
+  EXPECT_GE(r->max_scope_id, 1u);
+}
+
+TEST(ResolvePassComprehensionScopeTest, IdentScopeBindingsStamped) {
+  // Every kIdent named `v` or `@result` inside the body must carry
+  // `scope_id != 0`.  No kIdent at the top level (there isn't one for
+  // this expression).
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto r = ResolvePass(*ta);
+  ASSERT_THAT(r, IsOk());
+  for (const IdentRef& ref : CollectIdents(*ta)) {
+    const NodeAnnotation* ann = r->annotations.Find(ref.expr_id);
+    ASSERT_NE(ann, nullptr) << "missing annotation for " << ref.name;
+    if (ref.name == "v" || ref.name == "@result") {
+      EXPECT_NE(ann->scope_id, 0u)
+          << "scope-bound ident `" << ref.name << "` missing scope_id stamp";
+    }
+  }
+}
+
+TEST(ResolvePassComprehensionScopeTest, FreeVarVisibleInsideBody) {
+  // `[1,2,3].exists(v, v > x)` — `x` is a free int var; `v` shadows
+  // nothing.  Both bind correctly; `x` stays in the activation surface.
+  auto r = ResolveWithVars("[1, 2, 3].exists(v, v > x)", {"x:int"});
+  ASSERT_THAT(r, IsOk());
+
+  const ResolvedVariable* free_x =
+      FindVarOfKind(*r, "x", ResolvedVariableKind::kFreeVariable);
+  ASSERT_NE(free_x, nullptr) << "free variable `x` not bound";
+  EXPECT_EQ(free_x->repr, Repr::kInt);
+
+  const ResolvedVariable* iter_v =
+      FindVarOfKind(*r, "v", ResolvedVariableKind::kComprehensionIter);
+  ASSERT_NE(iter_v, nullptr);
+}
+
+TEST(ResolvePassComprehensionScopeTest, ShadowedFreeVarKeepsBothBindings) {
+  // A free `v:int` declaration AND an inner-comprehension `v` iter_var:
+  // both must exist as distinct entries in `variables`.  The inner
+  // refs resolve to the iter binding (scope_id != 0); refs OUTSIDE the
+  // comprehension would resolve to the free binding — but here we
+  // construct a CEL expression where `v` only appears inside, so the
+  // free `v` is unreferenced and won't appear in variables_.  Use `v`
+  // outside too: `v + [1,2,3].exists(v, v > 0) ? 1 : 0` — has both.
+  auto r = ResolveWithVars("(v > 0) && [1, 2, 3].exists(v, v > 0)", {"v:int"});
+  ASSERT_THAT(r, IsOk());
+
+  // Free `v` exists (referenced at the top level).
+  const ResolvedVariable* free_v =
+      FindVarOfKind(*r, "v", ResolvedVariableKind::kFreeVariable);
+  ASSERT_NE(free_v, nullptr)
+      << "free `v` should be in variables (referenced at top level)";
+
+  // Iter `v` exists separately.
+  const ResolvedVariable* iter_v =
+      FindVarOfKind(*r, "v", ResolvedVariableKind::kComprehensionIter);
+  ASSERT_NE(iter_v, nullptr)
+      << "iter `v` should be a distinct entry from the free `v`";
+  EXPECT_NE(free_v->local_index, iter_v->local_index)
+      << "free and iter `v` must have distinct local_index slots";
+}
+
+TEST(ResolvePassComprehensionScopeTest, NestedComprehensionMaxScopeIdGrows) {
+  // `[1].exists(y, [0].exists(y, y == 0))` — depth-2 nesting; inner y
+  // shadows outer y.  Same-name shadowing is the canonical edge case
+  // from `m5-comprehensions-design.md §3.5`.
+  auto r = ResolveWithVars("[1].exists(y, [0].exists(y, y == 0))", {});
+  ASSERT_THAT(r, IsOk());
+  EXPECT_GE(r->max_scope_id, 2u)
+      << "nested comprehensions must each push a fresh scope";
+
+  // TWO iter-`y` entries (outer y and inner y) — distinct slots.
+  int iter_y_count = 0;
+  for (const auto& v : r->variables) {
+    if (v.name == "y" && v.kind == ResolvedVariableKind::kComprehensionIter) {
+      ++iter_y_count;
+    }
+  }
+  EXPECT_EQ(iter_y_count, 2)
+      << "outer + inner `y` should be distinct ResolvedVariable entries";
+}
+
+TEST(ResolvePassComprehensionScopeTest, IterVarNotAnAttributeRoot) {
+  // The AttributePathResolver must not intern comprehension-scope
+  // iter / accu vars as attribute roots — they aren't activation
+  // attributes and can't appear in unknown-pattern matches.
+  auto r = ResolveWithVars("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(r, IsOk());
+  for (const auto& [id, ann] : r->annotations.nodes()) {
+    if (ann.scope_id != 0) {
+      EXPECT_EQ(ann.attribute_id, 0u)
+          << "scope-bound expr id=" << id
+          << " must have attribute_id=0 (not an attribute root)";
+    }
+  }
+  // The attribute table should NOT contain entries with root_variable
+  // == "v" or "@result".
+  for (const AttributeEntryRow& row : r->attributes) {
+    EXPECT_NE(row.root_variable, "v")
+        << "iter_var `v` leaked into attribute intern table";
+    EXPECT_NE(row.root_variable, "@result")
+        << "accu_var `@result` leaked into attribute intern table";
+  }
+}
+
+TEST(ResolvePassComprehensionScopeTest, AllMacroAccuIsBool) {
+  // `[1,2,3].all(v, v > 0)` — accu starts at `true`; loop_step uses
+  // `&&` to combine.  Accu Repr is bool just like exists.
+  auto r = ResolveWithVars("[1, 2, 3].all(v, v > 0)", {});
+  ASSERT_THAT(r, IsOk());
+  const ResolvedVariable* accu =
+      FindVarOfKind(*r, "@result", ResolvedVariableKind::kComprehensionAccu);
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->repr, Repr::kBool);
+}
+
+TEST(ResolvePassComprehensionScopeTest, MapMacroAccuIsList) {
+  // `[1,2,3].map(v, v * 2)` — accu starts at `[]`; loop_step appends.
+  // Accu Repr is list.  Confirms scope resolver handles non-bool accu.
+  auto r = ResolveWithVars("[1, 2, 3].map(v, v * 2)", {});
+  ASSERT_THAT(r, IsOk());
+  const ResolvedVariable* accu =
+      FindVarOfKind(*r, "@result", ResolvedVariableKind::kComprehensionAccu);
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->repr, Repr::kList);
+}
+
+TEST(ResolvePassComprehensionScopeTest, ExistsOneAccuIsInt) {
+  // `[1,2,3].exists_one(v, v > 0)` — accu starts at 0 (int); result
+  // is `accu == 1` (bool).  The ACCU's repr is int, even though the
+  // comprehension's OUTPUT repr is bool (per design §3.8).
+  auto r = ResolveWithVars("[1, 2, 3].exists_one(v, v > 0)", {});
+  ASSERT_THAT(r, IsOk());
+  const ResolvedVariable* accu =
+      FindVarOfKind(*r, "@result", ResolvedVariableKind::kComprehensionAccu);
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->repr, Repr::kInt);
+}
+
 }  // namespace
 }  // namespace celwasm

@@ -12,6 +12,36 @@
 
 namespace celwasm {
 
+// Discriminates a `ResolvedVariable`'s lifetime / set-site.
+//
+//   - `kFreeVariable` — bound by `Activation` at host side; the wasm
+//     `$eval` prelude `local.set $i (i32.const slot_offset)` for
+//     every entry.  Counts toward `cel.abi.variables[]`.
+//
+//   - `kComprehensionIter` — bound by the comprehension's loop
+//     prologue.  The wasm local holds a *moving pointer* (iter_off)
+//     into the iter_range's element run for list iteration, or the
+//     output slot of `cel_map_iter_key_at` for map iteration.  NOT
+//     set by the function prelude; NOT in `cel.abi.variables[]`.
+//
+//   - `kComprehensionAccu` — bound by the comprehension's
+//     init/loop_step.  The wasm local holds a stable workspace slot
+//     offset; `loop_step` re-writes the CelValue at that offset each
+//     iteration.  NOT set by the function prelude; NOT in
+//     `cel.abi.variables[]`.
+//
+//   - `kComprehensionIndex` — Slice F (two-iter-var list): the
+//     synthetic integer counter for the index `iter_var`.  Wasm
+//     local holds a workspace slot offset; the slot's CelValue is
+//     rewritten to `{kind=CEL_INT, payload.i=index}` each iter.  NOT
+//     in `cel.abi.variables[]`.
+enum class ResolvedVariableKind : uint8_t {
+  kFreeVariable = 0,
+  kComprehensionIter,
+  kComprehensionAccu,
+  kComprehensionIndex,
+};
+
 // One referenced free variable — populated by ResolvePass when it
 // sees a `kIdentExpr` whose name matches a checker-declared variable.
 // The same variable may be referenced many times (each kIdent node
@@ -25,11 +55,14 @@ namespace celwasm {
 //
 // `local_index` is dense across referenced variables: 0, 1, 2, ...
 // in first-seen order.  The index also indexes `cel.abi.variables[]`
-// — the ABI the host reads at Plan time.
+// for `kind == kFreeVariable` entries (M5.B extends `variables` with
+// comprehension-scope entries; those are flagged via `kind` so the
+// prelude and ABI emitter skip them).
 struct ResolvedVariable {
   std::string name;
   uint32_t local_index = 0;
   Repr repr = Repr::kUnknown;
+  ResolvedVariableKind kind = ResolvedVariableKind::kFreeVariable;
 };
 
 // One row of the attribute intern table — one entry per distinct
