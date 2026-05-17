@@ -1,8 +1,29 @@
 # Comprehension design
 
-Status: design — drafted 2026-05-16.  Companion to
+Status: **design — drafted 2026-05-16; reconciled 2026-05-17 after
+cel-cpp probe** (see plan-vs-execution callouts inline + at
+`m5-comprehensions-followon.md` header).  Companion to
 `m5-comprehensions-followon.md`; this doc owns the *how it's
 shaped*, the plan doc owns the *what to ship*.
+
+> **Plan-vs-execution deltas, 2026-05-17**:
+>
+>   - `accu_var` everywhere is the literal `@result` (single `@`).
+>     The `__result__` name in cel-cpp's spec doc is the conceptual
+>     placeholder; the actual emitted AST uses `@result`.  This
+>     doc has been globally renamed.
+>   - Loop-cond peephole (§9.4) reads the accu's bool payload
+>     directly for the canonical `exists` / `all` shapes; the
+>     `cel_not_strictly_false` runtime helper named in the
+>     original §9.4 is **deferred** — never reached by
+>     cel-cpp-emitted comprehensions.
+>   - `cel.bind`'s `iter_var` is the literal `"#unused"` — useful
+>     auxiliary signal for the §5 Shape-C detector.
+>   - `map`'s loop_step overload-resolves to `add_list`
+>     (pre-seeded to `cel_list_concat`); Slice D's pattern
+>     detector rewrites it to `cel_list_append_at`.
+>   - WAT traces 60–67 under `doc/implementation-plan/rewrite/wat/`
+>     are the byte-accurate locks for codegen's emitted shape.
 
 Authoritative references:
   - `third_party/cel-cpp/parser/macro.cc` — standard macros
@@ -24,7 +45,7 @@ ComprehensionExpr {
   iter_var   : string   // bound name for each iter element / index / key
   iter_var2  : string   // empty for single-iter; non-empty for two-iter
   iter_range : Expr     // typed list or map
-  accu_var   : string   // canonically "__result__"
+  accu_var   : string   // canonically "@result"
   accu_init  : Expr     // initial accumulator value
   loop_cond  : Expr     // continue iff this evaluates true
   loop_step  : Expr     // new accumulator value each iter
@@ -219,7 +240,7 @@ exactly like any other comprehension.
 ### 3.7 Iter_var and accu_var name collision
 
 cel-cpp's macros explicitly **reject** iter_var named
-`__result__` (the canonical accu_var name).  See
+`@result` (the canonical accu_var name).  See
 `parser/macro.cc:108-111` for `all`:
 
 ```cpp
@@ -231,11 +252,11 @@ if (args[0].ident_expr().name() == kAccumulatorVariableName) {
 
 So this case is *parser-rejected*; we don't need to handle it in
 codegen.  Similarly for the two-iter-var macros, both `iter_var`
-and `iter_var2` must differ from `__result__` and from each
+and `iter_var2` must differ from `@result` and from each
 other.
 
 **Invariant**: when the AST reaches our ResolvePass, no
-iter_var collision with `__result__` is possible.
+iter_var collision with `@result` is possible.
 
 ### 3.8 Heterogeneous accumulator types
 
@@ -612,7 +633,7 @@ loop_step.
 
 ResolvePass push/pop sequence:
   1. Enter outer comprehension; push frame `{y → outer_iter_off,
-     __result__ → outer_accu_slot}`.
+     @result → outer_accu_slot}`.
   2. Lower outer iter_range (empty scope at this point, outer
      iter_var/accu_var NOT yet visible per langdef).  Wait —
      actually langdef says iter_range is in OUTER scope.  So
@@ -622,7 +643,7 @@ ResolvePass push/pop sequence:
      frame).
   4. Push outer frame.
   5. Enter inner comprehension; push frame `{y →
-     inner_iter_off, __result__ → inner_accu_slot}`.  The name
+     inner_iter_off, @result → inner_accu_slot}`.  The name
      `y` SHADOWS the outer.
   6. Lower inner subtrees.
   7. Pop inner frame.
@@ -652,15 +673,15 @@ kComprehensionExpr {  // outer is the cel.bind
     iter_var   = "e"
     iter_var2  = ""
     iter_range = kCreateList([3, 4, 5])
-    accu_var   = "__result__"
+    accu_var   = "@result"
     accu_init  = kBoolConst(false)
-    loop_cond  = ...                  ;; @not_strictly_false(!__result__)
+    loop_cond  = ...                  ;; @not_strictly_false(!@result)
     loop_step  = kCall(`||`,
-                       kIdent("__result__"),
+                       kIdent("@result"),
                        kCall(`@in`,
                              kIdent("e"),
                              kIdent("valid_elems")))  ;; ← from outer!
-    result     = kIdent("__result__")
+    result     = kIdent("@result")
   }
 }
 ```
@@ -668,9 +689,9 @@ kComprehensionExpr {  // outer is the cel.bind
 Note `valid_elems` is referenced inside the inner comprehension's
 `loop_step`.  Resolution path:
 
-  1. Inner scope: `e` and `__result__` bound; `valid_elems`
+  1. Inner scope: `e` and `@result` bound; `valid_elems`
      not found.
-  2. Outer scope: `valid_elems` bound (and `__result__` too,
+  2. Outer scope: `valid_elems` bound (and `@result` too,
      but the inner already won that lookup).
   3. Top-level activation: would be checked next, but we found
      it.

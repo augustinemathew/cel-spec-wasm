@@ -81,6 +81,35 @@ cc_test(
     ],
 )
 
+# M5.B e2e test suite — comprehension follow-on (cel.bind +
+# the five standard comprehension macros over list / map sources +
+# the comprehensions_v2 two-iter-var / transformMap /
+# transformMapEntry cohort).  RED today (every test GTEST_SKIPs);
+# turns on slice-by-slice as M5.B.A → M5.B.J ship per
+# `doc/implementation-plan/rewrite/m5-comprehensions-followon.md` §5.
+# Conformance unlock target: ~+90 PASS per the m5b plan §1.  No
+# proto fixture deps — every test is LITERAL-driven (list / map
+# source from CEL source text or Value::List / Value::Map bindings).
+cc_test(
+    name = "m5b_test",
+    srcs = ["m5b_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:attribute",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M7 e2e test suite — proto message literal construction
 # (`kStructExpr`).  RED until M7.A lands `cel_make_message`; greens
 # slice-by-slice through M7.A → M7.E per `m7-proto-literals.md`

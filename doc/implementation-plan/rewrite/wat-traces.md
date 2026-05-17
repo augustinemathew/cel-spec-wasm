@@ -274,11 +274,11 @@ cel-cpp's macro expander already rewrites `exists` to the explicit
 kComprehensionExpr {
   iter_range  = [1, 2, 3]                      // kCreateList
   iter_var    = x
-  accu_var    = __result__
+  accu_var    = @result
   accu_init   = false
-  loop_cond   = @not_strictly_false(!__result__)
-  loop_step   = __result__ || (x > 0)
-  result      = __result__
+  loop_cond   = @not_strictly_false(!@result)
+  loop_step   = @result || (x > 0)
+  result      = @result
 }
 ```
 
@@ -315,7 +315,7 @@ the comprehension codegen arm):
 
   (func $eval (result i32)
     (local $iter_off  i32)  ;; x's local — set by loop header
-    (local $accu_off  i32)  ;; __result__ — set by init + loop_step
+    (local $accu_off  i32)  ;; @result — set by init + loop_step
     (local $end_off   i32)
     (local $step_out  i32)
 
@@ -1439,6 +1439,236 @@ codegen seam is identical (`MaybeEmitWktUnwrapTailCall` in
 `compiler_v2/codegen/expr_lower.cc:439-451`), extended to dispatch
 on wrapper FQNs in addition to Timestamp/Duration and to thread the
 `wrapper_kind` enum through the 3rd call arg.
+
+---
+
+## 60. Comprehension exists over list literal — `[1, 2, 3].exists(v, v > 0)` (M5 Slices A–C)
+
+The milestone-final WAT for `exists` over a list source.  Supersedes
+the M5-prototype `05_comprehension_exists.wat` (which predated this
+milestone and locked the design-claim doctrine — "uniform `kIdent`
+load: `v` IS `iter_off`, no per-iter memcpy").  WAT 60 keeps that
+doctrine and pins it to real exported runtime symbols
+(`cel_list_create` / `cel_list_set` for the literal,
+`cel_int_gt_at_vv` for the predicate, `cel_or` for the accu
+combine).  See `m5-comprehensions-design.md` §5 (Shape A) and §6
+(macro 2 recipe), `m5-comprehensions-followon.md` §3.1 (canonical
+lowering shape).
+
+Layout: rodata [16, 136) for the three list-elem CelValues, the
+accu_init `false`, and the predicate rhs `0`.  Workspace
+[136, 208) for the iter_range list slot, accu slot, and per-iter
+step_out scratch.  arena_base = 208.
+
+Invariants:
+  - **Loop-cond peephole**: read `accu.payload.b` directly at
+    `accu_slot + 8` to drive `br_if $exit`.  Valid because type
+    analysis proves accu can only hold a CEL_BOOL.
+  - **Same-slot aliasing into `cel_or`** is well-defined per
+    `cel_3vl.h`'s contract (the helper never reads `a`/`b` after
+    writing `out`).  Codegen exploits this — no separate
+    "accu_next" slot is allocated.
+  - **Iter pointer reads the list payload from the `ArenaListHeader`'s
+    `elements_offset` field**, not a fresh slot — bit-identical to
+    the strategy `cel_list_at_arena` uses.
+
+**Runnable today.**
+
+---
+
+## 61. Comprehension all over list literal — `[1, 2, 3].all(v, v > 0)` (M5 Slices A–C)
+
+Sibling to 60.  The codegen arm is *generic* — only `accu_init`'s
+constant bytes and `loop_step`'s helper choice differ between
+`exists` and `all`.  Reading 60 and 61 side-by-side is the
+clearest demonstration that the comprehension shape is one arm,
+not two.
+
+Differences from 60:
+  - `accu_init` rodata is `{CEL_BOOL, true}` instead of false.
+  - `loop_cond` peephole is `br_if $exit (i32.eqz (accu.b))` —
+    `all` exits when accu becomes strictly false, not strictly true.
+  - `loop_step` calls `cel_and` (M5.G) instead of `cel_or`.
+
+The `i32.eqz` wrapper is the only structural difference; everything
+else is bit-identical, including the same-slot aliasing trick into
+`cel_and`.  See `m5-comprehensions-design.md` §9.4 for the
+error-short-circuit subtlety: peephole-on-bool-payload is correct
+only when type analysis proves accu can hold only CEL_BOOL.  The
+general path evaluates the full `@not_strictly_false` expression
+when accu's static type is wider (e.g. dyn-typed accu).
+
+**Runnable today.**
+
+---
+
+## 62. Comprehension map over list literal — `[1, 2, 3].map(v, v * 2)` (M5 Slice D)
+
+`map(v, t)` produces a new list — the per-iter accumulator grows
+by one element.  cel-cpp's macro emits `accu + [t]` for
+`loop_step`; a naive lowering would compile this to
+`cel_list_concat(accu, accu, [t])` — O(N²) total work over N
+iterations.  Slice D introduces `cel_list_append_at(list_slot,
+value_slot)` with geometric (2×) growth → amortised O(N), and
+codegen pattern-matches the `kCall(_+_, accu_ref,
+kCreateList([single_elem]))` IR shape to emit the append-at
+directly.
+
+The empty-list `accu_init` is `cel_list_create(accu_slot, 0)`,
+which allocates a bare `ArenaListHeader` with `count = capacity =
+elements_offset = 0`.  The first `cel_list_append_at` call grows
+the elements run on demand.  Codegen could pre-size to
+`cel_list_size(iter_range)` for the unconditional-map case, but
+that specialises per-macro and was rejected in
+`m5-comprehensions-followon.md` §3.6.
+
+**Depends on Slice D** — `cel_list_append_at` does not yet exist as
+a `cel_runtime.wasm` export.  `wasm-as` validates the WAT today;
+`wat_runner_test` skips this fixture (tag = manual) until Slice D
+ships the runtime helper and adds the name to `kRuntimeExports`.
+
+---
+
+## 63. Comprehension filter over list literal — `[1, 2, 3].filter(v, v != 2)` (M5 Slice D)
+
+`filter(v, p)` is `map`'s sibling: the accumulator is a list, but
+the append is *conditional*.  cel-cpp's macro emits a ternary
+`p ? accu + [v] : accu`; codegen pattern-detects this shape and
+emits a wasm `if`-block around the `cel_list_append_at` call,
+bypassing the general ternary lowering.
+
+Key shape distinction vs. WAT 62: `filter` appends `v` itself (the
+iter element, in-place pointer) — no `step_out` workspace for the
+appended value is needed because we never transform `v`.  The only
+per-iter workspace is the predicate result slot, which drives the
+`if`.
+
+Same dependency as 62: `cel_list_append_at` lands in Slice D.
+Tagged `manual` until then.
+
+---
+
+## 64. Comprehension exists over map literal — `{1: "a", 2: "b"}.exists(k, k > 1)` (M5 Slice E)
+
+The first WAT with **map source**.  cel-cpp's evaluator iterates
+the map's keys in insertion order via in-place iteration (no keys
+list materialised — see `m5-comprehensions-design.md` §7.4).  We
+follow Option β: three new runtime helpers shape the iter —
+`cel_map_iter_init(map_slot) → handle`, `cel_map_iter_next(handle) →
+0|1`, `cel_map_iter_key_at(out, handle)`.
+
+Per-iter, codegen calls `cel_map_iter_next` to advance / check;
+on `1` it calls `cel_map_iter_key_at` to materialise the current
+key into the iter_var workspace slot (24-byte copy from the
+entries run).  `k` then resolves via the uniform kIdent arm to
+`(i32.const <key_slot>)`.
+
+**Key contrast with list iteration**: map keys are polymorphic
+(may be CEL_INT / CEL_UINT / CEL_BOOL / CEL_STRING), so the
+in-place "moving pointer" trick that works for list iteration
+(WAT 60) doesn't apply — we need a stable workspace slot the
+kIdent arm can resolve to.  The runtime helper does the memcpy.
+
+**Depends on Slice E** — three runtime helpers (`cel_map_iter_init`,
+`cel_map_iter_next`, `cel_map_iter_key_at`) plus the Slice F-overlap
+helper `cel_map_iter_value_at` need to ship in `cel_map.c` and be
+added to `kRuntimeExports`.  Tagged `manual` until then.
+
+---
+
+## 65. cel.bind degenerate — `cel.bind(x, 5, x + 1)` (M5 Slice I)
+
+The Shape-C codegen optimisation.  `cel.bind` expands (via cel-cpp's
+`bindings_ext`) into a `kComprehensionExpr` with `iter_range = []`
+and `loop_cond = false` — a comprehension whose loop body never
+runs.  Generic Shape A would produce the correct answer (loop
+runs zero times, accu retains its init, result evaluates with
+accu_var bound to accu_init), but it pays a ~5-wasm-op prologue
+per bind.  Shape C detects the degenerate shape at codegen entry
+and emits the eval directly with no loop framing.
+
+Codegen detection criteria (`m5-comprehensions-design.md` §5,
+Shape C):
+  - `iter_range` is an empty-list literal.
+  - `loop_cond` is the constant `false`.
+  - `iter_var` is the cel-cpp sentinel name (typically `"#unused"`).
+
+When matched: push a scope binding `accu_var → accu_init's slot`,
+evaluate `result`, pop.  No `block`/`loop`/`br_if`.  Per cel-cpp
+benchmarks this is ~30% faster on bind-heavy programs.
+**Correctness-wise Shape A is a strict superset** — the gate is
+purely a perf optimisation, no runtime surface change.
+
+No new runtime helpers.  **Runnable today** (assuming Slice I
+ships the parser registration so the macro reaches codegen at
+all — until then `cel.bind` won't parse and the source expression
+fails before lowering).
+
+---
+
+## 66. Nested comprehension with shadowing — `[1].exists(y, [0].exists(y, y == 0))` (M5 Slices A–C)
+
+Structural test for **nested scopes** and **name shadowing**.  Two
+stacked `kComprehensionExpr`s, both binding the same name `y` (and
+both using `@result` for accu_var).  The inner binding wins for
+the duration of the inner body; the outer binding becomes visible
+again after the inner exits.
+
+Invariants this WAT locks:
+
+  1. **Independent wasm locals per nesting level.**  `$iter_off_o`
+     and `$iter_off_i` are different locals; LayoutPass allocates
+     them disjointly per `ComprehensionFrame` with a free-cursor
+     snapshot per frame.
+  2. **Independent accu / step_out / list-header workspace slots.**
+     The outer comprehension's accu lives at one slot, the inner
+     at another.  After the inner pops, references to outer
+     `@result` resolve to the outer slot.
+  3. **kIdent for `y` inside the inner body resolves to the inner
+     iter_off local.**  ScopeResolver walks the stack
+     inner-to-outer; the shadowing is automatic, no error
+     reported (matches cel-cpp's behaviour per
+     `m5-comprehensions-design.md` §3.7).
+  4. **Inner comprehension's result is just "the inner accu slot
+     offset"**, which the outer body's `cel_or` consumes via a
+     `step_out` memcpy.  Codegen treats the inner comprehension
+     as a regular sub-expression whose result lives at a known
+     slot.
+
+No new runtime helpers.  **Runnable today** (once Slices A–C land
+the ResolvePass / LayoutPass / expr_lower body).
+
+---
+
+## 67. Three-arg list exists — `[10, 20, 30].exists(i, v, v == 20 && i == 1)` (M5 Slice F)
+
+The first WAT for the **two-iter-var** comprehension shape.
+cel-cpp's `kComprehensionExpr` natively carries `iter_var` AND
+`iter_var2`; the evaluator dispatches Evaluate1 vs Evaluate2 at
+runtime based on whether `iter_var2` is set.  Binding semantics
+(per `m5-comprehensions-followon.md` §3.8 and cel-cpp's
+`comprehension_step.cc::Evaluate2`):
+
+  - **List source, two iter_vars**: `iter_var = i` (an int
+    counter, current index), `iter_var2 = v` (the per-iter list
+    element, same in-place pointer as the single-var case).
+  - **Map source, two iter_vars**: `iter_var = k` (the key),
+    `iter_var2 = v` (the value).  Covered by a follow-up WAT
+    (Slice F + Slice E overlap; not in this initial M5 cut).
+
+Codegen surface for the list two-var case:
+
+  - **Index counter** is a wasm local (`$index`) bumped by 1 per
+    iter.  Once per iter, before lowering `loop_cond` /
+    `loop_step`, we WRITE the int into a workspace CelValue
+    (`{kind=CEL_INT, payload.i=<index>}`).  The kIdent arm for
+    `i` lowers to `(i32.const <index_slot>)`.
+  - **`v` IS `iter_off`** — same uniform load as single-var (WAT 60).
+  - **No new runtime helper.**  The index-as-CelValue write is six
+    inline wasm instructions; no helper call.
+
+**Runnable today** (once Slice F's `iter_var2` plumbing in
+ResolvePass / LayoutPass / expr_lower lands).
 
 ---
 

@@ -1,9 +1,57 @@
 # Rewrite M5 follow-on — Comprehensions + `cel.bind`
 
-Status: **plan — drafted 2026-05-16.  Depends on M5 (kCall +
-control flow + activation marshalling).  Anticipated by the M5
-doc's §2.5 carve-out and the conformance README's
-"Comprehensions follow-on" forecast row.**
+Status: **in flight — drafted 2026-05-16; pre-work landed 2026-05-17
+(e2e spec-of-done at `compiler_v2/e2e/m5b_test.cc` with 71 SKIP'd
+tests; 8 WAT traces 60–67 under `doc/implementation-plan/rewrite/wat/`,
+each `wasm-as`-validated; wat-traces.md walkthroughs).  Implementation
+slices A→J pending.  Depends on M5 (kCall + control flow + activation
+marshalling), all shipped.  Anticipated by the M5 doc's §2.5
+carve-out and the conformance README's "Comprehensions follow-on"
+forecast row.**
+
+> **Plan-vs-execution deltas captured at pre-work landing
+> (2026-05-17), confirmed by an ad-hoc cel-cpp probe:**
+>
+>   - **Accumulator name is `@result`** (single `@`), NOT
+>     `__result__` as originally specified in §2.2 / §3.x.  This
+>     doc and the design companion have both been globally
+>     renamed.  Resolver, codegen, and tests must compare against
+>     the literal string `"@result"`.  Nested comprehensions get
+>     suffixed names (`@result0`, `@result1`, …) — verify per
+>     slice; M5.B's nesting tests in §11 cover this.
+>   - **`cel.bind`'s `iter_var` is the literal `"#unused"`**.  A
+>     reliable Shape-C detector (per design §5) can additionally
+>     key off `iter_var == "#unused"` alongside
+>     `iter_range == kCreateList(size=0) && loop_cond == const(false)`.
+>   - **`map`'s `loop_step` overload-resolves to `add_list`** (NOT
+>     `add_int64`).  Already seeded in `compiler_v2/codegen/overload_table.cc:107`
+>     pointing at `cel_list_concat` (O(N²)).  Slice D's
+>     append-pattern detection rewrites the shape
+>     `Call(_+_, Ident(@result), CreateList(size=1))` to
+>     `cel_list_append_at` (O(N) amortised) — load-bearing for
+>     any comprehension producing a list longer than ~10
+>     elements.
+>   - **`exists`/`all` loop_cond is `@not_strictly_false(!@result)`
+>     / `@not_strictly_false(@result)`** — a wrapped not, not a
+>     bare check.  Slice C's loop-cond peephole detector must
+>     pattern-match the full `Call(@not_strictly_false, Call(!_, Ident(@result)))`
+>     and bare `Call(@not_strictly_false, Ident(@result))` shapes
+>     and emit `i32.load offset=8` against the accu slot directly
+>     (per WAT 60/61).  Result: `cel_not_strictly_false` runtime
+>     helper is **deferred** — cel-cpp's parser never emits a
+>     comprehension whose loop_cond is anything other than these
+>     three shapes (the two peephole patterns plus `kConst true/false`).
+>   - **Two-iter-var has NO synthetic index expression**.  Both
+>     `iter_var` and `iter_var2` are bound in the loop body's
+>     lexical scope; codegen owns the dual-binding (per WAT 67
+>     and design §6 macros 9–13).  No `cel.@indexof(iter_range, i)`
+>     hidden select appears.
+>   - **e2e file shape**: the §4.9 inventory called for 5
+>     separate `m5b_*_test.cc` files; we shipped a single
+>     `compiler_v2/e2e/m5b_test.cc` (~1145 lines, 9 fixture
+>     classes, 71 tests) following the M7B / M8 pattern.  Easier
+>     to thread shared helpers; per-fixture skip / un-skip
+>     remains per-slice.
 
 Companion: `m5-comprehensions-design.md` carries the per-macro
 inventory, per-shape codegen recipes, edge-case catalogue, and
@@ -174,12 +222,12 @@ Three details that the codegen must respect:
 
   - **`loop_cond` is evaluated before each `loop_step`.**  Not
     after.  This lets `exists` short-circuit on the first
-    true (`@not_strictly_false(!__result__)` returns false the
-    moment `__result__` flips true).
+    true (`@not_strictly_false(!@result)` returns false the
+    moment `@result` flips true).
   - **`loop_cond` runs with the current `accu_var` *and*
     `iter_var`.**  Both are in scope.  cel-cpp's `exists` lowers
     `loop_cond` to read only the accumulator
-    (`@not_strictly_false(!__result__)`); the codegen must
+    (`@not_strictly_false(!@result)`); the codegen must
     nonetheless make `iter_var` available — `exists_one` and
     `filter` do reference it.
   - **`result` does NOT have `iter_var` in scope.**  Only
@@ -195,12 +243,12 @@ From cel-cpp's parser macro definitions
 
 | Macro | iter_var | accu_var | accu_init | loop_cond | loop_step | result |
 |-------|----------|----------|-----------|-----------|-----------|--------|
-| `e.exists(v, p)` | `v` | `__result__` | `false` | `@not_strictly_false(!__result__)` | <code>__result__ &#124;&#124; p</code> | `__result__` |
-| `e.all(v, p)` | `v` | `__result__` | `true` | `@not_strictly_false(__result__)` | `__result__ && p` | `__result__` |
-| `e.exists_one(v, p)` | `v` | `__result__` | `0` (int) | `true` | `p ? __result__ + 1 : __result__` | `__result__ == 1` |
-| `e.map(v, t)` | `v` | `__result__` | `[]` | `true` | `__result__ + [t]` | `__result__` |
-| `e.map(v, p, t)` | `v` | `__result__` | `[]` | `true` | <code>p ? __result__ + [t] : __result__</code> | `__result__` |
-| `e.filter(v, p)` | `v` | `__result__` | `[]` | `true` | <code>p ? __result__ + [v] : __result__</code> | `__result__` |
+| `e.exists(v, p)` | `v` | `@result` | `false` | `@not_strictly_false(!@result)` | <code>@result &#124;&#124; p</code> | `@result` |
+| `e.all(v, p)` | `v` | `@result` | `true` | `@not_strictly_false(@result)` | `@result && p` | `@result` |
+| `e.exists_one(v, p)` | `v` | `@result` | `0` (int) | `true` | `p ? @result + 1 : @result` | `@result == 1` |
+| `e.map(v, t)` | `v` | `@result` | `[]` | `true` | `@result + [t]` | `@result` |
+| `e.map(v, p, t)` | `v` | `@result` | `[]` | `true` | <code>p ? @result + [t] : @result</code> | `@result` |
+| `e.filter(v, p)` | `v` | `@result` | `[]` | `true` | <code>p ? @result + [v] : @result</code> | `@result` |
 
 Note `exists_one` returns int-typed accumulator then post-compares
 to `1`; this means we **must support comprehension `accu_var` of
@@ -319,7 +367,7 @@ Three notes on the codegen:
   - **Inner-expr lowering reuses the existing kIdent codegen.**
     A reference to `x` inside `loop_step` (or the predicate)
     compiles to `local.get $x_off`, which we set up to be
-    `iter_off`.  A reference to `__result__` compiles to
+    `iter_off`.  A reference to `@result` compiles to
     `local.get $accu_off`.  No new codegen for "identifier
     inside a comprehension" — the existing kIdent arm handles
     it once ResolvePass maps the name to the right slot.
@@ -370,9 +418,9 @@ Replace with a scope-aware visitor.  Required behaviour:
     stack; lookup walks the stack outer-to-inner.  Shadowing
     works naturally.
   - **`accu_var` collision with `iter_var`** — cel-cpp's macros
-    always use `__result__` for accu_var, so collision with
+    always use `@result` for accu_var, so collision with
     user-chosen iter_vars is unlikely but not impossible (a
-    user could write `cel.bind(__result__, 5, ...)`).  We
+    user could write `cel.bind(@result, 5, ...)`).  We
     follow cel-cpp: the inner binding wins, no error reported.
 
 New file: `compiler_v2/codegen/scope_resolver.h` / `.cc`.
@@ -447,7 +495,7 @@ void LowerComprehension(const ComprehensionExpr& comp, ...) {
 
   // The result of the comprehension is whatever slot Lower(comp.result)
   // wrote into.  Usually that's accu_slot; for forms like
-  // exists_one where result is `__result__ == 1`, it's a fresh
+  // exists_one where result is `@result == 1`, it's a fresh
   // slot from the kCall(`_==_`) arm.
 }
 ```

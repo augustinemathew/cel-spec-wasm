@@ -2,11 +2,11 @@
 ;; cel-cpp macro → kComprehensionExpr:
 ;;   iter_range  = [1, 2, 3]            (kCreateList)
 ;;   iter_var    = x
-;;   accu_var    = __result__
+;;   accu_var    = @result
 ;;   accu_init   = false
-;;   loop_cond   = @not_strictly_false(!__result__)  ;; stop when true
-;;   loop_step   = __result__ || (x > 0)
-;;   result      = __result__
+;;   loop_cond   = @not_strictly_false(!@result)  ;; stop when true
+;;   loop_step   = @result || (x > 0)
+;;   result      = @result
 ;;
 ;; ── Key design claim ────────────────────────────────────────
 ;; The SAME kIdent lowering that serves top-level free variables
@@ -90,7 +90,7 @@
 
         ;; Iteration exit #2: loop_cond says we're done.  For
         ;; `exists`, cel-cpp lowers this to
-        ;; `!@not_strictly_false(__result__)` — exit once accu is
+        ;; `!@not_strictly_false(@result)` — exit once accu is
         ;; already true.  Read the bool byte at accu_off + 8
         ;; (payload.b lives at the i32 offset 8 inside a CelValue).
         (br_if $exit (i32.load offset=8 (local.get $accu_off)))

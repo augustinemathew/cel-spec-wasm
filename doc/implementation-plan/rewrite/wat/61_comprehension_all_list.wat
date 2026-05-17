@@ -1,0 +1,162 @@
+;; CEL source:  [1, 2, 3].all(v, v > 0)
+;; Decl:        — (no free variables)
+;;
+;; M5 slice (Slices A–C closeout) — the `all` macro shape, sibling
+;; to `60_comprehension_exists_list.wat`.  Both expand to the same
+;; kComprehensionExpr skeleton; only `accu_init` and `loop_step` /
+;; `loop_cond` differ.  Reading 60 and 61 side-by-side is the
+;; clearest demonstration that the codegen arm is *generic* — the
+;; only macro-specific bits live in the (already-lowered) accu_init
+;; constant and the loop_step kCall expression.
+;;
+;; cel-cpp macro → kComprehensionExpr (parser/macro.cc::MakeAll):
+;;   iter_range  = [1, 2, 3]                    (kCreateList)
+;;   iter_var    = v
+;;   accu_var    = @result
+;;   accu_init   = true                         (vs. `false` in exists)
+;;   loop_cond   = @not_strictly_false(@result)
+;;                 (vs. `@not_strictly_false(!@result)` in exists)
+;;   loop_step   = @result && (v > 0)        (vs. `||` in exists)
+;;   result      = @result
+;;
+;; ── Difference matrix exists ↔ all ──────────────────────────
+;;
+;;   exists                            all
+;;   accu_init = false                 accu_init = true
+;;   loop_cond peephole:               loop_cond peephole:
+;;     accu.b != 0   → exit              accu.b == 0   → exit
+;;     (br_if $exit  on != 0)            (br_if $exit  on == 0)
+;;   loop_step uses cel_or             loop_step uses cel_and
+;;
+;; The peephole inversion is load-bearing: per langdef
+;; §"Comprehensions" the wrapped form is
+;; `@not_strictly_false(@result)`, which "stays true unless the
+;; result is *strictly false* — i.e. CEL_BOOL with payload.b == 0".
+;; ERROR / UNKNOWN in accu DO NOT cause loop exit (3VL has no
+;; short-circuit for those kinds in `all`; the loop runs to
+;; completion, propagating whichever wins).
+;;
+;;   - For `exists`: payload.b != 0 means we found a true element,
+;;     so we can exit early.  ERROR/UNKNOWN accu means we must
+;;     keep iterating (a later true would still flip us to true,
+;;     not propagate the error).
+;;   - For `all`:    payload.b == 0 means we found a false element,
+;;     so we can exit early.  ERROR/UNKNOWN means same — keep
+;;     iterating.
+;;
+;; The simple `i32.load offset=8` peephole reads any-payload-as-i32,
+;; so for non-BOOL kinds (ERROR/UNKNOWN have payload.err / payload.unk
+;; at the same offset 8) the predicate doesn't trip cleanly.  The
+;; general-path codegen evaluates the full `@not_strictly_false`
+;; expression; the peephole is correct only when type analysis
+;; proves accu can only hold a BOOL (which it does here, since
+;; `loop_step = bool && bool` is statically bool).  Cite
+;; m5-comprehensions-design.md §9.4 for the error-short-circuit
+;; rule.
+;;
+;; ── Key design claims (inherited from 60, restated for clarity) ──
+;;
+;;   1. **Uniform kIdent load** — `v` IS `iter_off`.
+;;   2. **No per-iter memcpy of v** — moving pointer, no copy.
+;;   3. **Same-slot aliasing into cel_and** — `cel_and(accu, accu,
+;;      step_out)` works identically to `cel_or` in 60: cel_3vl.h's
+;;      same-slot contract applies to both.
+;;
+;; Memory layout (mirrors 60 exactly; differs only in accu_init bytes):
+;;   [ 0,  8)   null sentinel + arena cursor
+;;   [ 8, 16)   arena limit / pad
+;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
+;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
+;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
+;;   [88,112)   rodata: accu_init = {CEL_BOOL, b=true}    ← TRUE here
+;;   [112,136)  rodata: rhs of `v > 0` = {CEL_INT, i=0}
+;;   [136,160)  workspace: kCreateList result slot
+;;   [160,184)  workspace: accu_slot
+;;   [184,208)  workspace: step_out scratch
+;;   [208, mem_size)  bump arena
+;;
+;; ── Runtime helpers — all already exported ──
+;;   cel.cel_and    (M5.G — 3VL conjunction; same-slot aliasing OK)
+;;   …rest as 60.
+;;
+;; **Runnable today.**
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
+  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_int_gt_at_vv"
+          (func $cel_int_gt_at_vv (param i32 i32 i32)))
+  (import "cel" "cel_and" (func $cel_and (param i32 i32 i32)))
+
+  (data (i32.const 16)
+        "\02\00\00\00" "\00\00\00\00"
+        "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
+  (data (i32.const 40)
+        "\02\00\00\00" "\00\00\00\00"
+        "\02\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
+  (data (i32.const 64)
+        "\02\00\00\00" "\00\00\00\00"
+        "\03\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
+  ;; accu_init = {CEL_BOOL, true} at [88, 112) — payload.b at offset 8 = 1.
+  (data (i32.const 88)
+        "\01\00\00\00" "\00\00\00\00"
+        "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
+  (data (i32.const 112)
+        "\02\00\00\00" "\00\00\00\00"
+        "\00\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
+
+  (func $eval (result i32)
+    (local $list_hdr i32)
+    (local $iter_off i32)
+    (local $end_off  i32)
+
+    (call $cel_reset (i32.const 208) (i32.const 131072))
+
+    ;; iter_range = [1, 2, 3]
+    (call $cel_list_create (i32.const 136) (i32.const 3))
+    (call $cel_list_set (i32.const 136) (i32.const 0) (i32.const 16))
+    (call $cel_list_set (i32.const 136) (i32.const 1) (i32.const 40))
+    (call $cel_list_set (i32.const 136) (i32.const 2) (i32.const 64))
+
+    ;; accu_slot at 160 ← rodata true at 88.
+    (i32.store offset=0  (i32.const 160) (i32.load offset=0  (i32.const 88)))
+    (i32.store offset=4  (i32.const 160) (i32.load offset=4  (i32.const 88)))
+    (i32.store offset=8  (i32.const 160) (i32.load offset=8  (i32.const 88)))
+    (i32.store offset=12 (i32.const 160) (i32.load offset=12 (i32.const 88)))
+    (i32.store offset=16 (i32.const 160) (i32.load offset=16 (i32.const 88)))
+    (i32.store offset=20 (i32.const 160) (i32.load offset=20 (i32.const 88)))
+
+    (local.set $list_hdr (i32.load offset=8 (i32.const 136)))
+    (local.set $iter_off (i32.load offset=8 (local.get $list_hdr)))
+    (local.set $end_off  (i32.add (local.get $iter_off) (i32.const 72)))
+
+    (block $exit
+      (loop $continue
+        (br_if $exit
+               (i32.ge_u (local.get $iter_off) (local.get $end_off)))
+
+        ;; Exit when accu.b == 0 — strictly false ⇒ `all` short-circuit.
+        ;; `i32.eqz` of the payload byte; differs from 60 only by the
+        ;; eqz wrapper.
+        (br_if $exit (i32.eqz (i32.load offset=8 (i32.const 160))))
+
+        ;; loop_step: @result && (v > 0)
+        (call $cel_int_gt_at_vv
+              (i32.const 184)
+              (local.get $iter_off)       ;; v IS iter_off
+              (i32.const 112))
+        (call $cel_and
+              (i32.const 160)             ;; accu_slot (out)
+              (i32.const 160)             ;; accu_slot (a)  — alias OK
+              (i32.const 184))            ;; step_out  (b)
+
+        (local.set $iter_off
+                   (i32.add (local.get $iter_off) (i32.const 24)))
+        (br $continue)))
+
+    (i32.const 160))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
