@@ -17,6 +17,40 @@ The analysis brief that produced this report lives at
 `/tmp/comprehensions_simplify_prompt.md` (not committed — it's a
 session artifact, kept locally for re-runs).
 
+### What has landed since the original report was written
+
+  - **TU split (commit `fb55b7f`, 2026-05-17).**  The
+    comprehension surface moved out of `expr_lower.cc` into
+    `expr_lower_comprehension.cc`; shared primitives
+    (`EmitCtx`, the 6 wasm-emission helpers, the `Emit`
+    dispatcher forward) live in a new internal header
+    `expr_lower_internal.h`.  Mechanical, zero behavioural
+    change.  Net file sizes: `expr_lower.cc` 2049 → 1132,
+    `expr_lower_comprehension.cc` 0 → 980, `expr_lower_internal.h`
+    0 → 103.  The report's per-area analyses still cite line
+    numbers from the pre-split file; re-grep when working from
+    a recommendation.  The split was a precondition for
+    landing several proposals in this report (Area 2, 3, 5)
+    safely — touching ~950 LoC inside a ~2050 LoC file is a
+    bigger blast radius than touching the same LoC inside its
+    own 980 LoC TU.
+  - **Testing-instrumentation gap surfaced as a new Area 9.5
+    (2026-05-17).**  Question from the maintainer: "how do
+    compilers generally test this sort of code?  Are we
+    missing unit tests?"  The honest answer is yes — the
+    comprehension surface has ResolvePass + LayoutPass unit
+    tests, runtime helper unit tests for most of cel_list /
+    cel_map, and m5b_test e2e coverage, but **zero
+    codegen-IR-inspection unit tests** of the kind the
+    non-comp expr_lower arms already have (see
+    `ScalarListLiteralEmitsCreateAndAppends` in
+    `expr_lower_test.cc:792`).  Area 9.5 enumerates the gap,
+    ranks 5 concrete items, and recommends that items 1–4
+    land BEFORE the simplification proposals in Areas 1–5
+    are executed — otherwise a regression bisects via
+    conformance run instead of via a focused unit-test
+    failure.
+
 ---
 
 # Comprehensions Simplification Report — M5.B post-mortem
@@ -71,10 +105,18 @@ Working tree: `/Users/augustine/cel-spec-wasm/`.
    the call site costs ~12 wasm ops per loop iter (vs ~5 today) but
    removes 2 exported runtime helpers, 2 wat_runner entries, 2 BUILD
    `--export=` lines, and 2 `compile.cc` imports. **However, I do
-   NOT recommend this** — see "What NOT to change" §1. It made the
-   shortlist because it looks redundant; the runtime placement is
-   load-bearing for cross-platform allocator behaviour and ABI
-   stability. Cited here for honesty.
+   NOT recommend this** — see "What NOT to change" §1.  The real
+   reason is layering + test surface, not "cross-platform allocator
+   behaviour" as the original report claimed (that framing was
+   sloppy and corrected here per maintainer pushback on
+   2026-05-17): keeping the 3VL ladder in C means it's
+   unit-testable in isolation via `cel_runtime_wasm_test.cc` and
+   the planned Item 3 of §9.5; moving to codegen-emitted wasm
+   splits the test surface and makes the next bug like the Slice
+   G `macros2/transformMap/error_filter` regression harder to
+   diagnose.  Net LoC win is small (~−15); layering regression is
+   real.  Cited here for honesty + as a reminder that not every
+   "looks redundant" surface should consolidate.
 
 5. **Replace `CompContext`'s 12 fields with a 3-field root + 3
    per-source sub-structs and derive the rest at consumer sites.**
@@ -810,6 +852,172 @@ don't).
 
 ---
 
+### Area 9.5 — Testing instrumentation: codegen-IR-level coverage
+
+**This section was added 2026-05-17 after the maintainer asked
+"how do compilers generally test this sort of code?"  Area 9
+covered the e2e test file; this section covers the layer ABOVE
+that — the codegen-IR-inspection unit tests that are present for
+every other expr_lower arm but missing for the comprehension
+surface.**
+
+**Current coverage by layer.**
+
+| Layer | What it does | Coverage for comp |
+|---|---|---|
+| Codegen-IR-inspect unit | Compile source → walk Binaryen IR → assert tree shape | **NONE** for comprehension shapes; present for kConst/kIdent/kSelect/kMap/kList/kCall in `expr_lower_test.cc` |
+| ResolvePass unit | Build expr → run ResolvePass → assert ResolvedVariable kinds + scope | YES — `ResolvePassComprehensionScopeTest` (resolve_pass_test.cc:707+) |
+| LayoutPass unit | Build expr → run LayoutPass → assert slot kinds + layout invariants | YES — `LayoutPassComprehensionTest` (layout_pass_test.cc:699+) |
+| Runtime helper unit | Call C helpers directly → assert state | PARTIAL — `cel_list_append_at` + `cel_map_iter_*` covered; `cel_list_append_at_if_bool` + `cel_map_insert_at_if_bool` NOT |
+| E2E (wasmtime) | Compile + execute + assert decoded `CelValue` | YES — `compiler_v2/e2e/m5b_test.cc` (~54 tests) |
+| Conformance (cel-cpp corpus) | Differential test against 2454 upstream rows | YES — drives the macros/macros2/bindings_ext fixtures |
+
+**How real compilers test this layer.**
+
+The canonical pattern is **"compile a source snippet → inspect
+the IR → assert structural shape"** without executing.  Examples:
+
+- **LLVM** — every IR transformation pass has hundreds of `.ll`
+  golden files in `llvm/test/Transforms/` with `// CHECK: ...`
+  directives.  Run `opt -<pass>` on the input, regex-match the
+  output against the directives.  Catches "did the lowering
+  produce the right ops" instantly.  Thousands of these.
+- **Rust** — `src/test/mir-opt/` files contain Rust source with
+  embedded MIR-shape assertions.  Same idea, different IR.
+- **V8 TurboFan** — `test-pipeline.cc` builds an optimization
+  input, runs the pass, asserts the output graph has specific
+  node count + kinds.
+- **Go SSA** — `test/codegen/<arch>.go` files contain Go source
+  with `// amd64: instr1, instr2` directives matching the
+  emitted assembly.
+
+**Our equivalent (already used elsewhere in this codebase):**
+`ScalarListLiteralEmitsCreateAndAppends`
+(`expr_lower_test.cc:792`) — compiles `[10, 20, 30]`, walks the
+Binaryen IR, asserts:
+
+```cpp
+EXPECT_EQ(BinaryenBlockGetNumChildren(root), 5u);
+EXPECT_STREQ(BinaryenCallGetTarget(create), "cel_list_create");
+for (i = 1; i <= 3; ++i) {
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_list_append_at");
+}
+```
+
+No wasm execution.  Walks the tree directly.  This pattern
+exists for kMap / kList / kSelect literals but **zero** of these
+exist for any comprehension shape.
+
+**The gap, ranked by ROI.**
+
+1. **Codegen-IR golden tests for the 9 comprehension shapes**
+   (~12 tests, ~400 LoC).  One TEST per shape — exists, all,
+   exists_one, map, filter (list source); transformMap,
+   transformMapEntry (single-key entry), transformList (3-arg
+   v2), transformList (4-arg v2 conditional); cel.bind via
+   Shape-C; nested same-name accu.  Each test compiles the
+   source through `LowerToEvalFunction`, then asserts the
+   emitted block contains:
+   - The expected create call (`cel_list_create` or
+     `cel_map_create`) with the right capacity multiplier;
+   - The expected per-iter helper call (`cel_list_append_at`,
+     `cel_list_append_at_if_bool`, `cel_map_insert_at`,
+     `cel_map_insert_at_if_bool`);
+   - The expected loop scaffold (Block/Loop/Break shape for
+     list source; `cel_map_iter_*` call sequence for map
+     source).
+   Would have caught the Slice G 3VL-pred bug at codegen-test
+   time (1 second), instead of macros2 conformance time
+   (whole-suite run).  Living target file:
+   `compiler_v2/codegen/expr_lower_comprehension_test.cc` (new).
+
+2. **Pre-sizing predicate tables.**  Two `TEST_P`-style table
+   tests:
+   - `IsPresizableCollectionAccu` × 8 cases:
+     `(accu_init kind, init_ann.repr, expected_result)`.
+     Covers `kListExpr empty` + `kMapExpr empty` × list/map
+     repr × non-list/non-map repr fall-through.
+   - `PerIterEntryCount` × 8 cases: 1 for transformMap 3-arg /
+     4-arg, `entry.size()` for transformMapEntry literal of
+     size 0/1/2/3, 1 conservative default for unmatched
+     shapes.
+   ~80 LoC total.  Catches matcher regressions in milliseconds.
+
+3. **`_if_bool` runtime helper unit tests.**  Mirror the
+   existing `cel_list_test.cc` / `cel_map_test.cc` patterns:
+   - `cel_list_append_at_if_bool` × 5 cases:
+     `(pred = ERROR / UNKNOWN / non-bool / false / true) →
+     (expected list state)`.
+   - `cel_map_insert_at_if_bool` × 5 cases: same matrix.
+   ~60 LoC total.  Trivial to write.  Closes the
+   regression-coverage gap for the Slice H fix.
+
+4. **Shape-C / `LowerShapeC` IR assertion.**  One TEST.
+   Compile `cel.bind(x, 5, x + 1)`, verify the emitted block
+   contains NO `cel_map_iter_init` / no list-iter prologue /
+   no loop scaffold — just the bind-value copy + the result
+   expression.  Locks the fast-path invariant that today only
+   m5b_test's `CelBindE2ETest::BindScalarAndUse` exercises
+   end-to-end.  ~30 LoC.
+
+5. **Loop-cond peephole matchers** (`TryMatchBoolConst`,
+   `IsIdentNamed`, `IsNotStrictlyFalseOfIdent`,
+   `IsNotStrictlyFalseOfNotIdent`).  Table tests with positive
+   shapes (each predicate's match) + negative shapes (close-
+   but-wrong: `@strictly_false` instead of `@not_strictly_false`,
+   wrong arg count, wrong inner shape).  ~40 LoC.  Catches
+   subtle cel-cpp version drift if a future vendoring of
+   cel-cpp changes the loop_cond shape.
+
+6. **Fuzzing harness (longer-term).**  A `libfuzzer`-driven
+   target that takes random CEL source, runs `Compile`,
+   asserts "either Status is OK and Eval succeeds, or Status
+   is a typed error; never crashes; never produces undefined
+   behavior."  Out of scope for this milestone but worth
+   tracking as a recurring future-work bullet.  Real compilers
+   (Rust, V8, LLVM) all run continuous fuzzing; cel-cpp
+   does not (verified via repo grep), so we'd be the first.
+
+**Why this matters specifically for the planned simplification
+pass.**  Areas 1–5 of this report propose collapsing ~250 LoC of
+detector/emitter scaffolding into a tagged-classifier pattern
+(Area 2), inlining the pre-sizing helpers (Area 3), and
+removing `IsShapeC` (Area 5).  Each of those touches the
+codegen-emit path for every comprehension shape.  Today, a
+subtle regression — e.g. the unified classifier returns the
+wrong shape tag for a corner-case AST, or the pre-sizing
+calculation off-by-ones for `transformMapEntry(k, v, {})` —
+would only surface via the conformance run (minutes to bisect)
+or via an m5b_test e2e failure (seconds to bisect to the test,
+but the failure is "value mismatch", not "this matcher
+misfired").  With the codegen-IR tests above, a regression
+bisects in seconds AND the failure points directly at the
+matcher / emitter that's wrong.
+
+The simplification pass should NOT start until at least Items
+1–4 land.  Item 5 + 6 are nice-to-haves.
+
+**Estimated LoC delta:** +610 (tests only); 0 in production code.
+**Risk:** low.  These are read-only assertions over existing
+behavior — they can't break what they observe, only add
+coverage.
+**Migration sketch:**
+- Create `compiler_v2/codegen/expr_lower_comprehension_test.cc`;
+  copy the `Pipeline` / `LowerWithDefaultOverloads` /
+  `PrepareHostModule` scaffolding from `expr_lower_test.cc` (or
+  refactor into a shared `expr_lower_test_lib.h` if duplication
+  becomes painful — but keep the test files separate).
+- Write Items 1, 4, 5 in that file.
+- Write Item 2 in `expr_lower_comprehension_test.cc` too — it's
+  pure-predicate testing, no IR walk needed.
+- Write Item 3 in `compiler_v2/runtime/cel_list_test.cc` /
+  `cel_map_test.cc`, next to the existing helper-unit tests.
+- All five items can land in one commit; ~600 LoC of pure
+  test code, no production-code changes, can ship
+  independently of the simplification pass.
+
+---
+
 ### Area 10 — Runtime ABI churn opportunity
 
 The §3.6 list-API collapse already removed two helpers
@@ -968,17 +1176,27 @@ issue for `MapOverBoundList` / `MapLargeListGrowthPath` in
 
 ### Recommended order
 
+0. **Area 9.5 Items 1–4 (codegen-IR + predicate unit tests)** —
+   PRECONDITION for everything below.  Without these, a
+   simplification regression bisects via the conformance run
+   (minutes) instead of via a focused matcher / emitter test
+   (seconds), and the failure signature is "wrong CelValue at row
+   X" instead of "TryMatchAccuMapInsertEntries returned false on
+   shape Y".  ~600 LoC of pure test code; can be one commit; zero
+   production-code risk.  Land before touching Areas 1, 2, 3, or
+   5.  Item 5 + 6 of §9.5 are nice-to-haves.
 1. **Area 4 (dead-enum + locals-per-comp knob)** — lowest risk,
-   smallest diff, cleanest signal. Do first.
+   smallest diff, cleanest signal.  Do first among the production
+   changes.
 2. **Area 1 (CompContext slimming)** — mechanical refactor; no
    behaviour change; sets up Area 2's emitter table to be smaller.
 3. **Area 2 + Area 3 (collapse detector zoo + pre-sizing helpers)** —
-   land together. Area 3 is a natural follow-on once Area 2 has
+   land together.  Area 3 is a natural follow-on once Area 2 has
    put the `LoopStepShape` struct in place; the per-iter count
    moves into the classifier's return.
 4. **Area 9 (test consolidation + un-SKIP consumer cases)** —
    independent of all the above; can land in parallel.
-5. **Area 5 (`IsShapeC` removal)** — deferred. Land after Areas
+5. **Area 5 (`IsShapeC` removal)** — deferred.  Land after Areas
    1-3 stabilise; the diff is then a one-commit follow-up.
 
 Areas 6, 7, 8, 10 are all leave-as-is.
@@ -986,13 +1204,16 @@ Areas 6, 7, 8, 10 are all leave-as-is.
 ### Dependency graph
 
 ```
-Area 4 (independent) ─────────────────────┐
-                                          │
+Area 9.5 (test instrumentation, blocks all production changes)
+        │
+        ▼
+Area 4 (dead-enum cleanup, independent) ───────────────┐
+                                                       │
 Area 1 (CompContext slim) ─→ Area 2 (zoo collapse) ─→ Area 3 (presize merge)
-                                          │
-                                          └─→ Area 5 (IsShapeC removal)
+                                                       │
+                                                       └─→ Area 5 (IsShapeC removal)
 
-Area 9 (test consolidation, independent)
+Area 9 (test consolidation, independent — can run in parallel with Area 9.5)
 ```
 
 ### Runtime ABI blast radius
