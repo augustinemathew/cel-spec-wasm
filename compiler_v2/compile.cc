@@ -95,6 +95,12 @@ void InstallMapImports(WasmModule& mod) {
   // M5.B Slice G: dynamic-map insert for transformMap accumulators.
   mod.AddFunctionImport("cel_map_insert_at", "cel", "cel_map_insert_at",
                         map3_params, BinaryenTypeNone());
+  // Slice G/H followup: 3VL predicate-gated map insert.
+  // `(map_slot, pred_slot, key_slot, value_slot) -> void`.
+  const BinaryenType map4_params[4] = {i32, i32, i32, i32};
+  mod.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
+                        "cel_map_insert_at_if_bool", map4_params,
+                        BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
                         "cel_map_lookup_arena", map3_params,
                         BinaryenTypeNone());

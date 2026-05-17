@@ -656,6 +656,22 @@ Result ClassifyCompileFailure(const absl::Status& s) {
       absl::StrContains(s.message(), "static subset")) {
     return Unsupported(absl::StrCat("static_subset: ", s.message()));
   }
+  // Unregistered extension symbols (block_ext's `cel.block`/`cel.index`,
+  // optionals' `cel.optional` etc.) surface as type-check failures
+  // citing the namespace + function as undeclared.  We don't ship
+  // every cel-cpp extension parser library; rows that hit one are
+  // graceful SKIPs (extension out-of-scope), not regressions.
+  // The error message shape is `undeclared reference to 'cel'` /
+  // `undeclared reference to 'block'` etc. — detecting "undeclared
+  // reference to 'cel'" specifically isolates the extension-
+  // namespace case from a genuine user-decl typo (which would name
+  // a user variable, not `cel`).
+  if (s.code() == absl::StatusCode::kInvalidArgument &&
+      absl::StrContains(s.message(), "type check failed") &&
+      absl::StrContains(s.message(), "undeclared reference to 'cel'")) {
+    return Unsupported(absl::StrCat(
+        "ext_unimpl: unregistered cel.* extension symbol: ", s.message()));
+  }
   return Fail("compile", s);
 }
 

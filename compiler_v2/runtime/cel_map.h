@@ -50,6 +50,14 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot);
 
+// Slice G/H followup — 3VL predicate-gated map insert for conditional
+// transformMap / transformMapEntry steps.  Mirror of
+// cel_list_append_at_if_bool: pred ERROR/UNKNOWN → propagate into
+// map slot (aborts comprehension); pred non-bool → poison TYPE_MISMATCH;
+// pred false → no-op; pred true → cel_map_insert_at delegate.
+void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                               uint32_t key_slot, uint32_t value_slot);
+
 // Arena fast path — codegen calls this directly when ResolvePass
 // proved the operand origin is `kArena`.  No host trip; pure wasm
 // linear scan.  Cross-type numeric key equality follows langdef

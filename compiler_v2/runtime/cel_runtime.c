@@ -359,6 +359,37 @@ void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
   cel_list_append_at(list_slot, value_slot);
 }
 
+// Slice G/H followup — 3VL-aware predicate-gated map insert for
+// conditional transformMap / transformMapEntry steps.  Mirrors
+// cel_list_append_at_if_bool exactly:
+//   - pred ERROR / UNKNOWN: propagate verbatim into the map slot
+//     (aborts the comprehension per design §3.2).
+//   - pred not CEL_BOOL: poison map with CEL_ERR_TYPE_MISMATCH.
+//   - pred false: silent no-op.
+//   - pred true: delegate to cel_map_insert_at (which performs
+//     its own 3VL on key + value).
+// Surfaced by macros2/transformMap/error_filter conformance row:
+// `{...}.transformMap(k, v, k=='baz' && 4/v==0, v)` where v=0
+// produces a divide-by-zero ERROR predicate that must propagate
+// rather than being interpreted as a bool.
+void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                               uint32_t key_slot, uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* p = cel_value_at(pred_slot);
+  if (p->kind == CEL_ERROR || p->kind == CEL_UNKNOWN) {
+    *m = *p;
+    return;
+  }
+  if (p->kind != CEL_BOOL) {
+    poison(m, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (p->payload.b == 0) return;
+  cel_map_insert_at(map_slot, key_slot, value_slot);
+}
+
 void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
                        uint32_t index_slot) {
   CEL_LOG("enter");

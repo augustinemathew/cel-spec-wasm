@@ -1300,17 +1300,66 @@ BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
                       /*align=*/4, BinaryenTypeInt32(), hdr_ptr, "memory");
 }
 
-// followon §10.A: emit the pre-sizing call that replaces the
-// normal `Emit(accu_init) + cel_copy_slot(accu, init_src)` for
-// list/map accumulators.  Calls `cel_list_create_with_capacity` or
-// `cel_map_create` with capacity=iter_range.count loaded at
-// runtime from the source's arena header.  The downstream runtime
-// helpers (`cel_list_append_at`, `cel_map_insert_at`) rely on this
-// pre-sizing for their bounded-write invariant.
+// Forward declarations — the matchers themselves live further down
+// (in the loop_step section), but PerIterEntryCount below needs to
+// peek at the loop_step shape from the prologue's call site.
+bool TryMatchAccuMapInsertEntries(const cel::Expr& expr,
+                                  absl::string_view accu_name,
+                                  const cel::Expr** entry_out);
+bool TryMatchAccuConditionalMapInsertEntries(const cel::Expr& expr,
+                                             absl::string_view accu_name,
+                                             const cel::Expr** pred_out,
+                                             const cel::Expr** entry_out);
+
+// followon §10.A: returns the per-iter capacity multiplier for the
+// accu given the loop_step shape.
+//   - `map` / `filter` / `transformList` list accus: 1 (each iter
+//     contributes ≤1 element; the helper already covers that).
+//   - `transformMap` 3-arg / 4-arg (`cel.@mapInsert(@result, k, v)`
+//     or its conditional wrap): 1 entry per iter — same as
+//     transformMap's design contract.
+//   - `transformMapEntry` (`cel.@mapInsert(@result, entry)` where
+//     entry is a `kMapExpr` literal): `entry.size()` entries per
+//     iter — empty `{}` is 0 (no-op), single-key `{k': t}` is 1,
+//     multi-key `{k1: t1, k2: t2}` is 2, etc.  The literal-only
+//     case is what cel-cpp's transformMapEntry macro emits in
+//     practice; computed (non-literal) entry expressions are
+//     deferred to the runtime map-merge follow-up.
+// Any unrecognised shape returns 1 — conservative default
+// matching the pre-Slice-H behaviour.
+uint32_t PerIterEntryCount(const cel::ComprehensionExpr& comp) {
+  const cel::Expr* entry = nullptr;
+  if (TryMatchAccuMapInsertEntries(comp.loop_step(), comp.accu_var(), &entry) &&
+      entry->kind_case() == cel::ExprKindCase::kMapExpr) {
+    return static_cast<uint32_t>(entry->map_expr().entries().size());
+  }
+  const cel::Expr* pred = nullptr;
+  if (TryMatchAccuConditionalMapInsertEntries(comp.loop_step(), comp.accu_var(),
+                                              &pred, &entry) &&
+      entry->kind_case() == cel::ExprKindCase::kMapExpr) {
+    return static_cast<uint32_t>(entry->map_expr().entries().size());
+  }
+  return 1;
+}
+
+// followon §10.A: emit the pre-sizing call that replaces the normal
+// `Emit(accu_init) + cel_copy_slot(accu, init_src)` for list/map
+// accumulators.  Calls `cel_list_create` or `cel_map_create` with
+// `capacity = iter_range.count * per_iter` loaded at runtime.  The
+// downstream runtime helpers (`cel_list_append_at`,
+// `cel_map_insert_at`) rely on this pre-sizing for their bounded-
+// write invariant.  `per_iter` defaults to 1 for list accus;
+// transformMapEntry passes `entry.size()` so a multi-entry literal
+// expands capacity correctly.
 void EmitPresizeAccu(EmitCtx& ctx, const CompContext& c, bool is_map,
+                     uint32_t per_iter,
                      std::vector<BinaryenExpressionRef>* instrs) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef count = EmitLoadSourceCount(ctx, c);
+  if (per_iter != 1) {
+    count = BinaryenBinary(mod, BinaryenMulInt32(), count,
+                           I32Const(ctx.mod, per_iter));
+  }
   BinaryenExpressionRef args[2] = {I32Const(ctx.mod, c.accu_slot), count};
   const char* helper = is_map ? "cel_map_create" : "cel_list_create";
   instrs->push_back(BinaryenCall(mod, helper, args, 2, BinaryenTypeNone()));
@@ -1331,7 +1380,8 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
   ABSL_CHECK(init_ann != nullptr);
   if (IsPresizableCollectionAccu(comp, *init_ann)) {
-    EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap, instrs);
+    EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap,
+                    /*per_iter=*/PerIterEntryCount(comp), instrs);
   } else {
     instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
   }
@@ -1492,6 +1542,39 @@ bool TryMatchAccuConditionalMapInsert(const cel::Expr& expr,
   return true;
 }
 
+// Slice H: `cel.@mapInsert(@result, entry_map)` — the 2-arg map-merge
+// form emitted by transformMapEntry (cel-cpp
+// extensions/comprehensions_v2_macros.cc:420).  On match sets
+// `*entry_out` to the entry expression (typically a kMapExpr).
+bool TryMatchAccuMapInsertEntries(const cel::Expr& expr,
+                                  absl::string_view accu_name,
+                                  const cel::Expr** entry_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "cel.@mapInsert") return false;
+  if (call.args().size() != 2) return false;
+  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
+  *entry_out = &call.args()[1];
+  return true;
+}
+
+// Slice H conditional form: `p ? cel.@mapInsert(@result, entry) :
+// @result` — the 4-arg `transformMapEntry(k, v, p, entry)` step.
+bool TryMatchAccuConditionalMapInsertEntries(const cel::Expr& expr,
+                                             absl::string_view accu_name,
+                                             const cel::Expr** pred_out,
+                                             const cel::Expr** entry_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "_?_:_" || call.args().size() != 3) return false;
+  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
+  if (!TryMatchAccuMapInsertEntries(call.args()[1], accu_name, entry_out)) {
+    return false;
+  }
+  *pred_out = call.args().data();
+  return true;
+}
+
 // Slice D append-shape: `_+_(@result, [t])`.
 absl::Status EmitAppendStep(EmitCtx& ctx, const CompContext& c,
                             const cel::Expr& elem,
@@ -1532,8 +1615,14 @@ absl::Status EmitMapInsertStep(EmitCtx& ctx, const CompContext& c,
   return absl::OkStatus();
 }
 
-// Slice G conditional transformMap step:
-// `p ? cel.@mapInsert(@result, k, t) : @result`.
+// Slice G conditional transformMap step: `p ? cel.@mapInsert(@result,
+// k, t) : @result`.  Uses the 3VL-aware `cel_map_insert_at_if_bool`
+// runtime helper so an ERROR / UNKNOWN predicate propagates into the
+// accu slot (aborting the comprehension per design §3.2) rather than
+// being silently interpreted as a bool.  Surfaced by the
+// macros2/transformMap/error_filter conformance row:
+// `{...}.transformMap(k, v, k=='baz' && 4/v==0, v)` where v=0
+// produces a div-by-zero predicate error.
 absl::Status EmitConditionalMapInsertStep(
     EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
     const cel::Expr& key, const cel::Expr& value,
@@ -1544,21 +1633,78 @@ absl::Status EmitConditionalMapInsertStep(
   if (!key_or.ok()) return key_or.status();
   auto value_or = Emit(ctx, value);
   if (!value_or.ok()) return value_or.status();
-  // Pred 3VL: defer the `cel_map_insert_at_if_bool` parallel to
-  // `cel_list_append_at_if_bool` until a failing corpus row
-  // surfaces.  See followon §3.8 plan-vs-execution note.
-  const auto* pred_ann = ctx.layout.annotations.Find(pred.id());
-  ABSL_CHECK(pred_ann != nullptr);
-  const uint32_t pred_slot = pred_ann->storage.payload;
-  BinaryenExpressionRef insert_args[3] = {I32Const(ctx.mod, c.accu_slot),
-                                          *key_or, *value_or};
-  body->push_back(BinaryenDrop(ctx.mod.raw(), *pred_or));
-  body->push_back(
-      BinaryenIf(ctx.mod.raw(),
-                 LoadSlotI32Ne(ctx, pred_slot, /*offset=*/8, /*expected=*/0),
-                 BinaryenCall(ctx.mod.raw(), "cel_map_insert_at", insert_args,
-                              3, BinaryenTypeNone()),
-                 /*ifFalse=*/nullptr));
+  BinaryenExpressionRef args[4] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
+                                   *key_or, *value_or};
+  body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_insert_at_if_bool", args,
+                               4, BinaryenTypeNone()));
+  return absl::OkStatus();
+}
+
+// Slice H: `cel.@mapInsert(@result, entry)` step, generalized over
+// entry size.  Entry must be a `kMapExpr` literal — Slice H scope;
+// computed (non-literal) entry expressions need a runtime map-
+// merge helper, deferred.  Emits one `cel_map_insert_at(accu, k_i,
+// v_i)` per entry: size 0 is a no-op iter (langdef §9.7), size 1
+// is the transformMap-equivalent shape, size N>1 is N sequential
+// inserts.  Capacity is pre-sized to `iter_range.count *
+// entry.size()` (see `PerIterEntryCount` + `EmitPresizeAccu`), so
+// PRESIZE_INVARIANT holds across all entry shapes.
+absl::Status EmitMapInsertEntriesStep(
+    EmitCtx& ctx, const CompContext& c, const cel::Expr& entry,
+    std::vector<BinaryenExpressionRef>* body) {
+  if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
+    ABSL_CHECK(false)
+        << "transformMapEntry with non-literal entry expression is a stub "
+           "until Slice H.2 (runtime map-merge helper) — entry kind "
+        << static_cast<int>(entry.kind_case());
+    return absl::OkStatus();
+  }
+  const auto& entries = entry.map_expr().entries();
+  if (entries.empty()) {
+    body->push_back(BinaryenNop(ctx.mod.raw()));
+    return absl::OkStatus();
+  }
+  for (const auto& e : entries) {
+    absl::Status s = EmitMapInsertStep(ctx, c, e.key(), e.value(), body);
+    if (!s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
+// Slice H conditional form: `p ? cel.@mapInsert(@result, entry) :
+// @result`.  Size-0 evaluates pred for side-effects and drops.
+// Size-1 routes through Slice G's `cel_map_insert_at_if_bool` (3VL
+// pred + single insert).  Size-N>1 needs the 3VL ladder to gate
+// the whole N-insert sequence atomically — the single-pair
+// `_if_bool` helper does not express that — so defer to a runtime
+// follow-up; CHECK so the surfacing corpus row is actionable.
+absl::Status EmitConditionalMapInsertEntriesStep(
+    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
+    const cel::Expr& entry, std::vector<BinaryenExpressionRef>* body) {
+  if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
+    ABSL_CHECK(false)
+        << "conditional transformMapEntry with non-literal entry is a stub "
+           "until Slice H.2 — entry kind "
+        << static_cast<int>(entry.kind_case());
+    return absl::OkStatus();
+  }
+  const auto& entries = entry.map_expr().entries();
+  if (entries.empty()) {
+    auto pred_or = Emit(ctx, pred);
+    if (!pred_or.ok()) return pred_or.status();
+    body->push_back(BinaryenDrop(ctx.mod.raw(), *pred_or));
+    return absl::OkStatus();
+  }
+  if (entries.size() == 1) {
+    return EmitConditionalMapInsertStep(ctx, c, pred, entries[0].key(),
+                                        entries[0].value(), body);
+  }
+  ABSL_CHECK(false)
+      << "conditional transformMapEntry with multi-key entry (N>1) is a stub "
+         "until Slice H.2 — the 3VL ladder must gate the whole N-insert "
+         "sequence atomically; cel_map_insert_at_if_bool handles only single "
+         "(k,v).  entries.size()="
+      << entries.size();
   return absl::OkStatus();
 }
 
@@ -1584,6 +1730,22 @@ absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
                                        &tm_key, &tm_value)) {
     return EmitConditionalMapInsertStep(ctx, c, *pred, *tm_key, *tm_value,
                                         body);
+  }
+  // Slice H: transformMapEntry — `cel.@mapInsert(@result, entry)`
+  // and the conditional wrapper.  Entry shape is either:
+  //   - empty `{}` → no-op for this iter (BinaryenNop);
+  //   - single-key `{k': t}` → route through Slice G's
+  //     `cel_map_insert_at(accu, k', t)`;
+  //   - multi-key `{k1: t1, k2: t2, …}` → stub until Slice H.2,
+  //     per followon §Slice H "general path deferred" note.
+  const cel::Expr* tme_entry = nullptr;
+  if (TryMatchAccuMapInsertEntries(comp.loop_step(), comp.accu_var(),
+                                   &tme_entry)) {
+    return EmitMapInsertEntriesStep(ctx, c, *tme_entry, body);
+  }
+  if (TryMatchAccuConditionalMapInsertEntries(comp.loop_step(), comp.accu_var(),
+                                              &pred, &tme_entry)) {
+    return EmitConditionalMapInsertEntriesStep(ctx, c, *pred, *tme_entry, body);
   }
   auto step_or = Emit(ctx, comp.loop_step());
   if (!step_or.ok()) return step_or.status();
