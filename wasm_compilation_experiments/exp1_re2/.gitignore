@@ -4,5 +4,13 @@ wasi-sdk.tar.gz
 # Cloned for the RE2 attempt — too large to commit
 re2/
 abseil-cpp/
-# Build artifacts
+# Build outputs (re-buildable from sources)
+absl-install/
+re2-install/
+# Object files + wasm artifacts (re-buildable)
+*.o
 *.wasm
+# Throwaway probes
+probe.c
+probe_mutex.cc
+main.cc

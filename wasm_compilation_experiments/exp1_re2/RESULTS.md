@@ -101,42 +101,122 @@ modules under the given import-namespace name.
     small Rust/JS harness using wasmtime's API; the wat-driver
     route is faster for prototyping.
 
-## RE2 build attempt — stopped at toolchain setup
+## RE2 in wasm — real numbers
 
-Cloned `re2` (2.5 MB) + `abseil-cpp` (18 MB).  RE2 requires
-either:
-  - **CMake + a pre-built abseil install** — needs `cmake`
-    (not on this system; one `brew install` away) and a full
-    cross-compiled absl tree that wasi-sdk can link against.
-  - **RE2's `Makefile`** — requires `pkg-config` + system absl
-    packages (`absl_strings`, `absl_synchronization`,
-    `absl_flat_hash_map`, ~15 more), which means building absl
-    via CMake first regardless.
+Built abseil-cpp + RE2 via CMake with a wasi-sdk toolchain
+file, linked our `re2_lib.cc` wrapper against
+`libre2.a` + 93 `libabsl_*.a`, ran through a hand-coded
+`.wat` driver: **works**.
 
-Either path is several hours of build-engineering work
-(CMake toolchain file for wasi-sdk, working through absl's
-build-time feature probes, vetting which absl translation
-units pull in `pthread` / `clock_gettime` etc., reconciling
-`-fno-rtti -fno-exceptions` with absl's own settings).
+| Metric | Value |
+|---|---:|
+| `re2_lib.wasm` size | **388,471 bytes** (388 KB) |
+| gzipped | **150,249 bytes** (150 KB) |
+| WASI imports | **11** (all `wasi_snapshot_preview1`) |
+| absl install footprint | 7.4 MB / 93 static libs |
+| RE2 install footprint | 708 KB |
 
-**Stopped here** because the architectural prototype is
-proven without it — the question "can libraries live inside
-the wasm runtime" was answered yes by the tiny_regex /
-hello.wasm + driver.wat composition.  RE2's value at this
-stage would be empirical numbers for size + imports, which
-informs the option-C "vendor a slice" vs option-B "vendor
-full absl" decision in `../PLAN.md` — that decision can wait
-for a dedicated build session.
+WASI imports the linked binary requires:
 
-Projected RE2 numbers (informed by published envoy
-proxy-wasm filter binaries that ship RE2 in wasm):
-  - **Binary size**: 200-500 KB stripped, 80-200 KB gzipped.
-  - **Imports**: a handful of WASI imports (`fd_write` from
-    absl logging, `clock_time_get` from `absl::Now()` error
-    paths, `random_get` from absl's container hash seeds).
-    All in the "good subset" — browser-shimmable.
-  - **ABI**: `bool RE2::PartialMatch(text, pattern)` — same
-    shape as our `match()` signature.
+  - `clock_time_get`, `environ_get`, `environ_sizes_get`,
+    `proc_exit`, `sched_yield` — "good subset", trivially
+    shimmable in any embedder including browsers.
+  - `fd_write` — also good subset, maps to console.
+  - `fd_close`, `fd_prestat_get`, `fd_prestat_dir_name`,
+    `fd_seek` — pulled in transitively, probably by absl's
+    `<fstream>` use somewhere.  Browser shims can no-op these
+    (return ENOTSUP), still loads.
+  - `poll_oneoff` — async; browser shims stub this.
+
+End-to-end test (`re2_driver.wat` → `re2_lib.wasm`):
+
+  - `[a-z]+@[a-z]+` against `alice@example` → 1 ✓
+  - `\d{4}-\d{2}-\d{2}` against `today: 2026-05-17` → 1 ✓
+
+### Build flags that mattered
+
+Threads target was required because wasi-sdk 25's default
+`wasm32-wasi` libc++ has no `std::mutex` (cctz uses it for
+its tz cache).  Switching to `wasm32-wasi-threads` provides
+`std::mutex` but requires `--shared-memory` and
+`--import-memory` link flags.
+
+absl needs the WASI emulation libs for things it would
+otherwise get from libc:
+```
+-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS
+-D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID
+-lwasi-emulated-signal -lwasi-emulated-process-clocks
+-lwasi-emulated-mman -lwasi-emulated-getpid
+```
+
+RE2 throws `std::out_of_range` / similar in rare error paths
+but wasi-sdk's libc++ is built without exceptions.  Stubbed
+the C++ ABI symbols in `cxa_stubs.c` — `__cxa_allocate_exception`,
+`__cxa_throw`, `__cxa_begin_catch`, etc., all trap via
+`__builtin_trap()`.  Our `re2_lib.cc` wrapper does bounds-
+checking so the throw paths shouldn't be hit in practice.
+
+One absl patch was needed: `absl/base/internal/sysinfo.cc`'s
+`GetNumCPUs()` calls `std::thread::hardware_concurrency()`,
+which doesn't exist in this target.  Added a `#elif defined(__wasm__)`
+branch returning `1` — see `absl-wasm.patch`.
+
+### The proper way (vs. what we did)
+
+cel-cpp + abseil + RE2 all support a bazel-native config
+for wasm targets via `@platforms//cpu:wasm32` and
+`@platforms//os:wasi` selects (see `re2/BUILD.bazel:62-67`
+and `:75-81` — both drop `-pthread` for these platforms).
+Building with bazel + `--platforms=@platforms//os:wasi`
+would auto-configure all the wasm-specific copts and
+linkopts without our CMake-toolchain-file workaround, our
+`absl-wasm.patch`, or our manual emulation-lib threading.
+
+For production integration into the cel-spec-wasm repo
+(which already uses bazel), this is the route to take.
+The CMake build we used here proved the binary-size +
+WASI-import numbers; the bazel build would tighten them
+(no signal/mman/pthread emulation libs needed if the
+selects properly disable threading code paths) and
+integrate cleanly with our existing `MODULE.bazel`.
+
+### Driver
+
+`re2_driver.wat` (215 bytes) is the hand-coded wasm that
+calls into the RE2 library:
+
+```
+(module
+  (import "lib" "memory" (memory 1 65536 shared))
+  (import "lib" "match"
+          (func $match (param i32 i32 i32 i32) (result i32)))
+  (data (i32.const 0x24000) "[a-z]+@[a-z]+")
+  (data (i32.const 0x24020) "alice@example")
+  ...
+  (func (export "case0") (result i32)
+    (call $match (i32.const 0x24000) (i32.const 13)
+                 (i32.const 0x24020) (i32.const 13))))
+```
+
+Composed with the library at instantiation:
+```
+wasmtime run -W threads=y -W shared-memory=y \
+  --preload lib=re2_lib.wasm \
+  --invoke case0 re2_driver.wasm
+```
+
+Driver writes data above the lib's static-data + stack
+region (offset 0x24000 ≈ 144 KB; lib's stack pointer
+init was 0x23830 ≈ 142 KB).  Both share lib's linear
+memory.
+
+### Answer to "library lives in the runtime"
+
+Yes — RE2 can ship as ~150 KB gzipped inside the wasm
+runtime, with 11 WASI imports all from the good subset.
+A small embedder shim (~10 KB) suffices to satisfy those
+imports.  No host-side regex code needed.
 
 ## What this proves about moving libraries into the runtime
 
