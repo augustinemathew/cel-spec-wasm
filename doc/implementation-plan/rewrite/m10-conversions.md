@@ -41,11 +41,18 @@ Status: **shipped 2026-05-14 (slices A–E + closeout).**
 The plan covers every spec-named type-conversion overload whose
 operand and result types are both already shippable in the v2
 pipeline: bool / int / uint / double / string / bytes
-inter-conversions, plus their identity arms.  **All
-timestamp / duration conversions are explicitly carved out into a
-sibling "timestamps slice" — see §2.2.**  Out of scope: the
+inter-conversions, plus their identity arms.  Out of scope: the
 `type(x)` and `dyn(x)` standard functions (M9 + M5.1.5
 respectively, both shipped).
+
+> Plan-vs-execution delta: the timestamp / duration conversion
+> arms originally carved out for the "timestamps slice" (§2.2)
+> **shipped at M7B (2026-05-16)** — `int(timestamp)`,
+> `string(timestamp)`, `timestamp(string)`, `timestamp(int)`, the
+> identity arms, and the matching duration variants.  See
+> `m7b-duration-timestamp.md` for the as-shipped shape.  Affected
+> rows in `conversions.textproto` graduated as part of M7B's
+> +86-PASS unlock.
 
 ## 1. Why M10
 
@@ -165,6 +172,11 @@ each into `kBuiltinSeeds` paired with a runtime helper.
     construction).
 
 ### 2.2 Out-of-scope (deferred to the timestamps slice)
+
+> **Status update (2026-05-16):** every row below shipped at
+> M7B (see `m7b-duration-timestamp.md` slice M7B.D).  Kept here
+> as the historical carve-out boundary that drove M10's
+> sequencing.
 
 The `timestamp(...)` and `duration(...)` constructors plus
 every conversion that crosses a timestamp / duration boundary

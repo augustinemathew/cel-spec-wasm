@@ -4,10 +4,7 @@
 // every test asserts a capability M7B must light up.
 //
 // Status: M7B shipped 2026-05-16 (A through F plus two polish
-// rounds); 179 / 180 tests pass.  One remaining `GTEST_SKIP`
-// — `RejectE2ETest::DescriptorMismatchOnFieldRead` — is a
-// defence-in-depth case that's hard to construct from the
-// public Value API (would need harness-level fixture surgery).
+// rounds); all 179 tests pass.
 //
 // Fixtures grouped by capability (one section per slice + cross-
 // cutting matrices):
@@ -1305,19 +1302,13 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
   EXPECT_EQ(v.kind(), Value::Kind::kError);
 }
 
-TEST_F(RejectE2ETest, DescriptorMismatchOnFieldRead) {
-  // Defence-in-depth: if a field's descriptor is
-  // `google.protobuf.Timestamp` but the bound message backing is
-  // the wrong type, the normaliser must surface CEL_ERROR, not
-  // silently miscompile.  Hard to construct from the public e2e
-  // harness — `Value::Message(...)` carries the actual backing
-  // descriptor, so producing a "field says Timestamp, backing is
-  // Customer" mismatch needs harness-level fixture surgery.
-  GTEST_SKIP() << "Hard to exercise from the public Value API — "
-                  "would need a fixture that constructs a message "
-                  "whose schema-declared type differs from its "
-                  "actual descriptor.";
-}
+// (Removed `DescriptorMismatchOnFieldRead` test — the
+// `UnpackWellKnownTimeMessage` normaliser inspects the message's
+// actual descriptor and returns `std::nullopt` for non-WKT, which
+// falls through to the standard `HostMessage` path.  There's no
+// "field says X but backing is Y" error code-path to test; the
+// `NonWellKnownMessageFieldStillYieldsMessage` test above already
+// pins that non-WKT fields stay as messages.)
 
 }  // namespace
 }  // namespace cel

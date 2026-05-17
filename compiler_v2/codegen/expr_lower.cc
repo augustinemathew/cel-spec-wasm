@@ -430,6 +430,26 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
 //       descriptor's shape; it trusts the checker for type
 //       compatibility and the trampoline to surface unsupported
 //       shapes as clean traps.
+// M7B polish: well-known time-type literals (`Timestamp{seconds:1}`
+// / `Duration{...}`) unwrap to `CEL_TIMESTAMP` / `CEL_DURATION` so
+// they're compare-equal to the matching `timestamp("...")` /
+// `duration("...")` constructor results.  Empirically pinned
+// against cel-cpp; see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`.
+// Returns nullptr for non-WKT struct names — caller falls through.
+BinaryenExpressionRef MaybeEmitWktUnwrapTailCall(EmitCtx& ctx,
+                                                 absl::string_view type_fqn,
+                                                 uint32_t out_slot) {
+  if (type_fqn != "google.protobuf.Timestamp" &&
+      type_fqn != "google.protobuf.Duration") {
+    return nullptr;
+  }
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot),
+                                    I32Const(ctx.mod, out_slot)};
+  return BinaryenCall(
+      ctx.mod.raw(), std::string(kCelHostWktUnwrapTimeInternalName).c_str(),
+      args, 2, BinaryenTypeNone());
+}
+
 absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
     EmitCtx& ctx, const cel::Expr& expr, const cel::StructExpr& s,
     const NodeAnnotation& ann) {
@@ -472,18 +492,9 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
                                          *value_or));
   }
 
-  // M7B polish: well-known time-type literals (`Timestamp{seconds:1}`
-  // / `Duration{...}`) unwrap to `CEL_TIMESTAMP` / `CEL_DURATION`
-  // so they're compare-equal to the matching `timestamp("...")` /
-  // `duration("...")` constructor results.  Empirically pinned
-  // against cel-cpp; see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`.
-  if (s.name() == "google.protobuf.Timestamp" ||
-      s.name() == "google.protobuf.Duration") {
-    BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot),
-                                      I32Const(ctx.mod, out_slot)};
-    instrs.push_back(BinaryenCall(
-        ctx.mod.raw(), std::string(kCelHostWktUnwrapTimeInternalName).c_str(),
-        args, 2, BinaryenTypeNone()));
+  if (auto wkt_tail = MaybeEmitWktUnwrapTailCall(ctx, s.name(), out_slot);
+      wkt_tail != nullptr) {
+    instrs.push_back(wkt_tail);
   }
 
   instrs.push_back(I32Const(ctx.mod, out_slot));

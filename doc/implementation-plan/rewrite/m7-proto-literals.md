@@ -784,14 +784,16 @@ graduates, and the milestone-or-slice that picks it up.
     today (clean failure mode) — unlock when a fixture row
     requires it.
 
-  - **`Timestamp` / `Duration` literal construction**.  Mostly
-    shipped at M7B (2026-05-16) — the M7 proto-literal arm
-    constructs the underlying `google.protobuf.Timestamp` /
-    `Duration` message; M7B.A's field-read normaliser converts
-    such messages to `CEL_TIMESTAMP` / `CEL_DURATION` on access.
-    Open subset: cross-form equivalence (`timestamp("X") ==
-    Timestamp{seconds: 1}`) — see `m7b-duration-timestamp.md`
-    §9 for the architectural gap.
+  - **`Timestamp` / `Duration` literal construction**.  **Shipped
+    in full at M7B (2026-05-16)** — the M7 proto-literal arm
+    constructs the underlying message; M7B.A's field-read
+    normaliser handles read-back-via-field; cross-form
+    equivalence with `timestamp("...")` / `duration("...")`
+    constructor results landed at M7B polish-2 via the new
+    `cel_host.cel_wkt_unwrap_time` tail-call emitted by
+    `EmitKStructExpr` when `s.name()` matches a WKT time-type
+    FQN.  See `m7b-duration-timestamp.md` §9 for the as-shipped
+    shape + cel-cpp parity evidence.
 
 ### Plan-vs-execution delta (numbers)
 

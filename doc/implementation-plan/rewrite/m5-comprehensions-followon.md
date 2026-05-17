@@ -511,43 +511,95 @@ any code in our codegen because cel-cpp's parser does the
 expansion to a generic `kComprehensionExpr` AST node, and the
 Slice A–C codegen above handles it.
 
-### 3.8 Three-arg form support (Slice F)
+### 3.8 Two-iter-var support (Slice F) — native AST shape
 
-Two-iter-var comprehensions.  cel-cpp's macro factory expands
-`list.exists(i, v, p)` to something like:
+> **Plan-vs-execution delta (2026-05-16):** an earlier draft of
+> this section claimed two-iter-var comprehensions desugar to a
+> nested `cel.bind` inside `loop_step`.  **Verified against
+> cel-cpp source: that was wrong.**  See
+> `language_feature_unlocks/COMPREHENSION_DESIGN.md` §1, §4 for
+> the corrected analysis.  The text below is the corrected
+> version.
+
+cel-cpp's `kComprehensionExpr` AST natively carries **both**
+`iter_var` and `iter_var2` fields (see
+`third_party/cel-cpp/common/ast/expr_proto.cc:229-230` — proto
+push and pull both fields).  cel-cpp's evaluator
+(`eval/eval/comprehension_step.cc`) dispatches `Evaluate1`
+(single-var) vs `Evaluate2` (two-var) at runtime based on
+whether `iter_var2` is empty.
+
+Binding semantics, per the evaluator:
+
+  - **List source, single iter_var**: iter_slot = current value.
+  - **List source, two iter_vars**: iter_var = index (int),
+    iter_var2 = value.
+  - **Map source, single iter_var**: iter_slot = current key.
+  - **Map source, two iter_vars**: iter_var = key, iter_var2 = value.
+
+So the codegen change is real but small:
+
+  - ResolvePass / LayoutPass: read both `iter_var` and `iter_var2`
+    from the AST; allocate both bindings when iter_var2 is
+    non-empty.
+  - `kComprehensionExpr` codegen arm extended:
+    - Two-iter-var list: emit a wasm-local int counter for the
+      index, write it into a workspace CelValue slot each iter,
+      bind iter_var → that slot; iter_var2 → the per-iter list
+      element (same shape as the single-iter-var list path).
+    - Two-iter-var map: bind iter_var → key workspace,
+      iter_var2 → value workspace; pull both via
+      `cel_map_iter_key_at` / `cel_map_iter_value_at`.
+
+**No dependency on Slice G** (cel.bind parser registration)
+any more.  Slice F is standalone.  Shortens the critical path.
+
+Per-macro-shape impact on Slice F's codegen surface:
+
+  - `list.exists(i, v, p)` / `list.all(i, v, p)` /
+    `list.existsOne(i, v, p)` — bool/int accu, generic.
+  - `list.transformList(i, v, t)` / `list.transformList(i, v, p, t)`
+    — list accu using `cel_list_append_at`.
+  - `map.exists(k, v, p)` / `map.all(k, v, p)` /
+    `map.existsOne(k, v, p)` — bool/int accu over map source.
+  - `map.transformMap(k, v, t)` / `map.transformMap(k, v, p, t)` —
+    **map accu**.  Needs a new runtime helper
+    `cel_map_insert_at` (see §4.6.1).
+  - `map.transformMapEntry(k, v, entry)` /
+    `map.transformMapEntry(k, v, p, entry)` — map accu, but
+    `entry` is itself a map expression that gets *merged* into
+    accu per iter.  See §3.8.1 for the loop_step shape.
+
+The 46 rows in `macros2.textproto` split into:
+  - ~28 covered by the bool/int/list cases above (Slice F
+    body).
+  - ~10 covered by transformMap (Slice G).
+  - ~8 covered by transformMapEntry (Slice H).
+
+### 3.8.1 `transformMapEntry` loop_step
+
+`m.transformMapEntry(k, v, entry)` lowers to a
+`kComprehensionExpr` with `loop_step` of shape:
 
 ```
-ComprehensionExpr {
-  iter_var   : "@i"
-  iter_range : range(size(list))            // [0, 1, 2, …]
-  accu_var   : "__result__"
-  accu_init  : false
-  loop_cond  : @not_strictly_false(!__result__)
-  loop_step  : __result__ ||
-               cel.bind("v", list[@i], p)   // ← inner bind
-  result     : __result__
-}
+kCall(_+_, accu_ref, entry)   // merge entry-map into accu
 ```
 
-(Verify the exact expansion shape at spike time; cel-cpp's
-extended-macros library is the source of truth — see
-`third_party/cel-cpp/extensions/comprehensions_v2_macros.cc`
-or equivalent.)
+…where `entry` is itself a map-literal-shaped expression (most
+commonly `{k': t}` — a single key/value pair, but in principle
+any map).  Per-iter execution:
 
-Two consequences:
+  1. Evaluate `entry` to a temp map.
+  2. For each `(k_i, v_i)` in temp: `cel_map_insert_at(accu_slot,
+     k_i, v_i)`.
 
-  - **No new AST shape.**  The second iter-var is realised as a
-    nested `cel.bind` inside `loop_step`.  This means
-    Slice F depends on Slice G shipping first (so `cel.bind`
-    parser registration is in place).
-  - **One new runtime/codegen helper: `range(N)`.**  Lowers to a
-    range-shaped iterator over `[0..N-1]` without materialising
-    the list.  Codegen-only — no runtime helper, just emit the
-    iter-init / iter-next inline with an integer counter local.
-    Variant of map iteration (Option β above), much simpler.
+Initial implementation: the general path (evaluate-temp-then-
+merge).  Optimisation: pattern-detect the single-key shape
+`kCreateMap([{k': t}])` and emit a direct
+`cel_map_insert_at(accu_slot, k', t)` without the temp.
 
-The 46 FAILs in `macros2.textproto` resolve as soon as the
-parser library is registered AND `range()` codegen lands.
+Last-write-wins on key collisions (matches cel-cpp's runtime
+behaviour and our existing `cel_map` semantics).
 
 ## 4 Surfaces introduced
 

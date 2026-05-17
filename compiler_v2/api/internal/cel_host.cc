@@ -2797,8 +2797,20 @@ absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
   CelValue out_cv{};
   WriteDurTsPayload(since_epoch, CEL_TIMESTAMP, &out_cv);
   // langdef range check — also rejects absl's lax year>9999 admit.
-  if (out_cv.payload.ts.seconds < kTimestampMinSeconds ||
-      out_cv.payload.ts.seconds > kTimestampMaxSeconds) {
+  // Uses the same sign-correlated boundary refinement as
+  // `cel_time.c::payload_in_range`: at MIN with negative nanos or
+  // at MAX with positive nanos overflows too.  Practically
+  // unreachable today (the Probe-B 4-digit-year walker rejects
+  // year 0 first) but pinned here to mirror the runtime-side
+  // gate so a future walker tweak can't introduce a regression
+  // surface.
+  const int64_t out_s = out_cv.payload.ts.seconds;
+  const int32_t out_ns = out_cv.payload.ts.nanos;
+  const bool out_of_range = out_s < kTimestampMinSeconds ||
+                            out_s > kTimestampMaxSeconds ||
+                            (out_s == kTimestampMaxSeconds && out_ns > 0) ||
+                            (out_s == kTimestampMinSeconds && out_ns < 0);
+  if (out_of_range) {
     WriteOverflowError(out_slot, ctx.mem);
     return absl::OkStatus();
   }

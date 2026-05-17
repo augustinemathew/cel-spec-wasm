@@ -65,9 +65,11 @@ What's left as future work (§9):
 >     mentions the [year 1, year 9999] range but didn't pin where
 >     it's enforced.  M7B.B's `run_arith` already gates timestamp
 >     results; M7B.D's `cel_int_to_ts_at_v` reuses the same gate.
->     `cel_int_to_dur_at_v` does NOT range-check (any int64
->     seconds is a valid duration; proto-Duration's ±315B-second
->     range only matters at parse-trampoline boundary).
+>     `cel_int_to_dur_at_v` range-checks against the proto-Duration
+>     ±315.576B-second bound (parity with the parse trampoline) —
+>     enough to reject the conformance corpus's `duration_range/*`
+>     over/under rows.  Arithmetic results then go through the
+>     tighter int64-nanos bound (polish-2).
 >   - **`equality_kernel` and `EncodeValue` are in the lint backlog.**
 >     Both pre-existed M7B; my edits stayed at or below their prior
 >     sizes via helper extraction.  The proper cleanup is a per-
