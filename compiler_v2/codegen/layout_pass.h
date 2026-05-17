@@ -30,7 +30,19 @@ struct LaidOutVariable {
   std::string name;
   uint32_t local_index = 0;
   Repr repr = Repr::kUnknown;
+  // Workspace slot byte offset for variables whose wasm local holds
+  // a slot pointer (`kFreeVariable`, `kComprehensionAccu`,
+  // `kComprehensionIndex`).  Zero for `kComprehensionIter` — the
+  // iter local holds a *moving* pointer into the iter_range's
+  // element run (list iteration) or the output of
+  // `cel_map_iter_key_at` (map iteration); no fixed workspace cell.
   uint32_t slot_offset = 0;
+  // Propagated from `ResolvedVariable::kind`.  EmitVariablePrelude
+  // skips entries with `kind != kFreeVariable` — comp-scope
+  // entries are set by the comprehension's loop prologue, not by
+  // the function prelude.  ABI emitter also filters to
+  // `kFreeVariable` entries when populating `cel.abi.variables[]`.
+  ResolvedVariableKind kind = ResolvedVariableKind::kFreeVariable;
 };
 
 // Layout-time knobs for the pass.  Today: `debug_layout` turns off slot
@@ -86,10 +98,7 @@ struct StaticLayout {
   // LayoutPass neither reads nor mutates it.
   std::vector<MessageTypeRow> message_types;
 
-  // NOLINTNEXTLINE(readability-redundant-member-init) — explicit defaults
-  // satisfy cppcoreguidelines-pro-type-member-init on the aggregate
-  // without forcing callers into a boilerplate constructor.
-  std::vector<uint8_t> rodata = {};
+  std::vector<uint8_t> rodata;
   uint32_t rodata_base = 16;
   uint32_t workspace_base = 0;
   uint32_t workspace_bytes = 0;

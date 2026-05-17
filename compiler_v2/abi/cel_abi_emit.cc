@@ -16,6 +16,22 @@ namespace {
 // unknown fields per proto3 semantics.
 constexpr uint32_t kCelAbiVersion = 1;
 
+// Populates `cel.abi.variables[]` from the layout's free-variable
+// entries.  Comprehension-scope locals (iter / accu / index) are
+// excluded — they're bound by the comprehension's loop prologue
+// per M5.B Slice B, not by `Activation::Bind`.
+void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
+  abi.mutable_variables()->Reserve(static_cast<int>(layout.variables.size()));
+  for (const LaidOutVariable& v : layout.variables) {
+    if (v.kind != ResolvedVariableKind::kFreeVariable) continue;
+    celwasm::abi::VariableEntry* entry = abi.add_variables();
+    entry->set_name(v.name);
+    entry->set_local_index(v.local_index);
+    entry->set_slot_offset(v.slot_offset);
+    entry->set_repr(static_cast<uint32_t>(v.repr));
+  }
+}
+
 }  // namespace
 
 // Public declaration lives in cel_abi_emit.h; clang-tidy's include
@@ -27,14 +43,7 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
 
-  abi.mutable_variables()->Reserve(static_cast<int>(layout.variables.size()));
-  for (const LaidOutVariable& v : layout.variables) {
-    celwasm::abi::VariableEntry* entry = abi.add_variables();
-    entry->set_name(v.name);
-    entry->set_local_index(v.local_index);
-    entry->set_slot_offset(v.slot_offset);
-    entry->set_repr(static_cast<uint32_t>(v.repr));
-  }
+  EmitVariables(layout, abi);
 
   // fields[]: one row per kSelect (M2.C).  Index 0 is the sentinel
   // (zero-initialised FieldRefRow); emit it too so the host-side

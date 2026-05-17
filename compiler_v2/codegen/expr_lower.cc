@@ -132,6 +132,12 @@ std::vector<BinaryenExpressionRef> EmitVariablePrelude(
   std::vector<BinaryenExpressionRef> out;
   out.reserve(variables.size());
   for (const LaidOutVariable& v : variables) {
+    // M5.B Slice B: comprehension-scope locals (iter / accu /
+    // index) are set by the comprehension's loop prologue, not the
+    // function prelude.  Skipping them here also keeps free-variable
+    // slot offsets stable when comprehensions are present — the
+    // host marshal addresses by `cel.abi.variables[].slot_offset`.
+    if (v.kind != ResolvedVariableKind::kFreeVariable) continue;
     out.push_back(BinaryenLocalSet(mod.raw(), v.local_index,
                                    I32Const(mod, v.slot_offset)));
   }
@@ -261,7 +267,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
   const auto N = static_cast<uint32_t>(m.entries().size());
 
   std::vector<BinaryenExpressionRef> instrs;
-  instrs.reserve(2u + 3u * N);
+  instrs.reserve(2u + (3u * N));
   instrs.push_back(EmitCelMapCreateCall(ctx.mod, out_slot, N));
 
   for (const cel::MapExprEntry& e : m.entries()) {
@@ -819,9 +825,9 @@ absl::StatusOr<std::vector<BinaryenExpressionRef>> EmitCallOperands(
   return out;
 }
 
-// Forward decl — `Emit` calls `EmitConditional`, `EmitConditional`
-// recurses through `Emit` for cond / then / else.
-absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
+// `Emit` is forward-declared earlier in this TU (line ~161); the
+// definition appears below.  EmitConditional recurses via `Emit`
+// for cond / then / else, so it relies on that earlier declaration.
 
 // M5.G (Slice 2) — `_?_:_` lowering.  Per langdef §"Conditional
 // expression", only the chosen arm is evaluated; ERROR / UNKNOWN
@@ -870,7 +876,7 @@ BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed=*/0, offset, /*align=*/4,
+      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
                    BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
   return BinaryenBinary(mod, BinaryenEqInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
@@ -880,7 +886,7 @@ BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed=*/0, offset, /*align=*/4,
+      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
                    BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
   return BinaryenBinary(mod, BinaryenNeInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));

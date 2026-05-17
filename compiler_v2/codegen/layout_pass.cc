@@ -289,13 +289,21 @@ void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
   layout.workspace_base = RoundUp8(layout.rodata_base +
                                    static_cast<uint32_t>(layout.rodata.size()));
   layout.variables.reserve(variables.size());
+  // Comprehension iter vars don't get a workspace slot (their wasm
+  // local holds a moving pointer, not a slot address).  Allocate
+  // slots only to free vars + accu / index comp vars; pack densely
+  // by allocation order so we don't waste cells on iter holes.
+  uint32_t slot_count = 0;
   for (const ResolvedVariable& rv : variables) {
-    const uint32_t slot_offset =
-        layout.workspace_base + (rv.local_index * kSlotBytes);
-    layout.variables.push_back(
-        LaidOutVariable{rv.name, rv.local_index, rv.repr, slot_offset});
+    uint32_t slot_offset = 0;
+    if (rv.kind != ResolvedVariableKind::kComprehensionIter) {
+      slot_offset = layout.workspace_base + (slot_count * kSlotBytes);
+      ++slot_count;
+    }
+    layout.variables.push_back(LaidOutVariable{rv.name, rv.local_index, rv.repr,
+                                               slot_offset, rv.kind});
   }
-  layout.workspace_bytes = static_cast<uint32_t>(variables.size()) * kSlotBytes;
+  layout.workspace_bytes = slot_count * kSlotBytes;
 }
 
 }  // namespace

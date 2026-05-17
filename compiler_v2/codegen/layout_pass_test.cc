@@ -674,5 +674,100 @@ TEST(LayoutPassControlFlowTest, ConditionalGetsOneCallSlot) {
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
+// ============================================================
+// LayoutPassComprehensionTest — M5.B Slice B
+//
+//   Locks: comprehension iter_vars get NO workspace slot (their
+//   wasm local holds a moving pointer); accu_vars DO get a slot;
+//   free vars coexist with comp scope without slot collisions.
+//   EmitVariablePrelude / cel.abi emitter filter comp entries (out
+//   of scope here; tested at expr_lower / cel_abi_emit).
+// ============================================================
+
+namespace {
+
+const LaidOutVariable* FindLaidOutByName(const StaticLayout& layout,
+                                         absl::string_view name) {
+  for (const auto& v : layout.variables) {
+    if (v.name == name) return &v;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(LayoutPassComprehensionTest, IterVarHasNoWorkspaceSlot) {
+  // `[1, 2, 3].exists(v, v > 0)` — iter_var `v` is a moving pointer
+  // into the iter_range's element run, NOT a fixed workspace slot.
+  // Its LaidOutVariable.slot_offset stays at 0 (sentinel).
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* v = FindLaidOutByName(*layout, "v");
+  ASSERT_NE(v, nullptr);
+  EXPECT_EQ(v->kind, ResolvedVariableKind::kComprehensionIter);
+  EXPECT_EQ(v->slot_offset, 0u)
+      << "iter_var must have slot_offset=0 (sentinel for `no slot needed`)";
+}
+
+TEST(LayoutPassComprehensionTest, AccuVarHasWorkspaceSlot) {
+  // accu_var `@result` (bool) needs a real workspace slot — the
+  // accu CelValue lives there for the comprehension's lifetime.
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_GE(accu->slot_offset, layout->workspace_base)
+      << "accu workspace slot must live in the workspace region";
+}
+
+TEST(LayoutPassComprehensionTest, WorkspaceBytesSkipsIterVars) {
+  // Literal-only comprehension: no free vars.  Workspace bytes
+  // accounts for the accu slot (24B) + any kCallExpr / kListExpr
+  // workspace slots allocated by AggregateStorageVisitor.  Crucially:
+  // the iter_var does NOT contribute 24B.
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // accu var contributes 24B; aggregate slots stack on after.
+  EXPECT_GE(layout->workspace_bytes, 24u);
+}
+
+TEST(LayoutPassComprehensionTest, FreeVarsCoexistWithCompScope) {
+  // `[1, 2, 3].exists(v, v > x)` with `x:int` free.  Workspace must
+  // hold: x's slot + @result's accu slot + aggregate-pass slots.
+  // x's slot_offset must NOT collide with @result's.
+  CheckOptions opts;
+  opts.variable_specs = {"x:int"};
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > x)", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* x = FindLaidOutByName(*layout, "x");
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(x, nullptr);
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(x->kind, ResolvedVariableKind::kFreeVariable);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(x->slot_offset, accu->slot_offset)
+      << "free var and comp accu must not share a slot";
+  EXPECT_NE(x->slot_offset, 0u);
+  EXPECT_NE(accu->slot_offset, 0u);
+}
+
 }  // namespace
 }  // namespace celwasm
