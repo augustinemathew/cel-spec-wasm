@@ -932,8 +932,6 @@ TEST_F(CelBindE2ETest, NestedBindBothBoolean) {
 class ComprehensionNestedE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionNestedE2ETest, OuterListInnerList) {
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -943,8 +941,9 @@ TEST_F(ComprehensionNestedE2ETest, OuterListInnerList) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterListInnerMap) {
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
+  GTEST_SKIP() << "map-source iter_range needs Slice E "
+                  "(cel_map_iter_*) — m5-comprehensions-followon.md "
+                  "§Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -954,8 +953,8 @@ TEST_F(ComprehensionNestedE2ETest, OuterListInnerMap) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterMapInnerList) {
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
+  GTEST_SKIP() << "map-source iter_range needs Slice E "
+                  "(cel_map_iter_*).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -965,8 +964,8 @@ TEST_F(ComprehensionNestedE2ETest, OuterMapInnerList) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterMapInnerMap) {
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
+  GTEST_SKIP() << "map-source iter_range needs Slice E "
+                  "(cel_map_iter_*).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -979,8 +978,6 @@ TEST_F(ComprehensionNestedE2ETest, SameNameInnerShadowsOuter) {
   // design §3.5: `[1].exists(y, [0].exists(y, y == 0))` → true.
   // Inner `y` binds 0; reference inside inner step resolves to
   // inner binding.
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -992,8 +989,6 @@ TEST_F(ComprehensionNestedE2ETest, SameNameInnerShadowsOuter) {
 TEST_F(ComprehensionNestedE2ETest, OuterIterVarVisibleInsideInner) {
   // design §3.5: outer iter_var is a free variable in the inner
   // loop_step; resolves to outer binding.
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -1006,8 +1001,6 @@ TEST_F(ComprehensionNestedE2ETest, OuterIterVarVisibleInsideInner) {
 TEST_F(ComprehensionNestedE2ETest, FilterWithInnerAllPasses) {
   // design §3.5: `['signer'].filter(signer, ['artifact'].all(artifact,
   // true))` → `['signer']`.
-  GTEST_SKIP() << "M5.B.C-nested ships here — see "
-                  "m5-comprehensions-followon.md §Slice C (nesting).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(

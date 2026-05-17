@@ -1021,14 +1021,6 @@ absl::StatusOr<BinaryenExpressionRef> EmitGeneralCall(
 // UnimplementedError — Slice I adds the general path for
 // cel.bind / arbitrary user shapes.
 
-const LaidOutVariable* FindLaidOutVarByName(const StaticLayout& layout,
-                                            absl::string_view name) {
-  for (const auto& v : layout.variables) {
-    if (v.name == name) return &v;
-  }
-  return nullptr;
-}
-
 bool TryMatchBoolConst(const cel::Expr& expr, bool* out) {
   if (expr.kind_case() != cel::ExprKindCase::kConstant) return false;
   if (!expr.const_expr().has_bool_value()) return false;
@@ -1080,28 +1072,48 @@ BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
 // in F.  Slots / locals come from ResolvePass + LayoutPass; codegen
 // in `LowerComprehension` walks the same data to emit the prologue.
 struct CompContext {
-  const LaidOutVariable* iter_v;
-  const LaidOutVariable* accu_v;
-  uint32_t end_off_local;
-  uint32_t accu_slot;
-  uint32_t list_slot;
-  uint32_t init_src_slot;
+  const LaidOutVariable* iter_v = nullptr;
+  const LaidOutVariable* accu_v = nullptr;
+  uint32_t end_off_local = 0;
+  uint32_t accu_slot = 0;
+  uint32_t list_slot = 0;
+  uint32_t init_src_slot = 0;
+  // Per-comprehension unique labels.  Nested comprehensions emit
+  // their own `(block exit_<id> (loop continue_<id> ...))`; without
+  // expr-id-scoped names, Binaryen rejects nested same-name labels
+  // with `wasm-validator.cpp visitLoop: iter != breakTypes.end()`.
+  std::string exit_label;
+  std::string continue_label;
 };
 
 absl::StatusOr<CompContext> ResolveCompContext(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const NodeAnnotation& ann) {
+  // Set unique labels up front so any early-return doesn't leave
+  // them empty; downstream emitters always have a valid string.
+  CompContext c{};
+  c.exit_label = absl::StrCat("comp_exit_", expr.id());
+  c.continue_label = absl::StrCat("comp_continue_", expr.id());
   if (!comp.iter_var2().empty()) {
     return absl::UnimplementedError(absl::StrCat(
         "expr_lower: two-iter-var comprehension (iter_var2=`", comp.iter_var2(),
         "`) is M5.B Slice F (expr_id=", expr.id(), ")"));
   }
-  CompContext c{};
-  c.iter_v = FindLaidOutVarByName(ctx.layout, comp.iter_var());
-  c.accu_v = FindLaidOutVarByName(ctx.layout, comp.accu_var());
-  ABSL_CHECK(c.iter_v != nullptr && c.accu_v != nullptr)
-      << "LowerComprehension: missing iter/accu binding (expr_id=" << expr.id()
-      << ")";
+  // Look up the per-comprehension iter / accu LaidOutVariable
+  // entries by INDEX (from the comp-node's NodeAnnotation), NOT by
+  // name.  Nested comprehensions share accu_var names (cel-cpp
+  // emits `@result` at every depth in the standard macros), so
+  // name-based lookup returns the OUTER's entry for an inner
+  // resolve — both prologues then set the same wasm local /
+  // workspace slot.  Caught by the 2026-05-17 nested probe.
+  ABSL_CHECK(ann.comp_iter_local_index < ctx.layout.variables.size() &&
+             ann.comp_accu_local_index < ctx.layout.variables.size())
+      << "LowerComprehension: per-comp local indices out of range (expr_id="
+      << expr.id() << " iter=" << ann.comp_iter_local_index
+      << " accu=" << ann.comp_accu_local_index
+      << " variables.size=" << ctx.layout.variables.size() << ")";
+  c.iter_v = &ctx.layout.variables[ann.comp_iter_local_index];
+  c.accu_v = &ctx.layout.variables[ann.comp_accu_local_index];
   ABSL_CHECK(ann.comp_aux_local_base != 0)
       << "LowerComprehension: ComprehensionLocalsVisitor didn't assign aux "
          "locals (expr_id="
@@ -1190,14 +1202,14 @@ absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
   bool kconst_bool = false;
   if (TryMatchBoolConst(loop_cond, &kconst_bool)) {
     if (kconst_bool) return BinaryenExpressionRef{nullptr};  // no check
-    return BinaryenBreak(mod, "exit", nullptr, nullptr);     // immediate exit
+    return BinaryenBreak(mod, c.exit_label.c_str(), nullptr, nullptr);
   }
   if (IsNotStrictlyFalseOfNotIdent(loop_cond, accu_name)) {
-    return BinaryenBreak(mod, "exit", LoadAccuBoolPayload(ctx, c.accu_slot),
-                         nullptr);
+    return BinaryenBreak(mod, c.exit_label.c_str(),
+                         LoadAccuBoolPayload(ctx, c.accu_slot), nullptr);
   }
   if (IsNotStrictlyFalseOfIdent(loop_cond, accu_name)) {
-    return BinaryenBreak(mod, "exit",
+    return BinaryenBreak(mod, c.exit_label.c_str(),
                          BinaryenUnary(mod, BinaryenEqZInt32(),
                                        LoadAccuBoolPayload(ctx, c.accu_slot)),
                          nullptr);
@@ -1317,7 +1329,7 @@ absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
   auto* mod = ctx.mod.raw();
   std::vector<BinaryenExpressionRef> body;
   body.push_back(BinaryenBreak(
-      mod, "exit",
+      mod, c.exit_label.c_str(),
       BinaryenBinary(
           mod, BinaryenGeUInt32(),
           BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
@@ -1336,14 +1348,16 @@ absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
           mod, BinaryenAddInt32(),
           BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
           BinaryenConst(mod, BinaryenLiteralInt32(24)))));
-  body.push_back(BinaryenBreak(mod, "continue", nullptr, nullptr));
+  body.push_back(
+      BinaryenBreak(mod, c.continue_label.c_str(), nullptr, nullptr));
   BinaryenExpressionRef loop =
-      BinaryenLoop(mod, "continue",
+      BinaryenLoop(mod, c.continue_label.c_str(),
                    BinaryenBlock(mod, /*name=*/nullptr, body.data(),
                                  static_cast<BinaryenIndex>(body.size()),
                                  BinaryenTypeNone()));
   BinaryenExpressionRef loop_arr[1] = {loop};
-  return BinaryenBlock(mod, "exit", loop_arr, 1, BinaryenTypeNone());
+  return BinaryenBlock(mod, c.exit_label.c_str(), loop_arr, 1,
+                       BinaryenTypeNone());
 }
 
 absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
@@ -1351,7 +1365,7 @@ absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
     const NodeAnnotation& ann) {
   auto cctx_or = ResolveCompContext(ctx, expr, comp, ann);
   if (!cctx_or.ok()) return cctx_or.status();
-  const CompContext c = *cctx_or;
+  const CompContext& c = *cctx_or;
   auto range_or = Emit(ctx, comp.iter_range());
   if (!range_or.ok()) return range_or.status();
   auto init_or = Emit(ctx, comp.accu_init());

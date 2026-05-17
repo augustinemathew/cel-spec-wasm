@@ -150,7 +150,7 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     ann.scope_id = 0;
   }
 
-  void PreVisitComprehension(const cel::Expr& /*expr*/,
+  void PreVisitComprehension(const cel::Expr& expr,
                              const cel::ComprehensionExpr& comp) override {
     // Allocate iter / iter2 / accu bindings up front.  Their Reprs
     // start at kUnknown and resolve lazily on first kIdent
@@ -183,6 +183,17 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     variables_.push_back(
         ResolvedVariable{f.accu_var, f.accu_local_index, Repr::kUnknown,
                          ResolvedVariableKind::kComprehensionAccu});
+    // Stamp the per-comprehension binding indices on the comp
+    // node's NodeAnnotation so codegen can look them up by expr_id.
+    // Name-based lookup conflates nested same-name accu_vars —
+    // cel-cpp uses "@result" at every depth in the standard
+    // macros, so the inner's name would resolve to the outer's
+    // LaidOutVariable entry, causing both prologues to set the
+    // SAME wasm local + workspace slot (caught by the 2026-05-17
+    // nested probe).
+    NodeAnnotation& ann = annotations_[expr.id()];
+    ann.comp_iter_local_index = f.iter_local_index;
+    ann.comp_accu_local_index = f.accu_local_index;
     comp_frames_.push_back(std::move(f));
   }
 

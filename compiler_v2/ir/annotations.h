@@ -104,6 +104,19 @@ struct NodeAnnotation {
   // first of `StaticLayout::comprehension_extra_locals_per_comp`
   // consecutive locals.  Zero on non-comprehension nodes.
   uint32_t comp_aux_local_base = 0;
+  // M5.B Slice C: per-comprehension iter_var / accu_var bindings.
+  // Populated by ResolvePass's ScopedIdentResolver at
+  // PreVisitComprehension time.  Required because nested
+  // comprehensions can share accu_var names (`@result` at every
+  // depth in cel-cpp's standard macros), so name-based lookup
+  // would conflate the inner's binding with the outer's — see the
+  // bug surfaced by the 2026-05-17 nested probe.  Zero on
+  // non-comprehension nodes.  iter_var2 (Slice F) reuses
+  // `comp_aux_local_base + 1` as the index-counter slot for
+  // list-source two-iter-var, or as the value workspace for
+  // map-source.
+  uint32_t comp_iter_local_index = 0;
+  uint32_t comp_accu_local_index = 0;
 };
 
 // Side map keyed by cel::ExprId.
