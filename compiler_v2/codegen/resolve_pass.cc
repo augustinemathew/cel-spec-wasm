@@ -150,24 +150,46 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     ann.scope_id = 0;
   }
 
-  // M5.B Slice E: for list-source comprehensions, iter_var's wasm
-  // local holds a moving pointer into the list payload (no
-  // workspace slot needed — `kComprehensionIter` tag).  For
-  // map-source comprehensions, iter_var binds to the CURRENT KEY,
-  // which the runtime `cel_map_iter_key_at` helper writes into a
-  // dedicated workspace slot each iteration.  Peek at the
-  // iter_range's repr (annotated by the checker via
-  // PopulateAnnotations before ResolvePass runs) to pick the right
-  // allocation lifecycle.  Map-source iter_vars share the
-  // `kComprehensionAccu` lifecycle in LayoutPass — they get a
-  // workspace slot and are excluded from EmitVariablePrelude /
-  // cel.abi.variables[].
-  ResolvedVariableKind IterKindForRange(const cel::ComprehensionExpr& comp) {
+  // M5.B Slice E + F: pick the per-iter-var allocation lifecycle
+  // for the current comprehension's iter_var / iter_var2 bindings.
+  //
+  // Single-iter-var:
+  //   - list source: iter_var = kComprehensionIter (no workspace
+  //     slot; wasm local holds a moving pointer into the list
+  //     element run).
+  //   - map source:  iter_var = kComprehensionAccu (workspace
+  //     slot — cel_map_iter_key_at writes the key here each iter;
+  //     local holds the fixed slot offset).
+  //
+  // Two-iter-var (Slice F):
+  //   - list source: iter_var (= index) = kComprehensionAccu
+  //     (slot — codegen writes {CEL_INT, i=idx} here each iter);
+  //     iter_var2 (= value) = kComprehensionIter (moving pointer,
+  //     same as the single-var list case).
+  //   - map source:  iter_var (= key) = kComprehensionAccu;
+  //     iter_var2 (= value) = kComprehensionAccu (both get slots;
+  //     cel_map_iter_{key,value}_at populate them).
+  struct IterKinds {
+    ResolvedVariableKind iter = ResolvedVariableKind::kComprehensionIter;
+    ResolvedVariableKind iter2 = ResolvedVariableKind::kComprehensionIter;
+  };
+  IterKinds IterKindsFor(const cel::ComprehensionExpr& comp) {
     const NodeAnnotation* range_pre = annotations_.Find(comp.iter_range().id());
     const bool map_source =
         range_pre != nullptr && range_pre->repr == Repr::kMap;
-    return map_source ? ResolvedVariableKind::kComprehensionAccu
-                      : ResolvedVariableKind::kComprehensionIter;
+    const bool two_iter = !comp.iter_var2().empty();
+    IterKinds k;
+    if (map_source) {
+      k.iter = ResolvedVariableKind::kComprehensionAccu;
+      k.iter2 = ResolvedVariableKind::kComprehensionAccu;
+    } else if (two_iter) {
+      k.iter = ResolvedVariableKind::kComprehensionAccu;
+      k.iter2 = ResolvedVariableKind::kComprehensionIter;
+    } else {
+      k.iter = ResolvedVariableKind::kComprehensionIter;
+      k.iter2 = ResolvedVariableKind::kComprehensionIter;  // unused
+    }
+    return k;
   }
 
   void PreVisitComprehension(const cel::Expr& expr,
@@ -179,18 +201,14 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     f.iter_var = std::string(comp.iter_var());
     f.iter_var2 = std::string(comp.iter_var2());
     f.accu_var = std::string(comp.accu_var());
+    const IterKinds kinds = IterKindsFor(comp);
     f.iter_local_index = static_cast<uint32_t>(variables_.size());
     variables_.push_back(ResolvedVariable{f.iter_var, f.iter_local_index,
-                                          Repr::kUnknown,
-                                          IterKindForRange(comp)});
+                                          Repr::kUnknown, kinds.iter});
     if (!f.iter_var2.empty()) {
-      // Two-iter-var (Slice F): codegen owns the index counter /
-      // value workspace; LayoutPass treats both as
-      // `kComprehensionIter` (loop-prologue-set).
       f.iter_local_index2 = static_cast<uint32_t>(variables_.size());
-      variables_.push_back(
-          ResolvedVariable{f.iter_var2, f.iter_local_index2, Repr::kUnknown,
-                           ResolvedVariableKind::kComprehensionIter});
+      variables_.push_back(ResolvedVariable{f.iter_var2, f.iter_local_index2,
+                                            Repr::kUnknown, kinds.iter2});
     }
     f.accu_local_index = static_cast<uint32_t>(variables_.size());
     variables_.push_back(
@@ -205,6 +223,9 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     NodeAnnotation& ann = annotations_[expr.id()];
     ann.comp_iter_local_index = f.iter_local_index;
     ann.comp_accu_local_index = f.accu_local_index;
+    if (!f.iter_var2.empty()) {
+      ann.comp_iter2_local_index = f.iter_local_index2;
+    }
     comp_frames_.push_back(std::move(f));
   }
 

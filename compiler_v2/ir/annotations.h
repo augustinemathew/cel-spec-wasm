@@ -117,6 +117,11 @@ struct NodeAnnotation {
   // map-source.
   uint32_t comp_iter_local_index = 0;
   uint32_t comp_accu_local_index = 0;
+  // Slice F: iter_var2's local_index (zero for single-iter-var
+  // comprehensions).  For list source: iter_var binds to the
+  // synthesized index counter, iter_var2 to the value pointer.
+  // For map source: iter_var binds to key, iter_var2 to value.
+  uint32_t comp_iter2_local_index = 0;
 };
 
 // Side map keyed by cel::ExprId.

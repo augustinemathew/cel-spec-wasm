@@ -1073,11 +1073,21 @@ BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
 // in `LowerComprehension` walks the same data to emit the prologue.
 struct CompContext {
   const LaidOutVariable* iter_v = nullptr;
+  // Slice F: iter_var2 (null for single-iter-var).  List two-iter:
+  // iter_v is the index counter workspace slot; iter_v2 is the
+  // moving value pointer.  Map two-iter: both are workspace slots
+  // populated by cel_map_iter_{key,value}_at each iter.
+  const LaidOutVariable* iter_v2 = nullptr;
   const LaidOutVariable* accu_v = nullptr;
   // For list source: end_off pointer (one-past-end of element run).
   // For map source: iter handle (returned by cel_map_iter_init,
   // passed to cel_map_iter_next / key_at / value_at).
   uint32_t aux0_local = 0;
+  // Slice F: list two-iter index counter local (raw int — not a
+  // CelValue offset).  Written into iter_v's workspace slot each
+  // iter as {kind=CEL_INT, payload.i=index}.  Unused for
+  // single-iter and for map source.
+  uint32_t aux1_local = 0;
   uint32_t accu_slot = 0;
   uint32_t source_slot = 0;  // list_slot or map_slot
   uint32_t init_src_slot = 0;
@@ -1088,6 +1098,9 @@ struct CompContext {
   // LaidOutVariable.slot_offset is non-zero here (kComprehensionAccu
   // lifecycle set by ResolvePass when iter_range.repr == kMap).
   bool map_source = false;
+  // Slice F: true if iter_var2 is non-empty (comprehensions_v2
+  // three-arg form).
+  bool two_iter = false;
   // Per-comprehension unique labels.  Nested comprehensions emit
   // their own `(block exit_<id> (loop continue_<id> ...))`; without
   // expr-id-scoped names, Binaryen rejects nested same-name labels
@@ -1111,11 +1124,19 @@ void BindCompVariables(EmitCtx& ctx, const cel::Expr& expr,
       << " variables.size=" << ctx.layout.variables.size() << ")";
   c->iter_v = &ctx.layout.variables[ann.comp_iter_local_index];
   c->accu_v = &ctx.layout.variables[ann.comp_accu_local_index];
+  c->two_iter = !comp.iter_var2().empty();
+  if (c->two_iter) {
+    ABSL_CHECK(ann.comp_iter2_local_index < ctx.layout.variables.size())
+        << "LowerComprehension: iter2 local index out of range (expr_id="
+        << expr.id() << ")";
+    c->iter_v2 = &ctx.layout.variables[ann.comp_iter2_local_index];
+  }
   ABSL_CHECK(ann.comp_aux_local_base != 0)
       << "LowerComprehension: ComprehensionLocalsVisitor didn't assign aux "
          "locals (expr_id="
       << expr.id() << ")";
   c->aux0_local = ann.comp_aux_local_base + 0;
+  c->aux1_local = ann.comp_aux_local_base + 1;
   c->accu_slot = c->accu_v->slot_offset;
   ABSL_CHECK(c->accu_slot != 0) << "LowerComprehension: accu_var `"
                                 << comp.accu_var() << "` has no workspace slot";
@@ -1129,11 +1150,6 @@ absl::StatusOr<CompContext> ResolveCompContext(
   CompContext c{};
   c.exit_label = absl::StrCat("comp_exit_", expr.id());
   c.continue_label = absl::StrCat("comp_continue_", expr.id());
-  if (!comp.iter_var2().empty()) {
-    return absl::UnimplementedError(absl::StrCat(
-        "expr_lower: two-iter-var comprehension (iter_var2=`", comp.iter_var2(),
-        "`) is M5.B Slice F (expr_id=", expr.id(), ")"));
-  }
   BindCompVariables(ctx, expr, comp, ann, &c);
 
   const auto* range_ann = ctx.layout.annotations.Find(comp.iter_range().id());
@@ -1178,40 +1194,49 @@ absl::StatusOr<CompContext> ResolveCompContext(
 // source: iter handle (= aux0_local), iter_var local set to a
 // fixed workspace slot the loop body rewrites via
 // cel_map_iter_key_at.
-void EmitCompPrologue(EmitCtx& ctx, const CompContext& c,
-                      BinaryenExpressionRef range_value,
-                      BinaryenExpressionRef init_value,
+// Slice F helper: which wasm local holds the moving list pointer.
+// Single-iter list: iter_v itself doubles as the pointer.
+// Two-iter list: iter_v is the synthesized index workspace slot
+// (constant), iter_v2 is the moving pointer.
+uint32_t ListIterPointerLocal(const CompContext& c) {
+  return c.two_iter ? c.iter_v2->local_index : c.iter_v->local_index;
+}
+
+// Slice E + F map-source prologue: init handle, point iter_var(s)
+// at their workspace slots.  Body's cel_map_iter_{key,value}_at
+// calls refresh those slots each iteration.
+void EmitMapPrologue(EmitCtx& ctx, const CompContext& c,
+                     std::vector<BinaryenExpressionRef>* instrs) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef init_args[1] = {I32Const(ctx.mod, c.source_slot)};
+  instrs->push_back(
+      BinaryenLocalSet(mod, c.aux0_local,
+                       BinaryenCall(mod, "cel_map_iter_init", init_args, 1,
+                                    BinaryenTypeInt32())));
+  instrs->push_back(BinaryenLocalSet(mod, c.iter_v->local_index,
+                                     I32Const(ctx.mod, c.iter_v->slot_offset)));
+  if (c.two_iter) {
+    instrs->push_back(
+        BinaryenLocalSet(mod, c.iter_v2->local_index,
+                         I32Const(ctx.mod, c.iter_v2->slot_offset)));
+  }
+}
+
+// List-source prologue: load list_hdr, derive iter_off + end_off.
+// Single-iter: iter_v.local doubles as iter_off (moving pointer).
+// Two-iter: iter_v2.local is the pointer; iter_v.local is the
+// fixed index-workspace slot offset; aux1_local = index counter.
+void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
                       std::vector<BinaryenExpressionRef>* instrs) {
   auto* mod = ctx.mod.raw();
-  instrs->push_back(BinaryenDrop(mod, range_value));
-  instrs->push_back(BinaryenDrop(mod, init_value));
-  instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
-  instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
-                                     I32Const(ctx.mod, c.accu_slot)));
-  if (c.map_source) {
-    // Map iter: handle = cel_map_iter_init(map_slot); store in
-    // aux0_local.  iter_var.local = iter_v->slot_offset (the key
-    // workspace slot, populated by cel_map_iter_key_at each iter).
-    BinaryenExpressionRef init_args[1] = {I32Const(ctx.mod, c.source_slot)};
-    instrs->push_back(
-        BinaryenLocalSet(mod, c.aux0_local,
-                         BinaryenCall(mod, "cel_map_iter_init", init_args, 1,
-                                      BinaryenTypeInt32())));
-    instrs->push_back(BinaryenLocalSet(
-        mod, c.iter_v->local_index, I32Const(ctx.mod, c.iter_v->slot_offset)));
-    return;
-  }
-  // List source: load list_hdr from list_slot.arena_list.header_ptr
-  // (offset 8), cache in aux0_local; then iter_off from header's
-  // elements_offset (offset 8); end_off = iter_off + count * 24.
-  // iter_var.local doubles as iter_off (uniform kIdent load).
+  const uint32_t ptr_local = ListIterPointerLocal(c);
   instrs->push_back(BinaryenLocalSet(
       mod, c.aux0_local,
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
                    /*align=*/4, BinaryenTypeInt32(),
                    I32Const(ctx.mod, c.source_slot), "memory")));
   instrs->push_back(BinaryenLocalSet(
-      mod, c.iter_v->local_index,
+      mod, ptr_local,
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
                    /*align=*/4, BinaryenTypeInt32(),
                    BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32()),
@@ -1224,9 +1249,59 @@ void EmitCompPrologue(EmitCtx& ctx, const CompContext& c,
       mod, c.aux0_local,
       BinaryenBinary(
           mod, BinaryenAddInt32(),
-          BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
+          BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
           BinaryenBinary(mod, BinaryenMulInt32(), count,
                          BinaryenConst(mod, BinaryenLiteralInt32(24))))));
+  if (c.two_iter) {
+    instrs->push_back(BinaryenLocalSet(
+        mod, c.iter_v->local_index, I32Const(ctx.mod, c.iter_v->slot_offset)));
+    instrs->push_back(
+        BinaryenLocalSet(mod, c.aux1_local, I32Const(ctx.mod, 0)));
+  }
+}
+
+void EmitCompPrologue(EmitCtx& ctx, const CompContext& c,
+                      BinaryenExpressionRef range_value,
+                      BinaryenExpressionRef init_value,
+                      std::vector<BinaryenExpressionRef>* instrs) {
+  auto* mod = ctx.mod.raw();
+  instrs->push_back(BinaryenDrop(mod, range_value));
+  instrs->push_back(BinaryenDrop(mod, init_value));
+  instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
+  instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
+                                     I32Const(ctx.mod, c.accu_slot)));
+  if (c.map_source) {
+    EmitMapPrologue(ctx, c, instrs);
+  } else {
+    EmitListPrologue(ctx, c, instrs);
+  }
+}
+
+// Slice F helper: write a `{kind=CEL_INT, payload.i=local_value}`
+// CelValue into `slot`.  Used per-iter for the list-two-iter
+// index binding.  CelValue is 24 bytes: kind:u32 at 0, _pad:u32
+// at 4, payload starting at offset 8 (int64 in the first 8 bytes).
+void EmitWriteIntCelValueToSlot(EmitCtx& ctx, uint32_t slot,
+                                uint32_t value_local,
+                                std::vector<BinaryenExpressionRef>* out) {
+  auto* mod = ctx.mod.raw();
+  // kind = CEL_INT (2)
+  out->push_back(BinaryenStore(mod, /*bytes=*/4, /*offset=*/0, /*align=*/4,
+                               I32Const(ctx.mod, slot),
+                               BinaryenConst(mod, BinaryenLiteralInt32(2)),
+                               BinaryenTypeInt32(), "memory"));
+  // _pad = 0 (defensive; rodata starts zeroed but we're writing in
+  // place into a workspace slot whose prior contents are unknown).
+  out->push_back(BinaryenStore(mod, /*bytes=*/4, /*offset=*/4, /*align=*/4,
+                               I32Const(ctx.mod, slot),
+                               BinaryenConst(mod, BinaryenLiteralInt32(0)),
+                               BinaryenTypeInt32(), "memory"));
+  // payload.i = sign-extend(value_local : i32) → i64 at offset 8.
+  out->push_back(BinaryenStore(
+      mod, /*bytes=*/8, /*offset=*/8, /*align=*/8, I32Const(ctx.mod, slot),
+      BinaryenUnary(mod, BinaryenExtendSInt32(),
+                    BinaryenLocalGet(mod, value_local, BinaryenTypeInt32())),
+      BinaryenTypeInt64(), "memory"));
 }
 
 // Loop-cond peephole detection.  Returns a br_if exit expression for
@@ -1362,37 +1437,80 @@ absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   return absl::OkStatus();
 }
 
+// Map-source loop-head: exit on iter_next() == 0; key_at +
+// (Slice F) value_at to refresh iter_var(s).
+void EmitMapLoopHead(EmitCtx& ctx, const CompContext& c,
+                     std::vector<BinaryenExpressionRef>* body) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef next_args[1] = {
+      BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
+  body->push_back(BinaryenBreak(
+      mod, c.exit_label.c_str(),
+      BinaryenUnary(mod, BinaryenEqZInt32(),
+                    BinaryenCall(mod, "cel_map_iter_next", next_args, 1,
+                                 BinaryenTypeInt32())),
+      nullptr));
+  BinaryenExpressionRef key_args[2] = {
+      I32Const(ctx.mod, c.iter_v->slot_offset),
+      BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
+  body->push_back(BinaryenCall(mod, "cel_map_iter_key_at", key_args, 2,
+                               BinaryenTypeNone()));
+  if (c.two_iter) {
+    BinaryenExpressionRef val_args[2] = {
+        I32Const(ctx.mod, c.iter_v2->slot_offset),
+        BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
+    body->push_back(BinaryenCall(mod, "cel_map_iter_value_at", val_args, 2,
+                                 BinaryenTypeNone()));
+  }
+}
+
+// List-source loop-head: exit on iter_off >= end_off; Slice F
+// two-iter also materialises {CEL_INT, i=index} in iter_var's slot.
+void EmitListLoopHead(EmitCtx& ctx, const CompContext& c,
+                      std::vector<BinaryenExpressionRef>* body) {
+  auto* mod = ctx.mod.raw();
+  const uint32_t ptr_local = ListIterPointerLocal(c);
+  body->push_back(BinaryenBreak(
+      mod, c.exit_label.c_str(),
+      BinaryenBinary(mod, BinaryenGeUInt32(),
+                     BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
+                     BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())),
+      nullptr));
+  if (c.two_iter) {
+    EmitWriteIntCelValueToSlot(ctx, c.iter_v->slot_offset, c.aux1_local, body);
+  }
+}
+
+// List-source loop-tail: advance moving pointer + bump index for
+// Slice F two-iter.  Map source's iter advance happens at the
+// head via cel_map_iter_next; nothing to do here.
+void EmitListLoopTail(EmitCtx& ctx, const CompContext& c,
+                      std::vector<BinaryenExpressionRef>* body) {
+  auto* mod = ctx.mod.raw();
+  const uint32_t ptr_local = ListIterPointerLocal(c);
+  body->push_back(BinaryenLocalSet(
+      mod, ptr_local,
+      BinaryenBinary(mod, BinaryenAddInt32(),
+                     BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
+                     BinaryenConst(mod, BinaryenLiteralInt32(24)))));
+  if (c.two_iter) {
+    body->push_back(BinaryenLocalSet(
+        mod, c.aux1_local,
+        BinaryenBinary(mod, BinaryenAddInt32(),
+                       BinaryenLocalGet(mod, c.aux1_local, BinaryenTypeInt32()),
+                       BinaryenConst(mod, BinaryenLiteralInt32(1)))));
+  }
+}
+
 absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const CompContext& c) {
   auto* mod = ctx.mod.raw();
   std::vector<BinaryenExpressionRef> body;
-  // Source-specific iter-advance + end-check + key materialisation.
   if (c.map_source) {
-    // Map: exit when cel_map_iter_next(handle) returns 0.  Otherwise
-    // refresh iter_var's key slot via cel_map_iter_key_at(slot, handle).
-    BinaryenExpressionRef next_args[1] = {
-        BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
-    body.push_back(BinaryenBreak(
-        mod, c.exit_label.c_str(),
-        BinaryenUnary(mod, BinaryenEqZInt32(),
-                      BinaryenCall(mod, "cel_map_iter_next", next_args, 1,
-                                   BinaryenTypeInt32())),
-        nullptr));
-    BinaryenExpressionRef key_args[2] = {
-        I32Const(ctx.mod, c.iter_v->slot_offset),
-        BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
-    body.push_back(BinaryenCall(mod, "cel_map_iter_key_at", key_args, 2,
-                                BinaryenTypeNone()));
+    EmitMapLoopHead(ctx, c, &body);
   } else {
-    // List: exit when iter_off >= end_off.
-    body.push_back(BinaryenBreak(
-        mod, c.exit_label.c_str(),
-        BinaryenBinary(
-            mod, BinaryenGeUInt32(),
-            BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
-            BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())),
-        nullptr));
+    EmitListLoopHead(ctx, c, &body);
   }
   auto cond_exit_or =
       BuildLoopCondExit(ctx, expr, c, comp.loop_condition(), comp.accu_var());
@@ -1401,17 +1519,7 @@ absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
   if (auto status = EmitCompLoopStep(ctx, comp, c, &body); !status.ok()) {
     return status;
   }
-  // List source: advance iter_off by sizeof(CelValue).  Map source:
-  // iter advance happens at the head of next iteration via
-  // cel_map_iter_next; nothing to do here.
-  if (!c.map_source) {
-    body.push_back(BinaryenLocalSet(
-        mod, c.iter_v->local_index,
-        BinaryenBinary(
-            mod, BinaryenAddInt32(),
-            BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
-            BinaryenConst(mod, BinaryenLiteralInt32(24)))));
-  }
+  if (!c.map_source) EmitListLoopTail(ctx, c, &body);
   body.push_back(
       BinaryenBreak(mod, c.continue_label.c_str(), nullptr, nullptr));
   BinaryenExpressionRef loop =

@@ -571,8 +571,6 @@ TEST_F(ComprehensionMapIterE2ETest, MapOverMapKeysSizeCheck) {
 class ComprehensionTwoIterVarE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionTwoIterVarE2ETest, ExistsTwoIterVarOverListIndexAndValue) {
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -582,8 +580,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, ExistsTwoIterVarOverListIndexAndValue) {
 }
 
 TEST_F(ComprehensionTwoIterVarE2ETest, AllTwoIterVarOverListIndexAndValue) {
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[10, 20, 30].all(i, v, v >= i * 10)");
@@ -592,8 +588,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, AllTwoIterVarOverListIndexAndValue) {
 }
 
 TEST_F(ComprehensionTwoIterVarE2ETest, ExistsTwoIterVarOverMapKeyAndValue) {
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -603,8 +597,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, ExistsTwoIterVarOverMapKeyAndValue) {
 }
 
 TEST_F(ComprehensionTwoIterVarE2ETest, AllTwoIterVarOverMapKeyAndValue) {
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -615,8 +607,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, AllTwoIterVarOverMapKeyAndValue) {
 
 TEST_F(ComprehensionTwoIterVarE2ETest, TransformListIndexPlusValueHalf) {
   // `[2,4,6].transformList(i, v, v/2 + i)` → `[1, 3, 5]`.
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -627,8 +617,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, TransformListIndexPlusValueHalf) {
 
 TEST_F(ComprehensionTwoIterVarE2ETest, TransformListConditional) {
   // `[2,4,6].transformList(i, v, i != 1, v/2 + i)` → `[1, 5]`.
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -640,8 +628,6 @@ TEST_F(ComprehensionTwoIterVarE2ETest, TransformListConditional) {
 TEST_F(ComprehensionTwoIterVarE2ETest, TransformListEmptySource) {
   // design §3.1: empty range → `[]`; per-iter divide-by-zero never
   // reached.
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].transformList(i, v, i / v) == []");
@@ -650,12 +636,13 @@ TEST_F(ComprehensionTwoIterVarE2ETest, TransformListEmptySource) {
 }
 
 TEST_F(ComprehensionTwoIterVarE2ETest, ExistsOneTwoIterVarOverList) {
-  GTEST_SKIP() << "M5.B.F ships here — see "
-                  "m5-comprehensions-followon.md §Slice F.";
+  // ComprehensionsV2 spells the three-arg form `existsOne` (camelCase),
+  // distinct from standard `exists_one` (snake_case 2-arg).  See
+  // design §2.3 macro 11.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "[10, 20, 30].exists_one(i, v, i == 1 && v == 20)");
+  auto instance =
+      CompilePlan(*compiler, "[10, 20, 30].existsOne(i, v, i == 1 && v == 20)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
