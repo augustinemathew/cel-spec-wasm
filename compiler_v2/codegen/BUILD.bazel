@@ -189,8 +189,14 @@ cc_test(
 # return Unimplemented.
 cc_library(
     name = "expr_lower",
-    srcs = ["expr_lower.cc"],
-    hdrs = ["expr_lower.h"],
+    srcs = [
+        "expr_lower.cc",
+        "expr_lower_comprehension.cc",
+    ],
+    hdrs = [
+        "expr_lower.h",
+        "expr_lower_internal.h",
+    ],
     deps = [
         ":layout_pass",
         ":module",
@@ -200,6 +206,7 @@ cc_library(
         "@binaryen//:binaryen",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:expr",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
