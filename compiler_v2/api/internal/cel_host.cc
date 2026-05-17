@@ -48,6 +48,27 @@ cel::Value MakeError(cel::ErrorCode code, std::string message) {
   });
 }
 
+// Forward declarations for the WKT-peel helpers used by both
+// `UnpackAnyToValue` (Any-of-WKT chain) and `ReadScalarField`
+// (singular CPPTYPE_MESSAGE arm).  Bodies are defined below in
+// this anonymous namespace alongside the other peelers.
+std::optional<cel::Value> UnpackWrapperMessage(
+    const google::protobuf::Message& sub);
+std::optional<cel::Value> UnpackWellKnownTimeMessage(
+    const google::protobuf::Message& sub);
+
+// M8.B — chain the two WKT peelers in a single call site: returns
+// the inner-scalar / Timestamp / Duration value if `sub` is one of
+// the recognised WKT message types, otherwise `std::nullopt`.
+// Lets both Any-unwrap and proto-field-read share one entry point
+// without duplicating the if-cascade.
+inline std::optional<cel::Value> MaybeUnpackWktMessage(
+    const google::protobuf::Message& sub) {
+  if (auto wrap = UnpackWrapperMessage(sub); wrap.has_value()) return wrap;
+  if (auto wkt = UnpackWellKnownTimeMessage(sub); wkt.has_value()) return wkt;
+  return std::nullopt;
+}
+
 // M7-A.B: parse `any.type_url`, look up the wrapped FQN in `pool`,
 // parse `any.value` against that descriptor, return an owning
 // backing.  Returns a `cel::Value`:
@@ -75,10 +96,10 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
   // FQN = substring after the last '/'.  No slash → FQN is the whole
   // string (probe B); subsequent pool lookup either resolves or fails.
   const size_t slash = type_url.rfind('/');
-  const absl::string_view fqn = (slash == absl::string_view::npos)
-                                    ? absl::string_view(type_url)
-                                    : absl::string_view(type_url).substr(
-                                          slash + 1);
+  const absl::string_view fqn =
+      (slash == absl::string_view::npos)
+          ? absl::string_view(type_url)
+          : absl::string_view(type_url).substr(slash + 1);
   const google::protobuf::Descriptor* sub_desc =
       pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
   if (sub_desc == nullptr) {
@@ -98,10 +119,16 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
   const std::string& bytes =
       any_refl->GetStringReference(any, value_fd, &val_scratch);
   if (!sub->ParseFromString(bytes)) {
-    return MakeError(cel::ErrorCode::kTypeMismatch,
-                     absl::StrCat("Any payload bytes don't parse against `",
-                                  fqn, "`"));
+    return MakeError(
+        cel::ErrorCode::kTypeMismatch,
+        absl::StrCat("Any payload bytes don't parse against `", fqn, "`"));
   }
+  // M8.B: chain wrapper-peel + WKT-time-peel after Any-unwrap so
+  // `Any{Int32Value{value:1}}` surfaces as `int 1` and
+  // `Any{Timestamp{...}}` as `CEL_TIMESTAMP` (instead of CEL_MESSAGE).
+  // Mirrors the same chain at `ReadScalarField` so Any-erased and
+  // field-erased WKT operands behave identically.
+  if (auto v = MaybeUnpackWktMessage(*sub); v.has_value()) return *std::move(v);
   return cel::Value::OwnedMessage(std::move(sub));
 }
 
@@ -138,6 +165,100 @@ std::optional<cel::Value> UnpackWellKnownTimeMessage(
   return cel::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
 }
 
+// M8.B: closed set of 9 google.protobuf wrapper FQNs.  Shared
+// between the unset-field-null gate in `ReadScalarField` and the
+// peel-the-inner-scalar `UnpackWrapperMessage` below (and chained
+// from `UnpackAnyToValue` for Any-of-wrapper).  Per langdef line
+// 484-486 the unset-wrapper-field-evaluates-to-null exception
+// applies regardless of proto syntax (proto2 and proto3 agree).
+bool IsWrapperFqn(absl::string_view fqn) {
+  return fqn == "google.protobuf.BoolValue" ||
+         fqn == "google.protobuf.Int32Value" ||
+         fqn == "google.protobuf.Int64Value" ||
+         fqn == "google.protobuf.UInt32Value" ||
+         fqn == "google.protobuf.UInt64Value" ||
+         fqn == "google.protobuf.FloatValue" ||
+         fqn == "google.protobuf.DoubleValue" ||
+         fqn == "google.protobuf.StringValue" ||
+         fqn == "google.protobuf.BytesValue";
+}
+
+// M8.B — well-known WRAPPER-type normaliser for proto field reads.
+// Mirror of `UnpackWellKnownTimeMessage` (m7b §4.8): when a
+// singular CPPTYPE_MESSAGE field resolves to one of the 9
+// google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
+// String,Bytes}Value types, peel the inner `value` field (number 1)
+// via reflection and return the matching cel::Value scalar.
+// Returns std::nullopt for any other message type — caller falls
+// back to HostMessage(ProtoBacking).
+//
+// Reflection-based: works for both generated-class messages
+// (DynamicCastToGenerated downcast) and dynamic messages loaded
+// from a runtime descriptor pool.
+//
+// Per langdef §"Dynamic Values" line 479 ("wrapper types |
+// converted as eponymous field type"): this helper handles the
+// SET case — reading the inner scalar.  The UNSET case
+// (field-evaluates-to-null per line 484-486) is gated at the
+// caller before this helper is reached.
+// String / bytes peel for the WKT wrapper inner `value` field.
+// CPPTYPE_STRING covers both string and bytes wire types — the
+// distinction comes from `field.type()`, not `cpp_type()`.  Pulled
+// out of `UnpackWrapperMessage` so the parent stays under the
+// readability-function-size gate (9-branch dispatch + this branch
+// would otherwise overflow).
+cel::Value UnpackWrapperStringOrBytes(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& sub,
+    const google::protobuf::FieldDescriptor& vf) {
+  std::string scratch;
+  std::string s(refl.GetStringReference(sub, &vf, &scratch));
+  if (vf.type() == google::protobuf::FieldDescriptor::TYPE_BYTES) {
+    return cel::Value::Bytes(std::move(s));
+  }
+  return cel::Value::String(std::move(s));
+}
+
+std::optional<cel::Value> UnpackWrapperMessage(
+    const google::protobuf::Message& sub) {
+  const google::protobuf::Descriptor* d = sub.GetDescriptor();
+  if (d == nullptr) return std::nullopt;
+  if (!IsWrapperFqn(d->full_name())) return std::nullopt;
+  const google::protobuf::Reflection* refl = sub.GetReflection();
+  if (refl == nullptr) return std::nullopt;
+  const google::protobuf::FieldDescriptor* vf = d->FindFieldByNumber(1);
+  if (vf == nullptr) return std::nullopt;
+  // Dispatch on the inner `value` field's cpp_type — closed set per
+  // the 9 wrapper definitions.  IsWrapperFqn above gates entry, so
+  // any other cpp_type here is an invariant violation (corrupted
+  // descriptor pool); CHECK at the default arm.
+  using FD = google::protobuf::FieldDescriptor;
+  switch (vf->cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      return cel::Value::Bool(refl->GetBool(sub, vf));
+    case FD::CPPTYPE_INT32:
+      return cel::Value::Int(refl->GetInt32(sub, vf));
+    case FD::CPPTYPE_INT64:
+      return cel::Value::Int(refl->GetInt64(sub, vf));
+    case FD::CPPTYPE_UINT32:
+      return cel::Value::Uint(refl->GetUInt32(sub, vf));
+    case FD::CPPTYPE_UINT64:
+      return cel::Value::Uint(refl->GetUInt64(sub, vf));
+    case FD::CPPTYPE_FLOAT:
+      return cel::Value::Double(refl->GetFloat(sub, vf));
+    case FD::CPPTYPE_DOUBLE:
+      return cel::Value::Double(refl->GetDouble(sub, vf));
+    case FD::CPPTYPE_STRING:
+      return UnpackWrapperStringOrBytes(*refl, sub, *vf);
+    default:
+      ABSL_CHECK(false)
+          << "UnpackWrapperMessage: WKT-wrapper FQN claims an unexpected "
+             "inner cpp_type "
+          << static_cast<int>(vf->cpp_type());
+      return std::nullopt;
+  }
+}
+
 // Port of v1 `ReadNumericField` — dispatches on the field's
 // `cpp_type` to build a `cel::Value` of the matching scalar kind.
 // Returns `std::nullopt` on non-numeric fields; the caller handles
@@ -170,6 +291,54 @@ std::optional<cel::Value> ReadNumericField(
   }
 }
 
+// Read a singular CPPTYPE_MESSAGE field, applying the langdef
+// §"Field Selection" presence rules and the WKT auto-peel chain
+// (M7-A.B Any-unwrap, m7b §4.8 Timestamp / Duration peel, M8.B
+// wrapper peel).  Extracted from `ReadScalarField` so the dispatch
+// ladder there stays under the readability-function-size gate.
+//
+// Presence rules:
+//   - Wrapper-typed unset field           → Null (langdef line 484-486;
+//                                          both proto2 and proto3,
+//                                          exception to default-msg).
+//   - Proto3 generic-message unset field  → Null (langdef §"Field
+//                                          Selection").
+//   - Proto2 generic-message unset field  → default-instance message.
+//
+// Peel chain (after presence resolves the field is set OR proto2
+// default-instance):
+//   - Any → UnpackAnyToValue (chains wrapper / WKT-time peels).
+//   - Wrapper → inner scalar (CEL_BOOL/INT/UINT/DOUBLE/STRING/BYTES).
+//   - Timestamp / Duration → CEL_TIMESTAMP / CEL_DURATION.
+//   - Otherwise → HostMessage(ProtoBacking).
+absl::StatusOr<cel::Value> ReadSingularMessageField(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field) {
+  const google::protobuf::Descriptor* mt = field.message_type();
+  if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
+      !refl.HasField(msg, &field)) {
+    return cel::Value::Null();
+  }
+  const google::protobuf::FileDescriptor* file =
+      field.containing_type()->file();
+  const bool is_proto3 =
+      file != nullptr &&
+      google::protobuf::FileDescriptorLegacy(file).edition() ==
+          google::protobuf::EDITION_PROTO3;
+  if (is_proto3 && !refl.HasField(msg, &field)) {
+    return cel::Value::Null();
+  }
+  const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+  if (mt != nullptr && mt->full_name() == "google.protobuf.Any") {
+    return UnpackAnyToValue(sub, mt->file()->pool());
+  }
+  if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
+    return *std::move(v);
+  }
+  return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+}
+
 // Read one singular proto field, returning the matching cel::Value.
 // Non-OK Status is reserved for infrastructure failures (reflection
 // missing, descriptor null) — spec-level errors (field not found,
@@ -195,42 +364,7 @@ absl::StatusOr<cel::Value> ReadScalarField(
     return cel::Value::String(std::string(s));
   }
   if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
-    // langdef §"Field Selection": proto3 unset singular message
-    // reads as `null`; proto2 reads as the descriptor's default
-    // instance.  Protobuf's `Reflection::GetMessage` already
-    // returns the default-instance for unset fields in both
-    // syntaxes, so the proto2 path is just "wrap GetMessage".
-    // The only override is proto3-null on unset.
-    const google::protobuf::FileDescriptor* file =
-        field.containing_type()->file();
-    const bool is_proto3 =
-        file != nullptr &&
-        google::protobuf::FileDescriptorLegacy(file).edition() ==
-            google::protobuf::EDITION_PROTO3;
-    if (is_proto3 && !refl->HasField(msg, &field)) {
-      return cel::Value::Null();
-    }
-    const google::protobuf::Message& sub = refl->GetMessage(msg, &field);
-    // M7-A.B: Any-typed singular fields unwrap on read — return the
-    // wrapped value as-if-of-the-wrapped-type per langdef §"Protocol
-    // Buffer Data Conversion".  Unpack pool is the Any descriptor's
-    // own pool, which matches whatever pool the embedder loaded the
-    // outer schema from.
-    if (field.message_type() != nullptr &&
-        field.message_type()->full_name() == "google.protobuf.Any") {
-      return UnpackAnyToValue(sub, field.message_type()->file()->pool());
-    }
-    // m7b §4.8: Timestamp / Duration well-known-type fields normalise
-    // on read to cel::Value::Timestamp / cel::Value::Duration so they
-    // downstream-encode as CEL_TIMESTAMP / CEL_DURATION (vs the
-    // CEL_MESSAGE arm just below).  Bridges the cross-form
-    // equivalence in §3.4: a `Timestamp{seconds: 1}` literal field
-    // read back here returns the same kind as `timestamp("...")`
-    // when constructed.
-    if (auto wkt = UnpackWellKnownTimeMessage(sub); wkt.has_value()) {
-      return *std::move(wkt);
-    }
-    return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+    return ReadSingularMessageField(*refl, msg, field);
   }
   return absl::InternalError(absl::StrCat(
       "ProtoBacking::ReadField: unhandled cpp_type ",
@@ -1653,8 +1787,7 @@ static const google::protobuf::Message* absl_nullable PeelAnyForEq(
       m->GetDescriptor()->full_name() != "google.protobuf.Any") {
     return m;
   }
-  cel::Value peeled =
-      UnpackAnyToValue(*m, m->GetDescriptor()->file()->pool());
+  cel::Value peeled = UnpackAnyToValue(*m, m->GetDescriptor()->file()->pool());
   if (peeled.kind() != cel::Value::Kind::kMessage) return nullptr;
   auto backing_or = peeled.MessageBacking();
   if (!backing_or.ok() || (*backing_or)->message() == nullptr) return nullptr;
@@ -2764,7 +2897,7 @@ bool RejectsAsDurationPerCEL(absl::string_view input) {
     // Hit a non-digit: must be a unit letter.
     const char next = i + 1 < input.size() ? input[i + 1] : 0;
     const int rank = UnitRank(c, next == 's' ? 's' : 0);
-    if (rank < 0) return true;  // unknown unit
+    if (rank < 0) return true;           // unknown unit
     if (rank >= prev_rank) return true;  // not strictly decreasing
     prev_rank = rank;
     i += (rank == 0 || rank == 1 || rank == 2) ? 2 : 1;  // 2-char ms/us/ns
@@ -2775,7 +2908,7 @@ bool RejectsAsDurationPerCEL(absl::string_view input) {
 }  // namespace
 
 absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
-                                    const TrampolineContext& ctx) {
+                                   const TrampolineContext& ctx) {
   CelValue in = ctx.mem.ReadCelValue(str_slot);
   if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
     ctx.mem.WriteCelValue(out_slot, in);
@@ -2785,7 +2918,8 @@ absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
     WriteInvalidArgumentError(out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  const absl::string_view s = ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
+  const absl::string_view s =
+      ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
   absl::Time t;
   std::string err;
   if (!absl::ParseTime(absl::RFC3339_full, s, &t, &err) ||
@@ -2819,7 +2953,7 @@ absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
 }
 
 absl::Status CelDurationParseImpl(uint32_t out_slot, uint32_t str_slot,
-                                   const TrampolineContext& ctx) {
+                                  const TrampolineContext& ctx) {
   CelValue in = ctx.mem.ReadCelValue(str_slot);
   if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
     ctx.mem.WriteCelValue(out_slot, in);
@@ -2829,7 +2963,8 @@ absl::Status CelDurationParseImpl(uint32_t out_slot, uint32_t str_slot,
     WriteInvalidArgumentError(out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  const absl::string_view s = ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
+  const absl::string_view s =
+      ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
   absl::Duration d;
   if (!absl::ParseDuration(s, &d) || RejectsAsDurationPerCEL(s)) {
     WriteInvalidArgumentError(out_slot, ctx.mem);
@@ -2884,11 +3019,10 @@ std::string FormatProtoDuration(int64_t seconds, int32_t nanos) {
   const bool negative = seconds < 0 || nanos < 0;
   if (negative) out.push_back('-');
   // Absolute values; INT64_MIN handled via uint64 cast.
-  const uint64_t abs_s = seconds < 0
-                             ? static_cast<uint64_t>(-(seconds + 1)) + 1
-                             : static_cast<uint64_t>(seconds);
-  const uint32_t abs_n = nanos < 0 ? static_cast<uint32_t>(-nanos)
-                                    : static_cast<uint32_t>(nanos);
+  const uint64_t abs_s = seconds < 0 ? static_cast<uint64_t>(-(seconds + 1)) + 1
+                                     : static_cast<uint64_t>(seconds);
+  const uint32_t abs_n =
+      nanos < 0 ? static_cast<uint32_t>(-nanos) : static_cast<uint32_t>(nanos);
   absl::StrAppend(&out, abs_s);
   if (abs_n != 0) {
     out.push_back('.');
@@ -2910,7 +3044,7 @@ std::string FormatProtoDuration(int64_t seconds, int32_t nanos) {
 }  // namespace
 
 absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
-                                     const TrampolineContext& ctx) {
+                                    const TrampolineContext& ctx) {
   CelValue in = ctx.mem.ReadCelValue(ts_slot);
   if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
     ctx.mem.WriteCelValue(out_slot, in);
@@ -2928,8 +3062,7 @@ absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
   // proto Timestamp text format use `Z`.  absl::FormatTime emits
   // `+00:00`; rewrite the trailing offset.
   constexpr absl::string_view kUtcOffset = "+00:00";
-  if (s.size() > kUtcOffset.size() &&
-      absl::EndsWith(s, kUtcOffset)) {
+  if (s.size() > kUtcOffset.size() && absl::EndsWith(s, kUtcOffset)) {
     s.resize(s.size() - kUtcOffset.size());
     s.push_back('Z');
   }
@@ -2937,7 +3070,7 @@ absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
 }
 
 absl::Status CelDurationFormatImpl(uint32_t out_slot, uint32_t dur_slot,
-                                    const TrampolineContext& ctx) {
+                                   const TrampolineContext& ctx) {
   CelValue in = ctx.mem.ReadCelValue(dur_slot);
   if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
     ctx.mem.WriteCelValue(out_slot, in);
@@ -2979,20 +3112,20 @@ enum class TzAccessorKind : uint8_t {
   kMilliseconds = 9,
 };
 
-int64_t ProjectCivilField(const absl::CivilSecond& cs,
-                          absl::Weekday weekday, int day_of_year,
-                          int64_t ns_in_second, TzAccessorKind kind) {
+int64_t ProjectCivilField(const absl::CivilSecond& cs, absl::Weekday weekday,
+                          int day_of_year, int64_t ns_in_second,
+                          TzAccessorKind kind) {
   switch (kind) {
     case TzAccessorKind::kYear:
       return cs.year();
     case TzAccessorKind::kMonth:
       return cs.month() - 1;  // cel-cpp 0-based
     case TzAccessorKind::kDayOfMonth1:
-      return cs.day();        // 1-based
+      return cs.day();  // 1-based
     case TzAccessorKind::kDayOfMonth:
-      return cs.day() - 1;    // 0-based
+      return cs.day() - 1;  // 0-based
     case TzAccessorKind::kDayOfYear:
-      return day_of_year - 1; // absl 1-based → cel-cpp 0-based
+      return day_of_year - 1;  // absl 1-based → cel-cpp 0-based
     case TzAccessorKind::kDayOfWeek:
       // absl::Weekday: monday=0..sunday=6.  cel-cpp: sunday=0..saturday=6.
       return (static_cast<int>(weekday) + 1) % 7;
@@ -3102,9 +3235,9 @@ absl::Status CelTimestampTzAccessorImpl(uint32_t out_slot, uint32_t ts_slot,
   const absl::TimeZone::CivilInfo info = tz.At(t);
   const int day_of_year = absl::GetYearDay(absl::CivilDay(info.cs));
   const absl::Weekday weekday = absl::GetWeekday(absl::CivilDay(info.cs));
-  const int64_t result = ProjectCivilField(
-      info.cs, weekday, day_of_year, ts_cv.payload.ts.nanos,
-      static_cast<TzAccessorKind>(accessor_kind));
+  const int64_t result =
+      ProjectCivilField(info.cs, weekday, day_of_year, ts_cv.payload.ts.nanos,
+                        static_cast<TzAccessorKind>(accessor_kind));
   CelValue out{};
   out.kind = CEL_INT;
   out.payload.i = result;
@@ -3128,8 +3261,7 @@ absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
     ctx.mem.WriteCelValue(out_slot, err);
     return absl::OkStatus();
   }
-  const HostMessageBacking* backing =
-      ctx.refs.Lookup(in.payload.msg_slot);
+  const HostMessageBacking* backing = ctx.refs.Lookup(in.payload.msg_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(
         absl::StrCat("CelWktUnwrapTimeImpl: msg_slot ", in.payload.msg_slot,

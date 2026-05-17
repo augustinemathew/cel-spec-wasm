@@ -94,11 +94,15 @@ using ::absl_testing::IsOk;
       google::protobuf::LinkMessageReflection<::google::protobuf::BoolValue>();
       google::protobuf::LinkMessageReflection<::google::protobuf::Int32Value>();
       google::protobuf::LinkMessageReflection<::google::protobuf::Int64Value>();
-      google::protobuf::LinkMessageReflection<::google::protobuf::UInt32Value>();
-      google::protobuf::LinkMessageReflection<::google::protobuf::UInt64Value>();
+      google::protobuf::LinkMessageReflection<
+          ::google::protobuf::UInt32Value>();
+      google::protobuf::LinkMessageReflection<
+          ::google::protobuf::UInt64Value>();
       google::protobuf::LinkMessageReflection<::google::protobuf::FloatValue>();
-      google::protobuf::LinkMessageReflection<::google::protobuf::DoubleValue>();
-      google::protobuf::LinkMessageReflection<::google::protobuf::StringValue>();
+      google::protobuf::LinkMessageReflection<
+          ::google::protobuf::DoubleValue>();
+      google::protobuf::LinkMessageReflection<
+          ::google::protobuf::StringValue>();
       google::protobuf::LinkMessageReflection<::google::protobuf::BytesValue>();
       google::protobuf::LinkMessageReflection<::google::protobuf::Any>();
       return 0;
@@ -130,7 +134,7 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 // ready for slice-by-slice migration (mirrors m7b_test.cc).
 
 [[maybe_unused]] Instance CompilePlan(const Compiler& compiler,
-                                       absl::string_view source) {
+                                      absl::string_view source) {
   auto program = compiler.Compile(source);
   ABSL_CHECK_OK(program) << source;
   auto instance = GlobalEngine().Plan(*program);
@@ -138,15 +142,16 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
   return *std::move(instance);
 }
 
-[[maybe_unused]] Value EvalOk(Instance& instance, const Activation& activation) {
+[[maybe_unused]] Value EvalOk(Instance& instance,
+                              const Activation& activation) {
   auto v = instance.Eval(activation);
   ABSL_CHECK_OK(v);
   return *std::move(v);
 }
 
 [[maybe_unused]] void ExpectCompileFails(const Compiler& compiler,
-                                          absl::string_view source,
-                                          absl::string_view why) {
+                                         absl::string_view source,
+                                         absl::string_view why) {
   auto program_or = compiler.Compile(source);
   EXPECT_FALSE(program_or.ok())
       << "expected `" << source << "` to fail at compile (" << why << ")";
@@ -225,10 +230,10 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int64ValueSetToBoundaryMaxPeels) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "google.protobuf.Int64Value{value: 9223372036854775807} == "
-      "9223372036854775807");
+  auto instance =
+      CompilePlan(*compiler,
+                  "google.protobuf.Int64Value{value: 9223372036854775807} == "
+                  "9223372036854775807");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -238,7 +243,8 @@ TEST_F(WrapperLiteralUnwrapE2ETest, UInt32ValueSetToBoundaryMaxPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler, "google.protobuf.UInt32Value{value: 4294967295u} == 4294967295u");
+      *compiler,
+      "google.protobuf.UInt32Value{value: 4294967295u} == 4294967295u");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -260,8 +266,8 @@ TEST_F(WrapperLiteralUnwrapE2ETest, FloatValueSetToValuePeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   // Floats peel to double in CEL (no float kind); cel-cpp widens.
-  auto instance = CompilePlan(
-      *compiler, "google.protobuf.FloatValue{value: 1.5} == 1.5");
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.FloatValue{value: 1.5} == 1.5");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -271,8 +277,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, DoubleValueSetToValuePeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "google.protobuf.DoubleValue{value: 3.14159} == 3.14159");
+      *compiler, "google.protobuf.DoubleValue{value: 3.14159} == 3.14159");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -283,8 +288,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, StringValueSetToUnicodePeels) {
   ASSERT_THAT(compiler, IsOk());
   // dynamic.textproto literal_unicode row: multi-byte UTF-8.
   auto instance = CompilePlan(
-      *compiler,
-      R"(google.protobuf.StringValue{value: "flambé"} == "flambé")");
+      *compiler, R"(google.protobuf.StringValue{value: "flambé"} == "flambé")");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -358,8 +362,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt32ValuePeelsToZero) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.UInt32Value{} == 0u");
+  auto instance = CompilePlan(*compiler, "google.protobuf.UInt32Value{} == 0u");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -368,8 +371,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt64ValuePeelsToZero) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.UInt64Value{} == 0u");
+  auto instance = CompilePlan(*compiler, "google.protobuf.UInt64Value{} == 0u");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -378,8 +380,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyFloatValuePeelsToZero) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.FloatValue{} == 0.0");
+  auto instance = CompilePlan(*compiler, "google.protobuf.FloatValue{} == 0.0");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -463,8 +464,7 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBoolValueIsNotNull) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.BoolValue{} == null");
+  auto instance = CompilePlan(*compiler, "google.protobuf.BoolValue{} == null");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
 }
@@ -497,10 +497,9 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueEqualsItselfAfterPeel) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "google.protobuf.Int32Value{value: 1} == "
-      "google.protobuf.Int32Value{value: 1}");
+  auto instance = CompilePlan(*compiler,
+                              "google.protobuf.Int32Value{value: 1} == "
+                              "google.protobuf.Int32Value{value: 1}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -509,10 +508,9 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueDiffersFromOtherValue) {
   GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "google.protobuf.Int32Value{value: 1} != "
-      "google.protobuf.Int32Value{value: 2}");
+  auto instance = CompilePlan(*compiler,
+                              "google.protobuf.Int32Value{value: 1} != "
+                              "google.protobuf.Int32Value{value: 2}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -552,7 +550,6 @@ class WrapperFieldReadE2ETest : public ::testing::Test {};
 // — Unset field reads as null (the load-bearing M8.B row) —
 
 TEST_F(WrapperFieldReadE2ETest, UnsetInt32WrapperReadsAsNullProto3) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -564,7 +561,6 @@ TEST_F(WrapperFieldReadE2ETest, UnsetInt32WrapperReadsAsNullProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, UnsetInt32WrapperReadsAsNullProto2) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -576,7 +572,6 @@ TEST_F(WrapperFieldReadE2ETest, UnsetInt32WrapperReadsAsNullProto2) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, UnsetBoolWrapperReadsAsNullProto3) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -588,7 +583,6 @@ TEST_F(WrapperFieldReadE2ETest, UnsetBoolWrapperReadsAsNullProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, UnsetStringWrapperReadsAsNullProto3) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -600,7 +594,6 @@ TEST_F(WrapperFieldReadE2ETest, UnsetStringWrapperReadsAsNullProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, UnsetBytesWrapperReadsAsNullProto2) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -615,7 +608,6 @@ TEST_F(WrapperFieldReadE2ETest, UnsetBytesWrapperReadsAsNullProto2) {
 //   value-vs-null peel; presence is descriptor-level. —
 
 TEST_F(WrapperFieldReadE2ETest, HasUnsetWrapperIsFalseProto3) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -626,7 +618,6 @@ TEST_F(WrapperFieldReadE2ETest, HasUnsetWrapperIsFalseProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, HasUnsetWrapperIsFalseProto2) {
-  GTEST_SKIP() << "M8.B ships here (see m8-wrapper-types.md §M8.B)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -645,10 +636,9 @@ TEST_F(WrapperFieldReadE2ETest, HasSetToZeroWrapperIsTrueProto3) {
   GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "has(cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32_wrapper: 0}.single_int32_wrapper)");
+  auto instance = CompilePlan(*compiler,
+                              "has(cel.expr.conformance.proto3.TestAllTypes{"
+                              "single_int32_wrapper: 0}.single_int32_wrapper)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -657,10 +647,9 @@ TEST_F(WrapperFieldReadE2ETest, HasSetWrapperIsTrueProto2) {
   GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "has(cel.expr.conformance.proto2.TestAllTypes{"
-      "single_int32_wrapper: 5}.single_int32_wrapper)");
+  auto instance = CompilePlan(*compiler,
+                              "has(cel.expr.conformance.proto2.TestAllTypes{"
+                              "single_int32_wrapper: 5}.single_int32_wrapper)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -672,10 +661,10 @@ TEST_F(WrapperFieldReadE2ETest, SetToZeroReadsAsScalarNotNullProto3) {
   GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32_wrapper: 0}.single_int32_wrapper == null");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int32_wrapper: 0}.single_int32_wrapper == null");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
 }
@@ -685,9 +674,8 @@ TEST_F(WrapperFieldReadE2ETest, SetToEmptyStringReadsAsScalarNotNullProto3) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"(cel.expr.conformance.proto3.TestAllTypes{)"
-      R"(single_string_wrapper: ""}.single_string_wrapper == null)");
+      *compiler, R"(cel.expr.conformance.proto3.TestAllTypes{)"
+                 R"(single_string_wrapper: ""}.single_string_wrapper == null)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
 }
@@ -712,7 +700,6 @@ TEST_F(WrapperFieldReadE2ETest, SetToEmptyStringReadsAsScalarNotNullProto3) {
 class WrapperAnyChainE2ETest : public ::testing::Test {};
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfInt32ValuePeelsToInt) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   // Construct TestAllTypes{single_any: Int32Value{value: 7}} on the
   // host side so the read-side Any-of-wrapper chain is exercised in
   // isolation from M8.A's construction path.
@@ -732,7 +719,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfInt32ValuePeelsToInt) {
 }
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfBoolValuePeelsToBool) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   ::cel::expr::conformance::proto3::TestAllTypes m;
   ::google::protobuf::BoolValue inner;
   inner.set_value(true);
@@ -749,7 +735,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfBoolValuePeelsToBool) {
 }
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfStringValuePeelsToString) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   ::cel::expr::conformance::proto3::TestAllTypes m;
   ::google::protobuf::StringValue inner;
   inner.set_value("hello");
@@ -766,7 +751,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfStringValuePeelsToString) {
 }
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfBytesValuePeelsToBytes) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   ::cel::expr::conformance::proto3::TestAllTypes m;
   ::google::protobuf::BytesValue inner;
   inner.set_value("abc");
@@ -783,7 +767,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfBytesValuePeelsToBytes) {
 }
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfDoubleValuePeelsToDouble) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   ::cel::expr::conformance::proto3::TestAllTypes m;
   ::google::protobuf::DoubleValue inner;
   inner.set_value(2.5);
@@ -800,7 +783,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfDoubleValuePeelsToDouble) {
 }
 
 TEST_F(WrapperAnyChainE2ETest, AnyOfUInt64ValuePeelsToUint) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   ::cel::expr::conformance::proto3::TestAllTypes m;
   ::google::protobuf::UInt64Value inner;
   inner.set_value(42);
@@ -820,7 +802,6 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfUInt64ValuePeelsToUint) {
 // erroneously peeled.  M8.B's chain only fires when the inner
 // descriptor is in the wrapper-FQN set.
 TEST_F(WrapperAnyChainE2ETest, AnyOfNonWrapperMessageStaysMessage) {
-  GTEST_SKIP() << "M8.B ships here (Any-chain; see m8-wrapper-types.md §M8.B)";
   // Inner is a TestAllTypes (NOT a wrapper); the outer field's read
   // should return a non-wrapper message that compares equal to the
   // inner via cel_message_eq (M5.B).  Tests that B's wrapper-peel
@@ -836,10 +817,10 @@ TEST_F(WrapperAnyChainE2ETest, AnyOfNonWrapperMessageStaysMessage) {
   ASSERT_THAT(compiler, IsOk());
   // Read m.single_any (the non-wrapper inner) and compare to a
   // freshly-constructed equivalent.  No peel should fire.
-  auto instance = CompilePlan(
-      *compiler,
-      "m.single_any == cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32: 99}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "m.single_any == cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int32: 99}");
   Activation a;
   a.Bind("m", Value::Message(outer));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
@@ -919,13 +900,13 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapInt64BoundaryMaxEqualsExplicit) {
   GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int64_wrapper: 9223372036854775807} == "
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int64_wrapper: google.protobuf.Int64Value{"
-      "value: 9223372036854775807}}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int64_wrapper: 9223372036854775807} == "
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int64_wrapper: google.protobuf.Int64Value{"
+                  "value: 9223372036854775807}}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -934,13 +915,13 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapUInt64BoundaryMaxEqualsExplicit) {
   GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_uint64_wrapper: 18446744073709551615u} == "
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_uint64_wrapper: google.protobuf.UInt64Value{"
-      "value: 18446744073709551615u}}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_uint64_wrapper: 18446744073709551615u} == "
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_uint64_wrapper: google.protobuf.UInt64Value{"
+                  "value: 18446744073709551615u}}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -951,7 +932,8 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapDoubleEqualsExplicit) {
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
       *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{single_double_wrapper: 3.14} == "
+      "cel.expr.conformance.proto3.TestAllTypes{single_double_wrapper: 3.14} "
+      "== "
       "cel.expr.conformance.proto3.TestAllTypes{"
       "single_double_wrapper: google.protobuf.DoubleValue{value: 3.14}}");
   Activation a;
@@ -1045,10 +1027,10 @@ TEST_F(WrapperConstructionE2ETest, NullIntoStringWrapperClearsField) {
   GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: null} == "
-      "cel.expr.conformance.proto3.TestAllTypes{}");
+  auto instance = CompilePlan(*compiler,
+                              "cel.expr.conformance.proto3.TestAllTypes{single_"
+                              "string_wrapper: null} == "
+                              "cel.expr.conformance.proto3.TestAllTypes{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1230,10 +1212,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto3) {
   GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32_wrapper: 5}.single_int32_wrapper == 5");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int32_wrapper: 5}.single_int32_wrapper == 5");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1242,10 +1224,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto2) {
   GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto2.TestAllTypes{"
-      "single_int32_wrapper: 5}.single_int32_wrapper == 5");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto2.TestAllTypes{"
+                  "single_int32_wrapper: 5}.single_int32_wrapper == 5");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1254,10 +1236,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackBoolProto3) {
   GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_bool_wrapper: true}.single_bool_wrapper == true");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_bool_wrapper: true}.single_bool_wrapper == true");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1290,10 +1272,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackDoubleProto3) {
   GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_double_wrapper: 3.14}.single_double_wrapper == 3.14");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_double_wrapper: 3.14}.single_double_wrapper == 3.14");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1302,10 +1284,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackUInt64Proto3) {
   GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_uint64_wrapper: 42u}.single_uint64_wrapper == 42u");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_uint64_wrapper: 42u}.single_uint64_wrapper == 42u");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1330,10 +1312,10 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackSetToZeroIsScalar) {
   // `enable_empty_wrapper_null_unboxing=true` mandates this).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32_wrapper: 0}.single_int32_wrapper == 0");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int32_wrapper: 0}.single_int32_wrapper == 0");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1346,11 +1328,11 @@ TEST_F(WrapperRoundTripE2ETest, ExplicitWrapperConstructionReadsScalar) {
   GTEST_SKIP() << "M8.B ships the read-half; explicit construction is M7.E";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "cel.expr.conformance.proto3.TestAllTypes{"
-      "single_int32_wrapper: google.protobuf.Int32Value{value: 5}}"
-      ".single_int32_wrapper == 5");
+  auto instance =
+      CompilePlan(*compiler,
+                  "cel.expr.conformance.proto3.TestAllTypes{"
+                  "single_int32_wrapper: google.protobuf.Int32Value{value: 5}}"
+                  ".single_int32_wrapper == 5");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1373,9 +1355,9 @@ TEST_F(WrapperRejectE2ETest, CrossKindEqRejectedByChecker) {
   // of the wrapper peel — but the row pins the guarantee.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(
-      *compiler, R"(google.protobuf.Int32Value{value: 1} == "1")",
-      "cross-kind == (int vs string after wrapper peel)");
+  ExpectCompileFails(*compiler,
+                     R"(google.protobuf.Int32Value{value: 1} == "1")",
+                     "cross-kind == (int vs string after wrapper peel)");
 }
 
 TEST_F(WrapperRejectE2ETest, WrongScalarKindIntoStringWrapperRejected) {
