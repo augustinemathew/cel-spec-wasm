@@ -1,0 +1,8 @@
+# Local toolchain — sideloaded, not part of the repo
+wasi-sdk-25.0-arm64-macos/
+wasi-sdk.tar.gz
+# Cloned for the RE2 attempt — too large to commit
+re2/
+abseil-cpp/
+# Build artifacts
+*.wasm
