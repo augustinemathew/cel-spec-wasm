@@ -3488,7 +3488,7 @@ absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
 // its variant).
 // ══════════════════════════════════════════════════════════════════
 
-namespace cel {
+namespace celwasm::api {
 
 Value Value::Message(const google::protobuf::Message& m) {
   return Value::HostMessage(std::make_shared<celwasm::ProtoBacking>(&m));
@@ -3525,4 +3525,4 @@ Value Value::HostList(std::shared_ptr<celwasm::HostListBacking> backing) {
   return r;
 }
 
-}  // namespace cel
+}  // namespace celwasm::api

@@ -27,7 +27,7 @@
 
 #include "absl/types/span.h"
 
-namespace cel {
+namespace celwasm::api {
 
 class Program {
  public:
@@ -56,6 +56,11 @@ class Program {
   std::vector<uint8_t> wasm_bytes_;
 };
 
+}  // namespace celwasm::api
+
+// Backward-compat alias — see value.h for rationale.
+namespace cel {
+using ::celwasm::api::Program;
 }  // namespace cel
 
 #endif  // CELWASM_COMPILER_V2_API_PROGRAM_H_

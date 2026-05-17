@@ -27,7 +27,12 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 
-namespace cel {
+namespace celwasm::api {
+
+// Pulled in from `namespace cel` (type.h / program.h re-exports
+// from celwasm::api but `CelType` still lives in `cel`).  Lets the
+// class bodies refer to them unqualified.
+using ::cel::CelType;
 
 // One declared free variable: name + static type.  Introspected via
 // `Compiler::declared_variables()`; the checker resolves each ident
@@ -199,6 +204,15 @@ class Compiler::Builder {
   std::vector<VariableDeclaration> declared_variables_;
 };
 
+}  // namespace celwasm::api
+
+// Backward-compat aliases — see value.h for rationale.  cel-cpp
+// defines `cel::Compiler` in `compiler/compiler.h`; we now live under
+// `celwasm::api` to avoid the ODR collision.
+namespace cel {
+using ::celwasm::api::Compiler;
+using ::celwasm::api::CompilerOptions;
+using ::celwasm::api::VariableDeclaration;
 }  // namespace cel
 
 #endif  // CELWASM_COMPILER_V2_API_COMPILER_H_

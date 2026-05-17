@@ -16,7 +16,7 @@
 #include "compiler_v2/api/error.h"
 #include "google/protobuf/message.h"  // needed for ~unique_ptr<Message>
 
-namespace cel {
+namespace celwasm::api {
 
 namespace {
 
@@ -294,4 +294,4 @@ absl::string_view ValueKindName(Value::Kind k) {
   ABSL_CHECK(false) << "unhandled Value::Kind = " << static_cast<int>(k);
 }
 
-}  // namespace cel
+}  // namespace celwasm::api
