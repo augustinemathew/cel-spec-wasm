@@ -366,6 +366,12 @@ genrule(
         "-Wl,--export=cel_map_size",
         "-Wl,--export=cel_map_in",
         "-Wl,--export=cel_map_eq",
+        # M5.B Slice E: map-key iteration helpers used by
+        # comprehensions over a `map(K, V)` source.
+        "-Wl,--export=cel_map_iter_init",
+        "-Wl,--export=cel_map_iter_next",
+        "-Wl,--export=cel_map_iter_key_at",
+        "-Wl,--export=cel_map_iter_value_at",
         # M5.B step 2b: polymorphic equality.
         "-Wl,--export=cel_equals_at_vv",
         "-Wl,--export=cel_not_equals_at_vv",

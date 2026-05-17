@@ -29,7 +29,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 97> kRuntimeExports = {
+constexpr std::array<absl::string_view, 101> kRuntimeExports = {
     // M1 baseline.
     "cel_reset",
     "cel_alloc",
@@ -129,6 +129,13 @@ constexpr std::array<absl::string_view, 97> kRuntimeExports = {
     "cel_map_size",
     "cel_map_in",
     "cel_map_eq",
+    // M5.B Slice E: map-key iteration helpers (used by WAT
+    // `64_comprehension_exists_map.wat` and downstream slice-F /
+    // slice-G map-source comprehensions).
+    "cel_map_iter_init",
+    "cel_map_iter_next",
+    "cel_map_iter_key_at",
+    "cel_map_iter_value_at",
     // M5.B step 2b: polymorphic equality.
     "cel_equals_at_vv",
     "cel_not_equals_at_vv",

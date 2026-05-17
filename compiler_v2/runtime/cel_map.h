@@ -90,6 +90,50 @@ void cel_map_size(uint32_t out_slot, uint32_t map_slot);
 void cel_map_in(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
 void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
+// =====================================================================
+// M5.B Slice E — map-key iteration helpers used by comprehensions over
+// a `map(K, V)` source.  Per `m5-comprehensions-design.md §3.5` Option β
+// (in-place key iteration; no keys-list materialisation) and WAT
+// `wat/64_comprehension_exists_map.wat`.
+//
+// The iterator handle is an opaque u32 — codegen stores it in a wasm
+// local and shuttles it between the three calls without inspecting it.
+// Internally it is the arena offset of an 8-byte iterator-state struct
+// `{ uint32_t header_ptr; uint32_t cursor; }` allocated by `iter_init`;
+// the layout is a private runtime detail and may change without
+// affecting the WAT shape.  A `0` handle is the sentinel "no entries"
+// (empty / poisoned map): `iter_next(0)` returns 0 immediately and
+// `iter_{key,value}_at` are silent no-ops on it.
+//
+// Semantics:
+//   - `cel_map_iter_init(map_slot) -> handle`
+//       Allocates iterator state for `map_slot`.  Returns the handle,
+//       or 0 if the map is empty / poisoned / OOM.  Cursor starts at
+//       "before first" — i.e. zero entries have been yielded.
+//
+//   - `cel_map_iter_next(handle) -> u32`
+//       Advances the cursor.  Returns 1 if a new entry is available
+//       (the next `iter_{key,value}_at` call will read that entry);
+//       returns 0 if iteration is done.  Idempotent at the end:
+//       subsequent calls return 0 without modifying state.
+//
+//   - `cel_map_iter_key_at(out_slot, handle)`
+//       Copies the *current* entry's key as a CelValue into `out_slot`.
+//       "Current" = the entry that the most recent `iter_next` returned
+//       1 for.  Calling before any `iter_next` returned 1 is undefined
+//       per the codegen contract (loop guard ensures next-then-read);
+//       defensively a no-op rather than a crash.
+//
+//   - `cel_map_iter_value_at(out_slot, handle)`
+//       Same as `iter_key_at` but copies the entry's value.  Required
+//       by Slice F's two-iter-var map shape (`m.exists(k, v, p)`).
+// =====================================================================
+
+uint32_t cel_map_iter_init(uint32_t map_slot);
+uint32_t cel_map_iter_next(uint32_t iter_handle);
+void cel_map_iter_key_at(uint32_t out_slot, uint32_t iter_handle);
+void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle);
+
 #ifdef __cplusplus
 }
 #endif

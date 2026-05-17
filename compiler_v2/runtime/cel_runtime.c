@@ -931,6 +931,104 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 }
 
 // =====================================================================
+// M5.B Slice E — map-key iteration helpers (Option β; see cel_map.h).
+//
+// The iterator handle is the arena offset of an 8-byte state struct
+// `{ header_ptr, cursor }`.  `cursor` is the 1-based index of the
+// "current" entry — i.e. the entry that the most recent `iter_next`
+// returned 1 for.  `cursor == 0` is the pre-first state set by
+// `iter_init`; key_at / value_at refuse to dereference it.
+// =====================================================================
+
+typedef struct {
+  uint32_t header_ptr;  // ArenaMapHeader byte offset; 0 iff empty/poisoned.
+  uint32_t cursor;      // 1-based current entry; 0 = pre-first.
+} ArenaMapIterState;
+
+_Static_assert(sizeof(ArenaMapIterState) == 8,
+               "ArenaMapIterState must remain 8 bytes (iter ABI)");
+
+// Resolve the iter-state struct from a handle, or NULL when the handle
+// is the 0 sentinel (empty/poisoned map).  Centralising the deref keeps
+// every caller's null-check identical.
+static ArenaMapIterState* arena_map_iter_state(uint32_t handle) {
+  if (handle == 0) return (ArenaMapIterState*)0;
+  return (ArenaMapIterState*)(cel_memory_base_() + handle);
+}
+
+// Read the header an iterator points at.  Caller has already proven
+// `state != NULL` and `state->header_ptr != 0`.
+static ArenaMapHeader* iter_header(ArenaMapIterState* state) {
+  return (ArenaMapHeader*)(cel_memory_base_() + state->header_ptr);
+}
+
+uint32_t cel_map_iter_init(uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  // Poisoned / wrong-kind / host-backed maps: codegen guarantees the
+  // checker proved the source is `map(K, V)` (and the M5 envelope
+  // gates host-backed map sources out of comprehensions today), but
+  // a defensive 0 handle keeps `iter_next` / `key_at` safe.
+  if (m->kind != CEL_MAP_ARENA) return 0;
+  ArenaMapHeader* hdr = arena_map_header(m);
+  // Empty map: skip the state alloc entirely — `iter_next(0)` returns
+  // 0 immediately, so the comprehension loop exits without entering
+  // the body.  Saves 8 arena bytes per empty-iter and keeps the
+  // common `iter_next(handle)` hot path branch-light.
+  if (hdr->count == 0) return 0;
+  uint32_t state_off = cel_alloc((uint32_t)sizeof(ArenaMapIterState));
+  if (state_off == 0) return 0;  // OOM: behave as empty.
+  ArenaMapIterState* state =
+      (ArenaMapIterState*)(cel_memory_base_() + state_off);
+  state->header_ptr = m->payload.arena_map.header_ptr;
+  state->cursor = 0;
+  return state_off;
+}
+
+uint32_t cel_map_iter_next(uint32_t iter_handle) {
+  CEL_LOG("enter");
+  ArenaMapIterState* state = arena_map_iter_state(iter_handle);
+  if (state == (ArenaMapIterState*)0) return 0;
+  ArenaMapHeader* hdr = iter_header(state);
+  // `cursor` is the 1-based index of the *current* entry.  After the
+  // last entry has been exposed (cursor == count), iteration is done
+  // and every further call returns 0 without mutating state.
+  if (state->cursor >= hdr->count) return 0;
+  state->cursor++;
+  return 1;
+}
+
+// Write the current entry's key/value into `out_slot`.  Routed through
+// a shared helper so the key/value variants stay one-line dispatches.
+static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
+                            int want_value) {
+  CelValue* out = cel_value_at(out_slot);
+  ArenaMapIterState* state = arena_map_iter_state(iter_handle);
+  if (state == (ArenaMapIterState*)0 || state->cursor == 0) {
+    // Codegen contract: a read without a preceding `iter_next` that
+    // returned 1 is a generator bug.  Stamp an error rather than
+    // dereferencing past the entries run; the eval surfaces it as
+    // the comprehension's result via 3VL absorption upstream.
+    poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
+    return;
+  }
+  ArenaMapHeader* hdr = iter_header(state);
+  uint32_t i = state->cursor - 1;
+  *out =
+      want_value ? *arena_map_entry_val(hdr, i) : *arena_map_entry_key(hdr, i);
+}
+
+void cel_map_iter_key_at(uint32_t out_slot, uint32_t iter_handle) {
+  CEL_LOG("enter");
+  copy_iter_entry(out_slot, iter_handle, /*want_value=*/0);
+}
+
+void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle) {
+  CEL_LOG("enter");
+  copy_iter_entry(out_slot, iter_handle, /*want_value=*/1);
+}
+
+// =====================================================================
 // M5.B step 2b — polymorphic equality dispatcher.
 //
 // `cel_equals_at_vv` and `cel_not_equals_at_vv` resolve every cel-cpp

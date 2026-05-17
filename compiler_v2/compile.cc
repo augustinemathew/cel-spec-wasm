@@ -99,6 +99,24 @@ void InstallMapImports(WasmModule& mod) {
                         "cel_map_lookup", map3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
                         "cel_map_lookup", map3_params, BinaryenTypeNone());
+  // M5.B Slice E: map-key iteration helpers used by comprehensions
+  // over a `map(K, V)` source.  Always imported regardless of AST
+  // presence — per CLAUDE.md "no lazy tracking of runtime imports".
+  // Wire shapes pinned by `wat/64_comprehension_exists_map.wat`:
+  //   cel_map_iter_init       (map_slot)              -> i32 handle
+  //   cel_map_iter_next       (handle)                -> i32 (0|1)
+  //   cel_map_iter_key_at     (out_slot, handle)      -> void
+  //   cel_map_iter_value_at   (out_slot, handle)      -> void
+  const BinaryenType iter_one_param[1] = {i32};
+  const BinaryenType iter_two_params[2] = {i32, i32};
+  mod.AddFunctionImport("cel_map_iter_init", "cel", "cel_map_iter_init",
+                        iter_one_param, i32);
+  mod.AddFunctionImport("cel_map_iter_next", "cel", "cel_map_iter_next",
+                        iter_one_param, i32);
+  mod.AddFunctionImport("cel_map_iter_key_at", "cel", "cel_map_iter_key_at",
+                        iter_two_params, BinaryenTypeNone());
+  mod.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
+                        iter_two_params, BinaryenTypeNone());
 }
 
 // M4.F: list literal + indexing runtime entry points.  Same shape

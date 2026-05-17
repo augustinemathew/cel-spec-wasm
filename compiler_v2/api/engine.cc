@@ -201,6 +201,9 @@ constexpr const char* kRuntimeExports[] = {
     // M5.D step 2: aggregate kDynamic dispatchers.
     "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
     "cel_map_size", "cel_map_in", "cel_map_eq",
+    // M5.B Slice E: map-key iteration helpers.
+    "cel_map_iter_init", "cel_map_iter_next", "cel_map_iter_key_at",
+    "cel_map_iter_value_at",
     // M5.B step 2b: polymorphic equality.
     "cel_equals_at_vv", "cel_not_equals_at_vv",
     // M5.G (Slice 2): 3VL / control-flow helpers.
