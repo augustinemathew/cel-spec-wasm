@@ -1,32 +1,111 @@
 # M8 — Wrapper types
 
-Status: **plan — drafted 2026-04-25, not yet started.  Depends on M7.**
+Status: **active development 2026-05-16.  Reconciled against
+empirical probe + conformance baseline; original draft sections
+preserved with `Plan-vs-execution delta:` callouts.**
+
+> **Plan-vs-execution delta (2026-05-16 reconciliation):** the
+> drafted plan undercounts unlock by ~2× and is missing one of
+> the three required arms.  Three independent empirical findings
+> reshaped the doc:
+>
+> 1.  **Conformance baseline** (master c33dab1, full
+>     `bazel run //compiler_v2/conformance`): **153 wrapper-related
+>     FAIL rows** across 7 fixtures.  `dynamic.textproto` carries 95
+>     of them — the original plan didn't enumerate this fixture.
+>     Net M8-deliverable unlock is **+151 PASS** (~2× the original
+>     "+50-70" estimate).  Per-arm split: A=89, B=24, C=38.  See
+>     §6.0 for the row inventory.
+> 2.  **cel-cpp empirical probe** (throwaway branch
+>     `throwaway/m8-wrapper-probe`, PR #4): drove cel-cpp's
+>     `StandardRuntime` against an exhaustive matrix and surfaced
+>     a critical option toggle —
+>     `RuntimeOptions::enable_empty_wrapper_null_unboxing`
+>     (default `false`).  When `false`, cel-cpp peels unset
+>     wrapper fields to scalar zero; when `true`, to null.  The
+>     conformance corpus is generated with `true`; we must
+>     implement `true`-semantics to match (langdef §"Dynamic
+>     Values" line 484-486 mandates this too).  The probe report
+>     also confirms wrapper LITERALS (`BoolValue{}`) are
+>     non-null-message values that peel to the inner scalar
+>     default on comparison — distinct from UNSET FIELDs.
+> 3.  **`typed_ast.cc:56` already maps wrapper-Repr to scalar-Repr**
+>     (`if (type.has_wrapper()) return ReprOfPrimitive(type.wrapper())`).
+>     This eliminates the original §4 Option-A-vs-Option-B
+>     debate: codegen at `_==_` already lowers as scalar
+>     equality.  The actual work is at the boundaries
+>     (literal construction, field read, write set) — exactly
+>     mirroring the m7b WKT-time pattern.
+>
+> The revised three-arm architecture (A=write-side, B=read-side
+> + Any-chain, C=kStructExpr tail-unwrap) is documented inline
+> in §2 and §4-§5 below.
 
 The plan covers `google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,
-Float,Double,String,Bytes}Value` ("wrapper types") — the
-construction-time auto-wrap path (scalar-RHS into wrapper-typed
-field), the activation-bind auto-wrap path (`Bind("w",
-Value::Int(5))` against a wrapper-typed slot), and the
-wrapper-vs-scalar `==` / `!=` peel that satisfies langdef
-§"Wrapper Types" equivalence.
+Float,Double,String,Bytes}Value` ("wrapper types") across **three
+arms**:
+
+  - **Arm A — write-side auto-wrap.**  `cel_set_field` for a
+    wrapper-typed proto field accepts a matching scalar `CelValue`
+    and synthesises the wrapper message via reflection.  Also
+    handles activation marshalling (`Activation::Bind("w",
+    Value::Int(5))` against a wrapper-typed binding) and
+    null-into-wrapper-field (clears the field).
+  - **Arm B — read-side auto-peel + Any-chain.**
+    `ProtoBacking::ReadField` for a wrapper-typed CPPTYPE_MESSAGE
+    field: unset → `cel::Value::Null()`; set → peeled inner
+    scalar.  `UnpackAnyToValue` chains wrapper-peel after its own
+    Any unwrap so `Any{Int32Value{value:1}}` surfaces as `int 1`.
+    Mirrors the m7b `UnpackWellKnownTimeMessage` helper shape.
+  - **Arm C — kStructExpr tail-unwrap.**  New
+    `cel_host.cel_wkt_unwrap_wrapper` trampoline; `expr_lower.cc`
+    emits a tail call after wrapper-FQN struct literals so
+    `Int32Value{value: 5}` materialises as `CEL_INT(5)` rather
+    than a `CEL_MESSAGE` slot codegen downstream doesn't expect.
+    Direct clone of m7b's `cel_wkt_unwrap_time` shape.
 
 **Out of scope:** every other proto literal concern (covered by
 M7, including explicit wrapper-message construction
-`Foo{w: Int32Value{value: 5}}` which lands at M7.E for free as a
-recursive `kStructExpr` lower); `Any`; extensions; Timestamp;
-Duration; wrapper coercion in arithmetic.
+`Foo{w: Int32Value{value: 5}}` which after Arm C lowers as
+`Foo{w: 5}` and goes through Arm A's auto-wrap); `Any` (Arm B
+chains the inner wrapper-peel but Any-unwrap itself was M7-A.B);
+extensions; Timestamp / Duration (M7B); wrapper coercion in
+arithmetic (`Int32Value{value:1} + 2` still rejected).
 
 ## 1. Why M8
 
 Wrapper types are a self-contained slice of CEL's type system
-that gates two distinct conformance cohorts:
+that gates multiple conformance cohorts.
 
-| Fixture / row family | Today | Post-M8 (estimate) |
+> **Plan-vs-execution delta (2026-05-16):** the original
+> "+50-70 PASS" estimate was based on a `wrappers.textproto` +
+> `comparisons.eq_wrapper/*` + `fp_math` count.  Conformance
+> baseline turned up `dynamic.textproto` (95 rows, the
+> load-bearing wrapper fixture not enumerated in the original
+> draft), plus rows in `proto2.textproto`, `proto3.textproto`,
+> and `parse.textproto`.  Revised total: **+151 PASS**.
+
+| Fixture / row family | Today | Post-M8 |
 |---|---|---|
-| `wrappers.textproto` | 0 / 36 | 30 – 35 |
-| `comparisons.textproto` (`eq_wrapper/*`) | within 287 / 406 | +20 – 30 |
-| `fp_math` wrapper rows | small subset | +5 |
-| Total projected | — | **+50 – +70 PASS** |
+| `wrappers.textproto :: */to_any` | 0 / 9 | 9 / 9 (Arm B Any-chain) |
+| `wrappers.textproto :: */to_null` | 9 / 9 | unchanged |
+| `wrappers.textproto :: */to_json` (Value WKT) | 0 / 18 | non-M8 |
+| `comparisons.eq_wrapper` | 18 / 45 | 45 / 45 |
+| `dynamic.textproto` wrapper rows | 0 / 95 (9 SKIP non-M8) | 95 / 95 |
+| `proto2.textproto :: literal_wellknown` | 0 / 9 | 9 / 9 (Arm A) |
+| `proto2.textproto :: empty_field/wkt` | 0 / 1 | 1 / 1 (Arm B) |
+| `proto3.textproto :: literal_wellknown` | 0 / 9 | 9 / 9 (Arm A) |
+| `parse.textproto :: repeat/message_literal` | 0 / 1 | 1 / 1 (Arm A) |
+| **Net M8-deliverable rows** | — | **+151 PASS** |
+
+Non-M8 wrapper-adjacent rows (excluded from the unlock target):
+38 rows split across `wrappers.textproto` misc-WKT (18:
+google.protobuf.Value / ListValue / Struct / FieldMask / Empty);
+`dynamic.textproto :: literal_no_field_access` (9 — harness
+disable_check); `type_deduction.textproto` wrapper rows (9 —
+harness check_only); `optionals.textproto` (2 — `?` syntax).
+See `compiler_v2/conformance/README.md` and the baseline report
+at `/tmp/m8_baseline_report.md` for the row-by-row inventory.
 
 Carved out of M7 (originally M7.C in the now-superseded combined
 plan) because:
@@ -96,13 +175,29 @@ plan) because:
 
 ### 3.1 Wrapper equivalence (langdef §"Wrapper Types" + §"Equality")
 
+> **Plan-vs-execution delta:** the original table claimed
+> `Int32Value{} == null` → `true`.  Empirical probe + conformance
+> fixture (`comparisons.eq_X_not_null`: `BoolValue{} != null` →
+> `true`) both refute this.  An empty WRAPPER LITERAL is a
+> present message that peels to the inner scalar default —
+> `BoolValue{} == false` is `true`, `BoolValue{} == null` is
+> `false`.  The "absent wrapper field equals null" rule applies
+> only to UNSET FIELD READS, not to constructed literals.
+
 | Expression | Result | Citation |
 |---|---|---|
 | `Int32Value{value: 1} == 1` | `true` | §"Wrapper Types": "wrapper types … equal to their underlying value" |
-| `Int32Value{} == null` | `true` | §"Wrapper Types": "absent wrapper field is equal to `null`" |
-| `Int32Value{value: 0} != null` | `true` | corollary — set wrapper is not null even if zero |
-| `Int32Value{value: 0} == 0` | `true` | §"Wrapper Types" |
-| `Int32Value{value: 1} == Int32Value{value: 1}` | `true` | wrapper-vs-wrapper falls back to MessageDifferencer (M5.B, shipped — re-run as M8 regression) |
+| `Int32Value{} == 0` | `true` | empty literal peels to inner scalar default (= `0` for int wrappers) |
+| `Int32Value{} == null` | `false` | empty wrapper literal is a present message, not null |
+| `Int32Value{} != null` | `true` | corollary; matches `eq_X_not_null` rows |
+| `Int32Value{value: 1} != null` | `true` | set wrapper literal is not null |
+| `Int32Value{value: 0} == 0` | `true` | set-to-default-still-peels-to-default |
+| `TestAllTypes{}.single_int32_wrapper == null` | `true` | UNSET wrapper field read evaluates to null (langdef line 484-486; cel-cpp option `enable_empty_wrapper_null_unboxing=true`) |
+| `TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == 0` | `true` | SET wrapper field read auto-peels to inner scalar (Arm B) |
+| `TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == null` | `false` | SET-with-default is still "set"; reads as scalar `0`, not null |
+| `has(TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper)` | `true` | presence is independent of value |
+| `has(TestAllTypes{}.single_int32_wrapper)` | `false` | unset |
+| `Int32Value{value: 1} == Int32Value{value: 1}` | `true` | both peel to `1`; scalar-vs-scalar equality (M5.B's `cel_message_eq` is NOT reached because Arm C peels both operands) |
 | `BoolValue{value: true} == true` | `true` | per-kind counterpart |
 | `StringValue{value: "x"} == "x"` | `true` | per-kind counterpart |
 | `BytesValue{value: b"x"} == b"x"` | `true` | per-kind counterpart |
@@ -167,11 +262,94 @@ Two outcomes:
 
 In either outcome, M8.A's actual code change is small.
 
-## 4. Architecture — codegen vs runtime peel
+## 4. Architecture — three-arm pattern (revised 2026-05-16)
 
-Two viable options for the `==` / `!=` wrapper peel, scored
-against the principles in CLAUDE.md ("compilers miscompile
-silently — fail at the call site"):
+> **Plan-vs-execution delta:** the original §4 weighed two
+> wrapper-equality peel options (codegen-emit at `_==_` vs
+> runtime-peel in `cel_message_eq`).  Both are unnecessary.
+> `compiler_v2/ir/typed_ast.cc:56` already maps every wrapper
+> Repr to its eponymous scalar Repr, so codegen at `_==_`
+> already lowers as a scalar comparison.  The breakage is at
+> the OPERAND boundaries: literal wrapper construction emits
+> `CEL_MESSAGE` into a scalar slot, and field-read of a
+> wrapper field emits `CEL_MESSAGE` instead of the inner
+> scalar.  Fix the boundaries, leave equality alone.
+>
+> The old §4 (Options A/B) is preserved below as historical
+> context; the actual architecture is the three-arm pattern
+> described here, which mirrors m7b's WKT-time work exactly.
+
+### 4.1 The boundaries
+
+```
+                ┌─── Arm A ─────┐
+   activation ─→│ EncodeMessage │─→ CEL_MESSAGE slot ─→ Reflection.SetField
+   scalar bind  │ (instance.cc) │                       (wrapped scalar)
+                └───────────────┘
+
+                ┌─── Arm A ─────┐
+   kStructExpr  │ cel_set_field │─→ Reflection.SetField
+   `Foo{w: 5}`  │ (cel_host.cc) │   (synth wrapper from scalar)
+                └───────────────┘
+
+                ┌─── Arm B ─────┐
+   field-read   │ ReadScalarField │─→ inner scalar (or null if unset)
+   `Foo.w`      │ (cel_host.cc)   │
+                └─────────────────┘
+
+                ┌─── Arm B (Any-chain) ─┐
+   Any-read     │ UnpackAnyToValue      │─→ inner scalar
+   `m.any_w`    │ → wrapper detection   │
+                └───────────────────────┘
+
+                ┌─── Arm C ───┐
+   kStructExpr  │ tail-call    │─→ CEL_INT/BOOL/STRING/...
+   `IntXValue{}`│ cel_wkt_unwrap_wrapper │
+                └────────────────────────┘
+```
+
+### 4.2 Why this works without a codegen `==` peel
+
+Trace `google.protobuf.Int32Value{value: 1} == 1` through the
+pipeline:
+
+1.  cel-cpp checker stamps the kStructExpr type as
+    `wrapper(Int32)`; the int literal as `int`.
+2.  `typed_ast.cc:56` maps `wrapper(Int32)` → `Repr::kInt`;
+    int literal → `Repr::kInt`.
+3.  Codegen sees both operands as `Repr::kInt`, resolves `_==_`
+    to `equals_int` overload, emits scalar `cel_int_equals_at_vv`
+    — no peel needed at the equality site.
+4.  At the LHS kStructExpr lowering, Arm C tail-calls
+    `cel_wkt_unwrap_wrapper(out_slot, msg_slot,
+    wrapper_kind)`, which writes `CEL_INT(1)` to `out_slot`.
+    Matches what step 3 expects.
+5.  RHS literal emits `CEL_INT(1)`.  Done.
+
+Trace `TestAllTypes{}.single_int32_wrapper == null`:
+
+1.  Checker stamps `.single_int32_wrapper` as `wrapper(Int32)`;
+    `null` as `null_type`.  `_==_` is polymorphic across
+    null and scalar in cel-cpp (the `equals` overload
+    accepts `null_type` on either side).
+2.  At runtime, Arm B's read-side peel: field is unset
+    → `cel::Value::Null()` → `CEL_NULL` slot.
+3.  `cel_equals_at_vv` sees `CEL_NULL == CEL_NULL` → `true`.
+
+Trace `TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper`:
+
+1.  Outer kStructExpr lowering: Arm A's `cel_set_field`
+    receives a scalar value for a wrapper-typed field;
+    synthesises `Int32Value{value: 5}` via reflection and
+    assigns.
+2.  Outer kSelect lowering: Arm B's read-side peel returns
+    inner scalar `5` as `CEL_INT(5)`.
+
+### 4.3 Original §4 (superseded) — codegen-vs-runtime peel debate
+
+Preserved for context: the original draft weighed two options for
+the wrapper `==` peel.  Both became moot once the `typed_ast.cc:56`
+mapping was understood.
 
 ### Option A — codegen peels at `_==_` lowering site
 
@@ -236,7 +414,179 @@ is a third design that pays the full cost of both).
 
 ## 5. Sequencing — slices
 
-### M8.A — wrapper field set + activation auto-wrap
+> **Plan-vs-execution delta:** revised to three slices (A / B / C)
+> matching the boundary architecture in §4.  The original draft
+> had two (auto-wrap + equivalence-peel).  Implementation order:
+> **B → C → A → closeout**.  Rationale: B is smallest and
+> isolates the read-side peel (also retires the proto3-incidental-
+> pass which currently disguises the bug); C mirrors m7b's tail-
+> unwrap so the codegen + host trampoline lands with maximum
+> pattern reuse; A is the largest and depends on Arm B existing
+> so the round-trip test rows can light up end-to-end.
+
+### M8.B — read-side wrapper auto-peel + Any-chain  *(first)*
+
+  - **Layer-1 helper.**  Add `UnpackWrapperMessage(const Message&)
+    → optional<cel::Value>` to the anonymous namespace in
+    `compiler_v2/api/internal/cel_host.cc`.  Mirrors the existing
+    `UnpackWellKnownTimeMessage`: descriptor `full_name()` against
+    the 9 wrapper FQNs; on match, reflection-read field number 1
+    (`value`); return matching `cel::Value::{Bool, Int, Uint,
+    Double, String, Bytes}`; on non-wrapper return `nullopt`.
+  - **Wire into `ReadScalarField`.**  CPPTYPE_MESSAGE arm:
+    after the existing Any-unwrap and WKT-time check, call
+    `UnpackWrapperMessage(sub)`; if it returns a value, use it.
+    The proto3-`!HasField` → Null branch already covers
+    proto3-unset; broaden to ALL syntaxes for wrapper fields
+    (langdef line 484-486 mandates this exception across
+    proto2 and proto3 — currently `proto2_null` rows FAIL
+    while `proto3_null` rows incidentally PASS).
+  - **Chain into Any.**  Extend `UnpackAnyToValue`: after the
+    `sub->ParseFromString(bytes)` succeeds, call
+    `UnpackWrapperMessage(*sub)` and `UnpackWellKnownTimeMessage(*sub)`
+    in order; if either returns a value, surface it (Any-of-
+    wrapper / Any-of-Timestamp peels through transparently).
+    Fallback to `OwnedMessage(sub)` as today.
+  - **Test matrix.**  9 wrapper kinds × {set, unset, set-to-zero,
+    set-default-empty-string, set-default-empty-bytes} × {proto2,
+    proto3}.  Plus Any-of-wrapper for each kind.  Plus negative:
+    non-wrapper message stays as `HostMessage`.
+  - **Conformance unlock.**  +24 standalone rows
+    (`*_proto2_null` × 9 + `wrappers/<w>/to_any` × 9 +
+    `dynamic/<w>/field_read_proto2_unset` × 5 + `proto2/empty_field/wkt`
+    × 1).  Plus completes the read-half of 16 dynamic round-trip
+    rows that A unblocks.
+  - **Effort.**  Small.
+
+### M8.C — kStructExpr wrapper tail-unwrap  *(second)*
+
+  - **WAT-first.** *Shipped 2026-05-16 (commit 56cac56)*.
+    `doc/implementation-plan/rewrite/wat/56_wrapper_kstruct_unwrap.wat`
+    captures the codegen shape for
+    `google.protobuf.Int32Value{value: 5}`: `cel_make_message` →
+    `cel_set_field(value)` → `cel_wkt_unwrap_wrapper(out_slot,
+    msg_slot, wrapper_kind)` tail call, returning the same slot.
+    The slot is overwritten in place (msg_slot == out_slot) —
+    same pattern as m7b's `cel_wkt_unwrap_time`.  `wat_runner`
+    gained a stub for the new trampoline + a
+    `WrapperKStructTailUnwrapProducesCelInt` test verifies the
+    ABI args arrive and a stub-emitted `CEL_INT(5)` round-trips
+    through `$eval`.  See `wat-traces.md` §56 for the
+    walkthrough.
+  - **ABI.**  `cel_host.cel_wkt_unwrap_wrapper(out_slot,
+    msg_slot, wrapper_kind) → ()`.  Three i32 args; the third
+    is the matching `CelKind` for the inner scalar
+    (`CEL_BOOL=1`, `CEL_INT=2`, `CEL_UINT=3`, `CEL_DOUBLE=4`,
+    `CEL_STRING=5`, `CEL_BYTES=6`).  **Wrapper-kind = CelKind is
+    intentional load-bearing collision** (per WAT design pass):
+    Layer-2's switch on `wrapper_kind` selects both the
+    descriptor FQN to cross-check AND the matching
+    `CelValue.kind` to emit, with no duplicated dispatch table.
+    `Int32Value` and `Int64Value` collapse onto `CEL_INT`;
+    `UInt32Value` and `UInt64Value` onto `CEL_UINT`;
+    `FloatValue` and `DoubleValue` onto `CEL_DOUBLE` — matches
+    CEL's value algebra (no 32-vs-64 distinction).  Codegen
+    knows the kind statically from the kStructExpr FQN; no
+    per-call descriptor walk.  Layer-2
+    `CelWktUnwrapWrapperImpl` reads `msg_slot`, expects
+    `CEL_MESSAGE`, dereferences via
+    `ExternrefTable::Lookup` → `HostMessageBacking::message()`,
+    cross-checks `descriptor()->full_name()` matches
+    `wrapper_kind`, reflection-reads `value` field, writes
+    matching scalar `CelValue` to `out_slot`.  Wrong descriptor
+    → `CEL_ERROR(kTypeMismatch)` (defence in depth; codegen
+    only emits the call when the FQN matches).
+  - **Codegen.**  Extend `expr_lower.cc::MaybeEmitWktUnwrapTailCall`
+    (already refactored from `EmitKStructExpr` during m7b review
+    nits — perfect seam) to dispatch on wrapper FQNs in addition
+    to Timestamp/Duration.  Returns either the existing
+    `cel_wkt_unwrap_time` ExpressionRef or a new
+    `cel_wkt_unwrap_wrapper` ExpressionRef.
+  - **Overload table.**  Add `cel_wkt_unwrap_wrapper` import to
+    `kBuiltinSeeds` (kCelHost).  Add `compile.cc::InstallStructImports`
+    to install the import alongside `cel_wkt_unwrap_time`.
+  - **Test matrix.**  9 wrapper FQNs × {set-to-value,
+    set-to-zero, empty-construct} = 27 rows.  Plus negative
+    via direct trampoline test:
+    `CelWktUnwrapWrapperImpl(msg_slot=non-wrapper)` →
+    `CEL_ERROR`.
+  - **Conformance unlock.**  +38 rows (`comparisons.eq_X` × 9 +
+    `comparisons.eq_X_empty` × 9 + `dynamic/<w>/literal*` × 20).
+  - **Effort.**  Medium.
+
+### M8.A — write-side auto-wrap + activation auto-wrap  *(third)*
+
+  - **Probe-spike outcome.**  The cel-cpp probe (PR #4) confirmed
+    that `TestAllTypes{single_int32_wrapper: 5}` is admitted at
+    check time — the checker auto-promotes scalar literals into
+    wrapper-typed message fields.  `compiler_v2/codegen` therefore
+    sees the source-AST as a struct-with-int-field, which means
+    `cel_set_field` is called with a scalar `CelValue` against a
+    `CPPTYPE_MESSAGE` field.  No frontend / typed_ast change is
+    needed; the work is entirely in Layer 2 + Instance.
+  - **`SetScalarField` wrapper arm.**  CPPTYPE_MESSAGE case:
+    after the existing null-clears-field branch, if
+    `field.message_type()->full_name()` is a wrapper FQN AND
+    `value.kind` matches the wrapper's inner scalar kind,
+    synthesise the wrapper via `MessageFactory::generated_factory()
+    ->GetPrototype(field.message_type())->New()`, reflection-set
+    its `value` field from the CelValue, then
+    `MutableMessage(&msg, &field)->CopyFrom(*wrapper)`.  On
+    kind mismatch (scalar of wrong kind), `InvalidArgumentError`.
+    On non-wrapper non-Any descriptor mismatch, fall through
+    to the existing `WriteMessageOrPack` → Unimplemented(M8)
+    path (now empty — wrapper case is handled by this new
+    arm).
+  - **`WriteMessageOrPack` cleanup.**  Remove the
+    `wrapper auto-wrap is M8` Unimplemented branch — it
+    becomes truly unreachable once the scalar wrapper-arm
+    above handles every reachable case.  Replace with
+    `ABSL_CHECK(false)` + actionable message.
+  - **`Instance::EncodeMessage` activation auto-wrap.**  When
+    a declared variable's checker-stamped CelType is a
+    wrapper and the bound `cel::Value` is the matching scalar
+    kind, synthesise the wrapper proto on the way in.  When
+    the bound value is `Null`, leave the field unset.
+    Implementation site: `compiler_v2/api/instance.cc`
+    (alongside the existing m7b `TryEncodeWktTimeMessage`
+    helper — extract a shared `TryEncodeWktAnyMessage`
+    super-helper that dispatches by FQN).
+  - **Test matrix.**  9 wrappers × 2 entry points
+    (cel_set_field + activation Encode) = 18 baseline cells;
+    add boundary values per kind (INT32_MIN/MAX, UINT64_MAX,
+    NaN, INF, embedded NUL, multi-byte UTF-8, empty
+    string/bytes) = ~50 rows; negative matrix (wrong-kind,
+    explicit-message-of-wrong-FQN, null-into-wrapper-field-
+    leaves-unset).
+  - **Conformance unlock.**  +89 rows including the 16
+    round-trip rows that B already half-unblocked.
+  - **Effort.**  Medium-large.
+
+### M8.D — closeout
+
+  - Run full conformance + record post-M8 numbers in
+    `compiler_v2/conformance/README.md`.
+  - Run `scripts/run_full_suite.sh`.
+  - Reconcile `cel-host-surface.md` (new `cel_wkt_unwrap_wrapper`
+    trampoline doc); `m7-proto-literals.md` (drop M8-placeholder
+    references); `design.md` §11.5 (flip wrapper rows to
+    shipped).
+  - Flip this doc's status header.
+  - Tick `testing-checklist.md` rows under "Rewrite M8".
+  - Append a "Future work" section: wrapper coercion in
+    arithmetic (`Int32Value{value:1} + 2`); `dyn(wrappermsg)`
+    runtime fallback if static-subset broadens.
+  - Throwaway probe branch + PR #4 stays open as a reference;
+    do not merge.
+
+### Original §5 (superseded)
+
+The original two-slice plan (M8.A wrapper-field-set + activation
+auto-wrap; M8.B wrapper-equivalence-peel) is preserved verbatim
+below.  Its content remains useful as background; the as-shipped
+sequencing is the three-arm split above.
+
+### Original M8.A — wrapper field set + activation auto-wrap
 
   - **Probe-spike** (§3.3): determine whether cel-cpp's checker
     auto-promotes scalar-into-wrapper-field literals.
@@ -255,7 +605,7 @@ is a third design that pays the full cost of both).
     (auto-wrap rows specifically).
   - **Effort.**  Small.
 
-### M8.B — wrapper equivalence peel (Option A)
+### Original M8.B — wrapper equivalence peel (Option A)
 
   - **WAT-first.**  Author `doc/implementation-plan/rewrite/wat/
     14_wrapper_equivalence.wat` showing the
@@ -281,7 +631,7 @@ is a third design that pays the full cost of both).
     + `comparisons.eq_wrapper/*`.
   - **Effort.**  Medium.
 
-### M8.C — closeout
+### Original M8.C — closeout
 
   - Run `bazel run //compiler_v2/conformance:run_conformance` and
     record the post-M8 deltas in `compiler_v2/conformance/README.md`.
