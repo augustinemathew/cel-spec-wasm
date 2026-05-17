@@ -453,17 +453,19 @@ calls work for pure expressions but lose the
 `false && (1/0 == 0)` short-circuit guarantee that langdef
 mandates.  Explicit branching is the only correct lowering.
 
-### 2.5 Comprehension-related surfaces — deferred to follow-on milestone
+### 2.5 Comprehension-related surfaces — SHIPPED at m5-comprehensions-followon
 
-> ResolvePass scope handler, `kComprehension` codegen arm, and
-> LayoutPass comprehension-scope `PushScope` / `PopScope`
-> semantics all move to the comprehensions follow-on milestone
-> (`m5-comprehensions-followon.md`).  M4's
-> `ComprehensionDetector` early-reject in `ResolvePass` stays in
-> place through M5; conformance tests containing
-> `kComprehensionExpr` continue to classify as SKIP until the
-> follow-on lands.  See `design.md §10.2` for the
-> scope-absorption design that the follow-on inherits.
+> **Shipped 2026-05-17** at the `m5-comprehensions-followon.md`
+> milestone (slices A–J, commits `c218552`..`c8a4c56`).
+> ResolvePass scope handler, `kComprehension` codegen arm,
+> LayoutPass scope-aware slot allocation, the dynamic-list /
+> dynamic-map runtime primitives, and the macro registries
+> (`bindings_ext` / `comprehensions_v2`) all landed there.  The
+> `ComprehensionDetector` early-reject in `ResolvePass` was
+> replaced by the real handler in Slice A; conformance rows that
+> were SKIPped under `compile unimpl: comprehensions are M5` now
+> PASS.  Net headline contribution: +86 PASS (macros 0→38,
+> macros2 0→39, bindings_ext 0→7, namespace 4→6).
 
 ### 2.6 `api/internal/cel_host.{h,cc}` — message equality
 

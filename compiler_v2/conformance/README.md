@@ -8,14 +8,28 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1287 (52.4%) · skip=602 (24.5%) · fail=565 (23.0%)`
-(post-M8 wrapper-types, 2026-05-17; +143 PASS vs the post-M7B 1144
-baseline; +229 PASS vs the M10-closeout 1058 baseline.  All 9
-google.protobuf wrapper types now flow end-to-end across the three
-boundaries — construction-side auto-wrap, read-side auto-peel +
-Any-chain, and kStructExpr tail-unwrap.)
+`total=2454 · pass=1373 (55.9%) · skip=590 (24.0%) · fail=491 (20.0%)`
+(post-M5.B comprehensions follow-on, 2026-05-17; +86 PASS vs the
+post-M8 1287 baseline; +229 PASS vs the post-M7B 1144 baseline;
++315 PASS vs the M10-closeout 1058 baseline.  cel.bind + all five
+standard / v2 comprehension macros (exists / all / exists_one / map
+/ filter / transformList / transformMap / transformMapEntry) now
+flow end-to-end over both list and map sources.)
 across 30 loadable fixtures.  The most recent landings:
 
+  - **M5.B comprehensions follow-on** (2026-05-17): +86 PASS net.
+    Slices A→J landed cel.bind + 5 std + 3 v2 macros end-to-end;
+    pre-sized list / map accumulators eliminated the runtime
+    growth path (PRESIZE_INVARIANT trap on any codegen regression);
+    list runtime API collapsed to one create + one write
+    (cel_list_set deleted).  Map-side 3VL pred propagation
+    (cel_map_insert_at_if_bool) closed the conditional
+    transformMap error-filter row.  Extension-symbol detection
+    (`undeclared reference to 'cel'` → SKIP) graceful-classified
+    25 block_ext rows.  Net headline contributions:
+    macros 0→38 PASS, macros2 0→39 PASS, bindings_ext 0→7 PASS,
+    block_ext 0/37 FAIL → 0/25 SKIP / 12 FAIL.
+    See `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
   - **M8.A write-side wrapper auto-wrap + activation bind** (2026-05-17):
     +91 PASS.  `SetScalarField` synthesises wrapper-messages from
     matching scalar `CelValue` operands via reflection
@@ -281,24 +295,24 @@ ext-lib FAIL-dominated fixtures.
 | `proto3.textproto`          |  85 |  53 |  19 |  13 | 62% | 13 FAILs split across wrapper-typed (M8) and enum-on-message-read; Any pack/unpack landed at M7-A | M8 |
 | `proto2.textproto`          | 118 |  56 |  49 |  13 | 47% | 13 FAILs: ~9 wrapper-typed (M8), ~2 Struct/Value pack (M7-future), ~2 misc; 18 SKIPs still in `type_value` envelope; Any pack/unpack landed at M7-A | M8 |
 | `fields.textproto`          |  60 |  26 |  28 |   6 | 43% | 13 SKIPs `dyn(aggregate)`; 8 `type_env: map_type`; 5 `disable_check`; 6 FAILs are `has({...}.k)` bool-on-map dispatch | map-type marshalling + M5.D step 2 |
-| `namespace.textproto`       |  14 |   4 |  10 |   0 | 29% | 6 SKIPs are comprehension-shaped (`[0].exists(y, ...)`); 4 are `disable_check` self-eval | Comprehensions follow-on |
+| `namespace.textproto`       |  14 |   6 |   4 |   4 | 43% | M5.B comprehensions shipped — 2 prev-SKIPed comp-shaped rows now PASS; 4 FAILs are namespace-shadowing resolution; 4 `disable_check` self-eval SKIPs | namespace-shadowing slice |
 | `wrappers.textproto`        |  36 |   9 |  18 |   9 | 25% | 9 PASSes via wrapper construction; 9 FAILs and 18 `static_subset`-classified SKIPs gate on M8 (wrapper `==` peel + scalar auto-wrap) | M8 |
 | `dynamic.textproto`         | 226 |   4 |  92 | 130 |  2% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`; 130 FAILs are dyn-shaped construction reaching past the gate | Never (static subset) + classifier tightening |
 | `unknowns.textproto`        |   0 |   0 |   0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
-| `macros.textproto`          |  44 |   0 |  44 |   0 |  0% | 38 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 `dyn(aggregate)` rejections | Comprehensions follow-on |
+| `macros.textproto`          |  44 |  38 |   6 |   0 | 86% | M5.B shipped — all 38 std-macro rows now PASS; 6 SKIPs are `dyn(aggregate)` rejections (static-subset, by design) | — |
 | `timestamps.textproto`      |  76 |  76 |   0 |   0 | 100% | All rows pass post-M7B + 2 polish rounds | M7B shipped 2026-05-16 |
 | `type_deduction.textproto`  |  47 |  20 |  25 |   2 | 43% | M9.F's `kTypedResult` matcher graduates eval-style rows; the 25 remaining SKIPs are `check_only:true` typed-result rows that early-out before reaching the comparator | M9 follow-up (check_only typed-result path) |
 | `proto2_ext.textproto`      |  18 |   0 |  18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) — `type_value` envelope SKIP | extensions pass |
-| `bindings_ext.textproto`    |   8 |   0 |   0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
+| `bindings_ext.textproto`    |   8 |   7 |   0 |   1 | 88% | M5.B Slice I shipped `cel.bind` — 7 PASS; 1 FAIL is `x.y` on map operand (kSelect-on-map dispatch gap; tracked in followon §10 future-work) | kSelect-on-map slice |
 | `encoders_ext.textproto`    |   4 |   0 |   0 |   4 |  0% | `base64.encode` / `base64.decode` | Extensions pass |
-| `block_ext.textproto`       |  37 |   0 |   0 |  37 |  0% | `cel.@block([args…], expr)` — CEL-internal block form | Extensions pass |
-| `macros2.textproto`         |  46 |   0 |   0 |  46 |  0% | Three-arg comprehension forms (`list.exists(i, v, pred)`); compile fails on undeclared three-arg form | Comprehensions follow-on |
+| `block_ext.textproto`       |  37 |   0 |  25 |  12 | 0% | M5.B added `undeclared reference to 'cel'` SKIP detection — 25 rows graceful-SKIP as ext_unimpl; 12 FAILs are rows that don't cite `cel.*` as the first undeclared symbol (broader detection deferred) | Extensions pass + classifier broadening |
+| `macros2.textproto`         |  46 |  39 |   7 |   0 | 85% | M5.B Slices F/G/H shipped two-iter-var + transformMap + transformMapEntry — all comp rows now PASS; 7 SKIPs are dyn / static-subset rejections | — |
 | `network_ext.textproto`     |  69 |   0 |   0 |  69 |  0% | `ip(...)` / `isIP` / CIDR parsing | Extensions pass |
 | `math_ext.textproto`        | 199 |   0 |  83 | 116 |  0% | `math.greatest` / `.least` / `.round` / `.trunc` / `.ceil` / `.floor` / `.sign` | Extensions pass |
 | `optionals.textproto`       |  70 |   0 |   0 |  70 |  0% | `optional.of` / `.none` / `.hasValue()` / `.or(...)` / `.orValue(...)` | Optionals pass (post-M5) |
 | `string_ext.textproto`      | 216 |   0 | 122 |  94 |  0% | `.charAt` / `.indexOf` / `.lastIndexOf` / `.substring` / `.replace` / `.split` / `.join` / `.lowerAscii` / `.upperAscii` | Extensions pass |
 
-Sums (cross-check): pass = 1058, skip = 693, fail = 703, total = 2454.
+Sums (cross-check): pass = 1373, skip = 590, fail = 491, total = 2454.
 
 ## Top remaining unlock buckets
 
@@ -308,34 +322,38 @@ for ceilings.
   1. **Extensions pass** (~+680) — math/network/optionals/string-ext
      fixtures all fail at "undeclared reference to `<extension symbol>`".
      Whole next-tier milestone.
-  2. **Comprehensions follow-on** (~+50–80) — `macros` (38
-     comprehension SKIPs), `macros2` three-arg forms (46 FAILs),
-     `namespace` exists/all rows.
-  3. **M8 wrappers** (~+50–60) — `wrappers.textproto` (27 non-
+  2. **M8 wrappers** (~+50–60) — `wrappers.textproto` (27 non-
      passing rows) + the 27 `comparisons.eq_wrapper/*` FAILs +
      wrapper-typed field rows in `proto2`/`proto3`.
-  4. **Timestamps slice** (~+76) — `timestamp(...)` / `duration(...)`
+  3. **Timestamps slice** (~+76) — `timestamp(...)` / `duration(...)`
      constructors, date arithmetic.  Also unblocks 4 of 5 remaining
      `conversions` SKIPs (timestamp / duration conversion arms
      carved out per `m10-conversions.md` §2.2).
-  5. **Classifier tightening** (Slice 3 of
+  4. **Classifier tightening** (Slice 3 of
      `conformance-unlock-plan.md`) — reclassifies most ext-lib
      FAILs (math/network/optionals/string-ext) as `kUnsupported`
      so `kFail==0` becomes a viable CI gate; 0 PASS impact but
      unblocks a corpus-wide regression test.
-  6. **M9 follow-up** (~+25) — the 25 `check_only:true`
+  5. **M9 follow-up** (~+25) — the 25 `check_only:true`
      `typed_result` rows in `type_deduction`.  M9.F's
      `kTypedResult` matcher graduated eval-style rows
      (20 PASS); the `check_only` cohort needs the no-eval
      deduced-type comparison path.
-  7. **Map-type / aggregate `type_env` marshalling** (~+12) —
+  6. **Map-type / aggregate `type_env` marshalling** (~+12) —
      8 SKIPs in `fields`, 1 in `parse`, 3 in `comparisons`.
-  8. **`matches` regex helper** (~+9) — 9 SKIPs in
+  7. **`matches` regex helper** (~+9) — 9 SKIPs in
      `string.textproto`'s `matches/*` section.
-  9. **v2 checker extension for bool→{int,uint,double}
+  8. **v2 checker extension for bool→{int,uint,double}
      conversions** (~+5) — cel-cpp's runtime declares the
      overloads but its checker doesn't; M10 dropped the rows
      rather than ship a v2-side extension.
+  9. **Comprehensions follow-on tail-ends** (~+5–12) — namespace-
+     shadowing (4 FAILs in `namespace.textproto`), block_ext
+     classifier broadening (12 FAILs in `block_ext.textproto`
+     that don't cite `cel.*` as the first undeclared symbol),
+     kSelect-on-map (1 FAIL in `bindings_ext.textproto`).
+     Documented in `m5-comprehensions-followon.md` §10
+     future-work.
 
 ## Forecast by open milestone
 
@@ -346,7 +364,6 @@ not to predict exact PASS counts.
 | Milestone | Fixture classes expected to move | Approx. tests unlocked |
 |---|---|---:|
 | **M8 wrappers** (auto-wrap on construction + wrapper-vs-scalar `==` peel) | `wrappers.textproto` (27 rows) + the 27 `comparisons.eq_wrapper/*` FAILs + wrapper-typed field rows in `proto2`/`proto3` | ~+50–60 |
-| **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
 | **Timestamps** (shipped M7B, 2026-05-16) | `timestamps.textproto`: 0/76 → **76/76 = 100%**; scattered timestamp/duration `compile unimpl` SKIPs across `proto2` / `proto3` / `conversions` graduated.  Net corpus delta: pass 1058 → 1144 (**+86**). | shipped +86 |
 | **Chained-null read fix** (cel-cpp's null-propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
 | **Enum-set-on-message diagnosis** | FAILs in `enums.textproto` `repeated_field_assign/*` + `single_field_assign/*` | ~+5–10 |
@@ -360,6 +377,16 @@ not to predict exact PASS counts.
 
 **Closed milestones** (no longer in this forecast):
 
+  - **M5.B comprehensions follow-on** (shipped 2026-05-17 across
+    slices A–J): +86 PASS.  cel.bind + the five standard / v2
+    comprehension macros over list and map sources.  Pre-sized
+    accumulators eliminated runtime growth; list runtime API
+    collapsed to one create + one write.  See
+    `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`
+    for the as-shipped writeup.  Tail-end follow-ups (namespace-
+    shadowing, multi-key conditional transformMapEntry,
+    kSelect-on-map, IsShapeC removal) are documented in §10
+    future-work.
   - **M7-A google.protobuf.Any** (shipped 2026-05-16 across slices
     A/B/C): +7 PASS.  Pack (WriteMessageOrPack), read-side unwrap
     (UnpackAnyToValue + frontend §3.5.A select-through-Any

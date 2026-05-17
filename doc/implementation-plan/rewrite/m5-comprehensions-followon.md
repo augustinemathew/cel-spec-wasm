@@ -1,13 +1,38 @@
 # Rewrite M5 follow-on — Comprehensions + `cel.bind`
 
-Status: **in flight — drafted 2026-05-16; pre-work landed 2026-05-17
-(e2e spec-of-done at `compiler_v2/e2e/m5b_test.cc` with 71 SKIP'd
-tests; 8 WAT traces 60–67 under `doc/implementation-plan/rewrite/wat/`,
-each `wasm-as`-validated; wat-traces.md walkthroughs).  Implementation
-slices A→J pending.  Depends on M5 (kCall + control flow + activation
-marshalling), all shipped.  Anticipated by the M5 doc's §2.5
-carve-out and the conformance README's "Comprehensions follow-on"
-forecast row.**
+Status: **shipped 2026-05-17.**  Slices A–J all landed end-to-end:
+cel.bind + the five standard / v2 comprehension macros (exists /
+all / exists_one / map / filter / transformList / transformMap /
+transformMapEntry) over both list and map sources.  Pre-sized list
+and map accumulators eliminated the runtime growth path
+(PRESIZE_INVARIANT traps any codegen regression); list runtime API
+collapsed to one create (`cel_list_create(out, capacity)`) + one
+write (`cel_list_append_at(list, elem)`), with `cel_list_set`
+deleted entirely.  Map-side 3VL pred propagation
+(`cel_map_insert_at_if_bool`) closed conditional-transformMap
+error-filter rows.  An `undeclared reference to 'cel'` SKIP
+classifier graceful-classifies unregistered extension symbols
+(block_ext / optionals / etc.).
+
+Conformance delta: **+86 PASS**, headline 1287 → **1373 / 2454**
+(55.9%).  Per-fixture: `macros` 0→38 PASS, `macros2` 0→39 PASS,
+`bindings_ext` 0→7 PASS, `namespace` 4→6 PASS, `block_ext` 37
+FAIL → 25 SKIP + 12 FAIL.  See `compiler_v2/conformance/README.md`
+for the closed-milestone entry.
+
+Plan-vs-execution deltas captured per-slice as inline callouts
+below (search for "Plan-vs-execution" or "as-shipped").  Tail-end
+follow-ups deferred to §10 future-work — none are blocking.
+
+Sibling: `m5b-comprehensions-simplification.md` carries the
+analysis-only post-mortem produced 2026-05-17 by a focused
+subagent pass.  It calls out 5 high-ROI simplifications across
+the codegen + runtime surface (CompContext sprawl, detector /
+emitter zoo collapse, `IsShapeC` removal, pre-sizing helper
+collapse, dead `kComprehensionIndex` removal) with grounded LoC
+numbers, per-area migration sketches, and an explicit "what NOT
+to change" list.  Read it before scheduling any post-milestone
+cleanup pass.
 
 > **Plan-vs-execution deltas captured at pre-work landing
 > (2026-05-17), confirmed by an ad-hoc cel-cpp probe:**
@@ -58,10 +83,12 @@ inventory, per-shape codegen recipes, edge-case catalogue, and
 per-fixture conformance projection.  This plan owns the *what
 to ship*; the design doc owns the *how it's shaped*.
 
-Headline projection: PASS 1144 → ~1233–1253 (+89 to +109 if all
-10 slices ship; +50 for the minimum-viable 6-slice variant that
-ships core comprehensions + `cel.bind`).  Effective
-addressable-corpus pass rate 60% → ~65%.
+Headline (as shipped): PASS 1287 → **1373** (+86, full slate A–J
+landed; less than the +89–+109 plan projection because several
+fixtures retained `dyn`-related SKIPs that aren't comprehension-
+gated and because block_ext's 12 non-PASS rows are out-of-scope
+extension shape, not a comp regression).  Effective addressable-
+corpus pass rate 52.4% → **55.9%**.
 
 This milestone closes the single biggest language-feature gap
 remaining in the post-M7B corpus: every `exists` / `all` /

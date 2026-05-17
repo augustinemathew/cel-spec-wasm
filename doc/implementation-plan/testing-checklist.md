@@ -388,7 +388,7 @@ string-escape row become load-bearing once M3 lowers
 **Waiting on later milestones** (don't try to close in M2):
   - `kListExpr`, `kMapExpr`, `kStructExpr` — codegen + e2e rows
     `[ ]`.  Unblocked by M5 (collections).
-  - `kComprehensionExpr` × 4 variants + nested shadowing — comprehensions follow-on milestone (post-M5).
+  - `kComprehensionExpr` × 4 variants + nested shadowing — **shipped 2026-05-17 at the M5.B comprehensions follow-on milestone**; per-shape grid rows ticked below.
   - Arithmetic-overflow / divide-by-zero / NaN-unordered / string
     coercion / unknown-propagation e2e — M4 (three-valued logic).
   - Partial-eval commutativity for `unknown && false → false` — M4.
@@ -444,11 +444,20 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kListExpr` (empty + non-empty) | [x] | [x] | [x]  | [x]       | [ ]     | [ ] |
 | `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [ ] |
 | `kMapExpr`          | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
-| `kComprehensionExpr` (exists) | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
-| `kComprehensionExpr` (all)    | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
-| `kComprehensionExpr` (filter) | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
-| `kComprehensionExpr` (map)    | [ ] | [ ] | [ ]  | [x]       | [ ]     | [ ] |
-| nested comprehensions with shadowing | [ ] | [ ] | [ ] | [ ]   | [ ]     | [ ] |
+| `kComprehensionExpr` (exists) | [x] | [x] | [x]  | [x]       | [x]     | [x] |
+| `kComprehensionExpr` (all)    | [x] | [x] | [x]  | [x]       | [x]     | [x] |
+| `kComprehensionExpr` (filter) | [x] | [x] | [x]  | [x]       | [x]     | [x] |
+| `kComprehensionExpr` (map)    | [x] | [x] | [x]  | [x]       | [x]     | [x] |
+| `kComprehensionExpr` (exists_one)            | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformList v2 3-arg)| [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformList v2 4-arg)| [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMap v2 3-arg) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMap v2 4-arg) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 3-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 3-arg, multi-key entry)  | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 4-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (cel.bind via Shape-C)  | [x] | [x] | [x] | [x] | [x] | [x] |
+| nested comprehensions with shadowing | [x] | [x] | [x] | [x]  | [x]     | [x] |
 
 ## Front-end helpers
 
@@ -590,6 +599,63 @@ variant to the right `Repr`. `RejectDyn` tests live in
       operand-kind × operator × dyn-position matrix + boundary +
       NaN matrix + membership matrix + same-kind regression
       guards).
+
+- [x] **Rewrite M5.B comprehensions follow-on** — cel.bind + the
+      five standard / v2 comprehension macros (exists / all /
+      exists_one / map / filter / transformList / transformMap /
+      transformMapEntry) over both list and map sources.  Slices
+      A–J landed 2026-05-17 (commits `c218552`..`c8a4c56`):
+        - **A**: ResolvePass scope handler.  Comprehensions
+          admitted (was: rejected by `ComprehensionDetector`).
+        - **B**: LayoutPass scope-aware slot allocation; ABI
+          filter excludes comp vars.
+        - **C** (+ nested closeout): `kComprehensionExpr`
+          codegen for exists/all/exists_one over list literals;
+          per-comp binding indices + unique loop labels for
+          nested-same-name accu_var safety.
+        - **D**: map/filter codegen + `cel_list_append_at` /
+          `cel_list_append_at_if_bool` runtime helpers; 3VL pred.
+        - **E**: map-source comprehensions via
+          `cel_map_iter_init/next/key_at/value_at` runtime
+          helpers; iter_var binds to current key per design §3.10.
+        - **F**: two-iter-var (`comprehensions_v2`) — list +
+          map source; synthesized index counter for list
+          two-iter case.
+        - **G**: `transformMap` + `cel_map_insert_at` runtime
+          helper; ComprehensionsV2CheckerLibrary registered for
+          `cel.@mapInsert` overload type-check.
+        - **H**: `transformMapEntry` — generalized over
+          `entry.size()` (0 = no-op, 1 = transformMap-equivalent,
+          N>1 = N sequential inserts); pre-sizing multiplier
+          via `PerIterEntryCount`.
+        - **I**: `cel.bind` parser-library registration +
+          Shape-C fast path.
+        - **Consolidation**: pre-sized list + map accumulators
+          (capacity = iter_range.count × per-iter); list
+          runtime API collapsed (`cel_list_create(out,
+          capacity)` + universal `cel_list_append_at`,
+          `cel_list_set` deleted); growth branches replaced
+          with `__builtin_trap` invariant; lint PCH fix
+          (bazel build superset to keep external symlinks live
+          for clang-tidy).
+        - **Slice H + 3VL pred + ext-symbol SKIP**:
+          `cel_map_insert_at_if_bool` for conditional
+          transformMap predicate error propagation; runner
+          gained "undeclared reference to 'cel'" → SKIP
+          classifier for unregistered extensions.
+        - **J**: closeout — docs reconcile + conformance README
+          headline / per-fixture / forecast updates.
+      Conformance: 1287 → **1373 PASS / 2454** (+86 net).
+      Per-fixture: macros 0→38 PASS, macros2 0→39 PASS,
+      bindings_ext 0→7 PASS, namespace 4→6 PASS, block_ext
+      37 FAIL → 25 SKIP + 12 FAIL.  Locked in
+      `compiler_v2/e2e/m5b_test.cc` (54 tests across 9
+      fixture classes — exists/all/exists_one, map/filter,
+      map-iter, two-iter-var, cel.bind, transformMap,
+      transformMapEntry, nested, consumer; per-fixture
+      SKIPs at `RejectDyn`-on-empty-literal cases documented
+      with cel_map_test.cc runtime equivalents).  Doc:
+      `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
 
 ## Front-end semantic coverage (beyond the grids)
 
