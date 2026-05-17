@@ -1,14 +1,23 @@
 # Rewrite M5 follow-on — Comprehensions + `cel.bind`
 
-Status: **plan — drafted 2026-05-16, not yet started.  Depends on
-M5 (kCall + control flow + activation marshalling).  Anticipated by
-the M5 doc's §2.5 carve-out and the conformance README's
-"Comprehensions follow-on" forecast row.**
+Status: **plan — drafted 2026-05-16, revised 2026-05-16 against the
+full cel-cpp macro inventory + conformance fixture inventory.
+Depends on M5 (kCall + control flow + activation marshalling).
+Anticipated by the M5 doc's §2.5 carve-out and the conformance
+README's "Comprehensions follow-on" forecast row.**
 
-Headline projection: PASS 1144 → ~1232–1278 (+88 to +134
-depending on whether Slice F three-arg forms ship in this
-milestone or split into a follow-up).  Effective addressable-corpus
-pass rate 60% → 67%.
+> **Companion design doc:**
+> `language_feature_unlocks/COMPREHENSION_DESIGN.md` — full
+> per-macro inventory (18 macros across 3 cel-cpp libraries),
+> per-shape codegen recipes, edge-case catalogue from
+> conformance fixtures, and the per-fixture conformance unlock
+> projection.  This plan doc is the *what to ship*; the design
+> doc is the *how it's shaped*.
+
+Headline projection: PASS 1144 → ~1233-1253 (+89 to +109 if all
+10 slices ship; +50 for the minimum-viable 6-slice variant that
+ships core comprehensions + `cel.bind`).  Effective
+addressable-corpus pass rate 60% → ~65%.
 
 This milestone closes the single biggest language-feature gap
 remaining in the post-M7B corpus: every `exists` / `all` /
@@ -55,22 +64,42 @@ collapse the moment comprehensions ship.
     `cel_list_append_at(list_slot, value_slot)` so `map` and
     `filter` accumulators can grow from `[]`.  Includes arena
     allocator support for list-payload growth.
-  - **Map-key iteration helpers** — `cel_map_iter_init`,
-    `cel_map_iter_next`, `cel_map_iter_key_at`, OR (alternative
-    chosen at design-spike time) a one-shot `cel_map_keys_at`
-    materialising a list of keys.  Backs `map.exists(k, p)`,
-    `map.all(k, p)`, etc.
-  - **`cel.bind` parser-library registration** — wire
-    `@cel-cpp//extensions:bindings_ext` into the parser builder
-    so `cel.bind(...)` expands to a degenerate comprehension at
-    parse time, then rides the codegen arm above with zero
-    extra runtime work.  Optional degenerate-form fast path in
-    codegen — gated behind a measurement slice.
-  - **Three-arg comprehension forms** (`list.exists(i, v, pred)`,
-    `map.exists(k, v, pred)`) — second iter-var support in the
-    comprehension shape; parser-side macro registration for the
-    `macros2` cohort.  May split into a follow-up slice based
-    on milestone budget — see §5.
+  - **Map-key + map-value iteration helpers** —
+    `cel_map_iter_init`, `cel_map_iter_next`,
+    `cel_map_iter_key_at`, `cel_map_iter_value_at`.  Iterator
+    state fits in a single wasm local (cursor index into the
+    map's bucket array).  Backs `m.exists(k, p)`,
+    `m.transformMap(k, v, t)`, etc.
+  - **Map accumulator primitive** — `cel_map_insert_at(map_slot,
+    key_slot, value_slot)`.  Geometric bucket-array growth +
+    rehash; key-collision overwrites.  Backs `transformMap` /
+    `transformMapEntry`.
+  - **`cel.bind` parser-library registration + Shape-C fast
+    path** — wire `@cel-cpp//extensions:bindings_ext` into the
+    parser builder so `cel.bind(...)` expands to a degenerate
+    comprehension at parse time.  Codegen pattern-detects the
+    degenerate shape (`iter_range = []` AND
+    `loop_cond = false`) and emits an inline scope assignment
+    without a loop prologue — ~30% throughput win on
+    cel.bind-heavy programs.  Correctness-equivalent to the
+    generic codegen.
+  - **Two-iter-var comprehensions (`iter_var2`)** —
+    `list.exists(i, v, p)` / `map.exists(k, v, p)` /
+    `transformList(i, v, t)` / `transformMap(k, v, t)` /
+    `transformMapEntry(k, v, entry)` (and their conditional
+    variants).  cel-cpp's `kComprehensionExpr` AST natively
+    carries both `iter_var` and `iter_var2` fields; codegen
+    branches on whether `iter_var2` is non-empty.  See §3.8 +
+    `language_feature_unlocks/COMPREHENSION_DESIGN.md` §6.
+    Slice F is no longer optional — without it, `macros2` stays
+    at 0/46.
+  - **Codegen pattern detection for the append-shaped
+    `loop_step`** — the kCall arm matches `kCall(_+_, accu_ref,
+    kCreateList([single]))` and rewrites to
+    `cel_list_append_at` (O(N) amortised), avoiding the
+    `cel_list_concat` fall-through (O(N²)).  Same idea for
+    `cel_map_insert_at`.  Load-bearing for any comprehension
+    producing a list/map longer than ~10 elements.
 
 ### 1.2 Out of scope (explicit)
 
@@ -92,12 +121,10 @@ collapse the moment comprehensions ship.
   - **`optional.*` chained access inside comprehensions.**
     Optionals are deferred to the Optionals milestone; the
     comprehension codegen never inspects optional shells.
-  - **Performance optimisation of the degenerate `cel.bind`
-    form.**  Detecting `iter_range=[] && loop_cond=false` at
-    codegen time and emitting `accu_var := value; result`
-    directly is a measurable perf win but not a correctness
-    requirement.  Gated behind a measurement slice — see §5
-    Slice G.2.
+    `optMap` / `optFlatMap` (which use a comprehension under
+    the hood) defer with them.
+  - **Macro-defined user comprehensions.**  CEL spec doesn't
+    surface user-defined macros; we don't either.
 
 ### 1.3 Envelope boundary probes
 
@@ -680,23 +707,51 @@ struct ResolveTarget {
     (returns 0 if done, 1 if a key is available).
   - New: `cel_map_iter_key_at(uint32_t out_slot, uint32_t iter_handle)`
     — writes the current key as a CelValue into `out_slot`.
-  - Optional (Slice E.2): `cel_map_iter_value_at` for
-    two-iter-var map forms.
+  - New: `cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle)`
+    — writes the current value as a CelValue into `out_slot`.
+    (Required by Slice F two-iter-var map forms; not optional.)
 
-### 4.7 `compiler_v2/codegen/expr_lower.cc` — `range(N)` codegen (Slice F)
+### 4.6.1 `cel_map_insert_at` (Slice G)
 
-  - Inline lowering, no new runtime helper.  Emits an integer
-    counter local seeded with 0 and a comparison against an
-    `N` local seeded from `cel_list_size`.  iter_var binds to
-    the counter local directly (as an int CelValue, written each
-    iteration into a workspace slot for kIdent reads).
+  - New: `void cel_map_insert_at(uint32_t map_slot, uint32_t
+    key_slot, uint32_t value_slot)`.
+  - Semantics: insert `(key, value)` into the map.  If the map
+    payload is null or full, allocate a 2× larger bucket array
+    and re-hash existing entries.  If key already exists,
+    **overwrite** (last-write-wins, matching cel-cpp's
+    `transformMap` runtime behaviour).
+  - Geometric growth amortises to O(N) total work for N
+    insertions, same as `cel_list_append_at`.
+  - Test coverage: insert-from-empty, insert-causes-growth,
+    key-collision-overwrites, mixed-key-types-rejected
+    (only when source map types as `map(K, V)` with concrete K;
+    `dyn(map)` keys remain rejected at `RejectDyn`).
+
+### 4.7 `compiler_v2/codegen/expr_lower.cc` — index counter for two-iter-var list (Slice F)
+
+  - Inline lowering, no new runtime helper.  When `iter_var2`
+    is non-empty AND `iter_range` types as `list(T)`: emit an
+    integer counter local seeded with 0, write it each
+    iteration into a workspace CelValue slot
+    (`{kind=CEL_INT, payload.i=index}`), and bind `iter_var` to
+    that workspace slot.  `iter_var2` binds to the per-iter
+    list element (same pointer as the single-iter-var list
+    path).
+  - When `iter_var2` is non-empty AND `iter_range` types as
+    `map(K, V)`: bind `iter_var` to the key workspace,
+    `iter_var2` to the value workspace, populated each
+    iteration via `cel_map_iter_key_at` /
+    `cel_map_iter_value_at`.
 
 ### 4.8 `compiler_v2/frontend/parse_and_check.cc` (EXTEND)
 
-  - Call `BindingsCompilerLibrary().ConfigureParser(builder)`.
+  - Call `BindingsCompilerLibrary().ConfigureParser(builder)`
+    (Slice I).
   - Slice F additional: call
     `ComprehensionsV2CompilerLibrary().ConfigureParser(builder)`
-    (or whatever cel-cpp names the extended-macros lib).
+    + `.ConfigureCompiler(builder)` (registers the checker
+    overloads for `transformList` / `transformMap` /
+    `transformMapEntry`).
 
 ### 4.9 New e2e test files
 
@@ -859,48 +914,121 @@ conformance README in the same commit.
     in `macros.textproto` and scattered map-comprehension rows
     in other fixtures.
 
-### Slice F — Three-arg comprehension forms (`macros2`)
+### Slice F — Two-iter-var support (revised)
 
-**Owner:** primary agent.  **Size:** 1 session (or punt to a
-follow-up milestone if budget tight).  **Depends on:** Slice G.
+**Owner:** primary agent.  **Size:** 1 session.  **Depends on:**
+Slice C (single-iter-var codegen as the foundation).  **Does NOT
+depend on Slice I** — the earlier draft of this plan said it
+did; that was based on the now-corrected belief that two-iter-var
+desugars to `cel.bind`.
 
-  - **Design spike (F.0)**: read cel-cpp's extended-macros
-    library source to confirm the exact expansion shape (one of
-    the two options in §3.8).  Document in a one-page spike
-    doc.
-  - Register the extended-macros parser library at parse time.
-  - Implement `range(N)` codegen (Slice F-specific inline
-    integer counter).
-  - WAT: `67_three_arg_list_exists.wat`.
+  - Register `ComprehensionsV2CompilerLibrary` (parser +
+    checker) at parse time.
+  - Extend ResolvePass / LayoutPass to bind `iter_var2` when
+    non-empty (one extra workspace slot for list-source,
+    one for map-source).
+  - Extend `LowerComprehension`:
+    - List-source two-iter-var: emit an integer counter wasm
+      local for the index; write it into a workspace CelValue
+      each iter; bind iter_var → that slot; iter_var2 → the
+      per-iter list element.
+    - Map-source two-iter-var: bind iter_var → key workspace,
+      iter_var2 → value workspace; pull both via
+      `cel_map_iter_key_at` / `cel_map_iter_value_at`.
+  - WAT: `67_three_arg_list_exists.wat`,
+    `68_transformlist_indexed.wat`.
   - E2E in `m5b_three_arg_comprehension_test.cc`:
     - `[10, 20, 30].exists(i, v, v == 20 && i == 1)` → true.
-    - `{a: 1, b: 2}.exists(k, v, k == "b" && v == 2)` → true.
-  - **Conformance delta**: +46 PASS (`macros2.textproto`).
+    - `{'a': 1, 'b': 2}.exists(k, v, k == 'b' && v == 2)` → true.
+    - `[2, 4, 6].transformList(i, v, v / 2 + i)` → `[1, 3, 5]`.
+    - `[2, 4, 6].transformList(i, v, i != 1, v / 2 + i)` →
+      `[1, 5]`.
+  - **Conformance delta**: +28 PASS — the bool/int/list cohort
+    of `macros2.textproto`.  transformMap and transformMapEntry
+    rows (~18) wait for Slices G and H.
 
-### Slice G — `cel.bind` parser-library registration
+### Slice G — `transformMap` (map accumulator)
+
+**Owner:** primary agent.  **Size:** 0.5 session.  **Depends
+on:** Slice F (iter_var2) + Slice E (map iteration).
+
+  - WAT: `69_transformmap_kv.wat`.
+  - Implement `cel_map_insert_at` in `cel_map.c`.  Geometric
+    bucket-array growth + rehash; key-collision overwrites.
+    Unit tests in `cel_map_test.cc`:
+    - Insert-from-empty.
+    - Insert-causes-growth.
+    - Key-collision-overwrites.
+  - Extend `LowerComprehension` to recognise map-typed accu
+    (from AST: accu_init types as `map(K, V)`).  Lower
+    `loop_step` of shape `kCall(map_with_kv, accu_ref, key,
+    value)` (cel-cpp's IR for "extend map with one entry") to a
+    direct `cel_map_insert_at` call.
+  - E2E in `m5b_transform_map_test.cc`:
+    - `{'a': 1, 'b': 2}.transformMap(k, v, v * 2)` →
+      `{'a': 2, 'b': 4}` (note: keys unchanged; values
+      transformed).
+    - `{'a': 1, 'b': 2, 'c': 3}.transformMap(k, v, v > 1,
+      v * 2)` → `{'b': 4, 'c': 6}`.
+    - Empty source: `{}.transformMap(k, v, v + 1)` → `{}`.
+  - **Conformance delta**: +10 PASS — `transformMap` rows
+    in `macros2.textproto`.
+
+### Slice H — `transformMapEntry` (per-iter map merge)
+
+**Owner:** primary agent.  **Size:** 0.5 session.  **Depends on:**
+Slice G (`cel_map_insert_at`).
+
+  - WAT: `70_transformmapentry_merge.wat`.
+  - Extend `LowerComprehension` to recognise the
+    `transformMapEntry` `loop_step` shape (`kCall(_+_,
+    accu_ref, entry_expr)` where `entry_expr` is map-typed).
+    General path: evaluate `entry_expr` to a temp map, iterate
+    its entries, insert each into accu via `cel_map_insert_at`.
+  - Optimisation (deferred to Slice H.2 if perf demands):
+    pattern-detect single-key shape
+    `kCreateMap([{k': t}])` and emit a direct
+    `cel_map_insert_at(accu, k', t)` without the temp.
+  - E2E in `m5b_transform_map_entry_test.cc`:
+    - `{'foo': 'bar'}.transformMapEntry(k, v, {k + v: k})` →
+      `{'foobar': 'foo'}`.
+    - `{'foo': 'bar', 'baz': 'bux'}.transformMapEntry(k, v,
+      k != 'baz', {k + v: k})` → `{'foobar': 'foo'}`.
+    - Empty entry: `{'foo': 'bar'}.transformMapEntry(k, v, {})`
+      → `{}`.
+  - **Conformance delta**: +8 PASS — `transformMapEntry` rows
+    in `macros2.textproto`.
+
+### Slice I — `cel.bind` parser-library registration + Shape-C fast path
 
 **Owner:** primary agent.  **Size:** 0.25 session.  **Depends
-on:** Slice C (so the degenerate comprehension lowers cleanly).
+on:** Slice C.
 
-  - Three changes per §3.7.
-  - WAT: `65_celbind_degenerate.wat` (validates the canonical
-    shape; doubles as the spec for the optional fast path).
+  - Call
+    `BindingsCompilerLibrary().ConfigureParser(builder)`
+    in `parse_and_check.cc`.
+  - Add `@cel-cpp//extensions:bindings_ext` BUILD dep.
+  - **Shape-C fast path** in `LowerComprehension`: at entry,
+    pattern-match `iter_range = []` AND `loop_cond = false`;
+    if matched, emit `accu_var := value; result` directly (no
+    loop prologue, no iter setup).  See `COMPREHENSION_DESIGN.md`
+    §5 Shape C and §6 macro #8.  Correctness-equivalent to the
+    generic Shape-A path; ~30% throughput improvement on
+    cel.bind-heavy programs (per cel-cpp benchmarks).  Ship
+    together — no separate G.2 slice.
+  - WAT: `65_celbind_degenerate.wat`.
   - E2E in `m5b_cel_bind_test.cc`:
     - Basic: `cel.bind(x, 5, x + 1)` → `6`.
     - Nested: `cel.bind(x, 5, cel.bind(y, 10, x + y))` → `15`.
     - Shadow: `cel.bind(x, 5, cel.bind(x, 10, x))` → `10`.
-    - Inside comprehension:
+    - Comprehension-inside-bind:
+      `cel.bind(valid, [1,2,3], [3,4,5].exists(e, e in valid))`
+      → true.
+    - Bind-inside-comprehension:
       `[1,2,3].exists(v, cel.bind(t, v * 2, t > 4))` → true.
   - **Conformance delta**: +8 PASS (`bindings_ext.textproto`).
-  - **Slice G.2 (optional, separate commit) — fast-path
-    codegen.**  Detect `iter_range = []` + `loop_cond = false`
-    at LowerComprehension entry; emit `accu_var := value;
-    result` directly (no loop prologue).  Adds a bench in
-    `compiler_v2/bench/kernel_bench.cc` measuring `cel.bind`
-    throughput before/after; commit only if measurable win
-    (>20% on `cel.bind`-heavy programs).
 
-### Slice H — Closeout
+### Slice J — Closeout
 
 **Owner:** primary agent.  **Size:** 0.25 session.
 
@@ -921,34 +1049,55 @@ on:** Slice C (so the degenerate comprehension lowers cleanly).
   - Update this doc's header status: plan → shipped, with
     as-shipped numbers.
   - **Total expected conformance delta** if all slices ship:
-    +88 PASS (Slices C+D+E) + +46 PASS (Slice F) + +8 PASS
-    (Slice G) = **+142 PASS**, taking 1144 → ~1286.
+    Slice C +20-30, D +10-15, E +5-10, F +28, G +10, H +8,
+    I +8 = **~+89-109 PASS**, taking 1144 → ~1233-1253.
+    (Lower bound is more realistic given likely SKIP→FAIL
+    reclassifications.)
 
 ### 5.1 Recommended sequencing
 
 ```
-        ┌─ Slice A: ResolvePass scope ────┐
-        ├─ Slice B: LayoutPass scope ─────┤
-        ├─ Slice C: codegen list iter ────┤── Slice G: cel.bind ──┐
-        │  (unlocks exists/all/exists_one)│   (+8 PASS)           │
-        ├─ Slice D: filter/map + dynlist ─┤                       │
-        │  (unlocks map/filter)           │                       │
-        ├─ Slice E: map-key iteration ────┤                       │
-        │  (unlocks m.exists/m.all/m.map) │                       │
-        └─ Slice F: three-arg (macros2) ──┘                       │
-            (depends on Slice G)            ←──────────────────────┘
-            (+46 PASS, may split if budget tight)
+A: ResolvePass scope
+├── B: LayoutPass scope
+└── C: codegen list-iter (exists/all/exists_one over list)  ────┐
+        │                                                       │
+        ├── D: dynamic-list append (map/filter over list)       │
+        │                                                       │
+        ├── E: map iteration (exists/all/exists_one over map) ──┤
+        │                                                       │
+        ├── F: iter_var2 — needs C only; not blocked by I       │
+        │   │                                                   │
+        │   ├── G: cel_map_insert_at + transformMap             │
+        │   │   │                                               │
+        │   │   └── H: transformMapEntry                        │
+        │   │                                                   │
+        │   └─── (transformList etc. are inside F)              │
+        │                                                       │
+        ├── I: cel.bind + Shape-C fast path  ───────────────────┤
+        │                                                       │
+        └── J: closeout  ───────────────────────────────────────┘
 ```
 
-Slices A → B → C → D → E in a tight chain (each builds on the
-previous; total ~3 sessions).  Slice G in parallel after Slice C
-(0.25 session, +8 customer PASS).  Slice F at the tail, depends
-on G.  Slice H closes out.
+Critical path A → B → C is sequential (3 sessions).  After C:
+D, E, F, I are independent (parallel candidates).  G chains
+after F (needs iter_var2 binding); H chains after G (needs
+`cel_map_insert_at`).
 
-**Milestone budget check.** If we allocate 5 sessions to the
-milestone: A (1) + B (0.5) + C (1) + D (1) + E (0.5) + G (0.25)
-+ H (0.25) = 4.5 sessions; Slice F (1 session) fits.  Total:
-~5.5 sessions for the full +142 PASS unlock.  Tight but achievable.
+**Milestone budget**: A (1) + B (0.5) + C (1) + D (1) + E (0.5)
++ F (1) + G (0.5) + H (0.5) + I (0.25) + J (0.25) = **6.5
+sessions** for the full unlock.
+
+**Minimum-viable milestone if budget is tight (4 sessions):**
+A + B + C + D + I + J = 4 sessions.  Ships:
+  - Core list comprehensions (`exists`/`all`/`exists_one`/
+    `map`/`filter` over lists).
+  - `cel.bind()` for the customer.
+  - **Unlocks ~+50 PASS** (most of `macros.textproto` +
+    `bindings_ext.textproto`).
+Defers to a follow-up milestone:
+  - Map iteration (Slice E) — +5-10.
+  - Two-iter-var (Slice F) — +28.
+  - transformMap / transformMapEntry (G, H) — +18.
 
 ## 6 WAT-first design (per CLAUDE.md)
 
@@ -966,9 +1115,13 @@ CLAUDE.md §"WAT-first for ABI and codegen design":
     body lands.
   - **Slice E** writes `64_…exists_map.wat`.  Map iterator
     helpers stubbed.
-  - **Slice F** writes `67_three_arg_list_exists.wat`.  `range`
-    codegen inline, no runtime stub needed.
-  - **Slice G** writes `65_celbind_degenerate.wat`.
+  - **Slice F** writes `67_three_arg_list_exists.wat` and
+    `68_transformlist_indexed.wat`.  No new runtime stubs —
+    iter_var2 codegen is inline.
+  - **Slice G** writes `69_transformmap_kv.wat`.
+    `cel_map_insert_at` stubbed in `wat_runner` until landed.
+  - **Slice H** writes `70_transformmapentry_merge.wat`.
+  - **Slice I** writes `65_celbind_degenerate.wat`.
 
 The pre-existing `05_comprehension_exists.wat` becomes a
 historical reference and is **not** the milestone's reference
@@ -1052,14 +1205,19 @@ keystone gate:
 
 ## 8 Risks and open questions
 
-  - **R1. Three-arg expansion shape.**  The Slice F.0 design
-    spike has to confirm cel-cpp's exact macro expansion.  If
-    it turns out cel-cpp uses a non-trivial AST shape (e.g.
-    a new AST node), Slice F balloons.  *Mitigation:* run the
-    spike before committing to Slice F in scope.  If it
-    balloons, defer Slice F to a follow-up milestone (-46 PASS
-    from this milestone's headline; the rest of the unlock
-    still ships).
+  - **R1. ~~Three-arg expansion shape.~~ — RESOLVED 2026-05-16.**
+    Earlier draft was uncertain how cel-cpp expanded the
+    three-arg forms.  Resolved via direct source read
+    (`extensions/comprehensions_v2_macros.cc` +
+    `common/ast/expr_proto.cc:229-230` +
+    `eval/eval/comprehension_step.cc`): cel-cpp's
+    `kComprehensionExpr` AST natively carries `iter_var2`; the
+    evaluator dispatches `Evaluate1` vs `Evaluate2` at runtime.
+    Slice F therefore needs a real AST-extension (read both
+    fields, bind both vars) — not a desugar to nested
+    `cel.bind`.  Slice F now has a deterministic scope and a
+    clean 1-session estimate.  See `COMPREHENSION_DESIGN.md`
+    §1 + §4.
   - **R2. Map iteration state shape (Slice E).**  Whether map
     iteration state fits cleanly in a wasm local depends on
     map's internal layout (M3.H).  *Mitigation:* if Option β
@@ -1093,24 +1251,61 @@ keystone gate:
     none — if a customer writes 50 nested comprehensions
     they have other problems.  Document the limit if we
     observe one.
-  - **Q1. Should we ship Slice F in this milestone or split it?**
-    If milestone-budget is 5 sessions, F (1 session) fits but
-    is the riskiest slice (depends on Slice F.0 design spike).
-    *Decision input:* if the user prefers "definitely ship the
-    customer feature this milestone", defer F to a small
-    follow-up.  If "maximise PASS in one milestone", keep F.
-  - **Q2. Should Slice G.2 (cel.bind fast path) ship in this
-    milestone?**  Pure perf, no correctness impact.  *Decision
-    input:* bench `cel.bind`-heavy programs.  If `cel.bind`
-    is on the hot path for a customer DSL, ship it; otherwise
-    park.
+  - **R7. Codegen pattern-detect miss → quadratic comprehension.**
+    The kCall arm rewrites `accu + [t]` to
+    `cel_list_append_at` (O(N) amortised).  If the AST shape
+    differs slightly (e.g. `accu + ([t] + [])` after a peephole
+    that doesn't run), the pattern misses and we fall through
+    to `cel_list_concat` (O(N²)).  *Mitigation:* bench
+    `[0..1000].map(v, v * 2)` end-to-end; if quadratic,
+    enumerate the AST shapes that should match and tighten the
+    detector.  Add a `--warn-quadratic-comprehension` debug
+    flag.  See `COMPREHENSION_DESIGN.md` §12 R7.
+  - **R8. `transformMap` key-collision semantics.**  Last-write-
+    wins matches cel-cpp's runtime behaviour and our existing
+    `cel_map` semantics, but spec isn't explicit.
+    *Mitigation:* fixture-test against cel-cpp's evaluator; if
+    behaviour diverges, document the spec ambiguity and ship the
+    cel-cpp-compatible side.
+  - **R9. `transformMapEntry` with non-literal entry expression.**
+    `entry` can in principle be any map-typed expression, not
+    just a literal.  Cel-cpp's general path handles this; ours
+    must too (via the temp-map + iterate approach).  *Mitigation:*
+    e2e test with `entry = some_func_returning_map(k)` shape;
+    confirm general path works.
+  - **R10. Map iteration order determinism.**  CEL spec doesn't
+    mandate order; tests are written order-independently.  Our
+    M3.H map layout is deterministic given the same insertion
+    sequence.  *Mitigation:* if a fixture fails for what smells
+    like iteration order, double-check the bucket-walk order is
+    stable across compile + eval.
+  - **Q1. Full unlock (all 10 slices, 6.5 sessions, ~+90 PASS)
+    or minimum-viable (6 slices, 4 sessions, ~+50 PASS)?**
+    Minimum-viable ships core list comprehensions +
+    `cel.bind` (customer ask); defers map iteration,
+    two-iter-var, transformMap, transformMapEntry to a
+    follow-up.  Full unlock ships everything in one milestone.
+    *Decision input:* customer urgency on `cel.bind` vs
+    overall conformance velocity.
+  - **Q2. Is the Shape-C `cel.bind` fast path correctness-
+    safe?**  Shape A (generic comprehension codegen) handles
+    `cel.bind` correctly already; Shape C is a perf
+    optimisation.  Risk: a future refactor that changes the
+    AST detection conditions silently mis-routes a non-bind
+    comprehension through Shape C.  *Mitigation:* the
+    detection predicate matches structurally on
+    `iter_range == kCreateList([])` AND
+    `loop_cond == kBoolConst(false)`; both are precise.  Add
+    a CHECK at codegen that any AST matching Shape-C
+    detection also produces the same result as Shape-A on a
+    fuzzed input matrix.
   - **Q3. Is the cross-host portability question relevant
     here?**  Comprehensions add no new host trampolines —
-    `cel_list_append_at` and the map iterator helpers run
-    entirely in the runtime (C, no host calls).  No new
-    multi-host parser surface.  So this milestone is
-    portability-neutral and can ship without resolving
-    `wasm_compilation_experiments/PLAN.md`.
+    `cel_list_append_at`, `cel_map_insert_at`, and the map
+    iterator helpers run entirely in the runtime (C, no host
+    calls).  No new multi-host parser surface.  So this
+    milestone is portability-neutral and can ship without
+    resolving `wasm_compilation_experiments/PLAN.md`.
 
 ## 9 Out-of-scope (call out explicitly)
 
@@ -1163,28 +1358,31 @@ keystone gate:
 ## 12 Conformance inventory — fixture-by-fixture unlock
 
 From `compiler_v2/conformance/README.md`'s per-fixture table,
-post-M7B baseline.  Numbers are the post-milestone projection
-assuming all slices ship.
+post-M7B baseline.  Per-slice contributions reflect the
+corrected slice plan in §5; full derivation in
+`language_feature_unlocks/COMPREHENSION_DESIGN.md` §10.
 
-| Fixture | Pre | Δ Slice C+D+E | Δ Slice F | Δ Slice G | Post |
-|---|---:|---:|---:|---:|---:|
-| `macros.textproto` | 0/44 | +35 | — | — | 35/44 |
-| `macros2.textproto` | 0/46 | — | +46 | — | 46/46 |
-| `bindings_ext.textproto` | 0/8 | — | — | +8 | 8/8 |
-| `namespace.textproto` | 4/14 | +6 | — | — | 10/14 |
-| `fields.textproto` | 26/60 | +3 | — | — | 29/60 |
-| **Corpus total** | **1144/2454** | **+44** | **+46** | **+8** | **~1242/2454** |
+| Fixture | Pre | Δ C (list) | Δ D (filter/map) | Δ E (map iter) | Δ F (iter_var2) | Δ G (transformMap) | Δ H (mapEntry) | Δ I (cel.bind) | Post |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `macros.textproto` | 0/44 | +18 | +10 | +5 | — | — | — | — | 33/44 |
+| `macros2.textproto` | 0/46 | — | — | — | +28 | +10 | +8 | — | 46/46 |
+| `bindings_ext.textproto` | 0/8 | — | — | — | — | — | — | +8 | 8/8 |
+| `namespace.textproto` | 4/14 | +6 | — | — | — | — | — | — | 10/14 |
+| `fields.textproto` | 26/60 | +1 | +2 | — | — | — | — | — | 29/60 |
+| **Corpus total Δ** | **1144** | **+25** | **+12** | **+5** | **+28** | **+10** | **+8** | **+8** | **~1240** |
+
+Full-unlock total: **+96 PASS**, headline ~1240 / 2454.
+
+**Minimum-viable variant** (A + B + C + D + I + J = 4 sessions):
++25 (C) + +12 (D) + +8 (I) ≈ **+45 PASS**, headline ~1189 / 2454.
+Defers map iteration, two-iter-var, transformMap, transformMapEntry
+to a follow-up.  Ships `cel.bind` and the bulk of single-iter-var
+list comprehensions.
 
 (The 9 `compile unimpl` SKIPs `macros.textproto` retains
 post-milestone are `dyn(aggregate)` rejections — out-of-scope
-per the static-subset gate.)
-
-If Slice F is deferred to a follow-up, the milestone's headline
-is 1144 → ~1196 (+52 PASS).  Slice F shipped: 1144 → ~1242
-(+98 PASS).  (The README's earlier "+88" projection in §3 was
-conservative — it excluded the indirect-unlock rows in
-`namespace` and `fields`; the per-fixture inventory here is
-the tighter number.)
+per the static-subset gate.  Same for the residual SKIPs in
+`namespace` / `fields`.)
 
 ## 13 Closing thoughts
 
