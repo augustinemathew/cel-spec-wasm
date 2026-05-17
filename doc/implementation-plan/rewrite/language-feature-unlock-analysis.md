@@ -14,17 +14,18 @@ Inputs: `compiler_v2/conformance/README.md` (post-M7B + polish, today),
     addressable corpus is **~1920 tests**.
   - **Effective pass rate against addressable corpus**: ~60%.
 
-## 2 What "language feature" means here
+## 2 Scope
 
-Per the user, this analysis **excludes extensions**:
-math_ext, network_ext, string_ext, encoders_ext, optionals,
-proto2_ext, and block_ext.  Those total ~600 of the corpus and
-are explicitly deferred.
+This analysis covers **language features only** — extensions
+(math_ext, network_ext, string_ext, encoders_ext, optionals,
+proto2_ext, block_ext) are out of scope here.  Those total
+~600 corpus rows and are tracked in the extensions-pass
+forecast.
 
-Included: core CEL features (comprehensions, wrappers, regex,
-type-coercion overloads, map-type marshalling) plus the
-customer-named follow-up: **`cel.bind()`** (which despite
-living in `bindings_ext.textproto` is mechanically a comprehension
+In scope: core CEL features (comprehensions, wrappers, regex,
+type-coercion overloads, map-type marshalling) plus
+**`cel.bind()`** (which despite living in
+`bindings_ext.textproto` is mechanically a comprehension
 special-form — see §6).
 
 ## 3 The unlock-priority table
@@ -167,27 +168,7 @@ analysis shows this pattern is hot in customer programs (likely
 it will be — `cel.bind` is meant for repeated subexpression
 elimination, so customers will use it heavily).
 
-## 7 What needs to be done now (analysis-phase deliverables)
-
-This doc is the analysis the user asked for.  The natural
-next planning artefact would be:
-
-  - **Draft `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`**
-    with slice-level breakdown (Slice A: ResolvePass scope; Slice B:
-    `kComprehension` codegen; Slice C: `filter` + dynamic-list;
-    Slice D: macros2 three-arg forms; Slice E: `cel.bind` parser
-    registration).
-  - **Per-slice WAT traces** under `doc/implementation-plan/rewrite/wat/`
-    showing the loop shape, scope stack, slot allocation.
-  - **Per-slice conformance projection** — for each slice, expected
-    PASS/FAIL/SKIP delta.
-
-Per the user's "don't pre-commit to follow-up plans" rule from
-CLAUDE.md, this analysis stops at the *what* and *why*.  The
-follow-on milestone doc itself is left to the user to authorise
-before drafting.
-
-## 8 Recommendation
+## 7 Recommendation
 
 **Single-milestone recommendation.**  The next milestone should be
 **M5 comprehensions follow-on**, scoped to include:
@@ -221,22 +202,21 @@ single-milestone unlock).
   - Three-arg forms either shipped (Slice D in scope, +46 → ~1278)
     or staged for the immediately-following slice.
 
-## 9 Open questions for the user
+## 8 Open questions
 
-  1. **Confirm scope** — is "core comprehensions + cel.bind +
-     three-arg forms" the right bundle for the next milestone, or
-     do you want to split (e.g. ship `cel.bind` standalone first
-     for the customer)?  Splitting is technically possible —
-     just register the parser macro and gate ResolvePass to admit
-     a comprehension *only if* it's the degenerate form
-     (`iter_range = [] && loop_cond = false`).  That's a ~1
-     session change instead of 3.5.
-  2. **Performance for `cel.bind`** — should the degenerate
-     comprehension take a fast path in codegen (no loop prologue)?
-     Worth doing eventually; deciding now affects whether codegen
+  1. **Scope of the next milestone** — "core comprehensions +
+     cel.bind + three-arg forms" as one bundle, or split (ship
+     `cel.bind` standalone first for the customer)?  Splitting
+     is technically possible: register the parser macro and gate
+     ResolvePass to admit a comprehension *only if* it's the
+     degenerate form (`iter_range = [] && loop_cond = false`).
+     ~1 session change instead of the full ~6.5 sessions.
+  2. **Degenerate-form fast path for `cel.bind`** — should
+     codegen detect `iter_range=[]` + `loop_cond=false` and skip
+     the loop prologue?  Pure perf; affects whether codegen
      gets a special case or treats it generically.
-  3. **M8 after, or M8 in parallel?**  M8 is independent and could
-     run as a parallel agent — but it shares the
-     wasi-sdk-or-handroll question if `matches()` is in scope.
-     If we want M8 to run parallel to comprehensions, we need to
-     pick a lane for that question first.
+  3. **M8 after, or M8 in parallel?**  M8 wrappers is
+     independent and could run as a parallel agent — but it
+     shares the wasi-sdk-or-handroll question if `matches()` is
+     in scope.  Parallel execution requires picking a lane for
+     that question first.

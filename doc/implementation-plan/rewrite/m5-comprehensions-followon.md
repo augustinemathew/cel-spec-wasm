@@ -1,20 +1,16 @@
 # Rewrite M5 follow-on — Comprehensions + `cel.bind`
 
-Status: **plan — drafted 2026-05-16, revised 2026-05-16 against the
-full cel-cpp macro inventory + conformance fixture inventory.
-Depends on M5 (kCall + control flow + activation marshalling).
-Anticipated by the M5 doc's §2.5 carve-out and the conformance
-README's "Comprehensions follow-on" forecast row.**
+Status: **plan — drafted 2026-05-16.  Depends on M5 (kCall +
+control flow + activation marshalling).  Anticipated by the M5
+doc's §2.5 carve-out and the conformance README's
+"Comprehensions follow-on" forecast row.**
 
-> **Companion design doc:**
-> `m5-comprehensions-design.md` — full
-> per-macro inventory (18 macros across 3 cel-cpp libraries),
-> per-shape codegen recipes, edge-case catalogue from
-> conformance fixtures, and the per-fixture conformance unlock
-> projection.  This plan doc is the *what to ship*; the design
-> doc is the *how it's shaped*.
+Companion: `m5-comprehensions-design.md` carries the per-macro
+inventory, per-shape codegen recipes, edge-case catalogue, and
+per-fixture conformance projection.  This plan owns the *what
+to ship*; the design doc owns the *how it's shaped*.
 
-Headline projection: PASS 1144 → ~1233-1253 (+89 to +109 if all
+Headline projection: PASS 1144 → ~1233–1253 (+89 to +109 if all
 10 slices ship; +50 for the minimum-viable 6-slice variant that
 ships core comprehensions + `cel.bind`).  Effective
 addressable-corpus pass rate 60% → ~65%.
@@ -538,15 +534,7 @@ any code in our codegen because cel-cpp's parser does the
 expansion to a generic `kComprehensionExpr` AST node, and the
 Slice A–C codegen above handles it.
 
-### 3.8 Two-iter-var support (Slice F) — native AST shape
-
-> **Plan-vs-execution delta (2026-05-16):** an earlier draft of
-> this section claimed two-iter-var comprehensions desugar to a
-> nested `cel.bind` inside `loop_step`.  **Verified against
-> cel-cpp source: that was wrong.**  See
-> `m5-comprehensions-design.md` §1, §4 for
-> the corrected analysis.  The text below is the corrected
-> version.
+### 3.8 Two-iter-var support (Slice F)
 
 cel-cpp's `kComprehensionExpr` AST natively carries **both**
 `iter_var` and `iter_var2` fields (see
@@ -917,10 +905,8 @@ conformance README in the same commit.
 ### Slice F — Two-iter-var support (revised)
 
 **Owner:** primary agent.  **Size:** 1 session.  **Depends on:**
-Slice C (single-iter-var codegen as the foundation).  **Does NOT
-depend on Slice I** — the earlier draft of this plan said it
-did; that was based on the now-corrected belief that two-iter-var
-desugars to `cel.bind`.
+Slice C (single-iter-var codegen as the foundation).
+Independent of Slice I.
 
   - Register `ComprehensionsV2CompilerLibrary` (parser +
     checker) at parse time.
@@ -1205,26 +1191,13 @@ keystone gate:
 
 ## 8 Risks and open questions
 
-  - **R1. ~~Three-arg expansion shape.~~ — RESOLVED 2026-05-16.**
-    Earlier draft was uncertain how cel-cpp expanded the
-    three-arg forms.  Resolved via direct source read
-    (`extensions/comprehensions_v2_macros.cc` +
-    `common/ast/expr_proto.cc:229-230` +
-    `eval/eval/comprehension_step.cc`): cel-cpp's
-    `kComprehensionExpr` AST natively carries `iter_var2`; the
-    evaluator dispatches `Evaluate1` vs `Evaluate2` at runtime.
-    Slice F therefore needs a real AST-extension (read both
-    fields, bind both vars) — not a desugar to nested
-    `cel.bind`.  Slice F now has a deterministic scope and a
-    clean 1-session estimate.  See `COMPREHENSION_DESIGN.md`
-    §1 + §4.
-  - **R2. Map iteration state shape (Slice E).**  Whether map
+  - **R1. Map iteration state shape (Slice E).**  Whether map
     iteration state fits cleanly in a wasm local depends on
     map's internal layout (M3.H).  *Mitigation:* if Option β
     proves messy, fall back to Option α (materialise keys);
     accept the per-comprehension allocation cost as an
     optimisation TODO.
-  - **R3. Dynamic-list append + arena lifetime (Slice D).**  A
+  - **R2. Dynamic-list append + arena lifetime (Slice D).**  A
     comprehension that produces a large list under
     `cel_list_append_at` consumes O(N log N) arena bytes due
     to geometric growth abandoning old payloads.  Under the
@@ -1233,25 +1206,25 @@ keystone gate:
     add a "compact at end" pass that copies the final list
     into a tight allocation before the comprehension exits.
     Spec-out for this milestone if perf is acceptable.
-  - **R4. Comprehension inside `==` polymorphic dispatch.**  A
+  - **R3. Comprehension inside `==` polymorphic dispatch.**  A
     rare shape: `[1,2,3].exists(v, …) == true`.  The kCall
     `_==_` arm should see the comprehension's result as a
     standard bool CelValue; this needs the comprehension's
     output slot to be addressable as `kCallExpr` operand.
     *Mitigation:* covered by the existing kCall arm's
     operand-from-slot logic; verify with a targeted E2E.
-  - **R5. Custom-named accu_var collision with stdlib idents.**
+  - **R4. Custom-named accu_var collision with stdlib idents.**
     A user-defined `cel.bind(true, 5, …)` — does cel-cpp's
     parser reject this?  Need to check; if not, our codegen
     needs to as well.  *Mitigation:* spike at Slice G time;
     expect cel-cpp rejects at parse so we get it for free.
-  - **R6. Nested-comprehension scope depth.**  Theoretically
+  - **R5. Nested-comprehension scope depth.**  Theoretically
     unbounded; practical limit set by wasm local count
     (~1000 ish before binaryen complains).  *Mitigation:*
     none — if a customer writes 50 nested comprehensions
     they have other problems.  Document the limit if we
     observe one.
-  - **R7. Codegen pattern-detect miss → quadratic comprehension.**
+  - **R6. Codegen pattern-detect miss → quadratic comprehension.**
     The kCall arm rewrites `accu + [t]` to
     `cel_list_append_at` (O(N) amortised).  If the AST shape
     differs slightly (e.g. `accu + ([t] + [])` after a peephole
@@ -1261,19 +1234,19 @@ keystone gate:
     enumerate the AST shapes that should match and tighten the
     detector.  Add a `--warn-quadratic-comprehension` debug
     flag.  See `COMPREHENSION_DESIGN.md` §12 R7.
-  - **R8. `transformMap` key-collision semantics.**  Last-write-
+  - **R7. `transformMap` key-collision semantics.**  Last-write-
     wins matches cel-cpp's runtime behaviour and our existing
     `cel_map` semantics, but spec isn't explicit.
     *Mitigation:* fixture-test against cel-cpp's evaluator; if
     behaviour diverges, document the spec ambiguity and ship the
     cel-cpp-compatible side.
-  - **R9. `transformMapEntry` with non-literal entry expression.**
+  - **R8. `transformMapEntry` with non-literal entry expression.**
     `entry` can in principle be any map-typed expression, not
     just a literal.  Cel-cpp's general path handles this; ours
     must too (via the temp-map + iterate approach).  *Mitigation:*
     e2e test with `entry = some_func_returning_map(k)` shape;
     confirm general path works.
-  - **R10. Map iteration order determinism.**  CEL spec doesn't
+  - **R9. Map iteration order determinism.**  CEL spec doesn't
     mandate order; tests are written order-independently.  Our
     M3.H map layout is deterministic given the same insertion
     sequence.  *Mitigation:* if a fixture fails for what smells
@@ -1384,18 +1357,15 @@ post-milestone are `dyn(aggregate)` rejections — out-of-scope
 per the static-subset gate.  Same for the residual SKIPs in
 `namespace` / `fields`.)
 
-## 13 Closing thoughts
+## 13 Position in the milestone roadmap
 
 Comprehensions is the last big language-feature gap in the
-post-M7B corpus that isn't an extension.  Once this milestone
-ships, CEL programs written by customers will mostly compile —
-the failure modes left are: extensions (math, string, network,
+post-M7B corpus that isn't an extension.  Post-milestone, the
+remaining failure modes are: extensions (math, string, network,
 optionals), wrapper-typed proto fields (M8), and the long tail
 of small unlocks (matches regex, map-type marshalling, bool→int
-overloads).  Of those, M8 is the next-biggest single
-unlock (~+55–60 PASS) and the natural sequel.
+overloads).  M8 is the next-biggest single unlock (~+55–60
+PASS) and the natural sequel.
 
-The customer-named `cel.bind` ships as a 0.25-session
-slice (G) on top of this work, demonstrating that the
-"foundational unlock → small customer feature" pattern is the
-right shape for this milestone family.
+`cel.bind` (Slice I) ships on top of the core comprehension
+infrastructure at ~0.25 session cost for +8 PASS.

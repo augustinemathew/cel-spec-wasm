@@ -1,42 +1,43 @@
-# Comprehensive comprehension design
+# Comprehension design
 
-Status: design analysis — drafted 2026-05-16.  Supersedes parts of
-`doc/implementation-plan/rewrite/m5-comprehensions-followon.md`
-where this doc finds the earlier sketch was wrong (see §10 for the
-plan-delta list).
+Status: design — drafted 2026-05-16.  Companion to
+`m5-comprehensions-followon.md`; this doc owns the *how it's
+shaped*, the plan doc owns the *what to ship*.
 
-Inputs surveyed:
-  - `third_party/cel-cpp/parser/macro.cc` (standard macros)
-  - `third_party/cel-cpp/extensions/bindings_ext.cc` (`cel.bind`)
+Authoritative references:
+  - `third_party/cel-cpp/parser/macro.cc` — standard macros
+    (`all`, `exists`, `exists_one`, `map`, `filter`, `has`).
+  - `third_party/cel-cpp/extensions/bindings_ext.cc` — `cel.bind`.
   - `third_party/cel-cpp/extensions/comprehensions_v2_macros.cc`
-    (three-arg / two-iter-var macros)
-  - `third_party/cel-cpp/eval/eval/comprehension_step.cc`
-    (runtime semantics — list-vs-map iter, iter_var2 binding)
-  - `third_party/cel-cpp/common/ast/expr_proto.cc` (AST shape:
-    `iter_var` AND `iter_var2` are native fields)
-  - `tests/simple/testdata/macros.textproto` (44 rows)
-  - `tests/simple/testdata/macros2.textproto` (46 rows)
-  - `tests/simple/testdata/bindings_ext.textproto` (8 rows)
-  - `tests/simple/testdata/namespace.textproto` (comprehension rows)
+    — two-iter-var macros.
+  - `third_party/cel-cpp/eval/eval/comprehension_step.cc` —
+    runtime semantics.
+  - `third_party/cel-cpp/common/ast/expr_proto.cc` — AST shape.
+  - `doc/langdef.md` §"Comprehensions" — spec.
 
-## 1 Critical correction to the prior plan
+## 1 AST shape
 
-The previous milestone plan asserted that two-iter-var
-comprehensions desugar into a `cel.bind` nested inside a
-single-iter-var comprehension's `loop_step`.  **That is wrong.**
+`kComprehensionExpr` carries eight fields:
 
-cel-cpp's AST proto for `kComprehensionExpr` has both `iter_var`
-and `iter_var2` as first-class fields
-(`common/ast/expr_proto.cc:229-230` push them as separate
-`comprehension_proto->set_iter_var(...)` /
-`set_iter_var2(...)` calls).  cel-cpp's evaluator
-(`eval/eval/comprehension_step.cc`) branches at runtime on
-`iter_slot_ == iter2_slot_` to choose `Evaluate1` (single-var) vs
-`Evaluate2` (two-var); both shapes are native, not desugared.
+```
+ComprehensionExpr {
+  iter_var   : string   // bound name for each iter element / index / key
+  iter_var2  : string   // empty for single-iter; non-empty for two-iter
+  iter_range : Expr     // typed list or map
+  accu_var   : string   // canonically "__result__"
+  accu_init  : Expr     // initial accumulator value
+  loop_cond  : Expr     // continue iff this evaluates true
+  loop_step  : Expr     // new accumulator value each iter
+  result     : Expr     // returned after the loop
+}
+```
 
-Implication for us: the milestone needs to handle a native
-two-iter-var AST shape.  No nested-`cel.bind` workaround.  See §6
-for the codegen impact.
+`iter_var2` is a first-class field
+(`common/ast/expr_proto.cc:229-230` pushes
+`set_iter_var2(...)` alongside `set_iter_var(...)`).  The
+evaluator (`eval/eval/comprehension_step.cc`) branches on
+`iter_slot_ == iter2_slot_` to choose `Evaluate1` (single-var)
+vs `Evaluate2` (two-var); both shapes are native.
 
 ## 2 Full catalogue of comprehension shapes
 
@@ -290,34 +291,17 @@ Tests are written to be order-independent.  Our runtime can
 iterate in whatever order matches our map implementation
 (deterministic per M3.H bucket layout).
 
-## 4 The AST shape — uniform, native two-iter-var
+## 4 Codegen dispatch rule
 
-cel-cpp's `kComprehensionExpr` proto has **eight** fields:
+`compiler_v2` reads the comprehension AST via cel-cpp's checker
+output (`cel::ast_internal::Comprehension`).  Both `iter_var`
+and `iter_var2` accessors exist on the API.
 
-```
-ComprehensionExpr {
-  iter_var   : string   // always present
-  iter_var2  : string   // empty for single-iter; non-empty for two-iter
-  iter_range : Expr
-  accu_var   : string   // always "__result__" (canonical)
-  accu_init  : Expr
-  loop_cond  : Expr → bool
-  loop_step  : Expr
-  result     : Expr
-}
-```
-
-Our `compiler_v2` code-base reads this AST via cel-cpp's checker
-output (`cel::ast_internal::Comprehension`).  The accessor for
-`iter_var2` already exists in cel-cpp's API; we just have to
-*use* it.
-
-**Detection rule for the codegen**: if `iter_var2` is non-empty,
-emit the two-iter-var lowering shape.  Otherwise emit the
-single-iter-var shape.  Both shapes share the outer scaffolding
-(scope push/pop, accu allocation, loop init / cond / step /
-result); they differ only in what gets bound and how the
-iteration step extracts elements.
+**Dispatch**: if `iter_var2` is non-empty, emit the two-iter-var
+lowering shape; otherwise the single-iter-var shape.  Both
+shapes share the outer scaffolding (scope push/pop, accu
+allocation, loop init / cond / step / result); they differ only
+in what gets bound and how the iteration step extracts elements.
 
 ## 5 Codegen taxonomy — three execution shapes
 
@@ -490,10 +474,11 @@ Semantics:
     keys; comprehension semantics aren't explicit, but cel-cpp's
     transformMap uses overwrite).
 
-Codegen detection: kCall arm matches
-`kCall(map_with_kv, accu_ref, key, value)` (or whatever
-cel-cpp's IR shape is — TBD at design-spike) and emits
-`cel_map_insert_at` directly.
+Codegen detection: kCall arm matches the IR shape that
+cel-cpp's `transformMap` macro emits for extending a map with
+one entry, and rewrites to `cel_map_insert_at` directly.  The
+exact IR shape to match is verified at implementation time
+against the macro source.
 
 ### 7.3 Map entry merging (`transformMapEntry`)
 
@@ -771,244 +756,63 @@ if (args[0].ident_expr().name() == args[1].ident_expr().name()) {
 
 Parser rejects.  Codegen never sees this case.
 
-## 10 Plan delta against m5-comprehensions-followon.md
+## 10 Risks
 
-What this design discovery changes about the milestone plan:
+  - **R1. Codegen pattern-detect miss → quadratic comprehension.**
+    The kCall arm rewrites `accu + [t]` to `cel_list_append_at`
+    (O(N) amortised).  If the AST shape differs slightly (e.g.
+    `accu + ([t] + [])` after a peephole that doesn't run), the
+    pattern misses and we fall through to `cel_list_concat`
+    (O(N²)).  Mitigation: bench `[0..1000].map(v, v * 2)`
+    end-to-end; if quadratic, enumerate the AST shapes that
+    should match and tighten the detector.
+  - **R2. transformMap key collision.**  Last-write-wins matches
+    cel-cpp's runtime behaviour and our existing `cel_map`
+    semantics, but spec isn't explicit.  Fixture-test against
+    cel-cpp's evaluator; if behaviour diverges, document the
+    spec ambiguity and ship the cel-cpp-compatible side.
+  - **R3. transformMapEntry with non-literal entry expression.**
+    `entry` can in principle be any map-typed expression, not
+    just a literal.  The general path (evaluate-temp-then-merge)
+    handles this; verify with a targeted e2e.
+  - **R4. Map iteration order determinism.**  Spec doesn't
+    mandate order; tests are written order-independently.  Our
+    M3.H map layout is deterministic given the same insertion
+    sequence — confirm the bucket-walk order is stable across
+    compile + eval.
 
-  - **§3.8 is WRONG.**  Two-iter-var comprehensions are NOT
-    desugared to nested `cel.bind`.  cel-cpp's AST natively
-    carries `iter_var2`; the evaluator dispatches `Evaluate1` vs
-    `Evaluate2` at runtime.  Our codegen needs both shapes.
-    Slice F therefore becomes:
-    - Add `iter_var2` reading to ResolvePass / LayoutPass.
-    - Add a second iter-binding emit in the `kComprehensionExpr`
-      codegen arm — single-var emits Shape A/B as before; two-var
-      adds a second bound local (iter_var2 → key_workspace for
-      map; iter_var2 → iter_off for list, with iter_var → index
-      counter).
-    - **No dependency on Slice G** (cel.bind registration) any
-      more — Slice F is standalone.  This shortens the critical
-      path.
-  - **New runtime helper: `cel_map_insert_at`** for the
-    `transformMap` / `transformMapEntry` family.  Not in the
-    prior plan.  Adds ~50 LoC to `cel_map.c` (Slice D scope) or
-    a new Slice D.2.
-  - **`transformMapEntry` is a new "shape variant"** — `entry`
-    is a map expression evaluated per-iter, then merged.  Two
-    codegen options (general vs single-key-pattern); ship the
-    general path first.  Adds ~30 LoC to `expr_lower.cc`.
-  - **Pattern detection in kCall arm** for `accu + [t]` →
-    `cel_list_append_at` is a real codegen optimisation, not
-    just "use the new helper".  The general `accu + [t]`
-    falls through to `cel_list_concat` (O(N²)).  Codegen
-    pattern-matches the AST shape `kCall(_+_,
-    accu_ref, kCreateList([single])` and rewrites to a single
-    `cel_list_append_at` call.  Same idea for
-    `cel_map_insert_at`.
-  - **Shape C (degenerate cel.bind fast path) is gradeable** —
-    correctness with Shape A, perf with Shape C.  Ship Shape A
-    + fast-path detection together in Slice G; no separate
-    G.2 slice.
-  - **Conformance unlock projection updated**.  Per-fixture:
+## 11 Test inventory
 
-| Fixture | Pre | Δ | Post | Reason |
-|---|---:|---:|---:|---|
-| macros.textproto | 0/44 | +30 to +35 | 30-35/44 | Slice C list-iter + Slice D filter/map; remaining are dyn-rejected or error-propagation edge cases |
-| macros2.textproto | 0/46 | +35 to +40 | 35-40/46 | Slice F two-iter-var; remaining are transformMap/transformMapEntry edge cases (dyn-rejection + map-key shadowing) |
-| bindings_ext.textproto | 0/8 | +8 | 8/8 | Slice G — registration of bindings library |
-| namespace.textproto | 4/14 | +6 | 10/14 | Comprehension rows |
-| **Total** | **1144** | **+79 to +89** | **~1230** | |
+Coverage matrix: 18 macros × {empty, single, multi, error,
+nested} × {list source, map source where applicable}.
 
-  - **Three new WAT traces**: `68_transformlist_indexed.wat`,
-    `69_transformmap_kv.wat`, `70_transformmapentry_merge.wat`.
-    Each locks a specific accumulator shape (list-with-index,
-    map-with-kv-insert, map-with-merge).
-
-## 11 Updated slice plan
-
-Replaces §5 of m5-comprehensions-followon.md:
-
-```
-Slice A  — ResolvePass scope handler (iter_var + iter_var2 aware)
-         — 1 session
-Slice B  — LayoutPass scope-aware slot allocation
-         — 0.5 session
-Slice C  — kComprehensionExpr codegen — Shape A (list, single iter_var)
-         — Unlocks 1, 2, 3 over list
-         — 1 session
-Slice D  — Dynamic-list append + macros 4-6 codegen
-         — Unlocks map / map-with-filter / filter over list
-         — 1 session
-Slice E  — Shape B (map iteration) — single-iter-var over map source
-         — Unlocks 1, 2, 3 over map
-         — 0.5 session
-Slice F  — Two-iter-var support (iter_var2)
-         — Unlocks 9, 10, 11, 12, 13 (most of macros2)
-         — 1 session (NOT dependent on G any more)
-Slice G  — Map accumulator (cel_map_insert_at) + transformMap
-         — Unlocks 14, 15
-         — 0.5 session
-Slice H  — transformMapEntry (per-iter map merge)
-         — Unlocks 16, 17
-         — 0.5 session
-Slice I  — Shape C fast path for cel.bind + bindings_ext library reg
-         — Unlocks 8 (bindings_ext)
-         — 0.25 session
-Slice J  — Closeout
-         — 0.25 session
-```
-
-Total: ~6.5 sessions for the full ~+85 PASS unlock.
-
-**Sequencing**: A → B → C, then any of D/E/F/I in parallel.
-G and H depend on F (for two-iter-var binding) but on nothing
-else.
-
-**Minimum-viable milestone** if budget is tight (4 sessions):
-A + B + C + D + I + closeout.  Unlocks 1-6 over list + cel.bind
-(~+50 PASS).  Skips map iteration, two-iter-var, transformMap.
-Customer gets cel.bind, biggest direct conformance bucket
-clears.  Slice E/F/G/H ship as a follow-up.
-
-## 12 Risks newly identified
-
-  - **R7. `cel_list_concat` already exists; deciding when to use
-    append-at vs concat is a codegen pattern-detect, not a
-    runtime decision.**  If the pattern detector misses cases
-    (e.g. `accu + ([t] + [])`), we silently fall through to
-    `cel_list_concat` (O(N²)).  Mitigation: bench the generated
-    wasm for `[1..1000].map(v, v * 2)`; if quadratic, find the
-    pattern miss.  Add a debug `--warn-quadratic-comprehension`
-    flag.
-  - **R8. transformMap key collision** — last-write-wins is the
-    cel-cpp behaviour but I haven't seen it explicitly speccd.
-    Test against cel-cpp's runtime; if our behaviour diverges,
-    note the spec ambiguity.
-  - **R9. transformMapEntry with non-literal entry expression**
-    is rarely seen but allowed by the macro.  Need to confirm
-    our codegen handles `transformMapEntry(k, v, dynamic_map_expr)`
-    where `dynamic_map_expr` is non-constant.  Should "just
-    work" via the general path (§7.3 option a), but worth a
-    targeted e2e test.
-  - **R10. Map iteration order determinism across runs.**
-    Tests assume order-independence but if a test secretly
-    relies on insertion order (some `exists_one` tests *could*
-    in theory), we need to confirm our `cel_map_iter_*`
-    produces a deterministic order.  Per M3.H, our map is
-    bucket-array based with stable bucket order; order is
-    deterministic *given the same key-set inserted in the same
-    sequence*.  This should be fine but flag if a fixture
-    fails for reasons that smell like iteration order.
-
-## 13 Test inventory the milestone must cover
-
-Per CLAUDE.md "test every type and every AST variant": the
-matrix is 18 macros × {empty, single, multi, error, nested} ×
-{list source, map source where applicable}.  Realistic
-parameterised coverage:
-
-  - **`m5b_comprehension_exists_test.cc`** — `exists` /
-    `exists_one` over list + map, 1/2-var.  Parameterised
-    over `{empty, single match, multi match, no match,
-    error-in-pred, error-in-step}`.
-  - **`m5b_comprehension_all_test.cc`** — `all`, same matrix.
-  - **`m5b_comprehension_filter_test.cc`** — `filter`, same
-    matrix.
-  - **`m5b_comprehension_map_test.cc`** — `map` / `transformList`
-    over list + map source.  Parameterised over
-    `{empty, single, multi, conditional-filter,
-     index-in-output, error}`.
-  - **`m5b_comprehension_transform_map_test.cc`** —
-    `transformMap` / `transformMapEntry`.  Parameterised over
-    `{empty, single, multi, conditional, key-collision,
-     empty-entry, multi-entry}`.
-  - **`m5b_cel_bind_test.cc`** — `cel.bind` over scalar /
-    aggregate / message accu; nested bind; bind-shadows-outer;
+  - `m5b_comprehension_exists_test.cc` — `exists` /
+    `exists_one` over list + map, 1/2-var.  Parameterised over
+    `{empty, single match, multi match, no match, error-in-pred,
+    error-in-step}`.
+  - `m5b_comprehension_all_test.cc` — `all`, same matrix.
+  - `m5b_comprehension_filter_test.cc` — `filter`, same matrix.
+  - `m5b_comprehension_map_test.cc` — `map` / `transformList`
+    over list + map source.  Parameterised over `{empty,
+    single, multi, conditional-filter, index-in-output, error}`.
+  - `m5b_comprehension_transform_map_test.cc` — `transformMap`
+    / `transformMapEntry`.  Parameterised over `{empty, single,
+    multi, conditional, key-collision, empty-entry, multi-entry}`.
+  - `m5b_cel_bind_test.cc` — `cel.bind` over scalar / aggregate
+    / message accu; nested bind; bind-shadows-outer;
     bind-inside-comprehension; comprehension-inside-bind.
-  - **`m5b_comprehension_nested_test.cc`** — outer×inner over
+  - `m5b_comprehension_nested_test.cc` — outer×inner over
     list×list, list×map, map×list, map×map; same-name shadow;
     free-var passthrough.
-  - **`m5b_comprehension_consumer_test.cc`** — comprehension's
+  - `m5b_comprehension_consumer_test.cc` — comprehension's
     output as operand to `==`, `in`, `size`, `_+_`, field
     select, comprehension itself (nested in outer).
 
-Each file ~150-300 lines; total e2e suite ~1500-2000 lines new.
-
-**Conformance side**:
-  - `bazel run //compiler_v2/conformance:run_conformance --
-    --file=tests/simple/testdata/macros.textproto` — verify
-    +30 to +35 net post-milestone.
-  - Same for macros2, bindings_ext, namespace.
-  - Watch for **new FAIL rows** that weren't FAIL pre-milestone
-    (e.g. dyn-rejection rows that classification logic should
-    now route to `static_subset:` SKIP, not FAIL).
-
-## 14 What's still uncertain (for design-spike time)
-
-  - **The exact `cel_map_insert_at` rehash threshold** — fixed at
-    2× capacity per current `cel_map_create` pattern, or
-    different for accumulator-grown maps?  Bench.
-  - **`comprehensions_v2`'s checker-library config** — what
-    overloads does it register?  Need to read
-    `extensions/comprehensions_v2.cc` (the non-`_macros.cc`
-    side) to see the checker bindings.  Implementation detail
-    discoverable at Slice F start.
-  - **`transformList`'s synthetic `range(N)` expansion** — does
-    it really synthesise a range list or use the index-counter
-    trick I described in §7.6?  Need to read cel-cpp's
-    evaluator more closely; the macro definition I read at
-    `comprehensions_v2_macros.cc:223` uses `iter_var2` directly,
-    suggesting the evaluator handles list iteration with two
-    bindings natively (no synthesised range list).  Confirm at
-    Slice F spike.
-
-## 15 Recommendation for the milestone plan
-
-Update `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`
-with these deltas:
-
-  1. **Replace §3.8** ("Three-arg form support") with this
-     doc's §6 + §11 — two-iter-var is native, not desugared.
-  2. **Add `cel_map_insert_at` to §4.6** as a new runtime
-     helper.
-  3. **Add `transformMapEntry` codegen note to §3.4** — the
-     "merge entry map into accu" loop_step pattern.
-  4. **Update §5 slice plan** to the §11 version above (10
-     slices A–J, 6.5 sessions, ~+85 PASS).
-  5. **Update conformance projection table** with the
-     per-fixture numbers from §10.
-  6. **Add §7 pattern-detection codegen** as a first-class
-     concern, not an afterthought — it's the difference
-     between O(N) and O(N²) for `map` / `filter`.
-  7. **Add R7–R10 to the risk register.**
-
-Doing this turns the milestone plan from "approximately
-right" into "verified against cel-cpp source and conformance
-fixture inventory".
-
-## 16 Summary
-
-The comprehension landscape:
-
-  - **18 macros**, **3 codegen execution shapes** (A loop-over-
-    list, B loop-over-map, C degenerate-no-loop), **2
-    accumulator-storage families** (scalar, aggregate-with-
-    geometric-growth).
-  - **Native two-iter-var AST shape** — not a desugar.  Slice F
-    becomes a real ResolvePass / LayoutPass / codegen extension.
-  - **Three new runtime helpers** needed: `cel_list_append_at`
-    (geometric growth), `cel_map_insert_at` (geometric growth +
-    rehash), `cel_map_iter_*` (iterator family).
-  - **Codegen pattern detection** is load-bearing — the
-    difference between `cel_list_concat` (O(N²)) and
-    `cel_list_append_at` (O(N)) is a pattern-match on the
-    `loop_step` AST shape.
-  - **cel.bind ships nearly free** as a Shape-C special case +
-    parser-library registration (~0.25 session for +8 PASS).
-  - **Effort total**: ~6.5 sessions for ~+85 PASS, end-state at
-    1144 + 85 ≈ 1229 (50.1% of total corpus, ~64% of addressable).
-
-The prior milestone plan got the broad shape right but missed:
-the native iter_var2 AST shape, the transformMap accumulator
-type, the codegen pattern-detection for O(N) vs O(N²), and the
-transformMapEntry execution shape.  This doc captures those.
+Conformance closeout: run the harness per
+`compiler_v2/conformance/README.md` against the four
+comprehension-bearing fixtures (`macros`, `macros2`,
+`bindings_ext`, `namespace`); confirm the per-fixture deltas in
+§5 of `m5-comprehensions-followon.md`.  Watch for new FAIL rows
+that weren't FAIL pre-milestone (dyn-rejection rows that
+classification logic should route to `static_subset:` SKIP, not
+FAIL).
