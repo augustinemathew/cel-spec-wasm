@@ -1,4 +1,3 @@
-
 === GROUP 1: Literal wrapper equality ===
 [A1] google.protobuf.Int32Value{value: 123} == 123
    -> true
@@ -206,5 +205,93 @@
    -> true
 [F-setzero-vs-litzero] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == google.protobuf.Int32Value{value: 0}
    -> true
+
+=== GROUP 7: Wrapper arithmetic / ordering / size / calls ===
+[G-add-i32-lit-scalar] google.protobuf.Int32Value{value:1} + 2
+   -> 3
+[G-sub-i32-wrap-wrap] google.protobuf.Int32Value{value:5} - google.protobuf.Int32Value{value:2}
+   -> 3
+[G-mul-i64-lit-scalar] google.protobuf.Int64Value{value:10} * 3
+   -> 30
+[G-add-double-lit-scalar] google.protobuf.DoubleValue{value:1.5} + 2.5
+   -> 4.0
+[G-sub-u32-lit-scalar] google.protobuf.UInt32Value{value:10u} - 3u
+   -> 7u
+[G-add-bool-int] google.protobuf.BoolValue{value:true} + 1
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:39: found no matching overload for '_+_' applied to '(wrapper(bool), int)'
+ | google.protobuf.BoolValue{value:true} + 1
+ | ......................................^
+[G-concat-str-lit-scalar] google.protobuf.StringValue{value:"x"} + "y"
+   -> "xy"
+[G-concat-bytes-lit-scalar] google.protobuf.BytesValue{value:b"x"} + b"y"
+   -> b"xy"
+[G-empty-wrapper-add] google.protobuf.Int32Value{} + 2
+   -> 2
+[G-cross-form-add] google.protobuf.Int32Value{value:1} + google.protobuf.Int32Value{value:2}
+   -> 3
+[G-div-i32-scalar] google.protobuf.Int32Value{value:10} / 2
+   -> 5
+[G-mod-i64-scalar] google.protobuf.Int64Value{value:7} % 3
+   -> 1
+[G-add-float-scalar] google.protobuf.FloatValue{value:1.5} + 2.5
+   -> 4.0
+[G-lt-i32-lit-scalar] google.protobuf.Int32Value{value:1} < 2
+   -> true
+[G-gt-i32-wrap-wrap] google.protobuf.Int32Value{value:5} > google.protobuf.Int32Value{value:3}
+   -> true
+[G-le-double-lit-scalar] google.protobuf.DoubleValue{value:1.5} <= 1.5
+   -> true
+[G-lt-str-lit-scalar] google.protobuf.StringValue{value:"abc"} < "abd"
+   -> true
+[G-ge-u64-lit-scalar] google.protobuf.UInt64Value{value:10u} >= 5u
+   -> true
+[G-size-str-wrap] size(google.protobuf.StringValue{value:"hello"})
+   -> 5
+[G-size-bytes-wrap] size(google.protobuf.BytesValue{value:b"foo"})
+   -> 3
+[G-in-list-wrap-elem] google.protobuf.Int32Value{value:1} in [1, 2, 3]
+   -> true
+[G-string-of-i32-wrap] string(google.protobuf.Int32Value{value:42})
+   -> "42"
+[G-int-of-double-wrap] int(google.protobuf.DoubleValue{value:42.0})
+   -> 42
+[G-double-of-i32-wrap] double(google.protobuf.Int32Value{value:7})
+   -> 7.0
+[G-i32-toString] google.protobuf.Int32Value{value:1}.toString()
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:45: undeclared reference to 'toString' (in container '')
+ | google.protobuf.Int32Value{value:1}.toString()
+ | ............................................^
+[G-add-wrap-string] google.protobuf.Int32Value{value:1} + "2"
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:37: found no matching overload for '_+_' applied to '(wrapper(int), string)'
+ | google.protobuf.Int32Value{value:1} + "2"
+ | ....................................^
+[G-add-i32-double] google.protobuf.Int32Value{value:1} + google.protobuf.DoubleValue{value:1.5}
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:37: found no matching overload for '_+_' applied to '(wrapper(int), wrapper(double))'
+ | google.protobuf.Int32Value{value:1} + google.protobuf.DoubleValue{value:1.5}
+ | ....................................^
+[G-add-i32-i64] google.protobuf.Int32Value{value:1} + google.protobuf.Int64Value{value:2}
+   -> 3
+[G-add-i32-u32] google.protobuf.Int32Value{value:1} + google.protobuf.UInt32Value{value:2u}
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:37: found no matching overload for '_+_' applied to '(wrapper(int), wrapper(uint))'
+ | google.protobuf.Int32Value{value:1} + google.protobuf.UInt32Value{value:2u}
+ | ....................................^
+[G-fieldread-i32-add] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper + 1
+   -> 6
+[G-fieldread-i32-unset-add] cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper + 1
+   -> 1
+[G-fieldread-i64-add] cel.expr.conformance.proto3.TestAllTypes{single_int64_wrapper: 9}.single_int64_wrapper + 1
+   -> 10
+[G-fieldread-u32-add] cel.expr.conformance.proto3.TestAllTypes{single_uint32_wrapper: 7u}.single_uint32_wrapper + 1u
+   -> 8u
+[G-fieldread-double-add] cel.expr.conformance.proto3.TestAllTypes{single_double_wrapper: 1.5}.single_double_wrapper + 2.5
+   -> 4.0
+[G-fieldread-str-add] cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: "x"}.single_string_wrapper + "y"
+   -> "xy"
+[G-fieldread-bool-and] cel.expr.conformance.proto3.TestAllTypes{single_bool_wrapper: true}.single_bool_wrapper && true
+   -> true
+[G-fieldread-i32-lt] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper < 10
+   -> true
+[G-fieldread-size-str] size(cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: "hello"}.single_string_wrapper)
+   -> 5
 
 [done]

@@ -12,6 +12,9 @@
 //   GROUP 4 — Any-contained wrapper (Any-unwrap chained to peel)
 //   GROUP 5 — Edge / boundary values per wrapper kind
 //   GROUP 6 — Cross-form symmetry (literal vs field-read equality)
+//   GROUP 7 — Wrapper arithmetic / ordering / size / call coercion
+//     (added 2026-05-17 to answer "does cel-cpp peel wrappers in
+//     arithmetic / ordering / size / function-call contexts?").
 //
 // Output: one `[ROW] expr → result` line per row.  Read against
 // `langdef.md` §wrapper-types to drive the M8 plan + test matrix.
@@ -291,6 +294,108 @@ void Group6_CrossForm() {
           "google.protobuf.Int32Value{value: 0}");
 }
 
+void Group7_ArithmeticOrderingSizeCalls() {
+  std::cout << "\n=== GROUP 7: Wrapper arithmetic / ordering / size / "
+               "calls ===\n";
+  std::string p = std::string(kT3);
+
+  // --- Arithmetic (+, -, *, /, %) -------------------------------
+  Run("G-add-i32-lit-scalar",
+      "google.protobuf.Int32Value{value:1} + 2");
+  Run("G-sub-i32-wrap-wrap",
+      "google.protobuf.Int32Value{value:5} - "
+      "google.protobuf.Int32Value{value:2}");
+  Run("G-mul-i64-lit-scalar",
+      "google.protobuf.Int64Value{value:10} * 3");
+  Run("G-add-double-lit-scalar",
+      "google.protobuf.DoubleValue{value:1.5} + 2.5");
+  Run("G-sub-u32-lit-scalar",
+      "google.protobuf.UInt32Value{value:10u} - 3u");
+  Run("G-add-bool-int",
+      "google.protobuf.BoolValue{value:true} + 1");
+  Run("G-concat-str-lit-scalar",
+      "google.protobuf.StringValue{value:\"x\"} + \"y\"");
+  Run("G-concat-bytes-lit-scalar",
+      "google.protobuf.BytesValue{value:b\"x\"} + b\"y\"");
+  Run("G-empty-wrapper-add",
+      "google.protobuf.Int32Value{} + 2");
+  Run("G-cross-form-add",
+      "google.protobuf.Int32Value{value:1} + "
+      "google.protobuf.Int32Value{value:2}");
+  Run("G-div-i32-scalar",
+      "google.protobuf.Int32Value{value:10} / 2");
+  Run("G-mod-i64-scalar",
+      "google.protobuf.Int64Value{value:7} % 3");
+  Run("G-add-float-scalar",
+      "google.protobuf.FloatValue{value:1.5} + 2.5");
+
+  // --- Ordering (<, <=, >, >=) ---------------------------------
+  Run("G-lt-i32-lit-scalar",
+      "google.protobuf.Int32Value{value:1} < 2");
+  Run("G-gt-i32-wrap-wrap",
+      "google.protobuf.Int32Value{value:5} > "
+      "google.protobuf.Int32Value{value:3}");
+  Run("G-le-double-lit-scalar",
+      "google.protobuf.DoubleValue{value:1.5} <= 1.5");
+  Run("G-lt-str-lit-scalar",
+      "google.protobuf.StringValue{value:\"abc\"} < \"abd\"");
+  Run("G-ge-u64-lit-scalar",
+      "google.protobuf.UInt64Value{value:10u} >= 5u");
+
+  // --- size() / membership -------------------------------------
+  Run("G-size-str-wrap",
+      "size(google.protobuf.StringValue{value:\"hello\"})");
+  Run("G-size-bytes-wrap",
+      "size(google.protobuf.BytesValue{value:b\"foo\"})");
+  Run("G-in-list-wrap-elem",
+      "google.protobuf.Int32Value{value:1} in [1, 2, 3]");
+
+  // --- Function calls ------------------------------------------
+  Run("G-string-of-i32-wrap",
+      "string(google.protobuf.Int32Value{value:42})");
+  Run("G-int-of-double-wrap",
+      "int(google.protobuf.DoubleValue{value:42.0})");
+  Run("G-double-of-i32-wrap",
+      "double(google.protobuf.Int32Value{value:7})");
+  // toString-on-wrapper (does this method exist?)
+  Run("G-i32-toString",
+      "google.protobuf.Int32Value{value:1}.toString()");
+
+  // --- Negative / disallowed ----------------------------------
+  Run("G-add-wrap-string",
+      "google.protobuf.Int32Value{value:1} + \"2\"");
+  Run("G-add-i32-double",
+      "google.protobuf.Int32Value{value:1} + "
+      "google.protobuf.DoubleValue{value:1.5}");
+  Run("G-add-i32-i64",
+      "google.protobuf.Int32Value{value:1} + "
+      "google.protobuf.Int64Value{value:2}");
+  Run("G-add-i32-u32",
+      "google.protobuf.Int32Value{value:1} + "
+      "google.protobuf.UInt32Value{value:2u}");
+
+  // --- Field-read arithmetic (already in our M8.B scope) -------
+  Run("G-fieldread-i32-add",
+      p + "{single_int32_wrapper: 5}.single_int32_wrapper + 1");
+  Run("G-fieldread-i32-unset-add",
+      p + "{}.single_int32_wrapper + 1");
+  Run("G-fieldread-i64-add",
+      p + "{single_int64_wrapper: 9}.single_int64_wrapper + 1");
+  Run("G-fieldread-u32-add",
+      p + "{single_uint32_wrapper: 7u}.single_uint32_wrapper + 1u");
+  Run("G-fieldread-double-add",
+      p + "{single_double_wrapper: 1.5}.single_double_wrapper + 2.5");
+  Run("G-fieldread-str-add",
+      p + "{single_string_wrapper: \"x\"}.single_string_wrapper + \"y\"");
+  Run("G-fieldread-bool-and",
+      p + "{single_bool_wrapper: true}.single_bool_wrapper && true");
+  Run("G-fieldread-i32-lt",
+      p + "{single_int32_wrapper: 5}.single_int32_wrapper < 10");
+  Run("G-fieldread-size-str",
+      "size(" + p +
+          "{single_string_wrapper: \"hello\"}.single_string_wrapper)");
+}
+
 }  // namespace
 
 int main() {
@@ -300,6 +405,7 @@ int main() {
   Group4_AnyContainedWrapper();
   Group5_BoundaryValues();
   Group6_CrossForm();
+  Group7_ArithmeticOrderingSizeCalls();
   std::cout << "\n[done]\n";
   return 0;
 }
