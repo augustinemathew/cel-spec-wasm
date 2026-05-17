@@ -169,6 +169,38 @@ cc_test(
     ],
 )
 
+# M8 e2e test suite — wrapper types (`google.protobuf.{Bool,Int32,
+# Int64,UInt32,UInt64,Float,Double,String,Bytes}Value`).  RED today
+# (every test GTEST_SKIPs); turns on slice-by-slice as M8.B → M8.C →
+# M8.A → M8.D ship per
+# `doc/implementation-plan/rewrite/m8-wrapper-types.md` §5.
+# Conformance unlock target: +151 PASS per the m8 plan §1 (A=89,
+# B=24 standalone, C=38).  Test matrix covers all 9 wrappers × the
+# three architecture arms (write-side, read-side+Any-chain, kStruct
+# tail-unwrap).
+cc_test(
+    name = "m8_test",
+    srcs = ["m8_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # M9 e2e test suite — type subsystem (`type(x)` standard function +
 # type-identifier idents like `int` / `bool` / `<message-fqn>`
 # standalone + CEL_TYPE equality).  RED until M9.A lands the
