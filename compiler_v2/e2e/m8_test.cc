@@ -1331,5 +1331,182 @@ TEST_F(WrapperRejectE2ETest, DynOfWrapperVarRejectedByStaticSubset) {
                      "static-subset rejects dyn-of-wrapper");
 }
 
+// ──────────────────────────────────────────────────────────────
+// 8. WrapperArithmeticE2ETest  (incidental coverage — no new code)
+//
+//    cel-cpp peels wrappers at the call-dispatch boundary for
+//    arithmetic / ordering / size / `in` / scalar-constructor /
+//    string-concat (probe `throwaway/m8-wrapper-probe` PR #4
+//    matrix-confirmed against the vendored cel-cpp).  Our M8
+//    architecture (typed_ast.cc:56 wrapper→scalar Repr + M8.B
+//    read-side peel + M8.C kStructExpr tail-unwrap) means every
+//    such expression flows through the existing scalar-arithmetic
+//    codegen by the time codegen sees the operand — no
+//    wrapper-arithmetic-specific machinery needed.  These tests
+//    pin that property so a future refactor that tries to
+//    "simplify" the typed_ast wrapper-Repr mapping doesn't
+//    silently regress wrapper arithmetic.
+//
+//    Originally listed as M8 §9 "Future work — Wrapper coercion
+//    in arithmetic" before the probe empirically resolved it as
+//    already-working.
+// ──────────────────────────────────────────────────────────────
+
+class WrapperArithmeticE2ETest : public ::testing::Test {};
+
+// — Wrapper-vs-scalar arithmetic across the four numeric kinds —
+
+TEST_F(WrapperArithmeticE2ETest, Int32WrapperPlusScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.Int32Value{value: 1} + 2");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
+}
+
+TEST_F(WrapperArithmeticE2ETest, Int64WrapperMinusScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.Int64Value{value: 10} - 3");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 7);
+}
+
+TEST_F(WrapperArithmeticE2ETest, UInt32WrapperTimesScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.UInt32Value{value: 7u} * 3u");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsUint(), 21u);
+}
+
+TEST_F(WrapperArithmeticE2ETest, DoubleWrapperPlusScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.DoubleValue{value: 1.5} + 2.5");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsDouble(), 4.0);
+}
+
+// — Wrapper-vs-wrapper arithmetic (both operands peel) —
+
+TEST_F(WrapperArithmeticE2ETest, Int32WrapperMinusInt32WrapperPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "google.protobuf.Int32Value{value: 5} - "
+                  "google.protobuf.Int32Value{value: 2}");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
+}
+
+// — String concat: wrapper-vs-scalar peels to string-string concat —
+
+TEST_F(WrapperArithmeticE2ETest, StringWrapperConcatScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(google.protobuf.StringValue{value: "ab"} + "c")");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsString(), "abc");
+}
+
+// — Ordering: wrapper-vs-scalar comparison peels —
+
+TEST_F(WrapperArithmeticE2ETest, Int32WrapperLessThanScalarPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.Int32Value{value: 1} < 2");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(WrapperArithmeticE2ETest, Int32WrapperGreaterEqualsWrapperPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "google.protobuf.Int32Value{value: 5} >= "
+                  "google.protobuf.Int32Value{value: 5}");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// — `size()` on string/bytes wrappers peels through —
+
+TEST_F(WrapperArithmeticE2ETest, SizeStringWrapperPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(size(google.protobuf.StringValue{value: "hello"}))");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 5);
+}
+
+TEST_F(WrapperArithmeticE2ETest, SizeBytesWrapperPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(size(google.protobuf.BytesValue{value: b"foo"}))");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
+}
+
+// — `in` operator: wrapper element vs scalar list peels —
+
+TEST_F(WrapperArithmeticE2ETest, WrapperInScalarListPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.Int32Value{value: 2} in [1, 2, 3]");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// — Scalar constructor (string()) on a wrapper peels through —
+
+TEST_F(WrapperArithmeticE2ETest, StringConstructorOnIntWrapperPeels) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "string(google.protobuf.Int32Value{value: 42})");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsString(), "42");
+}
+
+// — Field-read wrapper in arithmetic (M8.B-peel then scalar add) —
+
+TEST_F(WrapperArithmeticE2ETest, FieldReadWrapperInArithmetic) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}."
+      "single_int32_wrapper + 7");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 12);
+}
+
+// — Empty-wrapper arithmetic: empty literal peels to default scalar —
+
+TEST_F(WrapperArithmeticE2ETest, EmptyInt32WrapperPlusScalarUsesDefault) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // Int32Value{} peels to scalar default 0; 0 + 2 = 2.  Confirms
+  // the M8.C tail-unwrap path treats an unset value field as the
+  // proto default (langdef §"Wrapper Types" — wrapper literals
+  // are present messages whose field defaults to zero).
+  auto instance =
+      CompilePlan(*compiler, "google.protobuf.Int32Value{} + 2");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
+}
+
 }  // namespace
 }  // namespace cel

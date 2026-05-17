@@ -743,9 +743,25 @@ sequencing is the three-arm split above.
 
 Surfaced during M8 execution but not in scope for this milestone:
 
-  - **Wrapper coercion in arithmetic** (`Int32Value{value:1} + 2`)
-    if a fixture row surfaces.  cel-cpp ships this; the conformance
-    corpus rarely exercises it.
+  - ~~**Wrapper coercion in arithmetic** (`Int32Value{value:1} + 2`)
+    if a fixture row surfaces.~~  **Resolved 2026-05-17** — the
+    M8 architecture handles wrapper arithmetic incidentally.
+    `typed_ast.cc:56` maps wrapper Repr → scalar at the frontend;
+    M8.B peels wrapper field reads to scalar at runtime; M8.C
+    peels wrapper literals to scalar at kStructExpr tail.  By
+    the time codegen sees an arithmetic operand, the wrapper has
+    already become a scalar slot, so the existing scalar-
+    arithmetic / ordering / size / `in` / scalar-constructor
+    codegen handles it.  Empirically verified against the
+    vendored cel-cpp (probe `throwaway/m8-wrapper-probe` PR #4,
+    GROUP 7) — 36/37 comparable rows match; the one delta is the
+    unset-wrapper-policy choice (we return `null` per langdef
+    line 484-486; cel-cpp's `enable_empty_wrapper_null_unboxing`
+    default returns scalar-zero — not arithmetic-specific).
+    Coverage pinned by `WrapperArithmeticE2ETest` in
+    `compiler_v2/e2e/m8_test.cc` (14 rows: + - * / on wrappers,
+    ordering, size, `in`, scalar constructors, string concat,
+    field-read arithmetic, empty-wrapper-default-arithmetic).
   - **Runtime peel fallback (Option B)** if `dyn(wrappermsg)` is
     admitted at a later static-subset broadening.  Static subset
     rejects today (§4.R4).
