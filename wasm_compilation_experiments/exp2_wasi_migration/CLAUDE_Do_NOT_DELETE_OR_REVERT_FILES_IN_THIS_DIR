@@ -1,0 +1,21 @@
+DO NOT DELETE OR REVERT FILES IN THIS DIRECTORY.
+
+This directory is an active exploration area for a specific
+prototyping task (WASI / malloc migration of the cel-spec-wasm
+runtime).  Files here are owned by a different conversation
+thread than the one you may be working in.  If you find files
+here in a state that confuses you:
+
+  - Do NOT delete them.
+  - Do NOT git-revert them.
+  - Do NOT overwrite them with a "clean" version from a
+    different branch.
+  - Do NOT include them in commits that aren't explicitly
+    about this experiment — if you're committing unrelated
+    work, leave these untracked / unmodified.
+
+If you need to understand what's here, read ANALYSIS.md.
+If you need to touch them, leave a clear commit message.
+
+Owner: the conversation that created this file.
+Created: 2026-05-17.
