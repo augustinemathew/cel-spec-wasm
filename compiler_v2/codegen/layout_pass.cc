@@ -280,6 +280,40 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
 // fill `layout.variables`.  Workspace sits 8-aligned immediately
 // after rodata; each slot is 24 B, and 24 is a multiple of 8 so
 // every slot stays aligned.
+// M5.B Slice C: walks every `kComprehensionExpr` and stamps
+// `comp_aux_local_base` on each — the first of N consecutive wasm
+// locals reserved for that comp's per-iter state (end_off, cursor,
+// index).  N = `StaticLayout::comprehension_extra_locals_per_comp`.
+// `LowerToEvalFunction` reads the total local count via
+// `StaticLayout::total_wasm_locals`.
+class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
+ public:
+  ComprehensionLocalsVisitor(WasmAnnotations& annotations,
+                             uint32_t locals_per_comp,
+                             uint32_t base_local_index)
+      : annotations_(annotations),
+        locals_per_comp_(locals_per_comp),
+        next_local_(base_local_index) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PreVisitComprehension(const cel::Expr& expr,
+                             const cel::ComprehensionExpr& /*comp*/) override {
+    annotations_[expr.id()].comp_aux_local_base = next_local_;
+    next_local_ += locals_per_comp_;
+  }
+
+  uint32_t total_locals() const {
+    return next_local_;
+  }
+
+ private:
+  WasmAnnotations& annotations_;
+  uint32_t locals_per_comp_;
+  uint32_t next_local_;
+};
+
 void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
                           StaticLayout& layout) {
   constexpr auto kSlotBytes = static_cast<uint32_t>(sizeof(CelValue));
@@ -354,6 +388,17 @@ absl::StatusOr<StaticLayout> LayoutPass(
 
   // Arena grows forward from the first 8-aligned byte past workspace.
   layout.arena_base = RoundUp8(layout.workspace_base + layout.workspace_bytes);
+
+  // --- Pass E (M5.B Slice C): allocate per-comprehension auxiliary
+  // wasm locals beyond `variables.size()` so `LowerToEvalFunction`
+  // can declare the full local set up front.
+  const auto base_local = static_cast<uint32_t>(layout.variables.size());
+  ComprehensionLocalsVisitor comp_locals_visitor(
+      layout.annotations, layout.comprehension_extra_locals_per_comp,
+      base_local);
+  cel::AstTraverse(ast.ast().root_expr(), comp_locals_visitor,
+                   cel::TraversalOptions{.use_comprehension_callbacks = true});
+  layout.total_wasm_locals = comp_locals_visitor.total_locals();
 
   return layout;
 }

@@ -857,17 +857,20 @@ BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
                       BinaryenTypeNone());
 }
 
-// Builds `(eval; cel_copy_slot(out, arm_slot))` for one ternary arm.
-// Drops the i32 offset that `eval`'s `Emit` puts on the stack — the
-// arm's CelValue is already in `arm_slot` after `eval` runs.
+// Builds `cel_copy_slot(out, <eval>)` for one ternary arm.  The
+// eval expression returns the slot offset of the arm's CelValue at
+// runtime — whatever the arm's storage kind (rodata / workspace /
+// local).  Using the eval value directly avoids the trap of
+// hard-coding `storage.payload`, which for `kLocal` (kIdent arms)
+// is a local index, NOT a slot offset.  M5.B Slice C surfaced the
+// kIdent-arm case via `exists_one`'s loop_step `p ? accu+1 : accu`
+// (else-arm is a bare `kIdent(@result)`).
 BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                                           BinaryenExpressionRef eval_expr,
-                                          uint32_t out_slot,
-                                          uint32_t arm_slot) {
-  auto* mod = ctx.mod.raw();
-  BinaryenExpressionRef items[2] = {BinaryenDrop(mod, eval_expr),
-                                    EmitCelCopySlot(ctx, out_slot, arm_slot)};
-  return BinaryenBlock(mod, /*name=*/nullptr, items, 2, BinaryenTypeNone());
+                                          uint32_t out_slot) {
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot), eval_expr};
+  return BinaryenCall(ctx.mod.raw(), "cel_copy_slot", args, 2,
+                      BinaryenTypeNone());
 }
 
 // `(i32.eq (i32.load offset=N <slot>) <expected>)` — the CelValue
@@ -917,25 +920,21 @@ absl::StatusOr<BinaryenExpressionRef> EmitConditional(
   if (!else_or.ok()) return else_or.status();
 
   const NodeAnnotation* cond_ann = ctx.layout.annotations.Find(cond.id());
-  const NodeAnnotation* then_ann =
-      ctx.layout.annotations.Find(then_branch.id());
-  const NodeAnnotation* else_ann =
-      ctx.layout.annotations.Find(else_branch.id());
-  ABSL_CHECK(cond_ann != nullptr && then_ann != nullptr && else_ann != nullptr)
-      << "expr_lower: ternary sub-expr missing NodeAnnotation";
+  ABSL_CHECK(cond_ann != nullptr)
+      << "expr_lower: ternary cond sub-expr missing NodeAnnotation";
   const uint32_t cond_slot = cond_ann->storage.payload;
-  const uint32_t then_slot = then_ann->storage.payload;
-  const uint32_t else_slot = else_ann->storage.payload;
 
   auto* mod = ctx.mod.raw();
 
   // CelValue layout pinned by cel_data.h: kind:u32 at off 0,
   // _pad:u32 at off 4, payload at off 8 (b at off 8 for CEL_BOOL).
-  // CEL_BOOL = 1.
+  // CEL_BOOL = 1.  Then / else arm slots come from the arm's eval
+  // expression at runtime (correct across kLocal / kStaticRodata /
+  // kWorkspaceSlot storage kinds — see BuildConditionalArm).
   BinaryenExpressionRef inner_if = BinaryenIf(
       mod, LoadSlotI32Ne(ctx, cond_slot, /*offset=*/8, /*expected=*/0),
-      BuildConditionalArm(ctx, *then_or, out_slot, then_slot),
-      BuildConditionalArm(ctx, *else_or, out_slot, else_slot));
+      BuildConditionalArm(ctx, *then_or, out_slot),
+      BuildConditionalArm(ctx, *else_or, out_slot));
   BinaryenExpressionRef outer_if = BinaryenIf(
       mod, LoadSlotI32Eq(ctx, cond_slot, /*offset=*/0, /*expected=*/1),
       inner_if, EmitCelCopySlot(ctx, out_slot, cond_slot));
@@ -981,6 +980,295 @@ absl::StatusOr<BinaryenExpressionRef> EmitGeneralCall(
   BinaryenExpressionRef block_items[2] = {call_expr,
                                           I32Const(ctx.mod, out_slot)};
   return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
+// ============================================================
+// M5.B Slice C — kComprehensionExpr lowering (Shape A: list iter,
+// single-iter-var; exists / all / exists_one accumulators).
+// ============================================================
+//
+// Memory & local layout (per WAT 60 / 61):
+//   - iter_range evaluated in OUTER scope → list_slot (workspace,
+//     filled by kCreateList or any list-producing expression).
+//   - accu_init evaluated in OUTER scope → CelValue copied via
+//     cel_copy_slot into accu_slot (the accu_var's workspace cell).
+//   - iter_var.local_index doubles as iter_off (the moving pointer
+//     into the list payload).  kIdent(iter_var) inside the body
+//     reads it via `local.get` — the existing kIdent arm needs no
+//     comprehension awareness (uniform load doctrine, WAT 60 §1).
+//   - accu_var.local_index is set ONCE to accu_slot offset.
+//     kIdent(accu_var) reads it the same way.
+//   - comp_aux_local_base + 0 holds end_off (one-past-end iter
+//     pointer).  Slot 1 reserved for Slice E (map cursor) / Slice
+//     F (two-iter-var index counter).
+//
+// Loop-cond peephole (cel-cpp probe 2026-05-17): cel-cpp's macro
+// expansions only ever emit one of:
+//   - `kConst true`  (exists_one)             → omit cond check
+//   - `kConst false` (cel.bind — Slice I)     → immediate exit
+//   - `@not_strictly_false(kIdent(@result))`  (all)     → br_if exit
+//                                                          when accu's
+//                                                          bool payload
+//                                                          byte == 0
+//   - `@not_strictly_false(!_(kIdent(@result)))` (exists) → br_if exit
+//                                                            when accu's
+//                                                            bool payload
+//                                                            byte != 0
+// The peephole reads `i32.load offset=8` of accu_slot directly,
+// bypassing `cel_not_strictly_false` (which therefore stays
+// deferred).  Any unrecognised loop_cond shape returns
+// UnimplementedError — Slice I adds the general path for
+// cel.bind / arbitrary user shapes.
+
+const LaidOutVariable* FindLaidOutVarByName(const StaticLayout& layout,
+                                            absl::string_view name) {
+  for (const auto& v : layout.variables) {
+    if (v.name == name) return &v;
+  }
+  return nullptr;
+}
+
+bool TryMatchBoolConst(const cel::Expr& expr, bool* out) {
+  if (expr.kind_case() != cel::ExprKindCase::kConstant) return false;
+  if (!expr.const_expr().has_bool_value()) return false;
+  *out = expr.const_expr().bool_value();
+  return true;
+}
+
+bool IsIdentNamed(const cel::Expr& expr, absl::string_view name) {
+  return expr.kind_case() == cel::ExprKindCase::kIdentExpr &&
+         expr.ident_expr().name() == name;
+}
+
+// `kCall(@not_strictly_false, kIdent(name))` — `all` loop_cond.
+bool IsNotStrictlyFalseOfIdent(const cel::Expr& expr,
+                               absl::string_view accu_name) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "@not_strictly_false" || call.args().size() != 1) {
+    return false;
+  }
+  return IsIdentNamed(call.args()[0], accu_name);
+}
+
+// `kCall(@not_strictly_false, kCall(!_, kIdent(name)))` — `exists`.
+bool IsNotStrictlyFalseOfNotIdent(const cel::Expr& expr,
+                                  absl::string_view accu_name) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "@not_strictly_false" || call.args().size() != 1) {
+    return false;
+  }
+  const auto& arg = call.args()[0];
+  if (arg.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& inner = arg.call_expr();
+  if (inner.function() != "!_" || inner.args().size() != 1) return false;
+  return IsIdentNamed(inner.args()[0], accu_name);
+}
+
+// `i32.load offset=8 (i32.const accu_slot)` — read the bool payload
+// byte (CelValue.payload.b is at byte offset 8 from slot base).
+BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
+  auto* mod = ctx.mod.raw();
+  return BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                      /*align=*/4, BinaryenTypeInt32(),
+                      I32Const(ctx.mod, accu_slot), "memory");
+}
+
+// Per-comprehension binding context populated by Slice C / extended
+// in F.  Slots / locals come from ResolvePass + LayoutPass; codegen
+// in `LowerComprehension` walks the same data to emit the prologue.
+struct CompContext {
+  const LaidOutVariable* iter_v;
+  const LaidOutVariable* accu_v;
+  uint32_t end_off_local;
+  uint32_t accu_slot;
+  uint32_t list_slot;
+  uint32_t init_src_slot;
+};
+
+absl::StatusOr<CompContext> ResolveCompContext(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
+    const NodeAnnotation& ann) {
+  if (!comp.iter_var2().empty()) {
+    return absl::UnimplementedError(absl::StrCat(
+        "expr_lower: two-iter-var comprehension (iter_var2=`", comp.iter_var2(),
+        "`) is M5.B Slice F (expr_id=", expr.id(), ")"));
+  }
+  CompContext c{};
+  c.iter_v = FindLaidOutVarByName(ctx.layout, comp.iter_var());
+  c.accu_v = FindLaidOutVarByName(ctx.layout, comp.accu_var());
+  ABSL_CHECK(c.iter_v != nullptr && c.accu_v != nullptr)
+      << "LowerComprehension: missing iter/accu binding (expr_id=" << expr.id()
+      << ")";
+  ABSL_CHECK(ann.comp_aux_local_base != 0)
+      << "LowerComprehension: ComprehensionLocalsVisitor didn't assign aux "
+         "locals (expr_id="
+      << expr.id() << ")";
+  c.end_off_local = ann.comp_aux_local_base + 0;
+  c.accu_slot = c.accu_v->slot_offset;
+  ABSL_CHECK(c.accu_slot != 0) << "LowerComprehension: accu_var `"
+                               << comp.accu_var() << "` has no workspace slot";
+
+  const auto* range_ann = ctx.layout.annotations.Find(comp.iter_range().id());
+  const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
+  ABSL_CHECK(range_ann != nullptr && init_ann != nullptr);
+  if (range_ann->repr != Repr::kList) {
+    return absl::UnimplementedError(absl::StrCat(
+        "expr_lower: comprehension over non-list iter_range (repr=",
+        ReprName(range_ann->repr),
+        ") is M5.B Slice E / later (expr_id=", expr.id(), ")"));
+  }
+  if (range_ann->storage.kind != StorageKind::kWorkspaceSlot) {
+    return absl::UnimplementedError(
+        absl::StrCat("expr_lower: comprehension iter_range storage kind ",
+                     static_cast<int>(range_ann->storage.kind),
+                     " not yet supported (expr_id=", expr.id(),
+                     "); Slice C handles workspace-slot list literals only"));
+  }
+  c.list_slot = range_ann->storage.payload;
+  if (init_ann->storage.kind != StorageKind::kStaticRodata &&
+      init_ann->storage.kind != StorageKind::kWorkspaceSlot) {
+    ABSL_CHECK(false) << "LowerComprehension: accu_init storage kind "
+                      << static_cast<int>(init_ann->storage.kind);
+  }
+  c.init_src_slot = init_ann->storage.payload;
+  return c;
+}
+
+// Emits the 4-step prologue: drop iter_range/accu_init values
+// (their side effects already ran), copy accu_init → accu_slot, set
+// accu_var local, load iter_off + end_off from the list payload.
+void EmitCompPrologue(EmitCtx& ctx, const CompContext& c,
+                      BinaryenExpressionRef range_value,
+                      BinaryenExpressionRef init_value,
+                      std::vector<BinaryenExpressionRef>* instrs) {
+  auto* mod = ctx.mod.raw();
+  instrs->push_back(BinaryenDrop(mod, range_value));
+  instrs->push_back(BinaryenDrop(mod, init_value));
+  instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
+  instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
+                                     I32Const(ctx.mod, c.accu_slot)));
+  // list_hdr = load offset=8 list_slot; cache in end_off_local
+  // temporarily so we don't re-load list_slot twice.
+  instrs->push_back(BinaryenLocalSet(
+      mod, c.end_off_local,
+      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                   /*align=*/4, BinaryenTypeInt32(),
+                   I32Const(ctx.mod, c.list_slot), "memory")));
+  // iter_off = load offset=8 list_hdr
+  instrs->push_back(BinaryenLocalSet(
+      mod, c.iter_v->local_index,
+      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                   /*align=*/4, BinaryenTypeInt32(),
+                   BinaryenLocalGet(mod, c.end_off_local, BinaryenTypeInt32()),
+                   "memory")));
+  // end_off = iter_off + count * 24, where count = load offset=0 list_hdr
+  BinaryenExpressionRef count = BinaryenLoad(
+      mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0, /*align=*/4,
+      BinaryenTypeInt32(),
+      BinaryenLocalGet(mod, c.end_off_local, BinaryenTypeInt32()), "memory");
+  instrs->push_back(BinaryenLocalSet(
+      mod, c.end_off_local,
+      BinaryenBinary(
+          mod, BinaryenAddInt32(),
+          BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
+          BinaryenBinary(mod, BinaryenMulInt32(), count,
+                         BinaryenConst(mod, BinaryenLiteralInt32(24))))));
+}
+
+// Loop-cond peephole detection.  Returns a br_if exit expression for
+// the known shapes (kConst bool / @not_strictly_false(accu) /
+// @not_strictly_false(!accu)).  Returns Unimplemented for anything
+// else — Slice I adds the general path (recurse into loop_cond,
+// br_if on inverted result) when cel.bind is registered.
+absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
+    EmitCtx& ctx, const cel::Expr& comp_expr, const CompContext& c,
+    const cel::Expr& loop_cond, absl::string_view accu_name) {
+  auto* mod = ctx.mod.raw();
+  bool kconst_bool = false;
+  if (TryMatchBoolConst(loop_cond, &kconst_bool)) {
+    if (kconst_bool) return BinaryenExpressionRef{nullptr};  // no check
+    return BinaryenBreak(mod, "exit", nullptr, nullptr);     // immediate exit
+  }
+  if (IsNotStrictlyFalseOfNotIdent(loop_cond, accu_name)) {
+    return BinaryenBreak(mod, "exit", LoadAccuBoolPayload(ctx, c.accu_slot),
+                         nullptr);
+  }
+  if (IsNotStrictlyFalseOfIdent(loop_cond, accu_name)) {
+    return BinaryenBreak(mod, "exit",
+                         BinaryenUnary(mod, BinaryenEqZInt32(),
+                                       LoadAccuBoolPayload(ctx, c.accu_slot)),
+                         nullptr);
+  }
+  return absl::UnimplementedError(absl::StrCat(
+      "expr_lower: comprehension loop_cond shape not recognised (expr_id=",
+      comp_expr.id(),
+      ") — Slice C peephole handles kConst bool, @not_strictly_false(@result), "
+      "and @not_strictly_false(!@result) only; general path lands in Slice I"));
+}
+
+absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
+    const CompContext& c) {
+  auto* mod = ctx.mod.raw();
+  std::vector<BinaryenExpressionRef> body;
+  body.push_back(BinaryenBreak(
+      mod, "exit",
+      BinaryenBinary(
+          mod, BinaryenGeUInt32(),
+          BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
+          BinaryenLocalGet(mod, c.end_off_local, BinaryenTypeInt32())),
+      nullptr));
+  auto cond_exit_or =
+      BuildLoopCondExit(ctx, expr, c, comp.loop_condition(), comp.accu_var());
+  if (!cond_exit_or.ok()) return cond_exit_or.status();
+  if (*cond_exit_or != nullptr) body.push_back(*cond_exit_or);
+  auto step_or = Emit(ctx, comp.loop_step());
+  if (!step_or.ok()) return step_or.status();
+  const auto* step_ann = ctx.layout.annotations.Find(comp.loop_step().id());
+  ABSL_CHECK(step_ann != nullptr &&
+             step_ann->storage.kind == StorageKind::kWorkspaceSlot)
+      << "LowerComprehension: loop_step storage kind mismatch";
+  body.push_back(BinaryenDrop(mod, *step_or));
+  body.push_back(EmitCelCopySlot(ctx, c.accu_slot, step_ann->storage.payload));
+  body.push_back(BinaryenLocalSet(
+      mod, c.iter_v->local_index,
+      BinaryenBinary(
+          mod, BinaryenAddInt32(),
+          BinaryenLocalGet(mod, c.iter_v->local_index, BinaryenTypeInt32()),
+          BinaryenConst(mod, BinaryenLiteralInt32(24)))));
+  body.push_back(BinaryenBreak(mod, "continue", nullptr, nullptr));
+  BinaryenExpressionRef loop =
+      BinaryenLoop(mod, "continue",
+                   BinaryenBlock(mod, /*name=*/nullptr, body.data(),
+                                 static_cast<BinaryenIndex>(body.size()),
+                                 BinaryenTypeNone()));
+  BinaryenExpressionRef loop_arr[1] = {loop};
+  return BinaryenBlock(mod, "exit", loop_arr, 1, BinaryenTypeNone());
+}
+
+absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
+    EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
+    const NodeAnnotation& ann) {
+  auto cctx_or = ResolveCompContext(ctx, expr, comp, ann);
+  if (!cctx_or.ok()) return cctx_or.status();
+  const CompContext c = *cctx_or;
+  auto range_or = Emit(ctx, comp.iter_range());
+  if (!range_or.ok()) return range_or.status();
+  auto init_or = Emit(ctx, comp.accu_init());
+  if (!init_or.ok()) return init_or.status();
+  std::vector<BinaryenExpressionRef> instrs;
+  EmitCompPrologue(ctx, c, *range_or, *init_or, &instrs);
+  auto loop_or = BuildCompLoop(ctx, expr, comp, c);
+  if (!loop_or.ok()) return loop_or.status();
+  instrs.push_back(*loop_or);
+  auto result_or = Emit(ctx, comp.result());
+  if (!result_or.ok()) return result_or.status();
+  instrs.push_back(*result_or);
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
+                       static_cast<BinaryenIndex>(instrs.size()),
                        BinaryenTypeInt32());
 }
 
@@ -1041,6 +1329,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kStructExpr:
       return EmitKStructExpr(ctx, expr, expr.struct_expr(), *ann);
     case cel::ExprKindCase::kComprehensionExpr:
+      return LowerComprehension(ctx, expr, expr.comprehension_expr(), *ann);
     case cel::ExprKindCase::kUnspecifiedExpr:
       return Unimplemented(expr.kind_case(), expr.id());
   }
@@ -1088,10 +1377,15 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
 
   // Every wasm local `$eval` carries is a u32 memory offset — one
   // per referenced variable (m2-ident-select-unknowns.md §2.6 /
-  // Slice M2.B).  Build the per-local type vector at emission time;
-  // the layout carries only the count via `variables.size()`.
+  // Slice M2.B), plus per-comprehension auxiliary locals reserved
+  // by LayoutPass's `ComprehensionLocalsVisitor` (M5.B Slice C) for
+  // end_off / iter cursor / index counter.
   const std::string func_name_c(func_name);
-  const std::vector<BinaryenType> local_types(layout.variables.size(),
+  const uint32_t locals_count =
+      layout.total_wasm_locals != 0
+          ? layout.total_wasm_locals
+          : static_cast<uint32_t>(layout.variables.size());
+  const std::vector<BinaryenType> local_types(locals_count,
                                               BinaryenTypeInt32());
   mod.AddFunction(func_name, /*params=*/{}, BinaryenTypeInt32(), local_types,
                   body);

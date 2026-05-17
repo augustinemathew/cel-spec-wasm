@@ -188,8 +188,6 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 class ComprehensionExistsListE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsTrueOnSingleMatch) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].exists(e, e == 2)");
@@ -198,8 +196,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsTrueOnSingleMatch) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsTrueOnMultipleMatches) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 2, 3].exists(e, e == 2)");
@@ -208,8 +204,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsTrueOnMultipleMatches) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsFalseOnNoMatch) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].exists(e, e == 7)");
@@ -220,8 +214,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsFalseOnNoMatch) {
 TEST_F(ComprehensionExistsListE2ETest, ExistsEmptyListReturnsAccuInit) {
   // design §3.1 empty-range invariant: accu_init (false) is returned
   // because loop body never runs.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].exists(e, e == 2)");
@@ -230,8 +222,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsEmptyListReturnsAccuInit) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, AllTrueOnAllMatch) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].all(e, e > 0)");
@@ -240,8 +230,6 @@ TEST_F(ComprehensionExistsListE2ETest, AllTrueOnAllMatch) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, AllFalseOnAnyFail) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].all(e, e > 1)");
@@ -251,8 +239,6 @@ TEST_F(ComprehensionExistsListE2ETest, AllFalseOnAnyFail) {
 
 TEST_F(ComprehensionExistsListE2ETest, AllEmptyListReturnsAccuInit) {
   // design §3.1 empty-range invariant: accu_init (true) is returned.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].all(e, e > 0)");
@@ -261,8 +247,6 @@ TEST_F(ComprehensionExistsListE2ETest, AllEmptyListReturnsAccuInit) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsOneTrueOnExactlyOneMatch) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].exists_one(e, e == 2)");
@@ -271,8 +255,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOneTrueOnExactlyOneMatch) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsOneFalseOnMultipleMatches) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[2, 2, 3].exists_one(e, e == 2)");
@@ -281,8 +263,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOneFalseOnMultipleMatches) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsOneFalseOnNoMatch) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].exists_one(a, a == 7)");
@@ -292,8 +272,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOneFalseOnNoMatch) {
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsOneEmptyListIsFalse) {
   // design §3.1: accu (int 0); result `accu == 1` is false.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].exists_one(a, a == 7)");
@@ -304,8 +282,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOneEmptyListIsFalse) {
 TEST_F(ComprehensionExistsListE2ETest, ExistsPredicateErrorPropagates) {
   // design §3.2: `[1,2,3].exists(e, e/0 == 17)` → ERROR.  3VL `||`
   // never absorbs an error-only stream to `true`.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].exists(e, e / 0 == 17)");
@@ -316,8 +292,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsPredicateErrorPropagates) {
 
 TEST_F(ComprehensionExistsListE2ETest, AllPredicateErrorPropagates) {
   // design §3.2: `[1,2,3].all(e, e/0 != 17)` → ERROR.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].all(e, e / 0 != 17)");
@@ -330,8 +304,6 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsErrorAbsorbedByTrueIs3VL) {
   // design §3.2 3VL invariant: `error || true → true`.  Even though
   // the first iter errors, a later iter forces `true`, so accumulator
   // becomes definite.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -348,8 +320,9 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
   // Locks that comprehension iter source can be an Activation::Bind
   // list, not just a literal.  Backs `m5-comprehensions-design.md`
   // §3.9 ("comprehension as operand") symmetrically.
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
+  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
+                  "post-Slice-C follow-up; Slice C ships literal-list "
+                  "(kWorkspaceSlot/kArena) coverage only.";
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.exists(e, e == 5)");
   Activation a;
@@ -358,8 +331,9 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, AllOverBoundList) {
-  GTEST_SKIP() << "M5.B.C ships here — see "
-                  "m5-comprehensions-followon.md §Slice C.";
+  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
+                  "post-Slice-C follow-up; Slice C ships literal-list "
+                  "(kWorkspaceSlot/kArena) coverage only.";
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.all(e, e > 0)");
   Activation a;
@@ -384,7 +358,8 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapDoubles) {
                   "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(*compiler, "[1, 2, 3].map(v, v * 2) == [2, 4, 6]");
+  auto instance =
+      CompilePlan(*compiler, "[1, 2, 3].map(v, v * 2) == [2, 4, 6]");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -407,8 +382,8 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapConditional) {
                   "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "[1, 2, 3, 4].map(v, v % 2 == 0, v * 10) == [20, 40]");
+  auto instance = CompilePlan(
+      *compiler, "[1, 2, 3, 4].map(v, v % 2 == 0, v * 10) == [20, 40]");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -471,8 +446,7 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterPredicateErrorPropagates) {
                   "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "[3, 2, 1, 0].filter(n, 12 / n > 4)");
+  auto instance = CompilePlan(*compiler, "[3, 2, 1, 0].filter(n, 12 / n > 4)");
   Activation a;
   EXPECT_TRUE(EvalOk(instance, a).IsError());
 }
@@ -533,8 +507,7 @@ TEST_F(ComprehensionMapIterE2ETest, AllMapKeysPositive) {
                   "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"({1: "a", 2: "b"}.all(k, k > 0))");
+  auto instance = CompilePlan(*compiler, R"({1: "a", 2: "b"}.all(k, k > 0))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -630,8 +603,7 @@ TEST_F(ComprehensionTwoIterVarE2ETest, AllTwoIterVarOverListIndexAndValue) {
                   "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "[10, 20, 30].all(i, v, v >= i * 10)");
+  auto instance = CompilePlan(*compiler, "[10, 20, 30].all(i, v, v >= i * 10)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -677,8 +649,7 @@ TEST_F(ComprehensionTwoIterVarE2ETest, TransformListConditional) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "[2, 4, 6].transformList(i, v, i != 1, v / 2 + i) == [1, 5]");
+      *compiler, "[2, 4, 6].transformList(i, v, i != 1, v / 2 + i) == [1, 5]");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -690,8 +661,7 @@ TEST_F(ComprehensionTwoIterVarE2ETest, TransformListEmptySource) {
                   "m5-comprehensions-followon.md §Slice F.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "[].transformList(i, v, i / v) == []");
+  auto instance = CompilePlan(*compiler, "[].transformList(i, v, i / v) == []");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -749,13 +719,13 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapEmptySource) {
                   "m5-comprehensions-followon.md §Slice G.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "{}.transformMap(k, v, v + 1) == {}");
+  auto instance = CompilePlan(*compiler, "{}.transformMap(k, v, v + 1) == {}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-TEST_F(ComprehensionTransformMapE2ETest, TransformMapKeyCollisionLastWriteWins) {
+TEST_F(ComprehensionTransformMapE2ETest,
+       TransformMapKeyCollisionLastWriteWins) {
   // design §9.6: collisions overwrite.  All entries collapse to
   // single key `""` since the transformed key is the empty string
   // produced by an arbitrary mapping (we use a constant key here).
@@ -766,7 +736,8 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapKeyCollisionLastWriteWins) 
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler, R"({"a": 1, "b": 2, "c": 3}.transformMap(k, v, "x", v).size())");
+      *compiler,
+      R"({"a": 1, "b": 2, "c": 3}.transformMap(k, v, "x", v).size())");
   Activation a;
   // Plan-vs-execution delta: this test uses the 4-arg conditional
   // form's `t` slot as a key.  Pure transformMap(k, v, t) doesn't
@@ -811,9 +782,8 @@ TEST_F(ComprehensionTransformMapEntryE2ETest, SingleEntryRoundTrip) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"({"foo": "bar"}.transformMapEntry(k, v, {k + v: k}) == )"
-      R"({"foobar": "foo"})");
+      *compiler, R"({"foo": "bar"}.transformMapEntry(k, v, {k + v: k}) == )"
+                 R"({"foobar": "foo"})");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -825,9 +795,8 @@ TEST_F(ComprehensionTransformMapEntryE2ETest, MultiEntryPerIter) {
                   "m5-comprehensions-followon.md §Slice H.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  R"({"a": "A"}.transformMapEntry(k, v, {k: v, v: k}).size())");
+  auto instance = CompilePlan(
+      *compiler, R"({"a": "A"}.transformMapEntry(k, v, {k: v, v: k}).size())");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
 }
@@ -912,8 +881,7 @@ TEST_F(CelBindE2ETest, InnerShadowsOuter) {
                   "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "cel.bind(x, 5, cel.bind(x, 10, x))");
+  auto instance = CompilePlan(*compiler, "cel.bind(x, 5, cel.bind(x, 10, x))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 10);
 }
@@ -926,8 +894,7 @@ TEST_F(CelBindE2ETest, ComprehensionInsideBind) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "cel.bind(valid, [1, 2, 3], [3, 4, 5].exists(e, e in valid))");
+      *compiler, "cel.bind(valid, [1, 2, 3], [3, 4, 5].exists(e, e in valid))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -939,8 +906,8 @@ TEST_F(CelBindE2ETest, BindInsideComprehension) {
                   "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "[1, 2, 3].exists(v, cel.bind(t, v * 2, t > 4))");
+  auto instance =
+      CompilePlan(*compiler, "[1, 2, 3].exists(v, cel.bind(t, v * 2, t > 4))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -961,8 +928,8 @@ TEST_F(CelBindE2ETest, NestedBindBothBoolean) {
                   "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "cel.bind(t1, true, cel.bind(t2, true, t1 && t2))");
+  auto instance = CompilePlan(
+      *compiler, "cel.bind(t1, true, cel.bind(t2, true, t1 && t2))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -996,8 +963,7 @@ TEST_F(ComprehensionNestedE2ETest, OuterListInnerMap) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"([1, 2, 3].exists(x, {1: "a", 2: "b"}.exists(k, k == x)))");
+      *compiler, R"([1, 2, 3].exists(x, {1: "a", 2: "b"}.exists(k, k == x)))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1008,8 +974,7 @@ TEST_F(ComprehensionNestedE2ETest, OuterMapInnerList) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"({1: "a", 2: "b"}.exists(k, [1, 2, 3].exists(e, e == k)))");
+      *compiler, R"({1: "a", 2: "b"}.exists(k, [1, 2, 3].exists(e, e == k)))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1020,8 +985,7 @@ TEST_F(ComprehensionNestedE2ETest, OuterMapInnerMap) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"({1: "a"}.exists(k1, {2: "b"}.exists(k2, k1 + k2 == 3)))");
+      *compiler, R"({1: "a"}.exists(k1, {2: "b"}.exists(k2, k1 + k2 == 3)))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1061,10 +1025,9 @@ TEST_F(ComprehensionNestedE2ETest, FilterWithInnerAllPasses) {
                   "m5-comprehensions-followon.md §Slice C (nesting).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  R"(['signer'].filter(signer, ['artifact'].all(artifact, )"
-                  R"(true)) == ['signer'])");
+  auto instance = CompilePlan(
+      *compiler, R"(['signer'].filter(signer, ['artifact'].all(artifact, )"
+                 R"(true)) == ['signer'])");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1135,8 +1098,7 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultEqualsEmptyList) {
                   "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 100) == []");
+  auto instance = CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 100) == []");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }

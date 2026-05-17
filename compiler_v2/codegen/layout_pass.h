@@ -106,6 +106,19 @@ struct StaticLayout {
 
   uint32_t peak_slots = 0;
   bool debug_mode = false;
+
+  // M5.B Slice C: per-comprehension auxiliary wasm locals (e.g. the
+  // list-iteration `end_off` pointer; the map-iteration cursor; the
+  // two-iter-var index counter).  Codegen for `kComprehensionExpr`
+  // emits `local.set` against these on entry to the comprehension's
+  // loop prologue.  Pre-allocated at LayoutPass time so
+  // `LowerToEvalFunction` knows the total local count when calling
+  // `BinaryenAddFunction`.  Two indices per comp covers every shape
+  // through Slice H (Shape A list: end_off [+ index for two-iter];
+  // Shape B map: iter_cursor; Shape C cel.bind: none used).
+  uint32_t comprehension_extra_locals_per_comp = 2;
+  // Total local count = `variables.size()` + 2 × (#comprehensions).
+  uint32_t total_wasm_locals = 0;
 };
 
 // Runs the layout pass on a resolved TypedAst.  Takes the ResolveOutput

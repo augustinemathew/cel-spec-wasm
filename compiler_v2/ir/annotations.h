@@ -82,7 +82,7 @@ struct NodeAnnotation {
   // first overload string; codegen looks it up in `OverloadTable`.
   // Empty for non-call nodes.  String_view points into cel-cpp's
   // owned reference_map storage; lifetime tied to the TypedAst.
-  absl::string_view overload_id = {};
+  absl::string_view overload_id;
   uint32_t local_index = 0;   // IdentExpr resolved wasm local (M2)
   uint32_t scope_id = 0;      // comprehension scope (later)
   uint32_t attribute_id = 0;  // interned AttributeId (M2.E); 0 = none
@@ -98,6 +98,12 @@ struct NodeAnnotation {
   // m2-ident-select-unknowns.md §2.6 / §2.8.
   Origin map_origin = Origin::kDynamic;
   Origin list_origin = Origin::kDynamic;
+  // M5.B Slice C: base wasm-local index for a `kComprehensionExpr`
+  // node's auxiliary locals (end_off, iter cursor, index counter).
+  // `LayoutPass`'s ComprehensionLocalsVisitor stamps this with the
+  // first of `StaticLayout::comprehension_extra_locals_per_comp`
+  // consecutive locals.  Zero on non-comprehension nodes.
+  uint32_t comp_aux_local_base = 0;
 };
 
 // Side map keyed by cel::ExprId.
