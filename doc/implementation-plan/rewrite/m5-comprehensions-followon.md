@@ -7,7 +7,7 @@ Anticipated by the M5 doc's §2.5 carve-out and the conformance
 README's "Comprehensions follow-on" forecast row.**
 
 > **Companion design doc:**
-> `language_feature_unlocks/COMPREHENSION_DESIGN.md` — full
+> `m5-comprehensions-design.md` — full
 > per-macro inventory (18 macros across 3 cel-cpp libraries),
 > per-shape codegen recipes, edge-case catalogue from
 > conformance fixtures, and the per-fixture conformance unlock
@@ -90,7 +90,7 @@ collapse the moment comprehensions ship.
     variants).  cel-cpp's `kComprehensionExpr` AST natively
     carries both `iter_var` and `iter_var2` fields; codegen
     branches on whether `iter_var2` is non-empty.  See §3.8 +
-    `language_feature_unlocks/COMPREHENSION_DESIGN.md` §6.
+    `m5-comprehensions-design.md` §6.
     Slice F is no longer optional — without it, `macros2` stays
     at 0/46.
   - **Codegen pattern detection for the append-shaped
@@ -544,7 +544,7 @@ Slice A–C codegen above handles it.
 > this section claimed two-iter-var comprehensions desugar to a
 > nested `cel.bind` inside `loop_step`.  **Verified against
 > cel-cpp source: that was wrong.**  See
-> `language_feature_unlocks/COMPREHENSION_DESIGN.md` §1, §4 for
+> `m5-comprehensions-design.md` §1, §4 for
 > the corrected analysis.  The text below is the corrected
 > version.
 
@@ -1360,7 +1360,7 @@ keystone gate:
 From `compiler_v2/conformance/README.md`'s per-fixture table,
 post-M7B baseline.  Per-slice contributions reflect the
 corrected slice plan in §5; full derivation in
-`language_feature_unlocks/COMPREHENSION_DESIGN.md` §10.
+`m5-comprehensions-design.md` §10.
 
 | Fixture | Pre | Δ C (list) | Δ D (filter/map) | Δ E (map iter) | Δ F (iter_var2) | Δ G (transformMap) | Δ H (mapEntry) | Δ I (cel.bind) | Post |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
