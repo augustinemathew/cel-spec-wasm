@@ -601,6 +601,17 @@ ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
     uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
     uint32_t accessor_kind, const TrampolineContext& ctx);
 
+// M7B polish: bridge for `Timestamp{...}` / `Duration{...}`
+// proto-literal construction.  Reads `msg_slot` (expected CEL_MESSAGE
+// of WKT time-type descriptor), peels `(seconds, nanos)` via
+// reflection, writes a `CEL_TIMESTAMP` / `CEL_DURATION` CelValue at
+// `out_slot`.  Non-WKT or non-message operands → CEL_ERROR
+// (kTypeMismatch); codegen emits this call only for WKT struct
+// literals, so the only way to reach the error path is a codegen
+// regression.
+ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapTimeImpl(
+    uint32_t out_slot, uint32_t msg_slot, const TrampolineContext& ctx);
+
 // m7b §3.1 / Probe D — sign-correlated (seconds, nanos)
 // decomposition for an absl::Duration.  Shared between the
 // host-side encoders (`EncodeDurationValue` / `EncodeTimestampValue`

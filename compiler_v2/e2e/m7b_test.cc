@@ -503,8 +503,14 @@ INSTANTIATE_TEST_SUITE_P(
                   1234567890, 0, false, 60, 0},
         ArithCase{"TsSubTs_Negative", ArithOp::kTsSubTs, 1234567890, 0,
                   1234567950, 0, false, -60, 0},
+        // Full langdef-span timestamp diff (year 9999 - year 1) is
+        // 315.537B seconds — within proto-Duration's documented
+        // ±10000-year range but OUTSIDE the int64-nanos bound
+        // cel-cpp / arith_duration_in_range enforces (verified
+        // against cel-cpp empirically; see
+        // `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
         ArithCase{"TsSubTs_LangdefSpan", ArithOp::kTsSubTs, 253402300799LL, 0,
-                  -62135596800LL, 0, false, 315537897599LL, 0}),
+                  -62135596800LL, 0, true, 0, 0}),
     [](const ::testing::TestParamInfo<ArithCase>& info) {
       return info.param.label;
     });
@@ -1161,27 +1167,31 @@ TEST_F(CrossFormEquivalenceE2ETest, TimestampConstructEquality) {
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, DurationVsProtoLiteral) {
-  // Plan §3.4 cross-form equivalence: `duration("1s")` produces
-  // CEL_DURATION; `google.protobuf.Duration{seconds: 1}` currently
-  // produces CEL_MESSAGE via M7's proto-literal arm.  The M7B.A
-  // field-read normaliser fires only when reading the message
-  // *back through a field selector*, not on the literal itself —
-  // so cross-form equality reduces to cross-kind compare which is
-  // `false`.  Lighting this up requires either (a) extending the
-  // proto-literal arm to emit CEL_TIMESTAMP / CEL_DURATION directly
-  // for the two well-known time types, or (b) a normalise-on-
-  // equality step.  Deferred — surfaced as future work in §9.
-  GTEST_SKIP() << "Cross-form equivalence: proto-literal arm emits "
-                  "CEL_MESSAGE, not CEL_DURATION; needs follow-up.";
+  // `Timestamp{...}` / `Duration{...}` struct literals now unwrap
+  // to CEL_TIMESTAMP / CEL_DURATION via the kStructExpr-tail call
+  // to `cel_host.cel_wkt_unwrap_time`; equality reduces to the
+  // standard same-kind CelDurTs compare.  Empirically pinned
+  // against cel-cpp via the throwaway probe.
+  Value v = EvalClosedExpression(
+      R"(duration("1s") == google.protobuf.Duration{seconds: 1})");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, TimestampVsProtoLiteral) {
-  GTEST_SKIP() << "Cross-form equivalence: see DurationVsProtoLiteral.";
+  Value v = EvalClosedExpression(
+      R"(timestamp("1970-01-01T00:00:01Z") ==
+         google.protobuf.Timestamp{seconds: 1})");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, OrderingAcrossForms) {
-  GTEST_SKIP() << "Cross-form ordering: same architectural gap as "
-                  "the equality test.";
+  Value v = EvalClosedExpression(
+      R"(timestamp("1970-01-01T00:00:01Z") <
+         google.protobuf.Timestamp{seconds: 2})");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, CanonicalisationEqualsAcrossUnits) {

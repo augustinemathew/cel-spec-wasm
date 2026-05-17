@@ -381,6 +381,13 @@ extern "C" wasm_trap_t* CelDurationFormatTrampoline(
   return HostTwoArgTrampoline<CelDurationFormatImpl>(env_ptr, caller, args);
 }
 
+extern "C" wasm_trap_t* CelWktUnwrapTimeTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelWktUnwrapTimeImpl>(env_ptr, caller, args);
+}
+
 // M7B.E — 4-arg `(out_slot, ts_slot, tz_slot, accessor_kind)`
 // dispatch trampoline for all 10 with-TZ accessor overloads.  The
 // 4-arg shape is unique; no other host trampoline today takes
@@ -529,6 +536,11 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       // accessor overloads.  See m7b §4.3 + §4.4 Q3 for the
       // surface-count rationale.
       {"cel_timestamp_tz_accessor", 4, &CelTimestampTzAccessorTrampoline},
+      // M7B polish: WKT proto-literal unwrap.  Codegen emits this
+      // for `Timestamp{...}` / `Duration{...}` struct literals so
+      // they unify with `timestamp("...")` / `duration("...")`
+      // constructor results for `==` / `<` / etc.
+      {"cel_wkt_unwrap_time", 2, &CelWktUnwrapTimeTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

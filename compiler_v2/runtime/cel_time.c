@@ -57,6 +57,29 @@ static inline int duration_in_range(int64_t seconds, int32_t nanos) {
                           DURATION_MAX_SECONDS);
 }
 
+// Tighter bound used for arithmetic results.  cel-cpp's
+// `CheckedSub(Time, Time)` (overflow.cc:295) represents the result
+// in int64 nanoseconds (`s * 1e9 + ns`); the implicit bound is
+// therefore `|s * 1e9 + ns| <= INT64_MAX` ≈ ±292 years, much
+// tighter than the proto-Duration ±10000-year parse-side bound.
+// Empirically verified against cel-cpp (see
+// `compiler_v2/throwaway/cel_cpp_corner_probe.cc`): with
+// `enable_timestamp_duration_overflow_errors=true`,
+// `ts(9999) - ts(0001)` returns `OUT_OF_RANGE: integer overflow`.
+//
+// Avoid `__builtin_mul_overflow(int64, int64)` here — it lowers to
+// `__multi3` on wasm32 which the freestanding cross-compile
+// doesn't link (same workaround pattern as cel_arith.c).
+static inline int arith_duration_in_range(int64_t seconds, int32_t nanos) {
+  // INT64_MAX = 9223372036854775807 = 9223372036 * 1e9 + 854775807.
+  const int64_t kMaxAbsSec = 9223372036LL;
+  const int32_t kMaxBoundaryNs = 854775807;
+  if (seconds > kMaxAbsSec || seconds < -kMaxAbsSec) return 0;
+  if (seconds == kMaxAbsSec && nanos > kMaxBoundaryNs) return 0;
+  if (seconds == -kMaxAbsSec && nanos < -kMaxBoundaryNs) return 0;
+  return 1;
+}
+
 // ----- shared helpers (file-local) ----------------------------------------
 
 // require_kinds_2 — same-kind guard for non-uniform operand pairs.
@@ -149,7 +172,7 @@ static void run_arith(CelValue* out, const CelValue* a, const CelValue* b,
     return;
   }
   if (spec.result_kind == CEL_DURATION &&
-      !duration_in_range(r.seconds, r.nanos)) {
+      !arith_duration_in_range(r.seconds, r.nanos)) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }

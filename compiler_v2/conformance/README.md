@@ -8,11 +8,11 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1142 (46.5%) · skip=602 (24.5%) · fail=710 (28.9%)`
-(post-M7B + polish, 2026-05-16; +84 PASS vs the M10-closeout 1058
-baseline.  Polish round added WKT-coerce-on-bind, fixed-offset TZ
-without sign prefix, sub-second-ms semantics for `getMilliseconds`,
-and `Z`-suffix UTC formatting.)
+`total=2454 · pass=1144 (46.6%) · skip=602 (24.5%) · fail=708 (28.9%)`
+(post-M7B + polish rounds, 2026-05-16; +86 PASS vs the M10-closeout
+1058 baseline.  Polish-round-2 (cel-cpp-empirically-driven) added
+int64-nanos arithmetic-result bound + cross-form WKT-proto-literal
+unwrap; `timestamps.textproto` now 76/76 = 100%.)
 across 30 loadable fixtures.  The most recent landings:
 
   - **M7-A.C cel_message_eq Any-peel** (2026-05-16): 0 conformance-row
@@ -255,7 +255,7 @@ ext-lib FAIL-dominated fixtures.
 | `dynamic.textproto`         | 226 |   4 |  92 | 130 |  2% | Every test uses `dyn(...)` aggregate — most rejected by `RejectDyn`; 130 FAILs are dyn-shaped construction reaching past the gate | Never (static subset) + classifier tightening |
 | `unknowns.textproto`        |   0 |   0 |   0 |   0 |  —  | No `SimpleTest` entries (empty by design) | — |
 | `macros.textproto`          |  44 |   0 |  44 |   0 |  0% | 38 SKIPs are comprehension-shaped (`exists`/`all`/`exists_one`/`map`/`filter`); 6 `dyn(aggregate)` rejections | Comprehensions follow-on |
-| `timestamps.textproto`      |  76 |  74 |   0 |   2 | 97% | 2 FAILs in the `*_range/sub_time_duration_*` cohort — `ts(year-1) - ts(year-9999)` = ±315.537B seconds, within proto-Duration's documented ±315.576B range but considered overflow by cel-cpp (uses a tighter timestamp-pair bound).  Other 74 rows pass post-M7B | M7B shipped 2026-05-16 + polish round |
+| `timestamps.textproto`      |  76 |  76 |   0 |   0 | 100% | All rows pass post-M7B + 2 polish rounds | M7B shipped 2026-05-16 |
 | `type_deduction.textproto`  |  47 |  20 |  25 |   2 | 43% | M9.F's `kTypedResult` matcher graduates eval-style rows; the 25 remaining SKIPs are `check_only:true` typed-result rows that early-out before reaching the comparator | M9 follow-up (check_only typed-result path) |
 | `proto2_ext.textproto`      |  18 |   0 |  18 |   0 |  0% | Proto2 extension fields (`msg.[int32_ext]`) — `type_value` envelope SKIP | extensions pass |
 | `bindings_ext.textproto`    |   8 |   0 |   0 |   8 |  0% | `cel.bind(name, val, body)` macro | Extensions pass |
@@ -316,7 +316,7 @@ not to predict exact PASS counts.
 |---|---|---:|
 | **M8 wrappers** (auto-wrap on construction + wrapper-vs-scalar `==` peel) | `wrappers.textproto` (27 rows) + the 27 `comparisons.eq_wrapper/*` FAILs + wrapper-typed field rows in `proto2`/`proto3` | ~+50–60 |
 | **Comprehensions follow-on** | `macros` (38), `macros2` three-arg forms (46), `namespace_shadowing/*` rows | ~+50–80 |
-| **Timestamps** (shipped M7B, 2026-05-16) | `timestamps.textproto`: 0/76 → 74/76 (2 FAILs on proto-Duration boundary corners — see fixture row); scattered timestamp/duration `compile unimpl` SKIPs across `proto2` / `proto3` / `conversions` graduated.  Net corpus delta: pass 1058 → 1142 (**+84**). | shipped +84 |
+| **Timestamps** (shipped M7B, 2026-05-16) | `timestamps.textproto`: 0/76 → **76/76 = 100%**; scattered timestamp/duration `compile unimpl` SKIPs across `proto2` / `proto3` / `conversions` graduated.  Net corpus delta: pass 1058 → 1144 (**+86**). | shipped +86 |
 | **Chained-null read fix** (cel-cpp's null-propagation through unset-message chains) | `empty_field/nested_message_subfield` rows in `proto2`/`proto3` | ~+2 |
 | **Enum-set-on-message diagnosis** | FAILs in `enums.textproto` `repeated_field_assign/*` + `single_field_assign/*` | ~+5–10 |
 | **Extensions pass** | `bindings_ext`, `block_ext`, `encoders_ext`, `math_ext`, `network_ext`, `optionals`, `string_ext`, `proto2_ext` | ~+680 |

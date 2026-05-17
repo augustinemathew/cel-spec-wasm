@@ -472,6 +472,20 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
                                          *value_or));
   }
 
+  // M7B polish: well-known time-type literals (`Timestamp{seconds:1}`
+  // / `Duration{...}`) unwrap to `CEL_TIMESTAMP` / `CEL_DURATION`
+  // so they're compare-equal to the matching `timestamp("...")` /
+  // `duration("...")` constructor results.  Empirically pinned
+  // against cel-cpp; see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`.
+  if (s.name() == "google.protobuf.Timestamp" ||
+      s.name() == "google.protobuf.Duration") {
+    BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot),
+                                      I32Const(ctx.mod, out_slot)};
+    instrs.push_back(BinaryenCall(
+        ctx.mod.raw(), std::string(kCelHostWktUnwrapTimeInternalName).c_str(),
+        args, 2, BinaryenTypeNone()));
+  }
+
   instrs.push_back(I32Const(ctx.mod, out_slot));
   return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
                        static_cast<BinaryenIndex>(instrs.size()),

@@ -1,8 +1,8 @@
 # M7B — Timestamp and Duration
 
 Status: **shipped 2026-05-16.**  All six slices (A/B/C/D/E/F) on
-master + a polish round.  Conformance corpus: pass 1058 → 1142
-(**+84**; `timestamps.textproto` 0/76 → 74/76).  Depends on M7
+master + two polish rounds.  Conformance corpus: pass 1058 → 1144
+(**+86**; `timestamps.textproto` **76/76 = 100%**).  Depends on M7
 (shipped), independent of M8.
 
 What landed:
@@ -124,9 +124,42 @@ What's left as future work (§9):
 >     Tested via `Epoch_DayOfWeek` (Thu=4) and
 >     `Y9999LangdefMax` (Fri=5).
 >
+> **Polish-round-2 discoveries (verified empirically against
+> cel-cpp via `compiler_v2/throwaway/cel_cpp_corner_probe.cc`):**
+>
+>   - **Arithmetic-result range is int64-nanos, NOT proto-Duration
+>     ±10000-year.**  cel-cpp's `CheckedSub(Time, Time)` represents
+>     the result in int64 nanoseconds (`overflow.cc:295`) and
+>     overflows when `seconds * 1e9 + nanos` exceeds int64 — i.e.,
+>     ±~9.22B seconds (~292 years), much tighter than the
+>     ±315.576B-second documented parse-side bound.  Confirmed
+>     empirically: with `enable_timestamp_duration_overflow_errors
+>     =true`, `ts(year-9999) - ts(year-1)` returns
+>     `OUT_OF_RANGE: integer overflow`.  Implementation: new
+>     `arith_duration_in_range` helper in cel_time.c gates
+>     duration results in `dur_combine`; parse-side keeps the
+>     loose ±10000-year bound (cel-cpp's `ValidateDuration`).
+>     Effect: `timestamps.textproto` 74/76 → **76/76**.
+>
+>   - **Cross-form `==` / `<` / etc. between `timestamp("X")`
+>     and `Timestamp{...}` works in cel-cpp.**  Both forms unify
+>     to the same Kind at runtime.  Confirmed empirically:
+>     `timestamp('1970-01-01T00:00:01Z') ==
+>     google.protobuf.Timestamp{seconds: 1}` returns `true`.
+>     Implementation: new `cel_host.cel_wkt_unwrap_time(out_slot,
+>     msg_slot)` host trampoline; codegen at the kStructExpr tail
+>     emits a call when `s.name()` is one of the two WKT FQNs.
+>     The trampoline reads the constructed CEL_MESSAGE, peels
+>     `(seconds, nanos)` via `UnpackWellKnownTimeMessage` (the
+>     same helper the M7B.A field-read normaliser uses), writes
+>     `CEL_TIMESTAMP` / `CEL_DURATION` back to the slot.  Effect:
+>     3 cross-form e2e tests graduate from SKIP to PASS.
+>
 > No architectural revisions.  Option C still stands; the
 > trampoline-cost picture (§4.4 Q1) and IANA-TZ caching finding
-> (§10.5 Probe E) are unchanged.
+> (§10.5 Probe E) are unchanged.  The empirical probe driving
+> both fixes was deliberately written first — see commit log of
+> the probe-branch PR for the cel-cpp source citations.
 
 The plan covers the `google.protobuf.Timestamp` /
 `google.protobuf.Duration` surface that M7 and M10 explicitly carved

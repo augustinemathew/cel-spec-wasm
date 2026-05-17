@@ -69,6 +69,20 @@ inline constexpr absl::string_view kCelHostMakeMessageInternalName =
 inline constexpr absl::string_view kCelHostSetFieldInternalName =
     "cel_set_field";
 
+// M7B polish: cel_host.cel_wkt_unwrap_time trampoline (Layer 3).
+// Two-arg `(out_slot, msg_slot)` — reads the CelValue at msg_slot,
+// if it's a CEL_MESSAGE of well-known time type
+// (`google.protobuf.Timestamp` / `Duration`) extracts (seconds,
+// nanos) via reflection and writes a `CEL_TIMESTAMP` /
+// `CEL_DURATION` CelValue at out_slot.  Used by the kStructExpr
+// lowering to bridge the cross-form equivalence pinned by
+// cel-cpp's behavior (see m7b §3.4 + the empirical probe at
+// `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).  No-op for
+// non-WKT-time messages (codegen only emits the call when
+// `s.name()` matches one of the two WKT FQNs).
+inline constexpr absl::string_view kCelHostWktUnwrapTimeInternalName =
+    "cel_wkt_unwrap_time";
+
 // M3.F: runtime entry points for map literal construction +
 // indexing.  All three lookups carry signature
 // `(i32 out_slot, i32 map_slot, i32 key_slot) -> ()`.  cel_map_create

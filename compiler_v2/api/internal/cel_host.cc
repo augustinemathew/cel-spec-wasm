@@ -3100,6 +3100,56 @@ absl::Status CelTimestampTzAccessorImpl(uint32_t out_slot, uint32_t ts_slot,
   return absl::OkStatus();
 }
 
+// M7B polish: WKT proto-literal unwrap.  Codegen emits this at the
+// kStructExpr tail for `Timestamp{...}` / `Duration{...}` literals.
+absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
+                                  const TrampolineContext& ctx) {
+  const CelValue in = ctx.mem.ReadCelValue(msg_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_MESSAGE) {
+    CelValue err{};
+    err.kind = CEL_ERROR;
+    err.payload.err = CEL_ERR_TYPE_MISMATCH;
+    ctx.mem.WriteCelValue(out_slot, err);
+    return absl::OkStatus();
+  }
+  const HostMessageBacking* backing =
+      ctx.refs.Lookup(in.payload.msg_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelWktUnwrapTimeImpl: msg_slot ", in.payload.msg_slot,
+                     " not found in ExternrefTable"));
+  }
+  const google::protobuf::Message* msg = backing->message();
+  if (msg == nullptr) {
+    CelValue err{};
+    err.kind = CEL_ERROR;
+    err.payload.err = CEL_ERR_TYPE_MISMATCH;
+    ctx.mem.WriteCelValue(out_slot, err);
+    return absl::OkStatus();
+  }
+  // Reuse `UnpackWellKnownTimeMessage` — same helper the M7B.A
+  // field-read normaliser uses.  Returns nullopt if descriptor
+  // doesn't match WKT Timestamp/Duration (which shouldn't happen
+  // — codegen only emits this for matching s.name() — but
+  // defence-in-depth).
+  auto wkt = UnpackWellKnownTimeMessage(*msg);
+  if (!wkt.has_value()) {
+    CelValue err{};
+    err.kind = CEL_ERROR;
+    err.payload.err = CEL_ERR_TYPE_MISMATCH;
+    ctx.mem.WriteCelValue(out_slot, err);
+    return absl::OkStatus();
+  }
+  CelValue out_cv{};
+  if (auto s = EncodeValue(*wkt, &out_cv, ctx.alloc); !s.ok()) return s;
+  ctx.mem.WriteCelValue(out_slot, out_cv);
+  return absl::OkStatus();
+}
+
 }  // namespace celwasm
 
 // ══════════════════════════════════════════════════════════════════

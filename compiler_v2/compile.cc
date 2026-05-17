@@ -51,6 +51,10 @@ void InstallSelectImports(WasmModule& mod) {
 // M7.B: cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
 // → ().  Both always imported (no lazy tracking — CLAUDE.md);
 // codegen emits direct calls in the kStructExpr arm.
+// M7B polish: cel_host.cel_wkt_unwrap_time —
+// `(out_slot, msg_slot)` → ().  Conditional emit at the kStructExpr
+// tail for WKT Timestamp/Duration literals; uninstalled imports
+// validate fine.
 void InstallStructImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType make_params[2] = {i32, i32};
@@ -60,6 +64,10 @@ void InstallStructImports(WasmModule& mod) {
   const BinaryenType set_params[3] = {i32, i32, i32};
   mod.AddFunctionImport(std::string(kCelHostSetFieldInternalName), "cel_host",
                         "cel_set_field", set_params, BinaryenTypeNone());
+  // 2-arg `(out_slot, msg_slot)` — `make_params` happens to match.
+  mod.AddFunctionImport(std::string(kCelHostWktUnwrapTimeInternalName),
+                        "cel_host", "cel_wkt_unwrap_time", make_params,
+                        BinaryenTypeNone());
 }
 
 // M3.F: map literal + indexing runtime entry points.  `cel_map_*`
