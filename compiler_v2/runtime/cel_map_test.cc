@@ -39,11 +39,16 @@ namespace celwasm {
 namespace {
 
 class MapTest : public ::testing::Test {
- public:  // public so parameterized lambdas can use the helpers.
+ protected:
   void SetUp() override {
     cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
     g_host_lookup_calls = 0;
   }
+
+ public:
+  // Public so parameterized lambdas can use the helpers without
+  // friending themselves.  SetUp stays protected per
+  // misc-override-with-different-visibility.
   uint32_t NewSlot() {
     return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
@@ -560,8 +565,13 @@ TEST_F(MapIterTest, ThreeEntryFullWalkOrderIndependent) {
     int64_t k = cel_value_at(kslot)->payload.i;
     ASSERT_GE(k, 1);
     ASSERT_LE(k, 3);
-    EXPECT_FALSE(seen[k]) << "key " << k << " visited twice";
-    seen[k] = true;
+    // Bound-checked index to keep clang-analyzer happy about the
+    // upper-bound on `seen[k]` (the ASSERT_LE above is a runtime
+    // check the static analyzer can't fold).
+    const auto idx = static_cast<size_t>(k);
+    ASSERT_LT(idx, sizeof(seen) / sizeof(seen[0]));
+    EXPECT_FALSE(seen[idx]) << "key " << k << " visited twice";
+    seen[idx] = true;
     EXPECT_EQ(cel_value_at(vslot)->payload.i, k * 10);
   }
   EXPECT_EQ(count, 3);
@@ -700,8 +710,10 @@ TEST_F(MapIterTest, IteratesAcrossManyEntries) {
     int64_t k = cel_value_at(kslot)->payload.i;
     ASSERT_GE(k, 0);
     ASSERT_LT(k, static_cast<int64_t>(kN));
-    EXPECT_FALSE(seen[k]);
-    seen[k] = true;
+    const auto idx = static_cast<size_t>(k);
+    ASSERT_LT(idx, kN);  // hold the analyzer's hand on the upper bound.
+    EXPECT_FALSE(seen[idx]);
+    seen[idx] = true;
     EXPECT_EQ(cel_value_at(vslot)->payload.i, k * 1000);
   }
   EXPECT_EQ(count, static_cast<int>(kN));

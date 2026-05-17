@@ -150,31 +150,44 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     ann.scope_id = 0;
   }
 
+  // M5.B Slice E: for list-source comprehensions, iter_var's wasm
+  // local holds a moving pointer into the list payload (no
+  // workspace slot needed — `kComprehensionIter` tag).  For
+  // map-source comprehensions, iter_var binds to the CURRENT KEY,
+  // which the runtime `cel_map_iter_key_at` helper writes into a
+  // dedicated workspace slot each iteration.  Peek at the
+  // iter_range's repr (annotated by the checker via
+  // PopulateAnnotations before ResolvePass runs) to pick the right
+  // allocation lifecycle.  Map-source iter_vars share the
+  // `kComprehensionAccu` lifecycle in LayoutPass — they get a
+  // workspace slot and are excluded from EmitVariablePrelude /
+  // cel.abi.variables[].
+  ResolvedVariableKind IterKindForRange(const cel::ComprehensionExpr& comp) {
+    const NodeAnnotation* range_pre = annotations_.Find(comp.iter_range().id());
+    const bool map_source =
+        range_pre != nullptr && range_pre->repr == Repr::kMap;
+    return map_source ? ResolvedVariableKind::kComprehensionAccu
+                      : ResolvedVariableKind::kComprehensionIter;
+  }
+
   void PreVisitComprehension(const cel::Expr& expr,
                              const cel::ComprehensionExpr& comp) override {
     // Allocate iter / iter2 / accu bindings up front.  Their Reprs
     // start at kUnknown and resolve lazily on first kIdent
-    // reference in the loop body (PostVisitIdent above).  This
-    // sidesteps having to introspect the iter_range's element type
-    // ourselves — the checker already knows it and stamped every
-    // kIdent inside the body.
+    // reference in the loop body (PostVisitIdent above).
     CompFrame f;
     f.iter_var = std::string(comp.iter_var());
     f.iter_var2 = std::string(comp.iter_var2());
     f.accu_var = std::string(comp.accu_var());
     f.iter_local_index = static_cast<uint32_t>(variables_.size());
-    variables_.push_back(
-        ResolvedVariable{f.iter_var, f.iter_local_index, Repr::kUnknown,
-                         ResolvedVariableKind::kComprehensionIter});
+    variables_.push_back(ResolvedVariable{f.iter_var, f.iter_local_index,
+                                          Repr::kUnknown,
+                                          IterKindForRange(comp)});
     if (!f.iter_var2.empty()) {
+      // Two-iter-var (Slice F): codegen owns the index counter /
+      // value workspace; LayoutPass treats both as
+      // `kComprehensionIter` (loop-prologue-set).
       f.iter_local_index2 = static_cast<uint32_t>(variables_.size());
-      // List two-iter-var binds iter_var → index (synthesized int)
-      // and iter_var2 → element; map two-iter-var binds iter_var
-      // → key and iter_var2 → value.  Codegen (Slice F) discriminates
-      // by iter_range repr.  At ResolvePass we just allocate both
-      // bindings; the `kind` tag stays `kComprehensionIter` for now
-      // (LayoutPass / EmitVariablePrelude treat both the same as
-      // they're loop-prologue-set, not function-prelude-set).
       variables_.push_back(
           ResolvedVariable{f.iter_var2, f.iter_local_index2, Repr::kUnknown,
                            ResolvedVariableKind::kComprehensionIter});
@@ -183,14 +196,12 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     variables_.push_back(
         ResolvedVariable{f.accu_var, f.accu_local_index, Repr::kUnknown,
                          ResolvedVariableKind::kComprehensionAccu});
-    // Stamp the per-comprehension binding indices on the comp
-    // node's NodeAnnotation so codegen can look them up by expr_id.
-    // Name-based lookup conflates nested same-name accu_vars —
-    // cel-cpp uses "@result" at every depth in the standard
+    // Stamp the per-comp binding indices on the comp node's
+    // NodeAnnotation so codegen looks them up by expr_id, not by
+    // name.  Name-based lookup conflates nested same-name accu_vars
+    // — cel-cpp uses "@result" at every depth in the standard
     // macros, so the inner's name would resolve to the outer's
-    // LaidOutVariable entry, causing both prologues to set the
-    // SAME wasm local + workspace slot (caught by the 2026-05-17
-    // nested probe).
+    // LaidOutVariable entry (caught by the 2026-05-17 nested probe).
     NodeAnnotation& ann = annotations_[expr.id()];
     ann.comp_iter_local_index = f.iter_local_index;
     ann.comp_accu_local_index = f.accu_local_index;

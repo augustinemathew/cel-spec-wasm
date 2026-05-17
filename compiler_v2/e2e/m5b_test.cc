@@ -477,8 +477,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapLargeListGrowthPath) {
 class ComprehensionMapIterE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionMapIterE2ETest, ExistsMapKeyMatch) {
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -488,8 +486,6 @@ TEST_F(ComprehensionMapIterE2ETest, ExistsMapKeyMatch) {
 }
 
 TEST_F(ComprehensionMapIterE2ETest, AllMapKeysPositive) {
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, R"({1: "a", 2: "b"}.all(k, k > 0))");
@@ -499,8 +495,15 @@ TEST_F(ComprehensionMapIterE2ETest, AllMapKeysPositive) {
 
 TEST_F(ComprehensionMapIterE2ETest, ExistsEmptyMapIsFalse) {
   // design §3.1: empty range → accu_init (false).
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
+  // CEL has no syntactic way to construct an empty typed map —
+  // `{}` types as `map(dyn, dyn)` which the static-subset gate
+  // rejects.  An equivalent assertion lives in the runtime test
+  // `cel_map_test.cc::MapIterTest::Empty` (handle=0 → no iters).
+  // The bound-map variant ships when bound-map iter_range support
+  // does (separate post-milestone slice).
+  GTEST_SKIP() << "empty map literal types as map(dyn,dyn) — "
+                  "RejectDyn fires before the empty-iter codegen "
+                  "runs; runtime equivalent covered by cel_map_test.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.exists(k, true)");
@@ -509,8 +512,9 @@ TEST_F(ComprehensionMapIterE2ETest, ExistsEmptyMapIsFalse) {
 }
 
 TEST_F(ComprehensionMapIterE2ETest, AllEmptyMapIsTrue) {
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
+  GTEST_SKIP() << "empty map literal types as map(dyn,dyn) — "
+                  "RejectDyn fires before the empty-iter codegen "
+                  "runs; runtime equivalent covered by cel_map_test.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.all(k, false)");
@@ -521,8 +525,6 @@ TEST_F(ComprehensionMapIterE2ETest, AllEmptyMapIsTrue) {
 TEST_F(ComprehensionMapIterE2ETest, ExistsOneOverMapIntKeys) {
   // design §3.10: `{6:"six",7:"seven",8:"eight"}.exists_one(foo,
   // foo % 5 == 2)` → true (only 7 satisfies).
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -535,8 +537,6 @@ TEST_F(ComprehensionMapIterE2ETest, ExistsOneOverMapIntKeys) {
 TEST_F(ComprehensionMapIterE2ETest, MapOverMapKeysReturnsKeyList) {
   // design §3.11 + §3.10: `{'John':'smart'}.map(k, k)` returns
   // `['John']`.  Single-element map avoids ordering ambiguity.
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -549,8 +549,6 @@ TEST_F(ComprehensionMapIterE2ETest, MapOverMapKeysSizeCheck) {
   // design §3.11: map iteration order is not spec-mandated.  Assert
   // size only so the test is order-independent across runtime
   // implementations.
-  GTEST_SKIP() << "M5.B.E ships here — see "
-                  "m5-comprehensions-followon.md §Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -941,9 +939,6 @@ TEST_F(ComprehensionNestedE2ETest, OuterListInnerList) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterListInnerMap) {
-  GTEST_SKIP() << "map-source iter_range needs Slice E "
-                  "(cel_map_iter_*) — m5-comprehensions-followon.md "
-                  "§Slice E.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -953,8 +948,6 @@ TEST_F(ComprehensionNestedE2ETest, OuterListInnerMap) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterMapInnerList) {
-  GTEST_SKIP() << "map-source iter_range needs Slice E "
-                  "(cel_map_iter_*).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -964,8 +957,6 @@ TEST_F(ComprehensionNestedE2ETest, OuterMapInnerList) {
 }
 
 TEST_F(ComprehensionNestedE2ETest, OuterMapInnerMap) {
-  GTEST_SKIP() << "map-source iter_range needs Slice E "
-                  "(cel_map_iter_*).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
