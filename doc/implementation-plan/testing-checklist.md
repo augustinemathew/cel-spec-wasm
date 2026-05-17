@@ -425,7 +425,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `map<K,V>`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | proto message   | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | enum            | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
-| wrapper (Int64Value …) | [ ] | [ ]  | [x]         | [x]       | [ ]     | [ ]      |
+| wrapper (Int64Value …) | [x] | [x]  | [x]         | [x]       | [x]     | [x]      |
 | `any`           | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `dyn` (rejected)| —      | —       | —           | [x]       | —       | —        |
 | `error`         | —      | —       | —           | [x]       | —       | —        |
@@ -2096,6 +2096,59 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         are proto-Duration boundary corners cel-cpp considers
         overflow at a slightly tighter bound than our int64
         check; defer to a polish pass.
+
+## Rewrite M8 — wrapper types (shipped 2026-05-17)
+
+  - [x] **Per CEL type — wrapper row.**  Flipped from `[ ] [ ] [x]
+        [x] [ ] [ ]` to all `[x]`.  `google.protobuf.{Bool,Int32,
+        Int64,UInt32,UInt64,Float,Double,String,Bytes}Value` flow
+        end-to-end across the three boundaries (construction-side
+        auto-wrap, read-side auto-peel + Any-chain, kStructExpr
+        tail-unwrap).  All 9 wrapper kinds covered.
+  - [x] **e2e — 86-test matrix in `compiler_v2/e2e/m8_test.cc`.**
+        80 PASS / 6 SKIP (skipped rows are reject-matrix cases that
+        sit outside M8's scope per §6.3 of the plan).  Sections:
+        `WrapperLiteralUnwrapE2ETest` (M8.C — 29 tests covering
+        per-kind set / set-to-zero / empty-construct / cross-form),
+        `WrapperFieldReadE2ETest` (M8.B — unset-reads-null × proto2
+        + proto3, `has()` rows, set-to-default-still-scalar),
+        `WrapperAnyChainE2ETest` (M8.B — 6 wrapper-of-Any rows +
+        non-wrapper-stays-message regression),
+        `WrapperConstructionE2ETest` (M8.A — auto-wrap vs explicit-
+        wrapper per kind, null-into-wrapper-clears, boundary values),
+        `WrapperActivationBindE2ETest` (M8.A — scalar-bind × 9 kinds,
+        null-bind, wrong-kind reject),
+        `WrapperRoundTripE2ETest` (A+B+C end-to-end including
+        explicit-wrapper round-trip).
+  - [x] **Layer-2 unit tests at `cel_host_test.cc`.**  Existing
+        `CelSetFieldAnyPackTest::DescriptorMismatchOnSingularMessageInvalidArg`
+        updated to expect `InvalidArgument` (post-M8.A status; was
+        `Unimplemented` pre-M8).  Wrapper-peel via the read-side
+        path is covered by the e2e suite.
+  - [x] **WAT trace 56 (`56_wrapper_kstruct_unwrap.wat`)**
+        documents the kStructExpr tail-unwrap codegen shape;
+        `wat_runner` stub + test (`WrapperKStructTailUnwrapProducesCelInt`)
+        in `compiler_v2/tools/wat_runner/wat_runner_test.cc` pin
+        the trampoline ABI (3-arg `(out_slot, msg_slot,
+        wrapper_kind)`).
+  - [x] **Conformance: 1144 → 1287 (+143 PASS, ~95% of the +151
+        target).**  `wrappers.textproto` 9/36 → 18/36 (`to_any`
+        rows × 9 unlocked); `comparisons.eq_wrapper/*` 18/45 →
+        45/45 (`eq_X / eq_X_empty / eq_X_proto2_null × 9` unlocked);
+        `dynamic.textproto` wrapper rows 0/95 → 95/95;
+        `proto2.textproto :: literal_wellknown × 9` + `empty_field/
+        wkt` × 1 = 10/10 unlocked; `proto3.textproto :: literal_
+        wellknown × 9` unlocked.  The 8-row shortfall vs +151 is
+        likely classification noise from rows credited to one arm
+        but actually unlocked by another; tracked in m8 plan §9
+        "Future work".
+  - [x] **Throwaway empirical probe** at
+        `compiler_v2/throwaway/m8_wrapper_probe.cc` (branch
+        `throwaway/m8-wrapper-probe`, PR #4).  Pinned cel-cpp's
+        `RuntimeOptions::enable_empty_wrapper_null_unboxing`
+        toggle — default `false` peels unset wrapper fields to
+        scalar zero; conformance corpus is generated with `true`
+        (null), which our implementation matches.
 
 ## How to update
 

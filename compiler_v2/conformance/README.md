@@ -8,13 +8,44 @@ against each test's `cel.expr.Value` matcher.
 
 ## Headline
 
-`total=2454 · pass=1144 (46.6%) · skip=602 (24.5%) · fail=708 (28.9%)`
-(post-M7B + polish rounds, 2026-05-16; +86 PASS vs the M10-closeout
-1058 baseline.  Polish-round-2 (cel-cpp-empirically-driven) added
-int64-nanos arithmetic-result bound + cross-form WKT-proto-literal
-unwrap; `timestamps.textproto` now 76/76 = 100%.)
+`total=2454 · pass=1287 (52.4%) · skip=602 (24.5%) · fail=565 (23.0%)`
+(post-M8 wrapper-types, 2026-05-17; +143 PASS vs the post-M7B 1144
+baseline; +229 PASS vs the M10-closeout 1058 baseline.  All 9
+google.protobuf wrapper types now flow end-to-end across the three
+boundaries — construction-side auto-wrap, read-side auto-peel +
+Any-chain, and kStructExpr tail-unwrap.)
 across 30 loadable fixtures.  The most recent landings:
 
+  - **M8.A write-side wrapper auto-wrap + activation bind** (2026-05-17):
+    +91 PASS.  `SetScalarField` synthesises wrapper-messages from
+    matching scalar `CelValue` operands via reflection
+    (`Foo{single_int32_wrapper: 5}` → `Int32Value{value: 5}` proto);
+    `Instance::EncodeBool/Int/Uint/Double` accept
+    `Value::Message(WrapperType)` via `TryEncodeWktWrapperMessage`
+    and `Value::Null()` against any scalar slot via
+    `TryEncodeNullToScalarSlot` (per langdef line 484-486 "absent
+    wrapper field equals null" semantics at the activation side).
+    `WriteMessageOrPack`'s M8-stub branch is now unreachable;
+    surfaces as `InvalidArgument` for residual descriptor-mismatch
+    cases (embedder error, not codegen bug).  Largest M8 arm.
+    See `doc/implementation-plan/rewrite/m8-wrapper-types.md` §M8.A.
+  - **M8.C kStructExpr WKT wrapper tail-unwrap** (2026-05-17): +29 PASS.
+    New `cel_host.cel_wkt_unwrap_wrapper(out, msg, wrapper_kind)`
+    trampoline + codegen tail-call at kStructExpr for the 9 wrapper
+    FQNs.  Direct clone of m7b's `cel_wkt_unwrap_time` pattern —
+    `Int32Value{value: 5}` lowers to a `CEL_INT(5)` slot rather
+    than `CEL_MESSAGE`, matching `typed_ast.cc:56`'s wrapper-Repr
+    mapping.  WAT trace at
+    `doc/implementation-plan/rewrite/wat/56_wrapper_kstruct_unwrap.wat`.
+  - **M8.B read-side wrapper auto-peel + Any-chain** (2026-05-17): +23 PASS.
+    `ProtoBacking::ReadField` peels wrapper-typed fields to inner
+    scalar (set) or `null` (unset, both proto2 and proto3 — exception
+    to default-message rule per langdef line 484-486).
+    `UnpackAnyToValue` chains wrapper-peel + WKT-time-peel after the
+    Any-payload parse so `Any{Int32Value{value:1}}` surfaces as
+    `int 1`.  New `UnpackWrapperMessage` helper mirrors m7b's
+    `UnpackWellKnownTimeMessage` shape; `MaybeUnpackWktMessage`
+    unifies both peel chains under one entry point.
   - **M7-A.C cel_message_eq Any-peel** (2026-05-16): 0 conformance-row
     delta but unlocks direct Any-literal equality patterns
     (Any-vs-typed, Any-vs-Any cross-descriptor) that customers depend

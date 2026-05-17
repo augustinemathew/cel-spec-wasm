@@ -708,6 +708,8 @@ exactly one typed entry:
 | `cel_set_field` | `FieldEntry[field_ref_id]` | expected value `CelType` to coerce from |
 | `cel_make_message` | `TypeEntry[type_id]` | descriptor resolution key |
 | `cel_message_eq`   | `TypeEntry` of either operand | — (operand types drive Differencer) |
+| `cel_wkt_unwrap_time` (m7b) | inline — codegen knows from `s.name()` | `out`/`msg` slot offsets; descriptor cross-check via `UnpackWellKnownTimeMessage` |
+| `cel_wkt_unwrap_wrapper` (M8.C) | inline — codegen passes `wrapper_kind` (1..6 per `CelKind`) | `out`/`msg` slot offsets + expected inner `CelKind`; descriptor cross-check via `UnpackWrapperMessage` |
 | Custom call        | `CustomFunctionEntry[helper_name]` | `(function_name, overload_id, is_receiver, arg_types[], return_type)` |
 | Root variable read | `VariableEntry[param_index]` | declared type; trampoline boxes accordingly |
 

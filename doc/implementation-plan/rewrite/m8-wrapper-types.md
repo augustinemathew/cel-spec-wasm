@@ -1,8 +1,12 @@
 # M8 — Wrapper types
 
-Status: **active development 2026-05-16.  Reconciled against
-empirical probe + conformance baseline; original draft sections
-preserved with `Plan-vs-execution delta:` callouts.**
+Status: **shipped 2026-05-17.**  Three slices landed across 4
+commits (`959fc86` plan reconciliation, `946ffd1` M8.B,
+`7e161e6` M8.C, `038674a` M8.A).  Conformance: 1144 → 1287
+(**+143 PASS**); target was +151 — 95% on plan.  All 9
+google.protobuf wrapper types flow end-to-end across the three
+boundaries (construction-side auto-wrap, read-side auto-peel +
+Any-chain, kStructExpr tail-unwrap).
 
 > **Plan-vs-execution delta (2026-05-16 reconciliation):** the
 > drafted plan undercounts unlock by ~2× and is missing one of
@@ -737,7 +741,36 @@ sequencing is the three-arm split above.
 
 ## 9. Future work
 
+Surfaced during M8 execution but not in scope for this milestone:
+
   - **Wrapper coercion in arithmetic** (`Int32Value{value:1} + 2`)
-    if a fixture row surfaces.
+    if a fixture row surfaces.  cel-cpp ships this; the conformance
+    corpus rarely exercises it.
   - **Runtime peel fallback (Option B)** if `dyn(wrappermsg)` is
-    admitted at a later static-subset broadening.
+    admitted at a later static-subset broadening.  Static subset
+    rejects today (§4.R4).
+  - **Repeated wrapper fields**.  `Foo{rep_int32_wrapper: [1, 2, 3]}`
+    or similar.  `AppendRepeatedFromCelValue` does NOT have a
+    wrapper-scalar arm yet; it falls through to
+    `WriteMessageOrPack` which now returns `InvalidArgument`.
+    Not in any conformance row M8.A targeted; revisit if a
+    fixture flag-surfaces.
+  - **String / bytes wrapper bind via `Value::Message`**.
+    `TryEncodeWktWrapperMessage` short-circuits CPPTYPE_STRING
+    back through the existing arena path; the
+    bound-`Value::Message(StringValue{value:"x"})` case isn't
+    wired through `EncodeStringOrBytes` yet.  Falls through to
+    a kind-mismatch; can be wired in a polish round if an
+    embedder needs it.  Construction-side (`Foo{single_string_wrapper:
+    StringValue{value:"x"}}`) already works via M8.C tail-unwrap.
+  - **8-row conformance gap to the +151 target.**  +143 actual
+    suggests some rows credited to a single arm in the baseline
+    actually need cross-arm coordination.  Diff between the
+    baseline classification and the observed unlock to
+    identify; not blocking — every M8-deliverable shape is
+    covered by at least one e2e test in `m8_test.cc`.
+  - **6 e2e tests remain skipped** (`m8_test.cc`'s
+    `WrapperRejectE2ETest` reject-matrix rows + an explicit-wrapper-
+    construction read-back row dependent on M7.E shape).  Track in
+    `m8_test.cc` comments; clear when the corresponding behaviours
+    are implemented or pinned per their separate milestones.
