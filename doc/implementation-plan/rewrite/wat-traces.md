@@ -1346,6 +1346,102 @@ Authored alongside the WAT file at
 
 ---
 
+## 56 — google.protobuf.Int32Value{value: 5} (M8.C wrapper tail-unwrap)
+
+`m8-wrapper-types.md` §4 Arm C: wrapper-FQN struct literals lower as
+the M7.A/B `cel_make_message` + `cel_set_field` pair, then a
+**tail-call** to a new host trampoline `cel_wkt_unwrap_wrapper` that
+peels the freshly-constructed wrapper message back to its inner
+scalar.  Direct clone of m7b's `cel_wkt_unwrap_time` shape (see §51)
+with one extra arg.
+
+```wat
+(module
+  (import "cel" "memory" (memory 2))
+  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel_host" "cel_make_message"
+          (func $cel_make_message (param i32 i32)))
+  (import "cel_host" "cel_set_field"
+          (func $cel_set_field (param i32 i32 i32)))
+  (import "cel_host" "cel_wkt_unwrap_wrapper"
+          (func $cel_wkt_unwrap_wrapper (param i32 i32 i32)))
+
+  (data (i32.const 40)
+        "\02\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+
+  (func $eval (result i32)
+    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $cel_make_message (i32.const 1) (i32.const 16))
+    (call $cel_set_field (i32.const 16) (i32.const 1) (i32.const 40))
+    (call $cel_wkt_unwrap_wrapper (i32.const 16) (i32.const 16) (i32.const 2))
+    (i32.const 16))
+
+  (export "eval" (func $eval))
+  (export "memory" (memory 0)))
+```
+
+Memory layout:
+
+  - `[ 0, 16)` reserved + arena cursor/limit
+  - `[16, 40)` workspace slot for the kStructExpr — written THREE
+    times: cel_make_message stamps `{CEL_MESSAGE, externref}`,
+    cel_set_field mutates the proto behind the externref (slot
+    bytes unchanged), cel_wkt_unwrap_wrapper overwrites the slot
+    with the peeled scalar `{CEL_INT, payload.i=5}`.
+  - `[40, 64)` rodata: literal `5` CelValue (operand to set_field).
+  - `[64, mem_size)` bump arena — untouched (the peeled scalar is
+    by-value in the CelValue payload; the wrapper proto lived in
+    the ExternrefTable, not in linear memory).
+
+Why this is the **tail** of kStructExpr, not a separate AST node:
+`compiler_v2/ir/typed_ast.cc:56` maps every `wrapper(XX)` type to
+`Repr::kXX`, so every consumer of a wrapper-typed expression
+(equality, arithmetic-guard, list-element-assignment) already
+expects a scalar slot.  Without the tail-unwrap, kStructExpr would
+leave a `CEL_MESSAGE` slot at `out_slot` and the next pass would
+either CHECK-fail or silently miscompile.  See
+`m8-wrapper-types.md` §4.2 for the full trace of
+`Int32Value{value: 1} == 1`.
+
+`cel_wkt_unwrap_wrapper` arg layout:
+
+  - `out_slot`     — offset of the 24B CelValue cell to overwrite
+    with the peeled scalar.  In the tail-call shape this is the
+    same offset as `msg_slot` (matches m7b's
+    `MaybeEmitWktUnwrapTailCall` argument pattern).
+  - `msg_slot`     — offset of the just-constructed wrapper's
+    `{CEL_MESSAGE, externref}` CelValue.
+  - `wrapper_kind` — i32 CelKind tag (BOOL=1, INT=2, UINT=3,
+    DOUBLE=4, STRING=5, BYTES=6) — codegen knows the kind
+    statically from the wrapper FQN, so the Layer-2 impl avoids
+    a per-call descriptor walk.  Int32/Int64 both collapse onto
+    `CEL_INT=2`; UInt32/UInt64 onto `CEL_UINT=3`; Float/Double
+    onto `CEL_DOUBLE=4`, matching CEL's value algebra.
+
+Layer-2 trampoline (`CelWktUnwrapWrapperImpl`, to land in
+`compiler_v2/api/internal/cel_host.cc` alongside
+`CelWktUnwrapTimeImpl`):
+
+  1. Read CelValue at `msg_slot`.  3VL absorption — if CEL_ERROR
+     or CEL_UNKNOWN, propagate to `out_slot` and return.
+  2. Expect CEL_MESSAGE; mismatch → `{CEL_ERROR,
+     CEL_ERR_TYPE_MISMATCH}` (defence in depth; codegen only
+     emits the call when the FQN is a wrapper).
+  3. Look up the externref → `HostMessageBacking::message()`.
+  4. Cross-check `descriptor()->full_name()` matches the FQN
+     implied by `wrapper_kind` (one switch); mismatch → ERROR.
+  5. Reflection-read field number 1 (`value`); write the matching
+     scalar `CelValue` (`CEL_INT(5)` for the Int32Value case) to
+     `out_slot`.
+
+Cross-ref to the m7b analog (§51 + `expr_lower.h:72-84`): the
+codegen seam is identical (`MaybeEmitWktUnwrapTailCall` in
+`compiler_v2/codegen/expr_lower.cc:439-451`), extended to dispatch
+on wrapper FQNs in addition to Timestamp/Duration and to thread the
+`wrapper_kind` enum through the 3rd call arg.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

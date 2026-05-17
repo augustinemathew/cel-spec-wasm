@@ -59,11 +59,9 @@ namespace celwasm {
 // trampoline does.  The stub gets full access to the linear-memory
 // byte buffer so it can also read `msg_slot`'s CelValue to simulate
 // more realistic backings.
-using CelHostStub = std::function<void(uint32_t out_slot,
-                                       uint32_t msg_slot,
-                                       uint32_t field_ref_id,
-                                       uint32_t attribute_id,
-                                       uint8_t* memory, size_t mem_size)>;
+using CelHostStub = std::function<void(
+    uint32_t out_slot, uint32_t msg_slot, uint32_t field_ref_id,
+    uint32_t attribute_id, uint8_t* memory, size_t mem_size)>;
 
 // 3-arg stub for `cel_host.cel_map_lookup` / `cel_host.cel_list_at`.
 // Signature: `(out_slot, operand_slot, key_or_index_slot)`.  In
@@ -74,10 +72,9 @@ using CelHostStub = std::function<void(uint32_t out_slot,
 // `cel_host.*` function and no stub is supplied, the harness binds
 // a no-op (sufficient for kArena WATs that link cel_host imports
 // but never call them).
-using CelHostThreeArgStub =
-    std::function<void(uint32_t out_slot, uint32_t operand_slot,
-                       uint32_t key_or_index_slot,
-                       uint8_t* memory, size_t mem_size)>;
+using CelHostThreeArgStub = std::function<void(
+    uint32_t out_slot, uint32_t operand_slot, uint32_t key_or_index_slot,
+    uint8_t* memory, size_t mem_size)>;
 
 struct WatRunInput {
   absl::string_view wat;
@@ -103,6 +100,24 @@ struct WatRunInput {
   // this to simulate host-table backings).
   CelHostThreeArgStub cel_host_cel_map_lookup_stub;
   CelHostThreeArgStub cel_host_cel_list_at_stub;
+
+  // M8.C — `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
+  // wrapper_kind)` stub.  Mirrors the m7b `cel_wkt_unwrap_time`
+  // shape but with a third `wrapper_kind` i32 carrying the
+  // CelKind tag (1=BOOL, 2=INT, 3=UINT, 4=DOUBLE, 5=STRING,
+  // 6=BYTES) so the Layer-2 impl skips a descriptor walk.
+  //
+  // When unset, the harness binds a no-op so a WAT that imports
+  // the surface but doesn't exercise it still instantiates.  When
+  // set, the stub fires for every call: it has full access to the
+  // memory buffer to read msg_slot (the just-constructed wrapper
+  // proto's CelValue) AND to write the peeled scalar CelValue at
+  // out_slot.  The `key_or_index_slot` field of the
+  // CelHostThreeArgStub signature carries `wrapper_kind` for
+  // M8.C — same ABI shape, different semantic role of the third
+  // arg.  Production stubs should treat it as the wrapper-kind
+  // enum.
+  CelHostThreeArgStub cel_host_cel_wkt_unwrap_wrapper_stub;
 };
 
 struct WatRunOutput {

@@ -56,7 +56,7 @@ ArenaHeader DecodeArenaHeader(const std::vector<uint8_t>& mem) {
 }
 
 std::string ReadSpan(const std::vector<uint8_t>& mem, CelSpan s) {
-  return std::string(reinterpret_cast<const char*>(mem.data() + s.ptr), s.len);
+  return {reinterpret_cast<const char*>(mem.data() + s.ptr), s.len};
 }
 
 // Builds a 24-byte CelValue{CEL_INT, payload.i=value} for use as a
@@ -887,6 +887,85 @@ TEST(WatRunnerControlFlowTest, ConditionalSelectsThenArm) {
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 1);  // true ? 1 : 2 → 1
+}
+
+// ─────────────────────────────────────────────────────────
+// 56_wrapper_kstruct_unwrap.wat — `google.protobuf.Int32Value{value: 5}`
+// (M8.C kStructExpr wrapper tail-unwrap).
+//
+// Three host trampoline calls in sequence:
+//   1. cel_host.cel_make_message(type_id=1, out=16) — no-op stub
+//      (default for unsupplied 2-arg cel_host imports).
+//   2. cel_host.cel_set_field(msg=16, fid=1, value=40) — no-op stub
+//      (default for unsupplied 3-arg cel_host imports).
+//   3. cel_host.cel_wkt_unwrap_wrapper(out=16, msg=16, kind=2) —
+//      caller-supplied stub that simulates the M8.C trampoline
+//      by overwriting slot 16 with {CEL_INT, payload.i=5}.  The
+//      stub ALSO verifies it observed the three arg values the
+//      WAT passed verbatim (out==msg==16, kind==2 [CEL_INT]).
+//
+// The cel_make_message + cel_set_field stubs are no-ops because
+// M8.C's WAT contract is about the unwrap trampoline shape, not
+// about end-to-end proto construction (M7.A/B's WATs cover that
+// against their own production trampolines, which the wat_runner
+// harness can't reach today — they require Engine::Plan's
+// ExternrefTable wiring).
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerWrapperTest, WrapperKStructTailUnwrapProducesCelInt) {
+  auto wat = LoadWat("56_wrapper_kstruct_unwrap.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+
+  struct Capture {
+    int calls = 0;
+    uint32_t out_slot = 0;
+    uint32_t msg_slot = 0;
+    uint32_t wrapper_kind = 0;
+  };
+  auto capture = std::make_shared<Capture>();
+
+  // M8.C unwrap stub: overwrites msg_slot in place with the
+  // peeled scalar CelValue.  This is the shape the production
+  // Layer-2 `CelWktUnwrapWrapperImpl` will adopt (mirrors
+  // `CelWktUnwrapTimeImpl` at cel_host.cc:3117).
+  in.cel_host_cel_wkt_unwrap_wrapper_stub =
+      [capture](uint32_t out_slot, uint32_t msg_slot, uint32_t wrapper_kind,
+                uint8_t* memory, size_t /*size*/) {
+        ++capture->calls;
+        capture->out_slot = out_slot;
+        capture->msg_slot = msg_slot;
+        capture->wrapper_kind = wrapper_kind;
+        // Production impl would read msg_slot's CelValue
+        // (expect CEL_MESSAGE → externref → wrapper proto →
+        // reflection-read field "value"); here we just write
+        // CEL_INT(5) directly, simulating the unwrap result for
+        // `Int32Value{value: 5}`.
+        CelValue out{};
+        out.kind = CEL_INT;
+        out.payload.i = 5;
+        WriteCelValue(memory, out_slot, out);
+      };
+
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+
+  // ABI assertions — the three i32 args the WAT passed should
+  // arrive at the stub verbatim.  out_slot == msg_slot (in-place
+  // overwrite shape, matching m7b's MaybeEmitWktUnwrapTailCall);
+  // wrapper_kind == 2 (CEL_INT).
+  EXPECT_EQ(capture->calls, 1);
+  EXPECT_EQ(capture->out_slot, 16u);
+  EXPECT_EQ(capture->msg_slot, 16u);
+  EXPECT_EQ(capture->wrapper_kind, 2u);
+
+  // $eval returned the kStructExpr's slot offset (16), now
+  // holding the peeled scalar.
+  EXPECT_EQ(out->eval_return, 16u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 5);
 }
 
 }  // namespace

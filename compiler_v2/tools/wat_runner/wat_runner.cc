@@ -469,46 +469,42 @@ absl::Status RegisterCelHostFourArgStubs(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
-// Register the 3-arg cel_host trampolines (cel_map_lookup /
-// cel_list_at).  Caller may supply a stub to simulate host-table
-// dispatch (kHost-path tests); otherwise a no-op binds so kArena
-// WATs that link the cel_host imports but never call them still
-// instantiate.
-absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
-                                                const WatRunInput& input) {
-  if (input.cel_host_cel_map_lookup_stub) {
-    if (auto st = RegisterCelHostThreeArgStub(
-            linker, "cel_map_lookup", input.cel_host_cel_map_lookup_stub);
-        !st.ok()) {
-      return st;
-    }
-  } else if (auto st = RegisterCelHostThreeArgNoop(linker, "cel_map_lookup");
-             !st.ok()) {
-    return st;
+// Register one optional 3-arg cel_host trampoline by name: if the
+// caller supplied a stub, route the trampoline through it; otherwise
+// bind a no-op so the WAT instantiates even if it never calls the
+// surface.  Pulled out of `RegisterCelHostThreeArgTrampolines` so
+// adding a new optional trampoline (M8.C did this for
+// `cel_wkt_unwrap_wrapper`) doesn't push the parent function past
+// the readability-function-size threshold.
+absl::Status RegisterOptionalThreeArg(wasmtime_linker_t* linker,
+                                      absl::string_view name,
+                                      const CelHostThreeArgStub& stub) {
+  if (stub) {
+    return RegisterCelHostThreeArgStub(linker, name, stub);
   }
-  if (input.cel_host_cel_list_at_stub) {
-    if (auto st = RegisterCelHostThreeArgStub(linker, "cel_list_at",
-                                              input.cel_host_cel_list_at_stub);
-        !st.ok()) {
-      return st;
-    }
-  } else if (auto st = RegisterCelHostThreeArgNoop(linker, "cel_list_at");
-             !st.ok()) {
-    return st;
-  }
+  return RegisterCelHostThreeArgNoop(linker, name);
+}
+
+// Bulk no-op binds for cel_host imports that WATs reference but
+// don't exercise — the aggregate-op kHost dispatchers (M5.D step 2),
+// `cel_set_field` (M7.B), `cel_make_message` (M7.A), and
+// `resolve_message_type_name` (M9.B).  Each surface ships with a
+// real production trampoline; tests that need real semantics route
+// through the full Compiler/Engine pipeline, not this harness.
+// Factored out of `RegisterCelHostThreeArgTrampolines` to keep the
+// parent function under the readability-function-size threshold.
+absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
   // M5.D step 2: aggregate-op kHost imports.  Tests link the
   // dispatchers but don't exercise the host arms; no-op stubs
-  // suffice (tests that need behaviour will plug in via input).
+  // suffice.
   static constexpr absl::string_view kThreeArg[] = {
-      "cel_list_in", "cel_list_eq", "cel_list_concat",
-      "cel_map_in",  "cel_map_eq",  "cel_message_eq",
+      "cel_list_in",
+      "cel_list_eq",
+      "cel_list_concat",
+      "cel_map_in",
+      "cel_map_eq",
+      "cel_message_eq",
       // M7.B — `cel_set_field(msg_slot, field_ref_id, value_slot)`.
-      // 3-i32 args; binding a no-op suffices for any WAT that
-      // imports the surface but doesn't call it (or calls it
-      // expecting the side effect to be observable post-eval; the
-      // production trampoline carries the real semantics, tests
-      // that need them go through the full Compiler/Engine
-      // pipeline).
       "cel_set_field",
   };
   for (absl::string_view name : kThreeArg) {
@@ -519,22 +515,9 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   static constexpr absl::string_view kTwoArg[] = {
       "cel_list_size",
       "cel_map_size",
-      // M7.A — `cel_make_message(type_id, out_slot)`.  The trampoline
-      // shape is two i32 args; binding a no-op suffices for any WAT
-      // that imports the surface but doesn't call it.  WATs that
-      // exercise the call (40_kstruct_make_message.wat) still link
-      // through this stub — the post-eval memory snapshot will show
-      // the out_slot untouched, which is sufficient for assembly /
-      // instantiation regression coverage.  The production
-      // trampoline (cel_host_wasmtime.cc::CelMakeMessageTrampoline)
-      // carries the real semantics; tests that need them go through
-      // the full Compiler/Engine pipeline.
+      // M7.A — `cel_make_message(type_id, out_slot)`.
       "cel_make_message",
-      // M9.B — `resolve_message_type_name(out_slot, in_slot)` for
-      // `type(<message>)`.  Same rationale as `cel_make_message`:
-      // declared by the runtime's wasm_imports.txt, so any WAT
-      // assembled with the runtime included must define it for the
-      // module to instantiate.
+      // M9.B — `resolve_message_type_name(out_slot, in_slot)`.
       "resolve_message_type_name",
   };
   for (absl::string_view name : kTwoArg) {
@@ -543,6 +526,38 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
     }
   }
   return absl::OkStatus();
+}
+
+// Register the 3-arg cel_host trampolines (cel_map_lookup /
+// cel_list_at / cel_wkt_unwrap_wrapper).  Caller may supply a stub
+// to simulate host-table dispatch (kHost-path tests) / wrapper
+// peel (M8.C); otherwise a no-op binds so kArena WATs that link
+// the cel_host imports but never call them still instantiate.
+absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
+                                                const WatRunInput& input) {
+  if (auto st = RegisterOptionalThreeArg(linker, "cel_map_lookup",
+                                         input.cel_host_cel_map_lookup_stub);
+      !st.ok()) {
+    return st;
+  }
+  if (auto st = RegisterOptionalThreeArg(linker, "cel_list_at",
+                                         input.cel_host_cel_list_at_stub);
+      !st.ok()) {
+    return st;
+  }
+  // M8.C — `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
+  // wrapper_kind)`.  Same 3-i32-in / void-out shape as the M3/M4
+  // trampolines above.  Stubs interpret the third arg as
+  // `wrapper_kind` (CelKind tag: 1=BOOL, 2=INT, 3=UINT, 4=DOUBLE,
+  // 5=STRING, 6=BYTES), NOT the CelHostThreeArgStub-default
+  // "key_or_index_slot".
+  if (auto st =
+          RegisterOptionalThreeArg(linker, "cel_wkt_unwrap_wrapper",
+                                   input.cel_host_cel_wkt_unwrap_wrapper_stub);
+      !st.ok()) {
+    return st;
+  }
+  return RegisterCelHostBulkNoopImports(linker);
 }
 
 // Bind no-op fallbacks for M7B (duration/timestamp) imports that
@@ -560,22 +575,38 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
 // through `wasm-as` AND through wasmtime instantiation; callers that
 // want end-to-end execution against a meaningful result wire a stub
 // at the call site.
+// Bind a list of named no-op trampolines under the `cel` module on
+// the given linker, using `functype_factory` to build the per-name
+// wasm_functype_t.  Factored out of `RegisterPendingM7BImports` to
+// keep that parent function under the readability-function-size
+// threshold.
+absl::Status RegisterCelModuleNoopImports(
+    wasmtime_linker_t* linker, absl::Span<const absl::string_view> names,
+    wasm_functype_t* (*functype_factory)()) {
+  for (absl::string_view name : names) {
+    wasm_functype_t* type = functype_factory();
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "cel", 3, name.data(), name.size(), type, NoopCelHostThreeArg,
+        nullptr, nullptr);
+    wasm_functype_delete(type);
+    if (err != nullptr) {
+      return WasmtimeErrorToStatus(
+          absl::StrCat("linker.define(cel.", name, ")"), err);
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status RegisterPendingM7BImports(wasmtime_linker_t* linker) {
   // 3-arg `cel.cel_*_at_vv` kernels (M7B.B arithmetic + ordering).
   static constexpr absl::string_view kCelThreeArg[] = {
       "cel_dur_add_at_vv",
       "cel_ts_ts_sub_at_vv",
   };
-  for (absl::string_view name : kCelThreeArg) {
-    wasm_functype_t* type = HostThreeArgTrampolineType();
-    wasmtime_error_t* err = wasmtime_linker_define_func(
-        linker, "cel", 3, name.data(), name.size(), type,
-        NoopCelHostThreeArg, nullptr, nullptr);
-    wasm_functype_delete(type);
-    if (err != nullptr) {
-      return WasmtimeErrorToStatus(
-          absl::StrCat("linker.define(cel.", name, ")"), err);
-    }
+  if (auto st = RegisterCelModuleNoopImports(linker, kCelThreeArg,
+                                             HostThreeArgTrampolineType);
+      !st.ok()) {
+    return st;
   }
   // 2-arg `cel.cel_ts_*_utc` accessor kernels (M7B.C).  This is the
   // representative for all 14 accessor helpers — see
@@ -583,16 +614,10 @@ absl::Status RegisterPendingM7BImports(wasmtime_linker_t* linker) {
   static constexpr absl::string_view kCelTwoArg[] = {
       "cel_ts_year_utc",
   };
-  for (absl::string_view name : kCelTwoArg) {
-    wasm_functype_t* type = HostTwoArgTrampolineType();
-    wasmtime_error_t* err = wasmtime_linker_define_func(
-        linker, "cel", 3, name.data(), name.size(), type,
-        NoopCelHostThreeArg, nullptr, nullptr);
-    wasm_functype_delete(type);
-    if (err != nullptr) {
-      return WasmtimeErrorToStatus(
-          absl::StrCat("linker.define(cel.", name, ")"), err);
-    }
+  if (auto st = RegisterCelModuleNoopImports(linker, kCelTwoArg,
+                                             HostTwoArgTrampolineType);
+      !st.ok()) {
+    return st;
   }
   // 2-arg `cel_host.*` parse/format trampolines (M7B.D).  Each WAT
   // assumes `(out_slot, in_slot) -> ()`.  Production Layer-2 impls
@@ -617,8 +642,8 @@ absl::Status RegisterPendingM7BImports(wasmtime_linker_t* linker) {
     wasm_functype_t* type = CelHostTrampolineType();
     wasmtime_error_t* err = wasmtime_linker_define_func(
         linker, "cel_host", 8, "cel_timestamp_tz_accessor",
-        sizeof("cel_timestamp_tz_accessor") - 1, type,
-        NoopCelHostThreeArg, nullptr, nullptr);
+        sizeof("cel_timestamp_tz_accessor") - 1, type, NoopCelHostThreeArg,
+        nullptr, nullptr);
     wasm_functype_delete(type);
     if (err != nullptr) {
       return WasmtimeErrorToStatus(
