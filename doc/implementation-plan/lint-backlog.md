@@ -83,13 +83,17 @@ reports for the M9 closeout commits; they are larger refactors
 better done in their own milestones:
 
 - `compiler_v2/api/internal/cel_host.cc` — `EncodeValue`,
-  `SetScalarField`, `AppendRepeatedFromCelValue`,
-  `AppendRepeatedFromHostListValue`, `InsertArenaMapEntry`,
-  `InsertHostMapEntry`, `CelSetFieldImpl` — all flagged for
-  function-size.  Each is a per-cpp_type ladder over `FieldDescriptor::
-  CppType` (12-15 arms); the right shape is one helper per cpp_type
-  arm + a single dispatch ladder.  Cleanup tracked for the next
-  proto-reflection slice; the bodies themselves are correct.
+  `SetScalarField`, `SetWrapperInnerValue` (M8.A),
+  `AppendRepeatedFromCelValue`, `AppendRepeatedFromHostListValue`,
+  `InsertArenaMapEntry`, `InsertHostMapEntry`, `CelSetFieldImpl` —
+  all flagged for function-size.  Each is a per-cpp_type ladder
+  over `FieldDescriptor::CppType` (8-15 arms); the right shape is
+  one helper per cpp_type arm + a single dispatch ladder.  Cleanup
+  tracked for the next proto-reflection slice; the bodies
+  themselves are correct.  M8.A's `SetWrapperInnerValue` was
+  already split once (the parent `SetWrapperFieldFromScalar` calls
+  it) — the inner 8-arm dispatch hits the gate; splitting further
+  would lose locality.
 
 - `compiler_v2/api/instance.cc` — `DecodeCelValueAt` flagged for
   size; the per-CelKind decoder ladder is the natural place to

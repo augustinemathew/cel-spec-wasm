@@ -1987,9 +1987,118 @@ absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
     refl->SetString(dst, value_fd, src.SerializeAsString());
     return absl::OkStatus();
   }
-  return absl::UnimplementedError(
-      absl::StrCat("CelSetFieldImpl: dst `", dst_desc->full_name(), "` ≠ src `",
-                   src_desc->full_name(), "` — wrapper auto-wrap is M8"));
+  // Post-M8.A: the remaining descriptor-mismatch path (dst is some
+  // non-Any non-same-descriptor target) is reachable only if codegen
+  // / Activation handed us a CEL_MESSAGE with the wrong descriptor.
+  // M8.C tail-unwrap and M8.A's `SetWrapperFieldFromScalar` both
+  // route scalar values through their own paths before reaching
+  // here; only proper-message-vs-mismatched-message lands here.
+  // Surface as Invalid rather than CHECK — embedder error, not
+  // codegen bug.
+  return absl::InvalidArgumentError(
+      absl::StrCat("WriteMessageOrPack: dst `", dst_desc->full_name(),
+                   "` ≠ src `", src_desc->full_name(),
+                   "` — descriptor mismatch on singular-message "
+                   "field write"));
+}
+
+// M8.A — write the inner `value` field of a freshly-allocated wrapper
+// message from a matching scalar CelValue.  9-way cpp_type dispatch,
+// mirror of the read-side `UnpackWrapperMessage` (M8.B).  Extracted
+// from `SetWrapperFieldFromScalar` to keep the parent under the
+// readability-function-size gate.
+absl::Status SetWrapperInnerValue(
+    const google::protobuf::Reflection& wr, google::protobuf::Message& wrapper,
+    const google::protobuf::FieldDescriptor& vf,
+    const google::protobuf::Descriptor& wrapper_desc, const CelValue& value,
+    const MemoryView& mem) {
+  using FD = google::protobuf::FieldDescriptor;
+  auto mismatch = [&](absl::string_view expected) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "SetWrapperInnerValue: `", wrapper_desc.full_name(), "` expects ",
+        expected, " but value kind is ", static_cast<int>(value.kind)));
+  };
+  switch (vf.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      if (value.kind != CEL_BOOL) return mismatch("CEL_BOOL");
+      wr.SetBool(&wrapper, &vf, value.payload.b != 0);
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT32:
+      if (value.kind != CEL_INT) return mismatch("CEL_INT");
+      wr.SetInt32(&wrapper, &vf, static_cast<int32_t>(ReadInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT64:
+      if (value.kind != CEL_INT) return mismatch("CEL_INT");
+      wr.SetInt64(&wrapper, &vf, ReadInt64(value));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT32:
+      if (value.kind != CEL_UINT) return mismatch("CEL_UINT");
+      wr.SetUInt32(&wrapper, &vf, static_cast<uint32_t>(ReadUInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT64:
+      if (value.kind != CEL_UINT) return mismatch("CEL_UINT");
+      wr.SetUInt64(&wrapper, &vf, ReadUInt64(value));
+      return absl::OkStatus();
+    case FD::CPPTYPE_FLOAT:
+      if (value.kind != CEL_DOUBLE) return mismatch("CEL_DOUBLE");
+      wr.SetFloat(&wrapper, &vf, static_cast<float>(ReadDouble(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_DOUBLE:
+      if (value.kind != CEL_DOUBLE) return mismatch("CEL_DOUBLE");
+      wr.SetDouble(&wrapper, &vf, ReadDouble(value));
+      return absl::OkStatus();
+    case FD::CPPTYPE_STRING:
+      if (vf.type() == FD::TYPE_BYTES) {
+        if (value.kind != CEL_BYTES) return mismatch("CEL_BYTES");
+      } else if (value.kind != CEL_STRING) {
+        return mismatch("CEL_STRING");
+      }
+      wr.SetString(&wrapper, &vf, ReadSpanString(value, mem));
+      return absl::OkStatus();
+    default:
+      ABSL_CHECK(false)
+          << "SetWrapperInnerValue: WKT-wrapper FQN claims unexpected inner "
+             "cpp_type "
+          << static_cast<int>(vf.cpp_type());
+      return absl::InternalError("unreachable");
+  }
+}
+
+// M8.A — synthesise a wrapper-message proto from a matching scalar
+// CelValue and assign it to a wrapper-typed singular-message field
+// on the outer message.  Called by `SetScalarField`'s CPPTYPE_MESSAGE
+// arm when the field's `message_type()` FQN is one of the 9 wrapper
+// FQNs.  Mirror of the read-side `UnpackWrapperMessage` (M8.B) shape.
+absl::Status SetWrapperFieldFromScalar(
+    const google::protobuf::Reflection& outer_refl,
+    google::protobuf::Message& outer,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Descriptor& wrapper_desc, const CelValue& value,
+    const MemoryView& mem) {
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(
+          &wrapper_desc);
+  if (prototype == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "SetWrapperFieldFromScalar: no generated_factory prototype for `",
+        wrapper_desc.full_name(), "`"));
+  }
+  std::unique_ptr<google::protobuf::Message> wrapper(prototype->New());
+  const google::protobuf::Reflection* wr = wrapper->GetReflection();
+  const google::protobuf::FieldDescriptor* vf =
+      wrapper_desc.FindFieldByNumber(1);
+  if (wr == nullptr || vf == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("SetWrapperFieldFromScalar: `", wrapper_desc.full_name(),
+                     "` missing reflection or value-field descriptor"));
+  }
+  if (auto s =
+          SetWrapperInnerValue(*wr, *wrapper, *vf, wrapper_desc, value, mem);
+      !s.ok()) {
+    return s;
+  }
+  outer_refl.MutableMessage(&outer, &field)->CopyFrom(*wrapper);
+  return absl::OkStatus();
 }
 
 // Set a scalar singular field on `msg` per `field`'s cpp_type.  Returns
@@ -2099,10 +2208,22 @@ absl::Status SetScalarField(
       // langdef §"Field Selection" + cel-cpp behaviour: assigning
       // `null` to a singular message field clears it (equivalent
       // to leaving it unset).  `Foo{m: null} == Foo{}` per the
-      // conformance corpus's `set_null/*` rows.
+      // conformance corpus's `set_null/*` rows.  For wrapper-typed
+      // fields, langdef line 484-486's unset-reads-as-null rule
+      // makes this round-trip with the read-side M8.B peel.
       if (value.kind == CEL_NULL) {
         refl->ClearField(&msg, &field);
         return absl::OkStatus();
+      }
+      // M8.A: wrapper-typed field with scalar source — synthesise
+      // the wrapper proto and assign.  `Foo{single_int32_wrapper: 5}`
+      // sees scalar CEL_INT here because typed_ast.cc:56 stamps the
+      // value as `Int32` Repr; M8.A's auto-wrap is the boundary
+      // where the scalar becomes an `Int32Value{value: 5}` proto.
+      const google::protobuf::Descriptor* mt = field.message_type();
+      if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
+          value.kind != CEL_MESSAGE) {
+        return SetWrapperFieldFromScalar(*refl, msg, field, *mt, value, mem);
       }
       // M7.E: nested singular message — `Foo{nested: Bar{...}}`.
       // The outer kStructExpr lowering recursively built `Bar{...}`

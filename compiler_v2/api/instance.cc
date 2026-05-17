@@ -474,6 +474,98 @@ absl::Status KindMismatch(absl::string_view name, absl::string_view declared,
                    ValueKindName(got)));
 }
 
+// FQN → CEL_* kind table for the 9 WKT wrappers.  Pulled out of
+// `TryEncodeWktWrapperMessage` so the parent stays under the
+// readability-function-size gate.  Returns 0 (not a valid CelKind
+// for the unwrap path) if `fqn` isn't a wrapper.  Mirrors
+// `WrapperKindFromFqn` in `compiler_v2/codegen/expr_lower.cc`.
+uint32_t WrapperFqnToCelKind(absl::string_view fqn) {
+  if (fqn == "google.protobuf.BoolValue") return CEL_BOOL;
+  if (fqn == "google.protobuf.Int32Value" ||
+      fqn == "google.protobuf.Int64Value") {
+    return CEL_INT;
+  }
+  if (fqn == "google.protobuf.UInt32Value" ||
+      fqn == "google.protobuf.UInt64Value") {
+    return CEL_UINT;
+  }
+  if (fqn == "google.protobuf.FloatValue" ||
+      fqn == "google.protobuf.DoubleValue") {
+    return CEL_DOUBLE;
+  }
+  if (fqn == "google.protobuf.StringValue") return CEL_STRING;
+  if (fqn == "google.protobuf.BytesValue") return CEL_BYTES;
+  return 0;
+}
+
+// Peel the inner numeric `value` field of a wrapper-message into a
+// matching `CelValue` payload.  Returns true on success; false if
+// the cpp_type is one of the string/bytes wrappers (caller handles
+// those via the arena-side path) or any non-wrapper cpp_type
+// (defence in depth; `WrapperFqnToCelKind` should have gated entry).
+bool WriteNumericWrapperPayload(const google::protobuf::Reflection& refl,
+                                const google::protobuf::Message& msg,
+                                const google::protobuf::FieldDescriptor& vf,
+                                CelValue* dst) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (vf.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      dst->payload.b = refl.GetBool(msg, &vf) ? 1 : 0;
+      return true;
+    case FD::CPPTYPE_INT32:
+      dst->payload.i = refl.GetInt32(msg, &vf);
+      return true;
+    case FD::CPPTYPE_INT64:
+      dst->payload.i = refl.GetInt64(msg, &vf);
+      return true;
+    case FD::CPPTYPE_UINT32:
+      dst->payload.u = refl.GetUInt32(msg, &vf);
+      return true;
+    case FD::CPPTYPE_UINT64:
+      dst->payload.u = refl.GetUInt64(msg, &vf);
+      return true;
+    case FD::CPPTYPE_FLOAT:
+      dst->payload.d = refl.GetFloat(msg, &vf);
+      return true;
+    case FD::CPPTYPE_DOUBLE:
+      dst->payload.d = refl.GetDouble(msg, &vf);
+      return true;
+    default:
+      // String / bytes: out of band for the numeric fast path.
+      return false;
+  }
+}
+
+// M8.A — wrapper-coercion at activation bind.  When a declared
+// variable is a wrapper type (`Int32Value`, `BoolValue`, …) the
+// `compiler_v2/ir/typed_ast.cc:56` mapping collapses it to the
+// matching scalar Repr.  When the embedder binds a
+// `Value::Message(Int32Value{value: 5})` against an Int32Value-
+// declared variable, the Encode path that fires here is `EncodeInt`
+// — not `EncodeMessage`.  This helper detects that case and peels
+// the inner scalar from the bound wrapper proto.  Returns true and
+// writes `dst` on hit; false (caller falls through to its kind-
+// mismatch error path) on miss.  `want_kind` gates the FQN match so
+// a BoolValue bound against an Int32 variable is rejected as a
+// kind mismatch rather than silently coerced.
+bool TryEncodeWktWrapperMessage(const Value& v, uint32_t want_kind,
+                                CelValue* dst) {
+  if (v.kind() != Value::Kind::kMessage) return false;
+  auto backing_or = v.SharedMessageBacking();
+  if (!backing_or.ok()) return false;
+  const google::protobuf::Message* msg = (*backing_or)->message();
+  if (msg == nullptr) return false;
+  const google::protobuf::Descriptor* d = msg->GetDescriptor();
+  if (d == nullptr) return false;
+  const uint32_t fqn_kind = WrapperFqnToCelKind(d->full_name());
+  if (fqn_kind == 0 || fqn_kind != want_kind) return false;
+  const google::protobuf::Reflection* refl = msg->GetReflection();
+  const google::protobuf::FieldDescriptor* vf = d->FindFieldByNumber(1);
+  if (refl == nullptr || vf == nullptr) return false;
+  dst->kind = want_kind;
+  return WriteNumericWrapperPayload(*refl, *msg, *vf, dst);
+}
+
 absl::Status EncodeNull(const Value& v, absl::string_view name, CelValue* dst) {
   if (v.kind() != Value::Kind::kNull) {
     return KindMismatch(name, "null", v.kind());
@@ -482,7 +574,25 @@ absl::Status EncodeNull(const Value& v, absl::string_view name, CelValue* dst) {
   return absl::OkStatus();
 }
 
+// M8.A — wrapper-bind semantics: a `Value::Null()` bound against a
+// wrapper-typed declared variable (which `typed_ast.cc:56` has
+// already collapsed to scalar Repr) reads as `null` per langdef
+// §"Dynamic Values" line 484-486.  At the encoder, this means
+// writing `CEL_NULL` to the slot regardless of the slot's static
+// scalar kind — the runtime kernel polymorphically handles
+// `CEL_NULL == null` and the 3VL ladder.  Non-wrapper plain scalar
+// variables that the embedder mis-binds with `Value::Null()` get
+// the same permissive treatment; cel-cpp's checker is the strict
+// gate, not the runtime marshaller.
+bool TryEncodeNullToScalarSlot(const Value& v, CelValue* dst) {
+  if (v.kind() != Value::Kind::kNull) return false;
+  dst->kind = CEL_NULL;
+  return true;
+}
+
 absl::Status EncodeBool(const Value& v, absl::string_view name, CelValue* dst) {
+  if (TryEncodeNullToScalarSlot(v, dst)) return absl::OkStatus();
+  if (TryEncodeWktWrapperMessage(v, CEL_BOOL, dst)) return absl::OkStatus();
   if (v.kind() != Value::Kind::kBool) {
     return KindMismatch(name, "bool", v.kind());
   }
@@ -494,6 +604,8 @@ absl::Status EncodeBool(const Value& v, absl::string_view name, CelValue* dst) {
 }
 
 absl::Status EncodeInt(const Value& v, absl::string_view name, CelValue* dst) {
+  if (TryEncodeNullToScalarSlot(v, dst)) return absl::OkStatus();
+  if (TryEncodeWktWrapperMessage(v, CEL_INT, dst)) return absl::OkStatus();
   if (v.kind() != Value::Kind::kInt) {
     return KindMismatch(name, "int", v.kind());
   }
@@ -505,6 +617,8 @@ absl::Status EncodeInt(const Value& v, absl::string_view name, CelValue* dst) {
 }
 
 absl::Status EncodeUint(const Value& v, absl::string_view name, CelValue* dst) {
+  if (TryEncodeNullToScalarSlot(v, dst)) return absl::OkStatus();
+  if (TryEncodeWktWrapperMessage(v, CEL_UINT, dst)) return absl::OkStatus();
   if (v.kind() != Value::Kind::kUint) {
     return KindMismatch(name, "uint", v.kind());
   }
@@ -517,6 +631,8 @@ absl::Status EncodeUint(const Value& v, absl::string_view name, CelValue* dst) {
 
 absl::Status EncodeDouble(const Value& v, absl::string_view name,
                           CelValue* dst) {
+  if (TryEncodeNullToScalarSlot(v, dst)) return absl::OkStatus();
+  if (TryEncodeWktWrapperMessage(v, CEL_DOUBLE, dst)) return absl::OkStatus();
   if (v.kind() != Value::Kind::kDouble) {
     return KindMismatch(name, "double", v.kind());
   }
@@ -529,8 +645,7 @@ absl::Status EncodeDouble(const Value& v, absl::string_view name,
 
 // Forward decl of the WKT-message coercion helper defined just
 // below `EncodeMessage`.
-bool TryEncodeWktTimeMessage(const Value& v, uint32_t want_kind,
-                             CelValue* dst);
+bool TryEncodeWktTimeMessage(const Value& v, uint32_t want_kind, CelValue* dst);
 
 absl::Status EncodeDuration(const Value& v, absl::string_view name,
                             CelValue* dst) {
@@ -588,10 +703,10 @@ bool TryEncodeWktTimeMessage(const Value& v, uint32_t want_kind,
   const google::protobuf::Descriptor* d = msg->GetDescriptor();
   if (d == nullptr) return false;
   const absl::string_view fqn = d->full_name();
-  const bool is_timestamp = want_kind == CEL_TIMESTAMP &&
-                            fqn == "google.protobuf.Timestamp";
-  const bool is_duration = want_kind == CEL_DURATION &&
-                           fqn == "google.protobuf.Duration";
+  const bool is_timestamp =
+      want_kind == CEL_TIMESTAMP && fqn == "google.protobuf.Timestamp";
+  const bool is_duration =
+      want_kind == CEL_DURATION && fqn == "google.protobuf.Duration";
   if (!is_timestamp && !is_duration) return false;
   const google::protobuf::Reflection* refl = msg->GetReflection();
   const google::protobuf::FieldDescriptor* sf = d->FindFieldByNumber(1);
@@ -719,10 +834,10 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kMap:
     case celwasm::Repr::kEnum:
     case celwasm::Repr::kUnknown:
-      return absl::UnimplementedError(absl::StrCat(
-          "Activation[", name, "]: Repr=", celwasm::ReprName(repr),
-          " marshal not implemented (later milestones for "
-          "map/enum/unknown)"));
+      return absl::UnimplementedError(
+          absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
+                       " marshal not implemented (later milestones for "
+                       "map/enum/unknown)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));

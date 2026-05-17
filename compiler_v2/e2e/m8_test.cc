@@ -604,7 +604,6 @@ TEST_F(WrapperFieldReadE2ETest, HasUnsetWrapperIsFalseProto2) {
 //   construction succeed; the assertion is M8.B's. —
 
 TEST_F(WrapperFieldReadE2ETest, HasSetToZeroWrapperIsTrueProto3) {
-  GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler,
@@ -615,7 +614,6 @@ TEST_F(WrapperFieldReadE2ETest, HasSetToZeroWrapperIsTrueProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, HasSetWrapperIsTrueProto2) {
-  GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler,
@@ -629,7 +627,6 @@ TEST_F(WrapperFieldReadE2ETest, HasSetWrapperIsTrueProto2) {
 //   reads as null" rule applies only to *unset* fields. —
 
 TEST_F(WrapperFieldReadE2ETest, SetToZeroReadsAsScalarNotNullProto3) {
-  GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -641,7 +638,6 @@ TEST_F(WrapperFieldReadE2ETest, SetToZeroReadsAsScalarNotNullProto3) {
 }
 
 TEST_F(WrapperFieldReadE2ETest, SetToEmptyStringReadsAsScalarNotNullProto3) {
-  GTEST_SKIP() << "M8.B ships here (read-half); M8.A ships construction";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -816,7 +812,6 @@ class WrapperConstructionE2ETest : public ::testing::Test {};
 // — Auto-wrap-equals-explicit-wrap (per kind, the canonical row) —
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapInt32EqualsExplicitWrap) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -829,7 +824,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapInt32EqualsExplicitWrap) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapBoolEqualsExplicitWrap) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -842,7 +836,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapBoolEqualsExplicitWrap) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapStringEqualsExplicitWrap) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -855,7 +848,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapStringEqualsExplicitWrap) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapBytesEqualsExplicitWrap) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -868,7 +860,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapBytesEqualsExplicitWrap) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapInt64BoundaryMaxEqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -883,7 +874,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapInt64BoundaryMaxEqualsExplicit) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapUInt64BoundaryMaxEqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -898,7 +888,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapUInt64BoundaryMaxEqualsExplicit) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapDoubleEqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -912,7 +901,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapDoubleEqualsExplicit) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapFloatEqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -925,7 +913,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapFloatEqualsExplicit) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapUInt32EqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -941,7 +928,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapUInt32EqualsExplicit) {
 //   embedded NUL, multi-byte UTF-8 —
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapEmptyStringEqualsExplicit) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -954,7 +940,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapEmptyStringEqualsExplicit) {
 }
 
 TEST_F(WrapperConstructionE2ETest, AutoWrapMultiByteUTF8) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -971,7 +956,6 @@ TEST_F(WrapperConstructionE2ETest, AutoWrapMultiByteUTF8) {
 //   empty message. —
 
 TEST_F(WrapperConstructionE2ETest, NullIntoInt32WrapperClearsField) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -983,7 +967,6 @@ TEST_F(WrapperConstructionE2ETest, NullIntoInt32WrapperClearsField) {
 }
 
 TEST_F(WrapperConstructionE2ETest, NullIntoBoolWrapperClearsField) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -995,7 +978,6 @@ TEST_F(WrapperConstructionE2ETest, NullIntoBoolWrapperClearsField) {
 }
 
 TEST_F(WrapperConstructionE2ETest, NullIntoStringWrapperClearsField) {
-  GTEST_SKIP() << "M8.A ships here (see m8-wrapper-types.md §M8.A)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler,
@@ -1022,7 +1004,6 @@ TEST_F(WrapperConstructionE2ETest, NullIntoStringWrapperClearsField) {
 class WrapperActivationBindE2ETest : public ::testing::Test {};
 
 TEST_F(WrapperActivationBindE2ETest, BindIntAgainstInt32WrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   // Declare `w` as Int32Value (wrapper-typed); bind a CEL_INT;
   // expect the expression `w == 5` to read the bound int through
   // the synthesised wrapper.
@@ -1037,7 +1018,6 @@ TEST_F(WrapperActivationBindE2ETest, BindIntAgainstInt32WrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindBoolAgainstBoolWrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnBoolValue)));
   });
@@ -1049,7 +1029,6 @@ TEST_F(WrapperActivationBindE2ETest, BindBoolAgainstBoolWrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindStringAgainstStringWrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnStringValue)));
   });
@@ -1061,7 +1040,6 @@ TEST_F(WrapperActivationBindE2ETest, BindStringAgainstStringWrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindBytesAgainstBytesWrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnBytesValue)));
   });
@@ -1073,7 +1051,6 @@ TEST_F(WrapperActivationBindE2ETest, BindBytesAgainstBytesWrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindDoubleAgainstDoubleWrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnDoubleValue)));
   });
@@ -1085,7 +1062,6 @@ TEST_F(WrapperActivationBindE2ETest, BindDoubleAgainstDoubleWrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindDoubleAgainstFloatWrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   // Floats narrow on synthesis; no CEL Value::Float kind.
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnFloatValue)));
@@ -1098,7 +1074,6 @@ TEST_F(WrapperActivationBindE2ETest, BindDoubleAgainstFloatWrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindUIntAgainstUInt32WrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnUInt32Value)));
   });
@@ -1110,7 +1085,6 @@ TEST_F(WrapperActivationBindE2ETest, BindUIntAgainstUInt32WrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindUIntAgainstUInt64WrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnUInt64Value)));
   });
@@ -1122,7 +1096,6 @@ TEST_F(WrapperActivationBindE2ETest, BindUIntAgainstUInt64WrapperVar) {
 }
 
 TEST_F(WrapperActivationBindE2ETest, BindIntAgainstInt64WrapperVar) {
-  GTEST_SKIP() << "M8.A ships here (activation auto-wrap path)";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnInt64Value)));
   });
@@ -1137,7 +1110,6 @@ TEST_F(WrapperActivationBindE2ETest, BindIntAgainstInt64WrapperVar) {
 //   field; read path (Arm B) surfaces it as null. —
 
 TEST_F(WrapperActivationBindE2ETest, NullBindAgainstInt32WrapperVarReadsNull) {
-  GTEST_SKIP() << "M8.A + M8.B ship the null-bind / null-read path";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnInt32Value)));
   });
@@ -1180,7 +1152,6 @@ TEST_F(WrapperActivationBindE2ETest, WrongKindBindFailsAtEval) {
 class WrapperRoundTripE2ETest : public ::testing::Test {};
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1192,7 +1163,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto2) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1204,7 +1174,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt32Proto2) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackBoolProto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1216,7 +1185,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackBoolProto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackStringProto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -1228,7 +1196,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackStringProto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackBytesProto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -1240,7 +1207,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackBytesProto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackDoubleProto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1252,7 +1218,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackDoubleProto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackUInt64Proto3) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1264,7 +1229,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackUInt64Proto3) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt64BoundaryProto2) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -1277,7 +1241,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackInt64BoundaryProto2) {
 }
 
 TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackSetToZeroIsScalar) {
-  GTEST_SKIP() << "M8.A + M8.B ship the round-trip end-to-end";
   // Set-to-zero is "present" and reads as scalar 0, NOT null
   // (langdef §"Wrapper Types"; cel-cpp option
   // `enable_empty_wrapper_null_unboxing=true` mandates this).

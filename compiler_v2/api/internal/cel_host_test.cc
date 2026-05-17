@@ -794,16 +794,19 @@ TEST(CelSetFieldAnyPackTest, NonAnyDescriptorMatchCopies) {
   EXPECT_FALSE(h.outer()->has_single_any());  // no pack side-effect.
 }
 
-// (5) Wrapper-shaped mismatch (src ≠ dst and dst is not Any): the
-// helper surfaces Unimplemented for M8 to clear.  Pin that M7-A.A
-// didn't accidentally graduate the wrapper-shaped case.
-TEST(CelSetFieldAnyPackTest, WrapperShapedMismatchSurfacesUnimplemented) {
+// (5) Descriptor-mismatched message-vs-message field set: src and
+// dst differ AND dst is not Any AND dst is not a wrapper type.
+// Post-M8.A this surfaces as `InvalidArgument` (embedder error,
+// not codegen stub) — wrapper auto-wrap now handles the only
+// legitimate descriptor-mismatch shape; everything else is wrong
+// input.
+TEST(CelSetFieldAnyPackTest, DescriptorMismatchOnSingularMessageInvalidArg) {
   PackHarness h;
   // Source is a HostMsg2 but the dst field is the HostMsg3-typed
-  // `inner` — neither descriptor matches nor is the dst Any.
+  // `inner` — neither descriptor matches nor is the dst Any/wrapper.
   h.StageMessageSrc(std::make_unique<HostMsg2>());
   EXPECT_EQ(h.SetField(/*field_number=*/17, "inner").code(),
-            absl::StatusCode::kUnimplemented);
+            absl::StatusCode::kInvalidArgument);
 }
 
 // (6) Null-clear ordering: CEL_NULL on a singular Any reaches the
