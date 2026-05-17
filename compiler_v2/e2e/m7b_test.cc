@@ -1,17 +1,13 @@
 // M7B e2e test suite — the spec of "done" for timestamp / duration
 // surfaces.  Per `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`
 // §6 (test matrix) the suite mirrors the m4 / m7 / m10 test shape:
-// every test asserts a capability M7B must light up, every test
-// today GTEST_SKIPs with a pointer to the slice that will turn it
-// on, and the file compiles + builds green TODAY (so the slice-by-
-// slice unblock is visible on CI as SKIP → PASS migrations rather
-// than as a test-file landing event).
+// every test asserts a capability M7B must light up.
 //
-// Today (2026-05-16, plan drafted, not yet started):
-// `bazel test //compiler_v2/e2e:m7b_test` runs the binary and
-// reports every test SKIPPED.  As M7B.A...M7B.E ship, each test
-// graduates from GTEST_SKIP → real assertion in the same commit
-// that lands the production code, on a row-by-row basis.
+// Status: M7B shipped 2026-05-16 (A through F plus two polish
+// rounds); 179 / 180 tests pass.  One remaining `GTEST_SKIP`
+// — `RejectE2ETest::DescriptorMismatchOnFieldRead` — is a
+// defence-in-depth case that's hard to construct from the
+// public Value API (would need harness-level fixture surgery).
 //
 // Fixtures grouped by capability (one section per slice + cross-
 // cutting matrices):
@@ -1310,11 +1306,17 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
 }
 
 TEST_F(RejectE2ETest, DescriptorMismatchOnFieldRead) {
-  // If a field's descriptor is `google.protobuf.Timestamp` but the
-  // bound message backing is the wrong type, the normaliser must
-  // surface CEL_ERROR (kInvalidArgument), not silently miscompile.
-  GTEST_SKIP() << "M7B.A not yet shipped — descriptor-mismatch arm "
-                  "of CelGetFieldImpl normaliser is a stub.";
+  // Defence-in-depth: if a field's descriptor is
+  // `google.protobuf.Timestamp` but the bound message backing is
+  // the wrong type, the normaliser must surface CEL_ERROR, not
+  // silently miscompile.  Hard to construct from the public e2e
+  // harness — `Value::Message(...)` carries the actual backing
+  // descriptor, so producing a "field says Timestamp, backing is
+  // Customer" mismatch needs harness-level fixture surgery.
+  GTEST_SKIP() << "Hard to exercise from the public Value API — "
+                  "would need a fixture that constructs a message "
+                  "whose schema-declared type differs from its "
+                  "actual descriptor.";
 }
 
 }  // namespace

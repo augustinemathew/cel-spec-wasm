@@ -25,15 +25,15 @@ What landed:
     fails by 6).
 
 What's left as future work (§9):
-  - **Cross-form equivalence** between `timestamp("X")` and
-    `Timestamp{seconds: ...}` — 3 e2e tests SKIPed pending an
-    architectural decision (extend kStructExpr arm OR
-    normalise-on-equality).  Doesn't block any current
-    conformance row.
-  - **7 timestamps.textproto `*_range/*` fails** — corner cases
-    where our int64-bound representation accepts values that
-    cel-cpp's bound rejects.  Sub-linear unlock; defer to a
-    targeted polish pass.
+  - ~~**Cross-form equivalence**~~ — **shipped in polish-2**
+    (commit 8b53bef).  New `cel_host.cel_wkt_unwrap_time`
+    trampoline; kStructExpr tail-call for WKT FQNs.  All 3
+    e2e tests now pass.
+  - ~~**`*_range/*` fails**~~ — **shipped in polish-2**.  Tightened
+    `arith_duration_in_range` to the int64-nanos bound cel-cpp
+    enforces (verified empirically; see
+    `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
+    `timestamps.textproto` now 76/76 = 100%.
   - **`now()`**, extension-library time ops, leap-second
     modelling — pre-existing future work.
 
@@ -102,16 +102,15 @@ What's left as future work (§9):
 >     compare equal via the read normaliser, but that normaliser
 >     only fires on FIELD READS — the M7 `kStructExpr` proto-
 >     literal arm still produces `CEL_MESSAGE`, not
->     `CEL_TIMESTAMP`.  Three e2e tests
->     (`DurationVsProtoLiteral`, `TimestampVsProtoLiteral`,
->     `OrderingAcrossForms`) stay GTEST_SKIPPED with a pointer to
->     this gap.  Resolving it requires either (a) extending the
->     proto-literal arm to emit `CEL_TIMESTAMP` / `CEL_DURATION`
->     directly for the two well-known time types, or (b) a
->     normalise-on-equality step that converts a `CEL_MESSAGE`
->     of well-known-type descriptor to its `CEL_TIMESTAMP` /
->     `CEL_DURATION` form pre-compare.  Surfaced as future work
->     in §9 — needs a scope discussion before fixing.
+>     `CEL_TIMESTAMP`.  **Shipped in polish-2** (commit
+>     8b53bef): codegen at the kStructExpr tail emits
+>     `cel_host.cel_wkt_unwrap_time(out_slot, out_slot)` when
+>     `s.name()` is `google.protobuf.Timestamp` /
+>     `google.protobuf.Duration`; the trampoline peels
+>     `(seconds, nanos)` via reflection and overwrites the slot
+>     with `CEL_TIMESTAMP` / `CEL_DURATION`.  All three e2e
+>     tests pass.  cel-cpp parity verified empirically (see
+>     `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
 >   - **`getYear` vs `getFullYear` overload-name pinning.**
 >     cel-cpp ships only `getFullYear`; `getYear` is not a
 >     standard member.  Tests use `getFullYear` consistently.
@@ -1420,23 +1419,15 @@ Ranked highest → lowest.
 Surfaced during M7B planning + execution but out of scope of
 this slice.
 
-  - **Cross-form equivalence: `timestamp("X") == Timestamp{...}`.**
-    Surfaced during M7B.E e2e wiring.  Plan §3.4 promised this
-    via the read normaliser, but the M7 proto-literal arm
-    (`kStructExpr`) emits `CEL_MESSAGE`, NOT `CEL_TIMESTAMP`,
-    and the M7B.A normaliser only fires on field reads.  Three
-    M7B e2e tests stay GTEST_SKIPPED until this gap is closed.
-    Options: (a) extend the kStructExpr arm to emit
-    `CEL_TIMESTAMP` / `CEL_DURATION` directly for the two
-    well-known time types; (b) add a normalise-on-equality step
-    that converts well-known-type `CEL_MESSAGE` payloads to
-    their `CEL_TIMESTAMP` / `CEL_DURATION` form pre-compare.
-    Option (a) is cleaner — would also fix `timestamp ==
-    timestamp_field_on_proto` shapes and the entire ordering
-    ladder over cross-form operands.  Sized small (one
-    `WriteCelValue` call swap in the M7 path, plus the WKT
-    detection).  Defer to M7B follow-up or the next conformance
-    slice.
+  - ~~**Cross-form equivalence: `timestamp("X") == Timestamp{...}`.**~~
+    **Shipped in polish-2** (commit 8b53bef).  Went with
+    option (a) — extended kStructExpr lowering to emit a tail-
+    call to a new `cel_host.cel_wkt_unwrap_time` trampoline
+    when `s.name()` matches a WKT time-type FQN.  All three
+    cross-form e2e tests (`DurationVsProtoLiteral`,
+    `TimestampVsProtoLiteral`, `OrderingAcrossForms`) pass.
+    cel-cpp parity verified empirically before implementing
+    (see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
 
   - **`now()` standard function**.  Requires per-evaluation
     clock injection on `Activation`; today neither
