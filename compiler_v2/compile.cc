@@ -119,6 +119,18 @@ void InstallListImports(WasmModule& mod) {
                         "cel_list_at", list3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
                         "cel_list_at", list3_params, BinaryenTypeNone());
+  // M5.B Slice D: dynamic-list append for comprehension list-accu
+  // shapes (map / filter / transformList).  `(list_slot, value_slot)
+  // -> void`.  Always imported regardless of AST presence — per
+  // CLAUDE.md "no lazy tracking of runtime imports".
+  const BinaryenType append_params[2] = {i32, i32};
+  mod.AddFunctionImport("cel_list_append_at", "cel", "cel_list_append_at",
+                        append_params, BinaryenTypeNone());
+  // M5.B Slice D: predicate-gated append for filter / conditional-map.
+  // `(list_slot, pred_slot, value_slot) -> void`.
+  mod.AddFunctionImport("cel_list_append_at_if_bool", "cel",
+                        "cel_list_append_at_if_bool", list3_params,
+                        BinaryenTypeNone());
 }
 
 // M5.F: install one wasm function import per OverloadTable seed

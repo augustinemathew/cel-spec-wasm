@@ -277,6 +277,8 @@ genrule(
         "-Wl,--export=cel_map_lookup_arena",
         "-Wl,--export=cel_list_create",
         "-Wl,--export=cel_list_set",
+        "-Wl,--export=cel_list_append_at",
+        "-Wl,--export=cel_list_append_at_if_bool",
         "-Wl,--export=cel_list_at",
         "-Wl,--export=cel_list_at_arena",
         # M5.B: arithmetic helpers (int / uint / double × add/sub/mul/div/mod/neg).

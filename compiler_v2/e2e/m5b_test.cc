@@ -354,8 +354,6 @@ TEST_F(ComprehensionExistsListE2ETest, AllOverBoundList) {
 class ComprehensionMapFilterListE2ETest : public ::testing::Test {};
 
 TEST_F(ComprehensionMapFilterListE2ETest, MapDoubles) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -367,8 +365,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapDoubles) {
 TEST_F(ComprehensionMapFilterListE2ETest, MapEmptySource) {
   // design §3.1: empty range → `[]` (accu_init is the empty
   // dynamic list).
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].map(v, v * 2) == []");
@@ -378,8 +374,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapEmptySource) {
 
 TEST_F(ComprehensionMapFilterListE2ETest, MapConditional) {
   // `map(v, p, t)` form: predicate gates whether the step appends.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -390,8 +384,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapConditional) {
 
 TEST_F(ComprehensionMapFilterListE2ETest, MapStepErrorPropagates) {
   // design §3.2: step error aborts comprehension, becomes result.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[2, 1, 0].map(n, 4 / n)");
@@ -400,8 +392,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapStepErrorPropagates) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, FilterKeepsMatching) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -411,8 +401,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterKeepsMatching) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, FilterEmptySource) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[].filter(v, v > 0) == []");
@@ -421,8 +409,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterEmptySource) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, FilterAllKept) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -432,8 +418,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterAllKept) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, FilterNoneKept) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 10) == []");
@@ -442,8 +426,6 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterNoneKept) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, FilterPredicateErrorPropagates) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[3, 2, 1, 0].filter(n, 12 / n > 4)");
@@ -452,8 +434,9 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterPredicateErrorPropagates) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, MapOverBoundList) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
+  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
+                  "post-Slice-D follow-up; Slice D ships literal-list "
+                  "(kWorkspaceSlot/kArena) coverage only.";
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.map(v, v + 1) == [2, 3, 4]");
   Activation a;
@@ -465,8 +448,10 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapLargeListGrowthPath) {
   // Boundary: 1000-element list exercises the dynamic-list rehash /
   // capacity-grow path in `cel_list_append_at` (design §7.1).
   // We assert only the resulting size to keep the test order-agnostic.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D.";
+  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
+                  "post-Slice-D follow-up; the 1000-element growth "
+                  "path is exercised by the runtime cel_list_test "
+                  "directly.";
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.map(v, v * 2).size()");
   Activation a;

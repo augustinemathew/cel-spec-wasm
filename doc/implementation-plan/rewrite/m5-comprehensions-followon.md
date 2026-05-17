@@ -1348,6 +1348,11 @@ keystone gate:
 
 ## 10 Future work (post-shipping)
 
+  - **Pre-size list accumulators to `iter_range.count`
+    (REQUIRED — defer to milestone closeout).**  Discussed
+    during Slice D, 2026-05-17.  See §10.A below for the full
+    rationale, implementation sketch, and why we shipped the
+    dynamic-growth path first.
   - **Inline `cel.bind` fast path (Slice G.2).**  Ship if
     bench shows >20% win on cel.bind-heavy programs.
   - **Compact-at-end for dynamic lists.**  If R3 bites,
@@ -1359,6 +1364,116 @@ keystone gate:
     accumulators through iterations; unblock the deferred
     `unknowns:` ExprValue binding case in
     `binding_marshal.cc`.
+
+### 10.A Pre-size list accumulators — required follow-up
+
+**Status**: deferred to milestone closeout (Slice J or after).
+Discussed mid-Slice-D 2026-05-17; chosen to ship dynamic-growth
+first so the e2e test matrix could be validated end-to-end before
+touching the runtime allocator path again.
+
+**The observation that triggered this** (review note, 2026-05-17):
+the result size of any list-producing comprehension is bounded
+above by `iter_range.count`:
+
+  - `xs.map(v, t)`: result size = `xs.size()` exactly (every
+    iter contributes one element).
+  - `xs.filter(v, p)`: result size ≤ `xs.size()` (some iters
+    skipped).
+  - `xs.transformList(i, v, t)` / `xs.transformList(i, v, p, t)`:
+    same bounds as `map` / `filter` respectively.
+
+So **we never need to grow beyond N**.  Pre-allocating capacity
+= `iter_range.count` at accu_init time would:
+  - Eliminate the growth + copy path entirely (zero waste on
+    `map`, ≤50% over-allocation on `filter` in the worst case).
+  - Save arena bytes the geometric-growth path abandons in the
+    forward-only bump arena.
+  - Simplify the runtime helper (no growth branch).
+
+**What we shipped instead (Slice D, 2026-05-17)**: full dynamic
+growth.  `cel_list_append_at` allocates a fresh elements run at
+2× capacity (min 4) when full, copies existing entries, abandons
+the old run.  Amortises to O(N) total work for N appends; about
+50% arena waste during growth.
+
+**Why we shipped dynamic growth first**:
+  1. Correctness-equivalent.  Pre-sizing is a perf / memory
+     optimisation, not a behavioural difference.
+  2. The runtime helper is general — it handles any list-grow
+     scenario, not just comprehension accumulators.  A future
+     `cel.list.append` user-facing function (none currently
+     planned) would reuse the same helper.
+  3. The codegen for the pre-sized variant requires
+     intercepting `accu_init` — instead of evaluating the
+     `kCreateList(size=0)` accu_init expression, we'd need to
+     emit a special "create with capacity N" call where N is the
+     iter_range's count loaded at runtime.  That's a comp-form-
+     specific override in `LowerComprehension`, adding ~30 LoC
+     and a per-form branch.  Worth it; not blocking the e2e
+     unlock.
+  4. Letting the dynamic-growth runtime path exist in tree means
+     future codegen experiments (e.g. a `cel.list.append`
+     primitive, or a streaming comprehension prototype) have
+     the runtime ready.  The pre-sized path becomes a fast-path
+     codegen choice on top of an existing general helper.
+
+**The plan doc's original Slice D justification** (lines
+510-514) read: *"Alternative considered and rejected:
+pre-allocate `cel_list_size(iter_range)` capacity at `accu_init`
+time.  …The codegen would need to specialise per-form, which
+complicates the lowering arm.  Not worth it for the 24 KB
+best-case savings."*  The "not worth it" was wrong.  Per-form
+codegen specialisation already exists (the append-shape pattern
+detector for `map` / `filter` loop_step).  Pre-sizing is the
+matching prologue specialisation.
+
+**How to implement** (work for the follow-up):
+
+  1. Add `cel_list_create_with_capacity(uint32_t slot,
+     uint32_t capacity)` to `cel_list.{h,c}`.  Body: allocate
+     an `ArenaListHeader` with `count=0`, `capacity=capacity`,
+     `elements_offset = cel_alloc(capacity * 24)`.  OOM →
+     poison with `CEL_ERR_OVERFLOW`.
+  2. Export it from `cel_runtime.wasm` (BUILD.bazel
+     `--export=` flag) and add to wat_runner's
+     `kRuntimeExports`.
+  3. In `LowerComprehension`, after `ResolveCompContext`,
+     detect the list-accu case (accu_init is
+     `kCreateList(size=0)` AND `accu_var`'s Repr is
+     `Repr::kList`).  If matched: **skip** the normal
+     `Emit(comp.accu_init())` + `cel_copy_slot(accu_slot,
+     init_src_slot)` prologue.  Instead emit:
+     - Load `iter_range.count` (already loaded into a temp
+       during prologue's list_hdr setup — reuse it).
+     - Call `cel_list_create_with_capacity(accu_slot, count)`.
+  4. Optionally drop the growth branch in
+     `cel_list_append_at` — when ResolvePass + LayoutPass can
+     prove the accu was pre-sized, codegen could call a thinner
+     `cel_list_push_at` helper.  Not strictly needed since
+     pre-sized lists never trip the growth branch at runtime.
+  5. Bench: `[0..1000].map(v, v*2)` end-to-end; expect arena
+     bytes used to drop ~50% and per-iter wasm op count to drop
+     by the growth-check overhead.
+  6. Re-run all `ComprehensionMapFilterListE2ETest` cases;
+     `ComprehensionTwoIterVarE2ETest`'s `transformList` cases
+     (Slice F); confirm they pass unchanged.
+
+**Triggers for prioritising this work**:
+  - Conformance arena-overflow regressions on
+    `[1000 items].map(...)`-shaped rows (the existing
+    `MapLargeListGrowthPath` e2e test is the canary).
+  - Customer reports of high arena memory under
+    comprehension-heavy programs.
+  - When `transformMap` lands (Slice G), a similar pre-sizing
+    opportunity exists for map accumulators; doing both
+    together is cleaner.
+
+**Out of scope even for the follow-up**:
+  - Streaming / lazy comprehensions (separate milestone).
+  - Pre-sizing the `map` accumulator from a non-list source
+    (e.g. `transformMap` over a `map` source — that's a map
+    accu, separate primitive).
 
 ## 11 Dependencies and sequencing
 

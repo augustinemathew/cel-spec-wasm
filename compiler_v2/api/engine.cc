@@ -171,8 +171,9 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // loop and stays under the lint function-size gate.
 constexpr const char* kRuntimeExports[] = {
     "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
-    "cel_map_lookup_arena", "cel_map_lookup", "cel_list_create",
-    "cel_list_set", "cel_list_at_arena", "cel_list_at",
+    "cel_map_lookup_arena", "cel_map_lookup", "cel_list_create", "cel_list_set",
+    "cel_list_append_at", "cel_list_append_at_if_bool", "cel_list_at_arena",
+    "cel_list_at",
     // M5.B step 1: arithmetic helpers.
     "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
     "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
@@ -222,8 +223,8 @@ constexpr const char* kRuntimeExports[] = {
     "cel_dur_add_at_vv", "cel_dur_sub_at_vv", "cel_ts_dur_add_at_vv",
     "cel_dur_ts_add_at_vv", "cel_ts_dur_sub_at_vv", "cel_ts_ts_sub_at_vv",
     "cel_dur_lt_at_vv", "cel_dur_le_at_vv", "cel_dur_gt_at_vv",
-    "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv",
-    "cel_ts_gt_at_vv", "cel_ts_ge_at_vv",
+    "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv", "cel_ts_gt_at_vv",
+    "cel_ts_ge_at_vv",
     // M7B.C: timestamp UTC accessors + duration accessors.
     "cel_ts_year_utc_at_v", "cel_ts_month_utc_at_v",
     "cel_ts_day_of_month_1_utc_at_v", "cel_ts_day_of_month_utc_at_v",
@@ -237,11 +238,10 @@ constexpr const char* kRuntimeExports[] = {
     "cel_int_to_dur_at_v",
     // M7B.E: with-TZ accessor shims.
     "cel_ts_year_with_tz_at_vv", "cel_ts_month_with_tz_at_vv",
-    "cel_ts_day_of_month_1_with_tz_at_vv",
-    "cel_ts_day_of_month_with_tz_at_vv", "cel_ts_day_of_year_with_tz_at_vv",
-    "cel_ts_day_of_week_with_tz_at_vv", "cel_ts_hours_with_tz_at_vv",
-    "cel_ts_minutes_with_tz_at_vv", "cel_ts_seconds_with_tz_at_vv",
-    "cel_ts_milliseconds_with_tz_at_vv"};
+    "cel_ts_day_of_month_1_with_tz_at_vv", "cel_ts_day_of_month_with_tz_at_vv",
+    "cel_ts_day_of_year_with_tz_at_vv", "cel_ts_day_of_week_with_tz_at_vv",
+    "cel_ts_hours_with_tz_at_vv", "cel_ts_minutes_with_tz_at_vv",
+    "cel_ts_seconds_with_tz_at_vv", "cel_ts_milliseconds_with_tz_at_vv"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {

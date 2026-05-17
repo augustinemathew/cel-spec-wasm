@@ -272,6 +272,82 @@ void cel_list_set(uint32_t list_slot, uint32_t index, uint32_t elem_slot) {
   *arena_list_element(hdr, index) = *cel_value_at(elem_slot);
 }
 
+// M5.B Slice D — dynamic-list append.  Used by `map` / `filter` /
+// `transformList` accumulators, which start at `[]` and grow.
+// Geometric 2× capacity growth amortises to O(N) total work for N
+// appends.  On growth: allocates a fresh elements run via
+// cel_alloc, copies existing entries, abandons the old run in the
+// arena (forward-only bump — short-lived comprehension tolerable).
+// On OOM: poisons the list with CEL_ERR_OVERFLOW; subsequent
+// appends are silent no-ops (error sticks).
+void cel_list_append_at(uint32_t list_slot, uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind != CEL_LIST_ARENA) {
+    // Wrong kind or already poisoned — silent no-op so an upstream
+    // accu_init error sticks all the way to `result`.
+    return;
+  }
+  CelValue* v = cel_value_at(value_slot);
+  if (v->kind == CEL_ERROR || v->kind == CEL_UNKNOWN) {
+    // Per design §3.2: any error in `loop_step` aborts the
+    // comprehension and becomes the result.  Propagate the
+    // ERROR / UNKNOWN verbatim into the list slot; subsequent
+    // append calls on this iteration's later iters become
+    // silent no-ops (the kind-check above stops them).  The
+    // comprehension's `result = @result` then surfaces the
+    // error / unknown as the comp's value.
+    *l = *v;
+    return;
+  }
+  ArenaListHeader* hdr = arena_list_header(l);
+  if (hdr->count >= hdr->capacity) {
+    uint32_t new_cap = hdr->capacity == 0 ? 4u : hdr->capacity * 2u;
+    uint32_t new_elements_off =
+        cel_alloc((uint32_t)((size_t)kCelListEntryStride * new_cap));
+    if (new_elements_off == 0) {
+      poison(l, CEL_ERR_OVERFLOW);
+      return;
+    }
+    if (hdr->count > 0) {
+      memcpy(cel_memory_base_() + new_elements_off,
+             cel_memory_base_() + hdr->elements_offset,
+             (size_t)kCelListEntryStride * hdr->count);
+    }
+    hdr->elements_offset = new_elements_off;
+    hdr->capacity = new_cap;
+  }
+  *arena_list_element(hdr, hdr->count) = *cel_value_at(value_slot);
+  ++hdr->count;
+}
+
+// M5.B Slice D — predicate-gated append for `filter(v, p)` /
+// conditional-map.  Encapsulates 3VL on the predicate so codegen
+// can lower the loop_step into a single call.  Semantics:
+//   - list_slot poisoned (non-CEL_LIST_ARENA): silent no-op.
+//   - pred CEL_ERROR / CEL_UNKNOWN: propagate into list_slot (the
+//     comp's `result = @result` then surfaces it).
+//   - pred not CEL_BOOL: poison list with CEL_ERR_TYPE_MISMATCH.
+//   - pred CEL_BOOL false: silent no-op (predicate rejected iter).
+//   - pred CEL_BOOL true: delegate to cel_list_append_at.
+void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
+                                uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind != CEL_LIST_ARENA) return;
+  CelValue* p = cel_value_at(pred_slot);
+  if (p->kind == CEL_ERROR || p->kind == CEL_UNKNOWN) {
+    *l = *p;
+    return;
+  }
+  if (p->kind != CEL_BOOL) {
+    poison(l, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (p->payload.b == 0) return;
+  cel_list_append_at(list_slot, value_slot);
+}
+
 void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
                        uint32_t index_slot) {
   CEL_LOG("enter");

@@ -42,6 +42,21 @@ void cel_list_create(uint32_t out_slot, uint32_t count);
 // elements arena.
 void cel_list_set(uint32_t list_slot, uint32_t index, uint32_t elem_slot);
 
+// M5.B Slice D — dynamic-list append, used by `map` / `filter` /
+// `transformList` accumulators.  Grows the elements run
+// geometrically (2× capacity, min 4) when full; copies existing
+// entries into the new run; the old run is abandoned in the
+// forward-only arena.  On OOM poisons `list_slot` with
+// `CEL_ERR_OVERFLOW`.  Subsequent appends on a poisoned list are
+// silent no-ops (error sticks).
+void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
+
+// M5.B Slice D — predicate-gated append for `filter(v, p)` /
+// conditional-map.  Combines 3VL on the predicate with the
+// append in a single helper.  See impl notes in cel_runtime.c.
+void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
+                                uint32_t value_slot);
+
 // Arena fast path — codegen calls this directly when ResolvePass
 // proved the operand origin is `kArena`.  No host trip; pure wasm.
 //

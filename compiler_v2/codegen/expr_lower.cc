@@ -1209,6 +1209,108 @@ absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
       "and @not_strictly_false(!@result) only; general path lands in Slice I"));
 }
 
+// Returns true if `expr` matches `kCall(_+_, kIdent(accu_name),
+// kCreateList(size=1, [elem]))` — the canonical loop_step shape
+// emitted by cel-cpp's `map(v, t)` macro (resolved overload
+// `add_list`).  On match, sets `*elem_out` to the single element
+// subexpression so the caller can recurse into Emit() for it.
+//
+// Probe-confirmed (m5b probe 2026-05-17): cel-cpp's map and
+// filter macros always emit this exact shape — args[0] is the
+// accu_var ident, args[1] is a single-element list literal whose
+// element IS the transform / iter_var expression.
+bool TryMatchAccuAppendOne(const cel::Expr& expr, absl::string_view accu_name,
+                           const cel::Expr** elem_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "_+_" || call.args().size() != 2) return false;
+  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
+  const auto& rhs = call.args()[1];
+  if (rhs.kind_case() != cel::ExprKindCase::kListExpr) return false;
+  if (rhs.list_expr().elements().size() != 1) return false;
+  *elem_out = &rhs.list_expr().elements()[0].expr();
+  return true;
+}
+
+// Returns true if `expr` is `kCall(_?_:_, p, append_then,
+// kIdent(accu))` where `append_then` matches the append-one shape —
+// the `filter(v, p)` / conditional-map loop_step.  On match sets
+// `*pred_out` and `*elem_out`.
+bool TryMatchAccuConditionalAppendOne(const cel::Expr& expr,
+                                      absl::string_view accu_name,
+                                      const cel::Expr** pred_out,
+                                      const cel::Expr** elem_out) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
+  const auto& call = expr.call_expr();
+  if (call.function() != "_?_:_" || call.args().size() != 3) return false;
+  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
+  if (!TryMatchAccuAppendOne(call.args()[1], accu_name, elem_out)) {
+    return false;
+  }
+  *pred_out = call.args().data();
+  return true;
+}
+
+// Emits `cel_list_append_at(accu_slot, <elem_eval>)`.  The eval is
+// an i32-valued expression whose runtime value is the source slot's
+// byte offset (works uniformly for kIdent local.get, kConst
+// i32.const, and kCall block-returning-i32).
+BinaryenExpressionRef EmitCelListAppendCall(EmitCtx& ctx, uint32_t accu_slot,
+                                            BinaryenExpressionRef elem_eval) {
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, accu_slot), elem_eval};
+  return BinaryenCall(ctx.mod.raw(), "cel_list_append_at", args, 2,
+                      BinaryenTypeNone());
+}
+
+// Three lowering modes for loop_step:
+//   1. Append-one (`map(v, t)` step) — emit cel_list_append_at
+//      directly.  Skip the kCreateList and kCall(_+_) entirely; the
+//      runtime helper propagates value-side errors.
+//   2. Conditional-append (`filter(v, p)` / conditional-map) —
+//      evaluate predicate; if true, append.  Errors in the
+//      predicate poison the comprehension via the wrapping if.
+//   3. General path — Emit(loop_step) into a temp slot, then
+//      cel_copy_slot.  Used by exists / all / exists_one /
+//      cel.bind / transformMap accumulators.
+absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
+                              const CompContext& c,
+                              std::vector<BinaryenExpressionRef>* body) {
+  auto* mod = ctx.mod.raw();
+  const cel::Expr* elem = nullptr;
+  if (TryMatchAccuAppendOne(comp.loop_step(), comp.accu_var(), &elem)) {
+    auto elem_or = Emit(ctx, *elem);
+    if (!elem_or.ok()) return elem_or.status();
+    body->push_back(EmitCelListAppendCall(ctx, c.accu_slot, *elem_or));
+    return absl::OkStatus();
+  }
+  const cel::Expr* pred = nullptr;
+  if (TryMatchAccuConditionalAppendOne(comp.loop_step(), comp.accu_var(), &pred,
+                                       &elem)) {
+    auto pred_or = Emit(ctx, *pred);
+    if (!pred_or.ok()) return pred_or.status();
+    auto elem_or = Emit(ctx, *elem);
+    if (!elem_or.ok()) return elem_or.status();
+    // `cel_list_append_at_if_bool(accu_slot, pred_eval, elem_eval)`
+    // — the runtime helper encapsulates 3VL: error / unknown
+    // predicates propagate to the list slot, false skips, true
+    // appends (with value-side error propagation via append_at).
+    BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
+                                     *elem_or};
+    body->push_back(BinaryenCall(mod, "cel_list_append_at_if_bool", args, 3,
+                                 BinaryenTypeNone()));
+    return absl::OkStatus();
+  }
+  auto step_or = Emit(ctx, comp.loop_step());
+  if (!step_or.ok()) return step_or.status();
+  const auto* step_ann = ctx.layout.annotations.Find(comp.loop_step().id());
+  ABSL_CHECK(step_ann != nullptr &&
+             step_ann->storage.kind == StorageKind::kWorkspaceSlot)
+      << "LowerComprehension: loop_step storage kind mismatch";
+  body->push_back(BinaryenDrop(mod, *step_or));
+  body->push_back(EmitCelCopySlot(ctx, c.accu_slot, step_ann->storage.payload));
+  return absl::OkStatus();
+}
+
 absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const CompContext& c) {
@@ -1225,14 +1327,9 @@ absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
       BuildLoopCondExit(ctx, expr, c, comp.loop_condition(), comp.accu_var());
   if (!cond_exit_or.ok()) return cond_exit_or.status();
   if (*cond_exit_or != nullptr) body.push_back(*cond_exit_or);
-  auto step_or = Emit(ctx, comp.loop_step());
-  if (!step_or.ok()) return step_or.status();
-  const auto* step_ann = ctx.layout.annotations.Find(comp.loop_step().id());
-  ABSL_CHECK(step_ann != nullptr &&
-             step_ann->storage.kind == StorageKind::kWorkspaceSlot)
-      << "LowerComprehension: loop_step storage kind mismatch";
-  body.push_back(BinaryenDrop(mod, *step_or));
-  body.push_back(EmitCelCopySlot(ctx, c.accu_slot, step_ann->storage.payload));
+  if (auto status = EmitCompLoopStep(ctx, comp, c, &body); !status.ok()) {
+    return status;
+  }
   body.push_back(BinaryenLocalSet(
       mod, c.iter_v->local_index,
       BinaryenBinary(
