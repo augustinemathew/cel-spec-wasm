@@ -207,7 +207,6 @@ class WrapperLiteralUnwrapE2ETest : public ::testing::Test {};
 // — Per-kind set-to-value peel: `XValue{value: v} == v` → true —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, BoolValueSetToTruePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -217,7 +216,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, BoolValueSetToTruePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueSetToFivePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -227,7 +225,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueSetToFivePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int64ValueSetToBoundaryMaxPeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -239,7 +236,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int64ValueSetToBoundaryMaxPeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, UInt32ValueSetToBoundaryMaxPeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -250,7 +246,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, UInt32ValueSetToBoundaryMaxPeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, UInt64ValueSetToBoundaryMaxPeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -262,7 +257,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, UInt64ValueSetToBoundaryMaxPeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, FloatValueSetToValuePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   // Floats peel to double in CEL (no float kind); cel-cpp widens.
@@ -273,7 +267,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, FloatValueSetToValuePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, DoubleValueSetToValuePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -283,7 +276,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, DoubleValueSetToValuePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, StringValueSetToUnicodePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   // dynamic.textproto literal_unicode row: multi-byte UTF-8.
@@ -294,7 +286,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, StringValueSetToUnicodePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, BytesValueSetToValuePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -309,7 +300,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, BytesValueSetToValuePeels) {
 //   protobuf scalar zero default. —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, BoolValueSetToFalsePeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -319,7 +309,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, BoolValueSetToFalsePeels) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueSetToZeroPeels) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -331,7 +320,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueSetToZeroPeels) {
 // — Empty-construct peels to default scalar: `XValue{} == <default>` → true —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBoolValuePeelsToFalse) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -341,7 +329,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBoolValuePeelsToFalse) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.Int32Value{} == 0");
@@ -350,7 +337,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt64ValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.Int64Value{} == 0");
@@ -359,7 +345,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt64ValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt32ValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.UInt32Value{} == 0u");
@@ -368,7 +353,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt32ValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt64ValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.UInt64Value{} == 0u");
@@ -377,7 +361,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyUInt64ValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyFloatValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.FloatValue{} == 0.0");
@@ -386,7 +369,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyFloatValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyDoubleValuePeelsToZero) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -396,7 +378,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyDoubleValuePeelsToZero) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyStringValuePeelsToEmptyString) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -406,7 +387,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyStringValuePeelsToEmptyString) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBytesValuePeelsToEmptyBytes) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -418,7 +398,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBytesValuePeelsToEmptyBytes) {
 // — Cross-form: scalar on either side peels equivalently —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueOnRhsPeelsEqually) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -428,7 +407,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueOnRhsPeelsEqually) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, StringValueOnRhsPeelsEqually) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -441,7 +419,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, StringValueOnRhsPeelsEqually) {
 //   present wrapper message peels to inner default scalar, not null) —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValueIsNotNull) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -451,7 +428,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValueIsNotNull) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValueNotEqualNull) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -461,7 +437,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyInt32ValueNotEqualNull) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBoolValueIsNotNull) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "google.protobuf.BoolValue{} == null");
@@ -470,7 +445,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBoolValueIsNotNull) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyStringValueIsNotNull) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -480,7 +454,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyStringValueIsNotNull) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBytesValueIsNotNull) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -494,7 +467,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, EmptyBytesValueIsNotNull) {
 //   NOT reached because both LHS and RHS are peeled). —
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueEqualsItselfAfterPeel) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler,
@@ -505,7 +477,6 @@ TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueEqualsItselfAfterPeel) {
 }
 
 TEST_F(WrapperLiteralUnwrapE2ETest, Int32ValueDiffersFromOtherValue) {
-  GTEST_SKIP() << "M8.C ships here (see m8-wrapper-types.md §M8.C)";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler,

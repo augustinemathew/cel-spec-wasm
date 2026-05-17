@@ -83,6 +83,20 @@ inline constexpr absl::string_view kCelHostSetFieldInternalName =
 inline constexpr absl::string_view kCelHostWktUnwrapTimeInternalName =
     "cel_wkt_unwrap_time";
 
+// M8.C: cel_host.cel_wkt_unwrap_wrapper trampoline (Layer 3).
+// Three-arg `(out_slot, msg_slot, wrapper_kind)` — direct clone of
+// the m7b time-WKT shape for the 9 wrapper FQNs (BoolValue,
+// Int32Value, Int64Value, UInt32Value, UInt64Value, FloatValue,
+// DoubleValue, StringValue, BytesValue).  Codegen emits this at
+// the kStructExpr tail when `s.name()` is a wrapper FQN.
+// `wrapper_kind` is the matching `CelKind` (CEL_BOOL=1, CEL_INT=2,
+// CEL_UINT=3, CEL_DOUBLE=4, CEL_STRING=5, CEL_BYTES=6) — letting
+// Layer-2 dispatch on the inner-scalar kind without an additional
+// descriptor walk.  See `wat-traces.md` §56 + `m8-wrapper-types.md`
+// §M8.C.
+inline constexpr absl::string_view kCelHostWktUnwrapWrapperInternalName =
+    "cel_wkt_unwrap_wrapper";
+
 // M3.F: runtime entry points for map literal construction +
 // indexing.  All three lookups carry signature
 // `(i32 out_slot, i32 map_slot, i32 key_slot) -> ()`.  cel_map_create

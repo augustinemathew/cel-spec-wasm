@@ -385,8 +385,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
 // wraps in an owning HostMessageBacking, interns into the
 // ExternrefTable, and writes a CEL_MESSAGE CelValue with the interned
 // msg_slot to the out_slot cell.
-BinaryenExpressionRef EmitCelMakeMessageCall(WasmModule& mod,
-                                             uint32_t type_id,
+BinaryenExpressionRef EmitCelMakeMessageCall(WasmModule& mod, uint32_t type_id,
                                              uint32_t out_slot) {
   BinaryenExpressionRef args[2] = {I32Const(mod, type_id),
                                    I32Const(mod, out_slot)};
@@ -430,24 +429,63 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
 //       descriptor's shape; it trusts the checker for type
 //       compatibility and the trampoline to surface unsupported
 //       shapes as clean traps.
-// M7B polish: well-known time-type literals (`Timestamp{seconds:1}`
-// / `Duration{...}`) unwrap to `CEL_TIMESTAMP` / `CEL_DURATION` so
-// they're compare-equal to the matching `timestamp("...")` /
-// `duration("...")` constructor results.  Empirically pinned
-// against cel-cpp; see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`.
+// Maps a wrapper FQN to the matching `CelKind` (1..6) the M8.C
+// tail-unwrap trampoline expects as its third argument.  Returns
+// 0 (not a valid CelKind for the unwrap path) for non-wrapper
+// FQNs — caller falls through.  Mirrors `IsWrapperFqn` in
+// `compiler_v2/api/internal/cel_host.cc` but maps to the inner
+// scalar kind in a single call; Int32/Int64 collapse onto CEL_INT,
+// UInt32/UInt64 onto CEL_UINT, Float/Double onto CEL_DOUBLE per
+// CEL's value algebra (no 32-vs-64 distinction; see
+// `wat-traces.md` §56 for the rationale + ABI lock).
+uint32_t WrapperKindFromFqn(absl::string_view fqn) {
+  if (fqn == "google.protobuf.BoolValue") return 1;    // CEL_BOOL
+  if (fqn == "google.protobuf.Int32Value") return 2;   // CEL_INT
+  if (fqn == "google.protobuf.Int64Value") return 2;   // CEL_INT
+  if (fqn == "google.protobuf.UInt32Value") return 3;  // CEL_UINT
+  if (fqn == "google.protobuf.UInt64Value") return 3;  // CEL_UINT
+  if (fqn == "google.protobuf.FloatValue") return 4;   // CEL_DOUBLE
+  if (fqn == "google.protobuf.DoubleValue") return 4;  // CEL_DOUBLE
+  if (fqn == "google.protobuf.StringValue") return 5;  // CEL_STRING
+  if (fqn == "google.protobuf.BytesValue") return 6;   // CEL_BYTES
+  return 0;
+}
+
+// M7B polish + M8.C: well-known proto-literal tail-unwrap.  At
+// kStructExpr lowering, after the recursive build sets the message
+// fields, emit a host trampoline call that overwrites the message
+// slot IN PLACE with the equivalent scalar / Timestamp / Duration
+// CelValue.  Necessary because `compiler_v2/ir/typed_ast.cc:56`
+// maps WKT-typed expressions to scalar Repr — the downstream
+// pipeline expects a scalar at this slot, not a `CEL_MESSAGE`.
+//   - Timestamp / Duration (m7b polish): 2-arg trampoline
+//     `cel_wkt_unwrap_time(out_slot, msg_slot)`.
+//   - 9 WKT wrappers (M8.C): 3-arg trampoline
+//     `cel_wkt_unwrap_wrapper(out_slot, msg_slot, wrapper_kind)`
+//     where `wrapper_kind` is the inner CelKind (1..6).
 // Returns nullptr for non-WKT struct names — caller falls through.
 BinaryenExpressionRef MaybeEmitWktUnwrapTailCall(EmitCtx& ctx,
                                                  absl::string_view type_fqn,
                                                  uint32_t out_slot) {
-  if (type_fqn != "google.protobuf.Timestamp" &&
-      type_fqn != "google.protobuf.Duration") {
-    return nullptr;
+  if (type_fqn == "google.protobuf.Timestamp" ||
+      type_fqn == "google.protobuf.Duration") {
+    BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot),
+                                     I32Const(ctx.mod, out_slot)};
+    return BinaryenCall(ctx.mod.raw(),
+                        std::string(kCelHostWktUnwrapTimeInternalName).c_str(),
+                        args, 2, BinaryenTypeNone());
   }
-  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot),
-                                    I32Const(ctx.mod, out_slot)};
-  return BinaryenCall(
-      ctx.mod.raw(), std::string(kCelHostWktUnwrapTimeInternalName).c_str(),
-      args, 2, BinaryenTypeNone());
+  if (const uint32_t wrapper_kind = WrapperKindFromFqn(type_fqn);
+      wrapper_kind != 0) {
+    BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot),
+                                     I32Const(ctx.mod, out_slot),
+                                     I32Const(ctx.mod, wrapper_kind)};
+    return BinaryenCall(
+        ctx.mod.raw(),
+        std::string(kCelHostWktUnwrapWrapperInternalName).c_str(), args, 3,
+        BinaryenTypeNone());
+  }
+  return nullptr;
 }
 
 absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
@@ -488,8 +526,8 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
         /*name=*/f.name(),
         /*owner_fqn=*/s.name(),
     });
-    instrs.push_back(EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id,
-                                         *value_or));
+    instrs.push_back(
+        EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id, *value_or));
   }
 
   if (auto wkt_tail = MaybeEmitWktUnwrapTailCall(ctx, s.name(), out_slot);

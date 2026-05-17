@@ -388,6 +388,18 @@ extern "C" wasm_trap_t* CelWktUnwrapTimeTrampoline(
   return HostTwoArgTrampoline<CelWktUnwrapTimeImpl>(env_ptr, caller, args);
 }
 
+// M8.C — 3-arg `(out_slot, msg_slot, wrapper_kind)` trampoline for
+// the kStructExpr tail-unwrap of WKT wrapper proto literals.
+// Mirrors `CelWktUnwrapTimeTrampoline` but with 3 slot/kind args
+// (the third arg is the matching CelKind enum) — fits the existing
+// 3-arg `HostThreeArgTrampoline` template at line 218.
+extern "C" wasm_trap_t* CelWktUnwrapWrapperTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostThreeArgTrampoline<CelWktUnwrapWrapperImpl>(env_ptr, caller, args);
+}
+
 // M7B.E — 4-arg `(out_slot, ts_slot, tz_slot, accessor_kind)`
 // dispatch trampoline for all 10 with-TZ accessor overloads.  The
 // 4-arg shape is unique; no other host trampoline today takes
@@ -402,11 +414,11 @@ extern "C" wasm_trap_t* CelTimestampTzAccessorTrampoline(
   WasmtimeMemoryView mem(ctx, env->memory);
   WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
-  return StatusToTrap(CelTimestampTzAccessorImpl(
-      static_cast<uint32_t>(args[0].of.i32),
-      static_cast<uint32_t>(args[1].of.i32),
-      static_cast<uint32_t>(args[2].of.i32),
-      static_cast<uint32_t>(args[3].of.i32), tctx));
+  return StatusToTrap(
+      CelTimestampTzAccessorImpl(static_cast<uint32_t>(args[0].of.i32),
+                                 static_cast<uint32_t>(args[1].of.i32),
+                                 static_cast<uint32_t>(args[2].of.i32),
+                                 static_cast<uint32_t>(args[3].of.i32), tctx));
 }
 
 wasm_functype_t* NI32sToVoid(size_t n) {
@@ -541,6 +553,12 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       // they unify with `timestamp("...")` / `duration("...")`
       // constructor results for `==` / `<` / etc.
       {"cel_wkt_unwrap_time", 2, &CelWktUnwrapTimeTrampoline},
+      // M8.C: WKT wrapper proto-literal tail-unwrap (3-arg
+      // `(out_slot, msg_slot, wrapper_kind)`).  Codegen emits this
+      // for the 9 google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,
+      // Float,Double,String,Bytes}Value struct literals so they
+      // unify with their inner-scalar form for `==` / `<` etc.
+      {"cel_wkt_unwrap_wrapper", 3, &CelWktUnwrapWrapperTrampoline},
   };
   return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
 }

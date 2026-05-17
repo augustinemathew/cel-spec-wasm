@@ -53,8 +53,12 @@ void InstallSelectImports(WasmModule& mod) {
 // codegen emits direct calls in the kStructExpr arm.
 // M7B polish: cel_host.cel_wkt_unwrap_time —
 // `(out_slot, msg_slot)` → ().  Conditional emit at the kStructExpr
-// tail for WKT Timestamp/Duration literals; uninstalled imports
-// validate fine.
+// tail for WKT Timestamp/Duration literals.
+// M8.C: cel_host.cel_wkt_unwrap_wrapper —
+// `(out_slot, msg_slot, wrapper_kind)` → ().  Conditional emit at
+// the kStructExpr tail for the 9 wrapper FQNs.  Uninstalled
+// imports validate fine — keep them always installed per
+// CLAUDE.md "no lazy tracking" rule.
 void InstallStructImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType make_params[2] = {i32, i32};
@@ -67,6 +71,11 @@ void InstallStructImports(WasmModule& mod) {
   // 2-arg `(out_slot, msg_slot)` — `make_params` happens to match.
   mod.AddFunctionImport(std::string(kCelHostWktUnwrapTimeInternalName),
                         "cel_host", "cel_wkt_unwrap_time", make_params,
+                        BinaryenTypeNone());
+  // 3-arg `(out_slot, msg_slot, wrapper_kind)` — `set_params` happens
+  // to match (same i32, i32, i32 shape).
+  mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
+                        "cel_host", "cel_wkt_unwrap_wrapper", set_params,
                         BinaryenTypeNone());
 }
 

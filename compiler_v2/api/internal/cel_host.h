@@ -612,6 +612,21 @@ ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
 ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapTimeImpl(
     uint32_t out_slot, uint32_t msg_slot, const TrampolineContext& ctx);
 
+// M8.C: bridge for the 9 wrapper proto-literal types
+// (`google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
+// String,Bytes}Value`).  Three-arg `(out_slot, msg_slot,
+// wrapper_kind)` — reads the CEL_MESSAGE at `msg_slot`, peels the
+// inner `value` field via reflection, writes the matching scalar
+// CelValue (CEL_BOOL / CEL_INT / CEL_UINT / CEL_DOUBLE / CEL_STRING
+// / CEL_BYTES) at `out_slot`.  `wrapper_kind` is the expected inner
+// CelKind (1..6 per `cel_data.h::CelKind`) — Layer-2 cross-checks
+// against the descriptor's actual cpp_type and writes a
+// `CEL_ERR_TYPE_MISMATCH` poison on regression.  Direct clone of
+// `CelWktUnwrapTimeImpl` for the 9 wrapper FQNs.
+ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapWrapperImpl(
+    uint32_t out_slot, uint32_t msg_slot, uint32_t wrapper_kind,
+    const TrampolineContext& ctx);
+
 // m7b §3.1 / Probe D — sign-correlated (seconds, nanos)
 // decomposition for an absl::Duration.  Shared between the
 // host-side encoders (`EncodeDurationValue` / `EncodeTimestampValue`

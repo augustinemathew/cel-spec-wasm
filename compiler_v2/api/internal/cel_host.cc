@@ -3247,6 +3247,66 @@ absl::Status CelTimestampTzAccessorImpl(uint32_t out_slot, uint32_t ts_slot,
 
 // M7B polish: WKT proto-literal unwrap.  Codegen emits this at the
 // kStructExpr tail for `Timestamp{...}` / `Duration{...}` literals.
+// File-local helper: build a `CelValue` carrying the supplied error
+// code with no payload data.  Used by M8.C's `CelWktUnwrapWrapperImpl`
+// to collapse the repeated `{kind=CEL_ERROR, payload.err=...}` blocks
+// into one-line writes (keeps the parent under the
+// readability-function-size gate).
+static CelValue PoisonCelValue(uint32_t err_code) {
+  CelValue v{};
+  v.kind = CEL_ERROR;
+  v.payload.err = err_code;
+  return v;
+}
+
+// M8.C — kStructExpr tail-unwrap for the 9 wrapper FQNs.  Reads
+// the CEL_MESSAGE at `msg_slot`, peels the inner `value` field via
+// the shared `UnpackWrapperMessage` helper (also used by the
+// read-side auto-peel in `ReadSingularMessageField`), and writes
+// the matching scalar CelValue at `out_slot`.  Cross-checks the
+// produced kind against the caller-supplied `wrapper_kind` (1..6
+// per CelKind); mismatch surfaces as `CEL_ERR_TYPE_MISMATCH`
+// (codegen-regression tripwire).  Mirrors `CelWktUnwrapTimeImpl`.
+absl::Status CelWktUnwrapWrapperImpl(uint32_t out_slot, uint32_t msg_slot,
+                                     uint32_t wrapper_kind,
+                                     const TrampolineContext& ctx) {
+  const CelValue in = ctx.mem.ReadCelValue(msg_slot);
+  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
+    ctx.mem.WriteCelValue(out_slot, in);
+    return absl::OkStatus();
+  }
+  if (in.kind != CEL_MESSAGE) {
+    ctx.mem.WriteCelValue(out_slot, PoisonCelValue(CEL_ERR_TYPE_MISMATCH));
+    return absl::OkStatus();
+  }
+  const HostMessageBacking* backing = ctx.refs.Lookup(in.payload.msg_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelWktUnwrapWrapperImpl: msg_slot ", in.payload.msg_slot,
+                     " not found in ExternrefTable"));
+  }
+  const google::protobuf::Message* msg = backing->message();
+  if (msg == nullptr) {
+    ctx.mem.WriteCelValue(out_slot, PoisonCelValue(CEL_ERR_TYPE_MISMATCH));
+    return absl::OkStatus();
+  }
+  auto wrap = UnpackWrapperMessage(*msg);
+  if (!wrap.has_value()) {
+    ctx.mem.WriteCelValue(out_slot, PoisonCelValue(CEL_ERR_TYPE_MISMATCH));
+    return absl::OkStatus();
+  }
+  CelValue out_cv{};
+  if (auto s = EncodeValue(*wrap, &out_cv, ctx.alloc); !s.ok()) return s;
+  // Codegen-regression tripwire: produced inner-scalar kind must
+  // match the caller-supplied wrapper_kind (1..6 per CelKind).
+  if (out_cv.kind != wrapper_kind) {
+    ctx.mem.WriteCelValue(out_slot, PoisonCelValue(CEL_ERR_TYPE_MISMATCH));
+    return absl::OkStatus();
+  }
+  ctx.mem.WriteCelValue(out_slot, out_cv);
+  return absl::OkStatus();
+}
+
 absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
                                   const TrampolineContext& ctx) {
   const CelValue in = ctx.mem.ReadCelValue(msg_slot);
