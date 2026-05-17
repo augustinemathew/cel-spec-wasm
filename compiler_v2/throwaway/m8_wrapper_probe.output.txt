@@ -1,0 +1,210 @@
+
+=== GROUP 1: Literal wrapper equality ===
+[A1] google.protobuf.Int32Value{value: 123} == 123
+   -> true
+[A2] google.protobuf.Int32Value{value: 0}   == 0
+   -> true
+[A3] google.protobuf.Int32Value{}            == 0
+   -> true
+[A4] google.protobuf.Int32Value{}            == null
+   -> false
+[A5] google.protobuf.Int32Value{value: 0}    == null
+   -> false
+[A6] google.protobuf.Int32Value{value: 1}    != null
+   -> true
+[A7] google.protobuf.Int32Value{value:1} == google.protobuf.Int32Value{value:1}
+   -> true
+[A8] google.protobuf.Int32Value{value:1} == "1"
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:37: found no matching overload for '_==_' applied to '(wrapper(int), string)'
+ | google.protobuf.Int32Value{value:1} == "1"
+ | ....................................^
+[A2-bool] google.protobuf.BoolValue{value: false} == false
+   -> true
+[A3-bool] google.protobuf.BoolValue{}             == false
+   -> true
+[A5-bool] google.protobuf.BoolValue{value: false} == null
+   -> false
+[A1-i64] google.protobuf.Int64Value{value: 9} == 9
+   -> true
+[A5-i64] google.protobuf.Int64Value{value: 0} == null
+   -> false
+[A1-u32] google.protobuf.UInt32Value{value: 7u} == 7u
+   -> true
+[A5-u32] google.protobuf.UInt32Value{value: 0u} == null
+   -> false
+[A1-u64] google.protobuf.UInt64Value{value: 7u} == 7u
+   -> true
+[A5-u64] google.protobuf.UInt64Value{value: 0u} == null
+   -> false
+[A1-float] google.protobuf.FloatValue{value: 1.5}  == 1.5
+   -> true
+[A3-float] google.protobuf.FloatValue{}            == 0.0
+   -> true
+[A5-float] google.protobuf.FloatValue{value: 0.0}  == null
+   -> false
+[A1-double] google.protobuf.DoubleValue{value: 1.5} == 1.5
+   -> true
+[A5-double] google.protobuf.DoubleValue{value: 0.0} == null
+   -> false
+[A1-str] google.protobuf.StringValue{value: "x"} == "x"
+   -> true
+[A3-str] google.protobuf.StringValue{}             == ""
+   -> true
+[A5-str] google.protobuf.StringValue{value: ""}  == null
+   -> false
+[A1-bytes] google.protobuf.BytesValue{value: b"x"} == b"x"
+   -> true
+[A3-bytes] google.protobuf.BytesValue{}             == b""
+   -> true
+[A5-bytes] google.protobuf.BytesValue{value: b""} == null
+   -> false
+
+=== GROUP 2: Wrapper field reads ===
+[B1] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 1}.single_int32_wrapper
+   -> 1
+[B2] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 1}.single_int32_wrapper == 1
+   -> true
+[B3] cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper == null
+   -> false
+[B4] cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper == 0
+   -> true
+[B5] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == null
+   -> false
+[B6-proto2] cel.expr.conformance.proto2.TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == null
+   -> false
+[B7] has(cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper)
+   -> true
+[B8] has(cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper)
+   -> false
+[B-bool] cel.expr.conformance.proto3.TestAllTypes{single_bool_wrapper: true}.single_bool_wrapper
+   -> true
+[B-i64] cel.expr.conformance.proto3.TestAllTypes{single_int64_wrapper: 9}.single_int64_wrapper
+   -> 9
+[B-u32] cel.expr.conformance.proto3.TestAllTypes{single_uint32_wrapper: 7u}.single_uint32_wrapper
+   -> 7u
+[B-u64] cel.expr.conformance.proto3.TestAllTypes{single_uint64_wrapper: 7u}.single_uint64_wrapper
+   -> 7u
+[B-float] cel.expr.conformance.proto3.TestAllTypes{single_float_wrapper: 1.5}.single_float_wrapper
+   -> 1.5
+[B-double] cel.expr.conformance.proto3.TestAllTypes{single_double_wrapper: 1.5}.single_double_wrapper
+   -> 1.5
+[B-str] cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: "x"}.single_string_wrapper
+   -> "x"
+[B-bytes] cel.expr.conformance.proto3.TestAllTypes{single_bytes_wrapper: b"x"}.single_bytes_wrapper
+   -> b"x"
+[B-type-set] type(cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 1}.single_int32_wrapper)
+   -> int
+[B-type-unset] type(cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper)
+   -> int
+
+=== GROUP 3: Construction-side autowrap ===
+[C1] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper == 5
+   -> true
+[C2] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: null}.single_int32_wrapper == null
+   -> false
+[C3] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: google.protobuf.Int32Value{value:5}}.single_int32_wrapper == 5
+   -> true
+[C4] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: "5"}.single_int32_wrapper == 5
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:62: expected type of field 'single_int32_wrapper' is 'wrapper(int)' but provided type is 'string'
+ | cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: "5"}.single_int32_wrapper == 5
+ | .............................................................^
+[C5] cel.expr.conformance.proto3.TestAllTypes{single_uint32_wrapper: -1}.single_uint32_wrapper == 0u
+   -> STATUS-ERR: INVALID_ARGUMENT: compile failed: ERROR: probe:1:63: expected type of field 'single_uint32_wrapper' is 'wrapper(uint)' but provided type is 'int'
+ | cel.expr.conformance.proto3.TestAllTypes{single_uint32_wrapper: -1}.single_uint32_wrapper == 0u
+ | ..............................................................^
+[C6] cel.expr.conformance.proto3.TestAllTypes{single_bool_wrapper: true}.single_bool_wrapper == true
+   -> true
+[C-i64] cel.expr.conformance.proto3.TestAllTypes{single_int64_wrapper: 9}.single_int64_wrapper == 9
+   -> true
+[C-u32] cel.expr.conformance.proto3.TestAllTypes{single_uint32_wrapper: 7u}.single_uint32_wrapper == 7u
+   -> true
+[C-u64] cel.expr.conformance.proto3.TestAllTypes{single_uint64_wrapper: 7u}.single_uint64_wrapper == 7u
+   -> true
+[C-float] cel.expr.conformance.proto3.TestAllTypes{single_float_wrapper: 1.5}.single_float_wrapper == 1.5
+   -> true
+[C-double] cel.expr.conformance.proto3.TestAllTypes{single_double_wrapper: 1.5}.single_double_wrapper == 1.5
+   -> true
+[C-str] cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: "x"}.single_string_wrapper == "x"
+   -> true
+[C-bytes] cel.expr.conformance.proto3.TestAllTypes{single_bytes_wrapper: b"x"}.single_bytes_wrapper == b"x"
+   -> true
+[C-null-bool] cel.expr.conformance.proto3.TestAllTypes{single_bool_wrapper: null}.single_bool_wrapper == null
+   -> false
+[C-null-str] cel.expr.conformance.proto3.TestAllTypes{single_string_wrapper: null}.single_string_wrapper == null
+   -> false
+[C-null-bytes] cel.expr.conformance.proto3.TestAllTypes{single_bytes_wrapper: null}.single_bytes_wrapper == null
+   -> false
+
+=== GROUP 4: Any-contained wrapper (chain peel) ===
+[D-bool] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.BoolValue{value: true}}.single_any == true
+   -> true
+[D-i32] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.Int32Value{value: 1}}.single_any == 1
+   -> true
+[D-i64] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.Int64Value{value: 9}}.single_any == 9
+   -> true
+[D-u32] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.UInt32Value{value: 7u}}.single_any == 7u
+   -> true
+[D-u64] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.UInt64Value{value: 7u}}.single_any == 7u
+   -> true
+[D-float] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.FloatValue{value: 1.5}}.single_any == 1.5
+   -> true
+[D-double] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.DoubleValue{value: 1.5}}.single_any == 1.5
+   -> true
+[D-str] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.StringValue{value: "x"}}.single_any == "x"
+   -> true
+[D-bytes] cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.BytesValue{value: b"x"}}.single_any == b"x"
+   -> true
+[D-type-i32] type(cel.expr.conformance.proto3.TestAllTypes{single_any: google.protobuf.Int32Value{value: 1}}.single_any)
+   -> int
+
+=== GROUP 5: Boundary values per wrapper ===
+[E-bool-true] google.protobuf.BoolValue{value: true}  == true
+   -> true
+[E-bool-false] google.protobuf.BoolValue{value: false} == false
+   -> true
+[E-i32-min] google.protobuf.Int32Value{value: -2147483648} == -2147483648
+   -> true
+[E-i32-max] google.protobuf.Int32Value{value: 2147483647}  == 2147483647
+   -> true
+[E-i32-neg1] google.protobuf.Int32Value{value: -1}          == -1
+   -> true
+[E-i64-min] google.protobuf.Int64Value{value: -9223372036854775808} == -9223372036854775808
+   -> true
+[E-i64-max] google.protobuf.Int64Value{value: 9223372036854775807}  == 9223372036854775807
+   -> true
+[E-u32-max] google.protobuf.UInt32Value{value: 4294967295u} == 4294967295u
+   -> true
+[E-u64-max] google.protobuf.UInt64Value{value: 18446744073709551615u} == 18446744073709551615u
+   -> true
+[E-d-zero] google.protobuf.DoubleValue{value:  0.0} ==  0.0
+   -> true
+[E-d-nzero] google.protobuf.DoubleValue{value: -0.0} == -0.0
+   -> true
+[E-d-pinf] google.protobuf.DoubleValue{value: 1.0/0.0} == 1.0/0.0
+   -> true
+[E-d-ninf] google.protobuf.DoubleValue{value: -1.0/0.0} == -1.0/0.0
+   -> true
+[E-d-nan] google.protobuf.DoubleValue{value: 0.0/0.0} == 0.0/0.0
+   -> false
+[E-s-empty] google.protobuf.StringValue{value: ""}  == ""
+   -> true
+[E-s-nul] google.protobuf.StringValue{value: "a\x00b"} == "a\x00b"
+   -> true
+[E-s-utf8] google.protobuf.StringValue{value: "\u00e9"} == "\u00e9"
+   -> true
+[E-b-empty] google.protobuf.BytesValue{value: b""}    == b""
+   -> true
+[E-b-nul] google.protobuf.BytesValue{value: b"\x00"} == b"\x00"
+   -> true
+
+=== GROUP 6: Cross-form symmetry ===
+[F1] google.protobuf.Int32Value{value: 5} == cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper
+   -> true
+[F1-rev] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper == google.protobuf.Int32Value{value: 5}
+   -> true
+[F-unset-vs-litzero] cel.expr.conformance.proto3.TestAllTypes{}.single_int32_wrapper == google.protobuf.Int32Value{value: 0}
+   -> true
+[F-setzero-vs-litzero] cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper == google.protobuf.Int32Value{value: 0}
+   -> true
+
+[done]

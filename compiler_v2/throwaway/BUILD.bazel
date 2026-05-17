@@ -1,0 +1,33 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+# Throwaway empirical probe for M8 wrapper-type behaviour.  Run via
+# `bazel run -c opt //compiler_v2/throwaway:m8_wrapper_probe`.  Delete
+# once M8 closes.  See the source-file header for the matrix.
+cc_binary(
+    name = "m8_wrapper_probe",
+    srcs = ["m8_wrapper_probe.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    testonly = True,
+    deps = [
+        "@cel-cpp//common:ast",
+        "@cel-cpp//common:ast_proto",
+        "@cel-cpp//common:value",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//internal:testing_descriptor_pool",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:runtime_builder",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "//proto/cel/expr:checked_cc_proto",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
