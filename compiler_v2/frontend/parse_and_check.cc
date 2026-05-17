@@ -30,9 +30,12 @@
 #include "common/ast_proto.h"
 #include "common/decl.h"
 #include "common/expr.h"
+#include "common/source.h"
 #include "common/type.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
+#include "extensions/bindings_ext.h"
+#include "extensions/comprehensions_v2.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/compiler/importer.h"
 #include "google/protobuf/compiler/parser.h"
@@ -41,7 +44,10 @@
 #include "google/protobuf/descriptor_database.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "parser/macro_registry.h"
+#include "parser/options.h"
 #include "parser/parser.h"
+#include "parser/standard_macros.h"
 
 namespace celwasm {
 
@@ -392,15 +398,43 @@ void CheckSubsetStruct(const cel::StructExpr& s, const cel::Ast::TypeMap& types,
   }
 }
 
+// M5.B Slice I: `cel.bind(name, value, body)` expands to a
+// degenerate comprehension whose `iter_range` is an empty list
+// literal `[]` (and `loop_condition` is `kConst(false)`).  Empty
+// list literals type as `list(dyn)` — the checker has no
+// element type to infer — and RejectDyn would otherwise refuse
+// every cel.bind expression on that basis.  Skipping the
+// iter_range subtree for this canonical shape is safe: the loop
+// body never executes (loop_cond is `false`), so the
+// iter_range's element type is never observed at runtime.
+bool IsCelBindShape(const cel::ComprehensionExpr& c) {
+  if (!c.has_iter_range() || !c.has_loop_condition()) return false;
+  const cel::Expr& range = c.iter_range();
+  if (range.kind_case() != cel::ExprKindCase::kListExpr) return false;
+  if (!range.list_expr().elements().empty()) return false;
+  const cel::Expr& cond = c.loop_condition();
+  if (cond.kind_case() != cel::ExprKindCase::kConstant) return false;
+  return cond.const_expr().has_bool_value() && !cond.const_expr().bool_value();
+}
+
 void CheckSubsetComprehension(const cel::ComprehensionExpr& c,
                               const cel::Ast::TypeMap& types,
                               std::vector<Violation>& out) {
-  if (c.has_iter_range()) CheckSubsetNode(c.iter_range(), types, out);
+  const bool cel_bind = IsCelBindShape(c);
+  if (c.has_iter_range() && !cel_bind) {
+    CheckSubsetNode(c.iter_range(), types, out);
+  }
   if (c.has_accu_init()) CheckSubsetNode(c.accu_init(), types, out);
   if (c.has_loop_condition()) {
     CheckSubsetNode(c.loop_condition(), types, out);
   }
-  if (c.has_loop_step()) CheckSubsetNode(c.loop_step(), types, out);
+  if (c.has_loop_step() && !cel_bind) {
+    // cel.bind's loop_step is `kIdent(accu_var)` per the
+    // bindings_ext macro (never executed; loop_cond is false).
+    // It may type as the accu_var's type which can be anything
+    // including dyn-derived, but it's unreachable.
+    CheckSubsetNode(c.loop_step(), types, out);
+  }
   if (c.has_result()) CheckSubsetNode(c.result(), types, out);
 }
 
@@ -474,8 +508,7 @@ bool ArgIsAdmissibleScalar(const cel::Expr& arg,
 // Recursive: a select whose operand is itself a select-through-Any
 // admits transitively, so `msg.single_any.x.y` lands after the
 // first carve-out fires.
-bool IsSelectThroughAny(const cel::Expr& node,
-                        const cel::Ast::TypeMap& types) {
+bool IsSelectThroughAny(const cel::Expr& node, const cel::Ast::TypeMap& types) {
   if (!node.has_select_expr()) return false;
   const auto& sel = node.select_expr();
   if (!sel.has_operand()) return false;
@@ -576,10 +609,34 @@ absl::Status ConfigureCheckerBuilder(
   return absl::OkStatus();
 }
 
+// M5.B Slice I/F: macros the parser recognises beyond the bare
+// CEL grammar.  Standard macros (`has`, `all`, `exists`,
+// `exists_one`, `map`, `filter`) cover langdef-required
+// expansions; bindings_ext adds `cel.bind`; comprehensions_v2
+// adds the three-arg / two-iter-var forms (`exists(i, v, p)`,
+// `transformList(i, v, t)`, etc.) that drive `macros2.textproto`.
+absl::Status BuildMacroRegistry(cel::MacroRegistry& registry) {
+  cel::ParserOptions opts;
+  if (auto s = cel::RegisterStandardMacros(registry, opts); !s.ok()) return s;
+  if (auto s = cel::extensions::RegisterBindingsMacros(registry, opts);
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = cel::extensions::RegisterComprehensionsV2Macros(registry, opts);
+      !s.ok()) {
+    return s;
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
     cel::TypeChecker& checker, absl::string_view expression,
     absl::string_view description) {
-  auto parsed = google::api::expr::parser::Parse(expression, description);
+  cel::MacroRegistry registry;
+  if (auto s = BuildMacroRegistry(registry); !s.ok()) return s;
+  auto source = cel::NewSource(expression, std::string(description));
+  if (!source.ok()) return source.status();
+  auto parsed = google::api::expr::parser::Parse(**source, registry);
   if (!parsed.ok()) return parsed.status();
   auto ast = cel::CreateAstFromParsedExpr(*parsed);
   if (!ast.ok()) return ast.status();
@@ -611,6 +668,19 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
 // a no-op.  Called after the checker returns and before
 // `RejectDyn` / annotation population so all later passes see the
 // rewritten kConstant nodes uniformly.
+// Split out of VisitInlineConstantChildren to keep it under the
+// readability-function-size gate after Slice I's includes
+// reshuffle.
+void VisitComprehensionChildren(cel::Expr& expr,
+                                const std::function<void(cel::Expr&)>& visit) {
+  auto& c = expr.mutable_comprehension_expr();
+  visit(c.mutable_iter_range());
+  visit(c.mutable_accu_init());
+  visit(c.mutable_loop_condition());
+  visit(c.mutable_loop_step());
+  visit(c.mutable_result());
+}
+
 // Recurse into the immediate children of `expr` and apply `visit` to
 // each — split out of `InlineConstantReferences` to keep that function
 // under the lint size gate.  Caller is responsible for handling the
@@ -648,15 +718,7 @@ void VisitInlineConstantChildren(cel::Expr& expr,
     }
     return;
   }
-  if (expr.has_comprehension_expr()) {
-    auto& c = expr.mutable_comprehension_expr();
-    visit(c.mutable_iter_range());
-    visit(c.mutable_accu_init());
-    visit(c.mutable_loop_condition());
-    visit(c.mutable_loop_step());
-    visit(c.mutable_result());
-    return;
-  }
+  if (expr.has_comprehension_expr()) VisitComprehensionChildren(expr, visit);
   // kConstant / kUnspecified / kIdent — leaf, nothing to recurse into.
 }
 

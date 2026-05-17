@@ -1424,12 +1424,56 @@ absl::StatusOr<BinaryenExpressionRef> BuildCompLoop(
                        BinaryenTypeNone());
 }
 
+// M5.B Slice I — Shape-C detector: `iter_range = kCreateList([])
+// AND loop_cond = kConst(false)` (the `cel.bind` macro
+// expansion).  Loop body never runs at runtime.  Codegen emits a
+// streamlined no-loop sequence: evaluate `value` into accu_var's
+// slot, set the local pointer, evaluate `body` (result).
+bool IsShapeC(const cel::ComprehensionExpr& comp) {
+  if (!comp.has_iter_range() || !comp.has_loop_condition()) return false;
+  const cel::Expr& range = comp.iter_range();
+  if (range.kind_case() != cel::ExprKindCase::kListExpr) return false;
+  if (!range.list_expr().elements().empty()) return false;
+  const cel::Expr& cond = comp.loop_condition();
+  if (cond.kind_case() != cel::ExprKindCase::kConstant) return false;
+  return cond.const_expr().has_bool_value() && !cond.const_expr().bool_value();
+}
+
+// Streamlined emission for the `cel.bind(name, value, body)`
+// shape: evaluate `value` (which cel-cpp stores as accu_init),
+// copy it into accu_var's workspace slot, set accu_var's wasm
+// local to the slot offset (so kIdent(accu_var) inside `body`
+// reads it via `local.get`), then evaluate `body` (the
+// comprehension's `result`).  No loop scaffold.  Per design §5
+// Shape C / §6 macro #8.
+absl::StatusOr<BinaryenExpressionRef> LowerShapeC(
+    EmitCtx& ctx, const cel::ComprehensionExpr& comp, const CompContext& c) {
+  auto* mod = ctx.mod.raw();
+  auto init_or = Emit(ctx, comp.accu_init());
+  if (!init_or.ok()) return init_or.status();
+  const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
+  ABSL_CHECK(init_ann != nullptr);
+  std::vector<BinaryenExpressionRef> instrs;
+  instrs.push_back(BinaryenDrop(mod, *init_or));
+  instrs.push_back(
+      EmitCelCopySlot(ctx, c.accu_slot, init_ann->storage.payload));
+  instrs.push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
+                                    I32Const(ctx.mod, c.accu_slot)));
+  auto result_or = Emit(ctx, comp.result());
+  if (!result_or.ok()) return result_or.status();
+  instrs.push_back(*result_or);
+  return BinaryenBlock(mod, /*name=*/nullptr, instrs.data(),
+                       static_cast<BinaryenIndex>(instrs.size()),
+                       BinaryenTypeInt32());
+}
+
 absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const NodeAnnotation& ann) {
   auto cctx_or = ResolveCompContext(ctx, expr, comp, ann);
   if (!cctx_or.ok()) return cctx_or.status();
   const CompContext& c = *cctx_or;
+  if (IsShapeC(comp)) return LowerShapeC(ctx, comp, c);
   auto range_or = Emit(ctx, comp.iter_range());
   if (!range_or.ok()) return range_or.status();
   auto init_or = Emit(ctx, comp.accu_init());

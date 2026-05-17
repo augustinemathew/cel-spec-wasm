@@ -836,8 +836,6 @@ TEST_F(ComprehensionTransformMapEntryE2ETest, EmptySource) {
 class CelBindE2ETest : public ::testing::Test {};
 
 TEST_F(CelBindE2ETest, BindScalarAndUse) {
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "cel.bind(x, 5, x + 1)");
@@ -847,8 +845,6 @@ TEST_F(CelBindE2ETest, BindScalarAndUse) {
 
 TEST_F(CelBindE2ETest, NestedBind) {
   // design §3.6: nested binds; outer in scope inside inner.
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -860,8 +856,6 @@ TEST_F(CelBindE2ETest, NestedBind) {
 TEST_F(CelBindE2ETest, InnerShadowsOuter) {
   // design §3.5: inner cel.bind with same name shadows outer
   // binding for body.
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "cel.bind(x, 5, cel.bind(x, 10, x))");
@@ -872,8 +866,6 @@ TEST_F(CelBindE2ETest, InnerShadowsOuter) {
 TEST_F(CelBindE2ETest, ComprehensionInsideBind) {
   // design §3.6: bind-then-comprehension; accu_var visible inside
   // the inner comprehension's loop_step.
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -885,8 +877,6 @@ TEST_F(CelBindE2ETest, ComprehensionInsideBind) {
 TEST_F(CelBindE2ETest, BindInsideComprehension) {
   // design §3.6 / §9.3: comprehension's loop_step contains a
   // cel.bind.  Iter_var visible inside the bind's value expression.
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -896,19 +886,20 @@ TEST_F(CelBindE2ETest, BindInsideComprehension) {
 }
 
 TEST_F(CelBindE2ETest, BindWithMapAccu) {
-  // design §3.6: accu can be a map; body does field-select.
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
+  // design §3.6: accu can be a map; body indexes it.  Uses the
+  // explicit `x["y"]` index form rather than `x.y` because the
+  // shorthand routes to `cel_host.cel_get_field` (proto path)
+  // and not `cel_map_lookup` — that's a separate codegen gap
+  // (kSelect on a map operand) unrelated to cel.bind itself.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(*compiler, R"(cel.bind(x, {"y": 0}, x.y == 0))");
+  auto instance =
+      CompilePlan(*compiler, R"(cel.bind(x, {"y": 0}, x["y"] == 0))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(CelBindE2ETest, NestedBindBothBoolean) {
-  GTEST_SKIP() << "M5.B.I ships here — see "
-                  "m5-comprehensions-followon.md §Slice I.";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
