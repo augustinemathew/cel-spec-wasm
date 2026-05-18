@@ -769,5 +769,34 @@ TEST(LayoutPassComprehensionTest, FreeVarsCoexistWithCompScope) {
   EXPECT_NE(accu->slot_offset, 0u);
 }
 
+// `[1, 2, 3].existsOne(i, v, v > i)` — comprehensions_v2 two-iter
+// list form.  Both iter_var (index) and iter_var2 (value) need
+// their lifecycle right.  Regression test for the
+// `kComprehensionIndex` enum removal: the synthetic index
+// variable lands as `kComprehensionAccu` (workspace slot for the
+// per-iter {CEL_INT, i=idx} CelValue), NOT a separate kind.
+// Iter_var2 (the value) lands as `kComprehensionIter` (moving
+// pointer; no workspace slot).
+TEST(LayoutPassComprehensionTest, TwoIterListIndexUsesAccuKind) {
+  auto ta = ParseAndCheck("[1, 2, 3].existsOne(i, v, v > i)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* i = FindLaidOutByName(*layout, "i");
+  const LaidOutVariable* v = FindLaidOutByName(*layout, "v");
+  ASSERT_NE(i, nullptr);
+  ASSERT_NE(v, nullptr);
+  EXPECT_EQ(i->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(i->slot_offset, 0u)
+      << "v2 two-iter list index must own a workspace slot for the "
+         "{CEL_INT, i=idx} CelValue codegen writes each iter";
+  EXPECT_EQ(v->kind, ResolvedVariableKind::kComprehensionIter);
+  EXPECT_EQ(v->slot_offset, 0u)
+      << "v2 two-iter list value is a moving pointer — no fixed slot";
+}
+
 }  // namespace
 }  // namespace celwasm

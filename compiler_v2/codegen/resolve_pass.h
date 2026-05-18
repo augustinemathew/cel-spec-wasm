@@ -27,19 +27,14 @@ namespace celwasm {
 //   - `kComprehensionAccu` — bound by the comprehension's
 //     init/loop_step.  The wasm local holds a stable workspace slot
 //     offset; `loop_step` re-writes the CelValue at that offset each
-//     iteration.  NOT set by the function prelude; NOT in
-//     `cel.abi.variables[]`.
-//
-//   - `kComprehensionIndex` — Slice F (two-iter-var list): the
-//     synthetic integer counter for the index `iter_var`.  Wasm
-//     local holds a workspace slot offset; the slot's CelValue is
-//     rewritten to `{kind=CEL_INT, payload.i=index}` each iter.  NOT
-//     in `cel.abi.variables[]`.
+//     iteration.  The two-iter-var list source's synthetic index
+//     counter also uses this lifecycle — codegen rewrites its slot
+//     to `{kind=CEL_INT, payload.i=index}` each iter.  NOT set by
+//     the function prelude; NOT in `cel.abi.variables[]`.
 enum class ResolvedVariableKind : uint8_t {
   kFreeVariable = 0,
   kComprehensionIter,
   kComprehensionAccu,
-  kComprehensionIndex,
 };
 
 // One referenced free variable — populated by ResolvePass when it

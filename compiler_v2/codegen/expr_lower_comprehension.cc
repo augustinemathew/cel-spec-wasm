@@ -54,12 +54,20 @@
 //     ResolvePass — `slot_offset` is the workspace slot,
 //     `local_index` is the wasm local that holds it.
 //   - source_slot: where iter_range's CelValue lives.
-//   - aux0_local / aux1_local: end-pointer (list), iter-handle
-//     (map), or index-counter (list two-iter); usage depends on
-//     `map_source` + `two_iter`.
+//   - aux0_local: end-pointer (list source) or iter-handle (map
+//     source).  The v2 two-iter list index counter occupies
+//     `aux0_local + 1`, exposed as `c.index_local()`.
+//   - map_source: switches the prologue + loop scaffold between
+//     the list and map shapes.
 //   - exit_label / continue_label: per-comp unique (suffixed by
 //     expr_id) so Binaryen's nested-label validator accepts
 //     same-name comprehensions inside each other.
+//
+// Several values that used to live on this struct are now derived
+// at the read site: `accu_slot()` from `accu_v->slot_offset`,
+// `two_iter()` from `iter_v2 != nullptr`, `index_local()` from
+// `aux0_local + 1`, and the init-source slot inline from
+// `accu_init`'s NodeAnnotation in EmitCompPrologue.
 //
 // ── Pre-sizing invariant ─────────────────────────────────────
 //
@@ -178,24 +186,33 @@ BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
 //
 // aux0_local: end_off for list source (one-past-end pointer),
 //             handle for map source (returned by cel_map_iter_init).
-// aux1_local: raw-int index counter for list two-iter case;
-//             unused otherwise.
+// The list two-iter index counter occupies `aux0_local + 1`
+// (a second wasm local ComprehensionLocalsVisitor reserves
+// adjacent to aux0).  two_iter and accu_slot are derived from
+// other fields rather than cached, so the source-of-truth is
+// always iter_v2 / accu_v.
 struct CompContext {
   const LaidOutVariable* iter_v = nullptr;
   const LaidOutVariable* iter_v2 = nullptr;
   const LaidOutVariable* accu_v = nullptr;
   uint32_t aux0_local = 0;
-  uint32_t aux1_local = 0;
-  uint32_t accu_slot = 0;
   uint32_t source_slot = 0;
-  uint32_t init_src_slot = 0;
   bool map_source = false;
-  bool two_iter = false;
   // Per-comp unique labels (suffixed by expr_id).  Nested same-name
-  // comprehensions would otherwise trip Binaryen's
-  // visitLoop "iter != breakTypes.end()" check.
+  // comprehensions would otherwise trip Binaryen's visitLoop
+  // "iter != breakTypes.end()" check.
   std::string exit_label;
   std::string continue_label;
+
+  uint32_t accu_slot() const {
+    return accu_v->slot_offset;
+  }
+  bool two_iter() const {
+    return iter_v2 != nullptr;
+  }
+  uint32_t index_local() const {
+    return aux0_local + 1;
+  }
 };
 
 // Resolve iter / iter2 / accu LaidOutVariables via the comp node's
@@ -213,8 +230,7 @@ void BindCompVariables(EmitCtx& ctx, const cel::Expr& expr,
       << " variables.size=" << ctx.layout.variables.size() << ")";
   c->iter_v = &ctx.layout.variables[ann.comp_iter_local_index];
   c->accu_v = &ctx.layout.variables[ann.comp_accu_local_index];
-  c->two_iter = !comp.iter_var2().empty();
-  if (c->two_iter) {
+  if (!comp.iter_var2().empty()) {
     ABSL_CHECK(ann.comp_iter2_local_index < ctx.layout.variables.size())
         << "LowerComprehension: iter2 local index out of range (expr_id="
         << expr.id() << ")";
@@ -224,11 +240,10 @@ void BindCompVariables(EmitCtx& ctx, const cel::Expr& expr,
       << "LowerComprehension: ComprehensionLocalsVisitor didn't assign aux "
          "locals (expr_id="
       << expr.id() << ")";
-  c->aux0_local = ann.comp_aux_local_base + 0;
-  c->aux1_local = ann.comp_aux_local_base + 1;
-  c->accu_slot = c->accu_v->slot_offset;
-  ABSL_CHECK(c->accu_slot != 0) << "LowerComprehension: accu_var `"
-                                << comp.accu_var() << "` has no workspace slot";
+  c->aux0_local = ann.comp_aux_local_base;
+  ABSL_CHECK(c->accu_v->slot_offset != 0)
+      << "LowerComprehension: accu_var `" << comp.accu_var()
+      << "` has no workspace slot";
 }
 
 // Collection-accu shapes (map/filter/transformList/transformMap/
@@ -287,7 +302,6 @@ absl::StatusOr<CompContext> ResolveCompContext(
     ABSL_CHECK(false) << "LowerComprehension: accu_init storage kind "
                       << static_cast<int>(init_ann->storage.kind);
   }
-  c.init_src_slot = init_ann->storage.payload;
   return c;
 }
 
@@ -299,7 +313,7 @@ absl::StatusOr<CompContext> ResolveCompContext(
 // iter_v itself.  Two-iter (v2): iter_v2 — iter_v is the synthesized
 // index counter slot.
 uint32_t ListIterPointerLocal(const CompContext& c) {
-  return c.two_iter ? c.iter_v2->local_index : c.iter_v->local_index;
+  return c.two_iter() ? c.iter_v2->local_index : c.iter_v->local_index;
 }
 
 // Map-source prologue.  cel_map_iter_init returns a handle stored
@@ -316,7 +330,7 @@ void EmitMapPrologue(EmitCtx& ctx, const CompContext& c,
                                     BinaryenTypeInt32())));
   instrs->push_back(BinaryenLocalSet(mod, c.iter_v->local_index,
                                      I32Const(ctx.mod, c.iter_v->slot_offset)));
-  if (c.two_iter) {
+  if (c.two_iter()) {
     instrs->push_back(
         BinaryenLocalSet(mod, c.iter_v2->local_index,
                          I32Const(ctx.mod, c.iter_v2->slot_offset)));
@@ -356,11 +370,11 @@ void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
           BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
           BinaryenBinary(mod, BinaryenMulInt32(), count,
                          BinaryenConst(mod, BinaryenLiteralInt32(24))))));
-  if (c.two_iter) {
+  if (c.two_iter()) {
     instrs->push_back(BinaryenLocalSet(
         mod, c.iter_v->local_index, I32Const(ctx.mod, c.iter_v->slot_offset)));
     instrs->push_back(
-        BinaryenLocalSet(mod, c.aux1_local, I32Const(ctx.mod, 0)));
+        BinaryenLocalSet(mod, c.index_local(), I32Const(ctx.mod, 0)));
   }
 }
 
@@ -420,7 +434,7 @@ void EmitPresizeAccu(EmitCtx& ctx, const CompContext& c, bool is_map,
     count = BinaryenBinary(mod, BinaryenMulInt32(), count,
                            I32Const(ctx.mod, per_iter));
   }
-  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, c.accu_slot), count};
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, c.accu_slot()), count};
   const char* helper = is_map ? "cel_map_create" : "cel_list_create";
   instrs->push_back(BinaryenCall(mod, helper, args, 2, BinaryenTypeNone()));
 }
@@ -438,10 +452,11 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
     EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap,
                     /*per_iter=*/PerIterEntryCount(comp), instrs);
   } else {
-    instrs->push_back(EmitCelCopySlot(ctx, c.accu_slot, c.init_src_slot));
+    instrs->push_back(
+        EmitCelCopySlot(ctx, c.accu_slot(), init_ann->storage.payload));
   }
   instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
-                                     I32Const(ctx.mod, c.accu_slot)));
+                                     I32Const(ctx.mod, c.accu_slot())));
   if (c.map_source) {
     EmitMapPrologue(ctx, c, instrs);
   } else {
@@ -491,12 +506,12 @@ absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
   }
   if (IsNotStrictlyFalseOfNotIdent(loop_cond, accu_name)) {
     return BinaryenBreak(mod, c.exit_label.c_str(),
-                         LoadAccuBoolPayload(ctx, c.accu_slot), nullptr);
+                         LoadAccuBoolPayload(ctx, c.accu_slot()), nullptr);
   }
   if (IsNotStrictlyFalseOfIdent(loop_cond, accu_name)) {
     return BinaryenBreak(mod, c.exit_label.c_str(),
                          BinaryenUnary(mod, BinaryenEqZInt32(),
-                                       LoadAccuBoolPayload(ctx, c.accu_slot)),
+                                       LoadAccuBoolPayload(ctx, c.accu_slot())),
                          nullptr);
   }
   return absl::UnimplementedError(absl::StrCat(
@@ -607,7 +622,7 @@ absl::Status EmitAppendStep(EmitCtx& ctx, const CompContext& c,
                             std::vector<BinaryenExpressionRef>* body) {
   auto elem_or = Emit(ctx, elem);
   if (!elem_or.ok()) return elem_or.status();
-  body->push_back(EmitCelListAppendCall(ctx, c.accu_slot, *elem_or));
+  body->push_back(EmitCelListAppendCall(ctx, c.accu_slot(), *elem_or));
   return absl::OkStatus();
 }
 
@@ -618,7 +633,7 @@ absl::Status EmitConditionalAppendStep(
   if (!pred_or.ok()) return pred_or.status();
   auto elem_or = Emit(ctx, elem);
   if (!elem_or.ok()) return elem_or.status();
-  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot()), *pred_or,
                                    *elem_or};
   body->push_back(BinaryenCall(ctx.mod.raw(), "cel_list_append_at_if_bool",
                                args, 3, BinaryenTypeNone()));
@@ -632,7 +647,7 @@ absl::Status EmitMapInsertStep(EmitCtx& ctx, const CompContext& c,
   if (!key_or.ok()) return key_or.status();
   auto value_or = Emit(ctx, value);
   if (!value_or.ok()) return value_or.status();
-  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot), *key_or,
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot()), *key_or,
                                    *value_or};
   body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_insert_at", args, 3,
                                BinaryenTypeNone()));
@@ -652,7 +667,7 @@ absl::Status EmitConditionalMapInsertStep(
   if (!key_or.ok()) return key_or.status();
   auto value_or = Emit(ctx, value);
   if (!value_or.ok()) return value_or.status();
-  BinaryenExpressionRef args[4] = {I32Const(ctx.mod, c.accu_slot), *pred_or,
+  BinaryenExpressionRef args[4] = {I32Const(ctx.mod, c.accu_slot()), *pred_or,
                                    *key_or, *value_or};
   body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_insert_at_if_bool", args,
                                4, BinaryenTypeNone()));
@@ -761,7 +776,7 @@ absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   // means the loop body never executes at runtime anyway.
   if (step_ann->storage.kind == StorageKind::kWorkspaceSlot) {
     body->push_back(
-        EmitCelCopySlot(ctx, c.accu_slot, step_ann->storage.payload));
+        EmitCelCopySlot(ctx, c.accu_slot(), step_ann->storage.payload));
   }
   return absl::OkStatus();
 }
@@ -784,7 +799,7 @@ void EmitMapLoopHead(EmitCtx& ctx, const CompContext& c,
       BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
   body->push_back(BinaryenCall(mod, "cel_map_iter_key_at", key_args, 2,
                                BinaryenTypeNone()));
-  if (c.two_iter) {
+  if (c.two_iter()) {
     BinaryenExpressionRef val_args[2] = {
         I32Const(ctx.mod, c.iter_v2->slot_offset),
         BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())};
@@ -805,8 +820,9 @@ void EmitListLoopHead(EmitCtx& ctx, const CompContext& c,
                      BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
                      BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32())),
       nullptr));
-  if (c.two_iter) {
-    EmitWriteIntCelValueToSlot(ctx, c.iter_v->slot_offset, c.aux1_local, body);
+  if (c.two_iter()) {
+    EmitWriteIntCelValueToSlot(ctx, c.iter_v->slot_offset, c.index_local(),
+                               body);
   }
 }
 
@@ -822,12 +838,13 @@ void EmitListLoopTail(EmitCtx& ctx, const CompContext& c,
       BinaryenBinary(mod, BinaryenAddInt32(),
                      BinaryenLocalGet(mod, ptr_local, BinaryenTypeInt32()),
                      BinaryenConst(mod, BinaryenLiteralInt32(24)))));
-  if (c.two_iter) {
+  if (c.two_iter()) {
     body->push_back(BinaryenLocalSet(
-        mod, c.aux1_local,
-        BinaryenBinary(mod, BinaryenAddInt32(),
-                       BinaryenLocalGet(mod, c.aux1_local, BinaryenTypeInt32()),
-                       BinaryenConst(mod, BinaryenLiteralInt32(1)))));
+        mod, c.index_local(),
+        BinaryenBinary(
+            mod, BinaryenAddInt32(),
+            BinaryenLocalGet(mod, c.index_local(), BinaryenTypeInt32()),
+            BinaryenConst(mod, BinaryenLiteralInt32(1)))));
   }
 }
 

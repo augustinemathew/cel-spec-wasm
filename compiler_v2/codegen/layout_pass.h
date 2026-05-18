@@ -31,11 +31,11 @@ struct LaidOutVariable {
   uint32_t local_index = 0;
   Repr repr = Repr::kUnknown;
   // Workspace slot byte offset for variables whose wasm local holds
-  // a slot pointer (`kFreeVariable`, `kComprehensionAccu`,
-  // `kComprehensionIndex`).  Zero for `kComprehensionIter` — the
-  // iter local holds a *moving* pointer into the iter_range's
-  // element run (list iteration) or the output of
-  // `cel_map_iter_key_at` (map iteration); no fixed workspace cell.
+  // a slot pointer (`kFreeVariable`, `kComprehensionAccu`).  Zero
+  // for `kComprehensionIter` — the iter local holds a *moving*
+  // pointer into the iter_range's element run (list iteration) or
+  // the output of `cel_map_iter_key_at` (map iteration); no fixed
+  // workspace cell.
   uint32_t slot_offset = 0;
   // Propagated from `ResolvedVariable::kind`.  EmitVariablePrelude
   // skips entries with `kind != kFreeVariable` — comp-scope
