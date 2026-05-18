@@ -2,91 +2,90 @@
 
 Branch: `wasi-malloc-migration` (forked from master @ `9685d72`).
 
-This directory plans + tracks the migration of `compiler_v2`
-from `--target=wasm32 -nostdlib -ffreestanding` with a custom
-bump arena at fixed memory bytes 8/12, to `wasi-sdk`'s
-`--target=wasm32-wasi` with a hand-rolled bump arena over
-`malloc()`.
+The **design** is in [`DESIGN.md`](DESIGN.md) — singular source
+of truth for goals, architecture, sizing assumptions (with code
+assertions), per-Plan and per-Eval lifecycles, baseline numbers,
+acceptance criteria, and the work-item breakdown.
 
-## Goal
+This README is the **live tracker** — it lists every milestone
+slice, its current status, and links to its per-slice doc once
+that slice is started.  Per-slice docs land in
+[`milestones/`](milestones/).
 
-**Simplify codegen and host** by removing:
-  - The `cel_reset` codegen prologue + `arena_base` /
-    `mem_size_bytes` threading.
-  - The fixed cursor-slot at memory bytes 8/12.
-  - The `host_string_arena` workaround (`api/instance.cc` ~110 LoC).
-  - The inline-asm opacity barrier in `cel_memory.c`.
-  - The 2-arg `cel_reset(base, limit)` ABI.
-  - The `--import-memory=cel,memory` linker dance.
+---
 
-Side benefit: any C/C++ library (RE2, parts of absl) can be
-vendored into the runtime without dual-allocator integration
-pain.  Browser deployment via plain `WebAssembly.instantiate`
-stays viable (zero WASI imports for pure-allocation code,
-verified).
+## Phase A — MVP (`"foo" + "bar"` end-to-end)
 
-## What to read, in order
+Goal: a runnable demo in both wasmtime AND Chrome before any
+long-tail kernel migration starts.  Total: **~5 days**.
 
-1. **[AUTHORITATIVE_PLAN.md](AUTHORITATIVE_PLAN.md)** — the build
-   plan.  Resolved architectural decisions, per-Plan and
-   per-Eval lifecycle, 12-slice work breakdown, acceptance
-   criteria.  Single source of truth.
-2. **[BASELINE_BENCH.md](BASELINE_BENCH.md)** — the numbers to
-   beat.  Pre-migration `cel_pipeline_bench` measurements on
-   the same branch + commit.  Static metrics (LoC, binary
-   size, imports) too.
-3. **[MEMORY_OPTIONS.md](MEMORY_OPTIONS.md)** — the experimental
-   findings that justify the allocator + memory-layout choices
-   the plan makes.  Every claim grounded in a running
-   `experiments/*.wasm` binary.
-4. **[ANALYSIS.md](ANALYSIS.md)** — reference material.
-   Per-function inventory of what the migration touches
-   (1,082 lines).  Source for the plan's diff sketches.
-5. **[AGENT_ASSESSMENT.md](AGENT_ASSESSMENT.md)** — independent
-   critical review of compiler_v2's current design.  Motivates
-   the migration (the "three coupled decisions" finding).
+| ID | Slice | Status | Doc | Days |
+|---|---|---|---|---:|
+| **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☐ | — | 0.5 |
+| **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☐ | — | 1.0 |
+| **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☐ | — | 0.5 |
+| **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐ | — | 0.5 |
+| **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐ | — | 1.0 |
+| **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐ | — | 0.5 |
+| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity`; assert A15 | ☐ | — | 0.5 |
+| **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☐ | — | 0.25 |
+| **M9** | Chrome smoke-test (Puppeteer or manual) | ☐ | — | 0.5 |
 
-## Experiments
+---
 
-Under [`experiments/`](experiments/):
+## Phase B — finish the migration
 
-  - `exp_a_rodata.c` — probes default + custom rodata layout
-    under wasi-sdk.  Used to verify `--global-base=N` works.
-  - `exp_b_mspace.c` — link test for dlmalloc's `mspace_*`
-    API.  Fails — confirms stock wasi-libc doesn't expose it.
-  - `exp_c_malloc.c` — pure-malloc wasm.  Verifies zero WASI
-    imports (browser-shimmable without a shim).
-  - `exp_d_arena_in_malloc.c` + `exp_d_driver.wat` — the
-    recommended design.  47-LoC bump arena over a single
-    `malloc()`, with hand-coded WAT driver proving reset
-    semantics work cross-module.
+| ID | Slice | Status | Doc | Days |
+|---|---|---|---|---:|
+| **B1** | Migrate the remaining 106 `cel_alloc` sites; drop compat shim | ☐ | — | 1.0 |
+| **B2** | Migrate 20 test file `SetUp()` from `cel_reset` to `arena_reset` | ☐ | — | 0.5 |
+| **B3** | Codegen test fixture rebaseline (~50 sites in `codegen/*_test.cc`) | ☐ | — | 1.0 |
+| **B4** | Conformance debug → **1,144 PASS** | ☐ | — | 1-2 |
+| **B5** | Post-migration bench against §11 workload → `POST_MIGRATION_BENCH.md` | ☐ | — | 0.5 |
+| **B6** | Doc closeout (update sibling design docs; flip this status to shipped) | ☐ | — | 0.5 |
 
-To re-run the experiments, the symlink at
-`experiments/wasi-sdk` points to wasi-sdk-25, installed at
-`wasm_compilation_experiments/exp1_re2/wasi-sdk-25.0-arm64-macos/`.
+---
 
-## Status
+## Phase C — RE2 / `absl::ParseTime` vendoring (post-migration)
 
-  - [x] Branch cut (`wasi-malloc-migration`).
-  - [x] Baseline benchmark captured.
-  - [x] Memory-layout experimental questions answered.
-  - [x] Architectural decisions resolved (5 of 5).
-  - [x] Authoritative plan written.
-  - [ ] **S1**: wasi-sdk in MODULE.bazel.
-  - [ ] **S2**: runtime/BUILD.bazel switch to wasi-sdk.
-  - [ ] **S3**: arena_init/alloc/reset implementation.
-  - [ ] **S4**: kernel `cel_alloc` → `arena_alloc` (107 sites).
-  - [ ] **S5**: kernel test fixtures port (21 files).
-  - [ ] **S6**: codegen prologue swap.
-  - [ ] **S7**: LayoutPass `arena_base` removal.
-  - [ ] **S8**: Engine memory-ownership flip.
-  - [ ] **S9**: Instance host_string_arena deletion.
-  - [ ] **S10**: conformance debug → 1,144 PASS.
-  - [ ] **S11**: post-migration bench + POST_MIGRATION_BENCH.md.
-  - [ ] **S12**: Chrome smoke-test (string concat sample).
+The architectural payoff.  Phase C ships **regex** (`matches()`)
+and **timestamp parse/format** as proof that library vendoring
+works under the new architecture.
+
+| ID | Slice | Status | Doc | Days |
+|---|---|---|---|---:|
+| **C1** | Vendor `abseil-cpp` (`http_archive` + cross-compile via wasi-sdk + the `absl-wasm.patch`) | ☐ | — | 1.0 |
+| **C2** | Vendor `re2` (build against vendored absl) | ☐ | — | 0.5 |
+| **C3** | `cel_matches_at_vv` + per-Instance regex cache | ☐ | — | 1.0 |
+| **C4** | `cel_timestamp_parse_at_v` calling `absl::ParseTime` | ☐ | — | 0.5 |
+| **C5** | Conformance: `string.textproto::matches/*` (9 SKIPs) flip to PASS; timestamp parse rows too | ☐ | — | 0.5 |
+| **C6** | Bench delta + Chrome retest | ☐ | — | 0.5 |
+
+---
+
+## Status legend
+
+| Symbol | Meaning |
+|---|---|
+| ☐ | Not started.  No doc yet. |
+| ◐ | In progress.  Per-slice doc in `milestones/<ID>.md` with WIP notes. |
+| ☒ | Shipped.  Per-slice doc records what landed; "Doc" column links to it. |
+
+---
+
+## Done-to-date
+
+| Step | Outcome | Commit |
+|---|---|---|
+| Baseline benchmark captured | Pre-migration numbers in `DESIGN.md` §10 | `a086393` |
+| Memory experiments validated | All 5 architectural decisions resolved (`DESIGN.md` §3) | `df49328` |
+| Authoritative plan consolidated | `DESIGN.md` is now singular | (this commit) |
+
+---
 
 ## Sentinel
 
 [`CLAUDE_Do_NOT_DELETE_OR_REVERT_FILES_IN_THIS_DIR`](CLAUDE_Do_NOT_DELETE_OR_REVERT_FILES_IN_THIS_DIR)
-is a sentinel for other agents — these files are owned by
-the migration; don't include them in unrelated commits.
+flags this directory as owned by the migration.  Other agents
+working on the repo should leave these files alone unless their
+commit is explicitly part of this work.
