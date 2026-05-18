@@ -391,32 +391,59 @@ BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
                       /*align=*/4, BinaryenTypeInt32(), hdr_ptr, "memory");
 }
 
-// Forward decls — the matchers live below (loop_step section); the
-// prologue's PerIterEntryCount needs to peek at their shape.
-bool TryMatchAccuMapInsertEntries(const cel::Expr& expr,
-                                  absl::string_view accu_name,
-                                  const cel::Expr** entry_out);
-bool TryMatchAccuConditionalMapInsertEntries(const cel::Expr& expr,
-                                             absl::string_view accu_name,
-                                             const cel::Expr** pred_out,
-                                             const cel::Expr** entry_out);
+// ── loop_step classification ────────────────────────────────
+//
+// cel-cpp's macros emit one of seven loop_step shapes.  We
+// classify the AST once, then dispatch per kind.  Operand
+// pointers populated per kind (others stay null):
+//
+//   kListAppend / kListAppendIf   → elem  (+pred for If)
+//   kMapInsert  / kMapInsertIf    → key, value  (+pred for If)
+//   kMapMerge   / kMapMergeIf     → entry  (+pred for If)
+//   kGeneric                      → none
+//
+// Originating macro per kind (for reference; macro names are
+// erased by cel-cpp's expander, so we recover from AST shape):
+//   kListAppend     map / transformList(3-arg)
+//   kListAppendIf   filter / transformList(4-arg)
+//   kMapInsert      transformMap(3-arg)
+//   kMapInsertIf    transformMap(4-arg)
+//   kMapMerge       transformMapEntry(3-arg)
+//   kMapMergeIf     transformMapEntry(4-arg)
+//   kGeneric        exists / all / exists_one / cel.bind
+struct LoopStepShape {
+  enum class Kind : uint8_t {
+    kListAppend,
+    kListAppendIf,
+    kMapInsert,
+    kMapInsertIf,
+    kMapMerge,
+    kMapMergeIf,
+    kGeneric,
+  };
+  Kind kind = Kind::kGeneric;
+  const cel::Expr* pred = nullptr;
+  const cel::Expr* key = nullptr;
+  const cel::Expr* value = nullptr;
+  const cel::Expr* elem = nullptr;
+  const cel::Expr* entry = nullptr;
+};
+
+// Defined further down (after the match helpers) — prologue reads
+// the result to compute the pre-size multiplier.
+LoopStepShape ClassifyLoopStep(const cel::Expr& step, absl::string_view accu);
 
 // Per-iter entries the accu may receive — drives the pre-size
-// capacity multiplier.  1 for map/filter/transformMap (single
-// element/entry per iter); entry.size() for transformMapEntry with
-// a literal map entry (empty=0 no-op, N>1 means N inserts per iter).
-// Unrecognised shapes fall through to 1.
-uint32_t PerIterEntryCount(const cel::ComprehensionExpr& comp) {
-  const cel::Expr* entry = nullptr;
-  if (TryMatchAccuMapInsertEntries(comp.loop_step(), comp.accu_var(), &entry) &&
-      entry->kind_case() == cel::ExprKindCase::kMapExpr) {
-    return static_cast<uint32_t>(entry->map_expr().entries().size());
-  }
-  const cel::Expr* pred = nullptr;
-  if (TryMatchAccuConditionalMapInsertEntries(comp.loop_step(), comp.accu_var(),
-                                              &pred, &entry) &&
-      entry->kind_case() == cel::ExprKindCase::kMapExpr) {
-    return static_cast<uint32_t>(entry->map_expr().entries().size());
+// capacity multiplier.  1 for kListAppend / kMapInsert / kGeneric
+// (one element/entry per iter, or scalar accu); entry.size() for
+// kMapMerge (transformMapEntry literal — empty = no-op, N>1 = N
+// inserts per iter).  Reads the already-classified shape; doesn't
+// re-walk the AST.
+uint32_t PerIterEntryCount(const LoopStepShape& shape) {
+  if ((shape.kind == LoopStepShape::Kind::kMapMerge ||
+       shape.kind == LoopStepShape::Kind::kMapMergeIf) &&
+      shape.entry->kind_case() == cel::ExprKindCase::kMapExpr) {
+    return static_cast<uint32_t>(shape.entry->map_expr().entries().size());
   }
   return 1;
 }
@@ -449,8 +476,10 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
   ABSL_CHECK(init_ann != nullptr);
   if (IsPresizableCollectionAccu(comp, *init_ann)) {
+    const LoopStepShape shape =
+        ClassifyLoopStep(comp.loop_step(), comp.accu_var());
     EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap,
-                    /*per_iter=*/PerIterEntryCount(comp), instrs);
+                    /*per_iter=*/PerIterEntryCount(shape), instrs);
   } else {
     instrs->push_back(
         EmitCelCopySlot(ctx, c.accu_slot(), init_ann->storage.payload));
@@ -521,15 +550,14 @@ absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
       "@not_strictly_false(!@result) peephole shapes are handled"));
 }
 
-// `map(v, t)` loop_step shape: `_+_(@result, [t])`.  cel-cpp
-// resolves this to the add_list overload; rewriting at codegen
-// to a direct append avoids the O(N) list-concat per iter.
-bool TryMatchAccuAppendOne(const cel::Expr& expr, absl::string_view accu_name,
-                           const cel::Expr** elem_out) {
+// Match `_+_(@result, [t])` (kListAppend body).  On match writes
+// the single element expr to *elem_out.
+bool MatchAppendBody(const cel::Expr& expr, absl::string_view accu,
+                     const cel::Expr** elem_out) {
   if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
   const auto& call = expr.call_expr();
   if (call.function() != "_+_" || call.args().size() != 2) return false;
-  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
+  if (!IsIdentNamed(call.args()[0], accu)) return false;
   const auto& rhs = call.args()[1];
   if (rhs.kind_case() != cel::ExprKindCase::kListExpr) return false;
   if (rhs.list_expr().elements().size() != 1) return false;
@@ -537,87 +565,69 @@ bool TryMatchAccuAppendOne(const cel::Expr& expr, absl::string_view accu_name,
   return true;
 }
 
-// `filter(v, p)` loop_step: `p ? _+_(@result, [t]) : @result`.
-bool TryMatchAccuConditionalAppendOne(const cel::Expr& expr,
-                                      absl::string_view accu_name,
-                                      const cel::Expr** pred_out,
-                                      const cel::Expr** elem_out) {
+// Match `cel.@mapInsert(@result, ...)`.  Returns the arg count
+// (2 = MapMerge form with `entry`; 3 = MapInsert form with k, v).
+// Returns 0 if the shape doesn't match.
+int MatchMapInsertCall(const cel::Expr& expr, absl::string_view accu) {
+  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return 0;
+  const auto& call = expr.call_expr();
+  if (call.function() != "cel.@mapInsert") return 0;
+  if (!IsIdentNamed(call.args()[0], accu)) return 0;
+  return static_cast<int>(call.args().size());
+}
+
+// Recover the conditional-wrap shape `p ? body : @result` — every
+// macro's conditional 4-arg form lowers to this ternary.  On
+// match, sets *pred_out + *body_out; caller re-classifies *body_out.
+bool MatchConditionalWrap(const cel::Expr& expr, absl::string_view accu,
+                          const cel::Expr** pred_out,
+                          const cel::Expr** body_out) {
   if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
   const auto& call = expr.call_expr();
   if (call.function() != "_?_:_" || call.args().size() != 3) return false;
-  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
-  if (!TryMatchAccuAppendOne(call.args()[1], accu_name, elem_out)) {
-    return false;
-  }
+  if (!IsIdentNamed(call.args()[2], accu)) return false;
   *pred_out = call.args().data();
+  *body_out = &call.args()[1];
   return true;
 }
 
-// `transformMap(k, v, t)` loop_step: `cel.@mapInsert(@result, k, t)`.
-bool TryMatchAccuMapInsert(const cel::Expr& expr, absl::string_view accu_name,
-                           const cel::Expr** key_out,
-                           const cel::Expr** value_out) {
-  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
-  const auto& call = expr.call_expr();
-  if (call.function() != "cel.@mapInsert") return false;
-  if (call.args().size() != 3) return false;
-  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
-  *key_out = &call.args()[1];
-  *value_out = &call.args()[2];
-  return true;
-}
+// Classify the loop_step AST into one of the recognised shapes.
+// One walk; downstream emitters + PerIterEntryCount read the
+// result instead of re-walking.
+LoopStepShape ClassifyLoopStep(const cel::Expr& step, absl::string_view accu) {
+  LoopStepShape s;
+  const cel::Expr* pred = nullptr;
+  const cel::Expr* inner = nullptr;
+  const bool is_if = MatchConditionalWrap(step, accu, &pred, &inner);
+  const cel::Expr& body = is_if ? *inner : step;
 
-// `transformMap(k, v, p, t)` loop_step:
-// `p ? cel.@mapInsert(@result, k, t) : @result`.
-bool TryMatchAccuConditionalMapInsert(const cel::Expr& expr,
-                                      absl::string_view accu_name,
-                                      const cel::Expr** pred_out,
-                                      const cel::Expr** key_out,
-                                      const cel::Expr** value_out) {
-  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
-  const auto& call = expr.call_expr();
-  if (call.function() != "_?_:_" || call.args().size() != 3) return false;
-  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
-  if (!TryMatchAccuMapInsert(call.args()[1], accu_name, key_out, value_out)) {
-    return false;
+  if (const cel::Expr* elem = nullptr; MatchAppendBody(body, accu, &elem)) {
+    s.kind = is_if ? LoopStepShape::Kind::kListAppendIf
+                   : LoopStepShape::Kind::kListAppend;
+    s.elem = elem;
+    s.pred = pred;
+    return s;
   }
-  *pred_out = call.args().data();
-  return true;
-}
-
-// `transformMapEntry(k, v, entry)` loop_step: 2-arg map-merge form
-// `cel.@mapInsert(@result, entry)`.  Entry is typically a kMapExpr
-// literal; computed entries are not supported (see EmitMapInsertEntriesStep).
-bool TryMatchAccuMapInsertEntries(const cel::Expr& expr,
-                                  absl::string_view accu_name,
-                                  const cel::Expr** entry_out) {
-  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
-  const auto& call = expr.call_expr();
-  if (call.function() != "cel.@mapInsert") return false;
-  if (call.args().size() != 2) return false;
-  if (!IsIdentNamed(call.args()[0], accu_name)) return false;
-  *entry_out = &call.args()[1];
-  return true;
-}
-
-// `transformMapEntry(k, v, p, entry)` loop_step:
-// `p ? cel.@mapInsert(@result, entry) : @result`.
-bool TryMatchAccuConditionalMapInsertEntries(const cel::Expr& expr,
-                                             absl::string_view accu_name,
-                                             const cel::Expr** pred_out,
-                                             const cel::Expr** entry_out) {
-  if (expr.kind_case() != cel::ExprKindCase::kCallExpr) return false;
-  const auto& call = expr.call_expr();
-  if (call.function() != "_?_:_" || call.args().size() != 3) return false;
-  if (!IsIdentNamed(call.args()[2], accu_name)) return false;
-  if (!TryMatchAccuMapInsertEntries(call.args()[1], accu_name, entry_out)) {
-    return false;
+  const int argc = MatchMapInsertCall(body, accu);
+  if (argc == 3) {
+    s.kind = is_if ? LoopStepShape::Kind::kMapInsertIf
+                   : LoopStepShape::Kind::kMapInsert;
+    s.key = &body.call_expr().args()[1];
+    s.value = &body.call_expr().args()[2];
+    s.pred = pred;
+    return s;
   }
-  *pred_out = call.args().data();
-  return true;
+  if (argc == 2) {
+    s.kind = is_if ? LoopStepShape::Kind::kMapMergeIf
+                   : LoopStepShape::Kind::kMapMerge;
+    s.entry = &body.call_expr().args()[1];
+    s.pred = pred;
+    return s;
+  }
+  return s;  // kGeneric, no operands
 }
 
-absl::Status EmitAppendStep(EmitCtx& ctx, const CompContext& c,
+absl::Status EmitListAppend(EmitCtx& ctx, const CompContext& c,
                             const cel::Expr& elem,
                             std::vector<BinaryenExpressionRef>* body) {
   auto elem_or = Emit(ctx, elem);
@@ -626,9 +636,9 @@ absl::Status EmitAppendStep(EmitCtx& ctx, const CompContext& c,
   return absl::OkStatus();
 }
 
-absl::Status EmitConditionalAppendStep(
-    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
-    const cel::Expr& elem, std::vector<BinaryenExpressionRef>* body) {
+absl::Status EmitListAppendIf(EmitCtx& ctx, const CompContext& c,
+                              const cel::Expr& pred, const cel::Expr& elem,
+                              std::vector<BinaryenExpressionRef>* body) {
   auto pred_or = Emit(ctx, pred);
   if (!pred_or.ok()) return pred_or.status();
   auto elem_or = Emit(ctx, elem);
@@ -640,9 +650,9 @@ absl::Status EmitConditionalAppendStep(
   return absl::OkStatus();
 }
 
-absl::Status EmitMapInsertStep(EmitCtx& ctx, const CompContext& c,
-                               const cel::Expr& key, const cel::Expr& value,
-                               std::vector<BinaryenExpressionRef>* body) {
+absl::Status EmitMapInsert(EmitCtx& ctx, const CompContext& c,
+                           const cel::Expr& key, const cel::Expr& value,
+                           std::vector<BinaryenExpressionRef>* body) {
   auto key_or = Emit(ctx, key);
   if (!key_or.ok()) return key_or.status();
   auto value_or = Emit(ctx, value);
@@ -657,10 +667,10 @@ absl::Status EmitMapInsertStep(EmitCtx& ctx, const CompContext& c,
 // Routes through cel_map_insert_at_if_bool so a 3VL predicate
 // (ERROR/UNKNOWN) propagates into the accu slot — aborting the
 // comprehension — rather than being silently interpreted as a bool.
-absl::Status EmitConditionalMapInsertStep(
-    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
-    const cel::Expr& key, const cel::Expr& value,
-    std::vector<BinaryenExpressionRef>* body) {
+absl::Status EmitMapInsertIf(EmitCtx& ctx, const CompContext& c,
+                             const cel::Expr& pred, const cel::Expr& key,
+                             const cel::Expr& value,
+                             std::vector<BinaryenExpressionRef>* body) {
   auto pred_or = Emit(ctx, pred);
   if (!pred_or.ok()) return pred_or.status();
   auto key_or = Emit(ctx, key);
@@ -678,9 +688,9 @@ absl::Status EmitConditionalMapInsertStep(
 // computed entries need a runtime map-merge helper, not yet shipped.
 // Emits one cel_map_insert_at per entry (size 0 = no-op iter per
 // langdef §"Comprehension Macros"; size N = N sequential inserts).
-absl::Status EmitMapInsertEntriesStep(
-    EmitCtx& ctx, const CompContext& c, const cel::Expr& entry,
-    std::vector<BinaryenExpressionRef>* body) {
+absl::Status EmitMapMerge(EmitCtx& ctx, const CompContext& c,
+                          const cel::Expr& entry,
+                          std::vector<BinaryenExpressionRef>* body) {
   if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
     ABSL_CHECK(false)
         << "transformMapEntry: non-literal entry expression unsupported "
@@ -694,7 +704,7 @@ absl::Status EmitMapInsertEntriesStep(
     return absl::OkStatus();
   }
   for (const auto& e : entries) {
-    absl::Status s = EmitMapInsertStep(ctx, c, e.key(), e.value(), body);
+    absl::Status s = EmitMapInsert(ctx, c, e.key(), e.value(), body);
     if (!s.ok()) return s;
   }
   return absl::OkStatus();
@@ -704,9 +714,9 @@ absl::Status EmitMapInsertEntriesStep(
 // + drop.  Size 1: route through cel_map_insert_at_if_bool (3VL).
 // Size N>1: would need a 3VL ladder gating N inserts atomically;
 // cel_map_insert_at_if_bool only handles one (k,v).  Deferred.
-absl::Status EmitConditionalMapInsertEntriesStep(
-    EmitCtx& ctx, const CompContext& c, const cel::Expr& pred,
-    const cel::Expr& entry, std::vector<BinaryenExpressionRef>* body) {
+absl::Status EmitMapMergeIf(EmitCtx& ctx, const CompContext& c,
+                            const cel::Expr& pred, const cel::Expr& entry,
+                            std::vector<BinaryenExpressionRef>* body) {
   if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
     ABSL_CHECK(false)
         << "conditional transformMapEntry: non-literal entry unsupported; "
@@ -722,8 +732,8 @@ absl::Status EmitConditionalMapInsertEntriesStep(
     return absl::OkStatus();
   }
   if (entries.size() == 1) {
-    return EmitConditionalMapInsertStep(ctx, c, pred, entries[0].key(),
-                                        entries[0].value(), body);
+    return EmitMapInsertIf(ctx, c, pred, entries[0].key(), entries[0].value(),
+                           body);
   }
   ABSL_CHECK(false)
       << "conditional transformMapEntry: multi-key entry (N>1) needs a "
@@ -733,52 +743,48 @@ absl::Status EmitConditionalMapInsertEntriesStep(
   return absl::OkStatus();
 }
 
-absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
-                              const CompContext& c,
-                              std::vector<BinaryenExpressionRef>* body) {
-  const cel::Expr* elem = nullptr;
-  if (TryMatchAccuAppendOne(comp.loop_step(), comp.accu_var(), &elem)) {
-    return EmitAppendStep(ctx, c, *elem, body);
-  }
-  const cel::Expr* pred = nullptr;
-  if (TryMatchAccuConditionalAppendOne(comp.loop_step(), comp.accu_var(), &pred,
-                                       &elem)) {
-    return EmitConditionalAppendStep(ctx, c, *pred, *elem, body);
-  }
-  const cel::Expr* tm_key = nullptr;
-  const cel::Expr* tm_value = nullptr;
-  if (TryMatchAccuMapInsert(comp.loop_step(), comp.accu_var(), &tm_key,
-                            &tm_value)) {
-    return EmitMapInsertStep(ctx, c, *tm_key, *tm_value, body);
-  }
-  if (TryMatchAccuConditionalMapInsert(comp.loop_step(), comp.accu_var(), &pred,
-                                       &tm_key, &tm_value)) {
-    return EmitConditionalMapInsertStep(ctx, c, *pred, *tm_key, *tm_value,
-                                        body);
-  }
-  const cel::Expr* tme_entry = nullptr;
-  if (TryMatchAccuMapInsertEntries(comp.loop_step(), comp.accu_var(),
-                                   &tme_entry)) {
-    return EmitMapInsertEntriesStep(ctx, c, *tme_entry, body);
-  }
-  if (TryMatchAccuConditionalMapInsertEntries(comp.loop_step(), comp.accu_var(),
-                                              &pred, &tme_entry)) {
-    return EmitConditionalMapInsertEntriesStep(ctx, c, *pred, *tme_entry, body);
-  }
-  auto step_or = Emit(ctx, comp.loop_step());
+// Generic loop_step path: evaluate, drop, copy result slot into accu.
+// Used by exists / all / exists_one (scalar bool accu) and cel.bind
+// (degenerate, loop body never runs).  kLocal storage on the step
+// means the value already lives in a wasm local — no copy needed;
+// this is the cel.bind `loop_step = kIdent(accu_var)` case.
+absl::Status EmitGenericStep(EmitCtx& ctx, const cel::Expr& step,
+                             const CompContext& c,
+                             std::vector<BinaryenExpressionRef>* body) {
+  auto step_or = Emit(ctx, step);
   if (!step_or.ok()) return step_or.status();
-  const auto* step_ann = ctx.layout.annotations.Find(comp.loop_step().id());
+  const auto* step_ann = ctx.layout.annotations.Find(step.id());
   ABSL_CHECK(step_ann != nullptr);
   body->push_back(BinaryenDrop(ctx.mod.raw(), *step_or));
-  // kLocal storage: the local already holds the accu's slot offset;
-  // copy would be a no-op.  Lands here for cel.bind's
-  // `loop_step = kIdent(accu_var)` — but cel.bind's empty iter_range
-  // means the loop body never executes at runtime anyway.
   if (step_ann->storage.kind == StorageKind::kWorkspaceSlot) {
     body->push_back(
         EmitCelCopySlot(ctx, c.accu_slot(), step_ann->storage.payload));
   }
   return absl::OkStatus();
+}
+
+absl::Status EmitCompLoopStep(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
+                              const CompContext& c,
+                              std::vector<BinaryenExpressionRef>* body) {
+  const LoopStepShape s = ClassifyLoopStep(comp.loop_step(), comp.accu_var());
+  switch (s.kind) {
+    case LoopStepShape::Kind::kListAppend:
+      return EmitListAppend(ctx, c, *s.elem, body);
+    case LoopStepShape::Kind::kListAppendIf:
+      return EmitListAppendIf(ctx, c, *s.pred, *s.elem, body);
+    case LoopStepShape::Kind::kMapInsert:
+      return EmitMapInsert(ctx, c, *s.key, *s.value, body);
+    case LoopStepShape::Kind::kMapInsertIf:
+      return EmitMapInsertIf(ctx, c, *s.pred, *s.key, *s.value, body);
+    case LoopStepShape::Kind::kMapMerge:
+      return EmitMapMerge(ctx, c, *s.entry, body);
+    case LoopStepShape::Kind::kMapMergeIf:
+      return EmitMapMergeIf(ctx, c, *s.pred, *s.entry, body);
+    case LoopStepShape::Kind::kGeneric:
+      return EmitGenericStep(ctx, comp.loop_step(), c, body);
+  }
+  ABSL_CHECK(false) << "EmitCompLoopStep: unknown LoopStepShape::Kind "
+                    << static_cast<int>(s.kind);
 }
 
 // Map-source loop head: exit when cel_map_iter_next returns 0;

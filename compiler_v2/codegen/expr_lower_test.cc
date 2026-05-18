@@ -26,6 +26,7 @@ using ::absl_testing::IsOk;
 // Forward decl — body lives below at the first call site that
 // originally needed it (`ExprLowerMapTest`'s indexing tests).
 bool BodyContainsCallTo(BinaryenExpressionRef expr, const char* name);
+bool CallTargetMatches(BinaryenExpressionRef expr, const char* name);
 
 // Force generated-pool registration of descriptors referenced by
 // tests below.  Runs once at static init per test binary.
@@ -139,6 +140,54 @@ void InstallOverloadImportsForTest(WasmModule& m) {
 // Installs the memory + `cel.cel_reset` import shape every lowered
 // `$eval` body relies on.  One wasm page and a `(i32,i32)->()` import
 // under the internal name `kCelResetInternalName`.
+void InstallMapImports(WasmModule& m) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType map2[2] = {i32, i32};
+  const BinaryenType map3[3] = {i32, i32, i32};
+  const BinaryenType map4[4] = {i32, i32, i32, i32};
+  m.AddFunctionImport(std::string(kCelMapCreateInternalName), "cel",
+                      "cel_map_create", map2, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
+                      "cel_map_insert", map3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
+                      "cel_map_lookup_arena", map3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
+                      "cel_map_lookup", map3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                      "cel_map_lookup", map3, BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_insert_at", "cel", "cel_map_insert_at", map3,
+                      BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
+                      "cel_map_insert_at_if_bool", map4, BinaryenTypeNone());
+  const BinaryenType iter1[1] = {i32};
+  m.AddFunctionImport("cel_map_iter_init", "cel", "cel_map_iter_init", iter1,
+                      BinaryenTypeInt32());
+  m.AddFunctionImport("cel_map_iter_next", "cel", "cel_map_iter_next", iter1,
+                      BinaryenTypeInt32());
+  m.AddFunctionImport("cel_map_iter_key_at", "cel", "cel_map_iter_key_at", map2,
+                      BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
+                      map2, BinaryenTypeNone());
+}
+
+void InstallListImports(WasmModule& m) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType list2[2] = {i32, i32};
+  const BinaryenType list3[3] = {i32, i32, i32};
+  m.AddFunctionImport(std::string(kCelListCreateInternalName), "cel",
+                      "cel_list_create", list2, BinaryenTypeNone());
+  m.AddFunctionImport("cel_list_append_at", "cel", "cel_list_append_at", list2,
+                      BinaryenTypeNone());
+  m.AddFunctionImport("cel_list_append_at_if_bool", "cel",
+                      "cel_list_append_at_if_bool", list3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
+                      "cel_list_at_arena", list3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAtInternalName), "cel", "cel_list_at",
+                      list3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
+                      "cel_list_at", list3, BinaryenTypeNone());
+}
+
 void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
   std::vector<uint8_t> rodata_copy(layout.rodata);
   WasmModule::DataSegment seg{layout.rodata_base, rodata_copy};
@@ -154,35 +203,8 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_get_field", host_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
                       "cel_has_field", host_params, BinaryenTypeNone());
-  // M3.F: map runtime entry points + host trampoline.  Mirrors the
-  // imports compile.cc::InstallHostAbi installs on the production
-  // module — codegen targets the same internal names.
-  const BinaryenType map_create_params[2] = {i32, i32};
-  m.AddFunctionImport(std::string(kCelMapCreateInternalName), "cel",
-                      "cel_map_create", map_create_params, BinaryenTypeNone());
-  const BinaryenType map3_params[3] = {i32, i32, i32};
-  m.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
-                      "cel_map_insert", map3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
-                      "cel_map_lookup_arena", map3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
-                      "cel_map_lookup", map3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
-                      "cel_map_lookup", map3_params, BinaryenTypeNone());
-  // M4.F: list runtime entry points + host trampoline.
-  const BinaryenType list_create_params[2] = {i32, i32};
-  m.AddFunctionImport(std::string(kCelListCreateInternalName), "cel",
-                      "cel_list_create", list_create_params,
-                      BinaryenTypeNone());
-  m.AddFunctionImport("cel_list_append_at", "cel", "cel_list_append_at",
-                      list_create_params, BinaryenTypeNone());
-  const BinaryenType list3_params[3] = {i32, i32, i32};
-  m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
-                      "cel_list_at_arena", list3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelListAtInternalName), "cel", "cel_list_at",
-                      list3_params, BinaryenTypeNone());
-  m.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
-                      "cel_list_at", list3_params, BinaryenTypeNone());
+  InstallMapImports(m);
+  InstallListImports(m);
   // M5.F: every kCelRuntime helper in the OverloadTable that
   // ships a runtime export today.  Mirrors compile.cc.
   InstallOverloadImportsForTest(m);
@@ -644,34 +666,51 @@ TEST(ExprLowerSelectTest, NestedSelectRecursesOperandFirst) {
 // `(call $<name> ...)` anywhere in the tree.  Used to assert codegen
 // targeted the right runtime entry point without committing to a
 // specific block layout.
+bool CallTargetMatches(BinaryenExpressionRef expr, const char* name) {
+  if (std::string(BinaryenCallGetTarget(expr)) == name) return true;
+  for (BinaryenIndex i = 0; i < BinaryenCallGetNumOperands(expr); ++i) {
+    if (BodyContainsCallTo(BinaryenCallGetOperandAt(expr, i), name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool BlockContainsCall(BinaryenExpressionRef expr, const char* name) {
+  for (BinaryenIndex i = 0; i < BinaryenBlockGetNumChildren(expr); ++i) {
+    if (BodyContainsCallTo(BinaryenBlockGetChildAt(expr, i), name)) return true;
+  }
+  return false;
+}
+
+bool IfContainsCall(BinaryenExpressionRef expr, const char* name) {
+  if (BodyContainsCallTo(BinaryenIfGetCondition(expr), name)) return true;
+  if (BodyContainsCallTo(BinaryenIfGetIfTrue(expr), name)) return true;
+  BinaryenExpressionRef if_false = BinaryenIfGetIfFalse(expr);
+  return if_false != nullptr && BodyContainsCallTo(if_false, name);
+}
+
+bool BreakContainsCall(BinaryenExpressionRef expr, const char* name) {
+  BinaryenExpressionRef v = BinaryenBreakGetValue(expr);
+  if (v != nullptr && BodyContainsCallTo(v, name)) return true;
+  BinaryenExpressionRef c = BinaryenBreakGetCondition(expr);
+  return c != nullptr && BodyContainsCallTo(c, name);
+}
+
 bool BodyContainsCallTo(BinaryenExpressionRef expr, const char* name) {
-  if (BinaryenExpressionGetId(expr) == BinaryenCallId()) {
-    if (std::string(BinaryenCallGetTarget(expr)) == name) return true;
-    for (BinaryenIndex i = 0; i < BinaryenCallGetNumOperands(expr); ++i) {
-      if (BodyContainsCallTo(BinaryenCallGetOperandAt(expr, i), name)) {
-        return true;
-      }
-    }
-    return false;
+  const BinaryenExpressionId id = BinaryenExpressionGetId(expr);
+  if (id == BinaryenCallId()) return CallTargetMatches(expr, name);
+  if (id == BinaryenBlockId()) return BlockContainsCall(expr, name);
+  if (id == BinaryenIfId()) return IfContainsCall(expr, name);
+  if (id == BinaryenDropId()) {
+    return BodyContainsCallTo(BinaryenDropGetValue(expr), name);
   }
-  if (BinaryenExpressionGetId(expr) == BinaryenBlockId()) {
-    for (BinaryenIndex i = 0; i < BinaryenBlockGetNumChildren(expr); ++i) {
-      if (BodyContainsCallTo(BinaryenBlockGetChildAt(expr, i), name)) {
-        return true;
-      }
-    }
+  if (id == BinaryenLoopId()) {
+    return BodyContainsCallTo(BinaryenLoopGetBody(expr), name);
   }
-  // Walk into BinaryenIf branches — M5.G ternary lowering wraps
-  // `cel_copy_slot` calls inside (if … then … else …).
-  if (BinaryenExpressionGetId(expr) == BinaryenIfId()) {
-    if (BodyContainsCallTo(BinaryenIfGetCondition(expr), name)) return true;
-    if (BodyContainsCallTo(BinaryenIfGetIfTrue(expr), name)) return true;
-    BinaryenExpressionRef if_false = BinaryenIfGetIfFalse(expr);
-    if (if_false != nullptr && BodyContainsCallTo(if_false, name)) return true;
-  }
-  // Walk into Drop's value to catch calls inside dropped sub-exprs.
-  if (BinaryenExpressionGetId(expr) == BinaryenDropId()) {
-    if (BodyContainsCallTo(BinaryenDropGetValue(expr), name)) return true;
+  if (id == BinaryenBreakId()) return BreakContainsCall(expr, name);
+  if (id == BinaryenLocalSetId()) {
+    return BodyContainsCallTo(BinaryenLocalSetGetValue(expr), name);
   }
   return false;
 }
@@ -890,6 +929,103 @@ TEST(ExprLowerComprehensionTest, CelBindLowersThroughGenericPath) {
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_create"));
   // The arithmetic in the body (`x + 1`) still lowers normally.
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
+}
+
+// One codegen-IR shape assertion per LoopStepShape::Kind.  Each test
+// compiles a comprehension that the classifier maps to a specific
+// kind and verifies the dispatched emitter's helper-call signature.
+// Locks the {classifier kind → emitter → runtime helper} chain so a
+// regression in any link bisects to one of these tests.
+
+TEST(ExprLowerComprehensionTest, MapMacroEmitsListAppendAt) {
+  // `map(v, t)` → kListAppend → cel_list_append_at.
+  Pipeline p = RunPipeline("[1, 2, 3].map(v, v * 2)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at_if_bool"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at"));
+}
+
+TEST(ExprLowerComprehensionTest, FilterMacroEmitsListAppendAtIfBool) {
+  // `filter(v, p)` → kListAppendIf → cel_list_append_at_if_bool.
+  Pipeline p = RunPipeline("[1, 2, 3].filter(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at_if_bool"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at"));
+}
+
+TEST(ExprLowerComprehensionTest, TransformMap3ArgEmitsMapInsertAt) {
+  // `transformMap(k, v, t)` → kMapInsert → cel_map_insert_at.
+  Pipeline p = RunPipeline(R"({"a": 1, "b": 2}.transformMap(k, v, v * 10))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at_if_bool"));
+}
+
+TEST(ExprLowerComprehensionTest, TransformMap4ArgEmitsMapInsertAtIfBool) {
+  // `transformMap(k, v, p, t)` → kMapInsertIf → cel_map_insert_at_if_bool.
+  Pipeline p =
+      RunPipeline(R"({"a": 1, "b": 2}.transformMap(k, v, v > 1, v * 10))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at_if_bool"));
+}
+
+TEST(ExprLowerComprehensionTest, TransformMapEntryEmitsMapInsertAt) {
+  // `transformMapEntry(k, v, {k': t})` → kMapMerge → N×cel_map_insert_at.
+  // The single-entry case routes through the same helper as
+  // transformMap; the test locks that the merge emitter doesn't
+  // accidentally emit an Entries-specific helper that doesn't exist.
+  Pipeline p =
+      RunPipeline(R"({"foo": "bar"}.transformMapEntry(k, v, {k + v: k}))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_merge"));
+}
+
+TEST(ExprLowerComprehensionTest, ExistsEmitsGenericCopy) {
+  // `exists(v, p)` → kGeneric → eval loop_step + cel_copy_slot.
+  // The accu is scalar bool; loop_step doesn't append or insert.
+  // (The iter_range literal `[1, 2, 3]` IS built via cel_list_create
+  // + cel_list_append_at — those are unrelated to the comprehension
+  // loop body itself, so a generic "no append anywhere" assertion
+  // would false-fire.  The signal we want is "no map-insert anywhere
+  // and no map-iter setup," since exists over a list source uses
+  // neither.)
+  Pipeline p = RunPipeline("[1, 2, 3].exists(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_copy_slot"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_iter_init"));
 }
 
 // ============================================================
