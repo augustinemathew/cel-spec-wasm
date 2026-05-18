@@ -1,8 +1,11 @@
 # Memory layout — options + experimental findings
 
-Status: probing — 2026-05-18.  Companion to `HANDOFF.md` and
-`BASELINE_BENCH.md`.  This doc answers two specific questions
-the user raised before any migration code lands:
+Status: **experimental findings — 2026-05-18.**  Conclusions
+folded into `AUTHORITATIVE_PLAN.md` §1.  This doc is kept as
+the empirical justification for the allocator + memory-layout
+choices the plan makes.
+
+Two questions answered by direct experiment in `experiments/`:
 
   1. **Where do rodata / expression constants need to be laid
      out in a WASI module?**

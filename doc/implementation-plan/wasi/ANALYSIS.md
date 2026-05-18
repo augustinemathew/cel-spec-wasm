@@ -1,8 +1,14 @@
-# Migrating compiler_v2 to WASI + `malloc`
+# Migrating compiler_v2 to WASI + `malloc` — reference
 
-Status: comprehensive analysis — drafted 2026-05-17.  Companion
-to `../exp1_re2/` (which proved wasi-sdk + libraries-in-wasm
-works end-to-end with 150 KB gzipped RE2 + 11 WASI imports).
+Status: **reference material — drafted 2026-05-17.**  For the
+current build plan see `AUTHORITATIVE_PLAN.md`; this doc is
+the per-function inventory + change catalogue that plan draws
+on.  Effort estimate at the bottom (§7.2 in this doc) is
+superseded by `AUTHORITATIVE_PLAN.md` §6.
+
+Companion to `../../../wasm_compilation_experiments/exp1_re2/`
+(which proved wasi-sdk + libraries-in-wasm works end-to-end
+with 150 KB gzipped RE2 + 11 WASI imports).
 
 ## 1 Goal
 

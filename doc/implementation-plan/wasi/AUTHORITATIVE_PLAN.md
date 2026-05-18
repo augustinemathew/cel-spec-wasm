@@ -411,6 +411,39 @@ The migration ships when ALL of:
     loads via `WebAssembly.instantiate`, evaluates to
     `"hello  world"`.
 
+### 7.1 Benchmark workload
+
+S11 runs `cel_pipeline_bench` against this fixed set of CEL
+expressions.  Each row produces a golden `cel::Value` that's
+auto-asserted on every run.  Rows are listed by complexity
+and tagged by the milestone that ships their codegen.
+
+| # | Source | Bound vars | Exercises | Milestone |
+|---|---|---|---|---|
+| 1 | `42` | — | kConst, pure rodata | M1 |
+| 2 | `true && false` | — | kCall(`_&&_`), short-circuit | M5 |
+| 3 | `x` | `x: int` | kIdent, activation marshalling (scalar) | M2 |
+| 4 | `x + y` | `x,y: int` | kCall(arith), 2 kIdent | M5 |
+| 5 | `'foo' + 'bar'` | — | string concat (arena alloc in result) | M5C |
+| 6 | `s.contains('hello')` | `s: string` | kCall receiver, string ops | M5C |
+| 7 | `msg.field` | `msg: Customer` | kSelect, proto-field-read trampoline | M3 |
+| 8 | `[1, 2, 3].size()` | — | list literal, list size | M4 |
+| 9 | `{'a':1,'b':2}.size()` | — | map literal, map size | M3 |
+| 10 | `int(msg.f) > 0` | `msg: Customer` | type conversion + arith | M10 |
+
+Rows for comprehensions (`exists`, `cel.bind`) are
+intentionally omitted — they depend on M5 follow-on which is
+sequenced before this migration anyway.  Add them when that
+ships.
+
+Methodology:
+  - Run on a quiet machine, no other load.
+  - Pin to a single P-core if thermal variance is an issue
+    (`taskset` on Linux; close other apps on macOS).
+  - `--benchmark_min_time=2s --benchmark_repetitions=3`.
+  - Capture mean + p99 + stddev.
+  - Compare to `BASELINE_BENCH.md` deltas; pass/fail per §7.
+
 ## 8 Risks (load-bearing, from earlier docs)
 
   - **R1.  `--initial-memory` defaults to 2 pages.**
