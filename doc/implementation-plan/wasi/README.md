@@ -29,7 +29,7 @@ long-tail kernel migration starts.  Total: **~5 days**.
 | **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐* | — | 0.5 |
 | **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity`; assert A15 | ☐* | — | 0.5 |
 | **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☒ | [M6-M8.md](milestones/M6-M8.md) | 0.25 |
-| **M9** | Chrome smoke-test (Puppeteer or manual) | ☐ | — | 0.5 |
+| **M9** | absl::ParseTime in wasm + Chrome stake | ☒ | [M9.md](milestones/M9.md) | 0.5 |
 
 *M4-M7 are deferred to Phase B; the MVP works without them
 because the compat shim routes the old `cel_alloc` /
@@ -85,7 +85,10 @@ works under the new architecture.
 | Baseline benchmark captured | Pre-migration numbers in `DESIGN.md` §10 | `a086393` |
 | Memory experiments validated | All 5 architectural decisions resolved (`DESIGN.md` §3) | `df49328` |
 | Authoritative plan consolidated | `DESIGN.md` is now singular | `8392651` |
-| **M1 shipped** | wasi-sdk available via `//third_party/wasi_sdk:clang` | (this commit) |
+| **M1 shipped** | wasi-sdk available via `//third_party/wasi_sdk:clang` | `eca5583` |
+| **M2 + M3 shipped** | Runtime builds with wasi-sdk + bump arena over malloc | `f4b7157` |
+| **M6 + M8 shipped (partial)** | WASI random_get stub + mvp_concat_test green; all e2e + conformance regression-clean | `582def9` |
+| **M9 shipped** | absl::ParseTime running inside wasi-sdk wasm; Chrome stake captured | (this commit) |
 
 ---
 
