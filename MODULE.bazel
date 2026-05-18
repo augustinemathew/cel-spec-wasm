@@ -58,6 +58,49 @@ http_archive(
     ],
 )
 
+# wasi-sdk — wasm32-wasi cross-compile toolchain used to build
+# cel_runtime.wasm.  Replaces the previous brew-llvm + freestanding-
+# wasm32 build path.  Provides clang/clang++/llvm-ar/llvm-ranlib that
+# target wasm32-wasi, plus a wasi-sysroot (libc + libc++ + the WASI
+# preview1 headers).  Per the migration plan
+# (doc/implementation-plan/wasi/DESIGN.md §3), we use the vanilla
+# wasm32-wasi target (not the threads variant) — zero WASI imports
+# are required by our pure-malloc kernels, which keeps the browser
+# target story clean.
+#
+# Four per-platform archives are declared; `//third_party/wasi_sdk:`
+# aliases dispatch to the right one based on
+# @platforms//os × @platforms//cpu.  Each tarball is ~100 MB; bazel
+# fetches lazily and caches.
+http_archive(
+    name = "wasi_sdk_darwin_arm64",
+    build_file = "//third_party/wasi_sdk:BUILD.external.bazel",
+    sha256 = "e1e529ea226b1db0b430327809deae9246b580fa3cae32d31c82dfe770233587",
+    strip_prefix = "wasi-sdk-25.0-arm64-macos",
+    urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-arm64-macos.tar.gz"],
+)
+http_archive(
+    name = "wasi_sdk_darwin_x86_64",
+    build_file = "//third_party/wasi_sdk:BUILD.external.bazel",
+    sha256 = "55e3ff3fee1a15678a16eeccba0129276c9f6be481bc9c283e7f9f65bf055c11",
+    strip_prefix = "wasi-sdk-25.0-x86_64-macos",
+    urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-macos.tar.gz"],
+)
+http_archive(
+    name = "wasi_sdk_linux_arm64",
+    build_file = "//third_party/wasi_sdk:BUILD.external.bazel",
+    sha256 = "47fccad8b2498f2239e05e1115c3ffc652bf37e7de2f88fb64b2d663c976ce2d",
+    strip_prefix = "wasi-sdk-25.0-arm64-linux",
+    urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-arm64-linux.tar.gz"],
+)
+http_archive(
+    name = "wasi_sdk_linux_x86_64",
+    build_file = "//third_party/wasi_sdk:BUILD.external.bazel",
+    sha256 = "52640dde13599bf127a95499e61d6d640256119456d1af8897ab6725bcf3d89c",
+    strip_prefix = "wasi-sdk-25.0-x86_64-linux",
+    urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz"],
+)
+
 # C++ CEL compiler dependencies.
 bazel_dep(
     name = "abseil-cpp",

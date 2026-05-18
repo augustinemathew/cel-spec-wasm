@@ -21,7 +21,7 @@ long-tail kernel migration starts.  Total: **~5 days**.
 
 | ID | Slice | Status | Doc | Days |
 |---|---|---|---|---:|
-| **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☐ | — | 0.5 |
+| **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☒ | [M1.md](milestones/M1.md) | 0.5 |
 | **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☐ | — | 1.0 |
 | **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☐ | — | 0.5 |
 | **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐ | — | 0.5 |
@@ -79,7 +79,8 @@ works under the new architecture.
 |---|---|---|
 | Baseline benchmark captured | Pre-migration numbers in `DESIGN.md` §10 | `a086393` |
 | Memory experiments validated | All 5 architectural decisions resolved (`DESIGN.md` §3) | `df49328` |
-| Authoritative plan consolidated | `DESIGN.md` is now singular | (this commit) |
+| Authoritative plan consolidated | `DESIGN.md` is now singular | `8392651` |
+| **M1 shipped** | wasi-sdk available via `//third_party/wasi_sdk:clang` | (this commit) |
 
 ---
 

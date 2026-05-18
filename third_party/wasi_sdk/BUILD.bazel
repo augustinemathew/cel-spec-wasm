@@ -1,0 +1,44 @@
+# Top-level package for the wasi-sdk dependency.  The build rules each
+# per-platform `@wasi_sdk_*` repository exposes live in
+# BUILD.external.bazel, which is injected by the `http_archive` calls
+# in //:MODULE.bazel.
+#
+# The aliases below default to the darwin-arm64 variant — the only
+# platform with active development right now.  Per
+# `doc/implementation-plan/wasi/DESIGN.md`, cross-platform selection
+# via `@platforms//os` × `@platforms//cpu` is a follow-up when CI
+# extends beyond macOS.  Until then, downstream genrules reference
+# these path-based aliases on the dev box, and the other 3 archives
+# are pre-declared so adding the select rule is purely additive.
+
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "clang",
+    actual = "@wasi_sdk_darwin_arm64//:clang",
+)
+
+alias(
+    name = "clang++",
+    actual = "@wasi_sdk_darwin_arm64//:clang++",
+)
+
+alias(
+    name = "ar",
+    actual = "@wasi_sdk_darwin_arm64//:ar",
+)
+
+alias(
+    name = "ranlib",
+    actual = "@wasi_sdk_darwin_arm64//:ranlib",
+)
+
+alias(
+    name = "sysroot",
+    actual = "@wasi_sdk_darwin_arm64//:sysroot",
+)
+
+alias(
+    name = "all",
+    actual = "@wasi_sdk_darwin_arm64//:all",
+)
