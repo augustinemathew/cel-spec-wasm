@@ -22,8 +22,8 @@ long-tail kernel migration starts.  Total: **~5 days**.
 | ID | Slice | Status | Doc | Days |
 |---|---|---|---|---:|
 | **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☒ | [M1.md](milestones/M1.md) | 0.5 |
-| **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☐ | — | 1.0 |
-| **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☐ | — | 0.5 |
+| **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☒ | [M2.md](milestones/M2.md) | 1.0 |
+| **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☒ | [M3.md](milestones/M3.md) | 0.5 |
 | **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐ | — | 0.5 |
 | **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐ | — | 1.0 |
 | **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐ | — | 0.5 |

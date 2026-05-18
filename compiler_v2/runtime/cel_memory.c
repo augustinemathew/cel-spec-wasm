@@ -41,8 +41,12 @@ uint32_t cel_memory_size_(void) {  // NOLINT(misc-use-internal-linkage)
   return 64u * 1024u;
 }
 #else
+#include "compiler_v2/runtime/cel_layout.h"
+// Native test backing buffer must be at least the arena capacity plus
+// a slack region for the [0, 16) reserved bytes the arena leaves
+// before its own base.
 #ifndef CELWASM_ARENA_BYTES
-#define CELWASM_ARENA_BYTES (64u * 1024u)
+#define CELWASM_ARENA_BYTES (CELWASM_ARENA_CAPACITY_BYTES + 65536u)
 #endif
 // `_Alignas(8)` is load-bearing: every CelValue is 8-aligned (see
 // `cel_memory_test::BaseIsEightByteAligned`), so the host-side backing

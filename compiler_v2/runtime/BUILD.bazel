@@ -28,6 +28,7 @@ cc_library(
         "cel_compare.h",
         "cel_convert.h",
         "cel_data.h",
+        "cel_layout.h",
         "cel_list.h",
         "cel_log.h",
         "cel_make.h",
@@ -206,10 +207,12 @@ cc_test(
     ],
 )
 
-# wasm32 cross-compile.  Per rewrite plan §8.1: the runtime no longer
-# owns memory — the expr module does — so we pass `--import-memory=cel,memory`.
-# Explicit `--export=` per symbol (no `--export-all`).  darwin-arm64 only
-# due to brew-llvm absolute path.
+# wasm32-wasi cross-compile.  Per `doc/implementation-plan/wasi/DESIGN.md`:
+# the runtime is built with wasi-sdk against wasm32-wasi (vanilla, not
+# the threads variant); it OWNS its memory and exports it (the expr
+# module imports `cel.memory` from the runtime instance at link time).
+# Bytes [0, 8192) are reserved via `-Wl,--global-base=8192` for the
+# expr module's active data segments.
 genrule(
     name = "cel_runtime_wasm_file",
     srcs = [
@@ -225,6 +228,7 @@ genrule(
         "cel_convert.h",
         "cel_data.h",
         "cel_internal.h",
+        "cel_layout.h",
         "cel_list.h",
         "cel_log.c",
         "cel_log.h",
@@ -245,10 +249,8 @@ genrule(
     ],
     outs = ["cel_runtime.wasm"],
     cmd = " ".join([
-        "/opt/homebrew/opt/llvm/bin/clang",
-        "--target=wasm32",
-        "-ffreestanding",
-        "-nostdlib",
+        "$(execpath //third_party/wasi_sdk:clang)",
+        "--target=wasm32-wasi",
         # Speed knobs — mirror the native cc_library above.  After the
         # cel_runtime.c split shipped 2026-05-14, the runtime is ~10
         # per-topic .c files; -flto lets wasm-ld inline across them so
@@ -264,11 +266,31 @@ genrule(
         # the point.  wasmtime config also gets the matching flag in
         # api/engine.cc.
         "-mtail-call",
+        # No standard startup files; runtime is library code, no main.
+        "-nostartfiles",
         "-Wl,--no-entry",
-        # `-Wl,` splits on commas, which would corrupt the two-arg
-        # `--import-memory=<module>,<name>` form.  Use `-Xlinker` so
-        # the argument reaches wasm-ld intact.
-        "-Xlinker --import-memory=cel,memory",
+        # Reserve [0, 8192) for the expr module's active data segments.
+        # Per DESIGN.md §3 / experiments/exp_a_rodata.c.
+        "-Wl,--global-base=8192",
+        # Memory is exported by default under wasm32-wasi (per
+        # experiments/exp_c_malloc.wasm — verified).  No explicit
+        # --export=memory needed.
+        # Surface malloc + free for host reentry (activation marshalling)
+        # and for the arena to allocate its backing buffer.
+        "-Wl,--export=malloc",
+        "-Wl,--export=free",
+        # __heap_base is exposed for runtime A14 assertion check
+        # (host verifies it sits above the reserved region).
+        "-Wl,--export=__heap_base",
+        # The new arena API; kept alongside the cel_alloc/cel_reset
+        # back-compat shims so existing kernels link unchanged.
+        "-Wl,--export=arena_init",
+        "-Wl,--export=arena_alloc",
+        "-Wl,--export=arena_reset",
+        "-Wl,--export=arena_cursor",
+        "-Wl,--export=arena_capacity",
+        # Compat shims — to be deleted in Phase B once all kernels
+        # migrate from cel_alloc/cel_reset to arena_alloc/arena_reset.
         "-Wl,--export=cel_alloc",
         "-Wl,--export=cel_reset",
         "-Wl,--export=cel_map_create",
@@ -466,6 +488,9 @@ genrule(
         "$(location :cel_time.c)",
         "$(location :cel_type.c)",
     ]),
+    tools = [
+        "//third_party/wasi_sdk:clang",
+    ],
     tags = [
         "manual",
         "no-sandbox",
