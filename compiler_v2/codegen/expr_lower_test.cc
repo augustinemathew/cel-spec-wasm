@@ -858,6 +858,41 @@ TEST(ExprLowerListTest, ListIndexOnHostBoundIdentEmitsHostTrampoline) {
 }
 
 // ============================================================
+// M5.B comprehensions — codegen-IR shape assertions.
+// ============================================================
+//
+// First entries in the §9.5 codegen-IR test surface tracked in
+// `m5b-comprehensions-simplification.md` — added as each
+// simplification lands.  Pattern mirrors the kList/kMap literal
+// tests above: compile source → walk Binaryen IR → assert tree
+// shape, no wasm execution.
+
+// Post-IsShapeC-removal (commit TBD): `cel.bind(x, V, body)` no
+// longer takes a streamlined no-loop path.  It goes through the
+// generic comprehension lowering — iter_range = `[]` produces an
+// empty list, the loop scaffold runs zero iterations, and the
+// result expression is the body.  This test locks the shape so a
+// future regression that accidentally re-introduces ShapeC (or
+// that breaks the kLocal-storage handling in
+// `EmitCompLoopStep`'s generic fallback) is caught at codegen-IR
+// time rather than at e2e or conformance time.
+TEST(ExprLowerComprehensionTest, CelBindLowersThroughGenericPath) {
+  Pipeline p = RunPipeline("cel.bind(x, 5, x + 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  // Generic path emits the list-create call for the empty
+  // iter_range literal, even though the loop body never runs.
+  // A surviving ShapeC fast path would skip this entirely.
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_create"));
+  // The arithmetic in the body (`x + 1`) still lowers normally.
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
+}
+
+// ============================================================
 // M5.F — general kCallExpr arm (OverloadTable wiring).
 // ============================================================
 //
