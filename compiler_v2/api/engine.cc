@@ -1,6 +1,7 @@
 #include "compiler_v2/api/engine.h"
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -43,6 +44,60 @@ absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
   wasm_byte_vec_delete(&msg);
   wasm_trap_delete(trap);
   return absl::InternalError(absl::StrCat(context, ": ", text));
+}
+
+// Stub for `wasi_snapshot_preview1.random_get(buf, len) -> errno`.
+// wasi-libc's dlmalloc seeds itself on first allocation via this
+// import.  We don't need any actual randomness (the runtime is
+// deterministic by design — same expression + same activation =>
+// same bytes); just zero-fill the buffer and return success (0).
+wasm_trap_t* WasiRandomGetStub(void* /*env*/, wasmtime_caller_t* caller,
+                               const wasmtime_val_t* args, size_t nargs,
+                               wasmtime_val_t* results, size_t nresults) {
+  (void)nargs;
+  if (nresults >= 1) {
+    results[0].kind = WASMTIME_I32;
+    results[0].of.i32 = 0;  // 0 = success
+  }
+  wasmtime_extern_t mem_ext;
+  if (!wasmtime_caller_export_get(caller, "memory", 6, &mem_ext) ||
+      mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
+    return nullptr;  // caller has no memory; nothing to zero, return ok
+  }
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  uint8_t* data = wasmtime_memory_data(ctx, &mem_ext.of.memory);
+  size_t size = wasmtime_memory_data_size(ctx, &mem_ext.of.memory);
+  const uint32_t buf = static_cast<uint32_t>(args[0].of.i32);
+  const uint32_t len = static_cast<uint32_t>(args[1].of.i32);
+  if (data != nullptr && buf + len <= size) {
+    std::memset(data + buf, 0, len);
+  }
+  return nullptr;
+}
+
+absl::Status RegisterWasiStubs(wasmtime_linker_t* linker) {
+  // Signature: (i32 buf, i32 len) -> i32
+  wasm_valtype_t* i32_a = wasm_valtype_new_i32();
+  wasm_valtype_t* i32_b = wasm_valtype_new_i32();
+  wasm_valtype_t* i32_r = wasm_valtype_new_i32();
+  wasm_valtype_vec_t params, results;
+  wasm_valtype_vec_new_uninitialized(&params, 2);
+  params.data[0] = i32_a;
+  params.data[1] = i32_b;
+  wasm_valtype_vec_new_uninitialized(&results, 1);
+  results.data[0] = i32_r;
+  wasm_functype_t* type = wasm_functype_new(&params, &results);
+  const char kMod[] = "wasi_snapshot_preview1";
+  const char kName[] = "random_get";
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, kMod, sizeof(kMod) - 1, kName, sizeof(kName) - 1, type,
+      WasiRandomGetStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        "linker.define(wasi_snapshot_preview1.random_get)", err);
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
@@ -122,6 +177,7 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
       !s.ok()) {
     return s;
   }
+  if (auto s = RegisterWasiStubs(impl->linker); !s.ok()) return s;
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   wasmtime_extern_t mem_ext;
   mem_ext.kind = WASMTIME_EXTERN_MEMORY;

@@ -24,12 +24,17 @@ long-tail kernel migration starts.  Total: **~5 days**.
 | **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☒ | [M1.md](milestones/M1.md) | 0.5 |
 | **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☒ | [M2.md](milestones/M2.md) | 1.0 |
 | **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☒ | [M3.md](milestones/M3.md) | 0.5 |
-| **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐ | — | 0.5 |
-| **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐ | — | 1.0 |
-| **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐ | — | 0.5 |
-| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity`; assert A15 | ☐ | — | 0.5 |
-| **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☐ | — | 0.25 |
+| **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐* | — | 0.5 |
+| **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐* | — | 1.0 |
+| **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐* | — | 0.5 |
+| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity`; assert A15 | ☐* | — | 0.5 |
+| **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☒ | [M6-M8.md](milestones/M6-M8.md) | 0.25 |
 | **M9** | Chrome smoke-test (Puppeteer or manual) | ☐ | — | 0.5 |
+
+*M4-M7 are deferred to Phase B; the MVP works without them
+because the compat shim routes the old `cel_alloc` /
+`cel_reset` calls to the new arena.  See [M6-M8.md](milestones/M6-M8.md)
+"Plan-vs-execution deltas" for the rationale.
 
 ---
 

@@ -272,9 +272,12 @@ genrule(
         # Reserve [0, 8192) for the expr module's active data segments.
         # Per DESIGN.md §3 / experiments/exp_a_rodata.c.
         "-Wl,--global-base=8192",
-        # Memory is exported by default under wasm32-wasi (per
-        # experiments/exp_c_malloc.wasm — verified).  No explicit
-        # --export=memory needed.
+        # Import memory from the host (`cel.memory`).  The expr module
+        # also imports `cel.memory`, so both wasm modules share one
+        # linear memory the host owns.  Phase-A compat: M6 flips this
+        # to runtime-owns-memory; until then, the import keeps the
+        # host's existing memory-allocation flow intact.
+        "-Xlinker --import-memory=cel,memory",
         # Surface malloc + free for host reentry (activation marshalling)
         # and for the arena to allocate its backing buffer.
         "-Wl,--export=malloc",
