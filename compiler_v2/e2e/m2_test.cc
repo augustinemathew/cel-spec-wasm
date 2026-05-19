@@ -208,14 +208,14 @@ TEST_F(IdentE2ETest, Double) {
 
 TEST_F(IdentE2ETest, String) {
   // Host-side string marshal needs a persistent arena region for
-  // span payloads.  $eval's first instruction is cel_reset, which
+  // span payloads.  $eval's first instruction is arena_reset, which
   // rewinds the arena cursor — so any bytes the host arena_alloc'd
   // pre-Eval get overwritten the moment $eval runs.  Unblocking
   // needs one of:
   //   (a) host-tail memory region reserved at Plan time (reduce
   //       arena_limit, write span bytes past limit),
   //   (b) split $eval into "$reset" + "$body" so the host can
-  //       call cel_reset first, then arena_alloc, then $body,
+  //       call arena_reset first, then arena_alloc, then $body,
   //   (c) externref-style host backing per string variable.
   // Designing that is M2.C-era work — deferred until then.  Scalar
   // idents (the core M2.B win) already round-trip.
@@ -239,7 +239,7 @@ TEST_F(IdentE2ETest, UnboundDeclaredVariableFailsPrecondition) {
 }
 
 // Eval called back-to-back on the same Instance with fresh
-// Activations produces fresh results — cel_reset clears the
+// Activations produces fresh results — arena_reset clears the
 // arena, BindLazy memoisation clears, local_set overwrites the
 // previous binding.
 TEST_F(IdentE2ETest, BackToBackEvalRebindsIdent) {

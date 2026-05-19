@@ -64,8 +64,8 @@ class Engine {
   // Wiring (per Plan §5.4): host-allocates a 2-page wasmtime_memory_t
   // in a fresh store; binds it as cel.memory on a fresh linker;
   // installs cel_env.cel_log; instantiates cel_runtime.wasm against
-  // those imports; binds the runtime's cel_reset / arena_alloc exports
-  // back onto the linker as cel.cel_reset / cel.arena_alloc; parses
+  // those imports; binds the runtime's arena_reset / arena_alloc exports
+  // back onto the linker as cel.arena_reset / cel.arena_alloc; parses
   // and instantiates the expr module against the now-complete linker;
   // looks up the eval export.
   //

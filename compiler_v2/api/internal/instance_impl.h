@@ -41,7 +41,7 @@ struct InstanceImpl {
 
   // Slice 0 — host-managed string/bytes activation arena.  Lives in
   // linear memory above `arena_limit` (the wasm-side arena ceiling
-  // codegen baked into `cel_reset`'s second arg), grown via
+  // codegen baked into `arena_reset`'s second arg), grown via
   // `wasmtime_memory_grow` on demand.  `host_string_arena_floor` is
   // captured on the first Eval as the byte size of the host-owned
   // memory at instantiation time — that's the value codegen used

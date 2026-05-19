@@ -157,7 +157,7 @@ TEST(WasmModuleTest, AddFunctionImportValidates) {
   WasmModule m;
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType params[2] = {i32, i32};
-  m.AddFunctionImport("cel_reset", "cel", "cel_reset", params,
+  m.AddFunctionImport("arena_reset", "cel", "arena_reset", params,
                       BinaryenTypeNone());
   EXPECT_THAT(m.Validate(), IsOk());
 }

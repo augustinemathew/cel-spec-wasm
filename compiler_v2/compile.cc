@@ -302,9 +302,8 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
   if (!s.ok()) return s;
 
   const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType reset_params[2] = {i32, i32};
-  mod.AddFunctionImport(kCelResetInternalName, "cel", "cel_reset", reset_params,
-                        BinaryenTypeNone());
+  mod.AddFunctionImport(kArenaResetInternalName, "cel", "arena_reset",
+                        absl::Span<const BinaryenType>{}, BinaryenTypeNone());
   const BinaryenType alloc_params[1] = {i32};
   mod.AddFunctionImport("arena_alloc", "cel", "arena_alloc", alloc_params, i32);
   InstallSelectImports(mod);

@@ -118,29 +118,6 @@ uint32_t arena_capacity(void) {
   return g_arena.capacity;
 }
 
-// ---- Codegen-prologue compat shim (delete in M5) --------------------
-//
-// Codegen still emits `(call $cel_reset (i32.const arena_base)
-// (i32.const arena_limit))` at the top of $eval; arena_base and
-// arena_limit are no longer meaningful (they were offsets into a
-// fixed-position cursor at memory bytes 8/12; the bump cursor now
-// lives in BSS, not linear memory).  The shim ignores the args.
-//
-// M5 will swap codegen to `(call $arena_reset)` and delete this shim
-// + its corresponding declaration in cel_arena.h.
-
-void cel_reset(uint32_t arena_base, uint32_t arena_limit) {
-  (void)arena_base;
-  (void)arena_limit;
-  // Auto-init on first call so tests written against the old
-  // `cel_reset(base, limit)` ABI keep working without explicit
-  // `arena_init`.  Deletes alongside the shim in M5.
-  if (!g_arena.initialized) {
-    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
-  }
-  arena_reset();
-}
-
 CelValue* cel_value_at(uint32_t off) {
   CEL_LOG("enter");
   if (off == 0) return (CelValue*)0;

@@ -137,7 +137,7 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 // the conformance unlock plan needs a host-managed region above
 // `mem_size_bytes` (= the codegen's `arena_limit`) to host
 // activation-marshalled string / bytes payloads that survive
-// `cel_reset` and subsequent `arena_alloc` calls inside `$eval`.
+// `arena_reset` and subsequent `arena_alloc` calls inside `$eval`.
 // Wasm-side `arena_alloc`'s bounds check stays at `arena_limit`, so
 // the runtime never reaches into the grown tail.
 absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
@@ -193,7 +193,7 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
 }
 
 // Pulls a function export off `inst` and binds it onto the linker
-// under (cel, name).  Used to wire the runtime's cel_reset /
+// under (cel, name).  Used to wire the runtime's arena_reset /
 // arena_alloc exports as imports the expr module sees.
 absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
                                wasmtime_context_t* ctx,
@@ -228,7 +228,7 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // not code — kept at file scope so the function body is just the
 // loop and stays under the lint function-size gate.
 constexpr const char* kRuntimeExports[] = {
-    "cel_reset", "arena_alloc", "cel_map_create", "cel_map_insert",
+    "arena_reset", "arena_alloc", "cel_map_create", "cel_map_insert",
     "cel_map_insert_at", "cel_map_insert_at_if_bool", "cel_map_lookup_arena",
     "cel_map_lookup", "cel_list_create", "cel_list_append_at",
     "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
@@ -375,6 +375,34 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
     return absl::FailedPreconditionError("`arena_alloc` is not a function");
   }
   impl->host_env.arena_alloc_fn = alloc_ext.of.func;
+
+  // Seed the runtime's bump arena before any eval runs.  arena_alloc
+  // traps on !initialized (see cel_arena.c "Unimplemented features"
+  // rule); arena_init must be called exactly once per Instance with
+  // the design's default capacity.
+  wasmtime_extern_t init_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_init",
+                                    10, &init_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `arena_init`");
+  }
+  if (init_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`arena_init` is not a function");
+  }
+  wasmtime_val_t arg;
+  arg.kind = WASMTIME_I32;
+  arg.of.i32 = static_cast<int32_t>(CELWASM_ARENA_CAPACITY_BYTES);
+  wasm_trap_t* init_trap = nullptr;
+  wasmtime_error_t* init_err =
+      wasmtime_func_call(ctx, &init_ext.of.func, &arg, /*nargs=*/1,
+                         /*results=*/nullptr, /*nresults=*/0, &init_trap);
+  if (init_err != nullptr) {
+    return WasmtimeErrorToStatus("arena_init(CELWASM_ARENA_CAPACITY_BYTES)",
+                                 init_err);
+  }
+  if (init_trap != nullptr) {
+    return WasmTrapToStatus("arena_init trapped", init_trap);
+  }
   return absl::OkStatus();
 }
 

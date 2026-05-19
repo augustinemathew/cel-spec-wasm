@@ -160,7 +160,7 @@ TEST_F(InstanceEvalTest, EvalsBytesLiteral) {
 
 TEST_F(InstanceEvalTest, EvalIsDeterministicAcrossManyCalls) {
   // Re-evaluating the same Instance many times must produce the
-  // same Value — $eval's first instruction is a baked-in cel_reset
+  // same Value — $eval's first instruction is a baked-in arena_reset
   // call so the arena is fresh every time.
   auto prog_or = compiler_->Compile(R"("hello")");
   ASSERT_TRUE(prog_or.ok());

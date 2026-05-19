@@ -13,8 +13,6 @@
 //     (DESIGN §5 A16).
 //   - cel_value_at(0) is the absent sentinel; cel_value_at(off) for
 //     `off = arena_alloc(...)` is a valid pointer.
-//   - cel_reset compat shim ignores its args and auto-inits on the
-//     cold path (kept until M5; see cel_arena.c:127-137).
 
 #include "compiler_v2/runtime/cel_arena.h"
 
@@ -341,31 +339,6 @@ TEST_F(ArenaTest, InitIdempotentBranchPreservesCapacityAfterAllocs) {
   EXPECT_EQ(arena_capacity(), cap);
 }
 
-// ── cel_reset compat shim (M5 will delete) ─────────────────────────
-
-// The shim ignores both args.  We pass garbage values and observe
-// they have no effect on capacity.
-TEST_F(ArenaTest, CelResetIgnoresArgs) {
-  uint32_t cap = arena_capacity();
-  cel_reset(0xDEADBEEFu, 0xCAFEBABEu);
-  EXPECT_EQ(arena_capacity(), cap);
-  EXPECT_EQ(arena_cursor(), 0u);
-}
-
-TEST_F(ArenaTest, CelResetRewindsCursor) {
-  arena_alloc(128);
-  ASSERT_NE(arena_cursor(), 0u);
-  cel_reset(0u, 0u);
-  EXPECT_EQ(arena_cursor(), 0u);
-}
-
-// Note: the compat shim's cold-path branch (line 134-137 in
-// cel_arena.c) — first-ever call auto-inits with
-// CELWASM_ARENA_CAPACITY_BYTES — is implicitly covered by every
-// fixture's SetUp.  By the time we get to body assertions, the
-// arena is initialized and capacity matches the default; that IS
-// the cold-path lock.  See `CapacityMatchesDesignDefault`.
-
 // ── Per-Eval lifecycle simulation (DESIGN §7) ──────────────────────
 
 // Simulate the per-Eval hot path: arena_init runs once per Instance
@@ -413,7 +386,7 @@ TEST_F(ArenaDeathTest, InitWithLargerDifferentCapacityTraps) {
 // (cel_arena.c:84 __builtin_trap) under the same `!g_arena.initialized`
 // guard the test would exercise; covered by code review rather than a
 // runtime death test in this fixture.  If a future test harness can
-// run a child process that bypasses SetUp's cel_reset, add an
+// run a child process that bypasses SetUp's arena_reset, add an
 // ASSERT_DEATH(arena_alloc(8), "") there.
 
 }  // namespace

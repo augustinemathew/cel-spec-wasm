@@ -107,30 +107,26 @@ BinaryenExpressionRef EmitKIdentLoad(WasmModule& mod,
   return BinaryenLocalGet(mod.raw(), ann.storage.payload, BinaryenTypeInt32());
 }
 
-// Emits `call $cel_reset(arena_base, arena_limit)`.  First instruction
-// of every `$eval` body after the variable prelude: writes the arena
-// cursor/limit pair to linear-memory bytes 8/12, giving each eval a
-// fresh arena.  Both arguments are compile-time constants.
-BinaryenExpressionRef EmitCelResetCall(WasmModule& mod, uint32_t arena_base,
-                                       uint32_t arena_limit) {
-  BinaryenExpressionRef args[2] = {
-      I32Const(mod, arena_base),
-      I32Const(mod, arena_limit),
-  };
-  const std::string name(kCelResetInternalName);
-  return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+// Emits `(call $arena_reset)`.  First instruction of every `$eval`
+// body after the variable prelude: rewinds the runtime's bump-arena
+// cursor to 0 so each eval gets a fresh arena.  Takes no arguments
+// (the bump cursor lives in BSS, not linear memory, post-WASI
+// migration — see doc/implementation-plan/wasi/DESIGN.md §4).
+BinaryenExpressionRef EmitArenaResetCall(WasmModule& mod) {
+  const std::string name(kArenaResetInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), nullptr, 0, BinaryenTypeNone());
 }
 
 // Emits one `local.set local_index (i32.const slot_offset)` per
 // referenced variable, populating each ident's wasm local with its
-// compile-time-known workspace slot offset before `cel_reset` or the
+// compile-time-known workspace slot offset before `arena_reset` or the
 // body run.  Per m2-ident-select-unknowns.md §2.6 / Slice M2.B:
 // every kIdent lowering is `local.get local_index`, so the prelude is
 // the one place where the "which slot?" question gets answered for
 // free variables.
 //
 // The resulting instructions go at the top of `$eval`, before
-// `cel_reset`, because cel_reset only writes bytes [8, 16) (arena
+// `arena_reset`, because arena_reset only writes bytes [8, 16) (arena
 // cursor/limit) and doesn't touch the workspace region — so the order
 // prelude-then-reset vs reset-then-prelude is irrelevant at runtime.
 // We put prelude first so the generated WAT reads top-down matching
@@ -1081,17 +1077,16 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   // `$eval` body shape:
   //   (block (result i32)
   //     <prelude: one local.set per referenced variable>
-  //     (call $cel_reset arena_base mem_size)
+  //     (call $arena_reset)
   //     <root expression>)
   //
   // The block's last expression supplies its return value, so the
   // root expression's i32 is what `$eval` returns.  Prelude +
-  // cel_reset have `none` result type and contribute nothing to the
-  // block's value.
+  // arena_reset have `none` result type and contribute nothing to
+  // the block's value.
   std::vector<BinaryenExpressionRef> instrs =
       EmitVariablePrelude(mod, layout.variables);
-  instrs.push_back(
-      EmitCelResetCall(mod, layout.arena_base, opts.mem_size_bytes));
+  instrs.push_back(EmitArenaResetCall(mod));
   instrs.push_back(*root_ref);
   BinaryenExpressionRef body = BinaryenBlock(
       mod.raw(), /*name=*/nullptr, instrs.data(),

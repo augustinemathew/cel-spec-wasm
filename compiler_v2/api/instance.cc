@@ -346,11 +346,11 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 //
 // String / bytes — Slice 0 of the conformance unlock plan:
 // the bound payload bytes can NOT live in the wasm-side `arena_alloc`
-// arena, because `$eval`'s prelude calls `cel_reset` which rewinds
+// arena, because `$eval`'s prelude calls `arena_reset` which rewinds
 // the bump pointer to `arena_base`, and the first in-eval
 // `arena_alloc` then zero-fills the bytes we just wrote there.
 // Instead, we maintain a **host-managed string arena** in linear
-// memory above `arena_limit` (the codegen's `cel_reset` second arg
+// memory above `arena_limit` (the codegen's `arena_reset` second arg
 // — set to the same value as the host's initial memory size).
 // `wasmtime_memory_grow` extends linear memory beyond that
 // threshold; the runtime never touches the tail because every
@@ -375,7 +375,7 @@ uint32_t RoundUpToPage(uint64_t bytes) {
 // `needed` bytes of capacity above the arena_limit floor.  Captures
 // `arena_floor` lazily on first call (= the byte size of the host
 // memory at instantiation, which is exactly what codegen baked into
-// `cel_reset(arena_base, arena_limit)`'s second arg).  Grows the
+// `arena_reset(arena_base, arena_limit)`'s second arg).  Grows the
 // memory by whole pages on demand.  Returns ResourceExhausted if
 // `wasmtime_memory_grow` rejects the request (engine memorytype was
 // created with `max_present=false`, so this should only happen on
@@ -768,7 +768,7 @@ absl::Status EncodeList(const Value& v, absl::string_view name, CelValue* dst,
 // The bound name string is copied into the host string arena above
 // `arena_limit` (same arena kString / kBytes use); the resulting
 // CelSpan lives in `payload.s`.  Same lifetime as kString — bytes
-// outlive `cel_reset` because the arena floor is fixed at instantiation
+// outlive `arena_reset` because the arena floor is fixed at instantiation
 // time.
 absl::Status EncodeType(const Value& v, absl::string_view name, CelValue* dst,
                         HostStringArena arena) {

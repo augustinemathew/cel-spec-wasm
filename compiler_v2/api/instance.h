@@ -66,7 +66,7 @@ class Instance {
   //     range offset, or missing activation binding.
   //
   // `$eval`'s first instruction (after the variable prelude) is a
-  // baked-in `cel_reset(...)` call, so the arena is reset before
+  // baked-in `arena_reset(...)` call, so the arena is reset before
   // the body runs every time — calling Eval back-to-back on the
   // same Instance is safe and deterministic.
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval();

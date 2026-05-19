@@ -454,7 +454,7 @@ TEST_F(ListBindingE2ETest, BoundBoolListIndexed) {
 
 // String / bytes binding hits the same host-arena gap that
 // IdentE2ETest::String SKIPs — span payloads need persistent
-// host-side memory across cel_reset.  The element-type encoder
+// host-side memory across arena_reset.  The element-type encoder
 // itself doesn't fire for kHost lists (the list backing carries
 // the payloads), but the element ENCODER on read-back through
 // EncodeFieldResult does need the arena.  Lock the gap here.

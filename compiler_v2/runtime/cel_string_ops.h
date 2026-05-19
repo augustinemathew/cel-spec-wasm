@@ -10,7 +10,7 @@
 // /  `cel_bytes_concat` use `arena_alloc` to build a fresh payload in
 // the arena; the resulting CelValue's `payload.s.ptr` points into
 // that arena.  Every dynamically-built string payload is owned by
-// the arena `cel_reset` rewinds at the top of the next $eval, so
+// the arena `arena_reset` rewinds at the top of the next $eval, so
 // the lifetime is bounded by one Eval call.  Mirrors the M1
 // `cel_make_string` lifetime contract exactly.
 //

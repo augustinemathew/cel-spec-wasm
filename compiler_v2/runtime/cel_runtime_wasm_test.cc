@@ -3,7 +3,7 @@
 // `cel_memory_base_()` returns address 0 on wasm32 (the imported
 // memory is mapped from offset 0).  Without an opacity barrier
 // in the C source, clang treats `*(uint32_t*)(0+off) = v` as
-// undefined behaviour and elides the store; cel_reset compiled
+// undefined behaviour and elides the store; arena_reset compiled
 // to a no-op + cel_log call, arena_alloc compiled to `unreachable`.
 // See compiler_v2/runtime/cel_runtime.c::cel_memory_base_().
 //
@@ -12,7 +12,7 @@
 //   2. Binds it as `cel.memory` on a linker.
 //   3. Registers a no-op `cel_env.cel_log`.
 //   4. Instantiates cel_runtime.wasm against that linker.
-//   5. Calls cel_reset(arena_base, arena_limit) and verifies the
+//   5. Calls arena_reset(arena_base, arena_limit) and verifies the
 //      bump cursor + limit land at bytes 8 and 12.
 //   6. Calls arena_alloc(24) and verifies the returned offset is the
 //      pre-call bump value AND the cursor advanced by 24 (rounded
@@ -22,7 +22,7 @@
 // If any of these regress (e.g. a future clang upgrade re-discovers
 // the null-UB elision), this test fails immediately rather than the
 // bug staying latent until a downstream caller actually invokes
-// cel_reset/arena_alloc on the runtime wasm path.
+// arena_reset/arena_alloc on the runtime wasm path.
 
 #include <cstdint>
 #include <cstring>
@@ -60,7 +60,7 @@ std::string WasmTrapMsg(wasm_trap_t* trap) {
 }
 
 // No-op cel_env.cel_log trampoline.  cel_runtime.c calls
-// CEL_LOG("enter") at the top of cel_reset / arena_alloc; we don't
+// CEL_LOG("enter") at the top of arena_reset / arena_alloc; we don't
 // care about the output here, just that the import resolves.
 wasm_trap_t* NoopCelLog(void*, wasmtime_caller_t*, const wasmtime_val_t*,
                         size_t, wasmtime_val_t*, size_t) {
@@ -115,7 +115,7 @@ wasm_functype_t* HostTwoArgFuncType() {
 }
 
 // Owns the wasmtime state for one instantiated cel_runtime.wasm.
-// Public fields so the test can drive cel_reset / arena_alloc and
+// Public fields so the test can drive arena_reset / arena_alloc and
 // peek at memory bytes directly.
 struct RuntimeHarness {
   wasm_engine_t* engine = nullptr;
@@ -124,7 +124,7 @@ struct RuntimeHarness {
   wasmtime_module_t* module = nullptr;
   wasmtime_memory_t memory{};
   wasmtime_instance_t instance{};
-  wasmtime_func_t cel_reset_fn{};
+  wasmtime_func_t arena_reset_fn{};
   wasmtime_func_t arena_alloc_fn{};
 
   ~RuntimeHarness() {
@@ -136,7 +136,7 @@ struct RuntimeHarness {
 };
 
 // Pulls one i32-returning or void-returning func export off an
-// instance and stores its handle.  Reused for cel_reset (void) and
+// instance and stores its handle.  Reused for arena_reset (void) and
 // arena_alloc (i32 result).
 ::testing::AssertionResult LookupFunc(wasmtime_context_t* ctx,
                                       const wasmtime_instance_t& inst,
@@ -277,7 +277,7 @@ struct RuntimeHarness {
 }
 
 // Compiles + instantiates cel_runtime.wasm and pulls the
-// cel_reset / arena_alloc func handles.  Linker must already have
+// arena_reset / arena_alloc func handles.  Linker must already have
 // cel_env.cel_log + cel.memory bound (InitLinker did that).
 ::testing::AssertionResult InstantiateRuntime(RuntimeHarness* h) {
   wasmtime_context_t* ctx = wasmtime_store_context(h->store);
@@ -299,7 +299,7 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure()
            << "instantiate trapped: " << WasmTrapMsg(trap);
   }
-  if (auto r = LookupFunc(ctx, h->instance, "cel_reset", 9, &h->cel_reset_fn);
+  if (auto r = LookupFunc(ctx, h->instance, "arena_reset", 9, &h->arena_reset_fn);
       !r) {
     return r;
   }
@@ -344,16 +344,16 @@ void CelResetCall(const RuntimeHarness& h, uint32_t base, uint32_t limit) {
   args[1].kind = WASMTIME_I32;
   args[1].of.i32 = static_cast<int32_t>(limit);
   wasm_trap_t* trap = nullptr;
-  wasmtime_func_t fn = h.cel_reset_fn;
+  wasmtime_func_t fn = h.arena_reset_fn;
   wasmtime_error_t* err = wasmtime_func_call(ctx, &fn, args, /*nargs=*/2,
                                              /*results=*/nullptr,
                                              /*nresults=*/0, &trap);
   if (err != nullptr) {
-    ADD_FAILURE() << "cel_reset trampoline error: " << WasmtimeErrorMsg(err);
+    ADD_FAILURE() << "arena_reset trampoline error: " << WasmtimeErrorMsg(err);
     return;
   }
   if (trap != nullptr) {
-    ADD_FAILURE() << "cel_reset trapped: " << WasmTrapMsg(trap);
+    ADD_FAILURE() << "arena_reset trapped: " << WasmTrapMsg(trap);
   }
 }
 

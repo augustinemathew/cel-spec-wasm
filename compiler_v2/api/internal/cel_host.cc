@@ -2900,7 +2900,7 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
   const absl::string_view fqn = msg->GetDescriptor()->full_name();
   // Allocate the FQN bytes in the per-Eval arena and stamp the
   // CelSpan into out_slot.  Same lifetime model as the runtime
-  // helper's primitive-name path: bytes outlive `cel_reset` because
+  // helper's primitive-name path: bytes outlive `arena_reset` because
   // the arena is reset only at the start of the NEXT Eval, and
   // user-visible Values copy the bytes out via the read-side
   // decoder before the arena resets.

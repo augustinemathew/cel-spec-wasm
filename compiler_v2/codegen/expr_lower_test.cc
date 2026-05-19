@@ -137,9 +137,9 @@ void InstallOverloadImportsForTest(WasmModule& m) {
                       BinaryenTypeNone());
 }
 
-// Installs the memory + `cel.cel_reset` import shape every lowered
-// `$eval` body relies on.  One wasm page and a `(i32,i32)->()` import
-// under the internal name `kCelResetInternalName`.
+// Installs the memory + `cel.arena_reset` import shape every lowered
+// `$eval` body relies on.  One wasm page and a `()->()` import under
+// the internal name `kArenaResetInternalName`.
 void InstallMapImports(WasmModule& m) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType map2[2] = {i32, i32};
@@ -195,9 +195,8 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
       m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
       IsOk());
   const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType reset_params[2] = {i32, i32};
-  m.AddFunctionImport(kCelResetInternalName, "cel", "cel_reset", reset_params,
-                      BinaryenTypeNone());
+  m.AddFunctionImport(kArenaResetInternalName, "cel", "arena_reset",
+                      absl::Span<const BinaryenType>{}, BinaryenTypeNone());
   const BinaryenType host_params[4] = {i32, i32, i32, i32};
   m.AddFunctionImport(std::string(kCelHostGetFieldInternalName), "cel_host",
                       "cel_get_field", host_params, BinaryenTypeNone());
@@ -289,7 +288,7 @@ TEST(ExprLowerTest, EvalFunctionNameIsHonoured) {
   EXPECT_NE(BinaryenGetFunction(m.raw(), "my_eval"), nullptr);
 }
 
-// --- Body emits (call $cel_reset ...) then (i32.const <rodata_off>) ------
+// --- Body emits (call $arena_reset) then (i32.const <rodata_off>) -------
 
 TEST(ExprLowerTest, BodyReturnsRodataOffsetOfRootKConst) {
   Pipeline p = RunPipeline("42");
@@ -301,11 +300,11 @@ TEST(ExprLowerTest, BodyReturnsRodataOffsetOfRootKConst) {
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   ASSERT_EQ(BinaryenBlockGetNumChildren(body), 2u);
 
-  // First child: call $cel_reset with two i32.const args.
+  // First child: call $arena_reset (no args).
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
   EXPECT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_reset");
-  EXPECT_EQ(BinaryenCallGetNumOperands(call), 2u);
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "arena_reset");
+  EXPECT_EQ(BinaryenCallGetNumOperands(call), 0u);
 
   // Second child: i32.const <root_storage_offset>.
   BinaryenExpressionRef constExpr = BinaryenBlockGetChildAt(body, 1);
@@ -328,21 +327,22 @@ TEST(ExprLowerTest, EmittedModuleSerializesSuccessfully) {
   EXPECT_GE(bytes_or->size(), 8u);
 }
 
-// --- LoweringOptions: arena_limit argument reflected in the call ---------
-
-TEST(ExprLowerTest, MemSizeBytesFlowsIntoCelResetSecondArg) {
+// Post-M5: the eval prologue is `(call $arena_reset)` with zero
+// arguments — LoweringOptions::mem_size_bytes no longer threads
+// into codegen (the bump cursor lives in BSS, not linear memory).
+// CompileOptions::mem_size_bytes still controls the host's memory
+// import; see `MemSizeBytesLargerThanOnePageGrowsPageCount` in
+// compile_test.cc.
+TEST(ExprLowerTest, EvalPrologueIsZeroArgArenaReset) {
   Pipeline p = RunPipeline("42");
   WasmModule m;
   PrepareHostModule(m, p.layout);
-  LoweringOptions opts;
-  opts.mem_size_bytes = 128u * 1024u;
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m, opts);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
   ASSERT_THAT(lowered, IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
-  BinaryenExpressionRef arg1 = BinaryenCallGetOperandAt(call, 1);
-  EXPECT_EQ(BinaryenConstGetValueI32(arg1),
-            static_cast<int32_t>(opts.mem_size_bytes));
+  ASSERT_STREQ(BinaryenCallGetTarget(call), "arena_reset");
+  EXPECT_EQ(BinaryenCallGetNumOperands(call), 0u);
 }
 
 // --- Unimplemented kinds return UnimplementedError -----------------------
@@ -479,7 +479,7 @@ TEST(ExprLowerIdentTest, RootIdentLowersToLocalGet) {
   // `x` with x:int.  Body should be:
   //   (block (result i32)
   //     (local.set 0 (i32.const <x_slot_offset>))
-  //     (call $cel_reset ...)
+  //     (call $arena_reset ...)
   //     (local.get 0))
   Pipeline p = RunPipelineWithVars("x", {"x:int"});
   WasmModule m;
@@ -490,7 +490,7 @@ TEST(ExprLowerIdentTest, RootIdentLowersToLocalGet) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
   ASSERT_EQ(BinaryenBlockGetNumChildren(body), 3u)
-      << "prelude (1) + cel_reset (1) + root (1)";
+      << "prelude (1) + arena_reset (1) + root (1)";
 
   // Child 0: prelude local.set of x's slot_offset.
   BinaryenExpressionRef set = BinaryenBlockGetChildAt(body, 0);
@@ -502,10 +502,10 @@ TEST(ExprLowerIdentTest, RootIdentLowersToLocalGet) {
   EXPECT_EQ(BinaryenConstGetValueI32(slot_const),
             static_cast<int32_t>(p.layout.variables[0].slot_offset));
 
-  // Child 1: call $cel_reset.
+  // Child 1: call $arena_reset.
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 1);
   EXPECT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_reset");
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "arena_reset");
 
   // Child 2: local.get of x's local.  The returned i32 is what
   // `$eval` produces — the offset of x's CelValue.
@@ -543,7 +543,7 @@ TEST(ExprLowerIdentTest, PreludePresentEvenWhenOnlyKConstIsUsed) {
       << "literal-only program declares no wasm locals";
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   EXPECT_EQ(BinaryenBlockGetNumChildren(body), 2u)
-      << "no prelude: cel_reset + const root";
+      << "no prelude: arena_reset + const root";
 }
 
 TEST(ExprLowerIdentTest, EmittedModuleSerializesAndValidates) {
@@ -587,7 +587,7 @@ TEST(ExprLowerIdentTest, MultipleVariablesGetSeparateLocalsAndPrelude) {
 // doc/implementation-plan/rewrite/wat/04_select_c_name.wat.
 
 // The root expression is always $eval body's last child (prelude +
-// cel_reset come before).
+// arena_reset come before).
 BinaryenExpressionRef RootExpr(BinaryenFunctionRef func) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(func);
   return BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);

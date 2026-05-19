@@ -8,7 +8,7 @@
 // The emitted module has the M1 shape:
 //   - memory: one wasm page, exported as "memory", with an active data
 //     segment at `layout.rodata_base` holding the packed rodata bytes.
-//   - imports from module "cel": `cel_reset(i32,i32)->()` and
+//   - imports from module "cel": `arena_reset(i32,i32)->()` and
 //     `arena_alloc(i32)->i32`.  `arena_alloc` is unused at M1 but installed
 //     unconditionally — codegen always links the runtime fully, never
 //     gates imports on AST inspection (see CLAUDE.md memory notes).
@@ -41,7 +41,7 @@ struct CompileOptions {
   CheckOptions check;
 
   // Total linear-memory size in bytes.  Flows to
-  // `LoweringOptions.mem_size_bytes` (the second arg of the `cel_reset`
+  // `LoweringOptions.mem_size_bytes` (the second arg of the `arena_reset`
   // call emitted at the top of every `$eval` body) and to `SetMemory`'s
   // page count (rounded up to the next wasm page).  Default is two
   // pages (128 KiB): the runtime `.wasm` is cross-compiled with

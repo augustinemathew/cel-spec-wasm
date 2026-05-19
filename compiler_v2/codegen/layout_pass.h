@@ -64,7 +64,7 @@ struct LayoutOptions {
 // Memory map the output describes:
 //
 //     [0..8)     reserved (null sentinel)
-//     [8..16)    arena cursor + limit (bytes 8/12) — written by cel_reset
+//     [8..16)    arena cursor + limit (bytes 8/12) — written by arena_reset
 //     [rodata_base..rodata_base+rodata.size())
 //                active data segment (kConst CelValues + payload bytes)
 //     [workspace_base..workspace_base+workspace_bytes)

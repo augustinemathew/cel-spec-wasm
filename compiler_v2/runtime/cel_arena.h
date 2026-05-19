@@ -7,13 +7,10 @@
 //      and stores the base offset + capacity in a static `Arena`
 //      struct (in BSS).  Default N is `CELWASM_ARENA_CAPACITY_BYTES`
 //      (64 KiB).
-//   2. Per Eval, codegen emits `(call $cel_reset ...)` as the first
+//   2. Per Eval, codegen emits `(call $arena_reset)` as the first
 //      instruction of `$eval`.  Cursor = 0; allocations made by the
 //      previous Eval are effectively freed (they aren't `free()`d,
 //      but they're no longer reachable and the bytes are reused).
-//      The codegen prologue still passes the legacy `(arena_base,
-//      arena_limit)` args; they are ignored by `cel_reset` and will
-//      be removed in M5 once codegen emits `(call $arena_reset)`.
 //   3. Within `$eval`, kernels call `arena_alloc(n)` for any
 //      per-Eval working storage.  Returns an offset into linear
 //      memory (or 0 on OOM).  Allocations are 8-byte aligned and
@@ -42,22 +39,13 @@ void arena_init(uint32_t cap_bytes);
 uint32_t arena_alloc(uint32_t n);
 
 // Reset the cursor to the start of the arena.  Called from the
-// `$eval` prologue (today emitted as `cel_reset`, which routes here
-// via the compat shim).  O(1); does not free the underlying buffer.
+// `$eval` prologue as `(call $arena_reset)`.  O(1); does not free
+// the underlying buffer.
 void arena_reset(void);
 
 // Diagnostics — current bump cursor and total capacity in bytes.
 uint32_t arena_cursor(void);
 uint32_t arena_capacity(void);
-
-// Compat shim for the codegen prologue: kept until M5 swaps codegen
-// to emit `(call $arena_reset)` directly.  Ignores both args (they
-// were the old fixed-memory arena_base / arena_limit, no longer
-// meaningful) and falls through to `arena_reset`.  Auto-runs
-// `arena_init(CELWASM_ARENA_CAPACITY_BYTES)` on first call so older
-// test fixtures that hand-write `cel_reset(b, l)` in SetUp() still
-// work without an explicit `arena_init`.
-void cel_reset(uint32_t arena_base, uint32_t arena_limit);
 
 // Offset → CelValue* helper.  Returns NULL when `off == 0` so callers
 // can treat a zero offset uniformly as "absent".
