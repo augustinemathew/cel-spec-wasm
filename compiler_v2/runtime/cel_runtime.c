@@ -120,9 +120,9 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   hdr->count++;
 }
 
-// M5.B Slice G — dynamic-map insert for `transformMap` /
-// `transformMapEntry` accumulators.  Differs from `cel_map_insert`
-// in three ways:
+// Dynamic-map insert for `transformMap` / `transformMapEntry`
+// comprehension accumulators.  Differs from `cel_map_insert` in
+// three ways:
 //   1. Geometric growth (2× capacity, min 4) when full; copies
 //      existing entries into the new bucket array.  Old run is
 //      abandoned in the forward-only arena (same trade-off as
@@ -259,7 +259,7 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
 // appends in index order; final count == capacity.  Comprehension
 // accus: codegen loads `iter_range.count` at runtime, passes it
 // as capacity (collection-producing macros are bounded above by
-// source size, see m5-comprehensions-followon.md §10.A); appends
+// source size; see `rewrite/m5-comprehensions-followon.md` §10.A); appends
 // run per-iter; final count ≤ capacity.  No growth path — the
 // capacity is sufficient by construction, and the append's
 // `count >= capacity` invariant traps via `__builtin_trap` if
@@ -332,7 +332,7 @@ void cel_list_append_at(uint32_t list_slot, uint32_t value_slot) {
   ++hdr->count;
 }
 
-// M5.B Slice D — predicate-gated append for `filter(v, p)` /
+// Predicate-gated append for `filter(v, p)` /
 // conditional-map.  Encapsulates 3VL on the predicate so codegen
 // can lower the loop_step into a single call.  Semantics:
 //   - list_slot poisoned (non-CEL_LIST_ARENA): silent no-op.
@@ -359,8 +359,8 @@ void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
   cel_list_append_at(list_slot, value_slot);
 }
 
-// Slice G/H followup — 3VL-aware predicate-gated map insert for
-// conditional transformMap / transformMapEntry steps.  Mirrors
+// 3VL-aware predicate-gated map insert for conditional
+// transformMap / transformMapEntry steps.  Mirrors
 // cel_list_append_at_if_bool exactly:
 //   - pred ERROR / UNKNOWN: propagate verbatim into the map slot
 //     (aborts the comprehension per design §3.2).
@@ -456,21 +456,21 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 }
 
 // =====================================================================
-// M5.D step 1 — aggregate-op kArena fast paths (size / in / eq /
-// concat for lists, size / in / eq for maps).  No host trip; pure
-// wasm.  kHost trampolines + the kDynamic dispatchers land in
-// step 2.  See `m5-kcall-comprehensions.md §2.1`.
+// Aggregate-op kArena fast paths (size / in / eq / concat for
+// lists, size / in / eq for maps).  No host trip; pure wasm.
+// kHost trampolines + kDynamic dispatchers live below in this
+// TU.  See `rewrite/map-list-dispatch.md` §2 for the three-path
+// origin dispatch contract.
 // =====================================================================
 
 // 3VL absorbers + write_* writers come from cel_internal.h.
 
-// Slice 1.6 — polymorphic element-equality matcher.  Used by
-// `cel_list_in_arena` / `cel_map_in_arena` to test whether a
-// scalar query equals any element / key under langdef §"Equality"
-// semantics.  Differs from a same-kind matcher by routing every
-// numeric pair through `numeric_compare_kernel` (defined further
-// down in the M5.B step 2 section) — so `1 in [1.0]` returns true,
-// matching the conformance corpus' `int_in_doubles` row.
+// Polymorphic element-equality matcher.  Routes any numeric pair
+// (cross-kind included) through `numeric_compare_kernel` (defined
+// in cel_compare.c, visible via cel_internal.h's extern) so
+// `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
+// §"List Membership (in)" + §"Equality" and the conformance
+// corpus' `int_in_doubles` / `uint_in_ints` rows.
 //
 // Returns 1 (equal), 0 (unequal-or-different-shape).  Caller has
 // already absorbed 3VL on the operands; this matcher does not
@@ -479,16 +479,6 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 // Nested aggregates (CEL_LIST_*, CEL_MAP_*, CEL_MESSAGE) still
 // return 0 here — the arena fast path is correct only for scalar
 // element types; codegen gates routing accordingly.
-//
-// Forward-decls land at the top of the M5.B step 2 section; the
-// kernel + predicate live below in this same TU and resolve at
-// link-within-translation-unit time.
-// Slice 1.6 — polymorphic element-equality matcher.  Routes any
-// numeric pair (cross-kind included) through `numeric_compare_kernel`
-// (defined in cel_compare.c, visible via cel_internal.h's extern) so
-// `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
-// §"List Membership (in)" + §"Equality" + the conformance corpus'
-// `int_in_doubles` / `uint_in_ints` rows.
 static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
     return numeric_compare_kernel(a, b) == kCmpEqual;
@@ -722,16 +712,16 @@ void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 }
 
 // =====================================================================
-// M5.D step 2 — kDynamic dispatchers + kHost extern decls for
-// aggregate ops (size / in / eq / concat for lists; size / in / eq
-// for maps) plus the polymorphic `cel_message_eq` host helper.
-// Each dispatcher mirrors the `cel_map_lookup` shape at line 434:
-// 3VL absorption → branch on operand kind → `__attribute__((musttail))`
-// to either an arena fast path (M5.D step 1) or a kHost trampoline.
-// The kHost arms link to `cel_host.cel_*` imports on the wasm
-// build; the host build supplies weak no-op stubs that poison
-// with TYPE_MISMATCH so an accidental host invocation surfaces
-// at the assertion boundary.  See `m5-kcall-comprehensions.md §2.1`.
+// kDynamic dispatchers + kHost extern decls for aggregate ops
+// (size / in / eq / concat for lists; size / in / eq for maps),
+// plus the polymorphic `cel_message_eq` host helper.  Each
+// dispatcher mirrors the `cel_map_lookup` shape above: 3VL
+// absorption → branch on operand kind → `__attribute__((musttail))`
+// to either an arena fast path or a kHost trampoline.  The kHost
+// arms link to `cel_host.cel_*` imports on the wasm build; the
+// host build supplies weak no-op stubs that poison with
+// TYPE_MISMATCH so an accidental host invocation surfaces at the
+// assertion boundary.  See `rewrite/map-list-dispatch.md` §2.
 // =====================================================================
 
 #ifdef __wasm__
@@ -973,7 +963,7 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 }
 
 // =====================================================================
-// M5.B Slice E — map-key iteration helpers (Option β; see cel_map.h).
+// Map-key iteration helpers (Option β; see cel_map.h).
 //
 // The iterator handle is the arena offset of an 8-byte state struct
 // `{ header_ptr, cursor }`.  `cursor` is the 1-based index of the
@@ -1071,21 +1061,21 @@ void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle) {
 }
 
 // =====================================================================
-// M5.B step 2b — polymorphic equality dispatcher.
+// Polymorphic equality dispatcher.
 //
 // `cel_equals_at_vv` and `cel_not_equals_at_vv` resolve every cel-cpp
 // `equals` / `not_equals` overload at runtime via operand-kind
 // switch.  Per langdef §"Equality":
 //
 //   - Numeric kinds (int / uint / double) compare cross-type by
-//     mathematical value via the M5.B step 2 numeric ladder.
+//     mathematical value via the cross-numeric ladder.
 //   - Same-kind bool / string / bytes / null use the existing
 //     `cel_*_eq_at_vv` helpers.
-//   - Aggregate kinds (list / map) tail-call the M5.D step 2
+//   - Aggregate kinds (list / map) tail-call the kDynamic
 //     dispatcher (`cel_list_eq` / `cel_map_eq`), which handles
 //     arena vs host origin internally.
 //   - CEL_MESSAGE values delegate to the kHost
-//     `cel_host_cel_message_eq` import (M5.D step 2).
+//     `cel_host_cel_message_eq` import.
 //   - Mismatched kinds return `false` per langdef
 //     ("comparing incompatible types is not an error"), with one
 //     exception: numeric ↔ non-numeric is also `false`.
@@ -1128,10 +1118,10 @@ static int both_maps(uint32_t ka, uint32_t kb) {
 // or propagates 3VL.  Aggregate / message arms tail-call into their
 // dispatchers, which write CEL_BOOL themselves; `cel_not_equals`
 // re-reads `out_slot` after a tail-call'd helper returns and flips.
-// M9.D: CEL_TYPE × CEL_TYPE equality — memcmp on `payload.s` bytes,
+// CEL_TYPE × CEL_TYPE equality — memcmp on `payload.s` bytes,
 // the type-name string in linear memory.  Extracted from
 // `equality_kernel` to keep that function under the function-size
-// gate; per langdef §"Equality" + m9-type-subsystem.md §3.4.
+// gate; per langdef §"Equality" and `rewrite/m9-type-subsystem.md` §3.4.
 static void type_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(a_slot);

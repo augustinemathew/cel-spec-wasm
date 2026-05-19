@@ -22,7 +22,13 @@ struct InstanceImpl {
   wasmtime_store_t* store = nullptr;
   wasmtime_linker_t* linker = nullptr;
   wasmtime_module_t* expr_module = nullptr;
-  wasmtime_memory_t memory{};
+  // Phase C: the runtime is built for wasm32-wasi-threads and exports
+  // its memory as `shared`.  All host-side reads / writes go through
+  // the shared-memory API (`wasmtime_sharedmemory_data` /
+  // `wasmtime_sharedmemory_data_size`), which returns a stable base
+  // pointer and does not take a `wasmtime_context_t*`.  The pointer is
+  // owned by this struct and deleted in the destructor.
+  wasmtime_sharedmemory_t* memory = nullptr;
   wasmtime_instance_t runtime_instance{};
   wasmtime_instance_t expr_instance{};
   wasmtime_func_t eval_fn{};

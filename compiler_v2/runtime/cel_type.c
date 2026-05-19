@@ -1,10 +1,9 @@
-// type(x) — M9.B type-subsystem runtime kernel.
+// type(x) — type-subsystem runtime kernel.
 //
 // Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md`
-// (post-M10 follow-up — `cel_type.h` shipped alongside M9; the body
-// stayed in cel_runtime.c until now).  See cel_type.h for the public
-// ABI and m9-type-subsystem.md for the design rationale.
+// `rewrite/cel-runtime-c-split-plan.md`.  See cel_type.h for the
+// public ABI and `rewrite/m9-type-subsystem.md` for the design
+// rationale.
 
 #include "compiler_v2/runtime/cel_type.h"
 
@@ -16,9 +15,9 @@
 
 // Indexed by CelKind value.  NULL entries are kinds the helper
 // does not handle directly: CEL_MESSAGE dispatches to the host
-// trampoline (M9.C); CEL_OPTIONAL is an optionals-pass concern
-// (out of M9 scope); CEL_UNKNOWN / CEL_ERROR are absorbed by the
-// 3VL prelude before reaching this table.
+// trampoline; CEL_OPTIONAL is an optionals-pass concern;
+// CEL_UNKNOWN / CEL_ERROR are absorbed by the 3VL prelude before
+// reaching this table.
 //
 // CelKind tail value is CEL_LIST_HOST = 17, so the array has 18
 // slots.
@@ -43,11 +42,11 @@ static const char* const kPrimitiveTypeName[18] = {
     "list",                       // CEL_LIST_HOST = 17
 };
 
-// Forward decl of the M9.C host trampoline.  Same import pattern as
+// Forward decl of the host trampoline.  Same import pattern as
 // `cel_host_cel_map_lookup`: `__wasm__` ⇒ `import_module` attribute
 // (resolved at instantiation by wasmtime); host build ⇒ weak no-op
 // stub (poison kTypeMismatch) so unit tests link without the wasmtime
-// trampoline.  M9.C lands the strong override in
+// trampoline.  Strong override lives in
 // `compiler_v2/api/internal/cel_host.cc` for both directions.
 #ifdef __wasm__
 extern void cel_host_resolve_message_type_name(uint32_t out_slot,

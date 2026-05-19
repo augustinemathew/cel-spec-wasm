@@ -4,17 +4,26 @@
 // the `name:type` spec strings consumed by
 // `Compiler::Builder::DeclareVariable`).
 //
-// The harness uses these to widen the M2 envelope to admit tests
-// carrying scalar `bindings:` / `type_env:` / `container:` — every
-// gate is a graceful `Unimplemented` (caller SKIPs) rather than a
-// crash, since the corpus mixes scalar shapes (M2-eligible) with
-// aggregate shapes (M6/M7) inside the same fixture file.
+// Every entry point returns a graceful `Unimplemented` (caller
+// SKIPs as `kBindingUnsupported` / `kTypeEnvUnsupported`) for
+// shapes the harness can't yet route, rather than crashing — the
+// corpus mixes in-scope and out-of-scope shapes inside the same
+// fixture file.
 //
-// Scope at M2: scalar kinds (null/bool/int/uint/double/string/bytes)
-// only.  Aggregate ExprValue (`object_value`, `map_value`,
-// `list_value`, `enum_value`, `type_value`), aggregate `Decl` types
-// (list/map/message), function decls, and unknown/error ExprValue
-// all return `Unimplemented` — later milestones lift each gate.
+// Currently supported (`ValueFromProto` / `DeclareVariablesOnBuilder`):
+//   - scalar values (null / bool / int / uint / double / string / bytes)
+//   - `enum_value` (decoded as int per langdef §"Enumerated Types")
+//   - `object_value` (Any-unpacked via the generated descriptor pool)
+//   - `type_value` (decoded to `cel::Value::Type(name)`)
+//   - primitive / message-type / type-of-types `Decl` ident types
+//
+// Still `Unimplemented` (graceful SKIP — see follow-ups in
+// `compiler_v2/conformance/README.md`):
+//   - `map_value` / `list_value` bindings (aggregate marshal)
+//   - `error` / `unknown` `ExprValue` bindings (no per-test expr-id
+//     → AttributeId plumbing)
+//   - `wrapper`, `well_known`, `list_type`, `map_type`, `abstract_type`,
+//     `type_param`, `error`, `dyn`, `function` decls
 
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
@@ -50,8 +59,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<cel::Value> ValueFromProto(
 // TestAllTypes via `ForceLinkFixtureDescriptors` in `runner.cc`.
 // Used both by `ValueFromProto`'s kObjectValue arm (binding side)
 // and by `runner.cc::CompareMessage` (matcher side).
-ABSL_MUST_USE_RESULT absl::StatusOr<
-    std::unique_ptr<google::protobuf::Message>>
+ABSL_MUST_USE_RESULT absl::StatusOr<std::unique_ptr<google::protobuf::Message>>
 UnpackAny(const google::protobuf::Any& any);
 
 // Convert a scalar `cel.expr.Decl` (IdentDecl with a primitive

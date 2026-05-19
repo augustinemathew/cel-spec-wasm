@@ -114,6 +114,48 @@ wasm_functype_t* HostTwoArgFuncType() {
   return wasm_functype_new(&params, &results);
 }
 
+// Four-i32 in, void out.  Matches `cel_host.cel_timestamp_tz_accessor`,
+// which the runtime imports unconditionally (declared in cel_time.c
+// regardless of whether the test path reaches a `.year()` etc.
+// accessor with a non-UTC timezone).
+wasm_functype_t* HostFourArgFuncType() {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  wasm_valtype_t* param_arr[4];
+  for (auto& p : param_arr) {
+    p = wasm_valtype_new(WASM_I32);
+  }
+  wasm_valtype_vec_new(&params, 4, param_arr);
+  wasm_valtype_vec_new_empty(&results);
+  return wasm_functype_new(&params, &results);
+}
+
+// `wasi_snapshot_preview1.sched_yield() -> errno (i32)`.  wasi-sdk's
+// libc (wasm32-wasi-threads variant) declares this symbol; even when
+// no runtime code calls it, wasm-ld keeps the import alive.  Returns
+// 0 (success).
+wasm_trap_t* SchedYieldStub(void*, wasmtime_caller_t*, const wasmtime_val_t*,
+                            size_t, wasmtime_val_t* results, size_t nresults) {
+  if (nresults >= 1) {
+    results[0].kind = WASMTIME_I32;
+    results[0].of.i32 = 0;
+  }
+  return nullptr;
+}
+
+// `wasi_snapshot_preview1.random_get(buf, len) -> errno (i32)`.
+// wasi-libc's dlmalloc seeds itself via this on first allocation.
+// We don't need any actual randomness — return 0 (success) and leave
+// the buffer untouched; the test memory is already zeroed.
+wasm_trap_t* RandomGetStub(void*, wasmtime_caller_t*, const wasmtime_val_t*,
+                           size_t, wasmtime_val_t* results, size_t nresults) {
+  if (nresults >= 1) {
+    results[0].kind = WASMTIME_I32;
+    results[0].of.i32 = 0;
+  }
+  return nullptr;
+}
+
 // Owns the wasmtime state for one instantiated cel_runtime.wasm.
 // Public fields so the test can drive arena_reset / arena_alloc and
 // peek at memory bytes directly.
@@ -168,6 +210,14 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure() << "wasm_config_new";
   }
   wasmtime_config_wasm_tail_call_set(config, true);
+  // Phase C: the runtime is now built against `wasm32-wasi-threads`
+  // (cctz needs `<mutex>`).  Enable threads + shared memory in the
+  // engine so wasmtime accepts the module's shared-memory import.
+  // `wasm_threads_set` enables the threads proposal (atomic ops);
+  // `shared_memory_set` is the separate switch for shared linear
+  // memory support — both are needed to instantiate.
+  wasmtime_config_wasm_threads_set(config, true);
+  wasmtime_config_shared_memory_set(config, true);
   h->engine = wasm_engine_new_with_config(config);
   if (h->engine == nullptr) {
     return ::testing::AssertionFailure() << "wasm_engine_new_with_config";
@@ -194,6 +244,102 @@ struct RuntimeHarness {
   return ::testing::AssertionSuccess();
 }
 
+// `wasi_snapshot_preview1.sched_yield()->i32` and `random_get(buf,
+// len)->i32` stubs.  Both are kept-alive by wasi-libc's wasm32-wasi-
+// threads variant even though the C-only runtime never calls them;
+// the linker rejects instantiation if any declared import is
+// unresolved.
+::testing::AssertionResult DefineWasiStubs(wasmtime_linker_t* linker) {
+  // sched_yield: () -> i32
+  {
+    wasm_valtype_vec_t params;
+    wasm_valtype_vec_t results;
+    wasm_valtype_t* r = wasm_valtype_new(WASM_I32);
+    wasm_valtype_vec_new_empty(&params);
+    wasm_valtype_vec_new(&results, 1, &r);
+    wasm_functype_t* ft = wasm_functype_new(&params, &results);
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "wasi_snapshot_preview1", 22, "sched_yield", 11, ft,
+        SchedYieldStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+    wasm_functype_delete(ft);
+    if (err != nullptr) {
+      return ::testing::AssertionFailure()
+             << "define wasi_snapshot_preview1.sched_yield: "
+             << WasmtimeErrorMsg(err);
+    }
+  }
+  // random_get: (i32 buf, i32 len) -> i32
+  {
+    wasm_valtype_vec_t params;
+    wasm_valtype_vec_t results;
+    wasm_valtype_t* p_arr[2] = {wasm_valtype_new(WASM_I32),
+                                wasm_valtype_new(WASM_I32)};
+    wasm_valtype_t* r = wasm_valtype_new(WASM_I32);
+    wasm_valtype_vec_new(&params, 2, p_arr);
+    wasm_valtype_vec_new(&results, 1, &r);
+    wasm_functype_t* ft = wasm_functype_new(&params, &results);
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "wasi_snapshot_preview1", 22, "random_get", 10, ft,
+        RandomGetStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+    wasm_functype_delete(ft);
+    if (err != nullptr) {
+      return ::testing::AssertionFailure()
+             << "define wasi_snapshot_preview1.random_get: "
+             << WasmtimeErrorMsg(err);
+    }
+  }
+  return ::testing::AssertionSuccess();
+}
+
+// Define the cel_host.* aggregate-op + message-resolver + ts-accessor
+// trampolines as no-op stubs.  The runtime imports these symbols
+// unconditionally; none of the tests here exercise the kHost paths.
+::testing::AssertionResult DefineCelHostStubs(wasmtime_linker_t* linker) {
+  // M5.D step 2: aggregate-op kHost imports.  size helpers are
+  // 2-arg, in/eq/concat (and cel_message_eq) are 3-arg.
+  struct Entry {
+    const char* name;
+    size_t name_len;
+    int arity;
+  };
+  static const Entry kEntries[] = {
+      {"cel_map_lookup", 14, 3},
+      {"cel_list_at", 11, 3},
+      {"cel_list_size", 13, 2},
+      {"cel_list_in", 11, 3},
+      {"cel_list_eq", 11, 3},
+      {"cel_list_concat", 15, 3},
+      {"cel_map_size", 12, 2},
+      {"cel_map_in", 10, 3},
+      {"cel_map_eq", 10, 3},
+      {"cel_message_eq", 14, 3},
+      // M9.B: `type(message)` descriptor-FQN resolver.  M7B.E:
+      // timestamp-with-TZ accessor trampoline.  Both unconditional
+      // imports.
+      {"resolve_message_type_name", 25, 2},
+      {"cel_timestamp_tz_accessor", 25, 4},
+  };
+  for (const auto& e : kEntries) {
+    wasm_functype_t* ft;
+    if (e.arity == 2) {
+      ft = HostTwoArgFuncType();
+    } else if (e.arity == 3) {
+      ft = HostThreeArgFuncType();
+    } else {
+      ft = HostFourArgFuncType();
+    }
+    wasmtime_error_t* err = wasmtime_linker_define_func(
+        linker, "cel_host", 8, e.name, e.name_len, ft, NoopCelHostThreeArg,
+        /*data=*/nullptr, /*finalizer=*/nullptr);
+    wasm_functype_delete(ft);
+    if (err != nullptr) {
+      return ::testing::AssertionFailure()
+             << "define cel_host." << e.name << ": " << WasmtimeErrorMsg(err);
+    }
+  }
+  return ::testing::AssertionSuccess();
+}
+
 // Wires cel_env.cel_log (no-op) and cel.memory (host-owned) onto a
 // fresh linker.  Sets `h->linker`.
 ::testing::AssertionResult InitLinker(RuntimeHarness* h) {
@@ -211,60 +357,8 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure()
            << "define cel_env.cel_log: " << WasmtimeErrorMsg(err);
   }
-  wasm_functype_t* mlft = HostThreeArgFuncType();
-  err = wasmtime_linker_define_func(h->linker, "cel_host", 8, "cel_map_lookup",
-                                    14, mlft, NoopCelHostThreeArg,
-                                    /*data=*/nullptr, /*finalizer=*/nullptr);
-  wasm_functype_delete(mlft);
-  if (err != nullptr) {
-    return ::testing::AssertionFailure()
-           << "define cel_host.cel_map_lookup: " << WasmtimeErrorMsg(err);
-  }
-  // M4.C: same shape for `cel_host.cel_list_at`.
-  wasm_functype_t* llft = HostThreeArgFuncType();
-  err = wasmtime_linker_define_func(h->linker, "cel_host", 8, "cel_list_at", 11,
-                                    llft, NoopCelHostThreeArg,
-                                    /*data=*/nullptr, /*finalizer=*/nullptr);
-  wasm_functype_delete(llft);
-  if (err != nullptr) {
-    return ::testing::AssertionFailure()
-           << "define cel_host.cel_list_at: " << WasmtimeErrorMsg(err);
-  }
-  // M5.D step 2: aggregate-op kHost imports.  size helpers are
-  // 2-arg, in/eq/concat (and cel_message_eq) are 3-arg.  Tests
-  // here don't exercise the kHost path; no-op stubs suffice.
-  struct Entry {
-    const char* name;
-    size_t name_len;
-    int arity;
-  };
-  static const Entry kEntries[] = {
-      {"cel_list_size", 13, 2},
-      {"cel_list_in", 11, 3},
-      {"cel_list_eq", 11, 3},
-      {"cel_list_concat", 15, 3},
-      {"cel_map_size", 12, 2},
-      {"cel_map_in", 10, 3},
-      {"cel_map_eq", 10, 3},
-      {"cel_message_eq", 14, 3},
-      // M9.B: `type(message)` descriptor-FQN resolver.  Tests here
-      // don't exercise the CEL_MESSAGE arm of `cel_type_of_at_v`,
-      // but the wasm module imports the symbol unconditionally so
-      // the stub still has to land.
-      {"resolve_message_type_name", 25, 2},
-  };
-  for (const auto& e : kEntries) {
-    wasm_functype_t* ft =
-        e.arity == 2 ? HostTwoArgFuncType() : HostThreeArgFuncType();
-    err = wasmtime_linker_define_func(h->linker, "cel_host", 8, e.name,
-                                      e.name_len, ft, NoopCelHostThreeArg,
-                                      /*data=*/nullptr, /*finalizer=*/nullptr);
-    wasm_functype_delete(ft);
-    if (err != nullptr) {
-      return ::testing::AssertionFailure()
-             << "define cel_host." << e.name << ": " << WasmtimeErrorMsg(err);
-    }
-  }
+  if (auto r = DefineCelHostStubs(h->linker); !r) return r;
+  if (auto r = DefineWasiStubs(h->linker); !r) return r;
   wasmtime_extern_t ext;
   ext.kind = WASMTIME_EXTERN_MEMORY;
   ext.of.memory = h->memory;
@@ -299,11 +393,12 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure()
            << "instantiate trapped: " << WasmTrapMsg(trap);
   }
-  if (auto r = LookupFunc(ctx, h->instance, "arena_reset", 9, &h->arena_reset_fn);
+  if (auto r =
+          LookupFunc(ctx, h->instance, "arena_reset", 11, &h->arena_reset_fn);
       !r) {
     return r;
   }
-  return LookupFunc(ctx, h->instance, "arena_alloc", 9, &h->arena_alloc_fn);
+  return LookupFunc(ctx, h->instance, "arena_alloc", 11, &h->arena_alloc_fn);
 }
 
 // Top-level harness builder.  Three steps, each its own helper to

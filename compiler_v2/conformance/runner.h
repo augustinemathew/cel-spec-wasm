@@ -1,38 +1,27 @@
-// Conformance-suite harness for compiler_v2.
+// Conformance harness for compiler_v2.
 //
-// Wraps one `cel.expr.conformance.test.SimpleTest` as a pipeline
-// invocation (`cel::Compiler::Compile` → `cel::Engine::Plan` →
-// `cel::Instance::Eval`) and compares the decoded `cel::Value`
-// against the test's `cel.expr.Value` matcher.
+// Wraps a single upstream `cel.expr.conformance.test.SimpleTest` row
+// as a compiler_v2 pipeline invocation (`cel::Compiler::Compile` →
+// `cel::Engine::Plan` → `cel::Instance::Eval`) and compares the
+// decoded `cel::Value` against the test's `cel.expr.Value` matcher.
 //
-// Every run yields exactly one of three outcomes:
+// Every row resolves to exactly one of three outcomes:
 //
-//   - `kPass`         — compiled, evaluated, and matched the proto.
-//   - `kUnsupported`  — the test sits outside the current milestone's
-//                       envelope (bindings / container / type_env /
-//                       aggregate matcher / error matcher) *or*
-//                       compilation returned `Unimplemented`.  Not a
-//                       regression; later milestones graduate these.
-//   - `kFail`         — anything else.  Treated as a regression by the
-//                       test wrapper; the binary form tallies them.
+//   - `kPass`         — compiled, evaluated, and matched the matcher.
+//   - `kUnsupported`  — outside the harness's current envelope.  Each
+//                       such row carries a `SkipCategory` tag so the
+//                       caller can aggregate-by-category without
+//                       parsing detail text.  Not a regression.
+//   - `kFail`         — anything else (compile/plan/eval error not
+//                       recognised as out-of-envelope, or a value
+//                       mismatch).  Treated as a regression.
 //
-// The envelope widens each milestone.  M1 accepts scalar `value:`
-// matchers only; M2 additionally accepts `unknown` / `any_unknowns`
-// matchers and routes them to `Instance::PartialEval`.  M3 admits
-// `map_value:` matchers — the `CompareValue` map arm decodes the
-// proto map entries and matches them order-agnostically against
-// the cel::Value's `HostMapBacking`.  M4 admits `list_value:`
-// matchers — `CompareList` walks the decoded `cel::Value`'s
-// `HostListBacking` ORDER-aware (lists are ordered per langdef
-// § "List equality", unlike maps).  M4 additionally admits
-// `eval_error:` / `any_eval_errors:` matchers — `CompareEvalError`
-// asserts the runtime returned a `Value::Error`; the matcher's
-// per-error `message` strings are checked loosely (substring,
-// either direction) against the runtime payload, with empty
-// `errors[]` matching any error (mirrors cel-cpp's
-// `conformance/run.cc` which checks `has_error()` only).
-// Subsequent milestones loosen further dimensions (typed_result,
-// comprehensions) and update the filter here in the same commit.
+// The envelope today admits every matcher kind defined on
+// `cel.expr.Value` plus the `eval_error` / `any_eval_errors` /
+// `unknown` / `any_unknowns` / `typed_result` matchers.  The
+// per-stage marshal helpers in `binding_marshal.h` SKIP gracefully
+// for `bindings:` / `type_env:` entries whose shape the harness
+// doesn't yet support (aggregate types, error/unknown bindings).
 
 #ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
 #define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
@@ -45,7 +34,6 @@
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/eval.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
 #include "compiler_v2/api/value.h"
 
@@ -57,75 +45,105 @@ enum class Outcome : std::uint8_t {
   kFail,
 };
 
-struct Result {
-  Outcome outcome = Outcome::kUnsupported;
-  // Human-readable reason.  For kPass, empty.  For kUnsupported, the
-  // envelope dimension or `Unimplemented` message.  For kFail, the
-  // underlying status + a short diff of got-vs-want.
-  std::string detail;
+// Stable category tags for `kUnsupported` outcomes.  The textual
+// names (see `SkipCategoryName`) are part of the harness contract:
+// the conformance README's per-fixture SKIP-by-category table groups
+// by these names, and operators grep against them.  Add a category
+// here AND register the name in `SkipCategoryName` in the same
+// commit.
+//
+// The mapping from "what went wrong" to category:
+//
+//   kDisableCheck       — row carries `disable_check: true` (parse-
+//                         only eval; out-of-conformance-scope by
+//                         design — our pipeline is checker-passed
+//                         only).
+//   kCheckOnly          — row carries `check_only: true`.  Eval is
+//                         skipped; `typed_result.deduced_type`-only
+//                         comparison is harness follow-up.
+//   kEnvelope           — matcher kind is not one the harness can
+//                         compare today (no `value:` set, or a
+//                         typed_result row with no inner `result`).
+//   kStaticSubset       — `RejectDyn` rejected the expression.
+//                         Identified by status-payload tag
+//                         `kStaticSubsetViolationUrl`.
+//   kCompileUnimpl      — Compile returned `Unimplemented` (a stage
+//                         stub for a later milestone).  Detail
+//                         carries the stage label.
+//   kEvalUnimpl         — Eval or PartialEval returned
+//                         `Unimplemented`.  Detail carries the
+//                         stage label.
+//   kExtensionUnimpl    — Type-check failed because a cel-cpp
+//                         extension library was not registered
+//                         (`undeclared reference to '<ext-root>'`).
+//                         Identified by the
+//                         `kUndeclaredReferencesUrl` payload tag
+//                         plus an ext-lib roots match.
+//   kTypeEnvUnsupported — binding_marshal refused a `type_env`
+//                         decl (aggregate / function / dyn type).
+//   kBindingUnsupported — binding_marshal refused a `bindings`
+//                         entry (aggregate value, error / unknown
+//                         ExprValue shapes).
+enum class SkipCategory : std::uint8_t {
+  kDisableCheck,
+  kCheckOnly,
+  kEnvelope,
+  kStaticSubset,
+  kCompileUnimpl,
+  kEvalUnimpl,
+  kExtensionUnimpl,
+  kTypeEnvUnsupported,
+  kBindingUnsupported,
 };
 
 absl::string_view OutcomeName(Outcome o);
+absl::string_view SkipCategoryName(SkipCategory c);
 
-// Returns true iff the test shape is one the M3 pipeline can even
-// attempt: `check_only` and `disable_check` both unset, and the
-// matcher is one of
-//
-//   - `value:` with a scalar kind
-//     (null/bool/int64/uint64/double/string/bytes), or
-//   - `value:` with `map_value` (M3 — compared order-agnostically
-//     against the decoded `cel::Value`'s `HostMapBacking`), or
-//   - `unknown:` / `any_unknowns:` — routed to `PartialEval`.
-//
-// `bindings:` / `type_env:` / `container:` are NOT pre-filtered:
-// the harness-side marshaller (`binding_marshal.h`) attempts to
-// decode each entry into the public `cel::` surface and gracefully
-// returns `Unimplemented` (caller SKIPs) on aggregate / non-scalar
-// shapes.  This lets a single fixture file mix M3-eligible scalar
-// bindings with M6/M7 aggregate bindings and have only the
-// in-envelope tests graduate.
-//
-// A false here short-circuits to `kUnsupported` without compiling.
-bool IsInM7Envelope(const cel::expr::conformance::test::SimpleTest& t);
+struct Result {
+  Outcome outcome = Outcome::kUnsupported;
+  // Tag for `kUnsupported` outcomes.  Ignored for `kPass` / `kFail`.
+  SkipCategory category = SkipCategory::kEnvelope;
+  // Human-readable detail.  For `kPass`, empty.  For `kUnsupported`,
+  // describes the specific SKIP cause (the matcher kind, the
+  // unimplemented stage, etc).  For `kFail`, the stage + absl::Status
+  // string from where the failure was caught.
+  std::string detail;
+};
 
-// Compare a decoded `cel::Value` against the proto `cel.expr.Value`.
-// OK on equality, `FailedPrecondition` with a diff-ish payload on
-// mismatch, `InvalidArgument` if `want` is a kind the runner has no
-// comparison for (list_value / object_value / enum_value /
-// type_value — caller should have short-circuited via
-// `IsInM7Envelope` first).
+// Returns true iff the test's matcher kind is one the harness can
+// compare.  Pre-screen check used in `RunOne`; out-of-envelope rows
+// SKIP as `kEnvelope` without burning a compile.  `disable_check` /
+// `check_only` are NOT pre-screened by this predicate — they are
+// checked separately in `RunOne` and route to their own categories.
+bool IsInEnvelope(const cel::expr::conformance::test::SimpleTest& t);
+
+// Compare a decoded `cel::Value` against a proto matcher.  Returns
+// `OkStatus` on equality, `FailedPrecondition` with a kind/value
+// diff on mismatch, `InvalidArgument` if `want`'s kind has no
+// comparator (caller should pre-screen via `IsInEnvelope`).
 absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
 
-// Compare a `cel::Value` against an `UnknownSet` matcher.  OK iff
-// `got.IsUnknown()` — the matcher's `exprs` carry AST expression IDs
-// that our runtime-interned `AttributeId` can't be diffed against
-// without a per-run expr-id → attribute-id map, which the harness
-// doesn't plumb.  Upgrading to id-level equality is a future-work
-// item in `conformance/README.md`; for now the kind-level match is
-// enough to lock the PartialEval route end-to-end.
+// Compare a `cel::Value` against an unknown-set matcher.  OK iff
+// `got.IsUnknown()` — the matcher's `exprs` field carries AST IDs
+// the harness can't currently round-trip through `AttributeId`
+// (future work — see README).
 absl::Status CompareUnknown(const cel::Value& got);
 
 // Compare a `cel::Value` against an `eval_error` / `any_eval_errors`
-// matcher.  OK iff `got.IsError()` AND the matcher loosely matches
-// the runtime's `ErrorPayload::message`.  Matching rule (mirrors
-// cel-cpp's `conformance/run.cc`, which only checks `has_error()`):
-//
-//   - If `want.errors_size() == 0` → any error matches.
-//   - Otherwise → at least one of `want.errors[i].message` matches
-//     the runtime message via substring-either-direction (the
-//     fixture-author-supplied messages and our `ErrorCodeName(...)`
-//     payloads use different phrasings — e.g. `"divide by zero"` vs
-//     `"divide_by_zero"`, `"return error for overflow"` vs
-//     `"overflow"` — so strict equality would reject every row).
-//
-// Returns `FailedPrecondition` with a kind/message diff on mismatch.
+// matcher.  CEL errors are values (langdef §"Error propagation");
+// the matcher passes iff `got.IsError()`.  Per cel-cpp's upstream
+// `conformance/run.cc` semantics, message-level matching is NOT
+// part of conformance — any error matches any non-empty matcher at
+// the kind level.  Kind mismatch is the only failure path.
 absl::Status CompareEvalError(const cel::Value& got,
                               const cel::expr::ErrorSet& want);
 
-// Run one test end-to-end using the shared compiler + engine
-// fixtures.  Never throws; always returns a `Result`.
+// Run one test end-to-end.  Never throws; always returns a `Result`.
+// `engine` is shared across rows; the compiler is built per-row
+// when the row declares variables and is otherwise served from a
+// process-wide shared default.
 Result RunOne(const cel::expr::conformance::test::SimpleTest& t,
-              const cel::Compiler& compiler, const cel::Engine& engine);
+              const cel::Engine& engine);
 
 // Load a `SimpleTestFile` from a workspace-relative textproto path
 // (runfiles lookup handled by the caller — we just `ifstream` it).

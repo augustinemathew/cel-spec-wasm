@@ -19,7 +19,7 @@ constexpr uint32_t kCelAbiVersion = 1;
 // Populates `cel.abi.variables[]` from the layout's free-variable
 // entries.  Comprehension-scope locals (iter / accu / index) are
 // excluded — they're bound by the comprehension's loop prologue
-// per M5.B Slice B, not by `Activation::Bind`.
+// at comprehension entry, not by `Activation::Bind`.
 void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
   abi.mutable_variables()->Reserve(static_cast<int>(layout.variables.size()));
   for (const LaidOutVariable& v : layout.variables) {
@@ -45,7 +45,7 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
 
   EmitVariables(layout, abi);
 
-  // fields[]: one row per kSelect (M2.C).  Index 0 is the sentinel
+  // fields[]: one row per kSelect.  Index 0 is the sentinel
   // (zero-initialised FieldRefRow); emit it too so the host-side
   // table's indices line up 1:1 with field_ref_id used in
   // `cel_host.cel_get_field` calls.
@@ -59,7 +59,7 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     entry->set_owner_fqn(row.owner_fqn);
   }
 
-  // attributes[]: one row per distinct attribute path (M2.E).
+  // attributes[]: one row per distinct attribute path.
   // Index 0 is the sentinel (empty row).
   abi.mutable_attributes()->Reserve(static_cast<int>(layout.attributes.size()));
   for (uint32_t i = 0; i < layout.attributes.size(); ++i) {
@@ -72,7 +72,7 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     }
   }
 
-  // types[]: one row per distinct kStructExpr message FQN (M7.A).
+  // types[]: one row per distinct kStructExpr message FQN.
   // Index 0 is the sentinel (empty FQN); rows [1..N] are the ids
   // codegen stamps via `NodeAnnotation::message_type_id` and the
   // emitted `cel_make_message` calls reference.

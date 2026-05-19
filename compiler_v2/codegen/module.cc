@@ -44,12 +44,15 @@ BinaryenType TupleType(absl::Span<const BinaryenType> parts) {
 WasmModule::WasmModule() : module_(BinaryenModuleCreate()) {
   // Binaryen's validator defaults to MVP-only.  The design requires
   // multi-value (tuple returns for host trampolines) and
-  // reference-types (externref table for message handles, M3+).  Turn
-  // them on up front so the validator doesn't reject a clean module.
+  // reference-types (externref table for message handles, M3+).
+  // Phase C adds Atomics (threads): the runtime imports a shared
+  // memory; importing a shared memory requires the threads feature
+  // to be on, even if the expr module itself emits no atomic ops.
   BinaryenModuleSetFeatures(
       module_, BinaryenFeatureReferenceTypes() | BinaryenFeatureMultivalue() |
                    BinaryenFeatureBulkMemory() | BinaryenFeatureSignExt() |
-                   BinaryenFeatureMutableGlobals() | BinaryenFeatureGC());
+                   BinaryenFeatureMutableGlobals() | BinaryenFeatureGC() |
+                   BinaryenFeatureAtomics());
 }
 
 WasmModule::~WasmModule() {
@@ -123,10 +126,12 @@ absl::Status WasmModule::SetMemory(uint32_t initial_pages,
   return absl::OkStatus();
 }
 
-absl::Status WasmModule::AddMemoryImport(
-    absl::string_view external_module, absl::string_view external_base,
-    uint32_t initial_pages, std::optional<uint32_t> max_pages,
-    absl::Span<const DataSegment> segments) {
+absl::Status WasmModule::AddMemoryImport(absl::string_view external_module,
+                                         absl::string_view external_base,
+                                         uint32_t initial_pages,
+                                         std::optional<uint32_t> max_pages,
+                                         absl::Span<const DataSegment> segments,
+                                         bool shared) {
   if (BinaryenHasMemory(module_)) {
     return absl::FailedPreconditionError(
         "WasmModule::AddMemoryImport: module already has a memory.");
@@ -135,6 +140,10 @@ absl::Status WasmModule::AddMemoryImport(
     return absl::InvalidArgumentError(
         absl::StrCat("memory import max (", *max_pages,
                      ") is less than initial (", initial_pages, ")"));
+  }
+  if (shared && !max_pages.has_value()) {
+    return absl::InvalidArgumentError(
+        "AddMemoryImport: shared memory must specify max_pages.");
   }
   // Pack segment info into the parallel-array shape Binaryen wants —
   // identical to the SetMemory path; we keep the owned storage alive
@@ -173,14 +182,13 @@ absl::Status WasmModule::AddMemoryImport(
                            : reinterpret_cast<bool*>(seg_passives.data()),
       seg_offsets.empty() ? nullptr : seg_offsets.data(),
       seg_sizes.empty() ? nullptr : seg_sizes.data(),
-      static_cast<BinaryenIndex>(segments.size()),
-      /*shared=*/false,
+      static_cast<BinaryenIndex>(segments.size()), shared,
       /*memory64=*/false,
       /*name=*/"memory");
   BinaryenAddMemoryImport(module_,
                           /*internalName=*/"memory", ext_mod_c.c_str(),
                           ext_base_c.c_str(),
-                          /*shared=*/0);
+                          /*shared=*/shared ? 1 : 0);
   return absl::OkStatus();
 }
 
@@ -241,9 +249,9 @@ absl::Status WasmModule::Validate() const {
 
 absl::Status WasmModule::Optimize(int level) {
   if (level < 0 || level > 3) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "WasmModule::Optimize: level out of range; got ", level,
-        ", want 0..3"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("WasmModule::Optimize: level out of range; got ", level,
+                     ", want 0..3"));
   }
   if (level == 0) {
     // Caller asked for no-op explicitly; preserve byte-for-byte output

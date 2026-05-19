@@ -3,7 +3,7 @@
 // itself all #include this header — drift between the three would
 // otherwise cause silent miscompiles or out-of-bounds writes.
 //
-// See `doc/implementation-plan/wasi/DESIGN.md` §4 + §5 for the design
+// See `doc/implementation-plan/rewrite/wasi/DESIGN.md` §4 + §5 for the design
 // rationale; the static_asserts in this file enforce the assumptions
 // A5-A7 catalogued there.
 

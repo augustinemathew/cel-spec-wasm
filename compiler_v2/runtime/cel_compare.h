@@ -1,5 +1,5 @@
-// Comparison helpers — slot-out helper ABI per `design.md §4.2` /
-// `m5-kcall-comprehensions.md §2.1`.
+// Comparison helpers — slot-out helper ABI per
+// `rewrite/design.md` §4.2.
 //
 // Every helper has the uniform wasm signature
 // `(i32 out_slot, i32 a_slot, i32 b_slot) -> void`.  Result is
@@ -10,16 +10,16 @@
 // **Same-kind only.**  These helpers assume `a.kind == b.kind`;
 // any kind drift → `CEL_ERR_TYPE_MISMATCH`.  Cross-type numeric
 // equality (`1 == 1u`, `1 == 1.0`, `1u == 1.0`) routes through a
-// dedicated `cel_numeric_*` ladder (added in M5.B step 2 — defines
-// the lossless promotion order langdef §"Equality" pins) so this
-// header stays focused on the per-kind path.
+// dedicated `cel_numeric_*` ladder (defines the lossless promotion
+// order langdef §"Equality" pins) so this header stays focused on
+// the per-kind path.
 //
 // Bool / null operands have a tiny matrix of their own
 // (eq/ne for bool; eq for null since `null == null → true` is
 // the only operation langdef defines on the null type).
 //
-// String / bytes comparisons live in `cel_string_ops.h` (M5.C)
-// because they share span-walking machinery with concat / contains.
+// String / bytes comparisons live in `cel_string_ops.h` because
+// they share span-walking machinery with concat / contains.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_COMPARE_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_COMPARE_H_
@@ -73,7 +73,7 @@ void cel_bool_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // else.
 void cel_null_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
-// Cross-type numeric ladder (M5.B step 2).  Each helper accepts
+// Cross-type numeric ladder.  Each helper accepts
 // any combination of {CEL_INT, CEL_UINT, CEL_DOUBLE} on either
 // operand and produces a CEL_BOOL.  Same-kind pairs delegate to
 // the per-kind helpers above; cross-kind pairs follow the

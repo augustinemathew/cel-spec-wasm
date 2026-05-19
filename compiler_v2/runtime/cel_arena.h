@@ -1,6 +1,6 @@
 // Bump arena over a single `malloc()`-backed buffer.
 //
-// Lifecycle (`doc/implementation-plan/wasi/DESIGN.md` §4 + §6):
+// Lifecycle (`doc/implementation-plan/rewrite/wasi/DESIGN.md` §4 + §6):
 //
 //   1. Per Instance, the host calls `arena_init(N)` once via wasm
 //      reentry.  `arena_init` mallocs N bytes from the dlmalloc heap

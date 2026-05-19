@@ -22,6 +22,7 @@ cc_library(
         "//compiler_v2/api:instance",
         "//compiler_v2/api:program",
         "//compiler_v2/api:value",
+        "//compiler_v2/frontend:status_tags",
         # `TestAllTypes` descriptors registered at load time so
         # TextFormat::Parse can resolve google.protobuf.Any values
         # in the conformance textprotos (block_ext / dynamic / enums
@@ -32,6 +33,8 @@ cc_library(
         "//proto/cel/expr:eval_cc_proto",
         "//proto/cel/expr:value_cc_proto",
         "//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -106,8 +109,21 @@ cc_test(
     ],
 )
 
-# Textproto fixtures fan in via `data`; the runner ifstreams them from
-# workspace-relative paths (Bazel lands them at runfiles/_main/tests/...).
+# Textproto fixtures fan in via `data`; the runner ifstreams them
+# from workspace-relative paths (Bazel lands them at
+# runfiles/_main/tests/...).
+#
+# Three lists must stay in sync when adding or removing a fixture:
+#   1. `SIMPLE_TESTDATA` below — the `data =` attribute makes the
+#      file available in the runfiles tree.
+#   2. `DefaultCorpus()` in `run_conformance.cc` — the runtime
+#      list the binary iterates over.
+#   3. `ForceLinkFixtureDescriptors` in `runner.cc` — needed only
+#      if the new fixture embeds `google.protobuf.Any` values of
+#      types not already force-linked.
+#
+# Future work: replace these three with a single source of truth
+# (a genrule emitting a .inc) — tracked in `README.md::Future work`.
 SIMPLE_TESTDATA = [
     "//tests/simple:testdata/basic.textproto",
     "//tests/simple:testdata/bindings_ext.textproto",

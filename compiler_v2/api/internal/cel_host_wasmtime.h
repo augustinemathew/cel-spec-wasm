@@ -32,12 +32,12 @@ class HostExternrefTable final : public ExternrefTable {
   uint32_t Intern(std::shared_ptr<const HostMessageBacking> backing) override;
   const HostMessageBacking* absl_nullable Lookup(uint32_t slot) const override;
 
-  // M3.E: independent slot namespace for map backings — see
+  // Independent slot namespace for map backings — see
   // ExternrefTable::InternMap docs.
   uint32_t InternMap(std::shared_ptr<const HostMapBacking> backing) override;
   const HostMapBacking* absl_nullable LookupMap(uint32_t slot) const override;
 
-  // M4.E: independent slot namespace for list backings.
+  // Independent slot namespace for list backings.
   uint32_t InternList(std::shared_ptr<const HostListBacking> backing) override;
   const HostListBacking* absl_nullable LookupList(uint32_t slot) const override;
 
@@ -58,7 +58,7 @@ struct CelHostCallbackEnv {
   // Storage for bindings spans.  `bindings` references these.
   std::vector<FieldRefEntry> field_refs_storage;
   std::vector<AttributeEntry> attrs_storage;
-  // M7.A: type_id → resolved descriptor lookup, populated by
+  // type_id → resolved descriptor lookup, populated by
   // `BuildCelHostBindings` from `cel.abi.types[]` + the embedder-
   // supplied descriptor pool.  The trampoline reads this at
   // `cel_make_message` call time; entries with `descriptor=nullptr`
@@ -71,32 +71,36 @@ struct CelHostCallbackEnv {
   HostExternrefTable refs;
 
   // Filled by Engine::Plan after the runtime + expr instances are
-  // ready.  `memory` is the runtime-owned (post-M6) linear-memory
-  // handle both modules share; `arena_alloc_fn` is the runtime
+  // ready.  `memory` is the runtime-owned shared linear-memory
+  // pointer both modules share; `arena_alloc_fn` is the runtime
   // export bound onto the linker at InstantiateRuntime time.
-  wasmtime_memory_t memory = {};
+  // Borrowed pointer (the refcount is held by `InstanceImpl::memory`
+  // for the instance's lifetime; this struct is part of
+  // `InstanceImpl` so the pointer stays valid).
+  wasmtime_sharedmemory_t* memory = nullptr;
   wasmtime_func_t arena_alloc_fn = {};
-  // M7: handle for the runtime's `malloc` export.  Used by
+  // Handle for the runtime's `malloc` export.  Used by
   // Instance::Eval to allocate / grow the activation buffer (where
   // kString / kBytes payloads from Activation get marshalled before
   // each Eval).  The buffer lives outside the bump arena because
   // arena_reset (the first instruction of $eval) would wipe it.
+  // See `doc/implementation-plan/rewrite/wasi/DESIGN.md` for the
+  // activation-buffer ownership model.
   wasmtime_func_t malloc_fn = {};
 };
 
 // Wasmtime-backed `ArenaAllocator` — calls the runtime's
 // `arena_alloc(size) -> offset` wasm export by reentering wasm from
-// the host.  Originally lived in the anonymous namespace inside
-// cel_host_wasmtime.cc, used only by host trampolines; promoted to
-// the header for Slice 0 so `Instance::Eval(Activation)` can reuse
-// the canonical reentry pattern when marshalling kString / kBytes
-// activation values.  Slot-into-`out_offset` contract matches
-// `EncodeSpan` in cel_host.cc — zero-byte alloc still succeeds with
-// a valid offset; OOM / trap returns nullptr.
+// the host.  Used both by host trampolines and by
+// `Instance::Eval(Activation)` when marshalling kString / kBytes
+// activation values (canonical reentry pattern).  Slot-into-
+// `out_offset` contract matches `EncodeSpan` in cel_host.cc — zero-
+// byte alloc still succeeds with a valid offset; OOM / trap returns
+// nullptr.
 class WasmtimeArenaAllocator final : public ArenaAllocator {
  public:
   WasmtimeArenaAllocator(wasmtime_context_t* absl_nonnull ctx,
-                         wasmtime_func_t fn, wasmtime_memory_t mem)
+                         wasmtime_func_t fn, wasmtime_sharedmemory_t* mem)
       : ctx_(ctx), fn_(fn), mem_(mem) {}
 
   uint8_t* absl_nullable Alloc(size_t len,
@@ -105,11 +109,11 @@ class WasmtimeArenaAllocator final : public ArenaAllocator {
  private:
   wasmtime_context_t* absl_nonnull ctx_;
   wasmtime_func_t fn_;
-  wasmtime_memory_t mem_;
+  wasmtime_sharedmemory_t* mem_;
 };
 
 // Build bindings from a decoded CelAbi.  `pool` is consulted only
-// to validate owner_fqn entries; M2 ProtoBacking dispatches via the
+// to validate owner_fqn entries; `ProtoBacking` dispatches via the
 // bound Message's own `GetDescriptor()`, so the lookup here is a
 // defensive sanity check (can be `generated_pool()` or any pool
 // the embedder configured).  Unknown FQNs are tolerated — the

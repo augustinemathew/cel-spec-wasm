@@ -3,9 +3,9 @@
 // Covers every comprehension cel-cpp can emit: exists / all /
 // exists_one / map / filter (standard macros), transformList /
 // transformMap / transformMapEntry (comprehensions_v2), and
-// cel.bind (bindings_ext).  See `m5-comprehensions-followon.md`
-// for the design; `m5b-comprehensions-simplification.md` tracks
-// pending simplifications.
+// cel.bind (bindings_ext).  Design: `rewrite/m5-comprehensions-design.md`
+// + `rewrite/m5-comprehensions-followon.md`; pending simplifications
+// tracked in `rewrite/m5b-comprehensions-simplification.md`.
 //
 // ── Emission shape ────────────────────────────────────────────
 //

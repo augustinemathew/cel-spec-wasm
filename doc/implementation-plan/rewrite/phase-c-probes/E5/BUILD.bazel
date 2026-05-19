@@ -1,0 +1,42 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+# Probe E5 — link a C TU + a C++ TU that calls absl::ParseTime into
+# one wasm module.  Establishes that the bazel wasm32-wasi-threads
+# toolchain handles C/C++ interop the same way exp1_re2's
+# CMake-built path did.
+
+package(default_visibility = ["//visibility:private"])
+
+cc_library(
+    name = "runtime_stub",
+    srcs = ["runtime.c"],
+    tags = ["manual"],
+)
+
+cc_library(
+    name = "time_parse",
+    srcs = ["time_parse.cc"],
+    deps = [
+        ":runtime_stub",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+    tags = ["manual"],
+)
+
+cc_binary(
+    name = "combined",
+    deps = [":time_parse"],
+    linkopts = [
+        "-Wl,--export=arena_reset",
+        "-Wl,--export=arena_alloc",
+        "-Wl,--export=parse_timestamp",
+        "-Wl,--strip-all",
+        "-Wl,--gc-sections",
+        # 16 pages = 1 MB initial memory so the driver can place
+        # its test data above the lib's static-data + stack region
+        # without growing memory.
+        "-Wl,--initial-memory=1048576",
+    ],
+    tags = ["manual"],
+)

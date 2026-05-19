@@ -1,7 +1,7 @@
-// String + bytes operation helpers (M5.C).
+// String + bytes operation helpers.
 //
 // Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` (P7).
+// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md`.
 // See cel_string_ops.h for the public ABI.  Concat is the only
 // allocator: writes a fresh payload into the arena.  Other helpers
 // read operand spans without allocating.  3VL + type-mismatch

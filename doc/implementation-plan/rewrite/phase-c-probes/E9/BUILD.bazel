@@ -1,0 +1,49 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+# Probe E9 — measure binary-size impact of Phase C.  We build the
+# absl + RE2 kernels with -Oz override copts so we can compare
+# bazel-vs-CMake apples-to-apples (exp1_re2's CMake build used -Oz).
+
+package(default_visibility = ["//visibility:private"])
+
+cc_binary(
+    name = "kernels_oz",
+    srcs = ["kernels.cc"],
+    copts = ["-Oz"],
+    deps = [
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
+    ],
+    linkopts = [
+        "-Wl,--export=arena_reset",
+        "-Wl,--export=arena_alloc",
+        "-Wl,--export=parse_timestamp",
+        "-Wl,--export=parse_duration",
+        "-Wl,--export=format_timestamp",
+        "-Wl,--export=format_duration",
+        "-Wl,--export=strings_format_int",
+        "-Wl,--strip-all",
+        "-Wl,--gc-sections",
+        "-Wl,--initial-memory=1048576",
+    ],
+    tags = ["manual"],
+)
+
+cc_binary(
+    name = "re2_oz",
+    srcs = ["re2_match.cc"],
+    copts = ["-Oz"],
+    deps = [
+        "@com_google_absl//absl/strings",
+        "@re2",
+    ],
+    linkopts = [
+        "-Wl,--export=match",
+        "-Wl,--export=__wasm_call_ctors",
+        "-Wl,--strip-all",
+        "-Wl,--gc-sections",
+        "-Wl,--initial-memory=2097152",
+    ],
+    tags = ["manual"],
+)

@@ -48,7 +48,7 @@ std::string CelTypeToSpec(const CelType& t) {
     case CelType::Kind::kTimestamp:
       return "timestamp";
     case CelType::Kind::kType:
-      // M9.A: `type` is a primitive-shaped declaration — the spec
+      // `type` is a primitive-shaped declaration — the spec
       // parser maps `"type"` to `cel::TypeType` via cel-cpp's
       // standard library variable registration.
       return "type";
@@ -57,12 +57,9 @@ std::string CelTypeToSpec(const CelType& t) {
     case CelType::Kind::kList:
       return absl::StrCat("list<", CelTypeToSpec(t.list_element()), ">");
     case CelType::Kind::kMap:
-      // Map *variable declarations* travel here fine — parse_and_check
-      // parses the spec and the checker records the type — but any
-      // code path that materialises a map value at runtime (reads
-      // from the workspace slot, lowers a map comprehension, …) is
-      // blocked until M6.  The CHECK lives at the runtime edge
-      // (e.g. Instance::Eval's activation marshalling), not here.
+      // Map variable declarations travel through parse_and_check;
+      // runtime materialisation routes through the host map dispatch
+      // arm (see `rewrite/map-list-dispatch.md`).
       return absl::StrCat("map<", CelTypeToSpec(t.map_key()), ",",
                           CelTypeToSpec(t.map_value()), ">");
     case CelType::Kind::kUnknown:

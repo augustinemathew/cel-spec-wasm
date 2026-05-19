@@ -50,7 +50,7 @@ inline constexpr absl::string_view kCelHostGetFieldInternalName =
 inline constexpr absl::string_view kCelHostHasFieldInternalName =
     "cel_has_field";
 
-// M7.A: cel_host.cel_make_message trampoline (Layer 3).  Two-arg
+// cel_host.cel_make_message trampoline (Layer 3).  Two-arg
 // `(type_id, out_slot)` — the host resolves type_id against the
 // per-Instance `cel.abi.types[]` lookup table, allocates a default
 // proto via MessageFactory::GetPrototype()->New(), wraps it in an
@@ -59,46 +59,44 @@ inline constexpr absl::string_view kCelHostHasFieldInternalName =
 inline constexpr absl::string_view kCelHostMakeMessageInternalName =
     "cel_make_message";
 
-// M7.B: cel_host.cel_set_field trampoline (Layer 3).  Three-arg
+// cel_host.cel_set_field trampoline (Layer 3).  Three-arg
 // `(msg_slot, field_ref_id, value_slot)` — dispatches on the
 // resolved FieldDescriptor's cpp_type to pick the matching
 // Reflection setter (SetBool / SetInt32 / SetString / SetEnumValue
 // / etc.).  No out_slot — the message is mutated in place at the
-// OwnedProtoBacking carried by msg_slot.  Wasm trap on
-// repeated/map/message field types until M7.C/E ship those.
+// OwnedProtoBacking carried by msg_slot.  Repeated/map/message
+// field types trap at the trampoline.
 inline constexpr absl::string_view kCelHostSetFieldInternalName =
     "cel_set_field";
 
-// M7B polish: cel_host.cel_wkt_unwrap_time trampoline (Layer 3).
-// Two-arg `(out_slot, msg_slot)` — reads the CelValue at msg_slot,
-// if it's a CEL_MESSAGE of well-known time type
-// (`google.protobuf.Timestamp` / `Duration`) extracts (seconds,
+// cel_host.cel_wkt_unwrap_time trampoline (Layer 3).  Two-arg
+// `(out_slot, msg_slot)` — reads the CelValue at msg_slot; if it's
+// a CEL_MESSAGE of well-known time type
+// (`google.protobuf.Timestamp` / `Duration`), extracts (seconds,
 // nanos) via reflection and writes a `CEL_TIMESTAMP` /
 // `CEL_DURATION` CelValue at out_slot.  Used by the kStructExpr
 // lowering to bridge the cross-form equivalence pinned by
-// cel-cpp's behavior (see m7b §3.4 + the empirical probe at
-// `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).  No-op for
-// non-WKT-time messages (codegen only emits the call when
-// `s.name()` matches one of the two WKT FQNs).
+// cel-cpp's behavior (see `rewrite/m7b-duration-timestamp.md` §3.4).
+// No-op for non-WKT-time messages (codegen only emits the call
+// when `s.name()` matches one of the two WKT FQNs).
 inline constexpr absl::string_view kCelHostWktUnwrapTimeInternalName =
     "cel_wkt_unwrap_time";
 
-// M8.C: cel_host.cel_wkt_unwrap_wrapper trampoline (Layer 3).
-// Three-arg `(out_slot, msg_slot, wrapper_kind)` — direct clone of
-// the m7b time-WKT shape for the 9 wrapper FQNs (BoolValue,
+// cel_host.cel_wkt_unwrap_wrapper trampoline (Layer 3).  Three-arg
+// `(out_slot, msg_slot, wrapper_kind)` — direct clone of the
+// time-WKT unwrap shape for the 9 wrapper FQNs (BoolValue,
 // Int32Value, Int64Value, UInt32Value, UInt64Value, FloatValue,
 // DoubleValue, StringValue, BytesValue).  Codegen emits this at
 // the kStructExpr tail when `s.name()` is a wrapper FQN.
 // `wrapper_kind` is the matching `CelKind` (CEL_BOOL=1, CEL_INT=2,
 // CEL_UINT=3, CEL_DOUBLE=4, CEL_STRING=5, CEL_BYTES=6) — letting
 // Layer-2 dispatch on the inner-scalar kind without an additional
-// descriptor walk.  See `wat-traces.md` §56 + `m8-wrapper-types.md`
-// §M8.C.
+// descriptor walk.  See `rewrite/wat-traces.md` §56 and
+// `rewrite/m8-wrapper-types.md`.
 inline constexpr absl::string_view kCelHostWktUnwrapWrapperInternalName =
     "cel_wkt_unwrap_wrapper";
 
-// M3.F: runtime entry points for map literal construction +
-// indexing.  All three lookups carry signature
+// Runtime entry points for map literal construction + indexing.  All three lookups carry signature
 // `(i32 out_slot, i32 map_slot, i32 key_slot) -> ()`.  cel_map_create
 // is `(i32 out_slot, i32 capacity) -> ()`; cel_map_insert is
 // `(i32 map_slot, i32 key_slot, i32 value_slot) -> ()`.
@@ -111,8 +109,7 @@ inline constexpr absl::string_view kCelMapLookupInternalName =
 inline constexpr absl::string_view kCelHostMapLookupInternalName =
     "cel_host_cel_map_lookup";  // kHost arm import
 
-// M4.F: runtime entry points for list literal construction +
-// indexing.  `cel_list_create` is
+// Runtime entry points for list literal construction + indexing.  `cel_list_create` is
 // `(i32 out_slot, i32 capacity) -> ()`; the universal append
 // `cel_list_append_at` is `(i32 list_slot, i32 elem_slot) -> ()`
 // and is used for both literal fills (N appends in index order)
@@ -130,7 +127,8 @@ inline constexpr absl::string_view kCelHostListAtInternalName =
 // One row of the field intern table, one per kSelect emitted by
 // `LowerToEvalFunction`.  Index 0 is a reserved "not proto-resolvable"
 // sentinel; rows [1..N] are the ids the emitted `cel_get_field` calls
-// reference.  M2.C.4 serialises this vector into `cel.abi.fields[]`.
+// reference.  `BuildCelAbi` serialises this vector into
+// `cel.abi.fields[]`.
 struct FieldRefRow {
   uint32_t field_number = 0;  // proto wire number, or 0 for non-proto
   std::string name;           // always populated
@@ -138,12 +136,9 @@ struct FieldRefRow {
 };
 
 struct LoweringOptions {
-  // Total linear-memory size in bytes.  `arena_reset` is called with
-  // `(arena_base, arena_limit = mem_size_bytes)` at the top of every
-  // `$eval` body so the runtime arena spans `[arena_base, mem_size_bytes)`.
-  // Default is one wasm page (64 KiB) — enough for M1 (pure literal
-  // eval touches only rodata) and the M2/M3 surface covered by the
-  // e2e suite.
+  // Vestigial knob retained for source compatibility — the arena
+  // lives in the wasi-libc dlmalloc heap and is sized at runtime,
+  // not from this field.  See `rewrite/wasi/DESIGN.md` §4.
   uint32_t mem_size_bytes = 64u * 1024u;
 };
 
@@ -155,8 +150,8 @@ struct LoweredFunction {
 
   // Field intern table populated during kSelect lowering.  Size == 0
   // means "no selects emitted"; otherwise `field_refs[0]` is the
-  // sentinel and `field_refs[1..N]` are the referenced rows.  Consumed
-  // by `BuildCelAbi` at M2.C.4.
+  // sentinel and `field_refs[1..N]` are the referenced rows.
+  // Consumed by `BuildCelAbi`.
   std::vector<FieldRefRow> field_refs;
 };
 

@@ -42,16 +42,16 @@ void cel_map_create(uint32_t out_slot, uint32_t capacity);
 // resizes; the literal's entry count is fixed at compile time.
 void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 
-// M5.B Slice G — dynamic-map insert for `transformMap` /
-// `transformMapEntry` accumulators.  Unlike `cel_map_insert`:
+// Dynamic-map insert for `transformMap` / `transformMapEntry`
+// comprehension accumulators.  Unlike `cel_map_insert`:
 // geometric 2× growth on full; collisions overwrite (last-write-
-// wins per design §9.6); CEL_ERROR / CEL_UNKNOWN in key OR value
-// propagates verbatim into the map slot.
+// wins); CEL_ERROR / CEL_UNKNOWN in key OR value propagates
+// verbatim into the map slot.
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot);
 
-// Slice G/H followup — 3VL predicate-gated map insert for conditional
-// transformMap / transformMapEntry steps.  Mirror of
+// 3VL predicate-gated map insert for conditional transformMap /
+// transformMapEntry steps.  Mirror of
 // cel_list_append_at_if_bool: pred ERROR/UNKNOWN → propagate into
 // map slot (aborts comprehension); pred non-bool → poison TYPE_MISMATCH;
 // pred false → no-op; pred true → cel_map_insert_at delegate.
@@ -81,7 +81,7 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
 void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 
 // =====================================================================
-// M5.D step 1 — aggregate-op kArena fast paths for maps.
+// Aggregate-op kArena fast paths for maps.
 //
 // `cel_map_size_arena` writes a CEL_INT.  `cel_map_in_arena`
 // reuses the existing `map_keys_equal` matcher used by
@@ -95,7 +95,7 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
 void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // =====================================================================
-// M5.D step 2 — kDynamic dispatchers for aggregate map ops.  Same
+// kDynamic dispatchers for aggregate map ops.  Same
 // musttail-dispatch shape as `cel_map_lookup` (line 65): 3VL absorb,
 // branch on operand kind, tail-call the kArena fast path or the kHost
 // trampoline.  Codegen emits a `call` to these when ResolvePass
@@ -107,10 +107,10 @@ void cel_map_in(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
 void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // =====================================================================
-// M5.B Slice E — map-key iteration helpers used by comprehensions over
-// a `map(K, V)` source.  Per `m5-comprehensions-design.md §3.5` Option β
-// (in-place key iteration; no keys-list materialisation) and WAT
-// `wat/64_comprehension_exists_map.wat`.
+// Map-key iteration helpers used by comprehensions over a
+// `map(K, V)` source.  Per `rewrite/m5-comprehensions-design.md`
+// §3.5 Option β (in-place key iteration; no keys-list
+// materialisation) and `rewrite/wat/64_comprehension_exists_map.wat`.
 //
 // The iterator handle is an opaque u32 — codegen stores it in a wasm
 // local and shuttles it between the three calls without inspecting it.
@@ -142,7 +142,7 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 //
 //   - `cel_map_iter_value_at(out_slot, handle)`
 //       Same as `iter_key_at` but copies the entry's value.  Required
-//       by Slice F's two-iter-var map shape (`m.exists(k, v, p)`).
+//       by the two-iter-var map shape (`m.exists(k, v, p)`).
 // =====================================================================
 
 uint32_t cel_map_iter_init(uint32_t map_slot);

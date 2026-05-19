@@ -52,8 +52,9 @@
 
 namespace celwasm {
 
-// One stub for a cel_host.* import.  Signature matches the M2.C
-// wire ABI: `(out_slot, msg_slot, field_ref_id, attribute_id)`.  The
+// One stub for a cel_host.* import.  Signature matches the
+// cel_get_field / cel_has_field ABI:
+// `(out_slot, msg_slot, field_ref_id, attribute_id)`.  The
 // stub writes a CelValue to `memory[out_slot..out_slot+24)` — in
 // production this is what ProtoBacking::ReadField + Layer-2
 // trampoline does.  The stub gets full access to the linear-memory
@@ -101,11 +102,11 @@ struct WatRunInput {
   CelHostThreeArgStub cel_host_cel_map_lookup_stub;
   CelHostThreeArgStub cel_host_cel_list_at_stub;
 
-  // M8.C — `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
-  // wrapper_kind)` stub.  Mirrors the m7b `cel_wkt_unwrap_time`
-  // shape but with a third `wrapper_kind` i32 carrying the
-  // CelKind tag (1=BOOL, 2=INT, 3=UINT, 4=DOUBLE, 5=STRING,
-  // 6=BYTES) so the Layer-2 impl skips a descriptor walk.
+  // `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
+  // wrapper_kind)` stub.  Mirrors the `cel_wkt_unwrap_time` shape
+  // but with a third `wrapper_kind` i32 carrying the CelKind tag
+  // (1=BOOL, 2=INT, 3=UINT, 4=DOUBLE, 5=STRING, 6=BYTES) so the
+  // Layer-2 impl skips a descriptor walk.
   //
   // When unset, the harness binds a no-op so a WAT that imports
   // the surface but doesn't exercise it still instantiates.  When
@@ -113,10 +114,9 @@ struct WatRunInput {
   // memory buffer to read msg_slot (the just-constructed wrapper
   // proto's CelValue) AND to write the peeled scalar CelValue at
   // out_slot.  The `key_or_index_slot` field of the
-  // CelHostThreeArgStub signature carries `wrapper_kind` for
-  // M8.C — same ABI shape, different semantic role of the third
-  // arg.  Production stubs should treat it as the wrapper-kind
-  // enum.
+  // CelHostThreeArgStub signature carries `wrapper_kind` here —
+  // same ABI shape, different semantic role of the third arg.
+  // Production stubs should treat it as the wrapper-kind enum.
   CelHostThreeArgStub cel_host_cel_wkt_unwrap_wrapper_stub;
 };
 

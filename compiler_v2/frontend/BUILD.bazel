@@ -2,6 +2,19 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
+# Status::SetPayload type-URL constants used to classify
+# ParseAndCheck failures without substring-matching the message.
+# Header-only — included by parse_and_check.cc (producer) and the
+# conformance harness (consumer).  See status_tags.h for the payload
+# contract.
+cc_library(
+    name = "status_tags",
+    hdrs = ["status_tags.h"],
+    deps = [
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 # Parse + type-check + static-subset enforcement.  v1's separate
 # compiler/ir/static_subset library is folded into this one: ParseAndCheck
 # returns a TypedAst only if RejectDyn passes.  See rewrite plan §4.
@@ -10,6 +23,7 @@ cc_library(
     srcs = ["parse_and_check.cc"],
     hdrs = ["parse_and_check.h"],
     deps = [
+        ":status_tags",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
         "//proto/cel/expr:syntax_cc_proto",

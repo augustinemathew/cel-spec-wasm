@@ -21,7 +21,7 @@ namespace celwasm {
 //       * `$eval` prelude — one `BinaryenLocalSet(local_index,
 //         i32.const <slot_offset>)` per variable.
 //       * kIdent arm — `BinaryenLocalGet(local_index, i32)`.
-//       (Per m2-ident-select-unknowns.md §2.6 / §5 Slice M2.B.)
+//       (Per `rewrite/m2-ident-select-unknowns.md` §2.6.)
 //   - the cel.abi module emitter — writes `cel.abi.variables[]` so
 //     the host-side Activation marshal (`Instance::Eval`) can encode
 //     each bound Value into the CelValue wire format at `slot_offset`
@@ -46,31 +46,37 @@ struct LaidOutVariable {
 };
 
 // Layout-time knobs for the pass.  Today: `debug_layout` turns off slot
-// reuse (each workspace `Acquire` hands out a fresh cell).  M1 has no
-// workspace slots to acquire, so the flag is plumbed but inert.
+// reuse (each workspace `Acquire` hands out a fresh cell).
 struct LayoutOptions {
   bool debug_layout = false;
 };
 
 // Output of the second codegen pipeline pass.  Extends `annotations` from
 // ResolveOutput by writing `.storage` on every node whose result has a
-// known memory location at compile time.  M2 populates storage for:
-//   - `kConst` nodes (rodata-packed — unchanged from M1)
+// known memory location at compile time:
+//   - `kConst` nodes (rodata-packed)
 //   - `kIdent` nodes (workspace-slot pointing at the referenced
 //     variable's 24-byte CelValue cell)
+//   - `kSelect` / `kCallExpr` / `kMapExpr` / `kListExpr` /
+//     `kStructExpr` / `kComprehensionExpr` (workspace slots
+//     assigned by `SlotAllocator`).
 // Other non-populated kinds are left with `.storage.kind == kNone`;
 // expr_lower CHECKs or returns `Unimplemented` for them.
 //
 // Memory map the output describes:
 //
 //     [0..8)     reserved (null sentinel)
-//     [8..16)    arena cursor + limit (bytes 8/12) — written by arena_reset
+//     [8..16)    reserved (legacy arena cursor/limit slot — no
+//                longer consulted by codegen; see
+//                `rewrite/wasi/DESIGN.md` §4)
 //     [rodata_base..rodata_base+rodata.size())
 //                active data segment (kConst CelValues + payload bytes)
 //     [workspace_base..workspace_base+workspace_bytes)
-//                24B cells — one per referenced variable (M2), plus
-//                eventual SlotAllocator-owned scratch cells (M3+)
-//     [arena_base..)  grows forward via arena_alloc
+//                24B cells — one per referenced variable, plus
+//                SlotAllocator-owned scratch cells
+//     [arena_base..)  grows forward via arena_alloc (lives in
+//                     wasi-libc dlmalloc heap; see
+//                     `rewrite/wasi/DESIGN.md` §4)
 //
 // `rodata_base` is fixed at 16 (skip past the two reserved slots).
 // `workspace_base` is `rodata_base + rodata.size()` rounded up to 8;
@@ -88,13 +94,14 @@ struct StaticLayout {
   // Attribute intern table — carried forward from ResolveOutput
   // so `BuildCelAbi` can serialise it into `cel.abi.attributes[]`.
   // Entry 0 is the reserved sentinel.  Populated by ResolvePass
-  // (M2.E); LayoutPass neither reads nor mutates it.
+  // (see `rewrite/m2-ident-select-unknowns.md`); LayoutPass
+  // neither reads nor mutates it.
   std::vector<AttributeEntryRow> attributes;
 
-  // M7.A: message-type intern table — carried forward from
-  // ResolveOutput so `BuildCelAbi` can serialise it into
-  // `cel.abi.types[]`.  Entry 0 is the reserved sentinel.
-  // Populated by ResolvePass's `MessageTypeIdVisitor` (M7.A);
+  // Message-type intern table — carried forward from ResolveOutput
+  // so `BuildCelAbi` can serialise it into `cel.abi.types[]`.
+  // Entry 0 is the reserved sentinel.  Populated by ResolvePass's
+  // `MessageTypeIdVisitor` (see `rewrite/m7-proto-literals.md`);
   // LayoutPass neither reads nor mutates it.
   std::vector<MessageTypeRow> message_types;
 
@@ -107,15 +114,16 @@ struct StaticLayout {
   uint32_t peak_slots = 0;
   bool debug_mode = false;
 
-  // M5.B Slice C: per-comprehension auxiliary wasm locals (e.g. the
+  // Per-comprehension auxiliary wasm locals (e.g. the
   // list-iteration `end_off` pointer; the map-iteration cursor; the
   // two-iter-var index counter).  Codegen for `kComprehensionExpr`
   // emits `local.set` against these on entry to the comprehension's
   // loop prologue.  Pre-allocated at LayoutPass time so
   // `LowerToEvalFunction` knows the total local count when calling
   // `BinaryenAddFunction`.  Two indices per comp covers every shape
-  // through Slice H (Shape A list: end_off [+ index for two-iter];
-  // Shape B map: iter_cursor; Shape C cel.bind: none used).
+  // (Shape A list: end_off [+ index for two-iter]; Shape B map:
+  // iter_cursor; Shape C cel.bind: none used).  See
+  // `rewrite/m5-comprehensions-design.md`.
   uint32_t comprehension_extra_locals_per_comp = 2;
   // Total local count = `variables.size()` + 2 × (#comprehensions).
   uint32_t total_wasm_locals = 0;
@@ -123,15 +131,10 @@ struct StaticLayout {
 
 // Runs the layout pass on a resolved TypedAst.  Takes the ResolveOutput
 // by value — its annotations are extended in place with `.storage`
-// writes and returned as part of the StaticLayout.  M1 implements only
-// the kConst arm: the pass visits every Constant node, dispatches on its
-// variant, packs the CelValue into rodata via StaticMemoryBuilder, and
-// writes `{StorageKind::kStaticRodata, offset}` onto the annotation.
-//
-// Non-kConst expression kinds leave their storage at the zero sentinel.
-// expr_lower rejects them with `absl::UnimplementedError` at M1, so the
-// zero sentinel is never consumed; M2/M3/M5 will fill in storage for
-// idents, calls, and comprehension scopes as those kinds come online.
+// writes and returned as part of the StaticLayout.  See
+// `rewrite/design.md` §6 LayoutPass.  Expression kinds with no
+// allocated storage leave `.storage.kind == kNone`; expr_lower
+// CHECKs or returns `Unimplemented` for them.
 ABSL_MUST_USE_RESULT absl::StatusOr<StaticLayout> LayoutPass(
     const TypedAst& ast, ResolveOutput resolved,
     const LayoutOptions& opts = {});

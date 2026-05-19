@@ -50,9 +50,8 @@ enum class ResolvedVariableKind : uint8_t {
 //
 // `local_index` is dense across referenced variables: 0, 1, 2, ...
 // in first-seen order.  The index also indexes `cel.abi.variables[]`
-// for `kind == kFreeVariable` entries (M5.B extends `variables` with
-// comprehension-scope entries; those are flagged via `kind` so the
-// prelude and ABI emitter skip them).
+// for `kind == kFreeVariable` entries; comprehension-scope entries
+// are flagged via `kind` so the prelude and ABI emitter skip them.
 struct ResolvedVariable {
   std::string name;
   uint32_t local_index = 0;
@@ -64,10 +63,10 @@ struct ResolvedVariable {
 // (root_variable, qualifiers) path across the AST.  Indexed by
 // `NodeAnnotation::attribute_id`; id 0 is the sentinel "no
 // attribute" used on non-path-bearing nodes.  Populated by
-// `ResolvePass` (M2.E) by walking kIdent + kSelect post-order; the
-// trampoline reads this at cel_get_field time and appends the
-// selected field to construct the full attribute path for
-// unknown-pattern matching.
+// `ResolvePass` by walking kIdent + kSelect post-order (see
+// `rewrite/m2-ident-select-unknowns.md`); the trampoline reads this
+// at cel_get_field time and appends the selected field to construct
+// the full attribute path for unknown-pattern matching.
 struct AttributeEntryRow {
   std::string root_variable;
   std::vector<std::string> qualifiers;
@@ -77,8 +76,8 @@ struct AttributeEntryRow {
 // fully-qualified message name constructed by `kStructExpr` across
 // the AST.  Indexed by `NodeAnnotation::message_type_id`; id 0 is
 // the sentinel "no type id" carried by every non-struct node.
-// Populated by `ResolvePass`'s `MessageTypeIdVisitor` (M7.A) walking
-// kStructExpr post-order.  `BuildCelAbi` serialises this into
+// Populated by `ResolvePass`'s `MessageTypeIdVisitor` walking
+// kStructExpr post-order (see `rewrite/m7-proto-literals.md`).  `BuildCelAbi` serialises this into
 // `cel.abi.types[]`; `Engine::Plan` resolves each FQN against the
 // descriptor pool to populate the per-Instance type → Descriptor*
 // map the `cel_make_message` trampoline reads at eval time.
@@ -87,10 +86,10 @@ struct MessageTypeRow {
 };
 
 // Output of the first codegen pipeline pass.  `annotations` carries `repr`
-// (every typed node), `field_number` (select nodes, M2.C+), `overload_id`
-// (call nodes, M3+), `local_index` (ident nodes, M2.B+), `scope_id`
-// (comprehension nodes, M5+), `attribute_id` (M2.E+).
-// `storage` stays zero-initialised here — LayoutPass fills it next.
+// (every typed node), `field_number` (select nodes), `overload_id`
+// (call nodes), `local_index` (ident nodes), `scope_id`
+// (comprehension nodes), and `attribute_id`.  `storage` stays
+// zero-initialised here — LayoutPass fills it next.
 //
 // `variables` is the compact list of referenced free variables in
 // first-seen order; each `NodeAnnotation::local_index` on a kIdent
@@ -100,9 +99,9 @@ struct MessageTypeRow {
 // `$eval` function declares — one i32 per referenced variable.
 //
 // `max_scope_id` is the highest `scope_id` assigned during the walk.
-// 0 means "no comprehensions were present".  M5's comprehension
-// scope work extends `variables` (iter/accu names treated uniformly
-// with free variables from codegen's point of view).
+// 0 means "no comprehensions were present".  Comprehension scope
+// extends `variables` (iter/accu names treated uniformly with
+// free variables from codegen's point of view).
 struct ResolveOutput {
   WasmAnnotations annotations;
   std::vector<ResolvedVariable> variables;
@@ -113,7 +112,7 @@ struct ResolveOutput {
   // `BuildCelAbi` serialises this into `cel.abi.attributes[]`.
   std::vector<AttributeEntryRow> attributes;
 
-  // M7.A: message-type intern table.  Entry 0 is the reserved
+  // Message-type intern table.  Entry 0 is the reserved
   // "no type" sentinel; entries [1..N] are referenced by
   // `NodeAnnotation::message_type_id` on kStructExpr nodes.
   // `BuildCelAbi` serialises this into `cel.abi.types[]`.
@@ -122,12 +121,11 @@ struct ResolveOutput {
   uint32_t max_scope_id = 0;
 };
 
-// Runs the resolve pass on a checked TypedAst.  M1 implements only the
-// `repr`-population half of the pass: for every node in the checker's
-// `type_map`, the corresponding `NodeAnnotation::repr` is written.  Other
-// fields are left at their zero sentinels because M1's expression surface
-// is pure literals — no idents to bind, no overloads to intern, no
-// comprehension scopes to push.
+// Runs the resolve pass on a checked TypedAst.  Populates every
+// `NodeAnnotation::repr` from the checker's `type_map`; resolves
+// idents, overloads, attribute paths, comprehension scopes, and
+// message-type interns through the per-kind visitors above.  See
+// `rewrite/design.md` §5 ResolvePass.
 //
 // The pass aborts via `ABSL_CHECK` if any `kConst` node in the AST lacks a
 // populated repr at end-of-pass: a kConst without a type_map entry means

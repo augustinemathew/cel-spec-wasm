@@ -240,9 +240,8 @@ WasmModule BuildOptimizableModule() {
   //  (return (i32.add (i32.const 2) (i32.const 3)))`
   // The dead local should DCE; the constant add should fold to 5.
   BinaryenType i32 = BinaryenTypeInt32();
-  BinaryenExpressionRef dead =
-      BinaryenLocalSet(m.raw(), 0,
-                       BinaryenConst(m.raw(), BinaryenLiteralInt32(7)));
+  BinaryenExpressionRef dead = BinaryenLocalSet(
+      m.raw(), 0, BinaryenConst(m.raw(), BinaryenLiteralInt32(7)));
   BinaryenExpressionRef ret = BinaryenReturn(
       m.raw(), BinaryenBinary(m.raw(), BinaryenAddInt32(),
                               BinaryenConst(m.raw(), BinaryenLiteralInt32(2)),
@@ -292,10 +291,8 @@ TEST(WasmModuleOptimizeTest, LevelOutOfRangeIsInvalidArgument) {
   // Closed-range contract: 0..3.  -1 / 4 should error explicitly so
   // a misspelled CLI flag surfaces at the boundary.
   WasmModule m = BuildOptimizableModule();
-  EXPECT_THAT(m.Optimize(-1),
-              StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(m.Optimize(4),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(m.Optimize(-1), StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(m.Optimize(4), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 }  // namespace

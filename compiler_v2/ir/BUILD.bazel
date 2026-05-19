@@ -3,8 +3,9 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
 # NodeAnnotation with the full rewrite schema (repr, field_number,
-# overload_id, local_index, scope_id, Storage).  See
-# doc/implementation-plan/rewrite/m1-scalar-pipeline.md §2.1.
+# overload_id, local_index, scope_id, Storage, comprehension
+# locals, dispatch origins).  See
+# doc/implementation-plan/rewrite/design.md §4.1 + annotations.h.
 cc_library(
     name = "annotations",
     srcs = ["annotations.cc"],

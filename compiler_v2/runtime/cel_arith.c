@@ -2,9 +2,8 @@
 // mod / neg.
 //
 // Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` (P6).
-// See cel_arith.h for the public ABI and m5-kcall-comprehensions.md
-// §2.1 for the design rationale; WAT traces 16-17 lock the wire
+// `rewrite/cel-runtime-c-split-plan.md`.  See cel_arith.h for the
+// public ABI; `rewrite/wat-traces.md` traces 16-17 lock the wire
 // shape.
 
 #include "compiler_v2/runtime/cel_arith.h"

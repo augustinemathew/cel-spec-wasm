@@ -10,12 +10,17 @@ parser + type-checker reuse.
 Always read these before making non-trivial changes.  If a change invalidates
 something in them, update them in the same commit as the code.
 
-  - `doc/wasm-compiler-design.md` — architecture, host ABI, milestones M0-M8.
+  - `doc/implementation-plan/rewrite/design.md` — architecture, host ABI,
+    milestone slicing.  The active design surface lives under
+    `doc/implementation-plan/rewrite/` (the original
+    `doc/wasm-compiler-design.md` + per-milestone `mN-*.md` docs were
+    superseded by the rewrite and removed).
   - `doc/implementation-plan/` — per-milestone plan + running test-coverage
-    checklist.  **Keep this up to date.**  When the user gives new guidance
-    or a new feature is added, add a tagged bullet; when a feature ships,
-    tick the box.  Treat the checklist as the definition of "done" for each
-    milestone.
+    checklist; active milestone work happens under
+    `doc/implementation-plan/rewrite/`.  **Keep this up to date.**  When the
+    user gives new guidance or a new feature is added, add a tagged bullet;
+    when a feature ships, tick the box.  Treat the checklist as the
+    definition of "done" for each milestone.
   - `doc/langdef.md` — CEL semantics we must honour.
   - `doc/implementation-plan/testing-checklist.md` — transverse coverage grid
     (CEL type × pipeline stage, AST variant × pipeline stage).  Every merged
@@ -381,7 +386,7 @@ invisible.
      reviewer flags why.
 
 **What the reviewer must produce.**  A dated markdown report
-under `doc/implementation-plan/wasi/reviews/YYYY-MM-DD-<slug>.md`
+under `doc/implementation-plan/rewrite/wasi/reviews/YYYY-MM-DD-<slug>.md`
 (or the equivalent reviews dir for the active workstream), with:
 
   - **Architectural drift** — places the as-built shape diverges

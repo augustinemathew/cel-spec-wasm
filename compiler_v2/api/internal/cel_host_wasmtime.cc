@@ -93,11 +93,11 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
         AttributeEntry{a.variable(), std::move(qualifiers)});
   }
 
-  // M7.A: resolve `cel.abi.types[]` FQNs against the descriptor
-  // pool.  A null pool (kept here for legacy callers) leaves every
-  // entry's descriptor as nullptr; the trampoline surfaces those as
-  // a clean spec-level CEL_ERROR.  Sentinel id 0 entry is included
-  // so trampoline lookups can index by id directly.
+  // Resolve `cel.abi.types[]` FQNs against the descriptor pool.
+  // A null pool (kept here for legacy callers) leaves every entry's
+  // descriptor as nullptr; the trampoline surfaces those as a clean
+  // spec-level CEL_ERROR.  Sentinel id 0 entry is included so
+  // trampoline lookups can index by id directly.
   out.message_types_storage.clear();
   out.message_types_storage.reserve(static_cast<size_t>(abi.types_size()));
   for (const celwasm::abi::TypeEntry& t : abi.types()) {
@@ -127,7 +127,7 @@ namespace {
 
 class WasmtimeMemoryView final : public MemoryView {
  public:
-  WasmtimeMemoryView(wasmtime_context_t* ctx, wasmtime_memory_t mem)
+  WasmtimeMemoryView(wasmtime_context_t* ctx, wasmtime_sharedmemory_t* mem)
       : ctx_(ctx), mem_(mem) {}
 
   CelValue ReadCelValue(uint32_t offset) const override {
@@ -146,12 +146,11 @@ class WasmtimeMemoryView final : public MemoryView {
 
  private:
   uint8_t* Data() const {
-    wasmtime_memory_t m = mem_;
-    return wasmtime_memory_data(ctx_, &m);
+    return wasmtime_sharedmemory_data(mem_);
   }
 
   wasmtime_context_t* ctx_;
-  wasmtime_memory_t mem_;
+  wasmtime_sharedmemory_t* mem_;
 };
 
 // `WasmtimeArenaAllocator::Alloc` — calls the runtime's
@@ -165,8 +164,7 @@ class WasmtimeMemoryView final : public MemoryView {
 //
 // Definition lives outside the anonymous namespace (in the
 // `celwasm` namespace) because `instance.cc` reuses this allocator
-// for Activation-side kString / kBytes encoding (Slice 0 of the
-// conformance unlock plan).
+// for Activation-side kString / kBytes encoding.
 
 // Convert an absl::Status from Layer 2 into a wasmtime trap.
 // Infrastructure failures (null backing, OOM, malformed input) bubble
@@ -212,8 +210,8 @@ extern "C" wasm_trap_t* CelHasFieldTrampoline(
 // from the field trampolines (3 i32s in, void out vs. their 4
 // i32s).  Forwards into `CelMapLookupImpl` (Layer 2) which handles
 // the externref dereference + virtual `Get(key)` on the
-// `HostMapBacking`.  M4.E adds a sibling for `cel_host.cel_list_at`
-// with the same shape; both share the 3-arg helper below.
+// `HostMapBacking`.  `cel_host.cel_list_at` is the sibling with the
+// same shape; both share the 3-arg helper below.
 template <auto Impl>
 wasm_trap_t* HostThreeArgTrampoline(void* absl_nonnull env_ptr,
                                     wasmtime_caller_t* absl_nonnull caller,
@@ -242,7 +240,7 @@ extern "C" wasm_trap_t* CelListAtTrampoline(
   return HostThreeArgTrampoline<CelListAtImpl>(env_ptr, caller, args);
 }
 
-// M5.D step 2 — aggregate-op kHost trampolines.  Three-arg helpers
+// Aggregate-op kHost trampolines.  Three-arg helpers
 // (in/eq/concat) reuse `HostThreeArgTrampoline`; size helpers take
 // two args and reach Impls of arity-2 directly.
 template <auto Impl>
@@ -314,7 +312,7 @@ extern "C" wasm_trap_t* CelMessageEqTrampoline(
   return HostThreeArgTrampoline<CelMessageEqImpl>(env_ptr, caller, args);
 }
 
-// M7.A: cel_host.cel_make_message — `(type_id, out_slot)` → ().
+// cel_host.cel_make_message — `(type_id, out_slot)` → ().
 // Same shape as `HostTwoArgTrampoline` but the impl arity matches
 // `(uint32_t type_id, uint32_t out_slot, const TrampolineContext&)`.
 extern "C" wasm_trap_t* CelMakeMessageTrampoline(
@@ -324,7 +322,7 @@ extern "C" wasm_trap_t* CelMakeMessageTrampoline(
   return HostTwoArgTrampoline<CelMakeMessageImpl>(env_ptr, caller, args);
 }
 
-// M7.B: cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
+// cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
 // → ().  Three i32 args; reuses HostThreeArgTrampoline since the
 // impl signature `(uint32_t, uint32_t, uint32_t, const TrampolineContext&)`
 // matches the template's expected arity.
@@ -335,13 +333,8 @@ extern "C" wasm_trap_t* CelSetFieldTrampoline(
   return HostThreeArgTrampoline<CelSetFieldImpl>(env_ptr, caller, args);
 }
 
-// M9.B: cel_host.resolve_message_type_name — `(out_slot, in_slot)`
-// → ().  Two i32 args.  M9.B registers the trampoline as a stub so
-// the wasm module instantiates cleanly even before M9.C lands the
-// real impl; the stub's Layer-2 body lives in `cel_host.cc` and
-// poisons out_slot with kTypeMismatch.  M9.C replaces the impl body
-// with the real descriptor-pool walk; the trampoline registration
-// here doesn't change.
+// cel_host.resolve_message_type_name — `(out_slot, in_slot)` → ().
+// Two i32 args.  Layer-2 body lives in `cel_host.cc`.
 extern "C" wasm_trap_t* CelResolveMessageTypeNameTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
     const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
@@ -350,36 +343,11 @@ extern "C" wasm_trap_t* CelResolveMessageTypeNameTrampoline(
                                                              args);
 }
 
-// M7B.D: four 2-arg `(out_slot, in_slot)` trampolines — parse / format
-// for timestamp + duration.  Bodies live in cel_host.cc; here we
-// just pin the wasmtime signature.
-extern "C" wasm_trap_t* CelTimestampParseTrampoline(
-    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
-    size_t /*nresults*/) {
-  return HostTwoArgTrampoline<CelTimestampParseImpl>(env_ptr, caller, args);
-}
-
-extern "C" wasm_trap_t* CelDurationParseTrampoline(
-    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
-    size_t /*nresults*/) {
-  return HostTwoArgTrampoline<CelDurationParseImpl>(env_ptr, caller, args);
-}
-
-extern "C" wasm_trap_t* CelTimestampFormatTrampoline(
-    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
-    size_t /*nresults*/) {
-  return HostTwoArgTrampoline<CelTimestampFormatImpl>(env_ptr, caller, args);
-}
-
-extern "C" wasm_trap_t* CelDurationFormatTrampoline(
-    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
-    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
-    size_t /*nresults*/) {
-  return HostTwoArgTrampoline<CelDurationFormatImpl>(env_ptr, caller, args);
-}
+// The timestamp / duration parse + format trampolines previously
+// here have been deleted along with their `*Impl` bodies; codegen
+// now routes the four ids to runtime-hosted absl kernels.  See
+// `compiler_v2/runtime/cel_time_parse.cc` and
+// `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
 extern "C" wasm_trap_t* CelWktUnwrapTimeTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
@@ -388,11 +356,11 @@ extern "C" wasm_trap_t* CelWktUnwrapTimeTrampoline(
   return HostTwoArgTrampoline<CelWktUnwrapTimeImpl>(env_ptr, caller, args);
 }
 
-// M8.C — 3-arg `(out_slot, msg_slot, wrapper_kind)` trampoline for
-// the kStructExpr tail-unwrap of WKT wrapper proto literals.
-// Mirrors `CelWktUnwrapTimeTrampoline` but with 3 slot/kind args
-// (the third arg is the matching CelKind enum) — fits the existing
-// 3-arg `HostThreeArgTrampoline` template at line 218.
+// 3-arg `(out_slot, msg_slot, wrapper_kind)` trampoline for the
+// kStructExpr tail-unwrap of WKT wrapper proto literals.  Mirrors
+// `CelWktUnwrapTimeTrampoline` but with 3 slot/kind args (the third
+// arg is the matching CelKind enum) — fits the existing 3-arg
+// `HostThreeArgTrampoline` template above.
 extern "C" wasm_trap_t* CelWktUnwrapWrapperTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
     const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
@@ -400,11 +368,11 @@ extern "C" wasm_trap_t* CelWktUnwrapWrapperTrampoline(
   return HostThreeArgTrampoline<CelWktUnwrapWrapperImpl>(env_ptr, caller, args);
 }
 
-// M7B.E — 4-arg `(out_slot, ts_slot, tz_slot, accessor_kind)`
-// dispatch trampoline for all 10 with-TZ accessor overloads.  The
-// 4-arg shape is unique; no other host trampoline today takes
-// more than 3 slot indices + optional state.  Helper template
-// inlined locally.
+// 4-arg `(out_slot, ts_slot, tz_slot, accessor_kind)` dispatch
+// trampoline for all 10 with-TZ accessor overloads.  The 4-arg
+// shape is unique; no other host trampoline today takes more than
+// 3 slot indices + optional state.  Helper template inlined
+// locally.
 extern "C" wasm_trap_t* CelTimestampTzAccessorTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
     const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
@@ -500,8 +468,7 @@ uint8_t* absl_nullable WasmtimeArenaAllocator::Alloc(
   }
   const auto offset = static_cast<uint32_t>(result.of.i32);
   *out_offset = offset;
-  wasmtime_memory_t m = mem_;
-  return wasmtime_memory_data(ctx_, &m) + offset;
+  return wasmtime_sharedmemory_data(mem_) + offset;
 }
 
 absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
@@ -509,8 +476,8 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
   // Register every cel_host.* import the runtime module declares.
   // Arities: get/has_field are 4-arg (msg + field_ref + attr + out);
   // every other cel_host.* helper is slot-out (out + N operands).
-  // M5.D step 2 added the seven aggregate-op kHost arms plus the
-  // standalone `cel_message_eq` helper.
+  // Includes the seven aggregate-op kHost arms plus the standalone
+  // `cel_message_eq` helper.
   static constexpr HostImportEntry kEntries[] = {
       {"cel_get_field", 4, &CelGetFieldTrampoline},
       {"cel_has_field", 4, &CelHasFieldTrampoline},
@@ -524,36 +491,31 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
       {"cel_map_in", 3, &CelMapInTrampoline},
       {"cel_map_eq", 3, &CelMapEqTrampoline},
       {"cel_message_eq", 3, &CelMessageEqTrampoline},
-      // M7.A — proto literal construction.  Two i32 args
+      // Proto literal construction.  Two i32 args
       // `(type_id, out_slot)`; void result.
       {"cel_make_message", 2, &CelMakeMessageTrampoline},
-      // M7.B — proto literal field set.  Three i32 args
+      // Proto literal field set.  Three i32 args
       // `(msg_slot, field_ref_id, value_slot)`; void result.
       {"cel_set_field", 3, &CelSetFieldTrampoline},
-      // M9.B — type(message) descriptor-FQN resolver.  Two i32 args
-      // `(out_slot, in_slot)`; void result.  Stub impl in M9.B
-      // poisons; M9.C replaces with the real descriptor walk.
+      // type(message) descriptor-FQN resolver.  Two i32 args
+      // `(out_slot, in_slot)`; void result.
       {"resolve_message_type_name", 2, &CelResolveMessageTypeNameTrampoline},
-      // M7B.D — timestamp / duration parse + format.  All 2-arg
-      // `(out_slot, in_slot)`; bodies in cel_host.cc thread through
-      // absl::ParseTime / ParseDuration / FormatTime + a hand-rolled
-      // proto-Duration text formatter.  Spec-level errors surface
-      // via CEL_ERR_INVALID_ARGUMENT / CEL_ERR_OVERFLOW in the
-      // out_slot, NOT a wasmtime trap.
-      {"cel_timestamp_parse", 2, &CelTimestampParseTrampoline},
-      {"cel_duration_parse", 2, &CelDurationParseTrampoline},
-      {"cel_timestamp_format", 2, &CelTimestampFormatTrampoline},
-      {"cel_duration_format", 2, &CelDurationFormatTrampoline},
-      // M7B.E — single 4-arg dispatch trampoline for the 10 with-TZ
-      // accessor overloads.  See m7b §4.3 + §4.4 Q3 for the
-      // surface-count rationale.
+      // Timestamp / duration parse + format are now self-hosted in
+      // `compiler_v2/runtime/cel_time_parse.cc`; codegen routes the
+      // four ids there directly.  See
+      // `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
+      //
+      // Single 4-arg dispatch trampoline for the 10 with-TZ
+      // accessor overloads.  Surface-count rationale (1 dispatch
+      // trampoline vs 10 named trampolines) in
+      // `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`.
       {"cel_timestamp_tz_accessor", 4, &CelTimestampTzAccessorTrampoline},
-      // M7B polish: WKT proto-literal unwrap.  Codegen emits this
-      // for `Timestamp{...}` / `Duration{...}` struct literals so
-      // they unify with `timestamp("...")` / `duration("...")`
+      // WKT time proto-literal unwrap.  Codegen emits this for
+      // `Timestamp{...}` / `Duration{...}` struct literals so they
+      // unify with `timestamp("...")` / `duration("...")`
       // constructor results for `==` / `<` / etc.
       {"cel_wkt_unwrap_time", 2, &CelWktUnwrapTimeTrampoline},
-      // M8.C: WKT wrapper proto-literal tail-unwrap (3-arg
+      // WKT wrapper proto-literal tail-unwrap (3-arg
       // `(out_slot, msg_slot, wrapper_kind)`).  Codegen emits this
       // for the 9 google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,
       // Float,Double,String,Bytes}Value struct literals so they

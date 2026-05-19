@@ -1,11 +1,12 @@
 // cel_host — host-side helpers the wasm expr module calls via its
-// `cel_host.*` imports.  Three-layer split (m2-ident-select-unknowns.md §2.4):
+// `cel_host.*` imports.  Three-layer split (see
+// `doc/implementation-plan/rewrite/cel-host-surface.md` §4):
 //
 //   Layer 1: HostMessageBacking — pure CEL field-read semantics.
 //   Layer 2: trampoline — adapts Layer 1 to the wasm ABI (lives in this file,
 //            runtime-agnostic, driven by MemoryView / ExternrefTable /
-//            ArenaAllocator).  M2.C.0b.
-//   Layer 3: wasmtime glue.  M2.C.5.
+//            ArenaAllocator).
+//   Layer 3: wasmtime glue.
 
 #ifndef CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_
 #define CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_
@@ -63,10 +64,11 @@ class HostMessageBacking {
   // Optional access to the underlying proto message — proto backings
   // (`ProtoBacking`, `OwnedProtoBacking`) return a non-null pointer;
   // non-proto custom subclasses (JSON, struct-of-structs) inherit
-  // the nullptr default.  `CelMessageEqImpl` (M5.B) uses this to
-  // reach `MessageDifferencer` without dynamic_casting per concrete
-  // backing type — both M2.C-bound (`ProtoBacking`) and M7-built
-  // (`OwnedProtoBacking`) messages compare uniformly.
+  // the nullptr default.  `CelMessageEqImpl` uses this to reach
+  // `MessageDifferencer` without dynamic_casting per concrete
+  // backing type — both Activation-bound (`ProtoBacking`) and
+  // proto-literal-built (`OwnedProtoBacking`) messages compare
+  // uniformly.
   virtual const google::protobuf::Message* absl_nullable message() const {
     return nullptr;
   }
@@ -93,7 +95,7 @@ class ProtoBacking final : public HostMessageBacking {
   const google::protobuf::Message* absl_nonnull msg_;
 };
 
-// M7.A: owning counterpart to `ProtoBacking` — wraps a
+// Owning counterpart to `ProtoBacking` — wraps a
 // `unique_ptr<Message>` allocated by `MessageFactory::GetPrototype()
 // ->New()` inside `CelMakeMessageImpl`.  The runtime needs an owning
 // backing because the message has no host-side anchor (the literal
@@ -103,9 +105,9 @@ class ProtoBacking final : public HostMessageBacking {
 //
 // Read-side (ReadField / HasField) delegates to a composed
 // `ProtoBacking` over the owned message — no duplicated reflection
-// code; M7-constructed messages flow through the same M2.C kSelect
-// read path as host-bound proto messages.  M7.B's `cel_set_field`
-// will mutate the message in place via `mutable_message()`.
+// code; constructed messages flow through the same kSelect read path
+// as host-bound proto messages.  `cel_set_field` mutates the message
+// in place via `mutable_message()`.
 class OwnedProtoBacking final : public HostMessageBacking {
  public:
   explicit OwnedProtoBacking(std::unique_ptr<google::protobuf::Message> msg);
@@ -116,8 +118,9 @@ class OwnedProtoBacking final : public HostMessageBacking {
 
   bool HasField(int field_number, absl::string_view field_name) const override;
 
-  // M7.B uses this for `Reflection::Set...`; M7.A doesn't call it
-  // (every empty `Foo{}` reads back through the read-side path).
+  // `cel_set_field` uses this for `Reflection::Set...`; the
+  // empty-message construction path doesn't call it (every empty
+  // `Foo{}` reads back through the read-side path).
   google::protobuf::Message* absl_nonnull mutable_message() {
     return msg_.get();
   }
@@ -190,8 +193,7 @@ class HostMap final : public HostMapBacking {
 
 // Proto reflection-backed concrete.  Wraps a single
 // `google::protobuf::Message*` + the FieldDescriptor for one of its
-// map fields.  M3.G fills in the bodies; M3.D ships the class so the
-// header surface is stable.  Non-owning — the caller (typically
+// map fields.  Non-owning — the caller (typically
 // `ProtoBacking::ReadField`) keeps the message alive for the
 // lifetime of any Eval that observes the wrapping Value.
 class ProtoMap final : public HostMapBacking {
@@ -313,7 +315,7 @@ class ExternrefTable {
   virtual const HostMessageBacking* absl_nullable Lookup(
       uint32_t slot) const = 0;
 
-  // M3.E: same intern/lookup contract for map backings.  Slot
+  // Same intern/lookup contract for map backings.  Slot
   // namespaces are independent — `LookupMap(slot)` will not find a
   // message interned under `Intern(...)` and vice-versa.  An
   // implementation may share the slot space if it tags entries by
@@ -322,7 +324,7 @@ class ExternrefTable {
   virtual const HostMapBacking* absl_nullable LookupMap(
       uint32_t slot) const = 0;
 
-  // M4.E: same intern/lookup contract for list backings.  Independent
+  // Same intern/lookup contract for list backings.  Independent
   // namespace from messages and maps — `LookupList(slot)` won't find
   // a map or message interned under the other API.
   virtual uint32_t InternList(
@@ -356,14 +358,14 @@ struct FieldRefEntry {
 };
 
 // attribute_id → (variable, qualifiers) path for unknown-pattern match.
-// Populated by M2.E; empty at M2.B/C.
+// Populated when unknown-pattern matching is in scope; empty otherwise.
 struct AttributeEntry {
   std::string root_variable;
   std::vector<std::string> qualifiers;
 };
 
-// M7.A: type_id → (FQN, Descriptor*).  Populated by `Engine::Plan`
-// from `cel.abi.types[]` by resolving each FQN against the
+// type_id → (FQN, Descriptor*).  Populated by `Engine::Plan` from
+// `cel.abi.types[]` by resolving each FQN against the
 // embedder-supplied descriptor pool.  `descriptor` is nullable —
 // nullable means "FQN was not in the pool"; the trampoline returns
 // CEL_ERROR (kFieldNotFound or a future kTypeNotFound) rather than
@@ -380,7 +382,7 @@ struct CelHostBindings {
   absl::Span<const FieldRefEntry> field_refs;
   absl::Span<const AttributeEntry> attributes;
   absl::Span<const cel::AttributePattern> unknown_patterns;
-  // M7.A: type_id → resolved descriptor lookup.  Index 0 is the
+  // type_id → resolved descriptor lookup.  Index 0 is the
   // sentinel; rows [1..N] are the ids `cel_make_message` calls
   // reference.
   absl::Span<const MessageTypeEntry> message_types;
@@ -412,7 +414,7 @@ ABSL_MUST_USE_RESULT absl::Status CelHasFieldImpl(uint32_t out_slot,
                                                   uint32_t attribute_id,
                                                   const TrampolineContext& ctx);
 
-// M3.E: Layer-2 entry point for the kHost arm of map indexing.
+// Layer-2 entry point for the kHost arm of map indexing.
 // Reads the map slot's `ref_slot`, dereferences via
 // `ExternrefTable::LookupMap` to a `HostMapBacking`, decodes the
 // key CelValue, calls `backing->Get(key, ...)`, and marshals the
@@ -426,7 +428,7 @@ ABSL_MUST_USE_RESULT absl::Status CelMapLookupImpl(
     uint32_t out_slot, uint32_t map_slot, uint32_t key_slot,
     const TrampolineContext& ctx);
 
-// M4.E: Layer-2 entry point for the kHost arm of list indexing.
+// Layer-2 entry point for the kHost arm of list indexing.
 // Reads list_slot's `ref_slot`, dereferences via
 // `ExternrefTable::LookupList` to a `HostListBacking`, decodes the
 // index CelValue (must be CEL_INT; non-int → kTypeMismatch;
@@ -439,16 +441,16 @@ ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(uint32_t out_slot,
                                                 uint32_t index_slot,
                                                 const TrampolineContext& ctx);
 
-// M5.D step 2 — Layer-2 entry points for the kHost arms of the
-// aggregate-op runtime dispatchers (`cel_list_size` / `cel_list_in`
-// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in`
+// Layer-2 entry points for the kHost arms of the aggregate-op
+// runtime dispatchers (`cel_list_size` / `cel_list_in` /
+// `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in`
 // / `cel_map_eq`).  Each absorbs UNKNOWN / ERROR on its operands,
 // dereferences the kHost backing via `ctx.refs.LookupList` /
 // `LookupMap`, runs the spec-level operation, and writes the result
 // CelValue into `out_slot`.  Spec-level errors (no_such_key,
 // kind-mismatched element, …) travel inside the CelValue;
-// non-OK Status only on infrastructure failure.  See
-// `m5-kcall-comprehensions.md §2.1` for routing.
+// non-OK Status only on infrastructure failure.  Routing rationale
+// in `doc/implementation-plan/rewrite/map-list-dispatch.md`.
 //
 // Each Impl uses the 3-arg trampoline shape (out + 2 operands) so
 // the existing `HostThreeArgTrampoline<Impl>` template fits.
@@ -471,9 +473,9 @@ ABSL_MUST_USE_RESULT absl::Status CelListEqImpl(uint32_t out_slot,
 
 // Cross-origin (one CEL_LIST_ARENA + one CEL_LIST_HOST) and
 // both-host concat materialise into a fresh arena list under
-// the runtime's `arena_alloc`.  For M5.D step 2 ship state, mixed
-// origins POISON with TYPE_MISMATCH; full materialisation is
-// follow-up work tracked in the M5 doc.
+// the runtime's `arena_alloc`.  Current ship state: mixed origins
+// POISON with TYPE_MISMATCH; full materialisation is follow-up work
+// tracked in the M5 doc.
 ABSL_MUST_USE_RESULT absl::Status CelListConcatImpl(
     uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
     const TrampolineContext& ctx);
@@ -496,14 +498,13 @@ ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
 // operand UNKNOWN / ERROR propagates 3VL.  Uses
 // `google::protobuf::util::MessageDifferencer::Equals` over the
 // underlying `HostMessageBacking::Message()` per langdef §"Equality".
-// `cel_message_eq` is a standalone helper for M5.B step 2b's
-// polymorphic `cel_equals_at_vv` ladder; not one of the seven
-// dispatchers above.
+// `cel_message_eq` is a standalone helper for the polymorphic
+// `cel_equals_at_vv` ladder; not one of the seven dispatchers above.
 ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
     uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
     const TrampolineContext& ctx);
 
-// M7.A: cel_host.cel_make_message — proto literal construction.
+// cel_host.cel_make_message — proto literal construction.
 //   1. Resolve `type_id` against `bindings.message_types` →
 //      `Descriptor*` (kTypeMismatch CEL_ERROR if id is the sentinel
 //      or out-of-range, or the descriptor was not in the pool).
@@ -522,22 +523,17 @@ ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
 ABSL_MUST_USE_RESULT absl::Status CelMakeMessageImpl(
     uint32_t type_id, uint32_t out_slot, const TrampolineContext& ctx);
 
-// M9.B: cel_host.resolve_message_type_name — descriptor-FQN
-// resolution for `type(<message>)`.  Reads the CEL_MESSAGE
-// CelValue at `in_slot`, dereferences `payload.msg_slot` against
-// `ctx.refs` to recover the `HostMessageBacking`, walks to the
-// proto's `GetDescriptor()->full_name()`, copies the FQN bytes
-// into the per-Eval arena via `ctx.alloc`, stamps
+// cel_host.resolve_message_type_name — descriptor-FQN resolution
+// for `type(<message>)`.  Reads the CEL_MESSAGE CelValue at
+// `in_slot`, dereferences `payload.msg_slot` against `ctx.refs` to
+// recover the `HostMessageBacking`, walks to the proto's
+// `GetDescriptor()->full_name()`, copies the FQN bytes into the
+// per-Eval arena via `ctx.alloc`, stamps
 // `{kind: CEL_TYPE, payload.s: {arena_off, len}}` into out_slot.
-//
-// M9.B ships the function as a stub that poisons out_slot with
-// kTypeMismatch — registration of the trampoline is what makes
-// the runtime instantiate cleanly.  M9.C replaces the body with
-// the real descriptor walk.
 ABSL_MUST_USE_RESULT absl::Status CelResolveMessageTypeNameImpl(
     uint32_t out_slot, uint32_t in_slot, const TrampolineContext& ctx);
 
-// M7.B: cel_host.cel_set_field — proto literal field set.
+// cel_host.cel_set_field — proto literal field set.
 //   1. Read `msg_cv` from `msg_slot` — must be CEL_MESSAGE; the
 //      msg_slot externref must point at an `OwnedProtoBacking`
 //      (cast via `dynamic_cast` so externally-bound, non-mutable
@@ -560,10 +556,9 @@ ABSL_MUST_USE_RESULT absl::Status CelResolveMessageTypeNameImpl(
 //                            on field type — span bytes via mem)
 //        ENUM   → SetEnumValue (value: CEL_INT — langdef
 //                               §"Enumerated Types")
-//   4. Repeated, map, and singular-message field shapes are M7.C
-//      (lists/maps) and M7.E (nested messages); they return non-OK
-//      Status from this trampoline (wasm trap) until those slices
-//      ship.
+//   4. Repeated, map, and singular-message field shapes route
+//      through dedicated walkers in `cel_host.cc`; see
+//      `cel-host-surface.md` for the per-shape dispatch.
 // Non-OK Status surfaces as a wasm trap; the conformance harness
 // records the row as failure without aborting the run.
 ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(uint32_t msg_slot,
@@ -571,28 +566,16 @@ ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(uint32_t msg_slot,
                                                   uint32_t value_slot,
                                                   const TrampolineContext& ctx);
 
-// M7B.D: cel_host parse + format trampolines.  All four are
-// `(out_slot, in_slot)` shape — read the input CelValue at
-// `in_slot` (string for parse, ts/dur for format), run the
-// appropriate absl::ParseTime / ParseDuration / FormatTime / proto-
-// Duration text-format kernel, write the result CelValue at
-// `out_slot`.  Spec-level failures (parse error, lowercase z,
-// out-of-range, unordered compound units) write a `CEL_ERROR`
-// with `CEL_ERR_INVALID_ARGUMENT`; non-OK Status reserved for
-// infrastructure failures.  See m7b §4.3 for the split rationale.
-ABSL_MUST_USE_RESULT absl::Status CelTimestampParseImpl(
-    uint32_t out_slot, uint32_t str_slot, const TrampolineContext& ctx);
-ABSL_MUST_USE_RESULT absl::Status CelDurationParseImpl(
-    uint32_t out_slot, uint32_t str_slot, const TrampolineContext& ctx);
-ABSL_MUST_USE_RESULT absl::Status CelTimestampFormatImpl(
-    uint32_t out_slot, uint32_t ts_slot, const TrampolineContext& ctx);
-ABSL_MUST_USE_RESULT absl::Status CelDurationFormatImpl(
-    uint32_t out_slot, uint32_t dur_slot, const TrampolineContext& ctx);
+// Timestamp / duration parse + format trampolines (formerly four
+// host-side Impls) are now self-hosted in
+// `compiler_v2/runtime/cel_time_parse.cc`; codegen routes
+// `string_to_timestamp` etc. to `cel_runtime.cel_*_at_v` directly.
+// See `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
-// M7B.E: single dispatch trampoline for the 10 with-TZ accessor
-// overloads.  Reads the timestamp + TZ-name string operands; loads
-// the IANA / fixed-offset zone via `absl::TimeZone::Load`; projects
-// the requested civil-time field per `accessor_kind` (matches
+// Single dispatch trampoline for the 10 with-TZ accessor overloads.
+// Reads the timestamp + TZ-name string operands; loads the IANA /
+// fixed-offset zone via `absl::TimeZone::Load`; projects the
+// requested civil-time field per `accessor_kind` (matches
 // `CelTzAccessorKind` enum in cel_time.h).  Invalid TZ name →
 // CEL_ERROR(kInvalidArgument).  Bad accessor_kind →
 // CEL_ERROR(kTypeMismatch) (defence in depth; codegen wouldn't
@@ -601,8 +584,8 @@ ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
     uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
     uint32_t accessor_kind, const TrampolineContext& ctx);
 
-// M7B polish: bridge for `Timestamp{...}` / `Duration{...}`
-// proto-literal construction.  Reads `msg_slot` (expected CEL_MESSAGE
+// Bridge for `Timestamp{...}` / `Duration{...}` proto-literal
+// construction.  Reads `msg_slot` (expected CEL_MESSAGE
 // of WKT time-type descriptor), peels `(seconds, nanos)` via
 // reflection, writes a `CEL_TIMESTAMP` / `CEL_DURATION` CelValue at
 // `out_slot`.  Non-WKT or non-message operands → CEL_ERROR
@@ -612,7 +595,7 @@ ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
 ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapTimeImpl(
     uint32_t out_slot, uint32_t msg_slot, const TrampolineContext& ctx);
 
-// M8.C: bridge for the 9 wrapper proto-literal types
+// Bridge for the 9 wrapper proto-literal types
 // (`google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
 // String,Bytes}Value`).  Three-arg `(out_slot, msg_slot,
 // wrapper_kind)` — reads the CEL_MESSAGE at `msg_slot`, peels the

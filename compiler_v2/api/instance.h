@@ -45,12 +45,12 @@ class Instance {
   // Run `$eval()` once.
   //
   // The zero-arg overload is for literal-only / variable-free
-  // programs (the M1 case) — no host-side binding to marshal.
+  // programs — no host-side binding to marshal.
   //
-  // The Activation overload is M2.B: for every variable the ABI
-  // declares (cel.abi.variables[]), look up in the activation, encode
-  // the bound Value into the 24-byte CelValue wire form, and write
-  // it into the variable's workspace slot before calling $eval.  A
+  // The Activation overload: for every variable the ABI declares
+  // (cel.abi.variables[]), look up in the activation, encode the
+  // bound Value into the 24-byte CelValue wire form, and write it
+  // into the variable's workspace slot before calling $eval.  A
   // declared variable missing from the activation surfaces as
   // FailedPrecondition.  An activation-bound Value whose kind
   // doesn't match the declared variable's Repr is InvalidArgument.
@@ -72,13 +72,11 @@ class Instance {
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval();
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> Eval(const Activation& activation);
 
-  // Partial evaluation — M2.E.  Same activation-marshalling as
-  // Eval, plus an unknown-pattern set the host consults at field
-  // read time: a select whose attribute_id matches any pattern
-  // short-circuits to `Value::Unknown(attribute_id)` instead of
-  // descending the proto.  Stub until M2.E ships; calling it today
-  // returns `Unimplemented` so the symbol exists for headers
-  // referencing it (the failing m2_test.cc e2e suite).
+  // Partial evaluation.  Same activation-marshalling as Eval, plus
+  // an unknown-pattern set the host consults at field read time: a
+  // select whose attribute_id matches any pattern short-circuits to
+  // `Value::Unknown(attribute_id)` instead of descending the proto.
+  // See `rewrite/m2-ident-select-unknowns.md`.
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> PartialEval(
       const Activation& activation,
       absl::Span<const AttributePattern> unknowns);
@@ -90,8 +88,8 @@ class Instance {
   // originating Engine handle has been dropped (see
   // InstanceOutlivesEngineThatBuiltIt in engine_test.cc).
   //
-  // Will likely be removed or made non-public once a richer surface
-  // (Eval, ReadBytes) lands; for M1 it's the only externally
+  // May be removed or made non-public once a richer surface
+  // (Eval, ReadBytes) lands; today it's the only externally
   // observable signal that the Instance's wasmtime resources are
   // intact.
   std::size_t memory_size_bytes() const;

@@ -22,14 +22,6 @@ namespace celwasm {
 
 namespace {
 
-// M5.D step 2 (shipped) — every aggregate-op dispatcher
-// (`cel_list_size` / `cel_list_in` / `cel_list_eq` / `cel_list_concat`
-// / `cel_map_size` / `cel_map_in` / `cel_map_eq`) now has a runtime
-// export AND a kHost trampoline, so codegen can emit calls into them
-// freely.  The `kPendingRuntimeExports` guard that previously
-// gated those names was deleted at M5.D step 2 ship; if a future
-// dispatcher needs a similar gate, reinstate the pattern here.
-
 // Human-readable name for an `ExprKindCase`, used in unimplemented
 // diagnostics so the error points at the offending kind by name rather
 // than an integer enum value.
@@ -111,7 +103,7 @@ BinaryenExpressionRef EmitKIdentLoad(WasmModule& mod,
 // body after the variable prelude: rewinds the runtime's bump-arena
 // cursor to 0 so each eval gets a fresh arena.  Takes no arguments
 // (the bump cursor lives in BSS, not linear memory, post-WASI
-// migration — see doc/implementation-plan/wasi/DESIGN.md §4).
+// migration — see doc/implementation-plan/rewrite/wasi/DESIGN.md §4).
 BinaryenExpressionRef EmitArenaResetCall(WasmModule& mod) {
   const std::string name(kArenaResetInternalName);
   return BinaryenCall(mod.raw(), name.c_str(), nullptr, 0, BinaryenTypeNone());
@@ -119,28 +111,26 @@ BinaryenExpressionRef EmitArenaResetCall(WasmModule& mod) {
 
 // Emits one `local.set local_index (i32.const slot_offset)` per
 // referenced variable, populating each ident's wasm local with its
-// compile-time-known workspace slot offset before `arena_reset` or the
-// body run.  Per m2-ident-select-unknowns.md §2.6 / Slice M2.B:
-// every kIdent lowering is `local.get local_index`, so the prelude is
-// the one place where the "which slot?" question gets answered for
-// free variables.
+// compile-time-known workspace slot offset before the body run.
+// Per `rewrite/m2-ident-select-unknowns.md` §2.6: every kIdent
+// lowering is `local.get local_index`, so the prelude is the one
+// place where the "which slot?" question gets answered for free
+// variables.
 //
-// The resulting instructions go at the top of `$eval`, before
-// `arena_reset`, because arena_reset only writes bytes [8, 16) (arena
-// cursor/limit) and doesn't touch the workspace region — so the order
-// prelude-then-reset vs reset-then-prelude is irrelevant at runtime.
-// We put prelude first so the generated WAT reads top-down matching
-// the milestone plan doc's sketch.
+// Prelude goes at the top of `$eval`, before `arena_reset`, purely
+// for readability of the generated WAT — arena_reset doesn't touch
+// the workspace region, so the relative order is semantically
+// irrelevant.
 std::vector<BinaryenExpressionRef> EmitVariablePrelude(
     WasmModule& mod, absl::Span<const LaidOutVariable> variables) {
   std::vector<BinaryenExpressionRef> out;
   out.reserve(variables.size());
   for (const LaidOutVariable& v : variables) {
-    // M5.B Slice B: comprehension-scope locals (iter / accu /
-    // index) are set by the comprehension's loop prologue, not the
-    // function prelude.  Skipping them here also keeps free-variable
-    // slot offsets stable when comprehensions are present — the
-    // host marshal addresses by `cel.abi.variables[].slot_offset`.
+    // Comprehension-scope locals (iter / accu / index) are set by
+    // the comprehension's loop prologue, not the function prelude.
+    // Skipping them here also keeps free-variable slot offsets
+    // stable when comprehensions are present — the host marshal
+    // addresses by `cel.abi.variables[].slot_offset`.
     if (v.kind != ResolvedVariableKind::kFreeVariable) continue;
     out.push_back(BinaryenLocalSet(mod.raw(), v.local_index,
                                    I32Const(mod, v.slot_offset)));
@@ -264,7 +254,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
   for (const cel::MapExprEntry& e : m.entries()) {
     ABSL_CHECK(!e.optional())
         << "expr_lower: kMapExpr expr_id=" << expr.id()
-        << " entry id=" << e.id() << " is optional — stub until M5";
+        << " entry id=" << e.id() << " is optional — stub";
     auto key_or = Emit(ctx, e.key());
     if (!key_or.ok()) return key_or.status();
     auto val_or = Emit(ctx, e.value());
@@ -281,8 +271,8 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
 }
 
 // Selects the runtime entry point for a `_[_]` indexing call based
-// on the operand's `map_origin`.  M3.F three-path dispatch (per
-// `map-list-dispatch.md` §2.6 / m3-map-literals.md §2.9):
+// on the operand's `map_origin`.  Three-path dispatch (per
+// `rewrite/map-list-dispatch.md` §2.6):
 //   kArena    → cel.cel_map_lookup_arena (pure wasm fast path)
 //   kHost     → cel_host.cel_map_lookup  (host trampoline)
 //   kDynamic  → cel.cel_map_lookup       (the runtime dispatcher)
@@ -299,7 +289,7 @@ absl::string_view MapLookupCallTarget(Origin origin) {
                     << static_cast<int>(origin);
 }
 
-// M4.F: same shape as MapLookupCallTarget but for list indexing.
+// Same shape as MapLookupCallTarget but for list indexing.
 //   kArena    → cel.cel_list_at_arena (pure wasm fast path)
 //   kHost     → cel_host.cel_list_at  (host trampoline)
 //   kDynamic  → cel.cel_list_at       (the runtime dispatcher)
@@ -368,7 +358,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
     const cel::ListExprElement& e = l.elements()[i];
     ABSL_CHECK(!e.optional())
         << "expr_lower: kListExpr expr_id=" << expr.id()
-        << " element index=" << i << " is optional — stub until M5";
+        << " element index=" << i << " is optional — stub";
     auto elem_or = Emit(ctx, e.expr());
     if (!elem_or.ok()) return elem_or.status();
     instrs.push_back(EmitCelListAppendCall(ctx, out_slot, *elem_or));
@@ -380,14 +370,14 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
-// M7.A: emits `(call $cel_host.cel_make_message (i32.const type_id)
+// Emits `(call $cel_host.cel_make_message (i32.const type_id)
 // (i32.const out_slot))`.  Two i32 args, void result.  The trampoline
 // resolves type_id → Descriptor* against the per-Instance lookup
 // table (populated from `cel.abi.types[]` at Plan time), allocates a
 // default-constructed proto via MessageFactory::GetPrototype()->New(),
 // wraps in an owning HostMessageBacking, interns into the
 // ExternrefTable, and writes a CEL_MESSAGE CelValue with the interned
-// msg_slot to the out_slot cell.
+// msg_slot to the out_slot cell.  See `rewrite/m7-proto-literals.md`.
 BinaryenExpressionRef EmitCelMakeMessageCall(WasmModule& mod, uint32_t type_id,
                                              uint32_t out_slot) {
   BinaryenExpressionRef args[2] = {I32Const(mod, type_id),
@@ -396,7 +386,7 @@ BinaryenExpressionRef EmitCelMakeMessageCall(WasmModule& mod, uint32_t type_id,
   return BinaryenCall(mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
 }
 
-// M7.B: emits `(call $cel_host.cel_set_field (i32.const msg_slot)
+// Emits `(call $cel_host.cel_set_field (i32.const msg_slot)
 // (i32.const field_ref_id) <value_expr>)`.  `value_expr` is an
 // i32-valued sub-expression whose value at runtime is the linear-
 // memory offset of the entry's value CelValue (rodata for kConst,
@@ -424,15 +414,14 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
 //   (i32.const out_slot)
 // wrapped in a (block (result i32)) whose value is `out_slot`.
 //
-// M7.A: empty literal — entry loop is a no-op.
-// M7.B: scalar entry-set — Layer-2 dispatches per-cpp_type;
-//       repeated/map/message singular fields trap at the
-//       trampoline (M7.C/E will fill them in).  No codegen-time
-//       gating per field type — codegen here doesn't know the
-//       descriptor's shape; it trusts the checker for type
-//       compatibility and the trampoline to surface unsupported
-//       shapes as clean traps.
-// Maps a wrapper FQN to the matching `CelKind` (1..6) the M8.C
+// Empty struct literal — entry loop is a no-op.  Scalar entry-set
+// — the cel_host Layer-2 dispatches per-cpp_type; repeated/map/
+// message singular fields trap at the trampoline.  No codegen-time
+// gating per field type — codegen here doesn't know the descriptor's
+// shape; it trusts the checker for type compatibility and the
+// trampoline to surface unsupported shapes as clean traps.
+//
+// Maps a wrapper FQN to the matching `CelKind` (1..6) the WKT
 // tail-unwrap trampoline expects as its third argument.  Returns
 // 0 (not a valid CelKind for the unwrap path) for non-wrapper
 // FQNs — caller falls through.  Mirrors `IsWrapperFqn` in
@@ -440,7 +429,8 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
 // scalar kind in a single call; Int32/Int64 collapse onto CEL_INT,
 // UInt32/UInt64 onto CEL_UINT, Float/Double onto CEL_DOUBLE per
 // CEL's value algebra (no 32-vs-64 distinction; see
-// `wat-traces.md` §56 for the rationale + ABI lock).
+// `rewrite/m8-wrapper-types.md` and `rewrite/wat-traces.md` §56 for
+// the rationale + ABI lock).
 uint32_t WrapperKindFromFqn(absl::string_view fqn) {
   if (fqn == "google.protobuf.BoolValue") return 1;    // CEL_BOOL
   if (fqn == "google.protobuf.Int32Value") return 2;   // CEL_INT
@@ -454,16 +444,17 @@ uint32_t WrapperKindFromFqn(absl::string_view fqn) {
   return 0;
 }
 
-// M7B polish + M8.C: well-known proto-literal tail-unwrap.  At
-// kStructExpr lowering, after the recursive build sets the message
-// fields, emit a host trampoline call that overwrites the message
-// slot IN PLACE with the equivalent scalar / Timestamp / Duration
-// CelValue.  Necessary because `compiler_v2/ir/typed_ast.cc:56`
-// maps WKT-typed expressions to scalar Repr — the downstream
-// pipeline expects a scalar at this slot, not a `CEL_MESSAGE`.
-//   - Timestamp / Duration (m7b polish): 2-arg trampoline
+// Well-known proto-literal tail-unwrap.  At kStructExpr lowering,
+// after the recursive build sets the message fields, emit a host
+// trampoline call that overwrites the message slot IN PLACE with
+// the equivalent scalar / Timestamp / Duration CelValue.  Necessary
+// because `compiler_v2/ir/typed_ast.cc:56` maps WKT-typed
+// expressions to scalar Repr — the downstream pipeline expects a
+// scalar at this slot, not a `CEL_MESSAGE`.  See
+// `rewrite/m8-wrapper-types.md` and `rewrite/m7b-duration-timestamp.md`.
+//   - Timestamp / Duration: 2-arg trampoline
 //     `cel_wkt_unwrap_time(out_slot, msg_slot)`.
-//   - 9 WKT wrappers (M8.C): 3-arg trampoline
+//   - 9 WKT wrappers: 3-arg trampoline
 //     `cel_wkt_unwrap_wrapper(out_slot, msg_slot, wrapper_kind)`
 //     where `wrapper_kind` is the inner CelKind (1..6).
 // Returns nullptr for non-WKT struct names — caller falls through.
@@ -497,14 +488,14 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
   ABSL_CHECK(!s.name().empty())
       << "expr_lower: kStructExpr expr_id=" << expr.id()
       << " has empty name() — should have lowered as kMapExpr at parse "
-         "time per design.md §4.7.4";
+         "time per rewrite/design.md §4.7.4";
   ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
       << "expr_lower: kStructExpr expr_id=" << expr.id()
       << " has non-workspace storage (LayoutPass didn't allocate a slot)";
   ABSL_CHECK(ann.message_type_id != 0)
       << "expr_lower: kStructExpr expr_id=" << expr.id()
       << " has message_type_id=0 — ResolvePass MessageTypeIdVisitor "
-         "didn't intern the FQN (m7-proto-literals.md §4.2)";
+         "didn't intern the FQN (rewrite/m7-proto-literals.md §4.2)";
 
   const uint32_t out_slot = ann.storage.payload;
   std::vector<BinaryenExpressionRef> instrs;
@@ -518,11 +509,11 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
         << f.name() << "` is optional — stub until optionals slice";
     auto value_or = Emit(ctx, f.value());
     if (!value_or.ok()) return value_or.status();
-    // Append a fresh field-ref row.  M7.B emits field_number=0
-    // so the host resolves the FieldDescriptor by name against
-    // the bound message — matches the read-side fallback path
+    // Append a fresh field-ref row.  field_number=0 makes the
+    // host resolve the FieldDescriptor by name against the bound
+    // message — matches the read-side fallback path
     // ProtoBacking::ResolveFieldDescriptor already uses for
-    // non-proto backings (m2-ident-select-unknowns.md §2.4).
+    // non-proto backings (see `rewrite/m2-ident-select-unknowns.md` §2.4).
     const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
     ctx.field_refs.push_back(FieldRefRow{
         /*field_number=*/0,
@@ -596,10 +587,10 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
                        BinaryenTypeInt32());
 }
 
-// M5.F: lowers a general kCallExpr — every call that isn't `_[_]`
-// (M3/M4 indexing, special-cased above) and isn't control flow
-// (`_&&_` / `_||_` / `_?_:_`, M5.G — branch-style, slot-out has
-// 3VL semantics that don't fit the uniform vv/v ABI).
+// General kCallExpr lowering — every call that isn't `_[_]`
+// (indexing, special-cased above) and isn't control flow (`_&&_` /
+// `_||_` / `_?_:_`, branch-style; slot-out has 3VL semantics that
+// don't fit the uniform vv/v ABI).
 //
 // Shape mirrors `EmitKIndexCall`: emit each arg sub-expression
 // (returns its CelValue offset), prepend the out_slot constant,
@@ -614,26 +605,26 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
 // uniform argument list — the `contains_string` helper signature
 // is `(out_slot, s_slot, sub_slot) → void`, identical to
 // `add_int64`'s `(out, a, b) → void`.
-// Slice 1.6: cross-numeric ordering re-pick.  cel-cpp's reference
-// map for a comparison call site whose operands span numeric kinds
-// (e.g. `dyn(int) < uint`) lists exactly one candidate — the same-
-// kind overload of the non-dyn operand's kind (`less_uint64` for
+//
+// Cross-numeric ordering re-pick.  cel-cpp's reference map for a
+// comparison call site whose operands span numeric kinds (e.g.
+// `dyn(int) < uint`) lists exactly one candidate — the same-kind
+// overload of the non-dyn operand's kind (`less_uint64` for
 // `dyn(int) < uint`).  That id routes to the per-kind helper
 // (`cel_uint_lt_at_vv`) which `require_kinds(..., CEL_UINT)` rejects
-// the int operand and poisons.  The fix: at codegen time, inspect
-// each operand's annotated `Repr`.  When the function is `_<_` /
-// `_<=_` / `_>_` / `_>=_` AND the operand Reprs span a cross-
-// numeric pair, override the overload id with the cross-numeric
-// id (`less_int64_uint64`, etc.) which routes to the polymorphic
+// the int operand and poisons.  Fix: at codegen time, inspect each
+// operand's annotated `Repr`; when the function is `_<_` / `_<=_` /
+// `_>_` / `_>=_` AND the operand Reprs span a cross-numeric pair,
+// override the overload id with the cross-numeric id
+// (`less_int64_uint64`, etc.) which routes to the polymorphic
 // `cel_numeric_<op>_at_vv` kernel.
 //
 // Why codegen and not resolve_pass: cel-cpp emits exactly ONE
-// candidate per call (probe spike, 2026-04-25) — there is no
-// candidate list to choose from.  ResolvePass can't synthesise an
-// id that cel-cpp didn't list; codegen has the operand Reprs in
-// hand (Slice 1.5's `DynPassthroughVisitor` forwards them onto
-// dyn calls) and a static table of cross-numeric ids
-// (`kBuiltinSeeds` rows 142–189).
+// candidate per call — there is no candidate list to choose from.
+// ResolvePass can't synthesise an id that cel-cpp didn't list;
+// codegen has the operand Reprs in hand and a static table of
+// cross-numeric ids in `kBuiltinSeeds`.  See
+// `rewrite/cross-numeric-ordering-plan.md`.
 //
 // Same-kind operands pass through untouched (the per-kind helpers
 // are still preferred — one less branch per call).
@@ -776,10 +767,9 @@ absl::string_view MaybeRepickCrossNumericOverload(
 
 // Resolves `ann.overload_id` to a runtime helper name, returning an
 // `Unimplemented` Status if (a) the annotation is empty
-// (ResolvePass didn't stamp it — codegen invariant), (b) no entry
-// in OverloadTable matches, or (c) the resolved helper is one of
-// the M5.D-step-2 pending dispatchers.  The returned string_view
-// is the wasm import name codegen emits a `BinaryenCall` to.
+// (ResolvePass didn't stamp it — codegen invariant), or (b) no
+// entry in OverloadTable matches.  The returned string_view is
+// the wasm import name codegen emits a `BinaryenCall` to.
 absl::StatusOr<absl::string_view> ResolveCallHelper(const OverloadTable& table,
                                                     const cel::Expr& expr,
                                                     const cel::CallExpr& call,
@@ -826,7 +816,7 @@ absl::StatusOr<std::vector<BinaryenExpressionRef>> EmitCallOperands(
 // definition appears below.  EmitConditional recurses via `Emit`
 // for cond / then / else, so it relies on that earlier declaration.
 
-// M5.G (Slice 2) — `_?_:_` lowering.  Per langdef §"Conditional
+// `_?_:_` ternary lowering.  Per langdef §"Conditional
 // expression", only the chosen arm is evaluated; ERROR / UNKNOWN
 // on the cond propagate verbatim without dispatching to either
 // branch.  We materialise this with a nested BinaryenIf:
@@ -861,9 +851,9 @@ BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
 // runtime — whatever the arm's storage kind (rodata / workspace /
 // local).  Using the eval value directly avoids the trap of
 // hard-coding `storage.payload`, which for `kLocal` (kIdent arms)
-// is a local index, NOT a slot offset.  M5.B Slice C surfaced the
-// kIdent-arm case via `exists_one`'s loop_step `p ? accu+1 : accu`
-// (else-arm is a bare `kIdent(@result)`).
+// is a local index, NOT a slot offset.  The kIdent-arm case
+// shows up in comprehensions like `exists_one`'s loop_step
+// `p ? accu+1 : accu` (else-arm is a bare `kIdent(@result)`).
 BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                                           BinaryenExpressionRef eval_expr,
                                           uint32_t out_slot) {
@@ -956,10 +946,11 @@ absl::StatusOr<BinaryenExpressionRef> EmitGeneralCall(
       << "` has non-workspace storage (LayoutPass didn't allocate a slot)";
   const uint32_t out_slot = ann.storage.payload;
 
-  // Slice 1.6: cross-numeric ordering overload re-pick.  When operand
-  // Reprs span a numeric cross-pair, override the cel-cpp-picked id
+  // Cross-numeric ordering overload re-pick.  When operand Reprs
+  // span a numeric cross-pair, override the cel-cpp-picked id
   // (which was the same-kind overload of one operand) with the
-  // cross-numeric id.  See `MaybeRepickCrossNumericOverload` above.
+  // cross-numeric id.  See `MaybeRepickCrossNumericOverload` above
+  // and `rewrite/cross-numeric-ordering-plan.md`.
   NodeAnnotation effective_ann = ann;
   absl::string_view repicked =
       MaybeRepickCrossNumericOverload(ctx.layout.annotations, call);
@@ -1011,8 +1002,8 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
       return EmitKSelect(ctx, expr, expr.select_expr(), *ann);
     case cel::ExprKindCase::kCallExpr: {
       const cel::CallExpr& call = expr.call_expr();
-      // Slice 1.5 (dyn-passthrough-plan.md): `dyn(scalar)` is the
-      // identity function at codegen — emit the argument directly.
+      // `dyn(scalar)` is the identity function at codegen — emit
+      // the argument directly (see `rewrite/dyn-passthrough-plan.md`).
       // Annotation forwarding (ResolvePass + LayoutPass) ensured
       // any consumer that reads this call's annotation sees the
       // argument's repr / storage; this branch makes sure the call
@@ -1021,25 +1012,25 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
           !call.has_target()) {
         return Emit(ctx, call.args()[0]);
       }
-      // M3.F: indexing operator `_[_]` is origin-aware (kArena fast
+      // Indexing operator `_[_]` is origin-aware (kArena fast
       // path / kHost trampoline / kDynamic dispatcher) and pre-dates
       // the OverloadTable; keep its bespoke arm.
       if (call.function() == "_[_]") {
         return EmitKIndexCall(ctx, expr, call, *ann);
       }
-      // M5.G (Slice 2) ternary `_?_:_`: BinaryenIf-based lowering
-      // (only the chosen arm is evaluated, per langdef §"Conditional
-      // expression").  `_&&_` / `_||_` / `!_` route through the
-      // standard slot-out helper arm — non-strict 3VL semantics
-      // live entirely inside `cel_and` / `cel_or` / `cel_not`.
+      // Ternary `_?_:_` uses BinaryenIf-based lowering — only the
+      // chosen arm is evaluated, per langdef §"Conditional expression".
+      // `_&&_` / `_||_` / `!_` route through the standard slot-out
+      // helper arm — non-strict 3VL semantics live entirely inside
+      // `cel_and` / `cel_or` / `cel_not`.
       if (call.function() == "_?_:_") {
         return EmitConditional(ctx, expr, call, *ann);
       }
-      // M5.F general arm — arithmetic, comparison, string ops,
+      // General arm — arithmetic, comparison, string ops,
       // receiver-style (`s.contains(…)`), and any custom function
-      // the embedder registered (M6).  Lookup is by
-      // `ann.overload_id` (cel-cpp's resolved overload string,
-      // stamped by ResolvePass).
+      // the embedder registered (see `rewrite/m-custom-fns.md`).
+      // Lookup is by `ann.overload_id` (cel-cpp's resolved overload
+      // string, stamped by ResolvePass).
       return EmitGeneralCall(ctx, expr, call, *ann);
     }
     case cel::ExprKindCase::kMapExpr:
@@ -1093,10 +1084,10 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
       static_cast<BinaryenIndex>(instrs.size()), BinaryenTypeInt32());
 
   // Every wasm local `$eval` carries is a u32 memory offset — one
-  // per referenced variable (m2-ident-select-unknowns.md §2.6 /
-  // Slice M2.B), plus per-comprehension auxiliary locals reserved
-  // by LayoutPass's `ComprehensionLocalsVisitor` (M5.B Slice C) for
-  // end_off / iter cursor / index counter.
+  // per referenced variable (see `rewrite/m2-ident-select-unknowns.md` §2.6),
+  // plus per-comprehension auxiliary locals reserved by LayoutPass's
+  // `ComprehensionLocalsVisitor` for end_off / iter cursor / index
+  // counter (see `rewrite/m5-comprehensions-design.md`).
   const std::string func_name_c(func_name);
   const uint32_t locals_count =
       layout.total_wasm_locals != 0

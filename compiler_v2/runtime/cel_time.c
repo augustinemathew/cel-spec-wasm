@@ -11,9 +11,10 @@
 //   third_party/cel-cpp/runtime/standard/time_functions.cc::
 //     {add,subtract}_duration_duration / _time_duration /
 //     _time_time + less / greater / etc.
-// Pure-int kernels here; the parse / format / int conversions live
-// behind host trampolines (M7B.D) and the TZ-aware accessor lives
-// behind a single dispatch trampoline (M7B.E).
+// Pure-int kernels here; string parse / format live in
+// `cel_time_parse.{h,cc}` (vendored absl); the TZ-aware accessor
+// lives behind a single dispatch trampoline on the host (see
+// `rewrite/m7b-duration-timestamp.md`).
 
 #define NANOS_PER_SEC 1000000000
 
@@ -37,8 +38,8 @@
 // (just seconds) misses corners where seconds is exactly at MIN /
 // MAX and nanos has the same sign (which pushes the real value
 // past the bound).  Used for both timestamp and duration kinds.
-static inline int payload_in_range(int64_t seconds, int32_t nanos,
-                                   int64_t lo, int64_t hi) {
+static inline int payload_in_range(int64_t seconds, int32_t nanos, int64_t lo,
+                                   int64_t hi) {
   if (seconds > hi || seconds < lo) return 0;
   // Boundary refinement: at MAX a positive nanos overflows; at MIN
   // a negative nanos overflows.
@@ -196,10 +197,18 @@ static void run_compare(CelValue* out, const CelValue* a, const CelValue* b,
   write_bool(out, pred(cmp));
 }
 
-static int pred_lt(int cmp) { return cmp < 0; }
-static int pred_le(int cmp) { return cmp <= 0; }
-static int pred_gt(int cmp) { return cmp > 0; }
-static int pred_ge(int cmp) { return cmp >= 0; }
+static int pred_lt(int cmp) {
+  return cmp < 0;
+}
+static int pred_le(int cmp) {
+  return cmp <= 0;
+}
+static int pred_gt(int cmp) {
+  return cmp > 0;
+}
+static int pred_ge(int cmp) {
+  return cmp >= 0;
+}
 
 // ----- arithmetic -----
 
@@ -275,7 +284,7 @@ void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
               cel_value_at(b_slot), CEL_TIMESTAMP, pred_ge);
 }
 
-// ─── M7B.C: civil-calendar helper + UTC accessor family ─────────────────
+// ─── Civil-calendar helper + UTC accessor family ────────────────────────
 //
 // `cel_civil_from_seconds` projects an int64 epoch seconds value to
 // the Gregorian (year, month, day, hour, minute, second, day_of_year,
@@ -296,15 +305,15 @@ void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 #define ERA_BIAS 146096LL      // for negative-floor div
 
 typedef struct {
-  int32_t year;        // Gregorian year (negative possible if input below year 0)
-  int32_t month_0;     // 0-based, 0=Jan ... 11=Dec  (cel-cpp's getMonth)
-  int32_t day_1;       // 1-based, 1..31             (cel-cpp's getDate)
-  int32_t day_0;       // 0-based, 0..30             (cel-cpp's getDayOfMonth)
-  int32_t hour;        // 0..23
-  int32_t minute;      // 0..59
-  int32_t second;      // 0..59
-  int32_t day_of_year; // 0-based, Jan 1 = 0
-  int32_t day_of_week; // 0-based, Sunday = 0
+  int32_t year;     // Gregorian year (negative possible if input below year 0)
+  int32_t month_0;  // 0-based, 0=Jan ... 11=Dec  (cel-cpp's getMonth)
+  int32_t day_1;    // 1-based, 1..31             (cel-cpp's getDate)
+  int32_t day_0;    // 0-based, 0..30             (cel-cpp's getDayOfMonth)
+  int32_t hour;     // 0..23
+  int32_t minute;   // 0..59
+  int32_t second;   // 0..59
+  int32_t day_of_year;  // 0-based, Jan 1 = 0
+  int32_t day_of_week;  // 0-based, Sunday = 0
 } CelCivil;
 
 // 0-indexed cumulative days at the start of each month.  Used to
@@ -392,13 +401,13 @@ static int ts_accessor_prelude(CelValue* out, const CelValue* a,
   return 0;
 }
 
-#define DEFINE_TS_ACCESSOR(name, projection)                                 \
-  void name(uint32_t out_slot, uint32_t ts_slot) {                            \
-    CelValue* out = cel_value_at(out_slot);                                   \
-    const CelValue* a = cel_value_at(ts_slot);                                \
-    CelCivil c;                                                               \
-    if (ts_accessor_prelude(out, a, &c)) return;                              \
-    write_int(out, projection);                                               \
+#define DEFINE_TS_ACCESSOR(name, projection)       \
+  void name(uint32_t out_slot, uint32_t ts_slot) { \
+    CelValue* out = cel_value_at(out_slot);        \
+    const CelValue* a = cel_value_at(ts_slot);     \
+    CelCivil c;                                    \
+    if (ts_accessor_prelude(out, a, &c)) return;   \
+    write_int(out, projection);                    \
   }
 
 DEFINE_TS_ACCESSOR(cel_ts_year_utc_at_v, c.year)
@@ -471,7 +480,7 @@ void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot) {
   write_int(out, a->payload.dur.seconds);
 }
 
-// ─── M7B.D pure-wasm half: int <-> ts/dur conversions ──────────────────
+// ─── Pure-wasm half: int <-> ts/dur conversions ────────────────────────
 
 void cel_ts_to_int_at_v(uint32_t out_slot, uint32_t ts_slot) {
   CelValue* out = cel_value_at(out_slot);
@@ -518,7 +527,7 @@ void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot) {
   out->payload.ts = (CelDurTs){.seconds = s, .nanos = 0, ._pad = 0};
 }
 
-// ─── M7B.E with-TZ accessor shims ─────────────────────────────────────
+// ─── With-TZ accessor shims ───────────────────────────────────────────
 //
 // Each shim is a thin wrapper over the host trampoline.  The
 // `cel_host.cel_timestamp_tz_accessor` import is declared with
@@ -546,9 +555,9 @@ __attribute__((weak)) void cel_host_cel_timestamp_tz_accessor(
 }
 #endif
 
-#define DEFINE_TZ_ACCESSOR_SHIM(name, kind)                                   \
-  void name(uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot) {           \
-    cel_host_cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot, (kind));    \
+#define DEFINE_TZ_ACCESSOR_SHIM(name, kind)                                 \
+  void name(uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot) {        \
+    cel_host_cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot, (kind)); \
   }
 
 DEFINE_TZ_ACCESSOR_SHIM(cel_ts_year_with_tz_at_vv, CEL_TZ_ACC_YEAR)
@@ -582,8 +591,7 @@ void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
     return;
   }
   out->kind = CEL_DURATION;
-  out->payload.dur =
-      (CelDurTs){.seconds = a->payload.i, .nanos = 0, ._pad = 0};
+  out->payload.dur = (CelDurTs){.seconds = a->payload.i, .nanos = 0, ._pad = 0};
 }
 
 void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot) {

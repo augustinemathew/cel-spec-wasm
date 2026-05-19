@@ -921,6 +921,31 @@ INSTANTIATE_TEST_SUITE_P(
         ParseCase{"TsAdmit_PartialFractional",
                   R"(timestamp("2009-02-13T23:31:30.5Z").getMilliseconds() == 500)",
                   true},
+        // Fractional-precision grid — three- and six-digit forms
+        // alongside the existing one- (`.5`) and nine-digit
+        // (`.123456789`) cases.  Probe B's "absl admits, CEL re-
+        // validates" matrix should cover every well-formed digit
+        // count, not just the extremes.
+        ParseCase{"TsAdmit_ThreeDigitFraction",
+                  R"(timestamp("2009-02-13T23:31:30.123Z").getMilliseconds() == 123)",
+                  true},
+        ParseCase{"TsAdmit_SixDigitFraction",
+                  R"(timestamp("2009-02-13T23:31:30.123456Z").getMilliseconds() == 123)",
+                  true},
+        // Langdef-boundary admit rows — the reject side is already
+        // covered by YearOver/YearUnder.  Year 0001 / 9999 are inside
+        // the proto Timestamp envelope and parse cleanly.
+        ParseCase{"TsAdmit_YearOneLowerBound",
+                  R"(timestamp("0001-01-01T00:00:00Z") == timestamp("0001-01-01T00:00:00Z"))",
+                  true},
+        ParseCase{"TsAdmit_Year9999UpperBound",
+                  R"(timestamp("9999-12-31T23:59:59Z") == timestamp("9999-12-31T23:59:59Z"))",
+                  true},
+        // Pre-epoch (negative seconds).  Distinct codepath from
+        // post-epoch in the langdef range check.
+        ParseCase{"TsAdmit_PreEpoch",
+                  R"(timestamp("1969-12-31T23:59:59Z") == timestamp("1969-12-31T23:59:59Z"))",
+                  true},
         ParseCase{"TsReject_MissingTZ",
                   R"(timestamp("2009-02-13T23:31:30"))", false},
         ParseCase{"TsReject_LowercaseZ",
@@ -930,7 +955,11 @@ INSTANTIATE_TEST_SUITE_P(
         ParseCase{"TsReject_YearUnder",
                   R"(timestamp("0000-01-01T00:00:00Z"))", false},
         ParseCase{"TsReject_LeapSecond",
-                  R"(timestamp("2016-12-31T23:59:60Z"))", false}),
+                  R"(timestamp("2016-12-31T23:59:60Z"))", false},
+        // Two-digit year — `RejectsAsTimestampPerCEL` requires the
+        // first dash at byte ≥4 (i.e. zero-padded 4-digit year).
+        ParseCase{"TsReject_TwoDigitYear",
+                  R"(timestamp("70-01-01T00:00:00Z"))", false}),
     [](const ::testing::TestParamInfo<ParseCase>& info) {
       return info.param.label;
     });
@@ -962,13 +991,35 @@ INSTANTIATE_TEST_SUITE_P(
                   R"(duration("-1us") == duration("-1us"))", true},
         ParseCase{"DurAdmit_Nanos",
                   R"(duration("100ns") == duration("100ns"))", true},
+        // proto Duration JSON envelope boundary (±315 576 000 000 s).
+        // Reject side is `DurReject_Overflow`; admit at exactly the
+        // boundary distinguishes "envelope reject" from "absl
+        // overflow reject" — Probe C found that absl admits well
+        // past this point.
+        ParseCase{"DurAdmit_PosMaxBoundary",
+                  R"(duration("315576000000s") == duration("315576000000s"))",
+                  true},
+        ParseCase{"DurAdmit_NegMaxBoundary",
+                  R"(duration("-315576000000s") == duration("-315576000000s"))",
+                  true},
         ParseCase{"DurReject_Empty", R"(duration(""))", false},
         ParseCase{"DurReject_NoUnit", R"(duration("3600"))", false},
         ParseCase{"DurReject_UnknownUnit", R"(duration("3600x"))", false},
         ParseCase{"DurReject_WrongOrder", R"(duration("1s2h"))", false},
         ParseCase{"DurReject_TrailingGarbage", R"(duration("1s "))", false},
         ParseCase{"DurReject_Overflow",
-                  R"(duration("9223372036854775808s"))", false}),
+                  R"(duration("9223372036854775808s"))", false},
+        // Repeated unit at same rank — `RejectsAsDurationPerCEL`
+        // requires strictly-decreasing units.  Distinct from
+        // `DurReject_WrongOrder` (which exercises rank-increase).
+        ParseCase{"DurReject_RepeatedUnit",
+                  R"(duration("1h2h"))", false},
+        // Sub-second wrong order: ms before s violates "decreasing".
+        ParseCase{"DurReject_SubSecondWrongOrder",
+                  R"(duration("1ms1s"))", false},
+        // Proto-JSON envelope reject just outside the boundary.
+        ParseCase{"DurReject_OnePastMaxBoundary",
+                  R"(duration("315576000001s"))", false}),
     [](const ::testing::TestParamInfo<ParseCase>& info) {
       return info.param.label;
     });
@@ -1061,6 +1112,149 @@ TEST_F(FormatConvertE2ETest, Int64ToTimestampOverflow) {
   // INT64_MAX is well above year 9999 → CEL_ERROR (kOverflow).
   Value v = EvalClosedExpression(R"(timestamp(9223372036854775807))");
   EXPECT_EQ(v.kind(), Value::Kind::kError);
+}
+
+// ── Recorded current behaviour — DO NOT change without fixing kernel ──
+//
+// The kernel calls `absl::FormatTime(absl::RFC3339_full, ...)` directly
+// for timestamps; the only post-processing is the `+00:00` → `Z`
+// swap.  This means two corners of proto JSON Timestamp / Duration
+// spec (which `cel-cpp` honours) are NOT enforced today:
+//
+//   1. Year padding to 4 digits — `timestamp("0001-01-01T00:00:00Z")`
+//      reformats as `"1-01-01T00:00:00Z"`.
+//   2. Fractional-second digit count — proto JSON requires 0 / 3 / 6
+//      / 9 digits; the kernel emits the minimal-digit form (e.g.
+//      `.5` instead of `.500`).
+//
+// The tests below lock in the *current* output so a future kernel
+// fix shows up as a deliberate change — and so the conformance
+// gap is visible in the test names.  Update both the kernel and
+// these tests in the same commit.
+
+TEST_F(FormatConvertE2ETest, TimestampFormatLowYearNotPaddedKernelGap) {
+  Value v = EvalClosedExpression(R"(string(timestamp("0001-01-01T00:00:00Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  // Proto JSON spec: should be "0001-01-01T00:00:00Z".  Kernel emits
+  // unpadded year.  Tracked as a Phase C format-gap follow-up.
+  EXPECT_EQ(*v.AsString(), "1-01-01T00:00:00Z");
+}
+
+TEST_F(FormatConvertE2ETest, TimestampFormatHalfSecondNotProtoPaddedKernelGap) {
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("1970-01-01T00:00:00.500Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  // Proto JSON spec: should be "1970-01-01T00:00:00.500Z".  Kernel
+  // emits the minimal-digit form.
+  EXPECT_EQ(*v.AsString(), "1970-01-01T00:00:00.5Z");
+}
+
+// ── Format admit grid (currently-correct behaviour) ──
+
+TEST_F(FormatConvertE2ETest, TimestampFormatEpoch) {
+  Value v = EvalClosedExpression(R"(string(timestamp(0)))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "1970-01-01T00:00:00Z");
+}
+
+TEST_F(FormatConvertE2ETest, TimestampFormatYear9999Boundary) {
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("9999-12-31T23:59:59Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "9999-12-31T23:59:59Z");
+}
+
+TEST_F(FormatConvertE2ETest, TimestampFormatNineDigitFraction) {
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("2009-02-13T23:31:30.123456789Z")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30.123456789Z");
+}
+
+// ── Duration format: proto JSON envelope is more disciplined here ──
+//
+// `FormatProtoDuration` in `cel_time_parse.cc` already trims trailing
+// zero-triples to 3 / 6 / 9 digits per proto JSON spec.  Lock in the
+// per-digit-count rows so a regression in the trim loop surfaces.
+
+TEST_F(FormatConvertE2ETest, DurationFormatZero) {
+  Value v = EvalClosedExpression(R"(string(duration("0s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "0s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatNegativeSeconds) {
+  Value v = EvalClosedExpression(R"(string(duration("-3600s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "-3600s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatThreeDigitFraction) {
+  Value v = EvalClosedExpression(R"(string(duration("0.5s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "0.500s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatSixDigitFraction) {
+  Value v = EvalClosedExpression(R"(string(duration("0.000123s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "0.000123s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatNineDigitFraction) {
+  Value v = EvalClosedExpression(R"(string(duration("0.000000001s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "0.000000001s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatNegativeNanosOnly) {
+  // -1ns: the kernel emits `-0.000000001s` (proto JSON sign convention).
+  Value v = EvalClosedExpression(R"(string(duration("-1ns")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "-0.000000001s");
+}
+
+TEST_F(FormatConvertE2ETest, DurationFormatMaxBoundary) {
+  Value v = EvalClosedExpression(R"(string(duration("315576000000s")))");
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "315576000000s");
+}
+
+// ── Parse-then-format round-trip ──
+//
+// Lossless for the inputs the kernel handles cleanly today.  Inputs
+// that exercise the gaps documented above (low-year padding,
+// non-9-digit fractional) are intentionally excluded.
+
+TEST_F(FormatConvertE2ETest, TimestampParseFormatRoundTripCanonical) {
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("2026-05-18T10:00:00Z")) == "2026-05-18T10:00:00Z")");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
+}
+
+TEST_F(FormatConvertE2ETest, TimestampParseFormatRoundTripPreEpoch) {
+  Value v = EvalClosedExpression(
+      R"(string(timestamp("1969-12-31T23:59:59Z")) == "1969-12-31T23:59:59Z")");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
+}
+
+TEST_F(FormatConvertE2ETest, DurationParseFormatRoundTripCompound) {
+  // `1h2m3s` parses to 3723s; format emits the compact `3723s` form
+  // per proto JSON (no compound-unit output).  Documents the lossy
+  // direction of the round-trip — input shape is normalised.
+  Value v = EvalClosedExpression(
+      R"(string(duration("1h2m3s")) == "3723s")");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
+}
+
+TEST_F(FormatConvertE2ETest, DurationParseFormatRoundTripNanos) {
+  Value v = EvalClosedExpression(
+      R"(string(duration("0.000000001s")) == "0.000000001s")");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v.AsBool());
 }
 
 // ──────────────────────────────────────────────────────────────

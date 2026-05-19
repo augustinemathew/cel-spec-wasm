@@ -34,9 +34,9 @@ uint32_t PagesForBytes(uint32_t mem_size_bytes) {
   return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
 }
 
-// `cel_host.cel_get_field` + `cel_host.cel_has_field` trampolines
-// (M2.C / M2.D).  Always imported — the runtime links the cel_host
-// module unconditionally (see memory "No lazy tracking of runtime
+// `cel_host.cel_get_field` + `cel_host.cel_has_field` trampolines.
+// Always imported — the runtime links the cel_host module
+// unconditionally (see CLAUDE.md "no lazy tracking of runtime
 // imports").
 void InstallSelectImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
@@ -47,18 +47,19 @@ void InstallSelectImports(WasmModule& mod) {
                         "cel_has_field", host_params, BinaryenTypeNone());
 }
 
-// M7.A: cel_host.cel_make_message — `(type_id, out_slot)` → ().
-// M7.B: cel_host.cel_set_field — `(msg_slot, field_ref_id, value_slot)`
+// `cel_host.cel_make_message` — `(type_id, out_slot)` → ().
+// `cel_host.cel_set_field` — `(msg_slot, field_ref_id, value_slot)`
 // → ().  Both always imported (no lazy tracking — CLAUDE.md);
 // codegen emits direct calls in the kStructExpr arm.
-// M7B polish: cel_host.cel_wkt_unwrap_time —
-// `(out_slot, msg_slot)` → ().  Conditional emit at the kStructExpr
-// tail for WKT Timestamp/Duration literals.
-// M8.C: cel_host.cel_wkt_unwrap_wrapper —
+// `cel_host.cel_wkt_unwrap_time` — `(out_slot, msg_slot)` → ().
+// Conditional emit at the kStructExpr tail for WKT
+// Timestamp/Duration literals.
+// `cel_host.cel_wkt_unwrap_wrapper` —
 // `(out_slot, msg_slot, wrapper_kind)` → ().  Conditional emit at
 // the kStructExpr tail for the 9 wrapper FQNs.  Uninstalled
 // imports validate fine — keep them always installed per
-// CLAUDE.md "no lazy tracking" rule.
+// CLAUDE.md "no lazy tracking" rule.  See
+// `rewrite/m7-proto-literals.md` and `rewrite/m8-wrapper-types.md`.
 void InstallStructImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType make_params[2] = {i32, i32};
@@ -79,10 +80,10 @@ void InstallStructImports(WasmModule& mod) {
                         BinaryenTypeNone());
 }
 
-// M3.F: map literal + indexing runtime entry points.  `cel_map_*`
-// come from the runtime module; `cel_host.cel_map_lookup` is the
-// host trampoline arm of the kDynamic dispatcher (see
-// map-list-dispatch.md §3 + §5).
+// Map literal + indexing runtime entry points.  `cel_map_*` come
+// from the runtime module; `cel_host.cel_map_lookup` is the host
+// trampoline arm of the kDynamic dispatcher (see
+// `rewrite/map-list-dispatch.md` §3 / §5).
 void InstallMapImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType map_create_params[2] = {i32, i32};
@@ -92,10 +93,10 @@ void InstallMapImports(WasmModule& mod) {
   const BinaryenType map3_params[3] = {i32, i32, i32};
   mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
                         "cel_map_insert", map3_params, BinaryenTypeNone());
-  // M5.B Slice G: dynamic-map insert for transformMap accumulators.
+  // Dynamic-map insert for transformMap accumulators.
   mod.AddFunctionImport("cel_map_insert_at", "cel", "cel_map_insert_at",
                         map3_params, BinaryenTypeNone());
-  // Slice G/H followup: 3VL predicate-gated map insert.
+  // 3VL predicate-gated map insert.
   // `(map_slot, pred_slot, key_slot, value_slot) -> void`.
   const BinaryenType map4_params[4] = {i32, i32, i32, i32};
   mod.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
@@ -108,10 +109,10 @@ void InstallMapImports(WasmModule& mod) {
                         "cel_map_lookup", map3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
                         "cel_map_lookup", map3_params, BinaryenTypeNone());
-  // M5.B Slice E: map-key iteration helpers used by comprehensions
-  // over a `map(K, V)` source.  Always imported regardless of AST
-  // presence — per CLAUDE.md "no lazy tracking of runtime imports".
-  // Wire shapes pinned by `wat/64_comprehension_exists_map.wat`:
+  // Map-key iteration helpers used by comprehensions over a
+  // `map(K, V)` source.  Always imported regardless of AST presence
+  // — per CLAUDE.md "no lazy tracking of runtime imports".  Wire
+  // shapes pinned by `rewrite/wat/64_comprehension_exists_map.wat`:
   //   cel_map_iter_init       (map_slot)              -> i32 handle
   //   cel_map_iter_next       (handle)                -> i32 (0|1)
   //   cel_map_iter_key_at     (out_slot, handle)      -> void
@@ -128,8 +129,8 @@ void InstallMapImports(WasmModule& mod) {
                         iter_two_params, BinaryenTypeNone());
 }
 
-// M4.F: list literal + indexing runtime entry points.  Same shape
-// as maps; unused imports are harmless (Binaryen drops them at
+// List literal + indexing runtime entry points.  Same shape as
+// maps; unused imports are harmless (Binaryen drops them at
 // validate).
 void InstallListImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
@@ -151,32 +152,32 @@ void InstallListImports(WasmModule& mod) {
   const BinaryenType append_params[2] = {i32, i32};
   mod.AddFunctionImport("cel_list_append_at", "cel", "cel_list_append_at",
                         append_params, BinaryenTypeNone());
-  // M5.B Slice D: predicate-gated append for filter / conditional-map.
+  // Predicate-gated append for filter / conditional-map.
   // `(list_slot, pred_slot, value_slot) -> void`.
   mod.AddFunctionImport("cel_list_append_at_if_bool", "cel",
                         "cel_list_append_at_if_bool", list3_params,
                         BinaryenTypeNone());
 }
 
-// M5.F: install one wasm function import per OverloadTable seed
-// whose runtime export is shipped today.  Per CLAUDE.md "no lazy
+// Install one wasm function import per OverloadTable seed whose
+// runtime export is shipped today.  Per CLAUDE.md "no lazy
 // tracking of runtime imports" — every helper the table can name
 // gets imported regardless of whether the AST happens to reach it.
 //
 // Helper signatures: names ending in `_at_vv` take 3 args
 // (`out_slot, a_slot, b_slot`); names ending in `_at_v` take 2
-// (`out_slot, v_slot`).  M5.D step 2 added the seven aggregate-op
-// dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
-// `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`),
-// which don't follow the `_at_*` suffix convention; they get
-// special-cased below.
+// (`out_slot, v_slot`).  The seven aggregate-op dispatchers
+// (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
+// `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`)
+// don't follow the `_at_*` suffix convention; they get special-
+// cased below.
 //
 // Sets are deduplicated by helper-name: two cel-cpp overload ids
 // can resolve to the same wasm helper (every cross-type numeric
 // `less_*` resolves to `cel_numeric_lt_at_vv`); we only install
 // the import once.
 // Returns the helper arity inferred from the overload-helper name:
-// `_at_vv` → 3-arg, `_at_v` → 2-arg, M5.D step 2 dispatchers
+// `_at_vv` → 3-arg, `_at_v` → 2-arg, aggregate-op dispatchers
 // (`cel_list_size`/etc.) carry no suffix and use a hand-rolled
 // table.  Returns 0 for "not a helper we install here".
 int OverloadHelperArity(absl::string_view name) {
@@ -197,26 +198,26 @@ int OverloadHelperArity(absl::string_view name) {
       {"cel_map_size", 2},
       {"cel_map_in", 3},
       {"cel_map_eq", 3},
-      // M5.G (Slice 2): 3VL / control-flow helpers.  cel_and / cel_or
-      // are 3-arg; cel_not is 2-arg.  cel_unknown_merge is reachable
-      // only through cel_and / cel_or internally so it doesn't need
-      // an expr-side import; cel_copy_slot is installed unconditionally
+      // 3VL / control-flow helpers.  cel_and / cel_or are 3-arg;
+      // cel_not is 2-arg.  cel_unknown_merge is reachable only
+      // through cel_and / cel_or internally so it doesn't need an
+      // expr-side import; cel_copy_slot is installed unconditionally
       // by InstallOverloadImports below for the ternary lowering.
       {"cel_and", 3},
       {"cel_or", 3},
       {"cel_not", 2},
-      // M10.A: `cel_copy_slot` is the kernel for identity conversions
+      // `cel_copy_slot` is the kernel for identity conversions
       // (`bool(bool)` / `int(int)` / ...).  Its `(dst, src) → void`
       // signature is 2-arg; it doesn't follow the `_at_v` suffix
-      // convention because pre-M10 it was emitted directly by the
-      // ternary lowering, not via OverloadTable seeding.
+      // convention because the ternary lowering emits it directly,
+      // not via OverloadTable seeding.
       {"cel_copy_slot", 2},
-      // M7B.D: cel_host parse + format trampolines.  Names match
-      // the m7b plan §4.3 canonical form (`cel_timestamp_parse`
-      // etc., not `cel_timestamp_parse_at_v`) — the `_at_v` suffix
-      // is a runtime-side convention; host trampolines stay
-      // unsuffixed for consistency with cel_get_field /
-      // cel_make_message / cel_map_lookup.
+      // cel_host parse + format trampolines.  Names match the host
+      // ABI canonical form (`cel_timestamp_parse` etc., not
+      // `cel_timestamp_parse_at_v`) — the `_at_v` suffix is a
+      // runtime-side convention; host trampolines stay unsuffixed
+      // for consistency with cel_get_field / cel_make_message /
+      // cel_map_lookup.
       {"cel_timestamp_parse", 2},
       {"cel_duration_parse", 2},
       {"cel_timestamp_format", 2},
@@ -236,12 +237,12 @@ void InstallOverloadImports(WasmModule& mod,
   absl::flat_hash_set<std::string> installed;
   for (uint32_t id = 1; id <= overload_table.size(); ++id) {
     const OverloadImpl& impl = overload_table.LookupById(id);
-    // M7B.D: kCelHost seeds install with import_module="cel_host"
-    // (parse / format trampolines).  The binaryen function symbol
-    // matches the helper name regardless of module — helper names
-    // are globally unique (the kCelHost trampoline names start
-    // with `cel_timestamp_` / `cel_duration_`, the kCelRuntime
-    // helpers with `cel_int_` / `cel_string_` / etc).
+    // kCelHost seeds install with import_module="cel_host" (host
+    // trampolines).  The binaryen function symbol matches the
+    // helper name regardless of module — helper names are globally
+    // unique (kCelHost trampoline names start with `cel_timestamp_`
+    // / `cel_duration_`, kCelRuntime helpers with `cel_int_` /
+    // `cel_string_` / etc).
     const char* module_name = nullptr;
     switch (impl.module) {
       case ImportModule::kCelRuntime:
@@ -265,9 +266,9 @@ void InstallOverloadImports(WasmModule& mod,
     installed.insert(name);
   }
 
-  // M5.G (Slice 2): `cel_copy_slot` is emitted directly by
-  // expr_lower's ternary lowering (BinaryenIf branches that copy
-  // the chosen arm into out_slot).  Not seeded in OverloadTable —
+  // `cel_copy_slot` is emitted directly by expr_lower's ternary
+  // lowering (BinaryenIf branches that copy the chosen arm into
+  // out_slot).  Not seeded in OverloadTable —
   // the table maps cel-cpp overload ids to helpers, and ternary's
   // overload id `conditional` is special-cased above.  Install
   // unconditionally so every emitted module imports it; the no-lazy-
@@ -296,9 +297,16 @@ void InstallOverloadImports(WasmModule& mod,
 absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
                             uint32_t mem_size_bytes) {
   WasmModule::DataSegment seg{layout.rodata_base, layout.rodata};
+  // Phase C: the runtime (cel_runtime.wasm) is built on
+  // wasm32-wasi-threads and exports its memory as shared.  The expr
+  // module's `(import "cel" "memory")` must therefore declare a
+  // matching shared memory with a max page count.  Pick 1024 pages
+  // (64 MiB) to mirror the runtime's `-Wl,--max-memory=67108864`.
+  constexpr uint32_t kSharedMaxPages = 1024;
   auto s = mod.AddMemoryImport("cel", "memory", PagesForBytes(mem_size_bytes),
-                               /*max_pages=*/std::nullopt,
-                               absl::MakeConstSpan(&seg, 1));
+                               /*max_pages=*/kSharedMaxPages,
+                               absl::MakeConstSpan(&seg, 1),
+                               /*shared=*/true);
   if (!s.ok()) return s;
 
   const BinaryenType i32 = BinaryenTypeInt32();
@@ -388,9 +396,10 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
     return s;
   }
 
-  // M5.F: build the OverloadTable (built-ins only — M6 ships
-  // RegisterFunction for embedder customs) and install one wasm
-  // import per shipped helper before lowering.  expr_lower's
+  // Build the OverloadTable (built-ins only; embedder custom
+  // functions land via `RegisterFunction` — see
+  // `rewrite/m-custom-fns.md`) and install one wasm import per
+  // shipped helper before lowering.  expr_lower's
   // general-arm `BinaryenCall` references these imports by
   // internal name; if an import is missing the module won't
   // validate.

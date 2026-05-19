@@ -59,7 +59,7 @@ cc_test(
 # WASI migration MVP — the canonical "did the migration not
 # break anything?" vertical-slice test.  Compiles `"foo" +
 # "bar"` and asserts the eval result is the string `"foobar"`.
-# See doc/implementation-plan/wasi/DESIGN.md §2.
+# See doc/implementation-plan/rewrite/wasi/DESIGN.md §2.
 cc_test(
     name = "mvp_concat_test",
     srcs = ["mvp_concat_test.cc"],
@@ -74,9 +74,8 @@ cc_test(
     ],
 )
 
-# M5 e2e test suite — general kCall arm (M5.F).  Locks every
-# arithmetic / comparison / string-op surface that M5.F lights
-# up, plus the M5.G-pending control-flow rejection edge.
+# General kCall arm e2e suite.  Locks the arithmetic / comparison
+# / string-op surface plus the control-flow lowering edge.
 cc_test(
     name = "m5_test",
     srcs = ["m5_test.cc"],
@@ -99,14 +98,12 @@ cc_test(
     ],
 )
 
-# M5.B e2e test suite — comprehension follow-on (cel.bind +
-# the five standard comprehension macros over list / map sources +
-# the comprehensions_v2 two-iter-var / transformMap /
-# transformMapEntry cohort).  RED today (every test GTEST_SKIPs);
-# turns on slice-by-slice as M5.B.A → M5.B.J ship per
-# `doc/implementation-plan/rewrite/m5-comprehensions-followon.md` §5.
-# Conformance unlock target: ~+90 PASS per the m5b plan §1.  No
-# proto fixture deps — every test is LITERAL-driven (list / map
+# Comprehension e2e suite — cel.bind + the five standard
+# comprehension macros over list / map sources + the
+# comprehensions_v2 two-iter-var / transformMap / transformMapEntry
+# cohort.  See
+# `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
+# No proto fixture deps — every test is literal-driven (list / map
 # source from CEL source text or Value::List / Value::Map bindings).
 cc_test(
     name = "m5b_test",
@@ -128,12 +125,9 @@ cc_test(
     ],
 )
 
-# M7 e2e test suite — proto message literal construction
-# (`kStructExpr`).  RED until M7.A lands `cel_make_message`; greens
-# slice-by-slice through M7.A → M7.E per `m7-proto-literals.md`
-# §5.  Wrapper-types (M8) are NOT in scope here — see m8_test.cc
-# (forthcoming).  The suite is the milestone exit per
-# `m7-proto-literals.md` §6.
+# Proto message literal construction (`kStructExpr`) e2e suite.
+# See `doc/implementation-plan/rewrite/m7-proto-literals.md`.
+# Wrapper-types are covered separately in m8_test.cc.
 cc_test(
     name = "m7_test",
     srcs = ["m7_test.cc"],
@@ -216,15 +210,11 @@ cc_test(
     ],
 )
 
-# M8 e2e test suite — wrapper types (`google.protobuf.{Bool,Int32,
-# Int64,UInt32,UInt64,Float,Double,String,Bytes}Value`).  RED today
-# (every test GTEST_SKIPs); turns on slice-by-slice as M8.B → M8.C →
-# M8.A → M8.D ship per
-# `doc/implementation-plan/rewrite/m8-wrapper-types.md` §5.
-# Conformance unlock target: +151 PASS per the m8 plan §1 (A=89,
-# B=24 standalone, C=38).  Test matrix covers all 9 wrappers × the
-# three architecture arms (write-side, read-side+Any-chain, kStruct
-# tail-unwrap).
+# Wrapper-types e2e suite — `google.protobuf.{Bool,Int32,Int64,
+# UInt32,UInt64,Float,Double,String,Bytes}Value`.  See
+# `doc/implementation-plan/rewrite/m8-wrapper-types.md`.  Test
+# matrix covers all 9 wrappers × the three architecture arms
+# (write-side, read-side+Any-chain, kStruct tail-unwrap).
 cc_test(
     name = "m8_test",
     srcs = ["m8_test.cc"],
@@ -248,12 +238,11 @@ cc_test(
     ],
 )
 
-# M9 e2e test suite — type subsystem (`type(x)` standard function +
-# type-identifier idents like `int` / `bool` / `<message-fqn>`
-# standalone + CEL_TYPE equality).  RED until M9.A lands the
-# `cel.abi.type_names[]` ABI table + `Value::Kind::kType`; greens
-# slice-by-slice through M9.A → M9.E per `m9-type-subsystem.md` §5.
-# Harness-side `typed_result:` matcher work (M9.F) lives in
+# Type-subsystem e2e suite — `type(x)` standard function +
+# type-identifier idents (`int` / `bool` / `<message-fqn>`
+# standalone) + CEL_TYPE equality.  See
+# `doc/implementation-plan/rewrite/m9-type-subsystem.md`.
+# Harness-side `typed_result:` matcher work lives in
 # `compiler_v2/conformance/runner_test.cc`, not here.
 cc_test(
     name = "m9_test",

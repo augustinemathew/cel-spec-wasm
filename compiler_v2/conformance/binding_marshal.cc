@@ -105,12 +105,12 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
     }
     case ProtoValue::kEnumValue:
       // langdef §"Enumerated Types": enum values are spec-typed as
-      // int.  M7.D's InlineConstantReferences rewrite handles
-      // enum-name resolution into Constant(int) at the AST level;
+      // int.  `InlineConstantReferences` rewrites enum-name
+      // resolution into Constant(int) at the AST level;
       // here we marshal an `enum_value`-typed binding the same way.
       return cel::Value::Int(v.enum_value().value());
     case ProtoValue::kObjectValue: {
-      // M7: unpack the Any-style object_value into a fresh proto
+      // Unpack the Any-style object_value into a fresh proto
       // wrapped in OwnedProtoBacking.  Same pattern the conformance
       // matcher uses on the read side (CompareMessage in runner.cc).
       auto msg_or = UnpackAny(v.object_value());
@@ -119,12 +119,12 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
     }
     case ProtoValue::kMapValue:
       return absl::UnimplementedError(
-          "binding_marshal: map_value bindings unimplemented (M6)");
+          "binding_marshal: map_value bindings unimplemented");
     case ProtoValue::kListValue:
       return absl::UnimplementedError(
-          "binding_marshal: list_value bindings unimplemented (M6)");
+          "binding_marshal: list_value bindings unimplemented");
     case ProtoValue::kTypeValue:
-      // M9.A: type-value bindings — proto carries the spec type-name
+      // Type-value bindings — proto carries the spec type-name
       // string verbatim (`"int"`, `"bool"`, `"<msg-FQN>"`, ...).
       // No name validation; the read-side comparator does byte-equal
       // matching against the matcher.
@@ -208,7 +208,7 @@ absl::StatusOr<std::string> TypeSpecFragment(const ProtoType& t) {
       return absl::UnimplementedError(
           "binding_marshal: abstract_type type_env unimplemented");
     case ProtoType::kType:
-      // M9.A: `type` declared as a variable type — emit `type` as
+      // `type` declared as a variable type — emit `type` as
       // the checker spec-string keyword.  `parse_and_check.cc::
       // ParsePrimitiveType` already maps `"type"` → `cel::TypeType`
       // via the cel-cpp checker's standard library registration.
@@ -337,7 +337,7 @@ absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
     }
     return cel::CelType::Message(t.message_type());
   }
-  // M9.A: `type` declarable as a variable type.  No payload to
+  // `type` declarable as a variable type.  No payload to
   // unpack — the type-of-types is uninhabited as a distinct shape.
   if (t.type_kind_case() == ProtoType::kType) {
     return cel::CelType::Type();

@@ -76,7 +76,8 @@ DEFINE_CMP_VV(cel_bool_ge_at_vv, CEL_BOOL, b, >=)
 #undef DEFINE_CMP_VV
 
 // ─────────────────────────────────────────────────────────────
-// Cross-type numeric comparison ladder (M5.B step 2).
+// Cross-type numeric comparison ladder.  See
+// `rewrite/cross-numeric-ordering-plan.md`.
 //
 // Each helper accepts any combination of {CEL_INT, CEL_UINT,
 // CEL_DOUBLE} on either operand.  The shared `numeric_compare_kernel`
@@ -99,8 +100,8 @@ DEFINE_CMP_VV(cel_bool_ge_at_vv, CEL_BOOL, b, >=)
 //     compares unequal in every direction").
 //
 // Wasm32 freestanding constraint: this code MUST avoid `__multi3` /
-// other compiler-rt 128-bit intrinsics (mirrors the M5.B step 1
-// `int64_mul_overflows` precedent).  Only operations used here are
+// other compiler-rt 128-bit intrinsics (mirrors the
+// `int64_mul_overflows` precedent in same-kind arithmetic).  Only operations used here are
 // 64-bit comparisons + a single int↔uint cast that the wasm32 backend
 // lowers natively as `i64.lt_s` / `i64.lt_u` / `f64.lt`.  The
 // `noinline` attribute on the kernel keeps clang from re-deriving a
