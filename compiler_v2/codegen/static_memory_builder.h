@@ -69,16 +69,16 @@ class StaticMemoryBuilder {
   // frame's absolute linear-memory offset.
   uint32_t AllocateString(absl::string_view s);
   uint32_t AllocateBytes(absl::string_view b);
-  // M9.C: type-of-types value.  Same payload shape as a string
-  // (CelSpan into rodata-resident bytes) but `kind = CEL_TYPE`.
-  // Used by `LayoutPass::ConstLayoutVisitor` when the kConstant's
-  // checker-assigned `Repr` is `kType` (a rewrite from the M9.C
-  // `InlineTypeIdentifierReferences` pass).
+  // Type-of-types value.  Same payload shape as a string (CelSpan
+  // into rodata-resident bytes) but `kind = CEL_TYPE`.  Used by
+  // `LayoutPass::ConstLayoutVisitor` when the kConstant's
+  // checker-assigned `Repr` is `kType` — see
+  // `rewrite/m9-type-subsystem.md`.
   uint32_t AllocateType(absl::string_view name);
 
-  // Stubs until M5 / M6.  Signature is final; body is
-  // `ABSL_CHECK(false)` so any caller that reaches here in M1
-  // crashes with the method name, not a silent miscodegen.
+  // Stubs.  Signature is final; body is `ABSL_CHECK(false)` so any
+  // caller that reaches here crashes with the method name, not a
+  // silent miscodegen.
   uint32_t AllocateList(absl::Span<const uint32_t> element_offsets);
   uint32_t AllocateMap(absl::Span<const uint32_t> key_offsets,
                        absl::Span<const uint32_t> value_offsets);

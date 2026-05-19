@@ -1,11 +1,11 @@
-// Arithmetic helpers — slot-out helper ABI per `design.md §4.2` /
-// `m5-kcall-comprehensions.md §2.1`.
+// Arithmetic helpers — slot-out helper ABI per
+// `rewrite/design.md` §4.2.
 //
 // Every helper has the uniform wasm signature
 // `(i32 out_slot, i32 arg0, ..., i32 argN-1) -> void`.  Bodies live
 // in `cel_runtime.c`; this header keeps the topic separate so call
-// sites can include only what they use (per `design.md §3` source
-// layout).
+// sites can include only what they use (per `rewrite/design.md`
+// §3 source layout).
 //
 // Semantics are cel-cpp parity (per-helper inline pointer in the
 // .c body, citing
@@ -21,8 +21,7 @@
 //
 //   - 3VL absorption: `CEL_UNKNOWN`/`CEL_ERROR` on either operand
 //     propagates verbatim into `out_slot` — UNKNOWN+UNKNOWN merges
-//     via `cel_unknown_merge` (already shipped at v1 M4 Slice A);
-//     ERROR is left-bias.
+//     via `cel_unknown_merge`; ERROR is left-bias.
 //
 //   - Int / uint overflow → `out_slot = {CEL_ERROR,
 //     err = CEL_ERR_OVERFLOW}` per langdef §"Numeric values"

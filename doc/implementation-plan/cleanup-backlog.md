@@ -43,7 +43,7 @@ struck through or removed.
       consolidation pass (single header generating both lists)
       is the right fix but doesn't unblock anything in flight.
 
-- [ ] **#3** — `doc/implementation-plan/wasi/experiments/exp1_re2/`
+- [ ] **#3** — `doc/implementation-plan/rewrite/wasi/experiments/exp1_re2/`
       contains a `wasi-sdk/` symlink + cached absl install used by
       the absl::ParseTime experiment.  Both are post-Phase C
       garbage once `abseil-cpp` lands as a proper `http_archive`.
@@ -88,4 +88,22 @@ struck through or removed.
 
 ## Closed
 
-(none yet — this doc was created on 2026-05-18)
+- [x] **#7** — `CEL_LOG("enter")` in every public runtime helper does
+      a wasm→host `fprintf(stderr)` trampoline on every invocation;
+      under wasi-sdk's call-prologue convention the per-call cost
+      roughly doubled vs the pre-WASI freestanding build, dominating
+      per-Eval cost on aggregate-heavy expressions (`Eval_ListAt_Arena`
+      took 3.6 µs / Eval where the WASI-free body would take 0.6 µs).
+      Fix: gate `-DCEL_LOG_DISABLED` on `-c opt` via `config_setting`
+      in `compiler_v2/runtime/BUILD.bazel`; CEL_LOG stays live for
+      `dbg` / `fastbuild` so the dead-code audit per `cel_log.h`
+      still works.  Measured improvement: 1.4×–5.7× faster on the
+      `BM_Eval_*` rows of `//compiler_v2/bench:pipeline_bench`.  See
+      `bench/README.md` updated baseline and
+      `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md`
+      "Mitigation paths" item 1.
+      Surfaced: 2026-05-18 post-Phase-C perf-run investigation.
+      Closed: 2026-05-19.
+      Files: `compiler_v2/runtime/BUILD.bazel`,
+      `compiler_v2/bench/README.md`,
+      `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md`.

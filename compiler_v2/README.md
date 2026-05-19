@@ -5,7 +5,8 @@ wasm module the host instantiates and runs through wasmtime.  This
 README is the orientation page — start here if you're new to the
 codebase or you need to know which knob controls what.
 
-For the full design, see `doc/wasm-compiler-design.md`.  For per-
+For the full design, see `doc/implementation-plan/rewrite/design.md`
+and `doc/implementation-plan/rewrite/cel-host-surface.md`.  For per-
 component test coverage and the milestone closeout discipline, see
 `doc/implementation-plan/per-component-test-coverage.md`.
 
@@ -589,7 +590,8 @@ discipline.
 
 ## Pointers
 
-  - Top-level design: `doc/wasm-compiler-design.md`.
+  - Top-level design: `doc/implementation-plan/rewrite/design.md`
+    + `doc/implementation-plan/rewrite/cel-host-surface.md`.
   - Per-milestone plans: `doc/implementation-plan/rewrite/m*.md`.
   - Testing checklist: `doc/implementation-plan/testing-checklist.md`.
   - Per-component test coverage: `doc/implementation-plan/per-

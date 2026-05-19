@@ -30,16 +30,28 @@ Useful flags:
 
 ## Build configuration
 
-Two orthogonal axes affect every number in this file:
+Three orthogonal axes affect every number in this file:
 
   - **Runtime build flags.**  As of 2026-05-15 both the native
-    `cc_library` and the wasm32 cross-compile genrule build with
-    `-O3 + -flto`.  Pre-2026-05-15 the build was `-O2` (no LTO).
-    LTO is genuinely load-bearing after the `cel_runtime.c` split
-    shipped 2026-05-14: the per-topic `.c` files (cel_arith /
-    cel_compare / cel_3vl / cel_convert / cel_string_ops / cel_make
-    / cel_memory / cel_log / cel_type) only cross-inline through
-    LTO.
+    `cc_library` and the wasm32 cross-compile build with `-O3 +
+    -flto`.  Pre-2026-05-15 the build was `-O2` (no LTO).  LTO is
+    genuinely load-bearing after the `cel_runtime.c` split shipped
+    2026-05-14: the per-topic `.c` files (cel_arith / cel_compare /
+    cel_3vl / cel_convert / cel_string_ops / cel_make / cel_memory /
+    cel_log / cel_type) only cross-inline through LTO.  After
+    2026-05-18 the wasm32 build uses wasi-sdk + dlmalloc instead of
+    a freestanding fixed-cursor arena (see
+    `doc/implementation-plan/rewrite/wasi/DESIGN.md`).
+  - **`CEL_LOG_DISABLED`** (gated by `config_setting "opt_mode"` in
+    `compiler_v2/runtime/BUILD.bazel`).  Every public runtime helper
+    begins with `CEL_LOG("enter")`, which on the wasm runtime is a
+    host-import trampoline that ends in `fprintf(stderr, ...)`.  In
+    `-c opt` builds the define is active and `CEL_LOG` expands to
+    `((void)0)`; in `-c dbg` / `-c fastbuild` the macro is live so
+    the dead-code audit (see `cel_log.h`'s opening comment) still
+    works.  Effect on Eval: 1.4×–5.7× faster across the
+    aggregate-heavy rows.  Bench numbers below are the opt-build
+    numbers.
   - **Binaryen `optimize_level`**
     (`cel::CompilerOptions::optimize_level`).  Runs the canonical
     `wasm-opt -O<n>` pass list on the emitted expr module before
@@ -124,37 +136,60 @@ loops + `utf8_valid`.
 
 ### Pipeline benches
 
-Pipeline Eval numbers barely moved on the wasm32 `-O3 + -flto`
-upgrade — Cranelift was already producing efficient native code
-from the unoptimized wasm.  See the **Binaryen optimize_level**
-trade-off section below for the pipeline lever that actually
-moves the needle.
+Two columns:
 
-### Pipeline benches
+  - **2026-05-15** is the pre-WASI baseline at `-O3 + -flto`, CEL_LOG
+    live (every public helper did a `wasm→host fprintf(stderr)`
+    trampoline on every invocation).
+  - **2026-05-18** is post-WASI (M2 + M3 + M5 + M6 + M7 merged
+    2026-05-18, switched the wasm runtime to wasi-sdk + dlmalloc
+    arena + runtime-exported memory) and **CEL_LOG disabled in
+    opt builds** (`config_setting` "opt_mode" in
+    `compiler_v2/runtime/BUILD.bazel` → `-DCEL_LOG_DISABLED`).  Net
+    of those two changes the Eval rows uniformly improved — the
+    WASI tax on each `wasm→host` trampoline call was being paid 60+
+    times per Eval through CEL_LOG; disabling CEL_LOG cuts that
+    entirely.  The `BM_Compile` / `BM_Plan` rows went the other
+    way (~17% / ~33% slower) because both pay the wasi-sdk runtime's
+    larger instantiation cost (cel_runtime.wasm: 60 KB → 241 KB).
+    See `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md` for
+    the full migration accounting on the narrow api bench.
 
-| Bench                            | Time      | Notes                                          |
-| -------------------------------- | --------: | ---------------------------------------------- |
-| `BM_Compile_Literal`             |    253 us | floor for any `Compile` (parser + checker)     |
-| `BM_Compile_ThreeTermArith`      |    266 us |                                                |
-| `BM_Compile_TwentyTermCompare`   |    395 us | 20-term `a < b && b < c && ...` chain          |
-| `BM_Compile_TypeOfEqInt`         |    262 us | `type(x) == int`                               |
-| `BM_Compile_IntFromString`       |    248 us | `int(string(123))`                             |
-| `BM_Compile_StructLiteral`       |    260 us | `Customer{name: "Ada"}`                        |
-| `BM_Plan_Literal`                |    253 us | wasmtime instantiate                           |
-| `BM_Plan_ThreeTermArith`         |    240 us | ~constant in body size                         |
-| `BM_Eval_Literal`                |    160 ns | rodata-only; no kernel calls                   |
-| `BM_Eval_Select`                 |    462 ns | proto field read via cel_host trampoline       |
-| `BM_Eval_ThreeTermArith`         |    704 ns | 2× `cel_int_add` + activation marshal          |
-| `BM_Eval_TwentyTermCompare`     | 10 973 ns | 20-term chain — biggest body in the table      |
-| `BM_Eval_TypeOfEqInt`            |  1 031 ns | `type(x) == int`                               |
-| `BM_Eval_CreateList`             |  1 901 ns | 5-element arena list literal                   |
-| `BM_Eval_CreateMap`              |  1 364 ns | 2-entry arena map literal                      |
-| `BM_Eval_ListAt_Arena`           |  2 091 ns | 5-element list literal + index                 |
-| `BM_Eval_ListAt_Proto`           |    543 ns | `c.tags[2]` via cel_host trampoline            |
-| `BM_Eval_MapLookup_Arena`        |  1 977 ns | 3-entry map literal + lookup                   |
-| `BM_Eval_MapLookup_Proto`        |    576 ns | `c.metadata["b"]` via cel_host trampoline      |
-| `BM_Eval_StructLiteral`          |    381 ns | `Customer{name: "Ada"}` (host-side build)      |
-| `BM_Eval_IntFromString`          |    770 ns | `int(string(123))`                             |
+| Bench                          | 2026-05-15 (CEL_LOG live) | 2026-05-18 (post-WASI, CEL_LOG off) | Δ      | Notes                                          |
+| ------------------------------ | ------------------------: | ----------------------------------: | -----: | ---------------------------------------------- |
+| `BM_Compile_Literal`           |                    253 us |                              296 us | +17%   | wasi-sdk runtime instantiation overhead        |
+| `BM_Compile_ThreeTermArith`    |                    266 us |                              304 us | +14%   |                                                |
+| `BM_Compile_TwentyTermCompare` |                    395 us |                              450 us | +14%   | 20-term `a < b && b < c && ...` chain          |
+| `BM_Compile_TypeOfEqInt`       |                    262 us |                              306 us | +17%   | `type(x) == int`                               |
+| `BM_Compile_IntFromString`     |                    248 us |                              304 us | +23%   | `int(string(123))`                             |
+| `BM_Compile_StructLiteral`     |                    260 us |                              303 us | +17%   | `Customer{name: "Ada"}`                        |
+| `BM_Plan_Literal`              |                    253 us |                              337 us | +33%   | bigger wasm → longer cranelift Plan            |
+| `BM_Plan_ThreeTermArith`       |                    240 us |                              337 us | +40%   | ~constant in body size                         |
+| `BM_Eval_Literal`              |                    160 ns |                              137 ns | −14%   | rodata-only; no kernel calls                   |
+| `BM_Eval_Select`               |                    462 ns |                              404 ns | −13%   | proto field read via cel_host trampoline       |
+| `BM_Eval_ThreeTermArith`       |                    704 ns |                              329 ns | −53%   | 2× `cel_int_add` + activation marshal          |
+| `BM_Eval_TwentyTermCompare`    |                 10 973 ns |                            2 867 ns | **−74%** | 20-term chain — most kernel calls per Eval     |
+| `BM_Eval_TypeOfEqInt`          |                  1 031 ns |                              336 ns | −67%   | `type(x) == int`                               |
+| `BM_Eval_CreateList`           |                  1 901 ns |                              689 ns | −64%   | 5-element arena list literal                   |
+| `BM_Eval_CreateMap`            |                  1 364 ns |                              505 ns | −63%   | 2-entry arena map literal                      |
+| `BM_Eval_ListAt_Arena`         |                  2 091 ns |                              654 ns | −69%   | 5-element list literal + index                 |
+| `BM_Eval_ListAt_Proto`         |                    543 ns |                              465 ns | −14%   | `c.tags[2]` via cel_host trampoline            |
+| `BM_Eval_MapLookup_Arena`      |                  1 977 ns |                              633 ns | −68%   | 3-entry map literal + lookup                   |
+| `BM_Eval_MapLookup_Proto`      |                    576 ns |                              544 ns | −6%    | `c.metadata["b"]` via cel_host trampoline      |
+| `BM_Eval_StructLiteral`        |                    381 ns |                              348 ns | −9%    | `Customer{name: "Ada"}` (host-side build)      |
+| `BM_Eval_IntFromString`        |                    770 ns |                              312 ns | −59%   | `int(string(123))`                             |
+
+Two patterns to read in the deltas:
+
+  - The biggest Eval gains land on benches with the most kernel
+    calls per Eval (TwentyTermCompare, CreateList, ListAt_Arena) —
+    each kernel previously fired a CEL_LOG. CEL_LOG was the
+    dominant cost and its host-trampoline cost roughly doubled
+    under wasi-sdk's call-prologue convention.
+  - Proto-path Eval benches (`_Proto`, `Select`, `StructLiteral`)
+    move the least — those use `cel_host.*` trampolines whose
+    impls don't emit CEL_LOG.  They still pay the modest
+    wasi-libc per-call overhead (visible in the +14% to −14% range).
 
 The arena-vs-proto crossover (rows `BM_Eval_*At_Arena` /
 `BM_Eval_*Lookup_Arena` vs `_Proto`) is worth a moment: at the e2e

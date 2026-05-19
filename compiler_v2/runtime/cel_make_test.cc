@@ -5,8 +5,8 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
@@ -16,7 +16,8 @@ namespace {
 class MakeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+    arena_reset();
   }
 };
 
@@ -131,7 +132,8 @@ TEST_F(MakeTest, MakeEmptyStringHasZeroPtr) {
 class MakeOomTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+    arena_reset();
   }
 
   // Burn through all but `keep` bytes of arena capacity so subsequent

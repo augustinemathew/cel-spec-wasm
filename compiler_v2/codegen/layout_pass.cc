@@ -48,20 +48,20 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
 
  private:
   uint32_t Pack(const cel::Expr& expr, const cel::Constant& c) {
-    // M9.C: a `kConstant` whose annotation Repr is `kType` is the
+    // A `kConstant` whose annotation Repr is `kType` is the
     // rewrite target of `InlineTypeIdentifierReferences` — it
     // carries a string_value that names a CEL type.  Pack as a
     // CEL_TYPE-kinded CelValue (same span layout as a string) so
     // the runtime sees `{kind: CEL_TYPE, payload.s: ...}` instead
     // of CEL_STRING.  Dispatch on Repr here (not on the Constant
     // proto's oneof) because the proto has no slot for a
-    // type-value — see m9-type-subsystem.md §3.3 + §4.2.
+    // type-value — see `rewrite/m9-type-subsystem.md` §3.3 / §4.2.
     auto ann_it = annotations_.Find(expr.id());
     if (ann_it != nullptr && ann_it->repr == Repr::kType) {
       ABSL_CHECK(c.has_string_value())
           << "LayoutPass: kConstant expr_id=" << expr.id()
-          << " has Repr::kType but no string_value (M9.C "
-             "InlineTypeIdentifierReferences invariant violation)";
+          << " has Repr::kType but no string_value "
+             "(InlineTypeIdentifierReferences invariant violation)";
       return builder_.AllocateType(c.string_value());
     }
     if (c.has_null_value()) return builder_.AllocateNull();
@@ -84,9 +84,9 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
 };
 
 // Walks every kIdent node and writes `{kLocal, local_index}` onto
-// its annotation.  Per m2-ident-select-unknowns.md §2.6 / Slice
-// M2.B: the kIdent arm lowers to `BinaryenLocalGet(local_index,
-// i32)`, matched by a `$eval` prelude that sets each local to the
+// its annotation.  Per `rewrite/m2-ident-select-unknowns.md` §2.6:
+// the kIdent arm lowers to `BinaryenLocalGet(local_index, i32)`,
+// matched by a `$eval` prelude that sets each local to the
 // compile-time-known slot offset.  The slot offset itself lives on
 // `StaticLayout::variables[local_index].slot_offset` and the
 // prelude reads it at emission time — the kIdent annotation holds
@@ -148,9 +148,9 @@ class SelectStorageVisitor : public cel::AstVisitorBase {
 };
 
 // Returns true if `call` is the indexing operator `_[_]` — the
-// CEL-spec function name for `m[k]`.  M3.F dispatches through this
-// helper at both layout and codegen time; the function string is
-// stable per langdef §"Operator overloads".
+// CEL-spec function name for `m[k]`.  Layout + codegen dispatch
+// through this helper; the function string is stable per langdef
+// §"Operator overloads".
 bool IsIndexCall(const cel::CallExpr& call) {
   return call.function() == "_[_]";
 }
@@ -199,20 +199,14 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
         Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
-  // M7.A: kStructExpr — `Foo{...}` lowers to one
+  // kStructExpr — `Foo{...}` lowers to one
   // `cel_host.cel_make_message(type_id, out_slot)` call followed by
-  // per-entry `cel_host.cel_set_field(...)` calls (M7.B).  The
-  // result slot stays live through every entry-set call, then is
-  // returned to the parent.  Each entry's value-slot is consumed by
+  // per-entry `cel_host.cel_set_field(...)` calls.  The result slot
+  // stays live through every entry-set call, then is returned to
+  // the parent.  Each entry's value-slot is consumed by
   // `cel_set_field` and released here so the kStructExpr's result
   // slot can supersede in the same arena region — same discipline
-  // as kMapExpr / kListExpr.
-  //
-  // M7.A scope: the entries() loop is a no-op for empty `Foo{}`;
-  // expr_lower's M7.A arm CHECKs that entries() is empty (M7.B
-  // lights up the per-entry codegen).  Releasing here regardless
-  // of the M7.A vs M7.B distinction keeps the slot accounting
-  // correct as M7.B layers on without revisiting LayoutPass.
+  // as kMapExpr / kListExpr.  See `rewrite/m7-proto-literals.md`.
   void PostVisitStruct(const cel::Expr& expr,
                        const cel::StructExpr& s) override {
     for (const cel::StructExprField& f : s.fields()) {
@@ -224,8 +218,8 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
 
   void PostVisitCall(const cel::Expr& expr,
                      const cel::CallExpr& call) override {
-    // Slice 1.5 (dyn-passthrough-plan.md, Option A): a `dyn(scalar)`
-    // call lowers to its argument's slot directly.  ResolvePass has
+    // `dyn(scalar)` lowers to its argument's slot directly (per
+    // `rewrite/dyn-passthrough-plan.md`, Option A).  ResolvePass has
     // already forwarded the arg's non-storage annotation onto the
     // call node; here we forward storage so consumers reading the
     // call's `ann.storage` (e.g. the ternary's cond_slot lookup)
@@ -239,18 +233,15 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
         return;
       }
     }
-    // M5.G (Slice 2) control-flow operators.  `_&&_` / `_||_` /
-    // `_?_:_` / `!_` follow the standard slot-out shape: every arg
-    // sub-expression hands its slot up; release before acquiring
-    // this call's result slot so the arena region is reused.  The
-    // ternary's two branch-arm slots are allocated inside expr_lower
-    // (BinaryenIf wraps fresh per-arm slots that don't escape the
-    // call's scope), so LayoutPass only owns the call's result.
-    // _[_] (M3/M4 indexing) and the M5.F general arm both follow
-    // the same shape: every arg sub-expression hands its slot up
-    // to us; release before acquiring this call's result slot so
-    // the same arena region is reused.  Receiver-form `s.f(args)`
-    // also hands `target`'s slot up — release it too.
+    // Control-flow operators (`_&&_` / `_||_` / `_?_:_` / `!_`),
+    // indexing (`_[_]`), and the general arm all follow the same
+    // slot-out shape: every arg sub-expression hands its slot up;
+    // release before acquiring this call's result slot so the
+    // arena region is reused.  The ternary's two branch-arm slots
+    // are allocated inside expr_lower (BinaryenIf wraps fresh
+    // per-arm slots that don't escape the call's scope), so
+    // LayoutPass only owns the call's result.  Receiver-form
+    // `s.f(args)` also hands `target`'s slot up — release it too.
     if (!IsIndexCall(call)) {
       // General arm.  Receiver (target) participates in slot reuse.
       if (call.has_target()) {
@@ -389,9 +380,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
   // Arena grows forward from the first 8-aligned byte past workspace.
   layout.arena_base = RoundUp8(layout.workspace_base + layout.workspace_bytes);
 
-  // --- Pass E (M5.B Slice C): allocate per-comprehension auxiliary
-  // wasm locals beyond `variables.size()` so `LowerToEvalFunction`
-  // can declare the full local set up front.
+  // --- Pass E: allocate per-comprehension auxiliary wasm locals
+  // beyond `variables.size()` so `LowerToEvalFunction` can declare
+  // the full local set up front.
   const auto base_local = static_cast<uint32_t>(layout.variables.size());
   ComprehensionLocalsVisitor comp_locals_visitor(
       layout.annotations, layout.comprehension_extra_locals_per_comp,

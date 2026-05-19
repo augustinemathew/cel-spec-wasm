@@ -1,9 +1,9 @@
-// 3VL / control-flow helpers (M5.G — Slice 2).
+// 3VL / control-flow helpers.
 //
 // Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` (P5).
-// Depends on cel_arena.c (arena_alloc, cel_value_at) via cel_internal.h
-// and the public cel_arena.h.
+// `rewrite/cel-runtime-c-split-plan.md`.  Depends on cel_arena.c
+// (arena_alloc, cel_value_at) via cel_internal.h and the public
+// cel_arena.h.
 
 #include "compiler_v2/runtime/cel_3vl.h"
 

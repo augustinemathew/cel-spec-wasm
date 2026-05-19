@@ -40,13 +40,13 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_map_insert_at_if_bool",
     "cel_map_lookup_arena",
     "cel_map_lookup",
-    // M4: list runtime helpers.
+    // List runtime helpers.
     "cel_list_create",
     "cel_list_append_at",
     "cel_list_append_at_if_bool",
     "cel_list_at_arena",
     "cel_list_at",
-    // M5.B: arithmetic helpers.
+    // arithmetic helpers.
     "cel_int_add_at_vv",
     "cel_int_sub_at_vv",
     "cel_int_mul_at_vv",
@@ -63,7 +63,7 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_double_mul_at_vv",
     "cel_double_div_at_vv",
     "cel_double_neg_at_v",
-    // M5.B: comparison helpers.
+    // comparison helpers.
     "cel_int_eq_at_vv",
     "cel_int_ne_at_vv",
     "cel_int_lt_at_vv",
@@ -89,14 +89,14 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_bool_gt_at_vv",
     "cel_bool_ge_at_vv",
     "cel_null_eq_at_vv",
-    // M5.B step 2: cross-type numeric ladder.
+    // cross-type numeric ladder.
     "cel_numeric_eq_at_vv",
     "cel_numeric_ne_at_vv",
     "cel_numeric_lt_at_vv",
     "cel_numeric_le_at_vv",
     "cel_numeric_gt_at_vv",
     "cel_numeric_ge_at_vv",
-    // M5.C: string + bytes ops.
+    // string + bytes ops.
     "cel_string_concat_at_vv",
     "cel_string_size_at_v",
     "cel_string_eq_at_vv",
@@ -114,7 +114,7 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_bytes_le_at_vv",
     "cel_bytes_gt_at_vv",
     "cel_bytes_ge_at_vv",
-    // M5.D step 1: aggregate arena fast paths.
+    // aggregate arena fast paths.
     "cel_list_size_arena",
     "cel_list_in_arena",
     "cel_list_eq_arena",
@@ -122,7 +122,7 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_map_size_arena",
     "cel_map_in_arena",
     "cel_map_eq_arena",
-    // M5.D step 2: aggregate kDynamic dispatchers.
+    // aggregate kDynamic dispatchers.
     "cel_list_size",
     "cel_list_in",
     "cel_list_eq",
@@ -130,17 +130,17 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_map_size",
     "cel_map_in",
     "cel_map_eq",
-    // M5.B Slice E: map-key iteration helpers (used by WAT
+    // map-key iteration helpers (used by WAT
     // `64_comprehension_exists_map.wat` and downstream slice-F /
     // slice-G map-source comprehensions).
     "cel_map_iter_init",
     "cel_map_iter_next",
     "cel_map_iter_key_at",
     "cel_map_iter_value_at",
-    // M5.B step 2b: polymorphic equality.
+    // polymorphic equality.
     "cel_equals_at_vv",
     "cel_not_equals_at_vv",
-    // M5.G (Slice 2): 3VL / control-flow helpers.
+    // 3VL / control-flow helpers.
     "cel_and",
     "cel_or",
     "cel_not",
@@ -182,7 +182,7 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
   if (nargs != 4 || args[0].kind != WASMTIME_I32 ||
       args[1].kind != WASMTIME_I32 || args[2].kind != WASMTIME_I32 ||
       args[3].kind != WASMTIME_I32) {
-    // Stub trampoline expects the M2 4-arg shape exactly.  Any
+    // Stub trampoline expects the 4-arg shape exactly.  Any
     // mismatch is a programming error in the calling WAT, not a
     // runtime failure we should paper over.
     wasm_byte_vec_t msg;
@@ -221,11 +221,11 @@ void DeleteStubEnv(void* env) {
   delete static_cast<StubEnv*>(env);
 }
 
-// No-op 3-i32-in, void-out trampoline.  M3.C added a
-// `return_call $cel_host.cel_map_lookup` arm in cel_runtime.wasm;
-// M4.C added the same shape for `cel_host.cel_list_at`.  The
-// runtime won't instantiate without these bound.  WAT fixtures
-// don't exercise the kHost paths, so a no-op suffices.
+// No-op 3-i32-in, void-out trampoline.  cel_runtime.wasm has
+// `return_call $cel_host.cel_map_lookup` and
+// `cel_host.cel_list_at` arms; the runtime won't instantiate
+// without these bound.  WAT fixtures don't exercise the kHost
+// paths, so a no-op suffices.
 wasm_trap_t* NoopCelHostThreeArg(void*, wasmtime_caller_t*,
                                  const wasmtime_val_t*, size_t, wasmtime_val_t*,
                                  size_t) {
@@ -418,9 +418,9 @@ struct RunState {
 
 absl::Status InitEngineAndModules(RunState& s,
                                   absl::Span<const uint8_t> expr_bytes) {
-  // M3.C: cel_runtime.wasm's cel_map_lookup uses `return_call`; the
-  // engine must opt in to the wasm tail-call feature to instantiate
-  // it.  Mirrors api/engine.cc and runtime/cel_runtime_wasm_test.cc.
+  // cel_runtime.wasm's aggregate-op dispatchers use `return_call`;
+  // the engine must opt in to the wasm tail-call feature to
+  // instantiate it.  Mirrors api/engine.cc.
   wasm_config_t* config = wasm_config_new();
   if (config == nullptr) {
     return absl::InternalError("wasm_config_new returned null");
@@ -483,9 +483,8 @@ absl::Status RegisterCelHostFourArgStubs(wasmtime_linker_t* linker,
 // caller supplied a stub, route the trampoline through it; otherwise
 // bind a no-op so the WAT instantiates even if it never calls the
 // surface.  Pulled out of `RegisterCelHostThreeArgTrampolines` so
-// adding a new optional trampoline (M8.C did this for
-// `cel_wkt_unwrap_wrapper`) doesn't push the parent function past
-// the readability-function-size threshold.
+// adding a new optional trampoline doesn't push the parent function
+// past the readability-function-size threshold.
 absl::Status RegisterOptionalThreeArg(wasmtime_linker_t* linker,
                                       absl::string_view name,
                                       const CelHostThreeArgStub& stub) {
@@ -496,17 +495,16 @@ absl::Status RegisterOptionalThreeArg(wasmtime_linker_t* linker,
 }
 
 // Bulk no-op binds for cel_host imports that WATs reference but
-// don't exercise — the aggregate-op kHost dispatchers (M5.D step 2),
-// `cel_set_field` (M7.B), `cel_make_message` (M7.A), and
-// `resolve_message_type_name` (M9.B).  Each surface ships with a
+// don't exercise — the aggregate-op kHost dispatchers,
+// `cel_set_field`, `cel_make_message`, and
+// `resolve_message_type_name`.  Each surface ships with a
 // real production trampoline; tests that need real semantics route
 // through the full Compiler/Engine pipeline, not this harness.
 // Factored out of `RegisterCelHostThreeArgTrampolines` to keep the
 // parent function under the readability-function-size threshold.
 absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
-  // M5.D step 2: aggregate-op kHost imports.  Tests link the
-  // dispatchers but don't exercise the host arms; no-op stubs
-  // suffice.
+  // Aggregate-op kHost imports.  Tests link the dispatchers but
+  // don't exercise the host arms; no-op stubs suffice.
   static constexpr absl::string_view kThreeArg[] = {
       "cel_list_in",
       "cel_list_eq",
@@ -514,7 +512,7 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
       "cel_map_in",
       "cel_map_eq",
       "cel_message_eq",
-      // M7.B — `cel_set_field(msg_slot, field_ref_id, value_slot)`.
+      // `cel_set_field(msg_slot, field_ref_id, value_slot)`.
       "cel_set_field",
   };
   for (absl::string_view name : kThreeArg) {
@@ -525,9 +523,9 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
   static constexpr absl::string_view kTwoArg[] = {
       "cel_list_size",
       "cel_map_size",
-      // M7.A — `cel_make_message(type_id, out_slot)`.
+      // `cel_make_message(type_id, out_slot)`.
       "cel_make_message",
-      // M9.B — `resolve_message_type_name(out_slot, in_slot)`.
+      // `resolve_message_type_name(out_slot, in_slot)`.
       "resolve_message_type_name",
   };
   for (absl::string_view name : kTwoArg) {
@@ -541,7 +539,7 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
 // Register the 3-arg cel_host trampolines (cel_map_lookup /
 // cel_list_at / cel_wkt_unwrap_wrapper).  Caller may supply a stub
 // to simulate host-table dispatch (kHost-path tests) / wrapper
-// peel (M8.C); otherwise a no-op binds so kArena WATs that link
+// peel; otherwise a no-op binds so kArena WATs that link
 // the cel_host imports but never call them still instantiate.
 absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
                                                 const WatRunInput& input) {
@@ -555,9 +553,9 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
       !st.ok()) {
     return st;
   }
-  // M8.C — `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
-  // wrapper_kind)`.  Same 3-i32-in / void-out shape as the M3/M4
-  // trampolines above.  Stubs interpret the third arg as
+  // `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
+  // wrapper_kind)`.  Same 3-i32-in / void-out shape as the
+  // cel_map_lookup / cel_list_at trampolines above.  Stubs interpret the third arg as
   // `wrapper_kind` (CelKind tag: 1=BOOL, 2=INT, 3=UINT, 4=DOUBLE,
   // 5=STRING, 6=BYTES), NOT the CelHostThreeArgStub-default
   // "key_or_index_slot".

@@ -53,7 +53,7 @@ class KConstReprAudit : public cel::AstVisitorBase {
 // table (`local_index` 0, 1, 2, ... in first-seen order), and writes
 // the index onto the node's `NodeAnnotation::local_index`.  Maintains
 // a scope stack so comprehension iter / accu names shadow outer
-// bindings (M5.B Slice A).
+// bindings (see `rewrite/m5-comprehensions-design.md`).
 //
 // `variables_` accumulates one entry per distinct *binding* — free
 // variables AND comprehension-scope iter / accu vars.  Each entry's
@@ -150,8 +150,9 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
     ann.scope_id = 0;
   }
 
-  // M5.B Slice E + F: pick the per-iter-var allocation lifecycle
-  // for the current comprehension's iter_var / iter_var2 bindings.
+  // Pick the per-iter-var allocation lifecycle for the current
+  // comprehension's iter_var / iter_var2 bindings.  See
+  // `rewrite/m5-comprehensions-design.md`.
   //
   // Single-iter-var:
   //   - list source: iter_var = kComprehensionIter (no workspace
@@ -161,7 +162,7 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
   //     slot — cel_map_iter_key_at writes the key here each iter;
   //     local holds the fixed slot offset).
   //
-  // Two-iter-var (Slice F):
+  // Two-iter-var:
   //   - list source: iter_var (= index) = kComprehensionAccu
   //     (slot — codegen writes {CEL_INT, i=idx} here each iter);
   //     iter_var2 (= value) = kComprehensionIter (moving pointer,
@@ -372,8 +373,8 @@ class AttributePathResolver : public cel::AstVisitorBase {
   absl::flat_hash_map<std::string, uint32_t> key_to_id_;
 };
 
-// M3.F: stamps `map_origin` on every map-typed node per the
-// `map-list-dispatch.md` §2.6 inference table:
+// Stamps `map_origin` on every map-typed node per the
+// `rewrite/map-list-dispatch.md` §2.6 inference table:
 //   kMapExpr        → kArena  (literal in the wasm bump arena)
 //   kIdent[map<>]   → kHost   (Activation::Bind hands us a backing)
 //   kSelect[map<>]  → kHost   (proto map field via ProtoBacking)
@@ -381,7 +382,7 @@ class AttributePathResolver : public cel::AstVisitorBase {
 // site to choose between cel_map_lookup_arena (fast path),
 // cel_host.cel_map_lookup (host trampoline), and the kDynamic
 // dispatcher.  Branch-coalescing rules (?: / && / ||) over map
-// operands stay deferred to M5.
+// operands fall through to the kDynamic dispatcher.
 class MapOriginVisitor : public cel::AstVisitorBase {
  public:
   explicit MapOriginVisitor(WasmAnnotations& annotations)
@@ -408,22 +409,20 @@ class MapOriginVisitor : public cel::AstVisitorBase {
   void StampHostIfMapTyped(const cel::Expr& expr) {
     NodeAnnotation* ann = &annotations_[expr.id()];
     if (ann->repr != Repr::kMap) return;
-    // M5.B Slice A: a comprehension-scope ident binding to a
-    // map-typed value (e.g. `[[m1, m2]].exists(m, ...)` where `m`
-    // is a map) reads its bytes out of the OUTER list's arena
-    // payload — not a host backing.  Leaving origin at the default
-    // `kDynamic` lets codegen fall through to the runtime
-    // dispatcher, which inspects the CelValue kind tag at runtime.
-    // (For Slice A's tested matrix — scalar iter_vars over list
-    // literals — this branch is unreachable.)
+    // A comprehension-scope ident binding to a map-typed value
+    // (e.g. `[[m1, m2]].exists(m, ...)` where `m` is a map) reads
+    // its bytes out of the OUTER list's arena payload — not a host
+    // backing.  Leaving origin at the default `kDynamic` lets
+    // codegen fall through to the runtime dispatcher, which
+    // inspects the CelValue kind tag at runtime.
     if (ann->scope_id != 0) return;
     ann->map_origin = Origin::kHost;
   }
   WasmAnnotations& annotations_;
 };
 
-// M4.F: stamps `list_origin` on every list-typed node per the
-// `map-list-dispatch.md` §2.6 inference table (mirror of
+// Stamps `list_origin` on every list-typed node per the
+// `rewrite/map-list-dispatch.md` §2.6 inference table (mirror of
 // MapOriginVisitor):
 //   kListExpr       → kArena  (literal in the wasm bump arena)
 //   kIdent[list<>]  → kHost   (Activation::Bind hands us a backing)
@@ -431,8 +430,7 @@ class MapOriginVisitor : public cel::AstVisitorBase {
 // Codegen reads this annotation at the kCallExpr(_[_]) emission
 // site to choose between cel_list_at_arena (fast path),
 // cel_host.cel_list_at (host trampoline), and the kDynamic
-// dispatcher.  Branch-coalescing (?: / && / ||) over list operands
-// stays deferred to M5.
+// dispatcher.
 class ListOriginVisitor : public cel::AstVisitorBase {
  public:
   explicit ListOriginVisitor(WasmAnnotations& annotations)
@@ -468,15 +466,15 @@ class ListOriginVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
-// Slice 1.5 (dyn-passthrough-plan.md, Option A): for every `dyn(scalar)`
-// call admitted by the static-subset gate, copy the argument's
-// non-storage annotation fields onto the call node so downstream
-// consumers (operand reads in `==`, comprehension scope walks, the
-// attribute-pattern matcher) see the underlying scalar type — the
-// call site's checker-assigned `dyn` type would otherwise leave the
-// annotation at `Repr::kUnknown` with empty `attribute_id` /
-// `overload_id`.  Storage forwarding lives in LayoutPass: ResolvePass
-// runs before slots are assigned, so we cannot copy `storage` here.
+// For every `dyn(scalar)` call admitted by the static-subset gate,
+// copy the argument's non-storage annotation fields onto the call
+// node so downstream consumers (operand reads in `==`, comprehension
+// scope walks, the attribute-pattern matcher) see the underlying
+// scalar type — the call site's checker-assigned `dyn` type would
+// otherwise leave the annotation at `Repr::kUnknown` with empty
+// `attribute_id` / `overload_id`.  Storage forwarding lives in
+// LayoutPass: ResolvePass runs before slots are assigned, so we
+// cannot copy `storage` here.  See `rewrite/dyn-passthrough-plan.md`.
 class DynPassthroughVisitor : public cel::AstVisitorBase {
  public:
   explicit DynPassthroughVisitor(WasmAnnotations& annotations)
@@ -508,7 +506,7 @@ class DynPassthroughVisitor : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
-// M5.F: stamps `overload_id` on every kCallExpr from cel-cpp's
+// Stamps `overload_id` on every kCallExpr from cel-cpp's
 // `Ast::reference_map`.  cel-cpp's checker writes a Reference for
 // each call node listing the resolved standard-library overload
 // (e.g. "add_int64" for `1+2`); we copy the first entry as a
@@ -547,22 +545,23 @@ class OverloadIdResolver : public cel::AstVisitorBase {
   WasmAnnotations& annotations_;
 };
 
-// M7.A: walks every `kStructExpr` post-order, interns its `name()`
-// FQN into `output.message_types`, and stamps the dense id onto the
+// Walks every `kStructExpr` post-order, interns its `name()` FQN
+// into `output.message_types`, and stamps the dense id onto the
 // node's `NodeAnnotation::message_type_id`.  Index 0 is the
-// reserved sentinel; the first entry pushed by `RunAnnotationVisitors`.
-// Codegen reads the stamped id in the kStructExpr lowering arm to
-// emit `cel_host.cel_make_message(type_id, out_slot)`; the host
+// reserved sentinel; the first entry pushed by
+// `RunAnnotationVisitors`.  Codegen reads the stamped id in the
+// kStructExpr lowering arm to emit
+// `cel_host.cel_make_message(type_id, out_slot)`; the host
 // resolves `id → Descriptor*` against the descriptor pool at Plan
-// time.  See `m7-proto-literals.md` §4.2.
+// time.  See `rewrite/m7-proto-literals.md` §4.2.
 //
 // `name()` is the message FQN cel-cpp's checker stamped on the
 // kStructExpr (e.g. `"celwasm.testdata.HostMsg3"`).  Empty `name()`
-// means "struct literal lowered as a map" (`design.md` §4.7.4) —
-// those nodes lower through `kMapExpr` at parse time and never
-// reach codegen as a kStructExpr.  We CHECK rather than tolerate
-// the empty case here so a parser regression that lets one
-// through fails loudly at intern time, not at trampoline-call
+// means "struct literal lowered as a map" (`rewrite/design.md`
+// §4.7.4) — those nodes lower through `kMapExpr` at parse time
+// and never reach codegen as a kStructExpr.  We CHECK rather than
+// tolerate the empty case here so a parser regression that lets
+// one through fails loudly at intern time, not at trampoline-call
 // time with an opaque id-out-of-range.
 class MessageTypeIdVisitor : public cel::AstVisitorBase {
  public:
@@ -578,7 +577,7 @@ class MessageTypeIdVisitor : public cel::AstVisitorBase {
     ABSL_CHECK(!s.name().empty())
         << "ResolvePass: kStructExpr id=" << expr.id()
         << " has empty name() — should have lowered as kMapExpr at parse "
-           "time per design.md §4.7.4";
+           "time per rewrite/design.md §4.7.4";
     auto it = fqn_to_id_.find(s.name());
     uint32_t id = 0;
     if (it == fqn_to_id_.end()) {
@@ -623,7 +622,7 @@ void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
   AttributePathResolver attr_resolver(output.annotations, output.attributes);
   cel::AstTraverse(root, attr_resolver);
 
-  // M7.A: message-type intern table.  Sentinel at id 0; visitor
+  // Message-type intern table.  Sentinel at id 0; visitor
   // populates ids 1..N for distinct kStructExpr FQNs.
   output.message_types.emplace_back();
   MessageTypeIdVisitor type_visitor(output.annotations, output.message_types);

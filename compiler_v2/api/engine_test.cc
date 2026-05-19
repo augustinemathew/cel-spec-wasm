@@ -35,14 +35,18 @@ namespace {
 // is exercised in instance_test.cc once Eval lands; here we only
 // need a Program whose imports match what Plan provides so
 // instantiation succeeds.
+// Phase C: the runtime exports a shared memory (wasm32-wasi-threads).
+// The expr import must declare shared+max to match (Wasmtime rejects a
+// non-shared import against a shared export).  Also note the
+// `arena_reset` import is 0-arg post-runtime-refactor, not 2-arg.
 constexpr char kSyntheticExprWat[] = R"WAT(
 (module
-  (import "cel" "memory" (memory 1))
-  (import "cel" "arena_reset" (func $arena_reset (param i32 i32)))
+  (import "cel" "memory" (memory 1 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func (export "eval") (result i32)
     (local $off i32)
-    (call $arena_reset (i32.const 64) (i32.const 65536))
+    (call $arena_reset)
     (local.set $off (call $arena_alloc (i32.const 24)))
     (i32.store (local.get $off) (i32.const 1))
     (i64.store offset=8 (local.get $off) (i64.const 42))

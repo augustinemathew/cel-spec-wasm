@@ -1,15 +1,14 @@
 # celwasmc implementation plan
 
 This folder is the **source of truth** for the state of the CEL → WASM AOT
-compiler.  It is structured as one document per milestone (M0–M8) plus a
-running test-coverage checklist.  Any new instruction, scope change, or test
-obligation from the user gets recorded here so future sessions can pick up
-exactly where the last one left off.
+compiler.  The active design + per-milestone plans live under `rewrite/`;
+this top-level directory keeps the transverse coverage docs and backlog
+lists used across every milestone.
 
 Companion documents (do not duplicate — link):
-  - `../wasm-compiler-design.md` — the "why / what" design.  Sections 1–14
-    define the architecture; §15 tracks the milestone plan at a coarser level
-    than this folder.
+  - `rewrite/design.md` — the active "why / what" design for the
+    `compiler_v2/` rewrite.  Supersedes the original
+    `doc/wasm-compiler-design.md`, which has been removed.
   - `../langdef.md` — the CEL language spec we must honour.
   - `CLAUDE.md` at the repo root — rules that apply to every turn.
 
@@ -32,76 +31,48 @@ Companion documents (do not duplicate — link):
 
 ## Files
 
-  - `m0-parser-cli.md`       — DONE.  CLI can parse + check + emit ABI.
-  - `m1-type-checker.md`     — DONE.  Runtime struct + constructors landed.
-  - `m2-codegen-mvp.md`      — **IN PROGRESS.**  Scalar slice executes
-                                end-to-end via wasmtime.  Remaining:
-                                `cel_refs.wat`, wasm32 cross-compile,
-                                `cel.abi` custom section, a handful of
-                                test-grid gaps.  See the *Remaining for
-                                M2* section in that file.
-  - `m3-proto-and-strings.md` — **planned.**  Proto field reads
-                                (`cel_host.get_field`, `has_field`,
-                                `SelectExpr`, `has()`) + string equality
-                                and length + string constants through
-                                linear memory.  Note: the milestone
-                                chart in `../wasm-compiler-design.md` §15
-                                calls this "M3 Proto field reads /
-                                string ops" — this doc is the canonical
-                                scope.  Renamed locally from
-                                `m3-comprehensions.md` after the design
-                                doc was settled (comprehensions moved to
-                                M5 alongside collections; see the
-                                ordering note below).
-  - `m4-three-valued.md`     — **planned.**  Overflow → ERROR,
-                                divide-by-zero, NaN-unordered compares,
-                                `UnknownSet`, `cel_status_either`, and
-                                the commutativity of `unknown && false`.
-                                Swapped with collections on 2026-04-19 —
-                                the §8.2 host ABI returns UNKNOWN /
-                                ERROR statuses that codegen needs a
-                                story for before collections can build
-                                on top.
-  - `m5-collections-and-comprehensions.md` — **planned.**  List, map,
-                                struct literals + the comprehension
-                                macros (`all`, `exists`, `exists_one`,
-                                `map`, `filter`, nested shadowing).
-  - `m6-custom-fns.md`       — **planned.**  `.celfn` IDL, `celfnc`
-                                stub generator, `cel_fn.*` emission.
-  - `m7-stdlib.md`           — **planned.**  Timestamps, durations,
-                                regex, bytes; format directives; extras
-                                under `../extensions/`.
-  - `m8-conformance.md`      — **planned.**  Run against
-                                `tests/simple/testdata/` (the static
-                                subset only) as a gate for declaring
-                                the compiler production-ready.
-  - `rewrite/` — **active rewrite, in planning.**  Self-contained
-                                subtree for the codegen + runtime
-                                rewrite against a parallel
-                                `compiler_v2/` tree (ResolvePass +
-                                LayoutPass + uniform slot-out ABI +
-                                expr-owned memory):
-     - `rewrite/design.md` — 12-slice design doc; supersedes the
-                                two predecessor docs now archived
-                                alongside it.
-     - `rewrite/m1-scalar-pipeline.md` — M1 plan: full abstraction
-                                skeleton + scalar-literal eval
-                                end-to-end (bool/int/uint/double/
-                                null/string/bytes).  Merges design-
-                                doc Slices 1–3.
-     - `rewrite/predecessor-m-mem-static-layout-pass.md`,
-                                `rewrite/predecessor-memory-ownership-flip.md`
-                                — retired predecessor designs kept
-                                for historical context; superseded
-                                by `design.md`.
-  - `testing-checklist.md`   — CEL type × AST-variant coverage grid.
-                                Has a top-of-file **Gap summary** that
-                                calls out what's open in the active
-                                milestone vs. deferred.  The end-of-
-                                file **Bench harness** section (added
-                                2026-04-20) documents the
-                                `compiler/bench/...` Google Benchmark
-                                suite and the first-run findings
-                                (~420 ns CallEval floor; per-op cost;
-                                per-call O(L) string materialisation
-                                via `cel_reset`).
+  - `rewrite/` — **active rewrite + design surface.**  All per-milestone
+    plans live here:
+     - `rewrite/design.md` — the master 12-slice design doc.
+     - `rewrite/feature-pipeline-checklist.md` — per-feature-kind
+       checklist of files + tests that MUST be touched.
+     - `rewrite/m1-scalar-pipeline.md`, `rewrite/m2-ident-select-unknowns.md`,
+       `rewrite/m3-map-literals.md`, `rewrite/m4-list-literals.md`,
+       `rewrite/m5-*.md`, `rewrite/m7-*.md`, `rewrite/m8-wrapper-types.md`,
+       `rewrite/m9-type-subsystem.md`, `rewrite/m10-conversions.md`,
+       `rewrite/m-custom-fns.md` — per-milestone plans / shipped notes.
+     - `rewrite/phase-c-{research,design,plan}.md` + `rewrite/phase-c-probes/`
+       — the Phase C (compiled-expression + host runtime split) research
+       and probe artefacts.
+     - `rewrite/wasi/` — the WASI migration design (`DESIGN.md`),
+       per-milestone notes under `wasi/milestones/`, post-migration bench
+       (`POST_MIGRATION_BENCH.md`), and reviews.
+     - `rewrite/wat/` + `rewrite/wat-traces.md` — WAT-first ABI traces
+       (every new codegen arm / host import lives here before C++ codegen
+       lands; see CLAUDE.md "WAT-first" section).
+     - `rewrite/cel-host-surface.md` — the host-import surface; supersedes
+       the original `doc/cel-host-design.md`.
+     - `rewrite/predecessor-*.md` — retired predecessor designs kept for
+       historical context; superseded by `design.md`.
+  - `testing-checklist.md` — transverse CEL type × AST-variant coverage
+    grid.  Has a top-of-file **Gap summary** that calls out what's open
+    in the active milestone vs. deferred.
+  - `per-component-test-coverage.md` — per-component required test
+    scenarios (positive + negative + boundary), the catalog of
+    `manual`-tagged targets that MUST run before a milestone closes,
+    SKIP discipline, and the closeout gate to copy into every milestone
+    PR description.
+  - `lint-backlog.md` — known clang-tidy / function-size exceedances
+    tracked off the main lint gate; clear them before adding new code in
+    the same file.
+  - `cleanup-backlog.md` — P2 cleanup items surfaced by code-review
+    passes, tagged with the review date so the trail back to context is
+    preserved.
+
+## Closing out a planning doc
+
+Planning docs under `rewrite/**/*.md` are living artifacts.  When the
+work they describe ships, follow the steps in CLAUDE.md ("Closing out
+a planning doc"): update the status header, mark plan-vs-execution
+deltas in-line, append a "Future work" section, reconcile sibling
+docs, and tick the matching rows in `testing-checklist.md`.

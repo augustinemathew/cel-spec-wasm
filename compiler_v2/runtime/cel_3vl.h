@@ -1,4 +1,4 @@
-// 3VL / control-flow helpers (M5.G — Slice 2).
+// 3VL / control-flow helpers.
 //
 // CEL's logical operators (`_&&_`, `_||_`, `!_`) follow non-strict
 // 3VL semantics per langdef §"Logical operators":

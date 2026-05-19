@@ -124,8 +124,8 @@ void FormatSpanPayload(absl::Span<const uint8_t> mem, const CelSpan& s,
                        absl::string_view kind, std::string* out) {
   absl::Span<const uint8_t> bytes = SafeBytes(mem, s.ptr, s.len);
   if (kind == "string" || kind == "type") {
-    // M9: type-name strings are pure ASCII (per the spec type-name
-    // set in m9-type-subsystem.md §3.1) — render verbatim like a
+    // Type-name strings are pure ASCII (per the spec type-name
+    // set in `rewrite/m9-type-subsystem.md` §3.1) — render verbatim like a
     // string but with the `kind` label.
     absl::string_view sv(reinterpret_cast<const char*>(bytes.data()),
                          bytes.size());

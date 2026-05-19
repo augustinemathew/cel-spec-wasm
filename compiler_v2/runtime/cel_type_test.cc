@@ -4,8 +4,8 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
 #include "gtest/gtest.h"
@@ -24,7 +24,8 @@ namespace {
 class TypeOfTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+    arena_reset();
   }
 
   uint32_t MakeOut() {

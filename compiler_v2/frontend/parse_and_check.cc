@@ -12,9 +12,11 @@
 #include <variant>
 #include <vector>
 
+#include "absl/container/btree_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/cord.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -32,6 +34,7 @@
 #include "common/expr.h"
 #include "common/source.h"
 #include "common/type.h"
+#include "compiler_v2/frontend/status_tags.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
@@ -199,7 +202,8 @@ std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
   if (name == "duration") return cel::Type(cel::DurationType{});
   if (name == "any") return cel::Type(cel::AnyType{});
   if (name == "dyn") return cel::Type(cel::DynType{});
-  // M9.A: `type` declarable as a variable type (the type-of-types).
+  // `type` declarable as a variable type (the type-of-types; see
+  // `rewrite/m9-type-subsystem.md`).
   // The cel-cpp `TypeType` constructor takes an optional inner type;
   // a default-constructed TypeType corresponds to "untyped type" —
   // sufficient for variable declarations whose values are arbitrary
@@ -346,7 +350,7 @@ const char* UnacceptableLabel(const cel::TypeSpec& type) {
   if (absl::holds_alternative<cel::UnsetTypeSpec>(k)) return "unset";
   // Recurse through container types — list<dyn>, map<_, dyn>, map<dyn, _>,
   // and abstract<...,dyn,...> all carry implicit dyn that the static-subset
-  // gate must reject (`m5-kcall-comprehensions.md §5` M5.A).
+  // gate must reject.
   if (type.has_list_type()) {
     return UnacceptableLabel(type.list_type().elem_type());
   }
@@ -398,7 +402,7 @@ void CheckSubsetStruct(const cel::StructExpr& s, const cel::Ast::TypeMap& types,
   }
 }
 
-// M5.B Slice I: `cel.bind(name, value, body)` expands to a
+// `cel.bind(name, value, body)` expands to a
 // degenerate comprehension whose `iter_range` is an empty list
 // literal `[]` (and `loop_condition` is `kConst(false)`).  Empty
 // list literals type as `list(dyn)` — the checker has no
@@ -489,15 +493,15 @@ bool ArgIsAdmissibleScalar(const cel::Expr& arg,
   auto it = types.find(arg.id());
   if (it == types.end()) return false;
   const auto& t = it->second;
-  // M9.A: `dyn(type-value)` admits — CEL_TYPE is a scalar wire shape
+  // `dyn(type-value)` admits — CEL_TYPE is a scalar wire shape
   // (`payload.s` is a CelSpan into linear memory), and downstream
-  // operators (`==` via `cel_equals` CEL_TYPE arm in M9.D) handle
-  // it correctly.  Excluded: `dyn(message)` — out of scope per
-  // m7-proto-literals.md §2.2 (reflective introspection).
+  // operators (`==` via `cel_equals` CEL_TYPE arm) handle it
+  // correctly.  Excluded: `dyn(message)` — out of scope (reflective
+  // introspection; see `rewrite/m7-proto-literals.md` §2.2).
   return t.has_primitive() || t.has_null() || t.has_type();
 }
 
-// M7-A.B §3.5.A: admit a SelectExpr whose operand types as
+// Admit a SelectExpr whose operand types as
 // `google.protobuf.Any` even when the select itself types as `dyn`.
 // cel-cpp's checker types reads through Any as dyn (the runtime
 // unwrap target isn't statically known); v2's runtime DOES know how
@@ -580,12 +584,22 @@ absl::Status RejectDyn(const cel::Ast& ast) {
 
   std::vector<std::string> lines;
   lines.reserve(violations.size());
+  std::vector<std::string> ids;
+  ids.reserve(violations.size());
   for (const auto& v : violations) {
     lines.push_back(absl::StrCat("  expr id=", v.expr_id, " is ", v.kind, " (",
                                  v.detail, ")"));
+    ids.push_back(absl::StrCat(v.expr_id));
   }
-  return absl::InvalidArgumentError(absl::StrCat(
+  absl::Status s = absl::InvalidArgumentError(absl::StrCat(
       "expression is not in the static subset:\n", absl::StrJoin(lines, "\n")));
+  // Tag with status_tags.h::kStaticSubsetViolationUrl so the
+  // conformance harness can classify by GetPayload rather than by
+  // substring-matching the message text.  Body is the comma-joined
+  // offending expr-id list ("3,17"); the harness ignores the body
+  // today but the structure is here for diagnostics.
+  s.SetPayload(kStaticSubsetViolationUrl, absl::Cord(absl::StrJoin(ids, ",")));
+  return s;
 }
 
 absl::Status ConfigureCheckerBuilder(
@@ -595,8 +609,8 @@ absl::Status ConfigureCheckerBuilder(
   if (auto s = builder.AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
     return s;
   }
-  // M5.B Slice G: comprehensions_v2 also declares checker overloads
-  // for the runtime-only functions cel-cpp's transformMap /
+  // comprehensions_v2 also declares checker overloads for the
+  // runtime-only functions cel-cpp's transformMap /
   // transformMapEntry macros emit (`cel.@mapInsert`,
   // `cel.@mapInsertOverwrite`).  Without these, type-checking
   // rejects every transformMap{,Entry} expression with
@@ -620,7 +634,7 @@ absl::Status ConfigureCheckerBuilder(
   return absl::OkStatus();
 }
 
-// M5.B Slice I/F: macros the parser recognises beyond the bare
+// Macros the parser recognises beyond the bare
 // CEL grammar.  Standard macros (`has`, `all`, `exists`,
 // `exists_one`, `map`, `filter`) cover langdef-required
 // expansions; bindings_ext adds `cel.bind`; comprehensions_v2
@@ -640,6 +654,24 @@ absl::Status BuildMacroRegistry(cel::MacroRegistry& registry) {
   return absl::OkStatus();
 }
 
+// Extract the bare symbol from an "undeclared reference to 'X'"
+// issue message, returning the root namespace component (everything
+// up to the first '.').  Used to tag `kUndeclaredReferencesUrl` so
+// the harness can match against ext-lib roots without parsing
+// human-readable text itself.  Returns empty string_view if the
+// message doesn't match the expected shape.
+absl::string_view UndeclaredSymbolRoot(absl::string_view msg) {
+  constexpr absl::string_view kPrefix = "undeclared reference to '";
+  const auto start = msg.find(kPrefix);
+  if (start == absl::string_view::npos) return {};
+  const auto sym_begin = start + kPrefix.size();
+  const auto sym_end = msg.find('\'', sym_begin);
+  if (sym_end == absl::string_view::npos) return {};
+  absl::string_view sym = msg.substr(sym_begin, sym_end - sym_begin);
+  const auto dot = sym.find('.');
+  return dot == absl::string_view::npos ? sym : sym.substr(0, dot);
+}
+
 absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
     cel::TypeChecker& checker, absl::string_view expression,
     absl::string_view description) {
@@ -654,13 +686,27 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
   auto result = checker.Check(std::move(*ast));
   if (!result.ok()) return result.status();
   if (!result->IsValid()) {
-    return absl::InvalidArgumentError(
+    absl::Status s = absl::InvalidArgumentError(
         absl::StrCat("type check failed:\n", result->FormatError()));
+    // Collect the root namespace of every "undeclared reference to
+    // '<sym>'" issue so the conformance harness can classify
+    // ext-lib gaps (math.greatest, optional.of, …) without
+    // substring-matching the full message text.
+    absl::btree_set<absl::string_view> roots;
+    for (const auto& issue : result->GetIssues()) {
+      const absl::string_view root = UndeclaredSymbolRoot(issue.message());
+      if (!root.empty()) roots.insert(root);
+    }
+    if (!roots.empty()) {
+      s.SetPayload(kUndeclaredReferencesUrl,
+                   absl::Cord(absl::StrJoin(roots, "\n")));
+    }
+    return s;
   }
   return result->ReleaseAst();
 }
 
-// M7.D: walk the AST in place and replace every kIdentExpr whose
+// Walk the AST in place and replace every kIdentExpr whose
 // `reference_map` entry carries a Constant value with a kConstantExpr
 // node holding that value.  cel-cpp's checker resolves enum-name
 // references like `TestAllTypes.NestedEnum.BAR` to a `VariableReference`
@@ -680,8 +726,7 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
 // `RejectDyn` / annotation population so all later passes see the
 // rewritten kConstant nodes uniformly.
 // Split out of VisitInlineConstantChildren to keep it under the
-// readability-function-size gate after Slice I's includes
-// reshuffle.
+// readability-function-size gate.
 void VisitComprehensionChildren(cel::Expr& expr,
                                 const std::function<void(cel::Expr&)>& visit) {
   auto& c = expr.mutable_comprehension_expr();
@@ -755,9 +800,9 @@ void InlineConstantReferences(cel::Ast& ast) {
   visit(ast.mutable_root_expr());
 }
 
-// M9.C: resolve the spec type-name for a `cel.expr.Type` whose
-// outer kind is `kType` (the type-of-types).  Returns the spec
-// type-name per langdef §"Type Values" + m9-type-subsystem.md §3.1.
+// Resolve the spec type-name for a `cel.expr.Type` whose outer
+// kind is `kType` (the type-of-types).  Returns the spec type-name
+// per langdef §"Type Values" and `rewrite/m9-type-subsystem.md` §3.1.
 //
 // Returns std::nullopt for inner kinds we deliberately do NOT
 // rewrite at this slice — `function` / `error` / `dyn` / abstract
@@ -855,14 +900,14 @@ std::optional<std::string> SpecTypeName(const cel::TypeSpec& inner) {
   return std::nullopt;
 }
 
-// M9.C: walk the AST and rewrite every `kIdentExpr` whose
+// Walk the AST and rewrite every `kIdentExpr` whose
 // `reference_map` entry resolves to a checker-registered global
 // type-name variable (`int`, `bool`, `<message-FQN>`, ...) to a
 // `kConstantExpr` carrying `string_value = <spec type-name>`.
 //
 // Detection criterion: the `Reference` for the kIdent has NO
-// `value()` set (M7.D's `InlineConstantReferences` already handled
-// the constant-value case — enum-name resolution), AND the node's
+// `value()` set (`InlineConstantReferences` already handled the
+// constant-value case — enum-name resolution), AND the node's
 // checker-assigned type in `type_map` is `TypeType(<inner>)`
 // (i.e. `has_type()` returns true on the outer TypeSpec).  These
 // are precisely the type-identifier idents — the standard library
@@ -873,11 +918,11 @@ std::optional<std::string> SpecTypeName(const cel::TypeSpec& inner) {
 // the existing `ReprOf(TypeSpec)` path).  PackPass then uses the
 // `Repr::kType` annotation to write a CEL_TYPE-kinded rodata
 // CelValue (instead of the default CEL_STRING).  See
-// m9-type-subsystem.md §4.2 + §3.3.
+// `rewrite/m9-type-subsystem.md` §4.2 / §3.3.
 //
-// MUST run AFTER `InlineConstantReferences` (R2 mitigation) — the
-// constant-value rewrite happens first; type-ident rewriter sees
-// only kIdent nodes whose Reference is value-less.
+// MUST run AFTER `InlineConstantReferences` — the constant-value
+// rewrite happens first; type-ident rewriter sees only kIdent
+// nodes whose Reference is value-less.
 //
 // Idempotent — running this on an AST without any type-ident
 // idents is a no-op.
@@ -894,8 +939,8 @@ bool MaybeRewriteTypeIdent(cel::Expr& expr, const cel::Ast::ReferenceMap& refs,
   if (refs_it == refs.end() || types_it == types.end()) return true;
   const cel::Reference& ref = refs_it->second;
   const cel::TypeSpec& outer = types_it->second;
-  // Defensive: M7.D's InlineConstantReferences already handled
-  // the value-bearing path; assert we don't double-rewrite.
+  // Defensive: InlineConstantReferences already handled the
+  // value-bearing path; assert we don't double-rewrite.
   if (ref.has_value()) return true;
   if (!outer.has_type()) return true;
   auto name = SpecTypeName(outer.type());
@@ -944,16 +989,17 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   auto checked_ast = RunTypeCheck(**checker, expression, opts.description);
   if (!checked_ast.ok()) return checked_ast.status();
 
-  // M7.D: inline `VariableReference::value()` constants (enum-name
+  // Inline `VariableReference::value()` constants (enum-name
   // references) into the AST as kConstant nodes — must run before
-  // RejectDyn (which inspects every node's kind) and PopulateAnnotations
-  // (which seeds Repr from the kind-stamped type_map).
+  // RejectDyn (which inspects every node's kind) and
+  // PopulateAnnotations (which seeds Repr from the kind-stamped
+  // type_map).
   InlineConstantReferences(**checked_ast);
 
-  // M9.C: rewrite type-identifier idents (`int`, `bool`,
+  // Rewrite type-identifier idents (`int`, `bool`,
   // `<message-FQN>` standalone) to kConstantExpr nodes carrying
   // the spec type-name string.  MUST run AFTER
-  // InlineConstantReferences (per m9-type-subsystem.md §7 R2).
+  // InlineConstantReferences (see `rewrite/m9-type-subsystem.md` §7 R2).
   InlineTypeIdentifierReferences(**checked_ast);
 
   // Static-subset gate: no DYN / ERROR / type-param / function / unset nodes.

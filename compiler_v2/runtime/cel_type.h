@@ -1,5 +1,5 @@
-// Type-subsystem runtime helpers (M9.B).  Slot-out helper ABI per
-// `m9-type-subsystem.md` §4.5: `(out_slot, in_slot) -> void`.
+// Type-subsystem runtime helpers.  Slot-out helper ABI per
+// `rewrite/m9-type-subsystem.md` §4.5: `(out_slot, in_slot) -> void`.
 // Body lives in `cel_runtime.c`; this header keeps the declaration
 // separate so call sites (codegen + tests) can include only what
 // they need.
@@ -14,10 +14,10 @@
 //   propagate verbatim into out_slot.
 //
 //   The CEL_MESSAGE arm dispatches to the host trampoline
-//   `cel_host_resolve_message_type_name` (M9.C), which walks the
+//   `cel_host_resolve_message_type_name`, which walks the
 //   externref-table backing to resolve the descriptor's FQN.
-//   Until M9.C lands, that arm poisons with kTypeMismatch — no
-//   silent miscompiles.
+//   Without that host wiring, the arm poisons with kTypeMismatch
+//   — no silent miscompiles.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_TYPE_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_TYPE_H_

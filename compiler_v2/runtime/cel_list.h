@@ -51,9 +51,9 @@ void cel_list_create(uint32_t out_slot, uint32_t capacity);
 // no-ops.
 void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
 
-// M5.B Slice D — predicate-gated append for `filter(v, p)` /
-// conditional-map.  Combines 3VL on the predicate with the
-// append in a single helper.  See impl notes in cel_runtime.c.
+// Predicate-gated append for `filter(v, p)` / conditional-map.
+// Combines 3VL on the predicate with the append in a single
+// helper.  See impl notes in cel_runtime.c.
 void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
                                 uint32_t value_slot);
 
@@ -82,13 +82,14 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
 void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot);
 
 // =====================================================================
-// M5.D step 1 — aggregate-op kArena fast paths.
+// Aggregate-op kArena fast paths.
 //
 // Each helper assumes `list_slot.kind == CEL_LIST_ARENA` (codegen
 // only routes here when ResolvePass proves arena origin); other
 // kinds → CEL_ERR_TYPE_MISMATCH.  3VL absorption matches the
-// arith / compare / string envelope.  kHost / kDynamic siblings
-// land in M5.D step 2.
+// arith / compare / string envelope.  See
+// `rewrite/map-list-dispatch.md` for the three-path dispatch
+// contract.
 //
 // Element-equality (used by `in` and `eq`) reuses the same kind-
 // aware matcher as `cel_map_lookup_arena`'s `map_keys_equal`, so
@@ -116,7 +117,7 @@ void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // =====================================================================
-// M5.D step 2 — kDynamic dispatchers for aggregate list ops.  Same
+// kDynamic dispatchers for aggregate list ops.  Same
 // musttail-dispatch shape as `cel_list_at` (line 67): 3VL absorb,
 // branch on operand kind, tail-call into the kArena fast path or the
 // kHost trampoline.  Codegen emits a `call` to these when ResolvePass

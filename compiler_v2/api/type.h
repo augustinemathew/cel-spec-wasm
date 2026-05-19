@@ -35,9 +35,10 @@ class CelType {
     kMessage = 9,
     kDuration = 11,
     kTimestamp = 12,
-    // M9.A: type-of-types declarable as a variable type
+    // type-of-types declarable as a variable type
     // (`Bind("t", Value::Type(name))`).  Mirrors
-    // `cel::Value::Kind::kType = 13`.
+    // `cel::Value::Kind::kType = 13`.  See
+    // `rewrite/m9-type-subsystem.md`.
     kType = 13,
   };
 
@@ -50,7 +51,7 @@ class CelType {
   static CelType Bytes();
   static CelType Duration();
   static CelType Timestamp();
-  // M9.A: declare a variable typed as `type` (the type-of-types).
+  // Declare a variable typed as `type` (the type-of-types).
   // Bound values must be `Value::Type(name)`.
   static CelType Type();
 

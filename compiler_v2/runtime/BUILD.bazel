@@ -1,6 +1,18 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("//third_party/wasi_sdk:wasm_cc_binary.bzl", "wasm_cc_binary")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Gates the `-DCEL_LOG_DISABLED` define on -c opt builds.  Every public
+# runtime helper does a `CEL_LOG("enter")` host trampoline that
+# `fprintf`s to stderr.  Useful for the dead-code audit (see
+# `cel_log.h`); fatal to per-Eval performance once kernels start
+# stacking.  Keep CEL_LOG live for dbg/fastbuild; disable it for opt
+# benches + opt-built deploys.  See bench/README.md baseline note.
+config_setting(
+    name = "opt_mode",
+    values = {"compilation_mode": "opt"},
+)
 
 # Native-host build of the runtime.  Used by unit tests and by host-side
 # code that needs the CelValue layout (codegen, cel_log, tests).
@@ -54,7 +66,10 @@ cc_library(
         # sites in `cel_arith.c` callers across TU boundaries.
         "-O3",
         "-flto",
-    ],
+    ] + select({
+        ":opt_mode": ["-DCEL_LOG_DISABLED"],
+        "//conditions:default": [],
+    }),
     linkopts = [
         "-flto",
     ],
@@ -207,14 +222,61 @@ cc_test(
     ],
 )
 
-# wasm32-wasi cross-compile.  Per `doc/implementation-plan/wasi/DESIGN.md`:
-# the runtime is built with wasi-sdk against wasm32-wasi (vanilla, not
-# the threads variant); it OWNS its memory and exports it (the expr
-# module imports `cel.memory` from the runtime instance at link time).
-# Bytes [0, 8192) are reserved via `-Wl,--global-base=8192` for the
-# expr module's active data segments.
-genrule(
-    name = "cel_runtime_wasm_file",
+# Phase C — C++ kernels linked into cel_runtime.wasm.  Each TU
+# exposes a fixed set of `extern "C"` `cel_*_at_v` symbols matching
+# the `(out_slot, in_slot)` ABI of every other runtime helper.  Lives
+# in its own cc_library so the wasm32-wasi-threads toolchain applies
+# cleanly and the runtime cc_binary just adds it to deps.
+#
+# `cel_time_parse`: timestamp / duration parse + format kernels via
+# `absl::ParseTime` / `absl::ParseDuration` / `absl::FormatTime`.
+# Replaces the four `cel_host.*` parse/format trampolines (Phase C
+# slice C1/C2 per `phase-c-design.md`).
+cc_test(
+    name = "cel_time_parse_test",
+    srcs = ["cel_time_parse_test.cc"],
+    deps = [
+        ":cel_runtime",
+        ":cel_time_parse",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "cel_time_parse",
+    srcs = ["cel_time_parse.cc"],
+    hdrs = ["cel_time_parse.h"],
+    copts = [
+        "-Wno-unused-parameter",
+    ],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+# Phase C — wasm32-wasi-threads cross-compile via the `//third_party/
+# wasi_sdk:wasm32_wasi` cc_toolchain.  Replaces the legacy genrule
+# (which invoked wasi-sdk clang directly).  Built under the wasm
+# platform via `wasm_cc_binary`, which transitions the configuration
+# at the edge so downstream native consumers (the bytes-embed genrule
+# below) can depend on it without flipping `--platforms` themselves.
+#
+# Per `doc/implementation-plan/rewrite/wasi/DESIGN.md` §3 + the
+# Phase C plan, the runtime OWNS its memory and exports it; the
+# expr module imports `cel.memory` from the runtime instance at
+# link time.  Bytes [0, 8192) are reserved via
+# `-Wl,--global-base=8192` for the expr module's active data
+# segments.
+#
+# The target uses `wasm32-wasi-threads` because the toolchain
+# (which links absl + RE2 in Phase C) needs `<mutex>` for cctz.
+# Pure-C kernels don't actually use threading primitives —
+# `wasm-ld` dead-strips unused wasi imports — so this costs
+# nothing here.  See `rewrite/phase-c-plan.md` §7.2.
+cc_binary(
+    name = "cel_runtime_wasm.bin",
     srcs = [
         "cel_3vl.c",
         "cel_3vl.h",
@@ -245,46 +307,48 @@ genrule(
         "cel_time.h",
         "cel_type.c",
         "cel_type.h",
+    ],
+    additional_linker_inputs = [
         "wasm_imports.txt",
     ],
-    outs = ["cel_runtime.wasm"],
-    cmd = " ".join([
-        "$(execpath //third_party/wasi_sdk:clang)",
-        "--target=wasm32-wasi",
-        # Speed knobs — mirror the native cc_library above.  After the
-        # cel_runtime.c split shipped 2026-05-14, the runtime is ~10
-        # per-topic .c files; -flto lets wasm-ld inline across them so
-        # the leaf kernels (cel_int_add_at_vv, cel_string_eq_at_vv,
-        # parse_*) fold into their call sites in the emitted module.
-        # -O3 widens the loop / branch optimization aggressiveness that
-        # the parse-loops and utf8_valid in cel_convert.c benefit from.
-        "-O3",
-        "-flto",
-        # M3.C: `__attribute__((musttail))` requires the wasm tail-call
+    copts = [
+        # `__attribute__((musttail))` requires the wasm tail-call
         # feature to lower as `return_call`.  Without `-mtail-call`
         # clang errors out rather than silently downgrading — that's
         # the point.  wasmtime config also gets the matching flag in
         # api/engine.cc.
         "-mtail-call",
+        # Per-target warnings beyond toolchain's `-Wall`.
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ] + select({
+        ":opt_mode": ["-DCEL_LOG_DISABLED"],
+        "//conditions:default": [],
+    }),
+    linkopts = [
         # No standard startup files; runtime is library code, no main.
         "-nostartfiles",
         "-Wl,--no-entry",
         # Reserve [0, 8192) for the expr module's active data segments.
         # Per DESIGN.md §3 / experiments/exp_a_rodata.c.
         "-Wl,--global-base=8192",
-        # Runtime owns and exports its memory (M6).  By default
+        # Tight import allowlist.  The toolchain's default link flags
+        # include the broader `-Wl,--allow-undefined`; this file-based
+        # form is documented for the day the toolchain feature is
+        # split out so per-target strict mode is opt-in.
+        "-Wl,--allow-undefined-file=$(location wasm_imports.txt)",
+        # Runtime owns and exports its memory.  By default
         # wasi-sdk's wasm-ld exports the module-defined memory as
         # `memory`; the host pulls it off `runtime_instance` after
         # instantiation, then binds it on the linker as `cel.memory`
         # so the expr module (which still imports `cel.memory`)
-        # resolves to the same backing store.  No more
-        # `--import-memory` dance / host-allocated memory.
+        # resolves to the same backing store.
         # Surface malloc + free for host reentry (activation marshalling)
         # and for the arena to allocate its backing buffer.
         "-Wl,--export=malloc",
         "-Wl,--export=free",
-        # __heap_base is exposed for runtime A14 assertion check
-        # (host verifies it sits above the reserved region).
+        # __heap_base is exposed so the host can verify it sits
+        # above the reserved [0, 8192) region.
         "-Wl,--export=__heap_base",
         # The arena API: host reentry uses arena_init + arena_alloc;
         # codegen prologue emits (call $arena_reset).
@@ -304,7 +368,7 @@ genrule(
         "-Wl,--export=cel_list_append_at_if_bool",
         "-Wl,--export=cel_list_at",
         "-Wl,--export=cel_list_at_arena",
-        # M5.B: arithmetic helpers (int / uint / double × add/sub/mul/div/mod/neg).
+        # Arithmetic helpers (int / uint / double × add/sub/mul/div/mod/neg).
         "-Wl,--export=cel_int_add_at_vv",
         "-Wl,--export=cel_int_sub_at_vv",
         "-Wl,--export=cel_int_mul_at_vv",
@@ -321,7 +385,7 @@ genrule(
         "-Wl,--export=cel_double_mul_at_vv",
         "-Wl,--export=cel_double_div_at_vv",
         "-Wl,--export=cel_double_neg_at_v",
-        # M5.B: comparison helpers (per-kind eq/ne/lt/le/gt/ge + bool/null).
+        # Comparison helpers (per-kind eq/ne/lt/le/gt/ge + bool/null).
         "-Wl,--export=cel_int_eq_at_vv",
         "-Wl,--export=cel_int_ne_at_vv",
         "-Wl,--export=cel_int_lt_at_vv",
@@ -347,14 +411,14 @@ genrule(
         "-Wl,--export=cel_bool_gt_at_vv",
         "-Wl,--export=cel_bool_ge_at_vv",
         "-Wl,--export=cel_null_eq_at_vv",
-        # M5.B step 2: cross-type numeric ladder (eq/ne/lt/le/gt/ge).
+        # Cross-type numeric ladder (eq/ne/lt/le/gt/ge).
         "-Wl,--export=cel_numeric_eq_at_vv",
         "-Wl,--export=cel_numeric_ne_at_vv",
         "-Wl,--export=cel_numeric_lt_at_vv",
         "-Wl,--export=cel_numeric_le_at_vv",
         "-Wl,--export=cel_numeric_gt_at_vv",
         "-Wl,--export=cel_numeric_ge_at_vv",
-        # M5.C: string + bytes ops (concat allocates; rest read-only).
+        # String + bytes ops (concat allocates; rest read-only).
         "-Wl,--export=cel_string_concat_at_vv",
         "-Wl,--export=cel_string_size_at_v",
         "-Wl,--export=cel_string_eq_at_vv",
@@ -372,7 +436,7 @@ genrule(
         "-Wl,--export=cel_bytes_le_at_vv",
         "-Wl,--export=cel_bytes_gt_at_vv",
         "-Wl,--export=cel_bytes_ge_at_vv",
-        # M5.D step 1: aggregate arena fast paths.
+        # Aggregate arena fast paths.
         "-Wl,--export=cel_list_size_arena",
         "-Wl,--export=cel_list_in_arena",
         "-Wl,--export=cel_list_eq_arena",
@@ -380,8 +444,8 @@ genrule(
         "-Wl,--export=cel_map_size_arena",
         "-Wl,--export=cel_map_in_arena",
         "-Wl,--export=cel_map_eq_arena",
-        # M5.D step 2: kDynamic dispatchers.  Each tail-calls into
-        # the corresponding _arena fast path or the cel_host.* import.
+        # Aggregate kDynamic dispatchers.  Each tail-calls into the
+        # corresponding _arena fast path or the cel_host.* import.
         "-Wl,--export=cel_list_size",
         "-Wl,--export=cel_list_in",
         "-Wl,--export=cel_list_eq",
@@ -389,44 +453,44 @@ genrule(
         "-Wl,--export=cel_map_size",
         "-Wl,--export=cel_map_in",
         "-Wl,--export=cel_map_eq",
-        # M5.B Slice E: map-key iteration helpers used by
-        # comprehensions over a `map(K, V)` source.
+        # Map-key iteration helpers used by comprehensions over a
+        # `map(K, V)` source.
         "-Wl,--export=cel_map_iter_init",
         "-Wl,--export=cel_map_iter_next",
         "-Wl,--export=cel_map_iter_key_at",
         "-Wl,--export=cel_map_iter_value_at",
-        # M5.B step 2b: polymorphic equality.
+        # Polymorphic equality.
         "-Wl,--export=cel_equals_at_vv",
         "-Wl,--export=cel_not_equals_at_vv",
-        # M5.G (Slice 2): 3VL / control-flow helpers.
+        # 3VL / control-flow helpers.
         "-Wl,--export=cel_and",
         "-Wl,--export=cel_or",
         "-Wl,--export=cel_not",
         "-Wl,--export=cel_unknown_merge",
         "-Wl,--export=cel_copy_slot",
-        # M9.B: type-of helper.
+        # type-of helper (see `rewrite/m9-type-subsystem.md`).
         "-Wl,--export=cel_type_of_at_v",
-        # M10.B: numeric inter-conversion helpers.
+        # Numeric inter-conversion helpers (see `rewrite/m10-conversions.md`).
         "-Wl,--export=cel_uint_to_int_at_v",
         "-Wl,--export=cel_double_to_int_at_v",
         "-Wl,--export=cel_int_to_uint_at_v",
         "-Wl,--export=cel_double_to_uint_at_v",
         "-Wl,--export=cel_int_to_double_at_v",
         "-Wl,--export=cel_uint_to_double_at_v",
-        # M10.C: string-parse helpers.
+        # String-parse helpers.
         "-Wl,--export=cel_string_to_int_at_v",
         "-Wl,--export=cel_string_to_uint_at_v",
         "-Wl,--export=cel_string_to_double_at_v",
         "-Wl,--export=cel_string_to_bool_at_v",
-        # M10.D: number/bool-to-string formatters.
+        # Number/bool-to-string formatters.
         "-Wl,--export=cel_int_to_string_at_v",
         "-Wl,--export=cel_uint_to_string_at_v",
         "-Wl,--export=cel_bool_to_string_at_v",
         "-Wl,--export=cel_double_to_string_at_v",
-        # M10.E: bytes <-> string with UTF-8 validation.
+        # Bytes <-> string with UTF-8 validation.
         "-Wl,--export=cel_string_to_bytes_at_v",
         "-Wl,--export=cel_bytes_to_string_at_v",
-        # M7B.B: timestamp / duration arithmetic + ordering.
+        # Timestamp / duration arithmetic + ordering.
         "-Wl,--export=cel_dur_add_at_vv",
         "-Wl,--export=cel_dur_sub_at_vv",
         "-Wl,--export=cel_ts_dur_add_at_vv",
@@ -441,7 +505,7 @@ genrule(
         "-Wl,--export=cel_ts_le_at_vv",
         "-Wl,--export=cel_ts_gt_at_vv",
         "-Wl,--export=cel_ts_ge_at_vv",
-        # M7B.C: timestamp UTC accessors + duration accessors.
+        # Timestamp UTC accessors + duration accessors.
         "-Wl,--export=cel_ts_year_utc_at_v",
         "-Wl,--export=cel_ts_month_utc_at_v",
         "-Wl,--export=cel_ts_day_of_month_1_utc_at_v",
@@ -456,12 +520,13 @@ genrule(
         "-Wl,--export=cel_dur_minutes_at_v",
         "-Wl,--export=cel_dur_seconds_at_v",
         "-Wl,--export=cel_dur_milliseconds_at_v",
-        # M7B.D pure-wasm half: int <-> ts/dur conversions.
+        # Pure-wasm int <-> ts/dur conversions.
         "-Wl,--export=cel_ts_to_int_at_v",
         "-Wl,--export=cel_dur_to_int_at_v",
         "-Wl,--export=cel_int_to_ts_at_v",
         "-Wl,--export=cel_int_to_dur_at_v",
-        # M7B.E: with-TZ accessor shims (10 helpers, all 3-arg).
+        # With-TZ accessor shims (10 helpers, all 3-arg; route
+        # through `cel_host.cel_timestamp_tz_accessor`).
         "-Wl,--export=cel_ts_year_with_tz_at_vv",
         "-Wl,--export=cel_ts_month_with_tz_at_vv",
         "-Wl,--export=cel_ts_day_of_month_1_with_tz_at_vv",
@@ -472,38 +537,38 @@ genrule(
         "-Wl,--export=cel_ts_minutes_with_tz_at_vv",
         "-Wl,--export=cel_ts_seconds_with_tz_at_vv",
         "-Wl,--export=cel_ts_milliseconds_with_tz_at_vv",
-        "-Wl,--allow-undefined-file=$(location :wasm_imports.txt)",
-        "-I.",
-        "-o $@",
-        "$(location :cel_3vl.c)",
-        "$(location :cel_arena.c)",
-        "$(location :cel_arith.c)",
-        "$(location :cel_compare.c)",
-        "$(location :cel_convert.c)",
-        "$(location :cel_log.c)",
-        "$(location :cel_make.c)",
-        "$(location :cel_memory.c)",
-        "$(location :cel_runtime.c)",
-        "$(location :cel_string_ops.c)",
-        "$(location :cel_time.c)",
-        "$(location :cel_type.c)",
-    ]),
-    tools = [
-        "//third_party/wasi_sdk:clang",
+        # Runtime-hosted parse / format kernels (replacing the
+        # cel_host.* trampolines).  C++ implementations live in
+        # cel_time_parse.cc (linked via the cc_library dep below);
+        # codegen routes the four ids in overload_table.cc.  See
+        # `rewrite/phase-c-plan.md` §4.1-4.4.
+        "-Wl,--export=cel_timestamp_parse_at_v",
+        "-Wl,--export=cel_duration_parse_at_v",
+        "-Wl,--export=cel_timestamp_format_at_v",
+        "-Wl,--export=cel_duration_format_at_v",
     ],
-    tags = [
-        "manual",
-        "no-sandbox",
+    tags = ["manual"],
+    deps = [
+        ":cel_time_parse",
     ],
+)
+
+# Cross-platform-transition wrapper around the cc_binary above so
+# native-host consumers (the bytes-embed genrule, host-side tests)
+# can `srcs = [":cel_runtime_wasm"]` without flipping `--platforms`.
+wasm_cc_binary(
+    name = "cel_runtime_wasm",
+    binary = ":cel_runtime_wasm.bin",
+    tags = ["manual"],
 )
 
 genrule(
     name = "cel_runtime_wasm_bytes_cc",
-    srcs = [":cel_runtime_wasm_file"],
+    srcs = [":cel_runtime_wasm"],
     outs = ["cel_runtime_wasm_bytes.cc"],
     cmd = """
 set -e
-src=$(location :cel_runtime_wasm_file)
+src=$(location :cel_runtime_wasm)
 {
   echo '// Auto-generated by //compiler_v2/runtime:cel_runtime_wasm_bytes_cc.'
   echo '// Do not edit by hand; re-run the genrule to refresh.'

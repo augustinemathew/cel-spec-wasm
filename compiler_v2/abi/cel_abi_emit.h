@@ -23,11 +23,13 @@ namespace celwasm {
 
 // Build a `CelAbi` message from the compile-time layout + codegen
 // output.  Populates:
-//   - `variables[]` from `layout.variables` (M2.B)
-//   - `fields[]` from `field_refs` (M2.C — field intern table, one
+//   - `variables[]` from `layout.variables`
+//   - `fields[]` from `field_refs` (field intern table, one
 //     row per kSelect; index 0 is the reserved sentinel)
-//   - `attributes[]` from `layout.attributes` (M2.E — attribute
-//     intern table; index 0 is the reserved sentinel)
+//   - `attributes[]` from `layout.attributes` (attribute intern
+//     table; index 0 is the reserved sentinel)
+//   - `types[]` from `layout.message_types` (message-type intern
+//     table; index 0 is the reserved sentinel)
 // The version field is set to 1 (bumped on any breaking schema
 // change).
 ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(

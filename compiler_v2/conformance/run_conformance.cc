@@ -1,19 +1,25 @@
-// Exploration binary: walks every upstream `tests/simple/testdata/
-// *.textproto`, runs each `SimpleTest` through the compiler_v2
-// pipeline, and prints a per-file `pass / skip / fail` tally plus
-// the first few failure details per file.  Not a gate — exits 0
-// regardless of outcome.  Use this to answer "how much of the spec
-// conformance does M<n> cover?" and to regenerate the inventory
-// table in README.md.
+// Exploration binary: walks every upstream
+// `tests/simple/testdata/*.textproto` fixture, runs each
+// `SimpleTest` through the compiler_v2 pipeline, and prints a
+// per-file `pass / skip / fail` tally + a SKIP-by-category
+// breakdown (using `SkipCategory` from `runner.h`).  Optionally
+// prints individual FAIL details and SKIP-detail samples.
+//
+// Not a CI gate — exits 0 regardless of outcome.  Use this to
+// answer "how much of the spec conformance does this branch
+// cover?" and to regenerate the per-fixture inventory + the
+// SKIP-by-category aggregate that `compiler_v2/conformance/README.md`
+// quotes.
 //
 // Invocation:
 //
 //   bazel run //compiler_v2/conformance:run_conformance
 //   bazel run //compiler_v2/conformance:run_conformance -- \
 //       --file tests/simple/testdata/comparisons.textproto
-//
-// Exit 0 always — no failure is fatal.  The caller reads the table.
+//   bazel run //compiler_v2/conformance:run_conformance -- \
+//       --max_skip_examples=2000   # dump every SKIP detail
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -26,7 +32,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/test/simple.pb.h"
-#include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
 #include "compiler_v2/conformance/runner.h"
 
@@ -36,27 +41,26 @@
 //     std::vector<std::string> / std::uint32_t flag defaults.
 // NOLINTBEGIN(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 ABSL_FLAG(std::vector<std::string>, file, {},
-          "Explicit textproto paths to run.  Empty = run the built-in "
-          "list covering the whole `tests/simple/testdata/` corpus.");
+          "Explicit textproto paths to run.  Empty = the full corpus "
+          "(see DefaultCorpus()).");
 
 ABSL_FLAG(std::uint32_t, max_skip_examples, 0,
-          "Per-fixture cap on SKIP reasons printed.  0 means no SKIP "
-          "details — use a non-zero value when diagnosing why a "
-          "fixture's PASS count isn't budging.");
+          "Per-fixture cap on SKIP detail lines printed.  0 means no "
+          "SKIP details — use a non-zero value when diagnosing why a "
+          "fixture's PASS count isn't budging.  The SKIP-by-category "
+          "summary is always printed regardless.");
 ABSL_FLAG(std::uint32_t, max_fail_examples, 5,
-          "Per-file cap on fail-detail lines printed.");
+          "Per-file cap on FAIL detail lines printed.");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace {
 
 // Default corpus: every textproto we ship under `tests/simple/testdata`.
-// Listed explicitly (rather than glob'd at runtime) so the `data =`
-// attribute and this list stay in sync — adding a new fixture forces
-// both a BUILD edit and a source edit.
+// Listed once here and re-used by the BUILD `data =` attribute via
+// `SIMPLE_TESTDATA` in BUILD.bazel; both lists MUST stay in sync (a
+// new fixture lands here AND there).  Future cleanup tracked in
+// `conformance/README.md`'s "Future work" section.
 const std::vector<std::string>& DefaultCorpus() {
-  // All 30 `.textproto` fixtures shipped under `tests/simple/testdata/`.
-  // Kept in sync with `SIMPLE_TESTDATA` in the BUILD file (the `data =`
-  // attribute must also list them).
   static const auto* files = new std::vector<std::string>{
       "tests/simple/testdata/basic.textproto",
       "tests/simple/testdata/bindings_ext.textproto",
@@ -92,18 +96,46 @@ const std::vector<std::string>& DefaultCorpus() {
   return *files;
 }
 
+// All known `SkipCategory` values, in display order.  Keeping the
+// list in one place lets the per-fixture summary table iterate it
+// deterministically (rather than depending on map ordering).
+constexpr std::array<celwasm::conformance::SkipCategory, 9> kCategories{
+    celwasm::conformance::SkipCategory::kDisableCheck,
+    celwasm::conformance::SkipCategory::kCheckOnly,
+    celwasm::conformance::SkipCategory::kEnvelope,
+    celwasm::conformance::SkipCategory::kStaticSubset,
+    celwasm::conformance::SkipCategory::kCompileUnimpl,
+    celwasm::conformance::SkipCategory::kEvalUnimpl,
+    celwasm::conformance::SkipCategory::kExtensionUnimpl,
+    celwasm::conformance::SkipCategory::kTypeEnvUnsupported,
+    celwasm::conformance::SkipCategory::kBindingUnsupported,
+};
+
 struct FileTally {
   std::string path;
   std::size_t total = 0;
   std::size_t pass = 0;
   std::size_t skip = 0;
   std::size_t fail = 0;
+  // Counts indexed by `SkipCategory`'s underlying value.  Lives
+  // alongside the totals so the printer doesn't need a separate map.
+  std::array<std::size_t, kCategories.size()> by_category{};
   std::vector<std::string> fail_details;
   std::vector<std::string> skip_details;
 };
 
-FileTally RunFile(absl::string_view path, const cel::Compiler& compiler,
-                  const cel::Engine& engine, std::uint32_t max_fail_examples,
+void RecordSkip(FileTally& out, celwasm::conformance::SkipCategory c) {
+  for (std::size_t i = 0; i < kCategories.size(); ++i) {
+    if (kCategories[i] == c) {
+      ++out.by_category[i];
+      return;
+    }
+  }
+  ABSL_CHECK(false) << "unhandled SkipCategory in run_conformance";
+}
+
+FileTally RunFile(absl::string_view path, const cel::Engine& engine,
+                  std::uint32_t max_fail_examples,
                   std::uint32_t max_skip_examples) {
   FileTally out{.path = std::string(path)};
   cel::expr::conformance::test::SimpleTestFile file;
@@ -114,25 +146,27 @@ FileTally RunFile(absl::string_view path, const cel::Compiler& compiler,
   for (const auto& section : file.section()) {
     for (const auto& t : section.test()) {
       ++out.total;
-      auto r = celwasm::conformance::RunOne(t, compiler, engine);
+      auto r = celwasm::conformance::RunOne(t, engine);
+      const std::string label =
+          absl::StrCat(section.name(), "/", t.name(), " `", t.expr(), "`");
       switch (r.outcome) {
         case celwasm::conformance::Outcome::kPass:
           ++out.pass;
           break;
         case celwasm::conformance::Outcome::kUnsupported:
           ++out.skip;
+          RecordSkip(out, r.category);
           if (out.skip_details.size() < max_skip_examples) {
-            out.skip_details.push_back(absl::StrCat(section.name(), "/",
-                                                    t.name(), " `", t.expr(),
-                                                    "` — ", r.detail));
+            out.skip_details.push_back(
+                absl::StrCat(label, " — ",
+                             celwasm::conformance::SkipCategoryName(r.category),
+                             ": ", r.detail));
           }
           break;
         case celwasm::conformance::Outcome::kFail:
           ++out.fail;
           if (out.fail_details.size() < max_fail_examples) {
-            out.fail_details.push_back(absl::StrCat(section.name(), "/",
-                                                    t.name(), " `", t.expr(),
-                                                    "` — ", r.detail));
+            out.fail_details.push_back(absl::StrCat(label, " — ", r.detail));
           }
           break;
       }
@@ -145,6 +179,18 @@ void PrintTally(const FileTally& f) {
   std::cout << absl::StrCat("  ", f.path, "\n", "    total=", f.total,
                             "  pass=", f.pass, "  skip=", f.skip,
                             "  fail=", f.fail, "\n");
+  if (f.skip > 0) {
+    std::string by_cat = "    skip-by-category:";
+    bool any = false;
+    for (std::size_t i = 0; i < kCategories.size(); ++i) {
+      if (f.by_category[i] == 0) continue;
+      absl::StrAppend(&by_cat, " ",
+                      celwasm::conformance::SkipCategoryName(kCategories[i]),
+                      "=", f.by_category[i]);
+      any = true;
+    }
+    if (any) std::cout << by_cat << "\n";
+  }
   for (const auto& d : f.skip_details) {
     std::cout << "      SKIP " << d << "\n";
   }
@@ -153,14 +199,22 @@ void PrintTally(const FileTally& f) {
   }
 }
 
+void PrintCorpusBreakdown(
+    const std::array<std::size_t, kCategories.size()>& corpus_by_category) {
+  std::cout << "\nskip-by-category (corpus-wide):\n";
+  for (std::size_t i = 0; i < kCategories.size(); ++i) {
+    if (corpus_by_category[i] == 0) continue;
+    std::cout << absl::StrCat(
+        "  ", celwasm::conformance::SkipCategoryName(kCategories[i]), " = ",
+        corpus_by_category[i], "\n");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   absl::ParseCommandLine(argc, argv);
 
-  auto c = cel::Compiler::NewBuilder().Build();
-  ABSL_CHECK_OK(c);
-  cel::Compiler compiler = *std::move(c);
   auto e = cel::Engine::NewBuilder().Build();
   ABSL_CHECK_OK(e);
   cel::Engine engine = *std::move(e);
@@ -175,17 +229,22 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::size_t pass = 0;
   std::size_t skip = 0;
   std::size_t fail = 0;
+  std::array<std::size_t, kCategories.size()> corpus_by_category{};
 
-  std::cout << "compiler_v2 conformance run (M3-scope)\n";
+  std::cout << "compiler_v2 conformance run\n";
   for (const auto& path : paths) {
-    FileTally t = RunFile(path, compiler, engine, max_fail, max_skip);
+    FileTally t = RunFile(path, engine, max_fail, max_skip);
     PrintTally(t);
     total += t.total;
     pass += t.pass;
     skip += t.skip;
     fail += t.fail;
+    for (std::size_t i = 0; i < kCategories.size(); ++i) {
+      corpus_by_category[i] += t.by_category[i];
+    }
   }
   std::cout << absl::StrCat("\nsummary: total=", total, "  pass=", pass,
                             "  skip=", skip, "  fail=", fail, "\n");
+  PrintCorpusBreakdown(corpus_by_category);
   return 0;
 }

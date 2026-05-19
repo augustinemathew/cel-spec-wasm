@@ -26,7 +26,7 @@ of probing experiments**, write up results, and recommend the path forward.
 This doc is the brief for that agent.
 
 The output of the research phase is a separate, decision-ready
-`PHASE_C_PLAN.md` that the implementing agent (a different session) can
+`phase-c-plan.md` that the implementing agent (a different session) can
 then execute against.
 
 ## 1 Goal of Phase C
@@ -57,8 +57,25 @@ Conformance unlocks expected:
 
 ## 2 The unknowns we need probed
 
-We have **three plausible architectural paths**.  Each needs validation;
-no other repo in our tree has done this so we are first.
+**The chosen path is Path A** — a proper bazel `cc_toolchain` for
+wasm32-wasi.  This is the long-term fix; we are not shopping among
+A/B/C for which is cheapest this quarter.  The research exists to
+discover **how** to wire Path A, not **whether** to take it.  Paths B
+and C remain documented as fallbacks of last resort, but choosing
+either requires the agent to file a `BLOCKED.md` with a concrete
+demonstration that Path A is *infeasible* (not just painful) and
+get the user's explicit sign-off before pivoting.
+
+"Painful" looks like: 50 features in `cc_toolchain_config.bzl`, a
+day or two of flag tuning, a handful of upstream-style patches to
+absl's wasi guards.  That is the work of Phase C, not a reason to
+bail.  "Infeasible" looks like: a wasi-sdk capability bazel
+fundamentally cannot model, a hermetic-build invariant we cannot
+satisfy without forking bazel, etc.  Distinguish carefully.
+
+The three paths below are kept for context.  Read them, then treat
+the probes as "validate Path A and surface the config delta needed"
+rather than "bake-off among three options."
 
 ### Path A — Proper bazel `cc_toolchain` for wasm32-wasi
 
@@ -118,7 +135,7 @@ Each experiment is **small, has a clear pass/fail criterion, and produces
 an artifact** the agent can point at.  Run them in order; stop early if a
 prerequisite fails.
 
-The experiments live under `doc/implementation-plan/phase-c/probes/<EN>/`.
+The experiments live under `doc/implementation-plan/rewrite/phase-c-probes/<EN>/`.
 Each subdir contains: a `README.md` with method + expected output, the
 source file(s), any build script, the resulting `.wasm` (if applicable),
 and a `RESULT.md` with conclusions.
@@ -129,7 +146,7 @@ and a `RESULT.md` with conclusions.
 from scratch.  Pin the baseline before touching anything.
 
 **Method:** run the build command from
-`doc/implementation-plan/wasi/experiments/exp_e_absl_parsetime.cc:11-24`
+`doc/implementation-plan/rewrite/wasi/experiments/exp_e_absl_parsetime.cc:11-24`
 (the comment header has the full clang++ invocation).  It uses the cached
 `exp1_re2/absl-install/`.  Invoke the produced `parse` export with
 `"2026-05-18T10:00:00Z"`.
@@ -176,7 +193,7 @@ expensive part; if it works, Path A is unlocked.
   3. Create `probes/E3/BUILD.bazel` with `cc_toolchain` rule wrapping
      that config, plus `platform()` for `wasm32_wasi`.
   4. Try building `probes/E3/hello_wasm.cc` (a trivial `int add(int,int)`)
-     with `bazel build //doc/implementation-plan/phase-c/probes/E3:hello_wasm --platforms=//doc/implementation-plan/phase-c/probes/E3:wasm32_wasi`.
+     with `bazel build //doc/implementation-plan/rewrite/phase-c-probes/E3:hello_wasm --platforms=//doc/implementation-plan/rewrite/phase-c-probes/E3:wasm32_wasi`.
 
 **Pass:** bazel produces a wasm artifact that wasmtime can instantiate
 and the `add` export works.
@@ -197,7 +214,7 @@ target as the canary.
 **Method:**
   1. Pre-req: E3 succeeded.
   2. `bazel build @com_google_absl//absl/strings:string_view
-     --platforms=//doc/implementation-plan/phase-c/probes/E3:wasm32_wasi`.
+     --platforms=//doc/implementation-plan/rewrite/phase-c-probes/E3:wasm32_wasi`.
   3. If it fails, note the first error.  Common suspects: thread-local
      storage, atomics, the `absl::base::config.h` `__wasi__` branch.
   4. If `string_view` works, escalate to `@com_google_absl//absl/time:time`.
@@ -315,17 +332,29 @@ codegen routing change.
 
 ## 4 Decision matrix
 
-After all probes complete, recommend one path based on:
+**Default: Path A.**  The research validates Path A and produces a
+concrete config + patch list to make it work.  The plan documents
+the work needed, not a path choice.
 
-  - E3+E4 success → **Path A** (cc_toolchain).  Clean engineering;
-    long-term win.
-  - E3 fails but E6 works → **Path B** (rules_foreign_cc.cmake).
-    Pragmatic engineering; works today.
-  - Both fail or both painful → **Path C** (pre-built libs + script).
-    Fastest unblock; refactor later.
+Fallback only applies if Path A is *infeasible* (per §2's
+distinction).  In that case the agent writes a `BLOCKED.md`
+naming the specific blocker (a bazel limitation, a wasi-sdk
+capability gap, etc.), and stops — the user decides whether to
+authorise Path B/C.  Do not silently pivot.
 
-Document the decision + the migration cost in `PHASE_C_PLAN.md` (the
-output of the research phase).  The plan should include:
+  - E3+E4 succeed (likely with config iteration) → **Path A wins**;
+    write `phase-c-plan.md`.
+  - E3 or E4 fail after honest effort → write `BLOCKED.md`;
+    document the specific bazel/wasi-sdk obstacle; stop.
+
+E2 and E6 (the B/C-flavoured probes) remain in the sequence but
+their purpose is now *risk-mitigation context* — i.e. "if Path A is
+genuinely blocked, here is what the fallback would cost" — not
+options to recommend.  Run them, but don't use their success as a
+reason to abandon Path A.
+
+Document the chosen path + the migration cost in `phase-c-plan.md`
+(the output of the research phase).  The plan should include:
 
   - Chosen path with rationale (1 paragraph)
   - List of new bazel targets (toolchain, platform, third-party rules)
@@ -338,7 +367,7 @@ output of the research phase).  The plan should include:
 ## 5 What the research agent should NOT do
 
   - Don't modify `compiler_v2/runtime/` or `compiler_v2/api/` source.
-    All work goes under `doc/implementation-plan/phase-c/probes/`.
+    All work goes under `doc/implementation-plan/rewrite/phase-c-probes/`.
   - Don't commit pre-built `.a` files to the repo until the plan
     chooses Path C explicitly.  For probes, use the existing
     `wasm_compilation_experiments/exp1_re2/absl-install/`.
@@ -372,19 +401,19 @@ Each probe directory's `RESULT.md` has:
 <what this means for the Phase C plan>
 ```
 
-After all probes, the agent writes `PHASE_C_PLAN.md` at the same
-directory level as this RESEARCH.md.  Cap at 600 lines.
+After all probes, the agent writes `phase-c-plan.md` at the same
+directory level as this phase-c-research.md.  Cap at 600 lines.
 
 ## 7 Agent prompt (copy-paste ready)
 
 > You are the research agent for Phase C of the cel-spec-wasm project.
 > The branch is `phase-c-libraries` at `/Users/augustine/cel-spec-wasm`.
-> Read `doc/implementation-plan/phase-c/RESEARCH.md` start to finish
+> Read `doc/implementation-plan/rewrite/phase-c-research.md` start to finish
 > before doing anything.  It tells you what to investigate, why, and
 > what to NOT touch.
 >
 > Run probes E1 through E10 in order.  Each probe lives under
-> `doc/implementation-plan/phase-c/probes/E<N>/`.  Create the directory,
+> `doc/implementation-plan/rewrite/phase-c-probes/E<N>/`.  Create the directory,
 > do the work, write `RESULT.md`.  Time-box each probe at 4 hours;
 > mark PARTIAL and continue if blocked.
 >
@@ -394,9 +423,9 @@ directory level as this RESEARCH.md.  Cap at 600 lines.
 >     wrong; bail and write a `BLOCKED.md` describing what's needed).
 >
 > Required reading before probing:
->   - `doc/implementation-plan/phase-c/RESEARCH.md` — this doc
->   - `doc/implementation-plan/phase-c/DESIGN.md` — the per-slice plan
->   - `doc/implementation-plan/wasi/DESIGN.md` — the migration this
+>   - `doc/implementation-plan/rewrite/phase-c-research.md` — this doc
+>   - `doc/implementation-plan/rewrite/phase-c-design.md` — the per-slice plan
+>   - `doc/implementation-plan/rewrite/wasi/DESIGN.md` — the migration this
 >     builds on
 >   - `wasm_compilation_experiments/exp1_re2/RESULTS.md` — what the
 >     CMake-built absl proved
@@ -409,7 +438,7 @@ directory level as this RESEARCH.md.  Cap at 600 lines.
 >   - `CLAUDE.md` — repo rules + the periodic-review process this
 >     research feeds into
 >
-> After all probes, write `doc/implementation-plan/phase-c/PHASE_C_PLAN.md`
+> After all probes, write `doc/implementation-plan/rewrite/phase-c-plan.md`
 > with the chosen path + concrete next-step plan per RESEARCH §4.
 > Then write a short summary to stdout (under 500 words) covering
 > verdict, surprises, and recommended path.
@@ -419,7 +448,7 @@ directory level as this RESEARCH.md.  Cap at 600 lines.
 > in a separate session.
 >
 > Permission scope: read everything; write only under
-> `doc/implementation-plan/phase-c/`.  bazel commands and shell scripts
+> `doc/implementation-plan/rewrite/phase-c-`.  bazel commands and shell scripts
 > are allowed.  No `git push` — the user commits the doc work after
 > reviewing.
 
@@ -427,23 +456,23 @@ directory level as this RESEARCH.md.  Cap at 600 lines.
 
 After research:
 
-  - `doc/implementation-plan/phase-c/RESEARCH.md` — this brief (committed
+  - `doc/implementation-plan/rewrite/phase-c-research.md` — this brief (committed
     now, before research starts)
-  - `doc/implementation-plan/phase-c/probes/E*/` — probe artifacts
+  - `doc/implementation-plan/rewrite/phase-c-probes/E*/` — probe artifacts
     (committed by the research agent OR by the user after review)
-  - `doc/implementation-plan/phase-c/PHASE_C_PLAN.md` — the actionable
+  - `doc/implementation-plan/rewrite/phase-c-plan.md` — the actionable
     plan (committed after research)
-  - `doc/implementation-plan/phase-c/DESIGN.md` — the per-slice slicing
+  - `doc/implementation-plan/rewrite/phase-c-design.md` — the per-slice slicing
     (already committed; lightweight)
 
 The implementation agent (separate session, separate context budget)
-reads `PHASE_C_PLAN.md` + this RESEARCH.md + the probe RESULTs, then
+reads `phase-c-plan.md` + this phase-c-research.md + the probe RESULTs, then
 executes against the chosen path.
 
 ## 9 Open questions for the research to answer
 
 These are the load-bearing unknowns.  The agent should explicitly call
-out the answer to each in `PHASE_C_PLAN.md`.
+out the answer to each in `phase-c-plan.md`.
 
   1. **Path A or B or C?** — per §4 decision matrix.
   2. **Threading variant** — `wasm32-wasi` or `wasm32-wasi-threads`?
@@ -463,7 +492,7 @@ out the answer to each in `PHASE_C_PLAN.md`.
 The research session ends with:
 
   - 10 probe directories under `probes/`, each with a clean RESULT.md
-  - A committed `PHASE_C_PLAN.md` answering all §9 questions
+  - A committed `phase-c-plan.md` answering all §9 questions
   - One specific recommended path
   - Concrete file list + bazel target list for the implementation phase
   - Honest cost estimate for the implementation

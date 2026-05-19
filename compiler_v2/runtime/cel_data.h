@@ -121,9 +121,8 @@ struct CelValue {
     ArenaListRef arena_list;  // CEL_LIST_ARENA
     uint32_t ref_slot;        // CEL_MAP_HOST + CEL_LIST_HOST (and any
                               // future host aggregates; CEL_MESSAGE
-                              // has its own `msg_slot` for now to
-                              // keep cel_host call sites unchanged
-                              // since M3.A).
+                              // has its own `msg_slot` to keep
+                              // cel_host call sites unchanged).
     uint32_t msg_slot;
     // CEL_TYPE values reuse the `s` arm above (CelSpan = ptr+len).
     // The bytes pointed at are the spec type-name string ("int",
@@ -131,11 +130,11 @@ struct CelValue {
     // "google.protobuf.Timestamp", ...) living in rodata (compile-
     // time-knowable names), per-Eval arena (host-resolved
     // `type(<message>)`), or workspace (`Activation::Bind` for a
-    // `Value::Type(name)`-typed binding).  See M9.A in
-    // `doc/implementation-plan/rewrite/m9-type-subsystem.md` §3.3.1
-    // for the lifetime model.  No `type_id` field — there is no
-    // intern table; equality of CEL_TYPE values is `memcmp` on the
-    // payload.s bytes (M9.D in `cel_runtime.c::cel_equals`).
+    // `Value::Type(name)`-typed binding).  See
+    // `rewrite/m9-type-subsystem.md` §3.3.1 for the lifetime model.
+    // No `type_id` field — there is no intern table; equality of
+    // CEL_TYPE values is `memcmp` on the payload.s bytes (see
+    // `cel_runtime.c::cel_equals`).
     CelDurTs dur;
     CelDurTs ts;
     uint32_t opt;
@@ -184,10 +183,10 @@ enum {
   CEL_ERR_DIVIDE_BY_ZERO = 11,
   CEL_ERR_MODULUS_BY_ZERO = 12,
   CEL_ERR_TYPE_MISMATCH = 13,
-  // Returned by `ProtoBacking::ReadField` for MAP / REPEATED fields
-  // until M6 flips them to host-backed aggregates.  Named explicitly
-  // as the M2→M6 graduation contract (m2-ident-select-unknowns.md
-  // §2.8 / §6.1.1 envelope boundary row).
+  // Returned by `ProtoBacking::ReadField` for proto field types
+  // not yet supported by the host-backed aggregate decoder.
+  // See `rewrite/m2-ident-select-unknowns.md` §2.8 / §6.1.1
+  // envelope boundary row.
   CEL_ERR_TYPE_UNSUPPORTED = 14,
   // Returned by `cel_map_lookup_arena` (and the kDynamic dispatcher)
   // when the key is absent from the map.  Per langdef §"Indexing":
@@ -203,19 +202,20 @@ enum {
   // an error (not Python-style wrap-around).  Wire value mirrors
   // `cel::ErrorCode::kIndexOutOfBounds` (api/error.h).
   CEL_ERR_INDEX_OUT_OF_BOUNDS = 17,
-  // M7B.D: parse failures on `timestamp(str)` / `duration(str)` —
+  // Parse failures on `timestamp(str)` / `duration(str)` —
   // bad input (lowercase `z`, unordered compound, unknown unit,
-  // leap-second `:60`, two-digit year, …) per Probes B/C in the
-  // m7b plan.  Distinct from kTypeMismatch (which signals wrong
-  // operand kind, not bad-string contents).
+  // leap-second `:60`, two-digit year, …) per the langdef-strict
+  // post-validation rules in `cel_time_parse.cc`.  Distinct from
+  // kTypeMismatch (which signals wrong operand kind, not
+  // bad-string contents).
   CEL_ERR_INVALID_ARGUMENT = 18,
-  // M2.C: Layer-2 trampoline (`CelGetFieldImpl` / `CelHasFieldImpl`)
+  // Layer-2 trampoline (`CelGetFieldImpl` / `CelHasFieldImpl`)
   // returns this when the resolver can't find a FieldDescriptor for
   // the (field_number, field_name) pair the AST referenced — usually
   // because field_ref_id is out-of-range against `cel.abi.fields[]`.
   // Mirrors `cel::ErrorCode::kFieldNotFound` (api/error.h).
   CEL_ERR_FIELD_NOT_FOUND = 20,
-  // M2.C: Layer-2 trampoline returns this when the externref slot
+  // Layer-2 trampoline returns this when the externref slot
   // pointed at by a CEL_MESSAGE CelValue has not been interned (or
   // was interned in a different generation that has since been
   // Reset()).  Distinct from kTypeMismatch — the operand kind was

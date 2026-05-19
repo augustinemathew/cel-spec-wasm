@@ -57,9 +57,9 @@ std::optional<cel::Value> UnpackWrapperMessage(
 std::optional<cel::Value> UnpackWellKnownTimeMessage(
     const google::protobuf::Message& sub);
 
-// M8.B — chain the two WKT peelers in a single call site: returns
-// the inner-scalar / Timestamp / Duration value if `sub` is one of
-// the recognised WKT message types, otherwise `std::nullopt`.
+// Chain the two well-known-type peelers in a single call site:
+// returns the inner-scalar / Timestamp / Duration value if `sub` is
+// one of the recognised WKT message types, otherwise `std::nullopt`.
 // Lets both Any-unwrap and proto-field-read share one entry point
 // without duplicating the if-cascade.
 inline std::optional<cel::Value> MaybeUnpackWktMessage(
@@ -69,10 +69,10 @@ inline std::optional<cel::Value> MaybeUnpackWktMessage(
   return std::nullopt;
 }
 
-// M7-A.B: parse `any.type_url`, look up the wrapped FQN in `pool`,
-// parse `any.value` against that descriptor, return an owning
-// backing.  Returns a `cel::Value`:
-//   - `null` when type_url is empty (probe B; matches the M7-shipped
+// Parse `any.type_url`, look up the wrapped FQN in `pool`, parse
+// `any.value` against that descriptor, return an owning backing.
+// Returns a `cel::Value`:
+//   - `null` when type_url is empty (matches the proto-literal
 //     null-on-unset rule and serves as the "Any not populated" signal).
 //   - `Error(kFieldNotFound)` when the FQN isn't in the pool.
 //   - `Error(kTypeMismatch)` when value bytes don't parse.
@@ -94,7 +94,7 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
       any_refl->GetStringReference(any, type_url_fd, &url_scratch);
   if (type_url.empty()) return cel::Value::Null();
   // FQN = substring after the last '/'.  No slash → FQN is the whole
-  // string (probe B); subsequent pool lookup either resolves or fails.
+  // string; subsequent pool lookup either resolves or fails.
   const size_t slash = type_url.rfind('/');
   const absl::string_view fqn =
       (slash == absl::string_view::npos)
@@ -123,7 +123,7 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
         cel::ErrorCode::kTypeMismatch,
         absl::StrCat("Any payload bytes don't parse against `", fqn, "`"));
   }
-  // M8.B: chain wrapper-peel + WKT-time-peel after Any-unwrap so
+  // Chain wrapper-peel + WKT-time-peel after Any-unwrap so
   // `Any{Int32Value{value:1}}` surfaces as `int 1` and
   // `Any{Timestamp{...}}` as `CEL_TIMESTAMP` (instead of CEL_MESSAGE).
   // Mirrors the same chain at `ReadScalarField` so Any-erased and
@@ -132,8 +132,8 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
   return cel::Value::OwnedMessage(std::move(sub));
 }
 
-// m7b §4.8 — well-known time-type normaliser for proto field reads.
-// When a singular CPPTYPE_MESSAGE field resolves to
+// Well-known time-type normaliser for proto field reads.  When a
+// singular CPPTYPE_MESSAGE field resolves to
 // `google.protobuf.Timestamp` / `google.protobuf.Duration`, peel the
 // (seconds, nanos) pair via reflection (field numbers 1 and 2 are
 // pinned by the well-known type definitions) and return the matching
@@ -165,12 +165,12 @@ std::optional<cel::Value> UnpackWellKnownTimeMessage(
   return cel::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
 }
 
-// M8.B: closed set of 9 google.protobuf wrapper FQNs.  Shared
-// between the unset-field-null gate in `ReadScalarField` and the
-// peel-the-inner-scalar `UnpackWrapperMessage` below (and chained
-// from `UnpackAnyToValue` for Any-of-wrapper).  Per langdef line
-// 484-486 the unset-wrapper-field-evaluates-to-null exception
-// applies regardless of proto syntax (proto2 and proto3 agree).
+// Closed set of 9 google.protobuf wrapper FQNs.  Shared between the
+// unset-field-null gate in `ReadScalarField` and the peel-the-inner-
+// scalar `UnpackWrapperMessage` below (and chained from
+// `UnpackAnyToValue` for Any-of-wrapper).  Per langdef line 484-486
+// the unset-wrapper-field-evaluates-to-null exception applies
+// regardless of proto syntax (proto2 and proto3 agree).
 bool IsWrapperFqn(absl::string_view fqn) {
   return fqn == "google.protobuf.BoolValue" ||
          fqn == "google.protobuf.Int32Value" ||
@@ -183,9 +183,9 @@ bool IsWrapperFqn(absl::string_view fqn) {
          fqn == "google.protobuf.BytesValue";
 }
 
-// M8.B — well-known WRAPPER-type normaliser for proto field reads.
-// Mirror of `UnpackWellKnownTimeMessage` (m7b §4.8): when a
-// singular CPPTYPE_MESSAGE field resolves to one of the 9
+// Well-known WRAPPER-type normaliser for proto field reads.  Mirror
+// of `UnpackWellKnownTimeMessage`: when a singular CPPTYPE_MESSAGE
+// field resolves to one of the 9
 // google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
 // String,Bytes}Value types, peel the inner `value` field (number 1)
 // via reflection and return the matching cel::Value scalar.
@@ -293,8 +293,9 @@ std::optional<cel::Value> ReadNumericField(
 
 // Read a singular CPPTYPE_MESSAGE field, applying the langdef
 // §"Field Selection" presence rules and the WKT auto-peel chain
-// (M7-A.B Any-unwrap, m7b §4.8 Timestamp / Duration peel, M8.B
-// wrapper peel).  Extracted from `ReadScalarField` so the dispatch
+// (Any-unwrap, Timestamp / Duration peel, wrapper peel — see
+// `doc/implementation-plan/rewrite/cel-host-surface.md` for the
+// peel chain spec).  Extracted from `ReadScalarField` so the dispatch
 // ladder there stays under the readability-function-size gate.
 //
 // Presence rules:
@@ -390,10 +391,10 @@ const google::protobuf::FieldDescriptor* absl_nullable ResolveFieldDescriptor(
 // OwnedProtoBacking — Layer 1 over an owned `unique_ptr<Message>`.
 // ══════════════════════════════════════════════════════════════════
 //
-// Constructed by `CelMakeMessageImpl` for M7-built proto literals;
-// owns the heap-allocated default-proto so the
+// Constructed by `CelMakeMessageImpl` for proto literals built inside
+// the wasm module; owns the heap-allocated default-proto so the
 // `ExternrefTable::Reset()` between Evals frees it.  Reads delegate
-// to a composed `ProtoBacking` over the owned message — same M2.C
+// to a composed `ProtoBacking` over the owned message — same
 // reflection path used for host-bound messages, no duplicated logic.
 
 OwnedProtoBacking::OwnedProtoBacking(
@@ -425,13 +426,13 @@ absl::StatusOr<cel::Value> ProtoBacking::ReadField(
       ResolveFieldDescriptor(*msg_, field_number, field_name);
   if (field == nullptr) return FieldNotFound(field_name);
 
-  // M3.G: map fields land here as `Value::HostMap(ProtoMap{…})` —
-  // the trampoline interns the backing into the ExternrefTable and
-  // hands a `CEL_MAP_HOST` slot back to wasm.
-  // M4.G: REPEATED (non-map) fields land as `Value::HostList(
-  // ProtoList{…})` — same intern path, separate ExternrefTable
-  // namespace.  `is_map()` is checked first because every map field
-  // is also `is_repeated()` per descriptor.proto.
+  // Map fields land here as `Value::HostMap(ProtoMap{…})` — the
+  // trampoline interns the backing into the ExternrefTable and hands
+  // a `CEL_MAP_HOST` slot back to wasm.
+  // REPEATED (non-map) fields land as `Value::HostList(ProtoList{…})`
+  // — same intern path, separate ExternrefTable namespace.
+  // `is_map()` is checked first because every map field is also
+  // `is_repeated()` per descriptor.proto.
   if (field->is_map()) {
     return cel::Value::HostMap(std::make_shared<ProtoMap>(msg_, field));
   }
@@ -464,8 +465,8 @@ bool ProtoBacking::HasField(int field_number,
 // ══════════════════════════════════════════════════════════════════
 
 // File-scope helpers shared by HostMap (Layer-1, vector-backed) and
-// ProtoMap (M3.G, reflection-backed).  TU-internal via `static` so
-// the symbols don't escape this translation unit.
+// ProtoMap (reflection-backed).  TU-internal via `static` so the
+// symbols don't escape this translation unit.
 
 // langdef §"Equality" / §"Map keys": cross-type numeric equality
 // (int ≡ uint by mathematical value; negative int never equals any
@@ -888,7 +889,7 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
-// ProtoMap — proto-reflection over a single map field (M3.G).
+// ProtoMap — proto-reflection over a single map field.
 //
 // Proto map fields serialise on the wire as `repeated MapEntry`,
 // where MapEntry is a synthesized message with fields
@@ -1130,8 +1131,7 @@ void ProtoList::ForEach(
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Layer-2 trampoline bodies — `CelGetFieldImpl` / `CelHasFieldImpl`
-// (M2.C.0b).
+// Layer-2 trampoline bodies — `CelGetFieldImpl` / `CelHasFieldImpl`.
 //
 // Both share the same prelude:
 //   1. read msg_cv from `mem` (must precede any out_slot writes so
@@ -1308,7 +1308,7 @@ absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
-// M5.D step 2 — aggregate-op kHost trampolines.
+// Aggregate-op kHost trampolines.
 //
 // The seven dispatchers in `cel_runtime.c` (`cel_list_size` /
 // `cel_list_in` / `cel_list_eq` / `cel_list_concat` / `cel_map_size`
@@ -1320,7 +1320,9 @@ absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
 // scalar-only matcher (`HostScalarValueEq`) consistent with the
 // arena fast paths in `cel_runtime.c::cel_value_eq` —
 // nested-aggregate equality (lists of lists, maps of messages, …)
-// returns false here for now and lands as M6 follow-up.
+// returns false here for now; see
+// `doc/implementation-plan/rewrite/cel-host-surface.md` for the
+// scope boundary.
 // ══════════════════════════════════════════════════════════════════
 
 namespace {
@@ -1419,7 +1421,7 @@ uint32_t ReadArenaListCount(const CelValue& cv, const MemoryView& mem) {
 
 // Encode a backing-returned cel::Value into a CelValue.  Aggregate
 // returns POISON since aggregate element equality is out of scope
-// for this slice (M6 follow-up; mirrors arena fast path).
+// here (mirrors arena fast path).
 absl::StatusOr<CelValue> EncodeBackingScalar(const cel::Value& v,
                                              ArenaAllocator& alloc) {
   using K = cel::Value::Kind;
@@ -1632,7 +1634,7 @@ absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
   //          new run at the right offset.
   //        - If CEL_LIST_HOST: walk `backing->ForEach`, encode each
   //          `cel::Value` into a CelValue (via `EncodeBackingScalar`
-  //          extended for aggregates — the M6 work item), and
+  //          extended for aggregates — pending work item), and
   //          write into the destination run.
   //   3. Write `{kind:CEL_LIST_ARENA, arena_list.header_ptr=hdr_off}`
   //      into `out_slot`.  The result is observably an arena list,
@@ -1642,14 +1644,14 @@ absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
   // CelMapEqImpl) and to any future operator that needs to walk
   // both operands as one origin: lift host into arena, then run
   // the arena fast path.  Documented in
-  // `doc/implementation-plan/rewrite/m5-kcall-comprehensions.md
-  //  §"Cross-origin materialisation"` and
-  // `doc/implementation-plan/rewrite/map-list-dispatch.md §6`.
+  // `doc/implementation-plan/rewrite/m5-kcall-comprehensions.md`
+  // §"Cross-origin materialisation" and
+  // `doc/implementation-plan/rewrite/map-list-dispatch.md` §6.
   //
-  // M5.D step 2 ship state: nested-aggregate elements + the
-  // re-entrant arena allocation aren't fully exercised yet, so
-  // mixed-origin concat POISONs with TYPE_MISMATCH for now.  M6
-  // (or earlier follow-up) flips this to actual materialisation.
+  // Current ship state: nested-aggregate elements + the re-entrant
+  // arena allocation aren't fully exercised yet, so mixed-origin
+  // concat POISONs with TYPE_MISMATCH; follow-up work flips this to
+  // actual materialisation.
   WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
   return absl::OkStatus();
 }
@@ -1742,15 +1744,14 @@ absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
   CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
   CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
   if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
-  // M5.D step 2 ship state: only both-host map equality is supported
+  // Current ship state: only both-host map equality is supported
   // (mixed origins → TYPE_MISMATCH).  Same-arena routes through the
   // dispatcher's arena fast path.  The shipping strategy for
   // arena↔host pairs is to MATERIALISE the host operand into the
   // arena (lift via ForEach + EncodeBackingScalar + arena_alloc) and
   // then run the arena+arena equality walk — same lift-then-walk
   // pattern documented in CelListConcatImpl and described in
-  // `m5-kcall-comprehensions.md §"Cross-origin materialisation"`.
-  // The lift body lands as an M6 follow-up.
+  // `rewrite/m5-kcall-comprehensions.md` §"Cross-origin materialisation".
   if (a_cv.kind != CEL_MAP_HOST || b_cv.kind != CEL_MAP_HOST) {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
@@ -1773,8 +1774,8 @@ absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
   return absl::OkStatus();
 }
 
-// M7-A.C: if `m` is a google.protobuf.Any, unpack its type_url +
-// value against the Any descriptor's own pool and return a fresh
+// If `m` is a google.protobuf.Any, unpack its type_url + value
+// against the Any descriptor's own pool and return a fresh
 // typed-message clone (stashed in `owner` so the caller can keep it
 // alive).  Returns the original `m` when it's not an Any; returns
 // nullptr on Any-unpack failure (malformed type_url / unknown FQN /
@@ -1813,21 +1814,21 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
         "CelMessageEqImpl: message msg_slot not found in ExternrefTable");
   }
   // HostMessageBacking exposes its underlying Message* via the
-  // virtual `message()` introduced at M7.A so both `ProtoBacking`
-  // (host-bound) and `OwnedProtoBacking` (M7-built) participate
-  // uniformly.  Custom non-proto backings return nullptr from
-  // `message()` and surface kTypeMismatch (proto-vs-non-proto eq is
-  // a spec error per langdef §"Equality").
+  // virtual `message()` so both `ProtoBacking` (host-bound) and
+  // `OwnedProtoBacking` (proto-literal-built) participate uniformly.
+  // Custom non-proto backings return nullptr from `message()` and
+  // surface kTypeMismatch (proto-vs-non-proto eq is a spec error per
+  // langdef §"Equality").
   const google::protobuf::Message* a_msg = a_backing->message();
   const google::protobuf::Message* b_msg = b_backing->message();
   if (a_msg == nullptr || b_msg == nullptr) {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  // M7-A.C: peel either operand if it's a google.protobuf.Any
-  // (typical shape: a direct `Any{...}` literal that didn't pass
-  // through ProtoBacking::ReadField's M7-A.B unwrap arm).  The
-  // peeled owners live for the duration of this call.
+  // Peel either operand if it's a google.protobuf.Any (typical
+  // shape: a direct `Any{...}` literal that didn't pass through
+  // ProtoBacking::ReadField's unwrap arm).  The peeled owners live
+  // for the duration of this call.
   std::unique_ptr<google::protobuf::Message> a_owner;
   std::unique_ptr<google::protobuf::Message> b_owner;
   const google::protobuf::Message* a_cmp = PeelAnyForEq(a_msg, a_owner);
@@ -1850,7 +1851,7 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
-// M7.A — `cel_host.cel_make_message(type_id, out_slot)`.
+// `cel_host.cel_make_message(type_id, out_slot)`.
 //
 // Resolves type_id → Descriptor* against the per-Plan
 // `bindings.message_types` lookup (populated from `cel.abi.types[]`
@@ -1885,10 +1886,10 @@ absl::Status CelMakeMessageImpl(uint32_t type_id, uint32_t out_slot,
           entry.descriptor);
   if (prototype == nullptr) {
     // Generated factory doesn't know about this descriptor — most
-    // likely a dynamic descriptor loaded via SchemaProtoSource.  M7.A
-    // ships generated_factory() coverage; dynamic-descriptor support
-    // is a follow-up tied to the conformance harness's descriptor
-    // mode.  Surface as a clean spec error.
+    // likely a dynamic descriptor loaded via SchemaProtoSource.
+    // Dynamic-descriptor support is a follow-up tied to the
+    // conformance harness's descriptor mode.  Surface as a clean
+    // spec error.
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
@@ -1907,26 +1908,20 @@ absl::Status CelMakeMessageImpl(uint32_t type_id, uint32_t out_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
-// M7.B — `cel_host.cel_set_field(msg_slot, field_ref_id, value_slot)`.
+// `cel_host.cel_set_field(msg_slot, field_ref_id, value_slot)`.
 //
 // Per-cpp_type dispatch on the resolved FieldDescriptor.  The
 // OwnedProtoBacking wrapping the constructed message exposes a
 // non-const `Message*` via `mutable_message()`; reflection's
 // `Set...` family writes through that pointer.
 //
-// M7.C extends this trampoline to repeated and map fields: walk
-// the source list/map (arena or host), and per element call
-// `Reflection::Add...` for repeated fields, or build a fresh
-// MapEntry submessage via `Reflection::AddMessage` for map fields.
+// Repeated + map fields walk the source list/map (arena or host)
+// and per element call `Reflection::Add...` for repeated, or build
+// a fresh MapEntry submessage via `Reflection::AddMessage` for map.
 // Per-cpp_type dispatch shares structure with the scalar path
 // (singular `Set...` ↔ repeated `Add...`); element-of-message and
 // map-value-of-message route through `CopyFrom` on a fresh
 // reflection-allocated submessage.
-//
-// Singular-message (CPPTYPE_MESSAGE) field set is M7.E; repeated-
-// of-message + map-value-of-message work today because the
-// `AddMessage` reflection slot returns a fresh submessage we
-// `CopyFrom` into.
 // ══════════════════════════════════════════════════════════════════
 
 namespace {
@@ -1950,16 +1945,16 @@ std::string ReadSpanString(const CelValue& cv, const MemoryView& mem) {
   return std::string(sv);
 }
 
-// M7-A.A: write `src` into `dst` (a CPPTYPE_MESSAGE slot the caller
-// already resolved via `MutableMessage` or `AddMessage`).  Three
-// shapes:
-//   (1) dst descriptor == src descriptor    → CopyFrom (M7).
+// Write `src` into `dst` (a CPPTYPE_MESSAGE slot the caller already
+// resolved via `MutableMessage` or `AddMessage`).  Three shapes:
+//   (1) dst descriptor == src descriptor    → CopyFrom.
 //   (2) dst is google.protobuf.Any          → reflection-pack.
-//   (3) other descriptor mismatch           → Unimplemented (M8).
+//   (3) other descriptor mismatch           → InvalidArgument (see
+//                                             tail below).
 // The reflection path (vs the typed `Any::PackFrom`) is required for
-// portability across generated and dynamic descriptor pools — probe A
-// in m7a-any.md §10.1 pinned this.  Shared across every cpp_type-
-// MESSAGE caller (singular set, repeated append, map-entry value).
+// portability across generated and dynamic descriptor pools.  Shared
+// across every cpp_type-MESSAGE caller (singular set, repeated
+// append, map-entry value).
 absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
                                 const google::protobuf::Message& src) {
   using FD = google::protobuf::FieldDescriptor;
@@ -1987,14 +1982,13 @@ absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
     refl->SetString(dst, value_fd, src.SerializeAsString());
     return absl::OkStatus();
   }
-  // Post-M8.A: the remaining descriptor-mismatch path (dst is some
-  // non-Any non-same-descriptor target) is reachable only if codegen
-  // / Activation handed us a CEL_MESSAGE with the wrong descriptor.
-  // M8.C tail-unwrap and M8.A's `SetWrapperFieldFromScalar` both
-  // route scalar values through their own paths before reaching
-  // here; only proper-message-vs-mismatched-message lands here.
-  // Surface as Invalid rather than CHECK — embedder error, not
-  // codegen bug.
+  // The remaining descriptor-mismatch path (dst is some non-Any
+  // non-same-descriptor target) is reachable only if codegen /
+  // Activation handed us a CEL_MESSAGE with the wrong descriptor.
+  // Wrapper tail-unwrap and `SetWrapperFieldFromScalar` both route
+  // scalar values through their own paths before reaching here;
+  // only proper-message-vs-mismatched-message lands here.  Surface
+  // as Invalid rather than CHECK — embedder error, not codegen bug.
   return absl::InvalidArgumentError(
       absl::StrCat("WriteMessageOrPack: dst `", dst_desc->full_name(),
                    "` ≠ src `", src_desc->full_name(),
@@ -2002,10 +1996,10 @@ absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
                    "field write"));
 }
 
-// M8.A — write the inner `value` field of a freshly-allocated wrapper
+// Write the inner `value` field of a freshly-allocated wrapper
 // message from a matching scalar CelValue.  9-way cpp_type dispatch,
-// mirror of the read-side `UnpackWrapperMessage` (M8.B).  Extracted
-// from `SetWrapperFieldFromScalar` to keep the parent under the
+// mirror of the read-side `UnpackWrapperMessage`.  Extracted from
+// `SetWrapperFieldFromScalar` to keep the parent under the
 // readability-function-size gate.
 absl::Status SetWrapperInnerValue(
     const google::protobuf::Reflection& wr, google::protobuf::Message& wrapper,
@@ -2064,11 +2058,11 @@ absl::Status SetWrapperInnerValue(
   }
 }
 
-// M8.A — synthesise a wrapper-message proto from a matching scalar
+// Synthesise a wrapper-message proto from a matching scalar
 // CelValue and assign it to a wrapper-typed singular-message field
 // on the outer message.  Called by `SetScalarField`'s CPPTYPE_MESSAGE
 // arm when the field's `message_type()` FQN is one of the 9 wrapper
-// FQNs.  Mirror of the read-side `UnpackWrapperMessage` (M8.B) shape.
+// FQNs.  Mirror of the read-side `UnpackWrapperMessage` shape.
 absl::Status SetWrapperFieldFromScalar(
     const google::protobuf::Reflection& outer_refl,
     google::protobuf::Message& outer,
@@ -2210,28 +2204,27 @@ absl::Status SetScalarField(
       // to leaving it unset).  `Foo{m: null} == Foo{}` per the
       // conformance corpus's `set_null/*` rows.  For wrapper-typed
       // fields, langdef line 484-486's unset-reads-as-null rule
-      // makes this round-trip with the read-side M8.B peel.
+      // makes this round-trip with the read-side wrapper peel.
       if (value.kind == CEL_NULL) {
         refl->ClearField(&msg, &field);
         return absl::OkStatus();
       }
-      // M8.A: wrapper-typed field with scalar source — synthesise
-      // the wrapper proto and assign.  `Foo{single_int32_wrapper: 5}`
+      // Wrapper-typed field with scalar source — synthesise the
+      // wrapper proto and assign.  `Foo{single_int32_wrapper: 5}`
       // sees scalar CEL_INT here because typed_ast.cc:56 stamps the
-      // value as `Int32` Repr; M8.A's auto-wrap is the boundary
+      // value as `Int32` Repr; the auto-wrap below is the boundary
       // where the scalar becomes an `Int32Value{value: 5}` proto.
       const google::protobuf::Descriptor* mt = field.message_type();
       if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
           value.kind != CEL_MESSAGE) {
         return SetWrapperFieldFromScalar(*refl, msg, field, *mt, value, mem);
       }
-      // M7.E: nested singular message — `Foo{nested: Bar{...}}`.
-      // The outer kStructExpr lowering recursively built `Bar{...}`
-      // into a fresh OwnedProtoBacking and wrote a CEL_MESSAGE
-      // CelValue at value_slot.  Here we resolve that backing and
-      // CopyFrom into a freshly-mutable submessage of the outer
-      // field — same pattern as repeated-of-message in
-      // AppendRepeatedFromCelValue.
+      // Nested singular message — `Foo{nested: Bar{...}}`.  The
+      // outer kStructExpr lowering recursively built `Bar{...}` into
+      // a fresh OwnedProtoBacking and wrote a CEL_MESSAGE CelValue
+      // at value_slot.  Here we resolve that backing and CopyFrom
+      // into a freshly-mutable submessage of the outer field — same
+      // pattern as repeated-of-message in AppendRepeatedFromCelValue.
       if (value.kind != CEL_MESSAGE) {
         return absl::InvalidArgumentError(absl::StrCat(
             "CelSetFieldImpl: field `", field.name(),
@@ -2241,7 +2234,7 @@ absl::Status SetScalarField(
         return absl::InternalError(
             absl::StrCat("CelSetFieldImpl: field `", field.name(),
                          "` is MESSAGE but no ExternrefTable supplied "
-                         "(M7.E call-site bug)"));
+                         "(nested-message call-site bug)"));
       }
       const HostMessageBacking* src = refs->Lookup(value.payload.msg_slot);
       if (src == nullptr) {
@@ -2256,8 +2249,8 @@ absl::Status SetScalarField(
                          "` source backing has no proto message"));
       }
       // Descriptor-aware dst-write: descriptors match → CopyFrom;
-      // dst is google.protobuf.Any → reflection-pack (M7-A.A);
-      // other mismatch → Unimplemented (M8 wrapper auto-wrap).
+      // dst is google.protobuf.Any → reflection-pack; other mismatch
+      // → InvalidArgument (wrapper auto-wrap is gated above).
       google::protobuf::Message* dst = refl->MutableMessage(&msg, &field);
       return WriteMessageOrPack(dst, *src_msg);
     }
@@ -2267,7 +2260,7 @@ absl::Status SetScalarField(
   return absl::InternalError("unreachable");
 }
 
-// ──── M7.C — repeated + map field set helpers ───────────────────
+// ──── Repeated + map field set helpers ──────────────────────────
 
 // Walk an arena-list CelValue's elements, calling `visit(elem, i)`
 // per element (read via the MemoryView).  Caller has verified
@@ -2788,7 +2781,7 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
         "CelSetFieldImpl: msg_slot has no externref entry");
   }
   // Only OwnedProtoBacking is mutable through this path — the
-  // host-bound `ProtoBacking` (M2.C activation messages) wraps a
+  // host-bound `ProtoBacking` (Activation-bound messages) wraps a
   // non-const `const Message*` and must not be mutated.  A
   // dynamic_cast distinguishes; mismatch is a checker regression
   // (a `Foo{...}` literal must construct a fresh OwnedProtoBacking,
@@ -2827,9 +2820,9 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
 
   const CelValue value_cv = ctx.mem.ReadCelValue(value_slot);
 
-  // M7.C: route map / repeated source kinds through dedicated
-  // walkers.  Map check precedes repeated because every proto map
-  // field is also `is_repeated()` per descriptor.proto.
+  // Route map / repeated source kinds through dedicated walkers.
+  // Map check precedes repeated because every proto map field is
+  // also `is_repeated()` per descriptor.proto.
   if (field->is_map()) {
     return SetMapField(*msg, *field, value_cv, ctx.mem, ctx.refs);
   }
@@ -2838,29 +2831,23 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   }
 
   if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
-    // 3VL on `Foo{a: <unknown>}` is unaddressed in the M7 plan;
-    // surfacing as a clean trap matches the M7.B "trust the
-    // checker" stance — a properly-typed CEL program won't pass
-    // an Unknown / Error to a typed scalar field.  Revisit when
-    // partial-eval × construction is exercised by a fixture row.
+    // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a
+    // clean trap matches the "trust the checker" stance — a
+    // properly-typed CEL program won't pass an Unknown / Error to
+    // a typed scalar field.  Revisit when partial-eval ×
+    // construction is exercised by a fixture row.
     return absl::UnimplementedError(absl::StrCat(
         "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
-        " on field set is M7-future"));
+        " on field set not yet supported"));
   }
   return SetScalarField(*msg, *field, value_cv, ctx.mem, &ctx.refs);
 }
 
-// M9.B: cel_host.resolve_message_type_name — STUB.
+// `cel_host.resolve_message_type_name` — descriptor-FQN resolver
+// for `type(<message>)`.
 //
-// M9.B registers the trampoline so the wasm module instantiates
-// cleanly (every declared import must be defined at instantiation
-// time per wasmtime's contract).  The stub poisons out_slot with
-// kTypeMismatch; callers see a clean error rather than a silent
-// miscompile.
-//
-// M9.C replaces the body with the real descriptor walk:
-//   1. Read CEL_MESSAGE at in_slot; look up
-//      `payload.msg_slot` in `ctx.refs` → `HostMessageBacking*`.
+//   1. Read CEL_MESSAGE at in_slot; look up `payload.msg_slot` in
+//      `ctx.refs` → `HostMessageBacking*`.
 //   2. Backing's `Message()` → `proto*`; `proto->GetDescriptor()
 //      ->full_name()` → FQN std::string.
 //   3. Allocate FQN bytes in the per-Eval arena via `ctx.alloc`.
@@ -2868,8 +2855,6 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
 //      out_slot.
 absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
                                            const TrampolineContext& ctx) {
-  // M9.C: descriptor-FQN resolver for `type(<message>)`.
-  //
   // Read the CEL_MESSAGE CelValue at `in_slot`; defence-in-depth the
   // kind check (the runtime helper already routes on kind, but a
   // direct caller — e.g. tests — could reach here with a wrong-kind
@@ -2923,24 +2908,15 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
-// M7B.D: timestamp / duration parse + format trampolines.
-// ══════════════════════════════════════════════════════════════════
-//
-// Layer-2 routes for the four ids that absl can implement cleanly
-// (RFC3339 parse / format, proto-Duration text format).  Per m7b
-// §4.3 the runtime kernel stays descriptor-free; these trampolines
-// are the only piece that links absl::ParseTime / ParseDuration.
-// Probe-B (§10.2) found 4 admit-set drifts between absl and CEL
-// for timestamps; CelTimestampParseImpl post-validates against the
-// drift patterns.  Probe-C (§10.3) found 1 drift for durations
-// (`1s2h` admitted as `2h1s`); CelDurationParseImpl rejects out-of-
-// order compound forms.
+// Timestamp / duration parse + format kernels are now self-hosted in
+// `compiler_v2/runtime/cel_time_parse.cc`; codegen routes the four
+// ids there directly.  See
+// `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
 namespace {
 
-// Write a CEL_ERROR{kind:CEL_ERROR, err:wire_code} into out_slot.
-// Mirrors the runtime-side `poison` shape; we don't include
-// cel_internal.h here because that's a C-only header.
+// `WriteInvalidArgumentError` mirrors the runtime-side `poison`
+// shape and is still used by the with-TZ accessor trampoline below.
 void WriteInvalidArgumentError(uint32_t out_slot, MemoryView& mem) {
   CelValue cv{};
   cv.kind = CEL_ERROR;
@@ -2948,274 +2924,18 @@ void WriteInvalidArgumentError(uint32_t out_slot, MemoryView& mem) {
   mem.WriteCelValue(out_slot, cv);
 }
 
-void WriteOverflowError(uint32_t out_slot, MemoryView& mem) {
-  CelValue cv{};
-  cv.kind = CEL_ERROR;
-  cv.payload.err = CEL_ERR_OVERFLOW;
-  mem.WriteCelValue(out_slot, cv);
-}
-
-// Sign-correlated decomposition shared with EncodeDurationValue /
-// EncodeTimestampValue above; declared inline here so the parse
-// trampolines don't have to repeat the IDivDuration ladder.
-void WriteDurTsPayload(absl::Duration d, uint32_t kind, CelValue* out) {
-  out->kind = kind;
-  DecomposeAbslDuration(d, &out->payload.dur);
-}
-
-// langdef-pinned bounds from m7b §3.2 / cel_time.c.
-constexpr int64_t kTimestampMinSeconds = -62135596800LL;
-constexpr int64_t kTimestampMaxSeconds = 253402300799LL;
-
-// Probe B post-validation: absl is laxer than CEL on lowercase z,
-// year>9999, leap-second `:60`, and two-digit year inputs.  Walks
-// the input once and rejects each pattern explicitly.  Called
-// AFTER absl::ParseTime succeeds.
-bool RejectsAsTimestampPerCEL(absl::string_view input) {
-  // Lowercase trailing z: cel-cpp requires uppercase Z.
-  if (!input.empty() && input.back() == 'z') return true;
-  // Leap-second `:60`: cel-cpp rejects.  Scan for the pattern.
-  // Position the `:60` indicator before the trailing TZ/offset.
-  // Loose check: any substring `:60`.
-  if (input.find(":60") != absl::string_view::npos) return true;
-  // Two-digit year: cel-cpp requires four digits.  The RFC3339
-  // shape starts with `YYYY-MM-DD`.  If the position of the first
-  // `-` is < 4, the year is too short.
-  const size_t dash = input.find('-');
-  return dash == absl::string_view::npos || dash < 4;
-}
-
-// Probe C post-validation: absl admits `1s2h` (as 2h1s); CEL
-// rejects.  Walks the compound-duration input and asserts unit
-// order is strictly decreasing.  Unit ranks below — higher rank =
-// larger unit.  Called only on compound forms (single-unit forms
-// like `3600s` aren't checked because there's nothing to order).
-int UnitRank(char first, char second_or_zero) {
-  // `ns`, `us`, `ms`, `s`, `m`, `h`.  The compound-units we admit
-  // come from absl::ParseDuration; the rank is the proto-Duration
-  // text format order: h > m > s > ms > us > ns.
-  if (first == 'h') return 5;
-  if (first == 'm' && second_or_zero == 0) return 4;
-  if (first == 's' && second_or_zero == 0) return 3;
-  if (first == 'm' && second_or_zero == 's') return 2;
-  if (first == 'u' && second_or_zero == 's') return 1;
-  if (first == 'n' && second_or_zero == 's') return 0;
-  return -1;
-}
-
-bool RejectsAsDurationPerCEL(absl::string_view input) {
-  // Walk the unit suffixes; track the previous rank.  Each unit
-  // suffix follows a numeric chunk; we don't need to parse the
-  // numbers — just the unit letters.  Skip leading sign + first
-  // numeric chunk.
-  int prev_rank = INT32_MAX;
-  for (size_t i = 0; i < input.size();) {
-    const char c = input[i];
-    if (c == '-' || (c >= '0' && c <= '9') || c == '.') {
-      ++i;
-      continue;
-    }
-    // Hit a non-digit: must be a unit letter.
-    const char next = i + 1 < input.size() ? input[i + 1] : 0;
-    const int rank = UnitRank(c, next == 's' ? 's' : 0);
-    if (rank < 0) return true;           // unknown unit
-    if (rank >= prev_rank) return true;  // not strictly decreasing
-    prev_rank = rank;
-    i += (rank == 0 || rank == 1 || rank == 2) ? 2 : 1;  // 2-char ms/us/ns
-  }
-  return false;
-}
-
 }  // namespace
 
-absl::Status CelTimestampParseImpl(uint32_t out_slot, uint32_t str_slot,
-                                   const TrampolineContext& ctx) {
-  CelValue in = ctx.mem.ReadCelValue(str_slot);
-  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
-    ctx.mem.WriteCelValue(out_slot, in);
-    return absl::OkStatus();
-  }
-  if (in.kind != CEL_STRING) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const absl::string_view s =
-      ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
-  absl::Time t;
-  std::string err;
-  if (!absl::ParseTime(absl::RFC3339_full, s, &t, &err) ||
-      RejectsAsTimestampPerCEL(s)) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const absl::Duration since_epoch = t - absl::UnixEpoch();
-  CelValue out_cv{};
-  WriteDurTsPayload(since_epoch, CEL_TIMESTAMP, &out_cv);
-  // langdef range check — also rejects absl's lax year>9999 admit.
-  // Uses the same sign-correlated boundary refinement as
-  // `cel_time.c::payload_in_range`: at MIN with negative nanos or
-  // at MAX with positive nanos overflows too.  Practically
-  // unreachable today (the Probe-B 4-digit-year walker rejects
-  // year 0 first) but pinned here to mirror the runtime-side
-  // gate so a future walker tweak can't introduce a regression
-  // surface.
-  const int64_t out_s = out_cv.payload.ts.seconds;
-  const int32_t out_ns = out_cv.payload.ts.nanos;
-  const bool out_of_range = out_s < kTimestampMinSeconds ||
-                            out_s > kTimestampMaxSeconds ||
-                            (out_s == kTimestampMaxSeconds && out_ns > 0) ||
-                            (out_s == kTimestampMinSeconds && out_ns < 0);
-  if (out_of_range) {
-    WriteOverflowError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  ctx.mem.WriteCelValue(out_slot, out_cv);
-  return absl::OkStatus();
-}
-
-absl::Status CelDurationParseImpl(uint32_t out_slot, uint32_t str_slot,
-                                  const TrampolineContext& ctx) {
-  CelValue in = ctx.mem.ReadCelValue(str_slot);
-  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
-    ctx.mem.WriteCelValue(out_slot, in);
-    return absl::OkStatus();
-  }
-  if (in.kind != CEL_STRING) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const absl::string_view s =
-      ctx.mem.ReadSpan(in.payload.s.ptr, in.payload.s.len);
-  absl::Duration d;
-  if (!absl::ParseDuration(s, &d) || RejectsAsDurationPerCEL(s)) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  CelValue out_cv{};
-  WriteDurTsPayload(d, CEL_DURATION, &out_cv);
-  // proto-Duration range check: cel-cpp's
-  // `EncodeDurationToJson` rejects > ±315B seconds.  Without this
-  // check, `duration("320000000000s")` parses cleanly and
-  // produces a CelValue that the runtime arithmetic kernel would
-  // then reject — surfacing the error at the parse boundary
-  // matches cel-cpp's wire surface.
-  if (out_cv.payload.dur.seconds < -315576000000LL ||
-      out_cv.payload.dur.seconds > 315576000000LL) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  ctx.mem.WriteCelValue(out_slot, out_cv);
-  return absl::OkStatus();
-}
-
-namespace {
-
-// Allocate a string in the per-Eval arena, copy bytes, return a
-// CEL_STRING CelValue.  Used by both format trampolines.
-absl::Status WriteStringResult(absl::string_view s, uint32_t out_slot,
-                               const TrampolineContext& ctx) {
-  uint32_t off = 0;
-  uint8_t* p = ctx.alloc.Alloc(s.size(), &off);
-  if (p == nullptr && !s.empty()) {
-    return absl::ResourceExhaustedError(
-        "arena OOM in CelTimestampFormatImpl/CelDurationFormatImpl");
-  }
-  if (!s.empty()) std::memcpy(p, s.data(), s.size());
-  CelValue cv{};
-  cv.kind = CEL_STRING;
-  cv.payload.s.ptr = off;
-  cv.payload.s.len = static_cast<uint32_t>(s.size());
-  ctx.mem.WriteCelValue(out_slot, cv);
-  return absl::OkStatus();
-}
-
-// proto Duration text format per
-// google/protobuf/duration.proto:
-//   "[-]<seconds>[.<frac>]s"
-// where frac is 3/6/9 digits (trimmed to multiples of 3 by trailing
-// zero strip).  Sign-correlated input → at most one of `(s<0, n<0)`
-// is true.
-std::string FormatProtoDuration(int64_t seconds, int32_t nanos) {
-  std::string out;
-  const bool negative = seconds < 0 || nanos < 0;
-  if (negative) out.push_back('-');
-  // Absolute values; INT64_MIN handled via uint64 cast.
-  const uint64_t abs_s = seconds < 0 ? static_cast<uint64_t>(-(seconds + 1)) + 1
-                                     : static_cast<uint64_t>(seconds);
-  const uint32_t abs_n =
-      nanos < 0 ? static_cast<uint32_t>(-nanos) : static_cast<uint32_t>(nanos);
-  absl::StrAppend(&out, abs_s);
-  if (abs_n != 0) {
-    out.push_back('.');
-    // 9-digit zero-padded fraction, then trim trailing zeros to a
-    // multiple-of-3 length (matches proto JSON encoding).
-    char buf[10];
-    std::snprintf(buf, sizeof(buf), "%09u", abs_n);
-    size_t frac_len = 9;
-    while (frac_len > 3 && buf[frac_len - 1] == '0' &&
-           buf[frac_len - 2] == '0' && buf[frac_len - 3] == '0') {
-      frac_len -= 3;
-    }
-    out.append(buf, frac_len);
-  }
-  out.push_back('s');
-  return out;
-}
-
-}  // namespace
-
-absl::Status CelTimestampFormatImpl(uint32_t out_slot, uint32_t ts_slot,
-                                    const TrampolineContext& ctx) {
-  CelValue in = ctx.mem.ReadCelValue(ts_slot);
-  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
-    ctx.mem.WriteCelValue(out_slot, in);
-    return absl::OkStatus();
-  }
-  if (in.kind != CEL_TIMESTAMP) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const absl::Time t = absl::UnixEpoch() +
-                       absl::Seconds(in.payload.ts.seconds) +
-                       absl::Nanoseconds(in.payload.ts.nanos);
-  std::string s = absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
-  // RFC3339 spec admits both `Z` and `+00:00` for UTC; cel-cpp /
-  // proto Timestamp text format use `Z`.  absl::FormatTime emits
-  // `+00:00`; rewrite the trailing offset.
-  constexpr absl::string_view kUtcOffset = "+00:00";
-  if (s.size() > kUtcOffset.size() && absl::EndsWith(s, kUtcOffset)) {
-    s.resize(s.size() - kUtcOffset.size());
-    s.push_back('Z');
-  }
-  return WriteStringResult(s, out_slot, ctx);
-}
-
-absl::Status CelDurationFormatImpl(uint32_t out_slot, uint32_t dur_slot,
-                                   const TrampolineContext& ctx) {
-  CelValue in = ctx.mem.ReadCelValue(dur_slot);
-  if (in.kind == CEL_ERROR || in.kind == CEL_UNKNOWN) {
-    ctx.mem.WriteCelValue(out_slot, in);
-    return absl::OkStatus();
-  }
-  if (in.kind != CEL_DURATION) {
-    WriteInvalidArgumentError(out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const std::string s =
-      FormatProtoDuration(in.payload.dur.seconds, in.payload.dur.nanos);
-  return WriteStringResult(s, out_slot, ctx);
-}
-
-// ══════════════════════════════════════════════════════════════════
-// M7B.E: with-TZ accessor dispatch trampoline.
+// With-TZ accessor dispatch trampoline.
 // ══════════════════════════════════════════════════════════════════
 //
 // Single host import absorbs all 10 with-TZ accessor surfaces; the
 // per-accessor shims in cel_time.c supply the `accessor_kind`
 // constant.  Wire enum lives in cel_time.h (`CelTzAccessorKind`)
-// and is mirrored here — keep them in lockstep.  See m7b §4.3 +
-// §4.4 Q3 for the "1 dispatch trampoline vs 10 named trampolines"
-// rationale (ABI surface count savings > switch-branch cost).
+// and is mirrored here — keep them in lockstep.  Rationale ("1
+// dispatch trampoline vs 10 named trampolines": ABI surface count
+// savings > switch-branch cost) lives in
+// `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`.
 
 namespace {
 
@@ -3366,13 +3086,12 @@ absl::Status CelTimestampTzAccessorImpl(uint32_t out_slot, uint32_t ts_slot,
   return absl::OkStatus();
 }
 
-// M7B polish: WKT proto-literal unwrap.  Codegen emits this at the
-// kStructExpr tail for `Timestamp{...}` / `Duration{...}` literals.
-// File-local helper: build a `CelValue` carrying the supplied error
-// code with no payload data.  Used by M8.C's `CelWktUnwrapWrapperImpl`
-// to collapse the repeated `{kind=CEL_ERROR, payload.err=...}` blocks
-// into one-line writes (keeps the parent under the
-// readability-function-size gate).
+// WKT proto-literal unwrap.  Codegen emits this at the kStructExpr
+// tail for `Timestamp{...}` / `Duration{...}` literals.  File-local
+// helper: build a `CelValue` carrying the supplied error code with
+// no payload data.  Used by `CelWktUnwrapWrapperImpl` to collapse the
+// repeated `{kind=CEL_ERROR, payload.err=...}` blocks into one-line
+// writes (keeps the parent under the readability-function-size gate).
 static CelValue PoisonCelValue(uint32_t err_code) {
   CelValue v{};
   v.kind = CEL_ERROR;
@@ -3380,7 +3099,7 @@ static CelValue PoisonCelValue(uint32_t err_code) {
   return v;
 }
 
-// M8.C — kStructExpr tail-unwrap for the 9 wrapper FQNs.  Reads
+// kStructExpr tail-unwrap for the 9 wrapper FQNs.  Reads
 // the CEL_MESSAGE at `msg_slot`, peels the inner `value` field via
 // the shared `UnpackWrapperMessage` helper (also used by the
 // read-side auto-peel in `ReadSingularMessageField`), and writes
@@ -3456,11 +3175,10 @@ absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
     ctx.mem.WriteCelValue(out_slot, err);
     return absl::OkStatus();
   }
-  // Reuse `UnpackWellKnownTimeMessage` — same helper the M7B.A
-  // field-read normaliser uses.  Returns nullopt if descriptor
-  // doesn't match WKT Timestamp/Duration (which shouldn't happen
-  // — codegen only emits this for matching s.name() — but
-  // defence-in-depth).
+  // Reuse `UnpackWellKnownTimeMessage` — same helper the field-read
+  // normaliser uses.  Returns nullopt if descriptor doesn't match
+  // WKT Timestamp/Duration (which shouldn't happen — codegen only
+  // emits this for matching s.name() — but defence-in-depth).
   auto wkt = UnpackWellKnownTimeMessage(*msg);
   if (!wkt.has_value()) {
     CelValue err{};

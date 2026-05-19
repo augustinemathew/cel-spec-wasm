@@ -5,14 +5,13 @@
 // expr_lower_comprehension.cc.  Not part of the public surface —
 // callers outside the codegen TUs should use expr_lower.h.
 //
-// Split rationale (post-M5.B, commit 90a01cc): the comprehension
-// codegen had grown to ~950 LoC out of expr_lower.cc's ~2050 and
-// was structurally distinct from the other arms (its own scope
-// machinery, its own runtime helper set, its own pattern-detector
-// zoo).  Splitting keeps each TU under the cognitive-budget
-// threshold (~1100 LoC) and isolates the comprehension surface for
-// the planned simplification pass tracked in
-// m5b-comprehensions-simplification.md.
+// Split rationale: the comprehension codegen is structurally
+// distinct from the other arms (its own scope machinery, its own
+// runtime helper set, its own pattern-detector zoo).  Splitting
+// keeps each TU under the cognitive-budget threshold (~1100 LoC)
+// and isolates the comprehension surface for the planned
+// simplification pass tracked in
+// `rewrite/m5b-comprehensions-simplification.md`.
 
 #include <cstdint>
 #include <vector>
@@ -39,17 +38,16 @@ struct EmitCtx {
   const TypedAst& ast;
   const StaticLayout& layout;
   std::vector<FieldRefRow>& field_refs;
-  // M5.F: looked up at every general-arm `kCallExpr` to map the
-  // resolved cel-cpp `overload_id` (e.g. `add_int64`) onto the
-  // wasm helper this codegen emits a `BinaryenCall` to.
+  // Looked up at every general-arm `kCallExpr` to map the resolved
+  // cel-cpp `overload_id` (e.g. `add_int64`) onto the wasm helper
+  // this codegen emits a `BinaryenCall` to.
   const OverloadTable& overload_table;
 };
 
 // Top-level dispatcher.  Defined in expr_lower.cc.  Comprehension
 // codegen calls it to recurse into iter_range / accu_init /
 // loop_cond / loop_step / result sub-expressions.
-absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
-                                           const cel::Expr& expr);
+absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
 
 // ── Wasm-emission primitives shared between the two TUs ──────────
 

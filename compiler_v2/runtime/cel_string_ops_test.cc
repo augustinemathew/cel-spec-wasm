@@ -5,8 +5,8 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
 #include "gtest/gtest.h"
@@ -31,7 +31,8 @@ namespace {
 class StringOpsTest : public ::testing::Test {
  public:  // public so parameterized lambdas can use the helpers.
   void SetUp() override {
-    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+    arena_reset();
   }
 
   uint32_t MakeOut() {

@@ -1,17 +1,12 @@
-// Tests for the M4 `eval_error` / `any_eval_errors` matcher
-// branch.  Construct `cel::Value::Error` directly and `ErrorSet`
-// matchers as proto literals, then exercise `CompareEvalError`
-// through every outcome documented in `runner.h`.
-//
-// `RunOne` end-to-end coverage lives in the `run_conformance`
-// fixture harness — these tests target the comparison helper in
-// isolation so the proto-encoding shape and the compare semantics
-// are pinned independently.
+// Unit tests for the conformance harness comparison helpers and the
+// matcher-kind envelope predicate.  End-to-end coverage of `RunOne`
+// lives in `run_conformance` against the upstream fixture corpus.
 
 #include "compiler_v2/conformance/runner.h"
 
 #include "gtest/gtest.h"
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "cel/expr/eval.pb.h"
@@ -21,8 +16,6 @@
 
 namespace celwasm::conformance {
 namespace {
-
-// Helpers --------------------------------------------------------
 
 cel::Value MakeRuntimeError(cel::ErrorCode code, const std::string& message) {
   return cel::Value::Error(
@@ -36,69 +29,25 @@ cel::expr::ErrorSet ParseErrorSet(absl::string_view textproto) {
   return out;
 }
 
-// kEvalError comparisons -----------------------------------------
+// CompareEvalError — kind-only matching per cel-cpp upstream
+// `conformance/run.cc`.  Any error matches any matcher; only kind
+// mismatches fail.
 
-TEST(CompareEvalErrorTest, MatchExactMessage) {
-  // Got and want messages are byte-identical → loose match
-  // succeeds on the first substring check, before any normalise
-  // fallback or kind-only fallback fires.
+TEST(CompareEvalErrorTest, ErrorMatchesAnyMatcher) {
+  // Specific message in the matcher is informational only — kind is
+  // the only load-bearing check.
   auto got = MakeRuntimeError(cel::ErrorCode::kDivideByZero, "divide_by_zero");
-  auto want = ParseErrorSet(R"pb(errors { message: "divide_by_zero" })pb");
+  auto want = ParseErrorSet(R"pb(errors { message: "anything" })pb");
   EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
 }
 
-TEST(CompareEvalErrorTest, MatchSubstringMessage) {
-  // Want is a substring of got — the harness should accept loose
-  // either-direction substring matches.
-  auto got = MakeRuntimeError(cel::ErrorCode::kOverflow,
-                              "integer overflow during addition");
-  auto want = ParseErrorSet(R"pb(errors { message: "overflow" })pb");
-  EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
-}
-
-TEST(CompareEvalErrorTest, MatchNormalisedSpaceUnderscore) {
-  // Fixture phrasing ("divide by zero") vs runtime payload
-  // ("divide_by_zero") differ only in `_` vs space + case — the
-  // normalised-substring fallback should catch this.
-  auto got = MakeRuntimeError(cel::ErrorCode::kDivideByZero, "divide_by_zero");
-  auto want = ParseErrorSet(R"pb(errors { message: "divide by zero" })pb");
-  EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
-}
-
-TEST(CompareEvalErrorTest, MatchEmptyErrorsAcceptsAnyError) {
-  // A bare `eval_error: {}` matcher — i.e. errors_size() == 0 — is
-  // a wildcard "an error occurred, don't care which".
-  auto got = MakeRuntimeError(cel::ErrorCode::kDivideByZero, "divide_by_zero");
-  cel::expr::ErrorSet want;  // no `errors` repeated entries
-  EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
-}
-
-TEST(CompareEvalErrorTest, MatchKindOnlyFallback) {
-  // Got and want messages have NO substring overlap and don't
-  // normalise to one another ("foo" vs "divide_by_zero").  The
-  // kind-only fallback (mirrors cel-cpp's harness, which only
-  // checks `has_error()`) should still pass — every CEL error
-  // matches every non-empty `eval_error` matcher at the kind level.
-  auto got = MakeRuntimeError(cel::ErrorCode::kDivideByZero, "divide_by_zero");
-  auto want = ParseErrorSet(R"pb(errors { message: "foo" })pb");
-  EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
-}
-
-TEST(CompareEvalErrorTest, MatchAnyOfMultipleWantMessages) {
-  // Multiple `errors[]` entries — pass if any one matches.
+TEST(CompareEvalErrorTest, EmptyMatcherStillMatches) {
   auto got = MakeRuntimeError(cel::ErrorCode::kOverflow, "overflow");
-  auto want = ParseErrorSet(R"pb(
-    errors { message: "no_such_overload" }
-    errors { message: "overflow" }
-  )pb");
+  cel::expr::ErrorSet want;
   EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
 }
 
 TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
-  // Got is a regular int — kind mismatch is the one outcome that
-  // MUST fail; otherwise the harness would silently pass any
-  // expression that returned a value when the spec required an
-  // error (e.g. `1/0` returning 0 instead of an error).
   auto got = cel::Value::Int(42);
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
@@ -107,9 +56,6 @@ TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
-  // A `Value::Unknown` is also kind-distinct from `Value::Error`
-  // and must NOT satisfy an `eval_error` matcher (the
-  // langdef separates the two).
   auto got = cel::Value::Unknown(cel::AttributeId{.id = 1});
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
@@ -127,7 +73,7 @@ TEST(CompareEvalErrorTest, MismatchNullIsNotError) {
 
 // Envelope membership --------------------------------------------
 
-TEST(IsInM7EnvelopeTest, AdmitsEvalErrorMatcher) {
+TEST(IsInEnvelopeTest, AdmitsEvalErrorMatcher) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -136,10 +82,10 @@ TEST(IsInM7EnvelopeTest, AdmitsEvalErrorMatcher) {
         eval_error { errors { message: "divide_by_zero" } }
       )pb",
       &t));
-  EXPECT_TRUE(IsInM7Envelope(t));
+  EXPECT_TRUE(IsInEnvelope(t));
 }
 
-TEST(IsInM7EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
+TEST(IsInEnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -148,19 +94,28 @@ TEST(IsInM7EnvelopeTest, AdmitsAnyEvalErrorsMatcher) {
         any_eval_errors { errors { errors { message: "divide_by_zero" } } }
       )pb",
       &t));
-  EXPECT_TRUE(IsInM7Envelope(t));
+  EXPECT_TRUE(IsInEnvelope(t));
 }
 
-// `IsInM7Envelope` is now strictly a matcher-kind predicate.  It
-// returns TRUE for `disable_check:true` and `check_only:true` rows
-// whose matcher kind is otherwise in scope — those flags are
-// handled at the `RunOne` call site with their own dedicated
-// SKIP messages (see "SKIP-message taxonomy" in runner.cc).  The
-// previous "predicate-rejects-disable_check" assertion was
-// conflating two concerns and is no longer accurate; the
-// behavioural invariant ("`disable_check:true` rows SKIP") is
-// preserved, just enforced one layer up.
-TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresDisableCheckFlag) {
+TEST(IsInEnvelopeTest, AdmitsTypedResult) {
+  cel::expr::conformance::test::SimpleTest t;
+  ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        name: "typed_result_demo"
+        expr: "1 + 1"
+        typed_result {
+          result { int64_value: 2 }
+          deduced_type { primitive: INT64 }
+        }
+      )pb",
+      &t));
+  EXPECT_TRUE(IsInEnvelope(t));
+}
+
+// `IsInEnvelope` is strictly a matcher-kind predicate.  The
+// `disable_check` / `check_only` flags are checked separately in
+// `RunOne`'s `ScopeReject`; the predicate ignores them.
+TEST(IsInEnvelopeTest, MatcherInScopeIgnoresDisableCheckFlag) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -170,12 +125,10 @@ TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresDisableCheckFlag) {
         eval_error { errors { message: "no_such_overload" } }
       )pb",
       &t));
-  // Matcher kind is `eval_error` — in scope.  The `disable_check`
-  // flag is the call site's responsibility.
-  EXPECT_TRUE(IsInM7Envelope(t));
+  EXPECT_TRUE(IsInEnvelope(t));
 }
 
-TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresCheckOnlyFlag) {
+TEST(IsInEnvelopeTest, MatcherInScopeIgnoresCheckOnlyFlag) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
       R"pb(
@@ -185,7 +138,24 @@ TEST(IsInM7EnvelopeTest, MatcherInScopeIgnoresCheckOnlyFlag) {
         eval_error { errors { message: "divide_by_zero" } }
       )pb",
       &t));
-  EXPECT_TRUE(IsInM7Envelope(t));
+  EXPECT_TRUE(IsInEnvelope(t));
+}
+
+// Skip-category naming -------------------------------------------
+
+TEST(SkipCategoryNameTest, RoundTripsAllValues) {
+  // Exhaustive over the closed enum.  Names are part of the public
+  // harness contract — README's per-fixture SKIP-by-category table
+  // groups by these strings.
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kDisableCheck), "disable_check");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kCheckOnly), "check_only");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kEnvelope), "envelope");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kStaticSubset), "static_subset");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kCompileUnimpl), "compile_unimpl");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kEvalUnimpl), "eval_unimpl");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kExtensionUnimpl), "ext_unimpl");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kTypeEnvUnsupported), "type_env");
+  EXPECT_EQ(SkipCategoryName(SkipCategory::kBindingUnsupported), "bindings");
 }
 
 }  // namespace

@@ -153,7 +153,7 @@ cc_test(
 # manual.
 
 # Internal — decode the `cel.abi` custom section from raw wasm
-# bytes.  Consumed by Engine::Plan at load time (M2.B.2).
+# bytes.  Consumed by Engine::Plan at load time.
 # Parses the wasm byte stream directly (no Binaryen dep) since
 # the custom-section framing is simple and keeping the decoder
 # self-contained limits blast radius on binaryen API changes.
@@ -190,11 +190,13 @@ cc_test(
     ],
 )
 
-# Internal — Layer 1 of the cel_host stack
-# (m2-ident-select-unknowns.md §2.4).  Pure CEL semantics:
+# Internal — Layer 1 of the cel_host stack (see
+# `rewrite/m2-ident-select-unknowns.md` §2.4 and
+# `rewrite/cel-host-surface.md`).  Pure CEL semantics:
 # HostMessageBacking interface + ProtoBacking built-in.  Layer 2
 # (MemoryView / ExternrefTable / ArenaAllocator + trampoline
-# semantics) + Layer 3 (wasmtime glue) land in follow-up slices.
+# semantics) and Layer 3 (wasmtime glue) live in `cel_host.cc`
+# and `cel_host_wasmtime.{cc,h}`.
 #
 # Also defines `cel::Value::Message(const Message&)` so value.cc
 # doesn't need to know about ProtoBacking — the library dep runs
@@ -257,8 +259,8 @@ cc_test(
     ],
 )
 
-# M3.D — HostMap (vector-backed Layer 1) coverage.  Lives separate
-# from cel_host_test so it doesn't pull in the wasmtime-edge fixture
+# HostMap (vector-backed Layer 1) coverage.  Lives separate from
+# cel_host_test so it doesn't pull in the wasmtime-edge fixture
 # scaffolding the trampoline tests need.
 cc_test(
     name = "host_map_test",
@@ -272,7 +274,7 @@ cc_test(
     ],
 )
 
-# M3.G — ProtoMap (proto-reflection over a single map field).
+# ProtoMap (proto-reflection over a single map field).
 cc_test(
     name = "proto_map_test",
     srcs = ["internal/proto_map_test.cc"],
@@ -287,7 +289,7 @@ cc_test(
     ],
 )
 
-# M4.D — HostList (vector-backed Layer 1) coverage.  Mirrors
+# HostList (vector-backed Layer 1) coverage.  Mirrors
 # host_map_test.cc shape against cel::Value::List / HostList::At /
 # ForEach / boundary semantics.
 cc_test(
@@ -302,7 +304,7 @@ cc_test(
     ],
 )
 
-# M4.D — ProtoList (proto-reflection over a single REPEATED field).
+# ProtoList (proto-reflection over a single REPEATED field).
 cc_test(
     name = "proto_list_test",
     srcs = ["internal/proto_list_test.cc"],
@@ -317,10 +319,10 @@ cc_test(
     ],
 )
 
-# M3.E — Layer 2 trampoline body for cel_host.cel_map_lookup.
-# Drives CelMapLookupImpl through fakes for MemoryView /
-# ExternrefTable / ArenaAllocator; intentionally does not depend on
-# the wasmtime-edge Layer 3 (still pending behind M2.C.0b).
+# Layer 2 trampoline body for cel_host.cel_map_lookup.  Drives
+# CelMapLookupImpl through fakes for MemoryView / ExternrefTable
+# / ArenaAllocator; intentionally does not depend on the
+# wasmtime-edge Layer 3.
 cc_test(
     name = "cel_map_lookup_impl_test",
     srcs = ["internal/cel_map_lookup_impl_test.cc"],
@@ -335,7 +337,7 @@ cc_test(
     ],
 )
 
-# M4.E — Layer 2 trampoline body for cel_host.cel_list_at.  Uses
+# Layer 2 trampoline body for cel_host.cel_list_at.  Uses
 # the same shared fakes as cel_map_lookup_impl_test.
 cc_test(
     name = "cel_list_at_impl_test",

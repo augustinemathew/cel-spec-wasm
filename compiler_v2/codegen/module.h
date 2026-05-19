@@ -74,13 +74,17 @@ class WasmModule {
   // Imports a memory from `(import external_module external_base memory)`.
   // `segments` are installed as active data segments over the imported
   // memory — the instantiator writes them at module-load time, so expr's
-  // `.rodata` ends up in shared memory regardless of who owns it.  Fails
-  // (FailedPrecondition) if `SetMemory` / `AddMemoryImport` has already
-  // been called on this module.
+  // `.rodata` ends up in shared memory regardless of who owns it.
+  // `shared` mirrors the wasm spec's "shared" flag — required when the
+  // runtime exports a `wasm32-wasi-threads` shared linear memory (Phase
+  // C and later).  Shared memories MUST have `max_pages` set (wasm spec
+  // requirement); we return InvalidArgument if `shared` is true with
+  // an empty `max_pages`.  Fails (FailedPrecondition) if `SetMemory` /
+  // `AddMemoryImport` has already been called on this module.
   ABSL_MUST_USE_RESULT absl::Status AddMemoryImport(
       absl::string_view external_module, absl::string_view external_base,
       uint32_t initial_pages, std::optional<uint32_t> max_pages,
-      absl::Span<const DataSegment> segments = {});
+      absl::Span<const DataSegment> segments = {}, bool shared = false);
 
   // Registers an imported function.  `internal_name` is the identifier
   // codegen uses to refer to the import from inside function bodies

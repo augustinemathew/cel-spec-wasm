@@ -3,7 +3,7 @@
 //
 // This is the canonical "did the migration not break anything"
 // vertical-slice test referenced by
-// `doc/implementation-plan/wasi/DESIGN.md` §2.
+// `doc/implementation-plan/rewrite/wasi/DESIGN.md` §2.
 //
 // The expression exercises the full pipeline:
 //   - Frontend (cel-cpp parser + checker).
@@ -52,7 +52,7 @@ TEST(MvpConcatE2ETest, FooBar) {
 // Eval's output.  Caught by reading "foobar" back twice.
 //
 // Coverage gap addressed: the review at
-// `doc/implementation-plan/wasi/reviews/2026-05-18-mvp-shipped.md`
+// `doc/implementation-plan/rewrite/wasi/reviews/2026-05-18-mvp-shipped.md`
 // flagged that the single-eval test "is indistinguishable from a
 // hot-path test that bypasses the arena entirely" — this lock fixes
 // that.

@@ -1,5 +1,5 @@
 // String / bytes operation helpers — slot-out helper ABI per
-// `design.md §4.2` / `m5-kcall-comprehensions.md §2.1`.
+// `rewrite/design.md` §4.2.
 //
 // Every helper has the uniform wasm signature
 // `(i32 out_slot, i32 a_slot, ..., i32 argN-1) -> void`.  Bodies
@@ -11,8 +11,7 @@
 // the arena; the resulting CelValue's `payload.s.ptr` points into
 // that arena.  Every dynamically-built string payload is owned by
 // the arena `arena_reset` rewinds at the top of the next $eval, so
-// the lifetime is bounded by one Eval call.  Mirrors the M1
-// `cel_make_string` lifetime contract exactly.
+// the lifetime is bounded by one Eval call.
 //
 // Other helpers (`size`, `eq`, `lt`, `contains`, `startsWith`,
 // `endsWith`) read operand spans without allocating; the result is
@@ -23,9 +22,8 @@
 // on either operand → CEL_ERR_TYPE_MISMATCH.  Arena OOM during
 // concat → CEL_ERR_OVERFLOW.
 //
-// **Regex `matches` is deferred** per `m5-kcall-comprehensions.md
-// §1.2` — needs a regex engine choice that's orthogonal to the
-// rest of M5.
+// **Regex `matches`** is implemented as a separate Phase C kernel
+// (see `rewrite/phase-c-plan.md` §4.5) — needs RE2 vendoring.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_OPS_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_OPS_H_

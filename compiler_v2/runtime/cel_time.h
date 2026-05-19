@@ -1,17 +1,19 @@
 // Timestamp / Duration kernels — pure-wasm slot-out helpers per
-// `design.md §4.2` and `m7b-duration-timestamp.md` §4.3.  All
-// bodies follow the standard `(out_slot, arg_slot...) -> void`
-// shape; reads operands from the workspace, writes the result
-// CelValue at out_slot.
+// `rewrite/design.md` §4.2 and `rewrite/m7b-duration-timestamp.md`
+// §4.3.  All bodies follow the standard
+// `(out_slot, arg_slot...) -> void` shape; reads operands from the
+// workspace, writes the result CelValue at out_slot.
 //
-// Scope (m7b §5):
-//   - M7B.B: 6 arithmetic helpers + 8 ordering helpers (this file).
-//   - M7B.C: 14 UTC accessor helpers + civil-calendar helper (this
-//     file, expanded inline when M7B.C ships).
-//   - M7B.D pure-wasm half: int<->ts/dur conversions + identities
-//     (this file, expanded inline when M7B.D ships).
-//   - M7B.E per-kind shim helpers around the host TZ accessor
-//     trampoline (this file, expanded inline when M7B.E ships).
+// Scope:
+//   - Arithmetic: 6 helpers (add / sub variants over dur / ts).
+//   - Ordering: 8 helpers ({lt,le,gt,ge} × {dur, ts}).
+//   - UTC accessors: 10 timestamp + 4 duration accessor helpers
+//     over the Hinnant civil-calendar helper.
+//   - Conversions: int <-> ts/dur (pure-wasm half).  String parse
+//     / format live in `cel_time_parse.{h,cc}`.
+//   - With-TZ accessor shims: 10 helpers, all routing through the
+//     single host trampoline `cel_host.cel_timestamp_tz_accessor`
+//     with a fixed accessor_kind constant per shim.
 //
 // Semantics:
 //   - 3VL absorption: CEL_UNKNOWN / CEL_ERROR on either operand
@@ -76,7 +78,7 @@ void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // ----- UTC timestamp accessors (10 helpers) --------------------------------
 // All take a single Timestamp operand and write the matching int64
 // projection.  No TZ argument — UTC by definition; the with-TZ variants
-// (M7B.E) route through a single dispatch trampoline on the host.
+// (below) route through a single dispatch trampoline on the host.
 //
 // Result kinds + ranges per langdef + cel-cpp's
 // `runtime/standard/time_functions.cc`:
@@ -117,7 +119,7 @@ void cel_dur_minutes_at_v(uint32_t out_slot, uint32_t d_slot);
 void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot);
 void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
 
-// ----- Conversions (4 helpers, M7B.D pure-wasm half) -----------------------
+// ----- Conversions (4 helpers — pure-wasm half) ----------------------------
 // String <-> timestamp/duration parse + format are host trampolines
 // (RFC3339 / proto-Duration text format need a real parser); the
 // int-direction conversions are pure-wasm.
@@ -132,33 +134,33 @@ void cel_dur_to_int_at_v(uint32_t out_slot, uint32_t dur_slot);
 void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot);
 void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot);
 
-// ----- With-TZ accessor shims (10 helpers, M7B.E) --------------------------
+// ----- With-TZ accessor shims (10 helpers) ---------------------------------
 // Each shim takes `(out_slot, ts_slot, tz_slot)` and delegates to
 // `cel_host.cel_timestamp_tz_accessor(out, ts, tz, accessor_kind)`
 // with a fixed accessor_kind constant per shim.  Single host
-// trampoline absorbs all 10 surfaces — see m7b §4.3 "single
-// dispatch trampoline".
+// trampoline absorbs all 10 surfaces — see
+// `rewrite/m7b-duration-timestamp.md` §4.3 "single dispatch trampoline".
 
 void cel_ts_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                uint32_t tz_slot);
+                               uint32_t tz_slot);
 void cel_ts_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                 uint32_t tz_slot);
+                                uint32_t tz_slot);
 void cel_ts_day_of_month_1_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                          uint32_t tz_slot);
+                                         uint32_t tz_slot);
 void cel_ts_day_of_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                        uint32_t tz_slot);
+                                       uint32_t tz_slot);
 void cel_ts_day_of_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                       uint32_t tz_slot);
+                                      uint32_t tz_slot);
 void cel_ts_day_of_week_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                       uint32_t tz_slot);
+                                      uint32_t tz_slot);
 void cel_ts_hours_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                 uint32_t tz_slot);
+                                uint32_t tz_slot);
 void cel_ts_minutes_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                   uint32_t tz_slot);
+                                  uint32_t tz_slot);
 void cel_ts_seconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                   uint32_t tz_slot);
+                                  uint32_t tz_slot);
 void cel_ts_milliseconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
-                                        uint32_t tz_slot);
+                                       uint32_t tz_slot);
 
 // `accessor_kind` enum — wire contract for the single dispatch
 // trampoline.  Closed, append-only.  Used by both the cel_time.c

@@ -1,65 +1,63 @@
-// Conformance runner — drives every `SimpleTest` row through
-// Compile → Plan → Eval and classifies each outcome as
-// PASS / SKIP / FAIL.  SKIP rows always carry a `category: detail`
-// message string so the per-fixture diagnostic listings can be
-// grepped or tallied without reading source.
+// Conformance runner — drives one `SimpleTest` row through the
+// compiler_v2 pipeline (Compile → Plan → Eval) and classifies the
+// outcome as PASS / SKIP / FAIL.  SKIP rows always carry a
+// `SkipCategory` tag (declared in runner.h) so the aggregator can
+// group counts by category without parsing detail text.
 //
-// SKIP-message taxonomy (stable category prefixes — grep these):
+// Classification rules (see `runner.h::SkipCategory` for the
+// authoritative description of each tag):
 //
-//   disable_check:     row carries `disable_check: true`.
-//                      Out of conformance scope by design — our
-//                      pipeline is checker-passed-only.  See
-//                      `RunOne` below.
-//   check_only:        row carries `check_only: true` (typed_result
-//                      matcher, no eval).  Harness follow-up.
-//   envelope:          matcher kind not in current scope (typed_result
-//                      / object_value-not-yet-supported / no
-//                      matcher set).  See `EnvelopeRejectReason`.
-//   static_subset:     compile rejected by `RejectDyn` — `dyn(...)`
-//                      aggregate / heterogeneous-typed expression.
-//   compile unimplemented:  pipeline returned Unimplemented from a
-//                      stage that's still stub (named milestone in
-//                      the trailing detail; e.g. "comprehensions
-//                      are M5").
-//   <stage> unimplemented:  Eval / PartialEval returned Unimplemented
-//                      from a runtime stage stub (e.g. activation
-//                      encoder for kEnum).
-//   <stage> trampoline stub:  cel_host trampoline returned a marker
-//                      "stub:" trap before the real body landed.
-//   type_env: <reason>:     binding-marshal rejected a type_env decl.
-//   bindings: <reason>:     binding-marshal rejected a bound value.
+//   - Out-of-scope-by-design flags (`disable_check`, `check_only`)
+//     are checked first and skip directly with their dedicated
+//     categories.
+//   - Matcher-kind envelope is checked next; rows whose matcher we
+//     have no comparator for skip as `kEnvelope`.
+//   - Compile failures are classified by `Status::GetPayload(...)`
+//     tags set by `parse_and_check.cc`:
+//       · `kStaticSubsetViolationUrl`  → `kStaticSubset`.
+//       · `kUndeclaredReferencesUrl`   → `kExtensionUnimpl` iff
+//         every undeclared root is in the ext-lib roots list
+//         (`ExtensionRoots()` below); FAIL otherwise.
+//     `Unimplemented` codes from Compile route to `kCompileUnimpl`.
+//   - Eval / PartialEval `Unimplemented` codes route to
+//     `kEvalUnimpl`.
+//   - The marshal helpers in `binding_marshal.h` return
+//     `Unimplemented` for `bindings:` / `type_env:` shapes the
+//     harness doesn't support; those route to `kBindingUnsupported`
+//     / `kTypeEnvUnsupported` respectively.
 //
-// Adding a new SKIP path: pick (or coin) a category prefix above,
-// document it here, and ALWAYS use `category: detail` shape.
-// The fixture-author audience reads SKIP messages as the canonical
-// answer to "why didn't this run" — short and stable matters.
+// Adding a new SKIP category: extend `SkipCategory` + `SkipCategoryName`
+// in runner.h, then route to it from `RunOne` (or a helper).
 
 #include "compiler_v2/conformance/runner.h"
 
-#include <cctype>
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
-#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <variant>
+#include <vector>
 
+#include "absl/base/no_destructor.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 // `test_all_types.pb.h` is included for the side-effect of
-// registering the `cel.expr.conformance.proto{2,3}.TestAllTypes`
-// descriptors into the global pool.  Several fixture textprotos
-// (block_ext, dynamic, enums, parse, proto2, proto2_ext, proto3,
-// type_deduction) embed `google.protobuf.Any` values of these
-// types; without the descriptors registered, TextFormat::Parse
-// fails at load time with "Could not find type".  The pointer
-// references below defeat the linker's dead-strip — protobuf
-// descriptor registration is a static constructor in the .pb.cc,
-// and nothing else in this TU names a symbol from those objects.
+// registering `cel.expr.conformance.proto{2,3}.TestAllTypes` (and
+// the proto2 extension-scoped descriptor) into the generated pool.
+// Several fixtures embed `google.protobuf.Any` values of these
+// types; without registration, `TextFormat::Parse` fails at load
+// time with `"Could not find type"`.  `ForceLinkFixtureDescriptors`
+// referencing the generated `::descriptor()` accessors keeps the
+// linker from dead-stripping the .pb.o.
 #include "cel/expr/conformance/proto2/test_all_types.pb.h"
 #include "cel/expr/conformance/proto2/test_all_types_extensions.pb.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
@@ -73,6 +71,7 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/conformance/binding_marshal.h"
+#include "compiler_v2/frontend/status_tags.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/message_differencer.h"
@@ -81,23 +80,11 @@ namespace celwasm::conformance {
 
 namespace {
 
-// Force-link the .pb.o files that carry the static-initialiser
-// descriptor registration.  Calling the generated `descriptor()`
-// class-static method from a function (rather than a namespace-scope
-// variable initialiser) keeps the linker from dead-stripping the
-// .pb.o while dodging clang-tidy's
-// `bugprone-throwing-static-initialization` on the
-// generated-code declaration.  The helper is called from `RunOne`
-// via a single no-op guarded by the `static` local below.
 void ForceLinkFixtureDescriptors() {
   [[maybe_unused]] const auto* p2 =
       ::cel::expr::conformance::proto2::TestAllTypes::descriptor();
   [[maybe_unused]] const auto* p3 =
       ::cel::expr::conformance::proto3::TestAllTypes::descriptor();
-  // Extensions live in a separate .pb.cc.  Reference the extension
-  // scoped message's descriptor to pull that TU in — the file-scope
-  // extension *fields* (`int32_ext`, `nested_ext`, …) register via
-  // the same static initialiser.
   [[maybe_unused]] const auto* p2x = ::cel::expr::conformance::proto2::
       Proto2ExtensionScopedMessage::descriptor();
 }
@@ -106,6 +93,10 @@ using ::cel::expr::conformance::test::SimpleTest;
 using ::cel::expr::conformance::test::SimpleTestFile;
 using ProtoValue = ::cel::expr::Value;
 
+// Matchers the harness can compare today — every `cel.expr.Value`
+// kind plus the unknown / eval_error / typed_result aggregates.
+// Update both this predicate and `EnvelopeRejectReason` in the same
+// commit when widening.
 bool IsScalarMatcherKind(ProtoValue::KindCase k) {
   switch (k) {
     case ProtoValue::kNullValue:
@@ -121,15 +112,6 @@ bool IsScalarMatcherKind(ProtoValue::KindCase k) {
   }
 }
 
-// True for every NON-scalar `cel.expr.Value` matcher kind the runner
-// can currently compare.  Widens as milestones land:
-//   M3: map_value (`CompareMap`, order-agnostic per langdef §"Map equality").
-//   M4: list_value (`CompareList`, order-aware per langdef §"List equality").
-//   M7: object_value (`CompareMessage` — Any-unpack + MessageDifferencer)
-//       and enum_value (`CompareEnum` — int compare per langdef
-//       §"Enumerated Types").
-//   M9: type_value (`CompareType` — byte-equal type-name string per
-//       langdef §"Type Values").
 bool IsAggregateOrObjectMatcherKind(ProtoValue::KindCase k) {
   return k == ProtoValue::kMapValue || k == ProtoValue::kListValue ||
          k == ProtoValue::kObjectValue || k == ProtoValue::kEnumValue ||
@@ -141,18 +123,15 @@ bool IsUnknownMatcher(const SimpleTest& t) {
          t.result_matcher_case() == SimpleTest::kAnyUnknowns;
 }
 
-// `eval_error` / `any_eval_errors` matchers route to
-// `RunEvalErrorBranch` (Eval is expected to return ok with a
-// `Value::Error`, not a host-side absl::Status failure).
 bool IsEvalErrorMatcher(const SimpleTest& t) {
   return t.result_matcher_case() == SimpleTest::kEvalError ||
          t.result_matcher_case() == SimpleTest::kAnyEvalErrors;
 }
 
-// A mismatch reports kinds only — compare-site callers already know
-// which test they ran, and the detailed value isn't load-bearing for
-// debugging (the fail list shows the expression source).  Keeping the
-// switch-heavy per-kind formatters out of the TU also sidesteps
+// Kind-only diff payload — compare-site callers already know which
+// test they ran, and the detailed value isn't load-bearing for
+// debugging (the fail list shows the expression source).  Keeping
+// the switch-heavy per-kind formatters out of the TU also sidesteps
 // clang-tidy's `bugprone-branch-clone` on structurally-similar
 // `return absl::StrCat(...)` arms.
 absl::Status Mismatch(const cel::Value& got, const ProtoValue& want) {
@@ -169,21 +148,17 @@ absl::Status CompareDouble(double got, double want) {
       absl::StrCat("double want=", want, " got=", got));
 }
 
-// Forward decl — definition below `CompareValue`; the two recurse
-// (a map can hold scalar values).
+// Forward decls — these recurse with CompareValue.
 absl::Status CompareMap(const cel::Value& got, const cel::expr::MapValue& want);
-
-// M4 forward decl — same shape as CompareMap but order-aware.
 absl::Status CompareList(const cel::Value& got,
                          const cel::expr::ListValue& want);
 
 }  // namespace
 
-// clang-tidy runs per-TU and can't see the external callers in
-// run_conformance.cc, so `misc-use-internal-linkage` misclassifies
-// these public-API functions (declared in runner.h) as could-be-
-// static.  Mirror the NOLINT pattern used in
-// compiler/cli/celwasmc_eval_main.cc.
+// External-linkage API funcs (declared in runner.h) — clang-tidy's
+// `misc-use-internal-linkage` can't see callers across TUs and
+// misclassifies these as could-be-static.  Mirror the NOLINT pattern
+// used elsewhere in the tree.
 // NOLINTBEGIN(misc-use-internal-linkage)
 absl::string_view OutcomeName(Outcome o) {
   switch (o) {
@@ -198,21 +173,32 @@ absl::string_view OutcomeName(Outcome o) {
   return "?";
 }
 
-// Strict matcher-kind envelope check.  `disable_check` / `check_only`
-// rows are out-of-conformance-scope by design and handled in
-// `RunOne` BEFORE this predicate is consulted, with their own
-// dedicated SKIP messages — see the SKIP-message taxonomy at the
-// top of this file.  Caller is responsible for those early-outs;
-// this predicate strictly answers "is the row's matcher kind one
-// the runner knows how to compare today".
-//
-// M9.F admits `typed_result:` matchers — the harness routes them
-// through the value-comparison path using the embedded
-// `typed_result.result` value, ignoring the `deduced_type` arm
-// (which a future harness slice may compare against the AST's
-// recovered type_map).  Most rows in `type_deduction.textproto`
-// pass on the value alone.
-bool IsInM7Envelope(const SimpleTest& t) {
+absl::string_view SkipCategoryName(SkipCategory c) {
+  switch (c) {
+    case SkipCategory::kDisableCheck:
+      return "disable_check";
+    case SkipCategory::kCheckOnly:
+      return "check_only";
+    case SkipCategory::kEnvelope:
+      return "envelope";
+    case SkipCategory::kStaticSubset:
+      return "static_subset";
+    case SkipCategory::kCompileUnimpl:
+      return "compile_unimpl";
+    case SkipCategory::kEvalUnimpl:
+      return "eval_unimpl";
+    case SkipCategory::kExtensionUnimpl:
+      return "ext_unimpl";
+    case SkipCategory::kTypeEnvUnsupported:
+      return "type_env";
+    case SkipCategory::kBindingUnsupported:
+      return "bindings";
+  }
+  ABSL_CHECK(false) << "unhandled SkipCategory";
+  return "?";
+}
+
+bool IsInEnvelope(const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return true;
   if (IsEvalErrorMatcher(t)) return true;
   if (t.result_matcher_case() == SimpleTest::kTypedResult) return true;
@@ -220,15 +206,10 @@ bool IsInM7Envelope(const SimpleTest& t) {
   const auto k = t.value().kind_case();
   return IsScalarMatcherKind(k) || IsAggregateOrObjectMatcherKind(k);
 }
+// NOLINTEND(misc-use-internal-linkage)
 
-// Returns a SKIP-message-friendly string describing WHY `t` is out
-// of envelope.  Caller has verified `IsInM7Envelope(t) == false` and
-// already routed `disable_check` / `check_only` to their dedicated
-// SKIP messages; this function focuses on matcher-kind reasons.
-//
-// Matcher kind names mirror the textproto `result_matcher` oneof
-// case names so a reader can grep the SKIP listing back to the
-// fixture syntax that produced it.
+namespace {
+
 std::string ValueMatcherKindName(ProtoValue::KindCase k) {
   switch (k) {
     case ProtoValue::kNullValue:
@@ -264,43 +245,31 @@ std::string ValueMatcherKindName(ProtoValue::KindCase k) {
 std::string EnvelopeRejectReason(const SimpleTest& t) {
   switch (t.result_matcher_case()) {
     case SimpleTest::RESULT_MATCHER_NOT_SET:
-      return "envelope: no result_matcher set on test";
-    case SimpleTest::kValue: {
-      // Most-common case: `value: { type_value: "bool" }` etc. on
-      // `type(...)` tests in `dynamic` / `enums` / `proto2` —
-      // currently no `CompareType` arm + no `type(...)` overload
-      // in OverloadTable.  Name the matcher kind so the reader
-      // doesn't need a wire-tag table.
-      return absl::StrCat(
-          "envelope: value matcher kind `",
-          ValueMatcherKindName(t.value().kind_case()),
-          "` not in scope (today: null/bool/int/uint/double/string/"
-          "bytes/list/map/object/enum/type)");
-    }
+      return "no result_matcher set on test";
+    case SimpleTest::kValue:
+      return absl::StrCat("value matcher kind `",
+                          ValueMatcherKindName(t.value().kind_case()),
+                          "` not in scope");
     case SimpleTest::kEvalError:
     case SimpleTest::kAnyEvalErrors:
     case SimpleTest::kUnknown:
     case SimpleTest::kAnyUnknowns:
-      // These matchers ARE in scope — IsInM7Envelope would have
-      // returned true.  Reaching here means an upstream early-out
-      // (disable_check / check_only) misclassified.  Defensive.
-      return "envelope: internal classifier mismatch (please file a bug)";
+      // IsInEnvelope would have returned true.  Reaching here means
+      // an upstream early-out misclassified.  Defensive.
+      return "internal classifier mismatch (please file a bug)";
     case SimpleTest::kTypedResult:
-      // M9.F admits this matcher; the only path that still routes
-      // here is a `typed_result` whose embedded `result` is missing
-      // (deduced_type-only).  Surface as envelope so it's clear
-      // why the row was skipped vs. compared.
-      return "envelope: typed_result matcher with no `result` value "
+      return "typed_result matcher with no `result` value "
              "(deduced_type-only comparison is harness follow-up)";
   }
-  return "envelope: unrecognised result_matcher oneof case";
+  return "unrecognised result_matcher oneof case";
 }
+
+}  // namespace
+
+// Scalar / aggregate comparators ---------------------------------
 
 namespace {
 
-// Scalar arm of `CompareValue` — split out so the top-level
-// dispatcher stays under the function-size lint threshold once
-// the M4 list arm landed.
 absl::Status CompareScalar(const cel::Value& got, const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kNullValue:
@@ -343,11 +312,10 @@ absl::Status CompareScalar(const cel::Value& got, const ProtoValue& want) {
 
 }  // namespace
 
-// M7 — compare a returned `cel::Value::Message(...)` against an
-// `object_value` matcher (an Any wrapping the expected proto).
-// Unpacks the Any via `binding_marshal::UnpackAny` (uses the
-// generated descriptor pool the harness force-links into) and
-// runs `MessageDifferencer::Equals`.
+// `object_value` matcher: an Any wrapping the expected proto.
+// Unpacks via `binding_marshal::UnpackAny` (generated pool +
+// `ForceLinkFixtureDescriptors`) and runs `MessageDifferencer::Equals`.
+// NOLINTBEGIN(misc-use-internal-linkage)
 absl::Status CompareMessage(const cel::Value& got,
                             const google::protobuf::Any& want) {
   auto got_backing_or = got.MessageBacking();
@@ -380,11 +348,8 @@ absl::Status CompareMessage(const cel::Value& got,
   return absl::OkStatus();
 }
 
-// M7 — compare a returned int (per langdef §"Enumerated Types"
-// enums are spec-typed as int) against an `enum_value` matcher.
-// The matcher carries a numeric value; ignore the type field
-// (we trust cel-cpp's checker to have rejected the cross-type
-// comparison upstream).
+// Enum matcher: enums are spec-typed as int (langdef §"Enumerated
+// Types").  Compare against the numeric value; ignore the type field.
 absl::Status CompareEnum(const cel::Value& got,
                          const cel::expr::EnumValue& want) {
   auto i = got.AsInt();
@@ -396,11 +361,8 @@ absl::Status CompareEnum(const cel::Value& got,
   return absl::OkStatus();
 }
 
-// M9.A — compare a returned `cel::Value::Type(name)` against a
-// `type_value` matcher (a `string` per `cel.expr.Value`'s
-// `type_value` field).  Equality is byte-equal on the spec
-// type-name string per langdef §"Type Values" + m9-type-subsystem.md
-// §3.4.
+// Type matcher: byte-equal on the spec type-name string per langdef
+// §"Type Values".
 absl::Status CompareType(const cel::Value& got, absl::string_view want) {
   auto name_or = got.AsType();
   if (!name_or.ok()) {
@@ -427,8 +389,6 @@ absl::Status CompareValue(const cel::Value& got, const ProtoValue& want) {
     case ProtoValue::kTypeValue:
       return CompareType(got, want.type_value());
     default:
-      // Scalar (or unrecognised — CompareScalar's default returns
-      // InvalidArgument, matching the pre-M4 behaviour).
       return CompareScalar(got, want);
   }
 }
@@ -439,98 +399,31 @@ absl::Status CompareUnknown(const cel::Value& got) {
       absl::StrCat("want-kind=unknown got-kind=", ValueKindName(got.kind())));
 }
 
-// Normalise an error-message string for loose comparison: lowercase
-// + collapse `_` / `-` / runs of whitespace to a single space.  The
-// fixture-author phrasings and our `ErrorCodeName()` payloads
-// disagree on punctuation ("divide by zero" vs "divide_by_zero",
-// "return error for overflow" vs "overflow"), so a strict-equality
-// or even raw-substring rule would reject every row.
-std::string NormaliseErrorMessage(absl::string_view in) {
-  std::string out;
-  out.reserve(in.size());
-  bool last_space = true;  // collapse leading whitespace
-  for (char c : in) {
-    if (c == '_' || c == '-' || c == ' ' || c == '\t' || c == '\n') {
-      if (!last_space) {
-        out.push_back(' ');
-        last_space = true;
-      }
-    } else {
-      out.push_back(
-          static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-      last_space = false;
-    }
-  }
-  while (!out.empty() && out.back() == ' ') {
-    out.pop_back();
-  }
-  return out;
-}
-
-bool LooseMessageMatch(absl::string_view got, absl::string_view want) {
-  if (want.empty()) return true;  // matcher author wildcards
-  if (absl::StrContains(got, want)) return true;
-  if (!got.empty() && absl::StrContains(want, got)) return true;
-  // Normalised substring fallback — handles `_` / space / case
-  // mismatches between fixture phrasing and `ErrorCodeName()`.
-  const std::string ng = NormaliseErrorMessage(got);
-  const std::string nw = NormaliseErrorMessage(want);
-  if (nw.empty()) return true;
-  if (absl::StrContains(ng, nw)) return true;
-  if (!ng.empty() && absl::StrContains(nw, ng)) return true;
-  return false;
-}
-
+// CEL errors are values (langdef §"Error propagation"): the runtime
+// returns ok with `Value::Error` rather than a host-side
+// absl::Status failure.  Per cel-cpp's upstream `conformance/run.cc`
+// — which only checks `has_error()` — message-level matching is
+// NOT part of conformance.  Any error matches any matcher at the
+// kind level; the per-error `message` strings in the corpus disagree
+// with our runtime payloads along too many axes (phrasing,
+// punctuation, even non-semantic placeholders like "foo") for any
+// stricter rule to be useful.  Kind mismatch is the only failure
+// path.
 absl::Status CompareEvalError(const cel::Value& got,
-                              const cel::expr::ErrorSet& want) {
+                              const cel::expr::ErrorSet& /*want*/) {
   if (!got.IsError()) {
     return absl::FailedPreconditionError(
         absl::StrCat("want-kind=error got-kind=", ValueKindName(got.kind())));
   }
-  // Default rule (mirrors cel-cpp's `conformance/run.cc`, which only
-  // checks `has_error()`): kind-level match — any error matches any
-  // non-specific `eval_error` matcher.  The fixture corpus's
-  // per-error `message` strings disagree with our runtime payloads
-  // along multiple axes — phrasing ("divide by zero" vs
-  // "divide_by_zero"), substantive ("invalid_argument" vs
-  // "type_mismatch"), and even non-semantic placeholders ("foo" in
-  // plumbing.textproto).  A strict-message check would reject the
-  // majority of valid rows; a normalised-substring check catches
-  // some but not all.  The kind-only rule is the canonical
-  // upstream behaviour.
-  //
-  // We do still surface a *loose* message match as the primary
-  // pass path — useful when message-equality DOES hold (e.g.
-  // tests authored with our runtime in mind, or post-normalise
-  // matches like "divide by zero" → "divide_by_zero").  When it
-  // doesn't, the kind-only fallback applies.
-  if (want.errors_size() == 0) return absl::OkStatus();
-
-  auto info_or = got.ErrorInfo();
-  if (!info_or.ok() || *info_or == nullptr) {
-    // Defensive: a kError value with a null payload is an invariant
-    // violation upstream — pass on kind alone rather than crash.
-    return absl::OkStatus();
-  }
-  const std::string& got_msg = (*info_or)->message;
-  for (const auto& want_status : want.errors()) {
-    if (LooseMessageMatch(got_msg, want_status.message())) {
-      return absl::OkStatus();
-    }
-  }
-  // Kind-only fallback — see comment above.
   return absl::OkStatus();
 }
+// NOLINTEND(misc-use-internal-linkage)
 
 namespace {
 
-// Order-agnostic map equality per langdef § "Map equality": same
+// Order-agnostic map equality per langdef §"Map equality": same
 // size, and every want-entry has a got-entry whose key is
-// structurally equal and whose value matches recursively via
-// `CompareValue`.  Keys go through `ValueFromProto` (scalar-only
-// at M3 — bool/int/uint/string per the langdef map-key constraint),
-// so a `map_value` matcher with a non-scalar key short-circuits
-// to FailedPrecondition rather than miscompare silently.
+// structurally equal and whose value matches recursively.
 absl::Status CompareMap(const cel::Value& got,
                         const cel::expr::MapValue& want) {
   auto bk_or = got.MapBacking();
@@ -545,10 +438,6 @@ absl::Status CompareMap(const cel::Value& got,
         absl::StrCat("map size want=", want_size, " got=", backing->Size()));
   }
 
-  // Snapshot got-entries so the inner loop is a flat O(n²) scan
-  // rather than a virtual ForEach per outer iteration.  Map sizes
-  // in the corpus are small (single-digit entries) — the constant
-  // factor is irrelevant and the code stays linear-shaped.
   std::vector<std::pair<cel::Value, cel::Value>> got_entries;
   got_entries.reserve(backing->Size());
   backing->ForEach([&](const cel::Value& k, const cel::Value& v) {
@@ -575,10 +464,7 @@ absl::Status CompareMap(const cel::Value& got,
   return absl::OkStatus();
 }
 
-// Order-aware list equality per langdef § "List equality": same
-// size, and got-list[i] matches want-list.values[i] recursively
-// via `CompareValue`.  Unlike maps (entries are unordered), list
-// indices are load-bearing — `[1, 2]` ≠ `[2, 1]`.
+// Order-aware list equality per langdef §"List equality".
 absl::Status CompareList(const cel::Value& got,
                          const cel::expr::ListValue& want) {
   auto bk_or = got.ListBacking();
@@ -593,8 +479,6 @@ absl::Status CompareList(const cel::Value& got,
         absl::StrCat("list size want=", want_size, " got=", backing->Size()));
   }
 
-  // Snapshot got-elements in iteration order — `HostListBacking::ForEach`
-  // preserves index order (per `host_list_test`).
   std::vector<cel::Value> got_elems;
   got_elems.reserve(backing->Size());
   backing->ForEach([&](const cel::Value& v) {
@@ -611,33 +495,142 @@ absl::Status CompareList(const cel::Value& got,
   return absl::OkStatus();
 }
 
-}  // namespace
+// Result helpers --------------------------------------------------
 
-namespace {
-
-Result Unsupported(absl::string_view why) {
-  return {Outcome::kUnsupported, std::string(why)};
+Result Skip(SkipCategory c, absl::string_view detail) {
+  return {Outcome::kUnsupported, c, std::string(detail)};
 }
 
 Result Fail(absl::string_view stage, const absl::Status& s) {
-  return {Outcome::kFail, absl::StrCat(stage, ": ", s.ToString())};
+  Result r{Outcome::kFail, SkipCategory::kEnvelope, ""};
+  r.detail = absl::StrCat(stage, ": ", s.ToString());
+  return r;
+}
+
+// Ext-lib roots ---------------------------------------------------
+
+// CEL extension namespaces shipped by cel-cpp libraries we don't
+// register.  A type-check failure whose `kUndeclaredReferencesUrl`
+// payload lists ANY symbol from this set is an ext-lib gap
+// (SKIP as `kExtensionUnimpl`), not a regression.  Sources:
+//
+//   bindings_ext / block_ext  — `cel`, `block`
+//   optionals                 — `optional`, `optional_type`
+//   math_ext                  — `math`
+//   string_ext                — `strings`
+//   network_ext               — `ip`, `cidr`, `net`
+//   encoders_ext              — `base64`
+//
+// Trailing method/function names within an ext namespace
+// (`math.greatest` → roots `math`, `greatest`) needn't be listed —
+// the namespace root alone is enough to identify the call site as
+// living inside an ext library we don't register.
+const absl::flat_hash_set<absl::string_view>& ExtensionNamespaceRoots() {
+  static const absl::NoDestructor<absl::flat_hash_set<absl::string_view>> kSet{
+      {"cel", "block", "optional", "optional_type", "math", "strings", "base64",
+       "ip", "cidr", "net"}};
+  return *kSet;
+}
+
+// Bare receiver-style function names shipped by extension libraries
+// that have NO namespace prefix.  string_ext's receiver methods
+// (`'foo'.charAt(0)` → root `charAt`) are the canonical case;
+// network_ext also has a few receiver-only forms.  Used as a
+// fallback when no namespace root is present in the payload — if
+// EVERY root in the payload is one of these names, the row is an
+// ext-lib gap.
+//
+// A row whose payload mixes receivers with non-extension symbols
+// stays FAIL — we don't hide regressions behind an ext-lib SKIP.
+const absl::flat_hash_set<absl::string_view>& ExtensionReceiverRoots() {
+  static const absl::NoDestructor<absl::flat_hash_set<absl::string_view>> kSet{
+      {// string_ext receivers
+       "charAt", "indexOf", "lastIndexOf", "substring", "replace", "split",
+       "join", "lowerAscii", "upperAscii", "format", "reverse", "quote", "trim",
+       // network_ext receivers / predicates
+       "isIP", "isCIDR", "family", "isCanonical", "isUnspecified", "isLoopback",
+       "isGlobalUnicast", "isLinkLocalMulticast", "isLinkLocalUnicast",
+       "prefixLength", "containsIP", "containsCIDR", "masked"}};
+  return *kSet;
+}
+
+// `payload` is the `kUndeclaredReferencesUrl` body — a newline-
+// separated list of undeclared root symbols.  Returns true iff the
+// row is an ext-lib gap by either rule:
+//
+//   1. ANY namespace root from `ExtensionNamespaceRoots` appears,
+//      OR
+//   2. EVERY listed root is in `ExtensionReceiverRoots` (the
+//      bare-receiver fallback for string_ext / network_ext
+//      receiver-style calls that have no namespace prefix).
+//
+// The first rule fires for the bulk of ext-lib FAILs;
+// `math.greatest` lists `math` (matches) and `greatest` (which is
+// outside both sets, but rule 1 already passed).  The second rule
+// catches receiver-only calls like `'foo'.charAt(0)` where there's
+// no namespace in the call shape.
+bool IsExtensionFailure(absl::string_view payload) {
+  if (payload.empty()) return false;
+  const std::vector<absl::string_view> roots = absl::StrSplit(payload, '\n');
+  const auto& namespaces = ExtensionNamespaceRoots();
+  for (absl::string_view r : roots) {
+    if (namespaces.contains(r)) return true;
+  }
+  const auto& receivers = ExtensionReceiverRoots();
+  return std::all_of(roots.begin(), roots.end(), [&](absl::string_view r) {
+    return receivers.contains(r);
+  });
+}
+
+// Source-level fallback for ext-lib rows whose Compile failure
+// surfaces at the parser (before type-check, so the
+// `kUndeclaredReferencesUrl` payload tag never gets set).  The
+// markers below are syntax shapes that exist ONLY in cel-cpp
+// extensions we don't register:
+//
+//   `.?` / `[?` / `{?`    — optionals extension's optional-chaining
+//                           (select / index / struct-or-map init)
+//   `cel.iterVar(`        — block_ext's iterator-variable form
+//   `cel.index(`          — block_ext's bound-index reference
+//   `cel.block(`          — block_ext's bound-block expression
+//
+// A real CEL parser-rejected row in the conformance corpus would
+// live under `disable_check: true` (a parse-failure test); those
+// are caught upstream by `ScopeReject` before we reach the
+// classifier.  Any non-disable_check row that fails to parse and
+// matches one of these markers is by construction an ext-lib gap.
+bool LooksLikeExtensionSyntax(absl::string_view expr) {
+  return absl::StrContains(expr, ".?") || absl::StrContains(expr, "[?") ||
+         absl::StrContains(expr, "{?") ||
+         absl::StrContains(expr, "cel.iterVar(") ||
+         absl::StrContains(expr, "cel.index(") ||
+         absl::StrContains(expr, "cel.block(");
 }
 
 }  // namespace
 
 namespace {
 
-// Build a per-test Compiler with the right declared variables +
-// container.  Returns Unimplemented if any type_env entry is a kind
-// the marshaller doesn't yet handle (caller SKIPs).
+// Per-test compiler vs shared default ----------------------------
+
+// The default compiler is reused for every row whose `type_env` is
+// empty (the bulk of the corpus).  Rows with declared variables
+// build a per-test compiler via `BuildPerTestCompiler` below.
+const cel::Compiler& SharedDefaultCompiler() {
+  static const absl::NoDestructor<cel::Compiler> kShared([] {
+    auto c = cel::Compiler::NewBuilder().Build();
+    ABSL_CHECK_OK(c) << "default Compiler::Build failed";
+    return *std::move(c);
+  }());
+  return *kShared;
+}
+
 absl::StatusOr<cel::Compiler> BuildPerTestCompiler(const SimpleTest& t) {
   auto b = cel::Compiler::NewBuilder();
   if (auto s = DeclareVariablesOnBuilder(t, b); !s.ok()) return s;
   return std::move(b).Build();
 }
 
-// Compile the test's expression with the test's container.  Status
-// passthrough — caller maps Unimplemented / static-subset to SKIP.
 absl::StatusOr<cel::Program> CompileForTest(const cel::Compiler& compiler,
                                             const SimpleTest& t) {
   cel::CompilerOptions opts;
@@ -645,212 +638,143 @@ absl::StatusOr<cel::Program> CompileForTest(const cel::Compiler& compiler,
   return compiler.Compile(t.expr(), opts);
 }
 
-// Map a compile-stage status to either Unsupported (graceful) or Fail
-// (regression).  Mirrors the original `RunOne` classifier so the
-// same SKIP/FAIL policy survives the refactor.
-Result ClassifyCompileFailure(const absl::Status& s) {
+// Map a compile-stage status to either an `kUnsupported` outcome
+// (graceful) or `kFail` (regression).  Classification order:
+//
+//   1. `kUnimplemented` status → `kCompileUnimpl`.
+//   2. `kStaticSubsetViolationUrl` payload (set by `RejectDyn`) →
+//      `kStaticSubset`.
+//   3. `kUndeclaredReferencesUrl` payload (set by `RunTypeCheck`)
+//      with `IsExtensionFailure` true → `kExtensionUnimpl`.
+//   4. Source-level fallback: parser failed before type-check could
+//      attach the payload; if `t.expr()` contains ext-lib-only
+//      syntax markers, classify as `kExtensionUnimpl`.
+//   5. Otherwise → `kFail` (genuine regression).
+Result ClassifyCompileFailure(const SimpleTest& t, const absl::Status& s) {
   if (s.code() == absl::StatusCode::kUnimplemented) {
-    return Unsupported(absl::StrCat("compile unimplemented: ", s.message()));
+    return Skip(SkipCategory::kCompileUnimpl, std::string(s.message()));
   }
-  if (s.code() == absl::StatusCode::kInvalidArgument &&
-      absl::StrContains(s.message(), "static subset")) {
-    return Unsupported(absl::StrCat("static_subset: ", s.message()));
+  if (auto p = s.GetPayload(kStaticSubsetViolationUrl); p.has_value()) {
+    return Skip(SkipCategory::kStaticSubset, std::string(s.message()));
   }
-  // Unregistered extension symbols (block_ext's `cel.block`/`cel.index`,
-  // optionals' `cel.optional` etc.) surface as type-check failures
-  // citing the namespace + function as undeclared.  We don't ship
-  // every cel-cpp extension parser library; rows that hit one are
-  // graceful SKIPs (extension out-of-scope), not regressions.
-  // The error message shape is `undeclared reference to 'cel'` /
-  // `undeclared reference to 'block'` etc. — detecting "undeclared
-  // reference to 'cel'" specifically isolates the extension-
-  // namespace case from a genuine user-decl typo (which would name
-  // a user variable, not `cel`).
-  if (s.code() == absl::StatusCode::kInvalidArgument &&
-      absl::StrContains(s.message(), "type check failed") &&
-      absl::StrContains(s.message(), "undeclared reference to 'cel'")) {
-    return Unsupported(absl::StrCat(
-        "ext_unimpl: unregistered cel.* extension symbol: ", s.message()));
+  if (auto p = s.GetPayload(kUndeclaredReferencesUrl); p.has_value()) {
+    const std::string roots(p->Flatten());
+    if (IsExtensionFailure(roots)) {
+      return Skip(SkipCategory::kExtensionUnimpl,
+                  absl::StrCat("undeclared roots: ", roots));
+    }
+  }
+  if (LooksLikeExtensionSyntax(t.expr())) {
+    return Skip(SkipCategory::kExtensionUnimpl,
+                absl::StrCat("ext-lib syntax: ", s.message()));
   }
   return Fail("compile", s);
 }
 
-// Map an Eval / PartialEval status to either Unsupported (graceful)
-// or Fail.  Kept here (not in `ClassifyCompileFailure`) because the
-// status codes that map to SKIP differ between stages: at eval the
-// runtime returns `Unimplemented` for declared-variable Reprs the
-// M2.C activation marshaller doesn't yet handle (kString / kBytes /
-// aggregates).  Those tests are graceful SKIPs, not regressions —
-// the M2 envelope at the decl level is widening ahead of the
-// runtime's encoder coverage.
 Result ClassifyEvalFailure(absl::string_view stage, const absl::Status& s) {
   if (s.code() == absl::StatusCode::kUnimplemented) {
-    return Unsupported(absl::StrCat(stage, " unimplemented: ", s.message()));
-  }
-  // Layer-2 trampoline stubs (CelGetFieldImpl / CelHasFieldImpl,
-  // pending M2.C.0b) surface as a wasm trap whose message is the
-  // status text we pass to `wasmtime_trap_new`.  The trap travels
-  // through `WasmTrapToStatus` and lands here as
-  // `FailedPrecondition` — recognise the marker prefix so those
-  // tests SKIP cleanly until the real body lands, rather than
-  // counting as regressions.
-  if (s.code() == absl::StatusCode::kFailedPrecondition &&
-      absl::StrContains(s.message(), "stub:")) {
-    return Unsupported(absl::StrCat(stage, " trampoline stub: ", s.message()));
+    return Skip(SkipCategory::kEvalUnimpl,
+                absl::StrCat(stage, ": ", s.message()));
   }
   return Fail(stage, s);
 }
 
-// Run the unknown / partial-eval branch.  An Activation populated
-// from t.bindings() flows in unchanged — every `unknown:` test in
-// the corpus that also carries scalar bindings now exercises the
-// real binding-prelude path through PartialEval.
+// Per-matcher-kind eval branches ---------------------------------
+
 Result RunUnknownBranch(cel::Instance& inst, const cel::Activation& act) {
   auto val_or = inst.PartialEval(act, {});
   if (!val_or.ok()) return ClassifyEvalFailure("partial_eval", val_or.status());
-  absl::Status s = CompareUnknown(*val_or);
-  if (!s.ok()) return Fail("compare", s);
-  return {Outcome::kPass, ""};
+  if (auto s = CompareUnknown(*val_or); !s.ok()) return Fail("compare", s);
+  return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-// Run the value-matcher branch.  Eval(activation) is used
-// unconditionally — the empty-Activation overload of Eval() just
-// loops over zero declared variables, so there's no overhead for
-// variable-free tests.
 Result RunValueBranch(cel::Instance& inst, const cel::Activation& act,
                       const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
-  absl::Status s = CompareValue(*val_or, t.value());
-  if (!s.ok()) return Fail("compare", s);
-  return {Outcome::kPass, ""};
+  if (auto s = CompareValue(*val_or, t.value()); !s.ok()) {
+    return Fail("compare", s);
+  }
+  return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-// Run the `eval_error` / `any_eval_errors` matcher branch.  CEL
-// errors are *values* (langdef § "Error propagation"): the runtime
-// returns ok with `Value::Error` rather than an absl::Status
-// failure, so a not-ok eval here is still a regression — handled
-// via `ClassifyEvalFailure` (preserves the SKIP/FAIL policy for
-// `Unimplemented` / trampoline-stub cases).
-//
-// `kEvalError` and `kAnyEvalErrors` use the same compare path.  The
-// matcher proto for `any_eval_errors` is an `ErrorSetMatcher`
-// (`repeated ErrorSet errors`); per its comment the test passes if
-// the runtime matches *any* of those sets.  Substring loose-matching
-// makes the per-set test trivial — concatenate every contained
-// `Status::message` into the comparison and reuse the single-set
-// helper.
+// `kEvalError` and `kAnyEvalErrors` share the kind-only compare;
+// `any_eval_errors` succeeds if any of its contained `errors[]`
+// matches (kind-only semantics make all entries equivalent, so we
+// can just compare against the first or an empty set).
 Result RunEvalErrorBranch(cel::Instance& inst, const cel::Activation& act,
                           const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
-
-  if (t.result_matcher_case() == SimpleTest::kEvalError) {
-    if (auto s = CompareEvalError(*val_or, t.eval_error()); !s.ok()) {
-      return Fail("compare", s);
-    }
-    return {Outcome::kPass, ""};
+  cel::expr::ErrorSet empty;
+  const cel::expr::ErrorSet& want =
+      t.result_matcher_case() == SimpleTest::kEvalError ? t.eval_error()
+                                                        : empty;
+  if (auto s = CompareEvalError(*val_or, want); !s.ok()) {
+    return Fail("compare", s);
   }
-  // any_eval_errors: any contained ErrorSet matching is a pass.
-  // An empty `errors[]` outer also passes — matches "an error
-  // occurred, don't care which one".
-  const auto& matcher = t.any_eval_errors();
-  if (matcher.errors_size() == 0) {
-    cel::expr::ErrorSet empty;
-    if (auto s = CompareEvalError(*val_or, empty); !s.ok()) {
-      return Fail("compare", s);
-    }
-    return {Outcome::kPass, ""};
-  }
-  absl::Status last;
-  for (const auto& set : matcher.errors()) {
-    last = CompareEvalError(*val_or, set);
-    if (last.ok()) return {Outcome::kPass, ""};
-  }
-  return Fail("compare", last);
+  return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-// Returns a SKIP/FAIL Result if `t` is outside the conformance scope
-// (checker-disabled / check-only / not in the M7 envelope) — else
-// std::nullopt.  Pulled out of `RunOne` to keep that under the lint
-// size gate.
-std::optional<Result> ScopeReject(const SimpleTest& t) {
-  // Conformance scope is "expressions that pass cel-cpp's
-  // type-checker."  Tests that explicitly disable the checker
-  // (`disable_check: true`) or that only run the checker without
-  // eval (`check_only: true`) are out of scope by design — our
-  // pipeline (parse_and_check.cc::ParseAndCheck) is a single
-  // checked-AST path; supporting parse-only eval would require a
-  // separate codegen path with type inference at lower time.
-  if (t.disable_check()) {
-    return Unsupported(
-        "disable_check: parse-only eval out of conformance scope "
-        "(checker-passed expressions only)");
-  }
-  if (t.check_only()) {
-    return Unsupported(
-        "check_only: typed_result matcher requires no-eval check "
-        "path (harness follow-up)");
-  }
-  if (!IsInM7Envelope(t)) return Unsupported(EnvelopeRejectReason(t));
-  return std::nullopt;
-}
-
-// Run the typed_result-matcher arm of `RunOne` against `inst` + `act`.
-// Pulled out to keep RunOne under the lint size gate.
 Result RunTypedResultBranch(cel::Instance& inst, const cel::Activation& act,
                             const SimpleTest& t) {
-  // M9.F: typed_result rows route through the standard value
-  // comparator using the embedded `result` value.  The
-  // `deduced_type` arm is intentionally unchecked at this slice —
-  // most rows are unique on the value alone, and a follow-up harness
-  // slice can add the type comparison once the AST type_map is
-  // exposed through the public `Compiler::Compile` surface.
+  // typed_result rows compare on the embedded `result` via the
+  // standard value comparator.  Pure-`deduced_type` rows (no
+  // `result` set) SKIP — the no-eval check path is harness
+  // follow-up.
   if (!t.typed_result().has_result()) {
-    return Unsupported(
-        "envelope: typed_result matcher with no `result` value "
-        "(deduced_type-only comparison is harness follow-up)");
+    return Skip(SkipCategory::kEnvelope,
+                "typed_result matcher with no `result` value");
   }
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
   if (auto s = CompareValue(*val_or, t.typed_result().result()); !s.ok()) {
     return Fail("compare", s);
   }
-  return {Outcome::kPass, ""};
+  return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-}  // namespace
-
-Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
-              const cel::Engine& engine) {
-  if (auto skip = ScopeReject(t)) return *skip;
-
-  // Marshal type_env / bindings before touching the compiler — both
-  // can SKIP, and a failed marshal means we never burn a compile.
-  auto compiler_or = BuildPerTestCompiler(t);
-  if (!compiler_or.ok()) {
-    if (compiler_or.status().code() == absl::StatusCode::kUnimplemented) {
-      return Unsupported(
-          absl::StrCat("type_env: ", compiler_or.status().message()));
-    }
-    return Fail("type_env", compiler_or.status());
+// Pre-compile scope check.  Returns a `kUnsupported` result for
+// rows the harness handles without ever burning a compile —
+// `disable_check`, `check_only`, and matcher-kind-out-of-envelope.
+std::optional<Result> ScopeReject(const SimpleTest& t) {
+  if (t.disable_check()) {
+    return Skip(SkipCategory::kDisableCheck,
+                "parse-only eval out of conformance scope "
+                "(checker-passed expressions only)");
   }
-
-  cel::Activation act;
-  if (auto s = PopulateActivation(t, act); !s.ok()) {
-    if (s.code() == absl::StatusCode::kUnimplemented) {
-      return Unsupported(absl::StrCat("bindings: ", s.message()));
-    }
-    return Fail("bindings", s);
+  if (t.check_only()) {
+    return Skip(SkipCategory::kCheckOnly,
+                "typed_result matcher requires no-eval check path "
+                "(harness follow-up)");
   }
+  if (!IsInEnvelope(t)) {
+    return Skip(SkipCategory::kEnvelope, EnvelopeRejectReason(t));
+  }
+  return std::nullopt;
+}
 
-  auto prog_or = CompileForTest(*compiler_or, t);
-  if (!prog_or.ok()) return ClassifyCompileFailure(prog_or.status());
+// Returns a Compiler appropriate for the row — the shared default
+// when `type_env` is empty, a per-test build otherwise.  The
+// per-test path can SKIP gracefully (aggregate type_env decls) or
+// FAIL (real Builder errors).  Variant ordering: 0 = shared, 1 =
+// owned per-test build, 2 = SKIP/FAIL result already produced.
+std::variant<const cel::Compiler*, cel::Compiler, Result> ResolveCompiler(
+    const SimpleTest& t) {
+  if (t.type_env_size() == 0) return &SharedDefaultCompiler();
+  auto built = BuildPerTestCompiler(t);
+  if (built.ok()) return *std::move(built);
+  if (built.status().code() == absl::StatusCode::kUnimplemented) {
+    return Skip(SkipCategory::kTypeEnvUnsupported,
+                std::string(built.status().message()));
+  }
+  return Fail("type_env", built.status());
+}
 
-  auto inst_or = engine.Plan(*prog_or);
-  if (!inst_or.ok()) return Fail("plan", inst_or.status());
-
-  cel::Instance inst = *std::move(inst_or);
+// Dispatches the matcher-kind eval branch.  `RunOne`'s tail is just
+// "plan + dispatch"; lifting it keeps `RunOne` under the lint gate.
+Result DispatchEvalBranch(cel::Instance& inst, const cel::Activation& act,
+                          const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
   if (t.result_matcher_case() == SimpleTest::kTypedResult) {
@@ -859,10 +783,44 @@ Result RunOne(const SimpleTest& t, const cel::Compiler& /*compiler*/,
   return RunValueBranch(inst, act, t);
 }
 
+}  // namespace
+
+// NOLINTBEGIN(misc-use-internal-linkage)
+Result RunOne(const SimpleTest& t, const cel::Engine& engine) {
+  if (auto skip = ScopeReject(t)) return *skip;
+
+  auto compiler_var = ResolveCompiler(t);
+  if (std::holds_alternative<Result>(compiler_var)) {
+    return std::get<Result>(std::move(compiler_var));
+  }
+  const cel::Compiler* compiler =
+      std::holds_alternative<const cel::Compiler*>(compiler_var)
+          ? std::get<const cel::Compiler*>(compiler_var)
+          : &std::get<cel::Compiler>(compiler_var);
+
+  cel::Activation act;
+  if (auto s = PopulateActivation(t, act); !s.ok()) {
+    if (s.code() == absl::StatusCode::kUnimplemented) {
+      return Skip(SkipCategory::kBindingUnsupported, std::string(s.message()));
+    }
+    return Fail("bindings", s);
+  }
+
+  auto prog_or = CompileForTest(*compiler, t);
+  if (!prog_or.ok()) return ClassifyCompileFailure(t, prog_or.status());
+
+  auto inst_or = engine.Plan(*prog_or);
+  if (!inst_or.ok()) return Fail("plan", inst_or.status());
+
+  cel::Instance inst = *std::move(inst_or);
+  return DispatchEvalBranch(inst, act, t);
+}
+
 absl::Status LoadTestFile(absl::string_view path, SimpleTestFile& out) {
   // Called from runtime code rather than at static-init time so the
-  // .pb.o force-link doesn't tickle `bugprone-throwing-static-
-  // initialization` on the generated `descriptor()` accessor.
+  // .pb.o force-link doesn't tickle
+  // `bugprone-throwing-static-initialization` on the generated
+  // `descriptor()` accessor.
   ForceLinkFixtureDescriptors();
   std::ifstream f{std::string(path)};
   if (!f) {

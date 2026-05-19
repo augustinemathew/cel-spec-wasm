@@ -1,12 +1,10 @@
-// Conversion kernels — M10.B numeric inter-conversion, M10.C string
-// parsing, M10.D number/bool → string formatting, M10.E bytes ↔
-// string.
+// Conversion kernels — numeric inter-conversion, string parsing,
+// number/bool → string formatting, bytes ↔ string.
 //
 // Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md`
-// (post-M10 follow-up — these kernels were not in the original
-// pre-M10 split plan).  See cel_convert.h for the public ABI and
-// m10-conversions.md for the design rationale.
+// `rewrite/cel-runtime-c-split-plan.md`.  See cel_convert.h for the
+// public ABI and `rewrite/m10-conversions.md` for the design
+// rationale.
 
 #include "compiler_v2/runtime/cel_convert.h"
 
@@ -17,7 +15,7 @@
 #include "compiler_v2/runtime/cel_log.h"
 
 // ─────────────────────────────────────────────────────────────
-// M10.B: numeric inter-conversion kernels.
+// Numeric inter-conversion kernels.
 //
 // Six unary helpers for the cel-cpp overload ids:
 //   uint64_to_int64    int(uint)
@@ -474,7 +472,7 @@ void cel_string_to_bool_at_v(uint32_t out_slot, uint32_t in_slot) {
 //
 // Four unary kernels.  Output strings allocated in the per-Eval arena
 // via `arena_alloc(n)` and stamped as `{CEL_STRING, payload.s}` — same
-// lifetime model as the M9.B `cel_type_of_at_v` helper.
+// lifetime model as the `cel_type_of_at_v` helper.
 // ─────────────────────────────────────────────────────────────
 
 // Write decimal digits of a uint64 into `dst`, returning the count.
@@ -734,7 +732,8 @@ void cel_double_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
 // reading the span into a local before writing.
 // ─────────────────────────────────────────────────────────────
 
-// RFC3629 UTF-8 byte-wise validator.  See m10-conversions.md §4.5 for
+// RFC3629 UTF-8 byte-wise validator.  See
+// `rewrite/m10-conversions.md` §4.5 for
 // the reject matrix.  Helpers below cover one byte-length class each
 // so the top-level loop stays within the function-size gate.
 

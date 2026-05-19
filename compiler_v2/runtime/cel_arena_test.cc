@@ -1,5 +1,5 @@
 // Tests for the malloc-backed bump arena.  See cel_arena.h for the
-// API; doc/implementation-plan/wasi/DESIGN.md §4-§5 for the design.
+// API; doc/implementation-plan/rewrite/wasi/DESIGN.md §4-§5 for the design.
 //
 // Native-build invariants verified here:
 //   - arena_alloc(n) returns an offset such that
@@ -370,13 +370,11 @@ TEST_F(ArenaDeathTest, InitWithDifferentCapacityTraps) {
   // The fixture's SetUp has already inited at
   // CELWASM_ARENA_CAPACITY_BYTES.  Calling with a different value
   // must trap.
-  ASSERT_DEATH_IF_SUPPORTED(arena_init(CELWASM_ARENA_CAPACITY_BYTES / 2u),
-                            "");
+  ASSERT_DEATH_IF_SUPPORTED(arena_init(CELWASM_ARENA_CAPACITY_BYTES / 2u), "");
 }
 
 TEST_F(ArenaDeathTest, InitWithLargerDifferentCapacityTraps) {
-  ASSERT_DEATH_IF_SUPPORTED(arena_init(CELWASM_ARENA_CAPACITY_BYTES * 2u),
-                            "");
+  ASSERT_DEATH_IF_SUPPORTED(arena_init(CELWASM_ARENA_CAPACITY_BYTES * 2u), "");
 }
 
 // arena_alloc-before-init: in the gtest process the arena is already

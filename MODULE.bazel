@@ -25,6 +25,33 @@ bazel_dep(
     version = "0.15.1",
 )
 
+# Phase C probe E3 — required for the wasm32-wasi cc_toolchain
+# (//doc/implementation-plan/rewrite/phase-c-probes/E3) to reference
+# @platforms//cpu:wasm32 + @platforms//os:wasi as constraint values.
+# This is the same `platforms` rule the bazel ecosystem expects; it
+# was already a transitive dep of every existing bazel_dep but not
+# visible from the main repo until declared here.
+bazel_dep(
+    name = "platforms",
+    version = "1.0.0",
+)
+
+# Phase C probe E8 — RE2 for `matches()`.  Already a transitive
+# dep of abseil-cpp / protobuf in the bazel module graph; this
+# bazel_dep just makes it visible from the main repo so we can
+# build it under the wasm32-wasi-threads cc_toolchain.
+bazel_dep(
+    name = "re2",
+    version = "2025-11-05.bcr.1",
+)
+
+# Phase C — register the wasm32-wasi-threads cc_toolchain.  Auto-
+# discovered by bazel toolchain resolution whenever a target is
+# built with `--platforms=//third_party/wasi_sdk:wasm32_wasi` (or
+# transitioned in via `wasm_cc_binary`).  The toolchain config +
+# wrapper sh scripts live under `//third_party/wasi_sdk/`.
+register_toolchains("//third_party/wasi_sdk:wasm32_wasi_toolchain")
+
 # Binaryen — vendored as a pinned GitHub release tarball and built via
 # its own CMakeLists.txt inside Bazel (rules_foreign_cc).  We consume
 # the officially stable C API (`binaryen-c.h` + `libbinaryen.a`).
@@ -106,6 +133,18 @@ bazel_dep(
     name = "abseil-cpp",
     version = "20260107.0",
     repo_name = "com_google_absl",
+)
+
+# Phase C: patch abseil-cpp's sysinfo.cc so GetNumCPUs() compiles
+# under wasm32-wasi (the non-threads variant has no <thread>).  The
+# patch returns 1 on `__wasm__` / `__wasi__`.  Source patch lives at
+# `wasm_compilation_experiments/exp1_re2/absl-wasm.patch` and was
+# vendored to `third_party/patches/abseil-cpp-wasm-sysinfo.patch`
+# during Phase C research.
+single_version_override(
+    module_name = "abseil-cpp",
+    patch_strip = 1,
+    patches = ["//third_party/patches:abseil-cpp-wasm-sysinfo.patch"],
 )
 bazel_dep(
     name = "cel-cpp",

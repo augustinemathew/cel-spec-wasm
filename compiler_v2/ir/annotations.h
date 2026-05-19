@@ -52,15 +52,16 @@ struct Storage {
 };
 
 // Where a map- or list-typed node's backing lives at runtime.
-// Populated by ResolvePass in a forward-compat slot for M6 (map /
-// list dispatch).  M2 only writes `kHost` on `kSelect` / `kIdent`
-// nodes whose result type is `map<K,V>` / `list<T>` — every other
-// map/list-producing kind (kCreateMap, kComprehension, kCall,
-// ternary, …) lands in M5/M6 and stays `kDynamic` until then.
+// Populated by ResolvePass's MapOriginVisitor / ListOriginVisitor.
+// Direct producers (kCreateMap / kCreateList) stamp `kArena`;
+// `kSelect` / `kIdent` nodes whose result type is `map<K,V>` /
+// `list<T>` stamp `kHost`; everything else (ternary, comprehension
+// result, dyn-call) stays `kDynamic` and routes through the
+// runtime dispatcher.
 //
-// See `doc/implementation-plan/rewrite/map-list-dispatch.md` for the
-// full inference rule set and `m2-ident-select-unknowns.md` §2.6 +
-// §2.8 for what M2 actually populates.
+// See `rewrite/map-list-dispatch.md` for the full inference rule
+// set and `rewrite/m2-ident-select-unknowns.md` §2.6 / §2.8 for
+// the kSelect path.
 enum class Origin : uint8_t {
   kDynamic = 0,  // default — could be arena or host, decided by runtime
   kArena = 1,    // arena-backed (kCreateMap / kCreateList / …)
@@ -69,55 +70,51 @@ enum class Origin : uint8_t {
 
 absl::string_view OriginName(Origin o);
 
-// Per-node facts populated by ResolvePass + LayoutPass.  The schema is
-// intentionally the final shape from M1 even though M1 only writes
-// `repr` (for kConst nodes) and `storage` (kStaticRodata for kConst).
-// Later milestones fill the other fields; zero sentinels mean "not
-// applicable to this kind".
+// Per-node facts populated by ResolvePass + LayoutPass.  Zero
+// sentinels mean "not applicable to this kind".
 struct NodeAnnotation {
   Repr repr = Repr::kUnknown;
-  uint32_t field_number = 0;  // SelectExpr proto field number (M2)
-  // CallExpr's resolved cel-cpp overload id, e.g. "add_int64".  M5.F
+  uint32_t field_number = 0;  // SelectExpr proto field number.
+  // CallExpr's resolved cel-cpp overload id, e.g. "add_int64".
   // ResolvePass populates this from `cel::Ast::reference_map()`'s
   // first overload string; codegen looks it up in `OverloadTable`.
   // Empty for non-call nodes.  String_view points into cel-cpp's
   // owned reference_map storage; lifetime tied to the TypedAst.
   absl::string_view overload_id;
-  uint32_t local_index = 0;   // IdentExpr resolved wasm local (M2)
-  uint32_t scope_id = 0;      // comprehension scope (later)
-  uint32_t attribute_id = 0;  // interned AttributeId (M2.E); 0 = none
-  // M7.A: dense index into `cel.abi.types[]` populated by
-  // ResolvePass's MessageTypeIdVisitor for kStructExpr nodes; 0 = none
-  // (any non-struct node).  Codegen reads this in the kStructExpr
-  // arm to emit `cel_host.cel_make_message(type_id, out_slot)`; the
+  uint32_t local_index = 0;   // IdentExpr resolved wasm local.
+  uint32_t scope_id = 0;      // comprehension scope id.
+  uint32_t attribute_id = 0;  // interned AttributeId; 0 = none.
+  // Dense index into `cel.abi.types[]` populated by ResolvePass's
+  // MessageTypeIdVisitor for kStructExpr nodes; 0 = none (any
+  // non-struct node).  Codegen reads this in the kStructExpr arm
+  // to emit `cel_host.cel_make_message(type_id, out_slot)`; the
   // host resolves the id → Descriptor* against the descriptor pool
-  // at Plan time.  See m7-proto-literals.md §4.2.
+  // at Plan time.  See `rewrite/m7-proto-literals.md` §4.2.
   uint32_t message_type_id = 0;
   Storage storage;
-  // Forward-compat hooks for map/list dispatch — see
-  // m2-ident-select-unknowns.md §2.6 / §2.8.
+  // Map/list dispatch origin — see
+  // `rewrite/map-list-dispatch.md` and
+  // `rewrite/m2-ident-select-unknowns.md` §2.6 / §2.8.
   Origin map_origin = Origin::kDynamic;
   Origin list_origin = Origin::kDynamic;
-  // M5.B Slice C: base wasm-local index for a `kComprehensionExpr`
-  // node's auxiliary locals (end_off, iter cursor, index counter).
+  // Base wasm-local index for a `kComprehensionExpr` node's
+  // auxiliary locals (end_off, iter cursor, index counter).
   // `LayoutPass`'s ComprehensionLocalsVisitor stamps this with the
   // first of `StaticLayout::comprehension_extra_locals_per_comp`
   // consecutive locals.  Zero on non-comprehension nodes.
   uint32_t comp_aux_local_base = 0;
-  // M5.B Slice C: per-comprehension iter_var / accu_var bindings.
-  // Populated by ResolvePass's ScopedIdentResolver at
-  // PreVisitComprehension time.  Required because nested
-  // comprehensions can share accu_var names (`@result` at every
-  // depth in cel-cpp's standard macros), so name-based lookup
-  // would conflate the inner's binding with the outer's — see the
-  // bug surfaced by the 2026-05-17 nested probe.  Zero on
-  // non-comprehension nodes.  iter_var2 (Slice F) reuses
+  // Per-comprehension iter_var / accu_var bindings.  Populated by
+  // ResolvePass's ScopedIdentResolver at PreVisitComprehension time.
+  // Required because nested comprehensions can share accu_var names
+  // (`@result` at every depth in cel-cpp's standard macros), so
+  // name-based lookup would conflate the inner's binding with the
+  // outer's.  Zero on non-comprehension nodes.  iter_var2 reuses
   // `comp_aux_local_base + 1` as the index-counter slot for
   // list-source two-iter-var, or as the value workspace for
   // map-source.
   uint32_t comp_iter_local_index = 0;
   uint32_t comp_accu_local_index = 0;
-  // Slice F: iter_var2's local_index (zero for single-iter-var
+  // iter_var2's local_index (zero for single-iter-var
   // comprehensions).  For list source: iter_var binds to the
   // synthesized index counter, iter_var2 to the value pointer.
   // For map source: iter_var binds to key, iter_var2 to value.

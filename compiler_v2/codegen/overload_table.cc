@@ -31,54 +31,38 @@ absl::string_view ImportModuleName(ImportModule m) {
 
 namespace {
 
-// Built-in seeds populated at M5.E.  Maps every cel-cpp
-// `StandardOverloadIds::k*` constant the v2 runtime supports to
-// the wasm export that implements it.  Categories are grouped so a
-// reader can see at a glance what's covered:
+// Built-in seeds. Maps every cel-cpp `StandardOverloadIds::k*`
+// constant the runtime supports to the wasm export that
+// implements it. Categories are grouped so a reader can see at a
+// glance what's covered: arithmetic same-kind, cross-numeric and
+// same-kind ordering, container size/in/concat, polymorphic
+// equality, string ops, 3VL control flow, timestamp/duration
+// arithmetic+ordering+accessors+conversions, numeric/string/bytes
+// conversions.
 //
-//   - arithmetic same-kind (M5.B step 1)
-//   - same-kind ordering   (M5.B step 1)
-//   - container size + in  (M5.D step 1 arena fast paths,
-//                           M5.C string/bytes size)
-//   - container concat     (M5.B/C/D step 1)
-//   - string ops           (M5.C)
-//
-// Every other cel-cpp id is in `kExplicitlyUnimplementedIds` (see
-// below).  The two sets together cover the full
+// Every other cel-cpp id is in `kExplicitlyUnimplementedIds`
+// (see below). The two sets together cover the full
 // `StandardOverloadIds` surface — enforced by
 // `overload_table_test::CoverageTripwire`.
 //
-// Polymorphic equality (`equals` / `not_equals`), control flow
-// (`logical_*`, `conditional`), and `_[_]` indexing are deliberately
-// absent: the kCall arm in `expr_lower.cc` special-cases them
-// (M3/M4 for indexing; M5.G for control flow; M5.B step 2 for
-// polymorphic eq).  They appear in `kExplicitlyUnimplementedIds`
-// so the tripwire still classifies every cel-cpp id.
+// `_[_]` indexing, ternary `_?_:_`, and `not_strictly_false` are
+// deliberately absent from the seeds: the kCall arm in
+// `expr_lower.cc` special-cases them (indexing is origin-aware;
+// `_?_:_` lowers as `BinaryenIf`). They appear in
+// `kExplicitlyUnimplementedIds` so the tripwire still classifies
+// every cel-cpp id.
 //
-// **Aggregate-op design decision (Option B, 2026-04-25).**  The
-// `size_*` / `in_*` / `add_list` / aggregate-equality seeds name
-// the **kDynamic dispatcher** (e.g. `cel_list_size`, NOT
-// `cel_list_size_arena`).  The dispatcher branches on the operand's
-// runtime `kind` and `__attribute__((musttail))`-jumps to the
-// arena fast-path or the kHost trampoline.  Trade-off: one extra
-// runtime branch on every aggregate-op call, but the OverloadTable
-// stays a flat (id → helper-name) map and the codegen kCall arm
-// in `expr_lower.cc` can do a single lookup-and-emit (mirrors
-// arithmetic / compare).
-//
-// **Sequencing.**  These dispatcher names don't exist as runtime
-// exports yet — M5.D step 2 ships `cel_list_size` / `cel_list_in`
-// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` /
-// `cel_map_in` / `cel_map_eq`, plus the kHost trampolines they
-// tail-call into.  Until step 2 lands, expr modules that emit
-// these names link-fail at instantiation — by design (the
-// alternative was an arena-only seed that would silently
-// miscompile on host operands; see `(3>2)?proto.map:literal_map`).
-//
-// Why not Option A (special-case in expr_lower mirroring `_[_]`):
-// keeps the seed flat at the cost of one runtime branch per call
-// — small, predictable, and aligns with how arithmetic helpers
-// dispatch internally (`absorb_3vl_binary` + `require_kinds`).
+// **Aggregate-op dispatch.** The `size_*` / `in_*` / `add_list` /
+// aggregate-equality seeds name the **kDynamic dispatcher** (e.g.
+// `cel_list_size`, NOT `cel_list_size_arena`). The dispatcher
+// branches on the operand's runtime `kind` and
+// `__attribute__((musttail))`-jumps to the arena fast-path or the
+// kHost trampoline. Trade-off: one extra runtime branch on every
+// aggregate-op call, but the OverloadTable stays a flat
+// (id → helper-name) map and the codegen kCall arm in
+// `expr_lower.cc` can do a single lookup-and-emit (mirrors
+// arithmetic / compare). Three-path origin dispatch is documented
+// in `rewrite/map-list-dispatch.md`.
 constexpr std::array<Seed, 156> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
@@ -102,8 +86,8 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
     // ── Concat (`_+_` for strings / bytes / lists) ────────────
     Seed{"add_string", {ImportModule::kCelRuntime, "cel_string_concat_at_vv"}},
     Seed{"add_bytes", {ImportModule::kCelRuntime, "cel_bytes_concat_at_vv"}},
-    // `add_list` names the kDynamic dispatcher (Option B).  Lands
-    // in M5.D step 2 alongside the kHost trampoline.
+    // `add_list` names the kDynamic dispatcher; the dispatcher
+    // tail-calls the kHost trampoline on host-backed operands.
     Seed{"add_list", {ImportModule::kCelRuntime, "cel_list_concat"}},
     // ── Same-kind ordering (`_<_`, `_<=_`, `_>_`, `_>=_`) ─────
     Seed{"less_int64", {ImportModule::kCelRuntime, "cel_int_lt_at_vv"}},
@@ -125,7 +109,7 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_uint_ge_at_vv"}},
     Seed{"greater_equals_double",
          {ImportModule::kCelRuntime, "cel_double_ge_at_vv"}},
-    // ── Cross-type numeric ladder (M5.B step 2) ──────────────
+    // ── Cross-type numeric ladder ────────────────────────────
     // Every {int,uint,double} × {int,uint,double} cross-kind pair
     // for `<`, `<=`, `>`, `>=`.  All six routes through the
     // single `cel_numeric_<op>_at_vv` helper which dispatches on
@@ -219,14 +203,14 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
     // ── Container `in` (kDynamic dispatcher) ─────────────────
     Seed{"in_list", {ImportModule::kCelRuntime, "cel_list_in"}},
     Seed{"in_map", {ImportModule::kCelRuntime, "cel_map_in"}},
-    // ── Polymorphic equals / not_equals (M5.B step 2b) ───────
+    // ── Polymorphic equals / not_equals ──────────────────────
     // Single overload id per cel-cpp; the runtime helper switches
     // on (a.kind, b.kind) and dispatches into same-kind / cross-
     // numeric / aggregate / message arms.  Mismatched scalar
     // kinds return `false`, NOT error (langdef §"Equality").
     Seed{"equals", {ImportModule::kCelRuntime, "cel_equals_at_vv"}},
     Seed{"not_equals", {ImportModule::kCelRuntime, "cel_not_equals_at_vv"}},
-    // ── 3VL / control-flow operators (M5.G — Slice 2) ─────────
+    // ── 3VL / control-flow operators ─────────────────────────
     // `_&&_` / `_||_` / `!_` route through the standard slot-out
     // ABI; non-strict semantics + the 3VL truth table live entirely
     // inside the runtime helper, so codegen treats them like any
@@ -236,7 +220,7 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
     Seed{"logical_and", {ImportModule::kCelRuntime, "cel_and"}},
     Seed{"logical_or", {ImportModule::kCelRuntime, "cel_or"}},
     Seed{"logical_not", {ImportModule::kCelRuntime, "cel_not"}},
-    // ── Timestamp / Duration arithmetic (M7B.B) ──────────────
+    // ── Timestamp / Duration arithmetic ──────────────────────
     // Pure-wasm kernels in cel_time.c.  Result kinds:
     //   (dur, dur) -> dur                          : add, sub
     //   (ts, dur) -> ts                            : add, sub
@@ -254,7 +238,7 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_ts_dur_sub_at_vv"}},
     Seed{"subtract_timestamp_timestamp",
          {ImportModule::kCelRuntime, "cel_ts_ts_sub_at_vv"}},
-    // ── Timestamp / Duration ordering (M7B.B) ────────────────
+    // ── Timestamp / Duration ordering ────────────────────────
     // Lexicographic (seconds, nanos) compare on the sign-correlated
     // CelDurTs payload.  Equality / inequality route through the
     // standard `equals` / `not_equals` seeds above; the
@@ -272,10 +256,11 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_dur_ge_at_vv"}},
     Seed{"greater_equals_timestamp",
          {ImportModule::kCelRuntime, "cel_ts_ge_at_vv"}},
-    // ── Timestamp UTC accessors (M7B.C) ──────────────────────
+    // ── Timestamp UTC accessors ──────────────────────────────
     // Pure-wasm kernels over the Hinnant civil-calendar helper in
     // cel_time.c.  No TZ argument — UTC by definition; with-TZ
-    // variants route through a single dispatch trampoline at M7B.E.
+    // variants route through a single dispatch trampoline (see
+    // the with-TZ accessor shims below).
     Seed{"timestamp_to_year",
          {ImportModule::kCelRuntime, "cel_ts_year_utc_at_v"}},
     Seed{"timestamp_to_month",
@@ -296,16 +281,17 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_ts_seconds_utc_at_v"}},
     Seed{"timestamp_to_milliseconds",
          {ImportModule::kCelRuntime, "cel_ts_milliseconds_utc_at_v"}},
-    // ── Duration accessors (M7B.C) ───────────────────────────
+    // ── Duration accessors ───────────────────────────────────
     // Truncating integer divisions on the sign-correlated payload.
-    Seed{"duration_to_hours", {ImportModule::kCelRuntime, "cel_dur_hours_at_v"}},
+    Seed{"duration_to_hours",
+         {ImportModule::kCelRuntime, "cel_dur_hours_at_v"}},
     Seed{"duration_to_minutes",
          {ImportModule::kCelRuntime, "cel_dur_minutes_at_v"}},
     Seed{"duration_to_seconds",
          {ImportModule::kCelRuntime, "cel_dur_seconds_at_v"}},
     Seed{"duration_to_milliseconds",
          {ImportModule::kCelRuntime, "cel_dur_milliseconds_at_v"}},
-    // ── Timestamp / Duration <-> int conversions (M7B.D pure-wasm) ─
+    // ── Timestamp / Duration <-> int conversions ─────────────
     // langdef: `int(timestamp)` returns epoch-seconds; `int(duration)`
     // returns whole seconds.  Reverse builds `(seconds, 0)`; the
     // timestamp form additionally range-checks the langdef [year 1,
@@ -318,32 +304,36 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_int_to_ts_at_v"}},
     Seed{"int64_to_duration",
          {ImportModule::kCelRuntime, "cel_int_to_dur_at_v"}},
-    // ── Identity conversions (M7B.D) ─────────────────────────
-    // `timestamp(timestamp)` / `duration(duration)` are the same
-    // `cel_copy_slot` shape M10.A's other identity ids use.
+    // ── Identity conversions ─────────────────────────────────
+    // `timestamp(timestamp)` / `duration(duration)` share the
+    // `cel_copy_slot` shape used by the scalar identity
+    // conversions below.
     Seed{"timestamp_to_timestamp",
          {ImportModule::kCelRuntime, "cel_copy_slot"}},
-    Seed{"duration_to_duration",
-         {ImportModule::kCelRuntime, "cel_copy_slot"}},
-    // ── String <-> Timestamp / Duration (M7B.D host trampolines) ─
+    Seed{"duration_to_duration", {ImportModule::kCelRuntime, "cel_copy_slot"}},
+    // ── String <-> Timestamp / Duration ──────────────────────
     // RFC3339 parse / proto-Duration text-format parse + format.
-    // Layer-2 impls in api/internal/cel_host.cc; runtime stays
-    // descriptor-free per design.md §4.7.6.
+    // Self-hosted inside cel_runtime.wasm via vendored absl
+    // (`compiler_v2/runtime/cel_time_parse.cc`); see
+    // `rewrite/phase-c-plan.md` §4.1-4.4 for the kernel contracts
+    // (admit/reject envelope, error codes, RFC3339 format spec).
     Seed{"string_to_timestamp",
-         {ImportModule::kCelHost, "cel_timestamp_parse"}},
+         {ImportModule::kCelRuntime, "cel_timestamp_parse_at_v"}},
     Seed{"string_to_duration",
-         {ImportModule::kCelHost, "cel_duration_parse"}},
+         {ImportModule::kCelRuntime, "cel_duration_parse_at_v"}},
     Seed{"timestamp_to_string",
-         {ImportModule::kCelHost, "cel_timestamp_format"}},
+         {ImportModule::kCelRuntime, "cel_timestamp_format_at_v"}},
     Seed{"duration_to_string",
-         {ImportModule::kCelHost, "cel_duration_format"}},
-    // ── With-TZ accessor shims (M7B.E) ───────────────────────
+         {ImportModule::kCelRuntime, "cel_duration_format_at_v"}},
+    // ── With-TZ accessor shims ───────────────────────────────
     // Each id seeds to a pure-wasm shim helper that calls the
     // single `cel_host.cel_timestamp_tz_accessor(out, ts, tz, kind)`
     // host trampoline with a fixed `accessor_kind` constant.  The
     // shim shape `_at_vv` (3-arg: out + ts + tz) matches the
     // standard helper ABI; the kind constant is supplied by the
-    // shim, not the codegen.  See m7b §4.3 + §4.4 Q3.
+    // shim, not the codegen.  See
+    // `rewrite/m7b-duration-timestamp.md` §4.3-§4.4 for the
+    // single-trampoline-per-TZ-accessor rationale.
     Seed{"timestamp_to_year_with_tz",
          {ImportModule::kCelRuntime, "cel_ts_year_with_tz_at_vv"}},
     Seed{"timestamp_to_month_with_tz",
@@ -375,17 +365,18 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_starts_with_at_vv"}},
     Seed{"ends_with_string",
          {ImportModule::kCelRuntime, "cel_string_ends_with_at_vv"}},
-    // M9.B — `type(x)` standard function.  Pure-runtime helper that
+    // `type(x)` standard function.  Pure-runtime helper that
     // reads the operand kind, looks up the spec type-name in the
     // 12-row table in `cel_runtime.c`, and writes a CEL_TYPE
-    // CelValue.  CEL_MESSAGE arm dispatches to the M9.C host
-    // trampoline `cel_host_resolve_message_type_name`.
+    // CelValue.  CEL_MESSAGE arm dispatches to the host
+    // trampoline `cel_host_resolve_message_type_name`.  See
+    // `rewrite/m9-type-subsystem.md`.
     Seed{"type", {ImportModule::kCelRuntime, "cel_type_of_at_v"}},
-    // M10.A — identity conversions.  cel-cpp's standard library
+    // Identity conversions.  cel-cpp's standard library
     // registers `<kind>(<kind>)` overloads for every scalar kind;
     // each is a no-op at runtime.  Reuse `cel_copy_slot` (the
-    // 24-byte CelValue memcpy from M5.G Slice 2's ternary lowering)
-    // — its `(dst, src) -> void` ABI is bit-identical to the
+    // 24-byte CelValue memcpy used by the ternary lowering) —
+    // its `(dst, src) -> void` ABI is bit-identical to the
     // conversion `(out_slot, in_slot) -> void` shape, and the
     // full-CelValue copy automatically propagates CEL_UNKNOWN /
     // CEL_ERROR absorbing-kind semantics verbatim.
@@ -395,10 +386,11 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
     Seed{"double_to_double", {ImportModule::kCelRuntime, "cel_copy_slot"}},
     Seed{"string_to_string", {ImportModule::kCelRuntime, "cel_copy_slot"}},
     Seed{"bytes_to_bytes", {ImportModule::kCelRuntime, "cel_copy_slot"}},
-    // M10.B — numeric inter-conversions.  Each helper is a unary
-    // slot-out kernel with the standard 3VL absorb prelude;
-    // overflow / NaN / negative-source rejections poison with
-    // CEL_ERR_OVERFLOW per langdef §"int" / §"uint" / §"double".
+    // Numeric inter-conversions.  Each helper is a unary slot-out
+    // kernel with the standard 3VL absorb prelude; overflow / NaN
+    // / negative-source rejections poison with CEL_ERR_OVERFLOW
+    // per langdef §"int" / §"uint" / §"double".  See
+    // `rewrite/m10-conversions.md`.
     Seed{"uint64_to_int64",
          {ImportModule::kCelRuntime, "cel_uint_to_int_at_v"}},
     Seed{"double_to_int64",
@@ -411,10 +403,9 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_int_to_double_at_v"}},
     Seed{"uint64_to_double",
          {ImportModule::kCelRuntime, "cel_uint_to_double_at_v"}},
-    // M10.C — string parsing.  Hand-rolled parsers in
-    // `cel_runtime.c` mirror cel-cpp's `absl::SimpleAtoi` /
-    // `SimpleAtod` admit-sets; malformed input poisons
-    // `CEL_ERR_OVERFLOW`.
+    // String parsing.  Hand-rolled parsers in `cel_runtime.c`
+    // mirror cel-cpp's `absl::SimpleAtoi` / `SimpleAtod`
+    // admit-sets; malformed input poisons `CEL_ERR_OVERFLOW`.
     Seed{"string_to_int64",
          {ImportModule::kCelRuntime, "cel_string_to_int_at_v"}},
     Seed{"string_to_uint64",
@@ -423,12 +414,12 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_to_double_at_v"}},
     Seed{"string_to_bool",
          {ImportModule::kCelRuntime, "cel_string_to_bool_at_v"}},
-    // M10.D — number/bool to string.  Arena-allocates the output
-    // string bytes; lifetime model identical to the M9.B
-    // `cel_type_of_at_v` per-Eval-arena pattern.  `double_to_string`
-    // is "round-trip safe for typical magnitudes" — byte-exact match
-    // against cel-cpp's `to_chars` general format is not guaranteed
-    // (see m10-conversions.md §4.4).
+    // Number/bool to string.  Arena-allocates the output string
+    // bytes; lifetime model identical to the `cel_type_of_at_v`
+    // per-Eval-arena pattern.  `double_to_string` is "round-trip
+    // safe for typical magnitudes" — byte-exact match against
+    // cel-cpp's `to_chars` general format is not guaranteed (see
+    // `rewrite/m10-conversions.md` §4.4).
     Seed{"int64_to_string",
          {ImportModule::kCelRuntime, "cel_int_to_string_at_v"}},
     Seed{"uint64_to_string",
@@ -437,8 +428,8 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_bool_to_string_at_v"}},
     Seed{"double_to_string",
          {ImportModule::kCelRuntime, "cel_double_to_string_at_v"}},
-    // M10.E — bytes <-> string with UTF-8 validation.  Both share
-    // the source's payload.s span (no arena copy); the kind tag in
+    // Bytes <-> string with UTF-8 validation.  Both share the
+    // source's payload.s span (no arena copy); the kind tag in
     // CelValue disambiguates the byte semantics.
     Seed{"string_to_bytes",
          {ImportModule::kCelRuntime, "cel_string_to_bytes_at_v"}},
@@ -446,79 +437,35 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_bytes_to_string_at_v"}},
 };
 
-// Overload ids the v2 OverloadTable does NOT seed.  Every cel-cpp
+// Overload ids the OverloadTable does NOT seed.  Every cel-cpp
 // `StandardOverloadIds::k*` value is in either `kBuiltinSeeds`
 // above or this set; the tripwire test enforces the partition.
 //
-// Three reasons land an id here:
+// Two reasons land an id here:
 //
 //   1. Special-cased in `expr_lower.cc` and not routed through the
-//      OverloadTable's general arm — `_[_]` indexing (M3/M4),
-//      `_&&_` / `_||_` / `!_` / `_?_:_` control flow (M5.G),
-//      `not_strictly_false` (M5.I comprehension internals),
-//      polymorphic `equals` / `not_equals` (M5.B step 2).
+//      OverloadTable's general arm — `_[_]` indexing (origin-aware
+//      kArena/kHost/kDynamic dispatch; see `rewrite/map-list-dispatch.md`),
+//      `_?_:_` (lowered as `BinaryenIf`, not a slot-out helper),
+//      `not_strictly_false` (comprehension internals; see
+//      `rewrite/m5-comprehensions-design.md`).
 //
-//   2. Deferred to a later v2 milestone — cross-type numeric
-//      ladder (M5.B step 2), timestamp / duration arithmetic
-//      (post-M5 small slice), regex `matches` (post-M5 regex slice).
-//
-//   3. Not on the v2 critical path — type conversions (`to_int`,
-//      `to_string`, ...) and timestamp / duration accessors
-//      (`getFullYear`, etc.); these graduate when an embedder asks
-//      for them.
+//   2. Not yet implemented — regex `matches` (pending
+//      `rewrite/phase-c-plan.md` §4.5 — `cel_matches_at_vv`
+//      kernel + per-Instance LRU regex cache), and `to_dyn`
+//      (dyn-passthrough — see `rewrite/dyn-passthrough-plan.md`).
 constexpr std::array<absl::string_view, 10> kExplicitlyUnimplementedIds{
-    // (1) Special-cased in expr_lower.cc.
-    "conditional",  // M5.G — BinaryenIf lowering, not a slot-out helper.
+    // Special-cased in expr_lower.cc — not slot-out helpers.
+    "conditional",
     "not_strictly_false",
-    "__not_strictly_false__",  // M5.I.
+    "__not_strictly_false__",
     "index_list",
-    "index_map",  // _[_] (M3/M4).
-    // (2b) Timestamp / duration arithmetic + ordering graduated to
-    // `kBuiltinSeeds` above in M7B.B; size dropped 58 → 44.
-    // (2c) Regex `matches`.
+    "index_map",
+    // Regex (pending `rewrite/phase-c-plan.md` §4.5).
     "matches",
     "matches_string",
-    // (3) Timestamp UTC accessors graduated to `kBuiltinSeeds` in
-    // M7B.C (10 ts + 4 dur ids); size dropped 44 → 30.
-    // (4) Timestamp with-TZ accessors graduated in M7B.E (10 ids
-    // routing through pure-wasm shims over the single host
-    // dispatch trampoline `cel_host.cel_timestamp_tz_accessor`);
-    // size dropped 30 → 20.
-    // (3) Timestamp / duration parse / format / int conversions
-    // graduated to `kBuiltinSeeds` in M7B.D (10 ids: 6 conversion +
-    // 2 identity + 4 host parse/format trampolines); size dropped
-    // 30 → 20.
-    // (3) Type conversions.
+    // Dyn passthrough (see `rewrite/dyn-passthrough-plan.md`).
     "to_dyn",
-    // M10.A: identity-conversion ids (`bool_to_bool`,
-    // `int64_to_int64`, `uint64_to_uint64`, `double_to_double`,
-    // `string_to_string`, `bytes_to_bytes`) graduated to
-    // `kBuiltinSeeds` above; size dropped 80 → 74 to match.
-    //
-    // M10.B: numeric inter-conversion ids (`uint64_to_int64`,
-    // `double_to_int64`, `int64_to_uint64`, `double_to_uint64`,
-    // `int64_to_double`, `uint64_to_double`) graduated to
-    // `kBuiltinSeeds`; size dropped 74 → 68.
-    //
-    // M10.C: string-parse ids (`string_to_int64`,
-    // `string_to_uint64`, `string_to_double`, `string_to_bool`)
-    // graduated to `kBuiltinSeeds`; size dropped 68 → 64.
-    // M10.D: number/bool→string ids (`bool_to_string`,
-    // `double_to_string`, `int64_to_string`, `uint64_to_string`)
-    // graduated to `kBuiltinSeeds`; size dropped 64 → 60.
-    //
-    // M10.E: bytes <-> string ids (`string_to_bytes`,
-    // `bytes_to_string`) graduated; size dropped 60 → 58.
-    // M7B.D: 10 timestamp/duration parse + format + int conversion
-    // + identity ids (`timestamp_to_int64`, `duration_to_int64`,
-    // `timestamp_to_string`, `duration_to_string`,
-    // `timestamp_to_timestamp`, `duration_to_duration`,
-    // `int64_to_timestamp`, `int64_to_duration`,
-    // `string_to_timestamp`, `string_to_duration`) graduated to
-    // `kBuiltinSeeds`; size dropped 30 → 20.
-    // M9.B: `"type"` is now seeded in kBuiltinSeeds above; removed
-    // from this unimplemented-list (and the array size dropped from
-    // 81 → 80 to match).
 };
 
 }  // namespace

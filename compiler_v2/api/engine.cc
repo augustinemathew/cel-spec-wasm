@@ -20,6 +20,7 @@
 #include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
 #include "google/protobuf/descriptor.h"
+#include "wasi.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -48,71 +49,41 @@ absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
   return absl::InternalError(absl::StrCat(context, ": ", text));
 }
 
-// Stub for `wasi_snapshot_preview1.random_get(buf, len) -> errno`.
-// wasi-libc's dlmalloc seeds itself on first allocation via this
-// import.  We don't need any actual randomness (the runtime is
-// deterministic by design — same expression + same activation =>
-// same bytes); just zero-fill the buffer and return success (0).
-wasm_trap_t* WasiRandomGetStub(void* /*env*/, wasmtime_caller_t* caller,
-                               const wasmtime_val_t* args, size_t nargs,
-                               wasmtime_val_t* results, size_t nresults) {
-  (void)nargs;
-  if (nresults >= 1) {
-    results[0].kind = WASMTIME_I32;
-    results[0].of.i32 = 0;  // 0 = success
-  }
-  wasmtime_extern_t mem_ext;
-  if (!wasmtime_caller_export_get(caller, "memory", 6, &mem_ext) ||
-      mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
-    return nullptr;  // caller has no memory; nothing to zero, return ok
-  }
-  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
-  uint8_t* data = wasmtime_memory_data(ctx, &mem_ext.of.memory);
-  size_t size = wasmtime_memory_data_size(ctx, &mem_ext.of.memory);
-  const uint32_t buf = static_cast<uint32_t>(args[0].of.i32);
-  const uint32_t len = static_cast<uint32_t>(args[1].of.i32);
-  if (data != nullptr && buf + len <= size) {
-    std::memset(data + buf, 0, len);
-  }
-  return nullptr;
-}
-
+// Phase C: register wasmtime's built-in WASI preview1 implementation
+// onto the linker.  Replaces the hand-rolled random_get / sched_yield
+// stubs once absl + cctz are linked into cel_runtime.wasm — those
+// libs pull in ~10 wasi imports (environ_get / fd_close / fd_seek /
+// proc_exit / ...) on top, all of which wasmtime can resolve via its
+// reference implementation.  The actual WASI behaviour (env, stdio)
+// is supplied per-instance via `wasmtime_context_set_wasi`.
 absl::Status RegisterWasiStubs(wasmtime_linker_t* linker) {
-  // Signature: (i32 buf, i32 len) -> i32
-  wasm_valtype_t* i32_a = wasm_valtype_new_i32();
-  wasm_valtype_t* i32_b = wasm_valtype_new_i32();
-  wasm_valtype_t* i32_r = wasm_valtype_new_i32();
-  wasm_valtype_vec_t params, results;
-  wasm_valtype_vec_new_uninitialized(&params, 2);
-  params.data[0] = i32_a;
-  params.data[1] = i32_b;
-  wasm_valtype_vec_new_uninitialized(&results, 1);
-  results.data[0] = i32_r;
-  wasm_functype_t* type = wasm_functype_new(&params, &results);
-  const char kMod[] = "wasi_snapshot_preview1";
-  const char kName[] = "random_get";
-  wasmtime_error_t* err = wasmtime_linker_define_func(
-      linker, kMod, sizeof(kMod) - 1, kName, sizeof(kName) - 1, type,
-      WasiRandomGetStub, /*data=*/nullptr, /*finalizer=*/nullptr);
-  wasm_functype_delete(type);
+  wasmtime_error_t* err = wasmtime_linker_define_wasi(linker);
   if (err != nullptr) {
-    return WasmtimeErrorToStatus(
-        "linker.define(wasi_snapshot_preview1.random_get)", err);
+    return WasmtimeErrorToStatus("linker.define_wasi", err);
   }
   return absl::OkStatus();
 }
 
 absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
   auto state = std::make_shared<celwasm::WasmtimeEngineState>();
-  // M3.C: the cel_runtime module's `cel_map_lookup` dispatcher emits
-  // `return_call` (via clang `__attribute__((musttail))` + `-mtail-call`).
-  // wasmtime rejects modules using the tail-call feature unless the host
-  // opts in via the engine's config.
+  // The cel_runtime module's aggregate-op dispatchers
+  // (`cel_map_lookup`, etc.) emit `return_call` via clang
+  // `__attribute__((musttail))` + `-mtail-call`.  wasmtime rejects
+  // modules using the tail-call feature unless the host opts in.
   wasm_config_t* config = wasm_config_new();
   if (config == nullptr) {
     return absl::InternalError("wasm_config_new returned null");
   }
   wasmtime_config_wasm_tail_call_set(config, true);
+  // cel_runtime.wasm is built against wasm32-wasi-threads (cctz
+  // needs `<mutex>`).  The module declares its memory as shared and
+  // may import `wasi_snapshot_preview1.sched_yield`; both require
+  // the wasm threads proposal + shared memory support enabled here.
+  // The runtime never *calls* threading primitives — wasm-ld just
+  // keeps these imports alive as part of wasi-libc's surface.  See
+  // `rewrite/phase-c-plan.md` §7.2.
+  wasmtime_config_wasm_threads_set(config, true);
+  wasmtime_config_shared_memory_set(config, true);
   state->engine = wasm_engine_new_with_config(config);
   if (state->engine == nullptr) {
     return absl::InternalError("wasm_engine_new_with_config returned null");
@@ -130,25 +101,43 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 
 // ——— Plan helpers ———
 
-// Allocates the per-Plan store.  Memory is no longer host-allocated
-// (M6): the runtime module declares + exports its own memory via
+// Allocates the per-Plan store.  Memory ownership: the runtime
+// module declares + exports its own memory via
 // `runtime/BUILD.bazel:--export=memory`.  After `InstantiateRuntime`
 // finishes, `PullRuntimeMemory` pulls the exported memory off
 // `runtime_instance` and binds it on the linker as `cel.memory` so
 // the expr module's `(import "cel" "memory")` resolves to the same
-// backing store.
+// backing store.  See `rewrite/wasi/DESIGN.md` §3-4.
 absl::Status InitStore(celwasm::WasmtimeEngineState* state,
                        celwasm::InstanceImpl* impl) {
   impl->store = wasmtime_store_new(state->engine, nullptr, nullptr);
   if (impl->store == nullptr) {
     return absl::InternalError("wasmtime_store_new returned null");
   }
+  // cel_runtime.wasm links absl + cctz, which pulls in wasi-libc
+  // functions that reference env / stdio / clocks.  Hand wasmtime
+  // a minimal wasi_config (no inherited env / stdio) so the
+  // imports defined via `wasmtime_linker_define_wasi` resolve into a
+  // sandboxed implementation that returns deterministic "empty
+  // environment" responses.  Without this call wasmtime's WASI
+  // functions trap on first use.
+  wasi_config_t* wasi = wasi_config_new();
+  if (wasi == nullptr) {
+    return absl::InternalError("wasi_config_new returned null");
+  }
+  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
+  wasmtime_error_t* err = wasmtime_context_set_wasi(ctx, wasi);
+  // `wasmtime_context_set_wasi` takes ownership of `wasi`; do not
+  // free here even on error.
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus("context_set_wasi", err);
+  }
   return absl::OkStatus();
 }
 
 // Wires cel_env.cel_log + cel_host.* + WASI stubs onto a fresh
-// linker.  `cel.memory` is NOT bound here — post-M6 the runtime
-// module owns + exports its own memory; the binding lands after
+// linker.  `cel.memory` is NOT bound here — the runtime module
+// owns + exports its own memory; the binding lands after
 // `InstantiateRuntime` (see `BindRuntimeMemory`).
 absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
                         celwasm::InstanceImpl* impl) {
@@ -179,10 +168,18 @@ absl::Status BindRuntimeMemory(wasmtime_context_t* ctx,
     return absl::FailedPreconditionError(
         "runtime instance has no export `memory`");
   }
-  if (mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
-    return absl::FailedPreconditionError("`memory` is not a memory");
+  // Phase C: the runtime is built for wasm32-wasi-threads and exports
+  // its memory as shared.  The expr module imports `cel.memory` with
+  // matching shared shape (codegen sets `shared=true` on the import,
+  // see `WasmModule::AddMemoryImport`).
+  if (mem_ext.kind != WASMTIME_EXTERN_SHAREDMEMORY) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "`memory` is not a shared memory (kind=", mem_ext.kind, ")"));
   }
-  impl->memory = mem_ext.of.memory;
+  // The handle pulled out of `wasmtime_instance_export_get` is a
+  // shared-memory pointer owned by the store; we clone it so this
+  // InstanceImpl owns its own refcounted handle (deleted in the dtor).
+  impl->memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
   wasmtime_error_t* err = wasmtime_linker_define(impl->linker, ctx, "cel", 3,
                                                  "memory", 6, &mem_ext);
   if (err != nullptr) {
@@ -218,12 +215,13 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // rule); a missing entry here surfaces as
 // `instantiate(expr): unknown import: cel::<name>`.
 //
-// M5.F adds every kBuiltinSeeds helper that ships a runtime
-// export today.  M5.D step 2 added the seven aggregate-op
-// dispatchers (`cel_list_size` / `cel_list_in` / `cel_list_eq` /
-// `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`),
-// each `__attribute__((musttail))`-dispatching to either an
-// `_arena` fast path or a `cel_host.*` import.  The list is data,
+// Categories below mirror the seed grouping in
+// `compiler_v2/codegen/overload_table.cc::kBuiltinSeeds`.  The
+// seven aggregate-op dispatchers (`cel_list_size` / `cel_list_in`
+// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` /
+// `cel_map_in` / `cel_map_eq`) each `__attribute__((musttail))`-
+// dispatch to either an `_arena` fast path or a `cel_host.*`
+// import (see `rewrite/map-list-dispatch.md`).  The list is data,
 // not code — kept at file scope so the function body is just the
 // loop and stays under the lint function-size gate.
 constexpr const char* kRuntimeExports[] = {
@@ -231,61 +229,61 @@ constexpr const char* kRuntimeExports[] = {
     "cel_map_insert_at", "cel_map_insert_at_if_bool", "cel_map_lookup_arena",
     "cel_map_lookup", "cel_list_create", "cel_list_append_at",
     "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
-    // M5.B step 1: arithmetic helpers.
+    // Same-kind arithmetic.
     "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
     "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
     "cel_uint_add_at_vv", "cel_uint_sub_at_vv", "cel_uint_mul_at_vv",
     "cel_uint_div_at_vv", "cel_uint_mod_at_vv", "cel_double_add_at_vv",
     "cel_double_sub_at_vv", "cel_double_mul_at_vv", "cel_double_div_at_vv",
     "cel_double_neg_at_v",
-    // M5.B step 1: comparison helpers.
+    // Same-kind comparison helpers.
     "cel_int_lt_at_vv", "cel_int_le_at_vv", "cel_int_gt_at_vv",
     "cel_int_ge_at_vv", "cel_uint_lt_at_vv", "cel_uint_le_at_vv",
     "cel_uint_gt_at_vv", "cel_uint_ge_at_vv", "cel_double_lt_at_vv",
     "cel_double_le_at_vv", "cel_double_gt_at_vv", "cel_double_ge_at_vv",
     "cel_bool_lt_at_vv", "cel_bool_le_at_vv", "cel_bool_gt_at_vv",
     "cel_bool_ge_at_vv",
-    // M5.B step 2: cross-type numeric ladder.
+    // Cross-type numeric ladder.
     "cel_numeric_lt_at_vv", "cel_numeric_le_at_vv", "cel_numeric_gt_at_vv",
     "cel_numeric_ge_at_vv",
-    // M5.C: string + bytes ops.
+    // String + bytes ops.
     "cel_string_concat_at_vv", "cel_string_size_at_v", "cel_string_lt_at_vv",
     "cel_string_le_at_vv", "cel_string_gt_at_vv", "cel_string_ge_at_vv",
     "cel_string_contains_at_vv", "cel_string_starts_with_at_vv",
     "cel_string_ends_with_at_vv", "cel_bytes_concat_at_vv",
     "cel_bytes_size_at_v", "cel_bytes_lt_at_vv", "cel_bytes_le_at_vv",
     "cel_bytes_gt_at_vv", "cel_bytes_ge_at_vv",
-    // M5.D step 2: aggregate kDynamic dispatchers.
+    // Aggregate kDynamic dispatchers.
     "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
     "cel_map_size", "cel_map_in", "cel_map_eq",
-    // M5.B Slice E: map-key iteration helpers.
+    // Map-key iteration helpers.
     "cel_map_iter_init", "cel_map_iter_next", "cel_map_iter_key_at",
     "cel_map_iter_value_at",
-    // M5.B step 2b: polymorphic equality.
+    // Polymorphic equality.
     "cel_equals_at_vv", "cel_not_equals_at_vv",
-    // M5.G (Slice 2): 3VL / control-flow helpers.
+    // 3VL / control-flow helpers.
     "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
-    // M9.B: type-of helper.
+    // type-of helper.
     "cel_type_of_at_v",
-    // M10.B: numeric inter-conversion helpers.
+    // Numeric inter-conversion helpers.
     "cel_uint_to_int_at_v", "cel_double_to_int_at_v", "cel_int_to_uint_at_v",
     "cel_double_to_uint_at_v", "cel_int_to_double_at_v",
     "cel_uint_to_double_at_v",
-    // M10.C: string-parse helpers.
+    // String-parse helpers.
     "cel_string_to_int_at_v", "cel_string_to_uint_at_v",
     "cel_string_to_double_at_v", "cel_string_to_bool_at_v",
-    // M10.D: number/bool-to-string formatters.
+    // Number/bool-to-string formatters.
     "cel_int_to_string_at_v", "cel_uint_to_string_at_v",
     "cel_bool_to_string_at_v", "cel_double_to_string_at_v",
-    // M10.E: bytes <-> string with UTF-8 validation.
+    // Bytes <-> string with UTF-8 validation.
     "cel_string_to_bytes_at_v", "cel_bytes_to_string_at_v",
-    // M7B.B: timestamp / duration arithmetic + ordering kernels.
+    // Timestamp / duration arithmetic + ordering kernels.
     "cel_dur_add_at_vv", "cel_dur_sub_at_vv", "cel_ts_dur_add_at_vv",
     "cel_dur_ts_add_at_vv", "cel_ts_dur_sub_at_vv", "cel_ts_ts_sub_at_vv",
     "cel_dur_lt_at_vv", "cel_dur_le_at_vv", "cel_dur_gt_at_vv",
     "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv", "cel_ts_gt_at_vv",
     "cel_ts_ge_at_vv",
-    // M7B.C: timestamp UTC accessors + duration accessors.
+    // Timestamp UTC accessors + duration accessors.
     "cel_ts_year_utc_at_v", "cel_ts_month_utc_at_v",
     "cel_ts_day_of_month_1_utc_at_v", "cel_ts_day_of_month_utc_at_v",
     "cel_ts_day_of_year_utc_at_v", "cel_ts_day_of_week_utc_at_v",
@@ -293,15 +291,21 @@ constexpr const char* kRuntimeExports[] = {
     "cel_ts_seconds_utc_at_v", "cel_ts_milliseconds_utc_at_v",
     "cel_dur_hours_at_v", "cel_dur_minutes_at_v", "cel_dur_seconds_at_v",
     "cel_dur_milliseconds_at_v",
-    // M7B.D pure-wasm half: int <-> ts/dur conversions.
+    // Pure-wasm int <-> ts/dur conversions.
     "cel_ts_to_int_at_v", "cel_dur_to_int_at_v", "cel_int_to_ts_at_v",
     "cel_int_to_dur_at_v",
-    // M7B.E: with-TZ accessor shims.
+    // With-TZ accessor shims (delegate to the host's single
+    // `cel_timestamp_tz_accessor` trampoline).
     "cel_ts_year_with_tz_at_vv", "cel_ts_month_with_tz_at_vv",
     "cel_ts_day_of_month_1_with_tz_at_vv", "cel_ts_day_of_month_with_tz_at_vv",
     "cel_ts_day_of_year_with_tz_at_vv", "cel_ts_day_of_week_with_tz_at_vv",
     "cel_ts_hours_with_tz_at_vv", "cel_ts_minutes_with_tz_at_vv",
-    "cel_ts_seconds_with_tz_at_vv", "cel_ts_milliseconds_with_tz_at_vv"};
+    "cel_ts_seconds_with_tz_at_vv", "cel_ts_milliseconds_with_tz_at_vv",
+    // Runtime-hosted parse / format kernels — see
+    // `rewrite/phase-c-plan.md` §4.1-4.4.  Self-hosted inside
+    // `cel_runtime.wasm` via vendored absl in `cel_time_parse.cc`.
+    "cel_timestamp_parse_at_v", "cel_duration_parse_at_v",
+    "cel_timestamp_format_at_v", "cel_duration_format_at_v"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {
@@ -336,7 +340,7 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   // module declares + exports its own memory at the design's initial
   // size (2 pages = 128 KB).  A mismatch means BUILD.bazel +
   // cel_layout.h have drifted.
-  ABSL_CHECK_EQ(wasmtime_memory_size(ctx, &impl->memory),
+  ABSL_CHECK_EQ(wasmtime_sharedmemory_size(impl->memory),
                 CELWASM_INITIAL_MEMORY_PAGES)
       << "DESIGN A13: wasm memory page count mismatch";
 
@@ -484,9 +488,9 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // Decode the `cel.abi` custom section and park it on the Instance.
   // Instance::Eval(Activation) consults `impl->abi.by_name` at
   // call time to marshal bound values into their workspace slots.
-  // NotFound is tolerated: M1-era modules + synthetic WAT fixtures
-  // don't carry the section, and a variable-free Eval() still
-  // works — the decoded abi just stays empty.
+  // NotFound is tolerated: minimal / synthetic WAT fixtures don't
+  // carry the section, and a variable-free Eval() still works —
+  // the decoded abi just stays empty.
   auto abi_or = celwasm::DecodeCelAbiFromWasm(program.wasm_bytes());
   if (abi_or.ok()) {
     impl->abi = *std::move(abi_or);
@@ -494,17 +498,17 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
     return abi_or.status();
   }
 
-  // M2.C: populate host_env.bindings (field_refs + attributes) from
-  // the decoded ABI so the cel_host trampolines can resolve
+  // Populate host_env.bindings (field_refs + attributes) from the
+  // decoded ABI so the cel_host trampolines can resolve
   // field_ref_id → (field_number, field_name) and attribute_id →
   // (root, qualifiers).  unknown_patterns stays empty for Eval();
   // PartialEval rebinds it per-call.
   //
-  // M7.A: pass the generated descriptor pool so `BuildCelHostBindings`
+  // Pass the generated descriptor pool so `BuildCelHostBindings`
   // can resolve `cel.abi.types[]` FQNs to `Descriptor*` for
   // `cel_make_message` lookups.  Statically-linked cc_proto_library
   // descriptors are reachable through `generated_pool()`; dynamic
-  // schemas (SchemaProtoSource) are an M7.A-polish follow-up.
+  // schemas (SchemaProtoSource) are a follow-up.
   celwasm::BuildCelHostBindings(
       impl->abi, google::protobuf::DescriptorPool::generated_pool(),
       impl->host_env);
