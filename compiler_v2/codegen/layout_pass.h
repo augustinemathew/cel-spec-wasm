@@ -70,7 +70,7 @@ struct LayoutOptions {
 //     [workspace_base..workspace_base+workspace_bytes)
 //                24B cells — one per referenced variable (M2), plus
 //                eventual SlotAllocator-owned scratch cells (M3+)
-//     [arena_base..)  grows forward via cel_alloc
+//     [arena_base..)  grows forward via arena_alloc
 //
 // `rodata_base` is fixed at 16 (skip past the two reserved slots).
 // `workspace_base` is `rodata_base + rodata.size()` rounded up to 8;

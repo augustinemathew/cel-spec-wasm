@@ -90,7 +90,7 @@ static void concat_into_out(CelValue* out, const CelSpan* a, const CelSpan* b,
   uint32_t total = a->len + b->len;
   uint32_t off = 0;
   if (total > 0) {
-    off = cel_alloc(total);
+    off = arena_alloc(total);
     if (off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;

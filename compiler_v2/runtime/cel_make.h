@@ -1,9 +1,9 @@
 // Scalar CelValue constructors.  Each allocates a fresh 24-byte
-// CelValue in the arena (via `cel_alloc`) and returns its byte offset,
+// CelValue in the arena (via `arena_alloc`) and returns its byte offset,
 // or 0 on OOM.  String / bytes variants copy `len` source bytes into
 // the arena; `_view` variants wrap an already-arena-resident span
 // without copying — used when the host has already streamed bytes in
-// via a prior `cel_alloc`.
+// via a prior `arena_alloc`.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MAKE_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_MAKE_H_

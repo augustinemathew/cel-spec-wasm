@@ -47,7 +47,7 @@ class ListTest : public ::testing::Test {
 
  public:
   uint32_t NewSlot() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
   uint32_t Str(const char* s) {
     return cel_make_string(s, static_cast<uint32_t>(std::strlen(s)));
@@ -77,7 +77,7 @@ TEST_F(ListTest, CreateZeroCountIsValidEmpty) {
 }
 
 TEST_F(ListTest, PartiallyFilledTrailingSlotsReadAsCelNull) {
-  // create allocates `capacity` slots, count=0; cel_alloc zero-fills.
+  // create allocates `capacity` slots, count=0; arena_alloc zero-fills.
   // If codegen appends fewer than capacity (e.g. comprehension filter
   // skipping iters), the unused trailing slots are unreachable
   // (count caps reads) — but a defensive index past count must not

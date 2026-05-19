@@ -34,7 +34,7 @@ class StringOpsTest : public ::testing::Test {
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
   const CelValue* At(uint32_t slot) {
@@ -308,96 +308,193 @@ INSTANTIATE_TEST_SUITE_P(
     StringLe, BinaryStringBoolTest,
     ::testing::Values(
         BinaryStringBoolCase{"string_le_strictly_less", cel_string_le_at_vv,
-                             +[]() { return cel_make_string("a", 1); },
-                             +[]() { return cel_make_string("b", 1); }, true},
+                             +[]() {
+                               return cel_make_string("a", 1);
+                             },
+                             +[]() {
+                               return cel_make_string("b", 1);
+                             },
+                             true},
         BinaryStringBoolCase{"string_le_equal", cel_string_le_at_vv,
-                             +[]() { return cel_make_string("ab", 2); },
-                             +[]() { return cel_make_string("ab", 2); }, true},
+                             +[]() {
+                               return cel_make_string("ab", 2);
+                             },
+                             +[]() {
+                               return cel_make_string("ab", 2);
+                             },
+                             true},
         BinaryStringBoolCase{"string_le_strictly_greater", cel_string_le_at_vv,
-                             +[]() { return cel_make_string("b", 1); },
-                             +[]() { return cel_make_string("a", 1); }, false}),
-    [](const auto& info) { return std::string(info.param.name); });
+                             +[]() {
+                               return cel_make_string("b", 1);
+                             },
+                             +[]() {
+                               return cel_make_string("a", 1);
+                             },
+                             false}),
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     StringGt, BinaryStringBoolTest,
-    ::testing::Values(
-        BinaryStringBoolCase{"string_gt_strictly_greater", cel_string_gt_at_vv,
-                             +[]() { return cel_make_string("b", 1); },
-                             +[]() { return cel_make_string("a", 1); }, true},
-        BinaryStringBoolCase{"string_gt_equal_false", cel_string_gt_at_vv,
-                             +[]() { return cel_make_string("ab", 2); },
-                             +[]() { return cel_make_string("ab", 2); }, false},
-        BinaryStringBoolCase{"string_gt_strictly_less_false",
-                             cel_string_gt_at_vv,
-                             +[]() { return cel_make_string("a", 1); },
-                             +[]() { return cel_make_string("b", 1); }, false}),
-    [](const auto& info) { return std::string(info.param.name); });
+    ::testing::Values(BinaryStringBoolCase{"string_gt_strictly_greater",
+                                           cel_string_gt_at_vv,
+                                           +[]() {
+                                             return cel_make_string("b", 1);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("a", 1);
+                                           },
+                                           true},
+                      BinaryStringBoolCase{"string_gt_equal_false",
+                                           cel_string_gt_at_vv,
+                                           +[]() {
+                                             return cel_make_string("ab", 2);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("ab", 2);
+                                           },
+                                           false},
+                      BinaryStringBoolCase{"string_gt_strictly_less_false",
+                                           cel_string_gt_at_vv,
+                                           +[]() {
+                                             return cel_make_string("a", 1);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("b", 1);
+                                           },
+                                           false}),
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     StringGe, BinaryStringBoolTest,
-    ::testing::Values(
-        BinaryStringBoolCase{"string_ge_strictly_greater", cel_string_ge_at_vv,
-                             +[]() { return cel_make_string("b", 1); },
-                             +[]() { return cel_make_string("a", 1); }, true},
-        BinaryStringBoolCase{"string_ge_equal", cel_string_ge_at_vv,
-                             +[]() { return cel_make_string("ab", 2); },
-                             +[]() { return cel_make_string("ab", 2); }, true},
-        BinaryStringBoolCase{"string_ge_strictly_less_false",
-                             cel_string_ge_at_vv,
-                             +[]() { return cel_make_string("a", 1); },
-                             +[]() { return cel_make_string("b", 1); }, false}),
-    [](const auto& info) { return std::string(info.param.name); });
+    ::testing::Values(BinaryStringBoolCase{"string_ge_strictly_greater",
+                                           cel_string_ge_at_vv,
+                                           +[]() {
+                                             return cel_make_string("b", 1);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("a", 1);
+                                           },
+                                           true},
+                      BinaryStringBoolCase{"string_ge_equal",
+                                           cel_string_ge_at_vv,
+                                           +[]() {
+                                             return cel_make_string("ab", 2);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("ab", 2);
+                                           },
+                                           true},
+                      BinaryStringBoolCase{"string_ge_strictly_less_false",
+                                           cel_string_ge_at_vv,
+                                           +[]() {
+                                             return cel_make_string("a", 1);
+                                           },
+                                           +[]() {
+                                             return cel_make_string("b", 1);
+                                           },
+                                           false}),
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     BytesLe, BinaryStringBoolTest,
     ::testing::Values(
         BinaryStringBoolCase{"bytes_le_unsigned_byte_order", cel_bytes_le_at_vv,
-                             +[]() { return cel_make_bytes("\x7F", 1); },
-                             +[]() { return cel_make_bytes("\x80", 1); }, true},
+                             +[]() {
+                               return cel_make_bytes("\x7F", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x80", 1);
+                             },
+                             true},
         BinaryStringBoolCase{"bytes_le_equal", cel_bytes_le_at_vv,
-                             +[]() { return cel_make_bytes("\x01\x02", 2); },
-                             +[]() { return cel_make_bytes("\x01\x02", 2); },
+                             +[]() {
+                               return cel_make_bytes("\x01\x02", 2);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x01\x02", 2);
+                             },
                              true},
         BinaryStringBoolCase{"bytes_le_strictly_greater_false",
                              cel_bytes_le_at_vv,
-                             +[]() { return cel_make_bytes("\x80", 1); },
-                             +[]() { return cel_make_bytes("\x7F", 1); },
+                             +[]() {
+                               return cel_make_bytes("\x80", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x7F", 1);
+                             },
                              false}),
-    [](const auto& info) { return std::string(info.param.name); });
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     BytesGt, BinaryStringBoolTest,
     ::testing::Values(
         BinaryStringBoolCase{"bytes_gt_unsigned_byte_order", cel_bytes_gt_at_vv,
-                             +[]() { return cel_make_bytes("\x80", 1); },
-                             +[]() { return cel_make_bytes("\x7F", 1); }, true},
+                             +[]() {
+                               return cel_make_bytes("\x80", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x7F", 1);
+                             },
+                             true},
         BinaryStringBoolCase{"bytes_gt_equal_false", cel_bytes_gt_at_vv,
-                             +[]() { return cel_make_bytes("\x01", 1); },
-                             +[]() { return cel_make_bytes("\x01", 1); },
+                             +[]() {
+                               return cel_make_bytes("\x01", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x01", 1);
+                             },
                              false},
         BinaryStringBoolCase{"bytes_gt_shorter_prefix_false",
                              cel_bytes_gt_at_vv,
-                             +[]() { return cel_make_bytes("\x01", 1); },
-                             +[]() { return cel_make_bytes("\x01\x02", 2); },
+                             +[]() {
+                               return cel_make_bytes("\x01", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x01\x02", 2);
+                             },
                              false}),
-    [](const auto& info) { return std::string(info.param.name); });
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     BytesGe, BinaryStringBoolTest,
     ::testing::Values(
         BinaryStringBoolCase{"bytes_ge_strictly_greater", cel_bytes_ge_at_vv,
-                             +[]() { return cel_make_bytes("\x80", 1); },
-                             +[]() { return cel_make_bytes("\x7F", 1); }, true},
-        BinaryStringBoolCase{"bytes_ge_equal", cel_bytes_ge_at_vv,
-                             +[]() { return cel_make_bytes("\x01\x02", 2); },
-                             +[]() { return cel_make_bytes("\x01\x02", 2); },
+                             +[]() {
+                               return cel_make_bytes("\x80", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x7F", 1);
+                             },
                              true},
-        BinaryStringBoolCase{"bytes_ge_strictly_less_false",
-                             cel_bytes_ge_at_vv,
-                             +[]() { return cel_make_bytes("\x7F", 1); },
-                             +[]() { return cel_make_bytes("\x80", 1); },
+        BinaryStringBoolCase{"bytes_ge_equal", cel_bytes_ge_at_vv,
+                             +[]() {
+                               return cel_make_bytes("\x01\x02", 2);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x01\x02", 2);
+                             },
+                             true},
+        BinaryStringBoolCase{"bytes_ge_strictly_less_false", cel_bytes_ge_at_vv,
+                             +[]() {
+                               return cel_make_bytes("\x7F", 1);
+                             },
+                             +[]() {
+                               return cel_make_bytes("\x80", 1);
+                             },
                              false}),
-    [](const auto& info) { return std::string(info.param.name); });
+    [](const auto& info) {
+      return std::string(info.param.name);
+    });
 
 // ── Parameterized: string concat happy/empty ──────────────────
 
@@ -586,7 +683,7 @@ TEST_F(StringOpsTest, BytesConcatMixedKindRejected) {
 }
 
 TEST_F(StringOpsTest, ContainsAbsorbsError) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;

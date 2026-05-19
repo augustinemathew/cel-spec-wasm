@@ -22,7 +22,7 @@
 //     land alongside an api/error.h mirror in a later slice; the
 //     conformance contract is "IsError", not error-code-specific.
 //
-// String outputs are allocated in the per-Eval arena via `cel_alloc`;
+// String outputs are allocated in the per-Eval arena via `arena_alloc`;
 // arena OOM on a string-output kernel poisons with
 // `CEL_ERR_OVERFLOW`.  Bytes ↔ string aliases the source span — no
 // arena allocation, safe for `out_slot == in_slot`.

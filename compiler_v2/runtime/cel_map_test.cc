@@ -50,7 +50,7 @@ class MapTest : public ::testing::Test {
   // friending themselves.  SetUp stays protected per
   // misc-override-with-different-visibility.
   uint32_t NewSlot() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
   uint32_t Str(const char* s) {
     return cel_make_string(s, static_cast<uint32_t>(std::strlen(s)));

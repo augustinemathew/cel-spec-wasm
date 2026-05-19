@@ -32,7 +32,7 @@ namespace {
 constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     // M1 baseline.
     "cel_reset",
-    "cel_alloc",
+    "arena_alloc",
     // M3: map runtime helpers.
     "cel_map_create",
     "cel_map_insert",
@@ -712,7 +712,7 @@ absl::Status InstantiateRuntime(RunState& s) {
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  // M1 baseline: cel_reset + cel_alloc.  M3 added the map runtime
+  // M1 baseline: cel_reset + arena_alloc.  M3 added the map runtime
   // helpers; M4 added the list runtime helpers.  Bind every export
   // so any WAT that imports them resolves at instantiate time —
   // mirrors the "always link the runtime fully" rule from

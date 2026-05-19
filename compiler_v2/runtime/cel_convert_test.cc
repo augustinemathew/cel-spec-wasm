@@ -33,11 +33,11 @@ class ConvertFixture : public ::testing::Test {
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
   uint32_t MakeError() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_ERROR;
     v->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
@@ -45,7 +45,7 @@ class ConvertFixture : public ::testing::Test {
   }
 
   uint32_t MakeUnknown() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = 0u;

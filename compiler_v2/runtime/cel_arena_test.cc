@@ -2,7 +2,7 @@
 // API; doc/implementation-plan/wasi/DESIGN.md §4-§5 for the design.
 //
 // Native-build invariants:
-//   - cel_alloc(n) returns an offset such that
+//   - arena_alloc(n) returns an offset such that
 //     cel_mem_base() + offset is the allocated bytes.
 //   - Allocations are 8-byte aligned and zero-initialized.
 //   - arena_reset rewinds the cursor; the next alloc returns the
@@ -23,10 +23,11 @@ namespace {
 class ArenaTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Reset is idempotent: the compat shim auto-inits the arena on
-    // first call across the whole gtest process; subsequent SetUps
-    // just rewind the cursor to 0.
-    cel_reset(/*ignored=*/0u, /*ignored=*/0u);
+    // Reset is idempotent: the codegen-prologue compat shim auto-inits
+    // the arena on first call across the whole gtest process;
+    // subsequent SetUps just rewind the cursor to 0.  Both args are
+    // legacy and ignored by the shim — see cel_arena.h.
+    cel_reset(0u, 0u);
   }
 };
 
@@ -52,9 +53,9 @@ TEST_F(ArenaTest, AllocBumpsCursorMonotonically) {
 }
 
 TEST_F(ArenaTest, AllocAlignsToEightBytes) {
-  uint32_t a = arena_alloc(1);   // rounds up to 8
-  uint32_t b = arena_alloc(0);   // zero rounds up to 8
-  uint32_t c = arena_alloc(9);   // rounds up to 16
+  uint32_t a = arena_alloc(1);  // rounds up to 8
+  uint32_t b = arena_alloc(0);  // zero rounds up to 8
+  uint32_t c = arena_alloc(9);  // rounds up to 16
   EXPECT_EQ(b, a + 8u);
   EXPECT_EQ(c, b + 8u);
 }
@@ -99,9 +100,9 @@ TEST_F(ArenaTest, ValueAtNonZeroResolvesViaCelMemBase) {
             cel_mem_base() + off);
 }
 
-TEST_F(ArenaTest, CompatShimCelAllocMatchesArenaAlloc) {
+TEST_F(ArenaTest, ArenaResetRoundTripGivesSameOffset) {
   arena_reset();
-  uint32_t a = cel_alloc(24);
+  uint32_t a = arena_alloc(24);
   arena_reset();
   uint32_t b = arena_alloc(24);
   EXPECT_EQ(a, b);

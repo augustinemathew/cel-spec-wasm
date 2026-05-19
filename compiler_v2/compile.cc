@@ -306,7 +306,7 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
   mod.AddFunctionImport(kCelResetInternalName, "cel", "cel_reset", reset_params,
                         BinaryenTypeNone());
   const BinaryenType alloc_params[1] = {i32};
-  mod.AddFunctionImport("cel_alloc", "cel", "cel_alloc", alloc_params, i32);
+  mod.AddFunctionImport("arena_alloc", "cel", "arena_alloc", alloc_params, i32);
   InstallSelectImports(mod);
   InstallMapImports(mod);
   InstallListImports(mod);

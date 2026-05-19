@@ -18,10 +18,10 @@
 #include "compiler_v2/runtime/cel_log.h"
 
 typedef struct {
-  uint8_t* base;          // malloc'd buffer base in linear memory
-  uint32_t capacity;      // total bytes
-  uint32_t cursor;        // next free byte (relative to base)
-  uint32_t initialized;   // 0 or 1
+  uint8_t* base;         // malloc'd buffer base in linear memory
+  uint32_t capacity;     // total bytes
+  uint32_t cursor;       // next free byte (relative to base)
+  uint32_t initialized;  // 0 or 1
 } CelArena;
 
 static CelArena g_arena = {0, 0, 0, 0};
@@ -113,33 +113,27 @@ uint32_t arena_capacity(void) {
   return g_arena.capacity;
 }
 
-// ---- Compat shims (delete in Phase B) -------------------------------
+// ---- Codegen-prologue compat shim (delete in M5) --------------------
 //
-// The codegen still emits `(call $cel_reset (i32.const arena_base)
+// Codegen still emits `(call $cel_reset (i32.const arena_base)
 // (i32.const arena_limit))` at the top of $eval; arena_base and
 // arena_limit are no longer meaningful (they were offsets into a
 // fixed-position cursor at memory bytes 8/12; the bump cursor now
 // lives in BSS, not linear memory).  The shim ignores the args.
 //
-// 107 kernel call sites across cel_runtime.c / cel_3vl.c /
-// cel_make.c / cel_string_ops.c / cel_convert.c / cel_type.c call
-// `cel_alloc(n)`.  The shim aliases that to `arena_alloc`.  Phase B
-// (B1) rewrites the call sites and deletes these shims.
+// M5 will swap codegen to `(call $arena_reset)` and delete this shim
+// + its corresponding declaration in cel_arena.h.
 
 void cel_reset(uint32_t arena_base, uint32_t arena_limit) {
   (void)arena_base;
   (void)arena_limit;
   // Auto-init on first call so tests written against the old
   // `cel_reset(base, limit)` ABI keep working without explicit
-  // arena_init.  Deletes when Phase B rewrites the call sites.
+  // `arena_init`.  Deletes alongside the shim in M5.
   if (!g_arena.initialized) {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
   }
   arena_reset();
-}
-
-uint32_t cel_alloc(uint32_t n) {
-  return arena_alloc(n);
 }
 
 CelValue* cel_value_at(uint32_t off) {

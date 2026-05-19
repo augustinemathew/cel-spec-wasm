@@ -343,16 +343,16 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // route through `ExternrefTable`.
 //
 // String / bytes — Slice 0 of the conformance unlock plan:
-// the bound payload bytes can NOT live in the wasm-side `cel_alloc`
+// the bound payload bytes can NOT live in the wasm-side `arena_alloc`
 // arena, because `$eval`'s prelude calls `cel_reset` which rewinds
 // the bump pointer to `arena_base`, and the first in-eval
-// `cel_alloc` then zero-fills the bytes we just wrote there.
+// `arena_alloc` then zero-fills the bytes we just wrote there.
 // Instead, we maintain a **host-managed string arena** in linear
 // memory above `arena_limit` (the codegen's `cel_reset` second arg
 // — set to the same value as the host's initial memory size).
 // `wasmtime_memory_grow` extends linear memory beyond that
 // threshold; the runtime never touches the tail because every
-// `cel_alloc` bounds-checks against `arena_limit`.  See
+// `arena_alloc` bounds-checks against `arena_limit`.  See
 // `EnsureHostStringArenaCapacity` below.
 //
 // Repr::kMap / kDuration / kTimestamp / kEnum / kType / kUnknown

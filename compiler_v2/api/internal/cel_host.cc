@@ -1624,8 +1624,8 @@ absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
   // and then run the arena+arena fast path.  Concretely:
   //
   //   1. Allocate a fresh ArenaListHeader + elements run via
-  //      `cel_alloc`, sized `a_size + b_size`.  ArenaAllocator's
-  //      `Alloc` already reenters wasm for `cel_alloc`, so this
+  //      `arena_alloc`, sized `a_size + b_size`.  ArenaAllocator's
+  //      `Alloc` already reenters wasm for `arena_alloc`, so this
   //      works from inside a host trampoline.
   //   2. For each operand:
   //        - If CEL_LIST_ARENA: memcpy the elements run into the
@@ -1746,7 +1746,7 @@ absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
   // (mixed origins → TYPE_MISMATCH).  Same-arena routes through the
   // dispatcher's arena fast path.  The shipping strategy for
   // arena↔host pairs is to MATERIALISE the host operand into the
-  // arena (lift via ForEach + EncodeBackingScalar + cel_alloc) and
+  // arena (lift via ForEach + EncodeBackingScalar + arena_alloc) and
   // then run the arena+arena equality walk — same lift-then-walk
   // pattern documented in CelListConcatImpl and described in
   // `m5-kcall-comprehensions.md §"Cross-origin materialisation"`.

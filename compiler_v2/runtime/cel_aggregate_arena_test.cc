@@ -40,7 +40,7 @@ class AggregateArenaTest : public ::testing::Test {
 
  public:  // public so parameterized lambdas can use the helpers.
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
   const CelValue* At(uint32_t slot) {
@@ -461,7 +461,7 @@ TEST_F(AggregateArenaTest, MapEqSetSemanticsOnEntries) {
 // ── 3VL + type-mismatch envelope (one example each) ───────────
 
 TEST_F(AggregateArenaTest, ListInAbsorbsErrorOperand) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;
@@ -473,7 +473,7 @@ TEST_F(AggregateArenaTest, ListInAbsorbsErrorOperand) {
 }
 
 TEST_F(AggregateArenaTest, MapEqAbsorbsUnknown) {
-  uint32_t unk_off = cel_alloc(sizeof(CelValue));
+  uint32_t unk_off = arena_alloc(sizeof(CelValue));
   CelValue* unk = cel_value_at(unk_off);
   unk->kind = CEL_UNKNOWN;
   unk->payload.unk = 42;

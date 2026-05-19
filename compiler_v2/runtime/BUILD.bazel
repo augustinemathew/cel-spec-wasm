@@ -191,7 +191,7 @@ cc_test(
 
 # Locks the runtime null-pointer-elision bug closed.  Loads the
 # cross-compiled cel_runtime.wasm under wasmtime and asserts
-# cel_reset / cel_alloc actually mutate memory bytes 8 / 12 (they
+# cel_reset / arena_alloc actually mutate memory bytes 8 / 12 (they
 # don't, without the asm opacity barrier in cel_memory_base_).
 # Tagged manual because the cel_runtime_wasm_bytes target is
 # (genrule-via-brew-llvm, darwin-arm64 only).
@@ -285,7 +285,7 @@ genrule(
         # __heap_base is exposed for runtime A14 assertion check
         # (host verifies it sits above the reserved region).
         "-Wl,--export=__heap_base",
-        # The new arena API; kept alongside the cel_alloc/cel_reset
+        # The new arena API; kept alongside the arena_alloc/cel_reset
         # back-compat shims so existing kernels link unchanged.
         "-Wl,--export=arena_init",
         "-Wl,--export=arena_alloc",
@@ -293,8 +293,8 @@ genrule(
         "-Wl,--export=arena_cursor",
         "-Wl,--export=arena_capacity",
         # Compat shims — to be deleted in Phase B once all kernels
-        # migrate from cel_alloc/cel_reset to arena_alloc/arena_reset.
-        "-Wl,--export=cel_alloc",
+        # migrate from arena_alloc/cel_reset to arena_alloc/arena_reset.
+        "-Wl,--export=arena_alloc",
         "-Wl,--export=cel_reset",
         "-Wl,--export=cel_map_create",
         "-Wl,--export=cel_map_insert",

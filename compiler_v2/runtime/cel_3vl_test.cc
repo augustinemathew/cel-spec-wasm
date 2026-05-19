@@ -36,13 +36,15 @@ class ThreeVLTest : public ::testing::Test {
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
-  uint32_t MakeBool(bool b) { return cel_make_bool(b ? 1 : 0); }
+  uint32_t MakeBool(bool b) {
+    return cel_make_bool(b ? 1 : 0);
+  }
 
   uint32_t MakeError() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_ERROR;
     v->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
@@ -54,7 +56,7 @@ class ThreeVLTest : public ::testing::Test {
   // Empty means payload.unk = 0 (langdef-compatible "unspecified
   // provenance" UNKNOWN).
   uint32_t MakeUnknownEmpty() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = 0;
@@ -64,17 +66,18 @@ class ThreeVLTest : public ::testing::Test {
   uint32_t MakeUnknownWithIds(const std::vector<uint32_t>& ids) {
     uint32_t bytes = static_cast<uint32_t>(ids.size() * sizeof(uint32_t));
     if (bytes == 0) bytes = static_cast<uint32_t>(sizeof(uint32_t));
-    uint32_t ids_off = cel_alloc(bytes);
+    uint32_t ids_off = arena_alloc(bytes);
     auto* dst = reinterpret_cast<uint32_t*>(cel_mem_base() + ids_off);
-    for (size_t i = 0; i < ids.size(); ++i) dst[i] = ids[i];
+    for (size_t i = 0; i < ids.size(); ++i)
+      dst[i] = ids[i];
 
     uint32_t desc_off =
-        cel_alloc(static_cast<uint32_t>(2 * sizeof(uint32_t)));
+        arena_alloc(static_cast<uint32_t>(2 * sizeof(uint32_t)));
     auto* desc = reinterpret_cast<uint32_t*>(cel_mem_base() + desc_off);
     desc[0] = ids_off;
     desc[1] = static_cast<uint32_t>(ids.size());
 
-    uint32_t cv_off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t cv_off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(cv_off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = desc_off;
@@ -158,8 +161,7 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"F_T", OpKind::kBoolFalse, OpKind::kBoolTrue, CEL_BOOL,
                   false},
         LogicCase{"F_E", OpKind::kBoolFalse, OpKind::kError, CEL_BOOL, false},
-        LogicCase{"F_U", OpKind::kBoolFalse, OpKind::kUnknown, CEL_BOOL,
-                  false},
+        LogicCase{"F_U", OpKind::kBoolFalse, OpKind::kUnknown, CEL_BOOL, false},
         LogicCase{"T_F", OpKind::kBoolTrue, OpKind::kBoolFalse, CEL_BOOL,
                   false},
         LogicCase{"T_T", OpKind::kBoolTrue, OpKind::kBoolTrue, CEL_BOOL, true},
@@ -170,8 +172,7 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"E_T", OpKind::kError, OpKind::kBoolTrue, CEL_ERROR, false},
         LogicCase{"E_E", OpKind::kError, OpKind::kError, CEL_ERROR, false},
         LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_ERROR, false},
-        LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_BOOL,
-                  false},
+        LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_BOOL, false},
         LogicCase{"U_T", OpKind::kUnknown, OpKind::kBoolTrue, CEL_UNKNOWN,
                   false},
         LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_ERROR, false},

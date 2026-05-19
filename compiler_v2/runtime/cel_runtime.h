@@ -9,7 +9,7 @@
 //                   error codes.  Pure types; no function decls.
 //   cel_memory.h  — cel_mem_base / cel_mem_size accessors over the
 //                   shared linear memory.
-//   cel_arena.h   — cel_reset / cel_alloc / cel_value_at bump-allocator
+//   cel_arena.h   — cel_reset / arena_alloc / cel_value_at bump-allocator
 //                   helpers.
 //   cel_make.h    — cel_make_* scalar constructors.
 //   cel_log.h     — cel_log trampoline, CEL_LOG macros, tag enum.

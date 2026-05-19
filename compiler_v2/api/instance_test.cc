@@ -293,7 +293,7 @@ TEST(InstanceSelectEvalTest, HasMessageFieldUnsetReturnsFalse) {
 // Nested select: c.billing_address.city reads a nested sub-backing.
 // The inner cel_get_field interns a fresh ProtoBacking (the
 // address); the outer reads `city` off it.  String marshal exercises
-// WasmtimeArenaAllocator via the runtime's cel_alloc.
+// WasmtimeArenaAllocator via the runtime's arena_alloc.
 TEST(InstanceSelectEvalTest, NestedSelectReadsSubBackingString) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();

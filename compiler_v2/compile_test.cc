@@ -120,7 +120,7 @@ TEST(CompileTest, ModuleInstallsCelResetAndCelAllocImports) {
   BinaryenModuleRef raw = art_or->module.raw();
   // Binaryen models function imports as functions whose body is null.
   EXPECT_NE(BinaryenGetFunction(raw, "cel_reset"), nullptr);
-  EXPECT_NE(BinaryenGetFunction(raw, "cel_alloc"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(raw, "arena_alloc"), nullptr);
 }
 
 TEST(CompileTest, SerializedBytesStartWithWasmPreamble) {

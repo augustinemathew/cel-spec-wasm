@@ -135,8 +135,8 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 // the conformance unlock plan needs a host-managed region above
 // `mem_size_bytes` (= the codegen's `arena_limit`) to host
 // activation-marshalled string / bytes payloads that survive
-// `cel_reset` and subsequent `cel_alloc` calls inside `$eval`.
-// Wasm-side `cel_alloc`'s bounds check stays at `arena_limit`, so
+// `cel_reset` and subsequent `arena_alloc` calls inside `$eval`.
+// Wasm-side `arena_alloc`'s bounds check stays at `arena_limit`, so
 // the runtime never reaches into the grown tail.
 absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
                                 celwasm::InstanceImpl* impl) {
@@ -192,7 +192,7 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
 
 // Pulls a function export off `inst` and binds it onto the linker
 // under (cel, name).  Used to wire the runtime's cel_reset /
-// cel_alloc exports as imports the expr module sees.
+// arena_alloc exports as imports the expr module sees.
 absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
                                wasmtime_context_t* ctx,
                                const wasmtime_instance_t& inst,
@@ -226,7 +226,7 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // not code — kept at file scope so the function body is just the
 // loop and stays under the lint function-size gate.
 constexpr const char* kRuntimeExports[] = {
-    "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
+    "cel_reset", "arena_alloc", "cel_map_create", "cel_map_insert",
     "cel_map_insert_at", "cel_map_insert_at_if_bool", "cel_map_lookup_arena",
     "cel_map_lookup", "cel_list_create", "cel_list_append_at",
     "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
@@ -328,20 +328,20 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
 
   // Populate the layer-3 callback env now that the runtime
   // instance is live: the cel_host trampolines need a func handle
-  // to `cel_alloc` (for span payload allocation) + the memory
+  // to `arena_alloc` (for span payload allocation) + the memory
   // handle (for CelValue + span reads/writes).  Both are tied to
   // this store; resetting the table happens per-Eval.
   impl->host_env.memory = impl->memory;
   wasmtime_extern_t alloc_ext;
-  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "cel_alloc",
-                                    9, &alloc_ext)) {
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_alloc",
+                                    11, &alloc_ext)) {
     return absl::FailedPreconditionError(
-        "runtime instance has no export `cel_alloc` (cel_host needs it)");
+        "runtime instance has no export `arena_alloc` (cel_host needs it)");
   }
   if (alloc_ext.kind != WASMTIME_EXTERN_FUNC) {
-    return absl::FailedPreconditionError("`cel_alloc` is not a function");
+    return absl::FailedPreconditionError("`arena_alloc` is not a function");
   }
-  impl->host_env.cel_alloc_fn = alloc_ext.of.func;
+  impl->host_env.arena_alloc_fn = alloc_ext.of.func;
   return absl::OkStatus();
 }
 

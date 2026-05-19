@@ -93,11 +93,11 @@ void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot) {
     ++len;
   }
   // Allocate fresh bytes in the per-Eval arena and copy the name in.
-  // cel_alloc bumps the cursor by align_up(n, 8) and returns 0 on
+  // arena_alloc bumps the cursor by align_up(n, 8) and returns 0 on
   // OOM (or when n==0).  Even an empty name doesn't reach here —
   // every entry in `kPrimitiveTypeName` is non-empty — but defend
   // anyway for future kinds.
-  uint32_t off = cel_alloc(len);
+  uint32_t off = arena_alloc(len);
   if (off == 0 && len > 0) {
     poison(out, CEL_ERR_OVERFLOW);
     return;

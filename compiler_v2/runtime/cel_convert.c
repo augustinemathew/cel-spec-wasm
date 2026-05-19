@@ -473,7 +473,7 @@ void cel_string_to_bool_at_v(uint32_t out_slot, uint32_t in_slot) {
 // M10.D: number / bool → string formatting helpers.
 //
 // Four unary kernels.  Output strings allocated in the per-Eval arena
-// via `cel_alloc(n)` and stamped as `{CEL_STRING, payload.s}` — same
+// via `arena_alloc(n)` and stamped as `{CEL_STRING, payload.s}` — same
 // lifetime model as the M9.B `cel_type_of_at_v` helper.
 // ─────────────────────────────────────────────────────────────
 
@@ -511,7 +511,7 @@ static uint32_t write_int_decimal(uint8_t* dst, int64_t v) {
 // Common allocate-and-stamp for the small string outputs.  Returns
 // 1 on success; on arena OOM poisons out_slot and returns 0.
 static int stamp_string(CelValue* out, const uint8_t* src, uint32_t len) {
-  uint32_t off = cel_alloc(len);
+  uint32_t off = arena_alloc(len);
   if (off == 0 && len > 0) {
     poison(out, CEL_ERR_OVERFLOW);
     return 0;

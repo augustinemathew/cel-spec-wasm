@@ -7,7 +7,7 @@
 // call sites can include only what they use.
 //
 // **Concat is the only string op that allocates.**  `cel_string_concat`
-// /  `cel_bytes_concat` use `cel_alloc` to build a fresh payload in
+// /  `cel_bytes_concat` use `arena_alloc` to build a fresh payload in
 // the arena; the resulting CelValue's `payload.s.ptr` points into
 // that arena.  Every dynamically-built string payload is owned by
 // the arena `cel_reset` rewinds at the top of the next $eval, so

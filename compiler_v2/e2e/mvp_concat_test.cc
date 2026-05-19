@@ -11,7 +11,7 @@
 //   - Codegen kCall arm for `_+_` on strings (resolves to
 //     `cel_string_concat_at_vv` overload).
 //   - Runtime kernel calling `arena_alloc` (via compat shim
-//     `cel_alloc` until Phase B) for the concat payload.
+//     `arena_alloc` until Phase B) for the concat payload.
 //   - Host decoder reading the result CelValue's payload.s
 //     span and resolving its bytes via wasmtime memory.
 

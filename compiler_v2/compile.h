@@ -9,7 +9,7 @@
 //   - memory: one wasm page, exported as "memory", with an active data
 //     segment at `layout.rodata_base` holding the packed rodata bytes.
 //   - imports from module "cel": `cel_reset(i32,i32)->()` and
-//     `cel_alloc(i32)->i32`.  `cel_alloc` is unused at M1 but installed
+//     `arena_alloc(i32)->i32`.  `arena_alloc` is unused at M1 but installed
 //     unconditionally — codegen always links the runtime fully, never
 //     gates imports on AST inspection (see CLAUDE.md memory notes).
 //   - function: `$eval : () -> i32`, exported under `opts.eval_export_name`.

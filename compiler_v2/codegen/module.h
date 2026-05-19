@@ -9,7 +9,7 @@
 //
 // The expr module (emitted per-expression) defines and exports its own
 // memory, installs its rodata as an active data segment at offset 16
-// (per design doc §6.1), imports `cel.cel_reset` / `cel.cel_alloc`, and
+// (per design doc §6.1), imports `cel.cel_reset` / `cel.arena_alloc`, and
 // exports `$eval`.  The runtime module (pre-compiled from
 // `runtime/cel_runtime.c`) imports the memory back.  M1's codegen only
 // emits the expr side, but `AddMemoryImport` is kept so a future

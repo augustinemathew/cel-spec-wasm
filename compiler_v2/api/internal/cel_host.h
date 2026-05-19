@@ -471,7 +471,7 @@ ABSL_MUST_USE_RESULT absl::Status CelListEqImpl(uint32_t out_slot,
 
 // Cross-origin (one CEL_LIST_ARENA + one CEL_LIST_HOST) and
 // both-host concat materialise into a fresh arena list under
-// the runtime's `cel_alloc`.  For M5.D step 2 ship state, mixed
+// the runtime's `arena_alloc`.  For M5.D step 2 ship state, mixed
 // origins POISON with TYPE_MISMATCH; full materialisation is
 // follow-up work tracked in the M5 doc.
 ABSL_MUST_USE_RESULT absl::Status CelListConcatImpl(

@@ -51,7 +51,7 @@ class HostExternrefTable final : public ExternrefTable {
 
 // Per-Instance payload the cel_host.cel_get_field trampoline reads.
 // Populated once by Engine::Plan (from cel.abi + descriptor pool +
-// the runtime's cel_alloc export) and borrowed by the linker
+// the runtime's arena_alloc export) and borrowed by the linker
 // callback via raw pointer.  Lives on InstanceImpl for the
 // instance's lifetime.
 struct CelHostCallbackEnv {
@@ -72,14 +72,14 @@ struct CelHostCallbackEnv {
 
   // Filled by Engine::Plan after the runtime + expr instances are
   // ready.  `memory` is the host-owned linear-memory handle both
-  // modules share; `cel_alloc_fn` is the runtime export bound onto
+  // modules share; `arena_alloc_fn` is the runtime export bound onto
   // the linker at InstantiateRuntime time.
   wasmtime_memory_t memory = {};
-  wasmtime_func_t cel_alloc_fn = {};
+  wasmtime_func_t arena_alloc_fn = {};
 };
 
 // Wasmtime-backed `ArenaAllocator` — calls the runtime's
-// `cel_alloc(size) -> offset` wasm export by reentering wasm from
+// `arena_alloc(size) -> offset` wasm export by reentering wasm from
 // the host.  Originally lived in the anonymous namespace inside
 // cel_host_wasmtime.cc, used only by host trampolines; promoted to
 // the header for Slice 0 so `Instance::Eval(Activation)` can reuse

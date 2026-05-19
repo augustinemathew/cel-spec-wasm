@@ -7,19 +7,17 @@
 //      and stores the base offset + capacity in a static `Arena`
 //      struct (in BSS).  Default N is `CELWASM_ARENA_CAPACITY_BYTES`
 //      (64 KiB).
-//   2. Per Eval, codegen emits `(call $arena_reset)` as the first
+//   2. Per Eval, codegen emits `(call $cel_reset ...)` as the first
 //      instruction of `$eval`.  Cursor = 0; allocations made by the
 //      previous Eval are effectively freed (they aren't `free()`d,
 //      but they're no longer reachable and the bytes are reused).
+//      The codegen prologue still passes the legacy `(arena_base,
+//      arena_limit)` args; they are ignored by `cel_reset` and will
+//      be removed in M5 once codegen emits `(call $arena_reset)`.
 //   3. Within `$eval`, kernels call `arena_alloc(n)` for any
 //      per-Eval working storage.  Returns an offset into linear
 //      memory (or 0 on OOM).  Allocations are 8-byte aligned and
 //      zero-initialized.
-//
-// Compat shims `cel_alloc(n)` / `cel_reset(base, limit)` route to the
-// arena (ignoring the now-unused base/limit args) so existing kernels
-// link unchanged during the migration.  Both shims to be deleted in
-// Phase B once every call site has migrated.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_ARENA_H_
 #define CELWASM_COMPILER_V2_RUNTIME_CEL_ARENA_H_
@@ -52,17 +50,14 @@ void arena_reset(void);
 uint32_t arena_cursor(void);
 uint32_t arena_capacity(void);
 
-// Compat shims.  `cel_alloc` is alias for `arena_alloc`; `cel_reset`
-// ignores its args (they were the old fixed-memory arena_base /
-// arena_limit, no longer meaningful) and calls arena_reset.
-//
-// These shims exist so today's kernels (107 cel_alloc call sites
-// across 6 .c files) and today's codegen (which still emits
-// `(call $cel_reset ...)` at the top of $eval) keep working through
-// the migration window.  Both signatures are byte-for-byte compatible
-// with the old `cel_arena.c` ABI.
+// Compat shim for the codegen prologue: kept until M5 swaps codegen
+// to emit `(call $arena_reset)` directly.  Ignores both args (they
+// were the old fixed-memory arena_base / arena_limit, no longer
+// meaningful) and falls through to `arena_reset`.  Auto-runs
+// `arena_init(CELWASM_ARENA_CAPACITY_BYTES)` on first call so older
+// test fixtures that hand-write `cel_reset(b, l)` in SetUp() still
+// work without an explicit `arena_init`.
 void cel_reset(uint32_t arena_base, uint32_t arena_limit);
-uint32_t cel_alloc(uint32_t n);
 
 // Offset → CelValue* helper.  Returns NULL when `off == 0` so callers
 // can treat a zero offset uniformly as "absent".

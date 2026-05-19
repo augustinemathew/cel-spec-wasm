@@ -111,7 +111,7 @@ void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // Writes a fresh CEL_LIST_ARENA into `out_slot` whose elements are
 // `a` followed by `b`.  Allocates a new ArenaListHeader and a new
-// elements run via `cel_alloc`; OOM → CEL_ERR_OVERFLOW.  The
+// elements run via `arena_alloc`; OOM → CEL_ERR_OVERFLOW.  The
 // originals are unchanged.
 void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 

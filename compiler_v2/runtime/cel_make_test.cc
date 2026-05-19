@@ -90,7 +90,7 @@ TEST_F(MakeTest, MakeBytesCopiesBytes) {
 
 TEST_F(MakeTest, MakeStringViewReusesMemory) {
   const char kSrc[] = "prev";
-  uint32_t ptr = cel_alloc(sizeof(kSrc) - 1);
+  uint32_t ptr = arena_alloc(sizeof(kSrc) - 1);
   std::memcpy(cel_mem_base() + ptr, kSrc, sizeof(kSrc) - 1);
   uint32_t off = cel_make_string_view(ptr, sizeof(kSrc) - 1);
   const CelValue* v = cel_value_at(off);
@@ -101,7 +101,7 @@ TEST_F(MakeTest, MakeStringViewReusesMemory) {
 
 TEST_F(MakeTest, MakeBytesViewReusesMemory) {
   const uint8_t kSrc[] = {0xde, 0xad, 0xbe, 0xef};
-  uint32_t ptr = cel_alloc(sizeof(kSrc));
+  uint32_t ptr = arena_alloc(sizeof(kSrc));
   std::memcpy(cel_mem_base() + ptr, kSrc, sizeof(kSrc));
   uint32_t off = cel_make_bytes_view(ptr, sizeof(kSrc));
   const CelValue* v = cel_value_at(off);

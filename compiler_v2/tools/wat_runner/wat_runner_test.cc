@@ -87,7 +87,7 @@ constexpr absl::string_view kLiteral42Wat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
   (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (data (i32.const 16)
         "\02\00\00\00"
         "\00\00\00\00"
@@ -128,7 +128,7 @@ constexpr absl::string_view kIdentXWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
   (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
     (local $x_off i32)
     (local.set $x_off (i32.const 16))
@@ -171,8 +171,8 @@ TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Runtime exercise — cel_alloc through the real runtime.
-// cel_alloc bumps the arena cursor (stored in bytes [8,12) by
+// Runtime exercise — arena_alloc through the real runtime.
+// arena_alloc bumps the arena cursor (stored in bytes [8,12) by
 // cel_reset) and returns the pre-bump offset.  Two successive
 // allocs of size 24 should return arena_base and arena_base+24
 // if the runtime is wired correctly.
@@ -182,13 +182,13 @@ constexpr absl::string_view kTwoAllocsWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
   (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
     (local $first i32)
     (local $second i32)
     (call $cel_reset (i32.const 16) (i32.const 131072))
-    (local.set $first  (call $cel_alloc (i32.const 24)))
-    (local.set $second (call $cel_alloc (i32.const 24)))
+    (local.set $first  (call $arena_alloc (i32.const 24)))
+    (local.set $second (call $arena_alloc (i32.const 24)))
     ;; Write both offsets as u32s into bytes [200, 208) so the
     ;; test can inspect them.  $eval returns the first offset.
     (i32.store offset=200 (i32.const 0) (local.get $first))
@@ -204,7 +204,7 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
 
-  // $eval returned the first alloc's offset — cel_alloc's contract
+  // $eval returned the first alloc's offset — arena_alloc's contract
   // says it returns the pre-bump cursor, which was arena_base=16
   // at the start.
   EXPECT_EQ(out->eval_return, 16u);
@@ -240,11 +240,11 @@ constexpr absl::string_view kSelectCNameWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
   (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"
           (func $cel_get_field (param i32 i32 i32 i32)))
   ;; Static string bytes at [200, 203) — used as the stub's fake
-  ;; return span so we don't have to call cel_alloc from the stub.
+  ;; return span so we don't have to call arena_alloc from the stub.
   (data (i32.const 200) "Ada")
   (func $eval (result i32)
     (local $c_off i32)
