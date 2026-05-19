@@ -33,9 +33,10 @@
 #define CELWASM_ARENA_CAPACITY_BYTES (64u * 1024u)
 
 // Compile-time invariants (A5-A7 in DESIGN.md §5).
-#if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
+#if defined(__cplusplus) || \
+    (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
 _Static_assert(CELWASM_RESERVED_LOW_MEMORY_BYTES <
-               CELWASM_INITIAL_MEMORY_PAGES * CELWASM_WASM_PAGE_SIZE,
+                   CELWASM_INITIAL_MEMORY_PAGES * CELWASM_WASM_PAGE_SIZE,
                "Reserved low region must fit inside initial memory");
 _Static_assert((CELWASM_RESERVED_LOW_MEMORY_BYTES & 7u) == 0,
                "Reserved low region size must be 8-aligned");

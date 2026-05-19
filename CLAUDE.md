@@ -345,6 +345,88 @@ When a bug is fixed, add a regression test *in the same commit*.
   - Apple clang does **not** have a wasm32 target.  Cross-compilation uses
     brew's `llvm` + `binaryen` (already installed on this machine).
 
+## Periodic code review (every few commits, every milestone closeout)
+
+A compiler accretes tech debt faster than you notice: a shim that
+was "temporary for the MVP" turns load-bearing; a header gains
+fields no one calls; a comment block describes the design from
+two refactors ago.  The forcing function against this is a
+**recurring code-review pass**, run holistically against a batch
+of commits — not one commit at a time, where the drift is
+invisible.
+
+**Cadence.**  Trigger a review pass whenever ANY of these are true:
+
+  - A milestone (M-numbered or a Phase A/B/C slice) just shipped.
+  - 5+ commits have landed on a feature branch since the last
+    review.
+  - A long-lived branch (`wasi-malloc-migration`, anything
+    expected to merge in >1 week) is about to merge to master.
+  - A planning doc closed out (per "Closing out a planning doc"
+    above) — the review verifies the closeout is honest.
+
+**Scope of each pass.**  The reviewer agent reads:
+
+  1. The commit range (`git log --oneline <prev-review>..HEAD`).
+  2. Every design doc that the commits touched or referenced
+     (`doc/implementation-plan/**`, especially `wasi/DESIGN.md`,
+     `rewrite/design.md`, the relevant `m<N>-*.md`).
+  3. The actual diff (`git diff <prev-review>..HEAD`).
+  4. The headers + .cc/.c of every modified component, plus
+     **one neighbouring component the reviewer picks** to catch
+     "drift by adjacency" — fields/macros added in one TU that
+     leak idiom changes into a sibling TU.
+  5. The lint backlog (`doc/implementation-plan/lint-backlog.md`)
+     and the per-component coverage doc — if either grew, the
+     reviewer flags why.
+
+**What the reviewer must produce.**  A dated markdown report
+under `doc/implementation-plan/wasi/reviews/YYYY-MM-DD-<slug>.md`
+(or the equivalent reviews dir for the active workstream), with:
+
+  - **Architectural drift** — places the as-built shape diverges
+    from the as-designed shape; flag whether the doc or the code
+    is the right correction.
+  - **Tech-debt inventory** — compat shims still in place, dead
+    code, headers with unused fields, stubs that grew bodies,
+    comment blocks describing old designs.  Each entry has a
+    severity (P0 ships-breaking, P1 must-fix-before-next-milestone,
+    P2 cleanup-when-touched) and an estimated effort.
+  - **Coverage gaps** — files/functions that landed without
+    tests; spec citations missing from tests that assert
+    spec-mandated behaviour.
+  - **Doc drift** — sibling design docs that reference the old
+    architecture and weren't updated in the same commit; stale
+    plan docs that should be closed out.
+  - **One-paragraph summary** at the top with the verdict
+    (clean / dirty / mixed) and the top 3 items the user
+    should look at first.
+
+**Tracking what the review surfaces.**  Findings do NOT live
+only in the report — they get woven into the work queue:
+
+  - P0/P1 items become bullets in the active milestone's
+    "Pre-close cleanup" section, ticked as they're addressed.
+  - P2 items go into `doc/implementation-plan/cleanup-backlog.md`
+    (create on first use), tagged with the originating review
+    date so the trail back to context is preserved.
+  - When a future commit addresses a backlog item, the commit
+    message cites the review (`addresses cleanup-backlog #N
+    surfaced in YYYY-MM-DD review`).
+
+**Running a review.**  Use the Agent tool with `subagent_type:
+general-purpose` (or `Explore` for a research-only pass).
+Brief the agent with: the commit range, the doc roots to read,
+the report path to write, and a reminder that the agent
+**writes the report only — it does not change code**.  Code
+changes happen in the follow-up commits the user authorises
+after reading the report.
+
+**Why this matters.**  Skipping a review pass for "just one
+more milestone" is how `M2` shipped with 29 silent
+GTEST_SKIPs.  The review is the cheapest way to catch
+architectural drift before it calcifies into a rewrite.
+
 ## What not to do
 
   - Don't reimplement the CEL parser or type checker.  Reuse
