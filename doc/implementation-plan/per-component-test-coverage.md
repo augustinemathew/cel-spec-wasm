@@ -216,6 +216,79 @@ For each new feature touching parse / check:
   - **Wasmtime exercise** — `cel_runtime_wasm_test` instantiates
     the cross-compiled module and round-trips through every new
     export.
+  - **Arena public API** (`cel_arena.{h,c}` — DESIGN §4-§5
+    wasi/malloc migration).  `cel_arena_test.cc` covers:
+      - `arena_init` — capacity reflected by `arena_capacity()`;
+        idempotent with same arg; **traps on different cap_bytes**
+        (A16, death test).  `InitWithDifferentCapacityTraps`,
+        `InitWithLargerDifferentCapacityTraps`,
+        `InitWithSameCapacityIsIdempotent`,
+        `CapacityMatchesDesignDefault`.
+      - `arena_alloc` — 8-byte alignment for every n ∈
+        {1,7,8,9,15,16,23,24} (A9); zero-fill on success; bumps
+        cursor monotonically; alloc(0) returns valid 8-byte slot
+        (A9); alloc-after-OOM leaves cursor unchanged (A10);
+        return value resolves via `cel_mem_base() + ret`;
+        alloc-before-init traps (A16 corollary in `arena_alloc`).
+        `AllocOffsetIsAlwaysEightAligned`,
+        `AllocZeroReturnsValidEightByteSlot`,
+        `AllocBumpsCursorMonotonically`, `AllocReturnsZeroedBytes`,
+        `AllocAfterResetReturnsZeroedBytesEvenIfPreviouslyDirty`,
+        `AllocReturnContractResolvesViaCelMemBase`,
+        `AllocReturnsZeroWhenOutOfSpace`,
+        `AllocExactlyRemainingCapacitySucceeds`,
+        `AllocOneBytePastCapacityReturnsZero`,
+        `FailedAllocLeavesCursorUnchanged`,
+        `OverflowFollowingSuccessLeavesEarlierAllocsIntact`.
+      - `arena_reset` — O(1) rewind; same offset on repeat alloc
+        across many cycles; backing pointer unchanged.
+        `ResetRewindsCursor`, `ArenaResetRoundTripGivesSameOffset`,
+        `ResetAllocCycleIsIdempotentAcrossManyIterations`,
+        `ResetDoesNotChangeBackingPointer`,
+        `ResetBeforeInitIsHarmless`,
+        `PerEvalLifecycleResetGivesSameStartingOffset`.
+      - `arena_cursor` / `arena_capacity` — cursor reflects each
+        alloc's aligned size; capacity is stable across allocs
+        and resets.  `CursorReflectsAllocations`,
+        `CursorAdvancesByAlignedSize`,
+        `CapacityIsStableAcrossAllocsAndResets`,
+        `CursorIsZeroAfterFreshReset`.
+      - `cel_value_at` — offset 0 → nullptr (absent sentinel);
+        non-zero → CelValue* resolving via `cel_mem_base() +
+        off`.  `ValueAtZeroReturnsNull`,
+        `ValueAtNonZeroResolvesViaCelMemBase`,
+        `ValueAtForSizeofCelValueIsWriteable`.
+      - `cel_reset` **compat shim** (M5 will delete) — ignores
+        both args; rewinds cursor; auto-inits on cold path
+        (cold-path covered by SetUp's first call across the
+        process).  `CelResetIgnoresArgs`, `CelResetRewindsCursor`.
+  - **Kernel-side arena OOM paths** — every kernel that calls
+    `arena_alloc` has a graceful-failure test that drains the
+    arena and asserts the kernel poisons rather than UB.
+      - `cel_make_test::MakeOomTest*` — every constructor returns
+        0 when arena full; payload-fits-but-header-doesn't and
+        header-fits-but-payload-doesn't boundary rows for
+        `cel_make_string` / `cel_make_bytes`.
+      - `cel_string_ops_test::*Oom*` — `cel_string_concat_at_vv`
+        / `cel_bytes_concat_at_vv` poison with
+        `CEL_ERR_OVERFLOW` on payload OOM; exact-capacity-fit
+        succeeds at boundary; empty-operand concat never needs
+        arena.
+      - `cel_3vl_test::UnknownMerge*` — non-empty/non-empty
+        merge poisons on descriptor alloc OOM; empty-side merge
+        and both-empty merge succeed even when arena is full.
+      - `cel_aggregate_arena_test::AggregateOomTest` —
+        `cel_list_create` / `cel_map_create` poison with
+        `CEL_ERR_OVERFLOW` for both header-OOM and
+        elements/entries-OOM; zero-capacity create needs only
+        the header (succeeds when entries arena would not fit).
+  - **Compile-time invariants** (`cel_layout.h`).  Five
+    `_Static_assert`s pin `CELWASM_RESERVED_LOW_MEMORY_BYTES <
+    initial memory size`, the 8-byte alignment of the reserved
+    region, and `CELWASM_ARENA_CAPACITY_BYTES` being a
+    power-of-2.  No runtime tests — if any of these constants
+    ever becomes a tunable, add boundary tests for the dynamic
+    range.
 
 ### 3.9 Host imports (`api/internal/cel_host_test.cc`)
 
@@ -260,6 +333,12 @@ For each new feature touching parse / check:
     `GTEST_SKIP` and a referenced follow-up issue.
   - **Every shape end-to-end** — `Compile` → `Plan` → `Eval` /
     `PartialEval`; assert the decoded `cel::Value` matches.
+  - **`mvp_concat_test`** — DESIGN §2 MVP: `"foo" + "bar"` →
+    `"foobar"` via the malloc-backed arena.  `FooBar` (single
+    eval, codegen + runtime concat round-trip).
+    `FooBarRepeatedAcrossManyEvals` (1024 evals; locks
+    `arena_reset` across-Eval semantics from DESIGN §7 — without
+    correct reset the arena overflows by ~iteration 2000).
 
 ### 3.12 Conformance harness (`conformance/runner_test.cc`, `run_conformance`)
 

@@ -119,5 +119,114 @@ TEST_F(MakeTest, MakeEmptyStringHasZeroPtr) {
   EXPECT_EQ(v->payload.s.ptr, 0u);  // no backing alloc for zero-length
 }
 
+// ── Arena OOM behaviour (DESIGN §5 A10) ────────────────────────────
+//
+// When the arena cannot satisfy an allocation, `arena_alloc` returns
+// 0 (the absent sentinel).  Every `cel_make_*` constructor propagates
+// that by returning 0 — never a partial / dangling slot.  These tests
+// exhaust the arena and then exercise each constructor's failure
+// path.
+
+class MakeOomTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+  }
+
+  // Burn through all but `keep` bytes of arena capacity so subsequent
+  // allocations of size > `keep` fail.  Returns the number of bytes
+  // still available.
+  uint32_t DrainArenaLeaving(uint32_t keep) {
+    uint32_t remaining = arena_capacity() - arena_cursor();
+    EXPECT_GE(remaining, keep);
+    uint32_t to_burn = remaining - keep;
+    if (to_burn > 0) {
+      EXPECT_NE(arena_alloc(to_burn), 0u);
+    }
+    return keep;
+  }
+};
+
+TEST_F(MakeOomTest, MakeNullReturnsZeroWhenArenaIsFull) {
+  // Fill exactly to capacity.
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_null(), 0u);
+}
+
+TEST_F(MakeOomTest, MakeIntReturnsZeroWhenArenaIsFull) {
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_int(42), 0u);
+}
+
+TEST_F(MakeOomTest, MakeBoolReturnsZeroWhenArenaIsFull) {
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_bool(1), 0u);
+}
+
+TEST_F(MakeOomTest, MakeDoubleReturnsZeroWhenArenaIsFull) {
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_double(3.14), 0u);
+}
+
+// String with len=0 still needs space for the CelValue header (24 B);
+// fails if the header doesn't fit.
+TEST_F(MakeOomTest, MakeEmptyStringReturnsZeroWhenNoHeaderSpace) {
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_string(nullptr, 0), 0u);
+}
+
+// Non-empty string when the payload bytes fit but the CelValue header
+// would push past capacity — make_span_copy allocates payload first,
+// then header.  Drain to exactly `payload_len` bytes (after alignment)
+// so payload alloc succeeds but the header alloc fails.
+TEST_F(MakeOomTest, MakeStringReturnsZeroWhenHeaderDoesntFit) {
+  const char kSrc[] = "abcdef";  // 6 bytes
+  // 6 rounds up to 8.  Leave exactly 8 bytes → payload fits, header
+  // (24 bytes) does not.
+  DrainArenaLeaving(8);
+  EXPECT_EQ(cel_make_string(kSrc, sizeof(kSrc) - 1), 0u);
+}
+
+// When neither payload nor header fit, make_string still returns 0.
+TEST_F(MakeOomTest, MakeStringReturnsZeroWhenPayloadDoesntFit) {
+  DrainArenaLeaving(0);
+  EXPECT_EQ(cel_make_string("hi", 2), 0u);
+}
+
+// Bytes constructor mirrors string.
+TEST_F(MakeOomTest, MakeBytesReturnsZeroWhenArenaIsFull) {
+  DrainArenaLeaving(0);
+  const uint8_t kSrc[] = {0xde, 0xad};
+  EXPECT_EQ(cel_make_bytes(kSrc, sizeof(kSrc)), 0u);
+}
+
+// Boundary: just enough room for ONE more CelValue header (24 bytes,
+// rounded to 24 since it's already 8-aligned).  Next allocation
+// after that fails.
+TEST_F(MakeOomTest, MakeValueChainStopsAtBoundary) {
+  // Burn down to exactly 24 bytes free.
+  DrainArenaLeaving(24);
+  uint32_t a = cel_make_int(1);
+  EXPECT_NE(a, 0u);
+  // Arena is now full.
+  EXPECT_EQ(cel_make_int(2), 0u);
+}
+
+// Length-1 string at the boundary: payload (1 → 8) + header (24) =
+// 32 bytes.  Leave exactly 32 → succeeds.  Leave 31 → fails (header
+// doesn't fit after payload align-up).
+TEST_F(MakeOomTest, MakeOneByteStringSucceedsAtExactBoundary) {
+  DrainArenaLeaving(32);
+  EXPECT_NE(cel_make_string("x", 1), 0u);
+  EXPECT_EQ(arena_cursor(), arena_capacity());
+}
+
+TEST_F(MakeOomTest, MakeOneByteStringFailsJustBelowBoundary) {
+  // 31 bytes free: 8-byte payload alloc succeeds (8 ≤ 31), but the
+  // 24-byte header alloc fails (24 > 23 remaining).
+  DrainArenaLeaving(31);
+  EXPECT_EQ(cel_make_string("x", 1), 0u);
+}
+
 }  // namespace
 }  // namespace celwasm

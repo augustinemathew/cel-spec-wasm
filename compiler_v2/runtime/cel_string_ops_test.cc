@@ -693,5 +693,77 @@ TEST_F(StringOpsTest, ContainsAbsorbsError) {
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
 }
 
+// ── Arena OOM along the concat path (DESIGN §5 A10) ────────────────
+//
+// `concat_into_out` calls `arena_alloc(total_len)` for the payload;
+// on OOM it poisons the out CelValue with CEL_ERR_OVERFLOW.  These
+// tests exhaust the arena leaving only enough room for the output
+// CelValue header + operands, then confirm concat poisons rather
+// than UB.
+
+TEST_F(StringOpsTest, StringConcatOomPoisonsWithOverflow) {
+  // Build operands first.
+  uint32_t a = cel_make_string("aaa", 3);
+  uint32_t b = cel_make_string("bbb", 3);
+  uint32_t out = MakeOut();
+  // Now drain the arena.  Concat needs (3 + 3 = 6) → 8 aligned bytes
+  // for the payload.  Drain to 4 bytes remaining → payload alloc
+  // fails.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 4u) {
+    ASSERT_NE(arena_alloc(remaining - 4u), 0u);
+  }
+  cel_string_concat_at_vv(out, a, b);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(StringOpsTest, BytesConcatOomPoisonsWithOverflow) {
+  uint32_t a = cel_make_bytes("xxxx", 4);
+  uint32_t b = cel_make_bytes("yyyy", 4);
+  uint32_t out = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 4u) {
+    ASSERT_NE(arena_alloc(remaining - 4u), 0u);
+  }
+  cel_bytes_concat_at_vv(out, a, b);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+// Concat where total length is exactly equal to arena remaining
+// after operands + out — succeeds at the boundary.
+TEST_F(StringOpsTest, StringConcatSucceedsAtExactCapacityBoundary) {
+  uint32_t a = cel_make_string("foo", 3);
+  uint32_t b = cel_make_string("bar", 3);
+  uint32_t out = MakeOut();
+  // Leave exactly 8 bytes free → payload (6 → 8 aligned) fits.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  ASSERT_GE(remaining, 8u);
+  if (remaining > 8u) {
+    ASSERT_NE(arena_alloc(remaining - 8u), 0u);
+  }
+  cel_string_concat_at_vv(out, a, b);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(ReadString(out), "foobar");
+}
+
+// Concat of two empty strings → total = 0, no payload alloc, no OOM
+// even if arena is full.  Locks `if (total > 0)` early-out at
+// cel_string_ops.c:92.
+TEST_F(StringOpsTest, StringConcatOfEmptyOperandsSucceedsEvenWhenArenaFull) {
+  uint32_t a = cel_make_string(nullptr, 0);
+  uint32_t b = cel_make_string(nullptr, 0);
+  uint32_t out = MakeOut();
+  // Fill arena to capacity.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_string_concat_at_vv(out, a, b);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(At(out)->payload.s.len, 0u);
+}
+
 }  // namespace
 }  // namespace celwasm

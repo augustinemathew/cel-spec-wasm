@@ -406,5 +406,61 @@ TEST_F(ThreeVLTest, CopySlotPreservesUnknownDescriptor) {
   EXPECT_THAT(ReadUnknownIds(dst), ::testing::ElementsAre(11u, 13u));
 }
 
+// ── Arena OOM in cel_unknown_merge (DESIGN §5 A10) ─────────────────
+//
+// Merging two non-empty UnknownSets allocates a fresh descriptor +
+// ids buffer via arena_alloc.  On OOM, cel_3vl.c:122-128 re-derives
+// the out pointer and poisons with CEL_ERR_OVERFLOW.  Verify the
+// graceful failure path.
+
+TEST_F(ThreeVLTest, UnknownMergeOomPoisonsWithOverflow) {
+  uint32_t a = MakeUnknownWithIds({1, 2, 3});
+  uint32_t b = MakeUnknownWithIds({4, 5, 6});
+  uint32_t out = MakeOut();
+  // Drain the arena to 0 bytes free — neither the new ids array
+  // nor the descriptor will fit.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(v->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+// When one side is empty, merge takes the other side's descriptor
+// without any allocation — no OOM even if the arena is full.
+// (cel_3vl.c:110-120, the empty-side early returns.)
+TEST_F(ThreeVLTest, UnknownMergeEmptySideSucceedsEvenWhenArenaFull) {
+  uint32_t a = MakeUnknownEmpty();
+  uint32_t b = MakeUnknownWithIds({42});
+  uint32_t out = MakeOut();
+  // Fill the arena.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(42u));
+}
+
+// Both sides empty → no allocation, no OOM regardless of arena.
+TEST_F(ThreeVLTest, UnknownMergeBothEmptyNeverNeedsArena) {
+  uint32_t a = MakeUnknownEmpty();
+  uint32_t b = MakeUnknownEmpty();
+  uint32_t out = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(v->payload.unk, 0u);
+}
+
 }  // namespace
 }  // namespace celwasm

@@ -606,5 +606,85 @@ TEST_F(CrossNumericMembershipArenaTest, DoubleInMapOfIntKeys) {
   EXPECT_TRUE(ReadBool(out));
 }
 
+// ── Arena OOM for list/map create at the capacity boundary ─────────
+//
+// `cel_list_create` and `cel_map_create` allocate a header first;
+// if `capacity > 0` they then allocate the elements/entries run.
+// If either alloc fails, they poison with CEL_ERR_OVERFLOW.  DESIGN
+// §5 A10 — never UB, always a typed error return.
+
+class AggregateOomTest : public AggregateArenaTest {};
+
+TEST_F(AggregateOomTest, ListCreateFailsWhenArenaIsFull) {
+  uint32_t l = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_list_create(l, 4);
+  EXPECT_EQ(At(l)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(l)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(AggregateOomTest, ListCreateHeaderFitsButElementsDont) {
+  uint32_t l = MakeOut();
+  // Leave 8 bytes (enough for the small list header but not for
+  // 4 × CelValue = 96 bytes of elements).
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  ASSERT_GE(remaining, 8u);
+  if (remaining > 8u) {
+    ASSERT_NE(arena_alloc(remaining - 8u), 0u);
+  }
+  cel_list_create(l, 4);
+  EXPECT_EQ(At(l)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(l)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(AggregateOomTest, ListCreateZeroCapacityNeedsOnlyHeader) {
+  uint32_t l = MakeOut();
+  // Leave 16 bytes — enough for the list header (8 B aligned).
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  ASSERT_GE(remaining, 16u);
+  if (remaining > 16u) {
+    ASSERT_NE(arena_alloc(remaining - 16u), 0u);
+  }
+  cel_list_create(l, 0);
+  EXPECT_EQ(At(l)->kind, static_cast<uint32_t>(CEL_LIST_ARENA));
+}
+
+TEST_F(AggregateOomTest, MapCreateFailsWhenArenaIsFull) {
+  uint32_t m = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_map_create(m, 2);
+  EXPECT_EQ(At(m)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(m)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(AggregateOomTest, MapCreateHeaderFitsButEntriesDont) {
+  uint32_t m = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  ASSERT_GE(remaining, 8u);
+  if (remaining > 8u) {
+    ASSERT_NE(arena_alloc(remaining - 8u), 0u);
+  }
+  cel_map_create(m, 4);
+  EXPECT_EQ(At(m)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(m)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(AggregateOomTest, MapCreateZeroCapacityNeedsOnlyHeader) {
+  uint32_t m = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  ASSERT_GE(remaining, 16u);
+  if (remaining > 16u) {
+    ASSERT_NE(arena_alloc(remaining - 16u), 0u);
+  }
+  cel_map_create(m, 0);
+  EXPECT_EQ(At(m)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+}
+
 }  // namespace
 }  // namespace celwasm
