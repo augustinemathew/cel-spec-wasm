@@ -71,11 +71,17 @@ struct CelHostCallbackEnv {
   HostExternrefTable refs;
 
   // Filled by Engine::Plan after the runtime + expr instances are
-  // ready.  `memory` is the host-owned linear-memory handle both
-  // modules share; `arena_alloc_fn` is the runtime export bound onto
-  // the linker at InstantiateRuntime time.
+  // ready.  `memory` is the runtime-owned (post-M6) linear-memory
+  // handle both modules share; `arena_alloc_fn` is the runtime
+  // export bound onto the linker at InstantiateRuntime time.
   wasmtime_memory_t memory = {};
   wasmtime_func_t arena_alloc_fn = {};
+  // M7: handle for the runtime's `malloc` export.  Used by
+  // Instance::Eval to allocate / grow the activation buffer (where
+  // kString / kBytes payloads from Activation get marshalled before
+  // each Eval).  The buffer lives outside the bump arena because
+  // arena_reset (the first instruction of $eval) would wipe it.
+  wasmtime_func_t malloc_fn = {};
 };
 
 // Wasmtime-backed `ArenaAllocator` — calls the runtime's

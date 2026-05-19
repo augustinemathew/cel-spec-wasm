@@ -379,6 +379,20 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   }
   impl->host_env.arena_alloc_fn = alloc_ext.of.func;
 
+  // M7: handle for the runtime's `malloc` (wasi-libc dlmalloc).
+  // Used to allocate the activation buffer — payloads that must
+  // survive arena_reset and therefore can't live in the bump arena.
+  wasmtime_extern_t malloc_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "malloc", 6,
+                                    &malloc_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `malloc`");
+  }
+  if (malloc_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`malloc` is not a function");
+  }
+  impl->host_env.malloc_fn = malloc_ext.of.func;
+
   // Seed the runtime's bump arena before any eval runs.  arena_alloc
   // traps on !initialized (see cel_arena.c "Unimplemented features"
   // rule); arena_init must be called exactly once per Instance with
