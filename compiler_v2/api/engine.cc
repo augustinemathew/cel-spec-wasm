@@ -130,44 +130,26 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 
 // ——— Plan helpers ———
 
-// Allocates the per-Plan store + a 2-page host-owned memory.  Two
-// pages matches cel_runtime.wasm's --import-memory min=2 (per
-// runtime/BUILD.bazel).  `max_present=false` so `wasmtime_memory_grow`
-// can extend the memory beyond the initial reservation — Slice 0 of
-// the conformance unlock plan needs a host-managed region above
-// `mem_size_bytes` (= the codegen's `arena_limit`) to host
-// activation-marshalled string / bytes payloads that survive
-// `arena_reset` and subsequent `arena_alloc` calls inside `$eval`.
-// Wasm-side `arena_alloc`'s bounds check stays at `arena_limit`, so
-// the runtime never reaches into the grown tail.
-absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
-                                celwasm::InstanceImpl* impl) {
+// Allocates the per-Plan store.  Memory is no longer host-allocated
+// (M6): the runtime module declares + exports its own memory via
+// `runtime/BUILD.bazel:--export=memory`.  After `InstantiateRuntime`
+// finishes, `PullRuntimeMemory` pulls the exported memory off
+// `runtime_instance` and binds it on the linker as `cel.memory` so
+// the expr module's `(import "cel" "memory")` resolves to the same
+// backing store.
+absl::Status InitStore(celwasm::WasmtimeEngineState* state,
+                       celwasm::InstanceImpl* impl) {
   impl->store = wasmtime_store_new(state->engine, nullptr, nullptr);
   if (impl->store == nullptr) {
     return absl::InternalError("wasmtime_store_new returned null");
   }
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  wasm_memorytype_t* mty = nullptr;
-  wasmtime_error_t* err = wasmtime_memorytype_new(
-      /*min=*/2, /*max_present=*/false, /*max=*/0, /*is_64=*/false,
-      /*shared=*/false, /*page_size_log2=*/16, &mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memorytype_new", err);
-  err = wasmtime_memory_new(ctx, mty, &impl->memory);
-  wasm_memorytype_delete(mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memory_new", err);
   return absl::OkStatus();
 }
 
-// Wires cel_env.cel_log + cel.memory + cel_host.* onto a fresh
-// linker.  The cel_host imports point at trampolines whose
-// stub-bodies fire `ABSL_CHECK(false)` (`CelGetFieldImpl` /
-// `CelHasFieldImpl` until M2.C.0b lands the real bodies);
-// `cel_host.cel_map_lookup` is the only host-resident M3 path —
-// arena-resident map programs evaluate without ever calling it.
-// We register all three regardless so the runtime module
-// instantiates: the runtime's static import list demands every
-// `cel_host.*` symbol by name (no lazy import tracking, per the
-// project rule).
+// Wires cel_env.cel_log + cel_host.* + WASI stubs onto a fresh
+// linker.  `cel.memory` is NOT bound here — post-M6 the runtime
+// module owns + exports its own memory; the binding lands after
+// `InstantiateRuntime` (see `BindRuntimeMemory`).
 absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
                         celwasm::InstanceImpl* impl) {
   impl->linker = wasmtime_linker_new(state->engine);
@@ -180,10 +162,27 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
     return s;
   }
   if (auto s = RegisterWasiStubs(impl->linker); !s.ok()) return s;
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
+  return absl::OkStatus();
+}
+
+// Pull the runtime instance's exported `memory` and bind it on the
+// linker as `cel.memory` so the expr module's
+// `(import "cel" "memory" ...)` resolves to the same backing
+// store.  Cache the handle on InstanceImpl so the host's activation
+// marshalling + result decode can call `wasmtime_memory_data`
+// against it without re-pulling.
+absl::Status BindRuntimeMemory(wasmtime_context_t* ctx,
+                               celwasm::InstanceImpl* impl) {
   wasmtime_extern_t mem_ext;
-  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
-  mem_ext.of.memory = impl->memory;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "memory", 6,
+                                    &mem_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `memory`");
+  }
+  if (mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
+    return absl::FailedPreconditionError("`memory` is not a memory");
+  }
+  impl->memory = mem_ext.of.memory;
   wasmtime_error_t* err = wasmtime_linker_define(impl->linker, ctx, "cel", 3,
                                                  "memory", 6, &mem_ext);
   if (err != nullptr) {
@@ -327,12 +326,16 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
 
+  // M6: pull the runtime's exported `memory` and bind it on the
+  // linker BEFORE the expr module instantiates.  Also caches the
+  // handle on impl->memory for the activation marshaller + decoder.
+  if (auto s = BindRuntimeMemory(ctx, impl); !s.ok()) return s;
+
   // A13 (DESIGN §5): the wasm memory page count at instantiation must
-  // be exactly `CELWASM_INITIAL_MEMORY_PAGES`.  Today the memory is
-  // host-allocated at 2 pages (see `InitStoreAndMemory`); when M6
-  // flips ownership the runtime will export its own memory at the
-  // same initial size.  In both shapes the count is fixed and a
-  // mismatch means BUILD.bazel + cel_layout.h have drifted.
+  // be exactly `CELWASM_INITIAL_MEMORY_PAGES`.  Post-M6 the runtime
+  // module declares + exports its own memory at the design's initial
+  // size (2 pages = 128 KB).  A mismatch means BUILD.bazel +
+  // cel_layout.h have drifted.
   ABSL_CHECK_EQ(wasmtime_memory_size(ctx, &impl->memory),
                 CELWASM_INITIAL_MEMORY_PAGES)
       << "DESIGN A13: wasm memory page count mismatch";
@@ -452,7 +455,7 @@ Engine::Builder Engine::NewBuilder() {
 
 absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   auto impl = std::make_unique<celwasm::InstanceImpl>();
-  if (auto s = InitStoreAndMemory(wasmtime_.get(), impl.get()); !s.ok()) {
+  if (auto s = InitStore(wasmtime_.get(), impl.get()); !s.ok()) {
     return s;
   }
   if (auto s = InitLinker(wasmtime_.get(), impl.get()); !s.ok()) return s;
