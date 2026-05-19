@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_list.h"
 #include "compiler_v2/runtime/cel_make.h"
@@ -35,7 +36,7 @@ namespace {
 class AggregateArenaTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
 
  public:  // public so parameterized lambdas can use the helpers.

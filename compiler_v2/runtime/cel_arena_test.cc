@@ -32,11 +32,11 @@ namespace {
 class ArenaTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Reset is idempotent: the codegen-prologue compat shim auto-inits
-    // the arena on first call across the whole gtest process;
-    // subsequent SetUps just rewind the cursor to 0.  Both args are
-    // legacy and ignored by the shim — see cel_arena.h.
-    cel_reset(0u, 0u);
+    // arena_init is idempotent for same-cap: first SetUp seeds it
+    // across the gtest process; subsequent SetUps see initialized=1
+    // and return early.  arena_reset rewinds the cursor.
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+    arena_reset();
   }
 };
 

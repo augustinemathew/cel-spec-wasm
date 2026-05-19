@@ -16,6 +16,7 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -41,7 +42,7 @@ namespace {
 class ListTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
     g_host_at_calls = 0;
   }
 
