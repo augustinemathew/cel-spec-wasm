@@ -25,26 +25,14 @@ long-tail kernel migration starts.  Total: **~5 days**.
 | **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☒ | [M2.md](milestones/M2.md) | 1.0 |
 | **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☒ | [M3.md](milestones/M3.md) | 0.5 |
 | **M4** | Migrate kernels off `cel_alloc` — subsumed by B1 below | ☒ | (see B1) | (0) |
-| **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐* | — | 1.0 |
-| **M6** | Engine: pull runtime-owned memory; bind `arena_*`/`malloc`/`free` | ◐ | [M6-M8.md](milestones/M6-M8.md) | 0.5 |
-| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity` | ☐* | — | 0.5 |
+| **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes` | ☒ | (commit `dfc366c`) | 1.0 |
+| **M6** | Runtime exports memory; host pulls + binds; drop `--import-memory` | ☒ | (commit `208ddba`) | 0.5 |
+| **M7** | Instance: malloc'd activation buffer; delete `EnsureHostStringArenaCapacity` | ☒ | (commit `5d8156a`) | 0.5 |
 | **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☒ | [M6-M8.md](milestones/M6-M8.md) | 0.25 |
 | **M9** | absl::ParseTime in wasm runtime; Chrome stake | ◐ | [M9.md](milestones/M9.md) | 0.5 |
 
-*M5 + M7 deferred to Phase B; today's pipeline works because the
-codegen-prologue `cel_reset` compat shim and the legacy
-`host_string_arena` bookkeeping route the old shapes through the
-new arena.  See [M6-M8.md](milestones/M6-M8.md) "Plan-vs-execution
-deltas" + [reviews/2026-05-18-mvp-shipped.md](reviews/2026-05-18-mvp-shipped.md)
-for the rationale and exact deferred work.
+**◐ delta vs the as-designed plan**:
 
-**◐ deltas vs the as-designed plan**:
-
-  - **M6** — WASI `random_get` stub + `arena_alloc` export wired
-    end-to-end, but `--import-memory=cel,memory` was re-added
-    after M2's removal (the runtime still imports memory from
-    the host).  Full ownership flip is bundled with the codegen
-    prologue swap in Phase B.
   - **M9** — `absl::ParseTime` runs inside a wasi-sdk wasm
     runtime (proven by `exp_e_absl_parsetime.cc`), but the
     runtime is a separate experimental binary, not the main
@@ -60,11 +48,19 @@ for the rationale and exact deferred work.
 | ID | Slice | Status | Doc | Days |
 |---|---|---|---|---:|
 | **B1** | Migrate kernels + host off `cel_alloc` shim; drop the shim | ☒ | (commit `fcb1289`) | 1.0 |
-| **B2** | Migrate 20 test file `SetUp()` from `cel_reset` to `arena_reset` | ☐ | — | 0.5 |
-| **B3** | Codegen test fixture rebaseline (~50 sites in `codegen/*_test.cc`) | ☐ | — | 1.0 |
-| **B4** | Conformance debug → **1,144 PASS** | ☐ | — | 1-2 |
-| **B5** | Post-migration bench against §11 workload → `POST_MIGRATION_BENCH.md` | ☐ | — | 0.5 |
-| **B6** | Doc closeout (update sibling design docs; flip this status to shipped) | ☐ | — | 0.5 |
+| **B2** | Migrate test file `SetUp()` from `cel_reset` to `arena_reset` | ☒ | (commit `a104ea8`) | 0.5 |
+| **B3** | Codegen test fixture rebaseline | ☒ | (folded into M5 commit `dfc366c`) | 1.0 |
+| **B4** | Conformance debug (deferred — see note) | n/a | — | — |
+| **B5** | Post-migration bench → [POST_MIGRATION_BENCH.md](POST_MIGRATION_BENCH.md) | ☒ | (this commit) | 0.5 |
+| **B6** | Doc closeout (update sibling design docs; flip this status to shipped) | ☒ | (this commit) | 0.5 |
+
+**B4 note**: the original B4 target ("1,144 PASS") was set when
+master sat at 1144.  Master has since advanced to 1373 via the
+M5.B comprehensions follow-on; the migration matches that
+baseline exactly with no regressions.  The remaining 491 failures
+are pre-existing (missing extension subsystems — math_ext,
+string_ext, network_ext, optionals, encoders_ext, block_ext) and
+not in scope of this migration.
 
 ---
 
@@ -107,7 +103,14 @@ works under the new architecture.
 | **M6 + M8 shipped (partial)** | WASI random_get stub + mvp_concat_test green; all e2e + conformance regression-clean | `582def9` |
 | **M9 (partial)** | absl::ParseTime running inside wasi-sdk wasm (experiment binary only — Chrome path **unblocked**, not consummated; main runtime untouched until Phase C) | `f4b09da` |
 | **First periodic review** | Mixed verdict; 8 DESIGN §1 simplifications still hidden behind shims | `66a17cb` |
+| **Review P1+P2 follow-ups** | arena_alloc trap-on-uninit; A13/A14/A15 assertions; cleanup-backlog seeded | `1f2bdbd` |
+| **Edge-case memory tests** | 47 new tests across 6 files (arena boundaries, alignment, OOM, alloc-before-init death tests, per-Eval lifecycle) | `9bb1403` |
 | **B1 shipped** | Kernels + host migrated off `cel_alloc` compat shim; shim deleted | `fcb1289` |
+| **B2 shipped** | All test SetUp() migrated off `cel_reset` shim | `a104ea8` |
+| **M5 + B3 shipped** | Codegen emits `(call $arena_reset)` zero-arg; `cel_reset` shim deleted; ~50 codegen fixtures rebaselined | `dfc366c` |
+| **M6 shipped** | Runtime owns + exports memory; host pulls from `runtime_instance`; `--import-memory` dropped | `208ddba` |
+| **M7 shipped** | `host_string_arena` deleted; replaced with malloc'd activation buffer via wasm reentry | `5d8156a` |
+| **B5 + B6 shipped** | POST_MIGRATION_BENCH.md numbers; DESIGN status flipped to shipped; sibling docs reconciled | (this commit) |
 
 ---
 

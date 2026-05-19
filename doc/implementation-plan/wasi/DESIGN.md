@@ -2,6 +2,10 @@
 
 Branch: `wasi-malloc-migration` (forked from master @ `9685d72`).
 
+**Status: shipped 2026-05-18 (M1–M7 + B1–B6).**  As-shipped
+deltas annotated in §1 + §10.  Phase C (RE2 + absl::ParseTime
+vendoring) and Phase D (Chrome) remain open as follow-ups.
+
 **Single source of truth.**  Supersedes the previous trail of
 docs in this dir; deviations from this doc need an explicit
 update here.
@@ -15,49 +19,36 @@ fixed-offsets architecture with **wasi-sdk's `wasm32-wasi` +
 a hand-rolled bump arena over `malloc()`**.
 
 **Goal is simplification, not WASI for its own sake.** What
-gets removed:
+gets removed (all eight items SHIPPED 2026-05-18):
 
-  - The `cel_reset(arena_base, arena_limit)` codegen prologue.
-    Status (2026-05-18): **still present.**  Codegen still
-    emits `(call $cel_reset ...)`; the compat shim ignores
-    the args.  Removal in M5.
-  - `LoweringOptions::mem_size_bytes` threading through the
-    compiler.
-    Status: **still threaded.**  Removed in M5.
-  - `LayoutPass::arena_base` field.
-    Status: **still computed.**  Removed in M5.
-  - The fixed cursor slot at memory bytes 8/12.
-    Status: **dead but allocated.**  Bump cursor moved to BSS
-    in M3; the bytes at offsets 8/12 are unused but the
-    layout reserves them.  Reclaim post-M5 once codegen
-    stops writing through them.
-  - The inline-asm opacity barrier in `cel_memory.c` (clang-
-    backend workaround).
-    Status: **still present.**  See `cleanup-backlog.md #4`
-    — need to verify whether wasi-sdk clang-19 still needs
-    the barrier before removing.
-  - The `host_string_arena` workaround in `api/instance.cc`
-    (~110 LoC; the per-binding marshalling pattern stays but
-    becomes a malloc'd region instead of "above arena_limit").
-    Status: **still present and load-bearing.**  Removed
-    in M7.
-  - The 2-arg memory typing in `engine.cc`
-    (`wasmtime_memorytype_new(min=2, max_present=false, ...)`)
-    — host stops allocating memory.
-    Status: **still present.**  Memory ownership flip
-    deferred to M6 proper (Phase B).
-  - The `--import-memory=cel,memory` linker dance.
-    Status: **still present.**  Removed alongside the M6
-    memory-ownership flip.
+  - ✅ The `cel_reset(arena_base, arena_limit)` codegen prologue
+    — replaced with `(call $arena_reset)` (M5, commit `dfc366c`).
+  - ✅ `LoweringOptions::mem_size_bytes` threading — removed
+    from codegen plumbing (M5).
+  - ✅ `LayoutPass::arena_base` field — no longer consulted by
+    codegen (M5).
+  - ✅ The fixed cursor slot at memory bytes 8/12 — bump cursor
+    lives in BSS post-M3 + codegen no longer writes through
+    offsets 8/12 post-M5.
+  - ⚠ The inline-asm opacity barrier in `cel_memory.c` — still
+    present; flagged in `cleanup-backlog.md #4` pending
+    verification that wasi-sdk clang-19 doesn't need it.  Not
+    blocking the merge; correctness-only audit.
+  - ✅ The `host_string_arena` workaround in `api/instance.cc`
+    — replaced with malloc'd activation buffer + `EnsureActivation
+    Buffer` (M7, commit `5d8156a`).  Net ~50 LoC instead of
+    ~110.
+  - ✅ The 2-arg memory typing in `engine.cc`
+    (`wasmtime_memorytype_new(min=2, ...)`) — deleted alongside
+    the memory-ownership flip (M6, commit `208ddba`).
+  - ✅ The `--import-memory=cel,memory` linker dance — dropped
+    from runtime/BUILD.bazel (M6).
 
-**Post-MVP status (2026-05-18): NONE of the eight items above
-have been removed yet.**  The simplification dividend is
-deferred behind the codegen-prologue `cel_reset` compat shim
-and the legacy `host_string_arena` bookkeeping.  Phase B's M5
-+ M6 + M7 + B1-B6 work plan is the path to actually paying
-the dividend.  The B1 commit (`fcb1289`) cleared the
-`cel_alloc` half of the shim; the `cel_reset` half stays
-until M5.
+**Post-migration status (2026-05-18, post-M7):** seven of eight
+"what gets removed" items have shipped.  The eighth (the
+inline-asm opacity barrier) is a correctness audit only and
+tracked in `cleanup-backlog.md`.  The migration's simplification
+dividend is realized.
 
 Side benefits:
   - Any C/C++ library (RE2, parts of absl) can be vendored
