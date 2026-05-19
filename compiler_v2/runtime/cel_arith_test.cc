@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -25,12 +26,14 @@ namespace {
 class ArithTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
-  const CelValue* At(uint32_t slot) { return cel_value_at(slot); }
+  const CelValue* At(uint32_t slot) {
+    return cel_value_at(slot);
+  }
 };
 
 // ── Parameterized: happy-path arithmetic per kind × per op ────
@@ -43,7 +46,7 @@ struct BinaryArithCase {
   uint32_t result_kind;
   // Result accessor: we read the right field of payload depending
   // on the kind.  Per-row this dispatches the assertion.
-  int64_t (*read_int)(const CelValue*);  // populated for CEL_INT
+  int64_t (*read_int)(const CelValue*);    // populated for CEL_INT
   uint64_t (*read_uint)(const CelValue*);  // populated for CEL_UINT
   double (*read_double)(const CelValue*);  // populated for CEL_DOUBLE
   int64_t expected_int;
@@ -66,54 +69,91 @@ TEST_P(ArithHappyTest, ProducesExpectedResult) {
 }
 
 namespace {
-int64_t I(const CelValue* v) { return v->payload.i; }
-uint64_t U(const CelValue* v) { return v->payload.u; }
-double D(const CelValue* v) { return v->payload.d; }
+int64_t I(const CelValue* v) {
+  return v->payload.i;
+}
+uint64_t U(const CelValue* v) {
+  return v->payload.u;
+}
+double D(const CelValue* v) {
+  return v->payload.d;
+}
 }  // namespace
 
-#define INT_CASE(name_, helper_, a_val, b_val, expected_)               \
-  BinaryArithCase {                                                     \
-    name_, helper_, +[]() { return cel_make_int(a_val); },              \
-        +[]() { return cel_make_int(b_val); }, CEL_INT, I, nullptr,     \
-        nullptr, expected_, 0, 0.0                                      \
-  }
-#define UINT_CASE(name_, helper_, a_val, b_val, expected_)              \
-  BinaryArithCase {                                                     \
-    name_, helper_, +[]() { return cel_make_uint(a_val); },             \
-        +[]() { return cel_make_uint(b_val); }, CEL_UINT, nullptr, U,   \
-        nullptr, 0, expected_, 0.0                                      \
-  }
-#define DOUBLE_CASE(name_, helper_, a_val, b_val, expected_)            \
-  BinaryArithCase {                                                     \
-    name_, helper_, +[]() { return cel_make_double(a_val); },           \
-        +[]() { return cel_make_double(b_val); }, CEL_DOUBLE, nullptr,  \
-        nullptr, D, 0, 0, expected_                                     \
+#define INT_CASE(name_, helper_, a_val, b_val, expected_) \
+  BinaryArithCase{name_,                                  \
+                  helper_,                                \
+                  +[]() {                                 \
+                    return cel_make_int(a_val);           \
+                  },                                      \
+                  +[]() {                                 \
+                    return cel_make_int(b_val);           \
+                  },                                      \
+                  CEL_INT,                                \
+                  I,                                      \
+                  nullptr,                                \
+                  nullptr,                                \
+                  expected_,                              \
+                  0,                                      \
+                  0.0}
+#define UINT_CASE(name_, helper_, a_val, b_val, expected_) \
+  BinaryArithCase{name_,                                   \
+                  helper_,                                 \
+                  +[]() {                                  \
+                    return cel_make_uint(a_val);           \
+                  },                                       \
+                  +[]() {                                  \
+                    return cel_make_uint(b_val);           \
+                  },                                       \
+                  CEL_UINT,                                \
+                  nullptr,                                 \
+                  U,                                       \
+                  nullptr,                                 \
+                  0,                                       \
+                  expected_,                               \
+                  0.0}
+#define DOUBLE_CASE(name_, helper_, a_val, b_val, expected_) \
+  BinaryArithCase {                                          \
+    name_, helper_,                                          \
+        +[]() {                                              \
+          return cel_make_double(a_val);                     \
+        },                                                   \
+        +[]() {                                              \
+          return cel_make_double(b_val);                     \
+        },                                                   \
+        CEL_DOUBLE, nullptr, nullptr, D, 0, 0, expected_     \
   }
 
 INSTANTIATE_TEST_SUITE_P(
     Int, ArithHappyTest,
-    ::testing::Values(INT_CASE("int_add", cel_int_add_at_vv, 2, 3, 5),
-                      INT_CASE("int_sub", cel_int_sub_at_vv, 10, 4, 6),
-                      INT_CASE("int_mul_pos", cel_int_mul_at_vv, 7, 6, 42),
-                      INT_CASE("int_mul_neg_neg", cel_int_mul_at_vv, -3, -4, 12),
-                      INT_CASE("int_div_truncating", cel_int_div_at_vv, 20, 3, 6),
-                      INT_CASE("int_mod", cel_int_mod_at_vv, 20, 3, 2)),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(
+        INT_CASE("int_add", cel_int_add_at_vv, 2, 3, 5),
+        INT_CASE("int_sub", cel_int_sub_at_vv, 10, 4, 6),
+        INT_CASE("int_mul_pos", cel_int_mul_at_vv, 7, 6, 42),
+        INT_CASE("int_mul_neg_neg", cel_int_mul_at_vv, -3, -4, 12),
+        INT_CASE("int_div_truncating", cel_int_div_at_vv, 20, 3, 6),
+        INT_CASE("int_mod", cel_int_mod_at_vv, 20, 3, 2)),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Uint, ArithHappyTest,
-    ::testing::Values(
-        UINT_CASE("uint_add", cel_uint_add_at_vv, 2u, 3u, 5u),
-        UINT_CASE("uint_mul", cel_uint_mul_at_vv, 7u, 6u, 42u),
-        UINT_CASE("uint_mul_max_by_one", cel_uint_mul_at_vv, UINT64_MAX, 1u,
-                  UINT64_MAX)),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(UINT_CASE("uint_add", cel_uint_add_at_vv, 2u, 3u, 5u),
+                      UINT_CASE("uint_mul", cel_uint_mul_at_vv, 7u, 6u, 42u),
+                      UINT_CASE("uint_mul_max_by_one", cel_uint_mul_at_vv,
+                                UINT64_MAX, 1u, UINT64_MAX)),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
-INSTANTIATE_TEST_SUITE_P(
-    Double, ArithHappyTest,
-    ::testing::Values(
-        DOUBLE_CASE("double_add", cel_double_add_at_vv, 1.5, 2.25, 3.75)),
-    [](const auto& info) { return info.param.name; });
+INSTANTIATE_TEST_SUITE_P(Double, ArithHappyTest,
+                         ::testing::Values(DOUBLE_CASE("double_add",
+                                                       cel_double_add_at_vv,
+                                                       1.5, 2.25, 3.75)),
+                         [](const auto& info) {
+                           return info.param.name;
+                         });
 
 // ── Parameterized: overflow / underflow boundary errors ───────
 
@@ -140,50 +180,102 @@ INSTANTIATE_TEST_SUITE_P(
     Overflow, ArithErrorTest,
     ::testing::Values(
         OverflowCase{"int_add_max_plus_one", cel_int_add_at_vv,
-                     +[]() { return cel_make_int(INT64_MAX); },
-                     +[]() { return cel_make_int(1); }, CEL_ERR_OVERFLOW},
+                     +[]() {
+                       return cel_make_int(INT64_MAX);
+                     },
+                     +[]() {
+                       return cel_make_int(1);
+                     },
+                     CEL_ERR_OVERFLOW},
         OverflowCase{"int_add_min_plus_neg_one", cel_int_add_at_vv,
-                     +[]() { return cel_make_int(INT64_MIN); },
-                     +[]() { return cel_make_int(-1); }, CEL_ERR_OVERFLOW},
+                     +[]() {
+                       return cel_make_int(INT64_MIN);
+                     },
+                     +[]() {
+                       return cel_make_int(-1);
+                     },
+                     CEL_ERR_OVERFLOW},
         OverflowCase{"int_sub_min_minus_one", cel_int_sub_at_vv,
-                     +[]() { return cel_make_int(INT64_MIN); },
-                     +[]() { return cel_make_int(1); }, CEL_ERR_OVERFLOW},
+                     +[]() {
+                       return cel_make_int(INT64_MIN);
+                     },
+                     +[]() {
+                       return cel_make_int(1);
+                     },
+                     CEL_ERR_OVERFLOW},
         OverflowCase{"int_mul_2pow40_squared", cel_int_mul_at_vv,
-                     +[]() { return cel_make_int(int64_t{1} << 40); },
-                     +[]() { return cel_make_int(int64_t{1} << 40); },
+                     +[]() {
+                       return cel_make_int(int64_t{1} << 40);
+                     },
+                     +[]() {
+                       return cel_make_int(int64_t{1} << 40);
+                     },
                      CEL_ERR_OVERFLOW},
         OverflowCase{"uint_add_max_plus_one", cel_uint_add_at_vv,
-                     +[]() { return cel_make_uint(UINT64_MAX); },
-                     +[]() { return cel_make_uint(1); }, CEL_ERR_OVERFLOW},
+                     +[]() {
+                       return cel_make_uint(UINT64_MAX);
+                     },
+                     +[]() {
+                       return cel_make_uint(1);
+                     },
+                     CEL_ERR_OVERFLOW},
         OverflowCase{"uint_sub_zero_minus_one", cel_uint_sub_at_vv,
-                     +[]() { return cel_make_uint(0); },
-                     +[]() { return cel_make_uint(1); }, CEL_ERR_OVERFLOW},
+                     +[]() {
+                       return cel_make_uint(0);
+                     },
+                     +[]() {
+                       return cel_make_uint(1);
+                     },
+                     CEL_ERR_OVERFLOW},
         OverflowCase{"uint_mul_2pow40_squared", cel_uint_mul_at_vv,
-                     +[]() { return cel_make_uint(uint64_t{1} << 40); },
-                     +[]() { return cel_make_uint(uint64_t{1} << 40); },
+                     +[]() {
+                       return cel_make_uint(uint64_t{1} << 40);
+                     },
+                     +[]() {
+                       return cel_make_uint(uint64_t{1} << 40);
+                     },
                      CEL_ERR_OVERFLOW}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     DivByZero, ArithErrorTest,
-    ::testing::Values(
-        OverflowCase{"int_div_zero", cel_int_div_at_vv,
-                     +[]() { return cel_make_int(1); },
-                     +[]() { return cel_make_int(0); },
-                     CEL_ERR_DIVIDE_BY_ZERO},
-        OverflowCase{"uint_div_zero", cel_uint_div_at_vv,
-                     +[]() { return cel_make_uint(1); },
-                     +[]() { return cel_make_uint(0); },
-                     CEL_ERR_DIVIDE_BY_ZERO},
-        OverflowCase{"int_mod_zero", cel_int_mod_at_vv,
-                     +[]() { return cel_make_int(5); },
-                     +[]() { return cel_make_int(0); },
-                     CEL_ERR_MODULUS_BY_ZERO},
-        OverflowCase{"uint_mod_zero", cel_uint_mod_at_vv,
-                     +[]() { return cel_make_uint(5); },
-                     +[]() { return cel_make_uint(0); },
-                     CEL_ERR_MODULUS_BY_ZERO}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(OverflowCase{"int_div_zero", cel_int_div_at_vv,
+                                   +[]() {
+                                     return cel_make_int(1);
+                                   },
+                                   +[]() {
+                                     return cel_make_int(0);
+                                   },
+                                   CEL_ERR_DIVIDE_BY_ZERO},
+                      OverflowCase{"uint_div_zero", cel_uint_div_at_vv,
+                                   +[]() {
+                                     return cel_make_uint(1);
+                                   },
+                                   +[]() {
+                                     return cel_make_uint(0);
+                                   },
+                                   CEL_ERR_DIVIDE_BY_ZERO},
+                      OverflowCase{"int_mod_zero", cel_int_mod_at_vv,
+                                   +[]() {
+                                     return cel_make_int(5);
+                                   },
+                                   +[]() {
+                                     return cel_make_int(0);
+                                   },
+                                   CEL_ERR_MODULUS_BY_ZERO},
+                      OverflowCase{"uint_mod_zero", cel_uint_mod_at_vv,
+                                   +[]() {
+                                     return cel_make_uint(5);
+                                   },
+                                   +[]() {
+                                     return cel_make_uint(0);
+                                   },
+                                   CEL_ERR_MODULUS_BY_ZERO}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Spec-citation focused tests (TEST_F) ──────────────────────
 
@@ -246,8 +338,7 @@ TEST_F(ArithTest, IntAddTypeMismatchPoisons) {
   uint32_t out = MakeOut();
   cel_int_add_at_vv(out, cel_make_int(1), cel_make_uint(1));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 TEST_F(ArithTest, DoubleDivByZeroProducesInf) {
@@ -276,7 +367,7 @@ TEST_F(ArithTest, DoubleNegHappyPath) {
 // Repeating per kind would only re-test the shared shape.
 
 TEST_F(ArithTest, ErrorOnLeftPropagates) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;
@@ -287,7 +378,7 @@ TEST_F(ArithTest, ErrorOnLeftPropagates) {
 }
 
 TEST_F(ArithTest, ErrorOnRightPropagates) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
@@ -299,7 +390,7 @@ TEST_F(ArithTest, ErrorOnRightPropagates) {
 }
 
 TEST_F(ArithTest, UnknownOperandPropagates) {
-  uint32_t unk_off = cel_alloc(sizeof(CelValue));
+  uint32_t unk_off = arena_alloc(sizeof(CelValue));
   CelValue* unk = cel_value_at(unk_off);
   unk->kind = CEL_UNKNOWN;
   unk->payload.unk = 17;
@@ -310,15 +401,14 @@ TEST_F(ArithTest, UnknownOperandPropagates) {
 }
 
 TEST_F(ArithTest, UnaryAbsorbsError) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_TYPE_MISMATCH;
   uint32_t out = MakeOut();
   cel_int_neg_at_v(out, err_off);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 }  // namespace

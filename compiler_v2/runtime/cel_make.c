@@ -2,7 +2,7 @@
 //
 // Carved out of cel_runtime.c per
 // `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` (P4).
-// Depends on cel_arena.c (cel_alloc, cv_at) via cel_internal.h.
+// Depends on cel_arena.c (arena_alloc, cv_at) via cel_internal.h.
 //
 // All constructors allocate from the per-Eval arena and return the
 // byte offset into shared memory of the new CelValue (or 0 on OOM).
@@ -16,7 +16,7 @@
 #include "compiler_v2/runtime/cel_log.h"
 
 static uint32_t alloc_cv(void) {
-  return cel_alloc((uint32_t)sizeof(CelValue));
+  return arena_alloc((uint32_t)sizeof(CelValue));
 }
 
 uint32_t cel_make_null(void) {
@@ -71,7 +71,7 @@ uint32_t cel_make_double(double d) {
 static uint32_t make_span_copy(CelKind kind, const void* src, uint32_t len) {
   uint32_t data_off = 0;
   if (len > 0) {
-    data_off = cel_alloc(len);
+    data_off = arena_alloc(len);
     if (data_off == 0) return 0;
     memcpy(cel_memory_base_() + data_off, src, len);
   }

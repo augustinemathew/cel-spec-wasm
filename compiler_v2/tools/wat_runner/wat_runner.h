@@ -16,8 +16,8 @@
 //   1. Assembles a WAT string to wasm bytes via `wasmtime_wat2wasm`.
 //   2. Initialises a per-run wasmtime store + 2-page memory, matching
 //      `cel::Engine::Plan`'s M1 wiring.
-//   3. Instantiates `cel_runtime.wasm`, binds its `cel_reset` /
-//      `cel_alloc` exports onto the linker.
+//   3. Instantiates `cel_runtime.wasm`, binds its `arena_reset` /
+//      `arena_alloc` exports onto the linker.
 //   4. Optionally registers `cel_host.cel_get_field` /
 //      `cel_host.cel_has_field` as stubs — each stub is a
 //      caller-supplied std::function that writes a CelValue to the

@@ -155,9 +155,9 @@ class WasmtimeMemoryView final : public MemoryView {
 };
 
 // `WasmtimeArenaAllocator::Alloc` — calls the runtime's
-// `cel_alloc(size) -> offset` wasm export.  Reentrant into wasm
+// `arena_alloc(size) -> offset` wasm export.  Reentrant into wasm
 // from inside a host trampoline — wasmtime supports this.  A trap
-// from cel_alloc (OOM, ill-formed state) surfaces as `nullptr` from
+// from arena_alloc (OOM, ill-formed state) surfaces as `nullptr` from
 // Alloc; Layer 2 turns that into ResourceExhausted.  The contract
 // matches `EncodeSpan` in cel_host.cc: zero-byte alloc returns a
 // valid (possibly null-derefable on offset==0) pointer with a
@@ -186,7 +186,7 @@ wasm_trap_t* HostFieldTrampoline(void* env_ptr, wasmtime_caller_t* caller,
   auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   WasmtimeMemoryView mem(ctx, env->memory);
-  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
   return StatusToTrap(Impl(static_cast<uint32_t>(args[0].of.i32),
                            static_cast<uint32_t>(args[1].of.i32),
@@ -221,7 +221,7 @@ wasm_trap_t* HostThreeArgTrampoline(void* absl_nonnull env_ptr,
   auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   WasmtimeMemoryView mem(ctx, env->memory);
-  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
   return StatusToTrap(Impl(static_cast<uint32_t>(args[0].of.i32),
                            static_cast<uint32_t>(args[1].of.i32),
@@ -252,7 +252,7 @@ wasm_trap_t* HostTwoArgTrampoline(void* absl_nonnull env_ptr,
   auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   WasmtimeMemoryView mem(ctx, env->memory);
-  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
   return StatusToTrap(Impl(static_cast<uint32_t>(args[0].of.i32),
                            static_cast<uint32_t>(args[1].of.i32), tctx));
@@ -412,7 +412,7 @@ extern "C" wasm_trap_t* CelTimestampTzAccessorTrampoline(
   auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   WasmtimeMemoryView mem(ctx, env->memory);
-  WasmtimeArenaAllocator alloc(ctx, env->cel_alloc_fn, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
   return StatusToTrap(
       CelTimestampTzAccessorImpl(static_cast<uint32_t>(args[0].of.i32),

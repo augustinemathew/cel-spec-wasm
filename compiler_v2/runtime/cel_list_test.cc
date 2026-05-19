@@ -16,6 +16,7 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -41,13 +42,13 @@ namespace {
 class ListTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
     g_host_at_calls = 0;
   }
 
  public:
   uint32_t NewSlot() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
   uint32_t Str(const char* s) {
     return cel_make_string(s, static_cast<uint32_t>(std::strlen(s)));
@@ -77,7 +78,7 @@ TEST_F(ListTest, CreateZeroCountIsValidEmpty) {
 }
 
 TEST_F(ListTest, PartiallyFilledTrailingSlotsReadAsCelNull) {
-  // create allocates `capacity` slots, count=0; cel_alloc zero-fills.
+  // create allocates `capacity` slots, count=0; arena_alloc zero-fills.
   // If codegen appends fewer than capacity (e.g. comprehension filter
   // skipping iters), the unused trailing slots are unreachable
   // (count caps reads) — but a defensive index past count must not

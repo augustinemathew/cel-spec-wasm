@@ -179,7 +179,7 @@ gets to amortise:
     incremental cost of a fresh `wasmtime_module_new` + `instantiate`
     given a pre-compiled `Program`.
   - **`cel::Instance`** — wasmtime store + memory + bound exports.
-    Reuse across many `Eval(activation)` calls — `cel_reset` rewinds
+    Reuse across many `Eval(activation)` calls — `arena_reset` rewinds
     the arena at the top of each Eval so the instance is stateless
     between calls.  Each `BM_Eval_*` does this.
 

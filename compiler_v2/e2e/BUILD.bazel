@@ -56,6 +56,24 @@ cc_test(
     ],
 )
 
+# WASI migration MVP — the canonical "did the migration not
+# break anything?" vertical-slice test.  Compiles `"foo" +
+# "bar"` and asserts the eval result is the string `"foobar"`.
+# See doc/implementation-plan/wasi/DESIGN.md §2.
+cc_test(
+    name = "mvp_concat_test",
+    srcs = ["mvp_concat_test.cc"],
+    deps = [
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M5 e2e test suite — general kCall arm (M5.F).  Locks every
 # arithmetic / comparison / string-op surface that M5.F lights
 # up, plus the M5.G-pending control-flow rejection edge.

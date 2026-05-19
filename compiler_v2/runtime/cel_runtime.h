@@ -9,7 +9,7 @@
 //                   error codes.  Pure types; no function decls.
 //   cel_memory.h  — cel_mem_base / cel_mem_size accessors over the
 //                   shared linear memory.
-//   cel_arena.h   — cel_reset / cel_alloc / cel_value_at bump-allocator
+//   cel_arena.h   — arena_reset / arena_alloc / cel_value_at bump-allocator
 //                   helpers.
 //   cel_make.h    — cel_make_* scalar constructors.
 //   cel_log.h     — cel_log trampoline, CEL_LOG macros, tag enum.
@@ -25,7 +25,7 @@
 //   [12..16)  u32  limit
 //   [16..)    .rodata followed by the bump arena
 //
-// Codegen emits `cel_reset(arena_base, arena_limit)` at the top of
+// Codegen emits `arena_reset(arena_base, arena_limit)` at the top of
 // each generated `eval()` (both args compile-time constants), so the
 // host just instantiates and calls `eval()` — no separate init phase.
 //

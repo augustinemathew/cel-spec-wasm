@@ -39,9 +39,9 @@ CelValue DecodeCelValue(const std::vector<uint8_t>& mem, uint32_t offset) {
   return cv;
 }
 
-// Decode the arena cursor/limit pair `cel_reset` writes.  Offsets
-// match `runtime/cel_runtime.c::cel_reset`: cursor at byte 8, limit
-// at byte 12.  Used to prove our real runtime's `cel_reset`
+// Decode the arena cursor/limit pair `arena_reset` writes.  Offsets
+// match `runtime/cel_runtime.c::arena_reset`: cursor at byte 8, limit
+// at byte 12.  Used to prove our real runtime's `arena_reset`
 // executed — if the harness were bypassing the runtime (e.g. using
 // a mock that no-ops), these u32s would stay zero.
 struct ArenaHeader {
@@ -86,15 +86,15 @@ std::vector<uint8_t> EncodeMessageCelValue(uint32_t msg_slot) {
 constexpr absl::string_view kLiteral42Wat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset (param i32 i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (data (i32.const 16)
         "\02\00\00\00"
         "\00\00\00\00"
         "\2a\00\00\00\00\00\00\00"
         "\00\00\00\00\00\00\00\00")
   (func $eval (result i32)
-    (call $cel_reset (i32.const 40) (i32.const 131072))
+    (call $arena_reset (i32.const 40) (i32.const 131072))
     (i32.const 16))
   (export "eval" (func $eval))
   (export "memory" (memory 0)))
@@ -110,7 +110,7 @@ TEST(WatRunnerTest, LiteralFortyTwoReturnsCelIntFortyTwo) {
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 42);
 
-  // Prove our real cel_runtime.wasm ran: cel_reset must have
+  // Prove our real cel_runtime.wasm ran: arena_reset must have
   // written (arena_base=40, limit=131072) into bytes [8, 16).  If
   // the harness were silently bypassing the runtime (e.g. via a
   // mock that no-ops), both u32s would stay zero.
@@ -127,12 +127,12 @@ TEST(WatRunnerTest, LiteralFortyTwoReturnsCelIntFortyTwo) {
 constexpr absl::string_view kIdentXWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset (param i32 i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
     (local $x_off i32)
     (local.set $x_off (i32.const 16))
-    (call $cel_reset (i32.const 40) (i32.const 131072))
+    (call $arena_reset (i32.const 40) (i32.const 131072))
     (local.get $x_off))
   (export "eval" (func $eval))
   (export "memory" (memory 0)))
@@ -150,14 +150,14 @@ TEST(WatRunnerTest, IdentXReturnsPreWrittenCelValueSlot) {
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 7);
-  // Real runtime's cel_reset ran: arena cursor/limit at bytes 8/12.
+  // Real runtime's arena_reset ran: arena cursor/limit at bytes 8/12.
   ArenaHeader ah = DecodeArenaHeader(out->memory_after);
   EXPECT_EQ(ah.cursor, 40u);
   EXPECT_EQ(ah.limit, 131072u);
 }
 
 TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
-  // Regression: cel_reset writes only cursor/limit (bytes 8..16).
+  // Regression: arena_reset writes only cursor/limit (bytes 8..16).
   // The workspace slot at 16 must survive the reset call that runs
   // at the top of $eval.
   WatRunInput in;
@@ -171,9 +171,9 @@ TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Runtime exercise — cel_alloc through the real runtime.
-// cel_alloc bumps the arena cursor (stored in bytes [8,12) by
-// cel_reset) and returns the pre-bump offset.  Two successive
+// Runtime exercise — arena_alloc through the real runtime.
+// arena_alloc bumps the arena cursor (stored in bytes [8,12) by
+// arena_reset) and returns the pre-bump offset.  Two successive
 // allocs of size 24 should return arena_base and arena_base+24
 // if the runtime is wired correctly.
 // ─────────────────────────────────────────────────────────
@@ -181,14 +181,14 @@ TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
 constexpr absl::string_view kTwoAllocsWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset (param i32 i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
     (local $first i32)
     (local $second i32)
-    (call $cel_reset (i32.const 16) (i32.const 131072))
-    (local.set $first  (call $cel_alloc (i32.const 24)))
-    (local.set $second (call $cel_alloc (i32.const 24)))
+    (call $arena_reset (i32.const 16) (i32.const 131072))
+    (local.set $first  (call $arena_alloc (i32.const 24)))
+    (local.set $second (call $arena_alloc (i32.const 24)))
     ;; Write both offsets as u32s into bytes [200, 208) so the
     ;; test can inspect them.  $eval returns the first offset.
     (i32.store offset=200 (i32.const 0) (local.get $first))
@@ -204,7 +204,7 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
 
-  // $eval returned the first alloc's offset — cel_alloc's contract
+  // $eval returned the first alloc's offset — arena_alloc's contract
   // says it returns the pre-bump cursor, which was arena_base=16
   // at the start.
   EXPECT_EQ(out->eval_return, 16u);
@@ -239,17 +239,17 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
 constexpr absl::string_view kSelectCNameWat = R"WAT(
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset (param i32 i32)))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"
           (func $cel_get_field (param i32 i32 i32 i32)))
   ;; Static string bytes at [200, 203) — used as the stub's fake
-  ;; return span so we don't have to call cel_alloc from the stub.
+  ;; return span so we don't have to call arena_alloc from the stub.
   (data (i32.const 200) "Ada")
   (func $eval (result i32)
     (local $c_off i32)
     (local.set $c_off (i32.const 16))
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset (i32.const 64) (i32.const 131072))
     (call $cel_get_field
           (i32.const 40)
           (local.get $c_off)

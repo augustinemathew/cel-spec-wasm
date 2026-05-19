@@ -1,0 +1,4 @@
+# Binary artifacts — rebuildable from .c files
+*.wasm
+# Toolchain symlink — exists at experiment-time only
+wasi-sdk

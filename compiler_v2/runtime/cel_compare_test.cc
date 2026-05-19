@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -23,13 +24,15 @@ namespace {
 class CompareTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
-  const CelValue* At(uint32_t slot) { return cel_value_at(slot); }
+  const CelValue* At(uint32_t slot) {
+    return cel_value_at(slot);
+  }
   bool ReadBool(uint32_t slot) {
     EXPECT_EQ(At(slot)->kind, static_cast<uint32_t>(CEL_BOOL));
     return At(slot)->payload.b != 0;
@@ -64,103 +67,237 @@ TEST_P(SameKindCmpTest, ProducesExpectedBool) {
 
 INSTANTIATE_TEST_SUITE_P(
     Int, SameKindCmpTest,
-    ::testing::Values(
-        CmpCase{"int_eq_true", cel_int_eq_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_int(3); }, true},
-        CmpCase{"int_eq_false", cel_int_eq_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_int(4); }, false},
-        CmpCase{"int_ne_true", cel_int_ne_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_int(4); }, true},
-        CmpCase{"int_ne_false", cel_int_ne_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_int(3); }, false},
-        CmpCase{"int_lt_true", cel_int_lt_at_vv,
-                +[]() { return cel_make_int(1); },
-                +[]() { return cel_make_int(2); }, true},
-        CmpCase{"int_le_eq", cel_int_le_at_vv,
-                +[]() { return cel_make_int(2); },
-                +[]() { return cel_make_int(2); }, true},
-        CmpCase{"int_gt_true", cel_int_gt_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_int(2); }, true},
-        CmpCase{"int_ge_eq", cel_int_ge_at_vv,
-                +[]() { return cel_make_int(2); },
-                +[]() { return cel_make_int(2); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"int_eq_true", cel_int_eq_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              true},
+                      CmpCase{"int_eq_false", cel_int_eq_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_int(4);
+                              },
+                              false},
+                      CmpCase{"int_ne_true", cel_int_ne_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_int(4);
+                              },
+                              true},
+                      CmpCase{"int_ne_false", cel_int_ne_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              false},
+                      CmpCase{"int_lt_true", cel_int_lt_at_vv,
+                              +[]() {
+                                return cel_make_int(1);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true},
+                      CmpCase{"int_le_eq", cel_int_le_at_vv,
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true},
+                      CmpCase{"int_gt_true", cel_int_gt_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true},
+                      CmpCase{"int_ge_eq", cel_int_ge_at_vv,
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Uint, SameKindCmpTest,
-    ::testing::Values(
-        CmpCase{"uint_lt_true", cel_uint_lt_at_vv,
-                +[]() { return cel_make_uint(1); },
-                +[]() { return cel_make_uint(2); }, true},
-        CmpCase{"uint_le_eq", cel_uint_le_at_vv,
-                +[]() { return cel_make_uint(2); },
-                +[]() { return cel_make_uint(2); }, true},
-        CmpCase{"uint_gt_true", cel_uint_gt_at_vv,
-                +[]() { return cel_make_uint(3); },
-                +[]() { return cel_make_uint(2); }, true},
-        CmpCase{"uint_ge_max", cel_uint_ge_at_vv,
-                +[]() { return cel_make_uint(UINT64_MAX); },
-                +[]() { return cel_make_uint(0); }, true},
-        CmpCase{"uint_eq_max", cel_uint_eq_at_vv,
-                +[]() { return cel_make_uint(UINT64_MAX); },
-                +[]() { return cel_make_uint(UINT64_MAX); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"uint_lt_true", cel_uint_lt_at_vv,
+                              +[]() {
+                                return cel_make_uint(1);
+                              },
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              true},
+                      CmpCase{"uint_le_eq", cel_uint_le_at_vv,
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              true},
+                      CmpCase{"uint_gt_true", cel_uint_gt_at_vv,
+                              +[]() {
+                                return cel_make_uint(3);
+                              },
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              true},
+                      CmpCase{"uint_ge_max", cel_uint_ge_at_vv,
+                              +[]() {
+                                return cel_make_uint(UINT64_MAX);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              true},
+                      CmpCase{"uint_eq_max", cel_uint_eq_at_vv,
+                              +[]() {
+                                return cel_make_uint(UINT64_MAX);
+                              },
+                              +[]() {
+                                return cel_make_uint(UINT64_MAX);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Double, SameKindCmpTest,
-    ::testing::Values(
-        CmpCase{"double_eq_true", cel_double_eq_at_vv,
-                +[]() { return cel_make_double(1.5); },
-                +[]() { return cel_make_double(1.5); }, true},
-        CmpCase{"double_eq_false", cel_double_eq_at_vv,
-                +[]() { return cel_make_double(1.5); },
-                +[]() { return cel_make_double(2.5); }, false}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"double_eq_true", cel_double_eq_at_vv,
+                              +[]() {
+                                return cel_make_double(1.5);
+                              },
+                              +[]() {
+                                return cel_make_double(1.5);
+                              },
+                              true},
+                      CmpCase{"double_eq_false", cel_double_eq_at_vv,
+                              +[]() {
+                                return cel_make_double(1.5);
+                              },
+                              +[]() {
+                                return cel_make_double(2.5);
+                              },
+                              false}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     BoolFamily, SameKindCmpTest,
-    ::testing::Values(
-        CmpCase{"bool_eq_true", cel_bool_eq_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(1); }, true},
-        CmpCase{"bool_eq_false", cel_bool_eq_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(0); }, false},
-        CmpCase{"bool_ne", cel_bool_ne_at_vv,
-                +[]() { return cel_make_bool(0); },
-                +[]() { return cel_make_bool(1); }, true},
-        // langdef §"Booleans": false < true.  Spot-check each
-        // ordering op at both directions.
-        CmpCase{"bool_lt_false_true", cel_bool_lt_at_vv,
-                +[]() { return cel_make_bool(0); },
-                +[]() { return cel_make_bool(1); }, true},
-        CmpCase{"bool_lt_true_false", cel_bool_lt_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(0); }, false},
-        CmpCase{"bool_le_eq", cel_bool_le_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(1); }, true},
-        CmpCase{"bool_le_strictly_lt", cel_bool_le_at_vv,
-                +[]() { return cel_make_bool(0); },
-                +[]() { return cel_make_bool(1); }, true},
-        CmpCase{"bool_gt_true_false", cel_bool_gt_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(0); }, true},
-        CmpCase{"bool_gt_false_true", cel_bool_gt_at_vv,
-                +[]() { return cel_make_bool(0); },
-                +[]() { return cel_make_bool(1); }, false},
-        CmpCase{"bool_ge_eq", cel_bool_ge_at_vv,
-                +[]() { return cel_make_bool(0); },
-                +[]() { return cel_make_bool(0); }, true},
-        CmpCase{"bool_ge_strictly_gt", cel_bool_ge_at_vv,
-                +[]() { return cel_make_bool(1); },
-                +[]() { return cel_make_bool(0); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"bool_eq_true", cel_bool_eq_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              true},
+                      CmpCase{"bool_eq_false", cel_bool_eq_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              false},
+                      CmpCase{"bool_ne", cel_bool_ne_at_vv,
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              true},
+                      // langdef §"Booleans": false < true.  Spot-check each
+                      // ordering op at both directions.
+                      CmpCase{"bool_lt_false_true", cel_bool_lt_at_vv,
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              true},
+                      CmpCase{"bool_lt_true_false", cel_bool_lt_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              false},
+                      CmpCase{"bool_le_eq", cel_bool_le_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              true},
+                      CmpCase{"bool_le_strictly_lt", cel_bool_le_at_vv,
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              true},
+                      CmpCase{"bool_gt_true_false", cel_bool_gt_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              true},
+                      CmpCase{"bool_gt_false_true", cel_bool_gt_at_vv,
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              false},
+                      CmpCase{"bool_ge_eq", cel_bool_ge_at_vv,
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              true},
+                      CmpCase{"bool_ge_strictly_gt", cel_bool_ge_at_vv,
+                              +[]() {
+                                return cel_make_bool(1);
+                              },
+                              +[]() {
+                                return cel_make_bool(0);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Cross-kind numeric ladder (M5.B step 2) ───────────────────
 //
@@ -187,108 +324,255 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         // int vs uint.
         CmpCase{"lt_int_neg_lt_uint", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_int(-1); },
-                +[]() { return cel_make_uint(0); }, true},
+                +[]() {
+                  return cel_make_int(-1);
+                },
+                +[]() {
+                  return cel_make_uint(0);
+                },
+                true},
         CmpCase{"lt_int_pos_eq_uint_false", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_int(5); },
-                +[]() { return cel_make_uint(5); }, false},
+                +[]() {
+                  return cel_make_int(5);
+                },
+                +[]() {
+                  return cel_make_uint(5);
+                },
+                false},
         CmpCase{"lt_uint_gt_int_neg_false", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_uint(0); },
-                +[]() { return cel_make_int(-1); }, false},
+                +[]() {
+                  return cel_make_uint(0);
+                },
+                +[]() {
+                  return cel_make_int(-1);
+                },
+                false},
         // int vs double.
         CmpCase{"lt_int_lt_double_value", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_int(2); },
-                +[]() { return cel_make_double(2.5); }, true},
+                +[]() {
+                  return cel_make_int(2);
+                },
+                +[]() {
+                  return cel_make_double(2.5);
+                },
+                true},
         CmpCase{"lt_double_lt_int_value", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_double(1.5); },
-                +[]() { return cel_make_int(2); }, true},
+                +[]() {
+                  return cel_make_double(1.5);
+                },
+                +[]() {
+                  return cel_make_int(2);
+                },
+                true},
         // uint vs double.
         CmpCase{"lt_double_neg_lt_uint", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_double(-1.0); },
-                +[]() { return cel_make_uint(0); }, true},
+                +[]() {
+                  return cel_make_double(-1.0);
+                },
+                +[]() {
+                  return cel_make_uint(0);
+                },
+                true},
         CmpCase{"lt_uint_lt_double_above_max", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_uint(UINT64_MAX); },
-                +[]() { return cel_make_double(1e30); }, true},
+                +[]() {
+                  return cel_make_uint(UINT64_MAX);
+                },
+                +[]() {
+                  return cel_make_double(1e30);
+                },
+                true},
         // same-kind tripwire: kernel must still answer correctly.
         CmpCase{"lt_int_int_same_kind", cel_numeric_lt_at_vv,
-                +[]() { return cel_make_int(1); },
-                +[]() { return cel_make_int(2); }, true}),
-    [](const auto& info) { return info.param.name; });
+                +[]() {
+                  return cel_make_int(1);
+                },
+                +[]() {
+                  return cel_make_int(2);
+                },
+                true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Le, CrossKindCmpTest,
-    ::testing::Values(
-        CmpCase{"le_int_neg_le_uint", cel_numeric_le_at_vv,
-                +[]() { return cel_make_int(-1); },
-                +[]() { return cel_make_uint(0); }, true},
-        CmpCase{"le_int_pos_eq_uint_true", cel_numeric_le_at_vv,
-                +[]() { return cel_make_int(5); },
-                +[]() { return cel_make_uint(5); }, true},
-        CmpCase{"le_int_eq_double", cel_numeric_le_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_double(3.0); }, true},
-        CmpCase{"le_double_lt_uint_zero", cel_numeric_le_at_vv,
-                +[]() { return cel_make_double(-0.5); },
-                +[]() { return cel_make_uint(0); }, true},
-        CmpCase{"le_uint_lt_double", cel_numeric_le_at_vv,
-                +[]() { return cel_make_uint(2); },
-                +[]() { return cel_make_double(2.5); }, true},
-        CmpCase{"le_uint_gt_double_neg_false", cel_numeric_le_at_vv,
-                +[]() { return cel_make_uint(0); },
-                +[]() { return cel_make_double(-1.0); }, false},
-        CmpCase{"le_same_kind_tripwire", cel_numeric_le_at_vv,
-                +[]() { return cel_make_double(1.0); },
-                +[]() { return cel_make_double(1.0); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"le_int_neg_le_uint", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_int(-1);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              true},
+                      CmpCase{"le_int_pos_eq_uint_true", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_int(5);
+                              },
+                              +[]() {
+                                return cel_make_uint(5);
+                              },
+                              true},
+                      CmpCase{"le_int_eq_double", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_double(3.0);
+                              },
+                              true},
+                      CmpCase{"le_double_lt_uint_zero", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_double(-0.5);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              true},
+                      CmpCase{"le_uint_lt_double", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              +[]() {
+                                return cel_make_double(2.5);
+                              },
+                              true},
+                      CmpCase{"le_uint_gt_double_neg_false",
+                              cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              +[]() {
+                                return cel_make_double(-1.0);
+                              },
+                              false},
+                      CmpCase{"le_same_kind_tripwire", cel_numeric_le_at_vv,
+                              +[]() {
+                                return cel_make_double(1.0);
+                              },
+                              +[]() {
+                                return cel_make_double(1.0);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Gt, CrossKindCmpTest,
-    ::testing::Values(
-        CmpCase{"gt_uint_gt_int_neg", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_uint(0); },
-                +[]() { return cel_make_int(-1); }, true},
-        CmpCase{"gt_int_neg_gt_uint_false", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_int(-1); },
-                +[]() { return cel_make_uint(0); }, false},
-        CmpCase{"gt_double_gt_int", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_double(2.5); },
-                +[]() { return cel_make_int(2); }, true},
-        CmpCase{"gt_int_gt_double", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_double(2.5); }, true},
-        CmpCase{"gt_double_above_uintmax_gt_uint", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_double(1e30); },
-                +[]() { return cel_make_uint(UINT64_MAX); }, true},
-        CmpCase{"gt_uint_gt_double_neg", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_uint(0); },
-                +[]() { return cel_make_double(-1.0); }, true},
-        CmpCase{"gt_same_kind_tripwire", cel_numeric_gt_at_vv,
-                +[]() { return cel_make_uint(2); },
-                +[]() { return cel_make_uint(1); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"gt_uint_gt_int_neg", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              +[]() {
+                                return cel_make_int(-1);
+                              },
+                              true},
+                      CmpCase{"gt_int_neg_gt_uint_false", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_int(-1);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              false},
+                      CmpCase{"gt_double_gt_int", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_double(2.5);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true},
+                      CmpCase{"gt_int_gt_double", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_double(2.5);
+                              },
+                              true},
+                      CmpCase{"gt_double_above_uintmax_gt_uint",
+                              cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_double(1e30);
+                              },
+                              +[]() {
+                                return cel_make_uint(UINT64_MAX);
+                              },
+                              true},
+                      CmpCase{"gt_uint_gt_double_neg", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              +[]() {
+                                return cel_make_double(-1.0);
+                              },
+                              true},
+                      CmpCase{"gt_same_kind_tripwire", cel_numeric_gt_at_vv,
+                              +[]() {
+                                return cel_make_uint(2);
+                              },
+                              +[]() {
+                                return cel_make_uint(1);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     Ge, CrossKindCmpTest,
-    ::testing::Values(
-        CmpCase{"ge_uint_ge_int_eq", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_uint(5); },
-                +[]() { return cel_make_int(5); }, true},
-        CmpCase{"ge_int_neg_ge_uint_false", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_int(-1); },
-                +[]() { return cel_make_uint(0); }, false},
-        CmpCase{"ge_int_eq_double", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_double(3.0); }, true},
-        CmpCase{"ge_uint_ge_double_neg", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_uint(0); },
-                +[]() { return cel_make_double(-1.0); }, true},
-        CmpCase{"ge_double_lt_uint_false", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_double(-0.5); },
-                +[]() { return cel_make_uint(0); }, false},
-        CmpCase{"ge_same_kind_tripwire", cel_numeric_ge_at_vv,
-                +[]() { return cel_make_int(2); },
-                +[]() { return cel_make_int(2); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"ge_uint_ge_int_eq", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_uint(5);
+                              },
+                              +[]() {
+                                return cel_make_int(5);
+                              },
+                              true},
+                      CmpCase{"ge_int_neg_ge_uint_false", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_int(-1);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              false},
+                      CmpCase{"ge_int_eq_double", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_double(3.0);
+                              },
+                              true},
+                      CmpCase{"ge_uint_ge_double_neg", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              +[]() {
+                                return cel_make_double(-1.0);
+                              },
+                              true},
+                      CmpCase{"ge_double_lt_uint_false", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_double(-0.5);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              false},
+                      CmpCase{"ge_same_kind_tripwire", cel_numeric_ge_at_vv,
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              +[]() {
+                                return cel_make_int(2);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // Eq / ne wrappers exist (header) but the polymorphic `equals`
 // dispatcher seeding lands in M5.B step 2b after M5.D step 2 ships
@@ -297,23 +581,49 @@ INSTANTIATE_TEST_SUITE_P(
 // downstream codegen.
 INSTANTIATE_TEST_SUITE_P(
     EqNe, CrossKindCmpTest,
-    ::testing::Values(
-        CmpCase{"eq_int_pos_eq_uint", cel_numeric_eq_at_vv,
-                +[]() { return cel_make_int(5); },
-                +[]() { return cel_make_uint(5); }, true},
-        CmpCase{"eq_int_neg_eq_uint_false", cel_numeric_eq_at_vv,
-                +[]() { return cel_make_int(-1); },
-                +[]() { return cel_make_uint(0); }, false},
-        CmpCase{"eq_int_eq_double", cel_numeric_eq_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_double(3.0); }, true},
-        CmpCase{"ne_int_eq_uint_false", cel_numeric_ne_at_vv,
-                +[]() { return cel_make_int(5); },
-                +[]() { return cel_make_uint(5); }, false},
-        CmpCase{"ne_int_uneq_double_true", cel_numeric_ne_at_vv,
-                +[]() { return cel_make_int(3); },
-                +[]() { return cel_make_double(2.5); }, true}),
-    [](const auto& info) { return info.param.name; });
+    ::testing::Values(CmpCase{"eq_int_pos_eq_uint", cel_numeric_eq_at_vv,
+                              +[]() {
+                                return cel_make_int(5);
+                              },
+                              +[]() {
+                                return cel_make_uint(5);
+                              },
+                              true},
+                      CmpCase{"eq_int_neg_eq_uint_false", cel_numeric_eq_at_vv,
+                              +[]() {
+                                return cel_make_int(-1);
+                              },
+                              +[]() {
+                                return cel_make_uint(0);
+                              },
+                              false},
+                      CmpCase{"eq_int_eq_double", cel_numeric_eq_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_double(3.0);
+                              },
+                              true},
+                      CmpCase{"ne_int_eq_uint_false", cel_numeric_ne_at_vv,
+                              +[]() {
+                                return cel_make_int(5);
+                              },
+                              +[]() {
+                                return cel_make_uint(5);
+                              },
+                              false},
+                      CmpCase{"ne_int_uneq_double_true", cel_numeric_ne_at_vv,
+                              +[]() {
+                                return cel_make_int(3);
+                              },
+                              +[]() {
+                                return cel_make_double(2.5);
+                              },
+                              true}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Spec-citation focused tests (TEST_F) ──────────────────────
 
@@ -369,8 +679,7 @@ TEST_F(CompareTest, NullEqWithNonNullPoisons) {
   uint32_t out = MakeOut();
   cel_null_eq_at_vv(out, cel_make_null(), cel_make_int(0));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 TEST_F(CompareTest, IntEqTypeMismatchPoisons) {
@@ -380,8 +689,7 @@ TEST_F(CompareTest, IntEqTypeMismatchPoisons) {
   uint32_t out = MakeOut();
   cel_int_eq_at_vv(out, cel_make_int(1), cel_make_uint(1));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 // 3VL absorption — the shared `absorb_3vl_binary` is used by every
@@ -389,7 +697,7 @@ TEST_F(CompareTest, IntEqTypeMismatchPoisons) {
 // position.
 
 TEST_F(CompareTest, ErrorOperandPropagates) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;
@@ -521,20 +829,17 @@ TEST_F(CompareTest, NumericRejectsNonNumericOperands) {
   uint32_t out = MakeOut();
   cel_numeric_lt_at_vv(out, cel_make_int(0), cel_make_bool(0));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
   cel_numeric_gt_at_vv(out, cel_make_string("a", 1), cel_make_int(0));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
   cel_numeric_eq_at_vv(out, cel_make_null(), cel_make_double(0.0));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 TEST_F(CompareTest, NumericAbsorbs3VL) {
-  uint32_t err_off = cel_alloc(sizeof(CelValue));
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;
@@ -545,7 +850,7 @@ TEST_F(CompareTest, NumericAbsorbs3VL) {
 }
 
 TEST_F(CompareTest, UnknownOperandPropagates) {
-  uint32_t unk_off = cel_alloc(sizeof(CelValue));
+  uint32_t unk_off = arena_alloc(sizeof(CelValue));
   CelValue* unk = cel_value_at(unk_off);
   unk->kind = CEL_UNKNOWN;
   unk->payload.unk = 99;

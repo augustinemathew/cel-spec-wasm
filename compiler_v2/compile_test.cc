@@ -119,8 +119,8 @@ TEST(CompileTest, ModuleInstallsCelResetAndCelAllocImports) {
   ASSERT_THAT(art_or, IsOk());
   BinaryenModuleRef raw = art_or->module.raw();
   // Binaryen models function imports as functions whose body is null.
-  EXPECT_NE(BinaryenGetFunction(raw, "cel_reset"), nullptr);
-  EXPECT_NE(BinaryenGetFunction(raw, "cel_alloc"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(raw, "arena_reset"), nullptr);
+  EXPECT_NE(BinaryenGetFunction(raw, "arena_alloc"), nullptr);
 }
 
 TEST(CompileTest, SerializedBytesStartWithWasmPreamble) {
@@ -144,18 +144,19 @@ TEST(CompileTest, SerializeFalseLeavesWasmBytesEmpty) {
   EXPECT_TRUE(art_or->wasm_bytes.empty());
 }
 
-TEST(CompileTest, MemSizeBytesFlowsToCelResetSecondArg) {
-  CompileOptions opts;
-  opts.mem_size_bytes = 128u * 1024u;
-  auto art_or = Compile("42", opts);
+// Post-M5: arena_reset takes no arguments — the runtime's bump cursor
+// lives in BSS, not linear memory, so codegen no longer threads
+// (arena_base, arena_limit) into the prologue.  CompileOptions::
+// mem_size_bytes still controls the memory import's initial page
+// count via `MemSizeBytesLargerThanOnePageGrowsPageCount` below.
+TEST(CompileTest, EvalPrologueIsZeroArgArenaReset) {
+  auto art_or = Compile("42");
   ASSERT_THAT(art_or, IsOk());
 
   BinaryenExpressionRef body = BinaryenFunctionGetBody(art_or->eval_fn.func);
   BinaryenExpressionRef call = BinaryenBlockGetChildAt(body, 0);
-  ASSERT_STREQ(BinaryenCallGetTarget(call), "cel_reset");
-  BinaryenExpressionRef arg1 = BinaryenCallGetOperandAt(call, 1);
-  EXPECT_EQ(BinaryenConstGetValueI32(arg1),
-            static_cast<int32_t>(opts.mem_size_bytes));
+  ASSERT_STREQ(BinaryenCallGetTarget(call), "arena_reset");
+  EXPECT_EQ(BinaryenCallGetNumOperands(call), 0u);
 }
 
 TEST(CompileTest, EvalExportNameIsHonoured) {

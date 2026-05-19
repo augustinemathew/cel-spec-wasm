@@ -11,8 +11,8 @@
 // backend sees `(uint8_t*)0` as a C null pointer and treats every
 // store through `cel_memory_base_() + off` as undefined behaviour —
 // which it then elides entirely.  Disassembly without this fix shows
-// `cel_reset` compiles to a no-op (no `i32.store` at byte 8 or 12)
-// and `cel_alloc` compiles to `unreachable`.  The barrier prevents
+// `arena_reset` compiles to a no-op (no `i32.store` at byte 8 or 12)
+// and `arena_alloc` compiles to `unreachable`.  The barrier prevents
 // the optimizer from reasoning about the value-of-zero through the
 // pointer cast; the runtime cost is one register copy.
 
@@ -36,13 +36,17 @@ uint8_t* cel_memory_base_(void) {  // NOLINT(misc-use-internal-linkage)
 uint32_t cel_memory_size_(void) {  // NOLINT(misc-use-internal-linkage)
   // The module imports a 1-page memory (64 KiB) at M1; later milestones
   // negotiate a size via the `cel.abi` section.  Returning a fixed
-  // value here is fine — cel_alloc's bounds check uses `limit` from
+  // value here is fine — arena_alloc's bounds check uses `limit` from
   // the cursor slot, not this.
   return 64u * 1024u;
 }
 #else
+#include "compiler_v2/runtime/cel_layout.h"
+// Native test backing buffer must be at least the arena capacity plus
+// a slack region for the [0, 16) reserved bytes the arena leaves
+// before its own base.
 #ifndef CELWASM_ARENA_BYTES
-#define CELWASM_ARENA_BYTES (64u * 1024u)
+#define CELWASM_ARENA_BYTES (CELWASM_ARENA_CAPACITY_BYTES + 65536u)
 #endif
 // `_Alignas(8)` is load-bearing: every CelValue is 8-aligned (see
 // `cel_memory_test::BaseIsEightByteAligned`), so the host-side backing

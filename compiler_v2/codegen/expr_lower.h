@@ -4,7 +4,7 @@
 // Lowers a fully-resolved, fully-laid-out `TypedAst` into the `$eval`
 // wasm function.  M1 handles only the `kConst` arm: every literal's
 // value lives at a known rodata offset, so `$eval`'s body is a two-
-// instruction block — `call $cel_reset(<arena_base>, <arena_limit>)`
+// instruction block — `call $arena_reset(<arena_base>, <arena_limit>)`
 // followed by `i32.const <root_rodata_offset>` — and the function
 // returns the root literal's CelValue offset.
 //
@@ -15,7 +15,7 @@
 // status to the user.
 //
 // Caller responsibilities (M1): before calling `LowerToEvalFunction`
-// the caller must have installed memory + the `cel.cel_reset` function
+// the caller must have installed memory + the `cel.arena_reset` function
 // import on `mod`.  `LowerToEvalFunction` only adds the function
 // definition; the export is left to the caller so CLI callers can
 // export under a different external name if they choose.
@@ -36,10 +36,10 @@
 namespace celwasm {
 
 // The internal-name codegen uses when it emits `BinaryenCall` targeting
-// the runtime's `cel_reset`.  Callers that install the import under a
-// different internal name will produce a module Binaryen rejects at
+// the runtime's `arena_reset`.  Callers that install the import under
+// a different internal name will produce a module Binaryen rejects at
 // validate time.
-inline constexpr absl::string_view kCelResetInternalName = "cel_reset";
+inline constexpr absl::string_view kArenaResetInternalName = "arena_reset";
 
 // cel_host.cel_get_field + cel_host.cel_has_field trampolines
 // (Layer 3).  Internal names codegen references; the matching
@@ -138,7 +138,7 @@ struct FieldRefRow {
 };
 
 struct LoweringOptions {
-  // Total linear-memory size in bytes.  `cel_reset` is called with
+  // Total linear-memory size in bytes.  `arena_reset` is called with
   // `(arena_base, arena_limit = mem_size_bytes)` at the top of every
   // `$eval` body so the runtime arena spans `[arena_base, mem_size_bytes)`.
   // Default is one wasm page (64 KiB) — enough for M1 (pure literal
@@ -164,7 +164,7 @@ struct LoweredFunction {
 // function body is a block of type `i32`:
 //
 //   (block $eval (result i32)
-//     (call $cel_reset (i32.const <arena_base>) (i32.const <arena_limit>))
+//     (call $arena_reset (i32.const <arena_base>) (i32.const <arena_limit>))
 //     (i32.const <root_rodata_offset>))
 //
 // Fails with `UnimplementedError` for any expression kind outside the

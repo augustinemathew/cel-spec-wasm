@@ -31,8 +31,8 @@ namespace {
 // rely on it, which is the point.
 constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     // M1 baseline.
-    "cel_reset",
-    "cel_alloc",
+    "arena_reset",
+    "arena_alloc",
     // M3: map runtime helpers.
     "cel_map_create",
     "cel_map_insert",
@@ -712,7 +712,7 @@ absl::Status InstantiateRuntime(RunState& s) {
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  // M1 baseline: cel_reset + cel_alloc.  M3 added the map runtime
+  // M1 baseline: arena_reset + arena_alloc.  M3 added the map runtime
   // helpers; M4 added the list runtime helpers.  Bind every export
   // so any WAT that imports them resolves at instantiate time —
   // mirrors the "always link the runtime fully" rule from
@@ -749,7 +749,7 @@ absl::Status InstantiateExpr(RunState& s) {
 // Write the pre-write payloads into the live memory.  Applied AFTER
 // instantiation (so the data segments from the expr module have
 // already been laid down) but BEFORE $eval is called (so the body's
-// cel_reset runs on top of whatever we wrote).
+// arena_reset runs on top of whatever we wrote).
 absl::Status ApplyPreWrites(RunState& s, const WatRunInput& input) {
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   uint8_t* data = wasmtime_memory_data(ctx, &s.memory);

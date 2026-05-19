@@ -9,12 +9,14 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "compiler_v2/api/activation.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/abi_decode.h"
@@ -342,68 +344,78 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // uint / double / null) encode inline; aggregates (kMessage / kList)
 // route through `ExternrefTable`.
 //
-// String / bytes — Slice 0 of the conformance unlock plan:
-// the bound payload bytes can NOT live in the wasm-side `cel_alloc`
-// arena, because `$eval`'s prelude calls `cel_reset` which rewinds
-// the bump pointer to `arena_base`, and the first in-eval
-// `cel_alloc` then zero-fills the bytes we just wrote there.
-// Instead, we maintain a **host-managed string arena** in linear
-// memory above `arena_limit` (the codegen's `cel_reset` second arg
-// — set to the same value as the host's initial memory size).
-// `wasmtime_memory_grow` extends linear memory beyond that
-// threshold; the runtime never touches the tail because every
-// `cel_alloc` bounds-checks against `arena_limit`.  See
-// `EnsureHostStringArenaCapacity` below.
+// String / bytes — M7 activation buffer:
+// the bound payload bytes can NOT live in the wasm-side
+// `arena_alloc` arena, because `$eval`'s prelude calls `arena_reset`
+// which rewinds the bump pointer to 0 and the first in-eval
+// `arena_alloc` zero-fills the bytes we just wrote there.  Instead,
+// we malloc a buffer inside the runtime's linear memory once per
+// Instance (via wasm reentry into wasi-libc's dlmalloc) and reuse
+// it across Evals.  See `EnsureActivationBuffer` below.
 //
 // Repr::kMap / kDuration / kTimestamp / kEnum / kType / kUnknown
 // activation marshalling lands in M7-era work; fail loud until then.
 // ─────────────────────────────────────────────────────────────
 
-// Wasm pages are always 64KiB.  Mirror the `wasmtime_memorytype_new`
-// `page_size_log2=16` choice in engine.cc.
-constexpr uint32_t kWasmPageSize = 64u * 1024u;
-
-// Round `bytes` up to the next multiple of `kWasmPageSize`.
-uint32_t RoundUpToPage(uint64_t bytes) {
-  return static_cast<uint32_t>(((bytes + kWasmPageSize - 1) / kWasmPageSize) *
-                               kWasmPageSize);
+// Round `bytes` up to the next multiple of 4 KB.  4 KB matches the
+// minimum dlmalloc chunk size on wasi-libc and amortises the cost
+// of growing the activation buffer over many small Evals.
+uint32_t RoundUpTo4K(uint64_t bytes) {
+  constexpr uint64_t k4K = 4u * 1024u;
+  return static_cast<uint32_t>(((bytes + k4K - 1) / k4K) * k4K);
 }
 
-// Ensure the host-side string arena is initialized + has at least
-// `needed` bytes of capacity above the arena_limit floor.  Captures
-// `arena_floor` lazily on first call (= the byte size of the host
-// memory at instantiation, which is exactly what codegen baked into
-// `cel_reset(arena_base, arena_limit)`'s second arg).  Grows the
-// memory by whole pages on demand.  Returns ResourceExhausted if
-// `wasmtime_memory_grow` rejects the request (engine memorytype was
-// created with `max_present=false`, so this should only happen on
-// genuine address-space exhaustion).
-absl::Status EnsureHostStringArenaCapacity(wasmtime_context_t* ctx,
-                                           const wasmtime_memory_t& mem,
-                                           absl::string_view first_var_name,
-                                           uint32_t* absl_nonnull floor,
-                                           uint32_t* absl_nonnull capacity,
-                                           uint32_t needed) {
-  wasmtime_memory_t m = mem;
-  if (*floor == 0) {
-    // First call — record the initial mem size (= arena_limit).
-    *floor = static_cast<uint32_t>(wasmtime_memory_data_size(ctx, &m));
-  }
-  if (needed <= *capacity) return absl::OkStatus();
+// Ensure the per-Instance activation buffer has at least `needed`
+// bytes of capacity.  Lazily malloc'd via wasm reentry on first
+// need; replaced with a fresh malloc when a later Eval needs more
+// (the previous buffer is left to dlmalloc's free list — no
+// explicit free since dlmalloc reclaims on the next sized alloc).
+//
+// Returns ResourceExhausted if wasi-libc's dlmalloc fails to grow
+// linear memory enough to satisfy the request — i.e. genuine wasm
+// address-space exhaustion (4 GB cap).
+absl::Status EnsureActivationBuffer(wasmtime_context_t* ctx,
+                                    wasmtime_func_t malloc_fn,
+                                    absl::string_view first_var_name,
+                                    uint32_t* absl_nonnull buf_offset,
+                                    uint32_t* absl_nonnull buf_capacity,
+                                    uint32_t needed) {
+  if (needed <= *buf_capacity) return absl::OkStatus();
 
-  const uint32_t new_capacity = RoundUpToPage(needed);
-  const uint32_t delta_bytes = new_capacity - *capacity;
-  const uint32_t delta_pages = delta_bytes / kWasmPageSize;
-  uint64_t prev_pages = 0;
+  // Allocate a 4-KB-rounded buffer; for very small activations this
+  // is one malloc and we never grow.
+  const uint32_t new_capacity = RoundUpTo4K(needed);
+  wasmtime_val_t arg;
+  arg.kind = WASMTIME_I32;
+  arg.of.i32 = static_cast<int32_t>(new_capacity);
+  wasmtime_val_t result;
+  wasm_trap_t* trap = nullptr;
   wasmtime_error_t* err =
-      wasmtime_memory_grow(ctx, &m, delta_pages, &prev_pages);
+      wasmtime_func_call(ctx, &malloc_fn, &arg, 1, &result, 1, &trap);
   if (err != nullptr) {
     return WasmtimeErrorToStatus(
-        absl::StrCat("Activation[", first_var_name,
-                     "]: host-arena memory.grow(", delta_pages, " pages)"),
+        absl::StrCat("Activation[", first_var_name, "]: malloc(", new_capacity,
+                     ")"),
         err);
   }
-  *capacity = new_capacity;
+  if (trap != nullptr) {
+    return WasmTrapToStatus(
+        absl::StrCat("Activation[", first_var_name, "]: malloc trap"), trap);
+  }
+  if (result.kind != WASMTIME_I32 || result.of.i32 == 0) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        "Activation[", first_var_name, "]: malloc returned NULL (needed ",
+        new_capacity, " bytes)"));
+  }
+  *buf_offset = static_cast<uint32_t>(result.of.i32);
+  *buf_capacity = new_capacity;
+  // A15 (DESIGN §5): the malloc'd buffer must sit above the
+  // reserved low region (where the expr rodata + wasi-libc data
+  // live).  dlmalloc's heap floor is __heap_base, already
+  // validated >= kReservedLowMemoryBytes in engine.cc::
+  // InstantiateRuntime, so this is an invariant by construction.
+  ABSL_CHECK_GE(*buf_offset, CELWASM_RESERVED_LOW_MEMORY_BYTES)
+      << "DESIGN A15: activation buffer overlaps reserved region";
   return absl::OkStatus();
 }
 
@@ -756,7 +768,7 @@ absl::Status EncodeList(const Value& v, absl::string_view name, CelValue* dst,
 // The bound name string is copied into the host string arena above
 // `arena_limit` (same arena kString / kBytes use); the resulting
 // CelSpan lives in `payload.s`.  Same lifetime as kString — bytes
-// outlive `cel_reset` because the arena floor is fixed at instantiation
+// outlive `arena_reset` because the arena floor is fixed at instantiation
 // time.
 absl::Status EncodeType(const Value& v, absl::string_view name, CelValue* dst,
                         HostStringArena arena) {
@@ -889,8 +901,8 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
 // Missing variable → FailedPrecondition.  Type mismatch between
 // declared Repr and bound Value::Kind → InvalidArgument.
 //
-// Takes the whole `InstanceImpl` so the host-string-arena bookkeeping
-// (`host_string_arena_floor` / `host_string_arena_capacity`) lives at
+// Takes the whole `InstanceImpl` so the activation-buffer bookkeeping
+// (`activation_buf_offset` / `activation_buf_capacity`) lives at
 // instance scope without inflating MarshalActivation's parameter list
 // past the lint gate.
 absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
@@ -899,18 +911,19 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   const wasmtime_memory_t& mem = impl->memory;
   const celwasm::abi::CelAbi& abi = impl->abi;
 
-  // Pre-pass: ensure host string arena has room for every kString /
-  // kBytes payload before any encoder runs.  Memory.grow can move
-  // wasmtime_memory_data's pointer; doing the grow up-front means
-  // every per-variable encoder sees a stable base pointer.
+  // Pre-pass: ensure the activation buffer has room for every
+  // kString / kBytes payload before any encoder runs.  A malloc'd
+  // buffer's pointer doesn't move under us across reentry calls (no
+  // memory.grow side-effect on the same Eval), so the encoders that
+  // follow can read `wasmtime_memory_data` once and use it stably.
   const uint32_t need = TotalHostStringBytes(abi, activation);
   if (need > 0) {
     const absl::string_view first_name = abi.variables_size() > 0
                                              ? abi.variables(0).name()
                                              : absl::string_view{};
-    if (auto s = EnsureHostStringArenaCapacity(
-            ctx, mem, first_name, &impl->host_string_arena_floor,
-            &impl->host_string_arena_capacity, need);
+    if (auto s = EnsureActivationBuffer(
+            ctx, impl->host_env.malloc_fn, first_name,
+            &impl->activation_buf_offset, &impl->activation_buf_capacity, need);
         !s.ok()) {
       return s;
     }
@@ -918,8 +931,8 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   uint32_t arena_cursor = 0;
   EncoderContext ec{
       impl->host_env.refs,
-      HostStringArena{ctx, mem, impl->host_string_arena_floor,
-                      impl->host_string_arena_capacity, &arena_cursor}};
+      HostStringArena{ctx, mem, impl->activation_buf_offset,
+                      impl->activation_buf_capacity, &arena_cursor}};
 
   // Re-read mem_size AFTER any grow — workspace bounds checks below
   // need the fresh size, and the slot offsets are below `arena_floor`

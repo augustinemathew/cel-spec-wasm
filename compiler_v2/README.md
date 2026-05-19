@@ -75,7 +75,7 @@ each call site around them, not around `Compile()` alone.
        │                                 bound exports.
        │
        │  Instance.Eval(activation)
-       │   → Value                   ◄── many per Instance; cel_reset
+       │   → Value                   ◄── many per Instance; arena_reset
        │                                 rewinds the arena at the top
        │                                 of each call.
 ```
@@ -208,7 +208,7 @@ bool EvaluateRule(int64_t age, std::string country) {
 
 For a per-request pattern that runs many Evals on the same Instance
 (e.g. evaluating the same rule against a stream of inputs), keep the
-Instance alive and call `Eval(activation)` in a loop — `cel_reset`
+Instance alive and call `Eval(activation)` in a loop — `arena_reset`
 rewinds the per-Eval arena automatically at the top of each call.
 
 ### 4. Proto message variables
@@ -464,7 +464,7 @@ rounded up to the next wasm page:
 The bottom ~16 bytes of every memory are reserved for the arena
 cursor; the next ~`rodata_size` bytes (typically 100-500 B at
 `optimize_level=2`) hold compile-time constants; the rest is the
-bump arena `cel_reset` rewinds at the top of every Eval.
+bump arena `arena_reset` rewinds at the top of every Eval.
 
 A wasm page is 64 KiB by spec; you can't allocate fractional pages.
 That makes the minimum per-Instance memory cost ~128 KiB even for a

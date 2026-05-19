@@ -39,21 +39,19 @@ struct InstanceImpl {
   // valid across every Eval.  Populated by Engine::Plan.
   CelHostCallbackEnv host_env;
 
-  // Slice 0 — host-managed string/bytes activation arena.  Lives in
-  // linear memory above `arena_limit` (the wasm-side arena ceiling
-  // codegen baked into `cel_reset`'s second arg), grown via
-  // `wasmtime_memory_grow` on demand.  `host_string_arena_floor` is
-  // captured on the first Eval as the byte size of the host-owned
-  // memory at instantiation time — that's the value codegen used
-  // for `arena_limit`, and the floor above which our region starts.
-  // `host_string_arena_capacity` tracks how many bytes past the
-  // floor we've grown to so far; `[floor, floor + capacity)` is the
-  // region the marshaller writes activation strings into.  Reset to
-  // 0 between Evals — each Eval rewinds and reuses the region.
-  // (Strings only need to survive a single Eval call; the next
-  // Eval's marshal overwrites.)
-  uint32_t host_string_arena_floor = 0;
-  uint32_t host_string_arena_capacity = 0;
+  // M7: activation buffer — host-allocated region inside the
+  // runtime's linear memory where kString / kBytes payloads from
+  // Activation get written before each Eval.  Allocated via wasm
+  // reentry into `host_env.malloc_fn` on first need; replaced (via
+  // a fresh malloc) when a later Eval needs more capacity.  Lives
+  // OUTSIDE the bump arena — arena_reset (the first instruction of
+  // $eval) would otherwise wipe the bytes the marshaller just wrote.
+  //
+  // `activation_buf_offset` is the offset returned by malloc; the
+  // writeable region is `[offset, offset + capacity)`.  Reset to 0
+  // (cursor) between Evals — each Eval rewinds and reuses the region.
+  uint32_t activation_buf_offset = 0;
+  uint32_t activation_buf_capacity = 0;
 
   InstanceImpl() = default;
   ~InstanceImpl();

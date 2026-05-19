@@ -39,6 +39,7 @@
 #include "compiler_v2/runtime/cel_3vl.h"
 #include "compiler_v2/runtime/cel_arena.h"
 #include "compiler_v2/runtime/cel_arith.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_compare.h"
 #include "compiler_v2/runtime/cel_convert.h"
 #include "compiler_v2/runtime/cel_data.h"
@@ -59,17 +60,17 @@
 namespace celwasm {
 namespace {
 
-// Reset the arena to a known base / limit.  Mirrors the SetUp() shape
-// every runtime *_test.cc uses; the constants come from the parent
-// design's linear-memory layout (bytes 0..16 are reserved; bumping
-// starts at 16).
+// Reset the arena to its default capacity.  Mirrors the SetUp()
+// shape every runtime *_test.cc uses post-M5 — arena_init is
+// idempotent for same-cap; arena_reset rewinds the cursor.
 void ResetArena() {
-  cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+  arena_init(CELWASM_ARENA_CAPACITY_BYTES);
+  arena_reset();
 }
 
 // Allocate a fresh out-slot CelValue inside the arena.
 uint32_t AllocSlot() {
-  return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
 }
 
 // ============================================================
@@ -366,9 +367,9 @@ void BM_UnknownMerge(benchmark::State& state) {
   // payload.unk is a u32 byte-offset to {ids_off, len}; ids_off points
   // at a contiguous u32 array.
   auto mint_unk = [](uint32_t id) -> uint32_t {
-    uint32_t ids_off = cel_alloc(sizeof(uint32_t));
+    uint32_t ids_off = arena_alloc(sizeof(uint32_t));
     *reinterpret_cast<uint32_t*>(cel_mem_base() + ids_off) = id;
-    uint32_t desc_off = cel_alloc(2 * sizeof(uint32_t));
+    uint32_t desc_off = arena_alloc(2 * sizeof(uint32_t));
     auto* desc = reinterpret_cast<uint32_t*>(cel_mem_base() + desc_off);
     desc[0] = ids_off;
     desc[1] = 1;
@@ -382,8 +383,8 @@ void BM_UnknownMerge(benchmark::State& state) {
   uint32_t b = mint_unk(11);
   // Snapshot the arena cursor AFTER staging operands; each iteration
   // rewinds back to here, so operand bytes stay valid but the merge
-  // allocation gets reclaimed.  cel_reset takes (base, limit) — we
-  // re-bump from the post-stage cursor.  Since cel_alloc reads the
+  // allocation gets reclaimed.  arena_reset takes (base, limit) — we
+  // re-bump from the post-stage cursor.  Since arena_alloc reads the
   // cursor from bytes 8..12, we capture it directly.
   uint32_t post_stage_cursor = *reinterpret_cast<uint32_t*>(cel_mem_base() + 8);
   uint32_t out = AllocSlot();
@@ -555,7 +556,7 @@ BENCHMARK(BM_StringContains)->Arg(8)->Arg(64)->Arg(4096);
 // benches that consume this are themselves guarded.
 [[maybe_unused]] uint32_t MakeDuration(int64_t seconds, int32_t nanos) {
 #ifdef CELWASM_M7B_SHIPPED
-  uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   CelValue* v = reinterpret_cast<CelValue*>(
       reinterpret_cast<uint8_t*>(cel_mem_base()) + off);
   v->kind = CEL_DURATION;
@@ -573,7 +574,7 @@ BENCHMARK(BM_StringContains)->Arg(8)->Arg(64)->Arg(4096);
 
 [[maybe_unused]] uint32_t MakeTimestamp(int64_t seconds, int32_t nanos) {
 #ifdef CELWASM_M7B_SHIPPED
-  uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   CelValue* v = reinterpret_cast<CelValue*>(
       reinterpret_cast<uint8_t*>(cel_mem_base()) + off);
   v->kind = CEL_TIMESTAMP;

@@ -7,6 +7,7 @@
 #include <string>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -29,15 +30,15 @@ namespace {
 class ConvertFixture : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
   uint32_t MakeError() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_ERROR;
     v->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
@@ -45,7 +46,7 @@ class ConvertFixture : public ::testing::Test {
   }
 
   uint32_t MakeUnknown() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = 0u;

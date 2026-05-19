@@ -1,10 +1,12 @@
 #include "compiler_v2/api/engine.h"
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -15,6 +17,7 @@
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/host/cel_log.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
 #include "google/protobuf/descriptor.h"
 #include "wasm.h"
@@ -45,6 +48,60 @@ absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
   return absl::InternalError(absl::StrCat(context, ": ", text));
 }
 
+// Stub for `wasi_snapshot_preview1.random_get(buf, len) -> errno`.
+// wasi-libc's dlmalloc seeds itself on first allocation via this
+// import.  We don't need any actual randomness (the runtime is
+// deterministic by design — same expression + same activation =>
+// same bytes); just zero-fill the buffer and return success (0).
+wasm_trap_t* WasiRandomGetStub(void* /*env*/, wasmtime_caller_t* caller,
+                               const wasmtime_val_t* args, size_t nargs,
+                               wasmtime_val_t* results, size_t nresults) {
+  (void)nargs;
+  if (nresults >= 1) {
+    results[0].kind = WASMTIME_I32;
+    results[0].of.i32 = 0;  // 0 = success
+  }
+  wasmtime_extern_t mem_ext;
+  if (!wasmtime_caller_export_get(caller, "memory", 6, &mem_ext) ||
+      mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
+    return nullptr;  // caller has no memory; nothing to zero, return ok
+  }
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  uint8_t* data = wasmtime_memory_data(ctx, &mem_ext.of.memory);
+  size_t size = wasmtime_memory_data_size(ctx, &mem_ext.of.memory);
+  const uint32_t buf = static_cast<uint32_t>(args[0].of.i32);
+  const uint32_t len = static_cast<uint32_t>(args[1].of.i32);
+  if (data != nullptr && buf + len <= size) {
+    std::memset(data + buf, 0, len);
+  }
+  return nullptr;
+}
+
+absl::Status RegisterWasiStubs(wasmtime_linker_t* linker) {
+  // Signature: (i32 buf, i32 len) -> i32
+  wasm_valtype_t* i32_a = wasm_valtype_new_i32();
+  wasm_valtype_t* i32_b = wasm_valtype_new_i32();
+  wasm_valtype_t* i32_r = wasm_valtype_new_i32();
+  wasm_valtype_vec_t params, results;
+  wasm_valtype_vec_new_uninitialized(&params, 2);
+  params.data[0] = i32_a;
+  params.data[1] = i32_b;
+  wasm_valtype_vec_new_uninitialized(&results, 1);
+  results.data[0] = i32_r;
+  wasm_functype_t* type = wasm_functype_new(&params, &results);
+  const char kMod[] = "wasi_snapshot_preview1";
+  const char kName[] = "random_get";
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, kMod, sizeof(kMod) - 1, kName, sizeof(kName) - 1, type,
+      WasiRandomGetStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        "linker.define(wasi_snapshot_preview1.random_get)", err);
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
   auto state = std::make_shared<celwasm::WasmtimeEngineState>();
   // M3.C: the cel_runtime module's `cel_map_lookup` dispatcher emits
@@ -73,44 +130,26 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime() {
 
 // ——— Plan helpers ———
 
-// Allocates the per-Plan store + a 2-page host-owned memory.  Two
-// pages matches cel_runtime.wasm's --import-memory min=2 (per
-// runtime/BUILD.bazel).  `max_present=false` so `wasmtime_memory_grow`
-// can extend the memory beyond the initial reservation — Slice 0 of
-// the conformance unlock plan needs a host-managed region above
-// `mem_size_bytes` (= the codegen's `arena_limit`) to host
-// activation-marshalled string / bytes payloads that survive
-// `cel_reset` and subsequent `cel_alloc` calls inside `$eval`.
-// Wasm-side `cel_alloc`'s bounds check stays at `arena_limit`, so
-// the runtime never reaches into the grown tail.
-absl::Status InitStoreAndMemory(celwasm::WasmtimeEngineState* state,
-                                celwasm::InstanceImpl* impl) {
+// Allocates the per-Plan store.  Memory is no longer host-allocated
+// (M6): the runtime module declares + exports its own memory via
+// `runtime/BUILD.bazel:--export=memory`.  After `InstantiateRuntime`
+// finishes, `PullRuntimeMemory` pulls the exported memory off
+// `runtime_instance` and binds it on the linker as `cel.memory` so
+// the expr module's `(import "cel" "memory")` resolves to the same
+// backing store.
+absl::Status InitStore(celwasm::WasmtimeEngineState* state,
+                       celwasm::InstanceImpl* impl) {
   impl->store = wasmtime_store_new(state->engine, nullptr, nullptr);
   if (impl->store == nullptr) {
     return absl::InternalError("wasmtime_store_new returned null");
   }
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  wasm_memorytype_t* mty = nullptr;
-  wasmtime_error_t* err = wasmtime_memorytype_new(
-      /*min=*/2, /*max_present=*/false, /*max=*/0, /*is_64=*/false,
-      /*shared=*/false, /*page_size_log2=*/16, &mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memorytype_new", err);
-  err = wasmtime_memory_new(ctx, mty, &impl->memory);
-  wasm_memorytype_delete(mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memory_new", err);
   return absl::OkStatus();
 }
 
-// Wires cel_env.cel_log + cel.memory + cel_host.* onto a fresh
-// linker.  The cel_host imports point at trampolines whose
-// stub-bodies fire `ABSL_CHECK(false)` (`CelGetFieldImpl` /
-// `CelHasFieldImpl` until M2.C.0b lands the real bodies);
-// `cel_host.cel_map_lookup` is the only host-resident M3 path —
-// arena-resident map programs evaluate without ever calling it.
-// We register all three regardless so the runtime module
-// instantiates: the runtime's static import list demands every
-// `cel_host.*` symbol by name (no lazy import tracking, per the
-// project rule).
+// Wires cel_env.cel_log + cel_host.* + WASI stubs onto a fresh
+// linker.  `cel.memory` is NOT bound here — post-M6 the runtime
+// module owns + exports its own memory; the binding lands after
+// `InstantiateRuntime` (see `BindRuntimeMemory`).
 absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
                         celwasm::InstanceImpl* impl) {
   impl->linker = wasmtime_linker_new(state->engine);
@@ -122,10 +161,28 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
       !s.ok()) {
     return s;
   }
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
+  if (auto s = RegisterWasiStubs(impl->linker); !s.ok()) return s;
+  return absl::OkStatus();
+}
+
+// Pull the runtime instance's exported `memory` and bind it on the
+// linker as `cel.memory` so the expr module's
+// `(import "cel" "memory" ...)` resolves to the same backing
+// store.  Cache the handle on InstanceImpl so the host's activation
+// marshalling + result decode can call `wasmtime_memory_data`
+// against it without re-pulling.
+absl::Status BindRuntimeMemory(wasmtime_context_t* ctx,
+                               celwasm::InstanceImpl* impl) {
   wasmtime_extern_t mem_ext;
-  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
-  mem_ext.of.memory = impl->memory;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "memory", 6,
+                                    &mem_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `memory`");
+  }
+  if (mem_ext.kind != WASMTIME_EXTERN_MEMORY) {
+    return absl::FailedPreconditionError("`memory` is not a memory");
+  }
+  impl->memory = mem_ext.of.memory;
   wasmtime_error_t* err = wasmtime_linker_define(impl->linker, ctx, "cel", 3,
                                                  "memory", 6, &mem_ext);
   if (err != nullptr) {
@@ -135,8 +192,8 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
 }
 
 // Pulls a function export off `inst` and binds it onto the linker
-// under (cel, name).  Used to wire the runtime's cel_reset /
-// cel_alloc exports as imports the expr module sees.
+// under (cel, name).  Used to wire the runtime's arena_reset /
+// arena_alloc exports as imports the expr module sees.
 absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
                                wasmtime_context_t* ctx,
                                const wasmtime_instance_t& inst,
@@ -170,7 +227,7 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // not code — kept at file scope so the function body is just the
 // loop and stays under the lint function-size gate.
 constexpr const char* kRuntimeExports[] = {
-    "cel_reset", "cel_alloc", "cel_map_create", "cel_map_insert",
+    "arena_reset", "arena_alloc", "cel_map_create", "cel_map_insert",
     "cel_map_insert_at", "cel_map_insert_at_if_bool", "cel_map_lookup_arena",
     "cel_map_lookup", "cel_list_create", "cel_list_append_at",
     "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
@@ -268,24 +325,101 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
+
+  // M6: pull the runtime's exported `memory` and bind it on the
+  // linker BEFORE the expr module instantiates.  Also caches the
+  // handle on impl->memory for the activation marshaller + decoder.
+  if (auto s = BindRuntimeMemory(ctx, impl); !s.ok()) return s;
+
+  // A13 (DESIGN §5): the wasm memory page count at instantiation must
+  // be exactly `CELWASM_INITIAL_MEMORY_PAGES`.  Post-M6 the runtime
+  // module declares + exports its own memory at the design's initial
+  // size (2 pages = 128 KB).  A mismatch means BUILD.bazel +
+  // cel_layout.h have drifted.
+  ABSL_CHECK_EQ(wasmtime_memory_size(ctx, &impl->memory),
+                CELWASM_INITIAL_MEMORY_PAGES)
+      << "DESIGN A13: wasm memory page count mismatch";
+
+  // A14 (DESIGN §5): the runtime's `__heap_base` export (where
+  // wasi-libc places its data + bss + heap floor) must sit above
+  // the reserved low region.  Anything writing into [0, 8192) at
+  // codegen time would otherwise corrupt wasi-libc's static state.
+  wasmtime_extern_t heap_base_ext;
+  if (wasmtime_instance_export_get(ctx, &impl->runtime_instance, "__heap_base",
+                                   11, &heap_base_ext)) {
+    ABSL_CHECK_EQ(heap_base_ext.kind, WASMTIME_EXTERN_GLOBAL)
+        << "DESIGN A14: __heap_base must be a global";
+    wasmtime_val_t hb_val;
+    wasmtime_global_get(ctx, &heap_base_ext.of.global, &hb_val);
+    ABSL_CHECK_EQ(hb_val.kind, WASMTIME_I32)
+        << "DESIGN A14: __heap_base must be i32";
+    ABSL_CHECK_GE(static_cast<uint32_t>(hb_val.of.i32),
+                  CELWASM_RESERVED_LOW_MEMORY_BYTES)
+        << "DESIGN A14: __heap_base below reserved low region";
+  }
+  // If the runtime didn't export __heap_base, we're in a stripped
+  // build that's intentionally pre-WASI; leave A14 as a soft check.
+
   if (auto s = BindAllRuntimeExports(impl, ctx); !s.ok()) return s;
 
   // Populate the layer-3 callback env now that the runtime
   // instance is live: the cel_host trampolines need a func handle
-  // to `cel_alloc` (for span payload allocation) + the memory
+  // to `arena_alloc` (for span payload allocation) + the memory
   // handle (for CelValue + span reads/writes).  Both are tied to
   // this store; resetting the table happens per-Eval.
   impl->host_env.memory = impl->memory;
   wasmtime_extern_t alloc_ext;
-  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "cel_alloc",
-                                    9, &alloc_ext)) {
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_alloc",
+                                    11, &alloc_ext)) {
     return absl::FailedPreconditionError(
-        "runtime instance has no export `cel_alloc` (cel_host needs it)");
+        "runtime instance has no export `arena_alloc` (cel_host needs it)");
   }
   if (alloc_ext.kind != WASMTIME_EXTERN_FUNC) {
-    return absl::FailedPreconditionError("`cel_alloc` is not a function");
+    return absl::FailedPreconditionError("`arena_alloc` is not a function");
   }
-  impl->host_env.cel_alloc_fn = alloc_ext.of.func;
+  impl->host_env.arena_alloc_fn = alloc_ext.of.func;
+
+  // M7: handle for the runtime's `malloc` (wasi-libc dlmalloc).
+  // Used to allocate the activation buffer — payloads that must
+  // survive arena_reset and therefore can't live in the bump arena.
+  wasmtime_extern_t malloc_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "malloc", 6,
+                                    &malloc_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `malloc`");
+  }
+  if (malloc_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`malloc` is not a function");
+  }
+  impl->host_env.malloc_fn = malloc_ext.of.func;
+
+  // Seed the runtime's bump arena before any eval runs.  arena_alloc
+  // traps on !initialized (see cel_arena.c "Unimplemented features"
+  // rule); arena_init must be called exactly once per Instance with
+  // the design's default capacity.
+  wasmtime_extern_t init_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_init",
+                                    10, &init_ext)) {
+    return absl::FailedPreconditionError(
+        "runtime instance has no export `arena_init`");
+  }
+  if (init_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("`arena_init` is not a function");
+  }
+  wasmtime_val_t arg;
+  arg.kind = WASMTIME_I32;
+  arg.of.i32 = static_cast<int32_t>(CELWASM_ARENA_CAPACITY_BYTES);
+  wasm_trap_t* init_trap = nullptr;
+  wasmtime_error_t* init_err =
+      wasmtime_func_call(ctx, &init_ext.of.func, &arg, /*nargs=*/1,
+                         /*results=*/nullptr, /*nresults=*/0, &init_trap);
+  if (init_err != nullptr) {
+    return WasmtimeErrorToStatus("arena_init(CELWASM_ARENA_CAPACITY_BYTES)",
+                                 init_err);
+  }
+  if (init_trap != nullptr) {
+    return WasmTrapToStatus("arena_init trapped", init_trap);
+  }
   return absl::OkStatus();
 }
 
@@ -335,7 +469,7 @@ Engine::Builder Engine::NewBuilder() {
 
 absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   auto impl = std::make_unique<celwasm::InstanceImpl>();
-  if (auto s = InitStoreAndMemory(wasmtime_.get(), impl.get()); !s.ok()) {
+  if (auto s = InitStore(wasmtime_.get(), impl.get()); !s.ok()) {
     return s;
   }
   if (auto s = InitLinker(wasmtime_.get(), impl.get()); !s.ok()) return s;

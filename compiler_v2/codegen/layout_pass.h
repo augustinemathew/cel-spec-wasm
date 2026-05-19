@@ -64,13 +64,13 @@ struct LayoutOptions {
 // Memory map the output describes:
 //
 //     [0..8)     reserved (null sentinel)
-//     [8..16)    arena cursor + limit (bytes 8/12) — written by cel_reset
+//     [8..16)    arena cursor + limit (bytes 8/12) — written by arena_reset
 //     [rodata_base..rodata_base+rodata.size())
 //                active data segment (kConst CelValues + payload bytes)
 //     [workspace_base..workspace_base+workspace_bytes)
 //                24B cells — one per referenced variable (M2), plus
 //                eventual SlotAllocator-owned scratch cells (M3+)
-//     [arena_base..)  grows forward via cel_alloc
+//     [arena_base..)  grows forward via arena_alloc
 //
 // `rodata_base` is fixed at 16 (skip past the two reserved slots).
 // `workspace_base` is `rodata_base + rodata.size()` rounded up to 8;

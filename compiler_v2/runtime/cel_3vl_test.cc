@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_make.h"
 #include "compiler_v2/runtime/cel_memory.h"
@@ -32,17 +33,19 @@ enum class OpKind {
 class ThreeVLTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
 
   uint32_t MakeOut() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
 
-  uint32_t MakeBool(bool b) { return cel_make_bool(b ? 1 : 0); }
+  uint32_t MakeBool(bool b) {
+    return cel_make_bool(b ? 1 : 0);
+  }
 
   uint32_t MakeError() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_ERROR;
     v->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
@@ -54,7 +57,7 @@ class ThreeVLTest : public ::testing::Test {
   // Empty means payload.unk = 0 (langdef-compatible "unspecified
   // provenance" UNKNOWN).
   uint32_t MakeUnknownEmpty() {
-    uint32_t off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = 0;
@@ -64,17 +67,18 @@ class ThreeVLTest : public ::testing::Test {
   uint32_t MakeUnknownWithIds(const std::vector<uint32_t>& ids) {
     uint32_t bytes = static_cast<uint32_t>(ids.size() * sizeof(uint32_t));
     if (bytes == 0) bytes = static_cast<uint32_t>(sizeof(uint32_t));
-    uint32_t ids_off = cel_alloc(bytes);
+    uint32_t ids_off = arena_alloc(bytes);
     auto* dst = reinterpret_cast<uint32_t*>(cel_mem_base() + ids_off);
-    for (size_t i = 0; i < ids.size(); ++i) dst[i] = ids[i];
+    for (size_t i = 0; i < ids.size(); ++i)
+      dst[i] = ids[i];
 
     uint32_t desc_off =
-        cel_alloc(static_cast<uint32_t>(2 * sizeof(uint32_t)));
+        arena_alloc(static_cast<uint32_t>(2 * sizeof(uint32_t)));
     auto* desc = reinterpret_cast<uint32_t*>(cel_mem_base() + desc_off);
     desc[0] = ids_off;
     desc[1] = static_cast<uint32_t>(ids.size());
 
-    uint32_t cv_off = cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    uint32_t cv_off = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(cv_off);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = desc_off;
@@ -158,8 +162,7 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"F_T", OpKind::kBoolFalse, OpKind::kBoolTrue, CEL_BOOL,
                   false},
         LogicCase{"F_E", OpKind::kBoolFalse, OpKind::kError, CEL_BOOL, false},
-        LogicCase{"F_U", OpKind::kBoolFalse, OpKind::kUnknown, CEL_BOOL,
-                  false},
+        LogicCase{"F_U", OpKind::kBoolFalse, OpKind::kUnknown, CEL_BOOL, false},
         LogicCase{"T_F", OpKind::kBoolTrue, OpKind::kBoolFalse, CEL_BOOL,
                   false},
         LogicCase{"T_T", OpKind::kBoolTrue, OpKind::kBoolTrue, CEL_BOOL, true},
@@ -170,8 +173,7 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"E_T", OpKind::kError, OpKind::kBoolTrue, CEL_ERROR, false},
         LogicCase{"E_E", OpKind::kError, OpKind::kError, CEL_ERROR, false},
         LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_ERROR, false},
-        LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_BOOL,
-                  false},
+        LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_BOOL, false},
         LogicCase{"U_T", OpKind::kUnknown, OpKind::kBoolTrue, CEL_UNKNOWN,
                   false},
         LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_ERROR, false},
@@ -403,6 +405,62 @@ TEST_F(ThreeVLTest, CopySlotPreservesUnknownDescriptor) {
   uint32_t dst = MakeOut();
   cel_copy_slot(dst, src);
   EXPECT_THAT(ReadUnknownIds(dst), ::testing::ElementsAre(11u, 13u));
+}
+
+// ── Arena OOM in cel_unknown_merge (DESIGN §5 A10) ─────────────────
+//
+// Merging two non-empty UnknownSets allocates a fresh descriptor +
+// ids buffer via arena_alloc.  On OOM, cel_3vl.c:122-128 re-derives
+// the out pointer and poisons with CEL_ERR_OVERFLOW.  Verify the
+// graceful failure path.
+
+TEST_F(ThreeVLTest, UnknownMergeOomPoisonsWithOverflow) {
+  uint32_t a = MakeUnknownWithIds({1, 2, 3});
+  uint32_t b = MakeUnknownWithIds({4, 5, 6});
+  uint32_t out = MakeOut();
+  // Drain the arena to 0 bytes free — neither the new ids array
+  // nor the descriptor will fit.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(v->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+// When one side is empty, merge takes the other side's descriptor
+// without any allocation — no OOM even if the arena is full.
+// (cel_3vl.c:110-120, the empty-side early returns.)
+TEST_F(ThreeVLTest, UnknownMergeEmptySideSucceedsEvenWhenArenaFull) {
+  uint32_t a = MakeUnknownEmpty();
+  uint32_t b = MakeUnknownWithIds({42});
+  uint32_t out = MakeOut();
+  // Fill the arena.
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(42u));
+}
+
+// Both sides empty → no allocation, no OOM regardless of arena.
+TEST_F(ThreeVLTest, UnknownMergeBothEmptyNeverNeedsArena) {
+  uint32_t a = MakeUnknownEmpty();
+  uint32_t b = MakeUnknownEmpty();
+  uint32_t out = MakeOut();
+  uint32_t remaining = arena_capacity() - arena_cursor();
+  if (remaining > 0u) {
+    ASSERT_NE(arena_alloc(remaining), 0u);
+  }
+  cel_unknown_merge(out, a, b);
+  const CelValue* v = cel_value_at(out);
+  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(v->payload.unk, 0u);
 }
 
 }  // namespace

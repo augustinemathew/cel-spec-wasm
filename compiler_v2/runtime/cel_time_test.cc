@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "compiler_v2/runtime/cel_arena.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "compiler_v2/runtime/cel_memory.h"
 #include "gtest/gtest.h"
@@ -19,10 +20,10 @@ namespace {
 class TimeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    cel_reset(/*arena_base=*/16u, /*arena_limit=*/cel_mem_size());
+    arena_init(CELWASM_ARENA_CAPACITY_BYTES); arena_reset();
   }
   uint32_t MakeSlot() {
-    return cel_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
   }
   uint32_t MakeDur(int64_t s, int32_t ns) {
     const uint32_t slot = MakeSlot();
@@ -43,7 +44,9 @@ class TimeTest : public ::testing::Test {
     cel_value_at(slot)->kind = kind;
     return slot;
   }
-  const CelValue* At(uint32_t slot) { return cel_value_at(slot); }
+  const CelValue* At(uint32_t slot) {
+    return cel_value_at(slot);
+  }
 };
 
 // ── 3VL absorption matrix ───────────────────────────────────────
@@ -191,13 +194,13 @@ TEST_F(TimeTest, TsTsSubProducesDuration) {
 struct CmpRow {
   const char* label;
   void (*helper)(uint32_t, uint32_t, uint32_t);
-  bool result_for_a_lt_b;   // expected on (1s, 2s) ordered
-  bool result_for_a_eq_b;   // expected on (1s, 1s) equal
-  bool result_for_a_gt_b;   // expected on (2s, 1s) reversed
+  bool result_for_a_lt_b;  // expected on (1s, 2s) ordered
+  bool result_for_a_eq_b;  // expected on (1s, 1s) equal
+  bool result_for_a_gt_b;  // expected on (2s, 1s) reversed
 };
 
 class TimeOrderingTest : public TimeTest,
-                          public ::testing::WithParamInterface<CmpRow> {};
+                         public ::testing::WithParamInterface<CmpRow> {};
 
 TEST_P(TimeOrderingTest, DurationCompareMatrix) {
   const CmpRow& r = GetParam();
@@ -217,11 +220,10 @@ TEST_P(TimeOrderingTest, DurationCompareMatrix) {
 
 INSTANTIATE_TEST_SUITE_P(
     Ladder, TimeOrderingTest,
-    ::testing::Values(
-        CmpRow{"dur_lt", &cel_dur_lt_at_vv, true, false, false},
-        CmpRow{"dur_le", &cel_dur_le_at_vv, true, true, false},
-        CmpRow{"dur_gt", &cel_dur_gt_at_vv, false, false, true},
-        CmpRow{"dur_ge", &cel_dur_ge_at_vv, false, true, true}),
+    ::testing::Values(CmpRow{"dur_lt", &cel_dur_lt_at_vv, true, false, false},
+                      CmpRow{"dur_le", &cel_dur_le_at_vv, true, true, false},
+                      CmpRow{"dur_gt", &cel_dur_gt_at_vv, false, false, true},
+                      CmpRow{"dur_ge", &cel_dur_ge_at_vv, false, true, true}),
     [](const ::testing::TestParamInfo<CmpRow>& info) {
       return info.param.label;
     });
@@ -290,8 +292,7 @@ INSTANTIATE_TEST_SUITE_P(
         CivilCase{"EpochZero", 0, 1970, 0, 1, 0, 4 /*Thu*/},
         CivilCase{"NegOneSec", -1, 1969, 11, 31, 364, 3 /*Wed*/},
         CivilCase{"Y2KLeap", 946'684'800LL, 2000, 0, 1, 0, 6 /*Sat*/},
-        CivilCase{"LangdefSample", 1'234'567'890LL, 2009, 1, 13, 43,
-                  5 /*Fri*/},
+        CivilCase{"LangdefSample", 1'234'567'890LL, 2009, 1, 13, 43, 5 /*Fri*/},
         CivilCase{"Y2024Feb29", 1'709'164'800LL, 2024, 1, 29, 59, 4 /*Thu*/},
         CivilCase{"Y2024LastDay", 1'735'689'599LL, 2024, 11, 31, 365,
                   2 /*Tue*/},

@@ -62,7 +62,7 @@ static CelValue* arena_map_entry_val(ArenaMapHeader* hdr, uint32_t i) {
 void cel_map_create(uint32_t out_slot, uint32_t initial_capacity) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
-  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaMapHeader));
+  uint32_t hdr_off = arena_alloc((uint32_t)sizeof(ArenaMapHeader));
   if (hdr_off == 0) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
@@ -70,7 +70,7 @@ void cel_map_create(uint32_t out_slot, uint32_t initial_capacity) {
   uint32_t entries_off = 0;
   if (initial_capacity > 0) {
     entries_off =
-        cel_alloc((uint32_t)((size_t)kCelMapEntryStride * initial_capacity));
+        arena_alloc((uint32_t)((size_t)kCelMapEntryStride * initial_capacity));
     if (entries_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;
@@ -278,7 +278,7 @@ static CelValue* arena_list_element(ArenaListHeader* hdr, uint32_t i) {
 void cel_list_create(uint32_t out_slot, uint32_t capacity) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
-  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaListHeader));
+  uint32_t hdr_off = arena_alloc((uint32_t)sizeof(ArenaListHeader));
   if (hdr_off == 0) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
@@ -286,7 +286,7 @@ void cel_list_create(uint32_t out_slot, uint32_t capacity) {
   uint32_t elements_off = 0;
   if (capacity > 0) {
     elements_off =
-        cel_alloc((uint32_t)((size_t)kCelListEntryStride * capacity));
+        arena_alloc((uint32_t)((size_t)kCelListEntryStride * capacity));
     if (elements_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;
@@ -593,14 +593,14 @@ void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 // `out` poisoned with `CEL_ERR_OVERFLOW`).  Caller fills in the
 // elements run.
 static uint32_t alloc_concat_list(CelValue* out, uint32_t total) {
-  uint32_t hdr_off = cel_alloc((uint32_t)sizeof(ArenaListHeader));
+  uint32_t hdr_off = arena_alloc((uint32_t)sizeof(ArenaListHeader));
   if (hdr_off == 0) {
     poison(out, CEL_ERR_OVERFLOW);
     return 0;
   }
   uint32_t elements_off = 0;
   if (total > 0) {
-    elements_off = cel_alloc((uint32_t)((size_t)kCelListEntryStride * total));
+    elements_off = arena_alloc((uint32_t)((size_t)kCelListEntryStride * total));
     if (elements_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return 0;
@@ -1018,7 +1018,7 @@ uint32_t cel_map_iter_init(uint32_t map_slot) {
   // the body.  Saves 8 arena bytes per empty-iter and keeps the
   // common `iter_next(handle)` hot path branch-light.
   if (hdr->count == 0) return 0;
-  uint32_t state_off = cel_alloc((uint32_t)sizeof(ArenaMapIterState));
+  uint32_t state_off = arena_alloc((uint32_t)sizeof(ArenaMapIterState));
   if (state_off == 0) return 0;  // OOM: behave as empty.
   ArenaMapIterState* state =
       (ArenaMapIterState*)(cel_memory_base_() + state_off);

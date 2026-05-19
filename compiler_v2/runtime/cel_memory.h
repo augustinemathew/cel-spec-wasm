@@ -14,7 +14,7 @@
 //
 // On the native-host build the shared memory is backed by a static
 // byte buffer so native tests exercise the exact same layout the wasm
-// build uses.  Callable before any `cel_reset` — `cel_mem_base` in
+// build uses.  Callable before any `arena_reset` — `cel_mem_base` in
 // particular is how unit tests stage rodata bytes before eval.
 
 #ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MEMORY_H_

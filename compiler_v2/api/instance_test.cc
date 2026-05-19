@@ -160,7 +160,7 @@ TEST_F(InstanceEvalTest, EvalsBytesLiteral) {
 
 TEST_F(InstanceEvalTest, EvalIsDeterministicAcrossManyCalls) {
   // Re-evaluating the same Instance many times must produce the
-  // same Value — $eval's first instruction is a baked-in cel_reset
+  // same Value — $eval's first instruction is a baked-in arena_reset
   // call so the arena is fresh every time.
   auto prog_or = compiler_->Compile(R"("hello")");
   ASSERT_TRUE(prog_or.ok());
@@ -293,7 +293,7 @@ TEST(InstanceSelectEvalTest, HasMessageFieldUnsetReturnsFalse) {
 // Nested select: c.billing_address.city reads a nested sub-backing.
 // The inner cel_get_field interns a fresh ProtoBacking (the
 // address); the outer reads `city` off it.  String marshal exercises
-// WasmtimeArenaAllocator via the runtime's cel_alloc.
+// WasmtimeArenaAllocator via the runtime's arena_alloc.
 TEST(InstanceSelectEvalTest, NestedSelectReadsSubBackingString) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
