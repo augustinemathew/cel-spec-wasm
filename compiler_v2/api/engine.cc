@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -16,6 +17,7 @@
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/host/cel_log.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
 #include "google/protobuf/descriptor.h"
 #include "wasm.h"
@@ -324,6 +326,37 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
+
+  // A13 (DESIGN §5): the wasm memory page count at instantiation must
+  // be exactly `CELWASM_INITIAL_MEMORY_PAGES`.  Today the memory is
+  // host-allocated at 2 pages (see `InitStoreAndMemory`); when M6
+  // flips ownership the runtime will export its own memory at the
+  // same initial size.  In both shapes the count is fixed and a
+  // mismatch means BUILD.bazel + cel_layout.h have drifted.
+  ABSL_CHECK_EQ(wasmtime_memory_size(ctx, &impl->memory),
+                CELWASM_INITIAL_MEMORY_PAGES)
+      << "DESIGN A13: wasm memory page count mismatch";
+
+  // A14 (DESIGN §5): the runtime's `__heap_base` export (where
+  // wasi-libc places its data + bss + heap floor) must sit above
+  // the reserved low region.  Anything writing into [0, 8192) at
+  // codegen time would otherwise corrupt wasi-libc's static state.
+  wasmtime_extern_t heap_base_ext;
+  if (wasmtime_instance_export_get(ctx, &impl->runtime_instance, "__heap_base",
+                                   11, &heap_base_ext)) {
+    ABSL_CHECK_EQ(heap_base_ext.kind, WASMTIME_EXTERN_GLOBAL)
+        << "DESIGN A14: __heap_base must be a global";
+    wasmtime_val_t hb_val;
+    wasmtime_global_get(ctx, &heap_base_ext.of.global, &hb_val);
+    ABSL_CHECK_EQ(hb_val.kind, WASMTIME_I32)
+        << "DESIGN A14: __heap_base must be i32";
+    ABSL_CHECK_GE(static_cast<uint32_t>(hb_val.of.i32),
+                  CELWASM_RESERVED_LOW_MEMORY_BYTES)
+        << "DESIGN A14: __heap_base below reserved low region";
+  }
+  // If the runtime didn't export __heap_base, we're in a stripped
+  // build that's intentionally pre-WASI; leave A14 as a soft check.
+
   if (auto s = BindAllRuntimeExports(impl, ctx); !s.ok()) return s;
 
   // Populate the layer-3 callback env now that the runtime

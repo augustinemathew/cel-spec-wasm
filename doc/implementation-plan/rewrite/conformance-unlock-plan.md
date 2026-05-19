@@ -4,6 +4,12 @@ Status: **shipped 2026-04-25 — all numbered slices (0 / 1 / 1.5 /
 1.55 / 1.6 / 2) landed; only Slice 3 (classifier tightening)
 remains open.**
 
+> **Post-MVP note (2026-05-18).**  The wasi-sdk migration on
+> `wasi-malloc-migration` does not regress conformance (pass=1373
+> on both master and the migration branch as of 2026-05-18).  This
+> doc's per-slice numbers reflect the pre-migration baseline; the
+> migration is a no-op for the conformance harness.
+
 Final result: `412 / 1622 / 420` baseline → **`664 / 1362 / 428`**
 (+252 PASS, −260 SKIP, +8 FAIL net).  Per-slice as-shipped deltas
 recorded inline below.

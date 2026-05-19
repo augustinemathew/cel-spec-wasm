@@ -9,12 +9,14 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "compiler_v2/api/activation.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/abi_decode.h"
@@ -388,6 +390,16 @@ absl::Status EnsureHostStringArenaCapacity(wasmtime_context_t* ctx,
   if (*floor == 0) {
     // First call — record the initial mem size (= arena_limit).
     *floor = static_cast<uint32_t>(wasmtime_memory_data_size(ctx, &m));
+    // A15 (DESIGN §5): the activation buffer's first byte must sit
+    // above the reserved low region; otherwise activation-marshalled
+    // strings would overwrite wasi-libc data + the codegen rodata.
+    // Under the current legacy layout, `floor` is the initial 2-page
+    // memory size (131 072) — well above 8192 — so this is a
+    // compile-time invariant for the host-allocates-memory shape.
+    // Once M6 flips memory ownership the runtime exports memory at
+    // the same initial size and the check remains valid.
+    ABSL_CHECK_GE(*floor, CELWASM_RESERVED_LOW_MEMORY_BYTES)
+        << "DESIGN A15: activation buffer floor overlaps reserved region";
   }
   if (needed <= *capacity) return absl::OkStatus();
 

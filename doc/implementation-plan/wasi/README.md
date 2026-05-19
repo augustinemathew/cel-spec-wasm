@@ -24,17 +24,34 @@ long-tail kernel migration starts.  Total: **~5 days**.
 | **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) | ☒ | [M1.md](milestones/M1.md) | 0.5 |
 | **M2** | `runtime/BUILD.bazel` switch; `cel_layout.h` + asserts A1-A8; temp `cel_alloc`/`cel_reset` compat shim | ☒ | [M2.md](milestones/M2.md) | 1.0 |
 | **M3** | `cel_arena.c` rewrite (arena over malloc); asserts A9-A10, A16; unit tests | ☒ | [M3.md](milestones/M3.md) | 0.5 |
-| **M4** | Migrate `cel_string_concat_at_vv` only (one kernel) | ☐* | — | 0.5 |
+| **M4** | Migrate kernels off `cel_alloc` — subsumed by B1 below | ☒ | (see B1) | (0) |
 | **M5** | Codegen prologue: `(call $arena_reset)`; drop `arena_base` + `mem_size_bytes`; asserts A11-A12, A17 | ☐* | — | 1.0 |
-| **M6** | Engine: pull runtime-owned memory; asserts A13-A14; bind `arena_*`/`malloc`/`free` | ☐* | — | 0.5 |
-| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity`; assert A15 | ☐* | — | 0.5 |
+| **M6** | Engine: pull runtime-owned memory; bind `arena_*`/`malloc`/`free` | ◐ | [M6-M8.md](milestones/M6-M8.md) | 0.5 |
+| **M7** | Instance: malloc'd binding buffer; delete `EnsureHostStringArenaCapacity` | ☐* | — | 0.5 |
 | **M8** | E2E test `mvp_concat_test.cc` (`'foo' + 'bar'` → `"foobar"`) | ☒ | [M6-M8.md](milestones/M6-M8.md) | 0.25 |
-| **M9** | absl::ParseTime in wasm + Chrome stake | ☒ | [M9.md](milestones/M9.md) | 0.5 |
+| **M9** | absl::ParseTime in wasm runtime; Chrome stake | ◐ | [M9.md](milestones/M9.md) | 0.5 |
 
-*M4-M7 are deferred to Phase B; the MVP works without them
-because the compat shim routes the old `cel_alloc` /
-`cel_reset` calls to the new arena.  See [M6-M8.md](milestones/M6-M8.md)
-"Plan-vs-execution deltas" for the rationale.
+*M5 + M7 deferred to Phase B; today's pipeline works because the
+codegen-prologue `cel_reset` compat shim and the legacy
+`host_string_arena` bookkeeping route the old shapes through the
+new arena.  See [M6-M8.md](milestones/M6-M8.md) "Plan-vs-execution
+deltas" + [reviews/2026-05-18-mvp-shipped.md](reviews/2026-05-18-mvp-shipped.md)
+for the rationale and exact deferred work.
+
+**◐ deltas vs the as-designed plan**:
+
+  - **M6** — WASI `random_get` stub + `arena_alloc` export wired
+    end-to-end, but `--import-memory=cel,memory` was re-added
+    after M2's removal (the runtime still imports memory from
+    the host).  Full ownership flip is bundled with the codegen
+    prologue swap in Phase B.
+  - **M9** — `absl::ParseTime` runs inside a wasi-sdk wasm
+    runtime (proven by `exp_e_absl_parsetime.cc`), but the
+    runtime is a separate experimental binary, not the main
+    `cel_runtime.wasm`.  Chrome smoke-test was descoped to Phase
+    D (post-Phase C library vendoring).  What's proven: 9 WASI
+    imports all browser-shimmable; Chrome path **unblocked**, not
+    consummated.
 
 ---
 
@@ -42,7 +59,7 @@ because the compat shim routes the old `cel_alloc` /
 
 | ID | Slice | Status | Doc | Days |
 |---|---|---|---|---:|
-| **B1** | Migrate the remaining 106 `cel_alloc` sites; drop compat shim | ☐ | — | 1.0 |
+| **B1** | Migrate kernels + host off `cel_alloc` shim; drop the shim | ☒ | (commit `fcb1289`) | 1.0 |
 | **B2** | Migrate 20 test file `SetUp()` from `cel_reset` to `arena_reset` | ☐ | — | 0.5 |
 | **B3** | Codegen test fixture rebaseline (~50 sites in `codegen/*_test.cc`) | ☐ | — | 1.0 |
 | **B4** | Conformance debug → **1,144 PASS** | ☐ | — | 1-2 |
@@ -88,7 +105,9 @@ works under the new architecture.
 | **M1 shipped** | wasi-sdk available via `//third_party/wasi_sdk:clang` | `eca5583` |
 | **M2 + M3 shipped** | Runtime builds with wasi-sdk + bump arena over malloc | `f4b7157` |
 | **M6 + M8 shipped (partial)** | WASI random_get stub + mvp_concat_test green; all e2e + conformance regression-clean | `582def9` |
-| **M9 shipped** | absl::ParseTime running inside wasi-sdk wasm; Chrome stake captured | (this commit) |
+| **M9 (partial)** | absl::ParseTime running inside wasi-sdk wasm (experiment binary only — Chrome path **unblocked**, not consummated; main runtime untouched until Phase C) | `f4b09da` |
+| **First periodic review** | Mixed verdict; 8 DESIGN §1 simplifications still hidden behind shims | `66a17cb` |
+| **B1 shipped** | Kernels + host migrated off `cel_alloc` compat shim; shim deleted | `fcb1289` |
 
 ---
 

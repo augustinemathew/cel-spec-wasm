@@ -5,6 +5,25 @@ Drafted 2026-04-21.  This doc describes the end-state design; each
 sub-section is annotated with shipping status where it has shipped
 and a plan-vs-execution callout where the as-shipped shape diverged.
 
+> **Post-MVP delta (2026-05-18) — see [../wasi/DESIGN.md](../wasi/DESIGN.md).**
+> The wasi-sdk migration on `wasi-malloc-migration` replaces the
+> "fixed-offset bump arena at bytes 8/12 + host-owned memory"
+> shape this doc describes with "malloc-backed arena +
+> runtime-owned memory" (Phase B target).  Specifically:
+>
+>   - §3.2 ("memory regions") — bytes 8/12 cursor slot is dead
+>     in the runtime as of M3; codegen still writes through them
+>     until M5 (compat shim).
+>   - §3.5 ("Lowering") `cel_alloc` → `arena_alloc` rename
+>     landed in B1 (commit `fcb1289`); `cel_reset` rename
+>     pending M5.
+>   - §3.6 host ABI — `host_string_arena` deletion pending M7.
+>
+> Where this doc and `wasi/DESIGN.md` disagree post-MVP,
+> `wasi/DESIGN.md` is authoritative for the runtime + host ABI;
+> this doc remains authoritative for codegen + frontend.  Final
+> reconcile in B6.
+
 **Shipping snapshot (2026-04-25):**
 
 | design § | covered by | as-shipped | notes |

@@ -18,19 +18,46 @@ a hand-rolled bump arena over `malloc()`**.
 gets removed:
 
   - The `cel_reset(arena_base, arena_limit)` codegen prologue.
+    Status (2026-05-18): **still present.**  Codegen still
+    emits `(call $cel_reset ...)`; the compat shim ignores
+    the args.  Removal in M5.
   - `LoweringOptions::mem_size_bytes` threading through the
     compiler.
+    Status: **still threaded.**  Removed in M5.
   - `LayoutPass::arena_base` field.
+    Status: **still computed.**  Removed in M5.
   - The fixed cursor slot at memory bytes 8/12.
+    Status: **dead but allocated.**  Bump cursor moved to BSS
+    in M3; the bytes at offsets 8/12 are unused but the
+    layout reserves them.  Reclaim post-M5 once codegen
+    stops writing through them.
   - The inline-asm opacity barrier in `cel_memory.c` (clang-
     backend workaround).
+    Status: **still present.**  See `cleanup-backlog.md #4`
+    — need to verify whether wasi-sdk clang-19 still needs
+    the barrier before removing.
   - The `host_string_arena` workaround in `api/instance.cc`
     (~110 LoC; the per-binding marshalling pattern stays but
     becomes a malloc'd region instead of "above arena_limit").
+    Status: **still present and load-bearing.**  Removed
+    in M7.
   - The 2-arg memory typing in `engine.cc`
     (`wasmtime_memorytype_new(min=2, max_present=false, ...)`)
     — host stops allocating memory.
+    Status: **still present.**  Memory ownership flip
+    deferred to M6 proper (Phase B).
   - The `--import-memory=cel,memory` linker dance.
+    Status: **still present.**  Removed alongside the M6
+    memory-ownership flip.
+
+**Post-MVP status (2026-05-18): NONE of the eight items above
+have been removed yet.**  The simplification dividend is
+deferred behind the codegen-prologue `cel_reset` compat shim
+and the legacy `host_string_arena` bookkeeping.  Phase B's M5
++ M6 + M7 + B1-B6 work plan is the path to actually paying
+the dividend.  The B1 commit (`fcb1289`) cleared the
+`cel_alloc` half of the shim; the `cel_reset` half stays
+until M5.
 
 Side benefits:
   - Any C/C++ library (RE2, parts of absl) can be vendored

@@ -9,6 +9,21 @@ runtime/codegen internals; where the two touch (ABI fields,
 callback shapes, slice plan for the api/ tier), this doc wins and
 `design.md` defers.
 
+> **Post-MVP delta (2026-05-18) — see [../wasi/DESIGN.md](../wasi/DESIGN.md).**
+> The wasi-sdk + arena-over-malloc migration on `wasi-malloc-migration`
+> changes parts of the ABI this doc describes:
+>
+>   - The runtime now exports `arena_alloc` (was `cel_alloc`); host
+>     trampoline reentry uses the new name.
+>   - The wasm memory ownership flip (M6 proper) will swap the
+>     runtime to own + export memory rather than import it.
+>   - The `host_string_arena` bookkeeping in `api/instance.cc` is
+>     scheduled for deletion in M7, replaced by a malloc'd
+>     binding buffer.
+>
+> Where this doc and `wasi/DESIGN.md` disagree post-MVP,
+> `wasi/DESIGN.md` is authoritative.  Reconcile in B6.
+
 This doc scopes the entire host surface a developer touches when
 embedding a compiled CEL expression. It covers:
 

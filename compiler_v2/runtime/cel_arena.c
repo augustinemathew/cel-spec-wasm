@@ -76,7 +76,12 @@ uint32_t arena_alloc(uint32_t n) {
   CEL_LOG("enter");
   uint32_t need = align_up_8(n);
   if (need == 0) need = 8u;  // A9: alloc(0) returns a valid 8-byte slot
-  if (!g_arena.initialized) return 0;
+  // A16 ('init exactly once per Instance') corollary: arena_alloc
+  // must NOT be called before arena_init.  Silent zero return
+  // misdiagnoses downstream as CEL_ERR_OVERFLOW; trap so the
+  // backtrace names the call site (CLAUDE.md "Unimplemented features"
+  // rule for any code path that shouldn't be reachable).
+  if (!g_arena.initialized) __builtin_trap();
   if (g_arena.cursor + need > g_arena.capacity) return 0;  // A10: OOM → 0
   uint32_t local_off = g_arena.cursor;
   g_arena.cursor += need;
