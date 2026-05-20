@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slice A landed 2026-05-20.**  Scope
+Status: **in progress — Slice A + B landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -267,6 +267,39 @@ code-point indices (indexOf).  Each function has a 2-arg and
 3-arg overload — total 6 kernel additions.  Boundary matrix
 gets bigger here (negative indices, end-before-start,
 empty-needle, needle-longer-than-haystack).
+
+> **Shipped 2026-05-20.**  8 new kernels added to
+> `cel_string_ext.{h,cc}`:
+> `cel_string_index_of_at_vv` / `_at_vvv`,
+> `cel_string_last_index_of_at_vv` / `_at_vvv`,
+> `cel_string_substring_at_vv` /
+> `cel_string_substring_range_at_vvv`,
+> `cel_string_replace_at_vvv` /
+> `cel_string_replace_n_at_vvvv`.  Shared helpers
+> (`IndexOfImpl` / `LastIndexOfImpl` / `CodepointToByteOffset` /
+> `ValidatePos` / `BuildReplaced`) live in the file's anonymous
+> namespace and mirror cel-cpp `StringValue::IndexOf` /
+> `::LastIndexOf` / `::Substring` / `::Replace` line-for-line.
+>
+> Notable spec-parity calls:
+> - `IndexOf3`'s pos>byte_size error + `LastIndexOf3`'s
+>   pos<0||pos>byte_size error are pre-flight checks against the
+>   haystack's BYTE length (cel-cpp `extensions/strings.cc`
+>   `IndexOf3` / `LastIndexOf3`).
+> - `IndexOf` clamps negative pos to 0; `LastIndexOf3` rejects.
+> - Empty-needle `Replace` interleaves `replacement` before every
+>   code-point + once trailing (cel-cpp `Replace` lines
+>   ~1405-1430).  Empty-input + empty-needle returns just the
+>   trailing `replacement`.
+> - `replace(s, old, new, 0)` returns the original string
+>   verbatim; negative limit ≡ INT64_MAX (cel-cpp parity).
+>
+> 32 new tests across the indexOf / lastIndexOf / substring /
+> replace matrices (spec-row + boundary + envelope).  Total test
+> count now ~70.
+>
+> `bazel test //compiler_v2/runtime/...`: 18/18 PASS.
+> `scripts/lint.sh`: clean.
 
 ### Slice C — list-bridging family (~1.5 days)
 
