@@ -15,8 +15,16 @@
 // One wasm page = 64 KiB.  Spec constant; do not change.
 #define CELWASM_WASM_PAGE_SIZE 65536u
 
-// Initial linear memory size at Instance creation.  Two pages = 128 KiB
-// matches today's pre-migration baseline.  Memory grows as needed via
+// Minimum initial linear memory size we require at Instance creation.
+// The actual page count baked into `cel_runtime.wasm` is set by
+// wasm-ld at link time and varies by build mode + which libraries
+// are linked (Phase C added RE2 + absl::time, which pushed the
+// auto-sized minimum from 2 to 3-4 pages depending on `-c
+// opt`/`fastbuild`).  The host-side A13 invariant checks the
+// observed page count is `>=` this floor — anything smaller means
+// either the build mode produced an unexpectedly aggressive
+// dead-strip or the runtime regressed below its documented design
+// minimum.  Memory grows beyond this floor as needed via
 // dlmalloc + memory.grow.
 #define CELWASM_INITIAL_MEMORY_PAGES 2u
 

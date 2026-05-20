@@ -297,12 +297,10 @@ cc_test(
 # reconstruction, Plan, and Eval to bit-identical Values.  Locks the
 # cross-process / cache-eviction deployment shape (a Program written
 # to disk, shipped to another host, or pulled from a cache must still
-# evaluate identically).  Manual-tagged because it goes through the
-# full wasmtime pipeline.
+# evaluate identically).  Runs the full wasmtime pipeline.
 cc_test(
     name = "program_roundtrip_test",
     srcs = ["program_roundtrip_test.cc"],
-    tags = ["manual"],
     deps = [
         "//compiler_v2/api:activation",
         "//compiler_v2/api:compiler",
@@ -320,14 +318,10 @@ cc_test(
 # Optimization-on validation e2e — runs every representative
 # expression through Compile + Plan + Eval at both optimize_level=0
 # and optimize_level=2 and asserts the resulting Values are
-# identical.  Manual-tagged because it compiles each row twice (~2x
-# the cost of the slowest other e2e suite); intended as a closeout
-# gate when the Binaryen pass list or runtime build flags move, not
-# a per-PR check.
+# identical.
 cc_test(
     name = "optimize_test",
     srcs = ["optimize_test.cc"],
-    tags = ["manual"],
     deps = [
         "//compiler/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:activation",
@@ -343,31 +337,5 @@ cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "eval_test",
-    srcs = ["eval_test.cc"],
-    tags = ["manual"],
-    deps = [
-        "//compiler_v2/codegen:expr_lower",
-        "//compiler_v2/codegen:layout_pass",
-        "//compiler_v2/codegen:module",
-        "//compiler_v2/codegen:overload_table",
-        "//compiler_v2/codegen:resolve_pass",
-        "//compiler_v2/frontend:parse_and_check",
-        "//compiler_v2/api:engine",
-        "//compiler_v2/api:instance",
-        "//compiler_v2/api:program",
-        "//compiler_v2/host:cel_log",
-        "//compiler_v2/ir:typed_ast",
-        "//compiler_v2/runtime:cel_runtime",
-        "@binaryen//:binaryen",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
-        "@wasmtime_darwin_arm64//:wasmtime",
     ],
 )

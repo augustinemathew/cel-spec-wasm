@@ -1,28 +1,31 @@
-// Locks the runtime null-pointer-elision bug closed.
+// Locks the runtime null-pointer-elision bug closed and verifies
+// the post-WASI arena ABI (see
+// `doc/implementation-plan/rewrite/wasi/DESIGN.md` §4 + §6).
 //
-// `cel_memory_base_()` returns address 0 on wasm32 (the imported
-// memory is mapped from offset 0).  Without an opacity barrier
-// in the C source, clang treats `*(uint32_t*)(0+off) = v` as
-// undefined behaviour and elides the store; arena_reset compiled
-// to a no-op + cel_log call, arena_alloc compiled to `unreachable`.
-// See compiler_v2/runtime/cel_runtime.c::cel_memory_base_().
+// `cel_memory_base_()` returns the runtime-side base offset for
+// arena bookkeeping.  Without an opacity barrier in the C source,
+// clang would treat `*(uint32_t*)(0+off) = v` as undefined and
+// elide the store; `arena_reset` would compile to a no-op +
+// `cel_log` call and `arena_alloc` to `unreachable`.  See
+// `compiler_v2/runtime/cel_runtime.c::cel_memory_base_()`.
 //
 // This test stands up a minimal wasmtime harness that:
 //   1. Allocates a host-owned 2-page wasmtime_memory_t.
 //   2. Binds it as `cel.memory` on a linker.
-//   3. Registers a no-op `cel_env.cel_log`.
+//   3. Stubs the cel_env / cel_host / wasi_snapshot_preview1 imports.
 //   4. Instantiates cel_runtime.wasm against that linker.
-//   5. Calls arena_reset(arena_base, arena_limit) and verifies the
-//      bump cursor + limit land at bytes 8 and 12.
-//   6. Calls arena_alloc(24) and verifies the returned offset is the
-//      pre-call bump value AND the cursor advanced by 24 (rounded
-//      up to 8-byte alignment, which 24 already satisfies).
-//   7. Calls arena_alloc again to verify the cursor keeps moving.
+//   5. Calls `arena_init(cap)` once (per-Instance setup) and
+//      verifies `arena_capacity()` reflects the requested capacity.
+//   6. Calls `arena_alloc(n)` and verifies the cursor advances by
+//      `n` rounded up to 8-byte alignment.
+//   7. Calls `arena_reset()` and verifies the cursor returns to 0.
+//   8. Verifies `arena_alloc` returns 0 on OOM and leaves the
+//      cursor unchanged.
 //
 // If any of these regress (e.g. a future clang upgrade re-discovers
-// the null-UB elision), this test fails immediately rather than the
-// bug staying latent until a downstream caller actually invokes
-// arena_reset/arena_alloc on the runtime wasm path.
+// the null-UB elision, or the arena contract drifts), this test
+// fails immediately rather than the bug staying latent until a
+// downstream caller actually invokes the runtime on the wasm path.
 
 #include <cstdint>
 #include <cstring>
@@ -36,10 +39,10 @@
 namespace celwasm {
 namespace {
 
-constexpr uint32_t kArenaBase = 64;
-constexpr uint32_t kArenaLimit = 65536;
-constexpr uint32_t kBumpOffset = 8;
-constexpr uint32_t kLimitOffset = 12;
+// 64 KiB matches `CELWASM_ARENA_CAPACITY_BYTES` — the default the
+// host's `engine.cc::InstantiateRuntime` passes to `arena_init`.
+// Tests pick a smaller capacity for the OOM case.
+constexpr uint32_t kDefaultArenaCapacity = 64 * 1024;
 
 std::string WasmtimeErrorMsg(wasmtime_error_t* err) {
   wasm_byte_vec_t msg;
@@ -130,25 +133,15 @@ wasm_functype_t* HostFourArgFuncType() {
   return wasm_functype_new(&params, &results);
 }
 
-// `wasi_snapshot_preview1.sched_yield() -> errno (i32)`.  wasi-sdk's
-// libc (wasm32-wasi-threads variant) declares this symbol; even when
-// no runtime code calls it, wasm-ld keeps the import alive.  Returns
-// 0 (success).
-wasm_trap_t* SchedYieldStub(void*, wasmtime_caller_t*, const wasmtime_val_t*,
-                            size_t, wasmtime_val_t* results, size_t nresults) {
-  if (nresults >= 1) {
-    results[0].kind = WASMTIME_I32;
-    results[0].of.i32 = 0;
-  }
-  return nullptr;
-}
-
-// `wasi_snapshot_preview1.random_get(buf, len) -> errno (i32)`.
-// wasi-libc's dlmalloc seeds itself via this on first allocation.
-// We don't need any actual randomness — return 0 (success) and leave
-// the buffer untouched; the test memory is already zeroed.
-wasm_trap_t* RandomGetStub(void*, wasmtime_caller_t*, const wasmtime_val_t*,
-                           size_t, wasmtime_val_t* results, size_t nresults) {
+// Generic wasi-import no-op stub.  Every wasi-snapshot-preview1
+// function we stub here either returns an errno (i32, 0 = success)
+// or returns no result (proc_exit).  This single callback handles
+// both shapes by checking `nresults`.  The runtime never *calls*
+// any of these — they're kept alive by wasi-libc's startup code
+// and the wasm linker refuses to instantiate the module if any
+// declared import is unresolved.
+wasm_trap_t* WasiNopStub(void*, wasmtime_caller_t*, const wasmtime_val_t*,
+                         size_t, wasmtime_val_t* results, size_t nresults) {
   if (nresults >= 1) {
     results[0].kind = WASMTIME_I32;
     results[0].of.i32 = 0;
@@ -166,8 +159,11 @@ struct RuntimeHarness {
   wasmtime_module_t* module = nullptr;
   wasmtime_memory_t memory{};
   wasmtime_instance_t instance{};
+  wasmtime_func_t arena_init_fn{};
   wasmtime_func_t arena_reset_fn{};
   wasmtime_func_t arena_alloc_fn{};
+  wasmtime_func_t arena_cursor_fn{};
+  wasmtime_func_t arena_capacity_fn{};
 
   ~RuntimeHarness() {
     if (module != nullptr) wasmtime_module_delete(module);
@@ -244,49 +240,88 @@ struct RuntimeHarness {
   return ::testing::AssertionSuccess();
 }
 
-// `wasi_snapshot_preview1.sched_yield()->i32` and `random_get(buf,
-// len)->i32` stubs.  Both are kept-alive by wasi-libc's wasm32-wasi-
-// threads variant even though the C-only runtime never calls them;
-// the linker rejects instantiation if any declared import is
-// unresolved.
-::testing::AssertionResult DefineWasiStubs(wasmtime_linker_t* linker) {
-  // sched_yield: () -> i32
-  {
-    wasm_valtype_vec_t params;
-    wasm_valtype_vec_t results;
-    wasm_valtype_t* r = wasm_valtype_new(WASM_I32);
+// Register a single wasi_snapshot_preview1 import as a no-op stub.
+// `param_kinds` lists the wasm valtype kind for each parameter
+// (WASM_I32 / WASM_I64); `has_i32_result` is true for everything
+// except `proc_exit`.  The functype is owned by wasmtime_linker
+// after the define call.
+::testing::AssertionResult DefineWasiStub(
+    wasmtime_linker_t* linker, const char* fn_name, size_t fn_name_len,
+    std::initializer_list<wasm_valkind_t> param_kinds, bool has_i32_result) {
+  wasm_valtype_vec_t params;
+  wasm_valtype_vec_t results;
+  if (param_kinds.size() == 0) {
     wasm_valtype_vec_new_empty(&params);
-    wasm_valtype_vec_new(&results, 1, &r);
-    wasm_functype_t* ft = wasm_functype_new(&params, &results);
-    wasmtime_error_t* err = wasmtime_linker_define_func(
-        linker, "wasi_snapshot_preview1", 22, "sched_yield", 11, ft,
-        SchedYieldStub, /*data=*/nullptr, /*finalizer=*/nullptr);
-    wasm_functype_delete(ft);
-    if (err != nullptr) {
-      return ::testing::AssertionFailure()
-             << "define wasi_snapshot_preview1.sched_yield: "
-             << WasmtimeErrorMsg(err);
+  } else {
+    std::vector<wasm_valtype_t*> p;
+    p.reserve(param_kinds.size());
+    for (wasm_valkind_t k : param_kinds) {
+      p.push_back(wasm_valtype_new(k));
     }
+    wasm_valtype_vec_new(&params, p.size(), p.data());
   }
-  // random_get: (i32 buf, i32 len) -> i32
-  {
-    wasm_valtype_vec_t params;
-    wasm_valtype_vec_t results;
-    wasm_valtype_t* p_arr[2] = {wasm_valtype_new(WASM_I32),
-                                wasm_valtype_new(WASM_I32)};
+  if (has_i32_result) {
     wasm_valtype_t* r = wasm_valtype_new(WASM_I32);
-    wasm_valtype_vec_new(&params, 2, p_arr);
     wasm_valtype_vec_new(&results, 1, &r);
-    wasm_functype_t* ft = wasm_functype_new(&params, &results);
-    wasmtime_error_t* err = wasmtime_linker_define_func(
-        linker, "wasi_snapshot_preview1", 22, "random_get", 10, ft,
-        RandomGetStub, /*data=*/nullptr, /*finalizer=*/nullptr);
-    wasm_functype_delete(ft);
-    if (err != nullptr) {
-      return ::testing::AssertionFailure()
-             << "define wasi_snapshot_preview1.random_get: "
-             << WasmtimeErrorMsg(err);
-    }
+  } else {
+    wasm_valtype_vec_new_empty(&results);
+  }
+  wasm_functype_t* ft = wasm_functype_new(&params, &results);
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, "wasi_snapshot_preview1", 22, fn_name, fn_name_len, ft,
+      WasiNopStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+  wasm_functype_delete(ft);
+  if (err != nullptr) {
+    return ::testing::AssertionFailure()
+           << "define wasi_snapshot_preview1." << fn_name << ": "
+           << WasmtimeErrorMsg(err);
+  }
+  return ::testing::AssertionSuccess();
+}
+
+// Define stubs for every wasi_snapshot_preview1 function the
+// wasi-sdk-built runtime imports.  wasi-libc's startup code
+// references all of these unconditionally (environ, file
+// descriptors for stderr, proc_exit on abort); wasm-ld keeps the
+// imports alive even though the C-only runtime never calls them.
+// Wasmtime rejects instantiation if any declared import is
+// unresolved.  Signatures from the
+// [wasi-snapshot-preview1 spec](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md).
+::testing::AssertionResult DefineWasiStubs(wasmtime_linker_t* linker) {
+  struct Stub {
+    const char* name = nullptr;
+    std::size_t name_len = 0;
+    std::initializer_list<wasm_valkind_t> params;
+    bool has_i32_result = true;
+  };
+  // Each row mirrors one wasi import in the runtime.  Update both
+  // this list AND the `cel_runtime.wasm` import set if wasi-sdk
+  // libc starts pulling in a new symbol.
+  const Stub kStubs[] = {
+      {"environ_get", 11, {WASM_I32, WASM_I32}, true},
+      {"environ_sizes_get", 17, {WASM_I32, WASM_I32}, true},
+      {"fd_close", 8, {WASM_I32}, true},
+      {"fd_prestat_get", 14, {WASM_I32, WASM_I32}, true},
+      {"fd_prestat_dir_name", 19, {WASM_I32, WASM_I32, WASM_I32}, true},
+      {"fd_seek", 7, {WASM_I32, WASM_I64, WASM_I32, WASM_I32}, true},
+      {"fd_write", 8, {WASM_I32, WASM_I32, WASM_I32, WASM_I32}, true},
+      {"proc_exit", 9, {WASM_I32}, false},
+      {"sched_yield", 11, {}, true},
+      {"random_get", 10, {WASM_I32, WASM_I32}, true},
+      // Pulled in by absl::time / cctz once RE2 + absl land via
+      // Phase C C1/C2.  Used to set up cctz's lazy-init time-zone
+      // tables; never called on the hot path of any kernel in this
+      // test, so a no-op stub is sufficient.
+      {"clock_time_get", 14, {WASM_I32, WASM_I64, WASM_I32}, true},
+      // Same family — pulled in by wasi-libc once RE2/absl are
+      // linked (the libc startup wires poll-based blocking even
+      // though no kernel actually polls).
+      {"poll_oneoff", 11, {WASM_I32, WASM_I32, WASM_I32, WASM_I32}, true},
+  };
+  for (const Stub& s : kStubs) {
+    auto r =
+        DefineWasiStub(linker, s.name, s.name_len, s.params, s.has_i32_result);
+    if (!r) return r;
   }
   return ::testing::AssertionSuccess();
 }
@@ -393,12 +428,24 @@ struct RuntimeHarness {
     return ::testing::AssertionFailure()
            << "instantiate trapped: " << WasmTrapMsg(trap);
   }
-  if (auto r =
-          LookupFunc(ctx, h->instance, "arena_reset", 11, &h->arena_reset_fn);
-      !r) {
-    return r;
+  struct ExportRef {
+    const char* name;
+    size_t name_len;
+    wasmtime_func_t* out;
+  };
+  const ExportRef exports[] = {
+      {"arena_init", 10, &h->arena_init_fn},
+      {"arena_reset", 11, &h->arena_reset_fn},
+      {"arena_alloc", 11, &h->arena_alloc_fn},
+      {"arena_cursor", 12, &h->arena_cursor_fn},
+      {"arena_capacity", 14, &h->arena_capacity_fn},
+  };
+  for (const ExportRef& e : exports) {
+    if (auto r = LookupFunc(ctx, h->instance, e.name, e.name_len, e.out); !r) {
+      return r;
+    }
   }
-  return LookupFunc(ctx, h->instance, "arena_alloc", 11, &h->arena_alloc_fn);
+  return ::testing::AssertionSuccess();
 }
 
 // Top-level harness builder.  Three steps, each its own helper to
@@ -409,91 +456,108 @@ struct RuntimeHarness {
   return InstantiateRuntime(h);
 }
 
-uint32_t CelAllocCall(const RuntimeHarness& h, uint32_t n) {
+// Call one of the arena_* exports.  `n_args` arg slots in `args`,
+// `n_results` results returned in `result` (use 0 if void).  Returns
+// the i32 result, or 0 on trap / error (call site decides whether
+// that's expected via separate EXPECT macros).
+uint32_t CallI32(const RuntimeHarness& h, const wasmtime_func_t& fn,
+                 const char* name, const wasmtime_val_t* args,
+                 std::size_t n_args, bool returns_i32) {
   wasmtime_context_t* ctx = wasmtime_store_context(h.store);
+  wasmtime_val_t result;
+  wasm_trap_t* trap = nullptr;
+  wasmtime_func_t fn_copy = fn;
+  wasmtime_error_t* err = wasmtime_func_call(ctx, &fn_copy, args, n_args,
+                                             returns_i32 ? &result : nullptr,
+                                             returns_i32 ? 1 : 0, &trap);
+  if (err != nullptr) {
+    ADD_FAILURE() << name << " trampoline error: " << WasmtimeErrorMsg(err);
+    return 0;
+  }
+  if (trap != nullptr) {
+    ADD_FAILURE() << name << " trapped: " << WasmTrapMsg(trap);
+    return 0;
+  }
+  if (returns_i32) {
+    EXPECT_EQ(result.kind, WASMTIME_I32);
+    return static_cast<uint32_t>(result.of.i32);
+  }
+  return 0;
+}
+
+void ArenaInit(const RuntimeHarness& h, uint32_t cap_bytes) {
+  wasmtime_val_t arg;
+  arg.kind = WASMTIME_I32;
+  arg.of.i32 = static_cast<int32_t>(cap_bytes);
+  CallI32(h, h.arena_init_fn, "arena_init", &arg, 1, /*returns_i32=*/false);
+}
+
+void ArenaReset(const RuntimeHarness& h) {
+  CallI32(h, h.arena_reset_fn, "arena_reset", /*args=*/nullptr, 0,
+          /*returns_i32=*/false);
+}
+
+uint32_t ArenaAlloc(const RuntimeHarness& h, uint32_t n) {
   wasmtime_val_t arg;
   arg.kind = WASMTIME_I32;
   arg.of.i32 = static_cast<int32_t>(n);
-  wasmtime_val_t result;
-  wasm_trap_t* trap = nullptr;
-  wasmtime_func_t fn = h.arena_alloc_fn;
-  wasmtime_error_t* err = wasmtime_func_call(ctx, &fn, &arg, /*nargs=*/1,
-                                             &result, /*nresults=*/1, &trap);
-  if (err != nullptr) {
-    ADD_FAILURE() << "arena_alloc trampoline error: " << WasmtimeErrorMsg(err);
-    return 0;
-  }
-  if (trap != nullptr) {
-    ADD_FAILURE() << "arena_alloc trapped: " << WasmTrapMsg(trap);
-    return 0;
-  }
-  EXPECT_EQ(result.kind, WASMTIME_I32);
-  return static_cast<uint32_t>(result.of.i32);
+  return CallI32(h, h.arena_alloc_fn, "arena_alloc", &arg, 1,
+                 /*returns_i32=*/true);
 }
 
-void CelResetCall(const RuntimeHarness& h, uint32_t base, uint32_t limit) {
-  wasmtime_context_t* ctx = wasmtime_store_context(h.store);
-  wasmtime_val_t args[2];
-  args[0].kind = WASMTIME_I32;
-  args[0].of.i32 = static_cast<int32_t>(base);
-  args[1].kind = WASMTIME_I32;
-  args[1].of.i32 = static_cast<int32_t>(limit);
-  wasm_trap_t* trap = nullptr;
-  wasmtime_func_t fn = h.arena_reset_fn;
-  wasmtime_error_t* err = wasmtime_func_call(ctx, &fn, args, /*nargs=*/2,
-                                             /*results=*/nullptr,
-                                             /*nresults=*/0, &trap);
-  if (err != nullptr) {
-    ADD_FAILURE() << "arena_reset trampoline error: " << WasmtimeErrorMsg(err);
-    return;
-  }
-  if (trap != nullptr) {
-    ADD_FAILURE() << "arena_reset trapped: " << WasmTrapMsg(trap);
-  }
+uint32_t ArenaCursor(const RuntimeHarness& h) {
+  return CallI32(h, h.arena_cursor_fn, "arena_cursor", nullptr, 0,
+                 /*returns_i32=*/true);
 }
 
-uint32_t ReadU32(const RuntimeHarness& h, uint32_t off) {
-  wasmtime_context_t* ctx = wasmtime_store_context(h.store);
-  wasmtime_memory_t mem = h.memory;
-  const uint8_t* base = wasmtime_memory_data(ctx, &mem);
-  uint32_t v = 0;
-  std::memcpy(&v, base + off, sizeof(v));
-  return v;
+uint32_t ArenaCapacity(const RuntimeHarness& h) {
+  return CallI32(h, h.arena_capacity_fn, "arena_capacity", nullptr, 0,
+                 /*returns_i32=*/true);
 }
 
 // ————————————— Tests —————————————
 
-TEST(CelRuntimeWasmTest, CelResetWritesArenaCursorAndLimit) {
+TEST(CelRuntimeWasmTest, ArenaInitSetsCapacity) {
   RuntimeHarness h;
   ASSERT_TRUE(BuildHarness(&h));
-  CelResetCall(h, kArenaBase, kArenaLimit);
-  EXPECT_EQ(ReadU32(h, kBumpOffset), kArenaBase);
-  EXPECT_EQ(ReadU32(h, kLimitOffset), kArenaLimit);
+  ArenaInit(h, kDefaultArenaCapacity);
+  EXPECT_EQ(ArenaCapacity(h), kDefaultArenaCapacity);
+  EXPECT_EQ(ArenaCursor(h), 0u);
 }
 
-TEST(CelRuntimeWasmTest, CelAllocReturnsCursorAndAdvances) {
+TEST(CelRuntimeWasmTest, ArenaAllocAdvancesCursor) {
   RuntimeHarness h;
   ASSERT_TRUE(BuildHarness(&h));
-  CelResetCall(h, kArenaBase, kArenaLimit);
+  ArenaInit(h, kDefaultArenaCapacity);
 
-  const uint32_t off1 = CelAllocCall(h, 24);
-  EXPECT_EQ(off1, kArenaBase);
-  EXPECT_EQ(ReadU32(h, kBumpOffset), kArenaBase + 24);
+  const uint32_t off1 = ArenaAlloc(h, 24);
+  EXPECT_NE(off1, 0u);
+  EXPECT_EQ(ArenaCursor(h), 24u);
 
   // Second alloc should pick up where the first left off.
-  const uint32_t off2 = CelAllocCall(h, 16);
-  EXPECT_EQ(off2, kArenaBase + 24);
-  EXPECT_EQ(ReadU32(h, kBumpOffset), kArenaBase + 24 + 16);
+  const uint32_t off2 = ArenaAlloc(h, 16);
+  EXPECT_EQ(off2, off1 + 24);
+  EXPECT_EQ(ArenaCursor(h), 24u + 16u);
 }
 
-TEST(CelRuntimeWasmTest, CelAllocReturnsZeroWhenLimitExceeded) {
+TEST(CelRuntimeWasmTest, ArenaResetReturnsCursorToZero) {
   RuntimeHarness h;
   ASSERT_TRUE(BuildHarness(&h));
-  // Tiny arena: 64..72 (8 bytes available).  alloc(16) should fail.
-  CelResetCall(h, /*base=*/64, /*limit=*/72);
-  EXPECT_EQ(CelAllocCall(h, 16), 0u);
-  // Cursor unchanged on failure.
-  EXPECT_EQ(ReadU32(h, kBumpOffset), 64u);
+  ArenaInit(h, kDefaultArenaCapacity);
+  ArenaAlloc(h, 24);
+  ASSERT_EQ(ArenaCursor(h), 24u);
+  ArenaReset(h);
+  EXPECT_EQ(ArenaCursor(h), 0u);
+}
+
+TEST(CelRuntimeWasmTest, ArenaAllocReturnsZeroWhenCapacityExceeded) {
+  RuntimeHarness h;
+  ASSERT_TRUE(BuildHarness(&h));
+  // Tiny arena: 32 bytes total.  alloc(64) should fail (OOM).
+  ArenaInit(h, 32);
+  EXPECT_EQ(ArenaAlloc(h, 64), 0u);
+  // Cursor unchanged on OOM.
+  EXPECT_EQ(ArenaCursor(h), 0u);
 }
 
 }  // namespace

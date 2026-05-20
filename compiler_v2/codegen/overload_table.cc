@@ -63,7 +63,7 @@ namespace {
 // `expr_lower.cc` can do a single lookup-and-emit (mirrors
 // arithmetic / compare). Three-path origin dispatch is documented
 // in `rewrite/map-list-dispatch.md`.
-constexpr std::array<Seed, 156> kBuiltinSeeds{
+constexpr std::array<Seed, 158> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -365,6 +365,16 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_starts_with_at_vv"}},
     Seed{"ends_with_string",
          {ImportModule::kCelRuntime, "cel_string_ends_with_at_vv"}},
+    // Regex `matches(text, pat)` / `text.matches(pat)`.  RE2-backed
+    // PartialMatch self-hosted in cel_runtime.wasm with a per-Instance
+    // single-slot most-recent-pattern cache (the common
+    // `list.exists(x, x.matches(pat))` shape hits the cache every
+    // iteration past the first).  See `rewrite/phase-c-plan.md` §4.5.
+    // cel-cpp's standard library registers both the global-form
+    // `matches` overload id and the receiver-form `matches_string`
+    // id; both route to the same kernel.
+    Seed{"matches", {ImportModule::kCelRuntime, "cel_matches_at_vv"}},
+    Seed{"matches_string", {ImportModule::kCelRuntime, "cel_matches_at_vv"}},
     // `type(x)` standard function.  Pure-runtime helper that
     // reads the operand kind, looks up the spec type-name in the
     // 12-row table in `cel_runtime.c`, and writes a CEL_TYPE
@@ -450,20 +460,15 @@ constexpr std::array<Seed, 156> kBuiltinSeeds{
 //      `not_strictly_false` (comprehension internals; see
 //      `rewrite/m5-comprehensions-design.md`).
 //
-//   2. Not yet implemented — regex `matches` (pending
-//      `rewrite/phase-c-plan.md` §4.5 — `cel_matches_at_vv`
-//      kernel + per-Instance LRU regex cache), and `to_dyn`
-//      (dyn-passthrough — see `rewrite/dyn-passthrough-plan.md`).
-constexpr std::array<absl::string_view, 10> kExplicitlyUnimplementedIds{
+//   2. Not yet implemented — `to_dyn` (dyn-passthrough — see
+//      `rewrite/dyn-passthrough-plan.md`).
+constexpr std::array<absl::string_view, 6> kExplicitlyUnimplementedIds{
     // Special-cased in expr_lower.cc — not slot-out helpers.
     "conditional",
     "not_strictly_false",
     "__not_strictly_false__",
     "index_list",
     "index_map",
-    // Regex (pending `rewrite/phase-c-plan.md` §4.5).
-    "matches",
-    "matches_string",
     // Dyn passthrough (see `rewrite/dyn-passthrough-plan.md`).
     "to_dyn",
 };

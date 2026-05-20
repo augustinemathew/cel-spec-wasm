@@ -135,15 +135,39 @@ in the probes as fallback context only; they are not recommended.
   - **Behaviour:** `absl::FormatDuration(dur)` → arena_alloc'd
     string in `out`.
 
-### 4.5 `cel_matches_at_vv`
+### 4.5 `cel_matches_at_vv` (C3 — shipped 2026-05-19)
 
-  - **Signature:** `void cel_matches_at_vv(CelValue* out,
-    const CelValue* text, const CelValue* pat)`
+  - **Signature:** `void cel_matches_at_vv(uint32_t out_slot,
+    uint32_t text_slot, uint32_t pat_slot)`.  Slot-indexed
+    `_at_vv` form to match the existing runtime ABI; equivalent
+    in effect to the originally-drafted pointer signature.
   - **Behaviour:** RE2 compile + PartialMatch.  Compile-failure
-    propagated as error CelValue.  Per-Instance regex cache (LRU,
-    bound 128 entries) — added in slice C2.D.
+    propagated as `CEL_ERROR(CEL_ERR_INVALID_ARGUMENT)` and
+    cached as `nullptr` so a repeat invocation of the same bad
+    pattern surfaces the same sticky error without recompiling.
+  - **Cache shape — delta vs plan.**  The plan drafted an LRU
+    cap-128 cache; the shipped kernel is a **single-slot
+    most-recent-pattern** cache.  Rationale: the common
+    `list.exists(x, x.matches(pat))` workload reuses the same
+    pattern across iterations and saturates a single slot; the
+    multi-pattern shape is rare in practice and recompiles at
+    RE2-compile cost (~µs).  LRU adds complexity for a workload
+    we don't have evidence of.  Revisitable if profiling
+    surfaces a multi-pattern hot path.
   - **Conformance:** drives `string.textproto::matches/*` 9
-    SKIPs → 9 PASS.
+    SKIPs → 9 PASS (overall 1373 → 1382, locked in the
+    2026-05-19 conformance run).  Caught a real first-call-with-
+    empty-pattern bug: the cache's `CachedPattern() == ""`
+    matched the default-constructed empty pattern and skipped
+    the compile path, leaving `CachedRe()` null; fixed by
+    adding a `CachedInitialized` flag and a kernel-layer
+    regression test that doesn't rely on test-suite ordering.
+  - **Tests:** `compiler_v2/runtime/cel_matches_test.cc` —
+    21 cases covering 3VL absorb, kind-mismatch, pattern-compile
+    failure (sticky-error cache), the 9 spec rows as a TEST_P
+    matrix, cache behaviour (warm-path 1000× + alternating
+    50×), and boundary (embedded NUL, anchors, empty-empty,
+    invalid-UTF-8 no-crash, 4 KiB input).
 
 ### 4.6 `cel_strings_format_at_vv`
 

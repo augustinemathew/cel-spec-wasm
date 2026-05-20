@@ -204,16 +204,17 @@ cc_test(
     ],
 )
 
-# Locks the runtime null-pointer-elision bug closed.  Loads the
-# cross-compiled cel_runtime.wasm under wasmtime and asserts
-# arena_reset / arena_alloc actually mutate memory bytes 8 / 12 (they
-# don't, without the asm opacity barrier in cel_memory_base_).
-# Tagged manual because the cel_runtime_wasm_bytes target is
-# (genrule-via-brew-llvm, darwin-arm64 only).
+# Locks the runtime null-pointer-elision bug closed and the
+# post-WASI arena ABI (`arena_init` / `arena_alloc` / `arena_reset`
+# / `arena_cursor` / `arena_capacity`).  Loads the cross-compiled
+# cel_runtime.wasm under wasmtime and exercises the arena via the
+# real exports.  Pulls `cel_runtime_wasm_bytes` (manual) as a dep;
+# bazel still builds manual deps when explicitly required by a
+# non-manual target, so this test runs as part of
+# `bazel test //compiler_v2/...`.
 cc_test(
     name = "cel_runtime_wasm_test",
     srcs = ["cel_runtime_wasm_test.cc"],
-    tags = ["manual"],
     deps = [
         ":cel_runtime_wasm_bytes",
         "@com_google_absl//absl/log:absl_check",
@@ -253,6 +254,32 @@ cc_library(
         ":cel_runtime",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+    ],
+)
+
+# `cel_matches`: regex PartialMatch kernel backed by RE2.  Per-Instance
+# single-slot most-recent-pattern cache so a repeated `s.matches(p)`
+# over the same pattern doesn't recompile each Eval.  Replaces the
+# would-be `cel_host.cel_matches` trampoline by self-hosting RE2
+# inside cel_runtime.wasm.  See `rewrite/phase-c-plan.md` §4.5.
+cc_library(
+    name = "cel_matches",
+    srcs = ["cel_matches.cc"],
+    hdrs = ["cel_matches.h"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@re2",
+    ],
+)
+
+cc_test(
+    name = "cel_matches_test",
+    srcs = ["cel_matches_test.cc"],
+    deps = [
+        ":cel_matches",
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -546,9 +573,14 @@ cc_binary(
         "-Wl,--export=cel_duration_parse_at_v",
         "-Wl,--export=cel_timestamp_format_at_v",
         "-Wl,--export=cel_duration_format_at_v",
+        # Regex matches kernel (`rewrite/phase-c-plan.md` §4.5).
+        # RE2 + per-Instance single-slot most-recent-pattern cache
+        # live in cel_matches.cc.
+        "-Wl,--export=cel_matches_at_vv",
     ],
     tags = ["manual"],
     deps = [
+        ":cel_matches",
         ":cel_time_parse",
     ],
 )

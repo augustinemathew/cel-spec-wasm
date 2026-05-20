@@ -305,7 +305,11 @@ constexpr const char* kRuntimeExports[] = {
     // `rewrite/phase-c-plan.md` §4.1-4.4.  Self-hosted inside
     // `cel_runtime.wasm` via vendored absl in `cel_time_parse.cc`.
     "cel_timestamp_parse_at_v", "cel_duration_parse_at_v",
-    "cel_timestamp_format_at_v", "cel_duration_format_at_v"};
+    "cel_timestamp_format_at_v", "cel_duration_format_at_v",
+    // Regex matches kernel — RE2-backed self-hosted inside
+    // `cel_runtime.wasm` (`cel_matches.cc`).  See
+    // `rewrite/phase-c-plan.md` §4.5.
+    "cel_matches_at_vv"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {
@@ -336,13 +340,16 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
   if (auto s = BindRuntimeMemory(ctx, impl); !s.ok()) return s;
 
   // A13 (DESIGN §5): the wasm memory page count at instantiation must
-  // be exactly `CELWASM_INITIAL_MEMORY_PAGES`.  Post-M6 the runtime
-  // module declares + exports its own memory at the design's initial
-  // size (2 pages = 128 KB).  A mismatch means BUILD.bazel +
-  // cel_layout.h have drifted.
-  ABSL_CHECK_EQ(wasmtime_sharedmemory_size(impl->memory),
+  // be at least `CELWASM_INITIAL_MEMORY_PAGES` (the documented design
+  // floor — enough for the reserved low region + a one-arena
+  // working set).  wasm-ld sets the actual initial size based on
+  // BSS + data needs, which post-Phase-C exceeds the floor (RE2 +
+  // absl::time tables push it to 3-4 pages depending on build mode).
+  // Below the floor means the runtime regressed below the design
+  // minimum or BUILD.bazel + cel_layout.h have drifted.
+  ABSL_CHECK_GE(wasmtime_sharedmemory_size(impl->memory),
                 CELWASM_INITIAL_MEMORY_PAGES)
-      << "DESIGN A13: wasm memory page count mismatch";
+      << "DESIGN A13: wasm memory page count below design floor";
 
   // A14 (DESIGN §5): the runtime's `__heap_base` export (where
   // wasi-libc places its data + bss + heap floor) must sit above

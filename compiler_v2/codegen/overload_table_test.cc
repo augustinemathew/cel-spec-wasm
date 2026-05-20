@@ -63,7 +63,14 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // M7B.E: 146 → 156 — added 10 with-TZ accessor shim seeds; all
 // route through the single `cel_host.cel_timestamp_tz_accessor`
 // trampoline with a per-shim `accessor_kind` constant.
-constexpr size_t kBuiltinSeedCount = 156;
+// Phase C C2: 156 → 158 — added the regex `matches` +
+// `matches_string` overload ids; both point at the self-hosted
+// RE2-backed `cel_matches_at_vv` kernel (`cel_matches.cc`).
+//
+// The seed count rises monotonically as kernels land.  When it
+// changes, update both `kBuiltinSeeds`'s std::array size in
+// `overload_table.cc` and this constant.
+constexpr size_t kBuiltinSeedCount = 158;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

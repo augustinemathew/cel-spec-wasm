@@ -72,23 +72,34 @@ works under the new architecture.
 
 | ID | Slice | Status | Doc | Days |
 |---|---|---|---|---:|
-| **C1** | Vendor `abseil-cpp` (bazel_dep + `single_version_override` + `absl-wasm.patch` for cctz sysinfo) | ☒ | [phase-c-plan.md](../rewrite/phase-c-plan.md) | 1.0 |
-| **C2** | Vendor `re2` (build against vendored absl) | ☒ | [phase-c-plan.md](../rewrite/phase-c-plan.md) | 0.5 |
-| **C3** | `cel_matches_at_vv` + per-Instance regex cache | ☐ | — | 1.0 |
-| **C4** | `cel_timestamp_parse_at_v` / `_format_at_v` / `cel_duration_parse_at_v` / `_format_at_v` calling absl directly inside cel_runtime.wasm; 4 host trampolines deleted | ☒ | [phase-c-plan.md §4.1-4.4](../rewrite/phase-c-plan.md) | 0.5 |
-| **C5** | Conformance: `string.textproto::matches/*` (9 SKIPs) flip to PASS; timestamp parse rows too | ◐ | — | 0.5 |
-| **C6** | Bench delta (Chrome retest deferred — Phase D) | ☒ | [bench/README.md](../../../compiler_v2/bench/README.md) | 0.5 |
+| **C1** | Vendor `abseil-cpp` (bazel_dep + `single_version_override` + `absl-wasm.patch` for cctz sysinfo) | ☒ | [phase-c-plan.md](../phase-c-plan.md) | 1.0 |
+| **C2** | Vendor `re2` (build against vendored absl) | ☒ | [phase-c-plan.md](../phase-c-plan.md) | 0.5 |
+| **C3** | `cel_matches_at_vv` + per-Instance regex cache | ☒ | [phase-c-plan.md §4.5](../phase-c-plan.md) | 1.0 |
+| **C4** | `cel_timestamp_parse_at_v` / `_format_at_v` / `cel_duration_parse_at_v` / `_format_at_v` calling absl directly inside cel_runtime.wasm; 4 host trampolines deleted | ☒ | [phase-c-plan.md §4.1-4.4](../phase-c-plan.md) | 0.5 |
+| **C5** | Conformance: `string.textproto::matches/*` (9 SKIPs) flip to PASS | ☒ | — | 0.5 |
+| **C6** | Bench delta (Chrome retest deferred — Phase D) | ☒ | [bench/README.md](../../../../compiler_v2/bench/README.md) | 0.5 |
 
-**◐ delta vs the as-designed plan:**
+**Plan-vs-execution notes:**
 
-  - **C2** — RE2 is vendored via `MODULE.bazel:bazel_dep(name = "re2", …)`,
-    cross-compiles via the same wasi-sdk cc_toolchain as absl (probe
-    E8 validated end-to-end: 1.5 MB stripped wasm + clean link + smoke
-    test).  Not yet *consumed* by any kernel — C3 (`cel_matches_at_vv`)
-    will pull it in.  The vendoring deliverable itself is complete.
-  - **C3** — not started; only path-A research and a probe RESULT
-    page exist (see `doc/implementation-plan/rewrite/phase-c-probes/E8/`).
-    The `cel_matches` kernel + LRU regex cache are the missing work.
+  - **C3** — `cel_matches_at_vv` kernel in
+    `compiler_v2/runtime/cel_matches.{h,cc}`.  RE2 PartialMatch
+    with a per-Instance **single-slot most-recent-pattern cache**
+    (module-static `std::string` key + `unique_ptr<RE2>`).
+    Compile-failure stores `nullptr` so the failure is sticky for
+    the cached pattern.  The plan called for a 128-entry FIFO/LRU
+    cache; the simpler single-slot shape captures the dominant
+    `list.exists(x, x.matches(pat))` workload (same pattern reused
+    across the iteration) with ~30 lines of cache code instead of
+    ~80.  Multi-pattern call sites recompile each switch — RE2
+    compile is ~µs, not load-bearing.  If a real workload surfaces
+    a multi-pattern hot path, bumping to a true FIFO is a P2 perf
+    knob.
+    `overload_table.cc` routes `matches` + `matches_string` to
+    `ImportModule::kCelRuntime`.  Unit tests in
+    `cel_matches_test.cc` (24 cases — the 9 spec rows parameterised
+    + 3VL absorb + kind-mismatch + cache hit (repeat-same-pattern)
+    + alternating-pattern correctness + sticky-error + anchors +
+    embedded NUL).
   - **C4** — shipped as four runtime kernels in
     `compiler_v2/runtime/cel_time_parse.{h,cc}`.  `overload_table.cc`
     routes `string_to_timestamp` / `string_to_duration` /
@@ -103,17 +114,26 @@ works under the new architecture.
     round-trip.  Known proto-JSON gaps (year padding for years
     <1000; fractional-second digit count) are locked-in as recorded
     tests pending a follow-up fix.
-  - **C5** — partial.  Timestamp parse rows flip with C4 (the
-    `RejectsAsTimestampPerCEL` post-validation now runs in-runtime).
-    `matches/*` 9 SKIPs are blocked on C3.  No `string.textproto`
-    rerun was captured this commit.
+  - **C5** — `tests/simple/testdata/string.textproto`: 49/51 PASS,
+    **0 SKIP** (was 9), 2 unrelated FAIL (`size/one_unicode` +
+    `size/unicode` — pre-existing byte-vs-codepoint gap in
+    `cel_string_size_at_v`, separate concern).  Full-corpus delta:
+    1373 → 1382 PASS (+9, exactly the matches rows).
   - **C6** — `compiler_v2/bench/README.md` carries the bench delta
     (Compile/Plan +14-40% from wasi-libc instantiation, Eval below
     pre-WASI baseline net of the CEL_LOG_DISABLED gate).  Chrome
     retest is the only Phase D work item.
+  - **A13 invariant relaxed.** The wasm initial page count baked
+    into `cel_runtime.wasm` varies with build mode + linked
+    libraries (Phase C C1/C2 pushed wasm-ld's auto-sized minimum
+    from 2 to 3-4 pages depending on `-c opt`/`fastbuild`).
+    Engine.cc's A13 check is now `>= CELWASM_INITIAL_MEMORY_PAGES`
+    (the documented design floor) rather than `==`; still catches
+    a runtime regression below the floor, no longer trips on
+    benign expansion.
 
-**Net Phase C readiness:** C1/C2/C4/C6 ☒; C3 + the matches-side
-half of C5 are the remaining ~1.5 days of work.
+**Net Phase C readiness:** all six slices ☒.  Phase D (Chrome
+consummation of the M9 stake) is the only remaining WASI item.
 
 ---
 
@@ -147,7 +167,8 @@ half of C5 are the remaining ~1.5 days of work.
 | **M6 shipped** | Runtime owns + exports memory; host pulls from `runtime_instance`; `--import-memory` dropped | `208ddba` |
 | **M7 shipped** | `host_string_arena` deleted; replaced with malloc'd activation buffer via wasm reentry | `5d8156a` |
 | **B5 + B6 shipped** | POST_MIGRATION_BENCH.md numbers; DESIGN status flipped to shipped; sibling docs reconciled | `a43ee8b` |
-| **C1 + C2 + C4 + C6 shipped** | abseil + RE2 vendored via bzlmod; wasi-sdk cc_toolchain wired with cross-platform aliases; 4 timestamp/duration parse + format kernels self-hosted in `cel_runtime.wasm`; 4 cel_host trampolines deleted; CEL_LOG gated off in opt builds (1.4×–5.7× Eval speedup); bench/README + POST_MIGRATION_BENCH updated; cleanup-backlog #7 closed | (this commit) |
+| **C1 + C2 + C4 + C6 shipped** | abseil + RE2 vendored via bzlmod; wasi-sdk cc_toolchain wired with cross-platform aliases; 4 timestamp/duration parse + format kernels self-hosted in `cel_runtime.wasm`; 4 cel_host trampolines deleted; CEL_LOG gated off in opt builds (1.4×–5.7× Eval speedup); bench/README + POST_MIGRATION_BENCH updated; cleanup-backlog #7 closed | `3d882f2` |
+| **C3 + C5 shipped** | `cel_matches_at_vv` RE2-backed kernel + per-Instance single-slot most-recent-pattern cache (with the `CachedInitialized` flag — caught a first-call-with-empty-pattern bug via the `matches/empty_arg` + `matches/empty_empty` conformance rows); `overload_table.cc` routes `matches` + `matches_string`; A13 invariant relaxed to `>=` (wasm-ld auto-sizes initial memory now varies by build mode); conformance 1373 → 1382 (**+9 PASS**, the 9 `string.textproto::matches/*` rows) | (this commit) |
 
 ---
 
