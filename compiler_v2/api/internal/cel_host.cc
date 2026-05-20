@@ -11,10 +11,11 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "absl/strings/strip.h"
 #include "absl/time/time.h"
 #include "compiler_v2/api/error.h"
+#include "compiler_v2/api/internal/cel_host_error.h"  // M11 Slice E
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
 #include "google/protobuf/descriptor.h"
@@ -27,31 +28,19 @@ namespace celwasm {
 
 namespace {
 
-// Error payloads Layer 1 surfaces via `Value::Error`.  CEL_ERROR
-// semantics (missing field, wrong type) travel inside `Value`; only
-// infrastructure failures (null deref, checker inconsistency) travel
-// as `absl::Status`.
-cel::Value FieldNotFound(absl::string_view name) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kFieldNotFound,
-      /*message=*/std::string(name),
-      /*expr_id=*/0,
-  });
-}
-
-// Helper: `Value::Error` with a chosen code, formatted message.
-cel::Value MakeError(cel::ErrorCode code, std::string message) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/code,
-      /*message=*/std::move(message),
-      /*expr_id=*/0,
-  });
-}
-
 // Forward declarations for the WKT-peel helpers used by both
 // `UnpackAnyToValue` (Any-of-WKT chain) and `ReadScalarField`
 // (singular CPPTYPE_MESSAGE arm).  Bodies are defined below in
 // this anonymous namespace alongside the other peelers.
+//
+// M11 Slice E: the simple error-CelValue factories (`FieldNotFound`,
+// `MakeError`, `KeyTypeMismatch`, `NoSuchKey`, `IndexOutOfBounds`)
+// and the wire-format error encoders (`WriteWireError`,
+// `WriteWireBool`, `WriteWireInt`, `WriteInvalidArgumentError`,
+// `PoisonCelValue`) plus the 3VL absorbers (`AbsorbUnary`,
+// `AbsorbBinary`) moved out to `cel_host_error.{cc,h}` — they're
+// included via `<compiler_v2/api/internal/cel_host_error.h>` above
+// and remain callable here under the `celwasm::` namespace.
 std::optional<cel::Value> UnpackWrapperMessage(
     const google::protobuf::Message& sub);
 std::optional<cel::Value> UnpackWellKnownTimeMessage(
@@ -69,16 +58,36 @@ inline std::optional<cel::Value> MaybeUnpackWktMessage(
   return std::nullopt;
 }
 
-// Parse `any.type_url`, look up the wrapped FQN in `pool`, parse
-// `any.value` against that descriptor, return an owning backing.
-// Returns a `cel::Value`:
-//   - `null` when type_url is empty (matches the proto-literal
-//     null-on-unset rule and serves as the "Any not populated" signal).
-//   - `Error(kFieldNotFound)` when the FQN isn't in the pool.
-//   - `Error(kTypeMismatch)` when value bytes don't parse.
-//   - `HostMessage(OwnedProtoBacking(unwrapped))` on success.
-cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
-                            const google::protobuf::DescriptorPool* pool) {
+// Strip the standard Any URL prefix and return the bare FQN.
+// cel-cpp accepts `type.googleapis.com/` and `type.googleprod.com/`
+// (see `internal/well_known_types.cc:1960-1967`); any other URL
+// shape is rejected so a malformed type_url surfaces as a clean
+// FQN-not-found error instead of silently treating an attacker-
+// supplied URL as a pool lookup key.  Empty type_url is handled
+// separately by the caller as "Any unset → null".
+std::optional<absl::string_view> ExtractAnyFqn(absl::string_view type_url) {
+  constexpr absl::string_view kGapisPrefix = "type.googleapis.com/";
+  constexpr absl::string_view kGprodPrefix = "type.googleprod.com/";
+  if (absl::ConsumePrefix(&type_url, kGapisPrefix)) return type_url;
+  if (absl::ConsumePrefix(&type_url, kGprodPrefix)) return type_url;
+  return std::nullopt;
+}
+
+// Result of peeling exactly one Any layer.  Exactly one of `terminal`
+// or `peeled` is set on return:
+//   - `terminal` populated → the unwrap is done (Any was unset → null,
+//     or an error occurred); caller returns this Value directly.
+//   - `peeled` populated → the inner Message was extracted.  Caller
+//     checks whether the inner is itself an Any and decides whether
+//     to loop.
+struct UnpackOneAnyResult {
+  std::optional<cel::Value> terminal;
+  std::unique_ptr<google::protobuf::Message> peeled;
+};
+
+UnpackOneAnyResult UnpackOneAnyLayer(
+    const google::protobuf::Message& any,
+    const google::protobuf::DescriptorPool* pool) {
   const google::protobuf::Descriptor* any_desc = any.GetDescriptor();
   const google::protobuf::Reflection* any_refl = any.GetReflection();
   const google::protobuf::FieldDescriptor* type_url_fd =
@@ -87,49 +96,81 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
       any_desc->FindFieldByName("value");
   ABSL_CHECK(any_refl != nullptr && type_url_fd != nullptr &&
              value_fd != nullptr)
-      << "UnpackAnyToValue: Any descriptor missing type_url/value/reflection";
+      << "UnpackOneAnyLayer: Any descriptor missing type_url/value/reflection";
   std::string url_scratch;
   std::string val_scratch;
   const std::string& type_url =
       any_refl->GetStringReference(any, type_url_fd, &url_scratch);
-  if (type_url.empty()) return cel::Value::Null();
-  // FQN = substring after the last '/'.  No slash → FQN is the whole
-  // string; subsequent pool lookup either resolves or fails.
-  const size_t slash = type_url.rfind('/');
-  const absl::string_view fqn =
-      (slash == absl::string_view::npos)
-          ? absl::string_view(type_url)
-          : absl::string_view(type_url).substr(slash + 1);
+  if (type_url.empty()) return {cel::Value::Null(), nullptr};
+  const auto fqn_opt = ExtractAnyFqn(type_url);
+  if (!fqn_opt.has_value()) {
+    return {MakeError(cel::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type_url `", type_url,
+                                   "` lacks `type.googleapis.com/` or "
+                                   "`type.googleprod.com/` prefix")),
+            nullptr};
+  }
+  const absl::string_view fqn = *fqn_opt;
   const google::protobuf::Descriptor* sub_desc =
       pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
   if (sub_desc == nullptr) {
-    return MakeError(cel::ErrorCode::kFieldNotFound,
-                     absl::StrCat("Any type_url FQN `", fqn,
-                                  "` not registered in descriptor pool"));
+    return {MakeError(cel::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type_url FQN `", fqn,
+                                   "` not registered in descriptor pool")),
+            nullptr};
   }
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(
           sub_desc);
   if (prototype == nullptr) {
-    return MakeError(cel::ErrorCode::kFieldNotFound,
-                     absl::StrCat("Any type `", fqn,
-                                  "` has no generated_factory prototype"));
+    return {MakeError(cel::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type `", fqn,
+                                   "` has no generated_factory prototype")),
+            nullptr};
   }
   std::unique_ptr<google::protobuf::Message> sub(prototype->New());
   const std::string& bytes =
       any_refl->GetStringReference(any, value_fd, &val_scratch);
   if (!sub->ParseFromString(bytes)) {
-    return MakeError(
-        cel::ErrorCode::kTypeMismatch,
-        absl::StrCat("Any payload bytes don't parse against `", fqn, "`"));
+    return {MakeError(cel::ErrorCode::kTypeMismatch,
+                      absl::StrCat("Any payload bytes don't parse against `",
+                                   fqn, "`")),
+            nullptr};
   }
-  // Chain wrapper-peel + WKT-time-peel after Any-unwrap so
-  // `Any{Int32Value{value:1}}` surfaces as `int 1` and
-  // `Any{Timestamp{...}}` as `CEL_TIMESTAMP` (instead of CEL_MESSAGE).
-  // Mirrors the same chain at `ReadScalarField` so Any-erased and
-  // field-erased WKT operands behave identically.
-  if (auto v = MaybeUnpackWktMessage(*sub); v.has_value()) return *std::move(v);
-  return cel::Value::OwnedMessage(std::move(sub));
+  return {std::nullopt, std::move(sub)};
+}
+
+// Iteratively unwrap an Any (M11 Slice A — fixes the P0 where
+// `Any{Any{Int32Value{value:7}}}` previously surfaced as
+// `CEL_MESSAGE(google.protobuf.Any)` instead of `int 7`).
+// Mirrors cel-cpp's `AdaptAny` (`internal/well_known_types.cc:1943-2007`):
+// peel one layer; if the inner descriptor is still `google.protobuf.Any`,
+// peel again; otherwise try wrapper / WKT-time peel and return.
+//
+// Depth `ABSL_CHECK` at 1024 is belt-and-suspenders — wire-size
+// implicitly bounds depth in practice, but a malformed Any chain
+// shouldn't blow the host stack, and the M7-A design doc explicitly
+// recommended this constant.
+cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
+                            const google::protobuf::DescriptorPool* pool) {
+  std::unique_ptr<google::protobuf::Message> owned;
+  const google::protobuf::Message* current = &any;
+  for (int depth = 0;; ++depth) {
+    ABSL_CHECK(depth < 1024)
+        << "UnpackAnyToValue: Any-of-Any depth >= 1024 — runaway recursion?";
+    UnpackOneAnyResult layer = UnpackOneAnyLayer(*current, pool);
+    if (layer.terminal.has_value()) return *std::move(layer.terminal);
+    owned = std::move(layer.peeled);
+    const google::protobuf::Descriptor* d = owned->GetDescriptor();
+    if (d != nullptr && d->full_name() == "google.protobuf.Any") {
+      current = owned.get();
+      continue;
+    }
+    if (auto v = MaybeUnpackWktMessage(*owned); v.has_value()) {
+      return *std::move(v);
+    }
+    return cel::Value::OwnedMessage(std::move(owned));
+  }
 }
 
 // Well-known time-type normaliser for proto field reads.  When a
@@ -510,21 +551,7 @@ static bool IsValidMapKeyKind(cel::Value::Kind k) {
          k == cel::Value::Kind::kUint || k == cel::Value::Kind::kString;
 }
 
-static cel::Value KeyTypeMismatch() {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kTypeMismatch,
-      /*message=*/"map key kind is not bool/int/uint/string",
-      /*expr_id=*/0,
-  });
-}
-
-static cel::Value NoSuchKey() {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kKeyNotFound,
-      /*message=*/"no such key",
-      /*expr_id=*/0,
-  });
-}
+// `KeyTypeMismatch` / `NoSuchKey` moved to cel_host_error.cc (M11 Slice E).
 
 HostMap::HostMap(std::vector<std::pair<cel::Value, cel::Value>> entries)
     : entries_(std::move(entries)) {}
@@ -588,46 +615,7 @@ std::optional<cel::Value> DecodeKey(const CelValue& cv, const MemoryView& mem) {
   }
 }
 
-// Map the host-side ErrorCode catalogue → the wire `CEL_ERR_*`
-// numeric code carried in `CelValue.payload.err`.  Both sides
-// extend independently; surface unrecognized codes as TYPE_MISMATCH
-// rather than dropping silently.
-uint32_t WireErrorCode(cel::ErrorCode c) {
-  switch (c) {
-    case cel::ErrorCode::kOverflow:
-      return CEL_ERR_OVERFLOW;
-    case cel::ErrorCode::kDivideByZero:
-      return CEL_ERR_DIVIDE_BY_ZERO;
-    case cel::ErrorCode::kModulusByZero:
-      return CEL_ERR_MODULUS_BY_ZERO;
-    case cel::ErrorCode::kTypeMismatch:
-      return CEL_ERR_TYPE_MISMATCH;
-    case cel::ErrorCode::kTypeUnsupported:
-      return CEL_ERR_TYPE_UNSUPPORTED;
-    case cel::ErrorCode::kKeyNotFound:
-      return CEL_ERR_NO_SUCH_KEY;
-    case cel::ErrorCode::kFieldNotFound:
-      return CEL_ERR_FIELD_NOT_FOUND;
-    case cel::ErrorCode::kIndexOutOfBounds:
-      return CEL_ERR_INDEX_OUT_OF_BOUNDS;
-    case cel::ErrorCode::kInvalidArgument:
-      return CEL_ERR_INVALID_ARGUMENT;
-    case cel::ErrorCode::kHostAdapterError:
-      return CEL_ERR_HOST_ADAPTER_ERROR;
-    default:
-      return CEL_ERR_TYPE_MISMATCH;
-  }
-}
-
-// Build a CEL_ERROR CelValue with the given wire code and write it
-// to `out_slot`.  Used by every Layer-2 arm that surfaces a
-// spec-level error in-wire (rather than returning non-OK Status).
-void WriteWireError(uint32_t wire_code, uint32_t out_slot, MemoryView& mem) {
-  CelValue err{};
-  err.kind = CEL_ERROR;
-  err.payload.err = wire_code;
-  mem.WriteCelValue(out_slot, err);
-}
+// `WireErrorCode` / `WriteWireError` moved to cel_host_error.cc (M11 Slice E).
 
 // Encode the (string|bytes) span via the per-eval ArenaAllocator.
 absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
@@ -997,18 +985,7 @@ void ProtoMap::ForEach(
 // HostList — vector-backed `HostListBacking` for user bindings.
 // ══════════════════════════════════════════════════════════════════
 
-namespace {
-
-cel::Value IndexOutOfBounds(size_t index, size_t count) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kIndexOutOfBounds,
-      /*message=*/
-      absl::StrCat("index ", index, " out of range [0, ", count, ")"),
-      /*expr_id=*/0,
-  });
-}
-
-}  // namespace
+// `IndexOutOfBounds` moved to cel_host_error.cc (M11 Slice E).
 
 HostList::HostList(std::vector<cel::Value> elements)
     : elements_(std::move(elements)) {}
@@ -1436,45 +1413,8 @@ absl::StatusOr<CelValue> EncodeBackingScalar(const cel::Value& v,
   return cv;
 }
 
-// Write CEL_BOOL into `out_slot`.  Used by every comparison Impl.
-void WriteWireBool(bool v, uint32_t out_slot, MemoryView& mem) {
-  CelValue cv{};
-  cv.kind = CEL_BOOL;
-  cv.payload.b = v ? 1 : 0;
-  mem.WriteCelValue(out_slot, cv);
-}
-
-// Write CEL_INT into `out_slot`.
-void WriteWireInt(int64_t v, uint32_t out_slot, MemoryView& mem) {
-  CelValue cv{};
-  cv.kind = CEL_INT;
-  cv.payload.i = v;
-  mem.WriteCelValue(out_slot, cv);
-}
-
-// 3VL absorption shared by every kHost Impl: if either operand is
-// UNKNOWN / ERROR, write it through and return true (skip work).
-// Mirrors `cel_runtime.c::absorb_3vl_binary` plus `_unary`.
-bool AbsorbUnary(const CelValue& a, uint32_t out_slot, MemoryView& mem) {
-  if (a.kind == CEL_UNKNOWN || a.kind == CEL_ERROR) {
-    mem.WriteCelValue(out_slot, a);
-    return true;
-  }
-  return false;
-}
-
-bool AbsorbBinary(const CelValue& a, const CelValue& b, uint32_t out_slot,
-                  MemoryView& mem) {
-  if (a.kind == CEL_UNKNOWN || a.kind == CEL_ERROR) {
-    mem.WriteCelValue(out_slot, a);
-    return true;
-  }
-  if (b.kind == CEL_UNKNOWN || b.kind == CEL_ERROR) {
-    mem.WriteCelValue(out_slot, b);
-    return true;
-  }
-  return false;
-}
+// `WriteWireBool` / `WriteWireInt` / `AbsorbUnary` / `AbsorbBinary`
+// moved to cel_host_error.cc (M11 Slice E).
 
 }  // namespace
 
@@ -2913,18 +2853,7 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
 // ids there directly.  See
 // `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
-namespace {
-
-// `WriteInvalidArgumentError` mirrors the runtime-side `poison`
-// shape and is still used by the with-TZ accessor trampoline below.
-void WriteInvalidArgumentError(uint32_t out_slot, MemoryView& mem) {
-  CelValue cv{};
-  cv.kind = CEL_ERROR;
-  cv.payload.err = WireErrorCode(cel::ErrorCode::kInvalidArgument);
-  mem.WriteCelValue(out_slot, cv);
-}
-
-}  // namespace
+// `WriteInvalidArgumentError` moved to cel_host_error.cc (M11 Slice E).
 
 // With-TZ accessor dispatch trampoline.
 // ══════════════════════════════════════════════════════════════════
@@ -3086,18 +3015,8 @@ absl::Status CelTimestampTzAccessorImpl(uint32_t out_slot, uint32_t ts_slot,
   return absl::OkStatus();
 }
 
-// WKT proto-literal unwrap.  Codegen emits this at the kStructExpr
-// tail for `Timestamp{...}` / `Duration{...}` literals.  File-local
-// helper: build a `CelValue` carrying the supplied error code with
-// no payload data.  Used by `CelWktUnwrapWrapperImpl` to collapse the
-// repeated `{kind=CEL_ERROR, payload.err=...}` blocks into one-line
-// writes (keeps the parent under the readability-function-size gate).
-static CelValue PoisonCelValue(uint32_t err_code) {
-  CelValue v{};
-  v.kind = CEL_ERROR;
-  v.payload.err = err_code;
-  return v;
-}
+// `PoisonCelValue` moved to cel_host_error.cc (M11 Slice E); still
+// used by `CelWktUnwrapWrapperImpl` below via the new header.
 
 // kStructExpr tail-unwrap for the 9 wrapper FQNs.  Reads
 // the CEL_MESSAGE at `msg_slot`, peels the inner `value` field via

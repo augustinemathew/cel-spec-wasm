@@ -7,6 +7,7 @@
 #include "compiler_v2/api/internal/cel_host.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -22,7 +23,11 @@
 #include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "google/protobuf/any.pb.h"
+#include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
+#include "google/protobuf/timestamp.pb.h"
+#include "google/protobuf/wrappers.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -862,6 +867,347 @@ TEST(CelSetFieldAnyPackTest, MapStringToAnyHostSourcePacksTwoEntries) {
   ASSERT_TRUE(
       round.ParseFromString(h.outer()->map_str_to_any().at("a").value()));
   EXPECT_EQ(round.i32(), 1);
+}
+
+// ═══════════ M11 Slice A — Any-of-Any iterative unwrap ═══════════
+//
+// Pins the post-M11 contract for UnpackAnyToValue:
+//
+//   - depth-1 `Any<Int32Value>` reads back as `int 7` (regression
+//     against the M7-A path that previously worked at this depth).
+//   - depth-2 `Any<Any<Int32Value>>` reads back as `int 7` (the P0
+//     fix; pre-M11 this surfaced as `CEL_MESSAGE(google.protobuf.Any)`).
+//   - depth-3 `Any<Any<Any<Int32Value>>>` reads back as `int 7`.
+//   - Non-`type.googleapis.com/` URL prefix is rejected with a clean
+//     `kFieldNotFound`-shaped error (the strict-URL gate).
+//
+// The death test for depth > 1024 lives in M11 Slice B
+// (`cel_wkt_wire_test.cc`) — once the WKT peel moves to the runtime,
+// the depth `ABSL_CHECK` will fire there as a wasm trap, which is
+// the testable surface.
+
+namespace {
+
+// Build `Int32Value{value: v}` and return as a heap-owned message.
+std::unique_ptr<google::protobuf::Int32Value> MakeInt32Value(int32_t v) {
+  auto msg = std::make_unique<google::protobuf::Int32Value>();
+  msg->set_value(v);
+  return msg;
+}
+
+// Wrap a message in `google.protobuf.Any` via PackFrom.
+std::unique_ptr<google::protobuf::Any> WrapInAny(
+    const google::protobuf::Message& inner) {
+  auto any = std::make_unique<google::protobuf::Any>();
+  any->PackFrom(inner);
+  return any;
+}
+
+// Read `host_msg.single_any` through ProtoBacking — same path the
+// runtime takes for `msg.single_any` expressions.
+cel::Value ReadSingleAny(const HostMsg3& host_msg) {
+  // ProtoBacking::ReadField for field number 30 (single_any) goes
+  // through UnpackAnyToValue, which is the function under test.
+  ProtoBacking backing(&host_msg);
+  auto v = backing.ReadField(/*field_number=*/30, "single_any", IgnoredType());
+  EXPECT_TRUE(v.ok()) << v.status();
+  return v.ok() ? *std::move(v) : cel::Value::Null();
+}
+
+}  // namespace
+
+TEST(AnyOfAnyTest, Depth1WrappedInt32PeelsToInt) {
+  HostMsg3 outer;
+  auto inner = MakeInt32Value(7);
+  auto wrapped = WrapInAny(*inner);  // Any<Int32Value{value:7}>
+  *outer.mutable_single_any() = *wrapped;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), 7);
+}
+
+TEST(AnyOfAnyTest, Depth2WrappedInt32PeelsToInt) {
+  // This is the P0 regression: pre-M11 this surfaced as
+  // `CEL_MESSAGE(google.protobuf.Any)` because UnpackAnyToValue
+  // peeled exactly one layer.  Post-M11 the iterative loop peels
+  // both layers and falls through to the wrapper-peel.
+  HostMsg3 outer;
+  auto inner = MakeInt32Value(7);
+  auto wrapped_once = WrapInAny(*inner);
+  auto wrapped_twice =
+      WrapInAny(*wrapped_once);  // Any<Any<Int32Value{value:7}>>
+  *outer.mutable_single_any() = *wrapped_twice;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk()) << "Any-of-Any depth 2 did not peel to int";
+  EXPECT_EQ(*got.AsInt(), 7);
+}
+
+TEST(AnyOfAnyTest, Depth3WrappedInt32PeelsToInt) {
+  HostMsg3 outer;
+  auto inner = MakeInt32Value(42);
+  auto w1 = WrapInAny(*inner);
+  auto w2 = WrapInAny(*w1);
+  auto w3 = WrapInAny(*w2);  // Any<Any<Any<Int32Value{value:42}>>>
+  *outer.mutable_single_any() = *w3;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), 42);
+}
+
+TEST(AnyOfAnyTest, Depth4WrappedInt32PeelsToInt) {
+  HostMsg3 outer;
+  auto inner = MakeInt32Value(-1);
+  auto w1 = WrapInAny(*inner);
+  auto w2 = WrapInAny(*w1);
+  auto w3 = WrapInAny(*w2);
+  auto w4 = WrapInAny(*w3);
+  *outer.mutable_single_any() = *w4;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), -1);
+}
+
+TEST(AnyOfAnyTest, NonWktInnerSurfacesAsMessage) {
+  // An Any whose innermost payload is a user-schema message (not a
+  // WKT) should surface as a CEL_MESSAGE wrapping that inner type,
+  // not as a scalar.  This is the "host-side fallback" path that
+  // remains correct even after the iterative loop.
+  HostMsg3 inner;
+  inner.set_i32(99);
+  auto wrapped = WrapInAny(inner);
+  HostMsg3 outer;
+  *outer.mutable_single_any() = *wrapped;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_EQ(got.kind(), cel::Value::Kind::kMessage)
+      << "Any<HostMsg3> should surface as a CEL_MESSAGE, got kind="
+      << static_cast<int>(got.kind());
+}
+
+TEST(AnyOfAnyTest, StrictUrlPrefixRejectsNonStandardPrefix) {
+  // M11 Slice A also tightens the URL-prefix check.  Pre-M11
+  // accepted any URL with a slash and treated the suffix as FQN —
+  // a quiet divergence from cel-cpp.  Post-M11: only
+  // `type.googleapis.com/` and `type.googleprod.com/` prefixes
+  // resolve; anything else surfaces as a clean error.
+  HostMsg3 outer;
+  // Hand-construct a malformed Any (don't use PackFrom because
+  // that writes the strict prefix).
+  outer.mutable_single_any()->set_type_url(
+      "https://evil.example.com/google.protobuf.Int32Value");
+  google::protobuf::Int32Value payload;
+  payload.set_value(7);
+  std::string bytes;
+  ASSERT_TRUE(payload.SerializeToString(&bytes));
+  outer.mutable_single_any()->set_value(bytes);
+
+  cel::Value got = ReadSingleAny(outer);
+  EXPECT_TRUE(got.IsError())
+      << "Non-standard URL prefix should produce an error, got kind="
+      << static_cast<int>(got.kind());
+}
+
+TEST(AnyOfAnyTest, EmptyTypeUrlYieldsNull) {
+  // Per the long-standing contract: an Any with empty type_url
+  // signals "Any not populated" → null.  Verify the new loop
+  // still returns at the first layer.
+  HostMsg3 outer;
+  outer.mutable_single_any();  // Sets `has_single_any() == true`,
+                               // type_url empty.
+
+  cel::Value got = ReadSingleAny(outer);
+  EXPECT_TRUE(got.IsNull());
+}
+
+TEST(AnyOfAnyTest, GprodPrefixAccepted) {
+  // type.googleprod.com/ is the second accepted prefix per cel-cpp's
+  // strict-URL rule.
+  HostMsg3 outer;
+  outer.mutable_single_any()->set_type_url(
+      "type.googleprod.com/google.protobuf.Int32Value");
+  google::protobuf::Int32Value payload;
+  payload.set_value(5);
+  std::string bytes;
+  ASSERT_TRUE(payload.SerializeToString(&bytes));
+  outer.mutable_single_any()->set_value(bytes);
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), 5);
+}
+
+// ─────── Negative paths through the iterative unwrap loop ───────
+
+TEST(AnyOfAnyTest, MalformedPayloadBytesProduceError) {
+  // Strict-URL prefix passes, FQN resolves, but the payload bytes
+  // don't parse against the resolved descriptor.  Surfaces as
+  // `kTypeMismatch` (the "Any payload doesn't parse" message).
+  HostMsg3 outer;
+  outer.mutable_single_any()->set_type_url(
+      "type.googleapis.com/google.protobuf.Int32Value");
+  outer.mutable_single_any()->set_value("\xFFnot-a-valid-int32-wire-format");
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_TRUE(got.IsError());
+  auto info = got.ErrorInfo();
+  ASSERT_TRUE(info.ok());
+  EXPECT_EQ((*info)->code, cel::ErrorCode::kTypeMismatch);
+}
+
+TEST(AnyOfAnyTest, UnknownFqnInRegisteredPrefixProducesError) {
+  // Strict-URL prefix passes, but the FQN isn't in the descriptor
+  // pool.  Surfaces as `kFieldNotFound`.
+  HostMsg3 outer;
+  outer.mutable_single_any()->set_type_url(
+      "type.googleapis.com/no.such.package.Message");
+  outer.mutable_single_any()->set_value("");
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_TRUE(got.IsError());
+  auto info = got.ErrorInfo();
+  ASSERT_TRUE(info.ok());
+  EXPECT_EQ((*info)->code, cel::ErrorCode::kFieldNotFound);
+}
+
+TEST(AnyOfAnyTest, UrlWithoutSlashRejected) {
+  // The pre-M11 path treated any string-with-no-slash as a bare
+  // FQN.  Post-M11 it must be rejected via the strict-prefix gate.
+  HostMsg3 outer;
+  outer.mutable_single_any()->set_type_url("google.protobuf.Int32Value");
+  outer.mutable_single_any()->set_value("");
+
+  cel::Value got = ReadSingleAny(outer);
+  EXPECT_TRUE(got.IsError());
+}
+
+// ─────── Wrapper-kind coverage matrix (per langdef §"WKT") ───────
+//
+// Each of the 9 wrapper types is unwrappable both directly
+// (Any<X{value: ...}>) and after an extra Any layer
+// (Any<Any<X{value: ...}>>).  Direct-kind coverage is the leaf
+// `UnpackWrapperMessage` arm; via-Any coverage is the iterative
+// `UnpackAnyToValue` walking through.
+
+namespace {
+
+// Build `Any<wrapper>` carrying a wrapper-typed `inner` and read
+// it back through HostMsg3.single_any.
+template <typename WrapperT>
+cel::Value AnyOfWrapper(const WrapperT& inner) {
+  HostMsg3 outer;
+  auto wrapped = WrapInAny(inner);
+  *outer.mutable_single_any() = *wrapped;
+  return ReadSingleAny(outer);
+}
+
+}  // namespace
+
+TEST(AnyOfWrapperKindsTest, BoolValueUnwrapsToBool) {
+  google::protobuf::BoolValue w;
+  w.set_value(true);
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsBool(), IsOk());
+  EXPECT_EQ(*got.AsBool(), true);
+}
+
+TEST(AnyOfWrapperKindsTest, Int64ValueUnwrapsToInt) {
+  google::protobuf::Int64Value w;
+  w.set_value(-9001);
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), -9001);
+}
+
+TEST(AnyOfWrapperKindsTest, UInt32ValueUnwrapsToUint) {
+  google::protobuf::UInt32Value w;
+  w.set_value(42u);
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsUint(), IsOk());
+  EXPECT_EQ(*got.AsUint(), 42u);
+}
+
+TEST(AnyOfWrapperKindsTest, UInt64ValueUnwrapsToUint) {
+  google::protobuf::UInt64Value w;
+  w.set_value(std::numeric_limits<uint64_t>::max());
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsUint(), IsOk());
+  EXPECT_EQ(*got.AsUint(), std::numeric_limits<uint64_t>::max());
+}
+
+TEST(AnyOfWrapperKindsTest, FloatValueUnwrapsToDouble) {
+  // FloatValue.value : float — CEL widens to double on unwrap.
+  google::protobuf::FloatValue w;
+  w.set_value(1.5f);
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsDouble(), IsOk());
+  EXPECT_EQ(*got.AsDouble(), 1.5);
+}
+
+TEST(AnyOfWrapperKindsTest, DoubleValueUnwrapsToDouble) {
+  google::protobuf::DoubleValue w;
+  w.set_value(3.14159);
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsDouble(), IsOk());
+  EXPECT_EQ(*got.AsDouble(), 3.14159);
+}
+
+TEST(AnyOfWrapperKindsTest, StringValueUnwrapsToString) {
+  google::protobuf::StringValue w;
+  w.set_value("hello");
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsString(), IsOk());
+  EXPECT_EQ(*got.AsString(), "hello");
+}
+
+TEST(AnyOfWrapperKindsTest, BytesValueUnwrapsToBytes) {
+  google::protobuf::BytesValue w;
+  w.set_value(std::string("\x00\x01\xff", 3));
+  cel::Value got = AnyOfWrapper(w);
+  ASSERT_THAT(got.AsBytes(), IsOk());
+  EXPECT_EQ(*got.AsBytes(), std::string("\x00\x01\xff", 3));
+}
+
+TEST(AnyOfWrapperKindsTest, Int32ValueViaAnyOfAnyUnwrapsToInt) {
+  // Two Any layers, inner wrapper.  Locks the iterative loop +
+  // wrapper-peel composition end-to-end (the original P0 was the
+  // depth-2 case for a single wrapper kind; here we pin every kind
+  // via the helper above as the depth-1 direct path).
+  HostMsg3 outer;
+  google::protobuf::Int32Value inner;
+  inner.set_value(11);
+  auto w1 = WrapInAny(inner);
+  auto w2 = WrapInAny(*w1);
+  *outer.mutable_single_any() = *w2;
+
+  cel::Value got = ReadSingleAny(outer);
+  ASSERT_THAT(got.AsInt(), IsOk());
+  EXPECT_EQ(*got.AsInt(), 11);
+}
+
+// ─────── WKT-time peel through Any (Timestamp / Duration) ───────
+
+TEST(AnyOfWktTimeTest, TimestampUnwrapsToTimestamp) {
+  google::protobuf::Timestamp ts;
+  ts.set_seconds(1577836800);  // 2020-01-01T00:00:00Z
+  ts.set_nanos(0);
+  cel::Value got = AnyOfWrapper(ts);
+  EXPECT_EQ(got.kind(), cel::Value::Kind::kTimestamp)
+      << "Any<Timestamp> should peel to a CEL_TIMESTAMP, got kind="
+      << static_cast<int>(got.kind());
+}
+
+TEST(AnyOfWktTimeTest, DurationUnwrapsToDuration) {
+  google::protobuf::Duration d;
+  d.set_seconds(3600);
+  d.set_nanos(0);
+  cel::Value got = AnyOfWrapper(d);
+  EXPECT_EQ(got.kind(), cel::Value::Kind::kDuration)
+      << "Any<Duration> should peel to a CEL_DURATION, got kind="
+      << static_cast<int>(got.kind());
 }
 
 }  // namespace

@@ -2216,6 +2216,95 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         scalar zero; conformance corpus is generated with `true`
         (null), which our implementation matches.
 
+## Phase C — runtime self-hosting (in flight)
+
+### C3 — regex `matches` kernel (shipped 2026-05-19)
+
+  - [x] **`cel_matches_at_vv` kernel** — RE2-backed PartialMatch,
+        self-hosted in `compiler_v2/runtime/cel_matches.cc`.
+        Per-Instance single-slot most-recent-pattern cache
+        (the common `list.exists(x, x.matches(pat))` shape hits
+        the cache every iteration past the first; multi-pattern
+        sites recompile each switch at RE2-compile cost ~µs).
+  - [x] **Unit tests** at `compiler_v2/runtime/cel_matches_test.cc` —
+        focused TEST_F for 3VL absorb (error/unknown × text/pat),
+        kind-mismatch (non-string × text/pat), pattern-compile
+        failure + sticky-error cache; parameterised TEST_P over
+        the 9 `string.textproto::matches/*` rows verbatim;
+        cache-behaviour (warm-path 1000× + alternating-thrash 50×);
+        boundary (embedded NUL, anchors, empty-empty,
+        invalid-UTF-8 no-crash, 4 KiB text).
+  - [x] **Overload-table seeds** — `matches` + `matches_string`
+        seeds added in `compiler_v2/codegen/overload_table.cc`
+        pointing at `cel_matches_at_vv`; both removed from
+        `kExplicitlyUnimplementedIds`.  Seed count 156 → 158.
+  - [x] **Runtime BUILD wiring** — `cel_runtime` cc_binary
+        exports `cel_matches_at_vv`; `cel_matches` cc_library
+        depends on `@re2` + `absl::strings`.
+  - [x] **Host export binding** — `engine.cc::kRuntimeExports`
+        adds `cel_matches_at_vv`; runtime-test instantiation
+        verified.
+  - [x] **Conformance: `string.textproto::matches/*` 0/9 → 9/9
+        PASS** (overall 1373 → 1382, +9).  Caught a real bug
+        on first run: a first-call-with-empty-pattern would
+        spuriously poison because the cache's
+        `CachedPattern() == ""` matched the default-constructed
+        empty pattern and skipped the compile path, leaving
+        `CachedRe()` null.  Added a `CachedInitialized` flag
+        + a kernel-layer regression test
+        (`EmptyPatternAfterNonEmptyPattern`) so the cold-cache
+        path is locked outside the lexicographic-first
+        parameterized row.
+
+## Rewrite M11 — `cel_host` refactor (in flight)
+
+### M11 Slice A + E — Any-of-Any P0 fix + `cel_host_error` extraction (shipped 2026-05-19)
+
+  - [x] **Any-of-Any iterative unwrap (Slice A — P0).**
+        `UnpackAnyToValue` now loops over nested Any layers
+        instead of peeling exactly one.  Mirror of cel-cpp's
+        `AdaptAny` (`internal/well_known_types.cc:1943-2007`).
+        Depth-bounded by `ABSL_CHECK(depth < 1024)` per the
+        m7a-any.md §R3 design (belt-and-suspenders against
+        malformed Any chains that wire-size can't itself bound).
+        Tests at `cel_host_test.cc::AnyOfAnyTest` — depth 1/2/3/4
+        round-trip, depth-2 P0 regression, non-WKT inner →
+        kMessage, malformed payload → kTypeMismatch, unknown FQN
+        → kFieldNotFound, empty type_url → null.
+  - [x] **Strict Any URL prefix (Slice A).**
+        `ExtractAnyFqn` accepts only `type.googleapis.com/` and
+        `type.googleprod.com/` per cel-cpp; anything else surfaces
+        as a clean `kFieldNotFound` error.  Pre-M11 accepted any
+        string-with-slash, a quiet divergence from cel-cpp.
+        Tests at `AnyOfAnyTest::StrictUrlPrefixRejectsNonStandardPrefix`
+        + `UrlWithoutSlashRejected` + `GprodPrefixAccepted`.
+  - [x] **Any-of-9-wrappers round-trip (Slice A).**
+        Each of the 9 wrapper kinds (Bool/Int32/Int64/UInt32/
+        UInt64/Float/Double/String/Bytes Value) unwraps via
+        `Any<Wrapper>` to the corresponding CEL scalar.  Locked
+        in `AnyOfWrapperKindsTest::*UnwrapsTo*` (9 tests).
+  - [x] **Any-of-WKT-time (Slice A).**  `Any<Timestamp>` →
+        kTimestamp, `Any<Duration>` → kDuration.  Locked in
+        `AnyOfWktTimeTest::*UnwrapsTo*`.
+  - [x] **`cel_host_error` TU (Slice E).**  Wire-error helpers
+        + 3VL absorbers extracted out of `cel_host.cc` into a
+        new leaf-level TU at `compiler_v2/api/internal/cel_host_error.{cc,h}`.
+        New `cc_library` + `cc_test` targets in `compiler_v2/api/BUILD.bazel`.
+        Slice-E delta vs the plan: also introduced
+        `:cel_host_hdrs` headers-only target to break the dep
+        cycle that would otherwise arise as helpers extract out;
+        every future cel_host_* TU will depend on it.
+  - [x] **`cel_host_error` direct unit tests** at
+        `compiler_v2/api/internal/cel_host_error_test.cc` —
+        positive + negative + boundary coverage per CLAUDE.md
+        testing principles.  ~17 tests covering: cel::Value
+        error factories per pinned code, `WireErrorCode`
+        exhaustive per `cel::ErrorCode` enumerator, slot writers
+        with INT64_MIN/MAX boundary, 3VL absorber propagation
+        rules (first-non-normal-wins).  Before Slice E these
+        helpers were only exercised transitively via the
+        Compile → Plan → Eval e2e suite.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

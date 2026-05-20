@@ -99,6 +99,13 @@ better done in their own milestones:
   size; the per-CelKind decoder ladder is the natural place to
   split (one helper per kind family).
 
+- `compiler_v2/api/engine.cc` — `InstantiateRuntime` flagged for
+  size (~110 lines after Phase C C3's runtime-export expansion;
+  was ~107 before).  Natural split: the wasi-stub-defining
+  section + the runtime-export-binding section + the A13/A14
+  invariant checks are three independent stages that could each
+  be a small helper.
+
 - A handful of `clang-analyzer-*` warnings under
   `compiler_v2/api/internal/cel_host.cc` (`NullArg`,
   `NullableDereferenced`) — likely false positives from
@@ -111,6 +118,53 @@ better done in their own milestones:
   via the basename heuristic, which picks the wrong sibling .cc's
   compile entry.  Not real warnings; fix needs lint.sh to find the
   right TU per header, not "any TU with this basename".
+
+- **PCH-vs-wasm32 interaction in `scripts/lint.sh`** (surfaced
+  during Phase C C3 lint, 2026-05-19).  `cel_matches.cc` is built
+  for both arm64-darwin (the native unit test) and
+  wasm32-unknown-wasi-threads (the `cel_runtime` cc_binary), so
+  `compile_commands.json` carries two entries per file.  The PCH
+  cached at `.lint-cache/lint_pch.h.pch` is built for the native
+  triple; when clang-tidy walks the wasm32 entry it fails with
+  `precompiled file '...pch' was compiled for the target
+  'arm64-apple-macosx26.2.0' but the current translation unit is
+  being compiled for target 'wasm32-unknown-wasi-threads'` plus a
+  matching `exception handling was enabled` mismatch.  Cleanest
+  fix is for `lint.sh` to filter compile-commands entries by
+  target triple and only apply the PCH to the matching set (or
+  build a parallel wasm32 PCH).  Workaround: lint each affected
+  file via `--config=darwin_arm64` aquery filter (`scripts/refresh_compile_db.sh
+  --darwin-arm64-only`) before invoking lint.sh.  Not blocking
+  any milestone; Slice E + C3 verified clean via the native-only
+  pass.
+
+## Open M11-deferred items (surfaced 2026-05-19)
+
+These aren't lint findings but are tech-debt the M11 plan
+already commits to addressing in later slices; tracking here
+keeps the queue visible in a single place.
+
+- **Slice A code path marked for deletion when Slice C lands.**
+  The host-side iterative Any unwrap (`UnpackAnyToValue` +
+  `UnpackOneAnyLayer` + `ExtractAnyFqn` in `cel_host.cc`) and
+  the `cel_wkt_unwrap_wrapper` / `cel_wkt_unwrap_time`
+  trampolines become unused once Slice C swaps codegen to call
+  the runtime-side `cel_any_peel` / `cel_wkt_peel_wrapper` /
+  `cel_wkt_peel_time` exports.  Mark them with
+  `ABSL_CHECK(false) << "deprecated by M11.D"` in Slice C
+  rather than deleting outright; Slice D is the actual
+  removal.  See `rewrite/m11-cel-host-refactor.md` §6 Slice C
+  + Slice D.
+
+- **`cel_host_codec` extraction deferred from Slice E.**  The
+  original M11 plan §4.2 grouped `cel_host_codec.{cc,h}` with
+  `cel_host_error` as a leaf-level Slice E TU.  In practice
+  the codec helpers (`DecodeKey`, `EncodeSpan`, `EncodeValue`,
+  `EncodeAggregateIfAny`, `EncodeFieldResult`, `EncodeBackingScalar`)
+  are tangled with the proto-read/write code that Slice G will
+  move — cleaner to extract codec + read + write together as
+  one cohesive landing.  Plan §4.2 file row is still valid for
+  the target structure; the timing moves into Slice G.
 
 ## Repo-policy change — 2026-04-21
 

@@ -190,6 +190,67 @@ cc_test(
     ],
 )
 
+# M11 Slice E: headers-only target carrying `MemoryView`,
+# `ExternrefTable`, `ArenaAllocator`, the backing-type abstract
+# interfaces (`HostMessageBacking` / `HostMapBacking` /
+# `HostListBacking`), and the `CelHostBindings` struct.  Extracted
+# cel_host_* TUs (cel_host_error first, more to follow in Slices
+# F-I) depend on this for type visibility without pulling in the
+# full `cel_host.cc` impl — breaks the dep cycle that otherwise
+# arises between `cel_host` and the helpers it sheds.
+cc_library(
+    name = "cel_host_hdrs",
+    hdrs = ["internal/cel_host.h"],
+    deps = [
+        ":attribute",
+        ":error",
+        ":type",
+        ":value",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# M11 Slice E: wire-error helpers + 3VL absorbers extracted out of
+# the monolithic `cel_host.cc`.  Depends on `cel_host_hdrs` for the
+# `MemoryView` abstract interface (the .cc calls
+# `mem.WriteCelValue(...)` directly).
+cc_library(
+    name = "cel_host_error",
+    srcs = ["internal/cel_host_error.cc"],
+    hdrs = ["internal/cel_host_error.h"],
+    deps = [
+        ":cel_host_hdrs",
+        ":error",
+        ":value",
+        "//compiler_v2/runtime:cel_runtime",  # CEL_ERR_* wire codes
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cel_host_error_test",
+    srcs = ["internal/cel_host_error_test.cc"],
+    deps = [
+        ":cel_host_error",
+        ":cel_host_hdrs",
+        ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Internal — Layer 1 of the cel_host stack (see
 # `rewrite/m2-ident-select-unknowns.md` §2.4 and
 # `rewrite/cel-host-surface.md`).  Pure CEL semantics:
@@ -202,12 +263,18 @@ cc_test(
 # doesn't need to know about ProtoBacking — the library dep runs
 # cel_host -> value (never the reverse) and the Value stores a
 # forward-declared `HostMessageBacking` in its payload variant.
+#
+# M11 Slice E peeled the wire-error helpers + 3VL absorbers into
+# `:cel_host_error`; the dep below routes the call sites in
+# `cel_host.cc` to that target.
 cc_library(
     name = "cel_host",
     srcs = ["internal/cel_host.cc"],
     hdrs = ["internal/cel_host.h"],
     deps = [
         ":attribute",
+        ":cel_host_error",
+        ":cel_host_hdrs",
         ":error",
         ":type",
         ":value",
@@ -256,6 +323,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",  # M11 Slice A: Any + wrappers
     ],
 )
 
@@ -492,7 +560,6 @@ cc_library(
 cc_test(
     name = "instance_test",
     srcs = ["instance_test.cc"],
-    tags = ["manual"],
     deps = [
         ":activation",
         ":attribute",
@@ -561,7 +628,6 @@ cc_library(
 cc_test(
     name = "engine_test",
     srcs = ["engine_test.cc"],
-    tags = ["manual"],
     deps = [
         ":compiler",
         ":engine",
