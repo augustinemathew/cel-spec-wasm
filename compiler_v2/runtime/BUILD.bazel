@@ -283,6 +283,33 @@ cc_test(
     ],
 )
 
+# M12 Slice A — `string_ext` extension kernels (cel-cpp's
+# `extensions/strings.cc`), self-hosted inside cel_runtime.wasm.
+# Slice A lands the UTF-8 helpers + 5 simplest functions: charAt,
+# lowerAscii, upperAscii, trim, reverse.  Slices B-E layer
+# search/extract, list-bridging (split/join), quote, and the
+# format directive parser + renderer on top.  See
+# `rewrite/m12-string-ext.md` for the slice plan.
+cc_library(
+    name = "cel_string_ext",
+    srcs = ["cel_string_ext.cc"],
+    hdrs = ["cel_string_ext.h"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cel_string_ext_test",
+    srcs = ["cel_string_ext_test.cc"],
+    deps = [
+        ":cel_runtime",
+        ":cel_string_ext",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Phase C — wasm32-wasi-threads cross-compile via the `//third_party/
 # wasi_sdk:wasm32_wasi` cc_toolchain.  Replaces the legacy genrule
 # (which invoked wasi-sdk clang directly).  Built under the wasm

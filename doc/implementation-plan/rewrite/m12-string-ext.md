@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **plan — drafted 2026-05-20, not yet started.**  Scope
+Status: **in progress — Slice A landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -227,6 +227,37 @@ runtime TU shape + the test-file pattern that B-D inherit.
 
 `cel_string_ext.{cc,h}` skeleton lands here; `cel_string_format`
 TU stays empty.
+
+> **Shipped 2026-05-20.** `compiler_v2/runtime/cel_string_ext.{h,cc}`
+> + `cel_string_ext_test.cc` landed with:
+> - `Utf8Decode` / `Utf8DecodeMulti` shared UTF-8 helpers (1- to
+>   4-byte sequence decoder; malformed input falls back to a
+>   1-byte advance carrying the raw byte, mirrors cel-cpp's
+>   `internal::Utf8Decode`).
+> - `PrevCodepoint` reverse-direction code-point boundary walker.
+> - `IsUnicodeWhitespace` verbatim port of cel-cpp's whitespace
+>   classifier (`common/values/string_value.cc::IsUnicodeWhitespace`).
+> - 5 kernels: `cel_string_char_at_at_vv`,
+>   `cel_string_lower_ascii_at_v`, `cel_string_upper_ascii_at_v`,
+>   `cel_string_trim_at_v`, `cel_string_reverse_at_v`.  ASCII-fold
+>   helpers reuse the source span when no byte would change;
+>   `trim` always returns a narrowed subspan (no alloc); `charAt`
+>   / `reverse` arena-alloc the output.
+> - ~38 unit tests across the 3VL/kind-mismatch envelope (TEST_P
+>   over the 4 unary kernels), charAt's boundary + multi-byte
+>   matrix, fold matrix + embedded-NUL guard, the 16 Unicode
+>   whitespace code-points × trim matrix, and reverse's
+>   mixed-width code-point matrix.
+> - BUILD wiring: new `:cel_string_ext` cc_library + matching
+>   `:cel_string_ext_test`.  WASM-side export wiring + checker
+>   registration + overload-table seeding all defer to Slice F.
+> - `bazel test //compiler_v2/runtime/...`: 18/18 PASS.  Lint
+>   clean (PCH path validated).
+>
+> Plan-vs-execution delta: `Utf8DecodeMulti` factored out of
+> `Utf8Decode` to stay under the `readability-function-size`
+> threshold (40 statements); semantically identical to the
+> single-function form sketched in §4.1.
 
 ### Slice B — search/extract family (~2 days)
 
