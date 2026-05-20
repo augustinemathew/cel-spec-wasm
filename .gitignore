@@ -13,3 +13,6 @@ compile_commands.json
 
 # scripts/build_lint_pch.sh output — speeds clang-tidy via -include-pch.
 .lint-cache/
+
+# Claude Code harness scratch (per-session lock files, scheduled-task state).
+.claude/
