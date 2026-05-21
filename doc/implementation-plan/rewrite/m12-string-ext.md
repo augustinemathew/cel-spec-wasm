@@ -564,6 +564,131 @@ discipline:
         with a one-paragraph "what landed" summary.
   - [ ] Future work section appended.
 
+## 9b. Hand-off note (2026-05-20)
+
+Pause point: Slices A-C are done and committed (commits 64f3815,
+164417f, 198ecf2 refactor, c5b07b7); Slices D-F are pending.  Pick
+up at Slice D in a fresh session.
+
+**What's solid and ready to build on:**
+
+- 17 kernels in 3 per-topic TUs (`cel_string_ext_codepoint.cc`,
+  `cel_string_ext_search.cc`, `cel_string_ext_list.cc`) wired via
+  the single `:cel_string_ext` cc_library.
+- Shared helpers in `cel_string_ext_internal.h` (Poison, 3VL absorb,
+  span / slot writers, UTF-8 decode + reverse walker).  Slice D/E
+  pull these in via the same `using celwasm::string_ext_internal::…`
+  pattern the existing TUs use.
+- `string_ext_test_helpers.h` fixture (`StringExtFixture` +
+  `MakeStr` / `MakeInt` / `MakeError` / `MakeUnknown` / `ExpectStr` /
+  `ExpectInt` / `ExpectError` / `ExpectKind`) — Slice D/E tests
+  inherit from the same fixture; no new builders needed for
+  scalar args.
+- `bazel test //compiler_v2/runtime/...`: 20/20 PASS.  `scripts/lint.sh`
+  clean across every file touched.
+
+**What to do next (Slice D — quote + format parser):**
+
+1. **Quote** (~80 LOC kernel + ~30 tests).  New TU
+   `cel_string_ext_quote.cc` adding `cel_string_quote_at_v`.  Per
+   cel-cpp `StringValue::Quote` (`common/values/string_value.cc`):
+   wrap input in `"..."`, escape `\`, `"`, `\n`, `\t`, `\r`, `\b`,
+   `\f`, `\v`, `\a`, NUL, and any byte < 0x20 as `\xNN`.  Verbatim
+   bytes (printable ASCII + non-ASCII multi-byte) pass through.
+   Spec rows live in `string_ext.textproto::quote` (21 rows; pick
+   ~10 for the unit-test matrix, the rest land via the e2e file in
+   Slice F).
+2. **Format directive parser** (~300 LOC).  New TU pair
+   `cel_string_format.{h,cc}`.  Public ABI per §4.3:
+   `cel_string_format_at_vv(out, fmt, args_list)`.  Slice D ships
+   the parser only — produces a `std::vector<DirectiveOp>` where
+   each op is either a literal-byte range or a directive entry
+   `(precision, kind: %d/%f/%e/%s/%b/%o/%x/%X)`.  Renderer body
+   stays `ABSL_CHECK(false) << "format renderer is a stub until M12
+   Slice E"` per the unimplemented-feature rule.
+
+   Parse rejects (every malformed shape gets a unit test):
+   - `%` at end-of-string
+   - `%.` with no type byte
+   - `%.<n>` with no type byte
+   - unknown type byte (anything outside `dfes bxX o`)
+   - `%.5.3<type>` (repeated `.` in precision)
+   - precision > 1000
+
+**What to do at Slice E — format renderer:**
+
+1. Per-(directive × CelKind) renderer matrix.  Per §4.3 table:
+   - `%d` accepts INT, UINT.
+   - `%f` / `%e` accept DOUBLE, INT, UINT (default precision 6).
+   - `%s` accepts STRING, BYTES, BOOL, TIMESTAMP, DURATION, LIST,
+     MAP, NULL_VALUE, TYPE, INT, UINT, DOUBLE.
+   - `%b` accepts INT, UINT.
+   - `%o` accepts INT, UINT.
+   - `%x` / `%X` accept INT, UINT, STRING, BYTES.
+
+   `%s` canonical-form helpers (timestamp → RFC3339, duration →
+   Go-style, list → `[a, b, c]`, map → `{k: v}` with
+   lexicographically-sorted keys) — consolidate the existing
+   scattered helpers in the runtime into one `RenderCanonical`
+   entry point.
+
+2. Per-Instance single-slot most-recent-format cache.  Mirror
+   `cel_matches.cc`'s `CachedInitialized` flag + the empty-pattern
+   lesson — write the regression test for empty format string in
+   Slice E.
+
+3. E2E tests in `compiler_v2/e2e/m12_test.cc` (new) — ~30 tests
+   covering the spec rows from each `string_ext.textproto` section.
+
+**What to do at Slice F — overload table + conformance lock:**
+
+1. Register cel-cpp's `StringsCheckerLibrary` in
+   `compiler_v2/frontend/parse_and_check.cc::ConfigureCheckerBuilder`
+   (one `builder.AddLibrary(cel::extensions::StringsCheckerLibrary())`
+   call alongside the existing `ComprehensionsV2CheckerLibrary`).
+   BUILD.bazel for `:parse_and_check` gains
+   `@cel-cpp//extensions:strings`.
+2. Seed 19 overload IDs in
+   `compiler_v2/codegen/overload_table.cc` per the §4.2 table.
+   Bump `kBuiltinSeedCount` 158 → 177 in `overload_table_test.cc`
+   with a breadcrumb line:
+   `// M12.F: 158 → 177 — added 19 string_ext overload seeds.`
+   Note: `string_ext` overload IDs are NOT in cel-cpp's
+   `StandardOverloadIds` (they're extension-only), so the coverage
+   tripwire test does NOT enumerate them — they live in
+   `kBuiltinSeeds` without a tripwire arm.
+3. Wasm export wiring in `BUILD.bazel` (`cel_runtime_wasm.bin`):
+   add 19 `-Wl,--export=cel_string_<…>` lines (one per kernel
+   from the §4.2 table).
+4. Update `:cel_runtime_wasm.bin`'s `deps` to include
+   `:cel_string_ext`.
+5. Run `bazel run //compiler_v2/conformance:run_conformance`,
+   verify +94 PASS (1382 → 1476), bump
+   `scripts/check_conformance_monotonic.sh` baseline.
+6. Closeout per CLAUDE.md "Closing out a planning doc": flip
+   header to `shipped <date>`, populate §10 with surfaced
+   follow-ups (the `value_errors` envelope unification still
+   sitting at 78 SKIPs; the LRU format cache).
+
+**Open questions still standing from §8:**
+
+- `Utf8DecodeAt` placement: shared helper now lives in
+  `cel_string_ext_internal.h`.  Will the format parser also need
+  it (yes — `%s` rendering with a string arg may want code-point
+  iteration for truncation)?  If so, no move needed — already in
+  the right place.  Slice D should confirm.
+
+- Format precision cap: stays at 1000 (cel-cpp default).  Bake in.
+
+**Risk to watch on Slice E:**
+
+- Float formatting reproducibility (§7 Risk #5).  `%f` with
+  default precision 6 must produce byte-identical output to
+  cel-cpp on the same input.  Pin via a TEST_P comparing against a
+  small reference table (NaN, ±Inf, subnormals, 0.0, 1.0, π).
+  cel-cpp uses `absl::StrFormat` with explicit precision — we
+  mirror.
+
 ## 10. Future work surfaced (to fill at closeout)
 
 (Populated when the milestone ships.  Candidates already
