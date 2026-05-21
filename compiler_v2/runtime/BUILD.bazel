@@ -283,16 +283,27 @@ cc_test(
     ],
 )
 
-# M12 Slice A — `string_ext` extension kernels (cel-cpp's
+# M12 — `string_ext` extension kernels (cel-cpp's
 # `extensions/strings.cc`), self-hosted inside cel_runtime.wasm.
-# Slice A lands the UTF-8 helpers + 5 simplest functions: charAt,
-# lowerAscii, upperAscii, trim, reverse.  Slices B-E layer
-# search/extract, list-bridging (split/join), quote, and the
-# format directive parser + renderer on top.  See
-# `rewrite/m12-string-ext.md` for the slice plan.
+# Multi-TU split per `rewrite/m12-string-ext.md` §4.1:
+#   - `cel_string_ext.h`              — single public ABI header.
+#   - `cel_string_ext_internal.h`     — shared 3VL / slot / UTF-8
+#                                        helpers (static inline).
+#   - `cel_string_ext_codepoint.cc`   — Slice A (charAt, fold,
+#                                        trim, reverse).
+#   - `cel_string_ext_search.cc`      — Slice B (indexOf,
+#                                        lastIndexOf, substring,
+#                                        replace).
+#   - `cel_string_ext_list.cc`        — Slice C (split/join — TBD).
+#   - `cel_string_ext_quote.cc`       — Slice D quote (TBD).
+# Single library aggregates every TU; call sites see one `:cel_string_ext`.
 cc_library(
     name = "cel_string_ext",
-    srcs = ["cel_string_ext.cc"],
+    srcs = [
+        "cel_string_ext_codepoint.cc",
+        "cel_string_ext_internal.h",
+        "cel_string_ext_search.cc",
+    ],
     hdrs = ["cel_string_ext.h"],
     deps = [
         ":cel_runtime",
@@ -300,12 +311,34 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "string_ext_test_helpers",
+    testonly = True,
+    hdrs = ["string_ext_test_helpers.h"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
 cc_test(
-    name = "cel_string_ext_test",
-    srcs = ["cel_string_ext_test.cc"],
+    name = "cel_string_ext_codepoint_test",
+    srcs = ["cel_string_ext_codepoint_test.cc"],
     deps = [
         ":cel_runtime",
         ":cel_string_ext",
+        ":string_ext_test_helpers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_string_ext_search_test",
+    srcs = ["cel_string_ext_search_test.cc"],
+    deps = [
+        ":cel_runtime",
+        ":cel_string_ext",
+        ":string_ext_test_helpers",
         "@com_google_googletest//:gtest_main",
     ],
 )

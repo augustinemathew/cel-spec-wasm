@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slice A + B landed 2026-05-20.**  Scope
+Status: **in progress — Slice A + B + multi-TU split landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -104,12 +104,74 @@ Same trade as Phase C's matches kernel:
 
 ### 4.1 New runtime files
 
+> **Plan-vs-execution delta (added 2026-05-20 during Slice B
+> review).**  The original §4.1 sketch placed every non-format
+> kernel in a single `cel_string_ext.cc`.  After Slice A + B
+> landed (~761 LOC), the projected end-state for Slices A-D
+> would push that single TU past 1500 LOC — well over the
+> readable-per-file budget.  The TU is now split per-topic
+> (mirrors the `cel-runtime-c-split-plan.md` pattern): a single
+> public header + a private shared header + one TU per slice.
+>
+> Tests get the matching split: one test TU per kernel TU, with
+> a shared `string_ext_test_helpers.h` fixture (the helper was
+> always called out in §5.3; the test split formalises it).
+
+**Public header.**  Unchanged shape — one file, all kernels.
+
 | File | ~LOC | Contents |
 |---|---|---|
-| `compiler_v2/runtime/cel_string_ext.h` | ~120 | Public ABI: 19 `cel_string_ext_*_at_v*` exports.  Wire formats match the canonical `_at_v` (unary) / `_at_vv` (binary) / `_at_vvv` (ternary) shapes already used by `cel_string_concat_at_vv`, `cel_string_starts_with_at_vv`, etc.  CelKind constants for `format` arg-list construction. |
-| `compiler_v2/runtime/cel_string_ext.cc` | ~600 | Implementations for all 13 functions EXCEPT `format` (which gets its own TU because its directive-parser dominates the LOC).  Code-point iterator helper (`Utf8DecodeAt`, `Utf8Length`) lives here, shared with `cel_string_format.cc`. |
-| `compiler_v2/runtime/cel_string_format.h` | ~80 | Public ABI: `cel_string_format_at_vv(out, fmt, args_list)`.  `FormatDirective` enum mirroring cel-cpp's `extensions/formatting.cc`. |
-| `compiler_v2/runtime/cel_string_format.cc` | ~500 | Directive parser + per-(directive × CelKind) renderer.  Per-Instance single-slot most-recent-format cache (parsed directive sequence keyed by raw format-string bytes, same cache shape as `cel_matches`). |
+| `cel_string_ext.h` | ~150 | Public ABI: every `cel_string_ext_*_at_v*` declaration (Slices A-D).  This is the only file other TUs `#include` for the kernel ABI — the multi-TU split is invisible to call sites. |
+
+**Private shared header + impl.**  New, sits between the public
+header and the per-topic TUs.
+
+| File | ~LOC | Contents |
+|---|---|---|
+| `cel_string_ext_internal.h` | ~120 | `static inline` helpers shared by every kernel TU: `Poison`, `Absorb3vlUnary` / `_Binary`, `BorrowSpan`, `WriteStringFromBytes` / `_Span` / `WriteSubspan` / `WriteInt`, and the `Utf8Decode` / `Utf8DecodeMulti` / `PrevCodepoint` / `IsUnicodeWhitespace` UTF-8 helpers.  Per `cel-runtime-c-split-plan.md` §2, keeping these `static inline` preserves cross-TU inlining without forcing extern definitions. |
+| `cel_string_ext_internal.cc` | ~30 | Non-inline bodies for the rare helpers too big to inline (currently empty — every helper inlines cleanly; left as a placeholder TU for the `BuildReplaced` / format-directive renderer that Slice E may want to factor out). |
+
+**Per-topic kernel TUs.**  One per slice; each builds on
+`cel_string_ext_internal.h`.
+
+| File | ~LOC | Contents |
+|---|---|---|
+| `cel_string_ext_codepoint.cc` | ~250 | Slice A: `charAt`, `lowerAscii`, `upperAscii`, `trim`, `reverse`.  Plus the `AsciiFoldInto` helper shared by the two case-fold kernels. |
+| `cel_string_ext_search.cc` | ~280 | Slice B: `indexOf` × 2, `lastIndexOf` × 2, `substring` × 2, `replace` × 2.  Shared `IndexOfImpl` / `LastIndexOfImpl` / `CodepointToByteOffset` / `ValidatePos` / `BuildReplaced` / `DoReplace` helpers in this TU's anonymous namespace. |
+| `cel_string_ext_list.cc` | ~200 | Slice C: `split` (×2), `join` (×2).  Bridges to `cel_list_*` arena-list constructors. |
+| `cel_string_ext_quote.cc` | ~80 | Slice D quote: `strings.quote`.  Escape-sequence matrix mirrors cel-cpp's `StringValue::Quote`. |
+
+**Format TU pair (Slices D parser + E renderer).**  Already
+separate from `cel_string_ext` per the original §4.1.
+
+| File | ~LOC | Contents |
+|---|---|---|
+| `cel_string_format.h` | ~80 | Public ABI: `cel_string_format_at_vv(out, fmt, args_list)`.  `FormatDirective` enum mirroring cel-cpp's `extensions/formatting.cc`. |
+| `cel_string_format.cc` | ~500 | Directive parser + per-(directive × CelKind) renderer.  Per-Instance single-slot most-recent-format cache (parsed directive sequence keyed by raw format-string bytes, same cache shape as `cel_matches`). |
+
+**BUILD wiring (single `:cel_string_ext` cc_library).**  Mirrors
+the existing `:cel_runtime` aggregator pattern — one library
+target absorbing every TU; call sites depend on
+`:cel_string_ext` and get the full ABI.  Per-TU bazel targets
+would add granularity at the cost of cross-TU inlining (the
+`-O3 -flto` knobs in `:cel_runtime` rely on the single-library
+shape).
+
+```python
+cc_library(
+    name = "cel_string_ext",
+    srcs = [
+        "cel_string_ext_codepoint.cc",
+        "cel_string_ext_internal.cc",
+        "cel_string_ext_internal.h",
+        "cel_string_ext_list.cc",
+        "cel_string_ext_quote.cc",
+        "cel_string_ext_search.cc",
+    ],
+    hdrs = ["cel_string_ext.h"],
+    deps = [":cel_runtime", "@com_google_absl//absl/strings"],
+)
+```
 
 ### 4.2 Codegen change summary
 
@@ -185,9 +247,21 @@ test files + targeted entries in existing e2e files.
 
 ### 5.1 Per-TU test matrix
 
+> **Plan-vs-execution delta (2026-05-20).**  Original §5.1 had
+> one `cel_string_ext_test.cc` per kernel TU.  Splitting the
+> kernel TU per topic (see §4.1 delta) splits tests in
+> lockstep — same per-slice scenario lists, just routed to
+> dedicated test files so each stays under ~500 LOC and
+> compile-iteration time during Slice C-E development stays
+> short.  Shared fixture moved into `string_ext_test_helpers.h`
+> (always called out in §5.3, now formalised).
+
 | TU | Test file | Core scenarios |
 |---|---|---|
-| `cel_string_ext` (everything except format) | `cel_string_ext_test.cc` | Per-function happy path × empty input × multi-byte UTF-8 × embedded NUL × out-of-range index × negative index × 3VL absorption (error/unknown × every arg slot) × kind mismatch (non-string operand).  `split` / `join` exercise the arena-list allocation path: empty list, single-element list, very long element strings.  `quote` exercises every escape sequence (`\\`, `\"`, `\n`, `\t`, `\r`, `\0`, `\\xNN` for non-printable bytes).  `charAt(s, i)` boundary: `i = 0`, `i = len-1` (in code points), `i = len` (returns empty per spec), `i = -1` (out of range), `i = INT64_MAX`.  `substring` boundary: zero-length slice, full-string slice, end-before-start. |
+| `cel_string_ext_codepoint` | `cel_string_ext_codepoint_test.cc` | Slice A: charAt boundary + multi-byte matrix, lowerAscii / upperAscii fold matrix + embedded-NUL guard, every Unicode-whitespace code-point × trim parameterised table, reverse mixed-width code-point matrix.  Plus the shared `UnaryEnvelopeTable` over all 4 `_at_v` kernels. |
+| `cel_string_ext_search` | `cel_string_ext_search_test.cc` | Slice B: indexOf / lastIndexOf spec rows + boundary matrix (negative pos, pos beyond byte size).  substring spec rows + boundary (negative start, end<start, end>size).  replace spec rows + empty-needle interleaving + n=0 / n<0 / chained limit behaviour. |
+| `cel_string_ext_list` | `cel_string_ext_list_test.cc` | Slice C: split / join.  Empty list, single-element list, very long element strings, arena-list lifetime, sep-vs-no-sep variants. |
+| `cel_string_ext_quote` | `cel_string_ext_quote_test.cc` | Slice D quote: every escape sequence (`\\`, `\"`, `\n`, `\t`, `\r`, `\0`, `\xNN`).  Verbatim strings (no escape needed) round-trip. |
 | `cel_string_format` (directive parser + renderer) | `cel_string_format_test.cc` | Per-directive happy path × per accepting-CelKind × precision boundaries × negative precision rejected × precision > 1000 rejected.  Malformed format strings: `%` at end, `%.` with no type, unknown directive type, repeated `.` in precision.  Arg-list mismatches: too few args, too many args, kind mismatch per directive.  Per-CelKind `%s` canonical-form test: timestamp formats as RFC3339, duration as Go-style, list as `[a, b, c]`, map as `{k: v}`, null as `null`, bool as `true`/`false`.  Cache behaviour: same format string 100× hits cache, alternating format strings recompile.  Boundary: empty format string (returns empty), very long format string (4 KiB literal + 100 directives). |
 | Codegen wiring | `overload_table_test.cc` (existing) | Seed-count bump 158 → 178.  Per-overload `LookupById` returns the right runtime export.  No new `kExplicitlyUnimplementedIds` entries. |
 | E2E | `compiler_v2/e2e/m12_test.cc` (new) | ~30 tests covering the spec rows from each `string_ext.textproto` section: at least one per function, plus the three biggest sections (`format` 78 rows, `quote` 21 rows, `last_index_of` / `index_of` 14 each) get a 5-test sample.  Locks the Compile → Plan → Eval pipeline end-to-end. |

@@ -153,7 +153,17 @@ echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s) — jobs=$JOBS, pch
 # C translation unit shared with C++ tests (wrapped in `extern "C"`).
 declare -a c_targets=()
 declare -a cpp_targets=()
+# `compiler_v2/runtime/*_internal.h` and `string_ext_test_helpers.h`
+# are C++-only orphan headers (use absl + gtest, no matching `.cc`
+# basename clang-tidy could pull a compile entry from).  Skip the
+# direct analysis — they're transitively covered by the `.cc` files
+# that include them.  Pattern lives here rather than in the
+# discovery glob so a forced `--all` run still skips them.
 for f in "${targets[@]}"; do
+  case "$f" in
+    compiler_v2/runtime/cel_string_ext_internal.h) continue ;;
+    compiler_v2/runtime/string_ext_test_helpers.h) continue ;;
+  esac
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
     compiler/runtime/*.h)         c_targets+=("$f") ;;
