@@ -63,7 +63,7 @@ namespace {
 // `expr_lower.cc` can do a single lookup-and-emit (mirrors
 // arithmetic / compare). Three-path origin dispatch is documented
 // in `rewrite/map-list-dispatch.md`.
-constexpr std::array<Seed, 158> kBuiltinSeeds{
+constexpr std::array<Seed, 177> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -445,6 +445,54 @@ constexpr std::array<Seed, 158> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_to_bytes_at_v"}},
     Seed{"bytes_to_string",
          {ImportModule::kCelRuntime, "cel_bytes_to_string_at_v"}},
+    // ── M12 `string_ext` extension (cel-cpp `extensions/strings.cc`) ──
+    // 19 overload IDs covering charAt, lowerAscii, upperAscii, trim,
+    // reverse, indexOf (×2), lastIndexOf (×2), substring (×2), replace
+    // (×2), split (×2), join (×2), quote, format.  All kernels are
+    // self-hosted in `cel_runtime.wasm`; see
+    // `rewrite/m12-string-ext.md` §4.2 + the
+    // `cel_string_{ext,format}.{h,cc}` family.
+    //
+    // These IDs are NOT in cel-cpp's `StandardOverloadIds` (they're
+    // extension-only), so the coverage tripwire test in
+    // `overload_table_test.cc::CoverageTripwireClassifiesEveryStandardId`
+    // does NOT enumerate them — they live in `kBuiltinSeeds` without
+    // a tripwire arm.
+    Seed{"string_char_at_int",
+         {ImportModule::kCelRuntime, "cel_string_char_at_at_vv"}},
+    Seed{"string_index_of_string",
+         {ImportModule::kCelRuntime, "cel_string_index_of_at_vv"}},
+    Seed{"string_index_of_string_int",
+         {ImportModule::kCelRuntime, "cel_string_index_of_at_vvv"}},
+    Seed{"string_last_index_of_string",
+         {ImportModule::kCelRuntime, "cel_string_last_index_of_at_vv"}},
+    Seed{"string_last_index_of_string_int",
+         {ImportModule::kCelRuntime, "cel_string_last_index_of_at_vvv"}},
+    Seed{"string_lower_ascii",
+         {ImportModule::kCelRuntime, "cel_string_lower_ascii_at_v"}},
+    Seed{"string_upper_ascii",
+         {ImportModule::kCelRuntime, "cel_string_upper_ascii_at_v"}},
+    Seed{"string_replace_string_string",
+         {ImportModule::kCelRuntime, "cel_string_replace_at_vvv"}},
+    Seed{"string_replace_string_string_int",
+         {ImportModule::kCelRuntime, "cel_string_replace_n_at_vvvv"}},
+    Seed{"string_split_string",
+         {ImportModule::kCelRuntime, "cel_string_split_at_vv"}},
+    Seed{"string_split_string_int",
+         {ImportModule::kCelRuntime, "cel_string_split_n_at_vvv"}},
+    Seed{"string_substring_int",
+         {ImportModule::kCelRuntime, "cel_string_substring_at_vv"}},
+    Seed{"string_substring_int_int",
+         {ImportModule::kCelRuntime, "cel_string_substring_range_at_vvv"}},
+    Seed{"string_trim", {ImportModule::kCelRuntime, "cel_string_trim_at_v"}},
+    Seed{"list_join", {ImportModule::kCelRuntime, "cel_string_join_at_v"}},
+    Seed{"list_join_string",
+         {ImportModule::kCelRuntime, "cel_string_join_sep_at_vv"}},
+    Seed{"strings_quote", {ImportModule::kCelRuntime, "cel_string_quote_at_v"}},
+    Seed{"string_format",
+         {ImportModule::kCelRuntime, "cel_string_format_at_vv"}},
+    Seed{"string_reverse",
+         {ImportModule::kCelRuntime, "cel_string_reverse_at_v"}},
 };
 
 // Overload ids the OverloadTable does NOT seed.  Every cel-cpp

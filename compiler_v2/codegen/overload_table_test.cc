@@ -66,11 +66,17 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // Phase C C2: 156 → 158 — added the regex `matches` +
 // `matches_string` overload ids; both point at the self-hosted
 // RE2-backed `cel_matches_at_vv` kernel (`cel_matches.cc`).
+// M12.F: 158 → 177 — added 19 string_ext overload seeds for the
+// cel-cpp `strings` extension library (charAt, indexOf ×2,
+// lastIndexOf ×2, lowerAscii, upperAscii, replace ×2, split ×2,
+// substring ×2, trim, join ×2, quote, format, reverse).
+// All 19 kernels are self-hosted in `cel_runtime.wasm`; see
+// `rewrite/m12-string-ext.md` §4.2.
 //
 // The seed count rises monotonically as kernels land.  When it
 // changes, update both `kBuiltinSeeds`'s std::array size in
 // `overload_table.cc` and this constant.
-constexpr size_t kBuiltinSeedCount = 158;
+constexpr size_t kBuiltinSeedCount = 177;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

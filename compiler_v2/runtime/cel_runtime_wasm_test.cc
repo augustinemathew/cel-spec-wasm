@@ -317,6 +317,12 @@ struct RuntimeHarness {
       // linked (the libc startup wires poll-based blocking even
       // though no kernel actually polls).
       {"poll_oneoff", 11, {WASM_I32, WASM_I32, WASM_I32, WASM_I32}, true},
+      // M12 string_ext: linking absl::strings::str_format (used by
+      // the format renderer) pulls in fstat / read probes for
+      // stderr-on-panic paths.  Never called from the kernels
+      // under test; no-op stubs are sufficient.
+      {"fd_fdstat_get", 13, {WASM_I32, WASM_I32}, true},
+      {"fd_read", 7, {WASM_I32, WASM_I32, WASM_I32, WASM_I32}, true},
   };
   for (const Stub& s : kStubs) {
     auto r =

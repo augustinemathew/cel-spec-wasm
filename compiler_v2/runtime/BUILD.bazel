@@ -705,10 +705,36 @@ cc_binary(
         # RE2 + per-Instance single-slot most-recent-pattern cache
         # live in cel_matches.cc.
         "-Wl,--export=cel_matches_at_vv",
+        # M12 `string_ext` extension kernels — 17 self-hosted in
+        # `cel_string_ext_*.cc` (charAt / fold / trim / reverse /
+        # indexOf ×2 / lastIndexOf ×2 / substring ×2 / replace ×2 /
+        # split ×2 / join ×2 / quote) + the format dispatcher.
+        # See `rewrite/m12-string-ext.md` §4.2.
+        "-Wl,--export=cel_string_char_at_at_vv",
+        "-Wl,--export=cel_string_lower_ascii_at_v",
+        "-Wl,--export=cel_string_upper_ascii_at_v",
+        "-Wl,--export=cel_string_trim_at_v",
+        "-Wl,--export=cel_string_reverse_at_v",
+        "-Wl,--export=cel_string_index_of_at_vv",
+        "-Wl,--export=cel_string_index_of_at_vvv",
+        "-Wl,--export=cel_string_last_index_of_at_vv",
+        "-Wl,--export=cel_string_last_index_of_at_vvv",
+        "-Wl,--export=cel_string_substring_at_vv",
+        "-Wl,--export=cel_string_substring_range_at_vvv",
+        "-Wl,--export=cel_string_replace_at_vvv",
+        "-Wl,--export=cel_string_replace_n_at_vvvv",
+        "-Wl,--export=cel_string_split_at_vv",
+        "-Wl,--export=cel_string_split_n_at_vvv",
+        "-Wl,--export=cel_string_join_at_v",
+        "-Wl,--export=cel_string_join_sep_at_vv",
+        "-Wl,--export=cel_string_quote_at_v",
+        "-Wl,--export=cel_string_format_at_vv",
     ],
     tags = ["manual"],
     deps = [
         ":cel_matches",
+        ":cel_string_ext",
+        ":cel_string_format",
         ":cel_time_parse",
     ],
 )

@@ -79,6 +79,14 @@ for e in db:
     args_blob = ' '.join(e['arguments'])
     if 'abseil-cpp~' not in args_blob or 'protobuf~' not in args_blob:
         continue
+    # Skip wasm32-targeted entries (Phase C kernels build under
+    # `//third_party/wasi_sdk:wasm32_wasi`).  Lint is run against
+    # native-host code; the PCH must be built for the same target,
+    # otherwise clang-tidy refuses to load the PCH with
+    # "exception handling was enabled in precompiled file ...
+    # but is currently disabled" plus a target-triple mismatch.
+    if '-target' in args_blob and 'wasm32' in args_blob:
+        continue
     entry = e
     break
 if entry is None:

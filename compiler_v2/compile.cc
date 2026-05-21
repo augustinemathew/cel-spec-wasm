@@ -181,6 +181,17 @@ void InstallListImports(WasmModule& mod) {
 // (`cel_list_size`/etc.) carry no suffix and use a hand-rolled
 // table.  Returns 0 for "not a helper we install here".
 int OverloadHelperArity(absl::string_view name) {
+  // Longest suffixes first — `_at_vv` is a suffix of `_at_vvv` which
+  // is a suffix of `_at_vvvv`, so the obvious order would match the
+  // shortest form on every long-form helper.  M12's `_at_vvv` /
+  // `_at_vvvv` kernels (indexOf-with-pos, substring-range, replace,
+  // replace_n, split-n) require the explicit longer arms.
+  if (name.size() >= 8 && name.substr(name.size() - 8) == "_at_vvvv") {
+    return 5;
+  }
+  if (name.size() >= 7 && name.substr(name.size() - 7) == "_at_vvv") {
+    return 4;
+  }
   if (name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv") {
     return 3;
   }
@@ -229,11 +240,44 @@ int OverloadHelperArity(absl::string_view name) {
   return 0;
 }
 
+// Install a single overload helper as a wasm import with the
+// correct arity-derived parameter shape.  Returns true if an
+// import was installed; false if `name` is not a known arity
+// (caller skips installation).
+bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
+                           const char* module_name) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType v_params[2] = {i32, i32};
+  const BinaryenType vv_params[3] = {i32, i32, i32};
+  const BinaryenType vvv_params[4] = {i32, i32, i32, i32};
+  const BinaryenType vvvv_params[5] = {i32, i32, i32, i32, i32};
+  const std::string nstr(name);
+  const int arity = OverloadHelperArity(name);
+  if (arity == 5) {
+    mod.AddFunctionImport(nstr, module_name, nstr, vvvv_params,
+                          BinaryenTypeNone());
+    return true;
+  }
+  if (arity == 4) {
+    mod.AddFunctionImport(nstr, module_name, nstr, vvv_params,
+                          BinaryenTypeNone());
+    return true;
+  }
+  if (arity == 3) {
+    mod.AddFunctionImport(nstr, module_name, nstr, vv_params,
+                          BinaryenTypeNone());
+    return true;
+  }
+  if (arity == 2) {
+    mod.AddFunctionImport(nstr, module_name, nstr, v_params,
+                          BinaryenTypeNone());
+    return true;
+  }
+  return false;
+}
+
 void InstallOverloadImports(WasmModule& mod,
                             const OverloadTable& overload_table) {
-  const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType vv_params[3] = {i32, i32, i32};
-  const BinaryenType v_params[2] = {i32, i32};
   absl::flat_hash_set<std::string> installed;
   for (uint32_t id = 1; id <= overload_table.size(); ++id) {
     const OverloadImpl& impl = overload_table.LookupById(id);
@@ -255,14 +299,7 @@ void InstallOverloadImports(WasmModule& mod,
     if (module_name == nullptr) continue;
     const std::string name(impl.name);
     if (installed.contains(name)) continue;
-    const int arity = OverloadHelperArity(impl.name);
-    if (arity == 3) {
-      mod.AddFunctionImport(name, module_name, name, vv_params,
-                            BinaryenTypeNone());
-    } else if (arity == 2) {
-      mod.AddFunctionImport(name, module_name, name, v_params,
-                            BinaryenTypeNone());
-    }
+    InstallOverloadImport(mod, name, module_name);
     installed.insert(name);
   }
 
@@ -275,8 +312,7 @@ void InstallOverloadImports(WasmModule& mod,
   // imports rule (CLAUDE.md) applies — better to import once and
   // never use than to gate on AST inspection.
   if (!installed.contains("cel_copy_slot")) {
-    mod.AddFunctionImport("cel_copy_slot", "cel", "cel_copy_slot", v_params,
-                          BinaryenTypeNone());
+    InstallOverloadImport(mod, "cel_copy_slot", "cel");
     installed.insert("cel_copy_slot");
   }
 }

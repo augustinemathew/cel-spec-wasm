@@ -307,9 +307,8 @@ void RenderDoubleWithPrecision(std::string& buf, double v, int precision,
     return;
   }
   const int p = (precision == kPrecisionDefault) ? 6 : precision;
-  absl::StrAppend(&buf,
-                  scientific ? absl::StrFormat("%.*e", p, v)
-                             : absl::StrFormat("%.*f", p, v));
+  absl::StrAppend(&buf, scientific ? absl::StrFormat("%.*e", p, v)
+                                   : absl::StrFormat("%.*f", p, v));
 }
 
 }  // namespace
@@ -347,7 +346,9 @@ void AppendBinaryUint(std::string& buf, uint64_t v) {
     tmp[n++] = (v & 1u) ? '1' : '0';
     v >>= 1;
   }
-  while (n > 0) buf.push_back(tmp[--n]);
+  while (n > 0) {
+    buf.push_back(tmp[--n]);
+  }
 }
 
 }  // namespace
@@ -414,8 +415,8 @@ void AppendBytesAsHex(std::string& buf, absl::string_view bytes, bool upper) {
 namespace {
 
 void AppendHexUint(std::string& buf, uint64_t v, bool upper) {
-  absl::StrAppend(&buf, upper ? absl::StrFormat("%X", v)
-                              : absl::StrFormat("%x", v));
+  absl::StrAppend(&buf,
+                  upper ? absl::StrFormat("%X", v) : absl::StrFormat("%x", v));
 }
 
 }  // namespace

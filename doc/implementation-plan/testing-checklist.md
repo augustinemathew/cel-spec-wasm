@@ -2305,6 +2305,56 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         helpers were only exercised transitively via the
         Compile → Plan → Eval e2e suite.
 
+### Rewrite M12 — string_ext extension (slices A–F shipped 2026-05-20)
+
+`m12-string-ext.md` slices A-F land the cel-cpp `strings`
+extension library: 13 functions × 19 overloads + the
+printf-style `format` directive, all self-hosted inside
+`cel_runtime.wasm`.  Conformance: `string_ext.textproto` 0/216
+→ 94/216, total 1382 → 1476 PASS (+94, hit §5.2 target
+exactly).  Self-hosted runtime kernels in
+`compiler_v2/runtime/cel_string_ext_*.cc` (Slices A-D) +
+`cel_string_format*.cc` (Slices D-E) + checker library
+registration + 19 overload-table seeds + wasm exports + linker
+bindings (Slice F).
+
+  - [x] **Slice A — code-point iterator + simple kernels**
+        (charAt, lowerAscii, upperAscii, trim, reverse).
+        `cel_string_ext_codepoint.cc` + `cel_string_ext_internal.h`
+        shared UTF-8 helpers + 38 unit tests covering boundary
+        + multi-byte UTF-8 + Unicode-whitespace matrix.
+  - [x] **Slice B — search/extract family** (indexOf ×2 +
+        lastIndexOf ×2 + substring ×2 + replace ×2).  Boundary
+        matrix in `cel_string_ext_search_test.cc`: negative pos,
+        end<start, empty needle, n=0/<0 semantics.  cel-cpp
+        parity verified row-by-row against
+        `common/values/string_value.cc`.
+  - [x] **Slice C — list-bridging family** (split ×2 + join ×2).
+        `cel_string_ext_list.cc` with direct CelValue stamping
+        into arena list element array.  Final-piece rule for
+        split locked verbatim.  CEL_LIST_HOST deferred (per §10).
+  - [x] **Slice D — quote + format directive parser**
+        (`strings.quote` + `cel_string_format_at_vv` parser).
+        Diagnostic strings byte-identical to cel-cpp's
+        `extensions/formatting.cc`.  27 parser tests across
+        happy-path matrix + every malformed-input reject path.
+  - [x] **Slice E — format renderer + per-CelKind dispatch.**
+        7 Render* arms in `cel_string_format_render.cc` across
+        the full directive × CelKind matrix; per-Instance
+        single-slot format cache mirroring `cel_matches.cc`'s
+        shape (CachedInitialized flag locks the empty-pattern
+        bug closed at write time).  49 dispatcher tests including
+        cache regression coverage.
+  - [x] **Slice F — overload-table wiring + conformance lock.**
+        StringsCheckerLibrary registration; 19 overload IDs
+        seeded (158 → 177); `_at_vvv` (arity 4) + `_at_vvvv`
+        (arity 5) recognised by `compile.cc::OverloadHelperArity`;
+        wasm exports + `engine.cc::kRuntimeExports` table
+        extensions; literal-list `format` arg static-subset
+        admission.  34 e2e tests in
+        `compiler_v2/e2e/m12_test.cc`.  Conformance baseline
+        bumped 1382 → 1476.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

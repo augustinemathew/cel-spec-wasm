@@ -39,6 +39,7 @@
 #include "compiler_v2/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
 #include "extensions/comprehensions_v2.h"
+#include "extensions/strings.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/compiler/importer.h"
 #include "google/protobuf/compiler/parser.h"
@@ -372,9 +373,36 @@ const char* UnacceptableLabel(const cel::TypeSpec& type) {
 void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out);
 
+// `<string>.format(<list>)` (M12 string_ext extension) takes a
+// heterogeneously-typed args list — empty list literals type as
+// `list(dyn)`, mixed-element-type lists too, and nested
+// list/map literals in the args carry the same dyn exposure.
+// The runtime kernel dispatches per-element by CelKind via
+// `RenderString` in `cel_string_format_render.cc`, so the dyn
+// exposure is a checker-side artefact rather than a runtime
+// concern.  Admit the args sub-tree without recursing — every
+// child node is presumed safe under runtime per-kind dispatch.
+//
+// Scope: only the LITERAL-LIST shape `"...".format([...])`
+// admits.  Other shapes (variable holding a list, comprehension
+// result, …) stay rejected — they can't be statically validated
+// for runtime kind safety without further analysis (e.g. a
+// `list<dyn>`-typed variable might carry messages, which
+// `RenderString` errors out on).
+bool IsFormatCallWithListLiteralArgs(const cel::CallExpr& call) {
+  if (!call.has_target()) return false;
+  if (call.function() != "format") return false;
+  if (call.args().size() != 1) return false;
+  return call.args()[0].kind_case() == cel::ExprKindCase::kListExpr;
+}
+
 void CheckSubsetCall(const cel::CallExpr& call, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out) {
   if (call.has_target()) CheckSubsetNode(call.target(), types, out);
+  if (IsFormatCallWithListLiteralArgs(call)) {
+    // Args subtree fully admitted — see comment above.
+    return;
+  }
   for (const auto& arg : call.args()) {
     CheckSubsetNode(arg, types, out);
   }
@@ -617,6 +645,15 @@ absl::Status ConfigureCheckerBuilder(
   // "undeclared reference to 'cel.@mapInsert'".
   if (auto s =
           builder.AddLibrary(cel::extensions::ComprehensionsV2CheckerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  // M12 string_ext: registers the 13 cel-cpp `strings` extension
+  // functions + the printf-style `format` directive.  Runtime
+  // kernels are self-hosted in `cel_runtime.wasm`; codegen
+  // routes through the 19 overload IDs seeded in
+  // `overload_table.cc`.
+  if (auto s = builder.AddLibrary(cel::extensions::StringsCheckerLibrary());
       !s.ok()) {
     return s;
   }

@@ -292,6 +292,28 @@ cc_test(
     ],
 )
 
+# M12 e2e — `string_ext` extension functions lit up end-to-end.
+# Mirrors representative rows from
+# `tests/simple/testdata/string_ext.textproto` so a regression in
+# any of the 13 functions (× 19 overloads + format) surfaces
+# before the conformance run.
+cc_test(
+    name = "m12_test",
+    srcs = ["m12_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Program save / reload round-trip e2e — proves the wasm bytes from
 # Compiler::Compile round-trip through `Program(std::vector<uint8_t>)`
 # reconstruction, Plan, and Eval to bit-identical Values.  Locks the

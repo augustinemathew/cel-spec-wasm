@@ -99,12 +99,11 @@ better done in their own milestones:
   size; the per-CelKind decoder ladder is the natural place to
   split (one helper per kind family).
 
-- `compiler_v2/api/engine.cc` — `InstantiateRuntime` flagged for
-  size (~110 lines after Phase C C3's runtime-export expansion;
-  was ~107 before).  Natural split: the wasi-stub-defining
-  section + the runtime-export-binding section + the A13/A14
-  invariant checks are three independent stages that could each
-  be a small helper.
+- ~~`compiler_v2/api/engine.cc` — `InstantiateRuntime` flagged for
+  size~~ — addressed M12.F (2026-05-20).  Split into
+  `BindRuntimeFuncHandles` + `SeedRuntimeArena` +
+  `EnforceRuntimeMemoryInvariants` helpers; the function body
+  is now the sequence of stage calls.
 
 - A handful of `clang-analyzer-*` warnings under
   `compiler_v2/api/internal/cel_host.cc` (`NullArg`,

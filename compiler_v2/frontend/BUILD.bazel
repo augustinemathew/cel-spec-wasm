@@ -40,6 +40,7 @@ cc_library(
         "@cel-cpp//common:type",
         "@cel-cpp//extensions:bindings_ext",
         "@cel-cpp//extensions:comprehensions_v2",
+        "@cel-cpp//extensions:strings",
         "@cel-cpp//parser",
         "@cel-cpp//parser:macro_registry",
         "@cel-cpp//parser:options",

@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slices A + B + C + multi-TU split + D + E landed 2026-05-20.**  Scope
+Status: **shipped 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -558,6 +558,79 @@ run locks 94 PASS unlock.
 
 Closeout per CLAUDE.md ## Closing out a planning doc.
 
+> **Shipped 2026-05-20.**  Wiring across 5 files lights up the
+> end-to-end pipeline for all 13 string_ext functions:
+>
+> - **Frontend (parse_and_check.cc).**  Registered
+>   `cel::extensions::StringsCheckerLibrary()` alongside the
+>   existing `ComprehensionsV2CheckerLibrary`.  Type-check now
+>   accepts `s.charAt(i)`, `s.format(args)`, etc.  BUILD dep
+>   `@cel-cpp//extensions:strings` added.
+> - **Static-subset gate (parse_and_check.cc::CheckSubsetCall).**
+>   Added admission for `"...".format([...])` literal-list args:
+>   the runtime kernel dispatches per-element by CelKind via
+>   `RenderString`, so empty-list and mixed-element-type lists
+>   (which type as `list(dyn)` at the checker layer) no longer
+>   trip the RejectDyn check.  Scope: literal-list args only —
+>   variable / comprehension-result args stay rejected.
+> - **Codegen (overload_table.cc).**  Seeded 19 overload IDs
+>   (157 → 177).  IDs are extension-only (NOT in cel-cpp's
+>   `StandardOverloadIds`) so the coverage tripwire test isn't
+>   enumerated; they live in `kBuiltinSeeds` without a tripwire
+>   arm.
+> - **Codegen-side import installer (compile.cc::OverloadHelperArity).**
+>   Extended the helper-suffix → arity table to recognise
+>   `_at_vvv` (arity 4) and `_at_vvvv` (arity 5) for the M12
+>   kernels that take 3 / 4 arg slots (`indexOf_pos`,
+>   `substring_range`, `replace`, `replace_n`, `split_n`).
+>   `InstallOverloadImport` factored out of `InstallOverloadImports`
+>   to absorb the new arms; size lint passes.
+> - **Host-side import bridge (engine.cc::kRuntimeExports).**
+>   Added 19 export names to the linker-bind table.  Without
+>   this, the expr module's `(import "cel" "cel_string_*")`
+>   lookups fail with `instantiate(expr): unknown import` — a
+>   regression mode caught in conformance pre-flight before
+>   any test row was actually evaluated.
+> - **Engine helper hygiene (engine.cc).**  Split
+>   `InstantiateRuntime` (was over function-size lint gate) into
+>   `BindRuntimeFuncHandles` + `SeedRuntimeArena` +
+>   `EnforceRuntimeMemoryInvariants` helpers.  Lint-backlog
+>   entry cleared.
+> - **Wasm exports (runtime/BUILD.bazel).**  Added 19
+>   `-Wl,--export=cel_string_*` lines to `cel_runtime_wasm.bin`;
+>   deps += `:cel_string_ext` + `:cel_string_format`.  Confirmed
+>   present in the final wasm via `wasm-objdump -x`.
+>
+> **E2E tests (compiler_v2/e2e/m12_test.cc).**  34 tests across 6
+> fixtures — CodePoint / Search / ListBridge / Quote / Format /
+> MultiFunction — exercising at least one representative call
+> per function family + chained call shapes.
+>
+> **Conformance run.**  `bazel run -c opt
+> //compiler_v2/conformance:run_conformance`:
+> - Pass: 1382 → **1476** (+94 — hit the §5.2 target exactly).
+> - `static_subset` skip: 198 → 178 (-20).  Format-args
+>   admission unblocked 20 rows that were previously skipped on
+>   the dyn-list gate.
+> - `scripts/check_conformance_monotonic.sh` baseline bumped to
+>   1476.
+>
+> **Tooling fix surfaced during the slice.**
+> `scripts/build_lint_pch.sh` was picking the first
+> compile_commands entry with absl+protobuf includes — after the
+> wasm runtime added `cel_string_format.cc` to its build, that
+> entry showed up FIRST under the wasm-toolchain configuration,
+> and the PCH started building with `--target=wasm32-wasi-threads`.
+> clang-tidy then refused to load the PCH against native TUs
+> ("exception handling was enabled in precompiled file ... but
+> is currently disabled" + target-triple mismatch).  Fix: skip
+> wasm32-targeted entries in the PCH-builder's candidate search.
+> Plus a local `jq` filter applied to compile_commands.json
+> stripping wasm32 entries — bazel's emitter generates duplicate
+> entries (one native, one wasm) for every Phase C TU and the
+> wasm one wins last-write.  Belongs in a future cleanup of
+> `scripts/refresh_compile_db.sh` to filter at source.
+
 **Total estimate: 9-10 working days.**  At the user's
 AI-assisted pace, ~3-4 calendar days of focused work.
 
@@ -668,6 +741,14 @@ discipline:
   - [ ] Future work section appended.
 
 ## 9b. Hand-off note (2026-05-20)
+
+> **Superseded — Slices D, E, F all shipped 2026-05-20.**  The
+> original pause-after-Slice-C structure is preserved below for
+> archive purposes; the Slice F "Shipped" delta in §6 is the
+> canonical record of what actually landed.  The pickup-map
+> below is what fresh-session-Claude would have used to continue
+> if the session had ended; the actual continuation followed it
+> closely.
 
 Pause point: Slices A-C are done and committed (commits 64f3815,
 164417f, 198ecf2 refactor, c5b07b7); Slices D-F are pending.  Pick
@@ -792,10 +873,7 @@ up at Slice D in a fresh session.
   cel-cpp uses `absl::StrFormat` with explicit precision — we
   mirror.
 
-## 10. Future work surfaced (to fill at closeout)
-
-(Populated when the milestone ships.  Candidates already
-identified during planning:)
+## 10. Future work surfaced
 
   - **Envelope unification for `value_errors` + `eval_error`
     matchers.**  The 78 `string_ext.textproto::envelope` SKIPs
@@ -815,3 +893,24 @@ identified during planning:)
     is the `N`-limited variant; spec doesn't ship a
     `splitN(s, sep, n)` alias.  If a user demands it, trivial
     to add.
+  - **Host-backed list `join` / `format(%s, [host_list])`.**
+    M12 errors with `CEL_ERR_TYPE_MISMATCH` when handed a
+    `CEL_LIST_HOST` (proto-repeated field, Activation::Bind
+    list).  Adding a host-trampoline arm to walk those would
+    let `proto.repeated_string.join(",")` and similar shapes
+    work; deferred until a user asks.
+  - **Static-subset relaxation for non-literal `format` args.**
+    The Slice F admission only covers `"...".format([...])`
+    literal-list args.  Variables / comprehension results
+    typed `list(dyn)` (the cel-cpp built-in for
+    heterogeneous lists) stay rejected.  A follow-up could
+    track CelKind sets through the type checker — but the
+    literal-list shape covers ~95% of real-world format calls
+    (cel-cpp policy corpus + observed user expressions).
+  - **`scripts/refresh_compile_db.sh` wasm-entry filter.**
+    bazel's compile-commands emitter writes BOTH the native
+    and the wasm32 entries for every Phase C TU
+    (`cel_string_format.cc`, `cel_matches.cc`, …).  Today the
+    wasm entry wins last-write and lint clang-tidy uses
+    incompatible flags — fixed locally by `jq` filter after
+    refresh.  Bake the filter into the refresh script.

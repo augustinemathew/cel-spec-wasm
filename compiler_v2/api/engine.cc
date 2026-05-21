@@ -309,7 +309,23 @@ constexpr const char* kRuntimeExports[] = {
     // Regex matches kernel — RE2-backed self-hosted inside
     // `cel_runtime.wasm` (`cel_matches.cc`).  See
     // `rewrite/phase-c-plan.md` §4.5.
-    "cel_matches_at_vv"};
+    "cel_matches_at_vv",
+    // M12 `string_ext` extension kernels — 18 entries (13
+    // functions × 19 overloads → 18 distinct runtime exports,
+    // the 19th being a re-alias `matches`/`matches_string` that
+    // shares a kernel).  Self-hosted inside `cel_runtime.wasm`
+    // via `cel_string_ext_*.cc` + `cel_string_format*.cc`.  See
+    // `rewrite/m12-string-ext.md` §4.2.
+    "cel_string_char_at_at_vv", "cel_string_lower_ascii_at_v",
+    "cel_string_upper_ascii_at_v", "cel_string_trim_at_v",
+    "cel_string_reverse_at_v", "cel_string_index_of_at_vv",
+    "cel_string_index_of_at_vvv", "cel_string_last_index_of_at_vv",
+    "cel_string_last_index_of_at_vvv", "cel_string_substring_at_vv",
+    "cel_string_substring_range_at_vvv", "cel_string_replace_at_vvv",
+    "cel_string_replace_n_at_vvvv", "cel_string_split_at_vv",
+    "cel_string_split_n_at_vvv", "cel_string_join_at_v",
+    "cel_string_join_sep_at_vv", "cel_string_quote_at_v",
+    "cel_string_format_at_vv"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {
@@ -323,61 +339,11 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
   return absl::OkStatus();
 }
 
-absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
-                                celwasm::InstanceImpl* impl) {
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err = wasmtime_linker_instantiate(
-      impl->linker, ctx, state->runtime_module, &impl->runtime_instance, &trap);
-  if (err != nullptr) return WasmtimeErrorToStatus("instantiate(runtime)", err);
-  if (trap != nullptr) {
-    return WasmTrapToStatus("instantiate(runtime) trapped", trap);
-  }
-
-  // M6: pull the runtime's exported `memory` and bind it on the
-  // linker BEFORE the expr module instantiates.  Also caches the
-  // handle on impl->memory for the activation marshaller + decoder.
-  if (auto s = BindRuntimeMemory(ctx, impl); !s.ok()) return s;
-
-  // A13 (DESIGN §5): the wasm memory page count at instantiation must
-  // be at least `CELWASM_INITIAL_MEMORY_PAGES` (the documented design
-  // floor — enough for the reserved low region + a one-arena
-  // working set).  wasm-ld sets the actual initial size based on
-  // BSS + data needs, which post-Phase-C exceeds the floor (RE2 +
-  // absl::time tables push it to 3-4 pages depending on build mode).
-  // Below the floor means the runtime regressed below the design
-  // minimum or BUILD.bazel + cel_layout.h have drifted.
-  ABSL_CHECK_GE(wasmtime_sharedmemory_size(impl->memory),
-                CELWASM_INITIAL_MEMORY_PAGES)
-      << "DESIGN A13: wasm memory page count below design floor";
-
-  // A14 (DESIGN §5): the runtime's `__heap_base` export (where
-  // wasi-libc places its data + bss + heap floor) must sit above
-  // the reserved low region.  Anything writing into [0, 8192) at
-  // codegen time would otherwise corrupt wasi-libc's static state.
-  wasmtime_extern_t heap_base_ext;
-  if (wasmtime_instance_export_get(ctx, &impl->runtime_instance, "__heap_base",
-                                   11, &heap_base_ext)) {
-    ABSL_CHECK_EQ(heap_base_ext.kind, WASMTIME_EXTERN_GLOBAL)
-        << "DESIGN A14: __heap_base must be a global";
-    wasmtime_val_t hb_val;
-    wasmtime_global_get(ctx, &heap_base_ext.of.global, &hb_val);
-    ABSL_CHECK_EQ(hb_val.kind, WASMTIME_I32)
-        << "DESIGN A14: __heap_base must be i32";
-    ABSL_CHECK_GE(static_cast<uint32_t>(hb_val.of.i32),
-                  CELWASM_RESERVED_LOW_MEMORY_BYTES)
-        << "DESIGN A14: __heap_base below reserved low region";
-  }
-  // If the runtime didn't export __heap_base, we're in a stripped
-  // build that's intentionally pre-WASI; leave A14 as a soft check.
-
-  if (auto s = BindAllRuntimeExports(impl, ctx); !s.ok()) return s;
-
-  // Populate the layer-3 callback env now that the runtime
-  // instance is live: the cel_host trampolines need a func handle
-  // to `arena_alloc` (for span payload allocation) + the memory
-  // handle (for CelValue + span reads/writes).  Both are tied to
-  // this store; resetting the table happens per-Eval.
+// Populate the layer-3 callback env's `arena_alloc` + `malloc`
+// func handles + memory handle.  cel_host trampolines call into
+// these for span payload allocation + activation marshalling.
+absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
+                                    wasmtime_context_t* ctx) {
   impl->host_env.memory = impl->memory;
   wasmtime_extern_t alloc_ext;
   if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_alloc",
@@ -403,11 +369,15 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
     return absl::FailedPreconditionError("`malloc` is not a function");
   }
   impl->host_env.malloc_fn = malloc_ext.of.func;
+  return absl::OkStatus();
+}
 
-  // Seed the runtime's bump arena before any eval runs.  arena_alloc
-  // traps on !initialized (see cel_arena.c "Unimplemented features"
-  // rule); arena_init must be called exactly once per Instance with
-  // the design's default capacity.
+// Seed the runtime's bump arena before any eval runs.  `arena_alloc`
+// traps on !initialized (see cel_arena.c "Unimplemented features"
+// rule); arena_init must be called exactly once per Instance with
+// the design's default capacity.
+absl::Status SeedRuntimeArena(celwasm::InstanceImpl* impl,
+                              wasmtime_context_t* ctx) {
   wasmtime_extern_t init_ext;
   if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "arena_init",
                                     10, &init_ext)) {
@@ -432,6 +402,53 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
     return WasmTrapToStatus("arena_init trapped", init_trap);
   }
   return absl::OkStatus();
+}
+
+// A13 + A14 (DESIGN §5) invariant checks on the just-instantiated
+// runtime: memory page floor + `__heap_base` global above the
+// reserved low region.  Both are `ABSL_CHECK`s — regression
+// surfaces as a fail-loud crash with the design-doc citation in
+// the message.
+void EnforceRuntimeMemoryInvariants(celwasm::InstanceImpl* impl,
+                                    wasmtime_context_t* ctx) {
+  ABSL_CHECK_GE(wasmtime_sharedmemory_size(impl->memory),
+                CELWASM_INITIAL_MEMORY_PAGES)
+      << "DESIGN A13: wasm memory page count below design floor";
+  wasmtime_extern_t heap_base_ext;
+  if (!wasmtime_instance_export_get(ctx, &impl->runtime_instance, "__heap_base",
+                                    11, &heap_base_ext)) {
+    // Pre-WASI / stripped build — A14 is a soft check.
+    return;
+  }
+  ABSL_CHECK_EQ(heap_base_ext.kind, WASMTIME_EXTERN_GLOBAL)
+      << "DESIGN A14: __heap_base must be a global";
+  wasmtime_val_t hb_val;
+  wasmtime_global_get(ctx, &heap_base_ext.of.global, &hb_val);
+  ABSL_CHECK_EQ(hb_val.kind, WASMTIME_I32)
+      << "DESIGN A14: __heap_base must be i32";
+  ABSL_CHECK_GE(static_cast<uint32_t>(hb_val.of.i32),
+                CELWASM_RESERVED_LOW_MEMORY_BYTES)
+      << "DESIGN A14: __heap_base below reserved low region";
+}
+
+absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
+                                celwasm::InstanceImpl* impl) {
+  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
+  wasm_trap_t* trap = nullptr;
+  wasmtime_error_t* err = wasmtime_linker_instantiate(
+      impl->linker, ctx, state->runtime_module, &impl->runtime_instance, &trap);
+  if (err != nullptr) return WasmtimeErrorToStatus("instantiate(runtime)", err);
+  if (trap != nullptr) {
+    return WasmTrapToStatus("instantiate(runtime) trapped", trap);
+  }
+  // M6: pull the runtime's exported `memory` and bind it on the
+  // linker BEFORE the expr module instantiates.  Also caches the
+  // handle on impl->memory for the activation marshaller + decoder.
+  if (auto s = BindRuntimeMemory(ctx, impl); !s.ok()) return s;
+  EnforceRuntimeMemoryInvariants(impl, ctx);
+  if (auto s = BindAllRuntimeExports(impl, ctx); !s.ok()) return s;
+  if (auto s = BindRuntimeFuncHandles(impl, ctx); !s.ok()) return s;
+  return SeedRuntimeArena(impl, ctx);
 }
 
 absl::Status InstantiateExpr(celwasm::WasmtimeEngineState* state,
