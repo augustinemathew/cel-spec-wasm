@@ -294,8 +294,8 @@ cc_test(
 #   - `cel_string_ext_search.cc`      — Slice B (indexOf,
 #                                        lastIndexOf, substring,
 #                                        replace).
-#   - `cel_string_ext_list.cc`        — Slice C (split/join — TBD).
-#   - `cel_string_ext_quote.cc`       — Slice D quote (TBD).
+#   - `cel_string_ext_list.cc`        — Slice C (split/join).
+#   - `cel_string_ext_quote.cc`       — Slice D quote.
 # Single library aggregates every TU; call sites see one `:cel_string_ext`.
 cc_library(
     name = "cel_string_ext",
@@ -303,11 +303,36 @@ cc_library(
         "cel_string_ext_codepoint.cc",
         "cel_string_ext_internal.h",
         "cel_string_ext_list.cc",
+        "cel_string_ext_quote.cc",
         "cel_string_ext_search.cc",
     ],
     hdrs = ["cel_string_ext.h"],
     deps = [
         ":cel_runtime",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# M12 Slice D — `<string>.format(<list>)` parser + (stub) renderer.
+# Separate cc_library from `:cel_string_ext` because:
+#   - the parser surface is exercised independently of the kernel
+#     entry point (see `cel_string_format_test.cc` which #includes
+#     `cel_string_format_internal.h` directly);
+#   - Slice E will pull in additional deps (absl/strings/str_format
+#     for double rendering; potentially absl/container/btree_map for
+#     `%s` map dispatch) that don't belong on `:cel_string_ext`.
+cc_library(
+    name = "cel_string_format",
+    srcs = [
+        "cel_string_format.cc",
+        "cel_string_format_internal.h",
+    ],
+    hdrs = ["cel_string_format.h"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -351,6 +376,32 @@ cc_test(
         ":cel_runtime",
         ":cel_string_ext",
         ":string_ext_test_helpers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_string_ext_quote_test",
+    srcs = ["cel_string_ext_quote_test.cc"],
+    deps = [
+        ":cel_runtime",
+        ":cel_string_ext",
+        ":string_ext_test_helpers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_string_format_test",
+    srcs = [
+        "cel_string_format_internal.h",
+        "cel_string_format_test.cc",
+    ],
+    deps = [
+        ":cel_string_format",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
     ],
 )

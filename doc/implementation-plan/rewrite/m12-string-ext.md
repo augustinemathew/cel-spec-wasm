@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slices A + B + C + multi-TU split landed 2026-05-20.**  Scope
+Status: **in progress — Slices A + B + C + multi-TU split + D landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -430,6 +430,55 @@ parser produces `DirectiveOp[]`; tests assert the parsed
 sequence + every malformed-input rejection path.  Renderer
 stays stubbed (`ABSL_CHECK(false) << "format renderer is a
 stub until M12 Slice E"`).
+
+> **Shipped 2026-05-20.**  Two new kernel TUs land:
+> - `cel_string_ext_quote.cc` adds `cel_string_quote_at_v` (1
+>   public kernel + one local `AppendQuoteCodepoint` helper).
+>   Mirrors cel-cpp `common/values/string_value.cc::AppendQuoteCodePoint`
+>   exactly — escapes only `\a \b \f \n \r \t \v \\ \"`; every
+>   other byte (NUL, every byte in `[0x01, 0x1F]`, every UTF-8
+>   continuation byte) passes through verbatim.  The 9 spec rows
+>   from `string_ext.textproto::quote` all land via the unit test
+>   matrix; e2e rows defer to Slice F's conformance run.
+> - `cel_string_format.{h,cc}` + `cel_string_format_internal.h`
+>   add the format directive parser.  The internal header exposes
+>   `DirectiveOp` + `ParseFormat` to the test TU directly so the
+>   parser matrix can run without the renderer.  The public
+>   `cel_string_format_at_vv` entry point parses but then
+>   `ABSL_CHECK(false)`-fails until Slice E lands the renderer
+>   (CLAUDE.md unimplemented-feature rule).
+>
+> Parser design choices worth a note for future-Claude:
+> - **`%%` does NOT coalesce into a surrounding literal run.**
+>   Source `a%%b` becomes 2 ops: `Lit(0, 1)` ("a") + `Lit(2, 2)`
+>   ("%b").  The leading `%` byte at source offset 1 is consumed
+>   but is NOT emitted in the rendered output, so the literal
+>   range must skip it.  Renderer (Slice E) walks each
+>   `kLiteral` op's byte range as a contiguous source-bytes-to-
+>   output-bytes copy; one op per contiguous emit range.
+> - **Precision is silently dropped on non-numeric directives.**
+>   `%.5s` parses as `kSubstring` with `precision == kPrecisionDefault`
+>   (cel-cpp's `ParseAndFormatClause` does the same — `s` doesn't
+>   consult the parsed precision).  Asserted by
+>   `ParseFormatTest.PrecisionSilentlyDroppedOnSubstring`.
+> - **Diagnostic strings are byte-identical to cel-cpp's**
+>   (`unexpected end of format string`, `unable to find end of
+>   precision specifier`, `precision specifier exceeds maximum of
+>   1000`, `unrecognized formatting clause "<c>"`).  Locks
+>   conformance-output diff-clean against upstream.
+>
+> 22 quote tests + 27 parser tests; full runtime suite
+> `bazel test //compiler_v2/runtime/...`: 22/22 PASS (+2 from
+> the new test targets).  `scripts/lint.sh`: clean.
+>
+> Plan-vs-execution delta: `cel_string_format` is its own
+> cc_library (not absorbed into `:cel_string_ext`) because Slice
+> E will pull in `absl/strings/str_format` (for `FormatDouble`)
+> and potentially `absl/container/btree_map` (for `%s` map
+> rendering) that don't belong on the kernel library.  Slice F
+> still adds one `--export=cel_string_format_at_vv` line to
+> `cel_runtime_wasm.bin` and lists `:cel_string_format` as a dep
+> alongside `:cel_string_ext`.
 
 ### Slice E — `format` renderer + per-CelKind dispatch (~2.5 days)
 

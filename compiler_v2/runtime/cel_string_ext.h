@@ -168,6 +168,19 @@ void cel_string_join_at_v(uint32_t out_slot, uint32_t list_slot);
 void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
                                uint32_t sep_slot);
 
+// ───────────────────────────────────────────────────────────────
+// Quote — Slice D.  Mirrors cel-cpp's `StringValue::Quote`.
+// ───────────────────────────────────────────────────────────────
+
+// `strings.quote(s)`.  Wraps `s` in double-quotes and escapes the 9
+// named C-style sequences (`\a`, `\b`, `\f`, `\n`, `\r`, `\t`, `\v`,
+// `\\`, `\"`).  All other bytes (including NUL, every byte in
+// `[0x01, 0x1F]`, and every multi-byte UTF-8 lead/continuation pair)
+// pass through verbatim — cel-cpp parity, see
+// `common/values/string_value.cc::AppendQuoteCodePoint`.  Output
+// bytes are arena-allocated.
+void cel_string_quote_at_v(uint32_t out_slot, uint32_t s_slot);
+
 #ifdef __cplusplus
 }
 #endif
