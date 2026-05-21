@@ -128,6 +128,19 @@ TEST(IsInEnvelopeTest, MatcherInScopeIgnoresDisableCheckFlag) {
   EXPECT_TRUE(IsInEnvelope(t));
 }
 
+// A SimpleTest with no result_matcher set is an implicit
+// bool-true assertion (`expr` is expected to evaluate to true).
+// Mirrors upstream cel-cpp's `conformance/run.cc` convention.
+TEST(IsInEnvelopeTest, AdmitsUnsetMatcherAsImplicitBoolTrue) {
+  cel::expr::conformance::test::SimpleTest t;
+  ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        name: "bool_asserting_no_matcher" expr: "'tacocat'.charAt(3) == 'o'"
+      )pb",
+      &t));
+  EXPECT_TRUE(IsInEnvelope(t));
+}
+
 TEST(IsInEnvelopeTest, MatcherInScopeIgnoresCheckOnlyFlag) {
   cel::expr::conformance::test::SimpleTest t;
   ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(

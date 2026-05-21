@@ -199,10 +199,27 @@ absl::string_view SkipCategoryName(SkipCategory c) {
 }
 
 bool IsInEnvelope(const SimpleTest& t) {
-  if (IsUnknownMatcher(t)) return true;
-  if (IsEvalErrorMatcher(t)) return true;
-  if (t.result_matcher_case() == SimpleTest::kTypedResult) return true;
-  if (t.result_matcher_case() != SimpleTest::kValue) return false;
+  // Snapshot the oneof case once — repeated calls to
+  // result_matcher_case() trigger clang-tidy's path-sensitive
+  // EnumCastOutOfRange analyzer (each compare narrows the
+  // believed-possible enum set, and after two narrowings the
+  // analyzer concludes no documented value remains).
+  const auto matcher_case = t.result_matcher_case();
+  if (matcher_case == SimpleTest::kUnknown ||
+      matcher_case == SimpleTest::kAnyUnknowns) {
+    return true;
+  }
+  if (matcher_case == SimpleTest::kEvalError ||
+      matcher_case == SimpleTest::kAnyEvalErrors) {
+    return true;
+  }
+  if (matcher_case == SimpleTest::kTypedResult) return true;
+  // Implicit bool-true shortcut: a test with no result_matcher set
+  // is a bool-asserting expression (e.g. `'tacocat'.charAt(3) == 'o'`)
+  // expected to evaluate to true.  Matches cel-cpp's upstream
+  // convention in `conformance/run.cc`.
+  if (matcher_case == SimpleTest::RESULT_MATCHER_NOT_SET) return true;
+  if (matcher_case != SimpleTest::kValue) return false;
   const auto k = t.value().kind_case();
   return IsScalarMatcherKind(k) || IsAggregateOrObjectMatcherKind(k);
 }
@@ -242,26 +259,13 @@ std::string ValueMatcherKindName(ProtoValue::KindCase k) {
   return "<unknown>";
 }
 
-std::string EnvelopeRejectReason(const SimpleTest& t) {
-  switch (t.result_matcher_case()) {
-    case SimpleTest::RESULT_MATCHER_NOT_SET:
-      return "no result_matcher set on test";
-    case SimpleTest::kValue:
-      return absl::StrCat("value matcher kind `",
-                          ValueMatcherKindName(t.value().kind_case()),
-                          "` not in scope");
-    case SimpleTest::kEvalError:
-    case SimpleTest::kAnyEvalErrors:
-    case SimpleTest::kUnknown:
-    case SimpleTest::kAnyUnknowns:
-      // IsInEnvelope would have returned true.  Reaching here means
-      // an upstream early-out misclassified.  Defensive.
-      return "internal classifier mismatch (please file a bug)";
-    case SimpleTest::kTypedResult:
-      return "typed_result matcher with no `result` value "
-             "(deduced_type-only comparison is harness follow-up)";
-  }
-  return "unrecognised result_matcher oneof case";
+// The only reachable callers pass `kind` precomputed before the
+// IsInEnvelope check, so this function never re-queries the
+// protobuf oneof case.  See callsite for the path-sensitive-analyzer
+// rationale.
+std::string EnvelopeRejectReason(const cel::expr::Value::KindCase kind) {
+  return absl::StrCat("value matcher kind `", ValueMatcherKindName(kind),
+                      "` not in scope");
 }
 
 }  // namespace
@@ -528,7 +532,12 @@ Result Fail(absl::string_view stage, const absl::Status& s) {
 const absl::flat_hash_set<absl::string_view>& ExtensionNamespaceRoots() {
   static const absl::NoDestructor<absl::flat_hash_set<absl::string_view>> kSet{
       {"cel", "block", "optional", "optional_type", "math", "strings", "base64",
-       "ip", "cidr", "net"}};
+       "ip", "cidr", "net",
+       // proto_ext: `proto.hasExt(msg, ext)` / `proto.getExt(msg, ext)`
+       // (proto2 extension accessor functions).  The operator-form
+       // `has(msg.`fqn.ext_name`)` is checker-accepted today and
+       // reaches the runtime — that surface is a separate slice.
+       "proto"}};
   return *kSet;
 }
 
@@ -698,6 +707,21 @@ Result RunValueBranch(cel::Instance& inst, const cel::Activation& act,
   return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
+// Implicit-bool-true: a SimpleTest with no result_matcher set is a
+// bool-asserting expression; success means it evaluates to true.
+// Per the upstream cel-cpp convention in `conformance/run.cc`.
+Result RunImplicitBoolTrueBranch(cel::Instance& inst,
+                                 const cel::Activation& act) {
+  auto val_or = inst.Eval(act);
+  if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
+  cel::expr::Value want;
+  want.set_bool_value(true);
+  if (auto s = CompareValue(*val_or, want); !s.ok()) {
+    return Fail("compare", s);
+  }
+  return {Outcome::kPass, SkipCategory::kEnvelope, ""};
+}
+
 // `kEvalError` and `kAnyEvalErrors` share the kind-only compare;
 // `any_eval_errors` succeeds if any of its contained `errors[]`
 // matches (kind-only semantics make all entries equivalent, so we
@@ -748,8 +772,13 @@ std::optional<Result> ScopeReject(const SimpleTest& t) {
                 "typed_result matcher requires no-eval check path "
                 "(harness follow-up)");
   }
+  // Snapshot the inner value kind BEFORE IsInEnvelope's narrowing —
+  // the path-sensitive analyzer concludes every result_matcher case
+  // is ruled out post-check and flags subsequent protobuf accesses
+  // as EnumCastOutOfRange.  Reading once up front sidesteps that.
+  const auto value_kind = t.value().kind_case();
   if (!IsInEnvelope(t)) {
-    return Skip(SkipCategory::kEnvelope, EnvelopeRejectReason(t));
+    return Skip(SkipCategory::kEnvelope, EnvelopeRejectReason(value_kind));
   }
   return std::nullopt;
 }
@@ -777,6 +806,9 @@ Result DispatchEvalBranch(cel::Instance& inst, const cel::Activation& act,
                           const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
+  if (t.result_matcher_case() == SimpleTest::RESULT_MATCHER_NOT_SET) {
+    return RunImplicitBoolTrueBranch(inst, act);
+  }
   if (t.result_matcher_case() == SimpleTest::kTypedResult) {
     return RunTypedResultBranch(inst, act, t);
   }

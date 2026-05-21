@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — local gate enforcing conformance drift hygiene.
+#
+# What it does:
+#   1. Runs the full conformance suite via
+#      scripts/check_conformance_monotonic.sh.  This both checks the
+#      .baseline integer AND tee's the run output to
+#      /tmp/conformance_last_run.log.
+#   2. Re-uses that log to verify the per-fixture / skip-totals /
+#      headline / addressable-prose markers in
+#      compiler_v2/conformance/README.md are in sync with the live
+#      run (scripts/regen_conformance_readme.sh --check --from-log).
+#
+# Cost: ~30s on a warm bazel cache, 5-10 min on a cold one.  Skip
+# with `git push --no-verify` if you genuinely need to bypass (e.g.
+# pushing a doc-only fixup to a private branch).
+#
+# Installed by `scripts/install-hooks.sh` which points
+# `core.hooksPath` at `.githooks/`.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Skip if no commits are being pushed (e.g. `git push` on an
+# already-up-to-date branch).  The stdin protocol for pre-push is
+# documented in `git help githooks`; if it's empty we still run
+# (some clients suppress stdin), but if it's clearly a no-op delete
+# we skip.
+push_input=""
+if [[ -t 0 ]]; then
+  push_input=""
+else
+  push_input="$(cat || true)"
+fi
+if [[ -n "$push_input" ]] && ! echo "$push_input" | grep -qvE '^[^ ]+ [0-9a-f]{40} [^ ]+ 0{40}$'; then
+  # Every line is a delete (remote_sha = 0000...).  Nothing to gate.
+  exit 0
+fi
+
+echo "==> pre-push: conformance baseline + README drift gate"
+echo "    (skip with: git push --no-verify)"
+
+# 1. Baseline gate — runs conformance, tees to /tmp/conformance_last_run.log
+scripts/check_conformance_monotonic.sh
+
+# 2. README drift gate — reuses the log so we don't run conformance twice.
+LOG=/tmp/conformance_last_run.log
+if [[ ! -f "$LOG" ]]; then
+  echo "expected $LOG from check_conformance_monotonic.sh, not found" >&2
+  exit 1
+fi
+scripts/regen_conformance_readme.sh --check --from-log "$LOG"
+
+echo "==> pre-push: all gates passed"
