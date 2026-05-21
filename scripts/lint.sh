@@ -162,6 +162,7 @@ declare -a cpp_targets=()
 for f in "${targets[@]}"; do
   case "$f" in
     compiler_v2/runtime/cel_string_ext_internal.h) continue ;;
+    compiler_v2/runtime/cel_string_format_internal.h) continue ;;
     compiler_v2/runtime/string_ext_test_helpers.h) continue ;;
   esac
   case "$f" in

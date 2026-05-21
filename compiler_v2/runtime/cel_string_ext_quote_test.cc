@@ -26,65 +26,65 @@ TEST_F(QuoteTest, EscapesBell) {
   const uint32_t in = MakeStrLen("bell\a", 5);
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"bell\\a\"");
+  ExpectStr(out, R"("bell\a")");
 }
 
 TEST_F(QuoteTest, EscapesBackspace) {
   const uint32_t in = MakeStrLen("\bbackspace", 10);
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"\\bbackspace\"");
+  ExpectStr(out, R"("\bbackspace")");
 }
 
 TEST_F(QuoteTest, EscapesFormFeed) {
   const uint32_t in = MakeStrLen("\fform feed", 10);
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"\\fform feed\"");
+  ExpectStr(out, R"("\fform feed")");
 }
 
 TEST_F(QuoteTest, EscapesNewline) {
   const uint32_t in = MakeStr("first\nsecond");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"first\\nsecond\"");
+  ExpectStr(out, R"("first\nsecond")");
 }
 
 TEST_F(QuoteTest, EscapesCarriageReturn) {
   const uint32_t in = MakeStr("carriage \r return");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"carriage \\r return\"");
+  ExpectStr(out, R"("carriage \r return")");
 }
 
 TEST_F(QuoteTest, EscapesHorizontalTab) {
   const uint32_t in = MakeStr("horizontal tab\t");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"horizontal tab\\t\"");
+  ExpectStr(out, R"("horizontal tab\t")");
 }
 
 TEST_F(QuoteTest, EscapesVerticalTab) {
   const uint32_t in = MakeStr("vertical \v tab");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"vertical \\v tab\"");
+  ExpectStr(out, R"("vertical \v tab")");
 }
 
 TEST_F(QuoteTest, EscapesBackslash) {
   // Source literal: `double \\ slash` (4 bytes for `\\`); expected
   // output doubles every backslash, so 8 backslashes round-trip.
-  const uint32_t in = MakeStr("double \\\\ slash");
+  const uint32_t in = MakeStr(R"(double \\ slash)");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"double \\\\\\\\ slash\"");
+  ExpectStr(out, R"("double \\\\ slash")");
 }
 
 TEST_F(QuoteTest, EscapesDoubleQuote) {
-  const uint32_t in = MakeStr("mid string \" quote");
+  const uint32_t in = MakeStr(R"(mid string " quote)");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"mid string \\\" quote\"");
+  ExpectStr(out, R"("mid string \" quote")");
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -147,17 +147,17 @@ TEST_F(QuoteTest, MixedUnicode) {
 // Boundary: backslash at start / end.  Conformance rows
 // `starts_with` / `ends_with`.
 TEST_F(QuoteTest, EscapesBackslashAtStart) {
-  const uint32_t in = MakeStr("\\ starts with");
+  const uint32_t in = MakeStr(R"(\ starts with)");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"\\\\ starts with\"");
+  ExpectStr(out, R"("\\ starts with")");
 }
 
 TEST_F(QuoteTest, EscapesBackslashAtEnd) {
-  const uint32_t in = MakeStr("ends with \\");
+  const uint32_t in = MakeStr(R"(ends with \)");
   const uint32_t out = MakeOut();
   cel_string_quote_at_v(out, in);
-  ExpectStr(out, "\"ends with \\\\\"");
+  ExpectStr(out, R"("ends with \\")");
 }
 
 // `cel-cpp`'s `AppendQuoteCodePoint` does NOT special-case NUL
@@ -172,8 +172,8 @@ TEST_F(QuoteTest, VerbatimEmbeddedNul) {
   const CelValue* v = At(out);
   ASSERT_EQ(v->kind, static_cast<uint32_t>(CEL_STRING));
   ASSERT_EQ(v->payload.s.len, 5u);
-  const char* p = reinterpret_cast<const char*>(cel_mem_base()) +
-                  v->payload.s.ptr;
+  const char* p =
+      reinterpret_cast<const char*>(cel_mem_base()) + v->payload.s.ptr;
   EXPECT_EQ(p[0], '"');
   EXPECT_EQ(p[1], 'a');
   EXPECT_EQ(p[2], '\0');

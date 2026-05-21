@@ -326,6 +326,7 @@ cc_library(
     srcs = [
         "cel_string_format.cc",
         "cel_string_format_internal.h",
+        "cel_string_format_render.cc",
     ],
     hdrs = ["cel_string_format.h"],
     deps = [
@@ -334,6 +335,8 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
     ],
 )
 
@@ -398,7 +401,9 @@ cc_test(
         "cel_string_format_test.cc",
     ],
     deps = [
+        ":cel_runtime",
         ":cel_string_format",
+        ":string_ext_test_helpers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

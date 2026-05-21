@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slices A + B + C + multi-TU split + D landed 2026-05-20.**  Scope
+Status: **in progress — Slices A + B + C + multi-TU split + D + E landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -495,6 +495,60 @@ a single-slot most-recent-format cache (cf. `cel_matches`'s
 apply the same `FormatInitialized` flag here from day one).
 
 E2E tests in `compiler_v2/e2e/m12_test.cc` land here.
+
+> **Shipped 2026-05-20.**  New TU `cel_string_format_render.cc`
+> + dispatcher upgrades in `cel_string_format.cc`.  17 of the 19
+> M12 kernels were already self-hosted; this slice un-stubs the
+> last one (`cel_string_format_at_vv`).
+>
+> **Renderer matrix** — 7 `Render*` arms in
+> `cel_string_format_render.cc`, each short:
+> - `RenderString` (`%s`) — dispatches across NULL, BOOL, INT,
+>   UINT, DOUBLE, STRING, BYTES, TYPE, TIMESTAMP, DURATION,
+>   LIST_ARENA, MAP_ARENA.  Lists recurse on each element; maps
+>   stringify keys first then sort lex via `std::map<string, …>`
+>   for byte-stable iteration order (mirrors cel-cpp's
+>   `absl::btree_map<std::string, Value>` pattern).
+> - `RenderDecimal` (`%d`) — INT, UINT, DOUBLE (DOUBLE routes
+>   through `RenderFixed` per cel-cpp's `FormatDecimal`).
+> - `RenderFixed` / `RenderScientific` (`%f` / `%e`) — DOUBLE,
+>   INT, UINT, with NaN / ±Inf canonicalised to "NaN" /
+>   "Infinity" / "-Infinity"; finite values through
+>   `absl::StrFormat("%.*f"|"%.*e")` with precision-6 default.
+> - `RenderBinary` (`%b`) — INT (with `-` sign on negative),
+>   UINT, BOOL (emits "1" / "0").
+> - `RenderOctal` (`%o`) — INT, UINT.  Signed negative wraps
+>   `absl::StrFormat("-%o", unsigned_magnitude)` to mirror
+>   Go's Sprintf (cel-cpp's `FormatOctal`).
+> - `RenderHex` (`%x` / `%X`) — INT, UINT, STRING, BYTES.
+>   Strings/bytes route through `absl::BytesToHexString`;
+>   negative ints get a leading `-`.
+>
+> **Cache** — single-slot most-recent-format with a separate
+> `CachedInitialized` flag (the `cel_matches` empty-pattern
+> lesson).  Caches the parse status too: a malformed format
+> string sticks without re-parsing on every call.  Test
+> `CachedParseErrorSticks` locks the policy.
+>
+> **Arg-level absorb** — pre-scan the `args_list` for any
+> ERROR / UNKNOWN entry before parsing the format; the first
+> such entry propagates to `out`.  Avoids a half-built buffer
+> escaping on absorbed args.  Cel-cpp dispatches inline and
+> short-circuits at the first arg, producing the same
+> observable behaviour — we just centralise the check.
+>
+> **Plan-vs-execution delta — e2e tests deferred to Slice F.**
+> The plan had Slice E land `compiler_v2/e2e/m12_test.cc`, but
+> end-to-end tests require the checker library registration +
+> overload-table seeding + wasm exports — all Slice F work.
+> Folding the e2e tests into Slice F keeps the seam clean (one
+> commit lights up the entire pipeline + locks conformance).
+> Slice F's section absorbs the +30 e2e test deliverable.
+>
+> 76 format tests + 22 quote tests; full runtime suite
+> `bazel test //compiler_v2/runtime/...`: 22/22 PASS.
+> `scripts/lint.sh`: clean (one orphan-header entry added for
+> `cel_string_format_internal.h`).
 
 ### Slice F — overload-table wiring + conformance lock (~0.5 day)
 
