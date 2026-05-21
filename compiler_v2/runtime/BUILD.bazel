@@ -302,6 +302,7 @@ cc_library(
     srcs = [
         "cel_string_ext_codepoint.cc",
         "cel_string_ext_internal.h",
+        "cel_string_ext_list.cc",
         "cel_string_ext_search.cc",
     ],
     hdrs = ["cel_string_ext.h"],
@@ -335,6 +336,17 @@ cc_test(
 cc_test(
     name = "cel_string_ext_search_test",
     srcs = ["cel_string_ext_search_test.cc"],
+    deps = [
+        ":cel_runtime",
+        ":cel_string_ext",
+        ":string_ext_test_helpers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_string_ext_list_test",
+    srcs = ["cel_string_ext_list_test.cc"],
     deps = [
         ":cel_runtime",
         ":cel_string_ext",

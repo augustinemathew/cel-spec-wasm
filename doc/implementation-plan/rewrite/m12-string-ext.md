@@ -1,6 +1,6 @@
 # M12 — `string_ext` extension (self-hosted in runtime)
 
-Status: **in progress — Slice A + B + multi-TU split landed 2026-05-20.**  Scope
+Status: **in progress — Slices A + B + C + multi-TU split landed 2026-05-20.**  Scope
 is the cel-cpp `strings` extension library: 13 string functions
 + a printf-style `format` directive parser, all self-hosted
 inside `cel_runtime.wasm` against vendored absl.  Conformance
@@ -383,6 +383,41 @@ the arena-allocator path used by `cel_list_concat` /
 list-element-allocation lifetime (a `split` result is a list
 of strings each carrying spans into the arena; the spans
 remain valid until `arena_reset` at the next Eval).
+
+> **Shipped 2026-05-20.**  4 new kernels in `cel_string_ext_list.cc`:
+> `cel_string_split_at_vv`, `cel_string_split_n_at_vvv`,
+> `cel_string_join_at_v`, `cel_string_join_sep_at_vv`.  Public ABI
+> additions in `cel_string_ext.h`; BUILD wiring picks up the new
+> `.cc` automatically (existing `:cel_string_ext` cc_library
+> already aggregates).
+>
+> Implementation highlights:
+> - `split` ranges computed in a local `std::vector<pair<u32,u32>>`
+>   then directly stamped into the arena list's element array via
+>   `cel_mem_base() + elements_offset + k*stride` — avoids the
+>   per-element temp-slot dance `cel_list_append_at` would require.
+> - Output strings are arena subspans into the source `s`; list
+>   backing + headers + element CelValues are arena-allocated.
+>   Lifetime ends at the next `arena_reset` per the existing
+>   per-Eval arena contract.
+> - `join` validates every element kind upfront before allocating
+>   the output buffer — half-built strings can't escape on
+>   type-mismatch.
+> - cel-cpp's final-piece rule for `split` is mirrored verbatim
+>   (`splits.empty() || !sep.empty() || pos < len` → push trailing
+>   piece).  Locks the "empty haystack + non-empty sep → `[""]`"
+>   spec case.
+> - Host-backed lists (`CEL_LIST_HOST`) error with
+>   `CEL_ERR_TYPE_MISMATCH` for now — deferred to a follow-up if a
+>   user needs `join()` over proto-repeated fields.
+>
+> 22 new tests (`cel_string_ext_list_test.cc`) — split spec rows +
+> boundary matrix (empty haystack, empty sep code-point split,
+> trailing delimiter), join spec rows + boundary matrix (empty
+> list, single element, multi-byte sep, non-string element error).
+>
+> `bazel test //compiler_v2/runtime/...`: 20/20 PASS (+1 from the
+> new list_test target).  `scripts/lint.sh`: clean.
 
 ### Slice D — `quote` + start of `format` (~1.5 days)
 

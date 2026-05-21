@@ -129,6 +129,45 @@ void cel_string_replace_n_at_vvvv(uint32_t out_slot, uint32_t s_slot,
                                   uint32_t old_slot, uint32_t new_slot,
                                   uint32_t n_slot);
 
+// ───────────────────────────────────────────────────────────────
+// List-bridging family — Slice C.  Mirrors cel-cpp's
+// `StringValue::Split` / `::Join`.
+// ───────────────────────────────────────────────────────────────
+
+// `s.split(sep)` / `s.split(sep, n)`.  Returns a `CEL_LIST_ARENA`
+// of `CEL_STRING` elements, each carrying a subspan into the
+// original input (no allocation per element — list backing +
+// element values are arena-allocated, element BYTES borrow from
+// `s`).
+//
+// Per cel-cpp `StringValue::Split` (lines ~1300-1360):
+//   - `n == 0`               → empty list.
+//   - `n < 0`                → unlimited (treated as INT64_MAX).
+//   - `n == 1`               → list containing only the original.
+//   - `n  > 1`               → at most `n-1` splits, `n` pieces.
+//   - empty `sep`            → split into code-points (each piece
+//                              is one code-point of `s`).
+//   - empty `s` + non-empty sep → single-element `[""]`.
+void cel_string_split_at_vv(uint32_t out_slot, uint32_t s_slot,
+                            uint32_t sep_slot);
+void cel_string_split_n_at_vvv(uint32_t out_slot, uint32_t s_slot,
+                               uint32_t sep_slot, uint32_t n_slot);
+
+// `list.join()` / `list.join(sep)`.  Concatenates every element of
+// `list` (must be `CEL_LIST_ARENA` of `CEL_STRING`) into a single
+// arena-allocated string, with `sep` interposed between elements
+// (or empty if the no-sep overload).  Empty list → empty string.
+// Any non-string element → CEL_ERR_TYPE_MISMATCH (cel-cpp parity:
+// `StringValue::Join` errors out on the first non-string element).
+//
+// Host-backed lists (`CEL_LIST_HOST`) are not supported in M12 and
+// poison with CEL_ERR_TYPE_MISMATCH — `join()` over proto-repeated
+// fields would need a host-trampoline arm, deferred to a later
+// slice if a user asks.
+void cel_string_join_at_v(uint32_t out_slot, uint32_t list_slot);
+void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
+                               uint32_t sep_slot);
+
 #ifdef __cplusplus
 }
 #endif
