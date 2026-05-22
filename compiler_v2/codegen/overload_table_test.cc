@@ -112,7 +112,7 @@ TEST(OverloadTableTest, RegisterCustomAppendsPastBuiltinSeeds) {
   // builtins).
   OverloadTableBuilder builder;
   EXPECT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_string"),
+                                     "", "my_upper_string", 2),
               IsOk());
   OverloadTable table = std::move(builder).Build();
 
@@ -132,8 +132,8 @@ TEST(OverloadTableTest, RegisterCustomCollidingWithBuiltinIsAlreadyExists) {
   // overriding standard overloads; OverloadTable enforces this at
   // the builder layer with the failing id in the error message.
   OverloadTableBuilder builder;
-  EXPECT_THAT(builder.RegisterCustom("add_int64", ImportModule::kCelHost,
-                                     "my_add_int_override"),
+  EXPECT_THAT(builder.RegisterCustom("add_int64", ImportModule::kCelHost, "",
+                                     "my_add_int_override", 2),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("add_int64")));
 }
@@ -144,10 +144,10 @@ TEST(OverloadTableTest, DuplicateCustomRegistrationIsAlreadyExists) {
   // failure is caught at compile time with the id in the message.
   OverloadTableBuilder builder;
   ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_v1"),
+                                     "", "my_upper_v1", 2),
               IsOk());
   EXPECT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_v2"),
+                                     "", "my_upper_v2", 2),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("my_upper_string")));
 }
@@ -155,7 +155,7 @@ TEST(OverloadTableTest, DuplicateCustomRegistrationIsAlreadyExists) {
 TEST(OverloadTableTest, InternUnknownReturnsZero) {
   OverloadTableBuilder builder;
   ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_string"),
+                                     "", "my_upper_string", 2),
               IsOk());
   OverloadTable table = std::move(builder).Build();
   EXPECT_EQ(table.InternOverloadId("my_unregistered_fn"), 0u);
@@ -168,15 +168,15 @@ TEST(OverloadTableTest, InternsAssignedInRegistrationOrder) {
   // (not in `kBuiltinSeeds`) so the `RegisterCustom` calls don't
   // collide with the standard names.
   OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_log_int", ImportModule::kCelHost,
-                                     "my_log_int"),
+  ASSERT_THAT(builder.RegisterCustom("my_log_int", ImportModule::kCelHost, "",
+                                     "my_log_int", 2),
               IsOk());
   ASSERT_THAT(builder.RegisterCustom("my_log_double", ImportModule::kCelHost,
-                                     "my_log_double"),
+                                     "", "my_log_double", 2),
               IsOk());
   ASSERT_THAT(
-      builder.RegisterCustom("my_reverse_string", ImportModule::kCelHost,
-                             "my_reverse_string"),
+      builder.RegisterCustom("my_reverse_string", ImportModule::kCelHost, "",
+                             "my_reverse_string", 2),
       IsOk());
   OverloadTable table = std::move(builder).Build();
   const uint32_t base = kBuiltinSeedCount;
@@ -196,7 +196,7 @@ TEST(OverloadTableTest, RegisterCustomCopiesIdAndHelperName) {
   {
     std::string id = "my_upper_string";
     std::string name = "my_upper_string";
-    ASSERT_THAT(builder.RegisterCustom(id, ImportModule::kCelHost, name),
+    ASSERT_THAT(builder.RegisterCustom(id, ImportModule::kCelHost, "", name, 2),
                 IsOk());
   }
   OverloadTable table = std::move(builder).Build();
@@ -208,7 +208,7 @@ TEST(OverloadTableTest, RegisterCustomCopiesIdAndHelperName) {
 TEST(OverloadTableTest, LookupSurvivesOuterTableMove) {
   OverloadTableBuilder builder;
   ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_string"),
+                                     "", "my_upper_string", 2),
               IsOk());
   OverloadTable a = std::move(builder).Build();
   OverloadTable b = std::move(a);
@@ -224,37 +224,39 @@ TEST(OverloadTableTest, UsedImportsFiltersToRequestedIds) {
   // unused customs stay off the module's import list.
   OverloadTableBuilder builder;
   ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_string"),
+                                     "", "my_upper_string", 2),
               IsOk());
   ASSERT_THAT(builder.RegisterCustom("my_lower_string", ImportModule::kCelHost,
-                                     "my_lower_string"),
+                                     "", "my_lower_string", 2),
               IsOk());
   ASSERT_THAT(builder.RegisterCustom("my_trim_string", ImportModule::kCelHost,
-                                     "my_trim_string"),
+                                     "", "my_trim_string", 2),
               IsOk());
   OverloadTable table = std::move(builder).Build();
   const absl::flat_hash_set<uint32_t> used = {
       table.InternOverloadId("my_upper_string"),
       table.InternOverloadId("my_trim_string"),
   };
-  std::vector<std::pair<ImportModule, absl::string_view>> imports =
-      table.UsedImports(used);
+  auto imports = table.UsedImports(used);
   ASSERT_EQ(imports.size(), 2u);
-  // Hash-set iteration order is unspecified; sort results before
-  // comparing.
-  std::sort(imports.begin(), imports.end(), [](const auto& a, const auto& b) {
-    return a.second < b.second;
-  });
-  EXPECT_EQ(imports[0].first, ImportModule::kCelHost);
-  EXPECT_EQ(imports[0].second, "my_trim_string");
-  EXPECT_EQ(imports[1].first, ImportModule::kCelHost);
-  EXPECT_EQ(imports[1].second, "my_upper_string");
+  // Hash-set iteration order is unspecified; sort results by name
+  // (string content, not pointer value) before comparing — the
+  // comparator orders by `a->name`, which is deterministic.
+  // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order)
+  std::sort(imports.begin(), imports.end(),
+            [](const OverloadImpl* a, const OverloadImpl* b) {
+              return a->name < b->name;
+            });
+  EXPECT_EQ(imports[0]->module, ImportModule::kCelHost);
+  EXPECT_EQ(imports[0]->name, "my_trim_string");
+  EXPECT_EQ(imports[1]->module, ImportModule::kCelHost);
+  EXPECT_EQ(imports[1]->name, "my_upper_string");
 }
 
 TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
   OverloadTableBuilder builder;
   ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "my_upper_string"),
+                                     "", "my_upper_string", 2),
               IsOk());
   OverloadTable table = std::move(builder).Build();
   // M10.B note: id `99` used to be a safe "unknown" placeholder when
@@ -266,6 +268,119 @@ TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
       0u, static_cast<uint32_t>(kBuiltinSeedCount + 1000)};
   const auto imports = table.UsedImports(used);
   EXPECT_TRUE(imports.empty());
+}
+
+// ── M13.A — InferHelperArity longest-suffix-first ordering ────
+//
+// The function returns helper arity by suffix length match.  Order
+// of checks is `_at_vvvv` → `_at_vvv` → `_at_vv` → `_at_v`; reversing
+// would shadow every long-form helper with the 2-arg shape.  These
+// tests are the regression for that.
+
+TEST(InferHelperArityTest, SuffixAtVTwoArgs) {
+  EXPECT_EQ(InferHelperArity("cel_int_neg_at_v"), 2);
+  EXPECT_EQ(InferHelperArity("cel_double_neg_at_v"), 2);
+}
+
+TEST(InferHelperArityTest, SuffixAtVVThreeArgs) {
+  EXPECT_EQ(InferHelperArity("cel_int_add_at_vv"), 3);
+  EXPECT_EQ(InferHelperArity("cel_string_concat_at_vv"), 3);
+}
+
+TEST(InferHelperArityTest, SuffixAtVVVFourArgs) {
+  // M12's `_at_vvv` kernels: indexOf-with-pos, substring-range, etc.
+  // Returning 2 here would silently wrong-arity the import.
+  EXPECT_EQ(InferHelperArity("cel_string_substring_at_vvv"), 4);
+}
+
+TEST(InferHelperArityTest, SuffixAtVVVVFiveArgs) {
+  // M12's `_at_vvvv` kernels: replace_n, split_n.
+  EXPECT_EQ(InferHelperArity("cel_string_replace_n_at_vvvv"), 5);
+}
+
+TEST(InferHelperArityTest, NonSuffixDispatchers) {
+  EXPECT_EQ(InferHelperArity("cel_list_size"), 2);
+  EXPECT_EQ(InferHelperArity("cel_list_in"), 3);
+  EXPECT_EQ(InferHelperArity("cel_and"), 3);
+  EXPECT_EQ(InferHelperArity("cel_not"), 2);
+  EXPECT_EQ(InferHelperArity("cel_copy_slot"), 2);
+}
+
+TEST(InferHelperArityTest, UnknownNameReturnsZero) {
+  EXPECT_EQ(InferHelperArity("not_a_real_helper"), 0);
+  EXPECT_EQ(InferHelperArity(""), 0);
+  // M13 custom-fn names (no _at_v suffix, no dispatcher entry) →
+  // 0 here; RegisterCustom passes explicit num_args instead.
+  EXPECT_EQ(InferHelperArity("allow_string_string"), 0);
+}
+
+// ── M13.A — kUserModule registration + ImportModuleName(impl) ──
+
+TEST(OverloadTableTest, RegisterCustomKUserModuleRoundTrips) {
+  // Foreign-backed custom: module = kUserModule, module_name = "rules".
+  OverloadTableBuilder builder;
+  ASSERT_THAT(
+      builder.RegisterCustom("allow_string_string", ImportModule::kUserModule,
+                             /*module_name=*/"rules",
+                             /*helper_name=*/"allow_string_string",
+                             /*num_args=*/3),
+      IsOk());
+  OverloadTable table = std::move(builder).Build();
+
+  const OverloadImpl* impl = table.Lookup("allow_string_string");
+  ASSERT_NE(impl, nullptr);
+  EXPECT_EQ(impl->module, ImportModule::kUserModule);
+  EXPECT_EQ(impl->module_name, "rules");
+  EXPECT_EQ(impl->name, "allow_string_string");
+  EXPECT_EQ(impl->num_args, 3);
+  // ImportModuleName(impl) returns the per-impl alias for kUserModule.
+  EXPECT_EQ(ImportModuleName(*impl), "rules");
+}
+
+TEST(OverloadTableTest, TwoForeignAliasesSameHelperBothLand) {
+  // `rules.allow_string` and `policy.allow_string` are distinct
+  // wasm imports under different aliases.  OverloadTable's
+  // collision rule is on overload-id, NOT on (module, helper).  So
+  // the two MUST use distinct overload-ids.
+  OverloadTableBuilder builder;
+  ASSERT_THAT(
+      builder.RegisterCustom("allow_string_string", ImportModule::kUserModule,
+                             "rules", "allow_string_string", 3),
+      IsOk());
+  // Different overload-id — same helper name, same num_args, different
+  // alias.  Both legal; both end up as distinct wasm imports.
+  ASSERT_THAT(builder.RegisterCustom("allow_string_string_v2",
+                                     ImportModule::kUserModule, "policy",
+                                     "allow_string_string", 3),
+              IsOk());
+  OverloadTable table = std::move(builder).Build();
+
+  const OverloadImpl* rules = table.Lookup("allow_string_string");
+  const OverloadImpl* policy = table.Lookup("allow_string_string_v2");
+  ASSERT_NE(rules, nullptr);
+  ASSERT_NE(policy, nullptr);
+  EXPECT_EQ(ImportModuleName(*rules), "rules");
+  EXPECT_EQ(ImportModuleName(*policy), "policy");
+  EXPECT_EQ(rules->name, policy->name);  // same wasm export name
+}
+
+TEST(OverloadTableTest, RegisterCustomKUserModuleWithoutAliasIsAbort) {
+  // kUserModule requires a non-empty module_name; passing empty
+  // should CHECK at registration time.
+  OverloadTableBuilder builder;
+  EXPECT_DEATH(
+      (void)builder.RegisterCustom("foo_int", ImportModule::kUserModule,
+                                   /*module_name=*/"", "foo_int", 2),
+      "module_name");
+}
+
+TEST(OverloadTableTest, RegisterCustomKCelHostWithAliasIsAbort) {
+  // Non-kUserModule custom MUST leave module_name empty.
+  OverloadTableBuilder builder;
+  EXPECT_DEATH(
+      (void)builder.RegisterCustom("foo_int", ImportModule::kCelHost,
+                                   /*module_name=*/"some_alias", "foo_int", 2),
+      "module_name");
 }
 
 // ── M5.E coverage tripwire ────────────────────────────────────

@@ -1,5 +1,14 @@
 # M6 — User-defined custom functions
 
+> **Superseded 2026-05-21 by [m13-custom-fns.md](m13-custom-fns.md).**
+> This doc was drafted under the old M6 numbering (pre-rewrite),
+> covered host-imported custom fns only, and never closed out.  The
+> rewrite-era replacement adds: a `.celfn` IDL with the user-asked
+> `this`-receiver syntax, a second backend (wasm-module imports
+> alongside host-backed imports), a dispatch design with explicit
+> pros / cons, and a slice plan.  Read `m13-custom-fns.md` instead;
+> this file is retained only for the git-history breadcrumb.
+
 Status: **planned.**  Blocked on M4 (three-valued logic) — custom
 functions return the same `OK / UNKNOWN / ERROR` tri-state as built-in
 overloads.

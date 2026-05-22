@@ -160,5 +160,131 @@ TEST(CompilerCompileDeclaredVariableTest, UndeclaredVariableFailsAtChecker) {
   EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ─── M13 Slice C.2 — Compiler::Builder::AddLibrary / AddFunction ───
+
+TEST(CompilerBuilderAddLibraryTest, EmptyLibraryBuildsOk) {
+  auto lib_or = celwasm::FunctionLibrary::Builder().Build();
+  ASSERT_THAT(lib_or, IsOk());
+  auto b = Compiler::NewBuilder();
+  b.AddLibrary(*std::move(lib_or));
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_EQ(c->function_libraries().size(), 1u);
+  EXPECT_EQ(c->function_libraries()[0].decls().size(), 0u);
+}
+
+TEST(CompilerBuilderAddLibraryTest, LibraryWithHostFnPropagatesToCompiler) {
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kBool;
+  celwasm::CelfnType arg;
+  arg.kind = celwasm::CelfnType::Kind::kString;
+  std::vector<celwasm::CelfnParam> params{
+      celwasm::CelfnParam{/*is_receiver=*/true, arg, "s"}};
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("is_number", ret, std::move(params))
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk());
+  auto b = Compiler::NewBuilder();
+  b.AddLibrary(*std::move(lib_or));
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  ASSERT_EQ(c->function_libraries().size(), 1u);
+  ASSERT_EQ(c->function_libraries()[0].decls().size(), 1u);
+  EXPECT_EQ(c->function_libraries()[0].decls()[0].overload_id,
+            "is_number_string");
+}
+
+TEST(CompilerBuilderAddFunctionTest, SingleHostDeclString) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("string @host.upper(this string s);");
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  ASSERT_EQ(c->function_libraries().size(), 1u);
+  EXPECT_EQ(c->function_libraries()[0].decls()[0].overload_id, "upper_string");
+}
+
+TEST(CompilerBuilderAddFunctionTest, ParseErrorSurfacesAtBuild) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("string @host.upper(this string s)");  // missing `;`
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("AddFunction"));
+}
+
+TEST(CompilerBuilderAddFunctionTest, FirstParseErrorWins) {
+  // Two failures, first one wins.  Subsequent ok call still safe.
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("garbage");
+  b.AddFunction("more garbage");
+  b.AddFunction("string @host.upper(this string s);");
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderAddLibraryTest, CrossLibraryDuplicateOverloadIdRejected) {
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kString;
+  celwasm::CelfnType arg;
+  arg.kind = celwasm::CelfnType::Kind::kString;
+  auto make_lib = [&]() {
+    return *celwasm::FunctionLibrary::Builder()
+                .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
+                .Build();
+  };
+  auto b = Compiler::NewBuilder();
+  b.AddLibrary(make_lib());
+  b.AddLibrary(make_lib());
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("upper_string"));
+}
+
+// Pins the M13 Slice C.2 / C.3 boundary.  Slice C.2 landed
+// `AddLibrary` + `AddFunction` + the `function_libraries_`
+// accumulator on Compiler, but `Compiler::Compile` does not yet
+// consume that field — so a source referencing a registered
+// custom fn fails at the checker stage with
+// `InvalidArgument` ("undeclared reference to 'is_number'").
+//
+// When Slice C.3 wires `function_libraries_` into the underlying
+// `TypeCheckerBuilder` + `OverloadTableBuilder::RegisterCustom`,
+// this test will flip OK — that flip is the binary signal that
+// C.3 is wired.  Until then the failure path is the tripwire
+// guarding against silent behavioural drift.
+TEST(CompilerBuilderAddFunctionTest,
+     CompileReferencingRegisteredCustomFnFailsUntilSliceC3) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("name", CelType::String());
+  b.AddFunction("bool @host.is_number(this string s);");
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  // Sanity: the library landed on the Compiler.
+  ASSERT_EQ(c->function_libraries().size(), 1u);
+  // The boundary: the call-site cannot resolve until C.3.
+  auto prog_or = c->Compile("name.is_number()");
+  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kString;
+  celwasm::CelfnType arg;
+  arg.kind = celwasm::CelfnType::Kind::kString;
+  auto lib1 = *celwasm::FunctionLibrary::Builder()
+                   .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
+                   .Build();
+  auto lib2 = *celwasm::FunctionLibrary::Builder()
+                   .AddHost("lower", ret, {celwasm::CelfnParam{true, arg, "s"}})
+                   .Build();
+  auto b = Compiler::NewBuilder();
+  b.AddLibrary(std::move(lib1));
+  b.AddLibrary(std::move(lib2));
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_EQ(c->function_libraries().size(), 2u);
+}
+
 }  // namespace
 }  // namespace cel

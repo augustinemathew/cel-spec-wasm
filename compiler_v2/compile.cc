@@ -176,144 +176,72 @@ void InstallListImports(WasmModule& mod) {
 // can resolve to the same wasm helper (every cross-type numeric
 // `less_*` resolves to `cel_numeric_lt_at_vv`); we only install
 // the import once.
-// Returns the helper arity inferred from the overload-helper name:
-// `_at_vv` → 3-arg, `_at_v` → 2-arg, aggregate-op dispatchers
-// (`cel_list_size`/etc.) carry no suffix and use a hand-rolled
-// table.  Returns 0 for "not a helper we install here".
-int OverloadHelperArity(absl::string_view name) {
-  // Longest suffixes first — `_at_vv` is a suffix of `_at_vvv` which
-  // is a suffix of `_at_vvvv`, so the obvious order would match the
-  // shortest form on every long-form helper.  M12's `_at_vvv` /
-  // `_at_vvvv` kernels (indexOf-with-pos, substring-range, replace,
-  // replace_n, split-n) require the explicit longer arms.
-  if (name.size() >= 8 && name.substr(name.size() - 8) == "_at_vvvv") {
-    return 5;
-  }
-  if (name.size() >= 7 && name.substr(name.size() - 7) == "_at_vvv") {
-    return 4;
-  }
-  if (name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv") {
-    return 3;
-  }
-  if (name.size() >= 5 && name.substr(name.size() - 5) == "_at_v") {
-    return 2;
-  }
-  static constexpr struct {
-    absl::string_view name;
-    int arity;
-  } kDispatchers[] = {
-      {"cel_list_size", 2},
-      {"cel_list_in", 3},
-      {"cel_list_eq", 3},
-      {"cel_list_concat", 3},
-      {"cel_map_size", 2},
-      {"cel_map_in", 3},
-      {"cel_map_eq", 3},
-      // 3VL / control-flow helpers.  cel_and / cel_or are 3-arg;
-      // cel_not is 2-arg.  cel_unknown_merge is reachable only
-      // through cel_and / cel_or internally so it doesn't need an
-      // expr-side import; cel_copy_slot is installed unconditionally
-      // by InstallOverloadImports below for the ternary lowering.
-      {"cel_and", 3},
-      {"cel_or", 3},
-      {"cel_not", 2},
-      // `cel_copy_slot` is the kernel for identity conversions
-      // (`bool(bool)` / `int(int)` / ...).  Its `(dst, src) → void`
-      // signature is 2-arg; it doesn't follow the `_at_v` suffix
-      // convention because the ternary lowering emits it directly,
-      // not via OverloadTable seeding.
-      {"cel_copy_slot", 2},
-      // cel_host parse + format trampolines.  Names match the host
-      // ABI canonical form (`cel_timestamp_parse` etc., not
-      // `cel_timestamp_parse_at_v`) — the `_at_v` suffix is a
-      // runtime-side convention; host trampolines stay unsuffixed
-      // for consistency with cel_get_field / cel_make_message /
-      // cel_map_lookup.
-      {"cel_timestamp_parse", 2},
-      {"cel_duration_parse", 2},
-      {"cel_timestamp_format", 2},
-      {"cel_duration_format", 2},
-  };
-  for (const auto& d : kDispatchers) {
-    if (d.name == name) return d.arity;
-  }
-  return 0;
-}
-
 // Install a single overload helper as a wasm import with the
-// correct arity-derived parameter shape.  Returns true if an
-// import was installed; false if `name` is not a known arity
-// (caller skips installation).
+// correct arity-derived parameter shape.  Arity comes from
+// `OverloadImpl::num_args` (pre-populated by the OverloadTable
+// builder for built-ins via `InferHelperArity`, and by
+// `RegisterCustom` for customs).  Returns true if an import was
+// installed; false if `num_args` is 0 (caller skips installation —
+// matches pre-M13 "unknown arity ⇒ silently skip" behavior).
 bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
-                           const char* module_name) {
+                           absl::string_view module_name, uint8_t num_args) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType v_params[2] = {i32, i32};
   const BinaryenType vv_params[3] = {i32, i32, i32};
   const BinaryenType vvv_params[4] = {i32, i32, i32, i32};
   const BinaryenType vvvv_params[5] = {i32, i32, i32, i32, i32};
   const std::string nstr(name);
-  const int arity = OverloadHelperArity(name);
-  if (arity == 5) {
-    mod.AddFunctionImport(nstr, module_name, nstr, vvvv_params,
-                          BinaryenTypeNone());
-    return true;
+  const std::string mstr(module_name);
+  switch (num_args) {
+    case 5:
+      mod.AddFunctionImport(nstr, mstr, nstr, vvvv_params, BinaryenTypeNone());
+      return true;
+    case 4:
+      mod.AddFunctionImport(nstr, mstr, nstr, vvv_params, BinaryenTypeNone());
+      return true;
+    case 3:
+      mod.AddFunctionImport(nstr, mstr, nstr, vv_params, BinaryenTypeNone());
+      return true;
+    case 2:
+      mod.AddFunctionImport(nstr, mstr, nstr, v_params, BinaryenTypeNone());
+      return true;
+    default:
+      return false;
   }
-  if (arity == 4) {
-    mod.AddFunctionImport(nstr, module_name, nstr, vvv_params,
-                          BinaryenTypeNone());
-    return true;
-  }
-  if (arity == 3) {
-    mod.AddFunctionImport(nstr, module_name, nstr, vv_params,
-                          BinaryenTypeNone());
-    return true;
-  }
-  if (arity == 2) {
-    mod.AddFunctionImport(nstr, module_name, nstr, v_params,
-                          BinaryenTypeNone());
-    return true;
-  }
-  return false;
 }
 
 void InstallOverloadImports(WasmModule& mod,
                             const OverloadTable& overload_table) {
-  absl::flat_hash_set<std::string> installed;
+  // Dedup by (module_name, helper_name) pair — two foreign
+  // backends could legitimately export the same helper name under
+  // different aliases (`rules.allow` vs `policy.allow`), and we
+  // want both imports installed; only same-module same-helper
+  // duplicates should be folded.
+  absl::flat_hash_set<std::pair<std::string, std::string>> installed;
   for (uint32_t id = 1; id <= overload_table.size(); ++id) {
     const OverloadImpl& impl = overload_table.LookupById(id);
-    // kCelHost seeds install with import_module="cel_host" (host
-    // trampolines).  The binaryen function symbol matches the
-    // helper name regardless of module — helper names are globally
-    // unique (kCelHost trampoline names start with `cel_timestamp_`
-    // / `cel_duration_`, kCelRuntime helpers with `cel_int_` /
-    // `cel_string_` / etc).
-    const char* module_name = nullptr;
-    switch (impl.module) {
-      case ImportModule::kCelRuntime:
-        module_name = "cel";
-        break;
-      case ImportModule::kCelHost:
-        module_name = "cel_host";
-        break;
-    }
-    if (module_name == nullptr) continue;
-    const std::string name(impl.name);
-    if (installed.contains(name)) continue;
-    InstallOverloadImport(mod, name, module_name);
-    installed.insert(name);
+    const absl::string_view module_name = ImportModuleName(impl);
+    const std::string helper_name(impl.name);
+    auto key = std::make_pair(std::string(module_name), helper_name);
+    if (installed.contains(key)) continue;
+    InstallOverloadImport(mod, helper_name, module_name, impl.num_args);
+    installed.insert(std::move(key));
   }
 
   // `cel_copy_slot` is emitted directly by expr_lower's ternary
   // lowering (BinaryenIf branches that copy the chosen arm into
-  // out_slot).  Not seeded in OverloadTable —
-  // the table maps cel-cpp overload ids to helpers, and ternary's
-  // overload id `conditional` is special-cased above.  Install
-  // unconditionally so every emitted module imports it; the no-lazy-
-  // imports rule (CLAUDE.md) applies — better to import once and
-  // never use than to gate on AST inspection.
-  if (!installed.contains("cel_copy_slot")) {
-    InstallOverloadImport(mod, "cel_copy_slot", "cel");
-    installed.insert("cel_copy_slot");
+  // out_slot).  Not seeded in OverloadTable — the table maps
+  // cel-cpp overload ids to helpers, and ternary's overload id
+  // `conditional` is special-cased above.  Install unconditionally
+  // so every emitted module imports it; the no-lazy-imports rule
+  // (CLAUDE.md) applies — better to import once and never use than
+  // to gate on AST inspection.
+  auto copy_key =
+      std::make_pair(std::string("cel"), std::string("cel_copy_slot"));
+  if (!installed.contains(copy_key)) {
+    InstallOverloadImport(mod, "cel_copy_slot", "cel",
+                          InferHelperArity("cel_copy_slot"));
+    installed.insert(std::move(copy_key));
   }
 }
 

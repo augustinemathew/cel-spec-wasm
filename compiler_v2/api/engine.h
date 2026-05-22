@@ -32,10 +32,15 @@
 #ifndef CELWASM_COMPILER_V2_API_ENGINE_H_
 #define CELWASM_COMPILER_V2_API_ENGINE_H_
 
+#include <cstdint>
 #include <memory>
 
 #include "absl/base/attributes.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "compiler_v2/api/host_callback.h"
 #include "compiler_v2/api/instance.h"
 #include "compiler_v2/api/program.h"
 
@@ -44,6 +49,33 @@ struct WasmtimeEngineState;
 }  // namespace celwasm
 
 namespace cel {
+
+// Raw low-level callback type for `Engine::AddFunction` — the impl
+// for a single `@host.<name>` declaration in a `.celfn` library.
+//
+// The engine invokes the callback when a Planned program's wasm
+// imports `cel_fn.<overload_id>` and that import is reached during
+// `Instance::Eval`.  Contract:
+//
+//   - `memory` points at the program's shared `cel.memory` linear
+//     memory.  `mem_size` is the total memory size in bytes.
+//   - `out_slot` is the byte offset of the 24-byte CelValue the
+//     callback must write the result to.
+//   - `arg_slots` are the byte offsets of the input CelValues (one
+//     per `.celfn`-declared parameter, including the `this`-receiver
+//     if any).  Empty for a zero-arg callback.
+//   - Return OK on success.  Returning a non-OK status traps the
+//     wasm execution with the error message.
+//
+// CelValue layout is the canonical 24-byte shape from
+// `compiler_v2/runtime/cel_data.h`.  Slice C.1 ships this raw
+// shape; Slice C.2 wires the typed `cel::FunctionImpl` (from
+// `api/activation.h`, signature `Value(Span<const Value>) const`)
+// on top as the user-facing layer, with a coercion shim that
+// decodes raw CelValues into typed `Value`s and back.
+using HostCallback = std::function<absl::Status(
+    uint8_t* memory, size_t mem_size, uint32_t out_slot,
+    absl::Span<const uint32_t> arg_slots)>;
 
 class Engine {
  public:
@@ -81,6 +113,41 @@ class Engine {
   // are documented thread-safe.
   ABSL_MUST_USE_RESULT absl::StatusOr<Instance> Plan(
       const Program& program) const;
+
+  // Register a foreign wasm module under `alias`.  The module's
+  // exports become available to Planned programs as wasm imports of
+  // the form `(import "<alias>" "<helper>" …)`.  Slice E will broaden
+  // this to support modules that define their own memory (current
+  // Probe 2/3 shape); the v1 constraint is that the foreign module
+  // imports `cel.memory` from the engine.
+  //
+  // Conflict checks at registration time:
+  //   - `alias` already registered → AlreadyExists
+  //   - `alias` matches a reserved name (`cel`, `cel_host`, `cel_env`,
+  //     `cel_fn`, `host`) → InvalidArgument
+  //   - The module's wasm bytes fail to parse → InvalidArgument
+  //
+  // **NOT thread-safe** with concurrent calls to itself or to
+  // `AddFunction`.  Engine setup is single-threaded; only `Plan`
+  // promises concurrent-safe operation.  Configure once at startup,
+  // then `Plan` from many threads.
+  ABSL_MUST_USE_RESULT absl::Status AddModule(
+      absl::string_view alias, absl::Span<const uint8_t> wasm_bytes);
+
+  // Register a C++ callback as the impl for a `@host.<name>`
+  // declaration.  `overload_id` matches the synthesised id from
+  // `FunctionLibrary::Builder::AddHost(...)` (e.g. `upper_string`,
+  // `is_admin_message_acme_User`).  `num_args` is the total wasm
+  // function arity — `params.size() + 1` (the +1 is the out_slot
+  // every callback receives).  Matches `OverloadImpl::num_args` 1:1.
+  //
+  // Conflict checks:
+  //   - `overload_id` already registered → AlreadyExists
+  //
+  // **NOT thread-safe** — same contract as `AddModule`.
+  ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
+                                                uint8_t num_args,
+                                                HostCallback impl);
 
  private:
   friend class Builder;

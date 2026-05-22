@@ -1672,6 +1672,75 @@ ResolvePass / LayoutPass / expr_lower lands).
 
 ---
 
+## M13 P1 — Foreign-wasm custom fn link contract (`m13_p1_caller.wat` + `m13_p1_rules_stub.wat`) (M13 Probe 1, 2026-05-21)
+
+Probe-stage WAT pair validating the cross-module wasm-link
+contract for `Foreign`-aliased custom CEL functions.  Companion
+to [m13-probes.md §"Probe 1"](m13-probes.md).
+
+**CEL source modelled**
+
+```
+user.allow("/admin")    where  bool rules.allow(this proto(acme.User) u, string r);
+```
+
+**Two WAT files, one shared memory**
+
+  - `m13_p1_caller.wat` — what celwasmc emits for the expression.
+    Imports `(cel memory)` + `(rules allow_message_acme_User_string)`.
+    Pre-stages a CelMessage at [16,40), a CelString at [40,64), the
+    `"/admin"` raw bytes at [88,94), and an out_slot at [64,88).
+    Calls the import passing `(out=64, user=16, resource=40)` and
+    returns 64 so the host can decode the bool.
+  - `m13_p1_rules_stub.wat` — stand-in for what TinyGo / Rust /
+    AssemblyScript would produce.  Imports `(cel memory)`; exports
+    `allow_message_acme_User_string (param i32 i32 i32)`.  Always
+    writes a `CEL_BOOL = true` CelValue to *out_slot.
+
+**Memory layout (caller)**
+
+```
+[ 0,  8)   reserved null sentinel
+[ 8, 16)   reserved (arena cursor/limit slots — unused; no allocs here)
+[16, 40)   args[0]  CelValue{ kind=CEL_MESSAGE(10), payload.msg_slot=1 }
+[40, 64)   args[1]  CelValue{ kind=CEL_STRING(5),   payload.s={88,6} }
+[64, 88)   out_slot — foreign fn writes its CelValue result here
+[88, 94)   "/admin" raw bytes
+```
+
+**Link-time invariant**
+
+The wasmtime Linker resolves the caller's `rules.allow_message_acme_User_string`
+import against the stub's export of the same name.  No cel-cpp,
+no codegen — pure wasmtime wiring.  Host harness in
+`compiler_v2/probes/m13_custom_fns/m13_p1_test.cc`:
+
+  1. allocate `cel.memory` (2 pages, host-owned)
+  2. instantiate stub with `cel.memory` bound
+  3. extract stub's `allow_*` export
+  4. instantiate caller with `cel.memory` + `rules.allow_*` bound
+  5. call `eval()`, get the out_slot offset
+  6. memcpy 24 bytes from memory; assert kind=CEL_BOOL, payload.b=1
+
+**Why both WATs share `cel.memory` from the host**
+
+The simplest model that supports cross-language modules.  Both
+modules import the memory; the host owns it.  When Probe 2 swaps
+the stub for TinyGo-built wasm, the TinyGo side imports the same
+`cel.memory` — drop-in.  Component-model isolation is the future
+story but not what TinyGo / AS support cleanly today (§10.5 of
+m13-custom-fns.md).
+
+**Runnable today**
+
+```
+bazel test //compiler_v2/probes/m13_custom_fns:m13_p1_test --test_output=all
+```
+
+Passed in 6ms on first commit.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

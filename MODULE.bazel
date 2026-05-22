@@ -154,6 +154,32 @@ local_path_override(
     module_name = "cel-cpp",
     path = "third_party/cel-cpp",
 )
+
+# M13 Slice B — ANTLR4 for the `.celfn` IDL parser.  Mirrors how
+# cel-cpp loads ANTLR (third_party/cel-cpp/MODULE.bazel §"ANTLR4"):
+# the C++ runtime is a bazel module, the code-generator jar is an
+# http_jar.  Versions pinned to match cel-cpp's so we don't end up
+# with two ANTLR4 toolchains in the build graph.
+ANTLR4_VERSION = "4.13.2"
+
+bazel_dep(
+    name = "antlr4-cpp-runtime",
+    version = ANTLR4_VERSION,
+)
+single_version_override(
+    module_name = "antlr4-cpp-runtime",
+    # Same patch cel-cpp applies (third_party/cel-cpp/bazel/antlr.patch);
+    # vendored locally because bazel module overrides only honor patches
+    # from the root module.
+    patches = ["//third_party/patches:antlr-cpp-runtime.patch"],
+)
+
+http_jar = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_jar")
+http_jar(
+    name = "antlr4_jar",
+    sha256 = "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76",
+    urls = ["https://www.antlr.org/download/antlr-" + ANTLR4_VERSION + "-complete.jar"],
+)
 bazel_dep(
     name = "googletest",
     version = "1.17.0.bcr.2",

@@ -1,0 +1,59 @@
+load("@cel-cpp//bazel:antlr.bzl", "antlr_cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# Generates the ANTLR4 C++ lexer + parser for the `.celfn` IDL.
+# Produced files live under `<output>/CelfnLexer.{h,cpp}` etc.;
+# `antlr_cc_library` wraps them as a cc_library target.
+#
+# See `doc/implementation-plan/rewrite/m13-custom-fns.md` §3 and
+# `m13-probes.md` §"Probe 4" for the grammar's role + scope.
+antlr_cc_library(
+    name = "celfn_grammar",
+    src = "Celfn.g4",
+    package = "celwasm_celfn",
+)
+
+# Embedder-facing FunctionLibrary class + nested Builder.  Wraps
+# the ANTLR4 grammar via `ParseCelfnSource(source)` for tools that
+# load `.celfn` files; embedders constructing libraries
+# programmatically use `FunctionLibrary::Builder` directly.
+# Enforces the v1 design rules (§4.5.1 cross-foreign-boundary,
+# alias collisions, etc.).
+cc_library(
+    name = "function_library",
+    srcs = ["function_library.cc"],
+    hdrs = ["function_library.h"],
+    deps = [
+        ":celfn_grammar_cc_parser",
+        "@antlr4-cpp-runtime//:antlr4-cpp-runtime",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "celfn_parser_probe_test",
+    srcs = ["celfn_parser_probe_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":celfn_grammar_cc_parser",
+        "@antlr4-cpp-runtime//:antlr4-cpp-runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "function_library_test",
+    srcs = ["function_library_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":function_library",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
