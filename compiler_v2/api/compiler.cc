@@ -111,7 +111,32 @@ Compiler::Builder& Compiler::Builder::DeclareVariable(const std::string& name,
   return *this;
 }
 
+Compiler::Builder& Compiler::Builder::AddLibrary(
+    celwasm::FunctionLibrary library) {
+  function_libraries_.push_back(std::move(library));
+  return *this;
+}
+
+Compiler::Builder& Compiler::Builder::AddFunction(
+    absl::string_view celfn_source) {
+  auto lib_or = celwasm::ParseCelfnSource(celfn_source);
+  if (!lib_or.ok()) {
+    // Defer to Build() — earlier failure wins (don't overwrite).
+    if (deferred_status_.ok()) {
+      deferred_status_ =
+          absl::Status(lib_or.status().code(),
+                       absl::StrCat("Compiler::Builder::AddFunction: ",
+                                    lib_or.status().message()));
+    }
+    return *this;
+  }
+  function_libraries_.push_back(*std::move(lib_or));
+  return *this;
+}
+
 absl::StatusOr<Compiler> Compiler::Builder::Build() && {
+  if (!deferred_status_.ok()) return deferred_status_;
+
   absl::flat_hash_set<std::string> seen;
   seen.reserve(declared_variables_.size());
   for (const auto& decl : declared_variables_) {
@@ -123,8 +148,26 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
                        decl.name, "`"));
     }
   }
+
+  // M13 Slice C.2 — duplicate overload-id detection ACROSS libraries.
+  // Within a single library, `FunctionLibrary::Builder::Build` already
+  // rejected duplicates; the cross-library check here catches the case
+  // where two separate `AddLibrary` calls each declare the same
+  // overload-id.
+  absl::flat_hash_set<std::string> seen_overload_ids;
+  for (const auto& lib : function_libraries_) {
+    for (const auto& d : lib.decls()) {
+      if (!seen_overload_ids.insert(d.overload_id).second) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Compiler::Builder::Build: overload-id `", d.overload_id,
+            "` is declared by more than one library"));
+      }
+    }
+  }
+
   Compiler c;
   c.declared_variables_ = std::move(declared_variables_);
+  c.function_libraries_ = std::move(function_libraries_);
   return c;
 }
 
@@ -139,6 +182,10 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
     inner.check.variable_specs.push_back(
         absl::StrCat(decl.name, ":", CelTypeToSpec(decl.type)));
   }
+  // M13 Slice C.3 — forward custom-fn libraries to both the checker
+  // (call-site resolution) and codegen (OverloadTable registration).
+  inner.check.function_libraries = function_libraries_;
+  inner.function_libraries = function_libraries_;
   auto artifact_or = celwasm::Compile(source, inner);
   if (!artifact_or.ok()) return artifact_or.status();
   return Program(std::move(artifact_or->wasm_bytes));

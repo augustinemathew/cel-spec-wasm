@@ -1,0 +1,198 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# M13 custom-function probes.  Standalone validators for the
+# cross-language wasm-link contract that the M13 design (see
+# doc/implementation-plan/rewrite/m13-custom-fns.md and m13-probes.md)
+# proposes.  These probes are deliberately parallel to the
+# production wat_runner + Engine::Plan stack — they prove the
+# underlying ABI surface independently of those production paths.
+#
+# Tagged `manual` because they reach for `wasm-as`-equivalent
+# tooling at build time and aren't part of the default
+# `bazel test //compiler_v2/...` set; run explicitly when iterating
+# on the M13 design.
+
+# The TinyGo-built foreign wasm module that Probe 2 loads.
+# Regenerate via `rules/build_rules.sh` (requires TinyGo on PATH).
+# The .wasm is checked into the tree so the probes can run without
+# depending on TinyGo being available in CI.
+filegroup(
+    name = "rules_wasm",
+    srcs = ["rules/rules.wasm"],
+)
+
+# The bare-C-built foreign wasm module that Probe 3 (C) loads.
+# Regenerate via `rules_c/build_rules.sh` (requires brew's LLVM).
+filegroup(
+    name = "rules_c_wasm",
+    srcs = ["rules_c/rules.wasm"],
+)
+
+# The wasi-libc-linked C foreign wasm module that Probe 3 (WASI C)
+# loads.  Reactor mode — must `_initialize` before exports.
+# Regenerate via `rules_c_wasi/build_rules.sh` (requires brew's
+# LLVM + wasi-libc + wasi-runtimes).
+filegroup(
+    name = "rules_c_wasi_wasm",
+    srcs = ["rules_c_wasi/rules.wasm"],
+)
+
+# The Rust-built foreign wasm module that Probe 3 (Rust) loads.
+# Regenerate via `rules_rust/build_rules.sh` (requires rustup-managed
+# rustc + the wasm32-unknown-unknown target).
+filegroup(
+    name = "rules_rust_wasm",
+    srcs = ["rules_rust/rules.wasm"],
+)
+
+# Probe 1 — two hand-rolled WAT modules + a host harness that
+# wires them together via wasmtime.  Validates the wasm-link
+# shape (`<alias>.<fnname>` import resolves to a foreign module's
+# export under the same name) without any cross-language toolchain.
+cc_test(
+    name = "m13_p1_test",
+    srcs = ["m13_p1_test.cc"],
+    data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 2 — the foreign module is now compiled from Go via TinyGo.
+# Same caller WAT as Probe 1; only the stub WAT is swapped for a
+# real Go-authored wasm.  If both probes pass, TinyGo can hit the
+# M13 cross-language ABI without help.
+cc_test(
+    name = "m13_p2_test",
+    srcs = ["m13_p2_test.cc"],
+    data = [
+        ":rules_wasm",
+        "//doc/implementation-plan/rewrite/wat:wat_traces",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 3 (C) — the foreign module is now bare C (-nostdlib) built
+# via brew's LLVM clang.  Same caller WAT.  Exercises the "no
+# `_initialize` exported" branch of the engine's adapter policy
+# (§4.5.2 of m13-custom-fns.md).
+cc_test(
+    name = "m13_p3_c_test",
+    srcs = ["m13_p3_c_test.cc"],
+    data = [
+        ":rules_c_wasm",
+        "//doc/implementation-plan/rewrite/wat:wat_traces",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 3 (WASI C) — wasi-libc-linked C in reactor mode.  Exports
+# `_initialize`; the harness MUST call it.  Real-world toolchain
+# users would reach for this over bare-C (full libc, stable, what
+# wasi-sdk ships).
+cc_test(
+    name = "m13_p3_c_wasi_test",
+    srcs = ["m13_p3_c_wasi_test.cc"],
+    data = [
+        ":rules_c_wasi_wasm",
+        "//doc/implementation-plan/rewrite/wat:wat_traces",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 3 (Rust) — Rust no_std built with rustup.  Shape similar
+# to bare-C: defines memory, no `_initialize`.  Exercises the
+# third toolchain on top of TinyGo + bare-C.
+cc_test(
+    name = "m13_p3_rust_test",
+    srcs = ["m13_p3_rust_test.cc"],
+    data = [
+        ":rules_rust_wasm",
+        "//doc/implementation-plan/rewrite/wat:wat_traces",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 4 — engine-owned module model.  Validates the M13 design
+# refinement where the engine holds a map<alias, Instance> and
+# resolves a caller's wasm imports against that map at Plan time.
+# Probe-stage `ProbeEngine` class; the production `cel::Engine`
+# adopts the same shape in Slice C.
+cc_test(
+    name = "m13_p4_engine_test",
+    srcs = ["m13_p4_engine_test.cc"],
+    data = [
+        ":rules_wasm",
+        "//doc/implementation-plan/rewrite/wat:wat_traces",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# Probe 5 — host-backed custom fn via C++ callback.  Mirror of
+# Probe 2 (TinyGo) but for the `@host.X` backend: a C++ callback is
+# registered with wasmtime as the impl for `cel_fn.length_string`;
+# the caller WAT imports that name; the callback reads the input
+# CelValue from shared memory and writes the result.
+cc_test(
+    name = "m13_p5_host_test",
+    srcs = ["m13_p5_host_test.cc"],
+    data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
+    tags = ["manual"],
+    deps = [
+        "//compiler_v2/runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)

@@ -24,9 +24,85 @@ absl::string_view ImportModuleName(ImportModule m) {
       return "cel";
     case ImportModule::kCelHost:
       return "cel_host";
+    case ImportModule::kCelFn:
+      return "cel_fn";
+    case ImportModule::kUserModule:
+      // Caller error — kUserModule has a per-impl module_name.  Use
+      // the OverloadImpl-taking overload instead.
+      ABSL_CHECK(false)
+          << "ImportModuleName(enum) called with kUserModule; use the "
+             "OverloadImpl overload";
+      return {};
   }
   ABSL_CHECK(false) << "unknown ImportModule=" << static_cast<int>(m);
   return {};
+}
+
+absl::string_view ImportModuleName(const OverloadImpl& impl) {
+  if (impl.module == ImportModule::kUserModule) {
+    ABSL_CHECK(!impl.module_name.empty())
+        << "kUserModule OverloadImpl with empty module_name (helper="
+        << impl.name << ")";
+    return impl.module_name;
+  }
+  return ImportModuleName(impl.module);
+}
+
+uint8_t InferHelperArity(absl::string_view name) {
+  // Longest suffixes first — `_at_vv` is a suffix of `_at_vvv` which
+  // is a suffix of `_at_vvvv`, so the obvious order would match the
+  // shortest form on every long-form helper.  M12's `_at_vvv` /
+  // `_at_vvvv` kernels (indexOf-with-pos, substring-range, replace,
+  // replace_n, split-n) require the explicit longer arms.
+  if (name.size() >= 8 && name.substr(name.size() - 8) == "_at_vvvv") {
+    return 5;
+  }
+  if (name.size() >= 7 && name.substr(name.size() - 7) == "_at_vvv") {
+    return 4;
+  }
+  if (name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv") {
+    return 3;
+  }
+  if (name.size() >= 5 && name.substr(name.size() - 5) == "_at_v") {
+    return 2;
+  }
+  // `_at` (no `v` suffix) — 0 value-args + out_slot.
+  // `cel_optional_none_at(out_slot)` is the canonical case.  Checked
+  // AFTER the longer `_at_v*` suffixes so they win on names that
+  // share the `_at` prefix.
+  if (name.size() >= 3 && name.substr(name.size() - 3) == "_at") {
+    return 1;
+  }
+  // Non-suffix dispatchers and control-flow helpers.  Names matched
+  // by exact equality; mirrors `compile.cc::OverloadHelperArity`'s
+  // pre-M13 table.  Migrating the dispatch here lets the builder
+  // pre-populate `OverloadImpl::num_args` for every seed at Build()
+  // time, removing the runtime suffix sniff at import-install.
+  struct Dispatcher {
+    absl::string_view name;
+    uint8_t arity;
+  };
+  static constexpr Dispatcher kDispatchers[] = {
+      {"cel_list_size", 2},
+      {"cel_list_in", 3},
+      {"cel_list_eq", 3},
+      {"cel_list_concat", 3},
+      {"cel_map_size", 2},
+      {"cel_map_in", 3},
+      {"cel_map_eq", 3},
+      {"cel_and", 3},
+      {"cel_or", 3},
+      {"cel_not", 2},
+      {"cel_copy_slot", 2},
+      {"cel_timestamp_parse", 2},
+      {"cel_duration_parse", 2},
+      {"cel_timestamp_format", 2},
+      {"cel_duration_format", 2},
+  };
+  for (const auto& d : kDispatchers) {
+    if (d.name == name) return d.arity;
+  }
+  return 0;
 }
 
 namespace {
@@ -577,16 +653,40 @@ OverloadTableBuilder::OverloadTableBuilder() {
     // Built-ins use `constexpr` string_views — they point at stable
     // module-lifetime storage, so no copy is needed here.
     const uint32_t interned_id = static_cast<uint32_t>(impls_.size()) + 1u;
-    impls_.push_back(s.impl);
+    OverloadImpl impl = s.impl;
+    // Pre-populate arity from the helper-name suffix / dispatcher
+    // table — single source of truth at Build() time, removing the
+    // pre-M13 runtime suffix sniff in `InstallOverloadImports`.
+    // Unknown shapes get `num_args = 0`, which preserves the
+    // pre-M13 "skip silently" behavior at install time.
+    impl.num_args = InferHelperArity(impl.name);
+    impls_.push_back(impl);
     auto [it, inserted] = index_.emplace(s.overload_id, interned_id);
     ABSL_CHECK(inserted) << "kBuiltinSeeds duplicate: " << s.overload_id;
     builtin_ids_.insert(s.overload_id);
   }
 }
 
-absl::Status OverloadTableBuilder::RegisterCustom(
-    absl::string_view overload_id, ImportModule module,
-    absl::string_view helper_name) {
+absl::Status OverloadTableBuilder::RegisterCustom(absl::string_view overload_id,
+                                                  ImportModule module,
+                                                  absl::string_view module_name,
+                                                  absl::string_view helper_name,
+                                                  uint8_t num_args) {
+  // Argument validation.
+  ABSL_CHECK(module != ImportModule::kCelRuntime)
+      << "RegisterCustom called with kCelRuntime — that namespace is "
+         "reserved for built-in seeds";
+  ABSL_CHECK_GE(num_args, 1u)
+      << "RegisterCustom requires num_args >= 1 (out_slot is always present)";
+  if (module == ImportModule::kUserModule) {
+    ABSL_CHECK(!module_name.empty())
+        << "kUserModule customs must supply a non-empty module_name";
+  } else {
+    ABSL_CHECK(module_name.empty())
+        << "non-kUserModule customs must leave module_name empty; the "
+           "import-module name is fixed by the kind";
+  }
+
   if (builtin_ids_.contains(overload_id)) {
     return absl::AlreadyExistsError(absl::StrCat(
         "'", overload_id, "' is a standard built-in and cannot be overridden"));
@@ -600,7 +700,16 @@ absl::Status OverloadTableBuilder::RegisterCustom(
   const std::string& stored_id = custom_ids_.emplace_back(overload_id);
   const std::string& stored_name =
       custom_helper_names_.emplace_back(helper_name);
-  const OverloadImpl impl{module, absl::string_view(stored_name)};
+  absl::string_view stored_module_name = {};
+  if (module == ImportModule::kUserModule) {
+    const std::string& m = custom_module_names_.emplace_back(module_name);
+    stored_module_name = absl::string_view(m);
+  }
+  OverloadImpl impl{};
+  impl.module = module;
+  impl.name = absl::string_view(stored_name);
+  impl.num_args = num_args;
+  impl.module_name = stored_module_name;
   const uint32_t interned_id = static_cast<uint32_t>(impls_.size()) + 1u;
   impls_.push_back(impl);
   index_.emplace(absl::string_view(stored_id), interned_id);
@@ -609,16 +718,19 @@ absl::Status OverloadTableBuilder::RegisterCustom(
 
 OverloadTable OverloadTableBuilder::Build() && {
   return {std::move(custom_ids_), std::move(custom_helper_names_),
-          std::move(impls_), std::move(index_)};
+          std::move(custom_module_names_), std::move(impls_),
+          std::move(index_)};
 }
 
 OverloadTable::OverloadTable(
     std::deque<std::string> custom_ids,
     std::deque<std::string> custom_helper_names,
+    std::deque<std::string> custom_module_names,
     std::vector<OverloadImpl> impls,
     absl::flat_hash_map<absl::string_view, uint32_t> index)
     : custom_ids_(std::move(custom_ids)),
       custom_helper_names_(std::move(custom_helper_names)),
+      custom_module_names_(std::move(custom_module_names)),
       impls_(std::move(impls)),
       index_(std::move(index)) {}
 
@@ -640,15 +752,13 @@ const OverloadImpl& OverloadTable::LookupById(uint32_t interned_id) const {
   return impls_[interned_id - 1];
 }
 
-std::vector<std::pair<ImportModule, absl::string_view>>
-OverloadTable::UsedImports(
+std::vector<const OverloadImpl*> OverloadTable::UsedImports(
     const absl::flat_hash_set<uint32_t>& used_ids) const {
-  std::vector<std::pair<ImportModule, absl::string_view>> out;
+  std::vector<const OverloadImpl*> out;
   out.reserve(used_ids.size());
   for (const uint32_t id : used_ids) {
     if (id == 0 || id > impls_.size()) continue;
-    const OverloadImpl& impl = impls_[id - 1];
-    out.emplace_back(impl.module, impl.name);
+    out.push_back(&impls_[id - 1]);
   }
   return out;
 }

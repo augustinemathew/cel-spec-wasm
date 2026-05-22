@@ -454,7 +454,22 @@ cc_library(
     hdrs = ["internal/wasmtime_engine_state.h"],
     tags = ["manual"],
     deps = [
+        ":host_callback",
         "@wasmtime_darwin_arm64//:wasmtime",
+    ],
+)
+
+# M13 Slice C.1 — the raw low-level HostCallback type alias used
+# by Engine::AddFunction.  In its own tiny header so the internal
+# WasmtimeEngineState (which stores callbacks) and the public
+# engine.h (which exposes the type) can both depend on it without
+# creating an engine↔state circular include.
+cc_library(
+    name = "host_callback",
+    hdrs = ["host_callback.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -488,6 +503,7 @@ cc_library(
         ":program",
         ":type",
         "//compiler_v2:compile",
+        "//compiler_v2/celfn:function_library",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
@@ -522,6 +538,7 @@ cc_library(
     deps = [
         ":abi_decode",
         ":cel_host_wasmtime",
+        ":host_callback",
         "//compiler_v2/abi:cel_abi_cc_proto",
         "@wasmtime_darwin_arm64//:wasmtime",
     ],
@@ -609,6 +626,7 @@ cc_library(
     deps = [
         ":abi_decode",
         ":cel_host_wasmtime",
+        ":host_callback",
         ":instance",
         ":instance_impl",
         ":program",

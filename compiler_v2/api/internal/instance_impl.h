@@ -12,11 +12,30 @@
 #ifndef CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 #define CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
 
+#include <memory>
+#include <vector>
+
 #include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/api/host_callback.h"
 #include "compiler_v2/api/internal/cel_host_wasmtime.h"
 #include "wasmtime.h"
 
 namespace celwasm {
+
+// M13 Slice C.1 — per-Plan host-callback env.  Carries the
+// engine-registered `cel::HostCallback` plus a borrowed pointer to
+// the per-Instance shared memory.  The wasmtime linker callback
+// gets this struct's address as its `env` argument; the struct
+// outlives the linker via `InstanceImpl::host_fn_envs`.
+struct HostFnEnv {
+  // Borrowed; points into `WasmtimeEngineState::host_callbacks`.
+  // The shared_ptr<WasmtimeEngineState> on the public Instance
+  // outlives this struct, so the pointer stays valid.
+  const cel::HostCallback* callback = nullptr;
+  // Borrowed from `InstanceImpl::memory` (shared with the runtime
+  // + every foreign module instantiated into this store).
+  wasmtime_sharedmemory_t* memory = nullptr;
+};
 
 struct InstanceImpl {
   wasmtime_store_t* store = nullptr;
@@ -58,6 +77,13 @@ struct InstanceImpl {
   // (cursor) between Evals — each Eval rewinds and reuses the region.
   uint32_t activation_buf_offset = 0;
   uint32_t activation_buf_capacity = 0;
+
+  // M13 Slice C.1 — per-Plan host-callback envs.  One entry per
+  // host fn the engine has registered (via `Engine::AddFunction`).
+  // Stable address — heap-allocated unique_ptrs — so the linker
+  // callback's stashed env pointer stays valid for the instance's
+  // lifetime.
+  std::vector<std::unique_ptr<HostFnEnv>> host_fn_envs;
 
   InstanceImpl() = default;
   ~InstanceImpl();

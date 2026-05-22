@@ -213,5 +213,145 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
   EXPECT_EQ(*v2_or->AsInt(), 42);
 }
 
+// ─── M13 Slice C.1 — Engine::AddModule + Engine::AddFunction ───
+//
+// Mirrors Probe 4 + Probe 5's coverage, but against the production
+// `cel::Engine` API rather than the probe-stage `ProbeEngine` /
+// inline wasmtime harness.
+
+// A minimal self-contained custom-module wasm: defines + exports
+// memory, exports one function.  Bytes precomputed via
+// `wasmtime_wat2wasm` to keep the test self-contained (no probe
+// data files).
+std::vector<uint8_t> MakeMinimalCustomModuleBytes() {
+  constexpr absl::string_view kWat = R"(
+    (module
+      (memory (export "memory") 2)
+      (func (export "allow_string_string") (param i32 i32 i32))))";
+  wasm_byte_vec_t out;
+  wasmtime_error_t* err = wasmtime_wat2wasm(kWat.data(), kWat.size(), &out);
+  ABSL_CHECK_EQ(err, nullptr);
+  std::vector<uint8_t> bytes(
+      reinterpret_cast<const uint8_t*>(out.data),
+      reinterpret_cast<const uint8_t*>(out.data) + out.size);
+  wasm_byte_vec_delete(&out);
+  return bytes;
+}
+
+TEST(EngineAddModuleTest, AddModuleAcceptsValidAlias) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  const auto bytes = MakeMinimalCustomModuleBytes();
+  EXPECT_TRUE(engine_or->AddModule("rules", bytes).ok());
+}
+
+TEST(EngineAddModuleTest, AddModuleRejectsEmptyAlias) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  const auto bytes = MakeMinimalCustomModuleBytes();
+  auto s = engine_or->AddModule("", bytes);
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(EngineAddModuleTest, AddModuleRejectsReservedAliases) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  const auto bytes = MakeMinimalCustomModuleBytes();
+  for (absl::string_view reserved :
+       {"cel", "cel_host", "cel_env", "cel_fn", "host"}) {
+    auto s = engine_or->AddModule(reserved, bytes);
+    EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument)
+        << "alias `" << reserved << "` should be rejected";
+  }
+}
+
+TEST(EngineAddModuleTest, AddModuleRejectsDuplicateAlias) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  const auto bytes = MakeMinimalCustomModuleBytes();
+  ASSERT_TRUE(engine_or->AddModule("rules", bytes).ok());
+  auto s = engine_or->AddModule("rules", bytes);
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+}
+
+TEST(EngineAddModuleTest, AddModuleRejectsMalformedBytes) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  // Not a valid wasm module.
+  const std::vector<uint8_t> bad_bytes{0x00, 0x01, 0x02, 0x03, 0x04};
+  auto s = engine_or->AddModule("bad", bad_bytes);
+  EXPECT_FALSE(s.ok()) << "malformed wasm bytes should fail to parse";
+}
+
+TEST(EngineAddFunctionTest, AddFunctionAcceptsValidImpl) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  HostCallback impl = [](uint8_t* /*mem*/, size_t /*mem_size*/,
+                         uint32_t /*out_slot*/,
+                         absl::Span<const uint32_t> /*arg_slots*/) {
+    return absl::OkStatus();
+  };
+  EXPECT_TRUE(engine_or->AddFunction("upper_string", 2, impl).ok());
+}
+
+TEST(EngineAddFunctionTest, AddFunctionRejectsZeroArity) {
+  // num_args must be ≥ 1 (out_slot is always present).
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  HostCallback impl = [](uint8_t*, size_t, uint32_t,
+                         absl::Span<const uint32_t>) {
+    return absl::OkStatus();
+  };
+  auto s = engine_or->AddFunction("zero", 0, impl);
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(EngineAddFunctionTest, AddFunctionRejectsEmptyImpl) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  HostCallback empty;
+  auto s = engine_or->AddFunction("upper_string", 2, std::move(empty));
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(EngineAddFunctionTest, AddFunctionRejectsDuplicateOverloadId) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  HostCallback impl = [](uint8_t*, size_t, uint32_t,
+                         absl::Span<const uint32_t>) {
+    return absl::OkStatus();
+  };
+  ASSERT_TRUE(engine_or->AddFunction("upper_string", 2, impl).ok());
+  auto s = engine_or->AddFunction("upper_string", 2, impl);
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+}
+
+TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
+  // Smoke test: register a module + a host callback, then Plan the
+  // standard "42" program (which uses neither).  Plan should
+  // succeed; the registered module instantiates cleanly but its
+  // exports are never imported by this program — that's fine.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  ASSERT_TRUE(
+      engine_or->AddModule("rules", MakeMinimalCustomModuleBytes()).ok());
+  HostCallback impl = [](uint8_t*, size_t, uint32_t,
+                         absl::Span<const uint32_t>) {
+    return absl::OkStatus();
+  };
+  ASSERT_TRUE(engine_or->AddFunction("never_called", 2, impl).ok());
+
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok());
+  auto prog_or = compiler_or->Compile("42");
+  ASSERT_TRUE(prog_or.ok());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
 }  // namespace
 }  // namespace cel

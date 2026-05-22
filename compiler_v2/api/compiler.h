@@ -21,11 +21,13 @@
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
+#include "compiler_v2/celfn/function_library.h"
 
 namespace celwasm::api {
 
@@ -147,11 +149,34 @@ class Compiler {
     return declared_variables_;
   }
 
+  // Introspection — custom function libraries plugged into this
+  // Compiler via `Builder::AddLibrary` / `Builder::AddFunction`.
+  // Each library's `decls()` enumerates the available custom fns.
+  absl::Span<const celwasm::FunctionLibrary> function_libraries() const {
+    return function_libraries_;
+  }
+
  private:
   friend class Builder;
   Compiler() = default;  // Builder constructs.
 
   std::vector<VariableDeclaration> declared_variables_;
+  // M13 Slice C.2 — custom-fn libraries accumulated by the Builder.
+  // Each library is the typed parsed form of a `.celfn` file (or a
+  // programmatic `Builder` construction).  Held by value; Compiler
+  // owns them.
+  //
+  // **Storage only until Slice C.3.**  `Compiler::Compile` does not
+  // yet consume this field — the wiring into the cel-cpp
+  // `TypeCheckerBuilder` (call-site resolution) and the codegen
+  // `OverloadTableBuilder::RegisterCustom` (per decl, so the
+  // `cel_fn.<overload_id>` imports are emitted) lands in Slice C.3.
+  // Until C.3 lands, a CEL source that references a registered
+  // custom fn fails at the checker with "undeclared reference to
+  // 'fn_name'" — the same failure mode as if the library had never
+  // been registered.  See
+  // `doc/implementation-plan/rewrite/m13-custom-fns.md` §12.
+  std::vector<celwasm::FunctionLibrary> function_libraries_;
 };
 
 class Compiler::Builder {
@@ -184,6 +209,24 @@ class Compiler::Builder {
   // mutates `*this` in place and returns an lvalue reference.
   Builder& DeclareVariable(const std::string& name, const CelType& type);
 
+  // M13 Slice C.2 — register a `FunctionLibrary` of custom CEL
+  // function declarations.  All decls in the library become
+  // visible to every expression this Compiler compiles.  The
+  // library is taken by value and stored on the Compiler.  Mixing
+  // multiple `AddLibrary` calls (e.g. one from a `.celfn` file +
+  // one constructed programmatically via Builder) is supported;
+  // decls accumulate across calls.  Collisions (same overload-id
+  // declared twice) are caught at `Build()` time.
+  Builder& AddLibrary(celwasm::FunctionLibrary library);
+
+  // M13 Slice C.2 — register a single custom-fn declaration from a
+  // source string.  Convenience over `AddLibrary(ParseCelfnSource(s))`.
+  // Accepts any valid `.celfn` source — typically a one-liner like
+  //   `string @host.upper(this string s);`
+  // but multi-decl strings work too.  Returns `*this` even on
+  // parse failure; the deferred error surfaces at `Build()`.
+  Builder& AddFunction(absl::string_view celfn_source);
+
   // Materialises the Compiler.  Consumes the Builder — chain from a
   // named local with `std::move(b).Build()`.
   //
@@ -202,6 +245,12 @@ class Compiler::Builder {
 
  private:
   std::vector<VariableDeclaration> declared_variables_;
+  std::vector<celwasm::FunctionLibrary> function_libraries_;
+  // Deferred parse error from `AddFunction(string)` — surfaced
+  // at `Build()` if non-OK.  Subsequent `AddFunction` /
+  // `AddLibrary` calls overwrite this only if the prior status
+  // was OK, so the FIRST failure wins.
+  absl::Status deferred_status_;
 };
 
 }  // namespace celwasm::api
