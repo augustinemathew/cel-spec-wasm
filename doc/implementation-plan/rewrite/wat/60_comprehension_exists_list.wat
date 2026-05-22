@@ -53,7 +53,7 @@
 ;;      doesn't allocate a separate "accu_next" workspace.
 ;;
 ;; Memory layout (computed by LayoutPass):
-;;   [ 0,  8)   null sentinel + arena cursor (written by cel_reset)
+;;   [ 0,  8)   null sentinel + arena cursor (written by arena_reset)
 ;;   [ 8, 16)   arena limit / pad
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
@@ -68,8 +68,8 @@
 ;;                    here; total 88 B at offset 208.
 ;;
 ;; ── Runtime helpers this WAT calls — all already exported ──
-;;   cel.cel_reset            (M1)
-;;   cel.cel_alloc            (M1)
+;;   cel.arena_reset            (M1)
+;;   cel.arena_alloc            (M1)
 ;;   cel.cel_list_create      (M4.F) — header + count×24 zero-fill
 ;;   cel.cel_list_set         (M4.F) — write element[i] from slot
 ;;   cel.cel_int_gt_at_vv     (M5.B) — bool `v > 0`
@@ -80,8 +80,8 @@
 ;; regression test for codegen's emitted shape.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
   (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
   (import "cel" "cel_int_gt_at_vv"
@@ -115,7 +115,7 @@
     (local $end_off    i32)  ;; one-past-end of the element run
 
     ;; ── RESET ─ arena begins past workspace (= 208).
-    (call $cel_reset (i32.const 208) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── EVALUATE iter_range — kCreateList[1, 2, 3] ─────────
     ;; Build the list at workspace slot 136.  Allocates the

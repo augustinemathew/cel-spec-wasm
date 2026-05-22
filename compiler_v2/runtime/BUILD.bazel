@@ -28,6 +28,7 @@ cc_library(
         "cel_log.c",
         "cel_make.c",
         "cel_memory.c",
+        "cel_optional.c",
         "cel_runtime.c",
         "cel_string_ops.c",
         "cel_time.c",
@@ -46,6 +47,7 @@ cc_library(
         "cel_make.h",
         "cel_map.h",
         "cel_memory.h",
+        "cel_optional.h",
         "cel_runtime.h",
         "cel_string_ops.h",
         "cel_time.h",
@@ -90,6 +92,15 @@ cc_test(
 cc_test(
     name = "cel_make_test",
     srcs = ["cel_make_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_optional_test",
+    srcs = ["cel_optional_test.cc"],
     deps = [
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
@@ -617,6 +628,17 @@ cc_binary(
         # Polymorphic equality.
         "-Wl,--export=cel_equals_at_vv",
         "-Wl,--export=cel_not_equals_at_vv",
+        # CEL `optional<T>` kernels — see `cel_optional.{h,c}`.
+        "-Wl,--export=cel_optional_none_at",
+        "-Wl,--export=cel_optional_of_at_v",
+        "-Wl,--export=cel_optional_of_non_zero_at_v",
+        "-Wl,--export=cel_optional_has_value_at_v",
+        "-Wl,--export=cel_optional_value_at_v",
+        "-Wl,--export=cel_optional_or_at_vv",
+        "-Wl,--export=cel_optional_or_value_at_vv",
+        "-Wl,--export=cel_select_optional_field_at_vv",
+        "-Wl,--export=cel_map_insert_at_if_present",
+        "-Wl,--export=cel_list_append_at_if_present",
         # 3VL / control-flow helpers.
         "-Wl,--export=cel_and",
         "-Wl,--export=cel_or",

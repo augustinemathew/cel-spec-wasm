@@ -27,19 +27,19 @@
 ;;       out_slot = {CEL_ERROR, err=CEL_ERR_TYPE_MISMATCH}.
 ;;     - 3VL absorption — UNKNOWN/ERROR propagates verbatim.
 ;;     - allocates `a.len + b.len` bytes in the arena via
-;;       cel_alloc.  OOM → out_slot = {CEL_ERROR, err=CEL_ERR_OVERFLOW}.
+;;       arena_alloc.  OOM → out_slot = {CEL_ERROR, err=CEL_ERR_OVERFLOW}.
 ;;     - copies a.bytes then b.bytes into the new buffer.
 ;;     - writes out_slot = {CEL_STRING, payload.s={ptr=<new>, len=a.len+b.len}}.
 ;;
 ;; The new payload lives in the bump arena, so it survives until
-;; cel_reset is next called (top of next $eval).  This matches the
+;; arena_reset is next called (top of next $eval).  This matches the
 ;; existing string-handling pattern from M1: every dynamically-
 ;; produced string payload is owned by the arena that the next
-;; cel_reset rewinds.
+;; arena_reset rewinds.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_string_concat_at_vv"
           (func $cel_string_concat_at_vv (param i32 i32 i32)))
 
@@ -57,7 +57,7 @@
   (data (i32.const 64) "abcd")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 96) (i32.const 131072))
+    (call $arena_reset)
 
     ;; out_slot=72, a=16, b=40.  Helper allocates 4 bytes in the
     ;; arena, copies "abcd" into them, writes

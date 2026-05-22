@@ -43,8 +43,8 @@
 ;; resolved FieldDescriptor, not from the wire).
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_make_message"
           (func $cel_make_message (param i32 i32)))
   (import "cel_host" "cel_set_field"
@@ -66,7 +66,7 @@
     ;; (no free variables)
 
     ;; ── RESET ────────────────────────────────────────────────
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─────────────────────────────────────────────────
     ;; M7.A: construct the default proto into out_slot=16.

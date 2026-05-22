@@ -63,7 +63,7 @@ namespace {
 // `expr_lower.cc` can do a single lookup-and-emit (mirrors
 // arithmetic / compare). Three-path origin dispatch is documented
 // in `rewrite/map-list-dispatch.md`.
-constexpr std::array<Seed, 177> kBuiltinSeeds{
+constexpr std::array<Seed, 191> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -493,6 +493,46 @@ constexpr std::array<Seed, 177> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_format_at_vv"}},
     Seed{"string_reverse",
          {ImportModule::kCelRuntime, "cel_string_reverse_at_v"}},
+    // ── CEL `optional<T>` overloads ──────────────────────────
+    // Overload IDs from `third_party/cel-cpp/checker/optional.cc`.
+    // Kernels self-hosted in `cel_runtime.wasm` (see
+    // `compiler_v2/runtime/cel_optional.{h,c}` + the
+    // `-Wl,--export=cel_optional_*` lines in
+    // `runtime/BUILD.bazel`).
+    //
+    // The `.?field` and `[?key]` Call paths route through
+    // `cel_select_optional_field_at_vv` alongside the
+    // Select-on-optional kSelectExpr (one kernel handles both
+    // surfaces).  Chained-index variants
+    // (`optional_map_optindex_optional_value`, etc.) also map
+    // here — the kernel polymorphic-dispatches on `src.kind`
+    // internally.
+    Seed{"optional_of", {ImportModule::kCelRuntime, "cel_optional_of_at_v"}},
+    Seed{"optional_ofNonZeroValue",
+         {ImportModule::kCelRuntime, "cel_optional_of_non_zero_at_v"}},
+    Seed{"optional_none", {ImportModule::kCelRuntime, "cel_optional_none_at"}},
+    Seed{"optional_hasValue",
+         {ImportModule::kCelRuntime, "cel_optional_has_value_at_v"}},
+    Seed{"optional_value",
+         {ImportModule::kCelRuntime, "cel_optional_value_at_v"}},
+    Seed{"optional_or_optional",
+         {ImportModule::kCelRuntime, "cel_optional_or_at_vv"}},
+    Seed{"optional_orValue_value",
+         {ImportModule::kCelRuntime, "cel_optional_or_value_at_vv"}},
+    Seed{"select_optional_field",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"map_optindex_optional_value",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"optional_map_optindex_optional_value",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"list_optindex_optional_int",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"optional_list_optindex_optional_int",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"optional_list_index_int",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    Seed{"optional_map_index_value",
+         {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
 };
 
 // Overload ids the OverloadTable does NOT seed.  Every cel-cpp

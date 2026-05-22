@@ -38,8 +38,8 @@
 ;;   [88, mem_size)  bump arena
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   ;; The dispatcher itself — no `_arena` / `_host` suffix.  Bound
   ;; from cel_runtime.wasm at instantiate time; the dispatcher
   ;; tail-calls into one of the two arms.
@@ -54,7 +54,7 @@
     (local $m_off i32)
 
     (local.set $m_off (i32.const 16))
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; kDynamic arm of `_[_]`: the runtime dispatcher decides
     ;; arena vs. host at runtime by reading m's CelKind.

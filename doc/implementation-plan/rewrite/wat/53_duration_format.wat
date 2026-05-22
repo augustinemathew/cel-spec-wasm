@@ -17,7 +17,7 @@
 ;;                  CelValue{kind=CEL_DURATION(12), _pad,
 ;;                           payload.dur={seconds=3600, nanos=0, _pad=0}}
 ;;   [40,  64)  workspace: out_slot for the constructed CEL_STRING
-;;                          (Layer-2 impl cel_alloc's the bytes into the
+;;                          (Layer-2 impl arena_alloc's the bytes into the
 ;;                          arena and writes the span here).
 ;;   [64, mem_size)  bump arena (the formatted "3600s" bytes land here)
 ;;
@@ -30,7 +30,7 @@
 ;;   - 3VL absorption — CEL_UNKNOWN/CEL_ERROR pass through.
 ;;   - happy path: formats the {seconds, nanos} pair using the proto
 ;;     Duration canonical text format (cel-cpp parity), cel_allocs the
-;;     result bytes inside the arena via `cel_alloc(len)`, writes
+;;     result bytes inside the arena via `arena_alloc(len)`, writes
 ;;     out_slot = {CEL_STRING(5), payload.s={ptr=arena_off, len}}.
 ;;   - Trailing zero suppression: "3600s" (whole seconds), "0.001s"
 ;;     (millis), "0.000000001s" (nanos).  The proto canonical form
@@ -55,8 +55,8 @@
 ;; pure host import, no runtime cel_* dispatch hop.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_duration_format"
           (func $cel_duration_format (param i32 i32)))
 
@@ -69,10 +69,10 @@
 
   (func $eval (result i32)
     ;; Arena starts at 64 (past out_slot, 16-byte aligned).
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Host trampoline: format the rodata duration, write CEL_STRING
-    ;; into slot 40 with the bytes cel_alloc'd in the arena.
+    ;; into slot 40 with the bytes arena_alloc'd in the arena.
     (call $cel_duration_format
           (i32.const 40)        ;; out_slot
           (i32.const 16))       ;; dur_slot

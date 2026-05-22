@@ -86,7 +86,65 @@ struck through or removed.
       Why P2: not yet observable; lands when the host_string_arena
       cleanup goes in (M7).
 
+- [ ] **#9** — `{'k': 'v'}.k` (map-dot-field sugar) is broken
+      pre-existing.  cel-cpp's checker accepts `.k` on a `map<string,
+      V>` operand as sugar for `m["k"]` and stamps the kSelect's
+      result type as `V`.  Our `EmitKSelect` does not branch on
+      `op_ann->repr == Repr::kMap` and instead routes every non-
+      optional Select through `cel_get_field`, which is the
+      message-field trampoline — it errors on a CEL_MAP_ARENA
+      operand.  Confirmed by an e2e probe `EvalSource("{'k':
+      'v'}.k")` returning a CEL_ERROR value.
+      Impact: blocks 3 conformance rows in
+      `tests/simple/testdata/optionals.textproto` —
+      `optional_chaining_1`, `optional_chaining_2`,
+      `optional_chaining_3`.  All three have the shape
+      `{'c': {...}}.c[?'…']…`; the leftmost `.c` is the map.field
+      sugar that errors out, the rest of the chain never sees a
+      valid operand.  Likely blocks rows in other corpora too — the
+      probe is a universal pattern, not optionals-specific.
+      Fix: in `EmitKSelect`, detect `op_ann->repr == Repr::kMap`
+      (with string key type per type_map) and route to
+      `cel_map_lookup_arena` / `cel_map_lookup` / `cel_host_cel_map_lookup`
+      via `MapLookupCallTarget(op_ann->map_origin)`, passing the
+      field name as a CelValue rodata slot (same lift pattern Slice
+      B introduced via `SelectKeyRodataVisitor`).  Bytes / int key
+      types do not need the sugar — the spec only permits `.field`
+      on string-keyed maps.
+      Surfaced: 2026-05-21 M14 Slice B implementation.
+      Files: `compiler_v2/codegen/expr_lower.cc::EmitKSelect`,
+      `compiler_v2/codegen/layout_pass.cc::SelectKeyRodataVisitor`
+      (extend the operand-Repr predicate to include `kMap`).
+      Why P2: out of scope for M14 (Slice B mandate was
+      Select-on-optional, not Select-on-map).  Self-contained
+      follow-up slice — likely 2–4 hours of work, mostly mirroring
+      Slice B's structure.
+
 ## Closed
+
+- [x] **#8** — `compiler_v2/codegen/expr_lower.cc` had two
+      `ABSL_CHECK(false)` stubs that Slice A of M14 converted to
+      `return absl::UnimplementedError(...)`:
+        - `EmitKStructExpr` ~line 507 — `f.optional()` proto-literal
+          `?field:` entries (blocked on M7 Slice 9 + M14 follow-up).
+        - `EmitKIndexCall` ~line 574 — `_[_]` Call with operand
+          `Repr` other than `kMap` / `kList` (i.e., optional-typed
+          operands; lit up in M14 Slice B via `LowerSelect`
+          Repr-detection).
+      Surfaced: 2026-05-21 M14 Slice A independent review.
+      Closed: 2026-05-21 by M14 Slice B.
+      Files: `compiler_v2/codegen/expr_lower.cc`,
+      `compiler_v2/frontend/parse_and_check.cc`.
+      Resolution: `CheckSubsetStruct` rejects `?field:` proto-literal
+      entries at the static-subset gate so the harness classifies
+      affected rows as SKIP-static_subset; both codegen arms restored
+      to `ABSL_CHECK(false) << "stub until ..."`.  The optional-typed
+      `_[_]` operand arm in `EmitKIndexCall` is no longer reachable
+      either — Slice B's `Repr::kOptional` branch handles it
+      explicitly, and any other non-`{kMap, kList, kOptional}` Repr
+      is rejected before codegen by `parse_and_check.cc::
+      UnacceptableLabel`.  Closeout verified by 70/70 unit tests + no
+      conformance regressions vs baseline.
 
 - [x] **#7** — `CEL_LOG("enter")` in every public runtime helper does
       a wasm→host `fprintf(stderr)` trampoline on every invocation;

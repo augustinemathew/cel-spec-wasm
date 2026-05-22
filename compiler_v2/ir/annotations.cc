@@ -37,6 +37,8 @@ absl::string_view ReprName(Repr r) {
       return "timestamp";
     case Repr::kType:
       return "type";
+    case Repr::kOptional:
+      return "optional";
   }
   return "?";
 }

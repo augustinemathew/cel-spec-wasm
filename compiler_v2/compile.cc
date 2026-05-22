@@ -102,6 +102,11 @@ void InstallMapImports(WasmModule& mod) {
   mod.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
                         "cel_map_insert_at_if_bool", map4_params,
                         BinaryenTypeNone());
+  // Optional-payload predicate-gated insert for `{?key: opt_v}` map
+  // entries.  `(map_slot, key_slot, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName),
+                        "cel", "cel_map_insert_at_if_present", map3_params,
+                        BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
                         "cel_map_lookup_arena", map3_params,
                         BinaryenTypeNone());
@@ -157,6 +162,11 @@ void InstallListImports(WasmModule& mod) {
   mod.AddFunctionImport("cel_list_append_at_if_bool", "cel",
                         "cel_list_append_at_if_bool", list3_params,
                         BinaryenTypeNone());
+  // Optional-payload predicate-gated append for `[?elem]` list
+  // entries.  `(list_slot, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelListAppendAtIfPresentInternalName),
+                        "cel", "cel_list_append_at_if_present", append_params,
+                        BinaryenTypeNone());
 }
 
 // Install one wasm function import per OverloadTable seed whose
@@ -180,12 +190,11 @@ void InstallListImports(WasmModule& mod) {
 // `_at_vv` → 3-arg, `_at_v` → 2-arg, aggregate-op dispatchers
 // (`cel_list_size`/etc.) carry no suffix and use a hand-rolled
 // table.  Returns 0 for "not a helper we install here".
-int OverloadHelperArity(absl::string_view name) {
-  // Longest suffixes first — `_at_vv` is a suffix of `_at_vvv` which
-  // is a suffix of `_at_vvvv`, so the obvious order would match the
-  // shortest form on every long-form helper.  M12's `_at_vvv` /
-  // `_at_vvvv` kernels (indexOf-with-pos, substring-range, replace,
-  // replace_n, split-n) require the explicit longer arms.
+// Suffix-based arity inference (`_at_vvvv` / `_at_vvv` / `_at_vv` /
+// `_at_v` / `_at` — longest first so longer suffixes win on names
+// that share a tail).  Returns 0 if the name doesn't carry an `_at`
+// suffix; caller falls through to the dispatcher table.
+int OverloadHelperArityFromSuffix(absl::string_view name) {
   if (name.size() >= 8 && name.substr(name.size() - 8) == "_at_vvvv") {
     return 5;
   }
@@ -198,6 +207,20 @@ int OverloadHelperArity(absl::string_view name) {
   if (name.size() >= 5 && name.substr(name.size() - 5) == "_at_v") {
     return 2;
   }
+  // `_at` (no `v` suffix) = 1-arg kernel (out_slot only).  M14's
+  // `cel_optional_none_at(out_slot)` is the first; it's the 0-input
+  // cousin of `_at_v` / `_at_vv`.
+  if (name.size() >= 3 && name.substr(name.size() - 3) == "_at") {
+    return 1;
+  }
+  return 0;
+}
+
+// Aggregate-op dispatchers + 3VL / control-flow helpers + the
+// cel_host parse/format trampolines — names that don't fit the
+// `_at_*` suffix convention and use a hand-rolled arity table.
+// Returns 0 if `name` isn't in the table.
+int OverloadHelperArityFromTable(absl::string_view name) {
   static constexpr struct {
     absl::string_view name;
     int arity;
@@ -209,26 +232,19 @@ int OverloadHelperArity(absl::string_view name) {
       {"cel_map_size", 2},
       {"cel_map_in", 3},
       {"cel_map_eq", 3},
-      // 3VL / control-flow helpers.  cel_and / cel_or are 3-arg;
-      // cel_not is 2-arg.  cel_unknown_merge is reachable only
-      // through cel_and / cel_or internally so it doesn't need an
-      // expr-side import; cel_copy_slot is installed unconditionally
-      // by InstallOverloadImports below for the ternary lowering.
+      // cel_and / cel_or are 3-arg; cel_not is 2-arg.
+      // cel_unknown_merge is reachable only through cel_and / cel_or
+      // internally so it doesn't need an expr-side import;
+      // cel_copy_slot is installed unconditionally for ternary.
       {"cel_and", 3},
       {"cel_or", 3},
       {"cel_not", 2},
       // `cel_copy_slot` is the kernel for identity conversions
-      // (`bool(bool)` / `int(int)` / ...).  Its `(dst, src) → void`
-      // signature is 2-arg; it doesn't follow the `_at_v` suffix
-      // convention because the ternary lowering emits it directly,
-      // not via OverloadTable seeding.
+      // (`bool(bool)` etc.); ternary lowering emits it directly, not
+      // via OverloadTable seeding.
       {"cel_copy_slot", 2},
-      // cel_host parse + format trampolines.  Names match the host
-      // ABI canonical form (`cel_timestamp_parse` etc., not
-      // `cel_timestamp_parse_at_v`) — the `_at_v` suffix is a
-      // runtime-side convention; host trampolines stay unsuffixed
-      // for consistency with cel_get_field / cel_make_message /
-      // cel_map_lookup.
+      // cel_host parse + format trampolines.  Host trampolines stay
+      // unsuffixed for consistency with cel_get_field / etc.
       {"cel_timestamp_parse", 2},
       {"cel_duration_parse", 2},
       {"cel_timestamp_format", 2},
@@ -238,6 +254,12 @@ int OverloadHelperArity(absl::string_view name) {
     if (d.name == name) return d.arity;
   }
   return 0;
+}
+
+int OverloadHelperArity(absl::string_view name) {
+  const int suffix_arity = OverloadHelperArityFromSuffix(name);
+  if (suffix_arity != 0) return suffix_arity;
+  return OverloadHelperArityFromTable(name);
 }
 
 // Install a single overload helper as a wasm import with the
@@ -270,6 +292,12 @@ bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
   }
   if (arity == 2) {
     mod.AddFunctionImport(nstr, module_name, nstr, v_params,
+                          BinaryenTypeNone());
+    return true;
+  }
+  if (arity == 1) {
+    const BinaryenType one_param[1] = {i32};
+    mod.AddFunctionImport(nstr, module_name, nstr, one_param,
                           BinaryenTypeNone());
     return true;
   }

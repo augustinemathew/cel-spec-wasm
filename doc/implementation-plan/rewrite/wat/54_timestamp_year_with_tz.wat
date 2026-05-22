@@ -89,8 +89,8 @@
 ;; path on the host.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_timestamp_tz_accessor"
           (func $cel_timestamp_tz_accessor (param i32 i32 i32 i32)))
 
@@ -112,7 +112,7 @@
 
   (func $eval (result i32)
     ;; Arena begins at 112 (16-byte aligned past out_slot @ 88).
-    (call $cel_reset (i32.const 112) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Host trampoline: dispatch on accessor_kind=0 (kYear).
     (call $cel_timestamp_tz_accessor

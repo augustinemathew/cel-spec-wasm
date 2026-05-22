@@ -91,8 +91,8 @@
 ;;   cel.cel_or                                 (M5.G)
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
   (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
   (import "cel" "cel_int_eq_at_vv"
@@ -122,7 +122,7 @@
     (local $end_off_i  i32)
     (local $hdr_i      i32)
 
-    (call $cel_reset (i32.const 256) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── OUTER iter_range = [1] at slot 112 ──────────────────
     (call $cel_list_create (i32.const 112) (i32.const 1))

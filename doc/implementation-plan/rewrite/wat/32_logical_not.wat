@@ -25,8 +25,8 @@
 ;; Expected: out_slot = {CEL_BOOL, b=0}.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_not" (func $cel_not (param i32 i32)))
 
   (data (i32.const 16)
@@ -34,7 +34,7 @@
         "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; out_slot=40, v=16 (true).  cel_not writes CEL_BOOL false.
     (call $cel_not (i32.const 40) (i32.const 16))

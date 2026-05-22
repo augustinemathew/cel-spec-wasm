@@ -29,8 +29,8 @@
 ;; out_slot.  Missing key → {CEL_ERROR, payload.err=CEL_ERR_NO_SUCH_KEY}.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))
   (import "cel" "cel_map_insert" (func $cel_map_insert (param i32 i32 i32)))
   (import "cel" "cel_map_lookup_arena"
@@ -47,7 +47,7 @@
         "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 136) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Build the map at slot 88.
     (call $cel_map_create (i32.const 88) (i32.const 1))

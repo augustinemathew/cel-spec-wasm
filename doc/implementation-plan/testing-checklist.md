@@ -2355,6 +2355,75 @@ bindings (Slice F).
         `compiler_v2/e2e/m12_test.cc`.  Conformance baseline
         bumped 1382 → 1476.
 
+### Rewrite M14 — CEL `optional<T>` (Slices 0 + A + B shipped 2026-05-21; Slice C shipped 2026-05-22; Slice D in flight)
+
+`m14-optionals.md` slices land `optional<T>` end-to-end:
+runtime kernels + IR `Repr::kOptional` + codegen Select/Index
+branches + frontend `OptionalCheckerLibrary` wiring +
+`?field:` static-subset gate + `{?key: opt_v}` / `[?elem]`
+literal entries + `optMap`/`optFlatMap` macros riding Shape-C.
+Conformance: `optionals.textproto` 0/70 → 18/70 (3 FAIL gated
+on cleanup-backlog #9 map.field sugar gap); corpus-wide
+1476 → 1572 PASS (+96).  Slice C adds no new corpus rows
+because every literal-entry / `optMap` row in the corpus has
+a `dyn`-typed sub-expression that `RejectDyn` filters
+upstream of codegen — see m14-optionals.md §4 Slice C delta 1.
+
+  - [x] **Slice 0 — WAT-first ABI lock.**  Six WAT files under
+        `doc/.../wat/m14_optional_*.wat` lock the OptionalCell
+        layout (32-byte arena-allocated `{present, _pad, inner}`),
+        the kernel ABIs (`cel_optional_*_at_*`,
+        `cel_select_optional_field_at_vv`), and the
+        immutability + absent-key contracts.  All six
+        assemble and run end-to-end through `wat_runner` with
+        byte-exact memory assertions.
+  - [x] **Slice A — runtime kernels + parser flip.**  8 new
+        kernels in `cel_optional.{h,c}` (`none_at`, `of_at_v`,
+        `of_non_zero_at_v`, `has_value_at_v`, `value_at_v`,
+        `or_at_vv`, `or_value_at_vv`,
+        `select_optional_field_at_vv`) + 32 per-TU unit tests in
+        `cel_optional_test.cc` + 4 3VL-absorption tests (B3
+        follow-up).  `kPrimitiveTypeName[14]` filled with
+        `"optional_type"`.  `EnableOptionalSyntax = true` +
+        `AddLibrary(OptionalCheckerLibrary())` in
+        `parse_and_check.cc`.  14 OverloadTable seeds (the 7
+        value-level overloads + 7 chained-index overloads all
+        routed through `cel_select_optional_field_at_vv`).
+  - [x] **Slice B — codegen + static-subset gate.**
+        `Repr::kOptional` stamped by both `ReprOf` overloads
+        (TypeSpec `AbstractType{"optional_type"}` + cel::Type
+        `OptionalType`).  `LayoutPass::SelectKeyRodataVisitor`
+        lifts kSelect-on-optional field names into rodata.
+        `EmitKSelect` / `EmitKIndexCall` optional branches
+        route to `cel_select_optional_field_at_vv`.  test_only
+        Select on optional chains through
+        `cel_optional_has_value_at_v` on the same slot.
+        `CheckSubsetStruct` rejects `Foo{?field: ...}` proto-
+        literal entries.  Codegen test matrix:
+        `optional<map>.field`, `optional<list>[i]`,
+        `optional<list>[?i]`, `m[?k]`, `[1,2][?1]`,
+        `has(opt.x)`, Select on typed-None.  e2e test matrix:
+        the same plus orValue chains and the verbatim
+        conformance row sources.
+  - [x] **Slice C — `optMap` / `optFlatMap` macros + optional
+        entries in literals.**  Two new runtime kernels
+        (`cel_map_insert_at_if_present` / `cel_list_append_at_if_present`)
+        + 12 per-TU unit tests in `cel_optional_test.cc` covering
+        Some/None/error/unknown/wrong-kind + mixed-entry shapes.
+        Two new WAT traces (§M14.7 / §M14.8) with byte-exact
+        `WatRunner` assertions on the post-eval
+        `ArenaListHeader.count` / `ArenaMapHeader.count`.
+        `EmitKMapExpr` / `EmitKListExpr` honour
+        `MapExprEntry.optional()` / `ListExprElement.optional()`;
+        6 new codegen tests in `expr_lower_test.cc` cover
+        all-optional / mixed / regression-only-plain patterns.
+        12 new e2e tests in `m14_test.cc` cover literal-entry
+        materialisation/omission plus `optMap`/`optFlatMap`
+        Some/None branches — confirming Shape-C cel.bind
+        detector admits the macros with zero new comprehension
+        codegen (per probe Q5).
+  - [ ] **Slice D — closeout.**  In progress.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

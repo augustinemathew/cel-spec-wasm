@@ -45,7 +45,7 @@
 ;; Expected: out_slot = {CEL_INT, i=1} (cond is true → then arm).
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "cel_copy_slot" (func $cel_copy_slot (param i32 i32)))
 
   (data (i32.const 16)
@@ -59,7 +59,7 @@
         "\02\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 112) (i32.const 131072))
+    (call $arena_reset)
 
     ;; cond.kind == CEL_BOOL ?
     (if (i32.eq (i32.load (i32.const 16))

@@ -119,6 +119,39 @@ class IdentStorageVisitor : public cel::AstVisitorBase {
   uint32_t num_variables_;
 };
 
+// Walks every `kSelect` whose operand is annotated `Repr::kOptional`
+// and lifts the field name into rodata as a CelValue holding a
+// CEL_STRING.  Records the rodata offset on the Select node's
+// annotation field `select_key_rodata_offset` so `EmitKSelect` can
+// pass it as the `key_slot` arg of `cel_select_optional_field_at_vv`
+// (ABI rationale + memory map in
+// `wat/m14_optional_select_field.wat`).
+//
+// Non-optional Selects skip — the regular path uses `field_ref_id`
+// instead of a CelValue key.  Must run BEFORE the static-memory
+// builder is finalized.
+class SelectKeyRodataVisitor : public cel::AstVisitorBase {
+ public:
+  SelectKeyRodataVisitor(StaticMemoryBuilder& builder,
+                         WasmAnnotations& annotations)
+      : builder_(builder), annotations_(annotations) {}
+
+  void PreVisitExpr(const cel::Expr&) override {}
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitSelect(const cel::Expr& expr,
+                       const cel::SelectExpr& sel) override {
+    const NodeAnnotation* op = annotations_.Find(sel.operand().id());
+    if (op == nullptr || op->repr != Repr::kOptional) return;
+    annotations_[expr.id()].select_key_rodata_offset =
+        builder_.AllocateString(sel.field());
+  }
+
+ private:
+  StaticMemoryBuilder& builder_;
+  WasmAnnotations& annotations_;
+};
+
 // Walks every `kSelect` node post-order and writes
 // `{kWorkspaceSlot, offset}` onto its annotation.  Operand slots
 // (nested selects) are released before acquiring the parent's slot,
@@ -351,10 +384,16 @@ absl::StatusOr<StaticLayout> LayoutPass(
   layout.message_types = std::move(resolved.message_types);
   layout.debug_mode = opts.debug_layout;
 
-  // --- Pass A: pack every kConst into rodata. ---
+  // --- Pass A: pack every kConst into rodata, then lift the field
+  // name of every kSelect-on-optional into rodata too — the
+  // `cel_select_optional_field_at_vv` kernel reads its key from a
+  // CelValue slot.  Both passes share one builder so the rodata
+  // layout is contiguous. ---
   StaticMemoryBuilder builder(layout.rodata_base);
   ConstLayoutVisitor const_visitor(builder, layout.annotations);
   cel::AstTraverse(ast.ast().root_expr(), const_visitor);
+  SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
+  cel::AstTraverse(ast.ast().root_expr(), select_key_visitor);
   layout.rodata = std::move(builder).Finalize();
 
   // --- Pass B: reserve one 24-byte workspace slot per variable. ---

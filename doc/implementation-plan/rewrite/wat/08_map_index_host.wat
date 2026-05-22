@@ -35,8 +35,8 @@
 ;; into out_slot through EncodeFieldResult.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_map_lookup"
           (func $cel_map_lookup (param i32 i32 i32)))
 
@@ -55,7 +55,7 @@
     (local.set $m_off (i32.const 16))
 
     ;; Reset — arena begins at 96.
-    (call $cel_reset (i32.const 96) (i32.const 131072))
+    (call $arena_reset)
 
     ;; kHost arm of `_[_]`: route directly to the cel_host trampoline.
     (call $cel_map_lookup

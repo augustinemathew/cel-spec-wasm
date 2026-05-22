@@ -60,9 +60,13 @@ Repr ReprOf(const cel::TypeSpec& type) {
   if (type.has_map_type()) return Repr::kMap;
   if (type.has_message_type()) return Repr::kMessage;
   if (type.has_type()) return Repr::kType;
-  // DynTypeSpec, ErrorTypeSpec, AbstractType, FunctionTypeSpec, ParamTypeSpec:
-  // unsupported in the static subset.  Leave as kUnknown so the validator can
-  // flag them.
+  if (type.has_abstract_type() &&
+      type.abstract_type().name() == "optional_type") {
+    return Repr::kOptional;
+  }
+  // DynTypeSpec, ErrorTypeSpec, other AbstractType names, FunctionTypeSpec,
+  // ParamTypeSpec: unsupported in the static subset.  Leave as kUnknown so the
+  // validator can flag them.
   return Repr::kUnknown;
 }
 
@@ -100,6 +104,12 @@ Repr ReprOf(const cel::Type& type) {
     // lines up with how we'll wire `google.protobuf.Any` in M3 proto work.
     case cel::TypeKind::kAny:
       return Repr::kMessage;
+    // `optional<T>` is modelled in cel-cpp's strong type API as an
+    // `OptionalType`, a sub-shape of `OpaqueType`.  Detect via the
+    // `Is<OptionalType>` predicate (avoids matching other OpaqueType
+    // names that may appear in future cel-cpp releases).
+    case cel::TypeKind::kOpaque:
+      return type.Is<cel::OptionalType>() ? Repr::kOptional : Repr::kUnknown;
     case cel::TypeKind::kBoolWrapper:
       return Repr::kBool;
     case cel::TypeKind::kIntWrapper:

@@ -32,8 +32,8 @@
 ;; `equals_int64` in the OverloadTable and emits exactly this call.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_int_eq_at_vv"
           (func $cel_int_eq_at_vv (param i32 i32 i32)))
 
@@ -45,7 +45,7 @@
         "\02\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; out_slot=64, a=16, b=40.  Helper reads two CEL_INT frames out
     ;; of memory, writes a CEL_BOOL CelValue (false here, since

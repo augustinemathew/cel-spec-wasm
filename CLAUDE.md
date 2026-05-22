@@ -96,6 +96,28 @@ reference — when in doubt, copy its conventions verbatim.  In particular:
     (`cc_library` per header).
   - Close namespaces with `}  // namespace celwasm`.
 
+**No milestone / slice references in code comments.**  Code comments
+must describe what the code does and why, in terms that stay true
+after milestones close.  Do not write `// M14 Slice B: ...`,
+`// Added in M5.B`, `// land in M14 Slice B`, or `// M14 expanded
+the static subset to admit ...` — those references rot the moment
+the work ships, and they leak project-tracker noise into the
+codebase.  Cite a design-doc path only when the doc explains a
+non-obvious invariant the reader needs (e.g. an ABI contract or a
+rejected alternative); cite the path, not the milestone that
+authored it.
+
+**Single carved-out exception:** the `ABSL_CHECK(false) << "<symbol>
+is a stub until <milestone>"` form below.  The milestone name there
+is load-bearing — it tells the eventual debugger which slice owns
+filling in the body — and the stub message is meant to be deleted
+when the milestone lands, so it doesn't accumulate.
+
+The rule applies to NEW comments.  Existing milestone references
+in the codebase are grandfathered; clean them up opportunistically
+when you're already editing the surrounding lines, not in
+standalone churn commits.
+
 **Unreachable switch defaults.**  When a `switch` enumerates a closed
 set of cases (every `enum` value, every `cel::ExprKindCase`, every
 `CelKind`, …), the `default:` arm is an invariant violation — not a

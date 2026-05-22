@@ -22,6 +22,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/variant.h"
 #include "cel/expr/syntax.pb.h"
+#include "checker/optional.h"
 #include "checker/standard_library.h"
 #include "checker/type_checker.h"
 #include "checker/type_checker_builder.h"
@@ -426,6 +427,20 @@ void CheckSubsetList(const cel::ListExpr& list, const cel::Ast::TypeMap& types,
 void CheckSubsetStruct(const cel::StructExpr& s, const cel::Ast::TypeMap& types,
                        std::vector<Violation>& out) {
   for (const auto& field : s.fields()) {
+    // `Foo{?field: ...}` proto-literal entries (`StructExprField.optional`
+    // set) are out-of-scope for the static subset until proto-literal
+    // codegen for optional entries lands (the prerequisite is the
+    // `cel_set_field` proto-literal path).  Reject here so the
+    // conformance harness classifies these rows as static-subset SKIP
+    // rather than reaching `EmitKStructExpr` and tripping its stub
+    // branch.
+    if (field.optional()) {
+      out.push_back(Violation{/*expr_id=*/0, /*kind=*/"optional-struct-field",
+                              /*detail=*/
+                              absl::StrCat("`?field:` proto-literal entry on `",
+                                           field.name(), "`")});
+      continue;
+    }
     if (field.has_value()) CheckSubsetNode(field.value(), types, out);
   }
 }
@@ -657,6 +672,19 @@ absl::Status ConfigureCheckerBuilder(
       !s.ok()) {
     return s;
   }
+  // `OptionalCheckerLibrary` registers the `optional.of` /
+  // `optional.none` / `optional.ofNonZeroValue` constructors plus
+  // the `hasValue` / `value` / `or` / `orValue` receiver overloads,
+  // the `select_optional_field` / `map_optindex_optional_value` /
+  // `list_optindex_optional_int` overloads for `.?` / `[?_]`, and
+  // the `optional_type` ident — see
+  // `third_party/cel-cpp/checker/optional.cc` for the registered set.
+  // The parser-side flip (`enable_optional_syntax = true`) lives in
+  // `DefaultParserOptions` below; both pieces must be wired together
+  // for any `optional<T>` expression to type-check.
+  if (auto s = builder.AddLibrary(cel::OptionalCheckerLibrary()); !s.ok()) {
+    return s;
+  }
   if (!opts.container.empty()) {
     builder.set_container(opts.container);
   }
@@ -671,14 +699,34 @@ absl::Status ConfigureCheckerBuilder(
   return absl::OkStatus();
 }
 
+// Parser options shared by `BuildMacroRegistry` (macro registration)
+// and `ParseExpression` (the `Parse()` call).  Keeping a single
+// `ParserOptions` source-of-truth ensures the macros that
+// `RegisterStandardMacros` conditionally registers based on
+// `enable_optional_syntax` match the parser surface that
+// `Parse()` later honours — divergence between the two would
+// produce "macro not found" / "unexpected ?" surprises.
+cel::ParserOptions DefaultParserOptions() {
+  cel::ParserOptions opts;
+  // Optional syntax (`obj.?field`, `[?elem]`, `{?key: val}`, plus
+  // the `optMap` / `optFlatMap` macros) lit up here.  Without this
+  // flag the parser rejects every `.?` and the type checker's
+  // `optional<T>` handling (added via `OptionalCheckerLibrary`
+  // above) is unreachable.
+  opts.enable_optional_syntax = true;
+  return opts;
+}
+
 // Macros the parser recognises beyond the bare
 // CEL grammar.  Standard macros (`has`, `all`, `exists`,
 // `exists_one`, `map`, `filter`) cover langdef-required
 // expansions; bindings_ext adds `cel.bind`; comprehensions_v2
 // adds the three-arg / two-iter-var forms (`exists(i, v, p)`,
 // `transformList(i, v, t)`, etc.) that drive `macros2.textproto`.
+// With `enable_optional_syntax = true`, `RegisterStandardMacros`
+// additionally registers `optMap` / `optFlatMap`.
 absl::Status BuildMacroRegistry(cel::MacroRegistry& registry) {
-  cel::ParserOptions opts;
+  cel::ParserOptions opts = DefaultParserOptions();
   if (auto s = cel::RegisterStandardMacros(registry, opts); !s.ok()) return s;
   if (auto s = cel::extensions::RegisterBindingsMacros(registry, opts);
       !s.ok()) {
@@ -716,7 +764,8 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
   if (auto s = BuildMacroRegistry(registry); !s.ok()) return s;
   auto source = cel::NewSource(expression, std::string(description));
   if (!source.ok()) return source.status();
-  auto parsed = google::api::expr::parser::Parse(**source, registry);
+  auto parsed = google::api::expr::parser::Parse(**source, registry,
+                                                 DefaultParserOptions());
   if (!parsed.ok()) return parsed.status();
   auto ast = cel::CreateAstFromParsedExpr(*parsed);
   if (!ast.ok()) return ast.status();

@@ -2,6 +2,26 @@ load("@rules_cc//cc:defs.bzl", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
+# Optional types e2e: compile + plan + eval expressions involving
+# `optional.of` / `.c.x` chains / `has(opt.x)`.  Tracks the FAIL
+# rows in `tests/simple/testdata/optionals.textproto`.
+cc_test(
+    name = "m14_test",
+    srcs = ["m14_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M2 e2e test suite — the spec of "done" for idents / kSelect /
 # has() / partial-eval.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation) /

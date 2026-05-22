@@ -35,8 +35,8 @@
 ;; encodes the result back into out_slot via EncodeFieldResult.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_list_at"
           (func $cel_list_at (param i32 i32 i32)))
 
@@ -49,7 +49,7 @@
     (local $xs_off i32)
 
     (local.set $xs_off (i32.const 16))
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; kHost arm of `_[_]`: directly to the cel_host trampoline.
     (call $cel_list_at

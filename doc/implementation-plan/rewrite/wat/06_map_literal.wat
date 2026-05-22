@@ -8,8 +8,8 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  null sentinel
-;;   [ 8, 12)  arena cursor  — written by cel_reset
-;;   [12, 16)  arena limit   — written by cel_reset
+;;   [ 8, 12)  arena cursor  — written by arena_reset
+;;   [12, 16)  arena limit   — written by arena_reset
 ;;   [16, 40)  rodata: key kConst   {kind=CEL_INT(2), payload.i=1}
 ;;   [40, 64)  rodata: value kConst {kind=CEL_INT(2), payload.i=10}
 ;;   [64, 88)  workspace: kMapExpr result slot (out_slot=64)
@@ -27,8 +27,8 @@
 ;; pair; capacity overflow poisons the map with CEL_ERR_OVERFLOW.
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))
   (import "cel" "cel_map_insert" (func $cel_map_insert (param i32 i32 i32)))
 
@@ -47,7 +47,7 @@
 
   (func $eval (result i32)
     ;; ── RESET ─ arena begins past workspace (= 88).
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─ kCreateMap arm.
     ;; Allocate header + entries-run for capacity=1.

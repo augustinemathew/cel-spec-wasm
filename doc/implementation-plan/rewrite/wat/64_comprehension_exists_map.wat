@@ -78,8 +78,8 @@
 ;;   cel.cel_map_iter_key_at   (Slice E NEW)  — (out, handle) → ()
 (module
   (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))
   (import "cel" "cel_map_insert" (func $cel_map_insert (param i32 i32 i32)))
   (import "cel" "cel_int_gt_at_vv"
@@ -123,7 +123,7 @@
   (func $eval (result i32)
     (local $iter_handle i32)
 
-    (call $cel_reset (i32.const 256) (i32.const 131072))
+    (call $arena_reset)
 
     ;; iter_range = {1: "a", 2: "b"} at slot 160.
     (call $cel_map_create (i32.const 160) (i32.const 2))
