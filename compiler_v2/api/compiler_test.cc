@@ -241,30 +241,30 @@ TEST(CompilerBuilderAddLibraryTest, CrossLibraryDuplicateOverloadIdRejected) {
               testing::HasSubstr("upper_string"));
 }
 
-// Pins the M13 Slice C.2 / C.3 boundary.  Slice C.2 landed
-// `AddLibrary` + `AddFunction` + the `function_libraries_`
-// accumulator on Compiler, but `Compiler::Compile` does not yet
-// consume that field — so a source referencing a registered
-// custom fn fails at the checker stage with
-// `InvalidArgument` ("undeclared reference to 'is_number'").
-//
-// When Slice C.3 wires `function_libraries_` into the underlying
-// `TypeCheckerBuilder` + `OverloadTableBuilder::RegisterCustom`,
-// this test will flip OK — that flip is the binary signal that
-// C.3 is wired.  Until then the failure path is the tripwire
-// guarding against silent behavioural drift.
-TEST(CompilerBuilderAddFunctionTest,
-     CompileReferencingRegisteredCustomFnFailsUntilSliceC3) {
+// M13 Slice C.3 — call-sites resolve through to a valid wasm
+// module.  This is the slice's acceptance test: `name.is_number()`
+// compiles cleanly given the host-backed `is_number(string)` decl,
+// because (a) the checker has the OverloadDecl from
+// `RegisterCustomFunctionsOnChecker` and (b) codegen emits a
+// `cel_fn.is_number_string` import via the OverloadTable's
+// custom-row.  Engine-side binding is exercised end-to-end in
+// engine_test.cc / instance_test.cc.
+TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("name", CelType::String());
   b.AddFunction("bool @host.is_number(this string s);");
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
-  // Sanity: the library landed on the Compiler.
   ASSERT_EQ(c->function_libraries().size(), 1u);
-  // The boundary: the call-site cannot resolve until C.3.
   auto prog_or = c->Compile("name.is_number()");
-  EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  ASSERT_THAT(prog_or, IsOk());
+  // Sanity: emitted bytes start with the wasm magic.
+  auto bytes = prog_or->wasm_bytes();
+  ASSERT_GE(bytes.size(), 4u);
+  EXPECT_EQ(bytes[0], 0x00);
+  EXPECT_EQ(bytes[1], 0x61);
+  EXPECT_EQ(bytes[2], 0x73);
+  EXPECT_EQ(bytes[3], 0x6d);
 }
 
 TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {

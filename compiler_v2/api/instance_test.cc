@@ -10,12 +10,16 @@
 // expects.  Pre-flip these would fail at instantiate-time.
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "compiler/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
@@ -657,6 +661,131 @@ TEST(InstanceActivationStringEncoderTest, ArenaRewindsBetweenEvals) {
     EXPECT_EQ(*v_or->AsString(), candidate);
   }
 }
+
+// ─── M13 Slice C.3 — host-backed custom-fn end-to-end ─────────────
+//
+// Compile a CEL source that calls a declared host fn, register the
+// impl on the Engine, Plan, Eval, and assert the callback fired and
+// the result decoded.  This is the slice's acceptance test: it
+// exercises every layer the wiring touches — checker resolution,
+// codegen `cel_fn.<overload_id>` import, Engine's
+// `HostCallbackTrampoline`, the wasmtime sharedmemory read/write,
+// and Instance decode.
+namespace m13_c3 {
+
+// Read a `CelValue` (24 bytes) from `mem` at `slot`.  Replays the
+// memcpy pattern probe 5 uses; the high-level `HostCallback` shape
+// hides the wasmtime caller-export-`memory` plumbing for us.
+struct CelValueWire {
+  uint32_t kind;
+  uint32_t pad;
+  uint32_t payload_lo;
+  uint32_t payload_hi;
+  uint32_t payload_mid;
+  uint32_t payload_top;
+};
+static_assert(sizeof(CelValueWire) == 24, "CelValueWire must be 24 bytes");
+
+// CEL_STRING = 5, CEL_BOOL = 1.  Pulled from runtime/cel_data.h
+// directly to avoid bringing the whole C header into this test;
+// the values are part of the frozen ABI.
+constexpr uint32_t kCelString = 5;
+constexpr uint32_t kCelBool = 1;
+
+absl::Status IsAllDigitsCallback(uint8_t* memory, size_t mem_size,
+                                 uint32_t out_slot,
+                                 absl::Span<const uint32_t> arg_slots) {
+  if (arg_slots.size() != 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("is_number expects 1 arg, got ", arg_slots.size()));
+  }
+  const uint32_t s_slot = arg_slots[0];
+  if (s_slot + sizeof(CelValueWire) > mem_size) {
+    return absl::OutOfRangeError("string slot out of bounds");
+  }
+  CelValueWire input{};
+  std::memcpy(&input, memory + s_slot, sizeof(input));
+  if (input.kind != kCelString) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("is_number: expected CEL_STRING, got kind=", input.kind));
+  }
+  // Decode the CelSpan { ptr=payload_lo, len=payload_hi } and read
+  // the bytes from memory.  ptr is a wasm-memory offset.
+  const uint32_t str_ptr = input.payload_lo;
+  const uint32_t str_len = input.payload_hi;
+  if (str_ptr + str_len > mem_size) {
+    return absl::OutOfRangeError("string bytes out of bounds");
+  }
+  bool all_digits = str_len > 0;
+  for (uint32_t i = 0; i < str_len; ++i) {
+    const uint8_t c = memory[str_ptr + i];
+    if (c < '0' || c > '9') {
+      all_digits = false;
+      break;
+    }
+  }
+  CelValueWire output{};
+  output.kind = kCelBool;
+  output.payload_lo = all_digits ? 1u : 0u;
+  std::memcpy(memory + out_slot, &output, sizeof(output));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<Compiler> MakeCompiler() {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("name", CelType::String());
+  b.AddFunction("bool @host.is_number(this string s);");
+  return std::move(b).Build();
+}
+
+absl::StatusOr<Engine> MakeEngineWithIsNumber() {
+  auto engine_or = Engine::NewBuilder().Build();
+  if (!engine_or.ok()) return engine_or.status();
+  auto s = engine_or->AddFunction("is_number_string", /*num_args=*/2,
+                                  IsAllDigitsCallback);
+  if (!s.ok()) return s;
+  return engine_or;
+}
+
+TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnFiresAndReturnsTrue) {
+  auto compiler_or = MakeCompiler();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  auto prog_or = compiler_or->Compile("name.is_number()");
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+
+  auto engine_or = MakeEngineWithIsNumber();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+
+  Activation act;
+  act.Bind("name", Value::String("42"));
+  auto val_or = inst_or->Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  ASSERT_EQ(val_or->kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*val_or->AsBool());
+}
+
+TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnReturnsFalseForNonDigits) {
+  auto compiler_or = MakeCompiler();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  auto prog_or = compiler_or->Compile("name.is_number()");
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+
+  auto engine_or = MakeEngineWithIsNumber();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+
+  Activation act;
+  act.Bind("name", Value::String("abc"));
+  auto val_or = inst_or->Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  ASSERT_EQ(val_or->kind(), Value::Kind::kBool);
+  EXPECT_FALSE(*val_or->AsBool());
+}
+
+}  // namespace m13_c3
 
 }  // namespace
 }  // namespace cel

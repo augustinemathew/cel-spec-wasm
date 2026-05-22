@@ -1,5 +1,7 @@
 #include "compiler_v2/frontend/parse_and_check.h"
 
+#include "compiler_v2/celfn/function_library.h"
+
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -13,6 +15,8 @@
 #include <vector>
 
 #include "absl/container/btree_set.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
@@ -630,6 +634,143 @@ absl::Status RejectDyn(const cel::Ast& ast) {
   return s;
 }
 
+// M13 Slice C.3 — scalar arms of `CelfnTypeToCelType`.  Returns
+// `nullopt` for non-scalar kinds (list / map / proto); the caller
+// handles those structurally.  Split out from the parent to keep
+// each function under the `readability-function-size` threshold.
+std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
+  switch (k) {
+    case CelfnType::Kind::kBool:
+      return cel::Type(cel::BoolType{});
+    case CelfnType::Kind::kInt:
+      return cel::Type(cel::IntType{});
+    case CelfnType::Kind::kUint:
+      return cel::Type(cel::UintType{});
+    case CelfnType::Kind::kDouble:
+      return cel::Type(cel::DoubleType{});
+    case CelfnType::Kind::kString:
+      return cel::Type(cel::StringType{});
+    case CelfnType::Kind::kBytes:
+      return cel::Type(cel::BytesType{});
+    case CelfnType::Kind::kNull:
+      return cel::Type(cel::NullType{});
+    case CelfnType::Kind::kDuration:
+      return cel::Type(cel::DurationType{});
+    case CelfnType::Kind::kTimestamp:
+      return cel::Type(cel::TimestampType{});
+    case CelfnType::Kind::kList:
+    case CelfnType::Kind::kMap:
+    case CelfnType::Kind::kProto:
+      return std::nullopt;
+  }
+  ABSL_CHECK(false) << "CelfnScalarToCelType: unhandled CelfnType::Kind = "
+                    << static_cast<int>(k);
+}
+
+absl::StatusOr<cel::Type> CelfnTypeToCelType(
+    const CelfnType& t, google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool);
+
+absl::StatusOr<cel::Type> CelfnListToCelType(
+    const CelfnType& t, google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool) {
+  ABSL_CHECK_EQ(t.list_element.size(), 1u);
+  auto elem = CelfnTypeToCelType(t.list_element[0], arena, pool);
+  if (!elem.ok()) return elem.status();
+  return cel::Type(cel::ListType(arena, *elem));
+}
+
+absl::StatusOr<cel::Type> CelfnMapToCelType(
+    const CelfnType& t, google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool) {
+  ABSL_CHECK_EQ(t.map_kv.size(), 2u);
+  auto key = CelfnTypeToCelType(t.map_kv[0], arena, pool);
+  if (!key.ok()) return key.status();
+  auto val = CelfnTypeToCelType(t.map_kv[1], arena, pool);
+  if (!val.ok()) return val.status();
+  return cel::Type(cel::MapType(arena, *key, *val));
+}
+
+absl::StatusOr<cel::Type> CelfnProtoToCelType(
+    const CelfnType& t, const google::protobuf::DescriptorPool* pool) {
+  const auto* descriptor =
+      pool->FindMessageTypeByName(std::string(t.proto_fqn));
+  if (descriptor == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("celfn: unknown proto message type '", t.proto_fqn,
+                     "' — descriptor not in the configured pool"));
+  }
+  return cel::Type::Message(descriptor);
+}
+
+// Convert a `CelfnType` (the IDL-side shape) into a `cel::Type` (the
+// cel-cpp checker-side shape) so custom-fn signatures can be
+// registered with `TypeCheckerBuilder::AddFunction`.
+absl::StatusOr<cel::Type> CelfnTypeToCelType(
+    const CelfnType& t, google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool) {
+  if (auto scalar = CelfnScalarToCelType(t.kind); scalar.has_value()) {
+    return *scalar;
+  }
+  if (t.kind == CelfnType::Kind::kList)
+    return CelfnListToCelType(t, arena, pool);
+  if (t.kind == CelfnType::Kind::kMap) return CelfnMapToCelType(t, arena, pool);
+  ABSL_CHECK_EQ(static_cast<int>(t.kind),
+                static_cast<int>(CelfnType::Kind::kProto));
+  return CelfnProtoToCelType(t, pool);
+}
+
+// M13 Slice C.3 — build a single `OverloadDecl` from one `CelfnDecl`.
+absl::StatusOr<cel::OverloadDecl> BuildOverloadFromCelfn(
+    const CelfnDecl& decl, google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool) {
+  auto result = CelfnTypeToCelType(decl.return_type, arena, pool);
+  if (!result.ok()) return result.status();
+  cel::OverloadDecl overload;
+  overload.set_id(decl.overload_id);
+  overload.set_result(*result);
+  overload.set_member(decl.is_receiver);
+  auto& mutable_args = overload.mutable_args();
+  mutable_args.reserve(decl.params.size());
+  for (const auto& p : decl.params) {
+    auto t = CelfnTypeToCelType(p.type, arena, pool);
+    if (!t.ok()) return t.status();
+    mutable_args.push_back(*t);
+  }
+  return overload;
+}
+
+// Register every `CelfnDecl` from each library on the checker.
+// Decls are first grouped by fn_name (cel-cpp requires one
+// `FunctionDecl` per name, with multiple `AddOverload` calls for
+// each shape); each group becomes one `TypeCheckerBuilder::AddFunction`.
+absl::Status RegisterCustomFunctionsOnChecker(
+    cel::TypeCheckerBuilder& builder,
+    const std::vector<FunctionLibrary>& libraries,
+    google::protobuf::Arena* arena,
+    const google::protobuf::DescriptorPool* pool) {
+  absl::flat_hash_map<std::string, std::vector<const CelfnDecl*>> by_name;
+  for (const auto& lib : libraries) {
+    for (const auto& decl : lib.decls()) {
+      by_name[decl.fn_name].push_back(&decl);
+    }
+  }
+  for (const auto& [fn_name, decls] : by_name) {
+    auto fn_decl_or = cel::MakeFunctionDecl(fn_name);
+    if (!fn_decl_or.ok()) return fn_decl_or.status();
+    cel::FunctionDecl fn_decl = *std::move(fn_decl_or);
+    for (const CelfnDecl* decl : decls) {
+      auto overload = BuildOverloadFromCelfn(*decl, arena, pool);
+      if (!overload.ok()) return overload.status();
+      if (auto s = fn_decl.AddOverload(*std::move(overload)); !s.ok()) {
+        return s;
+      }
+    }
+    if (auto s = builder.AddFunction(fn_decl); !s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ConfigureCheckerBuilder(
     cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
     const google::protobuf::DescriptorPool* pool,
@@ -667,6 +808,12 @@ absl::Status ConfigureCheckerBuilder(
     std::string name = parsed->decl.name();
     if (auto s = builder.AddVariable(parsed->decl); !s.ok()) return s;
     variables_out.push_back(Variable{std::move(name), parsed->repr});
+  }
+  // M13 Slice C.3 — register embedder-supplied custom-fn decls.
+  if (auto s = RegisterCustomFunctionsOnChecker(
+          builder, opts.function_libraries, builder.arena(), pool);
+      !s.ok()) {
+    return s;
   }
   return absl::OkStatus();
 }

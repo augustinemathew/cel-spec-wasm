@@ -77,6 +77,16 @@ struct CompileOptions {
   // False keeps the artifact alive as a Binaryen IR handle for callers
   // that only need to inspect / transform the module.
   bool serialize = true;
+
+  // M13 Slice C.3 — custom-fn libraries to register with the cel-cpp
+  // checker (call-site resolution) AND the `OverloadTableBuilder`
+  // (codegen import emission).  Each `FunctionLibrary::decls()`
+  // contributes one `OverloadDecl` to the checker and one
+  // `RegisterCustom` call to the OverloadTable, keyed by the
+  // synthesised `overload_id`.  Empty (default) → built-ins only.
+  // Cross-library overload-id uniqueness is the public Compiler
+  // API's responsibility; this layer trusts the upstream filter.
+  std::vector<FunctionLibrary> function_libraries;
 };
 
 struct CompiledArtifact {

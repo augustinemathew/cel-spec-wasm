@@ -24,6 +24,7 @@ cc_library(
     hdrs = ["parse_and_check.h"],
     deps = [
         ":status_tags",
+        "//compiler_v2/celfn:function_library",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
         "//proto/cel/expr:syntax_cc_proto",

@@ -347,6 +347,42 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
   return absl::OkStatus();
 }
 
+// M13 Slice C.3 — build the OverloadTable from the built-in seeds
+// plus the embedder's `function_libraries`.  Each library decl maps
+// to one `RegisterCustom` row:
+//   - `overload_id`         = decl's synthesised id (the cel-cpp
+//     checker stamps this on resolved call nodes; ResolvePass uses
+//     it as the OverloadTable lookup key).
+//   - `module`              = `kCelFn` for `@host.`-prefixed decls,
+//     `kUserModule` for `<alias>.`-prefixed (foreign-wasm) decls.
+//   - `module_name`         = the user alias (empty for kCelFn —
+//     OverloadTable hardcodes the import-module string for kCelFn).
+//   - `helper_name`         = same as `overload_id` (one wasm
+//     import per decl; the IDL guarantees uniqueness).
+//   - `num_args`            = wasm function arity (1 out_slot + N
+//     CEL args, as recorded on `CelfnDecl::num_args`).
+absl::StatusOr<OverloadTable> BuildOverloadTable(
+    const std::vector<FunctionLibrary>& libraries) {
+  OverloadTableBuilder builder;
+  for (const auto& lib : libraries) {
+    for (const auto& decl : lib.decls()) {
+      const ImportModule import_module =
+          decl.backend == CelfnDecl::Backend::kHost ? ImportModule::kCelFn
+                                                    : ImportModule::kUserModule;
+      const absl::string_view module_name =
+          decl.backend == CelfnDecl::Backend::kHost ? absl::string_view("")
+                                                    : decl.module_name;
+      if (auto s = builder.RegisterCustom(decl.overload_id, import_module,
+                                          module_name, decl.overload_id,
+                                          decl.num_args);
+          !s.ok()) {
+        return s;
+      }
+    }
+  }
+  return std::move(builder).Build();
+}
+
 }  // namespace
 
 absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
@@ -360,14 +396,12 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
     return s;
   }
 
-  // Build the OverloadTable (built-ins only; embedder custom
-  // functions land via `RegisterFunction` — see
-  // `rewrite/m-custom-fns.md`) and install one wasm import per
-  // shipped helper before lowering.  expr_lower's
-  // general-arm `BinaryenCall` references these imports by
-  // internal name; if an import is missing the module won't
-  // validate.
-  OverloadTable overload_table = OverloadTableBuilder().Build();
+  // Build the OverloadTable (built-ins + embedder customs from
+  // `opts.function_libraries`).  See `BuildOverloadTable` for the
+  // per-decl mapping rules.
+  auto overload_table_or = BuildOverloadTable(opts.function_libraries);
+  if (!overload_table_or.ok()) return overload_table_or.status();
+  OverloadTable overload_table = *std::move(overload_table_or);
   InstallOverloadImports(out.module, overload_table);
 
   LoweringOptions lower_opts;

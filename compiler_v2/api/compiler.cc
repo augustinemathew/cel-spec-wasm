@@ -182,6 +182,10 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
     inner.check.variable_specs.push_back(
         absl::StrCat(decl.name, ":", CelTypeToSpec(decl.type)));
   }
+  // M13 Slice C.3 — forward custom-fn libraries to both the checker
+  // (call-site resolution) and codegen (OverloadTable registration).
+  inner.check.function_libraries = function_libraries_;
+  inner.function_libraries = function_libraries_;
   auto artifact_or = celwasm::Compile(source, inner);
   if (!artifact_or.ok()) return artifact_or.status();
   return Program(std::move(artifact_or->wasm_bytes));

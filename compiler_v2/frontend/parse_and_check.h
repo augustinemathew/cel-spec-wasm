@@ -7,6 +7,7 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "compiler_v2/celfn/function_library.h"
 #include "compiler_v2/ir/typed_ast.h"
 
 namespace celwasm {
@@ -50,6 +51,15 @@ struct CheckOptions {
 
   // Source description passed to the parser / checker for diagnostics.
   std::string description = "<input>";
+
+  // M13 Slice C.3 — custom-fn declarations to register with the
+  // checker so call-sites like `name.is_number()` resolve.  Each
+  // library's decls become individual `cel::FunctionDecl`s on the
+  // `TypeCheckerBuilder`.  Cross-library overload-id collisions are
+  // assumed already filtered by `Compiler::Builder::Build` (the
+  // upstream surface).  When empty (the default), no custom fns are
+  // visible to the checker.
+  std::vector<FunctionLibrary> function_libraries;
 };
 
 // Parses, type-checks, and validates that `expression` falls inside the
