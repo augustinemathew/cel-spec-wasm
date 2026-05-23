@@ -1,10 +1,39 @@
 # M14 — CEL optionals
 
-Status: **Slice 0 + Slice A + Slice B shipped 2026-05-21; Slice C
-shipped 2026-05-22; Slice E + Slice D in flight.**  See §4 for
-per-slice "what landed" summary.  Picks up after M13 (custom
-functions) closes.  Slice 0 (WAT traces) was non-negotiable per
-CLAUDE.md "WAT-first" before any production code landed.
+Status: **M14 shipped 2026-05-22 (Slices 0, A, B shipped 2026-05-21;
+C, E, D shipped 2026-05-22).**  See §4 for per-slice "what landed"
+summary.  Slice 0 (WAT traces) was non-negotiable per CLAUDE.md
+"WAT-first" before any production code landed.
+
+> **What landed.**  `optional<T>` end-to-end: `CEL_OPTIONAL = 14`
+> runtime kind + 12 kernels (8 value-level + select-field + 3
+> predicate-gated `_if_present` for map / list / proto entries) +
+> IR `Repr::kOptional` + codegen Select/Index/Struct branches +
+> `optMap`/`optFlatMap` macros riding the Shape-C cel.bind detector
+> with zero new comprehension codegen.  Nine WAT traces (`m14_*.wat`,
+> §M14.1-§M14.9) lock kernel ABIs byte-exact.  Conformance:
+> `optionals.textproto` 0/70 → 22/70 PASS (4 FAIL, 44 SKIP);
+> corpus-wide 1476 → 1576 PASS (+100).
+>
+> **Known remaining limitations**, surfaced during execution and
+> filed for follow-up:
+>
+>   - `optional.ofNonZeroValue(<message>)` traps at
+>     `is_zero_value`'s CEL_MESSAGE arm (§3.4) — needs a host
+>     trampoline that walks `Reflection::ListFields` to compute
+>     proto-zero-ness.  One corpus row (`optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`)
+>     newly FAILs as a result of Slice E lifting the
+>     proto-`?field:` gate; previously SKIP'd on static_subset.
+>     Filed as cleanup-backlog item.
+>   - 3 chained-index FAIL rows (`optional_chaining_1`/`_2`/`_3`)
+>     remain blocked on the pre-existing `map.field` sugar gap
+>     (cleanup-backlog #9), unrelated to optionals.
+>   - 44 SKIP rows on `optionals.textproto` are blocked on
+>     `static_subset` — mostly `dyn(...)` casts and untyped
+>     `map<dyn,dyn>` literals.  Relaxing `RejectDyn` is a separate
+>     call outside M14.
+>   - `first()` / `last()` v2 list helpers and Activation-bound
+>     optionals — remain in §5 "Out of scope" (not corpus-exercised).
 
 > **Scope pull-in 2026-05-22:** Slice E (proto `?field:` literal
 > entries) was originally §5 "Out of scope" deferred to an M7
@@ -592,7 +621,7 @@ Depends: Slice B shipped.
 > pattern (BUILD.bazel `--export=` line + the array's size literal
 > + an entry in the array body).
 
-### Slice E — proto `?field:` literal entries (~0.5 day)
+### Slice E — proto `?field:` literal entries (~0.5 day) — **shipped 2026-05-22**
 
 Depends: Slice C shipped.
 
@@ -684,17 +713,17 @@ pair from Slice C.
     upstream — same caveat as Slice C's delta 1.  Per-row outcome
     becomes visible on first conformance run.
 
-### Slice D — closeout (~0.5 day)
+### Slice D — closeout (~0.5 day) — **shipped 2026-05-22**
 
 Depends: Slices A-E shipped.
 
-  - Conformance run, bump `.baseline` to the new floor.
-  - `scripts/regen_conformance_readme.sh` (now auto-runs on
-    pre-push via `.githooks/pre-push`).
-  - `testing-checklist.md` rows ticked for optional × every
-    pipeline stage.
-  - This doc's status header flipped to `shipped <date>` with a
-    "what landed" paragraph.
+  - [x] Conformance run, bumped `.baseline` 1572 → 1576.
+  - [x] `testing-checklist.md` M14 section flipped to all-shipped.
+  - [x] This doc's status header flipped to "M14 shipped
+    2026-05-22" with the what-landed paragraph in §0.
+  - [x] Trap on `optional.ofNonZeroValue(<message>)` filed in
+    `doc/implementation-plan/cleanup-backlog.md` as the only
+    M14 follow-up.
 
 ## 5. Out of scope
 

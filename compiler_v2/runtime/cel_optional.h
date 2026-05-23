@@ -174,8 +174,32 @@ void cel_map_insert_at_if_present(uint32_t map_slot, uint32_t key_slot,
 //     CEL_ERR_TYPE_MISMATCH
 //
 // See `wat/m14_list_append_if_present.wat`.
-void cel_list_append_at_if_present(uint32_t list_slot,
-                                   uint32_t opt_value_slot);
+void cel_list_append_at_if_present(uint32_t list_slot, uint32_t opt_value_slot);
+
+// `Foo{?field: opt_value}` proto-literal entry — the third member
+// of the optional-payload predicate trio.  Structurally identical
+// to the map/list variants except the inner "actually set" step
+// delegates to a host trampoline (`cel_host.cel_set_field`) rather
+// than a pure-wasm primitive:
+//
+//   Some(v) ⇒ `cel_host.cel_set_field(msg_slot, field_ref_id, &inner)`
+//   None    ⇒ silent no-op (field stays unset in the proto, so
+//             `has(msg.field)` returns false)
+//   ERROR / UNKNOWN on `opt_value_slot` ⇒ propagate verbatim into
+//     `msg_slot`
+//   non-CEL_OPTIONAL `opt_value_slot` ⇒ poison `msg_slot` with
+//     CEL_ERR_TYPE_MISMATCH
+//
+// If `msg_slot` is not CEL_MESSAGE (e.g. already poisoned by an
+// upstream 3VL absorption), the call is a no-op — same convention
+// as the map/list `_if_present` siblings.
+//
+// The kernel is pure wasm; only the inner `cel_set_field` step
+// crosses to the host.  See `wat/m14_proto_set_field_if_present.wat`
+// and m14-optionals.md §0 "Scope pull-in 2026-05-22" for the
+// rationale.
+void cel_set_field_at_if_present(uint32_t msg_slot, uint32_t field_ref_id,
+                                 uint32_t opt_value_slot);
 
 #ifdef __cplusplus
 }

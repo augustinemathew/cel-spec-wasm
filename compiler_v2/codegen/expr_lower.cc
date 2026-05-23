@@ -482,6 +482,22 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
   return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
 }
 
+// Emits `(call $cel.cel_set_field_at_if_present <msg> <fref> <opt_v>)`.
+// Predicate-gated proto-field set for `Foo{?field: opt_value}`
+// entries.  The kernel (cel_optional.c) unwraps the optional and
+// delegates to the existing `cel_host.cel_set_field` only when the
+// cell is Some; on None the field stays unset (matches proto
+// semantics — `has(msg.field)` returns false).  See
+// `wat/m14_proto_set_field_if_present.wat`.
+BinaryenExpressionRef EmitCelSetFieldIfPresentCall(
+    WasmModule& mod, uint32_t msg_slot, uint32_t field_ref_id,
+    BinaryenExpressionRef opt_value) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, msg_slot),
+                                   I32Const(mod, field_ref_id), opt_value};
+  const std::string name(kCelSetFieldAtIfPresentInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
 // Lowers a kStructExpr to:
 //   (call $cel_host.cel_make_message (i32.const type_id) (i32.const out_slot))
 //   for each entry e:
@@ -582,13 +598,6 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
       EmitCelMakeMessageCall(ctx.mod, ann.message_type_id, out_slot));
 
   for (const cel::StructExprField& f : s.fields()) {
-    ABSL_CHECK(!f.optional())
-        << "EmitKStructExpr: `?field:` proto-literal entries are stub "
-           "until M7 Slice 9 `cel_set_field` codegen for optional "
-           "entries lands; the parse_and_check.cc static-subset gate "
-           "should have rejected this row before reaching codegen "
-           "(expr_id="
-        << expr.id() << " field=`" << f.name() << "`)";
     auto value_or = Emit(ctx, f.value());
     if (!value_or.ok()) return value_or.status();
     // Append a fresh field-ref row.  field_number=0 makes the
@@ -602,8 +611,16 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
         /*name=*/f.name(),
         /*owner_fqn=*/s.name(),
     });
-    instrs.push_back(
-        EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id, *value_or));
+    // `?field:` entries route through the predicate-gated kernel
+    // (wasm-side unwrap → delegate to cel_host.cel_set_field on
+    // Some, no-op on None).  See
+    // `wat/m14_proto_set_field_if_present.wat`.
+    BinaryenExpressionRef call =
+        f.optional()
+            ? EmitCelSetFieldIfPresentCall(ctx.mod, out_slot, field_ref_id,
+                                           *value_or)
+            : EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id, *value_or);
+    instrs.push_back(call);
   }
 
   if (auto wkt_tail = MaybeEmitWktUnwrapTailCall(ctx, s.name(), out_slot);

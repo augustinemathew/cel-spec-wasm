@@ -40,6 +40,28 @@ void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // `cel_map_create` / `cel_map_insert` declarations live in
 // `cel_map.h` (already pulled in transitively).  No extra decls
 // needed.
+
+// Strong override of the weak `cel_host_cel_set_field` declared in
+// `cel_optional.c` for the host build.  Recording the invocation
+// args is the load-bearing assertion for the proto `_if_present`
+// short-circuit: the None-path tests verify this counter stays at
+// 0 (proves the wrapper didn't reach the host).  Reset in `SetUp`.
+struct HostSetFieldCall {
+  uint32_t msg_slot;
+  uint32_t field_ref_id;
+  uint32_t value_slot;
+};
+}
+namespace {
+HostSetFieldCall g_host_set_field_last;
+int g_host_set_field_calls = 0;
+}  // namespace
+extern "C" {
+void cel_host_cel_set_field(uint32_t msg_slot, uint32_t field_ref_id,
+                            uint32_t value_slot) {
+  g_host_set_field_last = {msg_slot, field_ref_id, value_slot};
+  ++g_host_set_field_calls;
+}
 }
 
 namespace celwasm {
@@ -50,6 +72,8 @@ class OptionalTest : public ::testing::Test {
   void SetUp() override {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
     arena_reset();
+    g_host_set_field_calls = 0;
+    g_host_set_field_last = {};
   }
 
   // Allocates a fresh 24-byte CelValue slot in the arena and writes
@@ -106,7 +130,9 @@ class OptionalTest : public ::testing::Test {
     return s;
   }
 
-  const CelValue* At(uint32_t slot) { return cel_value_at(slot); }
+  const CelValue* At(uint32_t slot) {
+    return cel_value_at(slot);
+  }
   const OptionalCell* CellOf(uint32_t opt_slot) {
     const CelValue* v = cel_value_at(opt_slot);
     return reinterpret_cast<const OptionalCell*>(cel_mem_base() +
@@ -147,7 +173,8 @@ TEST_F(OptionalTest, OfPropagatesError) {
   uint32_t v = MakeSlotError(CEL_ERR_DIVIDE_BY_ZERO);
   cel_optional_of_at_v(out, v);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+  EXPECT_EQ(At(out)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
 }
 
 // ── ofNonZeroValue: zero-predicate matrix ─────────────────
@@ -395,8 +422,7 @@ TEST_F(OptionalTest, ChainedSelectFieldOnOptionalNestedMapsRecurses) {
   // Build inner map {'index': 'v'} at slot inner_m.
   uint32_t inner_m = MakeSlot();
   cel_map_create(inner_m, 1);
-  cel_map_insert(inner_m, MakeSlotString("index", 5),
-                 MakeSlotString("v", 1));
+  cel_map_insert(inner_m, MakeSlotString("index", 5), MakeSlotString("v", 1));
   // Build outer map {'c': inner_m} at slot outer_m.
   uint32_t outer_m = MakeSlot();
   cel_map_create(outer_m, 1);
@@ -729,8 +755,7 @@ TEST_F(OptionalTest, MapInsertIfPresentNonOptionalIsTypeMismatch) {
   uint32_t bare = MakeSlotInt(1);  // not CEL_OPTIONAL
   cel_map_insert_at_if_present(map, key, bare);
   EXPECT_EQ(At(map)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(map)->payload.err,
-            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(At(map)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
 TEST_F(OptionalTest, MapInsertIfPresentPoisonedMapIsNoOp) {
@@ -770,6 +795,113 @@ TEST_F(OptionalTest, ListAppendIfPresentMixedSomeNonePreservesOnlySome) {
   cel_list_append_at_if_present(list, opt_some);
   cel_list_append_at_if_present(list, opt_none);
   EXPECT_EQ(ListHeaderOf(list)->count, 1u);
+}
+
+// ── Proto `Foo{?field: opt_v}` predicate-gated set ────────
+
+// Helper: build a CEL_MESSAGE CelValue at a fresh slot.  The test
+// override of `cel_host_cel_set_field` ignores the payload — only
+// the kind matters for the kernel's pre-check.
+uint32_t MakeSlotMessage(uint32_t msg_slot_payload) {
+  uint32_t s = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  CelValue* v = cel_value_at(s);
+  v->kind = CEL_MESSAGE;
+  v->payload.msg_slot = msg_slot_payload;
+  return s;
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentSomeForwardsToHostWithInnerOffset) {
+  uint32_t msg = MakeSlotMessage(/*msg_slot_payload=*/1);
+  uint32_t opt = MakeSlot();
+  cel_optional_of_at_v(opt, MakeSlotInt(5));
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, opt);
+  ASSERT_EQ(g_host_set_field_calls, 1);
+  EXPECT_EQ(g_host_set_field_last.msg_slot, msg);
+  EXPECT_EQ(g_host_set_field_last.field_ref_id, 42u);
+  // value_slot points at OptionalCell.inner (8 bytes past the cell
+  // base).  This is the load-bearing contract delta vs. previous
+  // `cel_set_field` callers, which passed standalone workspace slots.
+  uint32_t expected_inner_off =
+      At(opt)->payload.opt +
+      static_cast<uint32_t>(offsetof(OptionalCell, inner));
+  EXPECT_EQ(g_host_set_field_last.value_slot, expected_inner_off);
+  // The host stub treats msg_slot as opaque; the kernel must not
+  // have mutated the message slot's kind.
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_MESSAGE));
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentNoneShortCircuitsBeforeHost) {
+  // Load-bearing correctness assertion: a None-path call MUST NOT
+  // reach the host trampoline.  If it did, the proto field would
+  // get unset → set to zero value, which violates proto semantics
+  // (the field should stay unset so `has()` returns false).
+  uint32_t msg = MakeSlotMessage(/*msg_slot_payload=*/1);
+  uint32_t opt = MakeSlot();
+  cel_optional_none_at(opt);
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, opt);
+  EXPECT_EQ(g_host_set_field_calls, 0)
+      << "None-path call must NOT reach cel_host_cel_set_field";
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_MESSAGE));
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentErrorPropagatesIntoMessage) {
+  uint32_t msg = MakeSlotMessage(1);
+  uint32_t err = MakeSlotError(CEL_ERR_DIVIDE_BY_ZERO);
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, err);
+  EXPECT_EQ(g_host_set_field_calls, 0);
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(msg)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentUnknownPropagatesIntoMessage) {
+  uint32_t msg = MakeSlotMessage(1);
+  uint32_t unk = MakeSlotUnknown(17u);
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, unk);
+  EXPECT_EQ(g_host_set_field_calls, 0);
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(At(msg)->payload.unk, 17u);
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentNonOptionalIsTypeMismatch) {
+  uint32_t msg = MakeSlotMessage(1);
+  uint32_t bare = MakeSlotInt(5);  // not CEL_OPTIONAL
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, bare);
+  EXPECT_EQ(g_host_set_field_calls, 0);
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(msg)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentPoisonedMessageIsNoOp) {
+  // Earlier 3VL absorption (a prior entry's optional was ERROR)
+  // stamped the message; preserve the poison, do nothing.
+  uint32_t msg = MakeSlot();
+  CelValue* mv = cel_value_at(msg);
+  mv->kind = CEL_ERROR;
+  mv->payload.err = CEL_ERR_OVERFLOW;
+  uint32_t opt = MakeSlot();
+  cel_optional_of_at_v(opt, MakeSlotInt(5));
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, opt);
+  EXPECT_EQ(g_host_set_field_calls, 0);
+  EXPECT_EQ(At(msg)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(msg)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(OptionalTest, SetFieldIfPresentMixedSomeNoneCallsHostOnce) {
+  // The canonical `Foo{?single_int32: opt.of(5), ?single_str: opt.none()}`
+  // shape: two entries, one materialises, one short-circuits.  Host
+  // stub fires exactly once with the Some entry's args.
+  uint32_t msg = MakeSlotMessage(1);
+  uint32_t opt_some = MakeSlot();
+  cel_optional_of_at_v(opt_some, MakeSlotInt(5));
+  uint32_t opt_none = MakeSlot();
+  cel_optional_none_at(opt_none);
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/42, opt_some);
+  cel_set_field_at_if_present(msg, /*field_ref_id=*/43, opt_none);
+  EXPECT_EQ(g_host_set_field_calls, 1);
+  // The recorded args belong to the Some call (field_ref_id=42),
+  // not the None call (43) — proves order + which call reached host.
+  EXPECT_EQ(g_host_set_field_last.field_ref_id, 42u);
 }
 
 }  // namespace

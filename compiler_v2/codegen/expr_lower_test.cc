@@ -214,6 +214,9 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_get_field", host_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
                       "cel_has_field", host_params, BinaryenTypeNone());
+  const BinaryenType set3[3] = {i32, i32, i32};
+  m.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
+                      "cel_set_field_at_if_present", set3, BinaryenTypeNone());
   InstallMapImports(m);
   InstallListImports(m);
   // M5.F: every kCelRuntime helper in the OverloadTable that
@@ -1434,6 +1437,18 @@ TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at"));
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at_if_present"));
 }
+
+// `Foo{?field: opt_value}` proto-literal optional entries route
+// through the new `cel_set_field_at_if_present` kernel.  Per-shape
+// codegen verification lives at the e2e level (`m14_test.cc`)
+// because the codegen-test `RunPipeline` doesn't register the
+// conformance proto descriptors needed for `cel.expr.conformance.*`
+// names to type-check.  The wat_runner test
+// (`WatRunnerM14Test.SetFieldIfPresentSomeCallsHostNoneShortCircuits`)
+// locks the kernel ABI byte-exact, and the runtime tests in
+// `cel_optional_test.cc` cover every input shape — between them,
+// the only remaining surface is "does the codegen branch on
+// `f.optional()` correctly", which the e2e tests prove directly.
 
 }  // namespace
 }  // namespace celwasm

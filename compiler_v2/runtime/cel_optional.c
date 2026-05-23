@@ -16,6 +16,26 @@
 #include "compiler_v2/runtime/cel_log.h"
 #include "compiler_v2/runtime/cel_map.h"
 
+// `cel_host.cel_set_field` — Layer-2 proto-field write.  Imported
+// from the host module under `wasm32-wasi-threads`; on the host
+// build (unit tests) the weak stub is a no-op that tests override
+// with a strong symbol to record invocations.  Same pattern as
+// `cel_host_cel_map_lookup` / `cel_host_cel_list_at` in
+// `cel_runtime.c`.
+#ifdef __wasm__
+extern void cel_host_cel_set_field(uint32_t msg_slot, uint32_t field_ref_id,
+                                   uint32_t value_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_set_field")));
+#else
+__attribute__((weak)) void
+cel_host_cel_set_field(  // NOLINT(misc-use-internal-linkage)
+    uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot) {
+  (void)msg_slot;
+  (void)field_ref_id;
+  (void)value_slot;
+}
+#endif
+
 // ── Cell helpers ───────────────────────────────────────────
 
 static OptionalCell* cell_at(uint32_t cell_off) {
@@ -69,12 +89,13 @@ static int is_zero_value(const CelValue* v) {
       return v->payload.bytes.len == 0;
     case CEL_LIST_ARENA: {
       ArenaListHeader* hdr =
-          (ArenaListHeader*)(cel_memory_base_() + v->payload.arena_list.header_ptr);
+          (ArenaListHeader*)(cel_memory_base_() +
+                             v->payload.arena_list.header_ptr);
       return hdr->count == 0;
     }
     case CEL_MAP_ARENA: {
-      ArenaMapHeader* hdr =
-          (ArenaMapHeader*)(cel_memory_base_() + v->payload.arena_map.header_ptr);
+      ArenaMapHeader* hdr = (ArenaMapHeader*)(cel_memory_base_() +
+                                              v->payload.arena_map.header_ptr);
       return hdr->count == 0;
     }
     case CEL_DURATION:
@@ -358,8 +379,7 @@ void cel_select_optional_field_at_vv(uint32_t out_slot, uint32_t src_slot,
     src = &src_cell->inner;
   }
 
-  const uint32_t inner_off =
-      cell_off + (uint32_t)offsetof(OptionalCell, inner);
+  const uint32_t inner_off = cell_off + (uint32_t)offsetof(OptionalCell, inner);
   if (!dispatch_lookup(out, src, inner_src_slot, key_slot, inner_off)) {
     return;  // dispatch_lookup poisoned out for TYPE_MISMATCH.
   }
@@ -421,5 +441,24 @@ void cel_list_append_at_if_present(uint32_t list_slot,
   uint32_t inner_off =
       opt->payload.opt + (uint32_t)offsetof(OptionalCell, inner);
   cel_list_append_at(list_slot, inner_off);
+  (void)cell;
+}
+
+void cel_set_field_at_if_present(uint32_t msg_slot, uint32_t field_ref_id,
+                                 uint32_t opt_value_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(msg_slot);
+  if (m->kind != CEL_MESSAGE) return;
+  const CelValue* opt = cel_value_at(opt_value_slot);
+  OptionalCell* cell = NULL;
+  if (absorb_optional_predicate(m, opt, &cell)) return;
+  // The host trampoline reads a 24-byte CelValue at value_slot.
+  // The inner CelValue lives 8 bytes into the OptionalCell (past
+  // `present` + `_pad`); passing that offset is byte-equivalent to
+  // staging the inner into a workspace slot first.  Stable until
+  // the next arena_reset, same as any arena offset.
+  uint32_t inner_off =
+      opt->payload.opt + (uint32_t)offsetof(OptionalCell, inner);
+  cel_host_cel_set_field(msg_slot, field_ref_id, inner_off);
   (void)cell;
 }

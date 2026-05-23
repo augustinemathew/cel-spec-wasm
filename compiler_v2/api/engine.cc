@@ -329,14 +329,16 @@ constexpr const char* kRuntimeExports[] = {
     // CEL `optional<T>` kernels — matching the
     // `-Wl,--export=cel_optional_*`,
     // `-Wl,--export=cel_select_optional_field_at_vv`,
-    // `-Wl,--export=cel_map_insert_at_if_present`, and
-    // `-Wl,--export=cel_list_append_at_if_present` lines in
+    // `-Wl,--export=cel_map_insert_at_if_present`,
+    // `-Wl,--export=cel_list_append_at_if_present`, and
+    // `-Wl,--export=cel_set_field_at_if_present` lines in
     // `compiler_v2/runtime/BUILD.bazel`.
     "cel_optional_none_at", "cel_optional_of_at_v",
     "cel_optional_of_non_zero_at_v", "cel_optional_has_value_at_v",
     "cel_optional_value_at_v", "cel_optional_or_at_vv",
     "cel_optional_or_value_at_vv", "cel_select_optional_field_at_vv",
-    "cel_map_insert_at_if_present", "cel_list_append_at_if_present"};
+    "cel_map_insert_at_if_present", "cel_list_append_at_if_present",
+    "cel_set_field_at_if_present"};
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {

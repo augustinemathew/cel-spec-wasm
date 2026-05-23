@@ -15,10 +15,13 @@ cc_test(
         "//compiler_v2/api:instance",
         "//compiler_v2/api:program",
         "//compiler_v2/api:value",
+        # Proto3 TestAllTypes for `Foo{?field: opt_v}` literal tests.
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 

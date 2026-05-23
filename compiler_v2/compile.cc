@@ -78,6 +78,13 @@ void InstallStructImports(WasmModule& mod) {
   mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
                         "cel_host", "cel_wkt_unwrap_wrapper", set_params,
                         BinaryenTypeNone());
+  // Optional-payload predicate-gated proto-field set for
+  // `Foo{?field: opt_value}` entries.  Wasm-side unwrap → delegate
+  // to `cel_host.cel_set_field` on Some; no-op on None.
+  // `(msg_slot, field_ref_id, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
+                        "cel_set_field_at_if_present", set_params,
+                        BinaryenTypeNone());
 }
 
 // Map literal + indexing runtime entry points.  `cel_map_*` come

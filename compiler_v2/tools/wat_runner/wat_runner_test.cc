@@ -1139,5 +1139,44 @@ TEST(WatRunnerM14Test, MapInsertIfPresentMixedSomeNoneProducesCountOne) {
   EXPECT_EQ(ReadSpan(out->memory_after, val.payload.s), "v1");
 }
 
+TEST(WatRunnerM14Test, SetFieldIfPresentSomeCallsHostNoneShortCircuits) {
+  auto wat = LoadWat("m14_proto_set_field_if_present.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  // Capture every cel_host.cel_set_field invocation.  The Some-path
+  // call must fire exactly once with field_ref_id=42; the None-path
+  // call must NOT reach the host (proves the wasm-side
+  // short-circuit on cell.present==0).
+  struct Capture {
+    uint32_t msg_slot;
+    uint32_t field_ref_id;
+    uint32_t value_slot;
+  };
+  std::vector<Capture> calls;
+  in.cel_host_cel_set_field_stub =
+      [&calls](uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot,
+               uint8_t* /*memory*/, size_t /*mem_size*/) {
+        calls.push_back({msg_slot, field_ref_id, value_slot});
+      };
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+
+  ASSERT_EQ(calls.size(), 1u) << "Some-path must invoke host exactly once; "
+                                 "None-path must short-circuit";
+  EXPECT_EQ(calls[0].msg_slot, 40u);
+  EXPECT_EQ(calls[0].field_ref_id, 42u)
+      << "Recorded field_ref_id confirms the Some-path call reached host "
+         "(field_ref_id=43 would have meant the None-path slipped through)";
+  // The value_slot must point at the OptionalCell.inner — 8 bytes
+  // past the cell base.
+  CelValue opt_cv = DecodeCelValue(out->memory_after, /*offset=*/64);
+  EXPECT_EQ(opt_cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  const uint32_t expected_inner_off =
+      opt_cv.payload.opt + 8u /* offsetof(OptionalCell, inner) */;
+  EXPECT_EQ(calls[0].value_slot, expected_inner_off);
+}
+
 }  // namespace
 }  // namespace celwasm

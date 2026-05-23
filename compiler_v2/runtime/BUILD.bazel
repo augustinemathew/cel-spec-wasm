@@ -639,6 +639,7 @@ cc_binary(
         "-Wl,--export=cel_select_optional_field_at_vv",
         "-Wl,--export=cel_map_insert_at_if_present",
         "-Wl,--export=cel_list_append_at_if_present",
+        "-Wl,--export=cel_set_field_at_if_present",
         # 3VL / control-flow helpers.
         "-Wl,--export=cel_and",
         "-Wl,--export=cel_or",

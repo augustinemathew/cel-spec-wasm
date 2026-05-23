@@ -154,6 +154,13 @@ inline constexpr absl::string_view kCelMapInsertAtIfPresentInternalName =
     "cel_map_insert_at_if_present";
 inline constexpr absl::string_view kCelListAppendAtIfPresentInternalName =
     "cel_list_append_at_if_present";
+// Predicate-gated proto-field set for `Foo{?field: opt_v}`.  Same
+// shape as the map/list `_if_present` kernels — wasm-side unwrap
+// followed by delegation, but the inner step is a host trampoline
+// (`cel_host.cel_set_field`).  See
+// `wat/m14_proto_set_field_if_present.wat`.
+inline constexpr absl::string_view kCelSetFieldAtIfPresentInternalName =
+    "cel_set_field_at_if_present";
 
 // One row of the field intern table, one per kSelect emitted by
 // `LowerToEvalFunction`.  Index 0 is a reserved "not proto-resolvable"

@@ -120,6 +120,43 @@ struck through or removed.
       follow-up slice — likely 2–4 hours of work, mostly mirroring
       Slice B's structure.
 
+- [ ] **#10** — `is_zero_value` in `compiler_v2/runtime/cel_optional.c`
+      traps with `__builtin_trap()` on `CEL_MESSAGE` (and
+      `CEL_LIST_HOST` / `CEL_MAP_HOST`) because the proto-zero
+      predicate needs proto reflection (cel-cpp parity:
+      `ParsedMessageValue::IsZeroValue()` walks
+      `Reflection::ListFields` and checks the unknown-field set).
+      Impact: `optional.ofNonZeroValue(<message>)` traps at
+      eval-time.  Newly reachable in Slice E because the
+      proto-`?field:` gate was lifted; previously the row
+      classified as SKIP-static_subset.
+      Affected conformance rows in
+      `tests/simple/testdata/optionals.textproto`:
+        - `optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`
+          (now FAIL where it was previously SKIP).
+        - Other `optional.ofNonZeroValue(TestAllTypes{…})` shapes
+          in the corpus will hit the same trap once
+          `static_subset` admits them (most are still SKIP'd on
+          unrelated `dyn` issues, so are not yet observable).
+      Fix shape: a new host trampoline
+      `cel_host.cel_message_is_zero(out_slot, msg_slot)`
+      that calls `ParsedMessageValue::IsZeroValue` (or the
+      equivalent reflection walk) and writes a CEL_BOOL into
+      `out_slot`.  The wasm-side `is_zero_value` arm for
+      CEL_MESSAGE would call this trampoline; same for
+      `CEL_LIST_HOST` / `CEL_MAP_HOST` (host_list_size / host_map_size
+      already exist — wasm can read them directly without a new
+      trampoline; trap arm replaced with `return hdr.size == 0`).
+      Surfaced: 2026-05-22 M14 Slice E closeout conformance run.
+      Files: `compiler_v2/runtime/cel_optional.c::is_zero_value`,
+      `compiler_v2/api/internal/cel_host.{h,cc}` (new
+      `cel_message_is_zero` trampoline),
+      `compiler_v2/api/internal/cel_host_wasmtime.cc` (register).
+      Why P2: only one corpus row newly FAILing; the rest of M14
+      ships cleanly.  Self-contained follow-up slice, mostly
+      mirroring the existing `cel_host.cel_list_size` /
+      `cel_host.cel_map_size` shape — likely 2–4 hours.
+
 ## Closed
 
 - [x] **#8** — `compiler_v2/codegen/expr_lower.cc` had two

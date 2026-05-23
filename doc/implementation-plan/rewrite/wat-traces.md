@@ -2237,6 +2237,81 @@ preserved entry is `(k1, v1)`.
 
 ---
 
+## M14.9.  `Foo{?field: opt_v}` — proto-field set-if-present
+
+File: `doc/implementation-plan/rewrite/wat/m14_proto_set_field_if_present.wat`
+
+Locks `cel_set_field_at_if_present` — completes the trio of
+optional-payload predicate kernels with the proto-field variant.
+Structurally identical to §M14.7 / §M14.8 except the inner
+"actually set" step delegates to a host trampoline
+(`cel_host.cel_set_field`) rather than a pure-wasm
+`cel_map_insert_at` / `cel_list_append_at`.
+
+ABI:
+
+```
+cel.cel_set_field_at_if_present(msg_slot, field_ref_id, opt_value_slot) → ()
+```
+
+Semantics:
+
+  - `m.kind != CEL_MESSAGE` → no-op (msg already poisoned).
+  - `opt.kind` ∈ {CEL_ERROR, CEL_UNKNOWN} → propagate into
+    `msg_slot`.
+  - `opt.kind != CEL_OPTIONAL` → poison `msg_slot` with
+    `CEL_ERR_TYPE_MISMATCH`.
+  - `opt = Some(v)` → `cel_host.cel_set_field(msg_slot,
+    field_ref_id, &v)`.  The value slot points 8 bytes into the
+    OptionalCell (past `present` + `_pad`), giving the host
+    trampoline a stable 24-byte view of `cell.inner`.
+  - `opt = None` → silent no-op; the proto field stays unset
+    (matches proto semantics — `has(msg.field)` returns false).
+
+Why the kernel is pure-wasm even though the inner step needs
+the host: the optional unwrap (`cell->present`, `cell->inner`)
+is plain memory reads.  Only the final reflection call requires
+the host.  Same shape as `_if_present` for map/list — wasm-side
+gate, delegate the mutation.  Design pull-in rationale in
+`m14-optionals.md` §0 "Scope pull-in 2026-05-22".
+
+Memory layout (`mem_size = 131072`):
+
+```
+[ 0, 16)   reserved null + arena scaffolding
+[16, 40)   rodata: CelValue{CEL_INT, i=5}
+[40, 64)   workspace: CelMessage{CEL_MESSAGE, msg_slot=1}
+[64, 88)   workspace: optional.of(5) — Some<int>
+[88, 112)  workspace: optional.none() — None
+[112, ...) bump arena.  By end-of-eval: 2 OptionalCells
+           (2 × 32 B).  Host stub records every invocation; the
+           test asserts the stub fired exactly once (Some path)
+           AND that the recorded args are
+           (msg_slot=40, field_ref_id=42, value_slot=72) where
+           value_slot is `opt_64.payload.opt + offsetof(
+           OptionalCell, inner) = 40 + 8 = 48`. (The arena_alloc
+           order makes the Some cell land at the first arena
+           offset; the inner offset is +8 into that cell.)
+```
+
+The wat_runner test installs a `cel_host_cel_set_field_stub`
+(new field on `WatRunInput`) that captures `(msg_slot,
+field_ref_id, value_slot)` on each invocation.  Assertions:
+
+  1. Stub invoked exactly once (Some path).
+  2. Recorded args: `msg_slot == 40`, `field_ref_id == 42`,
+     `value_slot == <inner-of-Some-cell>`.
+  3. The None-path call did NOT reach the stub (proves the
+     wasm-side short-circuit works).
+
+This is the **load-bearing correctness test** for the
+short-circuit no-op: a stub that runs the host call anyway
+would silently violate the proto-write semantics (field gets
+unset → set to zero value → `has()` returns true).  Caught at
+the WAT level rather than waiting for an integration test.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

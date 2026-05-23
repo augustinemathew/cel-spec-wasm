@@ -118,6 +118,20 @@ struct WatRunInput {
   // same ABI shape, different semantic role of the third arg.
   // Production stubs should treat it as the wrapper-kind enum.
   CelHostThreeArgStub cel_host_cel_wkt_unwrap_wrapper_stub;
+
+  // Optional stub for `cel_host.cel_set_field(msg_slot, field_ref_id,
+  // value_slot)`.  Overrides the default no-op; M14 tests for
+  // `cel_set_field_at_if_present` use this to capture the invocation
+  // count + args so they can prove the wasm-side wrapper
+  // short-circuits to a no-op on None entries (host stub NOT
+  // invoked) and forwards correctly on Some entries (host stub
+  // invoked once with the unwrapped inner's slot offset).
+  //
+  // The CelHostThreeArgStub signature carries `field_ref_id` in the
+  // `key_or_index_slot` arg slot — same i32 wire-shape, different
+  // semantic role of the second arg (matches the existing
+  // wkt_unwrap_wrapper repurposing of the third arg).
+  CelHostThreeArgStub cel_host_cel_set_field_stub;
 };
 
 struct WatRunOutput {

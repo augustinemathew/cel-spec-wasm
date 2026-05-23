@@ -359,6 +359,12 @@ struct RuntimeHarness {
       // imports.
       {"resolve_message_type_name", 25, 2},
       {"cel_timestamp_tz_accessor", 25, 4},
+      // M14 Slice E: `cel_set_field_at_if_present` imports
+      // `cel_host.cel_set_field` for the Some-path delegation.  The
+      // runtime now pulls this symbol in unconditionally; the
+      // arena-only harness here doesn't exercise the kernel but
+      // still needs the import bound.
+      {"cel_set_field", 13, 3},
   };
   for (const auto& e : kEntries) {
     wasm_functype_t* ft;

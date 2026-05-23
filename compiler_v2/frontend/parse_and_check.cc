@@ -430,21 +430,14 @@ void CheckSubsetList(const cel::ListExpr& list, const cel::Ast::TypeMap& types,
 
 void CheckSubsetStruct(const cel::StructExpr& s, const cel::Ast::TypeMap& types,
                        std::vector<Violation>& out) {
+  // `Foo{?field: opt_value}` entries are admitted: the codegen
+  // path (`EmitKStructExpr` + `cel_set_field_at_if_present` kernel)
+  // emits a wasm-side optional unwrap that delegates to the existing
+  // `cel_host.cel_set_field` only when the cell is Some; on None the
+  // field stays unset, matching proto semantics.  Both `optional()`
+  // and unconditional entries' values are checked recursively for
+  // static-subset compliance.
   for (const auto& field : s.fields()) {
-    // `Foo{?field: ...}` proto-literal entries (`StructExprField.optional`
-    // set) are out-of-scope for the static subset until proto-literal
-    // codegen for optional entries lands (the prerequisite is the
-    // `cel_set_field` proto-literal path).  Reject here so the
-    // conformance harness classifies these rows as static-subset SKIP
-    // rather than reaching `EmitKStructExpr` and tripping its stub
-    // branch.
-    if (field.optional()) {
-      out.push_back(Violation{/*expr_id=*/0, /*kind=*/"optional-struct-field",
-                              /*detail=*/
-                              absl::StrCat("`?field:` proto-literal entry on `",
-                                           field.name(), "`")});
-      continue;
-    }
     if (field.has_value()) CheckSubsetNode(field.value(), types, out);
   }
 }

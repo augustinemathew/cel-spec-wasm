@@ -2355,19 +2355,21 @@ bindings (Slice F).
         `compiler_v2/e2e/m12_test.cc`.  Conformance baseline
         bumped 1382 → 1476.
 
-### Rewrite M14 — CEL `optional<T>` (Slices 0 + A + B shipped 2026-05-21; Slice C shipped 2026-05-22; Slice D in flight)
+### Rewrite M14 — CEL `optional<T>` (shipped 2026-05-22)
 
-`m14-optionals.md` slices land `optional<T>` end-to-end:
-runtime kernels + IR `Repr::kOptional` + codegen Select/Index
-branches + frontend `OptionalCheckerLibrary` wiring +
-`?field:` static-subset gate + `{?key: opt_v}` / `[?elem]`
-literal entries + `optMap`/`optFlatMap` macros riding Shape-C.
-Conformance: `optionals.textproto` 0/70 → 18/70 (3 FAIL gated
-on cleanup-backlog #9 map.field sugar gap); corpus-wide
-1476 → 1572 PASS (+96).  Slice C adds no new corpus rows
-because every literal-entry / `optMap` row in the corpus has
-a `dyn`-typed sub-expression that `RejectDyn` filters
-upstream of codegen — see m14-optionals.md §4 Slice C delta 1.
+`m14-optionals.md` shipped `optional<T>` end-to-end:
+runtime kernels + IR `Repr::kOptional` + codegen Select/Index/
+Struct branches + frontend `OptionalCheckerLibrary` wiring +
+`{?key: opt_v}` / `[?elem]` / `{?field: opt_v}` literal entries
++ `optMap`/`optFlatMap` macros riding Shape-C with zero new
+comprehension codegen.  Conformance: `optionals.textproto`
+0/70 → 22/70 PASS (4 FAIL, 44 SKIP); corpus-wide 1476 → 1576
+PASS (+100).  Slice C unlock was 0 (every literal-entry /
+`optMap` row in the corpus has a `dyn`-typed sub-expression
+that `RejectDyn` filters upstream — see m14-optionals.md §4
+Slice C delta 1).  Slice E unlocked +4 by lifting the
+proto-`?field:` gate; one previously-SKIP'd row newly FAILs
+on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
 
   - [x] **Slice 0 — WAT-first ABI lock.**  Six WAT files under
         `doc/.../wat/m14_optional_*.wat` lock the OptionalCell
@@ -2422,7 +2424,28 @@ upstream of codegen — see m14-optionals.md §4 Slice C delta 1.
         Some/None branches — confirming Shape-C cel.bind
         detector admits the macros with zero new comprehension
         codegen (per probe Q5).
-  - [ ] **Slice D — closeout.**  In progress.
+  - [x] **Slice E — proto `?field:` literal entries.**  New
+        runtime kernel `cel_set_field_at_if_present` in
+        `cel_optional.c` reuses the `absorb_optional_predicate`
+        helper from Slice C, then delegates to
+        `cel_host.cel_set_field` on Some.  Pure wasm; no new host
+        trampoline (the design pull-in identified by the
+        pressure-test in `design-pressure-test-prompt.md` worked
+        example 1).  7 new per-TU unit tests in
+        `cel_optional_test.cc` including a load-bearing
+        short-circuit assertion via a strong override of
+        `cel_host_cel_set_field` that counts invocations (proves
+        None-path doesn't reach the host).  WAT §M14.9 with the
+        same short-circuit assertion via a wat_runner stub.
+        Frontend gate lifted (`CheckSubsetStruct`), codegen
+        branched on `f.optional()` in `EmitKStructExpr`.  3 new
+        e2e tests in `m14_test.cc` covering Some-materialises,
+        None-leaves-unset, and mixed-entry shapes.
+  - [x] **Slice D — closeout.**  `.baseline` bumped 1572 → 1576.
+        Status flipped to shipped in `m14-optionals.md` §0.
+        `is_zero_value` CEL_MESSAGE trap filed as M14 follow-up
+        in `cleanup-backlog.md` (only known remaining gap; one
+        previously-SKIP'd corpus row newly FAILs on it).
 
 ## How to update
 

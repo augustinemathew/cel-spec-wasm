@@ -30,7 +30,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 112> kRuntimeExports = {
+constexpr std::array<absl::string_view, 113> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -159,6 +159,7 @@ constexpr std::array<absl::string_view, 112> kRuntimeExports = {
     "cel_select_optional_field_at_vv",
     "cel_map_insert_at_if_present",
     "cel_list_append_at_if_present",
+    "cel_set_field_at_if_present",
 };
 
 // ── Status helpers — mirror cel::Engine's shape ─────────────
@@ -609,14 +610,13 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
   // Aggregate-op kHost imports.  Tests link the dispatchers but
   // don't exercise the host arms; no-op stubs suffice.
   static constexpr absl::string_view kThreeArg[] = {
-      "cel_list_in",
-      "cel_list_eq",
-      "cel_list_concat",
-      "cel_map_in",
-      "cel_map_eq",
-      "cel_message_eq",
-      // `cel_set_field(msg_slot, field_ref_id, value_slot)`.
-      "cel_set_field",
+      "cel_list_in", "cel_list_eq", "cel_list_concat",
+      "cel_map_in",  "cel_map_eq",  "cel_message_eq",
+      // `cel_set_field(msg_slot, field_ref_id, value_slot)` is wired
+      // through `RegisterOptionalThreeArg` instead — tests for the
+      // M14 `cel_set_field_at_if_present` kernel need an overridable
+      // stub to capture invocations (proves the wasm-side
+      // short-circuit doesn't reach the host on None entries).
   };
   for (absl::string_view name : kThreeArg) {
     if (auto st = RegisterCelHostThreeArgNoop(linker, name); !st.ok()) {
@@ -665,6 +665,14 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   if (auto st =
           RegisterOptionalThreeArg(linker, "cel_wkt_unwrap_wrapper",
                                    input.cel_host_cel_wkt_unwrap_wrapper_stub);
+      !st.ok()) {
+    return st;
+  }
+  // `cel_host.cel_set_field(msg_slot, field_ref_id, value_slot)` —
+  // overridable stub so M14 tests can capture the invocation
+  // (verifies the `_if_present` short-circuit behaviour).
+  if (auto st = RegisterOptionalThreeArg(linker, "cel_set_field",
+                                         input.cel_host_cel_set_field_stub);
       !st.ok()) {
     return st;
   }
