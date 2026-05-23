@@ -3,7 +3,7 @@
 ;;
 ;; M4.F slice — kCreateList lowering.  The literal constructs in
 ;; the wasm bump arena via cel_list_create + per-element
-;; cel_list_set; the result CelValue lives in a workspace slot.
+;; cel_list_append_at; the result CelValue lives in a workspace slot.
 ;; Codegen pattern mirrors expr_lower.cc::EmitKListExpr.
 ;;
 ;; Plan-vs-execution delta from the M4 plan: the runtime API is
@@ -15,22 +15,22 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  null sentinel
-;;   [ 8, 12)  arena cursor  — cel_reset
-;;   [12, 16)  arena limit   — cel_reset
+;;   [ 8, 12)  legacy cursor slot (now in runtime BSS)
+;;   [12, 16)  legacy limit slot (now in runtime BSS)
 ;;   [16, 40)  rodata: element 0   {CEL_INT, i=1}
 ;;   [40, 64)  rodata: element 1   {CEL_INT, i=2}
 ;;   [64, 88)  rodata: element 2   {CEL_INT, i=3}
 ;;   [88,112)  workspace: kListExpr result slot (out=88)
-;;   [112, mem_size)  bump arena — cel_list_create reserves
+;;   [112+]  bump arena (malloc'd in heap) — cel_list_create reserves
 ;;                    the ArenaListHeader (16 B) followed by
 ;;                    count*24 B for the elements run.
 ;;
 ;; New imports this milestone:
 ;;   cel.cel_list_create(out_slot, count)         — i32, i32 → ()
-;;   cel.cel_list_set(list_slot, index, elem_slot) — i32×3   → ()
+;;   cel.cel_list_append_at(list_slot, elem_slot) — i32×2  → ()
 ;;
 ;; cel_list_create allocates 16 + count*24 B and zero-fills the
-;; elements run with CEL_NULL CelValues.  cel_list_set writes the
+;; elements run with CEL_NULL CelValues.  cel_list_append_at writes the
 ;; CelValue at elem_slot into element[index]; out-of-bounds index
 ;; or set on a poisoned list poisons with CEL_ERR_OVERFLOW.
 (module

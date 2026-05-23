@@ -53,8 +53,8 @@
 ;;      doesn't allocate a separate "accu_next" workspace.
 ;;
 ;; Memory layout (computed by LayoutPass):
-;;   [ 0,  8)   null sentinel + arena cursor (written by cel_reset)
-;;   [ 8, 16)   arena limit / pad
+;;   [ 0,  8)   null sentinel (arena cursor now in runtime BSS)
+;;   [ 8, 16)   pad (legacy arena-limit slot — now in BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -63,15 +63,15 @@
 ;;   [136,160)  workspace: kCreateList result slot (list header pointer)
 ;;   [160,184)  workspace: accu_slot (initialised from rodata at 88)
 ;;   [184,208)  workspace: step_out scratch (per-iter `v > 0` result)
-;;   [208, mem_size)  bump arena — cel_list_create allocates the
+;;   [208+]  bump arena (malloc'd in heap) — cel_list_create allocates the
 ;;                    ArenaListHeader (16 B) + 3 × 24 B element run
 ;;                    here; total 88 B at offset 208.
 ;;
 ;; ── Runtime helpers this WAT calls — all already exported ──
-;;   cel.cel_reset            (M1)
-;;   cel.cel_alloc            (M1)
+;;   cel.arena_reset            (M1)
+;;   cel.arena_alloc            (M1)
 ;;   cel.cel_list_create      (M4.F) — header + count×24 zero-fill
-;;   cel.cel_list_set         (M4.F) — write element[i] from slot
+;;   cel.cel_list_append_at        (M4.F) — append element from slot
 ;;   cel.cel_int_gt_at_vv     (M5.B) — bool `v > 0`
 ;;   cel.cel_or               (M5.G) — non-strict 3VL disjunction
 ;;

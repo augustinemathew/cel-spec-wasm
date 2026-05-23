@@ -9,14 +9,14 @@
 ;; than rewriting a fixed-size scalar payload.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst "ab"  {CEL_STRING, payload.s={ptr=64, len=2}}
 ;;   [40, 64)  rodata: kConst "cd"  {CEL_STRING, payload.s={ptr=66, len=2}}
 ;;   [64, 66)  rodata: payload "ab"
 ;;   [66, 68)  rodata: payload "cd"
 ;;   [68, 72)  padding to 8-align workspace
 ;;   [72, 96)  workspace: kCall(`_+_`) result slot (out=72)
-;;   [96, mem_size)  bump arena (concat target lives here)
+;;   [96+]  bump arena (malloc'd in heap) (concat target lives here)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_string_concat_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
@@ -27,15 +27,15 @@
 ;;       out_slot = {CEL_ERROR, err=CEL_ERR_TYPE_MISMATCH}.
 ;;     - 3VL absorption — UNKNOWN/ERROR propagates verbatim.
 ;;     - allocates `a.len + b.len` bytes in the arena via
-;;       cel_alloc.  OOM → out_slot = {CEL_ERROR, err=CEL_ERR_OVERFLOW}.
+;;       arena_alloc.  OOM → out_slot = {CEL_ERROR, err=CEL_ERR_OVERFLOW}.
 ;;     - copies a.bytes then b.bytes into the new buffer.
 ;;     - writes out_slot = {CEL_STRING, payload.s={ptr=<new>, len=a.len+b.len}}.
 ;;
 ;; The new payload lives in the bump arena, so it survives until
-;; cel_reset is next called (top of next $eval).  This matches the
+;; arena_reset is next called (top of next $eval).  This matches the
 ;; existing string-handling pattern from M1: every dynamically-
 ;; produced string payload is owned by the arena that the next
-;; cel_reset rewinds.
+;; arena_reset rewinds.
 (module
   (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))

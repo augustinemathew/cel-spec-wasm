@@ -42,7 +42,7 @@
 ;; Tagged `manual` until Slice D ships.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -50,7 +50,7 @@
 ;;   [112,136)  workspace: iter_range list slot
 ;;   [136,160)  workspace: accu_slot (the growing filter result)
 ;;   [160,184)  workspace: pred_slot (per-iter `v != 2` result)
-;;   [184, mem_size)  bump arena
+;;   [184+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers ─────────────────────────────────────────
 ;;   cel.cel_int_ne_at_vv     (M5.B)          — `v != 2`

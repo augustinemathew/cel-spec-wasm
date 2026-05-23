@@ -8,12 +8,12 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  null sentinel
-;;   [ 8, 12)  arena cursor  — written by cel_reset
-;;   [12, 16)  arena limit   — written by cel_reset
+;;   [ 8, 12)  legacy cursor slot (now in runtime BSS)
+;;   [12, 16)  legacy limit slot (now in runtime BSS)
 ;;   [16, 40)  rodata: key kConst   {kind=CEL_INT(2), payload.i=1}
 ;;   [40, 64)  rodata: value kConst {kind=CEL_INT(2), payload.i=10}
 ;;   [64, 88)  workspace: kMapExpr result slot (out_slot=64)
-;;   [88, mem_size)  bump arena — cel_map_create allocates the
+;;   [88+]  bump arena (malloc'd in heap) — cel_map_create allocates the
 ;;                   ArenaMapHeader (16 B) here, then cel_map_insert
 ;;                   bumps to allocate the entries run.
 ;;

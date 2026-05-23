@@ -2,9 +2,27 @@
 
 Branch: `wasi-malloc-migration` (forked from master @ `9685d72`).
 
-**Status: shipped 2026-05-18 (M1–M7 + B1–B6).**  As-shipped
-deltas annotated in §1 + §10.  Phase C (RE2 + absl::ParseTime
-vendoring) and Phase D (Chrome) remain open as follow-ups.
+**Status: shipped 2026-05-18 (M1–M7 + B1–B6); Phase C shipped
+later (RE2 + absl::time / cctz vendored).**  As-shipped deltas
+annotated in §1 + §10.  Phase D (Chrome) remains open.
+
+> **Phase C delta (shipped) — the threading/shared-memory flip.**
+> Vendoring `absl::time` pulled in **cctz** (Google's civil-time /
+> timezone library), which needs `<mutex>` for its timezone-database
+> cache.  That forced the runtime onto the **`wasm32-wasi-threads`**
+> toolchain — reversing **decision #4** (§3), which had picked
+> `wasm32-wasi` vanilla.  `-threads` mandates a **shared** linear
+> memory, so the as-shipped memory shape is **`(memory 4 1024
+> shared)`**, defined + exported by `cel_runtime.wasm` and imported
+> (matching shared shape) by the expr module.  The runtime also now
+> imports `wasi_snapshot_preview1.*` (wasi-libc surface), satisfied
+> host-side by `wasmtime_linker_define_wasi`.  Everything else in
+> this doc — the malloc-backed arena (§4), `--global-base=8192`
+> reserved region (§3 #3), zero-arg `arena_reset` (§1), runtime-owned
+> memory (§4.2) — shipped as designed; only the *non-shared* framing
+> (e.g. the `(memory 2)` in the §2.1 MVP `.wat`) and decision #4 are
+> superseded.  The browser-deployment side benefit below is also
+> weakened: the threads build is no longer "zero WASI imports."
 
 **Single source of truth.**  Supersedes the previous trail of
 docs in this dir; deviations from this doc need an explicit
@@ -98,6 +116,11 @@ remaining kernels migrate mechanically.
 ;;   [~75K, ∞)        dlmalloc heap (arena buffer lives here)
 
 (module
+  ;; Phase C delta: the import is now a SHARED memory —
+  ;;   (import "cel" "memory" (memory 2 1024 shared))
+  ;; matching the runtime's exported `(memory 4 1024 shared)`.  The
+  ;; non-shared form below is the original MVP target, kept for the
+  ;; layout walkthrough; see the Phase C delta at the top of this doc.
   (import "cel" "memory" (memory 2))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "cel_string_concat_at_vv"
@@ -202,7 +225,7 @@ Five questions, all answered with experimental evidence in
 | 1 | Tree strategy | **In-place migration in `compiler_v2/`** | User direction 2026-05-17. |
 | 2 | Allocator strategy | **Hand-rolled bump arena over a single `malloc()`** | `experiments/exp_b_mspace.c` (mspace_* not in wasi-libc); `experiments/exp_d_arena_in_malloc.c` (47-LoC arena works, end-to-end). |
 | 3 | Memory layout | **`--global-base=8192` on the runtime build.  Expr rodata in `[0, 8192)`.** | `experiments/exp_a_rodata.c` (linker flag honored; bytes `[0, N)` left free). |
-| 4 | Threading target | **`wasm32-wasi` vanilla, no `-threads`** | `experiments/exp_c_malloc.c` (zero WASI imports for pure malloc; threads target needs `--shared-memory`). |
+| 4 | Threading target | ~~**`wasm32-wasi` vanilla, no `-threads`**~~ → **SUPERSEDED in Phase C: `wasm32-wasi-threads` + shared memory** (cctz needs `<mutex>`; see the Phase C delta at the top of this doc). | `experiments/exp_c_malloc.c` (the original "zero WASI imports for pure malloc" finding held only until absl::time/cctz were vendored). |
 | 5 | M5 comprehensions ordering | **Ships first; this migration starts after** | Both touch `expr_lower.cc` and `layout_pass.cc`. |
 
 ---
@@ -245,7 +268,8 @@ Instance (per Engine::Plan):
   ├─ wasmtime_store_t
   ├─ wasmtime_linker_t
   ├─ runtime_instance     (instantiated runtime_module)
-  │   ├─ exports memory   ← runtime owns memory now
+  │   ├─ exports memory   ← runtime owns memory now; Phase C: SHARED
+  │   │                      `(memory 4 1024 shared)` (wasm32-wasi-threads)
   │   ├─ exports malloc, free
   │   ├─ exports arena_init, arena_alloc, arena_reset
   │   └─ exports all cel_* kernels (unchanged signatures)

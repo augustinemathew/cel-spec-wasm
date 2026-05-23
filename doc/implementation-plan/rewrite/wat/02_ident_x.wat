@@ -3,12 +3,12 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  reserved null sentinel
-;;   [ 8, 12)  arena cursor (u32)  — written by cel_reset
-;;   [12, 16)  arena limit  (u32)  — written by cel_reset
+;;   [ 8, 12)  legacy cursor slot (arena cursor now in runtime BSS)
+;;   [12, 16)  legacy limit slot (arena limit now in runtime BSS)
 ;;   [16, 40)  workspace slot for `x` — 24-byte CelValue cell.
 ;;             Host writes `x`'s bound Value into this cell via
 ;;             Instance::Eval(activation) BEFORE calling $eval.
-;;   [40, mem_size)  bump arena
+;;   [40+]  bump arena (malloc'd in heap)
 ;;
 ;; rodata is empty (no literals in this expression).
 ;;

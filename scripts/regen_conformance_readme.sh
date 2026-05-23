@@ -131,6 +131,11 @@ PER_FIXTURE="$(awk '
     printf "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", fixture, total, pass, skip, fail, pct, skipcat
     fixture = ""; total = 0; pass = 0; skip = 0; fail = 0; skipcat = ""
   }
+  # The conformance report can appear twice in the captured stream
+  # (it reaches both stdout and stderr; the pre-push log captures
+  # 2>&1).  The first `summary:` line ends the first run`s per-fixture
+  # section — stop there so fixtures are not emitted twice.
+  done { next }
   /^  tests\/simple\/testdata\// {
     flush()
     n = split($0, a, "/")
@@ -155,7 +160,7 @@ PER_FIXTURE="$(awk '
     skipcat = line
     next
   }
-  /^summary:/ { flush() }
+  /^summary:/ { flush(); done = 1 }
   /^skip-by-category \(corpus-wide\):/ { flush() }
 ' "$TMPOUT")"
 
@@ -163,8 +168,12 @@ PER_FIXTURE="$(awk '
 #   skip-by-category (corpus-wide):
 #     cat = N
 #     cat = N
+# The runner may emit this identical block more than once per run;
+# `captured` guards so we read only the first occurrence — otherwise
+# every category row duplicates and the per-key arithmetic below
+# (DISABLE_CHECK / STATIC_SUBSET) sees a multi-line value.
 CORPUS_SKIP="$(awk '
-  /^skip-by-category \(corpus-wide\):/ { in_block = 1; next }
+  /^skip-by-category \(corpus-wide\):/ { if (captured) next; in_block = 1; next }
   in_block && /^  / {
     line = $0
     sub(/^  /, "", line)
@@ -174,7 +183,7 @@ CORPUS_SKIP="$(awk '
     }
     next
   }
-  in_block && !/^  / { in_block = 0 }
+  in_block { in_block = 0; captured = 1 }
 ' "$TMPOUT")"
 
 # Sort per-fixture by pass% descending, then by fixture name.  Empty
@@ -263,7 +272,9 @@ SKIP_TOTALS_MD="$(echo "$CORPUS_SKIP_SORTED" | DISPMAP="$DISPOSITION_MAP" awk -F
 ')"
 
 # Parse the corpus summary line: `summary: total=N pass=N skip=N fail=N`.
-SUMMARY_LINE="$(grep -E '^summary:' "$TMPOUT" || true)"
+# `-a`: the conformance log can contain non-text bytes, which makes
+# grep print "Binary file matches" instead of the line — treat as text.
+SUMMARY_LINE="$(grep -aE '^summary:' "$TMPOUT" | head -n1 || true)"
 if [[ -z "$SUMMARY_LINE" ]]; then
   echo "error: no 'summary:' line in conformance output" >&2
   exit 2

@@ -68,7 +68,7 @@
 ;; being shipped first; nothing else blocks this WAT).
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: outer-list elem {CEL_INT, i=1}
 ;;   [40, 64)   rodata: inner-list elem {CEL_INT, i=0}
 ;;   [64, 88)   rodata: accu_init false (shared — both inits are
@@ -83,10 +83,10 @@
 ;;   [184,208)  workspace: inner iter_range list slot
 ;;   [208,232)  workspace: inner accu_slot
 ;;   [232,256)  workspace: inner step_out scratch (`y == 0` result)
-;;   [256, mem_size)  bump arena
+;;   [256+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers — all exported today ────────────────────
-;;   cel.cel_list_create / cel_list_set         (M4.F)
+;;   cel.cel_list_create / cel_list_append_at         (M4.F)
 ;;   cel.cel_int_eq_at_vv                       (M5.B)
 ;;   cel.cel_or                                 (M5.G)
 (module

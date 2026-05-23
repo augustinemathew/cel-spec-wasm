@@ -23,7 +23,7 @@
 ;; CEL_DURATION(12) and CEL_TIMESTAMP(13)).
 ;;
 ;; Memory layout:
-;;   [ 0,  16)  reserved + arena cursor/limit
+;;   [ 0,  16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16,  40)  rodata: kConst duration("3600s") → CelValue{
 ;;                  kind=CEL_DURATION(12), _pad,
 ;;                  payload.dur={seconds=3600, nanos=0, _pad=0}}
@@ -39,7 +39,7 @@
 ;;                  payload.ts={seconds=1234567889, nanos=0, _pad=0}}
 ;;   [136, 160) workspace: kCall(`_-_`) result slot for ts sub (out=136)
 ;;                          expected: {CEL_DURATION, dur={seconds=1}}
-;;   [160, mem_size)  bump arena
+;;   [160+]  bump arena (malloc'd in heap)
 ;;
 ;; New imports this slice:
 ;;   cel.cel_dur_add_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()

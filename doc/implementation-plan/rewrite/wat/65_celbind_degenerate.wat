@@ -50,14 +50,14 @@
 ;; registered cel.bind).
 ;;
 ;; Memory layout (Shape C — no comprehension framing):
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: accu_init = {CEL_INT, i=5}
 ;;   [40, 64)   rodata: rhs `1` for `x + 1`
 ;;   [64, 88)   workspace: x_slot ← memcpy from accu_init at 16
 ;;                          (bound name's storage; the body's kIdent
 ;;                          arm for `x` lowers to (i32.const 64))
 ;;   [88,112)   workspace: body result slot (kCall(`_+_`) out)
-;;   [112, mem_size)  bump arena (untouched — no list/map alloc)
+;;   [112+]  bump arena (malloc'd in heap) (untouched — no list/map alloc)
 (module
   (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))

@@ -12,14 +12,14 @@
 ;; `wat/51_timestamp_year_utc.wat`).
 ;;
 ;; Memory layout:
-;;   [ 0,  16)  reserved + arena cursor/limit
+;;   [ 0,  16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16,  40)  rodata: kConst duration("3600s") →
 ;;                  CelValue{kind=CEL_DURATION(12), _pad,
 ;;                           payload.dur={seconds=3600, nanos=0, _pad=0}}
 ;;   [40,  64)  workspace: out_slot for the constructed CEL_STRING
-;;                          (Layer-2 impl cel_alloc's the bytes into the
+;;                          (Layer-2 impl arena_alloc's the bytes into the
 ;;                          arena and writes the span here).
-;;   [64, mem_size)  bump arena (the formatted "3600s" bytes land here)
+;;   [64+]  bump arena (malloc'd in heap) (the formatted "3600s" bytes land here)
 ;;
 ;; New import this slice:
 ;;   cel_host.cel_duration_format(out_slot, dur_slot) — i32×2 → ()
@@ -29,8 +29,8 @@
 ;;     out_slot = {CEL_ERROR, CEL_ERR_TYPE_MISMATCH}.
 ;;   - 3VL absorption — CEL_UNKNOWN/CEL_ERROR pass through.
 ;;   - happy path: formats the {seconds, nanos} pair using the proto
-;;     Duration canonical text format (cel-cpp parity), cel_allocs the
-;;     result bytes inside the arena via `cel_alloc(len)`, writes
+;;     Duration canonical text format (cel-cpp parity), arena_allocs the
+;;     result bytes inside the arena via `arena_alloc(len)`, writes
 ;;     out_slot = {CEL_STRING(5), payload.s={ptr=arena_off, len}}.
 ;;   - Trailing zero suppression: "3600s" (whole seconds), "0.001s"
 ;;     (millis), "0.000000001s" (nanos).  The proto canonical form
@@ -72,7 +72,7 @@
     (call $arena_reset)
 
     ;; Host trampoline: format the rodata duration, write CEL_STRING
-    ;; into slot 40 with the bytes cel_alloc'd in the arena.
+    ;; into slot 40 with the bytes arena_alloc'd in the arena.
     (call $cel_duration_format
           (i32.const 40)        ;; out_slot
           (i32.const 16))       ;; dur_slot

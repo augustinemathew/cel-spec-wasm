@@ -46,7 +46,7 @@
 ;; skips this fixture (tag = manual).
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -54,12 +54,12 @@
 ;;   [112,136)  workspace: iter_range list slot (kCreateList result)
 ;;   [136,160)  workspace: accu_slot (= the dynamic [] → [2,4,6])
 ;;   [160,184)  workspace: step_out (per-iter `v * 2` result)
-;;   [184, mem_size)  bump arena — initial accu list header (16 B)
+;;   [184+]  bump arena (malloc'd in heap) — initial accu list header (16 B)
 ;;                    + geometric element runs allocate from here.
 ;;
 ;; ── Runtime helpers ─────────────────────────────────────────
 ;;   cel.cel_list_create       (M4.F)         — for iter_range build
-;;   cel.cel_list_set          (M4.F)         — for iter_range build
+;;   cel.cel_list_append_at          (M4.F)         — for iter_range build
 ;;   cel.cel_int_mul_at_vv     (M5.B)         — `v * 2`
 ;;   cel.cel_list_append_at    (Slice D NEW)  — geometric-growth append
 ;;

@@ -52,7 +52,7 @@
 ;; `kRuntimeExports`.  Tagged `manual` until then.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: map-key kConst {CEL_INT, i=1}
 ;;   [40, 64)   rodata: map-key kConst {CEL_INT, i=2}
 ;;   [64, 88)   rodata: map-val kConst {CEL_STRING, s={ptr=200,len=1}}
@@ -64,7 +64,7 @@
 ;;   [208,232)  workspace: key_slot (iter_var binding, written by
 ;;                                   cel_map_iter_key_at each iter)
 ;;   [232,256)  workspace: step_out scratch
-;;   [256, mem_size)  bump arena
+;;   [256+]  bump arena (malloc'd in heap)
 ;;   (String payload bytes "ab" at offset 200 inside the reserved
 ;;    rodata region preceding the workspace.)
 ;;

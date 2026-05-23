@@ -29,7 +29,7 @@
 ;; module — both modules see the same `cel.memory`):
 ;;
 ;;   [ 0,  8)   reserved null sentinel
-;;   [ 8, 16)   reserved (arena cursor / limit slot — unused here)
+;;   [ 8, 16)   reserved (legacy cursor/limit slot — arena state now in BSS)
 ;;   [16, 40)   args[0] — userId CelValue
 ;;                kind = CEL_STRING (5)
 ;;                payload.s.ptr = 80

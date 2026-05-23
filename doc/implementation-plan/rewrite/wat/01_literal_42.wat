@@ -2,10 +2,10 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  reserved null sentinel
-;;   [ 8, 12)  arena cursor (u32)  — written by cel_reset
-;;   [12, 16)  arena limit  (u32)  — written by cel_reset
+;;   [ 8, 12)  legacy cursor slot (arena cursor now in runtime BSS)
+;;   [12, 16)  legacy limit slot (arena limit now in runtime BSS)
 ;;   [16, 40)  rodata: one 24-byte CelValue {kind=CEL_INT, payload.i=42}
-;;   [40, mem_size)  bump arena
+;;   [40+]  bump arena (malloc'd in heap)
 ;;
 ;; No variables, no workspace.
 (module

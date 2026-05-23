@@ -15,7 +15,7 @@
 ;; for the full enum table.
 ;;
 ;; Memory layout:
-;;   [ 0,  16)  reserved + arena cursor/limit
+;;   [ 0,  16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16,  40)  rodata: kConst timestamp("2009-02-13T23:31:30Z") →
 ;;                  CelValue{kind=CEL_TIMESTAMP(13), _pad,
 ;;                  payload.ts={seconds=1234567890, nanos=0, _pad=0}}
@@ -31,7 +31,7 @@
 ;;                          edge that motivates having the with-TZ form
 ;;                          at all; the no-TZ UTC accessor at the same
 ;;                          ts gives getHours = 23.)
-;;   [96, mem_size)  bump arena
+;;   [96+]  bump arena (malloc'd in heap)
 ;;
 ;; Codegen shape: identical to `54_timestamp_year_with_tz.wat` with
 ;; `(i32.const 6)` for the accessor_kind arg (kHours) instead of

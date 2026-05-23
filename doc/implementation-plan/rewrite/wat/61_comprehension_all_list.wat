@@ -63,8 +63,8 @@
 ;;      same-slot contract applies to both.
 ;;
 ;; Memory layout (mirrors 60 exactly; differs only in accu_init bytes):
-;;   [ 0,  8)   null sentinel + arena cursor
-;;   [ 8, 16)   arena limit / pad
+;;   [ 0,  8)   null sentinel (arena cursor now in runtime BSS)
+;;   [ 8, 16)   pad (legacy arena-limit slot — now in BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -73,7 +73,7 @@
 ;;   [136,160)  workspace: kCreateList result slot
 ;;   [160,184)  workspace: accu_slot
 ;;   [184,208)  workspace: step_out scratch
-;;   [208, mem_size)  bump arena
+;;   [208+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers — all already exported ──
 ;;   cel.cel_and    (M5.G — 3VL conjunction; same-slot aliasing OK)

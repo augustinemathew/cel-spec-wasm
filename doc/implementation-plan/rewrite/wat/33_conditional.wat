@@ -25,12 +25,12 @@
 ;;   }
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: cond  bool(true)   {CEL_BOOL, b=1}
 ;;   [40, 64)  rodata: then  int(1)       {CEL_INT, i=1}
 ;;   [64, 88)  rodata: else  int(2)       {CEL_INT, i=2}
 ;;   [88,112)  workspace: out slot for `_?_:_` (out=88)
-;;   [112, mem_size)  bump arena
+;;   [112+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_copy_slot(dst_slot, src_slot) — i32×2 → ()

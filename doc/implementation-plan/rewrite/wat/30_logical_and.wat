@@ -10,11 +10,11 @@
 ;; the truth table itself runs entirely inside `cel_and`.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst true   {CEL_BOOL,  b=1}
 ;;   [40, 64)  rodata: kConst false  {CEL_BOOL,  b=0}
 ;;   [64, 88)  workspace: kCall(`_&&_`) result slot (out=64)
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_and(out_slot, a_slot, b_slot) — i32×3 → ()

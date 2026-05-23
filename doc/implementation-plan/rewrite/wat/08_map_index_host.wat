@@ -12,14 +12,14 @@
 ;; arena helpers in the body.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  null sentinel + arena cursor/limit
+;;   [ 0, 16)  null sentinel (arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for `m`           (variable bound by host)
 ;;   [40, 64)  rodata: lookup-key kConst        {CEL_STRING, "k"}
 ;;   [64, 65)  rodata: span payload "k"         (1 byte)
 ;;   [72, 96)  workspace: kCallExpr result slot (out=72; aligned past
 ;;             rodata which ends at 65 — the codegen aligns up to 8
 ;;             via RoundUp8 in layout_pass.cc)
-;;   [96, mem_size)  bump arena
+;;   [96+]  bump arena (malloc'd in heap)
 ;;
 ;; The runtime body is one extern call into the host trampoline.
 ;; No cel_map_create / cel_map_insert (the operand was constructed

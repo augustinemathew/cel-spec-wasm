@@ -8,7 +8,7 @@
 ;; final `i32.const out_slot` returns the constructed message.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for kStructExpr — out_slot of
 ;;             cel_make_message; mutated in place by every
 ;;             cel_set_field.
@@ -17,7 +17,7 @@
 ;;             the operand-slot CelValue, so the slot offset is
 ;;             still the rodata offset.  The lowering returns the
 ;;             rodata offset as the i32 operand to cel_set_field.
-;;   [64, mem_size)  bump arena
+;;   [64+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel_host.cel_set_field(msg_slot, field_ref_id, value_slot)

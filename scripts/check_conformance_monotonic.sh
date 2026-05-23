@@ -40,9 +40,14 @@ for arg in "$@"; do
 done
 
 run_conformance() {
+  # `-a`: the log can contain non-text bytes (grep would otherwise
+  # print "Binary file matches").  `head -n1`: the runner emits its
+  # report on both stdout and stderr, so the merged 2>&1 stream has
+  # the summary twice — take the first to keep `current` single-line.
   bazel run -c opt //compiler_v2/conformance:run_conformance 2>&1 \
     | tee /tmp/conformance_last_run.log \
-    | grep -E '^summary:' \
+    | grep -aE '^summary:' \
+    | head -n1 \
     | sed -E 's/.*pass=([0-9]+).*/\1/'
 }
 

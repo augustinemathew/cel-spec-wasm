@@ -30,12 +30,12 @@
 ;; `54_timestamp_year_with_tz.wat`.  This file is the no-TZ shape only.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for `ts` (variable bound by host)
 ;;             {kind=CEL_TIMESTAMP(13), payload.ts={seconds=1234567890,
 ;;              nanos=0, _pad=0}}
 ;;   [40, 64)  workspace: kCallExpr result slot (out=40) for getFullYear
-;;   [64, mem_size)  bump arena
+;;   [64+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this slice:
 ;;   cel.cel_ts_year_utc(out_slot, ts_slot) — i32×2 → ()

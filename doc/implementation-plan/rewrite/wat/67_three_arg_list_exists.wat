@@ -69,7 +69,7 @@
 ;; LayoutPass / expr_lower lands).
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=10}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=20}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=30}
@@ -82,10 +82,10 @@
 ;;   [232,256)  workspace: scratch A — (v == 20) result
 ;;   [256,280)  workspace: scratch B — (i == 1)  result
 ;;   [280,304)  workspace: scratch C — (scratchA && scratchB) result
-;;   [304, mem_size)  bump arena
+;;   [304+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers — all exported today ────────────────────
-;;   cel.cel_list_create / cel_list_set         (M4.F)
+;;   cel.cel_list_create / cel_list_append_at         (M4.F)
 ;;   cel.cel_int_eq_at_vv                       (M5.B)
 ;;   cel.cel_and                                (M5.G)
 ;;   cel.cel_or                                 (M5.G)

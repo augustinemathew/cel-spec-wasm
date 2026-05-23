@@ -7,14 +7,14 @@
 ;; `map_keys_equal`).  Returns CEL_BOOL.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst 1     {CEL_INT, i=1}
 ;;   [40, 64)  rodata: kConst 2     {CEL_INT, i=2}
 ;;   [64, 88)  rodata: kConst 3     {CEL_INT, i=3}
 ;;   [88,112)  rodata: needle 2     {CEL_INT, i=2}
 ;;   [112,136) workspace: kListExpr result slot (out=112)
 ;;   [136,160) workspace: kCall(in) result slot (out=136)
-;;   [160, mem_size)  bump arena
+;;   [160+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_list_in_arena(out_slot, value_slot, list_slot) — i32×3 → ()

@@ -46,7 +46,7 @@
 ;; Float/Double similarly collapse onto kDouble.)
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for kStructExpr — out_slot of
 ;;             cel_make_message; mutated in place by cel_set_field;
 ;;             OVERWRITTEN in place by cel_wkt_unwrap_wrapper with
@@ -64,7 +64,7 @@
 ;;   [40, 64)  rodata: literal CelValue for the entry `5` (kInt) —
 ;;             read-only operand passed to cel_set_field.  See
 ;;             `41_kstruct_set_scalar.wat` for the same convention.
-;;   [64, mem_size)  bump arena (untouched for this construction —
+;;   [64+]  bump arena (malloc'd in heap) (untouched for this construction —
 ;;             the wrapper message lives in the ExternrefTable, not
 ;;             in linear memory; the peeled scalar is by-value in
 ;;             the CelValue payload, so no arena allocation needed).

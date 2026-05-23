@@ -8,10 +8,10 @@
 ;; will build on when the arithmetic arm lands.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for x — local_index 0
 ;;   [40, 64)  workspace slot for y — local_index 1
-;;   [64, mem_size)  bump arena
+;;   [64+]  bump arena (malloc'd in heap)
 (module
   (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))

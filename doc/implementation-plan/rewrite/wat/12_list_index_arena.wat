@@ -8,14 +8,14 @@
 ;; operand is arena-built.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: element 0       {CEL_INT, i=1}
 ;;   [40, 64)  rodata: element 1       {CEL_INT, i=2}
 ;;   [64, 88)  rodata: element 2       {CEL_INT, i=3}
 ;;   [88,112)  rodata: lookup-index    {CEL_INT, i=1}
 ;;   [112,136) workspace: kListExpr result slot (out=112)
 ;;   [136,160) workspace: kCallExpr result slot (out=136)
-;;   [160, mem_size)  bump arena
+;;   [160+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone (vs. 11):
 ;;   cel.cel_list_at_arena(out_slot, list_slot, index_slot) — i32×3 → ()
