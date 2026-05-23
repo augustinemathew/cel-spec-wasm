@@ -13,6 +13,7 @@ cc_library(
     tags = ["manual"],
     deps = [
         "//compiler_v2/host:cel_log",
+        "//compiler_v2/runtime:cel_runtime",
         "//compiler_v2/runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",

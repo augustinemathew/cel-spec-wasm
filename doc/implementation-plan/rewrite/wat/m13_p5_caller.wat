@@ -19,7 +19,7 @@
 ;;   [80, 91)   "hello world" bytes
 
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
 
   ;; The host-backed custom fn — bound at runtime by the engine's
   ;; host-callback registry (see m13_p5_host_test.cc).

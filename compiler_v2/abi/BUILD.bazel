@@ -16,6 +16,57 @@ cc_proto_library(
     deps = [":cel_abi_proto"],
 )
 
+# Single source of truth for the wasm imports an emitted expr
+# module declares.  Three namespaces (cel, cel_host, cel_env) plus
+# the per-program cel_fn namespace for custom fns.  Replaces three
+# previously hand-maintained surfaces (engine.cc::kRuntimeExports,
+# runtime/BUILD.bazel `--export=` flags, overload_table.cc::
+# InferHelperArity).  See `runtime_catalogue.h` for the full design.
+cc_library(
+    name = "runtime_catalogue",
+    srcs = ["runtime_catalogue.cc"],
+    hdrs = ["runtime_catalogue.h"],
+    deps = [
+        ":cel_abi_cc_proto",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "runtime_catalogue_test",
+    srcs = ["runtime_catalogue_test.cc"],
+    deps = [
+        ":runtime_catalogue",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Tripwire: asserts the `[codegen-helpers]` section of
+# `compiler_v2/runtime/wasm_exports.txt` is set-identical to
+# `abi::CelRuntimeHelpers()`.  Closes both directions of drift —
+# catalogue ⊆ text-file (else linker dead-strips on the wasm side)
+# and text-file ⊆ catalogue (else codegen has no metadata to emit
+# the import).  Replaces the pre-refactor BUILD-parsing form.
+cc_test(
+    name = "runtime_catalogue_consistency_test",
+    srcs = ["runtime_catalogue_consistency_test.cc"],
+    data = ["//compiler_v2/runtime:wasm_exports.txt"],
+    deps = [
+        ":runtime_catalogue",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Compile-side: build a `CelAbi` from the StaticLayout.  Consumed by
 # compile.cc after LayoutPass + LowerToEvalFunction.  Pair with
 # compiler_v2/api/internal/abi_decode (load-time decoder).
@@ -25,6 +76,7 @@ cc_library(
     hdrs = ["cel_abi_emit.h"],
     deps = [
         ":cel_abi_cc_proto",
+        ":runtime_catalogue",
         "//compiler_v2/codegen:expr_lower",
         "//compiler_v2/codegen:layout_pass",
         "@com_google_absl//absl/base:core_headers",

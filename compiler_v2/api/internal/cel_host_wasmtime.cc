@@ -9,11 +9,14 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/abi/runtime_catalogue.h"
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/runtime/cel_data.h"
 #include "google/protobuf/descriptor.h"
@@ -140,6 +143,10 @@ class WasmtimeMemoryView final : public MemoryView {
     std::memcpy(Data() + offset, &v, sizeof(v));
   }
 
+  void WriteU32(uint32_t offset, uint32_t value) override {
+    std::memcpy(Data() + offset, &value, sizeof(value));
+  }
+
   absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
     return {reinterpret_cast<const char*>(Data() + ptr), len};
   }
@@ -233,11 +240,47 @@ extern "C" wasm_trap_t* CelMapLookupTrampoline(
   return HostThreeArgTrampoline<CelMapLookupImpl>(env_ptr, caller, args);
 }
 
+// `cel_host.cel_map_iter_open(state_offset, map_slot)` — 2 i32 args,
+// void return.  Same shape as the 2-arg helpers below but reuses the
+// existing `HostTwoArgTrampoline` once it lands; until then, define
+// inline to avoid a forward declaration of the template.
+extern "C" wasm_trap_t* CelMapIterOpenTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  WasmtimeMemoryView mem(ctx, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
+  const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
+  return StatusToTrap(
+      CelMapIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
+                         static_cast<uint32_t>(args[1].of.i32), tctx));
+}
+
 extern "C" wasm_trap_t* CelListAtTrampoline(
     void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
     const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
     size_t /*nresults*/) {
   return HostThreeArgTrampoline<CelListAtImpl>(env_ptr, caller, args);
+}
+
+// `cel_host.cel_list_iter_open(out_slot, list_slot)` — 2 i32 args,
+// void return.  Mirrors CelMapIterOpenTrampoline shape; forwards
+// into CelListIterOpenImpl which snapshots a host list to arena
+// CEL_LIST_ARENA shape (m5b §CCF-8 Slice 2).
+extern "C" wasm_trap_t* CelListIterOpenTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  WasmtimeMemoryView mem(ctx, env->memory);
+  WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
+  const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
+  return StatusToTrap(
+      CelListIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
+                          static_cast<uint32_t>(args[1].of.i32), tctx));
 }
 
 // Aggregate-op kHost trampolines.  Three-arg helpers
@@ -426,21 +469,14 @@ absl::Status DefineHostFunc(wasmtime_linker_t* linker, absl::string_view name,
 
 namespace {
 
-struct HostImportEntry {
+// One row of the `cel_host` trampoline table.  Maps a catalogue
+// name to its C++ callback.  Arity + return shape come from
+// `abi::CelHostFunctions()` — Slice D of the single-source-of-truth
+// refactor (see `doc/implementation-plan/rewrite/abi-refactor.md`).
+struct HostTrampoline {
   absl::string_view name;
-  size_t arity;
   wasmtime_func_callback_t cb;
 };
-
-absl::Status DefineAll(wasmtime_linker_t* linker, CelHostCallbackEnv* env,
-                       absl::Span<const HostImportEntry> entries) {
-  for (const HostImportEntry& e : entries) {
-    if (auto s = DefineHostFunc(linker, e.name, e.arity, e.cb, env); !s.ok()) {
-      return s;
-    }
-  }
-  return absl::OkStatus();
-}
 
 }  // namespace
 
@@ -471,58 +507,87 @@ uint8_t* absl_nullable WasmtimeArenaAllocator::Alloc(
   return wasmtime_sharedmemory_data(mem_) + offset;
 }
 
+namespace {
+
+// `cel_host` trampoline table.  Maps each name (the catalogue key)
+// to its C++ callback.  Arity + return shape come from
+// `abi::CelHostFunctions()`; this table only carries the function
+// pointer.  The bijection check in `RegisterCelHostImports` makes
+// drift between this table and the catalogue impossible to ship.
+//
+// For multi-overload trampolines (e.g. cel_timestamp_tz_accessor
+// dispatches all 10 with-TZ accessor overloads through one 4-arg
+// slot), see `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`.
+// For the WKT unwrap pair (`cel_wkt_unwrap_time`,
+// `cel_wkt_unwrap_wrapper`), see `m8-wrapper-types.md`.
+constexpr HostTrampoline kHostTrampolines[] = {
+    {"cel_get_field", &CelGetFieldTrampoline},
+    {"cel_has_field", &CelHasFieldTrampoline},
+    {"cel_map_lookup", &CelMapLookupTrampoline},
+    {"cel_map_iter_open", &CelMapIterOpenTrampoline},
+    {"cel_list_iter_open", &CelListIterOpenTrampoline},
+    {"cel_list_at", &CelListAtTrampoline},
+    {"cel_list_size", &CelListSizeTrampoline},
+    {"cel_list_in", &CelListInTrampoline},
+    {"cel_list_eq", &CelListEqTrampoline},
+    {"cel_list_concat", &CelListConcatTrampoline},
+    {"cel_map_size", &CelMapSizeTrampoline},
+    {"cel_map_in", &CelMapInTrampoline},
+    {"cel_map_eq", &CelMapEqTrampoline},
+    {"cel_message_eq", &CelMessageEqTrampoline},
+    {"cel_make_message", &CelMakeMessageTrampoline},
+    {"cel_set_field", &CelSetFieldTrampoline},
+    {"resolve_message_type_name", &CelResolveMessageTypeNameTrampoline},
+    {"cel_timestamp_tz_accessor", &CelTimestampTzAccessorTrampoline},
+    {"cel_wkt_unwrap_time", &CelWktUnwrapTimeTrampoline},
+    {"cel_wkt_unwrap_wrapper", &CelWktUnwrapWrapperTrampoline},
+};
+
+// Build the name→callback index, asserting no duplicate trampoline
+// rows AND that every trampoline is in the ABI catalogue.  The
+// second check is the "trampolines ⊆ catalogue" half of the
+// bijection (an extra trampoline codegen never imports is dead
+// code).  The "catalogue ⊆ trampolines" half is the per-entry
+// check in `RegisterCelHostImports`.
+absl::flat_hash_map<absl::string_view, wasmtime_func_callback_t>
+BuildHostTrampolineIndex() {
+  absl::flat_hash_map<absl::string_view, wasmtime_func_callback_t> idx;
+  idx.reserve(std::size(kHostTrampolines));
+  for (const HostTrampoline& t : kHostTrampolines) {
+    const bool inserted = idx.emplace(t.name, t.cb).second;
+    ABSL_CHECK(inserted) << "duplicate cel_host trampoline `" << t.name
+                         << "` in cel_host_wasmtime.cc::kHostTrampolines";
+    ABSL_CHECK(abi::FindBuiltinHelper(abi::AbiModule::kCelHost, t.name) !=
+               nullptr)
+        << "cel_host trampoline `" << t.name
+        << "` is not in abi::CelHostFunctions() — add a catalogue entry "
+           "in compiler_v2/abi/runtime_catalogue.cc or delete the "
+           "trampoline.";
+  }
+  return idx;
+}
+
+}  // namespace
+
 absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
                                     CelHostCallbackEnv* env) {
-  // Register every cel_host.* import the runtime module declares.
-  // Arities: get/has_field are 4-arg (msg + field_ref + attr + out);
-  // every other cel_host.* helper is slot-out (out + N operands).
-  // Includes the seven aggregate-op kHost arms plus the standalone
-  // `cel_message_eq` helper.
-  static constexpr HostImportEntry kEntries[] = {
-      {"cel_get_field", 4, &CelGetFieldTrampoline},
-      {"cel_has_field", 4, &CelHasFieldTrampoline},
-      {"cel_map_lookup", 3, &CelMapLookupTrampoline},
-      {"cel_list_at", 3, &CelListAtTrampoline},
-      {"cel_list_size", 2, &CelListSizeTrampoline},
-      {"cel_list_in", 3, &CelListInTrampoline},
-      {"cel_list_eq", 3, &CelListEqTrampoline},
-      {"cel_list_concat", 3, &CelListConcatTrampoline},
-      {"cel_map_size", 2, &CelMapSizeTrampoline},
-      {"cel_map_in", 3, &CelMapInTrampoline},
-      {"cel_map_eq", 3, &CelMapEqTrampoline},
-      {"cel_message_eq", 3, &CelMessageEqTrampoline},
-      // Proto literal construction.  Two i32 args
-      // `(type_id, out_slot)`; void result.
-      {"cel_make_message", 2, &CelMakeMessageTrampoline},
-      // Proto literal field set.  Three i32 args
-      // `(msg_slot, field_ref_id, value_slot)`; void result.
-      {"cel_set_field", 3, &CelSetFieldTrampoline},
-      // type(message) descriptor-FQN resolver.  Two i32 args
-      // `(out_slot, in_slot)`; void result.
-      {"resolve_message_type_name", 2, &CelResolveMessageTypeNameTrampoline},
-      // Timestamp / duration parse + format are now self-hosted in
-      // `compiler_v2/runtime/cel_time_parse.cc`; codegen routes the
-      // four ids there directly.  See
-      // `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
-      //
-      // Single 4-arg dispatch trampoline for the 10 with-TZ
-      // accessor overloads.  Surface-count rationale (1 dispatch
-      // trampoline vs 10 named trampolines) in
-      // `doc/implementation-plan/rewrite/m7b-duration-timestamp.md`.
-      {"cel_timestamp_tz_accessor", 4, &CelTimestampTzAccessorTrampoline},
-      // WKT time proto-literal unwrap.  Codegen emits this for
-      // `Timestamp{...}` / `Duration{...}` struct literals so they
-      // unify with `timestamp("...")` / `duration("...")`
-      // constructor results for `==` / `<` / etc.
-      {"cel_wkt_unwrap_time", 2, &CelWktUnwrapTimeTrampoline},
-      // WKT wrapper proto-literal tail-unwrap (3-arg
-      // `(out_slot, msg_slot, wrapper_kind)`).  Codegen emits this
-      // for the 9 google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,
-      // Float,Double,String,Bytes}Value struct literals so they
-      // unify with their inner-scalar form for `==` / `<` etc.
-      {"cel_wkt_unwrap_wrapper", 3, &CelWktUnwrapWrapperTrampoline},
-  };
-  return DefineAll(linker, env, absl::MakeConstSpan(kEntries));
+  const auto by_name = BuildHostTrampolineIndex();
+  // Catalogue ⊆ trampolines: every catalogue entry MUST have a
+  // registered callback.  Otherwise codegen emits an import the
+  // linker can't resolve, and instantiate fails with an opaque
+  // wasmtime error — exactly the failure mode the single-source-
+  // of-truth refactor exists to prevent.
+  for (const abi::AbiHelper& h : abi::CelHostFunctions()) {
+    auto it = by_name.find(h.name);
+    ABSL_CHECK(it != by_name.end())
+        << "abi::CelHostFunctions() entry `" << h.name
+        << "` has no trampoline in cel_host_wasmtime.cc::kHostTrampolines";
+    if (auto s = DefineHostFunc(linker, h.name, h.num_args, it->second, env);
+        !s.ok()) {
+      return s;
+    }
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace celwasm

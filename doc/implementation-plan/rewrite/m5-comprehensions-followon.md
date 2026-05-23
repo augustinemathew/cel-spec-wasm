@@ -1412,6 +1412,45 @@ keystone gate:
     below for the as-shipped writeup; original deferral
     rationale + implementation plan kept for historical
     context.
+  - **Comprehension iter_range over host-origin sources
+    (bound list/map, proto repeated/map field) — SHIPPED
+    2026-05-22** as Slices 1+2 (m5b §CCF-8).  Approach (A) from
+    the original design: kind-dispatching runtime iter helpers.
+      - **Slice 1 (maps):** Extended `cel_map_iter_init` to
+        dispatch on CelValue.kind.  CEL_MAP_ARENA paths
+        unchanged; CEL_MAP_HOST calls a new host trampoline
+        `cel_host.cel_map_iter_open(state_offset, map_slot)`
+        (`CelMapIterOpenImpl` in `cel_host.cc`) that snapshots
+        the HostMapBacking via ForEach into a flat 48-byte/entry
+        region in the arena (key at +0, value at +24).
+        `MapIterState` grew from 8B to 16B carrying
+        `{kind, cursor, payload, count}`.  Pre-sizing routes
+        through a new `cel_map_count(slot) → i32` runtime
+        helper that dispatches on kind (arena: inline header
+        read; host: calls `cel_host.cel_map_size` and unboxes).
+      - **Slice 2 (lists):** New runtime helper
+        `cel_list_arena_view(slot) → slot` returns the input
+        for CEL_LIST_ARENA, or for CEL_LIST_HOST calls a new
+        trampoline `cel_host.cel_list_iter_open` that snapshots
+        the HostListBacking into an ArenaListHeader + N×24-byte
+        run and returns a workspace slot holding a synthetic
+        CEL_LIST_ARENA CelValue.  The codegen prologue calls
+        `cel_list_arena_view` once at entry and stores the
+        result in a per-comp wasm local (`aux0_local + 2`,
+        bumping `comprehension_extra_locals_per_comp` from 2 to
+        3); pre-sizing and the three inline header loads read
+        through that local.  The existing inline arena pointer
+        walk works unchanged for both arena passthrough and
+        host-snapshotted sources.
+    Affected SKIPs flipped: `m5b_test.cc::ExistsOverBoundList`,
+    `AllOverBoundList`, `MapOverBoundList`,
+    `MapLargeListGrowthPath` (all green).  Plus every
+    activation-bound list/map and proto repeated/map field
+    comprehension that previously failed silently is now
+    correct.  See `compiler_v2/tools/cel/
+    activation_matrix_test.cc::Bound*Comprehension*` /
+    `BoundProtoRepeatedField` / `BoundProtoMapFieldComprehension`
+    for the 7 new e2e cases locking the behavior.
   - **Inline `cel.bind` fast path (Slice G.2).**  Ship if
     bench shows >20% win on cel.bind-heavy programs.
   - **Remove `IsShapeC` / `LowerShapeC` cel.bind escape hatch

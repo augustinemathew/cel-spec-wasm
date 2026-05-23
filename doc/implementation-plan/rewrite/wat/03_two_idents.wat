@@ -13,9 +13,9 @@
 ;;   [40, 64)  workspace slot for y — local_index 1
 ;;   [64, mem_size)  bump arena
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
 
   (func $eval (result i32)
     (local $x_off i32)  ;; local 0
@@ -27,7 +27,7 @@
     (local.set $y_off (i32.const 40))
 
     ;; ── RESET ────────────────────────────────────────────────
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─────────────────────────────────────────────────
     ;; M3 will emit something like:

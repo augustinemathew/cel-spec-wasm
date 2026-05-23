@@ -48,9 +48,9 @@
 ;; This file follows the same shape as `08_map_index_host.wat` —
 ;; pure host import, no runtime cel_* dispatch hop.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_timestamp_parse"
           (func $cel_timestamp_parse (param i32 i32)))
 
@@ -64,7 +64,7 @@
 
   (func $eval (result i32)
     ;; Arena begins at 88 (16-byte aligned past rodata + out_slot).
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Host trampoline: parse the rodata string, write CEL_TIMESTAMP
     ;; into slot 64.

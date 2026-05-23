@@ -111,9 +111,9 @@
 ;;      pattern in MaybeEmitWktUnwrapTailCall).
 ;;   4. Return msg_slot as the i32 result of $eval.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_make_message"
           (func $cel_make_message (param i32 i32)))
   (import "cel_host" "cel_set_field"
@@ -140,7 +140,7 @@
     ;; ── RESET ────────────────────────────────────────────────
     ;; Arena base = 64 (past workspace slot at 16 + rodata at 40,
     ;; rounded up to 24-byte CelValue alignment).
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─────────────────────────────────────────────────
     ;; M7.A — construct the default Int32Value proto into slot 16.

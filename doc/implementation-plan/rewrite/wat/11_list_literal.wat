@@ -34,11 +34,11 @@
 ;; CelValue at elem_slot into element[index]; out-of-bounds index
 ;; or set on a poisoned list poisons with CEL_ERR_OVERFLOW.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
-  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
 
   (data (i32.const 16)
         "\02\00\00\00" "\00\00\00\00"
@@ -51,14 +51,14 @@
         "\03\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 112) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Reserve header + 3 element slots.
     (call $cel_list_create (i32.const 88) (i32.const 3))
     ;; Per-element write — index increments 0, 1, 2.
-    (call $cel_list_set (i32.const 88) (i32.const 0) (i32.const 16))
-    (call $cel_list_set (i32.const 88) (i32.const 1) (i32.const 40))
-    (call $cel_list_set (i32.const 88) (i32.const 2) (i32.const 64))
+    (call $cel_list_append_at (i32.const 88) (i32.const 16))
+    (call $cel_list_append_at (i32.const 88) (i32.const 40))
+    (call $cel_list_append_at (i32.const 88) (i32.const 64))
 
     (i32.const 88))
 

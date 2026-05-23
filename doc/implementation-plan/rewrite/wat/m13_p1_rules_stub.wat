@@ -24,7 +24,7 @@
   ;; Same host-owned memory the caller imports.  This is the
   ;; pillar of the shared-memory ABI — both modules see the same
   ;; bytes.
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
 
   ;; The foreign export.  Name shape matches what the IDL grammar's
   ;; overload-id synthesis produces from

@@ -359,6 +359,13 @@ struct RuntimeHarness {
       // imports.
       {"resolve_message_type_name", 25, 2},
       {"cel_timestamp_tz_accessor", 25, 4},
+      // Comprehension iter snapshots for host-backed list/map sources
+      // (m5b §CCF-8).  Imported unconditionally by the kDynamic
+      // dispatchers in cel_runtime.c; no-op stubs are sufficient
+      // because none of the runtime-wasm-only tests exercise the
+      // host-backed paths.
+      {"cel_list_iter_open", 18, 2},
+      {"cel_map_iter_open", 17, 2},
   };
   for (const auto& e : kEntries) {
     wasm_functype_t* ft;

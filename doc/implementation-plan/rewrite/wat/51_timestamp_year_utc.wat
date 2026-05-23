@@ -66,9 +66,9 @@
 ;;      ts_slot=16) — same shape as `16_arith_int_add.wat`.
 ;;   3. Result lives at slot 40.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_ts_year_utc"
           (func $cel_ts_year_utc (param i32 i32)))
 
@@ -80,7 +80,7 @@
     (local.set $ts_off (i32.const 16))
 
     ;; Arena begins at 64 (past workspace + out_slot, 16-byte aligned).
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Pure-wasm accessor — no host trampoline.
     (call $cel_ts_year_utc

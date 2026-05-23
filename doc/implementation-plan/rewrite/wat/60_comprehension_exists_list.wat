@@ -79,11 +79,11 @@
 ;; `cel_runtime.wasm`; this WAT is the design lock AND the
 ;; regression test for codegen's emitted shape.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
-  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
   (import "cel" "cel_int_gt_at_vv"
           (func $cel_int_gt_at_vv (param i32 i32 i32)))
   (import "cel" "cel_or" (func $cel_or (param i32 i32 i32)))
@@ -115,16 +115,16 @@
     (local $end_off    i32)  ;; one-past-end of the element run
 
     ;; ── RESET ─ arena begins past workspace (= 208).
-    (call $cel_reset (i32.const 208) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── EVALUATE iter_range — kCreateList[1, 2, 3] ─────────
     ;; Build the list at workspace slot 136.  Allocates the
     ;; ArenaListHeader at the current arena cursor (208) and
     ;; a 3 × 24 B element run immediately after it (224).
     (call $cel_list_create (i32.const 136) (i32.const 3))
-    (call $cel_list_set (i32.const 136) (i32.const 0) (i32.const 16))
-    (call $cel_list_set (i32.const 136) (i32.const 1) (i32.const 40))
-    (call $cel_list_set (i32.const 136) (i32.const 2) (i32.const 64))
+    (call $cel_list_append_at (i32.const 136) (i32.const 16))
+    (call $cel_list_append_at (i32.const 136) (i32.const 40))
+    (call $cel_list_append_at (i32.const 136) (i32.const 64))
 
     ;; ── EVALUATE accu_init — kConst false ───────────────────
     ;; accu_slot at 160 ← rodata false at 88 (24-byte memcpy).

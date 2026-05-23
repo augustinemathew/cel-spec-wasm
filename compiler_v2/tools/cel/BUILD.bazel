@@ -1,0 +1,139 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler_v2:__subpackages__"])
+
+# `cel` command-line driver.  Subcommands: eval / check / compile.
+# Schema-aware (--proto / --descriptor_set) and value-aware (--var
+# name:Type=value) wrapper around the celwasm::Compile pipeline +
+# cel::Engine runtime.
+
+cc_library(
+    name = "var_parser",
+    srcs = ["var_parser.cc"],
+    hdrs = ["var_parser.h"],
+    deps = [
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "var_parser_test",
+    srcs = ["var_parser_test.cc"],
+    deps = [
+        ":var_parser",
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/api:cel_host",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_library(
+    name = "value_format",
+    srcs = ["value_format.cc"],
+    hdrs = ["value_format.h"],
+    deps = [
+        "//compiler_v2/api:cel_host",
+        "//compiler_v2/api:error",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "value_format_test",
+    srcs = ["value_format_test.cc"],
+    deps = [
+        ":value_format",
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/api:cel_host",
+        "//compiler_v2/api:error",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_binary(
+    name = "cel",
+    srcs = ["cel.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":value_format",
+        ":var_parser",
+        "//compiler_v2:compile",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "//compiler_v2/frontend:parse_and_check",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Smoke-test the binary end-to-end.  Proto-schema coverage is in
+# the var_parser_test / value_format_test cc_tests (linked directly
+# against the library code); this just verifies the binary parses
+# argv + dispatches subcommands correctly.
+sh_test(
+    name = "cel_smoke_test",
+    srcs = ["cel_smoke_test.sh"],
+    data = [":cel"],
+)
+
+# Activation-marshal coverage matrix — every aggregate kind passed
+# in via `cel::Activation::Bind`.  Mirrors the user-facing CLI
+# `--var name:Type=value` shape but drives the public C++ API
+# directly (cleaner assertions, no shell-out).  See file header
+# for the coverage axes.
+cc_test(
+    name = "activation_matrix_test",
+    srcs = ["activation_matrix_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:type",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

@@ -28,9 +28,9 @@
 ;;
 ;; Expected: out_slot = {CEL_BOOL, b=1}.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_or" (func $cel_or (param i32 i32 i32)))
 
   (data (i32.const 16)
@@ -41,7 +41,7 @@
         "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; out_slot=64, a=16 (false), b=40 (true).  OK(true) absorber
     ;; writes CEL_BOOL true into slot 64.

@@ -3,6 +3,46 @@ load("//third_party/wasi_sdk:wasm_cc_binary.bzl", "wasm_cc_binary")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
+# `wasm_exports.txt` is the canonical list of symbols
+# `cel_runtime.wasm` exports.  Two consumers below:
+#
+#   1. `wasm_export_args` genrule — converts the text file to a
+#      wasm-ld response file (one `--export=<name>` per line).
+#      `cel_runtime_wasm.bin` picks it up via `-Wl,@<rsp>`.
+#   2. `//compiler_v2/abi:runtime_catalogue_consistency_test` —
+#      reads the text file at test time and asserts the
+#      `[codegen-helpers]` section is identical to
+#      `celwasm::abi::CelRuntimeHelpers()`.
+#
+# Exported as a plain file so the test (in `//compiler_v2/abi`)
+# can `data = ["//compiler_v2/runtime:wasm_exports.txt"]` it.
+exports_files(
+    ["wasm_exports.txt"],
+    visibility = ["//compiler_v2/abi:__subpackages__"],
+)
+
+# Convert `wasm_exports.txt` into a wasm-ld response file.  The
+# response file is one arg per line: `--export=foo`.  Consumed by
+# `cel_runtime_wasm.bin`'s linkopts via `-Wl,@$(location ...)`.
+#
+# We strip section headers (`[name]`), comments (`#...`), blanks,
+# and keep only the first whitespace-separated token of each
+# remaining line — that's the symbol name.  `awk` is on every
+# bazel-supported host; no extra toolchain dep.
+genrule(
+    name = "wasm_export_args",
+    srcs = ["wasm_exports.txt"],
+    outs = ["wasm_export_args.rsp"],
+    cmd = """
+awk '
+  /^[[:space:]]*#/    { next }
+  /^[[:space:]]*$$/   { next }
+  /^[[:space:]]*\\[/  { next }
+  { print "--export=" $$1 }
+' $< > $@
+""",
+)
+
 # Gates the `-DCEL_LOG_DISABLED` define on -c opt builds.  Every public
 # runtime helper does a `CEL_LOG("enter")` host trampoline that
 # `fprintf`s to stderr.  Useful for the dead-code audit (see
@@ -465,6 +505,7 @@ cc_binary(
     ],
     additional_linker_inputs = [
         "wasm_imports.txt",
+        ":wasm_export_args",
     ],
     copts = [
         # `__attribute__((musttail))` requires the wasm tail-call
@@ -498,237 +539,12 @@ cc_binary(
         # instantiation, then binds it on the linker as `cel.memory`
         # so the expr module (which still imports `cel.memory`)
         # resolves to the same backing store.
-        # Surface malloc + free for host reentry (activation marshalling)
-        # and for the arena to allocate its backing buffer.
-        "-Wl,--export=malloc",
-        "-Wl,--export=free",
-        # __heap_base is exposed so the host can verify it sits
-        # above the reserved [0, 8192) region.
-        "-Wl,--export=__heap_base",
-        # The arena API: host reentry uses arena_init + arena_alloc;
-        # codegen prologue emits (call $arena_reset).
-        "-Wl,--export=arena_init",
-        "-Wl,--export=arena_alloc",
-        "-Wl,--export=arena_reset",
-        "-Wl,--export=arena_cursor",
-        "-Wl,--export=arena_capacity",
-        "-Wl,--export=cel_map_create",
-        "-Wl,--export=cel_map_insert",
-        "-Wl,--export=cel_map_insert_at",
-        "-Wl,--export=cel_map_insert_at_if_bool",
-        "-Wl,--export=cel_map_lookup",
-        "-Wl,--export=cel_map_lookup_arena",
-        "-Wl,--export=cel_list_create",
-        "-Wl,--export=cel_list_append_at",
-        "-Wl,--export=cel_list_append_at_if_bool",
-        "-Wl,--export=cel_list_at",
-        "-Wl,--export=cel_list_at_arena",
-        # Arithmetic helpers (int / uint / double × add/sub/mul/div/mod/neg).
-        "-Wl,--export=cel_int_add_at_vv",
-        "-Wl,--export=cel_int_sub_at_vv",
-        "-Wl,--export=cel_int_mul_at_vv",
-        "-Wl,--export=cel_int_div_at_vv",
-        "-Wl,--export=cel_int_mod_at_vv",
-        "-Wl,--export=cel_int_neg_at_v",
-        "-Wl,--export=cel_uint_add_at_vv",
-        "-Wl,--export=cel_uint_sub_at_vv",
-        "-Wl,--export=cel_uint_mul_at_vv",
-        "-Wl,--export=cel_uint_div_at_vv",
-        "-Wl,--export=cel_uint_mod_at_vv",
-        "-Wl,--export=cel_double_add_at_vv",
-        "-Wl,--export=cel_double_sub_at_vv",
-        "-Wl,--export=cel_double_mul_at_vv",
-        "-Wl,--export=cel_double_div_at_vv",
-        "-Wl,--export=cel_double_neg_at_v",
-        # Comparison helpers (per-kind eq/ne/lt/le/gt/ge + bool/null).
-        "-Wl,--export=cel_int_eq_at_vv",
-        "-Wl,--export=cel_int_ne_at_vv",
-        "-Wl,--export=cel_int_lt_at_vv",
-        "-Wl,--export=cel_int_le_at_vv",
-        "-Wl,--export=cel_int_gt_at_vv",
-        "-Wl,--export=cel_int_ge_at_vv",
-        "-Wl,--export=cel_uint_eq_at_vv",
-        "-Wl,--export=cel_uint_ne_at_vv",
-        "-Wl,--export=cel_uint_lt_at_vv",
-        "-Wl,--export=cel_uint_le_at_vv",
-        "-Wl,--export=cel_uint_gt_at_vv",
-        "-Wl,--export=cel_uint_ge_at_vv",
-        "-Wl,--export=cel_double_eq_at_vv",
-        "-Wl,--export=cel_double_ne_at_vv",
-        "-Wl,--export=cel_double_lt_at_vv",
-        "-Wl,--export=cel_double_le_at_vv",
-        "-Wl,--export=cel_double_gt_at_vv",
-        "-Wl,--export=cel_double_ge_at_vv",
-        "-Wl,--export=cel_bool_eq_at_vv",
-        "-Wl,--export=cel_bool_ne_at_vv",
-        "-Wl,--export=cel_bool_lt_at_vv",
-        "-Wl,--export=cel_bool_le_at_vv",
-        "-Wl,--export=cel_bool_gt_at_vv",
-        "-Wl,--export=cel_bool_ge_at_vv",
-        "-Wl,--export=cel_null_eq_at_vv",
-        # Cross-type numeric ladder (eq/ne/lt/le/gt/ge).
-        "-Wl,--export=cel_numeric_eq_at_vv",
-        "-Wl,--export=cel_numeric_ne_at_vv",
-        "-Wl,--export=cel_numeric_lt_at_vv",
-        "-Wl,--export=cel_numeric_le_at_vv",
-        "-Wl,--export=cel_numeric_gt_at_vv",
-        "-Wl,--export=cel_numeric_ge_at_vv",
-        # String + bytes ops (concat allocates; rest read-only).
-        "-Wl,--export=cel_string_concat_at_vv",
-        "-Wl,--export=cel_string_size_at_v",
-        "-Wl,--export=cel_string_eq_at_vv",
-        "-Wl,--export=cel_string_lt_at_vv",
-        "-Wl,--export=cel_string_le_at_vv",
-        "-Wl,--export=cel_string_gt_at_vv",
-        "-Wl,--export=cel_string_ge_at_vv",
-        "-Wl,--export=cel_string_contains_at_vv",
-        "-Wl,--export=cel_string_starts_with_at_vv",
-        "-Wl,--export=cel_string_ends_with_at_vv",
-        "-Wl,--export=cel_bytes_concat_at_vv",
-        "-Wl,--export=cel_bytes_size_at_v",
-        "-Wl,--export=cel_bytes_eq_at_vv",
-        "-Wl,--export=cel_bytes_lt_at_vv",
-        "-Wl,--export=cel_bytes_le_at_vv",
-        "-Wl,--export=cel_bytes_gt_at_vv",
-        "-Wl,--export=cel_bytes_ge_at_vv",
-        # Aggregate arena fast paths.
-        "-Wl,--export=cel_list_size_arena",
-        "-Wl,--export=cel_list_in_arena",
-        "-Wl,--export=cel_list_eq_arena",
-        "-Wl,--export=cel_list_concat_arena",
-        "-Wl,--export=cel_map_size_arena",
-        "-Wl,--export=cel_map_in_arena",
-        "-Wl,--export=cel_map_eq_arena",
-        # Aggregate kDynamic dispatchers.  Each tail-calls into the
-        # corresponding _arena fast path or the cel_host.* import.
-        "-Wl,--export=cel_list_size",
-        "-Wl,--export=cel_list_in",
-        "-Wl,--export=cel_list_eq",
-        "-Wl,--export=cel_list_concat",
-        "-Wl,--export=cel_map_size",
-        "-Wl,--export=cel_map_in",
-        "-Wl,--export=cel_map_eq",
-        # Map-key iteration helpers used by comprehensions over a
-        # `map(K, V)` source.
-        "-Wl,--export=cel_map_iter_init",
-        "-Wl,--export=cel_map_iter_next",
-        "-Wl,--export=cel_map_iter_key_at",
-        "-Wl,--export=cel_map_iter_value_at",
-        # Polymorphic equality.
-        "-Wl,--export=cel_equals_at_vv",
-        "-Wl,--export=cel_not_equals_at_vv",
-        # 3VL / control-flow helpers.
-        "-Wl,--export=cel_and",
-        "-Wl,--export=cel_or",
-        "-Wl,--export=cel_not",
-        "-Wl,--export=cel_unknown_merge",
-        "-Wl,--export=cel_copy_slot",
-        # type-of helper (see `rewrite/m9-type-subsystem.md`).
-        "-Wl,--export=cel_type_of_at_v",
-        # Numeric inter-conversion helpers (see `rewrite/m10-conversions.md`).
-        "-Wl,--export=cel_uint_to_int_at_v",
-        "-Wl,--export=cel_double_to_int_at_v",
-        "-Wl,--export=cel_int_to_uint_at_v",
-        "-Wl,--export=cel_double_to_uint_at_v",
-        "-Wl,--export=cel_int_to_double_at_v",
-        "-Wl,--export=cel_uint_to_double_at_v",
-        # String-parse helpers.
-        "-Wl,--export=cel_string_to_int_at_v",
-        "-Wl,--export=cel_string_to_uint_at_v",
-        "-Wl,--export=cel_string_to_double_at_v",
-        "-Wl,--export=cel_string_to_bool_at_v",
-        # Number/bool-to-string formatters.
-        "-Wl,--export=cel_int_to_string_at_v",
-        "-Wl,--export=cel_uint_to_string_at_v",
-        "-Wl,--export=cel_bool_to_string_at_v",
-        "-Wl,--export=cel_double_to_string_at_v",
-        # Bytes <-> string with UTF-8 validation.
-        "-Wl,--export=cel_string_to_bytes_at_v",
-        "-Wl,--export=cel_bytes_to_string_at_v",
-        # Timestamp / duration arithmetic + ordering.
-        "-Wl,--export=cel_dur_add_at_vv",
-        "-Wl,--export=cel_dur_sub_at_vv",
-        "-Wl,--export=cel_ts_dur_add_at_vv",
-        "-Wl,--export=cel_dur_ts_add_at_vv",
-        "-Wl,--export=cel_ts_dur_sub_at_vv",
-        "-Wl,--export=cel_ts_ts_sub_at_vv",
-        "-Wl,--export=cel_dur_lt_at_vv",
-        "-Wl,--export=cel_dur_le_at_vv",
-        "-Wl,--export=cel_dur_gt_at_vv",
-        "-Wl,--export=cel_dur_ge_at_vv",
-        "-Wl,--export=cel_ts_lt_at_vv",
-        "-Wl,--export=cel_ts_le_at_vv",
-        "-Wl,--export=cel_ts_gt_at_vv",
-        "-Wl,--export=cel_ts_ge_at_vv",
-        # Timestamp UTC accessors + duration accessors.
-        "-Wl,--export=cel_ts_year_utc_at_v",
-        "-Wl,--export=cel_ts_month_utc_at_v",
-        "-Wl,--export=cel_ts_day_of_month_1_utc_at_v",
-        "-Wl,--export=cel_ts_day_of_month_utc_at_v",
-        "-Wl,--export=cel_ts_day_of_year_utc_at_v",
-        "-Wl,--export=cel_ts_day_of_week_utc_at_v",
-        "-Wl,--export=cel_ts_hours_utc_at_v",
-        "-Wl,--export=cel_ts_minutes_utc_at_v",
-        "-Wl,--export=cel_ts_seconds_utc_at_v",
-        "-Wl,--export=cel_ts_milliseconds_utc_at_v",
-        "-Wl,--export=cel_dur_hours_at_v",
-        "-Wl,--export=cel_dur_minutes_at_v",
-        "-Wl,--export=cel_dur_seconds_at_v",
-        "-Wl,--export=cel_dur_milliseconds_at_v",
-        # Pure-wasm int <-> ts/dur conversions.
-        "-Wl,--export=cel_ts_to_int_at_v",
-        "-Wl,--export=cel_dur_to_int_at_v",
-        "-Wl,--export=cel_int_to_ts_at_v",
-        "-Wl,--export=cel_int_to_dur_at_v",
-        # With-TZ accessor shims (10 helpers, all 3-arg; route
-        # through `cel_host.cel_timestamp_tz_accessor`).
-        "-Wl,--export=cel_ts_year_with_tz_at_vv",
-        "-Wl,--export=cel_ts_month_with_tz_at_vv",
-        "-Wl,--export=cel_ts_day_of_month_1_with_tz_at_vv",
-        "-Wl,--export=cel_ts_day_of_month_with_tz_at_vv",
-        "-Wl,--export=cel_ts_day_of_year_with_tz_at_vv",
-        "-Wl,--export=cel_ts_day_of_week_with_tz_at_vv",
-        "-Wl,--export=cel_ts_hours_with_tz_at_vv",
-        "-Wl,--export=cel_ts_minutes_with_tz_at_vv",
-        "-Wl,--export=cel_ts_seconds_with_tz_at_vv",
-        "-Wl,--export=cel_ts_milliseconds_with_tz_at_vv",
-        # Runtime-hosted parse / format kernels (replacing the
-        # cel_host.* trampolines).  C++ implementations live in
-        # cel_time_parse.cc (linked via the cc_library dep below);
-        # codegen routes the four ids in overload_table.cc.  See
-        # `rewrite/phase-c-plan.md` §4.1-4.4.
-        "-Wl,--export=cel_timestamp_parse_at_v",
-        "-Wl,--export=cel_duration_parse_at_v",
-        "-Wl,--export=cel_timestamp_format_at_v",
-        "-Wl,--export=cel_duration_format_at_v",
-        # Regex matches kernel (`rewrite/phase-c-plan.md` §4.5).
-        # RE2 + per-Instance single-slot most-recent-pattern cache
-        # live in cel_matches.cc.
-        "-Wl,--export=cel_matches_at_vv",
-        # M12 `string_ext` extension kernels — 17 self-hosted in
-        # `cel_string_ext_*.cc` (charAt / fold / trim / reverse /
-        # indexOf ×2 / lastIndexOf ×2 / substring ×2 / replace ×2 /
-        # split ×2 / join ×2 / quote) + the format dispatcher.
-        # See `rewrite/m12-string-ext.md` §4.2.
-        "-Wl,--export=cel_string_char_at_at_vv",
-        "-Wl,--export=cel_string_lower_ascii_at_v",
-        "-Wl,--export=cel_string_upper_ascii_at_v",
-        "-Wl,--export=cel_string_trim_at_v",
-        "-Wl,--export=cel_string_reverse_at_v",
-        "-Wl,--export=cel_string_index_of_at_vv",
-        "-Wl,--export=cel_string_index_of_at_vvv",
-        "-Wl,--export=cel_string_last_index_of_at_vv",
-        "-Wl,--export=cel_string_last_index_of_at_vvv",
-        "-Wl,--export=cel_string_substring_at_vv",
-        "-Wl,--export=cel_string_substring_range_at_vvv",
-        "-Wl,--export=cel_string_replace_at_vvv",
-        "-Wl,--export=cel_string_replace_n_at_vvvv",
-        "-Wl,--export=cel_string_split_at_vv",
-        "-Wl,--export=cel_string_split_n_at_vvv",
-        "-Wl,--export=cel_string_join_at_v",
-        "-Wl,--export=cel_string_join_sep_at_vv",
-        "-Wl,--export=cel_string_quote_at_v",
-        "-Wl,--export=cel_string_format_at_vv",
+        # Export list (193 symbols) comes from `wasm_exports.txt`
+        # via the `:wasm_export_args` genrule which emits one
+        # `--export=<name>` per line into a wasm-ld response file
+        # consumed below by `-Wl,@<file>`.  See the file header for
+        # the single-source-of-truth refactor rationale.
+        "-Wl,@$(location :wasm_export_args)",
     ],
     tags = ["manual"],
     deps = [

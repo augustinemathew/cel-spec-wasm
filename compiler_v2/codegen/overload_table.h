@@ -83,17 +83,14 @@ struct OverloadImpl {
 // for log messages / fixed-variant checks.
 absl::string_view ImportModuleName(const OverloadImpl& impl);
 
-// Number of i32 wasm function parameters a helper named `name`
-// takes — out_slot + N arg slots.  Recognizes the `_at_v…` suffix
-// convention used by the runtime helpers plus a small special-case
-// table for non-suffixed dispatchers (cel_list_size, cel_and, …).
-// Returns 0 when the name doesn't match a known shape.
-//
-// Exposed in the header so the builder can pre-populate
-// `OverloadImpl::num_args` for built-in seeds at Build() time, and
-// so codegen edge cases (cel_copy_slot) can use the same source of
-// truth.
-uint8_t InferHelperArity(absl::string_view name);
+// `InferHelperArity` was removed 2026-05-22.  Helper arities now
+// come from the ABI catalogue in `compiler_v2/abi/runtime_catalogue.h`
+// — the single source of truth across codegen, the engine's
+// runtime-export allowlist, and the wasm linker's `--export=` set.
+// Callers that need arity for a built-in helper name use
+// `abi::FindBuiltinHelper(module, name)->num_args`; callers that
+// need it for a custom-fn helper read `OverloadImpl::num_args`
+// (populated by `RegisterCustom`).
 
 struct Seed {
   // NOLINTNEXTLINE(readability-redundant-member-init) — see OverloadImpl::name.

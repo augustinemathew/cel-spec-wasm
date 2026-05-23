@@ -19,9 +19,9 @@
 ;;                   iter/accu vars, whose offset changes per
 ;;                   iteration (M5 extends exactly this path).
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
 
   ;; No `(data ...)` — rodata is empty for this expression.
 
@@ -36,7 +36,7 @@
     (local.set $x_off (i32.const 16))
 
     ;; ── RESET ────────────────────────────────────────────────
-    (call $cel_reset (i32.const 40) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─────────────────────────────────────────────────
     ;; kIdent lowering: return the offset of x's CelValue.

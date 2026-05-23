@@ -54,9 +54,9 @@
 ;; This file follows the same shape as `52_timestamp_parse.wat` —
 ;; pure host import, no runtime cel_* dispatch hop.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_duration_format"
           (func $cel_duration_format (param i32 i32)))
 
@@ -69,7 +69,7 @@
 
   (func $eval (result i32)
     ;; Arena starts at 64 (past out_slot, 16-byte aligned).
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Host trampoline: format the rodata duration, write CEL_STRING
     ;; into slot 40 with the bytes cel_alloc'd in the arena.

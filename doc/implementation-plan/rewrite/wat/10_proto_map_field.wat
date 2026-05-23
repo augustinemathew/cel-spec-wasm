@@ -35,9 +35,9 @@
 ;; calls ProtoBacking::ReadField → the MAP-field arm constructs a
 ;; ProtoMap and interns it.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"
           (func $cel_get_field (param i32 i32 i32 i32)))
   (import "cel_host" "cel_has_field"
@@ -56,7 +56,7 @@
     (local $c_off i32)
 
     (local.set $c_off (i32.const 16))
-    (call $cel_reset (i32.const 120) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── First hop ─ kSelect on c.metadata.
     ;; Trampoline reads c's msg_slot, resolves field_ref_id=1

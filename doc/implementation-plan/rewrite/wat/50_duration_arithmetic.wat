@@ -66,9 +66,9 @@
 ;; `timestamp - timestamp → duration`).  Overflow ladder runs on the
 ;; subtracted seconds + nanos-borrow.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_dur_add_at_vv"
           (func $cel_dur_add_at_vv (param i32 i32 i32)))
   (import "cel" "cel_ts_ts_sub_at_vv"
@@ -107,7 +107,7 @@
 
   (func $eval (result i32)
     ;; Arena starts at 160 (past both result slots, 16-byte aligned).
-    (call $cel_reset (i32.const 160) (i32.const 131072))
+    (call $arena_reset)
 
     ;; dur add: out=64, a=16, b=40 → {CEL_DURATION, seconds=3660}.
     (call $cel_dur_add_at_vv

@@ -196,7 +196,21 @@ struct CompContext {
   const LaidOutVariable* iter_v2 = nullptr;
   const LaidOutVariable* accu_v = nullptr;
   uint32_t aux0_local = 0;
+  // Where iter_range's CelValue lives at runtime.  Two shapes:
+  //   - workspace slot (`source_via_local == false`): `source_slot`
+  //     is the literal byte offset of the CelValue.  Set when
+  //     iter_range materialises into a layout-assigned slot
+  //     (literal `[..]`/`{..}`, proto field read, etc.).
+  //   - wasm local (`source_via_local == true`): `source_local`
+  //     is the index of the wasm local that holds the byte offset
+  //     at runtime.  Set when iter_range is a kIdent — the local
+  //     was populated by the `$eval` variable prelude (or an
+  //     enclosing comprehension's loop header for nested comp).
+  // The two shapes both resolve through `SourceAddrExpr` which
+  // returns the right Binaryen i32 expression.  See m5b §CCF-8.
   uint32_t source_slot = 0;
+  uint32_t source_local = 0;
+  bool source_via_local = false;
   bool map_source = false;
   // Per-comp unique labels (suffixed by expr_id).  Nested same-name
   // comprehensions would otherwise trip Binaryen's visitLoop
@@ -212,6 +226,16 @@ struct CompContext {
   }
   uint32_t index_local() const {
     return aux0_local + 1;
+  }
+  // Wasm local holding the kind-resolved source slot offset for the
+  // current comprehension's list iter_range.  Set at prologue entry
+  // via `cel_list_arena_view(source_addr)` so the inline arena walk
+  // sees an arena-shaped CelValue regardless of origin (arena
+  // sources pass through; host sources are snapshotted into arena
+  // format).  Unused by the map prologue — `cel_map_iter_init`
+  // dispatches internally.  See m5b §CCF-8 Slice 2.
+  uint32_t list_source_addr_local() const {
+    return aux0_local + 2;
   }
 };
 
@@ -280,14 +304,42 @@ absl::StatusOr<CompContext> ResolveCompContext(
         ReprName(range_ann->repr), " is not supported (expr_id=", expr.id(),
         "); only list and map sources are handled"));
   }
-  if (range_ann->storage.kind != StorageKind::kWorkspaceSlot) {
-    return absl::UnimplementedError(
-        absl::StrCat("expr_lower: comprehension iter_range storage kind ",
-                     static_cast<int>(range_ann->storage.kind),
-                     " not yet supported (expr_id=", expr.id(),
-                     "); literal-source paths are workspace-slot only"));
+  // Resolve the source address.  Two storage shapes are accepted
+  // (each only on certain reprs — list/map asymmetry below):
+  //   kWorkspaceSlot: literal byte offset of the CelValue.
+  //   kLocal:         wasm local holds the byte offset at runtime.
+  // See CompContext field doc for the runtime mapping.
+  switch (range_ann->storage.kind) {
+    case StorageKind::kWorkspaceSlot:
+      c.source_slot = range_ann->storage.payload;
+      c.source_via_local = false;
+      break;
+    case StorageKind::kLocal:
+      // kLocal sources are kIdent — the local holds the runtime
+      // byte offset of the variable's CelValue cell, populated by
+      // the `$eval` variable prelude (or an enclosing comp's loop
+      // header for nested comp).  Maps: `cel_map_iter_init` is
+      // kind-dispatching internally.  Lists: routed through
+      // `cel_list_arena_view` in the prologue, which dispatches on
+      // kind and snapshots host lists into arena shape so the
+      // inline arena walk works uniformly.  See m5b §CCF-8.
+      c.source_local = range_ann->storage.payload;
+      c.source_via_local = true;
+      break;
+    case StorageKind::kStaticRodata:
+    case StorageKind::kNone:
+      return absl::UnimplementedError(
+          absl::StrCat("expr_lower: comprehension iter_range storage kind ",
+                       static_cast<int>(range_ann->storage.kind),
+                       " not yet supported (expr_id=", expr.id(),
+                       "); accepted: kWorkspaceSlot, kLocal."));
   }
-  c.source_slot = range_ann->storage.payload;
+  // All origins (arena / host / dynamic) for both list and map
+  // sources land here.  Slice 1 (maps) ships via
+  // `cel_map_iter_init`'s kind dispatch; Slice 2 (lists) ships via
+  // `cel_list_arena_view` (called from the prologue) which
+  // dispatches on CelValue.kind and snapshots host lists into
+  // arena format.  See m5b §CCF-8.
   c.map_source = (range_ann->repr == Repr::kMap);
   if (c.map_source) {
     // Sanity: ResolvePass should have re-tagged the iter_var to get
@@ -316,6 +368,21 @@ uint32_t ListIterPointerLocal(const CompContext& c) {
   return c.two_iter() ? c.iter_v2->local_index : c.iter_v->local_index;
 }
 
+// Build a runtime int32 expression that yields the byte offset of
+// the iter_range's CelValue.  Workspace-slot sources resolve to a
+// literal i32.const; kLocal sources resolve to a local.get of the
+// local stamped by the variable prelude.  Used by `EmitMapPrologue`
+// to handle both Activation-bound (kLocal-source) and computed
+// (kWorkspaceSlot-source) maps uniformly.  See `CompContext` field
+// doc + m5b §CCF-8.
+BinaryenExpressionRef SourceAddrExpr(EmitCtx& ctx, const CompContext& c) {
+  if (c.source_via_local) {
+    return BinaryenLocalGet(ctx.mod.raw(), c.source_local,
+                            BinaryenTypeInt32());
+  }
+  return I32Const(ctx.mod, c.source_slot);
+}
+
 // Map-source prologue.  cel_map_iter_init returns a handle stored
 // in aux0_local; iter_var (+ iter_var2 for v2) are bound to fixed
 // workspace slots that cel_map_iter_{key,value}_at refresh each
@@ -323,7 +390,7 @@ uint32_t ListIterPointerLocal(const CompContext& c) {
 void EmitMapPrologue(EmitCtx& ctx, const CompContext& c,
                      std::vector<BinaryenExpressionRef>* instrs) {
   auto* mod = ctx.mod.raw();
-  BinaryenExpressionRef init_args[1] = {I32Const(ctx.mod, c.source_slot)};
+  BinaryenExpressionRef init_args[1] = {SourceAddrExpr(ctx, c)};
   instrs->push_back(
       BinaryenLocalSet(mod, c.aux0_local,
                        BinaryenCall(mod, "cel_map_iter_init", init_args, 1,
@@ -337,8 +404,10 @@ void EmitMapPrologue(EmitCtx& ctx, const CompContext& c,
   }
 }
 
-// List-source prologue.  Loads the arena-list header pointer
-// (CelValue.payload offset 8), then derives:
+// List-source prologue.  First resolves the iter_range source to an
+// arena-shaped slot via `cel_list_arena_view` (arena: passthrough;
+// host: snapshot into arena format).  Then loads the arena-list
+// header pointer (CelValue.payload offset 8), and derives:
 //   ptr_local = elements pointer (header offset 8)
 //   aux0_local = ptr_local + count * sizeof(CelValue) = one-past-end
 // For v2 two-iter: also seeds iter_v's index-counter slot + aux1.
@@ -347,12 +416,19 @@ void EmitMapPrologue(EmitCtx& ctx, const CompContext& c,
 void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
                       std::vector<BinaryenExpressionRef>* instrs) {
   auto* mod = ctx.mod.raw();
+  // `list_source_addr_local` was populated by EmitCompPrologue via
+  // `cel_list_arena_view` (arena passthrough / host snapshot).  All
+  // three subsequent loads read through that local — same address
+  // pre-sizing already used in `EmitLoadSourceCount`.
+  auto src_addr = [&]() {
+    return BinaryenLocalGet(mod, c.list_source_addr_local(),
+                            BinaryenTypeInt32());
+  };
   const uint32_t ptr_local = ListIterPointerLocal(c);
   instrs->push_back(BinaryenLocalSet(
       mod, c.aux0_local,
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                   /*align=*/4, BinaryenTypeInt32(),
-                   I32Const(ctx.mod, c.source_slot), "memory")));
+                   /*align=*/4, BinaryenTypeInt32(), src_addr(), "memory")));
   instrs->push_back(BinaryenLocalSet(
       mod, ptr_local,
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
@@ -378,15 +454,31 @@ void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
   }
 }
 
-// Load iter_range.count at runtime.  Arena-list and arena-map
-// headers both store count at header offset 0; both CelValue payloads
-// store the header pointer at slot offset 8.  Uniform two-load shape.
+// Load iter_range.count at runtime.
+//
+// Map sources can be arena OR host (Activation::Bind, proto map
+// field).  Routing through the kind-dispatching runtime helper
+// `cel_map_count` handles both: arena reads header.count inline;
+// host calls `cel_host.cel_map_size` and unboxes the int payload.
+//
+// List sources: EmitCompPrologue resolved the iter_range to an
+// arena-shaped slot via `cel_list_arena_view` and stored the
+// resulting offset in `list_source_addr_local`.  Both arena and
+// host (post-snapshot) sources now share the inline two-load
+// header-walk shape: `payload+8` = arena_list.header_ptr,
+// `*header+0` = count.
 BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
   auto* mod = ctx.mod.raw();
+  if (c.map_source) {
+    BinaryenExpressionRef args[1] = {SourceAddrExpr(ctx, c)};
+    return BinaryenCall(mod, "cel_map_count", args, 1, BinaryenTypeInt32());
+  }
+  // List path: read through the resolved (arena-shaped) source addr.
+  BinaryenExpressionRef src_addr = BinaryenLocalGet(
+      mod, c.list_source_addr_local(), BinaryenTypeInt32());
   BinaryenExpressionRef hdr_ptr =
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                   /*align=*/4, BinaryenTypeInt32(),
-                   I32Const(ctx.mod, c.source_slot), "memory");
+                   /*align=*/4, BinaryenTypeInt32(), src_addr, "memory");
   return BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
                       /*align=*/4, BinaryenTypeInt32(), hdr_ptr, "memory");
 }
@@ -475,6 +567,20 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   instrs->push_back(BinaryenDrop(mod, init_value));
   const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
   ABSL_CHECK(init_ann != nullptr);
+  // For LIST sources, resolve the iter_range to an arena-shaped slot
+  // FIRST so pre-sizing's `EmitLoadSourceCount` and the prologue's
+  // header reads share the same address.  Arena sources pass
+  // through `cel_list_arena_view` as identity; host sources get
+  // snapshotted into arena format.  Map sources don't need this —
+  // `cel_map_count` and `cel_map_iter_init` are both
+  // kind-dispatching internally.  See m5b §CCF-8 Slice 2.
+  if (!c.map_source) {
+    BinaryenExpressionRef view_args[1] = {SourceAddrExpr(ctx, c)};
+    instrs->push_back(BinaryenLocalSet(
+        mod, c.list_source_addr_local(),
+        BinaryenCall(mod, "cel_list_arena_view", view_args, 1,
+                     BinaryenTypeInt32())));
+  }
   if (IsPresizableCollectionAccu(comp, *init_ann)) {
     const LoopStepShape shape =
         ClassifyLoopStep(comp.loop_step(), comp.accu_var());

@@ -56,11 +56,11 @@
 ;;   cel.cel_int_ne_at_vv     (M5.B)          — `v != 2`
 ;;   cel.cel_list_append_at   (Slice D NEW)
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
-  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
   (import "cel" "cel_int_ne_at_vv"
           (func $cel_int_ne_at_vv (param i32 i32 i32)))
   ;; DEPENDS ON Slice D.
@@ -86,13 +86,13 @@
     (local $iter_off i32)
     (local $end_off  i32)
 
-    (call $cel_reset (i32.const 184) (i32.const 131072))
+    (call $arena_reset)
 
     ;; iter_range = [1, 2, 3] at slot 112.
     (call $cel_list_create (i32.const 112) (i32.const 3))
-    (call $cel_list_set (i32.const 112) (i32.const 0) (i32.const 16))
-    (call $cel_list_set (i32.const 112) (i32.const 1) (i32.const 40))
-    (call $cel_list_set (i32.const 112) (i32.const 2) (i32.const 64))
+    (call $cel_list_append_at (i32.const 112) (i32.const 16))
+    (call $cel_list_append_at (i32.const 112) (i32.const 40))
+    (call $cel_list_append_at (i32.const 112) (i32.const 64))
 
     ;; accu_init = [] at slot 136.
     (call $cel_list_create (i32.const 136) (i32.const 0))

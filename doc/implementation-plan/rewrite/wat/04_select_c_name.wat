@@ -26,9 +26,9 @@
 ;; once at Engine::Plan time and threaded through as callback data
 ;; to the trampoline.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"
           (func $cel_get_field (param i32 i32 i32 i32)))
   (import "cel_host" "cel_has_field"
@@ -41,7 +41,7 @@
     (local.set $c_off (i32.const 16))
 
     ;; ── RESET ────────────────────────────────────────────────
-    (call $cel_reset (i32.const 64) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─────────────────────────────────────────────────
     ;; kSelect lowering: ask cel_host to fill the select's output

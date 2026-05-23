@@ -270,49 +270,12 @@ TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
   EXPECT_TRUE(imports.empty());
 }
 
-// ── M13.A — InferHelperArity longest-suffix-first ordering ────
-//
-// The function returns helper arity by suffix length match.  Order
-// of checks is `_at_vvvv` → `_at_vvv` → `_at_vv` → `_at_v`; reversing
-// would shadow every long-form helper with the 2-arg shape.  These
-// tests are the regression for that.
-
-TEST(InferHelperArityTest, SuffixAtVTwoArgs) {
-  EXPECT_EQ(InferHelperArity("cel_int_neg_at_v"), 2);
-  EXPECT_EQ(InferHelperArity("cel_double_neg_at_v"), 2);
-}
-
-TEST(InferHelperArityTest, SuffixAtVVThreeArgs) {
-  EXPECT_EQ(InferHelperArity("cel_int_add_at_vv"), 3);
-  EXPECT_EQ(InferHelperArity("cel_string_concat_at_vv"), 3);
-}
-
-TEST(InferHelperArityTest, SuffixAtVVVFourArgs) {
-  // M12's `_at_vvv` kernels: indexOf-with-pos, substring-range, etc.
-  // Returning 2 here would silently wrong-arity the import.
-  EXPECT_EQ(InferHelperArity("cel_string_substring_at_vvv"), 4);
-}
-
-TEST(InferHelperArityTest, SuffixAtVVVVFiveArgs) {
-  // M12's `_at_vvvv` kernels: replace_n, split_n.
-  EXPECT_EQ(InferHelperArity("cel_string_replace_n_at_vvvv"), 5);
-}
-
-TEST(InferHelperArityTest, NonSuffixDispatchers) {
-  EXPECT_EQ(InferHelperArity("cel_list_size"), 2);
-  EXPECT_EQ(InferHelperArity("cel_list_in"), 3);
-  EXPECT_EQ(InferHelperArity("cel_and"), 3);
-  EXPECT_EQ(InferHelperArity("cel_not"), 2);
-  EXPECT_EQ(InferHelperArity("cel_copy_slot"), 2);
-}
-
-TEST(InferHelperArityTest, UnknownNameReturnsZero) {
-  EXPECT_EQ(InferHelperArity("not_a_real_helper"), 0);
-  EXPECT_EQ(InferHelperArity(""), 0);
-  // M13 custom-fn names (no _at_v suffix, no dispatcher entry) →
-  // 0 here; RegisterCustom passes explicit num_args instead.
-  EXPECT_EQ(InferHelperArity("allow_string_string"), 0);
-}
+// `InferHelperArity` and its name-suffix sniff are gone — arity now
+// comes from the ABI catalogue (`compiler_v2/abi/runtime_catalogue`).
+// The per-suffix unit tests that used to live here moved to
+// `runtime_catalogue_test.cc::KernelArityCanaries`; the seed-table
+// integration test `OverloadTableSeedArityAgainstCatalogue` below
+// exercises the wiring path that consumes the catalogue.
 
 // ── M13.A — kUserModule registration + ImportModuleName(impl) ──
 

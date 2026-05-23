@@ -32,9 +32,9 @@
 ;;   cel.cel_or_at_vv(out, a, b)       — `||`
 ;;   cel.cel_list_build_i(out, …)      — or rodata-packed list literal
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   ;; Stubs — declared so the WAT validates; real impls ship in M3/M6.
   (import "cel" "cel_int_gt_at_vv"
           (func $cel_int_gt_at_vv (param i32 i32 i32)))
@@ -70,7 +70,7 @@
     (local $step_out  i32)  ;; loop_step output slot
 
     ;; ── RESET ────────────────────────────────────────────────
-    (call $cel_reset (i32.const 208) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── COMPREHENSION SETUP ─────────────────────────────────
     ;; iter starts at first element's CelValue address (offset 16).

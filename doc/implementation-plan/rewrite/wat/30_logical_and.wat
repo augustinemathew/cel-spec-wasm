@@ -32,9 +32,9 @@
 ;;
 ;; Expected: out_slot = {CEL_BOOL, b=0}.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_and" (func $cel_and (param i32 i32 i32)))
 
   ;; bool(true) at 16: kind=CEL_BOOL=1, _pad=0, b=1, rest zero.
@@ -47,7 +47,7 @@
         "\00\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; out_slot=64, a=16 (true), b=40 (false).  cel_and writes
     ;; CEL_BOOL false into slot 64 via the OK(false) absorber.

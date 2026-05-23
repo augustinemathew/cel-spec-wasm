@@ -58,7 +58,7 @@
   ;; (TinyGo) exports memory, and the engine binds THAT as
   ;; `cel.memory` for this caller.  Either way, this `(import "cel"
   ;; "memory" …)` resolves correctly.
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
 
   ;; The foreign custom fn.  In the real system this is wired up at
   ;; Engine::Plan via RuntimeBindings::AddModule("rules", instance).

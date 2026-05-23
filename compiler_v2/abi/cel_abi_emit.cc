@@ -4,6 +4,7 @@
 
 #include "absl/status/statusor.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
+#include "compiler_v2/abi/runtime_catalogue.h"
 #include "compiler_v2/codegen/layout_pass.h"
 
 namespace celwasm {
@@ -42,6 +43,11 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs) {
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
+  // Runtime catalogue version the program is being compiled
+  // against.  Engine::Plan compares this against its own
+  // kRuntimeAbiVersion and rejects mismatches.  See
+  // doc/implementation-plan/rewrite/abi-refactor.md §5 (Slice E).
+  abi.set_runtime_abi_version(celwasm::abi::kRuntimeAbiVersion);
 
   EmitVariables(layout, abi);
 

@@ -59,9 +59,9 @@
 ;;   [88,112)   workspace: body result slot (kCall(`_+_`) out)
 ;;   [112, mem_size)  bump arena (untouched — no list/map alloc)
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_int_add_at_vv"
           (func $cel_int_add_at_vv (param i32 i32 i32)))
 
@@ -73,7 +73,7 @@
         "\01\00\00\00\00\00\00\00" "\00\00\00\00\00\00\00\00")
 
   (func $eval (result i32)
-    (call $cel_reset (i32.const 112) (i32.const 131072))
+    (call $arena_reset)
 
     ;; Shape C step 1: evaluate accu_init (`5`) into the bound
     ;; name's slot.  For a kConst init this is a 24-byte memcpy

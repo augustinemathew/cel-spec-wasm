@@ -14,7 +14,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler_v2/host/cel_log.h"
+#include "compiler_v2/runtime/cel_layout.h"
 #include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "wasi.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -197,8 +199,7 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
   const auto field_ref_id = static_cast<uint32_t>(args[2].of.i32);
   const auto attribute_id = static_cast<uint32_t>(args[3].of.i32);
 
-  // Reach the caller's memory through its `memory` export.
-  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  // Reach the caller's (shared) memory through its `memory` export.
   wasmtime_extern_t ext;
   const char kName[] = "memory";
   if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
@@ -209,8 +210,8 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
-  uint8_t* data = wasmtime_memory_data(ctx, &ext.of.memory);
-  const size_t size = wasmtime_memory_data_size(ctx, &ext.of.memory);
+  uint8_t* data = wasmtime_sharedmemory_data(ext.of.sharedmemory);
+  const size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
   auto* s = static_cast<StubEnv*>(env);
   s->stub(out_slot, msg_slot, field_ref_id, attribute_id, data, size);
@@ -339,7 +340,6 @@ wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
   const auto operand_slot = static_cast<uint32_t>(args[1].of.i32);
   const auto key_slot = static_cast<uint32_t>(args[2].of.i32);
 
-  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
   wasmtime_extern_t ext;
   const char kName[] = "memory";
   if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
@@ -350,9 +350,8 @@ wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
-  wasmtime_memory_t mem = ext.of.memory;
-  uint8_t* base = wasmtime_memory_data(ctx, &mem);
-  size_t size = wasmtime_memory_data_size(ctx, &mem);
+  uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
+  size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
   static_cast<ThreeArgStubEnv*>(env)->stub(out_slot, operand_slot, key_slot,
                                            base, size);
@@ -402,12 +401,15 @@ struct RunState {
   wasmtime_module_t* expr_module = nullptr;
   wasmtime_store_t* store = nullptr;
   wasmtime_linker_t* linker = nullptr;
-  wasmtime_memory_t memory{};
+  // Phase C: the runtime defines + exports a SHARED memory; the
+  // harness clones the handle in `InstantiateRuntime`.  Owned here.
+  wasmtime_sharedmemory_t* memory = nullptr;
   wasmtime_instance_t runtime_instance{};
   wasmtime_instance_t expr_instance{};
   wasmtime_func_t eval_fn{};
 
   ~RunState() {
+    if (memory != nullptr) wasmtime_sharedmemory_delete(memory);
     if (linker != nullptr) wasmtime_linker_delete(linker);
     if (store != nullptr) wasmtime_store_delete(store);
     if (expr_module != nullptr) wasmtime_module_delete(expr_module);
@@ -426,6 +428,12 @@ absl::Status InitEngineAndModules(RunState& s,
     return absl::InternalError("wasm_config_new returned null");
   }
   wasmtime_config_wasm_tail_call_set(config, true);
+  // Phase C: cel_runtime.wasm is built against wasm32-wasi-threads —
+  // it declares its memory as shared and may import threading
+  // primitives.  Both require the threads proposal + shared-memory
+  // support enabled here (mirrors api/engine.cc::InitWasmtime).
+  wasmtime_config_wasm_threads_set(config, true);
+  wasmtime_config_shared_memory_set(config, true);
   s.engine = wasm_engine_new_with_config(config);
   if (s.engine == nullptr) {
     return absl::InternalError("wasm_engine_new_with_config returned null");
@@ -440,20 +448,33 @@ absl::Status InitEngineAndModules(RunState& s,
   return absl::OkStatus();
 }
 
-absl::Status InitStoreAndMemory(RunState& s) {
+// Phase C: the runtime (cel_runtime.wasm) defines and exports its own
+// shared memory `(memory 4 1024 shared)`.  The harness adopts that
+// memory as `cel.memory` after instantiating the runtime (see
+// `InstantiateRuntime`), so this only has to create the store.
+// (Pre-Phase-C the harness created a private non-shared memory here
+// and the runtime imported it; that produced two disjoint memories
+// once the runtime started owning its own.)
+absl::Status InitStore(RunState& s) {
   s.store = wasmtime_store_new(s.engine, nullptr, nullptr);
   if (s.store == nullptr) {
     return absl::InternalError("wasmtime_store_new returned null");
   }
+  // Phase C: cel_runtime.wasm links absl + cctz, which pull in
+  // wasi-libc functions referencing env / stdio.  Hand wasmtime a
+  // minimal wasi_config so the imports defined via
+  // `wasmtime_linker_define_wasi` resolve into a sandboxed impl
+  // (mirrors api/engine.cc::InitStore).
+  wasi_config_t* wasi = wasi_config_new();
+  if (wasi == nullptr) {
+    return absl::InternalError("wasi_config_new returned null");
+  }
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
-  wasm_memorytype_t* mty = nullptr;
-  wasmtime_error_t* err = wasmtime_memorytype_new(
-      /*min=*/2, /*max_present=*/true, /*max=*/2, /*is_64=*/false,
-      /*shared=*/false, /*page_size_log2=*/16, &mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memorytype_new", err);
-  err = wasmtime_memory_new(ctx, mty, &s.memory);
-  wasm_memorytype_delete(mty);
-  if (err != nullptr) return WasmtimeErrorToStatus("memory_new", err);
+  // `wasmtime_context_set_wasi` takes ownership of `wasi`.
+  if (wasmtime_error_t* err = wasmtime_context_set_wasi(ctx, wasi);
+      err != nullptr) {
+    return WasmtimeErrorToStatus("context_set_wasi", err);
+  }
   return absl::OkStatus();
 }
 
@@ -527,6 +548,12 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
       "cel_make_message",
       // `resolve_message_type_name(out_slot, in_slot)`.
       "resolve_message_type_name",
+      // Comprehension-source iter-snapshot trampolines (m5b §CCF-8):
+      // `cel_{list,map}_iter_open(out_slot, src_slot)`.  Tests that
+      // link the dispatchers but iterate only arena sources never
+      // call the host arm; no-op stubs let the runtime instantiate.
+      "cel_list_iter_open",
+      "cel_map_iter_open",
   };
   for (absl::string_view name : kTwoArg) {
     if (auto st = RegisterCelHostTwoArgNoop(linker, name); !st.ok()) {
@@ -666,20 +693,21 @@ absl::Status InitLinker(RunState& s, const WatRunInput& input) {
   if (s.linker == nullptr) {
     return absl::InternalError("wasmtime_linker_new returned null");
   }
+  // Phase C: cel_runtime.wasm imports wasi_snapshot_preview1.* (absl +
+  // cctz pull in ~10 wasi-libc imports).  Define wasmtime's built-in
+  // WASI preview1 impl so the runtime instantiates (mirrors
+  // api/engine.cc::RegisterWasiStubs).
+  if (wasmtime_error_t* err = wasmtime_linker_define_wasi(s.linker);
+      err != nullptr) {
+    return WasmtimeErrorToStatus("linker.define_wasi", err);
+  }
   if (auto st = RegisterCelLog(s.linker); !st.ok()) return st;
   if (auto st = RegisterCelHostThreeArgTrampolines(s.linker, input); !st.ok()) {
     return st;
   }
   if (auto st = RegisterPendingM7BImports(s.linker); !st.ok()) return st;
-  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
-  wasmtime_extern_t mem_ext;
-  mem_ext.kind = WASMTIME_EXTERN_MEMORY;
-  mem_ext.of.memory = s.memory;
-  wasmtime_error_t* err =
-      wasmtime_linker_define(s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
-  if (err != nullptr) {
-    return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
-  }
+  // `cel.memory` is NOT bound here: the runtime defines + exports it,
+  // and `InstantiateRuntime` adopts that export onto the linker.
   return RegisterCelHostFourArgStubs(s.linker, input);
 }
 
@@ -701,6 +729,59 @@ absl::Status BindExport(wasmtime_linker_t* linker, wasmtime_context_t* ctx,
   return absl::OkStatus();
 }
 
+// Phase C: adopt the runtime's exported SHARED memory as `cel.memory`
+// so the expr module imports the SAME memory the arena helpers operate
+// on, and so pre-writes / snapshots observe the live arena.  The
+// runtime defines `(memory 4 1024 shared)` and exports it under
+// "memory".  Mirrors api/engine.cc::BindRuntimeMemory.
+absl::Status AdoptRuntimeMemory(RunState& s, wasmtime_context_t* ctx) {
+  wasmtime_extern_t mem_ext;
+  if (!wasmtime_instance_export_get(ctx, &s.runtime_instance, "memory", 6,
+                                    &mem_ext)) {
+    return absl::FailedPreconditionError("runtime has no `memory` export");
+  }
+  if (mem_ext.kind != WASMTIME_EXTERN_SHAREDMEMORY) {
+    return absl::FailedPreconditionError(
+        "runtime `memory` export is not a shared memory");
+  }
+  // Clone so this RunState owns a refcounted handle (deleted in dtor);
+  // the export's handle is owned by the store.
+  s.memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
+  if (wasmtime_error_t* err = wasmtime_linker_define(s.linker, ctx, "cel", 3,
+                                                     "memory", 6, &mem_ext);
+      err != nullptr) {
+    return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
+  }
+  return absl::OkStatus();
+}
+
+// Phase C: the arena is malloc-backed and seeded once per Instance via
+// `arena_init(cap_bytes)` (mirrors api/engine.cc::SeedRuntimeArena).
+// WAT `$eval` bodies call the zero-arg `arena_reset()` to rewind the
+// cursor but no longer set up the arena base/size themselves.
+absl::Status SeedArena(RunState& s, wasmtime_context_t* ctx) {
+  wasmtime_extern_t init_ext;
+  if (!wasmtime_instance_export_get(ctx, &s.runtime_instance, "arena_init", 10,
+                                    &init_ext) ||
+      init_ext.kind != WASMTIME_EXTERN_FUNC) {
+    return absl::FailedPreconditionError("runtime has no `arena_init` func");
+  }
+  wasmtime_val_t cap;
+  cap.kind = WASMTIME_I32;
+  cap.of.i32 = static_cast<int32_t>(CELWASM_ARENA_CAPACITY_BYTES);
+  wasm_trap_t* init_trap = nullptr;
+  if (wasmtime_error_t* ierr = wasmtime_func_call(
+          ctx, &init_ext.of.func, &cap, /*nargs=*/1, /*results=*/nullptr,
+          /*nresults=*/0, &init_trap);
+      ierr != nullptr) {
+    return WasmtimeErrorToStatus("arena_init", ierr);
+  }
+  if (init_trap != nullptr) {
+    return WasmTrapToStatus("arena_init trapped", init_trap);
+  }
+  return absl::OkStatus();
+}
+
 absl::Status InstantiateRuntime(RunState& s) {
   wasmtime_context_t* ctx = wasmtime_store_context(s.store);
   wasm_trap_t* trap = nullptr;
@@ -710,18 +791,17 @@ absl::Status InstantiateRuntime(RunState& s) {
   if (trap != nullptr) {
     return WasmTrapToStatus("instantiate(runtime) trapped", trap);
   }
-  // M1 baseline: arena_reset + arena_alloc.  M3 added the map runtime
-  // helpers; M4 added the list runtime helpers.  Bind every export
-  // so any WAT that imports them resolves at instantiate time —
-  // mirrors the "always link the runtime fully" rule from
-  // CLAUDE.md (api/engine.cc::Engine::Plan does the same).
+  if (auto st = AdoptRuntimeMemory(s, ctx); !st.ok()) return st;
+  // Bind every export so any WAT that imports a runtime helper resolves
+  // at instantiate time — mirrors the "always link the runtime fully"
+  // rule from CLAUDE.md (api/engine.cc::Engine::Plan does the same).
   for (absl::string_view name : kRuntimeExports) {
     if (auto st = BindExport(s.linker, ctx, s.runtime_instance, name);
         !st.ok()) {
       return st;
     }
   }
-  return absl::OkStatus();
+  return SeedArena(s, ctx);
 }
 
 absl::Status InstantiateExpr(RunState& s) {
@@ -749,9 +829,8 @@ absl::Status InstantiateExpr(RunState& s) {
 // already been laid down) but BEFORE $eval is called (so the body's
 // arena_reset runs on top of whatever we wrote).
 absl::Status ApplyPreWrites(RunState& s, const WatRunInput& input) {
-  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
-  uint8_t* data = wasmtime_memory_data(ctx, &s.memory);
-  const size_t size = wasmtime_memory_data_size(ctx, &s.memory);
+  uint8_t* data = wasmtime_sharedmemory_data(s.memory);
+  const size_t size = wasmtime_sharedmemory_data_size(s.memory);
   for (const auto& [offset, bytes] : input.pre_writes) {
     if (static_cast<std::uint64_t>(offset) + bytes.size() > size) {
       return absl::OutOfRangeError(
@@ -780,9 +859,8 @@ absl::StatusOr<uint32_t> CallEval(RunState& s) {
 }
 
 std::vector<uint8_t> SnapshotMemory(RunState& s) {
-  wasmtime_context_t* ctx = wasmtime_store_context(s.store);
-  const uint8_t* data = wasmtime_memory_data(ctx, &s.memory);
-  const size_t size = wasmtime_memory_data_size(ctx, &s.memory);
+  const uint8_t* data = wasmtime_sharedmemory_data(s.memory);
+  const size_t size = wasmtime_sharedmemory_data_size(s.memory);
   return {data, data + size};
 }
 
@@ -795,7 +873,7 @@ absl::StatusOr<WatRunOutput> RunWat(const WatRunInput& input) {
 
   RunState s;
   if (auto st = InitEngineAndModules(s, *expr_bytes_or); !st.ok()) return st;
-  if (auto st = InitStoreAndMemory(s); !st.ok()) return st;
+  if (auto st = InitStore(s); !st.ok()) return st;
   if (auto st = InitLinker(s, input); !st.ok()) return st;
   if (auto st = InstantiateRuntime(s); !st.ok()) return st;
   if (auto st = InstantiateExpr(s); !st.ok()) return st;

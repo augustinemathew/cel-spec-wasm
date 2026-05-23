@@ -1,0 +1,298 @@
+# Single source of truth for symbols exported by cel_runtime.wasm.
+#
+# Read at build time by `//compiler_v2/runtime:wasm_export_args`
+# (genrule below) — that target emits one `--export=<name>` line
+# per symbol into a wasm-ld response file, consumed by the
+# `cel_runtime_wasm.bin` cc_binary via `-Wl,@<rsp>`.
+#
+# Read at test time by `//compiler_v2/abi:runtime_catalogue_consistency_test`
+# — that test asserts the [codegen-helpers] section's name set is
+# IDENTICAL to `celwasm::abi::CelRuntimeHelpers()`.  Drift fails
+# at PR time, not at wasmtime instantiate time.
+#
+# Format:
+#   - One symbol per line.  Whitespace-only and `#`-prefixed lines
+#     ignored.
+#   - Section header `[<name>]` on its own line starts a new
+#     bucket.  Two buckets exist: `codegen-helpers` (mirror of the
+#     catalogue) and `host-only` (everything else — system /
+#     linker-internal / native-test-only / `_arena` tail-call
+#     targets that ride the linker through this file rather than
+#     through the catalogue).
+#
+# When adding a runtime helper:
+#   1. Add the catalogue entry in
+#      `compiler_v2/abi/runtime_catalogue.cc` (arity, return shape).
+#   2. Add one line in this file's [codegen-helpers] section.
+#   3. Add the impl in `compiler_v2/runtime/cel_*.c`.
+# Three edits, full stop.  The genrule + consistency test catch
+# any inconsistency at build / test time.
+
+[codegen-helpers]
+# Arena primitives — codegen-imported.  See also [host-only] for
+# the public arena-init/cursor/capacity surface the host calls.
+arena_alloc
+arena_reset
+
+# Same-kind arithmetic (int / uint / double × add/sub/mul/div/mod/neg).
+cel_int_add_at_vv
+cel_int_sub_at_vv
+cel_int_mul_at_vv
+cel_int_div_at_vv
+cel_int_mod_at_vv
+cel_int_neg_at_v
+cel_uint_add_at_vv
+cel_uint_sub_at_vv
+cel_uint_mul_at_vv
+cel_uint_div_at_vv
+cel_uint_mod_at_vv
+cel_double_add_at_vv
+cel_double_sub_at_vv
+cel_double_mul_at_vv
+cel_double_div_at_vv
+cel_double_neg_at_v
+
+# Same-kind comparison (lt/le/gt/ge per kind; eq/ne live as the
+# polymorphic cel_equals_at_vv / cel_not_equals_at_vv pair below).
+cel_int_lt_at_vv
+cel_int_le_at_vv
+cel_int_gt_at_vv
+cel_int_ge_at_vv
+cel_uint_lt_at_vv
+cel_uint_le_at_vv
+cel_uint_gt_at_vv
+cel_uint_ge_at_vv
+cel_double_lt_at_vv
+cel_double_le_at_vv
+cel_double_gt_at_vv
+cel_double_ge_at_vv
+cel_bool_lt_at_vv
+cel_bool_le_at_vv
+cel_bool_gt_at_vv
+cel_bool_ge_at_vv
+cel_string_lt_at_vv
+cel_string_le_at_vv
+cel_string_gt_at_vv
+cel_string_ge_at_vv
+cel_bytes_lt_at_vv
+cel_bytes_le_at_vv
+cel_bytes_gt_at_vv
+cel_bytes_ge_at_vv
+
+# Cross-type numeric ladder (lt/le/gt/ge; eq/ne in equality block).
+cel_numeric_lt_at_vv
+cel_numeric_le_at_vv
+cel_numeric_gt_at_vv
+cel_numeric_ge_at_vv
+
+# Polymorphic equality — every `==` / `!=` codegen call goes here.
+cel_equals_at_vv
+cel_not_equals_at_vv
+
+# String + bytes ops.
+cel_string_concat_at_vv
+cel_string_size_at_v
+cel_string_contains_at_vv
+cel_string_starts_with_at_vv
+cel_string_ends_with_at_vv
+cel_bytes_concat_at_vv
+cel_bytes_size_at_v
+
+# Aggregate kDynamic dispatchers (tail-call into _arena fast paths
+# or into cel_host.* trampolines).
+cel_list_size
+cel_list_in
+cel_list_eq
+cel_list_concat
+cel_list_at
+cel_list_create
+cel_list_append_at
+cel_list_append_at_if_bool
+cel_list_at_arena
+cel_map_size
+cel_map_in
+cel_map_eq
+cel_map_create
+cel_map_insert
+cel_map_insert_at
+cel_map_insert_at_if_bool
+cel_map_lookup
+cel_map_lookup_arena
+
+# Comprehension iter ABI (snapshot for host-backed sources).
+cel_list_arena_view
+cel_map_count
+cel_map_iter_init
+cel_map_iter_next
+cel_map_iter_key_at
+cel_map_iter_value_at
+
+# 3VL / control-flow + slot copy.
+cel_and
+cel_or
+cel_not
+cel_unknown_merge
+cel_copy_slot
+
+# type-of (m9-type-subsystem.md).
+cel_type_of_at_v
+
+# Numeric inter-conversion.
+cel_uint_to_int_at_v
+cel_double_to_int_at_v
+cel_int_to_uint_at_v
+cel_double_to_uint_at_v
+cel_int_to_double_at_v
+cel_uint_to_double_at_v
+
+# String parse + format helpers.
+cel_string_to_int_at_v
+cel_string_to_uint_at_v
+cel_string_to_double_at_v
+cel_string_to_bool_at_v
+cel_int_to_string_at_v
+cel_uint_to_string_at_v
+cel_bool_to_string_at_v
+cel_double_to_string_at_v
+
+# Bytes ↔ string with UTF-8 validation.
+cel_string_to_bytes_at_v
+cel_bytes_to_string_at_v
+
+# Timestamp / duration arithmetic + ordering.
+cel_dur_add_at_vv
+cel_dur_sub_at_vv
+cel_ts_dur_add_at_vv
+cel_dur_ts_add_at_vv
+cel_ts_dur_sub_at_vv
+cel_ts_ts_sub_at_vv
+cel_dur_lt_at_vv
+cel_dur_le_at_vv
+cel_dur_gt_at_vv
+cel_dur_ge_at_vv
+cel_ts_lt_at_vv
+cel_ts_le_at_vv
+cel_ts_gt_at_vv
+cel_ts_ge_at_vv
+
+# Timestamp UTC + with-TZ accessors; duration accessors.
+cel_ts_year_utc_at_v
+cel_ts_month_utc_at_v
+cel_ts_day_of_month_1_utc_at_v
+cel_ts_day_of_month_utc_at_v
+cel_ts_day_of_year_utc_at_v
+cel_ts_day_of_week_utc_at_v
+cel_ts_hours_utc_at_v
+cel_ts_minutes_utc_at_v
+cel_ts_seconds_utc_at_v
+cel_ts_milliseconds_utc_at_v
+cel_ts_year_with_tz_at_vv
+cel_ts_month_with_tz_at_vv
+cel_ts_day_of_month_1_with_tz_at_vv
+cel_ts_day_of_month_with_tz_at_vv
+cel_ts_day_of_year_with_tz_at_vv
+cel_ts_day_of_week_with_tz_at_vv
+cel_ts_hours_with_tz_at_vv
+cel_ts_minutes_with_tz_at_vv
+cel_ts_seconds_with_tz_at_vv
+cel_ts_milliseconds_with_tz_at_vv
+cel_dur_hours_at_v
+cel_dur_minutes_at_v
+cel_dur_seconds_at_v
+cel_dur_milliseconds_at_v
+
+# Pure-wasm ts/dur ↔ int conversions.
+cel_ts_to_int_at_v
+cel_dur_to_int_at_v
+cel_int_to_ts_at_v
+cel_int_to_dur_at_v
+
+# Timestamp / duration parse + format (self-hosted via absl::Time
+# in cel_time_parse.cc, replacing the would-be cel_host trampolines;
+# phase-c-plan.md §4.1-4.4).
+cel_timestamp_parse_at_v
+cel_duration_parse_at_v
+cel_timestamp_format_at_v
+cel_duration_format_at_v
+
+# Regex .matches() — RE2-backed (phase-c-plan.md §4.5).
+cel_matches_at_vv
+
+# m12 string_ext extension kernels.
+cel_string_char_at_at_vv
+cel_string_lower_ascii_at_v
+cel_string_upper_ascii_at_v
+cel_string_trim_at_v
+cel_string_reverse_at_v
+cel_string_index_of_at_vv
+cel_string_index_of_at_vvv
+cel_string_last_index_of_at_vv
+cel_string_last_index_of_at_vvv
+cel_string_substring_at_vv
+cel_string_substring_range_at_vvv
+cel_string_replace_at_vvv
+cel_string_replace_n_at_vvvv
+cel_string_split_at_vv
+cel_string_split_n_at_vvv
+cel_string_join_at_v
+cel_string_join_sep_at_vv
+cel_string_quote_at_v
+cel_string_format_at_vv
+
+[host-only]
+# Symbols exported by cel_runtime.wasm that are NOT codegen-imported
+# helpers.  Three sub-buckets:
+#
+#   - system / linker-internal: required for the wasi-sdk toolchain,
+#     not present in the catalogue because codegen never references
+#     them by name.
+#
+#   - public arena API for host reentry: the engine calls these
+#     directly via the WasmtimeArenaAllocator and host-reentry path
+#     (activation marshalling).  Distinct from the catalogue's
+#     `arena_alloc` / `arena_reset`, which codegen imports for the
+#     comprehension / list-builder prologue.
+#
+#   - same-kind eq/ne fast paths + `_arena` tail-call targets:
+#     internal to the wasm module's dispatcher pattern.  Codegen
+#     calls the polymorphic dispatcher (`cel_equals_at_vv`,
+#     `cel_list_size`, …); the dispatcher tail-calls into one of
+#     these.  Exported so native-host tests (`compiler_v2/runtime:
+#     cel_*_test`) link against them directly.
+
+# System / linker-internal.
+__heap_base
+malloc
+free
+
+# Public arena API for host reentry.
+arena_init
+arena_capacity
+arena_cursor
+
+# Same-kind eq/ne fast paths.  Reached by tail-call from
+# cel_equals_at_vv; native tests call them directly to assert
+# per-kind behaviour without round-tripping through the polymorphic
+# dispatcher.
+cel_int_eq_at_vv
+cel_int_ne_at_vv
+cel_uint_eq_at_vv
+cel_uint_ne_at_vv
+cel_double_eq_at_vv
+cel_double_ne_at_vv
+cel_bool_eq_at_vv
+cel_bool_ne_at_vv
+cel_null_eq_at_vv
+cel_numeric_eq_at_vv
+cel_numeric_ne_at_vv
+cel_string_eq_at_vv
+cel_bytes_eq_at_vv
+
+# `_arena` tail-call targets for aggregate dispatchers.
+cel_list_size_arena
+cel_list_in_arena
+cel_list_eq_arena
+cel_list_concat_arena
+cel_map_size_arena
+cel_map_in_arena
+cel_map_eq_arena

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -15,6 +16,7 @@
 #include "binaryen-c.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
 #include "compiler_v2/abi/cel_abi_emit.h"
+#include "compiler_v2/abi/runtime_catalogue.h"
 #include "compiler_v2/codegen/expr_lower.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
@@ -127,6 +129,19 @@ void InstallMapImports(WasmModule& mod) {
                         iter_two_params, BinaryenTypeNone());
   mod.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
                         iter_two_params, BinaryenTypeNone());
+  // `cel_map_count(map_slot) -> i32` — kind-dispatching count helper
+  // for comprehension pre-sizing.  Arena: header.count inline; Host:
+  // calls `cel_host.cel_map_size` and unboxes.  See m5b §CCF-8.
+  mod.AddFunctionImport("cel_map_count", "cel", "cel_map_count", iter_one_param,
+                        i32);
+  // `cel_list_arena_view(list_slot) -> i32` — kind-dispatching list
+  // iter snapshot.  Arena: returns input slot (identity).  Host:
+  // allocates a synthetic CEL_LIST_ARENA CelValue + arena snapshot
+  // of elements, returns the new slot offset.  Lets the inline
+  // arena prologue walk host lists unchanged.  See m5b §CCF-8
+  // Slice 2.
+  mod.AddFunctionImport("cel_list_arena_view", "cel", "cel_list_arena_view",
+                        iter_one_param, i32);
 }
 
 // List literal + indexing runtime entry points.  Same shape as
@@ -210,8 +225,10 @@ bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
   }
 }
 
-void InstallOverloadImports(WasmModule& mod,
-                            const OverloadTable& overload_table) {
+}  // namespace
+
+void InstallOverloadImportsExport(WasmModule& mod,
+                                  const OverloadTable& overload_table) {
   // Dedup by (module_name, helper_name) pair — two foreign
   // backends could legitimately export the same helper name under
   // different aliases (`rules.allow` vs `policy.allow`), and we
@@ -235,15 +252,21 @@ void InstallOverloadImports(WasmModule& mod,
   // `conditional` is special-cased above.  Install unconditionally
   // so every emitted module imports it; the no-lazy-imports rule
   // (CLAUDE.md) applies — better to import once and never use than
-  // to gate on AST inspection.
+  // to gate on AST inspection.  Arity from the ABI catalogue.
   auto copy_key =
       std::make_pair(std::string("cel"), std::string("cel_copy_slot"));
   if (!installed.contains(copy_key)) {
-    InstallOverloadImport(mod, "cel_copy_slot", "cel",
-                          InferHelperArity("cel_copy_slot"));
+    const auto* helper =
+        abi::FindBuiltinHelper(abi::AbiModule::kCelRuntime, "cel_copy_slot");
+    ABSL_CHECK(helper != nullptr)
+        << "cel_copy_slot missing from ABI catalogue — see "
+           "compiler_v2/abi/runtime_catalogue.cc";
+    InstallOverloadImport(mod, "cel_copy_slot", "cel", helper->num_args);
     installed.insert(std::move(copy_key));
   }
 }
+
+namespace {
 
 // Installs the expr module's host-ABI shape: imports `cel.memory`
 // (host-allocated, shared with the cel_runtime.wasm instance), with
@@ -258,8 +281,11 @@ void InstallOverloadImports(WasmModule& mod,
 // and cel_runtime.wasm import it.  Active data segments still
 // write at module-load time, so expr's .rodata lands in shared
 // memory regardless of who owns it.
-absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
-                            uint32_t mem_size_bytes) {
+}  // namespace
+
+absl::Status InstallExprModuleImports(WasmModule& mod,
+                                      const StaticLayout& layout,
+                                      uint32_t mem_size_bytes) {
   WasmModule::DataSegment seg{layout.rodata_base, layout.rodata};
   // Phase C: the runtime (cel_runtime.wasm) is built on
   // wasm32-wasi-threads and exports its memory as shared.  The expr
@@ -284,6 +310,8 @@ absl::Status InstallHostAbi(WasmModule& mod, const StaticLayout& layout,
   InstallStructImports(mod);
   return absl::OkStatus();
 }
+
+namespace {
 
 // Attach the `cel.abi` custom section to the module.  Payload is a
 // serialised `celwasm.abi.CelAbi` proto populated from the
@@ -391,7 +419,8 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
   if (!out_or.ok()) return out_or.status();
   CompiledArtifact out = *std::move(out_or);
 
-  if (auto s = InstallHostAbi(out.module, out.layout, opts.mem_size_bytes);
+  if (auto s =
+          InstallExprModuleImports(out.module, out.layout, opts.mem_size_bytes);
       !s.ok()) {
     return s;
   }
@@ -402,7 +431,7 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
   auto overload_table_or = BuildOverloadTable(opts.function_libraries);
   if (!overload_table_or.ok()) return overload_table_or.status();
   OverloadTable overload_table = *std::move(overload_table_or);
-  InstallOverloadImports(out.module, overload_table);
+  InstallOverloadImportsExport(out.module, overload_table);
 
   LoweringOptions lower_opts;
   lower_opts.mem_size_bytes = opts.mem_size_bytes;

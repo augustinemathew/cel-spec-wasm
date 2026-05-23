@@ -26,9 +26,9 @@
 ;; runtime/cel_data.h).  cel_map_insert appends one (key, value)
 ;; pair; capacity overflow poisons the map with CEL_ERR_OVERFLOW.
 (module
-  (import "cel" "memory" (memory 2))
-  (import "cel" "cel_reset" (func $cel_reset (param i32 i32)))
-  (import "cel" "cel_alloc" (func $cel_alloc (param i32) (result i32)))
+  (import "cel" "memory" (memory 2 1024 shared))
+  (import "cel" "arena_reset" (func $arena_reset))
+  (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))
   (import "cel" "cel_map_insert" (func $cel_map_insert (param i32 i32 i32)))
 
@@ -47,7 +47,7 @@
 
   (func $eval (result i32)
     ;; ── RESET ─ arena begins past workspace (= 88).
-    (call $cel_reset (i32.const 88) (i32.const 131072))
+    (call $arena_reset)
 
     ;; ── BODY ─ kCreateMap arm.
     ;; Allocate header + entries-run for capacity=1.
