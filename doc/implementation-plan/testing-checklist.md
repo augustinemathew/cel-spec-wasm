@@ -2355,6 +2355,36 @@ bindings (Slice F).
         `compiler_v2/e2e/m12_test.cc`.  Conformance baseline
         bumped 1382 → 1476.
 
+## Rewrite M16 — math_ext extension (shipped 2026-05-24)
+
+cel-cpp `math` extension: 17 functions.  `greatest`/`least` expand
+(parser macros) to `math.@min`/`@max`; the rest are plain global
+calls.  20 self-hosted kernels in a single `compiler_v2/runtime/
+cel_math_ext.c`; no new codegen (generic kCall).  Conformance:
+`math_ext.textproto` 0 → 194/199 PASS (5 SKIP dyn-error rows, 0
+FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
+
+  - [x] **Slice 0 — WAT-first.** AST-shape probe
+        (`compiler_v2/probes/math/ast_shape_probe_test.cc`) +
+        two traces (`wat/m16_math_min_list.wat`,
+        `wat/m16_math_bit_shift.wat`) assembled via `wasm-as`.
+  - [x] **Slice A — scalar.** ceil/floor/round/trunc, isInf/isNaN/
+        isFinite, abs/sign/sqrt (kind-dispatch); positive +
+        negative + boundary matrix in `cel_math_ext_test.cc`
+        (abs(INT64_MIN)→overflow, sign(±0/NaN), round half-away,
+        sqrt(neg)→NaN).
+  - [x] **Slice B — bitwise.** bitAnd/Or/Xor/Not/ShiftLeft/
+        ShiftRight; negative-offset→INVALID_ARGUMENT, count>63→0,
+        logical right-shift on int (no sign extension).
+  - [x] **Slice C — min/max.** binary + list folds via the
+        cross-type numeric ladder; NaN keeps the first operand;
+        mixed-list returns the winner's runtime kind.
+  - [x] **Slice D — wiring + conformance.** 58 overload seeds
+        (177 → 235); `MathCheckerLibrary()` + math macros in
+        `parse_and_check.cc`; 20 wasm exports + catalogue entries;
+        targeted static-subset admission for `dyn`-typed cross-type
+        / mixed-list `math.@min`/`@max`.  67-case e2e in
+        `compiler_v2/e2e/m16_test.cc`.  Baseline → 1770 (post-M14 merge).
 ### Rewrite M14 — CEL `optional<T>` (shipped 2026-05-22)
 
 `m14-optionals.md` shipped `optional<T>` end-to-end:

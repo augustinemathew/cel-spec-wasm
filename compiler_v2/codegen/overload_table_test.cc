@@ -72,11 +72,19 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // substring ×2, trim, join ×2, quote, format, reverse).
 // All 19 kernels are self-hosted in `cel_runtime.wasm`; see
 // `rewrite/m12-string-ext.md` §4.2.
+// M14: 177 → 191 — added 14 optional<T> overload seeds (optional.of/
+// ofNonZeroValue/none, value/hasValue/or/orValue, select-field, the
+// map/list optindex variants); kernels in `cel_optional.c`.
+// M16: 191 → 249 — added 58 math_ext overload seeds (16 scalar +
+// 12 bitwise + 30 @min/@max).  greatest/least expand to @min/@max
+// via parser macros; the 6 unary @min/@max ids are identity and
+// bind to `cel_copy_slot`.  Kernels self-hosted in `cel_math_ext.c`;
+// see `rewrite/m16-math-ext.md`.
 //
 // The seed count rises monotonically as kernels land.  When it
 // changes, update both `kBuiltinSeeds`'s std::array size in
 // `overload_table.cc` and this constant.
-constexpr size_t kBuiltinSeedCount = 191;
+constexpr size_t kBuiltinSeedCount = 249;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

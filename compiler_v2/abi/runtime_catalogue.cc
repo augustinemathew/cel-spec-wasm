@@ -257,6 +257,31 @@ constexpr AbiHelper kCelRuntimeHelpersArr[] = {
     RT_VOID("cel_map_insert_at_if_present", 3),
     RT_VOID("cel_list_append_at_if_present", 2),
     RT_VOID("cel_set_field_at_if_present", 3),
+
+    // ── math_ext extension kernels ────────────────────────────
+    // Scalar (rounding / predicates / abs / sign / sqrt).
+    K_AT_V("cel_math_ceil_at_v"),
+    K_AT_V("cel_math_floor_at_v"),
+    K_AT_V("cel_math_round_at_v"),
+    K_AT_V("cel_math_trunc_at_v"),
+    K_AT_V("cel_math_is_inf_at_v"),
+    K_AT_V("cel_math_is_nan_at_v"),
+    K_AT_V("cel_math_is_finite_at_v"),
+    K_AT_V("cel_math_abs_at_v"),
+    K_AT_V("cel_math_sign_at_v"),
+    K_AT_V("cel_math_sqrt_at_v"),
+    // Bitwise.
+    K_AT_VV("cel_math_bit_and_at_vv"),
+    K_AT_VV("cel_math_bit_or_at_vv"),
+    K_AT_VV("cel_math_bit_xor_at_vv"),
+    K_AT_V("cel_math_bit_not_at_v"),
+    K_AT_VV("cel_math_bit_shift_left_at_vv"),
+    K_AT_VV("cel_math_bit_shift_right_at_vv"),
+    // Variadic min / max (post-macro math.@min / math.@max).
+    K_AT_VV("cel_math_min_at_vv"),
+    K_AT_VV("cel_math_max_at_vv"),
+    K_AT_V("cel_math_min_list_at_v"),
+    K_AT_V("cel_math_max_list_at_v"),
 };
 
 // ════════════════════════════════════════════════════════════════

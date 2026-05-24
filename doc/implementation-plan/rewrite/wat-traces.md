@@ -1741,6 +1741,74 @@ Passed in 6ms on first commit.
 
 ---
 
+## M16.1 — Variadic min over list — `math.least([3, 1, 2])` (M16 Slice 0)
+
+File: `wat/m16_math_min_list.wat`.  Status: assembles (298 B); runs
+through `wat_runner` once `cel_math_min_list_at_v` lands (Slice C).
+
+The `math.least` / `math.greatest` parser macros collapse a list
+literal — and any 3+ scalar args — into a single `kListExpr` arg, so
+the runtime list form is one kernel:
+
+```
+cel.cel_math_min_list_at_v(out_slot, list_slot)   — i32, i32 → ()
+```
+
+Memory map: rodata CelValues for the three int elements at 16/40/64;
+`cel_list_create(88, 3)` reserves the `ArenaListHeader` (16 B) + 3×24 B
+elements run in the bump arena and writes the `CEL_LIST_ARENA` value at
+slot 88; three `cel_list_append_at` calls populate it; the kernel folds
+to slot 112.
+
+ABI frozen by this trace:
+
+  - Input: one `CEL_LIST_ARENA` (kind=7) CelValue at `list_slot`;
+    `payload.arena_list.header_ptr` → `{count, capacity,
+    elements_offset}`; elements are a contiguous `count*24 B` CelValue
+    run.
+  - Output: one CelValue at `out_slot` = the min element.
+  - The kernel reads each element's `kind` (offset 0) and folds with
+    the cross-type numeric compare ladder, so a mixed int/uint/double
+    list yields a dyn-typed result carrying the winning element's
+    runtime kind.  Same-kind int list used here for a layout-clear
+    baseline; cross-type fold is a kernel unit-test concern, not an
+    ABI-shape one.
+  - Empty list cannot reach the kernel (macro rejects empty list
+    literals at parse time).
+
+`cel_math_max_list_at_v` is byte-identical in shape; only the fold
+direction differs.
+
+## M16.2 — Bit shift — `math.bitShiftLeft(1, 2)` (M16 Slice 0)
+
+File: `wat/m16_math_bit_shift.wat`.  Status: assembles (201 B); runs
+through `wat_runner` once `cel_math_bit_shift_left_at_vv` lands
+(Slice B).
+
+`bitShiftLeft` / `bitShiftRight` are plain global `math.<name>` calls
+(no macro); checker resolves `math_bitShiftLeft_{int,uint}_int`.
+Runtime surface:
+
+```
+cel.cel_math_bit_shift_left_at_vv(out_slot, x_slot, n_slot)
+    — i32, i32, i32 → ()
+```
+
+Memory map: `x = {CEL_INT, 1}` at 16, `n = {CEL_INT, 2}` at 40, result
+at 64.  Decoded result `{CEL_INT, 4}`.
+
+ABI frozen by this trace:
+
+  - `x_slot` value kind = int or uint (result keeps x's kind);
+    `n_slot` always CEL_INT.
+  - Output CelValue at `out_slot`, same kind as `x_slot`.
+  - Shift semantics are spec-defined (math_ext.textproto), NOT C UB:
+    negative count and count ≥ 64 are explicit kernel cases (unit-test
+    matrix).  This trace exercises the nominal in-range case to lock
+    the slot/kind shape.
+
+`bitShiftRight` / `bitAnd` / `bitOr` / `bitXor` share this 3-arg
+`_at_vv` shape; `bitNot` is the unary `_at_v` sibling.
 ## M14 — CEL optionals ABI traces
 
 Six WAT files lock the runtime ABI for the M14 optionals work

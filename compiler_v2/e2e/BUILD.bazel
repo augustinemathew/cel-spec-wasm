@@ -337,6 +337,30 @@ cc_test(
     ],
 )
 
+# M16 e2e acceptance spec — the `math` extension functions lit up
+# end-to-end.  Mirrors representative rows from
+# `tests/simple/testdata/math_ext.textproto` across all 17 functions
+# (min/max macros, scalar, predicates, bitwise).  The full M16
+# pipeline is wired (kernels in `cel_math_ext.c`, `MathCheckerLibrary()`
+# registration, overload-table seeds, wasm exports), so this is a live
+# acceptance gate.
+cc_test(
+    name = "m16_test",
+    srcs = ["m16_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Program save / reload round-trip e2e — proves the wasm bytes from
 # Compiler::Compile round-trip through `Program(std::vector<uint8_t>)`
 # reconstruction, Plan, and Eval to bit-identical Values.  Locks the
