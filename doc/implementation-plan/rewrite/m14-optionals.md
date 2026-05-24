@@ -13,7 +13,11 @@ summary.  Slice 0 (WAT traces) was non-negotiable per CLAUDE.md
 > with zero new comprehension codegen.  Nine WAT traces (`m14_*.wat`,
 > §M14.1-§M14.9) lock kernel ABIs byte-exact.  Conformance:
 > `optionals.textproto` 0/70 → 22/70 PASS (4 FAIL, 44 SKIP);
-> corpus-wide 1476 → 1576 PASS (+100).
+> corpus-wide 1554 → 1576 PASS (+22 over master).  (The 1476 →
+> 1576 / +100 figure originally recorded here measured against the
+> pre-Phase-C baseline; master's parallel Phase C work accounts for
+> 1476 → 1554, so the optionals-isolated delta over current master
+> is +22 — the 22 `optionals.textproto` rows.)
 >
 > **Known remaining limitations**, surfaced during execution and
 > filed for follow-up:
