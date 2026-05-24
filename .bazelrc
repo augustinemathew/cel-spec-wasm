@@ -1,0 +1,16 @@
+# macOS / darwin-arm64 toolchain fix.  Without this, rules_cc's
+# auto-generated `local_config_cc/BUILD` detects the system clang
+# without LLD on PATH and emits `link_flags = ["-fuse-ld=ld64.lld:", ...]`
+# (note the trailing colon).  Apple clang then rejects with:
+#
+#   clang: error: invalid linker name in argument '-fuse-ld=ld64.lld:'
+#
+# Putting brew's llvm bin first on the toolchain-discovery PATH makes
+# rules_cc emit a clean `-fuse-ld=ld64.lld` (no trailing colon) AND
+# selects the homebrew clang, which accepts the flag.
+#
+# `--repo_env=PATH=...` is the right knob: it scopes the override to
+# repository-rule execution (where rules_cc's auto-detection runs)
+# without leaking into action env, so reproducible-build hashes are
+# unaffected.
+build --repo_env=PATH=/opt/homebrew/opt/llvm/bin:/usr/bin:/bin

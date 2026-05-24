@@ -240,6 +240,23 @@ constexpr AbiHelper kCelRuntimeHelpersArr[] = {
     K_AT_VV("cel_string_join_sep_at_vv"),
     K_AT_V("cel_string_quote_at_v"),
     K_AT_VV("cel_string_format_at_vv"),
+
+    // ── CEL optional<T> kernels ───────────────────────────────
+    // Eight value-level helpers + select-field + three
+    // predicate-gated `_if_present` mutators for map / list / proto
+    // entries.  The `_if_present` trio mutates its first arg in place
+    // (no out_slot), matching the `_if_bool` siblings above.
+    RT_VOID("cel_optional_none_at", 1),
+    K_AT_V("cel_optional_of_at_v"),
+    K_AT_V("cel_optional_of_non_zero_at_v"),
+    K_AT_V("cel_optional_has_value_at_v"),
+    K_AT_V("cel_optional_value_at_v"),
+    K_AT_VV("cel_optional_or_at_vv"),
+    K_AT_VV("cel_optional_or_value_at_vv"),
+    K_AT_VV("cel_select_optional_field_at_vv"),
+    RT_VOID("cel_map_insert_at_if_present", 3),
+    RT_VOID("cel_list_append_at_if_present", 2),
+    RT_VOID("cel_set_field_at_if_present", 3),
 };
 
 // ════════════════════════════════════════════════════════════════

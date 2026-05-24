@@ -359,6 +359,11 @@ struct RuntimeHarness {
       // imports.
       {"resolve_message_type_name", 25, 2},
       {"cel_timestamp_tz_accessor", 25, 4},
+      // `cel_set_field_at_if_present` imports `cel_host.cel_set_field`
+      // for the Some-path delegation.  The runtime pulls this symbol in
+      // unconditionally; the arena-only harness here doesn't exercise
+      // the kernel but still needs the import bound.
+      {"cel_set_field", 13, 3},
       // Comprehension iter snapshots for host-backed list/map sources
       // (m5b §CCF-8).  Imported unconditionally by the kDynamic
       // dispatchers in cel_runtime.c; no-op stubs are sufficient

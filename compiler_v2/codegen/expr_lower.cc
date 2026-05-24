@@ -160,6 +160,42 @@ std::string MessageTypeFqn(const TypedAst& ast, const cel::Expr& expr) {
   return it->second.message_type().type();
 }
 
+// Emits the kSelect lowering when the operand has `Repr::kOptional`.
+// Issues a `cel_select_optional_field_at_vv(out_slot, op_slot,
+// key_rodata_slot)` call; if `test_only` is set, chains a
+// `cel_optional_has_value_at_v` overwrite on the same slot so the
+// caller sees a Bool.  Aliasing on the same slot for the has-value
+// chain is safe because the kernel copies before writing.
+BinaryenExpressionRef EmitKSelectOptionalBranch(EmitCtx& ctx,
+                                                BinaryenExpressionRef operand,
+                                                uint32_t out_slot,
+                                                uint32_t key_rodata_offset,
+                                                bool test_only) {
+  BinaryenExpressionRef args[3] = {
+      I32Const(ctx.mod, out_slot),
+      operand,
+      I32Const(ctx.mod, key_rodata_offset),
+  };
+  const std::string select_name(kCelSelectOptionalFieldInternalName);
+  BinaryenExpressionRef select_call = BinaryenCall(
+      ctx.mod.raw(), select_name.c_str(), args, 3, BinaryenTypeNone());
+  if (!test_only) {
+    BinaryenExpressionRef block_items[2] = {select_call,
+                                            I32Const(ctx.mod, out_slot)};
+    return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                         BinaryenTypeInt32());
+  }
+  BinaryenExpressionRef has_args[2] = {I32Const(ctx.mod, out_slot),
+                                       I32Const(ctx.mod, out_slot)};
+  const std::string has_name(kCelOptionalHasValueInternalName);
+  BinaryenExpressionRef has_call = BinaryenCall(
+      ctx.mod.raw(), has_name.c_str(), has_args, 2, BinaryenTypeNone());
+  BinaryenExpressionRef block_items[3] = {select_call, has_call,
+                                          I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 3,
+                       BinaryenTypeInt32());
+}
+
 absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
                                                   const cel::Expr& expr,
                                                   const cel::SelectExpr& sel,
@@ -175,6 +211,18 @@ absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
       << " has non-workspace storage (LayoutPass didn't allocate a slot)";
   const uint32_t out_slot = ann.storage.payload;
 
+  const NodeAnnotation* op_ann =
+      ctx.layout.annotations.Find(sel.operand().id());
+  if (op_ann != nullptr && op_ann->repr == Repr::kOptional) {
+    ABSL_CHECK(ann.select_key_rodata_offset != 0)
+        << "expr_lower: kSelect expr_id=" << expr.id()
+        << " has optional operand but LayoutPass didn't allocate a "
+           "key_rodata_offset (SelectKeyRodataVisitor invariant)";
+    return EmitKSelectOptionalBranch(ctx, *operand_or, out_slot,
+                                     ann.select_key_rodata_offset,
+                                     sel.test_only());
+  }
+
   // Append a new field-ref row.  `field_refs.size()` at this point
   // is also the dense id for the new row (the sentinel at index 0
   // is pushed once in LowerToEvalFunction before the walk starts).
@@ -189,8 +237,6 @@ absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
   // looks up that path and appends `sel.field()` at runtime.  0
   // when the operand isn't path-bearing (literal, kCall, …); the
   // trampoline treats 0 as "no unknown-pattern match possible".
-  const NodeAnnotation* op_ann =
-      ctx.layout.annotations.Find(sel.operand().id());
   const uint32_t attribute_id = op_ann != nullptr ? op_ann->attribute_id : 0;
   BinaryenExpressionRef args[4] = {
       I32Const(ctx.mod, out_slot),
@@ -237,12 +283,27 @@ BinaryenExpressionRef EmitCelMapInsertCall(WasmModule& mod, uint32_t out_slot,
   return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
 }
 
+// Emits `(call $cel.cel_map_insert_at_if_present <map> <key> <opt_v>)`.
+// Predicate-gated insert for `{?key: opt_value}` map-literal entries:
+// the kernel unwraps `opt_value` and inserts the inner CelValue iff
+// the optional is Some.  See `wat/m14_map_insert_if_present.wat`.
+BinaryenExpressionRef EmitCelMapInsertIfPresentCall(
+    WasmModule& mod, uint32_t out_slot, BinaryenExpressionRef key,
+    BinaryenExpressionRef opt_value) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, out_slot), key, opt_value};
+  const std::string name(kCelMapInsertAtIfPresentInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
 // Lowers a kMapExpr to:
 //   (call $cel.cel_map_create out_slot N)
 //   for each entry:
 //     <eval key>           -> i32 key_offset
 //     <eval value>         -> i32 value_offset
-//     (call $cel.cel_map_insert out_slot key_offset value_offset)
+//     if entry.optional:
+//       (call $cel.cel_map_insert_at_if_present out_slot key_off value_off)
+//     else:
+//       (call $cel.cel_map_insert out_slot key_off value_off)
 //   (i32.const out_slot)
 // wrapped in a (block (result i32)) whose value is `out_slot`.
 absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
@@ -260,14 +321,15 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
   instrs.push_back(EmitCelMapCreateCall(ctx.mod, out_slot, N));
 
   for (const cel::MapExprEntry& e : m.entries()) {
-    ABSL_CHECK(!e.optional())
-        << "expr_lower: kMapExpr expr_id=" << expr.id()
-        << " entry id=" << e.id() << " is optional — stub";
     auto key_or = Emit(ctx, e.key());
     if (!key_or.ok()) return key_or.status();
     auto val_or = Emit(ctx, e.value());
     if (!val_or.ok()) return val_or.status();
-    instrs.push_back(EmitCelMapInsertCall(ctx.mod, out_slot, *key_or, *val_or));
+    BinaryenExpressionRef call =
+        e.optional()
+            ? EmitCelMapInsertIfPresentCall(ctx.mod, out_slot, *key_or, *val_or)
+            : EmitCelMapInsertCall(ctx.mod, out_slot, *key_or, *val_or);
+    instrs.push_back(call);
   }
 
   // Block-trailer i32 yields the map's slot offset for parent
@@ -339,15 +401,31 @@ BinaryenExpressionRef EmitCelListAppendCall(EmitCtx& ctx, uint32_t list_slot,
 
 namespace {
 
+// Emits `(call $cel.cel_list_append_at_if_present <list> <opt_v>)`.
+// Predicate-gated append for `[?opt_elem]` list-literal entries; the
+// kernel unwraps `opt_v` and appends the inner CelValue iff the
+// optional is Some.  See `wat/m14_list_append_if_present.wat`.
+BinaryenExpressionRef EmitCelListAppendIfPresentCall(
+    EmitCtx& ctx, uint32_t list_slot, BinaryenExpressionRef opt_value) {
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, list_slot), opt_value};
+  const std::string name(kCelListAppendAtIfPresentInternalName);
+  return BinaryenCall(ctx.mod.raw(), name.c_str(), args, 2, BinaryenTypeNone());
+}
+
 // Lowers a kListExpr to:
 //   (call $cel.cel_list_create out_slot N)   ;; capacity=N, count=0
 //   for i in [0, N):
 //     <eval element>      -> i32 elem_offset
-//     (call $cel.cel_list_append_at out_slot elem_offset)
+//     if i in optional_indices:
+//       (call $cel.cel_list_append_at_if_present out_slot elem_offset)
+//     else:
+//       (call $cel.cel_list_append_at out_slot elem_offset)
 //   (i32.const out_slot)
 // wrapped in a (block (result i32)) whose value is `out_slot`.
-// Final `count == capacity == N`.  Append is the universal write
-// for arena lists — shared with comprehension accu codegen.
+// For non-optional literals the final `count == capacity == N`; with
+// `?elem` entries the count may be lower iff some entries are None.
+// Append is the universal write for arena lists — shared with
+// comprehension accu codegen.
 absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                                                     const cel::Expr& expr,
                                                     const cel::ListExpr& l,
@@ -364,12 +442,12 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
 
   for (uint32_t i = 0; i < N; ++i) {
     const cel::ListExprElement& e = l.elements()[i];
-    ABSL_CHECK(!e.optional())
-        << "expr_lower: kListExpr expr_id=" << expr.id()
-        << " element index=" << i << " is optional — stub";
     auto elem_or = Emit(ctx, e.expr());
     if (!elem_or.ok()) return elem_or.status();
-    instrs.push_back(EmitCelListAppendCall(ctx, out_slot, *elem_or));
+    BinaryenExpressionRef call =
+        e.optional() ? EmitCelListAppendIfPresentCall(ctx, out_slot, *elem_or)
+                     : EmitCelListAppendCall(ctx, out_slot, *elem_or);
+    instrs.push_back(call);
   }
 
   instrs.push_back(I32Const(ctx.mod, out_slot));
@@ -409,6 +487,22 @@ BinaryenExpressionRef EmitCelSetFieldCall(WasmModule& mod, uint32_t msg_slot,
   BinaryenExpressionRef args[3] = {I32Const(mod, msg_slot),
                                    I32Const(mod, field_ref_id), value};
   const std::string name(kCelHostSetFieldInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
+}
+
+// Emits `(call $cel.cel_set_field_at_if_present <msg> <fref> <opt_v>)`.
+// Predicate-gated proto-field set for `Foo{?field: opt_value}`
+// entries.  The kernel (cel_optional.c) unwraps the optional and
+// delegates to the existing `cel_host.cel_set_field` only when the
+// cell is Some; on None the field stays unset (matches proto
+// semantics — `has(msg.field)` returns false).  See
+// `wat/m14_proto_set_field_if_present.wat`.
+BinaryenExpressionRef EmitCelSetFieldIfPresentCall(
+    WasmModule& mod, uint32_t msg_slot, uint32_t field_ref_id,
+    BinaryenExpressionRef opt_value) {
+  BinaryenExpressionRef args[3] = {I32Const(mod, msg_slot),
+                                   I32Const(mod, field_ref_id), opt_value};
+  const std::string name(kCelSetFieldAtIfPresentInternalName);
   return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
 }
 
@@ -512,9 +606,6 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
       EmitCelMakeMessageCall(ctx.mod, ann.message_type_id, out_slot));
 
   for (const cel::StructExprField& f : s.fields()) {
-    ABSL_CHECK(!f.optional())
-        << "expr_lower: kStructExpr expr_id=" << expr.id() << " field `"
-        << f.name() << "` is optional — stub until optionals slice";
     auto value_or = Emit(ctx, f.value());
     if (!value_or.ok()) return value_or.status();
     // Append a fresh field-ref row.  field_number=0 makes the
@@ -528,8 +619,16 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
         /*name=*/f.name(),
         /*owner_fqn=*/s.name(),
     });
-    instrs.push_back(
-        EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id, *value_or));
+    // `?field:` entries route through the predicate-gated kernel
+    // (wasm-side unwrap → delegate to cel_host.cel_set_field on
+    // Some, no-op on None).  See
+    // `wat/m14_proto_set_field_if_present.wat`.
+    BinaryenExpressionRef call =
+        f.optional()
+            ? EmitCelSetFieldIfPresentCall(ctx.mod, out_slot, field_ref_id,
+                                           *value_or)
+            : EmitCelSetFieldCall(ctx.mod, out_slot, field_ref_id, *value_or);
+    instrs.push_back(call);
   }
 
   if (auto wkt_tail = MaybeEmitWktUnwrapTailCall(ctx, s.name(), out_slot);
@@ -540,6 +639,25 @@ absl::StatusOr<BinaryenExpressionRef> EmitKStructExpr(
   instrs.push_back(I32Const(ctx.mod, out_slot));
   return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
                        static_cast<BinaryenIndex>(instrs.size()),
+                       BinaryenTypeInt32());
+}
+
+// Emits the `_[_]` lowering when the operand has `Repr::kOptional`.
+// The select-field kernel unwraps the optional, dispatches on the
+// inner kind, and reinterprets absent-key errors as None — same shape
+// the indexing semantics want.  See
+// `wat/m14_optional_select_field.wat`.
+BinaryenExpressionRef EmitIndexCallOptionalBranch(EmitCtx& ctx,
+                                                  BinaryenExpressionRef operand,
+                                                  BinaryenExpressionRef key,
+                                                  uint32_t out_slot) {
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot), operand, key};
+  const std::string select_name(kCelSelectOptionalFieldInternalName);
+  BinaryenExpressionRef call_expr = BinaryenCall(
+      ctx.mod.raw(), select_name.c_str(), args, 3, BinaryenTypeNone());
+  BinaryenExpressionRef block_items[2] = {call_expr,
+                                          I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
                        BinaryenTypeInt32());
 }
 
@@ -574,10 +692,17 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
   ABSL_CHECK(op_ann != nullptr)
       << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
       << " operand has no NodeAnnotation";
-  ABSL_CHECK(op_ann->repr == Repr::kMap || op_ann->repr == Repr::kList)
-      << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
-      << " operand repr=" << ReprName(op_ann->repr)
-      << " — only map / list operands supported (checker should have rejected)";
+  if (op_ann->repr == Repr::kOptional) {
+    return EmitIndexCallOptionalBranch(ctx, *operand_or, *key_or, out_slot);
+  }
+  if (op_ann->repr != Repr::kMap && op_ann->repr != Repr::kList) {
+    ABSL_CHECK(false) << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
+                      << " has unsupported operand repr="
+                      << ReprName(op_ann->repr)
+                      << " — closed set; `parse_and_check.cc::"
+                         "UnacceptableLabel` rejects every other shape "
+                         "before codegen";
+  }
   const Origin origin =
       (op_ann->repr == Repr::kList) ? op_ann->list_origin : op_ann->map_origin;
   const std::string target((op_ann->repr == Repr::kList)

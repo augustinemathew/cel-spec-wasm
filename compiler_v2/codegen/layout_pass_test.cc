@@ -14,6 +14,7 @@
 #include "compiler_v2/frontend/parse_and_check.h"
 #include "compiler_v2/ir/annotations.h"
 #include "compiler_v2/ir/typed_ast.h"
+#include "compiler_v2/runtime/cel_data.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -796,6 +797,87 @@ TEST(LayoutPassComprehensionTest, TwoIterListIndexUsesAccuKind) {
   EXPECT_EQ(v->kind, ResolvedVariableKind::kComprehensionIter);
   EXPECT_EQ(v->slot_offset, 0u)
       << "v2 two-iter list value is a moving pointer — no fixed slot";
+}
+
+// --- SelectKeyRodataVisitor: kSelect-on-optional rodata lifting ----------
+//
+// Only kSelect nodes whose operand carries `Repr::kOptional` get a
+// `select_key_rodata_offset` assigned (the field-name string lifted to
+// rodata as a CEL_STRING CelValue).  Every other kSelect leaves the
+// field at its zero default — the standard `field_ref_id`-based path
+// doesn't need a CelValue key.
+//
+// Positive case: `optional.of(...).c` — operand is optional<map>;
+// LayoutPass should allocate rodata for the literal "c".
+
+TEST(LayoutPassSelectOptionalTest,
+     SelectOnOptionalAllocatesRodataForFieldName) {
+  auto ta = ParseAndCheck("optional.of({'c': 'v'}).c", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const cel::Expr& root = ta->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  const NodeAnnotation* select_ann = layout->annotations.Find(root.id());
+  ASSERT_NE(select_ann, nullptr);
+  EXPECT_GE(select_ann->select_key_rodata_offset, 16u)
+      << "rodata offset must point past the two reserved slots";
+
+  // The rodata frame at that offset must be a 24-byte CEL_STRING frame.
+  const uint32_t rel =
+      select_ann->select_key_rodata_offset - layout->rodata_base;
+  ASSERT_LT(rel + 24u, layout->rodata.size() + 24u);
+  // Frame header: kind (4 bytes LE) at offset 0.
+  const uint8_t* frame = layout->rodata.data() + rel;
+  EXPECT_EQ(frame[0], static_cast<uint8_t>(CEL_STRING));
+}
+
+TEST(LayoutPassSelectOptionalTest, SelectOnNonOptionalLeavesOffsetZero) {
+  // Operand is a message — regular Select path, no rodata key needed.
+  CheckOptions opts;
+  opts.variable_specs = {"c:celwasm.testdata.Customer"};
+  auto ta = ParseAndCheck("c.billing_address", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const cel::Expr& root = ta->ast().root_expr();
+  ASSERT_EQ(root.kind_case(), cel::ExprKindCase::kSelectExpr);
+  const NodeAnnotation* select_ann = layout->annotations.Find(root.id());
+  ASSERT_NE(select_ann, nullptr);
+  EXPECT_EQ(select_ann->select_key_rodata_offset, 0u);
+}
+
+TEST(LayoutPassSelectOptionalTest, ChainedSelectOnOptionalLiftsEachField) {
+  // `optional.of(map).c.x` — two kSelects, both with optional operand
+  // (the outer Select's operand is the result of the inner Select,
+  // which is also optional<...>).  Each field name lifted distinctly.
+  auto ta = ParseAndCheck("optional.of({'c': {'x': 'v'}}).c.x", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const cel::Expr& outer = ta->ast().root_expr();
+  const cel::Expr& inner = outer.select_expr().operand();
+  ASSERT_EQ(outer.kind_case(), cel::ExprKindCase::kSelectExpr);
+  ASSERT_EQ(inner.kind_case(), cel::ExprKindCase::kSelectExpr);
+
+  const NodeAnnotation* outer_ann = layout->annotations.Find(outer.id());
+  const NodeAnnotation* inner_ann = layout->annotations.Find(inner.id());
+  ASSERT_NE(outer_ann, nullptr);
+  ASSERT_NE(inner_ann, nullptr);
+  EXPECT_NE(outer_ann->select_key_rodata_offset, 0u);
+  EXPECT_NE(inner_ann->select_key_rodata_offset, 0u);
+  EXPECT_NE(outer_ann->select_key_rodata_offset,
+            inner_ann->select_key_rodata_offset)
+      << "distinct field names get distinct rodata offsets";
 }
 
 }  // namespace

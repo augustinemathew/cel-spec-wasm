@@ -139,6 +139,37 @@ TEST(ReprOfTest, AbstractTypeIsUnknown) {
   EXPECT_EQ(ReprOf(cel::TypeSpec{std::move(abstract)}), Repr::kUnknown);
 }
 
+// `optional<T>` is wire-encoded as AbstractType{name="optional_type",
+// parameter_types=[inner]} by cel-cpp's checker (probed in
+// `compiler_v2/probes/optionals/ast_shape_probe_test.cc` Q8).  ReprOf
+// must distinguish it from the generic AbstractTypeIsUnknown path so
+// codegen can route through `cel_select_optional_field_at_vv`.
+TEST(ReprOfTest, OptionalTypeAbstractIsKOptional) {
+  std::vector<cel::TypeSpec> params;
+  params.emplace_back(cel::PrimitiveType::kInt64);
+  cel::AbstractType opt("optional_type", std::move(params));
+  EXPECT_EQ(ReprOf(cel::TypeSpec{std::move(opt)}), Repr::kOptional);
+}
+
+TEST(ReprOfTest, OtherAbstractNamedAbstractStaysUnknown) {
+  // Confirms the `name == "optional_type"` predicate is exact —
+  // a future cel-cpp AbstractType shouldn't accidentally light up
+  // the optional Repr path.
+  cel::AbstractType abstract("some.Other", {});
+  EXPECT_EQ(ReprOf(cel::TypeSpec{std::move(abstract)}), Repr::kUnknown);
+}
+
+TEST(ReprOfTest, OptionalOfDynAbstractStillStampsKOptional) {
+  // `UnacceptableLabel` recurses through abstract parameters and
+  // rejects `optional<dyn>` at the static-subset gate (before codegen
+  // runs).  ReprOf stamps Repr::kOptional regardless — the dyn-reject
+  // is a different layer.
+  std::vector<cel::TypeSpec> params;
+  params.emplace_back(cel::DynTypeSpec{});
+  cel::AbstractType opt("optional_type", std::move(params));
+  EXPECT_EQ(ReprOf(cel::TypeSpec{std::move(opt)}), Repr::kOptional);
+}
+
 // ---- PopulateAnnotations + TypedAst plumbing --------------------------------
 
 TEST(PopulateAnnotationsTest, SeedsOneEntryPerTypedNode) {
@@ -164,6 +195,22 @@ TEST(PopulateAnnotationsTest, LeavesUnseenNodesAbsent) {
   EXPECT_EQ(annotations.Find(1), nullptr);
   ASSERT_NE(annotations.Find(99), nullptr);
   EXPECT_EQ(annotations.Find(99)->repr, Repr::kString);
+}
+
+TEST(PopulateAnnotationsTest, OptionalAbstractEntryBecomesKOptional) {
+  // End-to-end: an `optional<int>`-typed AST node lands in the
+  // annotation map with Repr::kOptional, so downstream codegen
+  // can branch on operand repr.
+  cel::Ast ast;
+  std::vector<cel::TypeSpec> params;
+  params.emplace_back(cel::PrimitiveType::kInt64);
+  ast.mutable_type_map()[7] =
+      cel::TypeSpec{cel::AbstractType("optional_type", std::move(params))};
+
+  WasmAnnotations annotations;
+  PopulateAnnotations(ast, /*pool=*/nullptr, annotations);
+  ASSERT_NE(annotations.Find(7), nullptr);
+  EXPECT_EQ(annotations.Find(7)->repr, Repr::kOptional);
 }
 
 TEST(PopulateAnnotationsTest, DynEntriesBecomeKUnknown) {

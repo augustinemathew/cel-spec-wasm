@@ -1741,6 +1741,577 @@ Passed in 6ms on first commit.
 
 ---
 
+## M14 — CEL optionals ABI traces
+
+Six WAT files lock the runtime ABI for the M14 optionals work
+(`doc/implementation-plan/rewrite/m14-optionals.md`).  Named with
+the `m14_` prefix (no numeric ordinal) because they are authored
+as a coherent batch, not a per-slice continuation of the 0-67
+line.  Every byte these traces lock must round-trip against the
+production kernels; a codegen arm that diverges from these WATs
+is a regression by definition.
+
+All six assemble cleanly via `wasm-as`.  `wat_runner_test.cc`
+runs six `WatRunnerM14Test.*` cases — **byte-exact**, not smoke.
+Each test instantiates `cel_runtime.wasm` (sharing its
+shared-memory export with the expr module via
+`PreprocessWatMemoryImport`), calls `arena_init`, runs `$eval`,
+then decodes the post-eval workspace bytes as a `CelValue` and
+(for optional-valued results) dereferences `payload.opt` into a
+local `WatRunnerOptionalCell` mirror.  Each test asserts the
+exact CelValue / cell contents the WAT header documents (kind,
+inner kind, payload bytes, `present` flag, span lengths, etc.).
+
+The harness changes from Slice A that make this work:
+`RegisterPendingM14Imports` was deleted; the eight
+`cel_optional_*` kernels are now real production exports in
+`kRuntimeExports`; the expr module imports the runtime's
+exported shared memory rather than a host-allocated `cel.memory`
+(matched by a text-substitution rewrite of
+`(import "cel" "memory" (memory N))` in
+`PreprocessWatMemoryImport`); and the linker now binds the
+`wasi_snapshot_preview1` surface that the runtime's
+abseil+cctz transitive deps keep alive.  These changes are
+discussed in m14-optionals.md §4 Slice A "Plan-vs-execution
+delta 2."
+
+The slice locks these layout decisions (the alternatives in
+m14-optionals.md §3 were evaluated and rejected — see each WAT's
+header for rationale):
+
+  - **OptionalCell is 32 bytes**, arena-allocated per
+    `optional.of` / `optional.none`.  One `CelKind` value
+    (`CEL_OPTIONAL = 14`); no tag-encoded `SOME` / `NONE`
+    variant, no shared-static-None sentinel.
+  - **`cel_select_optional_field_at_vv` is a single kernel
+    serving both `.?field` and Select-on-optional**.  Per probe
+    Q11 the checker leaves Select-on-optional as `kSelectExpr`
+    with the result type promoted to `optional<T>`; codegen
+    routes both AST shapes through the same runtime export.
+  - **Receiver-form member overloads flatten at codegen time**.
+    `hasValue` / `value` / `or` / `orValue` ride the existing
+    `EmitGeneralCall` receiver-flatten in M5.F; their kernel
+    signatures are post-flatten `(out_slot, opt_slot, ...)`.
+
+---
+
+## M14.1.  `optional.of(1)` — OptionalCell layout lock
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_of_int.wat`
+
+The simplest possible optional construction.  Locks the
+OptionalCell layout (32 bytes: `u32 present`, `u32 _pad`,
+24-byte `CelValue inner`) and the `cel_optional_of_at_v(out, v)`
+kernel ABI.
+
+Memory layout (`mem_size = 131072`):
+
+```
+[ 0, 16)   reserved null + arena scaffolding
+[16, 40)   rodata: CelValue{CEL_INT, i=1}
+[40, 64)   workspace: out_slot — receives the CEL_OPTIONAL
+[64, ...)  bump arena.  arena_alloc(32) lands the OptionalCell:
+             [64, 68)  cell.present = 1 (Some)
+             [68, 72)  cell._pad    = 0
+             [72, 96)  cell.inner   = {CEL_INT, i=1}
+```
+
+Slice A target — expected post-eval CelValue at offset 40:
+`{kind=CEL_OPTIONAL(14), payload.opt=64}`.
+
+Why no tag-encoded `SOME = 15` / `NONE = 16` variant
+(rejected from §3.1):
+  - Every polymorphic switch (`cel_equals_at_vv`, `cel_log`
+    pretty-printer, `type()` resolution, future codegen
+    dispatch) would need TWO arms per polymorphic check
+    instead of one.  Two arms × ~12 switches = 24 extra
+    edges in a sprawl pattern that's easy to forget one of.
+  - Saves ~8 B per cell, but the 24-byte inner CelValue
+    dominates the footprint — relative overhead is small.
+  - Tag-encoded values can't carry per-instance "present"
+    state separate from kind, so `optional.or(...)` /
+    `orValue(...)` would need a more complex per-kernel
+    handshake.  One-cell-one-kind keeps every kernel's
+    `kind != CEL_OPTIONAL ⇒ TYPE_MISMATCH` check uniform.
+
+Why no shared-static-None sentinel **yet**:
+  - The optimisation saves an arena_alloc per
+    `optional.none()` call.  cel-cpp itself does this at the
+    value layer
+    (`common/values/optional_value.cc:415-418`) — every None
+    is the same static object.
+  - Slice 0 doesn't ship the optimisation, but it DOES lock
+    the **OptionalCell immutability contract** that lets the
+    optimisation layer in cleanly later (see the WAT 1 header
+    section "OptionalCell immutability contract"): kernels
+    that read a cell via `opt_slot.payload.opt` MUST NOT write
+    through that offset; all writes go through `out_slot` and
+    fresh arena_alloc'd cells.
+  - With that contract in place, a future runtime-init shim
+    can publish a single static `OptionalCell{present=0}` at
+    a fixed offset in the reserved region and have
+    `cel_optional_none_at` return that offset unconditionally
+    — zero per-kernel branches, zero per-call arena_alloc for
+    None.  The ABI is forward-compatible.
+
+**Instantiates today, doesn't compute today** — the kernel
+doesn't exist in `cel_runtime.wasm` yet; `RegisterPendingM14Imports`
+in `wat_runner.cc` binds a no-op trampoline so the WAT's import
+resolves and `$eval` runs without trapping.  The trampoline
+writes nothing, so the spec values above are not produced —
+they're the assertions Slice A's tests will add once the real
+kernel lands.
+
+---
+
+## M14.2.  `optional.of(1).hasValue()` — receiver-form kCall ABI lock
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_has_value.wat`
+
+Locks two surfaces:
+  1. The present-flag read (a 4-byte u32 load from cell offset 0,
+     reinterpreted as a CEL_BOOL).
+  2. The receiver-form kCall codegen pattern.  Per probe Q12, the
+     checker emits `kCallExpr{function="hasValue", target=opt,
+     args=[]}` — receiver in `target`, NOT in `args[0]`.  Codegen's
+     `EmitGeneralCall` flattens target → arg slot 0 before the
+     wasm call; the runtime kernel signature is the post-flatten
+     1-arg shape `(out_slot, opt_slot)`.
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   rodata: CelValue{CEL_INT, i=1}
+[40, 64)   workspace: optional.of(1) — CEL_OPTIONAL
+[64, 88)   workspace: hasValue result — CEL_BOOL
+[88, ...)  bump arena.  Step 1's optional.of allocates a 32-byte
+           OptionalCell here at [88, 120).
+```
+
+Slice A target — expected post-eval CelValue at offset 64:
+`{kind=CEL_BOOL(1), payload.b=1}` (true — the optional is Some).
+
+The companion `.value()` accessor (overload `optional_value`)
+shares the WAT's receiver-flatten shape — the kernel just reads
+24 bytes of `cell.inner` instead of 4 bytes of `cell.present`,
+and produces `CEL_ERROR{INVALID_ARGUMENT}` on None.  No separate
+WAT needed for `value` because the ABI is the same.
+
+---
+
+## M14.3.  `optional.of({'c': 'v'}).c` — shared select-field kernel
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_select_field.wat`
+
+Locks the `cel_select_optional_field_at_vv` kernel ABI and the
+**single-kernel-for-both-paths** decision: `.?field` (Call(`_?._`))
+and Select-on-optional-operand (kSelectExpr promoted to
+optional<T>) both route to the same runtime export.  Per probe
+Q11, the checker does NOT rewrite Select-on-optional into
+`_?._` — it leaves the kSelectExpr alone and promotes the
+result type.  Codegen's `LowerSelect` gets a new branch:
+when the operand's annotation says optional-typed, route to
+the same kernel `.?` uses.  Two codegen entry points
+converging on one runtime ABI — cheaper than two parallel
+kernels with subtly-different implementations.
+
+Kernel ABI:
+```
+cel.cel_select_optional_field_at_vv(out_slot, src_slot, key_slot)
+```
+where `src_slot` may be CEL_OPTIONAL (this WAT's path) OR
+CEL_MAP_ARENA / CEL_MAP_HOST / CEL_MESSAGE / list types (the
+`.?field` and `.?[key]` paths, exercised by Slice B's overload
+seeds + e2e tests).
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   rodata: key 'c' CelValue (CEL_STRING, ptr=256, len=1)
+[40, 64)   rodata: value 'v' CelValue (CEL_STRING, ptr=257, len=1)
+[64, 88)   workspace: map {'c': 'v'} — CEL_MAP_ARENA
+[88, 112)  workspace: optional.of(map) — CEL_OPTIONAL<map>
+[112, 136) workspace: select(.c) result — CEL_OPTIONAL<string>
+[256, 258) string bytes "cv"
+[136, ...) bump arena: map header + entries + 2 OptionalCells.
+```
+
+Slice A target — expected post-eval CelValue at offset 112:
+`{kind=CEL_OPTIONAL, payload.opt=<cell offset>}` with the
+cell's `present=1` and `cell.inner={CEL_STRING, ptr=257, len=1}`.
+
+Why one kernel and not two:
+  - The "absent key → optional.none()" semantic is identical for
+    both paths.  Path (2) just adds an outer "is the source's
+    own present flag 1?" precheck.
+  - One ABI freeze, one cel-cpp parity surface to test, one
+    `OverloadTable::kBuiltinSeeds` row per surface overload ID
+    (`select_optional_field`, `map_optindex_optional_value`,
+    `optional_map_optindex_optional_value`, …) all routing to
+    one runtime export.
+  - `LowerSelect`'s new branch is 4 lines (detect annotation,
+    emit one call to the same kernel `.?` uses).  A sibling
+    kernel for the Select-on-optional path alone would either
+    duplicate the absent-key logic or chain through the kernel
+    we already have — neither earns its own ABI surface.
+
+---
+
+## M14.4.  `{'k': 1}.?missing.orValue('default')` — None propagation + unwrap
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_chain_or_value.wat`
+
+End-to-end None propagation through two kernels:
+  - `.?missing` on a map that doesn't contain `'missing'` → the
+    absent-key branch of `cel_select_optional_field_at_vv` writes
+    a fresh OptionalCell with `present=0`.
+  - `.orValue('default')` — `cel_optional_or_value_at_vv` reads
+    `cell.present`, sees 0, and memcpys the default CelValue
+    into out_slot.  Unwraps: the result is the bare string, NOT
+    `optional<string>`.
+
+Kernel ABI:
+```
+cel.cel_optional_or_value_at_vv(out_slot, opt_slot, default_slot)
+```
+Receiver-form like hasValue (M14.2) — codegen flattens
+`opt.orValue(default)` from `kCallExpr{target=opt, args=[default]}`
+to the 3-arg ABI above.
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   rodata: key 'k'        CelValue {CEL_STRING, ptr=256, len=1}
+[40, 64)   rodata: value 1        CelValue {CEL_INT, i=1}
+[64, 88)   rodata: key 'missing'  CelValue {CEL_STRING, ptr=257, len=7}
+[88, 112)  rodata: 'default'      CelValue {CEL_STRING, ptr=264, len=7}
+[112, 136) workspace: map {'k': 1} — CEL_MAP_ARENA
+[136, 160) workspace: .?missing result — CEL_OPTIONAL(None)
+[160, 184) workspace: .orValue result  — CEL_STRING("default")
+[256, 271) string bytes: "k" + "missing" + "default"
+[184, ...) bump arena: map header + entries + None OptionalCell.
+```
+
+Slice A target — expected post-eval CelValue at offset 160:
+`{kind=CEL_STRING, payload.s={ptr=264, len=7}}` — the bytes
+`"default"` from rodata, surfaced verbatim by the unwrap branch
+of orValue.
+
+The `.or(other_opt)` overload (which preserves optional-ness:
+`optional.none().or(optional.of(7))` → `optional.of(7)`) has the
+same 3-arg ABI shape; the kernel reads the LHS cell, and on
+None copies the RHS *cell* into out (preserving the OptionalCell
+indirection), on Some copies the LHS *cell* into out.  Output
+kind is always `CEL_OPTIONAL`.  In `orValue`'s present branch
+the kernel instead copies `cell.inner` (24-byte memcpy of the
+wrapped CelValue) — output kind is the inner kind.  Both kernels
+fit the same `(out, opt, alt)` shape; only the present-branch
+payload-write line differs.
+
+### Short-circuit codegen requirement
+
+cel-cpp implements `or` / `orValue` with a jump step
+(`third_party/cel-cpp/eval/eval/optional_or_step.cc:60-105`).
+The RHS is **not** evaluated when the LHS is Some.  Our kernel
+ABI is eager — both operands evaluated into slots before the
+call — which is observationally identical for pure RHS (literal,
+ident, kConst) but DIFFERS for RHS that can produce errors or
+unknowns:
+  - `optional.of(1).orValue(1/0)` under the eager ABI evaluates
+    `1/0` into a workspace slot (producing
+    `{CEL_ERROR, DIVIDE_BY_ZERO}`), then the kernel sees `Some`
+    on LHS and unwraps to `1`.  The error CelValue lingers in
+    the workspace slot but is never returned.
+  - cel-cpp under jump-step semantics never evaluates `1/0` at
+    all — no error CelValue is ever constructed.
+
+For conformance rows that observe only the final result, both
+strategies agree.  For partial-eval rows that observe attribute
+absorption (or future "no spurious error" assertions), they
+diverge.
+
+**Slice B (codegen) must annotate RHS impurity and emit a
+short-circuit branch on impure RHS**, falling back to the eager
+kernel call on pure RHS.  This is a codegen decision, not a
+kernel decision — the kernel ABI stays as-locked above.  The
+short-circuit branch is a separate WAT in Slice B (not landed
+here).
+
+---
+
+---
+
+## M14.5.  `optional.none()` — distinct 0-input None constructor
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_none.wat`
+
+Per cel-cpp overload table, `optional.none()` is its own
+overload (`optional_none`) with a 0-input signature — NOT a
+special case of `optional.of()` with a magic argument.  Slice 0
+adds this WAT to lock the distinct ABI surface; the
+independent review on 2026-05-21 (P1) flagged its omission as
+the same "covered by symmetry" pattern that let M2 ship 29
+silent GTEST_SKIPs.
+
+Kernel ABI:
+```
+cel.cel_optional_none_at(out_slot) → ()
+```
+
+Suffix `_at` (no `_v`) is the 0-input cousin of `_at_v` /
+`_at_vv` in the M14 family.
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   workspace: out_slot — receives CEL_OPTIONAL(None)
+[40, ...)  bump arena.  arena_alloc(32) → cell at [40, 72):
+             [40, 44)  cell.present = 0  (None)
+             [44, 48)  cell._pad    = 0
+             [48, 72)  cell.inner   = zero (never read while
+                                            present=0; pinned
+                                            zero for cell-equality
+                                            memcmp-friendliness)
+```
+
+Slice A target — expected post-eval CelValue at offset 16:
+`{kind=CEL_OPTIONAL, payload.opt=40}`, with the cell at offset
+40 holding `{present=0, _pad=0, inner=zeroed}`.
+
+The OptionalCell immutability contract (WAT 1's "OptionalCell
+immutability contract" section) lets a future runtime-init
+shim publish a single static None cell at a fixed reserved
+offset and have this kernel return that offset unconditionally
+— ABI-compatible perf win.
+
+---
+
+## M14.6.  `optional.ofNonZeroValue(0)` — zero-predicate matrix
+
+File: `doc/implementation-plan/rewrite/wat/m14_optional_of_non_zero.wat`
+
+`ofNonZeroValue` wraps `optional.of` with a per-inner-kind
+zero-predicate check.  Per probe Q6 + cel-cpp
+`runtime/optional_types.cc:58-67`: if `v.IsZeroValue()` return
+`optional.none()`, else `optional.of(v)`.
+
+The kernel ABI shape (`(out_slot, v_slot) → ()`) is the same
+as `cel_optional_of_at_v` — what this WAT locks is the
+**per-kind zero-predicate matrix** (the closed set of
+"what counts as zero" rules per CelKind), which IS a
+new ABI surface.
+
+Kernel ABI:
+```
+cel.cel_optional_of_non_zero_at_v(out_slot, v_slot) → ()
+```
+
+The matrix is documented in the WAT header (covering all 16
+inner kinds including CEL_MESSAGE — which an earlier draft of
+m14-optionals.md §3.4 wrongly said cel-cpp errors on;
+corrected per `parsed_message_value.cc:78-86`).
+
+Memory layout for the WAT (exercises the CEL_INT zero case):
+
+```
+[ 0, 16)   reserved
+[16, 40)   rodata: CelValue{CEL_INT, i=0}
+[40, 64)   workspace: out_slot — receives CEL_OPTIONAL(None)
+                      because 0 is the CEL_INT zero value.
+[64, ...)  bump arena: 32-byte None OptionalCell from the
+                       tail-called cel_optional_none_at.
+```
+
+Slice A target — expected post-eval CelValue at offset 40:
+`{kind=CEL_OPTIONAL, payload.opt=64}` with cell `{present=0, ...}`.
+
+Slice A implements `cel_optional_of_non_zero_at_v` as a switch
+on `v.kind` dispatching the matrix predicates, then tail-calling
+either `cel_optional_none_at` (zero) or `cel_optional_of_at_v`
+(non-zero).  Host trampolines for CEL_MAP_HOST / CEL_LIST_HOST /
+CEL_MESSAGE need separate kernel additions (host_map_size,
+host_list_size — already exported; host message zero-predicate is
+new) — design deferred to Slice A pre-flight.
+
+---
+
+## M14.7.  `[?optional.of(10), ?optional.none()]` — list append-if-present
+
+File: `doc/implementation-plan/rewrite/wat/m14_list_append_if_present.wat`
+
+Locks the `cel_list_append_at_if_present` kernel ABI for the
+`[?elem]` list-literal entry shape established by probe Q4
+(`ast_shape_probe_test.cc`).  The kernel is the optional-payload
+analogue of the existing predicate-gated
+`cel_list_append_at_if_bool` (cel_runtime.c:345) that M5.B uses
+for `filter(v, p)` lowering.
+
+ABI:
+
+```
+cel.cel_list_append_at_if_present(list_slot, opt_value_slot) → ()
+```
+
+Semantics (matches the `_if_bool` pattern):
+
+  - `l.kind != CEL_LIST_ARENA` → no-op (list already poisoned by
+    an earlier 3VL absorption; preserve the poison).
+  - `opt.kind` ∈ {CEL_ERROR, CEL_UNKNOWN} → propagate verbatim into
+    `list_slot` (aborts the literal per langdef 3VL).
+  - `opt.kind != CEL_OPTIONAL` → poison `list_slot` with
+    `CEL_ERR_TYPE_MISMATCH`.
+  - `opt = Some(v)` → `cel_list_append_at(list_slot, &v)` where the
+    inner CelValue is read directly out of the OptionalCell — the
+    inner's byte offset within the cell is stable until the next
+    `arena_reset`, so passing that offset is byte-equivalent to
+    staging the inner into a workspace scratch slot first.
+  - `opt = None` → silent no-op.
+
+Memory layout (`mem_size = 131072`):
+
+```
+[ 0, 16)   reserved null + arena scaffolding
+[16, 40)   rodata: CelValue{CEL_INT, i=10}
+[40, 64)   workspace: list — CEL_LIST_ARENA result
+[64, 88)   workspace: optional.of(10) — Some<int>
+[88, 112)  workspace: optional.none() — None
+[112, ...) bump arena.  By end-of-eval: list header (16 B) +
+           capacity=2 elements run (2 × 24 = 48 B) + 2 OptionalCells
+           (2 × 32 B).  Header.count == 1 — only the Some appended.
+```
+
+The wat_runner test decodes the post-eval `ArenaListHeader` and
+asserts `count == 1` plus `elements[0] = {CEL_INT, i=10}`.  Locks
+the byte-exact relationship between the kernel ABI and the
+production codegen path in `EmitKListExpr`'s optional-element
+branch (Slice C codegen, §M14.7's companion).
+
+The `_if_bool` / `_if_present` pair is the canonical "two
+predicate forms, one append/insert primitive" pattern that
+unifies M5.B's comprehension lowering with M14's literal
+lowering.  Both predicates' 3VL surface is identical — the
+only diff is the kind of slot they read (`CEL_BOOL` vs the
+optional's `present` flag).
+
+---
+
+## M14.8.  `{?'k1': optional.of('v1'), ?'k2': optional.none()}` — map insert-if-present
+
+File: `doc/implementation-plan/rewrite/wat/m14_map_insert_if_present.wat`
+
+Locks `cel_map_insert_at_if_present` — the symmetric counterpart
+to §M14.7 for `{?key: val}` map-literal entries (probe Q3).
+Same predicate surface, same 3VL absorption, key-3VL handled by
+the existing `cel_map_insert_at` on the Some path.
+
+ABI:
+
+```
+cel.cel_map_insert_at_if_present(map_slot, key_slot, opt_value_slot) → ()
+```
+
+Memory layout (`mem_size = 131072`):
+
+```
+[ 0, 16)    reserved null + arena scaffolding
+[16, 40)    rodata: key 'k1' CelValue
+[40, 64)    rodata: key 'k2' CelValue
+[64, 88)    rodata: value 'v1' CelValue
+[88, 112)   workspace: map — CEL_MAP_ARENA result
+[112, 136)  workspace: optional.of('v1') — Some<string>
+[136, 160)  workspace: optional.none() — None
+[160, ...)  bump arena (map header 16 B + entries run 2 × 48 B +
+            2 OptionalCells 2 × 32 B).  Header.count == 1 — only
+            the Some entry inserted.
+
+String bytes at [256, 262): "k1" + "k2" + "v1".
+```
+
+The wat_runner test decodes the post-eval `ArenaMapHeader`,
+asserts `count == 1`, then walks `entries[0]` to confirm the
+preserved entry is `(k1, v1)`.
+
+---
+
+## M14.9.  `Foo{?field: opt_v}` — proto-field set-if-present
+
+File: `doc/implementation-plan/rewrite/wat/m14_proto_set_field_if_present.wat`
+
+Locks `cel_set_field_at_if_present` — completes the trio of
+optional-payload predicate kernels with the proto-field variant.
+Structurally identical to §M14.7 / §M14.8 except the inner
+"actually set" step delegates to a host trampoline
+(`cel_host.cel_set_field`) rather than a pure-wasm
+`cel_map_insert_at` / `cel_list_append_at`.
+
+ABI:
+
+```
+cel.cel_set_field_at_if_present(msg_slot, field_ref_id, opt_value_slot) → ()
+```
+
+Semantics:
+
+  - `m.kind != CEL_MESSAGE` → no-op (msg already poisoned).
+  - `opt.kind` ∈ {CEL_ERROR, CEL_UNKNOWN} → propagate into
+    `msg_slot`.
+  - `opt.kind != CEL_OPTIONAL` → poison `msg_slot` with
+    `CEL_ERR_TYPE_MISMATCH`.
+  - `opt = Some(v)` → `cel_host.cel_set_field(msg_slot,
+    field_ref_id, &v)`.  The value slot points 8 bytes into the
+    OptionalCell (past `present` + `_pad`), giving the host
+    trampoline a stable 24-byte view of `cell.inner`.
+  - `opt = None` → silent no-op; the proto field stays unset
+    (matches proto semantics — `has(msg.field)` returns false).
+
+Why the kernel is pure-wasm even though the inner step needs
+the host: the optional unwrap (`cell->present`, `cell->inner`)
+is plain memory reads.  Only the final reflection call requires
+the host.  Same shape as `_if_present` for map/list — wasm-side
+gate, delegate the mutation.  Design pull-in rationale in
+`m14-optionals.md` §0 "Scope pull-in 2026-05-22".
+
+Memory layout (`mem_size = 131072`):
+
+```
+[ 0, 16)   reserved null + arena scaffolding
+[16, 40)   rodata: CelValue{CEL_INT, i=5}
+[40, 64)   workspace: CelMessage{CEL_MESSAGE, msg_slot=1}
+[64, 88)   workspace: optional.of(5) — Some<int>
+[88, 112)  workspace: optional.none() — None
+[112, ...) bump arena.  By end-of-eval: 2 OptionalCells
+           (2 × 32 B).  Host stub records every invocation; the
+           test asserts the stub fired exactly once (Some path)
+           AND that the recorded args are
+           (msg_slot=40, field_ref_id=42, value_slot=72) where
+           value_slot is `opt_64.payload.opt + offsetof(
+           OptionalCell, inner) = 40 + 8 = 48`. (The arena_alloc
+           order makes the Some cell land at the first arena
+           offset; the inner offset is +8 into that cell.)
+```
+
+The wat_runner test installs a `cel_host_cel_set_field_stub`
+(new field on `WatRunInput`) that captures `(msg_slot,
+field_ref_id, value_slot)` on each invocation.  Assertions:
+
+  1. Stub invoked exactly once (Some path).
+  2. Recorded args: `msg_slot == 40`, `field_ref_id == 42`,
+     `value_slot == <inner-of-Some-cell>`.
+  3. The None-path call did NOT reach the stub (proves the
+     wasm-side short-circuit works).
+
+This is the **load-bearing correctness test** for the
+short-circuit no-op: a stub that runs the host call anyway
+would silently violate the proto-write semantics (field gets
+unset → set to zero value → `has()` returns true).  Caught at
+the WAT level rather than waiting for an integration test.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

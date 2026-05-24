@@ -103,16 +103,23 @@ void InstallOneOverloadImport(WasmModule& m, const std::string& name) {
   const BinaryenType i32 = BinaryenTypeInt32();
   const BinaryenType vv_params[3] = {i32, i32, i32};
   const BinaryenType v_params[2] = {i32, i32};
+  const BinaryenType nullary_params[1] = {i32};
   const bool is_vv =
       name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv";
   const bool is_v =
       !is_vv && name.size() >= 5 && name.substr(name.size() - 5) == "_at_v";
   const bool is_three_arg = name == "cel_and" || name == "cel_or";
   const bool is_two_arg = name == "cel_not";
+  // `cel_optional_none_at` is the only constructor whose name ends in
+  // bare `_at` (zero value-slots in addition to the out_slot); the
+  // suffix heuristic above would miss it.
+  const bool is_nullary = name == "cel_optional_none_at";
   if (is_vv || is_three_arg) {
     m.AddFunctionImport(name, "cel", name, vv_params, BinaryenTypeNone());
   } else if (is_v || is_two_arg) {
     m.AddFunctionImport(name, "cel", name, v_params, BinaryenTypeNone());
+  } else if (is_nullary) {
+    m.AddFunctionImport(name, "cel", name, nullary_params, BinaryenTypeNone());
   }
 }
 
@@ -159,6 +166,8 @@ void InstallMapImports(WasmModule& m) {
                       BinaryenTypeNone());
   m.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
                       "cel_map_insert_at_if_bool", map4, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName), "cel",
+                      "cel_map_insert_at_if_present", map3, BinaryenTypeNone());
   const BinaryenType iter1[1] = {i32};
   m.AddFunctionImport("cel_map_iter_init", "cel", "cel_map_iter_init", iter1,
                       BinaryenTypeInt32());
@@ -182,6 +191,9 @@ void InstallListImports(WasmModule& m) {
                       BinaryenTypeNone());
   m.AddFunctionImport("cel_list_append_at_if_bool", "cel",
                       "cel_list_append_at_if_bool", list3, BinaryenTypeNone());
+  m.AddFunctionImport(std::string(kCelListAppendAtIfPresentInternalName), "cel",
+                      "cel_list_append_at_if_present", list2,
+                      BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelListAtArenaInternalName), "cel",
                       "cel_list_at_arena", list3, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelListAtInternalName), "cel", "cel_list_at",
@@ -207,6 +219,9 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_get_field", host_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
                       "cel_has_field", host_params, BinaryenTypeNone());
+  const BinaryenType set3[3] = {i32, i32, i32};
+  m.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
+                      "cel_set_field_at_if_present", set3, BinaryenTypeNone());
   InstallMapImports(m);
   InstallListImports(m);
   // M5.F: every kCelRuntime helper in the OverloadTable that
@@ -1171,6 +1186,274 @@ TEST(ExprLowerCallTest, KCallNestedArithmetic) {
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_mul_at_vv"));
 }
+
+// ============================================================
+// Select / index on optional-typed operand
+// ============================================================
+//
+// EmitKSelect dispatches on the operand's `Repr`:
+//   - `kMessage` / `kMap`: emit a `cel_get_field` / `cel_has_field`
+//     call against the field_ref intern table.
+//   - `kOptional`: emit a `cel_select_optional_field_at_vv` call
+//     whose key argument is the rodata offset of the field-name
+//     CelValue allocated by `LayoutPass::SelectKeyRodataVisitor`.
+//
+// `EmitKIndexCall` dispatches on the operand's `Repr` similarly.
+
+TEST(ExprLowerSelectOptionalTest, SelectOnOptionalEmitsOptionalKernelCall) {
+  Pipeline p = RunPipeline("optional.of({'c': 'v'}).c");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"))
+      << "kSelect-on-optional must route through the optional kernel";
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field"))
+      << "the message-field trampoline must NOT be emitted for an "
+         "optional-typed Select";
+}
+
+TEST(ExprLowerSelectOptionalTest,
+     SelectOnOptionalKeyArgIsRodataOffsetOfFieldName) {
+  // The select kernel takes (out_slot, src_slot, key_slot) — `key_slot`
+  // must be the rodata offset LayoutPass allocated for the field name.
+  Pipeline p = RunPipeline("optional.of({'c': 'v'}).c");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+
+  const NodeAnnotation* root_ann =
+      p.layout.annotations.Find(p.ast.ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  ASSERT_NE(root_ann->select_key_rodata_offset, 0u);
+
+  // Root expression: `(block (call $cel_select_optional_field_at_vv ...)
+  //                          (i32.const out_slot))`
+  BinaryenExpressionRef root = RootExpr(lowered->func);
+  ASSERT_EQ(BinaryenExpressionGetId(root), BinaryenBlockId());
+  BinaryenExpressionRef call = BinaryenBlockGetChildAt(root, 0);
+  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_select_optional_field_at_vv");
+  ASSERT_EQ(BinaryenCallGetNumOperands(call), 3u);
+  // arg0 = out_slot, arg1 = operand_slot, arg2 = key_rodata_offset.
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 0)),
+            static_cast<int32_t>(root_ann->storage.payload));
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 2)),
+            static_cast<int32_t>(root_ann->select_key_rodata_offset));
+}
+
+TEST(ExprLowerSelectOptionalTest, TestOnlySelectOnOptionalEmitsHasValueChain) {
+  // `has(optional.of(map).c)` — outer test_only Select on an
+  // optional-typed Select chain.  We emit the optional-kernel call
+  // followed by `cel_optional_has_value_at_v` overwriting the same
+  // slot with a Bool.
+  Pipeline p = RunPipeline("has(optional.of({'c': 'v'}).c)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_optional_has_value_at_v"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_has_field"))
+      << "test_only Select on an optional operand must NOT call the "
+         "message-field has trampoline";
+}
+
+TEST(ExprLowerIndexOptionalTest, IndexOnOptionalEmitsOptionalKernelCall) {
+  // `optional.of(map)[k]` — Call(`_[_]`, [opt, key]).  The operand is
+  // optional<map>, so codegen routes to the optional kernel (the
+  // kernel unwraps internally).
+  Pipeline p = RunPipeline("optional.of({'c': 'v'})['c']");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_lookup_arena"));
+}
+
+TEST(ExprLowerIndexOptionalTest, MapOptIndexCallEmitsOptionalKernelCall) {
+  // `m[?k]` — `Call("_[?_]", [m, k])` per probe Q2.  Routes through
+  // the general kCall arm using the `map_optindex_optional_value`
+  // overload, which the OverloadTable maps to
+  // `cel_select_optional_field_at_vv`.  Distinct from the
+  // `_[_]`-with-optional-operand path covered above — exercises the
+  // seven `*_optindex_*` overload seeds.
+  Pipeline p = RunPipeline("{'c': 'v'}[?'c']");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+}
+
+TEST(ExprLowerIndexOptionalTest, ListOptIndexCallEmitsOptionalKernelCall) {
+  // List variant: `[?i]` on a list literal routes to the
+  // `list_optindex_optional_int` overload, also seeded onto the
+  // optional kernel.
+  Pipeline p = RunPipeline("[10, 20, 30][?1]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+}
+
+TEST(ExprLowerIndexOptionalTest, IndexOnOptionalListEmitsOptionalKernelCall) {
+  // `optional.of([1,2,3])[0]` — operand is `optional<list>`, so
+  // `EmitKIndexCall` routes Repr::kOptional through the optional
+  // kernel for the list variant too.  Distinct from
+  // `IndexOnOptionalEmitsOptionalKernelCall` which uses an
+  // optional<map> operand.
+  Pipeline p = RunPipeline("optional.of([10, 20, 30])[1]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_at_arena"));
+}
+
+TEST(ExprLowerSelectOptionalTest, SelectOnOptionalNoneEmitsOptionalKernelCall) {
+  // `optional.ofNonZeroValue({'a': 'b'}).c` — the value is Some(map)
+  // at runtime, but the static type is `optional<map<…>>` so codegen
+  // still routes through the optional kernel.  Bare `optional.none()`
+  // can't be used here: it types as `optional<dyn>`, which the
+  // static-subset gate rejects before codegen runs.
+  Pipeline p = RunPipeline("optional.ofNonZeroValue({'a': 'b'}).c");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_select_optional_field_at_vv"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field"));
+}
+
+// ============================================================
+// Optional entries in map / list literals
+// ============================================================
+//
+// `{?key: opt_v}` and `[?opt_e]` (probes Q3 / Q4) route through new
+// predicate-gated kernels.  Mixed literals (one `?` entry + one
+// regular entry) must emit one kernel per entry-kind in document
+// order.
+
+TEST(ExprLowerOptionalLiteralTest, MapAllOptionalEntriesEmitInsertIfPresent) {
+  Pipeline p =
+      RunPipeline("{?'k1': optional.of('v1'), ?'k2': optional.none()}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at_if_present"));
+  // No unconditional `cel_map_insert` — every entry is optional.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert"))
+      << "all-optional map literal must not emit any unconditional inserts";
+}
+
+TEST(ExprLowerOptionalLiteralTest, MapMixedEntriesEmitsBothInsertKernels) {
+  // The first entry is unconditional, the second is `?key:` —
+  // codegen must emit `cel_map_insert` then `cel_map_insert_at_if_present`.
+  Pipeline p = RunPipeline("{'k1': 'v1', ?'k2': optional.of('v2')}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at_if_present"));
+}
+
+TEST(ExprLowerOptionalLiteralTest, ListAllOptionalElementsEmitAppendIfPresent) {
+  Pipeline p = RunPipeline("[?optional.of(10), ?optional.of(20)]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at_if_present"));
+}
+
+TEST(ExprLowerOptionalLiteralTest, ListMixedElementsEmitsBothAppendKernels) {
+  // `[1, ?optional.of(2), 3]` — middle element is optional, the
+  // others are not.  Both kernels must appear.
+  Pipeline p = RunPipeline("[1, ?optional.of(2), 3]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at_if_present"));
+}
+
+TEST(ExprLowerOptionalLiteralTest, NonOptionalMapLiteralEmitsOnlyPlainInsert) {
+  // Regression: ordinary map literal must not route through the
+  // predicate-gated kernel even after the codegen branch was added.
+  Pipeline p = RunPipeline("{'k': 'v'}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at_if_present"));
+}
+
+TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
+  Pipeline p = RunPipeline("[1, 2, 3]");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at_if_present"));
+}
+
+// `Foo{?field: opt_value}` proto-literal optional entries route
+// through the new `cel_set_field_at_if_present` kernel.  Per-shape
+// codegen verification lives at the e2e level (`m14_test.cc`)
+// because the codegen-test `RunPipeline` doesn't register the
+// conformance proto descriptors needed for `cel.expr.conformance.*`
+// names to type-check.  The wat_runner test
+// (`WatRunnerM14Test.SetFieldIfPresentSomeCallsHostNoneShortCircuits`)
+// locks the kernel ABI byte-exact, and the runtime tests in
+// `cel_optional_test.cc` cover every input shape — between them,
+// the only remaining surface is "does the codegen branch on
+// `f.optional()` correctly", which the e2e tests prove directly.
 
 }  // namespace
 }  // namespace celwasm

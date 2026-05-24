@@ -80,6 +80,13 @@ void InstallStructImports(WasmModule& mod) {
   mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
                         "cel_host", "cel_wkt_unwrap_wrapper", set_params,
                         BinaryenTypeNone());
+  // Optional-payload predicate-gated proto-field set for
+  // `Foo{?field: opt_value}` entries.  Wasm-side unwrap → delegate
+  // to `cel_host.cel_set_field` on Some; no-op on None.
+  // `(msg_slot, field_ref_id, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
+                        "cel_set_field_at_if_present", set_params,
+                        BinaryenTypeNone());
 }
 
 // Map literal + indexing runtime entry points.  `cel_map_*` come
@@ -103,6 +110,11 @@ void InstallMapImports(WasmModule& mod) {
   const BinaryenType map4_params[4] = {i32, i32, i32, i32};
   mod.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
                         "cel_map_insert_at_if_bool", map4_params,
+                        BinaryenTypeNone());
+  // Optional-payload predicate-gated insert for `{?key: opt_v}` map
+  // entries.  `(map_slot, key_slot, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName),
+                        "cel", "cel_map_insert_at_if_present", map3_params,
                         BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
                         "cel_map_lookup_arena", map3_params,
@@ -172,6 +184,11 @@ void InstallListImports(WasmModule& mod) {
   mod.AddFunctionImport("cel_list_append_at_if_bool", "cel",
                         "cel_list_append_at_if_bool", list3_params,
                         BinaryenTypeNone());
+  // Optional-payload predicate-gated append for `[?elem]` list
+  // entries.  `(list_slot, opt_value_slot) -> void`.
+  mod.AddFunctionImport(std::string(kCelListAppendAtIfPresentInternalName),
+                        "cel", "cel_list_append_at_if_present", append_params,
+                        BinaryenTypeNone());
 }
 
 // Install one wasm function import per OverloadTable seed whose
@@ -201,6 +218,7 @@ void InstallListImports(WasmModule& mod) {
 bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
                            absl::string_view module_name, uint8_t num_args) {
   const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType one_param[1] = {i32};
   const BinaryenType v_params[2] = {i32, i32};
   const BinaryenType vv_params[3] = {i32, i32, i32};
   const BinaryenType vvv_params[4] = {i32, i32, i32, i32};
@@ -219,6 +237,11 @@ bool InstallOverloadImport(WasmModule& mod, absl::string_view name,
       return true;
     case 2:
       mod.AddFunctionImport(nstr, mstr, nstr, v_params, BinaryenTypeNone());
+      return true;
+    case 1:
+      // 0 value-args + out_slot.  `cel_optional_none_at(out_slot)` is
+      // the canonical 1-arg kernel — the 0-input cousin of `_at_v`.
+      mod.AddFunctionImport(nstr, mstr, nstr, one_param, BinaryenTypeNone());
       return true;
     default:
       return false;

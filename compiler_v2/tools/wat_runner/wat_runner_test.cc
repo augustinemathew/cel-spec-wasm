@@ -944,5 +944,215 @@ TEST(WatRunnerWrapperTest, WrapperKStructTailUnwrapProducesCelInt) {
   EXPECT_EQ(cv.payload.i, 5);
 }
 
+// ─────────────────────────────────────────────────────────
+// CEL `optional<T>` end-to-end WAT tests.
+//
+// Each test assembles a WAT under `doc/.../wat/m14_optional_*.wat`,
+// runs it through `wat_runner` against the real `cel_optional_*`
+// exports from `cel_runtime.wasm`, and asserts on the post-eval
+// CelValue bytes.  Any codegen-arm or kernel change that produces
+// a different byte layout for these six expressions breaks these
+// tests — the WAT-first lock CLAUDE.md promises.
+// ─────────────────────────────────────────────────────────
+
+// 32-byte arena-allocated OptionalCell (cf. cel_optional.h).  Mirrored
+// locally so we don't drag the runtime header (and its `_Static_assert`s
+// on _Alignof) into a googletest .cc.
+struct WatRunnerOptionalCell {
+  uint32_t present;
+  uint32_t _pad;
+  CelValue inner;
+};
+
+WatRunnerOptionalCell DecodeCell(const std::vector<uint8_t>& mem,
+                                 uint32_t cell_off) {
+  WatRunnerOptionalCell cell{};
+  std::memcpy(&cell, mem.data() + cell_off, sizeof(cell));
+  return cell;
+}
+
+TEST(WatRunnerM14Test, OptionalOfIntProducesSomeIntCell) {
+  auto wat = LoadWat("m14_optional_of_int.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  WatRunnerOptionalCell cell = DecodeCell(out->memory_after, cv.payload.opt);
+  EXPECT_EQ(cell.present, 1u);
+  EXPECT_EQ(cell.inner.kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(cell.inner.payload.i, 1);
+}
+
+TEST(WatRunnerM14Test, OptionalHasValueProducesTrue) {
+  auto wat = LoadWat("m14_optional_has_value.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cv.payload.b, 1);
+}
+
+TEST(WatRunnerM14Test, OptionalSelectFieldProducesSomeString) {
+  auto wat = LoadWat("m14_optional_select_field.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 112u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  WatRunnerOptionalCell cell = DecodeCell(out->memory_after, cv.payload.opt);
+  EXPECT_EQ(cell.present, 1u);
+  EXPECT_EQ(cell.inner.kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(cell.inner.payload.s.len, 1u);
+  EXPECT_EQ(ReadSpan(out->memory_after, cell.inner.payload.s), "v");
+}
+
+TEST(WatRunnerM14Test, OptionalChainOrValueUnwrapsDefault) {
+  auto wat = LoadWat("m14_optional_chain_or_value.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 160u);
+  // .?missing on a map without that key → None; .orValue("default")
+  // unwraps the default — output is the bare string, NOT another
+  // optional.
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(cv.payload.s.len, 7u);
+  EXPECT_EQ(ReadSpan(out->memory_after, cv.payload.s), "default");
+}
+
+TEST(WatRunnerM14Test, OptionalNoneProducesPresentZeroCell) {
+  auto wat = LoadWat("m14_optional_none.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 16u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  WatRunnerOptionalCell cell = DecodeCell(out->memory_after, cv.payload.opt);
+  EXPECT_EQ(cell.present, 0u);
+}
+
+TEST(WatRunnerM14Test, OptionalOfNonZeroOnZeroIntProducesNone) {
+  auto wat = LoadWat("m14_optional_of_non_zero.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  WatRunnerOptionalCell cell = DecodeCell(out->memory_after, cv.payload.opt);
+  EXPECT_EQ(cell.present, 0u)
+      << "ofNonZeroValue(0) should produce None per the zero-predicate "
+         "matrix (CEL_INT zero ⇒ true).";
+}
+
+TEST(WatRunnerM14Test, ListAppendIfPresentMixedSomeNoneProducesCountOne) {
+  auto wat = LoadWat("m14_list_append_if_present.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_LIST_ARENA));
+  // Decode the ArenaListHeader: count must be 1 (Some appended, None skipped).
+  ArenaListHeader hdr{};
+  std::memcpy(&hdr, out->memory_after.data() + cv.payload.arena_list.header_ptr,
+              sizeof(hdr));
+  EXPECT_EQ(hdr.count, 1u);
+  EXPECT_EQ(hdr.capacity, 2u);
+  // The single appended element must be CelValue{CEL_INT, i=10}.
+  CelValue elem;
+  std::memcpy(&elem, out->memory_after.data() + hdr.elements_offset,
+              sizeof(elem));
+  EXPECT_EQ(elem.kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(elem.payload.i, 10);
+}
+
+TEST(WatRunnerM14Test, MapInsertIfPresentMixedSomeNoneProducesCountOne) {
+  auto wat = LoadWat("m14_map_insert_if_present.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 88u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  ArenaMapHeader hdr{};
+  std::memcpy(&hdr, out->memory_after.data() + cv.payload.arena_map.header_ptr,
+              sizeof(hdr));
+  EXPECT_EQ(hdr.count, 1u);
+  EXPECT_EQ(hdr.capacity, 2u);
+  // The single inserted entry must be (k1, v1).
+  CelValue key;
+  CelValue val;
+  std::memcpy(&key, out->memory_after.data() + hdr.entries_offset, sizeof(key));
+  std::memcpy(&val, out->memory_after.data() + hdr.entries_offset + sizeof(key),
+              sizeof(val));
+  EXPECT_EQ(key.kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(ReadSpan(out->memory_after, key.payload.s), "k1");
+  EXPECT_EQ(val.kind, static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(ReadSpan(out->memory_after, val.payload.s), "v1");
+}
+
+TEST(WatRunnerM14Test, SetFieldIfPresentSomeCallsHostNoneShortCircuits) {
+  auto wat = LoadWat("m14_proto_set_field_if_present.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  // Capture every cel_host.cel_set_field invocation.  The Some-path
+  // call must fire exactly once with field_ref_id=42; the None-path
+  // call must NOT reach the host (proves the wasm-side
+  // short-circuit on cell.present==0).
+  struct Capture {
+    uint32_t msg_slot;
+    uint32_t field_ref_id;
+    uint32_t value_slot;
+  };
+  std::vector<Capture> calls;
+  in.cel_host_cel_set_field_stub =
+      [&calls](uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot,
+               uint8_t* /*memory*/, size_t /*mem_size*/) {
+        calls.push_back({msg_slot, field_ref_id, value_slot});
+      };
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+
+  ASSERT_EQ(calls.size(), 1u) << "Some-path must invoke host exactly once; "
+                                 "None-path must short-circuit";
+  EXPECT_EQ(calls[0].msg_slot, 40u);
+  EXPECT_EQ(calls[0].field_ref_id, 42u)
+      << "Recorded field_ref_id confirms the Some-path call reached host "
+         "(field_ref_id=43 would have meant the None-path slipped through)";
+  // The value_slot must point at the OptionalCell.inner — 8 bytes
+  // past the cell base.
+  CelValue opt_cv = DecodeCelValue(out->memory_after, /*offset=*/64);
+  EXPECT_EQ(opt_cv.kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  const uint32_t expected_inner_off =
+      opt_cv.payload.opt + 8u /* offsetof(OptionalCell, inner) */;
+  EXPECT_EQ(calls[0].value_slot, expected_inner_off);
+}
+
 }  // namespace
 }  // namespace celwasm
