@@ -1,6 +1,23 @@
 # M17 — `encoders` extension (`base64.encode` / `base64.decode`)
 
-Status: **plan — drafted 2026-05-24, not yet started.**
+Status: **shipped 2026-05-24.**  All slices (0, A, B) landed
+2026-05-24.
+
+> **What landed.**  `base64.encode(bytes)->string` and
+> `base64.decode(string)->bytes` end-to-end: two self-hosted
+> `cel_runtime.wasm` kernels (`cel_base64_encode_at_v` /
+> `cel_base64_decode_at_v`, thin absl `Base64Escape` /
+> `Base64Unescape` wrappers) + frontend `EncodersCheckerLibrary()`
+> registration + 2 overload seeds (`base64_encode_bytes` /
+> `base64_decode_string`) + ABI catalogue + wasm exports.  Two WAT
+> traces (`m17_base64_{encode,decode}.wat`) run end-to-end through
+> wasmtime.  Conformance: `encoders_ext.textproto` 0/4 → **4/4
+> PASS**; global pass 1576 → 1580 (`.baseline` bumped).  As-shipped
+> deltas from the as-written plan: (1) seed count was 191→193, not
+> 177→179 — M14 optionals had already raised it past the M12-era
+> 177 the plan assumed; (2) §4.6's host-bridge edit was a no-op —
+> engine.cc now iterates `CelRuntimeHelpers()`, so the ABI-catalogue
+> entry (§4.3) auto-wires the bind.
 
 Scope is the cel-cpp `encoders` extension library: two global
 functions (`base64.encode(bytes) -> string`,
@@ -141,7 +158,13 @@ no coverage-tripwire arm.  Seed count `177 → 179`.
 | `base64_decode_string` | `cel_base64_decode_at_v` |
 
 Breadcrumb in `overload_table_test.cc`:
-`// M17: 177 → 179 — added 2 encoders (base64) overload seeds.`
+`// M17: 191 → 193 — added 2 encoders (base64) overload seeds.`
+
+> **As-shipped:** seed count was **191 → 193**, not the 177 → 179
+> the plan assumed.  M14 (optionals) had added 14 seeds after the
+> M12-era 177 this doc was drafted against.  Both
+> `kBuiltinSeeds`'s `std::array<Seed, 193>` size and
+> `kBuiltinSeedCount` were bumped.
 
 No `expr_lower.cc` change — both route through the existing
 `EmitGeneralCall` arm (same path `string_ext` / `matches` use).
@@ -194,13 +217,18 @@ if (auto s = builder.AddLibrary(cel::extensions::EncodersCheckerLibrary());
 `BUILD.bazel` for `:parse_and_check` gains
 `@cel-cpp//extensions:encoders`.
 
-### 4.6 Host-side import bridge
+### 4.6 Host-side import bridge — **no-op as of M14**
 
-`compiler_v2/api/internal/engine.cc::kRuntimeExports` — add the 2
-export names to the linker-bind table so the expr module's
-`(import "cel" "cel_base64_*")` lookups resolve (the regression
-mode M12 §6 Slice F flagged: missing bind → `instantiate(expr):
-unknown import` at conformance pre-flight).
+> **Plan-vs-execution delta.**  This step was a no-op.  The
+> hand-maintained `kRuntimeExports` array in
+> `compiler_v2/api/engine.cc` was removed (2026-05-22, M14 era);
+> the engine now iterates `celwasm::abi::CelRuntimeHelpers()` (the
+> ABI catalogue, §4.3) to bind every runtime export.  So the §4.3
+> catalogue entry *is* the host-bridge wiring — no separate
+> engine.cc edit.  The M12 §6 Slice F failure mode (missing bind →
+> `instantiate(expr): unknown import`) is now structurally
+> impossible: catalogue and exports are the single source of
+> truth, cross-checked by `runtime_catalogue_consistency_test`.
 
 ## 5. Test coverage strategy
 
@@ -235,10 +263,12 @@ so Slice B's "lights up" commit is a pure wiring change.
 
 ### 5.3 Conformance lock
 
-  - [ ] `encoders_ext.textproto` 0/4 → 4/4 PASS.
-  - [ ] No regressions on other fixtures.
-  - [ ] `compiler_v2/conformance/.baseline` bumped `1576 → 1580`.
-  - [ ] `scripts/check_conformance_monotonic.sh` passes.
+  - [x] `encoders_ext.textproto` 0/4 → 4/4 PASS.
+  - [x] No regressions on other fixtures (global pass +4 = exactly
+        the 4 encoders rows; fail count unchanged at 148).
+  - [x] `compiler_v2/conformance/.baseline` bumped `1576 → 1580`.
+  - [x] `scripts/check_conformance_monotonic.sh` passes (pass ≥
+        baseline).
 
 ## 6. Slicing
 
@@ -306,25 +336,36 @@ the two kernel-call shapes.
 > `cel_base64_*` until the BUILD wires `:cel_base64_ext` into
 > `cel_runtime_wasm.bin` (Slice B work).
 
-### Slice B — pipeline wiring + conformance lock (~0.5 day)
+### Slice B — pipeline wiring + conformance lock (~0.5 day) — **shipped 2026-05-24**
 
-  - [ ] **Frontend** — register `EncodersCheckerLibrary()`
+  - [x] **Frontend** — registered `EncodersCheckerLibrary()`
         (§4.5); BUILD dep `@cel-cpp//extensions:encoders`.
-  - [ ] **Codegen** — seed 2 overload IDs in `overload_table.cc`
-        (§4.2); bump `overload_table_test.cc` seed count `177 →
-        179` with breadcrumb.
-  - [ ] **ABI catalogue** — 2 `K_AT_V` entries (§4.3).
-  - [ ] **Exports** — 2 lines in `wasm_exports.txt` (§4.4);
-        confirm present in final wasm via `wasm-objdump -x`.
-  - [ ] **Host bridge** — 2 names in `engine.cc::kRuntimeExports`
-        (§4.6).
-  - [ ] **Wasm deps** — `:cel_base64_ext` added to
-        `cel_runtime_wasm.bin` deps.
-  - [ ] **E2E** — `compiler_v2/e2e/m17_test.cc` green (§5.2).
-  - [ ] **Conformance** — `bazel run
-        //compiler_v2/conformance:run_conformance`, verify +4
-        (`encoders_ext` 0/4 → 4/4); bump `.baseline` to 1580.
-  - [ ] Closeout per CLAUDE.md "Closing out a planning doc".
+  - [x] **Codegen** — seeded 2 overload IDs in `overload_table.cc`
+        (§4.2); bumped `overload_table_test.cc` seed count
+        **191 → 193** (not 177→179 — see §4.2 delta) + array size.
+  - [x] **ABI catalogue** — 2 `K_AT_V` entries (§4.3).
+  - [x] **Exports** — 2 lines in `wasm_exports.txt` (§4.4).
+  - [x] ~~**Host bridge** — `engine.cc::kRuntimeExports`.~~  No-op:
+        engine binds from `CelRuntimeHelpers()` now (§4.6 delta).
+  - [x] **Wasm deps** — `:cel_base64_ext` added to
+        `cel_runtime_wasm.bin` deps; symbol comment 193 → 195.
+  - [x] **E2E** — `compiler_v2/e2e/m17_test.cc` green (§5.2).
+  - [x] **WAT-first e2e** — `wat_runner` binds the real
+        `cel_base64_*` exports (`kRuntimeExports` 113 → 115); 2 new
+        `WatRunnerEncodersTest` cases run `m17_base64_{encode,
+        decode}.wat` end-to-end through wasmtime and assert the
+        decoded output.  Closes the loop deferred from Slice 0/A.
+  - [x] **Conformance** — `bazel run -c opt
+        //compiler_v2/conformance:run_conformance`: `encoders_ext`
+        0/4 → **4/4**; global pass **1576 → 1580** (+4, no fail
+        regression).  `.baseline` bumped to 1580.
+  - [x] Closeout (this edit).
+
+> **Shipped 2026-05-24.**  Tests green: `m17_test`,
+> `overload_table_test`, `runtime_catalogue_test`,
+> `runtime_catalogue_consistency_test`, `cel_base64_ext_test`
+> (18), `wat_runner_test` Encoders cases (2).  Conformance +4
+> hit the §5.3 target exactly.
 
 ## 7. Risks
 
@@ -351,38 +392,64 @@ the two kernel-call shapes.
 
 ## 8. Open questions
 
-  1. **Does `cel_string_ext_internal.h` already expose the
-     byte-span borrow + write helpers `decode` needs, or do they
-     need a small base64-local copy?**  Resolve in Slice A — reuse
-     if the shapes match, else a 2-helper anonymous-namespace
-     copy is fine (don't over-factor for 2 kernels).
-  2. **Is `MakeBytes` / `ExpectBytes` already in
-     `string_ext_test_helpers.h`?**  M12 was string-centric;
-     likely needs adding.  Trivial mirror of `MakeStr`.
+  1. ~~**Does `cel_string_ext_internal.h` expose the byte-span
+     helpers `decode` needs?**~~  **Resolved (Slice A):** reused
+     `Absorb3vlUnary` / `BorrowSpan` / `Poison` /
+     `WriteStringFromBytes` directly; added one base64-local
+     `WriteBytesFromBytes` (CEL_BYTES analog) in the TU's anon ns.
+  2. ~~**Is `MakeBytes` / `ExpectBytes` in
+     `string_ext_test_helpers.h`?**~~  **Resolved (Slice A):** not
+     present; added `MakeBytes` / `BytesAt` / `ExpectBytes`.
   3. ~~**Exact cel-cpp invalid-base64 error message.**~~
      **Resolved (2026-05-24 probe):** `"invalid base64 data"`
      (`extensions/encoders.cc:51`).
 
 ## 9. Closeout gate (to copy into the PR description)
 
-  - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel test //compiler_v2/runtime:cel_base64_ext_test
-        //compiler_v2/e2e:m17_test` green (~45 new test cases).
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance` —
-        **+4 PASS** (`encoders_ext` 0/4 → 4/4); baseline
+  - [x] `bazel test //compiler_v2/runtime:cel_base64_ext_test
+        //compiler_v2/e2e:m17_test
+        //compiler_v2/codegen:overload_table_test
+        //compiler_v2/abi:runtime_catalogue_consistency_test
+        //compiler_v2/tools/wat_runner:wat_runner_test` green
+        (20 new test cases: 18 unit + 2 wat_runner; m17_test e2e).
+  - [x] `bazel run -c opt //compiler_v2/conformance:run_conformance`
+        — **+4 PASS** (`encoders_ext` 0/4 → 4/4); baseline
         `1576 → 1580`.
-  - [ ] `scripts/check_conformance_monotonic.sh` passes.
-  - [ ] `scripts/lint.sh` clean across touched files.
-  - [ ] `overload_table_test.cc` breadcrumb extended (`177 → 179`).
-  - [ ] WAT traces (`m17_base64_encode.wat`,
-        `m17_base64_decode.wat`) + `wat-traces.md` walkthroughs.
-  - [ ] `per-component-test-coverage.md` + `testing-checklist.md`
-        rows ticked: base64 encode kernel, decode kernel, 3VL
-        envelope, conformance lock.
-  - [ ] Status header flipped to `shipped <date>` with a
-        one-paragraph "what landed".
-  - [ ] Future-work section appended.
+  - [x] `scripts/check_conformance_monotonic.sh` passes.
+  - [ ] `scripts/lint.sh` — skipped per session instruction (see
+        §10).
+  - [x] `overload_table_test.cc` breadcrumb extended (`191 → 193`).
+  - [x] WAT traces (`m17_base64_encode.wat`,
+        `m17_base64_decode.wat`) + `wat-traces.md` walkthroughs
+        (§M17.1/§M17.2).
+  - [x] `testing-checklist.md` row ticked (Rewrite M17); the
+        per-component grid sweep noted in §10.
+  - [x] Status header flipped to `shipped 2026-05-24` with a
+        "what landed" summary.
+  - [x] Future-work section appended (§10).
+  - [ ] `bazel test //compiler_v2/...` full-suite green — targeted
+        targets above are green; full sweep not run this session.
 
 ## 10. Future work surfaced
 
-_(populated at closeout)_
+  - **Web-safe / URL base64 alphabet.**  cel-cpp's `encoders` is
+    standard-alphabet only, so M17 is too.  If a downstream user
+    needs `-_` (URL-safe) encode/decode, it's a small follow-up:
+    `absl::WebSafeBase64{Escape,Unescape}` + 2 more overloads — but
+    not until the spec defines them.
+  - **`scripts/lint.sh` pass.**  Skipped this session per
+    instruction.  The C ABI header trips the same
+    `google-objc-function-naming` + `modernize-deprecated-headers`
+    warnings `cel_string_ext.h` already carries (pre-existing
+    convention for the `extern "C"` runtime headers) — a lint pass
+    should confirm no *new* findings beyond those.
+  - **Negative-decode conformance row.**  The corpus has no
+    invalid-base64 row today, so the `"invalid base64 data"` /
+    `CEL_ERR_INVALID_ARGUMENT` contract is unit-tested
+    (`DecodeInvalidAlphabet`) but not conformance-pinned.  If
+    upstream adds one, M17's error path already matches cel-cpp
+    verbatim.
+  - **`testing-checklist.md` / `per-component-test-coverage.md`
+    rows.**  Closeout ticked the M17 conformance + e2e lines;
+    confirm the per-component grid has a "base64 encode/decode
+    kernel" row in the next doc-hygiene sweep.

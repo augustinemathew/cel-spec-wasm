@@ -2477,6 +2477,37 @@ on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
         in `cleanup-backlog.md` (only known remaining gap; one
         previously-SKIP'd corpus row newly FAILs on it).
 
+### Rewrite M17 — `encoders` extension (base64) (shipped 2026-05-24)
+
+`m17-encoders-ext.md` shipped `base64.encode(bytes)->string` +
+`base64.decode(string)->bytes` self-hosted in `cel_runtime.wasm`.
+Conformance: `encoders_ext.textproto` 0/4 → 4/4; corpus-wide
+1576 → 1580 (+4, no fail regression).  Semantics confirmed
+against `third_party/cel-cpp/extensions/encoders.cc` (overload
+ids, `absl::Base64{Escape,Unescape}`, `"invalid base64 data"`).
+
+  - [x] **Slice 0 — WAT-first.**  `m17_base64_{encode,decode}.wat`
+        lock the unary `(out, arg)` slot-out ABI; both run
+        end-to-end through `wat_runner` (`WatRunnerEncodersTest`,
+        2 cases) asserting `b'hello'`→`"aGVsbG8="` and unpadded
+        `'aGVsbG8'`→`b'hello'`.
+  - [x] **Slice A — runtime kernels + unit tests.**
+        `cel_base64_ext.{h,cc}` (`cel_base64_encode_at_v` /
+        `cel_base64_decode_at_v`), absl wrappers bridged via
+        `cel_string_ext_internal.h` + a local `WriteBytesFromBytes`.
+        `cel_base64_ext_test.cc` — 18 tests (happy paths, padding
+        shapes, unpadded decode, invalid input, 256-byte round
+        trip, 3VL + kind-mismatch envelope).  `MakeBytes` /
+        `BytesAt` / `ExpectBytes` added to
+        `string_ext_test_helpers.h`.
+  - [x] **Slice B — pipeline wiring + conformance lock.**
+        `EncodersCheckerLibrary()` registered in
+        `parse_and_check.cc`; 2 overload seeds in
+        `overload_table.cc` (191 → 193); 2 `K_AT_V` catalogue
+        entries; 2 `wasm_exports.txt` lines; `:cel_base64_ext`
+        wired into `cel_runtime_wasm.bin`.  `m17_test.cc` e2e
+        (9 tests).  `.baseline` 1576 → 1580.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in
