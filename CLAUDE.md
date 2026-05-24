@@ -229,6 +229,61 @@ new code in the same file.
 
 Full workflow and install steps are in `doc/contributing.md`.
 
+## Probe vendored cel-cpp before bringing in a CEL language feature
+
+When a milestone imports a CEL language feature — an extension
+library (`strings`, `encoders`, `math_ext`, …), a new builtin
+overload, a macro, or any spec-defined semantics — **cel-cpp is
+the source of truth, and you read it directly before you write the
+design doc.**  Do not plan from memory of the spec: overload-id
+strings, error messages, alphabet/padding rules, and edge-case
+behaviour are exactly the things memory gets subtly wrong, and a
+wrong overload-id string fails late (codegen `not found in
+OverloadTable`) or, worse, ships a conformance-diff.
+
+cel-cpp is fetched on demand (only `third_party/cel-cpp.sha` is
+committed).  Fetch it, then read the real source:
+
+```bash
+third_party/fetch_cel_cpp.sh          # clones at the pinned SHA
+grep -n "MakeOverloadDecl\|InvalidArgumentError\|absl::Base64" \
+    third_party/cel-cpp/extensions/<feature>.cc
+```
+
+For anything a grep can't settle — does the type-checker actually
+stamp this overload id? does this absl primitive accept the
+unpadded input the corpus feeds? — **write a throwaway probe**
+under `compiler_v2/probes/<milestone>/` (the `m13_custom_fns` /
+`optionals` probe dirs are the precedent).  A probe is a small
+`cc_test` that links the real cel-cpp library (or our pipeline)
+and asserts the assumption — e.g. compile `base64.encode(b'x')`
+and print `annotations_[id].overload_id`, or feed a value through
+`absl::Base64Unescape` and check the result.  Probes are
+disposable: keep them while the milestone is in flight, delete
+them at closeout (they are NOT permanent regression tests — those
+live in the per-component test suites).
+
+Record what each probe confirmed in the milestone design doc with
+a dated callout, citing the cel-cpp file:line it came from
+(see `rewrite/m17-encoders-ext.md` §2 for the pattern).  A design
+doc that asserts a spec fact without either a cel-cpp citation or
+a probe behind it is a guess, and gets sent back.
+
+Why this is mandatory, not a nice-to-have:
+
+  - **Conformance is byte-exact against cel-cpp.**  Error
+    messages, canonical string forms, and rounding all have to
+    match upstream verbatim; the only reliable way to get them
+    right is to copy them from the source, not approximate them.
+  - **Overload ids come from cel-cpp's `Reference`.**  Our
+    `overload_table.cc` seeds must match the strings the checker
+    library stamps — which are defined in cel-cpp's
+    `MakeOverloadDecl` calls, readable in one grep.
+  - **The cheap check now beats the expensive failure later.**  A
+    5-minute fetch + grep + probe replaces a debugging session
+    that starts at a codegen error or a conformance regression
+    four layers downstream.
+
 ## WAT-first for ABI and codegen design
 
 Before implementing any new codegen arm (kSelect, kCall, kComprehension,
