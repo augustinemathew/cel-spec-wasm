@@ -12,12 +12,14 @@ Status: **shipped 2026-05-24.**  All slices (0, A, B) landed
 > `base64_decode_string`) + ABI catalogue + wasm exports.  Two WAT
 > traces (`m17_base64_{encode,decode}.wat`) run end-to-end through
 > wasmtime.  Conformance: `encoders_ext.textproto` 0/4 → **4/4
-> PASS**; global pass 1576 → 1580 (`.baseline` bumped).  As-shipped
-> deltas from the as-written plan: (1) seed count was 191→193, not
-> 177→179 — M14 optionals had already raised it past the M12-era
-> 177 the plan assumed; (2) §4.6's host-bridge edit was a no-op —
-> engine.cc now iterates `CelRuntimeHelpers()`, so the ABI-catalogue
-> entry (§4.3) auto-wires the bind.
+> PASS**; global pass 1770 → 1774 (`.baseline` bumped).  Landed by
+> rebasing onto M16 (math_ext); integration recomputed the seed
+> count and baseline as M16-base + M17-delta.  As-shipped deltas
+> from the as-written plan: (1) seed count was 249→251 (M16 moved
+> it to 249; the plan assumed the M12-era 177); (2) §4.6's
+> host-bridge edit was a no-op — engine.cc now iterates
+> `CelRuntimeHelpers()`, so the ABI-catalogue entry (§4.3)
+> auto-wires the bind.
 
 Scope is the cel-cpp `encoders` extension library: two global
 functions (`base64.encode(bytes) -> string`,
@@ -25,7 +27,7 @@ functions (`base64.encode(bytes) -> string`,
 `cel_runtime.wasm` against vendored absl
 (`absl::Base64Escape` / `absl::Base64Unescape`).  Conformance
 ceiling: **+4 PASS** — `encoders_ext.textproto` 0/4 → 4/4.
-Baseline `1576 → 1580`.
+Baseline `1770 → 1774`.
 
 This is the smallest extension milestone to date (2 functions, 2
 overloads, no parser, no list bridging) — it follows the M12
@@ -158,9 +160,9 @@ no coverage-tripwire arm.  Seed count `177 → 179`.
 | `base64_decode_string` | `cel_base64_decode_at_v` |
 
 Breadcrumb in `overload_table_test.cc`:
-`// M17: 191 → 193 — added 2 encoders (base64) overload seeds.`
+`// M17: 249 → 251 — added 2 encoders (base64) overload seeds.`
 
-> **As-shipped:** seed count was **191 → 193**, not the 177 → 179
+> **As-shipped:** seed count was **249 → 251**, not the 177 → 179
 > the plan assumed.  M14 (optionals) had added 14 seeds after the
 > M12-era 177 this doc was drafted against.  Both
 > `kBuiltinSeeds`'s `std::array<Seed, 193>` size and
@@ -266,7 +268,7 @@ so Slice B's "lights up" commit is a pure wiring change.
   - [x] `encoders_ext.textproto` 0/4 → 4/4 PASS.
   - [x] No regressions on other fixtures (global pass +4 = exactly
         the 4 encoders rows; fail count unchanged at 148).
-  - [x] `compiler_v2/conformance/.baseline` bumped `1576 → 1580`.
+  - [x] `compiler_v2/conformance/.baseline` bumped `1770 → 1774`.
   - [x] `scripts/check_conformance_monotonic.sh` passes (pass ≥
         baseline).
 
@@ -342,7 +344,7 @@ the two kernel-call shapes.
         (§4.5); BUILD dep `@cel-cpp//extensions:encoders`.
   - [x] **Codegen** — seeded 2 overload IDs in `overload_table.cc`
         (§4.2); bumped `overload_table_test.cc` seed count
-        **191 → 193** (not 177→179 — see §4.2 delta) + array size.
+        **249 → 251** (not 177→179 — see §4.2 delta) + array size.
   - [x] **ABI catalogue** — 2 `K_AT_V` entries (§4.3).
   - [x] **Exports** — 2 lines in `wasm_exports.txt` (§4.4).
   - [x] ~~**Host bridge** — `engine.cc::kRuntimeExports`.~~  No-op:
@@ -357,8 +359,8 @@ the two kernel-call shapes.
         decoded output.  Closes the loop deferred from Slice 0/A.
   - [x] **Conformance** — `bazel run -c opt
         //compiler_v2/conformance:run_conformance`: `encoders_ext`
-        0/4 → **4/4**; global pass **1576 → 1580** (+4, no fail
-        regression).  `.baseline` bumped to 1580.
+        0/4 → **4/4**; global pass **1770 → 1774** (+4, no fail
+        regression).  `.baseline` bumped to 1774.
   - [x] Closeout (this edit).
 
 > **Shipped 2026-05-24.**  Tests green: `m17_test`,
@@ -414,11 +416,11 @@ the two kernel-call shapes.
         (20 new test cases: 18 unit + 2 wat_runner; m17_test e2e).
   - [x] `bazel run -c opt //compiler_v2/conformance:run_conformance`
         — **+4 PASS** (`encoders_ext` 0/4 → 4/4); baseline
-        `1576 → 1580`.
+        `1770 → 1774`.
   - [x] `scripts/check_conformance_monotonic.sh` passes.
   - [ ] `scripts/lint.sh` — skipped per session instruction (see
         §10).
-  - [x] `overload_table_test.cc` breadcrumb extended (`191 → 193`).
+  - [x] `overload_table_test.cc` breadcrumb extended (`249 → 251`).
   - [x] WAT traces (`m17_base64_encode.wat`,
         `m17_base64_decode.wat`) + `wat-traces.md` walkthroughs
         (§M17.1/§M17.2).

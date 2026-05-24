@@ -844,6 +844,16 @@ absl::Status AddCheckerLibraries(cel::TypeCheckerBuilder& builder) {
       !s.ok()) {
     return s;
   }
+  // math_ext: registers the cel-cpp `math` extension decls (ceil,
+  // floor, round, trunc, abs, sign, sqrt, isInf/isNaN/isFinite,
+  // bitAnd/Or/Xor/Not/ShiftLeft/ShiftRight, and the internal
+  // math.@min / math.@max the greatest/least macros expand to).
+  // Kernels self-hosted in `cel_math_ext.c`; codegen routes through
+  // the math overload IDs seeded in `overload_table.cc`.
+  if (auto s = builder.AddLibrary(cel::extensions::MathCheckerLibrary());
+      !s.ok()) {
+    return s;
+  }
   // `OptionalCheckerLibrary` registers the `optional.of` /
   // `optional.none` / `optional.ofNonZeroValue` constructors plus
   // the `hasValue` / `value` / `or` / `orValue` receiver overloads,
@@ -862,16 +872,6 @@ absl::Status ConfigureCheckerBuilder(
     const google::protobuf::DescriptorPool* pool,
     std::vector<Variable>& variables_out) {
   if (auto s = AddCheckerLibraries(builder); !s.ok()) {
-    return s;
-  }
-  // math_ext: registers the cel-cpp `math` extension decls (ceil,
-  // floor, round, trunc, abs, sign, sqrt, isInf/isNaN/isFinite,
-  // bitAnd/Or/Xor/Not/ShiftLeft/ShiftRight, and the internal
-  // math.@min / math.@max the greatest/least macros expand to).
-  // Kernels self-hosted in `cel_math_ext.c`; codegen routes through
-  // the math overload IDs seeded in `overload_table.cc`.
-  if (auto s = builder.AddLibrary(cel::extensions::MathCheckerLibrary());
-      !s.ok()) {
     return s;
   }
   if (!opts.container.empty()) {

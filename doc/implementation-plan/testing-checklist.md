@@ -2482,7 +2482,8 @@ on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
 `m17-encoders-ext.md` shipped `base64.encode(bytes)->string` +
 `base64.decode(string)->bytes` self-hosted in `cel_runtime.wasm`.
 Conformance: `encoders_ext.textproto` 0/4 → 4/4; corpus-wide
-1576 → 1580 (+4, no fail regression).  Semantics confirmed
+1770 → 1774 (+4, no fail regression; landed by rebasing onto M16).
+Semantics confirmed
 against `third_party/cel-cpp/extensions/encoders.cc` (overload
 ids, `absl::Base64{Escape,Unescape}`, `"invalid base64 data"`).
 
@@ -2503,10 +2504,10 @@ ids, `absl::Base64{Escape,Unescape}`, `"invalid base64 data"`).
   - [x] **Slice B — pipeline wiring + conformance lock.**
         `EncodersCheckerLibrary()` registered in
         `parse_and_check.cc`; 2 overload seeds in
-        `overload_table.cc` (191 → 193); 2 `K_AT_V` catalogue
+        `overload_table.cc` (249 → 251); 2 `K_AT_V` catalogue
         entries; 2 `wasm_exports.txt` lines; `:cel_base64_ext`
         wired into `cel_runtime_wasm.bin`.  `m17_test.cc` e2e
-        (9 tests).  `.baseline` 1576 → 1580.
+        (9 tests).  `.baseline` 1770 → 1774.
 
 ## How to update
 
