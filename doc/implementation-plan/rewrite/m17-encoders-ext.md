@@ -271,26 +271,40 @@ the two kernel-call shapes.
 > doesn't export `cel_base64_*` yet, so the runner can't bind the
 > imports until the kernels are built (same staging M12 used).
 
-### Slice A — runtime kernels + unit tests (~0.75 day)
+### Slice A — runtime kernels + unit tests (~0.75 day) — **shipped 2026-05-24**
 
-  - [ ] **Overload-id probe first** (§2 gate) — confirm
-        `base64_encode_bytes` / `base64_decode_string` are the
-        strings `EncodersCheckerLibrary()` stamps.
-  - [ ] `cel_base64_ext.{h,cc}` — both kernels.  `encode` via
+  - [x] **Overload-id probe first** (§2 gate) — confirmed
+        `base64_encode_bytes` / `base64_decode_string` by reading
+        `encoders.cc`'s `MakeOverloadDecl` calls directly (§2
+        callout); no separate probe binary needed.
+  - [x] `cel_base64_ext.{h,cc}` — both kernels.  `encode` via
         `absl::Base64Escape`; `decode` via `absl::Base64Unescape`
-        with `false` → `CEL_ERROR(kInvalidArgument, ...)`.  3VL
+        with `false` → `Poison(CEL_ERR_INVALID_ARGUMENT)`.  3VL
         absorb on the input slot; kind-mismatch guard
         (encode wants BYTES, decode wants STRING).  Output
         arena-allocated.
-  - [ ] `cel_base64_ext_test.cc` — §5.1 matrix (~35 tests).
-  - [ ] BUILD: `:cel_base64_ext` + `:cel_base64_ext_test`
-        (§4.1).  Add `MakeBytes` / `ExpectBytes` to
-        `string_ext_test_helpers.h` if absent.
-  - [ ] `bazel test //compiler_v2/runtime:cel_base64_ext_test`
-        green; `scripts/lint.sh` clean.
+  - [x] `cel_base64_ext_test.cc` — §5.1 matrix (18 tests).
+  - [x] BUILD: `:cel_base64_ext` + `:cel_base64_ext_test`
+        (§4.1).  Added `MakeBytes` / `BytesAt` / `ExpectBytes` to
+        `string_ext_test_helpers.h`.
+  - [x] `bazel test //compiler_v2/runtime:cel_base64_ext_test`
+        green (18/18).  (Lint skipped per session instruction.)
 
+> **Shipped 2026-05-24.**  Both kernels are thin absl wrappers
+> bridged to the slot-out ABI via the shared
+> `cel_string_ext_internal.h` envelope helpers.  The only
+> base64-specific addition is a local `WriteBytesFromBytes`
+> (the `CEL_BYTES` analog of `WriteStringFromBytes`, which only
+> produces `CEL_STRING`).  `:cel_base64_ext` lists
+> `cel_string_ext_internal.h` in `srcs` (header-only `inline`
+> helpers — no link dep on `:cel_string_ext`).
+>
 > Wasm export wiring + checker registration + overload-table
-> seeding defer to Slice B (mirrors M12 Slice A→F seam).
+> seeding defer to Slice B (mirrors M12 Slice A→F seam).  **The
+> WAT-first end-to-end `wat_runner` run also folds into Slice B**
+> — it binds against `cel_runtime.wasm`, which can't export
+> `cel_base64_*` until the BUILD wires `:cel_base64_ext` into
+> `cel_runtime_wasm.bin` (Slice B work).
 
 ### Slice B — pipeline wiring + conformance lock (~0.5 day)
 

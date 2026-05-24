@@ -47,6 +47,10 @@ class StringExtFixture : public ::testing::Test {
     return cel_make_string(s, n);
   }
 
+  uint32_t MakeBytes(const std::string& b) {
+    return cel_make_bytes(b.data(), static_cast<uint32_t>(b.size()));
+  }
+
   uint32_t MakeInt(int64_t i) {
     uint32_t slot = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
     CelValue* v = cel_value_at(slot);
@@ -85,6 +89,19 @@ class StringExtFixture : public ::testing::Test {
 
   void ExpectStr(uint32_t slot, const std::string& expected) {
     EXPECT_EQ(StringAt(slot), expected);
+  }
+
+  std::string BytesAt(uint32_t slot) {
+    const CelValue* v = At(slot);
+    EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_BYTES));
+    if (v->payload.bytes.len == 0) return {};
+    return {
+        reinterpret_cast<const char*>(cel_mem_base() + v->payload.bytes.ptr),
+        v->payload.bytes.len};
+  }
+
+  void ExpectBytes(uint32_t slot, const std::string& expected) {
+    EXPECT_EQ(BytesAt(slot), expected);
   }
 
   void ExpectError(uint32_t slot, uint32_t err) {
