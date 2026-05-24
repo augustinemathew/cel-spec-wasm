@@ -774,6 +774,41 @@ TEST(WatRunnerStringOpsTest, StringConcatBuildsArenaPayload) {
 }
 
 // ─────────────────────────────────────────────────────────
+// M17 encoders — base64 encode/decode kernels self-hosted in
+// cel_runtime.wasm.  WATs lock the unary `(out, arg)` slot-out
+// ABI; the harness binds the real exports (no stub).  See
+// `m17-encoders-ext.md` §6 Slice B + `wat-traces.md` §M17.
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerEncodersTest, Base64EncodeBytesToString) {
+  auto wat = LoadWat("m17_base64_encode.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 48u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_STRING);
+  // base64(b'hello') == "aGVsbG8=" (8 ASCII bytes in the arena).
+  EXPECT_EQ(ReadSpan(out->memory_after, cv.payload.s), "aGVsbG8=");
+}
+
+TEST(WatRunnerEncodersTest, Base64DecodeUnpaddedStringToBytes) {
+  auto wat = LoadWat("m17_base64_decode.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 48u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_BYTES);
+  // Unpadded 'aGVsbG8' decodes to b'hello' — the load-bearing case.
+  EXPECT_EQ(ReadSpan(out->memory_after, cv.payload.bytes), "hello");
+}
+
+// ─────────────────────────────────────────────────────────
 // M5.D step 1 — aggregate-op kArena fast paths.  WATs 21/22
 // build a 3-element list with cel_list_create+set, then call
 // the aggregate helper.  Locks the (out_slot, list_slot) /

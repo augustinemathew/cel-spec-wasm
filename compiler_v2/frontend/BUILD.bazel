@@ -42,6 +42,7 @@ cc_library(
         "@cel-cpp//common:type",
         "@cel-cpp//extensions:bindings_ext",
         "@cel-cpp//extensions:comprehensions_v2",
+        "@cel-cpp//extensions:encoders",
         "@cel-cpp//extensions:math_ext_decls",
         "@cel-cpp//extensions:math_ext_macros",
         "@cel-cpp//extensions:strings",

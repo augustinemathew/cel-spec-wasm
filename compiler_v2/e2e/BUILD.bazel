@@ -2,6 +2,24 @@ load("@rules_cc//cc:defs.bzl", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
+# M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
+# end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
+cc_test(
+    name = "m17_test",
+    srcs = ["m17_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Optional types e2e: compile + plan + eval expressions involving
 # `optional.of` / `.c.x` chains / `has(opt.x)`.  Tracks the FAIL
 # rows in `tests/simple/testdata/optionals.textproto`.

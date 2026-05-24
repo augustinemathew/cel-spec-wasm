@@ -588,7 +588,7 @@ cc_binary(
         # instantiation, then binds it on the linker as `cel.memory`
         # so the expr module (which still imports `cel.memory`)
         # resolves to the same backing store.
-        # Export list (193 symbols) comes from `wasm_exports.txt`
+        # Export list (195 symbols) comes from `wasm_exports.txt`
         # via the `:wasm_export_args` genrule which emits one
         # `--export=<name>` per line into a wasm-ld response file
         # consumed below by `-Wl,@<file>`.  See the file header for
@@ -597,6 +597,7 @@ cc_binary(
     ],
     tags = ["manual"],
     deps = [
+        ":cel_base64_ext",
         ":cel_matches",
         ":cel_string_ext",
         ":cel_string_format",

@@ -241,6 +241,12 @@ constexpr AbiHelper kCelRuntimeHelpersArr[] = {
     K_AT_V("cel_string_quote_at_v"),
     K_AT_VV("cel_string_format_at_vv"),
 
+    // ── M17 encoders (base64) kernels ─────────────────────────
+    // base64.encode(bytes)->string, base64.decode(string)->bytes.
+    // Both unary out-slot kernels (out + 1 value arg).
+    K_AT_V("cel_base64_encode_at_v"),
+    K_AT_V("cel_base64_decode_at_v"),
+
     // ── CEL optional<T> kernels ───────────────────────────────
     // Eight value-level helpers + select-field + three
     // predicate-gated `_if_present` mutators for map / list / proto

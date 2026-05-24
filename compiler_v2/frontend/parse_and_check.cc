@@ -44,6 +44,7 @@
 #include "compiler_v2/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
 #include "extensions/comprehensions_v2.h"
+#include "extensions/encoders.h"
 #include "extensions/math_ext_decls.h"
 #include "extensions/math_ext_macros.h"
 #include "extensions/strings.h"
@@ -830,6 +831,15 @@ absl::Status ConfigureCheckerBuilder(
   // routes through the 19 overload IDs seeded in
   // `overload_table.cc`.
   if (auto s = builder.AddLibrary(cel::extensions::StringsCheckerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  // M17 encoders: registers `base64.encode(bytes)->string` and
+  // `base64.decode(string)->bytes`.  Runtime kernels are self-hosted
+  // in `cel_runtime.wasm` (`cel_base64_{encode,decode}_at_v`); codegen
+  // routes through the 2 overload IDs (`base64_encode_bytes` /
+  // `base64_decode_string`) seeded in `overload_table.cc`.
+  if (auto s = builder.AddLibrary(cel::extensions::EncodersCheckerLibrary());
       !s.ok()) {
     return s;
   }
