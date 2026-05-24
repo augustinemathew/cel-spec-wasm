@@ -69,7 +69,7 @@
 ;;                   tail-calls cel_optional_none_at, which
 ;;                   arena_alloc(32)s a None cell at [64, 96).
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_optional_of_non_zero_at_v"

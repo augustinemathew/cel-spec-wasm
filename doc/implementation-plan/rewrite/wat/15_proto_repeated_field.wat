@@ -17,13 +17,13 @@
 ;;   2. cel_host.cel_list_at    → reads element 2 from that HostList
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace: c's slot                  (variable)
 ;;   [40, 64)  rodata: lookup-index kConst          {CEL_INT, i=2}
 ;;   [64, 88)  workspace: kSelect result slot       (out=64)
 ;;             (the select on c.tags returns CEL_LIST_HOST into here)
 ;;   [88,112)  workspace: kCallExpr result slot     (out=88)
-;;   [112, mem_size)  bump arena
+;;   [112+]  bump arena (malloc'd in heap)
 ;;
 ;; cel.abi tables:
 ;;   fields[1]     = (field_number=12, name="tags",
@@ -34,7 +34,7 @@
 ;; calls ProtoBacking::ReadField → the REPEATED arm constructs a
 ;; ProtoList over the field and interns it.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"

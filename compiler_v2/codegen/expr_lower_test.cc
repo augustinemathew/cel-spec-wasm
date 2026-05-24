@@ -177,6 +177,8 @@ void InstallMapImports(WasmModule& m) {
                       BinaryenTypeNone());
   m.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
                       map2, BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_count", "cel", "cel_map_count", iter1,
+                      BinaryenTypeInt32());
 }
 
 void InstallListImports(WasmModule& m) {
@@ -198,6 +200,9 @@ void InstallListImports(WasmModule& m) {
                       list3, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
                       "cel_list_at", list3, BinaryenTypeNone());
+  const BinaryenType list1[1] = {i32};
+  m.AddFunctionImport("cel_list_arena_view", "cel", "cel_list_arena_view",
+                      list1, BinaryenTypeInt32());
 }
 
 void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {

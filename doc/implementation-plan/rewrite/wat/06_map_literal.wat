@@ -8,12 +8,12 @@
 ;;
 ;; Memory layout:
 ;;   [ 0,  8)  null sentinel
-;;   [ 8, 12)  arena cursor  — written by arena_reset
-;;   [12, 16)  arena limit   — written by arena_reset
+;;   [ 8, 12)  legacy cursor slot (now in runtime BSS)
+;;   [12, 16)  legacy limit slot (now in runtime BSS)
 ;;   [16, 40)  rodata: key kConst   {kind=CEL_INT(2), payload.i=1}
 ;;   [40, 64)  rodata: value kConst {kind=CEL_INT(2), payload.i=10}
 ;;   [64, 88)  workspace: kMapExpr result slot (out_slot=64)
-;;   [88, mem_size)  bump arena — cel_map_create allocates the
+;;   [88+]  bump arena (malloc'd in heap) — cel_map_create allocates the
 ;;                   ArenaMapHeader (16 B) here, then cel_map_insert
 ;;                   bumps to allocate the entries run.
 ;;
@@ -26,7 +26,7 @@
 ;; runtime/cel_data.h).  cel_map_insert appends one (key, value)
 ;; pair; capacity overflow poisons the map with CEL_ERR_OVERFLOW.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))

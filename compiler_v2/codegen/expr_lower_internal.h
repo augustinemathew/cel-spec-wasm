@@ -42,6 +42,14 @@ struct EmitCtx {
   // cel-cpp `overload_id` (e.g. `add_int64`) onto the wasm helper
   // this codegen emits a `BinaryenCall` to.
   const OverloadTable& overload_table;
+  // Wasm-local index offset applied to every kIdent load.  `$eval`
+  // declares no wasm params and leaves this 0.  CEL-defined custom
+  // function bodies declare `num_args` i32 params at the front of
+  // the local space (`out_slot, arg0, ...`), so their referenced
+  // variables — which `ResolvePass` assigned 0-based `local_index`
+  // values to — live at wasm locals `[num_args, num_args + K)`.
+  // See `library_module.cc::LowerCelDefinedFn`.
+  uint32_t wasm_local_offset = 0;
 };
 
 // Top-level dispatcher.  Defined in expr_lower.cc.  Comprehension

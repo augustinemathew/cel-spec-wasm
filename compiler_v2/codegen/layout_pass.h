@@ -49,6 +49,18 @@ struct LaidOutVariable {
 // reuse (each workspace `Acquire` hands out a fresh cell).
 struct LayoutOptions {
   bool debug_layout = false;
+  // Override `StaticLayout::rodata_base`.  0 (the default) means
+  // "use the design default" — 16, immediately past the two
+  // reserved low slots.  Non-zero values shift every rodata-,
+  // workspace-, and arena-derived offset by the same amount.
+  //
+  // Used by `compiler_v2/celfn/library_module.cc` to give each
+  // bundled CEL-defined-fn body a non-overlapping rodata range in
+  // the shared `cel.memory` — without this, two modules instantiated
+  // against the same memory would write their data segments on top
+  // of each other (see m13-custom-fns §4.4 + the WAT trace at
+  // `wat/45b_foo_module.wat`).
+  uint32_t rodata_base_override = 0;
 };
 
 // Output of the second codegen pipeline pass.  Extends `annotations` from
@@ -116,16 +128,21 @@ struct StaticLayout {
 
   // Per-comprehension auxiliary wasm locals (e.g. the
   // list-iteration `end_off` pointer; the map-iteration cursor; the
-  // two-iter-var index counter).  Codegen for `kComprehensionExpr`
-  // emits `local.set` against these on entry to the comprehension's
-  // loop prologue.  Pre-allocated at LayoutPass time so
+  // two-iter-var index counter; the source-address i32 for host
+  // list/map iter_ranges).  Codegen for `kComprehensionExpr` emits
+  // `local.set` against these on entry to the comprehension's loop
+  // prologue.  Pre-allocated at LayoutPass time so
   // `LowerToEvalFunction` knows the total local count when calling
-  // `BinaryenAddFunction`.  Two indices per comp covers every shape
-  // (Shape A list: end_off [+ index for two-iter]; Shape B map:
-  // iter_cursor; Shape C cel.bind: none used).  See
-  // `rewrite/m5-comprehensions-design.md`.
-  uint32_t comprehension_extra_locals_per_comp = 2;
-  // Total local count = `variables.size()` + 2 × (#comprehensions).
+  // `BinaryenAddFunction`.  Three indices per comp covers every
+  // shape (Shape A list: end_off + source_addr [+ index for
+  // two-iter]; Shape B map: iter_cursor + source_addr; Shape C
+  // cel.bind: none used).  source_addr (aux0+2) holds the
+  // kind-dispatched source slot returned by `cel_list_arena_view`
+  // for lists, or is unused for maps (`cel_map_iter_init`
+  // dispatches internally).  See `rewrite/m5-comprehensions-
+  // design.md` + m5b §CCF-8.
+  uint32_t comprehension_extra_locals_per_comp = 3;
+  // Total local count = `variables.size()` + 3 × (#comprehensions).
   uint32_t total_wasm_locals = 0;
 };
 

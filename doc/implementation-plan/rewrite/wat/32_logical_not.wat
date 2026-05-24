@@ -7,10 +7,10 @@
 ;; non-bool operand → CEL_ERR_TYPE_MISMATCH.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst true   {CEL_BOOL,  b=1}
 ;;   [40, 64)  workspace: kCall(`!_`) result slot (out=40)
-;;   [64, mem_size)  bump arena
+;;   [64+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_not(out_slot, v_slot) — i32×2 → ()
@@ -24,7 +24,7 @@
 ;;
 ;; Expected: out_slot = {CEL_BOOL, b=0}.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_not" (func $cel_not (param i32 i32)))

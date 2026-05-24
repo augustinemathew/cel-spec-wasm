@@ -28,7 +28,7 @@
 ;; `55_timestamp_hours_fixed_offset.wat`.
 ;;
 ;; Memory layout:
-;;   [ 0,  16)  reserved + arena cursor/limit
+;;   [ 0,  16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16,  40)  rodata: kConst timestamp("2009-02-13T23:31:30Z") →
 ;;                  CelValue{kind=CEL_TIMESTAMP(13), _pad,
 ;;                  payload.ts={seconds=1234567890, nanos=0, _pad=0}}
@@ -45,7 +45,7 @@
 ;;                          A near-midnight UTC ts that crosses the
 ;;                          dateline would be year=2008 — the negative
 ;;                          case lives in the §6.7 with-TZ matrix.)
-;;   [112, mem_size)  bump arena
+;;   [112+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this slice:
 ;;   cel_host.cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot,
@@ -88,7 +88,7 @@
 ;; fixed-offset tz, which exercises a different absl::TimeZone code
 ;; path on the host.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_timestamp_tz_accessor"

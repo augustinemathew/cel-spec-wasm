@@ -5,31 +5,57 @@ Drafted 2026-04-21.  This doc describes the end-state design; each
 sub-section is annotated with shipping status where it has shipped
 and a plan-vs-execution callout where the as-shipped shape diverged.
 
-> **Post-MVP delta (2026-05-18) — see [../wasi/DESIGN.md](../wasi/DESIGN.md).**
-> The wasi-sdk migration on `wasi-malloc-migration` replaces the
-> "fixed-offset bump arena at bytes 8/12 + host-owned memory"
-> shape this doc describes with "malloc-backed arena +
-> runtime-owned memory" (Phase B target).  Specifically:
+> **Phase C delta (shipped) — see [../wasi/DESIGN.md](../wasi/DESIGN.md) §4–§5.**
+> The wasi-sdk migration (Phases A/B, shipped 2026-05-18) plus the
+> Phase C library-vendoring work replaced the original
+> "fixed-offset bump arena at bytes 8/12 + host-owned, expr-defined
+> memory" shape this doc was drafted against.  The shipped model:
 >
->   - §3.2 ("memory regions") — bytes 8/12 cursor slot is dead
->     in the runtime as of M3; codegen still writes through them
->     until M5 (compat shim).
->   - §3.5 ("Lowering") `cel_alloc` → `arena_alloc` rename
->     landed in B1 (commit `fcb1289`); `cel_reset` rename
->     pending M5.
->   - §3.6 host ABI — `host_string_arena` deletion pending M7.
+>   - **One shared linear memory, runtime-owned.**
+>     `cel_runtime.wasm` is built on `wasm32-wasi-threads`, DEFINES
+>     and exports its memory as **shared** (observed `(memory 4 1024
+>     shared)` — min ~4 pages, max 1024 = 64 MiB; the min is baked by
+>     wasm-ld and varies by build mode, the host's A13 invariant only
+>     enforces a `>= CELWASM_INITIAL_MEMORY_PAGES = 2` floor).  The
+>     expr module IMPORTS `cel.memory` with a matching shared shape
+>     (`max_pages = 1024`, set in `compile.cc::InstallExprModuleImports`)
+>     and no longer defines its own.  This is the *reverse* of the
+>     pre-migration topology where the expr owned the memory and
+>     the runtime imported it.  The host pulls the shared-memory
+>     export off the runtime instance and binds it on the linker
+>     as `cel.memory` (`engine.cc::BindRuntimeMemory`), reading
+>     it via `wasmtime_sharedmemory_data()`.
+>   - **Malloc-backed, per-Instance arena.**  The fixed bytes-8/12
+>     cursor is gone.  `arena_init(cap_bytes)` is called once per
+>     Instance by the host; on wasm it `malloc()`s the backing
+>     buffer out of the dlmalloc heap, and the arena state lives
+>     in a runtime BSS struct (`g_arena`), not at fixed memory
+>     offsets.  `arena_reset()` takes no args (O(1) cursor zero);
+>     `arena_alloc(n)` returns an absolute offset into the shared
+>     memory.  `cel_alloc`/`cel_reset(base,limit)` are removed.
+>   - **`--global-base=8192`.**  The runtime link reserves
+>     `[0, 8192)` (= `CELWASM_RESERVED_LOW_MEMORY_BYTES`) for the
+>     expr module's active data segments (rodata + workspace);
+>     wasi-libc static data + stack + heap live above it.
 >
-> Where this doc and `wasi/DESIGN.md` disagree post-MVP,
-> `wasi/DESIGN.md` is authoritative for the runtime + host ABI;
-> this doc remains authoritative for codegen + frontend.  Final
-> reconcile in B6.
+> The corrected per-section descriptions are inline below
+> (§3.2, §8.1–§8.3, §9.1–§9.2) with `> Phase C delta:` callouts.
+> `wasi/DESIGN.md` §4–§5 is authoritative for the detailed runtime
+> + host memory ABI and the asserted layout invariants (A1–A17);
+> this doc carries the architectural overview.  Constants here are
+> mirrored from `compiler_v2/runtime/cel_layout.h` (the single
+> source of truth).  Note `wasi/DESIGN.md` itself predates the
+> shared-memory + wasm32-wasi-threads decision (it was drafted for
+> a vanilla `wasm32-wasi`, host-imported `(memory 2)` target); the
+> as-shipped shared-memory shape is the Phase C reality and is the
+> one described in the callouts below.
 
 **Shipping snapshot (2026-04-25):**
 
 | design § | covered by | as-shipped | notes |
 |---|---|---|---|
 | §3.1 pipeline | S1 → S4 (M1 + M2) | shipped | parse → check → resolve → layout → emit; no M5 scope stack yet |
-| §3.2 memory regions | S1 (M1) | shipped | host-allocated `cel.memory` per-Plan; both modules import |
+| §3.2 memory regions | S1 (M1), reshaped Phase C | shipped (Phase C) | runtime-owned **shared** `cel.memory`; expr imports it; expr rodata+workspace live in reserved `[0, 8192)`; arena is malloc-backed (see Phase C callout) |
 | §4.1 `NodeAnnotation` | S3 (M1), extended at M2/M3/M4 | shipped | three new fields landed at M2/M3/M4 — see §4.1 update |
 | §4.2 uniform call ABI | S5 (M5) | partial — M5.F shipped general kCall arm | general `kCall` arm landed M5.F (2026-04-25); 7 dispatcher names (`cel_list_size` / `cel_list_in` / `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in` / `cel_map_eq`) have runtime exports + kHost trampolines shipped (M5.D step 2 host/runtime halves), but codegen's `kPendingRuntimeExports` guard in `expr_lower.cc` keeps emitting `Unimplemented` for them until step 2's flip-the-guard commit lands; control-flow `&&` / `||` / `?:` pending M5.G |
 | §4.3 `OverloadTable` | S3 (M1), seeds at S5 | partial — M5.E + M5.B step 2 shipped seeds | `kBuiltinSeeds` populated with 80 entries (M5.E: 46; M5.B step 2: +34 cross-type numeric + bool/string/bytes ordering tail); `kExplicitlyUnimplementedIds` 86; coverage tripwire green |
@@ -41,8 +67,8 @@ and a plan-vs-execution callout where the as-shipped shape diverged.
 | §5 ResolvePass | S3 → S4 | shipped + extended | M2 added `attribute_id`; M3/M4 added origin visitors; M4 added comprehension early-reject |
 | §6 LayoutPass | S3 → S4 | shipped — naive | no Sethi–Ullman yet (S10); workspace slot per node |
 | §7 codegen | S1 → S4 + S8 + partial S5 | partial | `kConst` / `kIdent` / `kSelect` / `kCallExpr(_[_])` / `kCreateMap` / `kCreateList` / general `kCall` (M5.F, 2026-04-25) arms green; `&&` / `||` / `?:` pending M5.G; `kCreateStruct`, `kComprehension` pending |
-| §8 runtime | S1 + S8 | shipped + extended | bytes-8/12 arena, map/list arena primitives, kDynamic dispatcher with `__attribute__((musttail))` |
-| §9 host runtime (Engine/Instance) | S1 (M1) | shipped | two-phase instantiation; per-Plan host-allocated memory |
+| §8 runtime | S1 + S8, reshaped Phase C | shipped + extended (Phase C) | **malloc-backed arena** (`arena_init`/`arena_alloc`/`arena_reset`, state in BSS — replaces bytes-8/12), map/list arena primitives, kDynamic dispatcher with `__attribute__((musttail))` |
+| §9 host runtime (Engine/Instance) | S1 (M1), reshaped Phase C | shipped (Phase C) | two-phase instantiation; memory pulled from the runtime's shared export + bound as `cel.memory`; `arena_init` seeds the per-Instance arena |
 | §10 future-milestone absorption | M2 ✓ M3 ✓ M4 ✓ M5 pending | partial | §10.1 (M2) ticked; §10.3 (M3) + §10.4 (M4) added below; §10.2 (comprehensions) deferred to a follow-on milestone after M5 — `m5-kcall-comprehensions.md` ships kCall + control flow + msg-eq only |
 | §11.4 slice graph | S1–S4 + S8 done; S5 partial | partial | S5 partial — M5.A/B/C/D-step-1/E/F shipped 2026-04-25 (general kCall + arithmetic + comparison + string ops + aggregate kArena fast paths); S5 remainder (M5.D step 2 + M5.B step 2b + M5.G + M5.H) pending; S6 partial (`has` shipped, message-eq pending — lands with M5.D step 2); S7/S9/S10/S11/S12 pending |
 
@@ -254,10 +280,83 @@ Two reasons for splitting ResolvePass and LayoutPass:
     that logic out of the memory planner keeps each pass shorter than
     the lint's 60-line function ceiling.
 
-### 3.2 Memory regions in the expr module
+### 3.2 Memory regions
 
-Under the flip, the expr module defines its own linear memory.
-Layout:
+> **Phase C delta (shipped).**  The original drafting (preserved
+> below as historical context) had the expr module *define* its own
+> linear memory with the arena bump region at the high end of that
+> same memory.  The shipped model inverts memory ownership and moves
+> the arena into the dlmalloc heap.  Read the as-shipped layout
+> first; the original prose follows.
+
+**As-shipped (Phase C).**  There is exactly one linear memory per
+Instance, **defined and exported as shared by `cel_runtime.wasm`**
+(built on `wasm32-wasi-threads`; observed shape `(memory 4 1024
+shared)`).  The expr module IMPORTS it as `cel.memory` with a
+matching shared shape (max 1024 pages = 64 MiB).
+`-Wl,--global-base=8192` on
+the runtime link forces wasi-libc to place its static data + stack +
+heap above byte 8192, leaving `[0, 8192)` =
+`CELWASM_RESERVED_LOW_MEMORY_BYTES` free for the expr module's active
+data segments.
+
+```
+offset 0x00000  ── EXPR-RESERVED region [0, 8192) ─────────────────────
+                   Active data segments install here at expr-module
+                   instantiate time.
+   [0, 16)          null sentinel (zero-kind CelValue → `off==0 ⇒ absent`)
+   rodata_base=16   .rodata: constant CelValue headers + string/bytes
+                    payloads, one per kStaticRodata node
+   workspace_base   24-byte CelValue workspace slots, statically
+   = RoundUp8(...)  assigned (kWorkspaceSlot nodes), incl. select +
+                    aggregate scratch
+   (arena_base       ← legacy layout field; no longer where the arena
+    in StaticLayout)   physically lives — see below)
+
+offset 0x02000  ── WASI-LIBC STATIC DATA + STACK ──────────────────────
+                   ~static data + 64 KB stack.  __heap_base lands
+                   above this (around 243568, varies by build mode).
+
+offset ~__heap_base ── DLMALLOC HEAP ──────────────────────────────────
+                   Per-Instance bump arena buffer is malloc'd here
+                   once via arena_init (CELWASM_ARENA_CAPACITY_BYTES =
+                   64 KiB).  Activation binding buffer + any
+                   Plan-lifetime objects (RE2 regex cache, parsed
+                   timestamps) also live here.
+```
+
+  - **Offset 0 is reserved** as the "absent" sentinel.  Every `_at`
+    helper treats `out == 0` as absent and no-ops; `cel_value_at(0)`
+    returns a well-formed NULL.
+  - **`.rodata` starts at 16** (`rodata_base`, the first 8-aligned
+    offset past the sentinel).  CelValue headers + span payloads for
+    every `StorageKind::kStaticRodata` node.
+  - **Workspace** holds pre-assigned 24-byte slots for
+    `StorageKind::kWorkspaceSlot` nodes.  `workspace_base =
+    RoundUp8(rodata_base + rodata.size())`.
+  - **Arena** is the runtime's bump region for variable-length
+    payloads (string-concat results, list/map bodies, host-decoded
+    proto fields).  It is **malloc-backed** and lives in the dlmalloc
+    heap, NOT contiguous with workspace inside `[0, 8192)`.
+    `arena_alloc(n)` 8-aligns, bumps `g_arena.cursor`, and returns the
+    absolute offset of `g_arena.base + cursor` in the shared memory;
+    `arena_reset()` zeroes the cursor.  The `arena_base` field still
+    on `StaticLayout` is a legacy artifact (codegen no longer consults
+    it) — see §8.2.
+
+The runtime module provides `arena_init` / `arena_alloc` /
+`arena_reset` / 3VL / arithmetic helpers; the expr module imports
+them as `cel.*`.  The `INITIAL_MEMORY_PAGES`,
+`RESERVED_LOW_MEMORY_BYTES`, and `ARENA_CAPACITY_BYTES` constants live
+in `compiler_v2/runtime/cel_layout.h`, shared by codegen, host, and
+runtime so the three can't drift; see `wasi/DESIGN.md` §5 for the full
+asserted-invariant table (A1–A17).
+
+---
+
+**Original drafting (historical — pre-migration, expr-owned
+memory).**  Under the (now-superseded) flip, the expr module defined
+its own linear memory:
 
 ```
 offset 0                                                      memory end
@@ -274,28 +373,11 @@ offset 0                                                      memory end
        8 bytes padding to align .rodata to 16)
 ```
 
-  - **Offset 0 is reserved** as the "absent" sentinel. Every `_at`
-    helper already treats `out == 0` as a caller bug and no-ops;
-    the sentinel is a proper CelValue-shaped region so
-    `cel_value_at(0)` returns a well-formed NULL.
-  - **`.rodata` starts at 16** (first 8-byte-aligned offset past
-    the sentinel). Contains CelValue headers + span payloads for
-    every node annotated `StorageKind::kStaticRodata`.
-  - **Workspace** holds pre-assigned 24-byte slots for nodes annotated
-    `StorageKind::kWorkspaceSlot`. Slot count = peak Sethi–Ullman
-    number (typically 1–3 for realistic CEL).
-  - **Arena** is the runtime-internal bump region for variable-length
-    payloads — the bytes a string-concat result points at, the body
-    of a list/map, the payload of a host-decoded proto field. Not a
-    node-storage kind; every CEL node's `CelValue` itself lives in
-    `.rodata` / a workspace slot / a local. The arena is only reached
-    via `cel_alloc` called inside runtime helpers. Grows forward from
-    `arena_base`; reset by `cel_reset` exported from the expr module.
-
-The runtime module still provides `cel_alloc` / `cel_reset` / 3VL /
-arithmetic helpers. It imports the expr module's memory; its own
-`g_cel_arena` (two u32s) lives at a fixed offset inside the reserved
-region (§8.2) that both sides agree on by convention.
+In that model the arena was the high end of the expr's own memory,
+reached via `cel_alloc` and reset by a `cel_reset` the expr module
+imported, with the cursor stored at fixed bytes 8/12.  The runtime
+imported the expr's memory.  All three of those facts are reversed in
+the as-shipped Phase C model above.
 
 ## 4. Symbol table and overload table
 
@@ -1570,19 +1652,22 @@ struct CelHostCallbackEnv {
   HostExternrefTable refs;
 
   // Filled by Engine::Plan after the runtime + expr instances are
-  // ready.  `memory` is the host-owned linear-memory handle both
-  // modules share; `cel_alloc_fn` is the runtime's cel_alloc
-  // export bound onto the linker.
-  wasmtime_memory_t memory = {};
-  wasmtime_func_t cel_alloc_fn = {};
+  // ready.  `memory` is the runtime-owned SHARED-memory handle both
+  // modules share (read via wasmtime_sharedmemory_data); `arena_alloc_fn`
+  // is the runtime's arena_alloc export, `malloc_fn` its dlmalloc
+  // malloc — both bound onto the linker.  (Phase C: was a
+  // `wasmtime_memory_t` + `cel_alloc_fn` pre-migration.)
+  wasmtime_sharedmemory_t* memory = nullptr;
+  wasmtime_func_t arena_alloc_fn = {};
+  wasmtime_func_t malloc_fn = {};
 };
 ```
 
 `CelHostCallbackEnv` is passed by pointer as wasmtime callback-data
 (not copied per call) so the address must outlive the store —
 `InstanceImpl` owns it.  The Layer-3 callback bodies build a
-wasmtime-backed `MemoryView` and `ArenaAllocator` per call from
-`env->memory` + `env->cel_alloc_fn`, bundle them with `env->refs`
+shared-memory-backed `MemoryView` and `ArenaAllocator` per call from
+`env->memory` + `env->arena_alloc_fn`, bundle them with `env->refs`
 + `env->bindings` into a stack-local `TrampolineContext`, and call
 into the appropriate Layer-2 `Cel*Impl` entry point.
 
@@ -2034,6 +2119,15 @@ ident workspace prelude), `EmitCheckedArithmetic` (deleted whole),
 per-visitor helper-string plumbing (replaced by
 `OverloadTable::Lookup(ann.overload_id)` in `EmitGeneralCall`).
 
+> **Phase C delta (shipped) — `$eval` prologue is `(call
+> $arena_reset)`, no args.**  The `mem_size_bytes` comment above
+> describes the pre-migration `cel_reset(arena_base, arena_limit)`
+> prologue.  As-shipped, codegen emits a zero-arg
+> `(call $arena_reset)` (§8.3) and `LoweringOptions::mem_size_bytes`
+> no longer feeds a reset call — it now only sizes the *minimum
+> page count* of the imported shared `cel.memory`
+> (`compile.cc::InstallExprModuleImports` → `PagesForBytes`).
+
 > **Plan-vs-execution delta — `LowerToEvalFunction` takes an
 > `OverloadTable&` + `LoweringOptions` shipped with M5.F.**  The
 > as-written §7.1 signature was `(ast, layout, func_name, mod)`.
@@ -2158,8 +2252,10 @@ they become dead code on the codegen path.
   - Import declarations — the scaffolding stays but the driver
     changes.  As-shipped (`compiler_v2/compile.cc`,
     `InstallOverloadImports` + the per-feature `Install*Imports`
-    helpers): `InstallHostAbi` first declares `cel.memory` +
-    `cel.cel_reset` + `cel.cel_alloc` + the fixed host surfaces
+    helpers): `InstallExprModuleImports` first declares the imported
+    shared `cel.memory` (with the rodata active data segment) +
+    `cel.arena_reset` + `cel.arena_alloc` (Phase C — these replaced
+    `cel.cel_reset` + `cel.cel_alloc`) + the fixed host surfaces
     (`InstallSelectImports` for cel_get_field / cel_has_field;
     `InstallMapImports` for cel_map_create / insert / lookup_arena
     / lookup + the `cel_host_cel_map_lookup` re-export trampoline;
@@ -2207,22 +2303,79 @@ they become dead code on the codegen path.
 
 ## 8. Runtime changes — `compiler/runtime/*`
 
-### 8.1 Build flags — `compiler/runtime/BUILD.bazel`
+### 8.1 Build flags — `compiler_v2/runtime/BUILD.bazel`
+
+> **Phase C delta (shipped).**  `--import-memory` is gone: the
+> runtime now DEFINES + exports its (shared) memory rather than
+> importing it.  The export list is no longer hand-written inline —
+> it's driven by `wasm_exports.txt` → a wasm-ld response file.
+> `cel_alloc` is gone; `arena_init`/`arena_alloc`/`arena_reset`
+> replace it.  As-shipped flags on `cel_runtime_wasm.bin`:
 
 ```
--Wl,--import-memory=cel,memory
--Wl,--allow-undefined-file=$(location :wasm_imports.txt)
--Wl,--export=cel_alloc
--Wl,--export=cel_and
--Wl,--export=cel_or
-…
+# wasm32-wasi-threads cross-compile via //third_party/wasi_sdk
+-nostartfiles
+-Wl,--no-entry
+-Wl,--global-base=8192                    # reserve [0, 8192) for expr data segments
+-Wl,--allow-undefined-file=$(location wasm_imports.txt)
+-Wl,@$(location :wasm_export_args)        # one --export=<name> per wasm_exports.txt entry
+-mtail-call                               # musttail dispatchers lower as return_call
 ```
 
-`--export-all` retires. Every exported symbol is explicit so new
+`--export-all` is retired.  Every exported symbol is explicit
+(`wasm_exports.txt`, the single source of truth, cross-checked
+against `celwasm::abi::CelRuntimeHelpers()` by
+`//compiler_v2/abi:runtime_catalogue_consistency_test`) so new
 additions are visible in code review.
+
+**Original drafting (historical):** the pre-migration freestanding
+build imported memory (`-Wl,--import-memory=cel,memory`) and exported
+`cel_alloc` among an inline `--export=` list.
 
 ### 8.2 Arena cursor — fixed memory-base offsets
 
+> **Phase C delta (shipped) — the fixed bytes-8/12 cursor is gone.**
+> The arena is now **malloc-backed and per-Instance**, with its
+> state in a runtime BSS struct, not at fixed memory offsets.  See
+> `compiler_v2/runtime/cel_arena.c` and `wasi/DESIGN.md` §4.  The
+> as-shipped ABI:
+>
+> ```c
+> // compiler_v2/runtime/cel_arena.c
+> typedef struct {
+>   uint8_t* base;        // malloc'd buffer base in linear memory
+>   uint32_t capacity;    // total bytes (CELWASM_ARENA_CAPACITY_BYTES = 64 KiB)
+>   uint32_t cursor;      // next free byte, relative to base
+>   uint32_t initialized; // 0 or 1
+> } CelArena;
+> static CelArena g_arena;  // BSS — zero-init at instantiation
+>
+> void arena_init(uint32_t cap_bytes);  // once per Instance; malloc()s base
+> uint32_t arena_alloc(uint32_t n);     // 8-aligns, bumps; returns ABSOLUTE
+>                                       //   offset (cel_mem_base()+ret resolves
+>                                       //   on both wasm + host); 0 on OOM;
+>                                       //   traps if !initialized
+> void arena_reset(void);               // O(1): cursor = 0 (no args)
+> uint32_t arena_cursor(void);
+> uint32_t arena_capacity(void);
+> ```
+>
+> On the **wasm** build `arena_init` `malloc()`s the backing buffer
+> from the dlmalloc heap (high in memory, above `__heap_base`); the
+> returned malloc pointer IS an absolute offset in the shared memory,
+> so `arena_alloc` returns it directly.  On the **native** build the
+> arena is backed by a slice of the test `g_memory[]` so unit tests
+> exercise the same byte layout.  The host seeds the arena once per
+> Instance (`engine.cc::SeedRuntimeArena` →
+> `arena_init(CELWASM_ARENA_CAPACITY_BYTES)`); `arena_alloc` traps if
+> called before init (CLAUDE.md "Unimplemented features" rule).  The
+> `StaticLayout::arena_base` field is now a legacy artifact —
+> codegen no longer emits the old `cel_reset(base, limit)` prologue
+> that consumed it (§8.3).
+>
+> The original fixed-offset design follows as historical context.
+
+**Original drafting (historical — fixed bytes 8/12).**
 Today `g_cel_arena` is a `static` struct at `cel_runtime.c:67`.
 After the flip, the runtime cannot store per-instance mutable state
 in C globals inside its own memory (it no longer owns the memory).
@@ -2302,6 +2455,17 @@ constant per site.
 
 ### 8.3 `cel_reset` ownership
 
+> **Phase C delta (shipped).**  `cel_reset(base, limit)` is removed.
+> Codegen emits a single `(call $arena_reset)` (the zero-arg
+> `cel.arena_reset` import) as the first instruction of every `$eval`
+> body.  The "emit the reset in the prologue, not from the host"
+> decision below still holds — the only change is that the reset is
+> now argument-free (the arena base/capacity are owned by the
+> runtime's `g_arena`, established once at `arena_init`), so there
+> are no compile-time `i32.const base`/`i32.const limit` operands.
+> The original argument-carrying form follows as historical context.
+
+**Original drafting (historical).**
 Today: runtime exports `cel_reset`; host calls it before every
 `CallEval`.
 
@@ -2399,37 +2563,51 @@ Plan" half.
 > introduce the second `Plan(program, bindings)` overload; the
 > existing zero-bindings overload stays for backward compat.
 
-### 9.1 Two-phase instantiation (host-allocated memory)
+### 9.1 Two-phase instantiation (runtime-owned shared memory)
 
-As-shipped (`compiler_v2/api/engine.cc::Engine::Plan`):
+> **Phase C delta (shipped) — the host no longer allocates memory.**
+> The runtime instance owns + exports the (shared) memory; the host
+> pulls it off `runtime_instance`, clones the shared-memory handle,
+> and binds it on the linker as `cel.memory` BEFORE the expr module
+> instantiates (`engine.cc::BindRuntimeMemory`).  It then seeds the
+> per-Instance arena via `arena_init`.  This reverses the
+> "host-allocated `cel.memory`, both modules import" model the
+> original §9.1 (below) described.
+
+As-shipped (`compiler_v2/api/engine.cc::Engine::Plan` →
+`InstantiateRuntime`):
 
 ```cpp
 absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   auto impl = std::make_unique<celwasm::InstanceImpl>();
 
-  // 1. Per-Plan: store + host-allocated memory.
-  if (auto s = InitStoreAndMemory(wasmtime_.get(), impl.get());
-      !s.ok()) return s;
+  // 1. Per-Plan store + a sandboxed WASI config (absl/cctz pull in
+  //    wasi-libc env/stdio/clock imports; wasmtime's reference WASI
+  //    impl resolves them).  No host memory allocation here.
+  if (auto s = InitStore(wasmtime_.get(), impl.get()); !s.ok()) return s;
 
-  // 2. Linker setup: bind cel_env.cel_log; register the cel_host
-  //    trampolines (cel_get_field / cel_has_field / cel_map_lookup
-  //    / cel_list_at) against impl->host_env; bind cel.memory.
-  //    Both modules import cel.memory; binding it once satisfies
-  //    both.
+  // 2. Linker setup: bind cel_env.cel_log; register cel_host
+  //    trampolines against impl->host_env; define the WASI stubs.
+  //    `cel.memory` is NOT bound here — the runtime owns it.
   if (auto s = InitLinker(wasmtime_.get(), impl.get()); !s.ok()) return s;
 
-  // 3. Phase 1: instantiate cel_runtime.wasm against the linker
-  //    (its imports are cel.memory + cel_env.cel_log + the
-  //    cel_host.* re-exports the runtime calls into for kHost
-  //    aggregate dispatch).  Then bind ~50+ runtime exports back
-  //    onto the linker under module "cel" (cel_reset, cel_alloc,
-  //    every kBuiltinSeeds helper that ships today, the map/list
-  //    primitives + dispatchers).  See `BindAllRuntimeExports`.
+  // 3. Phase 1: instantiate cel_runtime.wasm, then:
+  //      BindRuntimeMemory  — pull the SHARED `memory` export, clone
+  //                           the handle, bind it as cel.memory.
+  //      EnforceRuntimeMemoryInvariants — A13 page floor + A14
+  //                           __heap_base ≥ reserved low region.
+  //      BindAllRuntimeExports — bind every cel.* helper named by
+  //                           the ABI catalogue (single source of
+  //                           truth — see callout below).
+  //      BindRuntimeFuncHandles — cache arena_alloc + malloc handles
+  //                           for the cel_host trampolines.
+  //      SeedRuntimeArena   — arena_init(CELWASM_ARENA_CAPACITY_BYTES).
   if (auto s = InstantiateRuntime(wasmtime_.get(), impl.get());
       !s.ok()) return s;
 
   // 4. Phase 2: parse + instantiate the expr module against the
-  //    now-complete linker; cache the eval export.
+  //    now-complete linker (it imports the bound cel.memory +
+  //    cel.arena_* + cel.* helpers); cache the eval export.
   if (auto s = InstantiateExpr(wasmtime_.get(), impl.get(),
                                program.wasm_bytes());
       !s.ok()) return s;
@@ -2443,25 +2621,28 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
 ```
 
 The wiring order side-steps the expr↔runtime "circular import" the
-predecessor design wrestled with: trampolines + cel.memory are
-bound on the linker before either module instantiates, so neither
-has to exist before the other.
+predecessor design wrestled with: `cel.memory` + the runtime's
+helper exports are bound on the linker after the runtime
+instantiates but before the expr module does, so the expr's imports
+all resolve.
 
-> **Plan-vs-execution delta — eager `BindAllRuntimeExports`, not
-> lazy `UsedImports`.**  The as-written design imagined the host
-> binding only the runtime exports the expr module actually
-> imports, driven by `OverloadTable::UsedImports(used_ids)`.
-> As-shipped, `BindAllRuntimeExports` (`engine.cc`) carries a
-> hand-maintained list of every runtime export the expr module
-> *might* import — currently ~60 helpers — and binds them all
-> unconditionally.  Why: codegen never reports back the set of
-> ids it emitted, and the wasmtime linker is happy to leave
-> bindings for unreferenced names unused.  The trade-off is that
-> adding a runtime export requires touching three sites (the
-> runtime BUILD `--export=` list, `BindAllRuntimeExports`'s
-> hand-list, and the corresponding seed in `kBuiltinSeeds`); a
-> tripwire test in `cel_runtime_wasm_test` cross-checks the
-> first two.
+> **Plan-vs-execution delta — catalogue-driven `BindAllRuntimeExports`,
+> not lazy `UsedImports` (and no longer a hand-maintained list).**
+> The as-written design imagined the host binding only the runtime
+> exports the expr module actually imports, driven by
+> `OverloadTable::UsedImports(used_ids)`.  As-shipped,
+> `BindAllRuntimeExports` (`engine.cc`) iterates
+> `celwasm::abi::CelRuntimeHelpers()` — the `cel`-namespace span of
+> the ABI catalogue (`compiler_v2/abi/runtime_catalogue`) — and binds
+> every helper unconditionally.  This is the single source of truth:
+> codegen's import-declaration pass (`compile.cc`) consumes the same
+> catalogue, so the bind set and the import set cannot drift, and
+> `wasm_exports.txt` is cross-checked against the catalogue by
+> `runtime_catalogue_consistency_test`.  (The earlier hand-maintained
+> `kRuntimeExports` array was removed 2026-05-22.)  `arena_alloc` +
+> `malloc` are additionally cached as raw wasmtime func handles on
+> `host_env` (`BindRuntimeFuncHandles`) so cel_host trampolines can
+> allocate without round-tripping the linker.
 
 ### 9.2 Deletions
 
@@ -2469,10 +2650,17 @@ has to exist before the other.
     the sret slot is a `kWorkspaceSlot` offset known at compile time;
     the host passes it as the out-slot param (or `eval(0)` means "use
     the default output slot", which the expr reads from its layout).
-  - `cel_reset` call pre-`CallEval` — codegen emits a
-    `cel_reset(<rodata_size>, <mem_size>)` as the first
-    instruction of `$eval`, so the host no longer primes the
-    arena (§8.3).
+  - Host-side arena priming pre-`CallEval` — codegen emits a
+    `(call $arena_reset)` as the first instruction of `$eval`, so the
+    host no longer primes the arena per-Eval (§8.3).  The one-time
+    `arena_init` at Plan time (`SeedRuntimeArena`) is the only
+    host-driven arena call.
+
+> **Phase C delta:** `host_loader.cc` itself was deleted in the
+> runtime-isolation work (its role split into Engine + Instance —
+> see the §9 preamble); the bullets above describe the *behaviour*
+> that retired, not live line numbers.  `cel_alloc` / `cel_reset`
+> no longer exist as runtime exports (replaced by `arena_*`, §8.2).
 
 ## 10. Future-milestone absorption
 

@@ -1160,15 +1160,20 @@ consistency. Pulling apart "populate" from "validate" — a separate
 `ResolveCompContext` order the calls more cleanly (validate first,
 then populate). Cosmetic; ~0 LoC change. Low priority.
 
-### CCF-8 — `kHost`/`kLocal` source for `iter_range` is rejected with `UnimplementedError`, but only one of the four bound-list SKIP messages explains why
+### CCF-8 — `kHost`/`kLocal` source for `iter_range` is rejected with `UnimplementedError` — **RESOLVED 2026-05-22**
 
-`ResolveCompContext` (`expr_lower.cc:1188-1194`) rejects non-
-workspace-slot iter_range storage with `UnimplementedError`. The
-m5b_test.cc bound-list SKIPs cite "kHost/kLocal source is a
-follow-up." This is a real gap that the followon doc doesn't track
-explicitly — recommend adding a §10 bullet so it isn't lost. Same
-issue for `MapOverBoundList` / `MapLargeListGrowthPath` in
-`ComprehensionMapFilterListE2ETest:436-470`.
+`ResolveCompContext` previously rejected non-workspace-slot
+iter_range storage with `UnimplementedError`.  Shipped fix
+(`m5-comprehensions-followon.md` §10): kind-dispatching runtime
+iter helpers — `cel_map_iter_init` extended to dispatch on
+CelValue.kind via a new `cel_host.cel_map_iter_open` trampoline
+that snapshots host maps into arena format; new
+`cel_list_arena_view` runtime helper + `cel_host.cel_list_iter_open`
+trampoline that snapshots host lists into arena format so the
+existing inline list prologue walks unchanged.  All four m5b SKIPs
+(`ExistsOverBoundList`, `AllOverBoundList`, `MapOverBoundList`,
+`MapLargeListGrowthPath`) flipped to PASS.  New coverage in
+`compiler_v2/tools/cel/activation_matrix_test.cc`.
 
 ---
 

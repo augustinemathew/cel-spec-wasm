@@ -16,7 +16,7 @@
 ;;   2. cel_host.cel_map_lookup → Looks up "k" in that HostMap
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace: c's slot                 (variable)
 ;;   [40, 64)  rodata: lookup-key kConst           {CEL_STRING, "k"}
 ;;   [64, 65)  rodata: span payload "k"
@@ -24,7 +24,7 @@
 ;;             (the select on c.metadata returns a CEL_MAP_HOST CelValue
 ;;              into this slot; out_slot=72)
 ;;   [96,120)  workspace: kCallExpr result slot    (out=96)
-;;   [120, mem_size)  bump arena
+;;   [120+]  bump arena (malloc'd in heap)
 ;;
 ;; cel.abi tables (populated at compile time, decoded at Plan time):
 ;;   fields[1]     = (field_number=10, name="metadata",
@@ -35,7 +35,7 @@
 ;; calls ProtoBacking::ReadField → the MAP-field arm constructs a
 ;; ProtoMap and interns it.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"

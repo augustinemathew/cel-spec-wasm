@@ -12,13 +12,13 @@
 ;; frame per kConst), so the literal `1` appears twice in rodata.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  null sentinel + arena cursor/limit
+;;   [ 0, 16)  null sentinel (arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: insert-key kConst {CEL_INT, i=1}
 ;;   [40, 64)  rodata: value kConst       {CEL_INT, i=10}
 ;;   [64, 88)  rodata: lookup-key kConst  {CEL_INT, i=1}
 ;;   [88,112)  workspace: kMapExpr result slot (out=88)
 ;;   [112,136) workspace: kCallExpr lookup result slot (out=112)
-;;   [136, mem_size)  bump arena
+;;   [136+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone (in addition to those in 06):
 ;;   cel.cel_map_lookup_arena(out_slot, map_slot, key_slot) — i32×3 → ()
@@ -28,7 +28,7 @@
 ;; the lookup key, copies the matching value CelValue into
 ;; out_slot.  Missing key → {CEL_ERROR, payload.err=CEL_ERR_NO_SUCH_KEY}.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))

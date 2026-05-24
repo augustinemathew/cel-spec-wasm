@@ -12,6 +12,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler_v2/abi/runtime_catalogue.h"
 #include "compiler_v2/api/internal/abi_decode.h"
 #include "compiler_v2/api/internal/instance_impl.h"
 #include "compiler_v2/api/internal/wasmtime_engine_state.h"
@@ -216,135 +217,28 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 // `instantiate(expr): unknown import: cel::<name>`.
 //
 // Categories below mirror the seed grouping in
-// `compiler_v2/codegen/overload_table.cc::kBuiltinSeeds`.  The
-// seven aggregate-op dispatchers (`cel_list_size` / `cel_list_in`
-// / `cel_list_eq` / `cel_list_concat` / `cel_map_size` /
-// `cel_map_in` / `cel_map_eq`) each `__attribute__((musttail))`-
-// dispatch to either an `_arena` fast path or a `cel_host.*`
-// import (see `rewrite/map-list-dispatch.md`).  The list is data,
-// not code — kept at file scope so the function body is just the
-// loop and stays under the lint function-size gate.
-constexpr const char* kRuntimeExports[] = {
-    "arena_reset", "arena_alloc", "cel_map_create", "cel_map_insert",
-    "cel_map_insert_at", "cel_map_insert_at_if_bool", "cel_map_lookup_arena",
-    "cel_map_lookup", "cel_list_create", "cel_list_append_at",
-    "cel_list_append_at_if_bool", "cel_list_at_arena", "cel_list_at",
-    // Same-kind arithmetic.
-    "cel_int_add_at_vv", "cel_int_sub_at_vv", "cel_int_mul_at_vv",
-    "cel_int_div_at_vv", "cel_int_mod_at_vv", "cel_int_neg_at_v",
-    "cel_uint_add_at_vv", "cel_uint_sub_at_vv", "cel_uint_mul_at_vv",
-    "cel_uint_div_at_vv", "cel_uint_mod_at_vv", "cel_double_add_at_vv",
-    "cel_double_sub_at_vv", "cel_double_mul_at_vv", "cel_double_div_at_vv",
-    "cel_double_neg_at_v",
-    // Same-kind comparison helpers.
-    "cel_int_lt_at_vv", "cel_int_le_at_vv", "cel_int_gt_at_vv",
-    "cel_int_ge_at_vv", "cel_uint_lt_at_vv", "cel_uint_le_at_vv",
-    "cel_uint_gt_at_vv", "cel_uint_ge_at_vv", "cel_double_lt_at_vv",
-    "cel_double_le_at_vv", "cel_double_gt_at_vv", "cel_double_ge_at_vv",
-    "cel_bool_lt_at_vv", "cel_bool_le_at_vv", "cel_bool_gt_at_vv",
-    "cel_bool_ge_at_vv",
-    // Cross-type numeric ladder.
-    "cel_numeric_lt_at_vv", "cel_numeric_le_at_vv", "cel_numeric_gt_at_vv",
-    "cel_numeric_ge_at_vv",
-    // String + bytes ops.
-    "cel_string_concat_at_vv", "cel_string_size_at_v", "cel_string_lt_at_vv",
-    "cel_string_le_at_vv", "cel_string_gt_at_vv", "cel_string_ge_at_vv",
-    "cel_string_contains_at_vv", "cel_string_starts_with_at_vv",
-    "cel_string_ends_with_at_vv", "cel_bytes_concat_at_vv",
-    "cel_bytes_size_at_v", "cel_bytes_lt_at_vv", "cel_bytes_le_at_vv",
-    "cel_bytes_gt_at_vv", "cel_bytes_ge_at_vv",
-    // Aggregate kDynamic dispatchers.
-    "cel_list_size", "cel_list_in", "cel_list_eq", "cel_list_concat",
-    "cel_map_size", "cel_map_in", "cel_map_eq",
-    // Map-key iteration helpers.
-    "cel_map_iter_init", "cel_map_iter_next", "cel_map_iter_key_at",
-    "cel_map_iter_value_at",
-    // Polymorphic equality.
-    "cel_equals_at_vv", "cel_not_equals_at_vv",
-    // 3VL / control-flow helpers.
-    "cel_and", "cel_or", "cel_not", "cel_unknown_merge", "cel_copy_slot",
-    // type-of helper.
-    "cel_type_of_at_v",
-    // Numeric inter-conversion helpers.
-    "cel_uint_to_int_at_v", "cel_double_to_int_at_v", "cel_int_to_uint_at_v",
-    "cel_double_to_uint_at_v", "cel_int_to_double_at_v",
-    "cel_uint_to_double_at_v",
-    // String-parse helpers.
-    "cel_string_to_int_at_v", "cel_string_to_uint_at_v",
-    "cel_string_to_double_at_v", "cel_string_to_bool_at_v",
-    // Number/bool-to-string formatters.
-    "cel_int_to_string_at_v", "cel_uint_to_string_at_v",
-    "cel_bool_to_string_at_v", "cel_double_to_string_at_v",
-    // Bytes <-> string with UTF-8 validation.
-    "cel_string_to_bytes_at_v", "cel_bytes_to_string_at_v",
-    // Timestamp / duration arithmetic + ordering kernels.
-    "cel_dur_add_at_vv", "cel_dur_sub_at_vv", "cel_ts_dur_add_at_vv",
-    "cel_dur_ts_add_at_vv", "cel_ts_dur_sub_at_vv", "cel_ts_ts_sub_at_vv",
-    "cel_dur_lt_at_vv", "cel_dur_le_at_vv", "cel_dur_gt_at_vv",
-    "cel_dur_ge_at_vv", "cel_ts_lt_at_vv", "cel_ts_le_at_vv", "cel_ts_gt_at_vv",
-    "cel_ts_ge_at_vv",
-    // Timestamp UTC accessors + duration accessors.
-    "cel_ts_year_utc_at_v", "cel_ts_month_utc_at_v",
-    "cel_ts_day_of_month_1_utc_at_v", "cel_ts_day_of_month_utc_at_v",
-    "cel_ts_day_of_year_utc_at_v", "cel_ts_day_of_week_utc_at_v",
-    "cel_ts_hours_utc_at_v", "cel_ts_minutes_utc_at_v",
-    "cel_ts_seconds_utc_at_v", "cel_ts_milliseconds_utc_at_v",
-    "cel_dur_hours_at_v", "cel_dur_minutes_at_v", "cel_dur_seconds_at_v",
-    "cel_dur_milliseconds_at_v",
-    // Pure-wasm int <-> ts/dur conversions.
-    "cel_ts_to_int_at_v", "cel_dur_to_int_at_v", "cel_int_to_ts_at_v",
-    "cel_int_to_dur_at_v",
-    // With-TZ accessor shims (delegate to the host's single
-    // `cel_timestamp_tz_accessor` trampoline).
-    "cel_ts_year_with_tz_at_vv", "cel_ts_month_with_tz_at_vv",
-    "cel_ts_day_of_month_1_with_tz_at_vv", "cel_ts_day_of_month_with_tz_at_vv",
-    "cel_ts_day_of_year_with_tz_at_vv", "cel_ts_day_of_week_with_tz_at_vv",
-    "cel_ts_hours_with_tz_at_vv", "cel_ts_minutes_with_tz_at_vv",
-    "cel_ts_seconds_with_tz_at_vv", "cel_ts_milliseconds_with_tz_at_vv",
-    // Runtime-hosted parse / format kernels — see
-    // `rewrite/phase-c-plan.md` §4.1-4.4.  Self-hosted inside
-    // `cel_runtime.wasm` via vendored absl in `cel_time_parse.cc`.
-    "cel_timestamp_parse_at_v", "cel_duration_parse_at_v",
-    "cel_timestamp_format_at_v", "cel_duration_format_at_v",
-    // Regex matches kernel — RE2-backed self-hosted inside
-    // `cel_runtime.wasm` (`cel_matches.cc`).  See
-    // `rewrite/phase-c-plan.md` §4.5.
-    "cel_matches_at_vv",
-    // M12 `string_ext` extension kernels — 18 entries (13
-    // functions × 19 overloads → 18 distinct runtime exports,
-    // the 19th being a re-alias `matches`/`matches_string` that
-    // shares a kernel).  Self-hosted inside `cel_runtime.wasm`
-    // via `cel_string_ext_*.cc` + `cel_string_format*.cc`.  See
-    // `rewrite/m12-string-ext.md` §4.2.
-    "cel_string_char_at_at_vv", "cel_string_lower_ascii_at_v",
-    "cel_string_upper_ascii_at_v", "cel_string_trim_at_v",
-    "cel_string_reverse_at_v", "cel_string_index_of_at_vv",
-    "cel_string_index_of_at_vvv", "cel_string_last_index_of_at_vv",
-    "cel_string_last_index_of_at_vvv", "cel_string_substring_at_vv",
-    "cel_string_substring_range_at_vvv", "cel_string_replace_at_vvv",
-    "cel_string_replace_n_at_vvvv", "cel_string_split_at_vv",
-    "cel_string_split_n_at_vvv", "cel_string_join_at_v",
-    "cel_string_join_sep_at_vv", "cel_string_quote_at_v",
-    "cel_string_format_at_vv",
-    // CEL `optional<T>` kernels — matching the
-    // `-Wl,--export=cel_optional_*`,
-    // `-Wl,--export=cel_select_optional_field_at_vv`,
-    // `-Wl,--export=cel_map_insert_at_if_present`,
-    // `-Wl,--export=cel_list_append_at_if_present`, and
-    // `-Wl,--export=cel_set_field_at_if_present` lines in
-    // `compiler_v2/runtime/BUILD.bazel`.
-    "cel_optional_none_at", "cel_optional_of_at_v",
-    "cel_optional_of_non_zero_at_v", "cel_optional_has_value_at_v",
-    "cel_optional_value_at_v", "cel_optional_or_at_vv",
-    "cel_optional_or_value_at_vv", "cel_select_optional_field_at_vv",
-    "cel_map_insert_at_if_present", "cel_list_append_at_if_present",
-    "cel_set_field_at_if_present"};
+// The pre-2026-05-22 hand-maintained `kRuntimeExports` array was
+// removed in favour of `compiler_v2/abi/runtime_catalogue` — the
+// `cel`-namespace span there drives both `BindAllRuntimeExports`
+// below and codegen's import-declaration pass in
+// `compile.cc::InstallOverloadImports`.  Single source of truth.
 
 absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
                                    wasmtime_context_t* ctx) {
-  for (const char* name : kRuntimeExports) {
-    if (auto s =
-            BindRuntimeExport(impl->linker, ctx, impl->runtime_instance, name);
+  // Derive the binding list from the ABI catalogue's `cel` namespace.
+  // This is the single source of truth — codegen's import-declaration
+  // pass (`compile.cc::InstallOverloadImports`) consumes the same
+  // catalogue, so the import set + the bind set can't drift.  Each
+  // helper name routes through the same `BindRuntimeExport` wrapper
+  // that handles the wasmtime linker plumbing.
+  for (const auto& h : celwasm::abi::CelRuntimeHelpers()) {
+    // `arena_alloc` is bound separately under a fixed wasmtime handle
+    // (see `BindRuntimeFuncHandles`) so cel_host trampolines can call
+    // it without round-tripping through the linker.  Also re-binding
+    // it under cel.arena_alloc here so the expr module's import call
+    // resolves identically.
+    if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
+                                    std::string(h.name).c_str());
         !s.ok()) {
       return s;
     }
@@ -713,6 +607,9 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // the decoded abi just stays empty.
   auto abi_or = celwasm::DecodeCelAbiFromWasm(program.wasm_bytes());
   if (abi_or.ok()) {
+    if (auto s = celwasm::abi::CheckRuntimeAbiVersion(*abi_or); !s.ok()) {
+      return s;
+    }
     impl->abi = *std::move(abi_or);
   } else if (abi_or.status().code() != absl::StatusCode::kNotFound) {
     return abi_or.status();

@@ -52,7 +52,7 @@
 ;; `kRuntimeExports`.  Tagged `manual` until then.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: map-key kConst {CEL_INT, i=1}
 ;;   [40, 64)   rodata: map-key kConst {CEL_INT, i=2}
 ;;   [64, 88)   rodata: map-val kConst {CEL_STRING, s={ptr=200,len=1}}
@@ -64,7 +64,7 @@
 ;;   [208,232)  workspace: key_slot (iter_var binding, written by
 ;;                                   cel_map_iter_key_at each iter)
 ;;   [232,256)  workspace: step_out scratch
-;;   [256, mem_size)  bump arena
+;;   [256+]  bump arena (malloc'd in heap)
 ;;   (String payload bytes "ab" at offset 200 inside the reserved
 ;;    rodata region preceding the workspace.)
 ;;
@@ -77,7 +77,7 @@
 ;;   cel.cel_map_iter_next     (Slice E NEW)  — (handle)   → 0|1
 ;;   cel.cel_map_iter_key_at   (Slice E NEW)  — (out, handle) → ()
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_map_create" (func $cel_map_create (param i32 i32)))

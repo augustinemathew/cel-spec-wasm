@@ -63,8 +63,8 @@
 ;;      same-slot contract applies to both.
 ;;
 ;; Memory layout (mirrors 60 exactly; differs only in accu_init bytes):
-;;   [ 0,  8)   null sentinel + arena cursor
-;;   [ 8, 16)   arena limit / pad
+;;   [ 0,  8)   null sentinel (arena cursor now in runtime BSS)
+;;   [ 8, 16)   pad (legacy arena-limit slot — now in BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -73,7 +73,7 @@
 ;;   [136,160)  workspace: kCreateList result slot
 ;;   [160,184)  workspace: accu_slot
 ;;   [184,208)  workspace: step_out scratch
-;;   [208, mem_size)  bump arena
+;;   [208+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers — all already exported ──
 ;;   cel.cel_and    (M5.G — 3VL conjunction; same-slot aliasing OK)
@@ -81,11 +81,11 @@
 ;;
 ;; **Runnable today.**
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
-  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
   (import "cel" "cel_int_gt_at_vv"
           (func $cel_int_gt_at_vv (param i32 i32 i32)))
   (import "cel" "cel_and" (func $cel_and (param i32 i32 i32)))
@@ -116,9 +116,9 @@
 
     ;; iter_range = [1, 2, 3]
     (call $cel_list_create (i32.const 136) (i32.const 3))
-    (call $cel_list_set (i32.const 136) (i32.const 0) (i32.const 16))
-    (call $cel_list_set (i32.const 136) (i32.const 1) (i32.const 40))
-    (call $cel_list_set (i32.const 136) (i32.const 2) (i32.const 64))
+    (call $cel_list_append_at (i32.const 136) (i32.const 16))
+    (call $cel_list_append_at (i32.const 136) (i32.const 40))
+    (call $cel_list_append_at (i32.const 136) (i32.const 64))
 
     ;; accu_slot at 160 ← rodata true at 88.
     (i32.store offset=0  (i32.const 160) (i32.load offset=0  (i32.const 88)))

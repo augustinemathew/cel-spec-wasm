@@ -12,14 +12,14 @@
 ;; `wat/51_timestamp_year_utc.wat`).
 ;;
 ;; Memory layout:
-;;   [ 0,  16)  reserved + arena cursor/limit
+;;   [ 0,  16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16,  40)  rodata: kConst duration("3600s") →
 ;;                  CelValue{kind=CEL_DURATION(12), _pad,
 ;;                           payload.dur={seconds=3600, nanos=0, _pad=0}}
 ;;   [40,  64)  workspace: out_slot for the constructed CEL_STRING
 ;;                          (Layer-2 impl arena_alloc's the bytes into the
 ;;                          arena and writes the span here).
-;;   [64, mem_size)  bump arena (the formatted "3600s" bytes land here)
+;;   [64+]  bump arena (malloc'd in heap) (the formatted "3600s" bytes land here)
 ;;
 ;; New import this slice:
 ;;   cel_host.cel_duration_format(out_slot, dur_slot) — i32×2 → ()
@@ -29,7 +29,7 @@
 ;;     out_slot = {CEL_ERROR, CEL_ERR_TYPE_MISMATCH}.
 ;;   - 3VL absorption — CEL_UNKNOWN/CEL_ERROR pass through.
 ;;   - happy path: formats the {seconds, nanos} pair using the proto
-;;     Duration canonical text format (cel-cpp parity), cel_allocs the
+;;     Duration canonical text format (cel-cpp parity), arena_allocs the
 ;;     result bytes inside the arena via `arena_alloc(len)`, writes
 ;;     out_slot = {CEL_STRING(5), payload.s={ptr=arena_off, len}}.
 ;;   - Trailing zero suppression: "3600s" (whole seconds), "0.001s"
@@ -54,7 +54,7 @@
 ;; This file follows the same shape as `52_timestamp_parse.wat` —
 ;; pure host import, no runtime cel_* dispatch hop.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_duration_format"

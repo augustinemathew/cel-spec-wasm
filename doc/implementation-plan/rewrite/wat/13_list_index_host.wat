@@ -13,14 +13,14 @@
 ;; the body.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  null sentinel + arena cursor/limit
+;;   [ 0, 16)  null sentinel (arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for `xs`     (variable bound by host)
 ;;   [40, 64)  rodata: lookup-index kConst {CEL_INT, i=0}
 ;;   [64, 88)  workspace: kCallExpr result slot (out=64)
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; The runtime body is one extern call into the host trampoline.
-;; No cel_list_create / cel_list_set (the operand was constructed
+;; No cel_list_create / cel_list_append_at (the operand was constructed
 ;; host-side, not in the arena).
 ;;
 ;; New import this milestone (vs. M3):
@@ -34,7 +34,7 @@
 ;; checks against backing->Size(), calls HostListBacking::At,
 ;; encodes the result back into out_slot via EncodeFieldResult.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_list_at"

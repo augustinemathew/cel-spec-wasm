@@ -44,6 +44,9 @@ class FakeMemoryView final : public MemoryView {
   void WriteCelValue(uint32_t offset, const CelValue& v) override {
     std::memcpy(mem_.data() + offset, &v, sizeof(v));
   }
+  void WriteU32(uint32_t offset, uint32_t value) override {
+    std::memcpy(mem_.data() + offset, &value, sizeof(value));
+  }
   absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
     return {reinterpret_cast<const char*>(mem_.data() + ptr), len};
   }

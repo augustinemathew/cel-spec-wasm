@@ -2,13 +2,13 @@
 ;; Decl:        c : celwasm.testdata.Customer
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for `c`      — local_index 0
 ;;   [40, 64)  workspace slot for select   — out_slot of cel_get_field
 ;;             (LayoutPass assigns a fresh workspace slot per
 ;;             internal-node output; slot reuse across unrelated
 ;;             subtrees is a future optimisation, not required here.)
-;;   [64, mem_size)  bump arena
+;;   [64+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel_host.cel_get_field(out_slot, msg_slot, field_ref_id,
@@ -26,7 +26,7 @@
 ;; once at Engine::Plan time and threaded through as callback data
 ;; to the trampoline.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"

@@ -14,11 +14,11 @@
 ;; looks identical to M3/M4 except for the helper name.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst 1     {CEL_INT, i=1}
 ;;   [40, 64)  rodata: kConst 2     {CEL_INT, i=2}
 ;;   [64, 88)  workspace: kCall(`_+_`) result slot (out=64)
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_int_add_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
@@ -42,7 +42,7 @@
 ;; (module=cel, name=cel_int_add_at_vv), and emits exactly the
 ;; (i32.const 64) (i32.const 16) (i32.const 40) call below.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_int_add_at_vv"

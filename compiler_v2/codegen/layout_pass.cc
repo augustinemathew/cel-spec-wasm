@@ -383,6 +383,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
   layout.attributes = std::move(resolved.attributes);
   layout.message_types = std::move(resolved.message_types);
   layout.debug_mode = opts.debug_layout;
+  if (opts.rodata_base_override != 0) {
+    layout.rodata_base = opts.rodata_base_override;
+  }
 
   // --- Pass A: pack every kConst into rodata, then lift the field
   // name of every kSelect-on-optional into rodata too — the

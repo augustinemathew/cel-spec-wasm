@@ -822,6 +822,92 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
   return EncodeFieldResult(*got, out_slot, ctx);
 }
 
+absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
+                                  const TrampolineContext& ctx) {
+  CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
+
+  // Allocate a zero-count ArenaListHeader so the comprehension
+  // prologue reads count=0 cleanly (its 2-load shape walks the
+  // header pointer at `payload+8`, then reads count at `*header+0`
+  // — a zero `header_ptr` would dereference into rodata).  Used
+  // for non-host sources, empty host lists, and OOM fallback.
+  constexpr uint32_t kHeaderBytes = 16u;
+  constexpr uint32_t kElemBytes = static_cast<uint32_t>(sizeof(CelValue));
+  auto write_empty = [&]() -> absl::Status {
+    uint32_t header_off = 0;
+    if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
+        header_off == 0) {
+      return absl::ResourceExhaustedError(
+          "CelListIterOpenImpl: arena OOM allocating empty header");
+    }
+    ctx.mem.WriteU32(header_off + 0u, 0u);   // count
+    ctx.mem.WriteU32(header_off + 4u, 0u);   // capacity
+    ctx.mem.WriteU32(header_off + 8u, 0u);   // elements_offset
+    ctx.mem.WriteU32(header_off + 12u, 0u);  // _pad
+    CelValue empty{};
+    empty.kind = CEL_LIST_ARENA;
+    empty.payload.arena_list.header_ptr = header_off;
+    ctx.mem.WriteCelValue(out_slot, empty);
+    return absl::OkStatus();
+  };
+
+  if (list_cv.kind != CEL_LIST_HOST) {
+    // Codegen contract: cel_list_arena_view only routes us for
+    // CEL_LIST_HOST sources.  Defence in depth.
+    return write_empty();
+  }
+  const HostListBacking* backing =
+      ctx.refs.LookupList(list_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "CelListIterOpenImpl: list ref_slot ", list_cv.payload.ref_slot,
+        " not found in ExternrefTable"));
+  }
+  const size_t count = backing->Size();
+  if (count == 0) {
+    return write_empty();
+  }
+  // Allocate one ArenaListHeader (16 B) + count * 24 B elements
+  // region.  Two separate arena allocations match the literal-list
+  // construction shape (`cel_list_create` does the same).  The
+  // header points at the elements via `elements_offset`.
+  uint32_t header_off = 0;
+  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr || header_off == 0) {
+    return write_empty();
+  }
+  uint32_t elements_off = 0;
+  const uint32_t elements_bytes = static_cast<uint32_t>(count) * kElemBytes;
+  if (ctx.alloc.Alloc(elements_bytes, &elements_off) == nullptr ||
+      elements_off == 0) {
+    return write_empty();
+  }
+  // Header layout (mirrors `ArenaListHeader` in cel_data.h):
+  //   [0..4]   count
+  //   [4..8]   capacity
+  //   [8..12]  elements_offset
+  //   [12..16] _pad
+  ctx.mem.WriteU32(header_off + 0u, static_cast<uint32_t>(count));
+  ctx.mem.WriteU32(header_off + 4u, static_cast<uint32_t>(count));
+  ctx.mem.WriteU32(header_off + 8u, elements_off);
+  ctx.mem.WriteU32(header_off + 12u, 0u);
+  // Snapshot every element via `At(i, …)` + EncodeFieldResult.
+  // `cel::CelType::Int()` is informational only (M4: no element-side
+  // narrowing); matches the `CelListAtImpl` call site.
+  for (size_t i = 0; i < count; ++i) {
+    auto got = backing->At(i, cel::CelType::Int());
+    if (!got.ok()) return got.status();
+    const uint32_t elem_slot =
+        elements_off + static_cast<uint32_t>(i) * kElemBytes;
+    if (auto s = EncodeFieldResult(*got, elem_slot, ctx); !s.ok()) return s;
+  }
+  // Write the synthetic CelValue at out_slot.
+  CelValue synthetic{};
+  synthetic.kind = CEL_LIST_ARENA;
+  synthetic.payload.arena_list.header_ptr = header_off;
+  ctx.mem.WriteCelValue(out_slot, synthetic);
+  return absl::OkStatus();
+}
+
 absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
                               uint32_t key_slot, const TrampolineContext& ctx) {
   CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
@@ -874,6 +960,93 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
   // uniformly — nested map/list/message values from Get land
   // through the matching externref namespace.
   return EncodeFieldResult(*got, out_slot, ctx);
+}
+
+absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
+                                const TrampolineContext& ctx) {
+  CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
+  // Empty / not-our-shape: stamp count=0 and return.  Runtime's
+  // `cel_map_iter_init` reads `count` and collapses to the 0
+  // handle, behaving as an empty iter.
+  // Field offsets within MapIterState (mirrors cel_runtime.c).
+  constexpr uint32_t kKindOff = 0u;
+  constexpr uint32_t kCursorOff = 4u;
+  constexpr uint32_t kPayloadOff = 8u;
+  constexpr uint32_t kCountOff = 12u;
+  constexpr uint32_t kHostKind = 1u;  // MAP_ITER_KIND_HOST
+  auto write_empty = [&] {
+    ctx.mem.WriteU32(state_offset + kKindOff, kHostKind);
+    ctx.mem.WriteU32(state_offset + kCursorOff, 0u);
+    ctx.mem.WriteU32(state_offset + kPayloadOff, 0u);
+    ctx.mem.WriteU32(state_offset + kCountOff, 0u);
+  };
+  if (map_cv.kind != CEL_MAP_HOST) {
+    // Codegen contract: cel_map_iter_init only calls us for
+    // CEL_MAP_HOST sources.  Defence in depth — leave empty.
+    write_empty();
+    return absl::OkStatus();
+  }
+  const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "CelMapIterOpenImpl: map ref_slot ", map_cv.payload.ref_slot,
+        " not found in ExternrefTable"));
+  }
+  // Snapshot the entries into a vector.  `ForEach` is the only
+  // positional-agnostic accessor on `HostMapBacking`; iter callers
+  // need by-index lookup so we materialise once up front.  Memory
+  // cost: snapshot lives in arena (count * 48B) AND in this
+  // temporary vector (count * sizeof(pair<Value,Value>)) for the
+  // duration of the trampoline.  Acceptable for typical map sizes;
+  // a streaming variant is future work if comprehensions over huge
+  // host maps become a hot path.
+  std::vector<std::pair<cel::Value, cel::Value>> entries;
+  entries.reserve(backing->Size());
+  backing->ForEach([&](const cel::Value& k, const cel::Value& v) {
+    entries.emplace_back(k, v);
+  });
+  if (entries.empty()) {
+    write_empty();
+    return absl::OkStatus();
+  }
+  // Allocate `count * 48` bytes in the arena for the snapshot.
+  // CelValue is 24 bytes; each entry is key (24B) immediately
+  // followed by value (24B).  The runtime's `cel_map_iter_key_at` /
+  // `value_at` indexes via the 48-byte stride.
+  constexpr uint32_t kPerEntry = 2u * sizeof(CelValue);
+  const uint32_t snapshot_bytes =
+      static_cast<uint32_t>(entries.size()) * kPerEntry;
+  uint32_t snapshot_off = 0;
+  uint8_t* unused_ptr = ctx.alloc.Alloc(snapshot_bytes, &snapshot_off);
+  (void)unused_ptr;
+  if (snapshot_off == 0) {
+    // OOM — behave as empty rather than tripping the comprehension.
+    write_empty();
+    return absl::OkStatus();
+  }
+  // Encode each entry pair into the snapshot region.
+  // EncodeFieldResult writes via the MemoryView (which sees the
+  // arena bytes the allocator just reserved), so we don't need the
+  // raw pointer.
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const uint32_t key_off =
+        snapshot_off + static_cast<uint32_t>(i) * kPerEntry;
+    const uint32_t val_off = key_off + sizeof(CelValue);
+    if (auto s = EncodeFieldResult(entries[i].first, key_off, ctx); !s.ok()) {
+      return s;
+    }
+    if (auto s = EncodeFieldResult(entries[i].second, val_off, ctx); !s.ok()) {
+      return s;
+    }
+  }
+  // Stamp the iter state: kind=HOST, cursor=0, payload=snapshot,
+  // count=entries.size().
+  ctx.mem.WriteU32(state_offset + kKindOff, kHostKind);
+  ctx.mem.WriteU32(state_offset + kCursorOff, 0u);
+  ctx.mem.WriteU32(state_offset + kPayloadOff, snapshot_off);
+  ctx.mem.WriteU32(state_offset + kCountOff,
+                    static_cast<uint32_t>(entries.size()));
+  return absl::OkStatus();
 }
 
 // ══════════════════════════════════════════════════════════════════

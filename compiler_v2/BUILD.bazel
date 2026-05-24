@@ -14,6 +14,7 @@ cc_library(
     deps = [
         "//compiler_v2/abi:cel_abi_cc_proto",
         "//compiler_v2/abi:cel_abi_emit",
+        "//compiler_v2/abi:runtime_catalogue",
         "//compiler_v2/codegen:expr_lower",
         "//compiler_v2/codegen:layout_pass",
         "//compiler_v2/codegen:module",
@@ -24,6 +25,7 @@ cc_library(
         "@binaryen//:binaryen",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

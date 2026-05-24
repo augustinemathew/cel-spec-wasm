@@ -31,7 +31,7 @@
 ;; Memory layout — same as 13 since the call-site lowering only
 ;; differs in target name.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   ;; The dispatcher itself — no `_arena` / `_host` suffix.

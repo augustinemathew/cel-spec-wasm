@@ -763,6 +763,29 @@ absl::Status EncodeList(const Value& v, absl::string_view name, CelValue* dst,
   return absl::OkStatus();
 }
 
+// Encode a Value::Map / Value::HostMap-bound variable into a
+// CEL_MAP_HOST CelValue.  Mirrors `EncodeList` for the map shape:
+// the bound `HostMapBacking` is interned into the per-Instance
+// `ExternrefTable` (independent `map_backings_` namespace from
+// messages and lists) and the resulting slot lives in
+// `payload.ref_slot`.  Routes through `InternMap` so the
+// trampoline's `LookupMap` finds it; the CEL_MAP_HOST runtime
+// dispatch (cel_map_lookup, cel_map_iter_init/key_at/value_at/
+// next) already consumes this shape — proto map fields use the
+// same wire encoding via `ProtoMap`.
+absl::Status EncodeMap(const Value& v, absl::string_view name, CelValue* dst,
+                       celwasm::ExternrefTable& refs) {
+  if (v.kind() != Value::Kind::kMap) {
+    return KindMismatch(name, "map", v.kind());
+  }
+  auto backing_or = v.SharedMapBacking();
+  if (!backing_or.ok()) return backing_or.status();
+  const uint32_t slot = refs.InternMap(*std::move(backing_or));
+  dst->kind = CEL_MAP_HOST;
+  dst->payload.ref_slot = slot;
+  return absl::OkStatus();
+}
+
 // Encode a Value::Type-bound variable into a CEL_TYPE CelValue.
 // The bound name string is copied into the host string arena above
 // `arena_limit` (same arena kString / kBytes use); the resulting
@@ -841,12 +864,13 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
     case celwasm::Repr::kTimestamp:
       return EncodeTimestamp(v, name, dst);
     case celwasm::Repr::kMap:
+      return EncodeMap(v, name, dst, ec.refs);
     case celwasm::Repr::kEnum:
     case celwasm::Repr::kUnknown:
       return absl::UnimplementedError(
           absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
                        " marshal not implemented (later milestones for "
-                       "map/enum/unknown)"));
+                       "enum/unknown)"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));

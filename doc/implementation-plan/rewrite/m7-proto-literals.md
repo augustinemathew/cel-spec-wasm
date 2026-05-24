@@ -401,6 +401,20 @@ so Binaryen sees the imports during link.
     map binding, M7.C pulls it in.  Pin the matrix during M7.A's
     probe-spike and decide.
 
+    > **Plan-vs-execution delta (2026-05-22):**  `EncodeMap` shipped
+    > out-of-band of M7, as a follow-up to the `cel` CLI's bound-map
+    > activation matrix.  Same shape as `EncodeList`:
+    > `SharedMapBacking()` → `ExternrefTable::InternMap` →
+    > `{CEL_MAP_HOST, payload.ref_slot}`.  Indexing, size, `in`
+    > operator, AND comprehension iteration (`m.exists(k, …)` etc.)
+    > all work; the comprehension lift ships in the same commit as
+    > kind-dispatching `cel_map_iter_init` + `cel_host.cel_map_iter_open`
+    > snapshot helpers.  Sibling list-side lift
+    > (`cel_list_arena_view` + `cel_host.cel_list_iter_open`) covers
+    > Activation-bound lists and proto repeated fields.  See
+    > `m5b-comprehensions-simplification.md` §CCF-8 +
+    > `m5-comprehensions-followon.md` §10.
+
 (Wrapper-typed activation auto-wrap is M8.)
 
 ## 5. Sequencing — slices

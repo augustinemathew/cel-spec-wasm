@@ -298,6 +298,11 @@ class MemoryView {
   virtual CelValue ReadCelValue(uint32_t offset) const = 0;
   virtual void WriteCelValue(uint32_t offset, const CelValue& v) = 0;
   virtual absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const = 0;
+
+  // Raw u32 write at `offset`.  Used by aggregate-iter trampolines
+  // that populate runtime-side state structs (e.g. `MapIterState`)
+  // whose 4-byte fields don't fit the 24-byte CelValue shape.
+  virtual void WriteU32(uint32_t offset, uint32_t value) = 0;
 };
 
 // Opaque u32 slots back `CelValue.payload.msg_slot`.  Intern is
@@ -441,6 +446,21 @@ ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(uint32_t out_slot,
                                                 uint32_t index_slot,
                                                 const TrampolineContext& ctx);
 
+// Comprehension-iter snapshot for a `CEL_LIST_HOST` source.  Walks
+// the HostListBacking via `At(i)`, encodes each element into an
+// arena-allocated `N×24-byte` elements run, allocates a 16-byte
+// ArenaListHeader pointing at that run, and writes a synthetic
+// `{kind:CEL_LIST_ARENA, payload.arena_list.header_ptr=...}`
+// CelValue at `out_slot`.  Lets the inline arena prologue in
+// `expr_lower_comprehension.cc` walk host lists unchanged.
+//
+// On empty source, OOM, or non-CEL_LIST_HOST input: writes an
+// empty arena list (header_ptr=0) so the comprehension loop body
+// never runs.  Mirrors `CelMapIterOpenImpl` for maps; see m5b
+// §CCF-8 for the design.
+ABSL_MUST_USE_RESULT absl::Status CelListIterOpenImpl(
+    uint32_t out_slot, uint32_t list_slot, const TrampolineContext& ctx);
+
 // Layer-2 entry points for the kHost arms of the aggregate-op
 // runtime dispatchers (`cel_list_size` / `cel_list_in` /
 // `cel_list_eq` / `cel_list_concat` / `cel_map_size` / `cel_map_in`
@@ -492,6 +512,26 @@ ABSL_MUST_USE_RESULT absl::Status CelMapInImpl(uint32_t out_slot,
 ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
                                                uint32_t a_slot, uint32_t b_slot,
                                                const TrampolineContext& ctx);
+
+// Comprehension-iter open for a `CEL_MAP_HOST` source.  Walks the
+// HostMapBacking via ForEach, encodes each (key, value) pair into
+// a flat 48-byte snapshot in the arena (key at +0, value at +24),
+// and writes the runtime-side `MapIterState` at `state_offset`:
+//
+//     [ 0..4]  kind   = 1 (MAP_ITER_KIND_HOST)
+//     [ 4..8]  cursor = 0 (pre-first)
+//     [ 8..12] payload = snapshot start offset
+//     [12..16] count   = snapshot entry count
+//
+// On empty source or arena OOM, sets `count = 0` so the runtime's
+// `cel_map_iter_init` collapses the handle to 0 (empty iter).
+//
+// Pure scalar-key snapshots are 48B/entry (e.g. `{string→int}` →
+// 96B for 2 entries).  Nested map/list/message values are encoded
+// as `CEL_MAP_HOST` / `CEL_LIST_HOST` / `CEL_MESSAGE` referencing
+// externref slots — same wire shape as inline indexed access.
+ABSL_MUST_USE_RESULT absl::Status CelMapIterOpenImpl(
+    uint32_t state_offset, uint32_t map_slot, const TrampolineContext& ctx);
 
 // Polymorphic message equality.  Both operands must be
 // `CEL_MESSAGE` with valid `payload.msg_slot` ref-slots; either

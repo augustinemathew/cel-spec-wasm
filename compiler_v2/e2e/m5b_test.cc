@@ -320,10 +320,9 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
   // Locks that comprehension iter source can be an Activation::Bind
   // list, not just a literal.  Backs `m5-comprehensions-design.md`
   // §3.9 ("comprehension as operand") symmetrically.
-  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
-                  "post-Slice-C follow-up; Slice C ships literal-list "
-                  "(kWorkspaceSlot/kArena) coverage only.";
-  Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
+  // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
+  // now snapshot into arena format via `cel_list_arena_view`.
+Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.exists(e, e == 5)");
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(5), Value::Int(9)}));
@@ -331,10 +330,9 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
 }
 
 TEST_F(ComprehensionExistsListE2ETest, AllOverBoundList) {
-  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
-                  "post-Slice-C follow-up; Slice C ships literal-list "
-                  "(kWorkspaceSlot/kArena) coverage only.";
-  Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
+  // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
+  // now snapshot into arena format via `cel_list_arena_view`.
+Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.all(e, e > 0)");
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(2), Value::Int(3)}));
@@ -434,9 +432,8 @@ TEST_F(ComprehensionMapFilterListE2ETest, FilterPredicateErrorPropagates) {
 }
 
 TEST_F(ComprehensionMapFilterListE2ETest, MapOverBoundList) {
-  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
-                  "post-Slice-D follow-up; Slice D ships literal-list "
-                  "(kWorkspaceSlot/kArena) coverage only.";
+  // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
+  // now snapshot into arena format via `cel_list_arena_view`.
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.map(v, v + 1) == [2, 3, 4]");
   Activation a;
@@ -448,10 +445,11 @@ TEST_F(ComprehensionMapFilterListE2ETest, MapLargeListGrowthPath) {
   // Boundary: 1000-element list exercises the dynamic-list rehash /
   // capacity-grow path in `cel_list_append_at` (design §7.1).
   // We assert only the resulting size to keep the test order-agnostic.
-  GTEST_SKIP() << "bound-list iter_range (kHost/kLocal source) is a "
-                  "post-Slice-D follow-up; the 1000-element growth "
-                  "path is exercised by the runtime cel_list_test "
-                  "directly.";
+  // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
+  // now snapshot into arena format via `cel_list_arena_view`.
+  // 1000-element snapshot exercises the per-element EncodeFieldResult
+  // loop in CelListIterOpenImpl + the inline arena walk's
+  // count-bounded loop.
   Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.map(v, v * 2).size()");
   Activation a;

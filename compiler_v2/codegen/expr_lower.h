@@ -27,6 +27,7 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "binaryen-c.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
@@ -210,6 +211,43 @@ ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
     const OverloadTable& overload_table, const LoweringOptions& opts = {});
+
+// One declared parameter on a CEL-defined custom function — name
+// + wasm-param position (1..N; wasm param 0 is the out_slot
+// dictated by the M13 ABI).  Used by `LowerToCustomFn` to wire
+// each referenced kFreeVariable `LaidOutVariable` to the wasm
+// param the caller passes its slot offset through.
+struct CustomFnParam {
+  std::string name;
+  // Wasm param index (1-based).  Param 0 is the out_slot.
+  uint32_t wasm_param_index = 0;
+};
+
+// Lowers a CEL-defined custom function body into a wasm function
+// with the M13 ABI:
+//
+//   (func (export <export_name>)
+//     (param i32 i32 ...)        ;; out_slot, arg0, arg1, ...
+//     (local i32 ...)            ;; one per referenced variable
+//     <prelude>                  ;; local.set var_local
+//                                ;;     (local.get param_for_name)
+//     (call $cel_copy_slot (local.get 0)  ;; out_slot
+//                          <root>))       ;; src slot from body
+//
+// Differs from `LowerToEvalFunction` in three ways: (a) wasm params
+// instead of zero params, (b) no `arena_reset` (the arena belongs
+// to the outer eval — see m13-custom-fns §4.4), and (c) the result
+// is written via `cel_copy_slot` into the caller-supplied out_slot
+// rather than returned by value.
+//
+// Bodies that reference a free variable not listed in `params` are
+// an invariant violation (per m13 §3.5 the only legal references
+// are declared params); CHECKs.
+ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToCustomFn(
+    const TypedAst& ast, const StaticLayout& layout,
+    absl::string_view export_name, absl::Span<const CustomFnParam> params,
+    WasmModule& mod, const OverloadTable& overload_table,
+    const LoweringOptions& opts = {});
 
 }  // namespace celwasm
 

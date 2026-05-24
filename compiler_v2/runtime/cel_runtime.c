@@ -266,9 +266,63 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
 // `count >= capacity` invariant traps via `__builtin_trap` if
 // codegen ever drops the pre-size.
 
+// Host trampoline: snapshots a CEL_LIST_HOST source into an
+// arena-allocated ArenaListHeader + N×24-byte elements run, then
+// writes a synthetic CelValue at `out_slot` of shape
+// `{kind: CEL_LIST_ARENA, payload.arena_list.header_ptr = ...}`.
+// On empty / OOM, writes a synthetic empty arena list.  Lets the
+// existing inline arena prologue walk host lists unchanged.  Sees
+// the same iter-snapshot pattern as `cel_host.cel_map_iter_open`
+// (m5b §CCF-8).
+#ifdef __wasm__
+extern void cel_host_cel_list_iter_open(uint32_t out_slot, uint32_t list_slot)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_list_iter_open")));
+#else
+// Host build: weak no-op stub for native unit tests.  Strong
+// override lives in cel_host_wasmtime.cc.
+__attribute__((weak)) void
+cel_host_cel_list_iter_open(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t list_slot) {
+  (void)list_slot;
+  CelValue* out = (CelValue*)(cel_memory_base_() + out_slot);
+  // Empty arena list — empty walk, no comprehension body runs.
+  out->kind = CEL_LIST_ARENA;
+  out->payload.arena_list.header_ptr = 0;
+}
+#endif
+
 static ArenaListHeader* arena_list_header(const CelValue* l) {
   return (ArenaListHeader*)(cel_memory_base_() +
                             l->payload.arena_list.header_ptr);
+}
+
+// Resolve a list iter_range source to a slot offset whose CelValue
+// is arena-shaped (CEL_LIST_ARENA).  Arena sources pass through;
+// host sources are snapshotted via `cel_host.cel_list_iter_open`
+// into a fresh arena allocation and a fresh slot returned.  Lets
+// codegen emit the same inline arena prologue regardless of origin.
+//
+// Returns 0 only on arena_alloc failure for the snapshot slot; the
+// codegen path treats 0 as "fall back to source_slot" (which will
+// produce an empty walk for host sources at worst).
+uint32_t cel_list_arena_view(uint32_t list_slot) {
+  CEL_LOG("enter");
+  CelValue* l = cel_value_at(list_slot);
+  if (l->kind == CEL_LIST_ARENA) {
+    return list_slot;
+  }
+  if (l->kind == CEL_LIST_HOST) {
+    uint32_t synth_slot = arena_alloc((uint32_t)sizeof(CelValue));
+    if (synth_slot == 0) return list_slot;  // OOM — empty walk follows.
+    cel_host_cel_list_iter_open(synth_slot, list_slot);
+    return synth_slot;
+  }
+  // Poisoned / wrong-kind — return original; codegen's arena walk
+  // will read garbage but the comprehension's accu propagation
+  // catches downstream errors.  Equivalent to the pre-iter-dispatch
+  // M5 behaviour for malformed sources.
+  return list_slot;
 }
 
 static CelValue* arena_list_element(ArenaListHeader* hdr, uint32_t i) {
@@ -966,67 +1020,159 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 // =====================================================================
 // Map-key iteration helpers (Option β; see cel_map.h).
 //
-// The iterator handle is the arena offset of an 8-byte state struct
-// `{ header_ptr, cursor }`.  `cursor` is the 1-based index of the
-// "current" entry — i.e. the entry that the most recent `iter_next`
-// returned 1 for.  `cursor == 0` is the pre-first state set by
-// `iter_init`; key_at / value_at refuse to dereference it.
+// The iterator handle is the arena offset of a 16-byte state struct.
+// Two shapes:
+//
+//   kind == 0 (ARENA):  walks ArenaMapHeader entries in place.
+//     `payload` = header_ptr; `count` field unused (header carries it).
+//
+//   kind == 1 (HOST):   walks a flat snapshot the host trampoline
+//     wrote into the arena at iter-open time.  Each snapshot entry is
+//     a pair of CelValue cells (key, value) — total 48 bytes per entry.
+//     `payload` = byte offset of entry 0; `count` = entry count.
+//     String / bytes / message / map / list payloads inside snapshot
+//     CelValues reference arena bytes (allocated by the trampoline),
+//     so the snapshot is valid for the rest of the current Eval.
+//
+// `cursor` is the 1-based index of the "current" entry — i.e. the
+// entry that the most recent `iter_next` returned 1 for.  `cursor == 0`
+// is the pre-first state set by `iter_init`; key_at / value_at refuse
+// to dereference it.
 // =====================================================================
 
-typedef struct {
-  uint32_t header_ptr;  // ArenaMapHeader byte offset; 0 iff empty/poisoned.
-  uint32_t cursor;      // 1-based current entry; 0 = pre-first.
-} ArenaMapIterState;
+#define MAP_ITER_KIND_ARENA 0u
+#define MAP_ITER_KIND_HOST 1u
 
-_Static_assert(sizeof(ArenaMapIterState) == 8,
-               "ArenaMapIterState must remain 8 bytes (iter ABI)");
+// Per-entry stride for HOST snapshot entries: one CelValue key
+// (24 bytes) directly followed by one CelValue value (24 bytes).
+// Trampoline and `copy_iter_entry` MUST keep these in lockstep.
+#define MAP_ITER_HOST_ENTRY_BYTES 48u
+
+typedef struct {
+  uint32_t kind;     // MAP_ITER_KIND_ARENA | MAP_ITER_KIND_HOST.
+  uint32_t cursor;   // 1-based current entry; 0 = pre-first.
+  uint32_t payload;  // ARENA: header_ptr; HOST: snapshot start offset.
+  uint32_t count;    // HOST: entry count; ARENA: 0 (read from header).
+} MapIterState;
+
+_Static_assert(sizeof(MapIterState) == 16,
+               "MapIterState must remain 16 bytes (iter ABI)");
 
 // Resolve the iter-state struct from a handle, or NULL when the handle
-// is the 0 sentinel (empty/poisoned map).  Centralising the deref keeps
-// every caller's null-check identical.
-static ArenaMapIterState* arena_map_iter_state(uint32_t handle) {
-  if (handle == 0) return (ArenaMapIterState*)0;
-  return (ArenaMapIterState*)(cel_memory_base_() + handle);
+// is the 0 sentinel (empty / poisoned / unsupported map kind).
+// Centralising the deref keeps every caller's null-check identical.
+static MapIterState* map_iter_state(uint32_t handle) {
+  if (handle == 0) return (MapIterState*)0;
+  return (MapIterState*)(cel_memory_base_() + handle);
 }
 
-// Read the header an iterator points at.  Caller has already proven
-// `state != NULL` and `state->header_ptr != 0`.
-static ArenaMapHeader* iter_header(ArenaMapIterState* state) {
-  return (ArenaMapHeader*)(cel_memory_base_() + state->header_ptr);
+// Return the iteration count for the supplied state — ARENA reads the
+// header live (lets `arena_map_insert` grow the source mid-iteration
+// without invalidating the iter, preserving M3's contract); HOST uses
+// the count cached at snapshot time.
+static uint32_t map_iter_count(const MapIterState* state) {
+  if (state->kind == MAP_ITER_KIND_ARENA) {
+    return ((ArenaMapHeader*)(cel_memory_base_() + state->payload))->count;
+  }
+  return state->count;
+}
+
+// Host trampoline: walks a CEL_MAP_HOST source, allocates a flat
+// snapshot in the arena via `cel_host`'s ArenaAllocator, encodes
+// each (key, value) pair as two consecutive 24-byte CelValue cells,
+// and writes the iter state's `{kind=HOST, cursor=0, payload, count}`
+// fields at `state_offset`.  When the source is empty or
+// snapshot-allocation fails, the trampoline sets `count = 0`.
+#ifdef __wasm__
+extern void cel_host_cel_map_iter_open(uint32_t state_offset,
+                                        uint32_t map_slot)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_map_iter_open")));
+#else
+// Host build: weak no-op stub so unit tests link without the wasmtime
+// trampoline.  Strong override registered in cel_host_wasmtime.cc.
+__attribute__((weak)) void
+cel_host_cel_map_iter_open(  // NOLINT(misc-use-internal-linkage)
+    uint32_t state_offset, uint32_t map_slot) {
+  (void)map_slot;
+  MapIterState* s = (MapIterState*)(cel_memory_base_() + state_offset);
+  s->kind = MAP_ITER_KIND_HOST;
+  s->cursor = 0;
+  s->payload = 0;
+  s->count = 0;  // Empty: iter_init returns 0.
+}
+#endif
+
+// Kind-dispatching count helper for map iter_range sources.  Used
+// by codegen pre-sizing (`EmitLoadSourceCount` for map-source
+// comprehensions) — the inline `payload+8` arena header read works
+// for CEL_MAP_ARENA only.  CEL_MAP_HOST routes through the existing
+// `cel_host.cel_map_size` trampoline (declared above for cel_size_at_*
+// dispatch; reused here) which writes a CelValue; we unbox the int
+// payload.  Returns 0 for empty / poisoned / unsupported kinds; the
+// comprehension's pre-size then allocates a zero-capacity accu and
+// the loop body never runs.
+uint32_t cel_map_count(uint32_t map_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind == CEL_MAP_ARENA) {
+    return arena_map_header(m)->count;
+  }
+  if (m->kind == CEL_MAP_HOST) {
+    uint32_t tmp = arena_alloc((uint32_t)sizeof(CelValue));
+    if (tmp == 0) return 0;
+    cel_host_cel_map_size(tmp, map_slot);
+    CelValue* out = cel_value_at(tmp);
+    if (out->kind != CEL_INT || out->payload.i < 0) return 0;
+    // Map sizes fit in u32 by construction (per-eval arena bytes
+    // bound them well below 2^32); narrow safely.
+    return (uint32_t)out->payload.i;
+  }
+  return 0;
 }
 
 uint32_t cel_map_iter_init(uint32_t map_slot) {
   CEL_LOG("enter");
   CelValue* m = cel_value_at(map_slot);
-  // Poisoned / wrong-kind / host-backed maps: codegen guarantees the
-  // checker proved the source is `map(K, V)` (and the M5 envelope
-  // gates host-backed map sources out of comprehensions today), but
-  // a defensive 0 handle keeps `iter_next` / `key_at` safe.
-  if (m->kind != CEL_MAP_ARENA) return 0;
-  ArenaMapHeader* hdr = arena_map_header(m);
-  // Empty map: skip the state alloc entirely — `iter_next(0)` returns
-  // 0 immediately, so the comprehension loop exits without entering
-  // the body.  Saves 8 arena bytes per empty-iter and keeps the
-  // common `iter_next(handle)` hot path branch-light.
-  if (hdr->count == 0) return 0;
-  uint32_t state_off = arena_alloc((uint32_t)sizeof(ArenaMapIterState));
-  if (state_off == 0) return 0;  // OOM: behave as empty.
-  ArenaMapIterState* state =
-      (ArenaMapIterState*)(cel_memory_base_() + state_off);
-  state->header_ptr = m->payload.arena_map.header_ptr;
-  state->cursor = 0;
-  return state_off;
+  if (m->kind == CEL_MAP_ARENA) {
+    ArenaMapHeader* hdr = arena_map_header(m);
+    // Empty map: skip the state alloc entirely — `iter_next(0)` returns
+    // 0 immediately, so the comprehension loop exits without entering
+    // the body.  Saves 16 arena bytes per empty-iter.
+    if (hdr->count == 0) return 0;
+    uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
+    if (state_off == 0) return 0;  // OOM: behave as empty.
+    MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
+    state->kind = MAP_ITER_KIND_ARENA;
+    state->cursor = 0;
+    state->payload = m->payload.arena_map.header_ptr;
+    state->count = 0;  // unused
+    return state_off;
+  }
+  if (m->kind == CEL_MAP_HOST) {
+    uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
+    if (state_off == 0) return 0;
+    // Trampoline writes every field of the state struct + the
+    // snapshot payload into the arena.  On empty / failure it
+    // leaves count==0.
+    cel_host_cel_map_iter_open(state_off, map_slot);
+    MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
+    if (state->count == 0) return 0;
+    return state_off;
+  }
+  // Poisoned / unknown / error: defensive 0.
+  return 0;
 }
 
 uint32_t cel_map_iter_next(uint32_t iter_handle) {
   CEL_LOG("enter");
-  ArenaMapIterState* state = arena_map_iter_state(iter_handle);
-  if (state == (ArenaMapIterState*)0) return 0;
-  ArenaMapHeader* hdr = iter_header(state);
+  MapIterState* state = map_iter_state(iter_handle);
+  if (state == (MapIterState*)0) return 0;
+  const uint32_t count = map_iter_count(state);
   // `cursor` is the 1-based index of the *current* entry.  After the
   // last entry has been exposed (cursor == count), iteration is done
   // and every further call returns 0 without mutating state.
-  if (state->cursor >= hdr->count) return 0;
+  if (state->cursor >= count) return 0;
   state->cursor++;
   return 1;
 }
@@ -1036,8 +1182,8 @@ uint32_t cel_map_iter_next(uint32_t iter_handle) {
 static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
                             int want_value) {
   CelValue* out = cel_value_at(out_slot);
-  ArenaMapIterState* state = arena_map_iter_state(iter_handle);
-  if (state == (ArenaMapIterState*)0 || state->cursor == 0) {
+  MapIterState* state = map_iter_state(iter_handle);
+  if (state == (MapIterState*)0 || state->cursor == 0) {
     // Codegen contract: a read without a preceding `iter_next` that
     // returned 1 is a generator bug.  Stamp an error rather than
     // dereferencing past the entries run; the eval surfaces it as
@@ -1045,10 +1191,18 @@ static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
     poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
     return;
   }
-  ArenaMapHeader* hdr = iter_header(state);
   uint32_t i = state->cursor - 1;
-  *out =
-      want_value ? *arena_map_entry_val(hdr, i) : *arena_map_entry_key(hdr, i);
+  if (state->kind == MAP_ITER_KIND_ARENA) {
+    ArenaMapHeader* hdr =
+        (ArenaMapHeader*)(cel_memory_base_() + state->payload);
+    *out =
+        want_value ? *arena_map_entry_val(hdr, i) : *arena_map_entry_key(hdr, i);
+    return;
+  }
+  // HOST: snapshot entries are 48 bytes each — key at +0, value at +24.
+  const uint32_t entry_off = state->payload + i * MAP_ITER_HOST_ENTRY_BYTES;
+  const uint32_t cell_off = want_value ? entry_off + 24u : entry_off;
+  *out = *(CelValue*)(cel_memory_base_() + cell_off);
 }
 
 void cel_map_iter_key_at(uint32_t out_slot, uint32_t iter_handle) {

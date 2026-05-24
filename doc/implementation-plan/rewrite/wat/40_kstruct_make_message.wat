@@ -8,7 +8,7 @@
 ;; final i32.const that returns the slot offset.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace slot for kStructExpr — out_slot of
 ;;             cel_host.cel_make_message.  After the call this
 ;;             cell contains:
@@ -16,7 +16,7 @@
 ;;               payload.msg_slot = <ExternrefTable index>
 ;;             (the externref points at an OwnedProtoBacking
 ;;              owning a default-constructed proto.)
-;;   [40, mem_size)  bump arena (unused for empty construction)
+;;   [40+]  bump arena (malloc'd in heap) (unused for empty construction)
 ;;
 ;; New import this milestone:
 ;;   cel_host.cel_make_message(type_id, out_slot)  — 2 × i32 → ()
@@ -34,7 +34,7 @@
 ;; at Plan time is the single source of truth (matches FieldEntry
 ;; .owner_fqn discipline; m7-proto-literals.md §4.3).
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_make_message"

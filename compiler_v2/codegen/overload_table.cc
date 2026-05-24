@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "compiler_v2/abi/runtime_catalogue.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -48,62 +49,15 @@ absl::string_view ImportModuleName(const OverloadImpl& impl) {
   return ImportModuleName(impl.module);
 }
 
-uint8_t InferHelperArity(absl::string_view name) {
-  // Longest suffixes first — `_at_vv` is a suffix of `_at_vvv` which
-  // is a suffix of `_at_vvvv`, so the obvious order would match the
-  // shortest form on every long-form helper.  M12's `_at_vvv` /
-  // `_at_vvvv` kernels (indexOf-with-pos, substring-range, replace,
-  // replace_n, split-n) require the explicit longer arms.
-  if (name.size() >= 8 && name.substr(name.size() - 8) == "_at_vvvv") {
-    return 5;
-  }
-  if (name.size() >= 7 && name.substr(name.size() - 7) == "_at_vvv") {
-    return 4;
-  }
-  if (name.size() >= 6 && name.substr(name.size() - 6) == "_at_vv") {
-    return 3;
-  }
-  if (name.size() >= 5 && name.substr(name.size() - 5) == "_at_v") {
-    return 2;
-  }
-  // `_at` (no `v` suffix) — 0 value-args + out_slot.
-  // `cel_optional_none_at(out_slot)` is the canonical case.  Checked
-  // AFTER the longer `_at_v*` suffixes so they win on names that
-  // share the `_at` prefix.
-  if (name.size() >= 3 && name.substr(name.size() - 3) == "_at") {
-    return 1;
-  }
-  // Non-suffix dispatchers and control-flow helpers.  Names matched
-  // by exact equality; mirrors `compile.cc::OverloadHelperArity`'s
-  // pre-M13 table.  Migrating the dispatch here lets the builder
-  // pre-populate `OverloadImpl::num_args` for every seed at Build()
-  // time, removing the runtime suffix sniff at import-install.
-  struct Dispatcher {
-    absl::string_view name;
-    uint8_t arity;
-  };
-  static constexpr Dispatcher kDispatchers[] = {
-      {"cel_list_size", 2},
-      {"cel_list_in", 3},
-      {"cel_list_eq", 3},
-      {"cel_list_concat", 3},
-      {"cel_map_size", 2},
-      {"cel_map_in", 3},
-      {"cel_map_eq", 3},
-      {"cel_and", 3},
-      {"cel_or", 3},
-      {"cel_not", 2},
-      {"cel_copy_slot", 2},
-      {"cel_timestamp_parse", 2},
-      {"cel_duration_parse", 2},
-      {"cel_timestamp_format", 2},
-      {"cel_duration_format", 2},
-  };
-  for (const auto& d : kDispatchers) {
-    if (d.name == name) return d.arity;
-  }
-  return 0;
-}
+// `InferHelperArity` and its name-suffix + 15-entry exception list
+// are gone.  Arity now comes from `compiler_v2/abi/runtime_catalogue`
+// — the single source of truth across codegen, the engine's
+// runtime-export allowlist, and the wasm linker's `--export=` set.
+//
+// `OverloadTableBuilder::OverloadTableBuilder` looks up each seed's
+// `(module, helper_name)` via `abi::FindBuiltinHelper`; the lookup
+// CHECK-fails if the helper is missing from the catalogue (no more
+// "0 means silently skip the import" gate).
 
 namespace {
 
@@ -647,6 +601,25 @@ bool OverloadTableIsExplicitlyUnimplemented(absl::string_view overload_id) {
                      });
 }
 
+namespace {
+// Map this file's ImportModule (codegen-side enum) to abi::AbiModule
+// (catalogue enum).  Distinct enums by design — codegen has
+// `kUserModule` which the catalogue doesn't (custom-fn modules are
+// per-program).
+abi::AbiModule ToAbiModule(ImportModule m) {
+  switch (m) {
+    case ImportModule::kCelRuntime: return abi::AbiModule::kCelRuntime;
+    case ImportModule::kCelHost:    return abi::AbiModule::kCelHost;
+    case ImportModule::kCelFn:      return abi::AbiModule::kCelFn;
+    case ImportModule::kUserModule:
+      ABSL_CHECK(false) << "ToAbiModule: kUserModule has no catalogue mapping "
+                           "— customs supply arity via RegisterCustom";
+  }
+  ABSL_CHECK(false) << "ToAbiModule: unhandled ImportModule="
+                    << static_cast<int>(m);
+}
+}  // namespace
+
 // NOLINTNEXTLINE(modernize-use-equals-default) — body seeds builtins, can't be defaulted
 OverloadTableBuilder::OverloadTableBuilder() {
   for (const Seed& s : kBuiltinSeeds) {
@@ -654,12 +627,20 @@ OverloadTableBuilder::OverloadTableBuilder() {
     // module-lifetime storage, so no copy is needed here.
     const uint32_t interned_id = static_cast<uint32_t>(impls_.size()) + 1u;
     OverloadImpl impl = s.impl;
-    // Pre-populate arity from the helper-name suffix / dispatcher
-    // table — single source of truth at Build() time, removing the
-    // pre-M13 runtime suffix sniff in `InstallOverloadImports`.
-    // Unknown shapes get `num_args = 0`, which preserves the
-    // pre-M13 "skip silently" behavior at install time.
-    impl.num_args = InferHelperArity(impl.name);
+    // Arity comes from the ABI catalogue (`compiler_v2/abi/
+    // runtime_catalogue`) — the single source of truth across
+    // codegen, engine runtime-export binding, and linker --export
+    // lists.  Every built-in seed MUST appear in the catalogue;
+    // a missing entry is a hard error caught here at Build() time.
+    const abi::AbiHelper* helper =
+        abi::FindBuiltinHelper(ToAbiModule(impl.module), impl.name);
+    ABSL_CHECK(helper != nullptr)
+        << "OverloadTableBuilder: seed `" << s.overload_id << "` → `"
+        << abi::AbiModuleName(ToAbiModule(impl.module)) << "." << impl.name
+        << "` is not in the ABI catalogue.  Add it to "
+           "`compiler_v2/abi/runtime_catalogue.cc::kCelRuntimeHelpersArr` "
+           "(or remove the seed if the helper is dropped).";
+    impl.num_args = helper->num_args;
     impls_.push_back(impl);
     auto [it, inserted] = index_.emplace(s.overload_id, interned_id);
     ABSL_CHECK(inserted) << "kBuiltinSeeds duplicate: " << s.overload_id;

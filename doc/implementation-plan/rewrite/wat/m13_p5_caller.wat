@@ -10,7 +10,7 @@
 ;; Memory layout:
 ;;
 ;;   [ 0,  8)   reserved null sentinel
-;;   [ 8, 16)   reserved (arena cursor / limit slot — unused here)
+;;   [ 8, 16)   reserved (legacy cursor/limit slot — arena state now in BSS)
 ;;   [16, 40)   args[0] — string CelValue
 ;;                kind = CEL_STRING (5)
 ;;                payload.s.ptr = 80
@@ -19,7 +19,7 @@
 ;;   [80, 91)   "hello world" bytes
 
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
 
   ;; The host-backed custom fn — bound at runtime by the engine's
   ;; host-callback registry (see m13_p5_host_test.cc).

@@ -39,22 +39,6 @@ CelValue DecodeCelValue(const std::vector<uint8_t>& mem, uint32_t offset) {
   return cv;
 }
 
-// Decode the arena cursor/limit pair `arena_reset` writes.  Offsets
-// match `runtime/cel_runtime.c::arena_reset`: cursor at byte 8, limit
-// at byte 12.  Used to prove our real runtime's `arena_reset`
-// executed — if the harness were bypassing the runtime (e.g. using
-// a mock that no-ops), these u32s would stay zero.
-struct ArenaHeader {
-  uint32_t cursor;
-  uint32_t limit;
-};
-ArenaHeader DecodeArenaHeader(const std::vector<uint8_t>& mem) {
-  ArenaHeader h{};
-  std::memcpy(&h.cursor, mem.data() + 8, sizeof(uint32_t));
-  std::memcpy(&h.limit, mem.data() + 12, sizeof(uint32_t));
-  return h;
-}
-
 std::string ReadSpan(const std::vector<uint8_t>& mem, CelSpan s) {
   return {reinterpret_cast<const char*>(mem.data() + s.ptr), s.len};
 }
@@ -85,7 +69,7 @@ std::vector<uint8_t> EncodeMessageCelValue(uint32_t msg_slot) {
 
 constexpr absl::string_view kLiteral42Wat = R"WAT(
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (data (i32.const 16)
@@ -109,14 +93,13 @@ TEST(WatRunnerTest, LiteralFortyTwoReturnsCelIntFortyTwo) {
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 42);
-
-  // Prove our real cel_runtime.wasm ran: arena_reset must have
-  // written (arena_base=40, limit=131072) into bytes [8, 16).  If
-  // the harness were silently bypassing the runtime (e.g. via a
-  // mock that no-ops), both u32s would stay zero.
-  ArenaHeader ah = DecodeArenaHeader(out->memory_after);
-  EXPECT_EQ(ah.cursor, 40u);
-  EXPECT_EQ(ah.limit, 131072u);
+  // Phase C: the runtime owns + exports the shared `cel.memory` the
+  // expr imports, so reaching this assertion at all proves the real
+  // cel_runtime.wasm instantiated and ran (a bypassing mock would
+  // have no shared memory to bind, failing instantiate upstream).
+  // The arena state now lives in the runtime's BSS, not at fixed
+  // memory bytes — see CelAllocThroughRealRuntimeBumpsCursor for the
+  // arena_alloc round-trip that exercises it.
 }
 
 // ─────────────────────────────────────────────────────────
@@ -126,7 +109,7 @@ TEST(WatRunnerTest, LiteralFortyTwoReturnsCelIntFortyTwo) {
 
 constexpr absl::string_view kIdentXWat = R"WAT(
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
@@ -150,16 +133,13 @@ TEST(WatRunnerTest, IdentXReturnsPreWrittenCelValueSlot) {
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 7);
-  // Real runtime's arena_reset ran: arena cursor/limit at bytes 8/12.
-  ArenaHeader ah = DecodeArenaHeader(out->memory_after);
-  EXPECT_EQ(ah.cursor, 40u);
-  EXPECT_EQ(ah.limit, 131072u);
 }
 
 TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
-  // Regression: arena_reset writes only cursor/limit (bytes 8..16).
-  // The workspace slot at 16 must survive the reset call that runs
-  // at the top of $eval.
+  // Regression: arena_reset() only rewinds the arena cursor (a BSS
+  // field in the runtime); it touches no linear memory.  The
+  // workspace slot at 16 must survive the reset call at the top of
+  // $eval.
   WatRunInput in;
   in.wat = kIdentXWat;
   in.pre_writes = {{16u, EncodeIntCelValue(-12345)}};
@@ -172,15 +152,17 @@ TEST(WatRunnerTest, IdentXCelResetDoesNotClobberWorkspace) {
 
 // ─────────────────────────────────────────────────────────
 // Runtime exercise — arena_alloc through the real runtime.
-// arena_alloc bumps the arena cursor (stored in bytes [8,12) by
-// arena_reset) and returns the pre-bump offset.  Two successive
-// allocs of size 24 should return arena_base and arena_base+24
-// if the runtime is wired correctly.
+// Phase C: the arena is a malloc'd buffer (seeded by the harness via
+// arena_init); arena_alloc 8-aligns, bumps the cursor, and returns
+// the pre-bump absolute offset into that buffer.  The exact base is
+// wherever dlmalloc placed it (high in memory, above __heap_base), so
+// the test asserts the *spacing* (second = first + 24) rather than
+// absolute offsets.
 // ─────────────────────────────────────────────────────────
 
 constexpr absl::string_view kTwoAllocsWat = R"WAT(
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (func $eval (result i32)
@@ -204,24 +186,18 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
   auto out = RunWat(in);
   ASSERT_THAT(out, IsOk());
 
-  // $eval returned the first alloc's offset — arena_alloc's contract
-  // says it returns the pre-bump cursor, which was arena_base=16
-  // at the start.
-  EXPECT_EQ(out->eval_return, 16u);
-
-  // Inspect the saved offsets.  Second alloc should sit 24 bytes
-  // past the first.
+  // Inspect the saved offsets written into the reserved low region
+  // at bytes [200, 208).  $eval returns the first alloc offset.
   uint32_t first = 0;
   uint32_t second = 0;
   std::memcpy(&first, out->memory_after.data() + 200, sizeof(first));
   std::memcpy(&second, out->memory_after.data() + 204, sizeof(second));
-  EXPECT_EQ(first, 16u);
-  EXPECT_EQ(second, 40u);
-
-  // After two 24-byte allocs, the cursor should be arena_base + 48.
-  ArenaHeader ah = DecodeArenaHeader(out->memory_after);
-  EXPECT_EQ(ah.cursor, 16u + 48u);
-  EXPECT_EQ(ah.limit, 131072u);
+  // arena_alloc returned a non-null offset (proves arena_init seeded
+  // the buffer; an unseeded arena traps in the runtime).
+  EXPECT_NE(first, 0u);
+  EXPECT_EQ(out->eval_return, first);
+  // Second alloc sits exactly 24 bytes past the first (8-aligned 24).
+  EXPECT_EQ(second, first + 24u);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -238,7 +214,7 @@ TEST(WatRunnerTest, CelAllocThroughRealRuntimeBumpsCursor) {
 
 constexpr absl::string_view kSelectCNameWat = R"WAT(
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_get_field"

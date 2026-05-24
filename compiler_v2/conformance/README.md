@@ -205,6 +205,16 @@ classifier miss.
     `binding_marshal::ValueFromProto` hasn't been extended to
     the runtime aggregate types yet.  Unlocks ~8 SKIPs across `fields`
     and a few scattered rows.
+    > Update 2026-05-22: the runtime-side encoder
+    > (`instance.cc::EncodeMap`) shipped, so the bottleneck is
+    > now purely `binding_marshal::ValueFromProto`'s aggregate
+    > decoder.  Indexing / size / `in` operator on bound maps
+    > works end-to-end (see `compiler_v2/tools/cel/
+    > activation_matrix_test.cc::BoundMap*`).  Comprehension
+    > iteration over a bound list/map and over proto
+    > repeated/map fields also ships in the same commit
+    > (Slices 1+2 — `m5b-comprehensions-simplification.md`
+    > §CCF-8 + `m5-comprehensions-followon.md` §10).
   - **`unknown:` ExprValue bindings.**  Refused because there's
     no per-test expr-id → `AttributeId` map.  Unlocks the
     `partial_*` sections embedded across multiple fixtures.

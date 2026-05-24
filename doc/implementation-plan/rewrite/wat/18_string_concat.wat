@@ -9,14 +9,14 @@
 ;; than rewriting a fixed-size scalar payload.
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst "ab"  {CEL_STRING, payload.s={ptr=64, len=2}}
 ;;   [40, 64)  rodata: kConst "cd"  {CEL_STRING, payload.s={ptr=66, len=2}}
 ;;   [64, 66)  rodata: payload "ab"
 ;;   [66, 68)  rodata: payload "cd"
 ;;   [68, 72)  padding to 8-align workspace
 ;;   [72, 96)  workspace: kCall(`_+_`) result slot (out=72)
-;;   [96, mem_size)  bump arena (concat target lives here)
+;;   [96+]  bump arena (malloc'd in heap) (concat target lives here)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_string_concat_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
@@ -37,7 +37,7 @@
 ;; produced string payload is owned by the arena that the next
 ;; arena_reset rewinds.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_string_concat_at_vv"

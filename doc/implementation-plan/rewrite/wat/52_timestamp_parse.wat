@@ -9,12 +9,12 @@
 ;; stay in pure wasm (`wat/43_timestamp_accessor.wat`).
 ;;
 ;; Memory layout:
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst "2009-02-13T23:31:30Z"
 ;;                     {kind=CEL_STRING(5), span.ptr=40, span.len=20}
 ;;   [40, 60)  rodata: string body "2009-02-13T23:31:30Z" (20 bytes)
 ;;   [64, 88)  workspace: out_slot for the constructed CEL_TIMESTAMP
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this slice:
 ;;   cel_host.cel_timestamp_parse(out_slot, str_slot) — i32×2 → ()
@@ -48,7 +48,7 @@
 ;; This file follows the same shape as `08_map_index_host.wat` —
 ;; pure host import, no runtime cel_* dispatch hop.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel_host" "cel_timestamp_parse"

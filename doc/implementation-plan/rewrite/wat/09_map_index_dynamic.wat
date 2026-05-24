@@ -31,13 +31,13 @@
 ;; Memory layout — same as 08 (host arm) since the call-site
 ;; lowering only differs in target name.
 ;;
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  workspace: m's slot
 ;;   [40, 64)  rodata: lookup-key {CEL_INT, i=1}
 ;;   [64, 88)  workspace: kCallExpr result slot
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   ;; The dispatcher itself — no `_arena` / `_host` suffix.  Bound

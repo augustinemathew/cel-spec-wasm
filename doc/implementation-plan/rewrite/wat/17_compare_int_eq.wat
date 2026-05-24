@@ -8,11 +8,11 @@
 ;;
 ;; Memory layout (identical to 16 — comparison and arithmetic
 ;; helpers share the slot-out shape exactly):
-;;   [ 0, 16)  reserved + arena cursor/limit
+;;   [ 0, 16)  reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)  rodata: kConst 1     {CEL_INT, i=1}
 ;;   [40, 64)  rodata: kConst 2     {CEL_INT, i=2}
 ;;   [64, 88)  workspace: kCall(`_==_`) result slot (out=64)
-;;   [88, mem_size)  bump arena
+;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
 ;;   cel.cel_int_eq_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
@@ -31,7 +31,7 @@
 ;; The kCall arm in `expr_lower.cc::EmitGeneralCall` looks up
 ;; `equals_int64` in the OverloadTable and emits exactly this call.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_int_eq_at_vv"

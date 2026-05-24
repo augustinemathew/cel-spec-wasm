@@ -18,21 +18,21 @@
 ;;   - accu var       : init/step set local = <accu slot or fresh CelValue>
 ;;
 ;; Memory layout sketch (rough; actual offsets computed by LayoutPass):
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 88)   rodata: three int consts {1, 2, 3}  — 3×24 = 72 bytes
 ;;   [88, 112)  rodata: bool const {false}          — accu_init
 ;;   [112, 136) rodata: int const {0}               — rhs of `x > 0`
 ;;   [136, 160) workspace slot for the list CelValue (header only)
 ;;   [160, 184) workspace slot for the accu CelValue
 ;;   [184, 208) workspace slot for the loop_step output
-;;   [208, mem_size)  bump arena
+;;   [208+]  bump arena (malloc'd in heap)
 ;;
 ;; Imports we'd need at M3 (arith) + M6 (list build) once those land:
 ;;   cel.cel_int_gt_at_vv(out, a, b)   — `x > 0`
 ;;   cel.cel_or_at_vv(out, a, b)       — `||`
 ;;   cel.cel_list_build_i(out, …)      — or rodata-packed list literal
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   ;; Stubs — declared so the WAT validates; real impls ship in M3/M6.

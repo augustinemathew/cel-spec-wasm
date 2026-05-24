@@ -119,10 +119,13 @@ message TypeEntry {
 
 // Top-level payload of the `cel.abi` custom section.
 message CelAbi {
-  // Bump on any field renumbering / removal.  Additive changes keep
-  // the version the same.  Hosts MAY reject a module whose version
-  // they don't recognise; typically they tolerate forward versions
-  // so long as they only consume the fields they know about.
+  // Schema version of *this proto message*.  Bumped on any field
+  // renumbering / removal.  Additive changes keep the version the
+  // same.  Hosts MAY reject a module whose version they don't
+  // recognise; typically they tolerate forward versions so long as
+  // they only consume the fields they know about.  Distinct from
+  // `runtime_abi_version` below — that one carries the runtime
+  // helper catalogue version the program was compiled against.
   uint32 version = 1;
 
   // Declared free variables referenced by the expression.
@@ -140,4 +143,26 @@ message CelAbi {
   // FQN constructed by `kStructExpr` in the program.  Index 0 is
   // the reserved sentinel.
   repeated TypeEntry types = 5;
+
+  // Version of the runtime helper catalogue the program was
+  // compiled against.  Mirror of `abi::kRuntimeAbiVersion` in
+  // `compiler_v2/abi/runtime_catalogue.h`.  The engine compares
+  // this against its own `kRuntimeAbiVersion` at `Plan` time and
+  // rejects mismatches with a clear FailedPrecondition that names
+  // both versions — far better than wasmtime's opaque "type
+  // mismatch on call $cel_..." trap that would otherwise happen at
+  // first call into a renamed / re-aritied helper.
+  //
+  // `0` is the sentinel "predates ABI versioning"; programs
+  // emitted before Slice E carry no value (proto3 default = 0).
+  // The engine rejects 0 with a "recompile against this engine's
+  // compiler" diagnostic — see Engine::Plan.
+  //
+  // Bumping policy (mirrors the constant's docstring):
+  //   - Helper renamed / removed / arity changed / return shape
+  //     changed / namespace renamed   →  bump
+  //   - Helper added (additive)        →  no bump (older modules
+  //                                       still load; they don't
+  //                                       reference the new helper)
+  uint32 runtime_abi_version = 6;
 }

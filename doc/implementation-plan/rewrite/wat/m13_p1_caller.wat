@@ -29,7 +29,7 @@
 ;; module — both modules see the same `cel.memory`):
 ;;
 ;;   [ 0,  8)   reserved null sentinel
-;;   [ 8, 16)   reserved (arena cursor / limit slot — unused here)
+;;   [ 8, 16)   reserved (legacy cursor/limit slot — arena state now in BSS)
 ;;   [16, 40)   args[0] — userId CelValue
 ;;                kind = CEL_STRING (5)
 ;;                payload.s.ptr = 80
@@ -58,7 +58,7 @@
   ;; (TinyGo) exports memory, and the engine binds THAT as
   ;; `cel.memory` for this caller.  Either way, this `(import "cel"
   ;; "memory" …)` resolves correctly.
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
 
   ;; The foreign custom fn.  In the real system this is wired up at
   ;; Engine::Plan via RuntimeBindings::AddModule("rules", instance).

@@ -46,7 +46,7 @@
 ;; skips this fixture (tag = manual).
 ;;
 ;; Memory layout:
-;;   [ 0, 16)   reserved + arena cursor/limit
+;;   [ 0, 16)   reserved (null sentinel; arena state lives in runtime BSS)
 ;;   [16, 40)   rodata: list elem [0] = {CEL_INT, i=1}
 ;;   [40, 64)   rodata: list elem [1] = {CEL_INT, i=2}
 ;;   [64, 88)   rodata: list elem [2] = {CEL_INT, i=3}
@@ -54,12 +54,12 @@
 ;;   [112,136)  workspace: iter_range list slot (kCreateList result)
 ;;   [136,160)  workspace: accu_slot (= the dynamic [] → [2,4,6])
 ;;   [160,184)  workspace: step_out (per-iter `v * 2` result)
-;;   [184, mem_size)  bump arena — initial accu list header (16 B)
+;;   [184+]  bump arena (malloc'd in heap) — initial accu list header (16 B)
 ;;                    + geometric element runs allocate from here.
 ;;
 ;; ── Runtime helpers ─────────────────────────────────────────
 ;;   cel.cel_list_create       (M4.F)         — for iter_range build
-;;   cel.cel_list_set          (M4.F)         — for iter_range build
+;;   cel.cel_list_append_at          (M4.F)         — for iter_range build
 ;;   cel.cel_int_mul_at_vv     (M5.B)         — `v * 2`
 ;;   cel.cel_list_append_at    (Slice D NEW)  — geometric-growth append
 ;;
@@ -75,11 +75,11 @@
 ;;       allocate anyway).
 ;; This WAT uses shape (a) — the generic path.
 (module
-  (import "cel" "memory" (memory 2))
+  (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
-  (import "cel" "cel_list_set" (func $cel_list_set (param i32 i32 i32)))
+  (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
   (import "cel" "cel_int_mul_at_vv"
           (func $cel_int_mul_at_vv (param i32 i32 i32)))
   ;; DEPENDS ON Slice D — symbol not yet exported by cel_runtime.wasm.
@@ -109,9 +109,9 @@
 
     ;; iter_range = [1, 2, 3] at slot 112.
     (call $cel_list_create (i32.const 112) (i32.const 3))
-    (call $cel_list_set (i32.const 112) (i32.const 0) (i32.const 16))
-    (call $cel_list_set (i32.const 112) (i32.const 1) (i32.const 40))
-    (call $cel_list_set (i32.const 112) (i32.const 2) (i32.const 64))
+    (call $cel_list_append_at (i32.const 112) (i32.const 16))
+    (call $cel_list_append_at (i32.const 112) (i32.const 40))
+    (call $cel_list_append_at (i32.const 112) (i32.const 64))
 
     ;; accu_init = [] at slot 136.  cel_list_create with count=0
     ;; allocates a bare ArenaListHeader; subsequent
