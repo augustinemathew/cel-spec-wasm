@@ -245,20 +245,31 @@ so Slice B's "lights up" commit is a pure wiring change.
 Ordered by dependency.  Small milestone — 3 slices, ~1.5 days
 total at AI-assisted pace.
 
-### Slice 0 — WAT traces (~0.25 day, non-negotiable)
+### Slice 0 — WAT traces (~0.25 day, non-negotiable) — **shipped 2026-05-24**
 
 Per CLAUDE.md "WAT-first": before any production C++, hand-write
-the two kernel-call shapes and run them through
-`tools/wat_runner` with stub impls.
+the two kernel-call shapes.
 
-  - [ ] `doc/implementation-plan/rewrite/wat/m17_base64_encode.wat`
+  - [x] `doc/implementation-plan/rewrite/wat/m17_base64_encode.wat`
         — locks the `cel_base64_encode_at_v(out, bytes)` call
         shape (read bytes span from in-slot, call, write string to
         out-slot).
-  - [ ] `doc/implementation-plan/rewrite/wat/m17_base64_decode.wat`
+  - [x] `doc/implementation-plan/rewrite/wat/m17_base64_decode.wat`
         — `cel_base64_decode_at_v(out, string)` + the
-        error-out shape for invalid input.
-  - [ ] Walkthrough paragraphs appended to `wat-traces.md`.
+        error-out shape for invalid input.  Input is the **unpadded**
+        `'aGVsbG8'` to pin the load-bearing conformance row.
+  - [x] Walkthrough paragraphs appended to `wat-traces.md`
+        (§M17.1, §M17.2).
+
+> **Shipped 2026-05-24.**  Both WATs assemble clean under
+> `wasm-as --enable-threads --enable-bulk-memory` (196 / 198
+> bytes).  Slot layout mirrors WAT 18 (`cel_string_concat`):
+> input CelValue at [16,40), body at [40,...), 8-aligned out_slot
+> at [48,72), arena at [72+).  Both kernels import from the
+> `"cel"` module (self-hosted, not `cel_host`).  The end-to-end
+> `wat_runner` execution defers to Slice A — `cel_runtime.wasm`
+> doesn't export `cel_base64_*` yet, so the runner can't bind the
+> imports until the kernels are built (same staging M12 used).
 
 ### Slice A — runtime kernels + unit tests (~0.75 day)
 
