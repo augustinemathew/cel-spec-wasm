@@ -43,6 +43,8 @@
 #include "compiler_v2/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
 #include "extensions/comprehensions_v2.h"
+#include "extensions/math_ext_decls.h"
+#include "extensions/math_ext_macros.h"
 #include "extensions/strings.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/compiler/importer.h"
@@ -400,6 +402,19 @@ bool IsFormatCallWithListLiteralArgs(const cel::CallExpr& call) {
   return call.args()[0].kind_case() == cel::ExprKindCase::kListExpr;
 }
 
+// `math.greatest` / `math.least` expand (parser macro) to global
+// `math.@min` / `math.@max` calls.  cel-cpp types the cross-type
+// pairwise and the mixed-element list overloads as `dyn` (the checker
+// can't pin a single numeric result kind); the runtime kernel
+// dispatches on each operand's CelKind, so these are safe.  Admit the
+// call's dyn result (in `CheckSubsetNode`) and skip recursing into a
+// mixed-numeric list-literal arg here — the macro already validated
+// every leaf is numeric.  See `m16-ast-probe-findings.md`.
+bool IsMathMinMaxCall(const cel::CallExpr& call) {
+  return !call.has_target() &&
+         (call.function() == "math.@min" || call.function() == "math.@max");
+}
+
 void CheckSubsetCall(const cel::CallExpr& call, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out) {
   if (call.has_target()) CheckSubsetNode(call.target(), types, out);
@@ -407,7 +422,11 @@ void CheckSubsetCall(const cel::CallExpr& call, const cel::Ast::TypeMap& types,
     // Args subtree fully admitted — see comment above.
     return;
   }
+  const bool minmax = IsMathMinMaxCall(call);
   for (const auto& arg : call.args()) {
+    // The macro-built mixed-numeric list arg is `list(dyn)` but every
+    // element is numeric; the list/fold kernel handles it at runtime.
+    if (minmax && arg.kind_case() == cel::ExprKindCase::kListExpr) continue;
     CheckSubsetNode(arg, types, out);
   }
 }
@@ -590,6 +609,14 @@ void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
     // or itself a select-through-Any).  The runtime unwrap arm in
     // ProtoBacking::ReadField handles the resolution at eval time.
     CheckSubsetNode(node.select_expr().operand(), types, out);
+    return;
+  }
+  if (node.has_call_expr() && IsMathMinMaxCall(node.call_expr())) {
+    // Cross-type / mixed-list math.@min / math.@max are checker-typed
+    // `dyn`; the runtime kernel dispatches on operand kind.  Admit the
+    // call's dyn result and validate its args (CheckSubsetCall skips
+    // the mixed-numeric list-literal arg).
+    CheckSubsetCall(node.call_expr(), types, out);
     return;
   }
   const int64_t id = node.id();
@@ -798,6 +825,16 @@ absl::Status ConfigureCheckerBuilder(
       !s.ok()) {
     return s;
   }
+  // math_ext: registers the cel-cpp `math` extension decls (ceil,
+  // floor, round, trunc, abs, sign, sqrt, isInf/isNaN/isFinite,
+  // bitAnd/Or/Xor/Not/ShiftLeft/ShiftRight, and the internal
+  // math.@min / math.@max the greatest/least macros expand to).
+  // Kernels self-hosted in `cel_math_ext.c`; codegen routes through
+  // the math overload IDs seeded in `overload_table.cc`.
+  if (auto s = builder.AddLibrary(cel::extensions::MathCheckerLibrary());
+      !s.ok()) {
+    return s;
+  }
   if (!opts.container.empty()) {
     builder.set_container(opts.container);
   }
@@ -833,6 +870,12 @@ absl::Status BuildMacroRegistry(cel::MacroRegistry& registry) {
   }
   if (auto s = cel::extensions::RegisterComprehensionsV2Macros(registry, opts);
       !s.ok()) {
+    return s;
+  }
+  // math_ext: `math.greatest` / `math.least` are receiver-varargs
+  // macros that expand at parse time to `math.@min` / `math.@max`
+  // calls (see `m16-ast-probe-findings.md`).
+  if (auto s = cel::extensions::RegisterMathMacros(registry, opts); !s.ok()) {
     return s;
   }
   return absl::OkStatus();

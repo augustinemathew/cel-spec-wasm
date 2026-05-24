@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1554 (63.3%)  skip=756 (30.8%)  fail=144 (5.9%)
+total=2454  pass=1748 (71.2%)  skip=562 (22.9%)  fail=144 (5.9%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -103,6 +103,7 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | Fixture | Total | Pass | Skip | Fail | Pass% | Skip categories |
 |---|---:|---:|---:|---:|---:|---|
 | `timestamps.textproto`       |  76 |  75 |   0 |   1 | 98% | — |
+| `math_ext.textproto`         | 199 | 194 |   5 |   0 | 97% | static_subset=5 |
 | `fp_math.textproto`          |  30 |  29 |   1 |   0 | 96% | disable_check=1 |
 | `string.textproto`           |  51 |  49 |   0 |   2 | 96% | — |
 | `integer_math.textproto`     |  64 |  61 |   3 |   0 | 95% | disable_check=3 |
@@ -127,7 +128,6 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `wrappers.textproto`         |  36 |   9 |  18 |   9 | 25% | static_subset=18 |
 | `block_ext.textproto`        |  37 |   0 |  37 |   0 |  0% | ext_unimpl=37 |
 | `encoders_ext.textproto`     |   4 |   0 |   4 |   0 |  0% | ext_unimpl=4 |
-| `math_ext.textproto`         | 199 |   0 | 199 |   0 |  0% | ext_unimpl=199 |
 | `network_ext.textproto`      |  69 |   0 |  69 |   0 |  0% | ext_unimpl=69 |
 | `optionals.textproto`        |  70 |   0 |  70 |   0 |  0% | ext_unimpl=70 |
 | `proto2_ext.textproto`       |  18 |   0 |  18 |   0 |  0% | ext_unimpl=18 |
@@ -140,12 +140,12 @@ is hand-maintained):
 <!-- BEGIN AUTOGEN skip-totals -->
 | Category | Count | Disposition |
 |---|---:|---|
-| `ext_unimpl`     | 397 | Scope-not-shipped — extensions pass (the largest single bucket; covers all of `math_ext` / `string_ext` / `optionals` / `network_ext` / `block_ext` / `encoders_ext` plus a handful of ext-shaped rows scattered through proto2/proto3/wrappers). |
-| `static_subset`  | 178 | Out-of-scope by design (`RejectDyn`). |
+| `ext_unimpl`     | 198 | Scope-not-shipped — extensions pass (the largest single bucket; covers all of `math_ext` / `string_ext` / `optionals` / `network_ext` / `block_ext` / `encoders_ext` plus a handful of ext-shaped rows scattered through proto2/proto3/wrappers). |
+| `static_subset`  | 183 | Out-of-scope by design (`RejectDyn`). |
 | `disable_check`  | 144 | Out-of-scope by design (parse-only eval). |
 | `check_only`     |  25 | Scope-not-shipped — `typed_result` `check_only:true` rows in `type_deduction.textproto`. |
 | `type_env`       |  12 | Scope-not-shipped — `binding_marshal` doesn't yet decode aggregate `type_env` decls. |
-| **Total**          | **756** | |
+| **Total**          | **562** | |
 <!-- END AUTOGEN skip-totals -->
 
 > Note: only the `Count` column of the SKIP-totals table is
@@ -153,11 +153,11 @@ is hand-maintained):
 > hand-maintained and preserved across regenerations.
 
 <!-- BEGIN AUTOGEN addressable-prose -->
-Of the 756 SKIPs: ~322 are out-of-scope by design
-(`disable_check` + `static_subset`); the rest (434) are
+Of the 562 SKIPs: ~327 are out-of-scope by design
+(`disable_check` + `static_subset`); the rest (235) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2454 - 322 = 2132) is **73%**.
+(2454 - 327 = 2127) is **82%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets

@@ -67,6 +67,7 @@ cc_library(
         "cel_internal.h",
         "cel_log.c",
         "cel_make.c",
+        "cel_math_ext.c",
         "cel_memory.c",
         "cel_runtime.c",
         "cel_string_ops.c",
@@ -85,6 +86,7 @@ cc_library(
         "cel_log.h",
         "cel_make.h",
         "cel_map.h",
+        "cel_math_ext.h",
         "cel_memory.h",
         "cel_runtime.h",
         "cel_string_ops.h",
@@ -175,6 +177,15 @@ cc_test(
 cc_test(
     name = "cel_arith_test",
     srcs = ["cel_arith_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_math_ext_test",
+    srcs = ["cel_math_ext_test.cc"],
     deps = [
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
