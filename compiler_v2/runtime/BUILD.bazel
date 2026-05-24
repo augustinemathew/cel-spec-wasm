@@ -375,6 +375,22 @@ cc_library(
     ],
 )
 
+# M17 — `encoders` extension kernels (base64.encode / base64.decode).
+# Reuses `cel_string_ext_internal.h`'s header-only 3VL / span helpers
+# (listed in srcs, not a link dep — every helper is `static inline`).
+cc_library(
+    name = "cel_base64_ext",
+    srcs = [
+        "cel_base64_ext.cc",
+        "cel_string_ext_internal.h",
+    ],
+    hdrs = ["cel_base64_ext.h"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 # M12 Slice D — `<string>.format(<list>)` parser + (stub) renderer.
 # Separate cc_library from `:cel_string_ext` because:
 #   - the parser surface is exercised independently of the kernel
@@ -418,6 +434,17 @@ cc_test(
     deps = [
         ":cel_runtime",
         ":cel_string_ext",
+        ":string_ext_test_helpers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_base64_ext_test",
+    srcs = ["cel_base64_ext_test.cc"],
+    deps = [
+        ":cel_base64_ext",
+        ":cel_runtime",
         ":string_ext_test_helpers",
         "@com_google_googletest//:gtest_main",
     ],
@@ -561,7 +588,7 @@ cc_binary(
         # instantiation, then binds it on the linker as `cel.memory`
         # so the expr module (which still imports `cel.memory`)
         # resolves to the same backing store.
-        # Export list (193 symbols) comes from `wasm_exports.txt`
+        # Export list (195 symbols) comes from `wasm_exports.txt`
         # via the `:wasm_export_args` genrule which emits one
         # `--export=<name>` per line into a wasm-ld response file
         # consumed below by `-Wl,@<file>`.  See the file header for
@@ -570,6 +597,7 @@ cc_binary(
     ],
     tags = ["manual"],
     deps = [
+        ":cel_base64_ext",
         ":cel_matches",
         ":cel_string_ext",
         ":cel_string_format",

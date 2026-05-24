@@ -80,11 +80,15 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // via parser macros; the 6 unary @min/@max ids are identity and
 // bind to `cel_copy_slot`.  Kernels self-hosted in `cel_math_ext.c`;
 // see `rewrite/m16-math-ext.md`.
+// M17: 249 → 251 — added 2 encoders (base64) overload seeds
+// (`base64_encode_bytes` / `base64_decode_string`), self-hosted in
+// `cel_runtime.wasm` (`cel_base64_{encode,decode}_at_v`); see
+// `rewrite/m17-encoders-ext.md` §4.2.
 //
 // The seed count rises monotonically as kernels land.  When it
 // changes, update both `kBuiltinSeeds`'s std::array size in
 // `overload_table.cc` and this constant.
-constexpr size_t kBuiltinSeedCount = 249;
+constexpr size_t kBuiltinSeedCount = 251;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard

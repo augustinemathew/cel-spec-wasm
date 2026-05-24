@@ -44,6 +44,7 @@
 #include "compiler_v2/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
 #include "extensions/comprehensions_v2.h"
+#include "extensions/encoders.h"
 #include "extensions/math_ext_decls.h"
 #include "extensions/math_ext_macros.h"
 #include "extensions/strings.h"
@@ -806,10 +807,11 @@ absl::Status RegisterCustomFunctionsOnChecker(
   return absl::OkStatus();
 }
 
-absl::Status ConfigureCheckerBuilder(
-    cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
-    const google::protobuf::DescriptorPool* pool,
-    std::vector<Variable>& variables_out) {
+// Registers the cel-cpp checker libraries whose function/overload
+// decls our pipeline supports.  Each `AddLibrary` teaches the
+// type-checker a family of declarations; the matching runtime kernels
+// + `overload_table.cc` seeds make them executable.
+absl::Status AddCheckerLibraries(cel::TypeCheckerBuilder& builder) {
   if (auto s = builder.AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
     return s;
   }
@@ -833,17 +835,13 @@ absl::Status ConfigureCheckerBuilder(
       !s.ok()) {
     return s;
   }
-  // `OptionalCheckerLibrary` registers the `optional.of` /
-  // `optional.none` / `optional.ofNonZeroValue` constructors plus
-  // the `hasValue` / `value` / `or` / `orValue` receiver overloads,
-  // the `select_optional_field` / `map_optindex_optional_value` /
-  // `list_optindex_optional_int` overloads for `.?` / `[?_]`, and
-  // the `optional_type` ident — see
-  // `third_party/cel-cpp/checker/optional.cc` for the registered set.
-  // The parser-side flip (`enable_optional_syntax = true`) lives in
-  // `DefaultParserOptions` below; both pieces must be wired together
-  // for any `optional<T>` expression to type-check.
-  if (auto s = builder.AddLibrary(cel::OptionalCheckerLibrary()); !s.ok()) {
+  // M17 encoders: registers `base64.encode(bytes)->string` and
+  // `base64.decode(string)->bytes`.  Runtime kernels are self-hosted
+  // in `cel_runtime.wasm` (`cel_base64_{encode,decode}_at_v`); codegen
+  // routes through the 2 overload IDs (`base64_encode_bytes` /
+  // `base64_decode_string`) seeded in `overload_table.cc`.
+  if (auto s = builder.AddLibrary(cel::extensions::EncodersCheckerLibrary());
+      !s.ok()) {
     return s;
   }
   // math_ext: registers the cel-cpp `math` extension decls (ceil,
@@ -854,6 +852,26 @@ absl::Status ConfigureCheckerBuilder(
   // the math overload IDs seeded in `overload_table.cc`.
   if (auto s = builder.AddLibrary(cel::extensions::MathCheckerLibrary());
       !s.ok()) {
+    return s;
+  }
+  // `OptionalCheckerLibrary` registers the `optional.of` /
+  // `optional.none` / `optional.ofNonZeroValue` constructors plus
+  // the `hasValue` / `value` / `or` / `orValue` receiver overloads,
+  // the `select_optional_field` / `map_optindex_optional_value` /
+  // `list_optindex_optional_int` overloads for `.?` / `[?_]`, and
+  // the `optional_type` ident — see
+  // `third_party/cel-cpp/checker/optional.cc` for the registered set.
+  // The parser-side flip (`enable_optional_syntax = true`) lives in
+  // `DefaultParserOptions` below; both pieces must be wired together
+  // for any `optional<T>` expression to type-check.
+  return builder.AddLibrary(cel::OptionalCheckerLibrary());
+}
+
+absl::Status ConfigureCheckerBuilder(
+    cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
+    const google::protobuf::DescriptorPool* pool,
+    std::vector<Variable>& variables_out) {
+  if (auto s = AddCheckerLibraries(builder); !s.ok()) {
     return s;
   }
   if (!opts.container.empty()) {

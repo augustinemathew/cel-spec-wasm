@@ -2380,6 +2380,56 @@ the WAT level rather than waiting for an integration test.
 
 ---
 
+## M17 — `encoders` extension ABI traces
+
+Two self-hosted runtime kernels for the cel-cpp `encoders`
+extension library.  Both follow the unary slot-out shape
+established by `cel_string_concat_at_vv` (example 18): a
+`(out_slot, arg_slot)` helper imported from the `"cel"` module
+(NOT a `cel_host` trampoline — these are pure operate-on-CelValue
+kernels with no descriptor-pool or externref needs), allocating
+their output in the per-Eval bump arena.  Semantics, overload
+ids, and the decode error message were confirmed by reading
+`third_party/cel-cpp/extensions/encoders.cc` directly (see
+`m17-encoders-ext.md` §2).  Both WATs assemble clean under
+`wasm-as --enable-threads --enable-bulk-memory`; the end-to-end
+`wat_runner` run against `cel_runtime.wasm` lands once Slice A
+builds the kernels (the exports don't exist yet).
+
+## M17.1.  `base64.encode(b'hello')` — bytes→string encode
+
+`doc/.../wat/m17_base64_encode.wat`.  Input is a `CEL_BYTES(6)`
+literal `b'hello'` (5-byte body at offset 40).  The kernel
+`cel_base64_encode_at_v(out=48, bytes=16)` runs
+`absl::Base64Escape` over the 5 input bytes, arena-allocates the
+8-byte result, and writes `{CEL_STRING(5), span={ptr=<arena>,
+len=8}}` — `"aGVsbG8="` ("hel"→`aGVs`, "lo"→`bG8=`).  Output is
+ASCII base64 text so the result kind is `CEL_STRING`, not
+`CEL_BYTES`, regardless of whether the input bytes were valid
+UTF-8.  Wrong-kind input → `{CEL_ERROR, CEL_ERR_TYPE_MISMATCH}`;
+ERROR/UNKNOWN absorbed verbatim; arena OOM →
+`{CEL_ERROR, CEL_ERR_OVERFLOW}`.
+
+## M17.2.  `base64.decode('aGVsbG8')` — string→bytes decode (unpadded)
+
+`doc/.../wat/m17_base64_decode.wat`.  The input is deliberately
+**unpadded** — `'aGVsbG8'` with no trailing `=` — because that is
+the load-bearing conformance row
+(`encoders_ext.textproto::decode/hello_without_padding`).
+`absl::Base64Unescape` accepts missing padding, so the kernel
+needs no manual re-pad; this WAT pins that into the trace so a
+future absl tightening surfaces here rather than in conformance.
+The kernel `cel_base64_decode_at_v(out=48, str=16)` decodes the
+7-byte input, arena-allocates the 5-byte result, and writes
+`{CEL_BYTES(6), span={ptr=<arena>, len=5}}` — `b'hello'`.  Output
+is `CEL_BYTES` (may be non-UTF-8), read via `AsBytes()` on the
+public surface.  Invalid input (`Base64Unescape` returns `false`)
+→ `{CEL_ERROR, CEL_ERR_INVALID_ARGUMENT}` with message
+`"invalid base64 data"` (cel-cpp `encoders.cc:51`, verbatim);
+wrong-kind → `CEL_ERR_TYPE_MISMATCH`; ERROR/UNKNOWN absorbed.
+
+---
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

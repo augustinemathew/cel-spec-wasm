@@ -93,7 +93,7 @@ namespace {
 // `expr_lower.cc` can do a single lookup-and-emit (mirrors
 // arithmetic / compare). Three-path origin dispatch is documented
 // in `rewrite/map-list-dispatch.md`.
-constexpr std::array<Seed, 249> kBuiltinSeeds{
+constexpr std::array<Seed, 251> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -637,6 +637,17 @@ constexpr std::array<Seed, 249> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_math_max_list_at_v"}},
     Seed{"math_@max_list_double",
          {ImportModule::kCelRuntime, "cel_math_max_list_at_v"}},
+    // ── M17 `encoders` extension (cel-cpp `extensions/encoders.cc`) ──
+    // base64.encode(bytes)->string + base64.decode(string)->bytes.
+    // Overload IDs are cel-cpp's `MakeOverloadDecl` strings (confirmed
+    // against `encoders.cc`); kernels self-hosted in `cel_runtime.wasm`
+    // (`cel_base64_{encode,decode}_at_v`, see `runtime/BUILD.bazel`'s
+    // `-Wl,--export=cel_base64_*` lines).  Extension-only IDs (NOT in
+    // cel-cpp's `StandardOverloadIds`) → no coverage-tripwire arm.
+    Seed{"base64_encode_bytes",
+         {ImportModule::kCelRuntime, "cel_base64_encode_at_v"}},
+    Seed{"base64_decode_string",
+         {ImportModule::kCelRuntime, "cel_base64_decode_at_v"}},
     // ── CEL `optional<T>` overloads ──────────────────────────
     // Overload IDs from `third_party/cel-cpp/checker/optional.cc`.
     // Kernels self-hosted in `cel_runtime.wasm` (see

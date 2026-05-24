@@ -31,7 +31,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 113> kRuntimeExports = {
+constexpr std::array<absl::string_view, 115> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -161,6 +161,12 @@ constexpr std::array<absl::string_view, 113> kRuntimeExports = {
     "cel_map_insert_at_if_present",
     "cel_list_append_at_if_present",
     "cel_set_field_at_if_present",
+    // M17 encoders (base64) kernels — exported from cel_runtime.wasm
+    // (see runtime/BUILD.bazel's cel_base64_* --export lines).  Bound
+    // to the real wasm exports (not stubs); arity comes from the
+    // export signature.  See wat/m17_base64_{encode,decode}.wat.
+    "cel_base64_encode_at_v",
+    "cel_base64_decode_at_v",
 };
 
 // ── Status helpers — mirror cel::Engine's shape ─────────────

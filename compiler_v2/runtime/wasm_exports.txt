@@ -278,6 +278,10 @@ cel_math_max_at_vv
 cel_math_min_list_at_v
 cel_math_max_list_at_v
 
+# m17 encoders (base64) extension kernels.
+cel_base64_encode_at_v
+cel_base64_decode_at_v
+
 [host-only]
 # Symbols exported by cel_runtime.wasm that are NOT codegen-imported
 # helpers.  Three sub-buckets:
