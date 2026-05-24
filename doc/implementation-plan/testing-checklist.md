@@ -2362,7 +2362,7 @@ cel-cpp `math` extension: 17 functions.  `greatest`/`least` expand
 calls.  20 self-hosted kernels in a single `compiler_v2/runtime/
 cel_math_ext.c`; no new codegen (generic kCall).  Conformance:
 `math_ext.textproto` 0 → 194/199 PASS (5 SKIP dyn-error rows, 0
-FAIL); corpus-wide 1554 → 1748.
+FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
 
   - [x] **Slice 0 — WAT-first.** AST-shape probe
         (`compiler_v2/probes/math/ast_shape_probe_test.cc`) +
@@ -2384,7 +2384,98 @@ FAIL); corpus-wide 1554 → 1748.
         `parse_and_check.cc`; 20 wasm exports + catalogue entries;
         targeted static-subset admission for `dyn`-typed cross-type
         / mixed-list `math.@min`/`@max`.  67-case e2e in
-        `compiler_v2/e2e/m16_test.cc`.  Baseline 1554 → 1748.
+        `compiler_v2/e2e/m16_test.cc`.  Baseline → 1770 (post-M14 merge).
+### Rewrite M14 — CEL `optional<T>` (shipped 2026-05-22)
+
+`m14-optionals.md` shipped `optional<T>` end-to-end:
+runtime kernels + IR `Repr::kOptional` + codegen Select/Index/
+Struct branches + frontend `OptionalCheckerLibrary` wiring +
+`{?key: opt_v}` / `[?elem]` / `{?field: opt_v}` literal entries
++ `optMap`/`optFlatMap` macros riding Shape-C with zero new
+comprehension codegen.  Conformance: `optionals.textproto`
+0/70 → 22/70 PASS (4 FAIL, 44 SKIP); corpus-wide 1476 → 1576
+PASS (+100).  Slice C unlock was 0 (every literal-entry /
+`optMap` row in the corpus has a `dyn`-typed sub-expression
+that `RejectDyn` filters upstream — see m14-optionals.md §4
+Slice C delta 1).  Slice E unlocked +4 by lifting the
+proto-`?field:` gate; one previously-SKIP'd row newly FAILs
+on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
+
+  - [x] **Slice 0 — WAT-first ABI lock.**  Six WAT files under
+        `doc/.../wat/m14_optional_*.wat` lock the OptionalCell
+        layout (32-byte arena-allocated `{present, _pad, inner}`),
+        the kernel ABIs (`cel_optional_*_at_*`,
+        `cel_select_optional_field_at_vv`), and the
+        immutability + absent-key contracts.  All six
+        assemble and run end-to-end through `wat_runner` with
+        byte-exact memory assertions.
+  - [x] **Slice A — runtime kernels + parser flip.**  8 new
+        kernels in `cel_optional.{h,c}` (`none_at`, `of_at_v`,
+        `of_non_zero_at_v`, `has_value_at_v`, `value_at_v`,
+        `or_at_vv`, `or_value_at_vv`,
+        `select_optional_field_at_vv`) + 32 per-TU unit tests in
+        `cel_optional_test.cc` + 4 3VL-absorption tests (B3
+        follow-up).  `kPrimitiveTypeName[14]` filled with
+        `"optional_type"`.  `EnableOptionalSyntax = true` +
+        `AddLibrary(OptionalCheckerLibrary())` in
+        `parse_and_check.cc`.  14 OverloadTable seeds (the 7
+        value-level overloads + 7 chained-index overloads all
+        routed through `cel_select_optional_field_at_vv`).
+  - [x] **Slice B — codegen + static-subset gate.**
+        `Repr::kOptional` stamped by both `ReprOf` overloads
+        (TypeSpec `AbstractType{"optional_type"}` + cel::Type
+        `OptionalType`).  `LayoutPass::SelectKeyRodataVisitor`
+        lifts kSelect-on-optional field names into rodata.
+        `EmitKSelect` / `EmitKIndexCall` optional branches
+        route to `cel_select_optional_field_at_vv`.  test_only
+        Select on optional chains through
+        `cel_optional_has_value_at_v` on the same slot.
+        `CheckSubsetStruct` rejects `Foo{?field: ...}` proto-
+        literal entries.  Codegen test matrix:
+        `optional<map>.field`, `optional<list>[i]`,
+        `optional<list>[?i]`, `m[?k]`, `[1,2][?1]`,
+        `has(opt.x)`, Select on typed-None.  e2e test matrix:
+        the same plus orValue chains and the verbatim
+        conformance row sources.
+  - [x] **Slice C — `optMap` / `optFlatMap` macros + optional
+        entries in literals.**  Two new runtime kernels
+        (`cel_map_insert_at_if_present` / `cel_list_append_at_if_present`)
+        + 12 per-TU unit tests in `cel_optional_test.cc` covering
+        Some/None/error/unknown/wrong-kind + mixed-entry shapes.
+        Two new WAT traces (§M14.7 / §M14.8) with byte-exact
+        `WatRunner` assertions on the post-eval
+        `ArenaListHeader.count` / `ArenaMapHeader.count`.
+        `EmitKMapExpr` / `EmitKListExpr` honour
+        `MapExprEntry.optional()` / `ListExprElement.optional()`;
+        6 new codegen tests in `expr_lower_test.cc` cover
+        all-optional / mixed / regression-only-plain patterns.
+        12 new e2e tests in `m14_test.cc` cover literal-entry
+        materialisation/omission plus `optMap`/`optFlatMap`
+        Some/None branches — confirming Shape-C cel.bind
+        detector admits the macros with zero new comprehension
+        codegen (per probe Q5).
+  - [x] **Slice E — proto `?field:` literal entries.**  New
+        runtime kernel `cel_set_field_at_if_present` in
+        `cel_optional.c` reuses the `absorb_optional_predicate`
+        helper from Slice C, then delegates to
+        `cel_host.cel_set_field` on Some.  Pure wasm; no new host
+        trampoline (the design pull-in identified by the
+        pressure-test in `design-pressure-test-prompt.md` worked
+        example 1).  7 new per-TU unit tests in
+        `cel_optional_test.cc` including a load-bearing
+        short-circuit assertion via a strong override of
+        `cel_host_cel_set_field` that counts invocations (proves
+        None-path doesn't reach the host).  WAT §M14.9 with the
+        same short-circuit assertion via a wat_runner stub.
+        Frontend gate lifted (`CheckSubsetStruct`), codegen
+        branched on `f.optional()` in `EmitKStructExpr`.  3 new
+        e2e tests in `m14_test.cc` covering Some-materialises,
+        None-leaves-unset, and mixed-entry shapes.
+  - [x] **Slice D — closeout.**  `.baseline` bumped 1572 → 1576.
+        Status flipped to shipped in `m14-optionals.md` §0.
+        `is_zero_value` CEL_MESSAGE trap filed as M14 follow-up
+        in `cleanup-backlog.md` (only known remaining gap; one
+        previously-SKIP'd corpus row newly FAILs on it).
 
 ## How to update
 

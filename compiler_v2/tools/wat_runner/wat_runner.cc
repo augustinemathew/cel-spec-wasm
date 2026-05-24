@@ -31,7 +31,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 102> kRuntimeExports = {
+constexpr std::array<absl::string_view, 113> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -148,6 +148,19 @@ constexpr std::array<absl::string_view, 102> kRuntimeExports = {
     "cel_not",
     "cel_unknown_merge",
     "cel_copy_slot",
+    // optional<T> runtime kernels — exported from cel_runtime.wasm
+    // (see runtime/BUILD.bazel's optional --export lines).
+    "cel_optional_none_at",
+    "cel_optional_of_at_v",
+    "cel_optional_of_non_zero_at_v",
+    "cel_optional_has_value_at_v",
+    "cel_optional_value_at_v",
+    "cel_optional_or_at_vv",
+    "cel_optional_or_value_at_vv",
+    "cel_select_optional_field_at_vv",
+    "cel_map_insert_at_if_present",
+    "cel_list_append_at_if_present",
+    "cel_set_field_at_if_present",
 };
 
 // ── Status helpers — mirror cel::Engine's shape ─────────────
@@ -533,8 +546,6 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
       "cel_map_in",
       "cel_map_eq",
       "cel_message_eq",
-      // `cel_set_field(msg_slot, field_ref_id, value_slot)`.
-      "cel_set_field",
   };
   for (absl::string_view name : kThreeArg) {
     if (auto st = RegisterCelHostThreeArgNoop(linker, name); !st.ok()) {
@@ -589,6 +600,15 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   if (auto st =
           RegisterOptionalThreeArg(linker, "cel_wkt_unwrap_wrapper",
                                    input.cel_host_cel_wkt_unwrap_wrapper_stub);
+      !st.ok()) {
+    return st;
+  }
+  // `cel_host.cel_set_field(msg_slot, field_ref_id, value_slot)` — the
+  // Some-path delegation of `cel_set_field_at_if_present`.  Overridable
+  // so the proto-set-field-if-present WAT can assert the kernel wrote
+  // the field (and verify the None-path short-circuit leaves it unset).
+  if (auto st = RegisterOptionalThreeArg(linker, "cel_set_field",
+                                         input.cel_host_cel_set_field_stub);
       !st.ok()) {
     return st;
   }

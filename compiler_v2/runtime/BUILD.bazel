@@ -69,6 +69,7 @@ cc_library(
         "cel_make.c",
         "cel_math_ext.c",
         "cel_memory.c",
+        "cel_optional.c",
         "cel_runtime.c",
         "cel_string_ops.c",
         "cel_time.c",
@@ -88,6 +89,7 @@ cc_library(
         "cel_map.h",
         "cel_math_ext.h",
         "cel_memory.h",
+        "cel_optional.h",
         "cel_runtime.h",
         "cel_string_ops.h",
         "cel_time.h",
@@ -132,6 +134,15 @@ cc_test(
 cc_test(
     name = "cel_make_test",
     srcs = ["cel_make_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_optional_test",
+    srcs = ["cel_optional_test.cc"],
     deps = [
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",

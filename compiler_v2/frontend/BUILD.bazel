@@ -28,6 +28,7 @@ cc_library(
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
         "//proto/cel/expr:syntax_cc_proto",
+        "@cel-cpp//checker:optional",
         "@cel-cpp//checker:standard_library",
         "@cel-cpp//checker:type_checker",
         "@cel-cpp//checker:type_checker_builder",

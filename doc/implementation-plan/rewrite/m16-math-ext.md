@@ -15,7 +15,7 @@ registration, no new codegen).
 > Native kernel unit tests (`cel_math_ext_test.cc`) + a 67-case host
 > e2e (`e2e/m16_test.cc`).  Conformance: `math_ext.textproto`
 > 0 → 194/199 PASS (5 SKIP = `dyn`-error rows out of scope per
-> `RejectDyn`, 0 FAIL); corpus-wide **1554 → 1748 PASS (+194)**.
+> `RejectDyn`, 0 FAIL); corpus-wide **+194** (1554 → 1748 standalone; 1576 → 1770 after merging M14).
 
 > **Codegen strategy decided by AST probe (2026-05-24).**  Before any
 > design choices were frozen, all 199 corpus shapes were run through
@@ -350,7 +350,7 @@ baseline + README regen.  Close the milestone.
         exist — deferred; the kernels are validated by the unit + e2e
         + conformance gates.
   - [x] `math_ext.textproto` → 194/199 PASS (5 SKIP `dyn`-error rows,
-        0 FAIL); `.baseline` 1554 → 1748; `conformance/README.md`
+        0 FAIL); `.baseline` → 1770 (post-M14 merge; +194 from M16); `conformance/README.md`
         regenerated (pre-push drift gate clean).
   - [x] `overload_table.cc` seeds cover every resolved id (the e2e
         cross-type cases exercise the full pairwise/list set); seed

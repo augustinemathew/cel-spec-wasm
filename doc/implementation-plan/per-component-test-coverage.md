@@ -162,6 +162,13 @@ For each new feature touching parse / check:
   - **Variables table** — every referenced variable lands with
     the correct `Repr`, distinct `slot_offset`, contiguous
     `local_index`.
+  - **Conditional rodata visitors** — when a visitor allocates
+    rodata only under a predicate (e.g. `SelectKeyRodataVisitor`
+    allocates only when the operand annotation is
+    `Repr::kOptional`), at least one positive test (predicate
+    holds → offset stamped, frame header bytes valid) AND one
+    negative test (predicate doesn't hold → offset stays zero)
+    must exist.
 
 ### 3.5 Codegen — ExprLower (`codegen/expr_lower_test.cc`)
 
@@ -174,6 +181,14 @@ For each new feature touching parse / check:
     enabled must surface `Unimplemented` with a message that
     names the kind (so accidentally lighting one up is
     immediately visible).
+  - **Per-Repr dispatch coverage** — when a new arm branches on
+    operand `Repr` (e.g. `EmitKSelect`'s optional branch,
+    `EmitKIndexCall`'s optional branch), every reachable Repr
+    must be exercised by at least one codegen test that
+    asserts the emitted call target.  Skipping `optional<list>`
+    coverage on the grounds that `optional<map>` is "the same
+    code path" is exactly the M2-incident-shaped mistake the
+    rest of this doc exists to prevent.
 
 ### 3.6 Module / Compile (`codegen/module_test.cc`, `compile_test.cc`)
 

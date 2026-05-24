@@ -166,15 +166,21 @@ TEST_F(TypeOfTest, UnknownOperandPropagates) {
   EXPECT_EQ(ov->payload.unk, 42u);
 }
 
-// CEL_OPTIONAL is a checker-rejected kind today (optionals pass is
-// out of M9 scope); the runtime defends with kTypeMismatch so the
-// failure surfaces cleanly if a caller smuggles one in.
-TEST_F(TypeOfTest, OptionalRejected) {
+// CEL_OPTIONAL resolves to the spec type name "optional_type" — see
+// `kPrimitiveTypeName[14]` in `cel_type.c`.  Matches cel-cpp
+// `OptionalValue::GetRuntimeType()` and the corpus row
+// `type(optional.none()) == optional_type`.  An earlier version of
+// this test asserted TYPE_MISMATCH back when index 14 was NULL; that
+// branch is no longer reachable.
+TEST_F(TypeOfTest, OptionalReturnsOptionalType) {
   uint32_t out = MakeOut();
   cel_type_of_at_v(out, MakeOfKind(CEL_OPTIONAL));
   const CelValue* ov = cel_value_at(out);
-  EXPECT_EQ(ov->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(ov->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(ov->kind, static_cast<uint32_t>(CEL_TYPE));
+  std::string name(
+      reinterpret_cast<const char*>(cel_mem_base() + ov->payload.s.ptr),
+      ov->payload.s.len);
+  EXPECT_EQ(name, "optional_type");
 }
 
 // CEL_MESSAGE dispatches to the host trampoline.  In the host build

@@ -149,6 +149,7 @@ cc_test(
         "//compiler_v2/frontend:parse_and_check",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
+        "//compiler_v2/runtime:cel_runtime",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

@@ -30,6 +30,12 @@ enum class Repr : uint8_t {
   kDuration,
   kTimestamp,
   kType,
+  // `optional<T>`-typed nodes.  Stamped by `ReprOf` when the type is
+  // the cel-cpp `AbstractType` named `"optional_type"`.  Codegen
+  // branches on this in `EmitKSelect` / `EmitKIndexCall` to route
+  // through `cel_select_optional_field_at_vv`, whose runtime
+  // contract handles the unwrap internally.
+  kOptional,
 };
 
 absl::string_view ReprName(Repr r);
@@ -119,6 +125,15 @@ struct NodeAnnotation {
   // synthesized index counter, iter_var2 to the value pointer.
   // For map source: iter_var binds to key, iter_var2 to value.
   uint32_t comp_iter2_local_index = 0;
+  // Absolute linear-memory offset of a rodata CelValue holding the
+  // kSelectExpr's field name as a CEL_STRING.  Allocated by
+  // `LayoutPass::SelectKeyRodataVisitor` only when the operand has
+  // `Repr::kOptional` — that's the only codegen path that needs a
+  // key_slot CelValue (the `cel_select_optional_field_at_vv` kernel
+  // ABI; rationale + memory map in
+  // `wat/m14_optional_select_field.wat`).  Zero on every other
+  // kSelect node.
+  uint32_t select_key_rodata_offset = 0;
 };
 
 // Side map keyed by cel::ExprId.

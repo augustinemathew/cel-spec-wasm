@@ -1,6 +1,7 @@
 #include "compiler_v2/runtime/cel_runtime.h"
 
 #include "compiler_v2/runtime/cel_internal.h"
+#include "compiler_v2/runtime/cel_optional.h"
 
 // ---- map runtime ---------------------------------------------------------
 //
@@ -1297,51 +1298,95 @@ static void type_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   write_bool(out, eq);
 }
 
+// Forward declaration: the CEL_OPTIONAL arm calls back into the
+// dispatcher to recurse on inner CelValues.
+static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
+                            uint32_t b_slot);
+
+// optional<T> == optional<U> per cel-cpp
+// `OptionalValueInterface::Equal` + langdef §"Equality" optional
+// addendum.  Both None → true; present mismatch → false; both
+// Some(inner) → recurse on inner CelValues.  Extracted from
+// `equality_kernel` to keep that switch under the
+// `readability-function-size` gate.
+static void optional_eq_at_vv(uint32_t out_slot, uint32_t a_slot,
+                              uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  OptionalCell* ac = (OptionalCell*)cv_at(a->payload.opt);
+  OptionalCell* bc = (OptionalCell*)cv_at(b->payload.opt);
+  if (ac->present == 0 && bc->present == 0) {
+    write_bool(out, 1);
+    return;
+  }
+  if (ac->present != bc->present) {
+    write_bool(out, 0);
+    return;
+  }
+  const uint32_t a_inner =
+      a->payload.opt + (uint32_t)offsetof(OptionalCell, inner);
+  const uint32_t b_inner =
+      b->payload.opt + (uint32_t)offsetof(OptionalCell, inner);
+  equality_kernel(out_slot, a_inner, b_inner);
+}
+
+// Same-kind scalar dispatch.  Caller guarantees a->kind == b->kind ==
+// `kind`.  Returns 1 if it published the result; 0 means the kind is
+// an aggregate that needs the polymorphic arms in `equality_kernel`.
+// Factored out so the parent stays under the readability-function-size
+// gate.
+static int equal_same_kind(uint32_t kind, uint32_t out_slot, uint32_t a_slot,
+                           uint32_t b_slot) {
+  switch (kind) {
+    case CEL_NULL:
+      cel_null_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_BOOL:
+      cel_bool_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_STRING:
+      cel_string_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_BYTES:
+      cel_bytes_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_TYPE:
+      type_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_OPTIONAL:
+      optional_eq_at_vv(out_slot, a_slot, b_slot);
+      return 1;
+    case CEL_DURATION:
+    case CEL_TIMESTAMP: {
+      // m7b.B: 12-byte payload compare on the sign-correlated CelDurTs
+      // arm.  `dur` and `ts` are the same union arm.
+      const CelValue* a = cel_value_at(a_slot);
+      const CelValue* b = cel_value_at(b_slot);
+      write_bool(cel_value_at(out_slot),
+                 a->payload.dur.seconds == b->payload.dur.seconds &&
+                     a->payload.dur.nanos == b->payload.dur.nanos);
+      return 1;
+    }
+    default:
+      return 0;  // Aggregates fall through to the polymorphic arms.
+  }
+}
+
 static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
                             uint32_t b_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(a_slot);
   const CelValue* b = cel_value_at(b_slot);
   if (absorb_3vl_binary(out, a, b)) return;
-  // Numeric ladder — cross-type allowed.
   if (is_numeric(a->kind) && is_numeric(b->kind)) {
     cel_numeric_eq_at_vv(out_slot, a_slot, b_slot);
     return;
   }
-  // Same-kind scalar arms.  Each handles its own type-check; we've
-  // already proven kinds match.
-  if (a->kind == b->kind) {
-    switch (a->kind) {
-      case CEL_NULL:
-        cel_null_eq_at_vv(out_slot, a_slot, b_slot);
-        return;
-      case CEL_BOOL:
-        cel_bool_eq_at_vv(out_slot, a_slot, b_slot);
-        return;
-      case CEL_STRING:
-        cel_string_eq_at_vv(out_slot, a_slot, b_slot);
-        return;
-      case CEL_BYTES:
-        cel_bytes_eq_at_vv(out_slot, a_slot, b_slot);
-        return;
-      case CEL_TYPE:
-        type_eq_at_vv(out_slot, a_slot, b_slot);
-        return;
-      case CEL_DURATION:
-      case CEL_TIMESTAMP:
-        // m7b.B: 12-byte payload compare on the sign-correlated
-        // CelDurTs arm — equivalent to comparing the absl::Duration
-        // values themselves once both are normalised.  `dur` and
-        // `ts` are the same union arm; reading either reads the
-        // same CelDurTs bytes.
-        write_bool(out, a->payload.dur.seconds == b->payload.dur.seconds &&
-                            a->payload.dur.nanos == b->payload.dur.nanos);
-        return;
-      default:
-        break;  // Aggregates fall through to the polymorphic arms.
-    }
+  if (a->kind == b->kind &&
+      equal_same_kind(a->kind, out_slot, a_slot, b_slot)) {
+    return;
   }
-  // Aggregates: dispatcher absorbs origin difference.
   if (both_lists(a->kind, b->kind)) {
     cel_list_eq(out_slot, a_slot, b_slot);
     return;
@@ -1355,8 +1400,7 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
     return;
   }
   // Cross-kind without a matching ladder rung: `false` per langdef
-  // (NOT type-mismatch error).  E.g. `1 == "1"`, `[] == {}`,
-  // `null == 0`.
+  // (NOT type-mismatch error).
   write_bool(out, 0);
 }
 

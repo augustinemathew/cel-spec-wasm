@@ -119,6 +119,21 @@ cel_map_insert_at_if_bool
 cel_map_lookup
 cel_map_lookup_arena
 
+# CEL optional<T> kernels — eight value-level helpers, select-field,
+# and the predicate-gated _if_present trio for map / list / proto
+# entries.  See cel_optional.{h,c}.
+cel_optional_none_at
+cel_optional_of_at_v
+cel_optional_of_non_zero_at_v
+cel_optional_has_value_at_v
+cel_optional_value_at_v
+cel_optional_or_at_vv
+cel_optional_or_value_at_vv
+cel_select_optional_field_at_vv
+cel_map_insert_at_if_present
+cel_list_append_at_if_present
+cel_set_field_at_if_present
+
 # Comprehension iter ABI (snapshot for host-backed sources).
 cel_list_arena_view
 cel_map_count
