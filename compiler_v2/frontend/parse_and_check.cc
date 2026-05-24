@@ -807,10 +807,11 @@ absl::Status RegisterCustomFunctionsOnChecker(
   return absl::OkStatus();
 }
 
-absl::Status ConfigureCheckerBuilder(
-    cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
-    const google::protobuf::DescriptorPool* pool,
-    std::vector<Variable>& variables_out) {
+// Registers the cel-cpp checker libraries whose function/overload
+// decls our pipeline supports.  Each `AddLibrary` teaches the
+// type-checker a family of declarations; the matching runtime kernels
+// + `overload_table.cc` seeds make them executable.
+absl::Status AddCheckerLibraries(cel::TypeCheckerBuilder& builder) {
   if (auto s = builder.AddLibrary(cel::StandardCheckerLibrary()); !s.ok()) {
     return s;
   }
@@ -853,7 +854,14 @@ absl::Status ConfigureCheckerBuilder(
   // The parser-side flip (`enable_optional_syntax = true`) lives in
   // `DefaultParserOptions` below; both pieces must be wired together
   // for any `optional<T>` expression to type-check.
-  if (auto s = builder.AddLibrary(cel::OptionalCheckerLibrary()); !s.ok()) {
+  return builder.AddLibrary(cel::OptionalCheckerLibrary());
+}
+
+absl::Status ConfigureCheckerBuilder(
+    cel::TypeCheckerBuilder& builder, const CheckOptions& opts,
+    const google::protobuf::DescriptorPool* pool,
+    std::vector<Variable>& variables_out) {
+  if (auto s = AddCheckerLibraries(builder); !s.ok()) {
     return s;
   }
   // math_ext: registers the cel-cpp `math` extension decls (ceil,

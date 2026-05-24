@@ -120,7 +120,9 @@ TEST_F(Base64Test, RoundTripHelloWorld) {
 TEST_F(Base64Test, RoundTripAll256Bytes) {
   std::string blob;
   blob.reserve(256);
-  for (int i = 0; i < 256; ++i) blob.push_back(static_cast<char>(i));
+  for (int i = 0; i < 256; ++i) {
+    blob.push_back(static_cast<char>(i));
+  }
   uint32_t enc = MakeOut();
   cel_base64_encode_at_v(enc, MakeBytes(blob));
   std::string encoded = StringAt(enc);
