@@ -258,19 +258,32 @@ pre-push drift gate), tick `testing-checklist.md` rows.
 
 ## 6. Slicing
 
-### Slice 0 — WAT traces + this doc (WAT-first, mandatory)
+### Slice 0 — WAT traces + this doc (WAT-first) — **DONE 2026-05-24**
 
-Write executable WAT for the kernels whose memory/ABI shape is *not*
-obvious, assemble with `wasm-as`, run through `wat_runner` with stubs:
+AST probe (`probes/math/`) + design doc landed first.  Then the two
+WAT traces whose memory/ABI shape is *not* already covered by an
+existing trace, authored + assembled (`wasm-as`) + written up in
+`wat-traces.md` §M16.1/§M16.2:
 
-  - `wat/m16_math_min_binary.wat` — cross-type binary fold (the
-    numeric-ladder reuse pattern).
-  - `wat/m16_math_min_list.wat` — unary-list iteration (list-view ABI
-    + fold; the one genuinely new shape).
-  - `wat/m16_math_bit_shift.wat` — shift-amount handling + wrap.
+  - `wat/m16_math_min_list.wat` — unary-list iteration (arena-list
+    layout + per-element cross-type fold; the one genuinely new
+    shape).  Assembles, 298 B.
+  - `wat/m16_math_bit_shift.wat` — shift slot/kind shape + spec wrap.
+    Assembles, 201 B.
 
-Document each in `wat-traces.md`.  The scalar kernels (ceil/abs/…) are
-single-`(call $libm)` shapes that don't need a trace.
+Both import not-yet-existing kernels, so they assemble now and are
+registered in `wat_runner_test` (and run end-to-end) when the kernels
+land (Slices B / C).
+
+Deliberately NOT traced (no new ABI to freeze):
+
+  - **Binary min/max** (`_at_vv`) — shape is identical to the existing
+    `cel_numeric_lt_at_vv` / `cel_int_add_at_vv` traces
+    (`wat/17_compare_int_eq.wat`, `wat/16_arith_int_add.wat`); the
+    cross-type fold is internal C, not a new ABI.
+  - **Scalar kernels** (ceil/floor/abs/sign/sqrt/is*) — single
+    `(call $libm-style)` `_at_v` shape, same as every other unary
+    kernel; nothing to freeze.
 
 ### Slice A — scalar family (~1 day)
 
@@ -349,7 +362,10 @@ registration.  Files to touch, top-down:
   - [ ] ABI catalogue: `runtime_catalogue.cc`.
   - [ ] Overload seeds: `overload_table.cc` (+ `kBuiltinSeedCount`).
   - [ ] Checker: `parse_and_check.cc` + `frontend/BUILD.bazel`.
-  - [ ] WAT: `wat/m16_*.wat` + `wat-traces.md` + `wat_runner_test.cc`.
+  - [x] WAT (Slice 0): `wat/m16_math_min_list.wat` +
+        `wat/m16_math_bit_shift.wat` authored, assembled, documented in
+        `wat-traces.md` §M16.1/§M16.2.  [ ] register in
+        `wat_runner_test.cc` when kernels land.
   - [ ] E2E: `e2e/m16_test.cc` + `e2e/BUILD.bazel`.
   - [ ] Conformance: `conformance/BUILD.bazel` + `run_conformance.cc`
         + `.baseline` + `README.md`.
