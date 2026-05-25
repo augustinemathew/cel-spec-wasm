@@ -44,7 +44,17 @@ run_conformance() {
   # print "Binary file matches").  `head -n1`: the runner emits its
   # report on both stdout and stderr, so the merged 2>&1 stream has
   # the summary twice — take the first to keep `current` single-line.
-  bazel run -c opt //compiler_v2/conformance:run_conformance 2>&1 \
+  #
+  # Runs in the DEFAULT (fastbuild) config, NOT `-c opt`.  This is the
+  # same configuration the dev loop and `bazel test` use, so the gate
+  # reuses the warm dev build tree instead of forcing a second,
+  # opt-config compile of cel-cpp (which made every push a ~10 min
+  # cold rebuild).  Pass count is identical across configs (verified
+  # 1774==1774); the gate checks correctness, not eval throughput, so
+  # the slower fastbuild eval is the right trade.  `-c opt` is reserved
+  # for benchmarks (//compiler_v2/bench) and CI.  See
+  # doc/implementation-plan/dev-loop-performance.md.
+  bazel run //compiler_v2/conformance:run_conformance 2>&1 \
     | tee /tmp/conformance_last_run.log \
     | grep -aE '^summary:' \
     | head -n1 \

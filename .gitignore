@@ -16,3 +16,6 @@ compile_commands.json
 
 # Claude Code harness scratch (per-session lock files, scheduled-task state).
 .claude/
+
+# Local, per-developer Bazel overrides (see .bazelrc try-import).
+user.bazelrc

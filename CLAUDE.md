@@ -127,7 +127,7 @@ a compiler that silently miscodegens in release builds is worse than
 one that crashes.  Only return a fallback value from `default:` when
 the switch is genuinely open — e.g. parsing untrusted wire bytes, where
 unknown bytes should pass through (see `FormatDirective` in
-`compiler/host/cel_log.cc` for an example of the legitimate form).
+`compiler_v2/host/cel_log.cc` for an example of the legitimate form).
 
 **Unimplemented features.**  When a code path is a stub until a later
 milestone — an arm of a switch that M1 doesn't handle, a
@@ -177,7 +177,7 @@ Before every commit run, in order:
      clang-tidy warning.  Run `scripts/refresh_compile_db.sh` first if
      `compile_commands.json` is stale or missing; analysis without it is
      partial.
-  2. `bazel test //compiler/...`.
+  2. `bazel test //compiler_v2/...`.
   3. Update `doc/implementation-plan/testing-checklist.md` and the
      active milestone doc (see "Authoritative docs" above).
 
@@ -359,7 +359,7 @@ a positive and a negative test.**  Before a milestone is marked done:
   1. `compiler/<path>_test.cc` exists for every non-trivial source file.
   2. The relevant rows in `doc/implementation-plan/testing-checklist.md`
      are ticked for that milestone.
-  3. `bazel test //compiler/...` is green.
+  3. `bazel test //compiler_v2/...` is green.
 
 **Testing principles.**  This codebase is a pipeline — frontend → IR →
 codegen → runtime/host.  Each stage is a component, and any non-trivial
@@ -421,11 +421,51 @@ When a bug is fixed, add a regression test *in the same commit*.
 
 ## Build & run
 
-  - Primary build: `bazel build //compiler/...`.
-  - Primary tests: `bazel test //compiler/...`.
-  - CLI: `bazel-bin/compiler/cli/celwasmc -e "<expr>" [--check ...]`.
+  - Primary build: `bazel build //compiler_v2/...`.
+  - Primary tests: `bazel test //compiler_v2/...`.
+  - CLI: `bazel-bin/compiler_v2/tools/cel/...` (see `compiler_v2/tools/cel`).
   - Apple clang does **not** have a wasm32 target.  Cross-compilation uses
     brew's `llvm` + `binaryen` (already installed on this machine).
+  - The legacy V1 `compiler/` tree was deleted (2026-05-24); shared proto
+    fixtures live at `//compiler_v2/testdata`.
+
+## Dev-loop performance (read before you wonder why it's slow)
+
+Full analysis + numbers: `doc/implementation-plan/dev-loop-performance.md`.
+The build dominates everything — of a 618 s `bazel test //compiler_v2/...`,
+only ~45 s is test execution; the rest is compiling cel-cpp from source.
+So:
+
+  - **Stay in ONE configuration.**  Dev, `bazel test`, and the conformance
+    gate all run in the **default (fastbuild)** config.  Do **NOT** run
+    conformance or anything else under `-c opt` in the inner loop: `opt`
+    is a *separate* build tree that shares nothing with fastbuild, so
+    switching recompiles cel-cpp (~10 min).  `-c opt` is for
+    `//compiler_v2/bench` and CI only.  The conformance gate
+    (`scripts/check_conformance_monotonic.sh`) deliberately runs
+    fastbuild — pass count is identical to opt (verified 1774==1774).
+  - **Don't `bazel test //compiler_v2/...` in the inner loop.**  Build/test
+    the touched package (`bazel test //compiler_v2/runtime:cel_foo_test`).
+    The full sweep is a "from-cold" cost; Bazel's local cache makes
+    targeted re-runs instant.
+  - **Lint is fast on a warm tree, slow on a cold one** — because
+    `build_lint_pch.sh` populates external symlinks via a `bazel build`
+    that, when symlinks are missing, becomes a full cel-cpp compile
+    (measured 609 s for 2 files).  It's guarded to skip on a warm tree.
+    If lint hangs, your tree is cold — warm it with a normal build first.
+  - **The pre-push hook runs the conformance gate.**  On a cold cache it
+    runs long enough that GitHub's SSH connection idle-times-out and the
+    push silently fails to land (the gate passes, the transfer drops).
+    Warm the tree first, or — only when the gate has already been verified
+    green separately and the change can't affect conformance (docs,
+    `.bazelrc`, scripts) — `git push --no-verify`.
+  - **Cross-checkout build cache is OPT-IN** (`user.bazelrc`,
+    `--disk_cache=…`), never committed-on-by-default: the system
+    Apple/brew toolchain is non-hermetic, so a cache outliving a
+    compiler/SDK bump can serve a stale object.  If you enable it,
+    `bazel clean` (or wipe the cache dir) whenever you upgrade Xcode or
+    brew llvm.  Each checkout otherwise gets its own output tree (Bazel
+    keys it by workspace path), so prefer **one** checkout over several.
 
 ## Periodic code review (every few commits, every milestone closeout)
 

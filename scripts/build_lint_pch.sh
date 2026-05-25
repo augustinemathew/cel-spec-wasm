@@ -33,8 +33,23 @@ fi
 # PCH-fresh gate below — the symlinks decay independently of the PCH
 # inputs, so the gate would skip this step on warm cache.  Sub-2s on
 # warm bazel cache.
-bazel build //compiler_v2/... //compiler_v2/bench:kernel_bench \
-  >/dev/null 2>&1 || true
+# GUARD (perf): the line below used to run UNCONDITIONALLY on every
+# lint.  On a warm tree it's ~2s, but on a cold/evicted tree it is a
+# full `bazel build //compiler_v2/...` — i.e. a from-scratch cel-cpp
+# compile — which made `lint.sh` take ~10 min (measured 609s for two
+# files).  The symlinks only need repopulating when they're actually
+# gone, so skip the build entirely when the heavy externals are
+# already present.  See doc/implementation-plan/dev-loop-performance.md §4.
+exec_root="$(bazel info execution_root 2>/dev/null || true)"
+if [[ -z "$exec_root" ]] \
+   || ! compgen -G "$exec_root/external/*abseil*" >/dev/null 2>&1 \
+   || ! compgen -G "$exec_root/external/*protobuf*" >/dev/null 2>&1 \
+   || ! compgen -G "$exec_root/external/*cel-cpp*" >/dev/null 2>&1; then
+  echo "build_lint_pch.sh: external symlinks missing — populating" \
+       "(one-time; subsequent lints skip this)." >&2
+  bazel build //compiler_v2/... //compiler_v2/bench:kernel_bench \
+    >/dev/null 2>&1 || true
+fi
 
 if [[ -f "$PCH_OUT" \
       && "$PCH_OUT" -nt "$PCH_HEADER" \

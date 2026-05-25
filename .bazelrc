@@ -14,3 +14,21 @@
 # without leaking into action env, so reproducible-build hashes are
 # unaffected.
 build --repo_env=PATH=/opt/homebrew/opt/llvm/bin:/usr/bin:/bin
+
+# ── Cross-checkout disk cache: OPT-IN, not enabled by default ──────
+# A shared --disk_cache would let a second checkout reuse compiled
+# actions (measured: fresh output base → 34/34 disk-cache hits, 0
+# recompiles).  It is deliberately NOT turned on here: this repo
+# builds with the non-hermetic system Apple/brew toolchain, so a
+# cache that outlives a compiler/SDK change could serve a stale
+# object whose action key didn't capture the change.  Correctness
+# first.  If you understand the trade-off, enable it per-machine in
+# user.bazelrc:
+#     build --disk_cache=~/.cache/celwasm-bazel-disk
+# and re-baseline (bazel clean) whenever you bump Xcode / brew llvm.
+# See doc/implementation-plan/dev-loop-performance.md §"cross-checkout".
+
+# ── Local, per-developer overrides (NOT committed) ─────────────────
+# Machine-specific knobs go here (disk_cache, remote_cache, --jobs).
+# try-import is silent when the file is absent.
+try-import %workspace%/user.bazelrc
