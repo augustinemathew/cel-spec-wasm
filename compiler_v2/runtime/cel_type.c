@@ -19,8 +19,8 @@
 // CEL_UNKNOWN / CEL_ERROR are absorbed by the 3VL prelude before
 // reaching this table.
 //
-// CelKind tail value is CEL_IP = 18, so the array has 19 slots.
-static const char* const kPrimitiveTypeName[19] = {
+// CelKind tail value is CEL_CIDR = 19, so the array has 20 slots.
+static const char* const kPrimitiveTypeName[20] = {
     "null_type",                  // CEL_NULL = 0
     "bool",                       // CEL_BOOL = 1
     "int",                        // CEL_INT = 2
@@ -40,6 +40,7 @@ static const char* const kPrimitiveTypeName[19] = {
     NULL,                         // CEL_ERROR = 16 (absorbed)
     "list",                       // CEL_LIST_HOST = 17
     "net.IP",                     // CEL_IP = 18
+    "net.CIDR",                   // CEL_CIDR = 19
 };
 
 // Forward decl of the host trampoline.  Same import pattern as
