@@ -219,7 +219,7 @@ bind a real `google::protobuf::Message` (or a host-side backing
 without copying) at Eval time.
 
 ```cpp
-#include "compiler/testdata/e2e_fixture.pb.h"  // your .proto
+#include "compiler_v2/testdata/e2e_fixture.pb.h"  // your .proto
 
 cel::Compiler::Builder cb;
 cb.DeclareVariable("c",

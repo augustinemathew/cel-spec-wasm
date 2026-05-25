@@ -5,7 +5,7 @@
 # include paths, language standard) so it can parse each .cc the same
 # way bazel does. We emit it via Hedron's `hedron_compile_commands`
 # bazel extension, which inspects every cc_library / cc_test / cc_binary
-# in //compiler/... and writes the database to the repo root.
+# in //compiler_v2/... and writes the database to the repo root.
 #
 # First time use (one-off, not yet wired into MODULE.bazel):
 #
@@ -35,7 +35,7 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   echo "  See this script's header for setup instructions." >&2
   echo "  Falling back to Bazel's aquery-based generator (slower)." >&2
   # Aquery-based fallback: dumps every compile action bazel would run
-  # for //compiler/... and reformats it as compile_commands.json. This
+  # for //compiler_v2/... and reformats it as compile_commands.json. This
   # works without any MODULE.bazel changes but is noticeably slower.
   #
   # `manual`-tagged targets (e.g. //compiler_v2/bench:kernel_bench,
@@ -55,17 +55,17 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   # target pattern (so the action set is exhaustive).  Non-manual
   # entries are unchanged — the union is idempotent.
   manual_cc=$(bazel query \
-    'attr(tags, "\bmanual\b", //compiler/... + //compiler_v2/...) intersect kind("cc_.*", //compiler/... + //compiler_v2/...)' \
+    'attr(tags, "\bmanual\b", //compiler_v2/... + //compiler_v2/...) intersect kind("cc_.*", //compiler_v2/... + //compiler_v2/...)' \
     2>/dev/null | paste -sd '+' -)
   if [[ -n "${manual_cc}" ]]; then
-    aquery_pattern="//compiler/... + //compiler_v2/... + ${manual_cc}"
+    aquery_pattern="//compiler_v2/... + //compiler_v2/... + ${manual_cc}"
     # `bazel build` takes space-separated labels, not '+'-unioned.
     manual_cc_space=${manual_cc//+/ }
     # shellcheck disable=SC2086
-    bazel build --config=lint //compiler/... //compiler_v2/... ${manual_cc_space} 2>/dev/null || true
+    bazel build --config=lint //compiler_v2/... //compiler_v2/... ${manual_cc_space} 2>/dev/null || true
   else
-    aquery_pattern="//compiler/... + //compiler_v2/..."
-    bazel build --config=lint //compiler/... //compiler_v2/... 2>/dev/null || true
+    aquery_pattern="//compiler_v2/... + //compiler_v2/..."
+    bazel build --config=lint //compiler_v2/... //compiler_v2/... 2>/dev/null || true
   fi
   bazel aquery --output=jsonproto \
     "mnemonic(\"CppCompile\", ${aquery_pattern})" \

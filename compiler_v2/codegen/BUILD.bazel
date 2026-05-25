@@ -102,8 +102,8 @@ cc_test(
     srcs = ["resolve_pass_test.cc"],
     deps = [
         ":resolve_pass",
-        "//compiler/testdata:e2e_fixture_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/frontend:parse_and_check",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
@@ -145,7 +145,7 @@ cc_test(
     deps = [
         ":layout_pass",
         ":resolve_pass",
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/frontend:parse_and_check",
         "//compiler_v2/ir:annotations",
         "//compiler_v2/ir:typed_ast",
@@ -223,7 +223,7 @@ cc_test(
         ":layout_pass",
         ":module",
         ":resolve_pass",
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/frontend:parse_and_check",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",

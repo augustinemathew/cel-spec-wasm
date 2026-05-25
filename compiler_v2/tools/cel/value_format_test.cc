@@ -7,7 +7,7 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/match.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"

@@ -9,7 +9,7 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/codegen/resolve_pass.h"
 #include "compiler_v2/frontend/parse_and_check.h"
 #include "compiler_v2/ir/annotations.h"

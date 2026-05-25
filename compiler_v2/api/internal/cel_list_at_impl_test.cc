@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/testdata/host_fixture_proto3.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"

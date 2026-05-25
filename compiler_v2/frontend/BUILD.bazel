@@ -63,7 +63,7 @@ cc_test(
     srcs = ["parse_and_check_test.cc"],
     data = [
         "parse_and_check.h",
-        "//compiler/testdata:e2e_fixture.proto",
+        "//compiler_v2/testdata:e2e_fixture.proto",
     ],
     deps = [
         ":parse_and_check",

@@ -47,13 +47,13 @@ cc_test(
 # has() / partial-eval.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation) /
 # Instance::PartialEval(activation, patterns).  Depends on the
-# shared proto fixtures at //compiler/testdata.
+# shared proto fixtures at //compiler_v2/testdata.
 cc_test(
     name = "m2_test",
     srcs = ["m2_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:attribute",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
@@ -79,8 +79,8 @@ cc_test(
     name = "m4_test",
     srcs = ["m4_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
@@ -121,7 +121,7 @@ cc_test(
     name = "m5_test",
     srcs = ["m5_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:attribute",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
@@ -173,9 +173,9 @@ cc_test(
     name = "m7_test",
     srcs = ["m7_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
-        "//compiler/testdata:host_fixture_proto2_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto2_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
@@ -203,8 +203,8 @@ cc_test(
     name = "m7a_test",
     srcs = ["m7a_test.cc"],
     deps = [
-        "//compiler/testdata:host_fixture_proto2_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto2_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
@@ -233,7 +233,7 @@ cc_test(
     name = "m7b_test",
     srcs = ["m7b_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:compiler",
         "//compiler_v2/api:engine",
@@ -289,8 +289,8 @@ cc_test(
     name = "m9_test",
     srcs = ["m9_test.cc"],
     deps = [
-        "//compiler/testdata:host_fixture_proto2_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto2_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",
@@ -410,7 +410,7 @@ cc_test(
     name = "optimize_test",
     srcs = ["optimize_test.cc"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",

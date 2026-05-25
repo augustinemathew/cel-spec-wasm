@@ -42,7 +42,7 @@
 
 #include "absl/log/absl_check.h"
 #include "benchmark/benchmark.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"

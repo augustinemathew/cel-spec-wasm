@@ -29,7 +29,7 @@ cc_test(
     srcs = ["var_parser_test.cc"],
     deps = [
         ":var_parser",
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:cel_host",
         "//compiler_v2/api:type",
         "//compiler_v2/api:value",
@@ -65,7 +65,7 @@ cc_test(
     srcs = ["value_format_test.cc"],
     deps = [
         ":value_format",
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:cel_host",
         "//compiler_v2/api:error",
         "//compiler_v2/api:value",
@@ -122,8 +122,8 @@ cc_test(
     srcs = ["activation_matrix_test.cc"],
     tags = ["manual"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
-        "//compiler/testdata:host_fixture_proto3_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:host_fixture_proto3_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",
         "//compiler_v2/api:compiler",

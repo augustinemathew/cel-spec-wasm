@@ -39,7 +39,7 @@ cc_binary(
     copts = ["-std=c++17"],
     tags = ["manual"],
     deps = [
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "//compiler_v2/api:activation",
         "//compiler_v2/api:cel_host",  # for Value::Message(proto)
         "//compiler_v2/api:compiler",

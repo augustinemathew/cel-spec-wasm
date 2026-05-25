@@ -9,7 +9,7 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"

@@ -18,7 +18,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/abi/cel_abi.pb.h"
 #include "compiler_v2/compile.h"
 #include "compiler_v2/ir/annotations.h"

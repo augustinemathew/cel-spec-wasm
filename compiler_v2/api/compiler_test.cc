@@ -9,7 +9,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "google/protobuf/message.h"

@@ -9,7 +9,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "binaryen-c.h"
-#include "compiler/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/codegen/layout_pass.h"
 #include "compiler_v2/codegen/module.h"
 #include "compiler_v2/codegen/overload_table.h"

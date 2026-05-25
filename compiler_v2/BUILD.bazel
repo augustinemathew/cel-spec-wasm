@@ -38,7 +38,7 @@ cc_test(
     srcs = ["compile_test.cc"],
     deps = [
         ":compile",
-        "//compiler/testdata:e2e_fixture_cc_proto",
+        "//compiler_v2/testdata:e2e_fixture_cc_proto",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

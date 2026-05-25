@@ -490,7 +490,7 @@ TEST(ParseAndCheckTest, RejectsProtoSourceNotFound) {
 // checker resolves field selects through the user-supplied schema.
 TEST(ParseAndCheckTest, ProtoSourceSchemaRegistersMessage) {
   CheckOptions opts;
-  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  opts.schema = SchemaProtoSource{"compiler_v2/testdata/e2e_fixture.proto"};
   opts.variable_specs = {"c:celwasm.testdata.Customer"};
   auto ta = ParseAndCheck("c.name", opts);
   ASSERT_THAT(ta, IsOk());
@@ -499,7 +499,7 @@ TEST(ParseAndCheckTest, ProtoSourceSchemaRegistersMessage) {
 
 TEST(ParseAndCheckTest, ProtoSourceSchemaResolvesNestedMessageField) {
   CheckOptions opts;
-  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  opts.schema = SchemaProtoSource{"compiler_v2/testdata/e2e_fixture.proto"};
   opts.variable_specs = {"c:celwasm.testdata.Customer"};
   auto ta = ParseAndCheck("c.billing_address.city", opts);
   ASSERT_THAT(ta, IsOk());
@@ -601,7 +601,7 @@ TEST(ParseAndCheckTest, RejectDynStillRejectsDynMessage) {
   // reads that runtime cannot dispatch today).
   CheckOptions opts;
   opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  opts.schema = SchemaProtoSource{"compiler_v2/testdata/e2e_fixture.proto"};
   EXPECT_THAT(ParseAndCheck("dyn(c)", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
@@ -612,7 +612,7 @@ TEST(ParseAndCheckTest, RejectDynStillRejectsDynFieldAccess) {
   // catches the rejection.
   CheckOptions opts;
   opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  opts.schema = SchemaProtoSource{"compiler_v2/testdata/e2e_fixture.proto"};
   EXPECT_THAT(ParseAndCheck("dyn(c).name", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
@@ -622,7 +622,7 @@ TEST(ParseAndCheckTest, RejectDynAdmitsScalarSelect) {
   // per Risk #1 in the plan (the field read is itself admissible).
   CheckOptions opts;
   opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"compiler/testdata/e2e_fixture.proto"};
+  opts.schema = SchemaProtoSource{"compiler_v2/testdata/e2e_fixture.proto"};
   auto r = ParseAndCheck("dyn(c.name)", opts);
   ASSERT_THAT(r, IsOk());
 }
