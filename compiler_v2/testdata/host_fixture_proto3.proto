@@ -11,6 +11,9 @@ syntax = "proto3";
 package celwasm.testdata;
 
 import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
 
 message HostMsg3 {
   enum Kind {
@@ -72,4 +75,14 @@ message HostMsg3 {
   google.protobuf.Any            single_any    = 30;
   repeated google.protobuf.Any   repeated_any  = 31;
   map<string, google.protobuf.Any> map_str_to_any = 32;
+
+  // Well-known Duration / Timestamp / JSON Value / Struct / ListValue
+  // pack coverage (write-side WKT message synthesis from a CelValue).
+  google.protobuf.Duration       single_duration   = 33;
+  google.protobuf.Timestamp      single_timestamp  = 34;
+  google.protobuf.Value          single_value      = 35;
+  google.protobuf.Struct         single_struct     = 36;
+  google.protobuf.ListValue      single_list_value = 37;
+  repeated google.protobuf.Timestamp repeated_timestamp = 38;
+  map<string, google.protobuf.Timestamp> map_str_to_ts = 39;
 }

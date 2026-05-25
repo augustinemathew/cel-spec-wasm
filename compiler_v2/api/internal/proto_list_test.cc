@@ -10,19 +10,19 @@
 #include <utility>
 #include <vector>
 
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
 
-#define PL_ASSIGN_OR_ASSERT(lhs, expr)               \
-  auto lhs##_or = (expr);                            \
-  ASSERT_TRUE(lhs##_or.ok()) << lhs##_or.status();   \
+#define PL_ASSIGN_OR_ASSERT(lhs, expr)             \
+  auto lhs##_or = (expr);                          \
+  ASSERT_TRUE(lhs##_or.ok()) << lhs##_or.status(); \
   auto lhs = *std::move(lhs##_or)
 
 using ::celwasm::testdata::HostMsg3;
@@ -102,6 +102,16 @@ TEST(ProtoListTest, RepeatedMessageWrapsAsHostMessage) {
   ASSERT_NE(b, nullptr);
 }
 
+// Repeated WKT (Timestamp) elements peel to CEL_TIMESTAMP, mirroring
+// the singular-field WKT read path — not a raw HostMessage.
+TEST(ProtoListTest, RepeatedTimestampPeelsToTimestamp) {
+  HostMsg3 m;
+  m.add_repeated_timestamp()->set_seconds(7);
+  ProtoList pl(&m, RepeatedField(m, "repeated_timestamp"));
+  PL_ASSIGN_OR_ASSERT(v, pl.At(0, cel::CelType::Timestamp()));
+  EXPECT_EQ(v.kind(), cel::Value::Kind::kTimestamp);
+}
+
 // ════════ Boundary ════════
 
 TEST(ProtoListTest, EmptyRepeatedReadsAsZeroSize) {
@@ -134,7 +144,9 @@ TEST(ProtoListTest, ForEachVisitsAllInOrder) {
   m.add_rep_i32(30);
   ProtoList pl(&m, RepeatedField(m, "rep_i32"));
   std::vector<int64_t> seen;
-  pl.ForEach([&](const cel::Value& v) { seen.push_back(*v.AsInt()); });
+  pl.ForEach([&](const cel::Value& v) {
+    seen.push_back(*v.AsInt());
+  });
   EXPECT_EQ(seen, std::vector<int64_t>({10, 20, 30}));
 }
 
@@ -147,8 +159,8 @@ TEST(ProtoBackingListTest, ReadFieldRepeatedReturnsHostList) {
   m.add_rep_i32(7);
   m.add_rep_i32(8);
   ProtoBacking pb(&m);
-  PL_ASSIGN_OR_ASSERT(v, pb.ReadField(/*field_number=*/18, "rep_i32",
-                                      cel::CelType::Int()));
+  PL_ASSIGN_OR_ASSERT(
+      v, pb.ReadField(/*field_number=*/18, "rep_i32", cel::CelType::Int()));
   ASSERT_EQ(v.kind(), cel::Value::Kind::kList);
   PL_ASSIGN_OR_ASSERT(b, v.ListBacking());
   ASSERT_NE(b, nullptr);

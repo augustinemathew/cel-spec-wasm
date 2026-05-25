@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,16 +46,22 @@ std::optional<cel::Value> UnpackWrapperMessage(
     const google::protobuf::Message& sub);
 std::optional<cel::Value> UnpackWellKnownTimeMessage(
     const google::protobuf::Message& sub);
+// Forward-declared so `MaybeUnpackWktMessage` (below) can chain it;
+// the definition follows after the recursive JSON-peel helpers.
+// NOLINTNEXTLINE(readability-redundant-declaration)
+std::optional<cel::Value> UnpackJsonValueMessage(
+    const google::protobuf::Message& sub);
 
-// Chain the two well-known-type peelers in a single call site:
-// returns the inner-scalar / Timestamp / Duration value if `sub` is
-// one of the recognised WKT message types, otherwise `std::nullopt`.
-// Lets both Any-unwrap and proto-field-read share one entry point
-// without duplicating the if-cascade.
+// Chain the well-known-type peelers in a single call site: returns
+// the inner-scalar / Timestamp / Duration / JSON-Value value if `sub`
+// is one of the recognised WKT message types, otherwise
+// `std::nullopt`.  Lets both Any-unwrap and proto-field-read share one
+// entry point without duplicating the if-cascade.
 inline std::optional<cel::Value> MaybeUnpackWktMessage(
     const google::protobuf::Message& sub) {
   if (auto wrap = UnpackWrapperMessage(sub); wrap.has_value()) return wrap;
   if (auto wkt = UnpackWellKnownTimeMessage(sub); wkt.has_value()) return wkt;
+  if (auto js = UnpackJsonValueMessage(sub); js.has_value()) return js;
   return std::nullopt;
 }
 
@@ -204,6 +211,110 @@ std::optional<cel::Value> UnpackWellKnownTimeMessage(
                                  absl::Nanoseconds(ns));
   }
   return cel::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
+}
+
+// Forward declarations for the JSON-value peel pair — they recurse
+// (a Value can hold a Struct or ListValue, each holding Values;
+// `UnpackJsonValueMessage` is declared with the other WKT peelers
+// above).
+cel::Value UnpackJsonStruct(const google::protobuf::Message& s);
+cel::Value UnpackJsonListValue(const google::protobuf::Message& lv);
+
+// Peel a `google.protobuf.Struct` into a CEL map<string, dyn>.  The
+// `fields` map field (number 1) is a map<string, Value>; each entry's
+// value is recursively peeled via `UnpackJsonValueMessage`.
+cel::Value UnpackJsonStruct(const google::protobuf::Message& s) {
+  const google::protobuf::Descriptor* d = s.GetDescriptor();
+  const google::protobuf::Reflection* refl = s.GetReflection();
+  const google::protobuf::FieldDescriptor* fields_fd =
+      d != nullptr ? d->FindFieldByNumber(1) : nullptr;
+  ABSL_CHECK(refl != nullptr && fields_fd != nullptr && fields_fd->is_map())
+      << "UnpackJsonStruct: google.protobuf.Struct missing `fields` map";
+  const google::protobuf::FieldDescriptor* key_fd =
+      fields_fd->message_type()->FindFieldByNumber(1);
+  const google::protobuf::FieldDescriptor* val_fd =
+      fields_fd->message_type()->FindFieldByNumber(2);
+  std::vector<std::pair<cel::Value, cel::Value>> entries;
+  const int n = refl->FieldSize(s, fields_fd);
+  entries.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    const google::protobuf::Message& entry =
+        refl->GetRepeatedMessage(s, fields_fd, i);
+    const google::protobuf::Reflection* er = entry.GetReflection();
+    std::string scratch;
+    cel::Value key =
+        cel::Value::String(er->GetStringReference(entry, key_fd, &scratch));
+    auto val = UnpackJsonValueMessage(er->GetMessage(entry, val_fd));
+    entries.emplace_back(
+        std::move(key), val.has_value() ? *std::move(val) : cel::Value::Null());
+  }
+  return cel::Value::Map(std::move(entries));
+}
+
+// Peel a `google.protobuf.ListValue` into a CEL list<dyn>.  The
+// `values` repeated-Value field (number 1) is peeled element-by-
+// element via `UnpackJsonValueMessage`.
+cel::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
+  const google::protobuf::Descriptor* d = lv.GetDescriptor();
+  const google::protobuf::Reflection* refl = lv.GetReflection();
+  const google::protobuf::FieldDescriptor* values_fd =
+      d != nullptr ? d->FindFieldByNumber(1) : nullptr;
+  ABSL_CHECK(refl != nullptr && values_fd != nullptr &&
+             values_fd->is_repeated())
+      << "UnpackJsonListValue: google.protobuf.ListValue missing `values`";
+  std::vector<cel::Value> elements;
+  const int n = refl->FieldSize(lv, values_fd);
+  elements.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    auto v = UnpackJsonValueMessage(refl->GetRepeatedMessage(lv, values_fd, i));
+    elements.push_back(v.has_value() ? *std::move(v) : cel::Value::Null());
+  }
+  return cel::Value::List(std::move(elements));
+}
+
+// JSON well-known-type normaliser for proto field reads.  When a
+// CPPTYPE_MESSAGE field resolves to google.protobuf.Value /
+// .Struct / .ListValue, peel it into the matching CEL value:
+//   Value  → its set kind_case (null/number/string/bool/struct/list).
+//   Struct → CEL map<string, dyn>.
+//   ListValue → CEL list<dyn>.
+// Returns nullopt for any other message type.  Reflection-based so
+// it works for generated and dynamic-pool messages alike.
+std::optional<cel::Value> UnpackJsonValueMessage(
+    const google::protobuf::Message& sub) {
+  const google::protobuf::Descriptor* d = sub.GetDescriptor();
+  if (d == nullptr) return std::nullopt;
+  const absl::string_view fqn = d->full_name();
+  if (fqn == "google.protobuf.Struct") return UnpackJsonStruct(sub);
+  if (fqn == "google.protobuf.ListValue") return UnpackJsonListValue(sub);
+  if (fqn != "google.protobuf.Value") return std::nullopt;
+  const google::protobuf::Reflection* refl = sub.GetReflection();
+  if (refl == nullptr) return std::nullopt;
+  const google::protobuf::FieldDescriptor* set =
+      refl->GetOneofFieldDescriptor(sub, d->FindOneofByName("kind"));
+  // Unset Value (no kind_case set) decodes to null per JSON rules.
+  if (set == nullptr) return cel::Value::Null();
+  switch (set->number()) {
+    case 1:  // null_value (a NullValue enum)
+      return cel::Value::Null();
+    case 2:  // number_value (double)
+      return cel::Value::Double(refl->GetDouble(sub, set));
+    case 3: {  // string_value
+      std::string scratch;
+      return cel::Value::String(refl->GetStringReference(sub, set, &scratch));
+    }
+    case 4:  // bool_value
+      return cel::Value::Bool(refl->GetBool(sub, set));
+    case 5:  // struct_value
+      return UnpackJsonStruct(refl->GetMessage(sub, set));
+    case 6:  // list_value
+      return UnpackJsonListValue(refl->GetMessage(sub, set));
+    default:
+      ABSL_CHECK(false) << "UnpackJsonValueMessage: google.protobuf.Value "
+                           "kind_case field number "
+                        << set->number() << " is not 1..6";
+      return std::nullopt;
+  }
 }
 
 // Closed set of 9 google.protobuf wrapper FQNs.  Shared between the
@@ -823,7 +934,7 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
 }
 
 absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
-                                  const TrampolineContext& ctx) {
+                                 const TrampolineContext& ctx) {
   CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
 
   // Allocate a zero-count ArenaListHeader so the comprehension
@@ -859,9 +970,9 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   const HostListBacking* backing =
       ctx.refs.LookupList(list_cv.payload.ref_slot);
   if (backing == nullptr) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "CelListIterOpenImpl: list ref_slot ", list_cv.payload.ref_slot,
-        " not found in ExternrefTable"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelListIterOpenImpl: list ref_slot ",
+                     list_cv.payload.ref_slot, " not found in ExternrefTable"));
   }
   const size_t count = backing->Size();
   if (count == 0) {
@@ -872,7 +983,8 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   // construction shape (`cel_list_create` does the same).  The
   // header points at the elements via `elements_offset`.
   uint32_t header_off = 0;
-  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr || header_off == 0) {
+  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
+      header_off == 0) {
     return write_empty();
   }
   uint32_t elements_off = 0;
@@ -988,9 +1100,9 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   }
   const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
   if (backing == nullptr) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "CelMapIterOpenImpl: map ref_slot ", map_cv.payload.ref_slot,
-        " not found in ExternrefTable"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelMapIterOpenImpl: map ref_slot ",
+                     map_cv.payload.ref_slot, " not found in ExternrefTable"));
   }
   // Snapshot the entries into a vector.  `ForEach` is the only
   // positional-agnostic accessor on `HostMapBacking`; iter callers
@@ -1045,7 +1157,7 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   ctx.mem.WriteU32(state_offset + kCursorOff, 0u);
   ctx.mem.WriteU32(state_offset + kPayloadOff, snapshot_off);
   ctx.mem.WriteU32(state_offset + kCountOff,
-                    static_cast<uint32_t>(entries.size()));
+                   static_cast<uint32_t>(entries.size()));
   return absl::OkStatus();
 }
 
@@ -1230,6 +1342,16 @@ absl::StatusOr<cel::Value> ReadRepeatedElement(
     case FD::CPPTYPE_MESSAGE: {
       const google::protobuf::Message& sub =
           refl.GetRepeatedMessage(msg, &field, i);
+      // Mirror `ReadSingularMessageField`'s WKT peel chain: Any-unwrap,
+      // Timestamp/Duration, wrapper, and JSON-Value peels apply to
+      // repeated message elements too.
+      const google::protobuf::Descriptor* mt = field.message_type();
+      if (mt != nullptr && mt->full_name() == "google.protobuf.Any") {
+        return UnpackAnyToValue(sub, mt->file()->pool());
+      }
+      if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
+        return *std::move(v);
+      }
       return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
     }
   }
@@ -1510,6 +1632,12 @@ bool HostScalarSameKindEq(const CelValue& a, const CelValue& b,
     case CEL_STRING:
     case CEL_BYTES:
       return HostScalarSpanEq(a, b, mem);
+    case CEL_DURATION:
+      return a.payload.dur.seconds == b.payload.dur.seconds &&
+             a.payload.dur.nanos == b.payload.dur.nanos;
+    case CEL_TIMESTAMP:
+      return a.payload.ts.seconds == b.payload.ts.seconds &&
+             a.payload.ts.nanos == b.payload.ts.nanos;
     default:
       return false;
   }
@@ -2051,6 +2179,30 @@ double ReadDouble(const CelValue& cv) {
   return cv.payload.d;
 }
 
+// Range-check an int64 CEL value before narrowing to an int32 proto
+// field.  cel-cpp surfaces an out-of-range field assignment as an
+// eval error ("range error"); we return OutOfRange so the caller
+// propagates it rather than silently truncating.  Shared by the bare
+// int32 field arm and the Int32Value-wrapper arm.
+absl::Status CheckInt32Range(int64_t v, absl::string_view field_name) {
+  if (v < std::numeric_limits<int32_t>::min() ||
+      v > std::numeric_limits<int32_t>::max()) {
+    return absl::OutOfRangeError(absl::StrCat(
+        "CelSetFieldImpl: field `", field_name, "` int32 range error: ", v));
+  }
+  return absl::OkStatus();
+}
+
+// Range-check a uint64 CEL value before narrowing to a uint32 proto
+// field.  Same contract as `CheckInt32Range`.
+absl::Status CheckUint32Range(uint64_t v, absl::string_view field_name) {
+  if (v > std::numeric_limits<uint32_t>::max()) {
+    return absl::OutOfRangeError(absl::StrCat(
+        "CelSetFieldImpl: field `", field_name, "` uint32 range error: ", v));
+  }
+  return absl::OkStatus();
+}
+
 // Read a string/bytes payload via the MemoryView's Span reader.
 // Caller has verified the value kind is CEL_STRING or CEL_BYTES.
 std::string ReadSpanString(const CelValue& cv, const MemoryView& mem) {
@@ -2132,6 +2284,10 @@ absl::Status SetWrapperInnerValue(
       return absl::OkStatus();
     case FD::CPPTYPE_INT32:
       if (value.kind != CEL_INT) return mismatch("CEL_INT");
+      if (auto s = CheckInt32Range(ReadInt64(value), wrapper_desc.full_name());
+          !s.ok()) {
+        return s;
+      }
       wr.SetInt32(&wrapper, &vf, static_cast<int32_t>(ReadInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_INT64:
@@ -2140,6 +2296,11 @@ absl::Status SetWrapperInnerValue(
       return absl::OkStatus();
     case FD::CPPTYPE_UINT32:
       if (value.kind != CEL_UINT) return mismatch("CEL_UINT");
+      if (auto s =
+              CheckUint32Range(ReadUInt64(value), wrapper_desc.full_name());
+          !s.ok()) {
+        return s;
+      }
       wr.SetUInt32(&wrapper, &vf, static_cast<uint32_t>(ReadUInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_UINT64:
@@ -2208,6 +2369,24 @@ absl::Status SetWrapperFieldFromScalar(
   return absl::OkStatus();
 }
 
+// Forward declarations for the WKT pack dispatch invoked from
+// `SetScalarField`'s CPPTYPE_MESSAGE arm and the arena-walker
+// helpers the JSON-Value packer recurses through (both defined
+// below, after the repeated/map walkers).
+std::optional<absl::Status> MaybeSetWktMessageField(
+    google::protobuf::Message& outer,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs);
+std::optional<absl::Status> MaybePackWktMessage(
+    google::protobuf::Message& target, const CelValue& value,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs);
+// Forward-declared so the Struct / ListValue packers can recurse into
+// it before its definition; the body lives below those helpers.
+// NOLINTNEXTLINE(readability-redundant-declaration)
+absl::Status PackCelValueIntoJsonValue(
+    const CelValue& value, google::protobuf::Message& out,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs);
+
 // Set a scalar singular field on `msg` per `field`'s cpp_type.  Returns
 // non-OK Status on cpp_type / value-kind mismatches that the cel-cpp
 // checker should have rejected pre-codegen — surfaces as a wasm trap so
@@ -2238,6 +2417,9 @@ absl::Status SetScalarField(
             "CelSetFieldImpl: field `", field.name(),
             "` is INT32 but value kind is ", static_cast<int>(value.kind)));
       }
+      if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
+        return s;
+      }
       refl->SetInt32(&msg, &field, static_cast<int32_t>(ReadInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_INT64:
@@ -2253,6 +2435,9 @@ absl::Status SetScalarField(
         return absl::InvalidArgumentError(absl::StrCat(
             "CelSetFieldImpl: field `", field.name(),
             "` is UINT32 but value kind is ", static_cast<int>(value.kind)));
+      }
+      if (auto s = CheckUint32Range(ReadUInt64(value), field.name()); !s.ok()) {
+        return s;
       }
       refl->SetUInt32(&msg, &field, static_cast<uint32_t>(ReadUInt64(value)));
       return absl::OkStatus();
@@ -2318,7 +2503,16 @@ absl::Status SetScalarField(
       // conformance corpus's `set_null/*` rows.  For wrapper-typed
       // fields, langdef line 484-486's unset-reads-as-null rule
       // makes this round-trip with the read-side wrapper peel.
+      // A `null` assigned to a `google.protobuf.Value` field packs as
+      // an explicit `null_value` (NOT a cleared field) — langdef JSON
+      // semantics, `value_null/field_assign_*` corpus rows.  Every
+      // other message type clears on null.
       if (value.kind == CEL_NULL) {
+        const google::protobuf::Descriptor* nmt = field.message_type();
+        if (nmt != nullptr && nmt->full_name() == "google.protobuf.Value") {
+          return PackCelValueIntoJsonValue(
+              value, *refl->MutableMessage(&msg, &field), mem, refs);
+        }
         refl->ClearField(&msg, &field);
         return absl::OkStatus();
       }
@@ -2331,6 +2525,16 @@ absl::Status SetScalarField(
       if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
           value.kind != CEL_MESSAGE) {
         return SetWrapperFieldFromScalar(*refl, msg, field, *mt, value, mem);
+      }
+      // Duration / Timestamp / Value / Struct / ListValue / Any from
+      // a non-message CelValue — pack the scalar/aggregate into the
+      // matching well-known message.  Mirror of the read-side
+      // `MaybeUnpackWktMessage` / `UnpackJsonValueMessage` peelers.
+      if (mt != nullptr && value.kind != CEL_MESSAGE) {
+        if (auto s = MaybeSetWktMessageField(msg, field, value, mem, refs);
+            s.has_value()) {
+          return *std::move(s);
+        }
       }
       // Nested singular message — `Foo{nested: Bar{...}}`.  The
       // outer kStructExpr lowering recursively built `Bar{...}` into
@@ -2411,6 +2615,303 @@ void ForEachArenaMapEntry(
                                   static_cast<uint32_t>(kCelListEntryStride));
     visit(k, v, i);
   }
+}
+
+// ──── Well-known-type pack helpers (write side) ─────────────────
+//
+// Inverse of the read-side `MaybeUnpackWktMessage` /
+// `UnpackJsonValueMessage` peelers: synthesise a Duration /
+// Timestamp / Value / Struct / ListValue / Any message from a
+// CelValue and assign it to a singular-message field.
+
+// Allocate a fresh prototype instance of the WKT message `desc`
+// describes.  Returns null on a missing generated_factory prototype
+// (an InternalError the caller surfaces).
+std::unique_ptr<google::protobuf::Message> NewWktMessage(
+    const google::protobuf::Descriptor& desc) {
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(
+          &desc);
+  if (prototype == nullptr) return nullptr;
+  return std::unique_ptr<google::protobuf::Message>(prototype->New());
+}
+
+// Set the (seconds, nanos) pair on a freshly-built Duration /
+// Timestamp message from a CEL_DURATION / CEL_TIMESTAMP payload.
+// `dur_ts` is `value.payload.dur` or `.ts` (both `CelDurTs`).
+absl::Status PackDurationOrTimestamp(google::protobuf::Message& wkt,
+                                     const CelDurTs& dur_ts) {
+  const google::protobuf::Descriptor* d = wkt.GetDescriptor();
+  const google::protobuf::Reflection* refl = wkt.GetReflection();
+  const google::protobuf::FieldDescriptor* sf =
+      d != nullptr ? d->FindFieldByNumber(1) : nullptr;
+  const google::protobuf::FieldDescriptor* nf =
+      d != nullptr ? d->FindFieldByNumber(2) : nullptr;
+  if (refl == nullptr || sf == nullptr || nf == nullptr) {
+    return absl::InternalError(
+        "PackDurationOrTimestamp: WKT time message missing seconds/nanos");
+  }
+  refl->SetInt64(&wkt, sf, dur_ts.seconds);
+  refl->SetInt32(&wkt, nf, dur_ts.nanos);
+  return absl::OkStatus();
+}
+
+// `PackCelValueIntoJsonValue` (the recursive CelValue →
+// google.protobuf.Value packer) is forward-declared with the other
+// WKT-pack helpers above; its definition follows below.
+
+// Populate a `google.protobuf.Struct`'s `fields` map from a CEL map
+// CelValue.  Keys must be CEL_STRING (JSON object keys); each value
+// is recursively packed into a `google.protobuf.Value`.
+absl::Status PackStruct(const CelValue& map_cv,
+                        google::protobuf::Message& strct, const MemoryView& mem,
+                        const ExternrefTable* absl_nullable refs) {
+  const google::protobuf::Descriptor* d = strct.GetDescriptor();
+  const google::protobuf::Reflection* refl = strct.GetReflection();
+  const google::protobuf::FieldDescriptor* fields_fd =
+      d != nullptr ? d->FindFieldByNumber(1) : nullptr;
+  if (refl == nullptr || fields_fd == nullptr || !fields_fd->is_map()) {
+    return absl::InternalError("PackStruct: Struct missing `fields` map");
+  }
+  const google::protobuf::FieldDescriptor* key_fd =
+      fields_fd->message_type()->FindFieldByNumber(1);
+  const google::protobuf::FieldDescriptor* val_fd =
+      fields_fd->message_type()->FindFieldByNumber(2);
+  absl::Status status = absl::OkStatus();
+  auto add_entry = [&](const CelValue& k, const CelValue& v) {
+    if (!status.ok()) return;
+    if (k.kind != CEL_STRING) {
+      status = absl::InvalidArgumentError(
+          "PackStruct: google.protobuf.Struct key is not a string");
+      return;
+    }
+    google::protobuf::Message* entry = refl->AddMessage(&strct, fields_fd);
+    const google::protobuf::Reflection* er = entry->GetReflection();
+    er->SetString(entry, key_fd, ReadSpanString(k, mem));
+    status = PackCelValueIntoJsonValue(v, *er->MutableMessage(entry, val_fd),
+                                       mem, refs);
+  };
+  if (map_cv.kind == CEL_MAP_ARENA) {
+    ForEachArenaMapEntry(
+        map_cv, mem, [&](const CelValue& k, const CelValue& v, uint32_t /*i*/) {
+          add_entry(k, v);
+        });
+    return status;
+  }
+  return absl::InvalidArgumentError(
+      absl::StrCat("PackStruct: source kind=", static_cast<int>(map_cv.kind),
+                   " (expected CEL_MAP_ARENA)"));
+}
+
+// Populate a `google.protobuf.ListValue`'s `values` from a CEL list
+// CelValue.  Each element is recursively packed into a
+// `google.protobuf.Value`.
+absl::Status PackListValue(const CelValue& list_cv,
+                           google::protobuf::Message& lv, const MemoryView& mem,
+                           const ExternrefTable* absl_nullable refs) {
+  const google::protobuf::Descriptor* d = lv.GetDescriptor();
+  const google::protobuf::Reflection* refl = lv.GetReflection();
+  const google::protobuf::FieldDescriptor* values_fd =
+      d != nullptr ? d->FindFieldByNumber(1) : nullptr;
+  if (refl == nullptr || values_fd == nullptr || !values_fd->is_repeated()) {
+    return absl::InternalError("PackListValue: ListValue missing `values`");
+  }
+  absl::Status status = absl::OkStatus();
+  if (list_cv.kind == CEL_LIST_ARENA) {
+    ForEachArenaListElement(
+        list_cv, mem, [&](const CelValue& elem, uint32_t /*i*/) {
+          if (!status.ok()) return;
+          status = PackCelValueIntoJsonValue(
+              elem, *refl->AddMessage(&lv, values_fd), mem, refs);
+        });
+    return status;
+  }
+  return absl::InvalidArgumentError(absl::StrCat(
+      "PackListValue: source kind=", static_cast<int>(list_cv.kind),
+      " (expected CEL_LIST_ARENA)"));
+}
+
+absl::Status PackCelValueIntoJsonValue(
+    const CelValue& value, google::protobuf::Message& out,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs) {
+  const google::protobuf::Descriptor* d = out.GetDescriptor();
+  const google::protobuf::Reflection* refl = out.GetReflection();
+  // kind_case field numbers in google.protobuf.Value: 1 null_value,
+  // 2 number_value, 3 string_value, 4 bool_value, 5 struct_value,
+  // 6 list_value.
+  auto field = [&](int n) {
+    return d->FindFieldByNumber(n);
+  };
+  switch (value.kind) {
+    case CEL_NULL:
+      refl->SetEnumValue(&out, field(1), 0);  // NULL_VALUE
+      return absl::OkStatus();
+    case CEL_BOOL:
+      refl->SetBool(&out, field(4), value.payload.b != 0);
+      return absl::OkStatus();
+    case CEL_INT:
+      refl->SetDouble(&out, field(2), static_cast<double>(value.payload.i));
+      return absl::OkStatus();
+    case CEL_UINT:
+      refl->SetDouble(&out, field(2), static_cast<double>(value.payload.u));
+      return absl::OkStatus();
+    case CEL_DOUBLE:
+      refl->SetDouble(&out, field(2), value.payload.d);
+      return absl::OkStatus();
+    case CEL_STRING:
+      refl->SetString(&out, field(3), ReadSpanString(value, mem));
+      return absl::OkStatus();
+    case CEL_LIST_ARENA:
+      return PackListValue(value, *refl->MutableMessage(&out, field(6)), mem,
+                           refs);
+    case CEL_MAP_ARENA:
+      return PackStruct(value, *refl->MutableMessage(&out, field(5)), mem,
+                        refs);
+    default:
+      return absl::InvalidArgumentError(absl::StrCat(
+          "PackCelValueIntoJsonValue: unsupported value kind ",
+          static_cast<int>(value.kind), " for google.protobuf.Value"));
+  }
+}
+
+// Pick the well-known inner FQN a CelValue is packed into before
+// being wrapped in an Any.  Mirrors cel-cpp's to-Any conversion:
+//
+//   - int / uint / bytes → the matching wrapper message, so the value
+//     round-trips as its CEL kind through the read-side wrapper peel
+//     (a bare JSON Value would lose int/uint to double, and JSON has
+//     no bytes type).
+//   - list → google.protobuf.ListValue, map → google.protobuf.Struct
+//     packed DIRECTLY (not nested inside a Value) — the corpus's
+//     `complex/any_list_map` row pins `type_url=.../ListValue`.
+//   - everything else (bool / double / string / null) → a bare
+//     google.protobuf.Value.
+absl::string_view AnyInnerFqn(uint32_t kind) {
+  switch (kind) {
+    case CEL_INT:
+      return "google.protobuf.Int64Value";
+    case CEL_UINT:
+      return "google.protobuf.UInt64Value";
+    case CEL_BYTES:
+      return "google.protobuf.BytesValue";
+    case CEL_LIST_ARENA:
+    case CEL_LIST_HOST:
+      return "google.protobuf.ListValue";
+    case CEL_MAP_ARENA:
+    case CEL_MAP_HOST:
+      return "google.protobuf.Struct";
+    default:
+      return "google.protobuf.Value";
+  }
+}
+
+// True for the inner FQNs that are filled by their dedicated packer
+// rather than `SetWrapperInnerValue`'s value-field set.
+bool IsAggregateInnerFqn(absl::string_view fqn) {
+  return fqn == "google.protobuf.ListValue" ||
+         fqn == "google.protobuf.Struct" || fqn == "google.protobuf.Value";
+}
+
+// Pack a non-message CelValue into the already-allocated `Any`
+// message `any`.  int / uint / bytes wrap into the matching wrapper
+// type (so the value round-trips as its CEL kind through the
+// read-side wrapper peel); everything else wraps into a
+// `google.protobuf.Value`.  Matches cel-cpp's to-Any conversion.
+absl::Status PackAnyFromScalar(google::protobuf::Message& any,
+                               const CelValue& value, const MemoryView& mem,
+                               const ExternrefTable* absl_nullable refs) {
+  const google::protobuf::DescriptorPool* pool =
+      any.GetDescriptor()->file()->pool();
+  const absl::string_view inner_fqn = AnyInnerFqn(value.kind);
+  const google::protobuf::Descriptor* inner_desc =
+      pool->FindMessageTypeByName(std::string(inner_fqn));
+  if (inner_desc == nullptr) {
+    return absl::InternalError(absl::StrCat("PackAnyFromScalar: ", inner_fqn,
+                                            " not in descriptor pool"));
+  }
+  std::unique_ptr<google::protobuf::Message> inner = NewWktMessage(*inner_desc);
+  if (inner == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("PackAnyFromScalar: no prototype for ", inner_fqn));
+  }
+  if (IsAggregateInnerFqn(inner_fqn)) {
+    // List → ListValue, map → Struct, scalar JSON kind → Value: route
+    // through the shared WKT packer for the chosen inner type.
+    if (auto s = MaybePackWktMessage(*inner, value, mem, refs);
+        s.has_value() && !s->ok()) {
+      return *std::move(s);
+    }
+  } else {
+    // Wrapper: set the inner `value` field (number 1) from the scalar.
+    const google::protobuf::Reflection* wr = inner->GetReflection();
+    const google::protobuf::FieldDescriptor* vf =
+        inner_desc->FindFieldByNumber(1);
+    if (wr == nullptr || vf == nullptr) {
+      return absl::InternalError(
+          "PackAnyFromScalar: wrapper missing value field");
+    }
+    if (auto s =
+            SetWrapperInnerValue(*wr, *inner, *vf, *inner_desc, value, mem);
+        !s.ok()) {
+      return s;
+    }
+  }
+  return WriteMessageOrPack(&any, *inner);
+}
+
+// Dispatch on `target`'s descriptor FQN to pack a non-message
+// CelValue into an already-allocated WKT message `target`.  Returns
+// `nullopt` if `target` is not a packable WKT — the caller then
+// falls through to its mismatch error.  Shared by the singular,
+// repeated, and map message-set paths; each resolves `target` from
+// the appropriate reflection mutator (MutableMessage / AddMessage).
+std::optional<absl::Status> MaybePackWktMessage(
+    google::protobuf::Message& target, const CelValue& value,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs) {
+  const absl::string_view fqn = target.GetDescriptor()->full_name();
+  const bool is_duration = fqn == "google.protobuf.Duration";
+  const bool is_timestamp = fqn == "google.protobuf.Timestamp";
+  if (is_duration || is_timestamp) {
+    if ((is_duration && value.kind != CEL_DURATION) ||
+        (is_timestamp && value.kind != CEL_TIMESTAMP)) {
+      return std::nullopt;
+    }
+    return PackDurationOrTimestamp(
+        target, is_duration ? value.payload.dur : value.payload.ts);
+  }
+  if (fqn == "google.protobuf.Value") {
+    return PackCelValueIntoJsonValue(value, target, mem, refs);
+  }
+  if (fqn == "google.protobuf.Struct") {
+    return PackStruct(value, target, mem, refs);
+  }
+  if (fqn == "google.protobuf.ListValue") {
+    return PackListValue(value, target, mem, refs);
+  }
+  if (fqn == "google.protobuf.Any") {
+    return PackAnyFromScalar(target, value, mem, refs);
+  }
+  return std::nullopt;
+}
+
+// Singular-field WKT pack: resolve a mutable submessage on the outer
+// field and delegate to `MaybePackWktMessage`.  `nullopt` propagates
+// (the field's message type isn't a packable WKT) — but only after
+// confirming via FQN so we don't mutate the field for a non-match.
+std::optional<absl::Status> MaybeSetWktMessageField(
+    google::protobuf::Message& outer,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs) {
+  const google::protobuf::Descriptor* mt = field.message_type();
+  const absl::string_view fqn = mt != nullptr ? mt->full_name() : "";
+  if (fqn != "google.protobuf.Duration" && fqn != "google.protobuf.Timestamp" &&
+      fqn != "google.protobuf.Value" && fqn != "google.protobuf.Struct" &&
+      fqn != "google.protobuf.ListValue" && fqn != "google.protobuf.Any") {
+    return std::nullopt;
+  }
+  google::protobuf::Message* sub =
+      outer.GetReflection()->MutableMessage(&outer, &field);
+  return MaybePackWktMessage(*sub, value, mem, refs);
 }
 
 // Append one element to a repeated field from an arena-source
@@ -2501,6 +3002,22 @@ absl::Status AppendRepeatedFromCelValue(
       refl.AddEnumValue(&msg, &field, static_cast<int>(cv.payload.i));
       return absl::OkStatus();
     case FD::CPPTYPE_MESSAGE: {
+      // A `null` element of a message-typed repeated field is PRUNED
+      // (skipped), not appended — `[timestamp(1), null]` round-trips
+      // as `[timestamp(1)]` per the `set_null/repeated_*` corpus rows.
+      if (cv.kind == CEL_NULL) {
+        return absl::OkStatus();
+      }
+      // Non-message element targeting a WKT message field (Duration /
+      // Timestamp / Value / Struct / ListValue / Any) — pack into a
+      // fresh AddMessage element via the shared WKT dispatch.
+      if (cv.kind != CEL_MESSAGE) {
+        if (auto s = MaybePackWktMessage(*refl.AddMessage(&msg, &field), cv,
+                                         mem, &refs);
+            s.has_value()) {
+          return *std::move(s);
+        }
+      }
       // Repeated-of-message: source element is CEL_MESSAGE pointing
       // at a HostMessageBacking that exposes its underlying Message*.
       // We CopyFrom into a fresh `AddMessage` submessage so the
@@ -2674,18 +3191,35 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
                                  const CelValue& key_cv, const CelValue& val_cv,
                                  const MemoryView& mem,
                                  const ExternrefTable& refs) {
-  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
   const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
+  const bool val_is_message =
+      val_fd->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE;
+  // A `null` value of a message-typed map field is PRUNED — the whole
+  // entry is skipped, not inserted with a default value.  Matches the
+  // `set_null/map_*_null_pruned` corpus rows.  Check before AddMessage
+  // so no stray empty entry is left behind.
+  if (val_is_message && val_cv.kind == CEL_NULL) {
+    return absl::OkStatus();
+  }
+  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
   // Recursive scalar-set on the entry submessage.  For a value
   // typed as message we route through a `CopyFrom` via the same
   // CEL_MESSAGE-source path repeated-of-message uses.
   if (auto s = SetScalarField(*entry, *key_fd, key_cv, mem, &refs); !s.ok()) {
     return s;
   }
-  if (val_fd->cpp_type() ==
-      google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+  if (val_is_message) {
+    // Non-message value targeting a WKT map value (Duration /
+    // Timestamp / Value / Struct / ListValue / Any) — pack via the
+    // shared WKT dispatch onto the entry's mutable value submessage.
+    google::protobuf::Message* dst =
+        entry->GetReflection()->MutableMessage(entry, val_fd);
     if (val_cv.kind != CEL_MESSAGE) {
+      if (auto s = MaybePackWktMessage(*dst, val_cv, mem, &refs);
+          s.has_value()) {
+        return *std::move(s);
+      }
       return absl::InvalidArgumentError(absl::StrCat(
           "CelSetFieldImpl: map<", key_fd->name(), ", message `",
           val_fd->name(), "`> value kind=", static_cast<int>(val_cv.kind)));
@@ -2695,8 +3229,6 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
       return absl::InvalidArgumentError(
           "CelSetFieldImpl: map message-value source has no backing");
     }
-    google::protobuf::Message* dst =
-        entry->GetReflection()->MutableMessage(entry, val_fd);
     return WriteMessageOrPack(dst, *src->message());
   }
   return SetScalarField(*entry, *val_fd, val_cv, mem, &refs);

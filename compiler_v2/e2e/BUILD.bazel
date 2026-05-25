@@ -415,6 +415,35 @@ cc_test(
     ],
 )
 
+# WKT-field-set e2e suite — one TEST_F per conformance corpus row in
+# the well-known-type field-construction cluster (literal_wellknown,
+# dynamic value_*/struct/int32/uint32, set_null null-pruning, Any).
+# Compiles + evaluates the SAME expression each corpus row uses
+# against the real conformance TestAllTypes descriptors.  Rows blocked
+# on a gap outside the field-set pack work GTEST_SKIP with a verified
+# reason.
+cc_test(
+    name = "wkt_field_set_test",
+    srcs = ["wkt_field_set_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:cel_host",  # MessageBacking() on constructed msgs
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # Program save / reload round-trip e2e — proves the wasm bytes from
 # Compiler::Compile round-trip through `Program(std::vector<uint8_t>)`
 # reconstruction, Plan, and Eval to bit-identical Values.  Locks the
