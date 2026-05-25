@@ -17,8 +17,6 @@ compiler_v2/
   api/         — public C++ surface: Compiler, Engine, Instance,
                   Activation, Value, CelType.  This is what hosts
                   link against.
-  cli/         — celwasmc command-line driver (--expr, --check,
-                  --schema, …).
   frontend/    — parse_and_check.  Wraps cel-cpp's parser + checker;
                   runs RejectDyn; emits TypedAst.
   ir/          — typed_ast + annotations.  Stable mid-layer between
@@ -45,7 +43,11 @@ compiler_v2/
                   level validation gate).
   bench/       — Google Benchmark microbenches (kernel + pipeline).
                   See bench/README.md.
-  tools/       — small CLI utilities (wat_runner, …).
+  tools/       — CLI utilities.  `tools/cel/` is the `cel` command-
+                  line driver (subcommands eval / check / compile,
+                  --var / --proto / --descriptor_set / --format; see
+                  tools/cel/README.md).  `tools/wat_runner/` assembles
+                  + runs WAT traces.
   compile.{h,cc} — internal pipeline facade (frontend → codegen).
                   Public callers go through api/compiler.h instead.
 ```
@@ -462,10 +464,19 @@ rounded up to the next wasm page:
 | 256 KiB                  | 4 pages = 256 KiB | Heavy string concat or 100s-of-element list construction. |
 | 1 MiB                    | 16 pages = 1 MiB | Stress / fuzzing; not a realistic production setting. |
 
-The bottom ~16 bytes of every memory are reserved for the arena
-cursor; the next ~`rodata_size` bytes (typically 100-500 B at
-`optimize_level=2`) hold compile-time constants; the rest is the
-bump arena `arena_reset` rewinds at the top of every Eval.
+The low `CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB, see
+`runtime/cel_layout.h`) of linear memory is reserved for the expr
+module's rodata + workspace data segments; wasi-libc places its own
+static data, stack, and dlmalloc heap above that.  The per-Eval
+bump arena is **not** a fixed slice of linear memory — it's a
+`CELWASM_ARENA_CAPACITY_BYTES` (64 KiB) buffer `malloc`'d once per
+Instance via `arena_init`, with its cursor/capacity living in a BSS
+struct (`runtime/cel_arena.c`).  `arena_reset` rewinds the cursor to
+zero at the top of every Eval — it does not free the buffer.  (This
+replaced the pre-Phase-C design where the arena cursor lived at fixed
+linear-memory bytes 8/12 and the arena was a bump region carved out
+of the imported memory; see `design.md` §"Phase C delta" callouts and
+`wasi/DESIGN.md` §4–§5 for the migration.)
 
 A wasm page is 64 KiB by spec; you can't allocate fractional pages.
 That makes the minimum per-Instance memory cost ~128 KiB even for a
@@ -476,34 +487,37 @@ request and let it drop at end-of-request.
 
 ### 8. CLI
 
-For a one-off "does this expression even compile" check without
-writing C++, use the legacy `celwasmc` CLI under `compiler/cli/`
-(the v2 CLI under `compiler_v2/cli/` hasn't been ported yet — the
-v1 CLI shares the parser / checker frontend so it's still useful
-for compile-time questions):
+For a one-off "does this even compile / what does it evaluate to"
+check without writing C++, use the `cel` driver under
+`compiler_v2/tools/cel/`.  It wraps the full v2 pipeline (compile →
+plan → eval) and has three subcommands — `eval`, `check`, `compile`:
 
 ```bash
-# Parse only.
-bazel run //compiler/cli:celwasmc -- -e='1 + 2'
+# Evaluate.
+bazel run //compiler_v2/tools/cel:cel -- eval '1 + 2 + 3'        # → 6
+bazel run //compiler_v2/tools/cel:cel -- eval 'a * b' \
+  --var 'a:int=6' --var 'b:int=7'                                # → 42
 
-# Parse + type-check.
-bazel run //compiler/cli:celwasmc -- --check -e='size("héllo")'
+# Parse + type-check only.
+bazel run //compiler_v2/tools/cel:cel -- check 'size("héllo")'   # → OK
+bazel run //compiler_v2/tools/cel:cel -- check 'user_age >= 18' \
+  --var 'user_age:int'                                           # → OK
 
-# With a declared variable.
-bazel run //compiler/cli:celwasmc -- --check \
-  --var='user_age:int' -e='user_age >= 18'
-
-# Emit the wasm bytes to a file.
-bazel run //compiler/cli:celwasmc -- --check \
-  -e='1 + 2' --emit_wasm=/tmp/expr.wasm
+# Emit wasm bytes to a file (or stdout with no --output).
+bazel run //compiler_v2/tools/cel:cel -- compile '1 + 2' \
+  --output /tmp/expr.wasm
 ```
 
-See `compiler/cli/celwasmc_main.cc` for the full flag set
-(`--schema`, `--schema_descriptorset`, `--container`, `--reject_dyn`,
-…).  An e2e-style "compile + plan + eval through the v2 pipeline"
-is easiest to drive from a small `cc_binary` using the snippets
-above; the eval-CLI variant (`celwasmc_eval_main.cc`) is wired up
-against the v1 runtime, not v2.
+`--var name:Type[=value]` declares (and optionally binds) a variable;
+`--proto` / `--descriptor_set` load message schemas; `--container`
+sets the ident-resolution prefix; `--O 0..3` is the Binaryen optimizer
+level; `--format textproto|json|cel` picks message output rendering.
+See `compiler_v2/tools/cel/README.md` for the full flag surface,
+`--var` grammar, and the proto-schema loading rules.
+
+(The pre-rewrite v1 `compiler/cli/celwasmc` driver has been deleted;
+`compiler_v2` has no `cli/` directory — the CLI lives under
+`tools/cel/`.)
 
 ## Build-time vs. compile-time knobs
 

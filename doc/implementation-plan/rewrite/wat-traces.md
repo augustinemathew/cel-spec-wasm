@@ -1,5 +1,22 @@
 # WAT traces — expr → target wasm, end-to-end
 
+> **⚠️ SUPERSEDED memory map — see `design.md` §"Phase C delta" and
+> `wasi/DESIGN.md` §4–§5.**  These traces document the *pre-Phase-C*
+> memory model: a fixed arena cursor at linear-memory bytes 8/12, a
+> bump arena carved out of the (then host-allocated, imported) memory,
+> and expr-module-owned memory.  As shipped, the runtime owns a single
+> shared `cel.memory`, the per-Eval arena is a 64 KiB `malloc`'d buffer
+> with its cursor in a BSS struct (`runtime/cel_arena.c`), and there is
+> no fixed bytes-8/12 cursor.  The *codegen-arm shapes* (which
+> instructions each expression lowers to) are still broadly
+> illustrative, but do NOT treat the memory offsets / cursor mechanics
+> here as current.  The traces are kept for historical and codegen-arm
+> reference — not deleted.
+>
+> The maintained, executable trace set lives at
+> `doc/implementation-plan/rewrite/wat/*.wat` (assembled + run via
+> `//compiler_v2/tools/wat_runner` and the `wat/BUILD.bazel` targets).
+
 Companion doc to `design.md` + `m2-ident-select-unknowns.md` + (future)
 `m5-comprehensions.md`.  Purpose: for each expression shape, write the
 **exact wasm we want `expr_lower` to emit**, in WAT, and keep it
