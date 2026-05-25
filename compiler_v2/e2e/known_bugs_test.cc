@@ -434,6 +434,19 @@ TEST(KnownBugs, DoubleToStringExponentForm) {
   EXPECT_EQ(*v->AsString(), "1e+10");
 }
 
+TEST(KnownBugs, OptionalSelectOnMapRejected) {
+  GTEST_SKIP() << "KNOWN BUG (verified: checker-rejected, want 1): static subset wrongly rejects .?field optional select (recurses into the synthetic field-name child), parse_and_check.cc:631-641. Delete to fix.";
+  // `.?field` (optional select) is wrongly rejected by the static subset.
+  // cel-cpp's HandleOptSelect erases the synthetic field-name arg's type
+  // (type_checker_impl.cc:1168); cel2's RejectDyn recurses into that untyped
+  // child and flags "no type_map entry" (parse_and_check.cc:631-641),
+  // blocking the entire `.?` syntax. {'a': 1}.?a.value() should be 1.
+  auto v = TryEval("{'a': 1}.?a.value()");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 1);
+}
+
 TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
   GTEST_SKIP() << "KNOWN BUG (verified: errors, want 3.14): double(string) does not strip surrounding whitespace; cel-cpp SimpleAtod does. cel_convert.c:350-362. Delete to fix.";
   // cel-cpp double(string) uses absl::SimpleAtod, which strips surrounding

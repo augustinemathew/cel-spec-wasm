@@ -184,3 +184,21 @@ repros are clean once TestAllTypes is registered).
     bad-utf8 cases (cel-cpp says "range"/"invalid"). Only matters if the
     harness matched error text — it doesn't (CompareEvalError is kind-only).
     Not a value divergence. FLAGGED.
+
+## Optionals findings (wave 5)
+
+- ENCODED: `.?field` optional select wrongly rejected by static subset
+  (OptionalSelectOnMapRejected). parse_and_check.cc:631-641 recurses into the
+  synthetic field-name child that cel-cpp's HandleOptSelect erases.
+- [HIGH, host-var trap — needs binding setup to encode] `[?key]`/`[?idx]` on a
+  HOST-backed (bound var) map/list TRAPS (`unreachable`): cel_optional.c:304-319
+  dispatch_lookup `__builtin_trap` for CEL_MAP_HOST/LIST_HOST/MESSAGE ("Slice B"
+  stub). `m[?"a"].value()` with m bound. cel-cpp returns 1.
+- [HIGH, host-var trap] `optional.ofNonZeroValue` on a host-backed list/map/msg
+  TRAPS: is_zero_value `__builtin_trap` cel_optional.c:116-124 (Slice B stub).
+- [subset strictness, not a clean bug] bare `optional.none()` and empty-collection
+  literal into ofNonZeroValue rejected as dyn (optional_type(dyn)/list(dyn)) —
+  same class as the known `[]`-dyn cut; cel-cpp accepts.
+- CORRECT: of/none/value/hasValue, ofNonZeroValue scalar zero-detection,
+  orValue/or short-circuit, optMap/optFlatMap, [?]/.? on literals, [?…]/{?…}
+  pruning, equality.
