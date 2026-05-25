@@ -162,7 +162,7 @@ real failures.
 Resolution: Replace `//...` in all build/test/query GATES with an explicit
 PROJECT-PACKAGE SET (the repo's own top-level packages, never `third_party`):
 ```
-//compiler/... //eval/... //common/... //abi/... //runtime/... \
+//compiler/... //eval/... //shared/... //abi/... //runtime/... \
 //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
 ```
 (Pre-restructure equivalent is `//compiler_v2/... //proto/... //tests/...`.)

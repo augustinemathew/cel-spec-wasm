@@ -19,7 +19,7 @@ set -euo pipefail
 # third_party/cel-cpp loads @com_github_google_flatbuffers, undeclared in
 # MODULE.bazel, so `//...` dies on package loading).  Space-joined for
 # `bazel test/build` command lines.
-PROJ="//compiler/... //eval/... //common/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/..."
+PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/..."
 
 QUICK=0
 for arg in "$@"; do

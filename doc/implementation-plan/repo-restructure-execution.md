@@ -50,7 +50,7 @@ Every build/test/query gate therefore targets the repo's own top-level packages
 explicitly. **Post-restructure project-package set** (`$PROJ`):
 
 ```
-//compiler/... //eval/... //common/... //abi/... //runtime/... \
+//compiler/... //eval/... //shared/... //abi/... //runtime/... \
 //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
 ```
 
