@@ -11,6 +11,19 @@ Resolution: …
 
 ---
 
+### Q4 — git worktree isolation unavailable in this environment [RESOLVED 2026-05-25]
+Context: plan assumes parallel agents run in `isolation: worktree`. The Agent
+tool errors: "Cannot create agent worktree: not in a git repository and no
+WorktreeCreate hooks are configured" (cwd is .../cel2/compiler_v2; harness
+worktree creation isn't wired here).
+Resolution: Drop worktree-based parallelism. All agents run NON-isolated on the
+`restructure` branch in the main checkout, committing directly. Disjoint-file
+waves (W1 Spec/Docs, W4 per-package verifiers) therefore run SEQUENTIALLY, not
+concurrently (concurrent same-tree agents would race the git index). No
+correctness impact and negligible time cost — the serial spine (W0→W3→W5→W6)
+was the critical path regardless; W1/W4 work is light vs. the W3/W4 bazel
+builds. The wave ORDER and gates are unchanged.
+
 ### Q3 — Literal wildcard `//compiler_v2/...` in scripts not handled by rewrite [RESOLVED 2026-05-25]
 Context: `run_full_suite.sh` (`bazel test //compiler_v2/...`), `build_lint_pch.sh`
 (`bazel build //compiler_v2/... //compiler_v2/bench:kernel_bench`),
