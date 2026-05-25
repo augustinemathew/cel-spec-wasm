@@ -163,24 +163,25 @@ graduate.  Effective pass rate against the addressable corpus
 ## Top remaining FAIL buckets
 
 93 FAILs across 14 fixtures — every one is a real gap, not a
-classifier miss.
+classifier miss.  Buckets sorted by FAIL count; cleanup-backlog
+references point at the tracked follow-up slice.
 
 | Fixture | FAIL | Root cause |
 |---|---:|---|
-| `proto2.textproto`        | 20 | `dyn(...)` / static-subset escapes plus WKT-literal field-construction patterns the harness reaches as dyn-typed. |
+| `proto2.textproto`        | 20 | proto2 **extension fields** — backtick-qualified extension selectors `msg.​`pkg.ext`` are unsupported: `has()` returns the wrong bool, the read errors out (18; same feature the standalone `proto2_ext.textproto` SKIPs as `ext_unimpl`).  Plus mixed-origin map equality on a null-pruned WKT map (2, cleanup-backlog #12). |
 | `parse.textproto`         | 19 | TextFormat-roundtrip rows, quoted-key map rows, and parse-error matcher cases the harness doesn't yet diff. |
-| `enums.textproto`         | 18 | Strong-enum-type rows (`strong_proto2` / `strong_proto3`) — a real enum-carrying runtime value.  Descoped deliberately: cel-cpp itself decays enums to int and FAILs these (see `rewrite/m20-enum-field-range.md` §6).  The numeric-range assignment rows were fixed in M20. |
-| `fields.textproto`        |  6 | `has({...}.k)` map-dispatch gap (`kSelect` on a literal map operand). |
+| `enums.textproto`         | 18 | Enums decay to plain `int`: `type(GlobalEnum.GOO)` yields `int` not the enum type (6); the `EnumType(i)` / `EnumType('NAME')` constructor and strong-enum field assignment are rejected by the checker (12).  One feature — real enum types in checker + runtime; descoped deliberately (cel-cpp itself decays enums to int, see `rewrite/m20-enum-field-range.md` §6).  The out-of-int32-range enum-field assignment rows were fixed in M20. |
+| `fields.textproto`        |  6 | `has({...}.k)` map-dispatch gap — `kSelect` on a literal map operand (cleanup-backlog #9). |
 | `conversions.textproto`   |  5 | `double('123.456')` precision — string→double parse and embedded-literal double differ by 1 ULP; `CompareDouble` uses `==`. |
-| `dynamic.textproto`       |  5 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  The int32/uint32 field-range rows were fixed in M20. |
-| `proto3.textproto`        |  4 | `Value`/`Struct`/`Duration`/`Timestamp` literal field construction reaching as dyn. |
+| `dynamic.textproto`       |  5 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  The int32/uint32 `field_assign_*_range` rows were fixed in M20. |
+| `proto3.textproto`        |  4 | Unset singular message field returns `null` instead of the default message instance, so the subfield read errors (2); mixed-origin map equality (2, cleanup-backlog #12). |
 | `namespace.textproto`     |  4 | Namespace-shadowing resolution (`cel.bind(x, ..., x.y)` resolves the wrong `x` against a container-qualified shape). |
-| `optionals.textproto`     |  4 | `kSelect` on a map operand (`{...}.field`) inside optional chaining (cleanup-backlog #9). |
+| `optionals.textproto`     |  4 | Map-index / optional-index select on a map operand — `.c['k']` / `.c[?'k']` errors (3, cleanup-backlog #9); `optional.ofNonZeroValue(<message>)` traps at eval (1, cleanup-backlog #10). |
+| `type_deduction.textproto`|  2 | `null`-assignable-to-wrapper-field rows that produce `null` but the matcher expects `message`. |
 | `string.textproto`        |  2 | `size('multibyte')` — we count code points but the matcher expects byte length (or vice versa). |
 | `lists.textproto`         |  2 | `[7,8,9][dyn(0.0)]` / `[dyn(0u)]` — dyn-typed index reaches past the static-subset gate. |
-| `type_deduction.textproto`|  2 | `null`-assignable-to-wrapper-field rows that produce `null` but the matcher expects `message`. |
-| `bindings_ext.textproto`  |  1 | `kSelect` on a map operand (`{...}.x` inside a `cel.bind`). |
-| `timestamp_conversions`   |  1 | `string(timestamp('9999-12-31T23:59:59.999999999Z'))` — nanosecond precision in the conversion. |
+| `timestamps.textproto`    |  1 | `string(timestamp('9999-12-31T23:59:59.999999999Z'))` — nanosecond precision in the conversion. |
+| `bindings_ext.textproto`  |  1 | `kSelect` on a map operand (`{...}.x` inside a `cel.bind`) — cleanup-backlog #9. |
 
 ## Future work
 
