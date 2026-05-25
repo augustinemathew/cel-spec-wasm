@@ -1,0 +1,516 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//:internal"])
+
+# AttributeId + AttributePattern + ErrorPayload/Code.  Payloads carried
+# by Value::Unknown / Value::Error.  Leaf.
+cc_library(
+    name = "attribute",
+    srcs = ["attribute.cc"],
+    hdrs = ["attribute.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "attribute_test",
+    srcs = ["attribute_test.cc"],
+    deps = [
+        ":attribute",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# ErrorCode + ErrorPayload — payload of Value::Error.  Separate from
+# attribute/ so callers that only need partial-eval plumbing don't
+# pull in the error catalogue.
+cc_library(
+    name = "error",
+    srcs = ["error.cc"],
+    hdrs = ["error.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "error_test",
+    srcs = ["error_test.cc"],
+    deps = [
+        ":error",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Value — user-facing counterpart to the 24-byte wire CelValue.  Owns
+# its payload by value; safe to copy / move / pass by value.  Aggregate
+# builders (List/Map/Message) are signature-final stubs until their
+# milestone ships.
+cc_library(
+    name = "value",
+    srcs = ["value.cc"],
+    hdrs = ["value.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":attribute",
+        ":error",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "value_test",
+    srcs = ["value_test.cc"],
+    deps = [
+        ":attribute",
+        ":error",
+        ":value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Activation — per-Eval name → Value bindings.  BindLazy and
+# OverrideFunction are signature-final stubs until their milestone.
+cc_library(
+    name = "activation",
+    srcs = ["activation.cc"],
+    hdrs = ["activation.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":value",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "activation_test",
+    srcs = ["activation_test.cc"],
+    deps = [
+        ":activation",
+        ":value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# M13 Slice C.1 — the raw low-level HostCallback type alias used
+# by Engine::AddFunction.  In its own tiny header so the internal
+# WasmtimeEngineState (which stores callbacks) and the public
+# engine.h (which exposes the type) can both depend on it without
+# creating an engine↔state circular include.
+cc_library(
+    name = "host_callback",
+    hdrs = ["host_callback.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+# Internal — decode the `cel.abi` custom section from raw wasm
+# bytes.  Consumed by Engine::Plan at load time.
+cc_library(
+    name = "abi_decode",
+    srcs = ["internal/abi_decode.cc"],
+    hdrs = ["internal/abi_decode.h"],
+    deps = [
+        "//abi:cel_abi_cc_proto",
+        "//compiler/ir:annotations",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "abi_decode_test",
+    srcs = ["internal/abi_decode_test.cc"],
+    deps = [
+        ":abi_decode",
+        "//testdata:e2e_fixture_cc_proto",
+        "//compiler/internal:compile",
+        "//abi:cel_abi_cc_proto",
+        "//compiler/ir:annotations",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Headers-only target carrying MemoryView / ExternrefTable /
+# ArenaAllocator, the backing-type abstract interfaces, and the
+# CelHostBindings struct.
+cc_library(
+    name = "cel_host_hdrs",
+    hdrs = ["internal/cel_host.h"],
+    deps = [
+        ":attribute",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Wire-error helpers + 3VL absorbers extracted out of the monolithic
+# cel_host.cc.
+cc_library(
+    name = "cel_host_error",
+    srcs = ["internal/cel_host_error.cc"],
+    hdrs = ["internal/cel_host_error.h"],
+    deps = [
+        ":cel_host_hdrs",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",  # CEL_ERR_* wire codes
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cel_host_error_test",
+    srcs = ["internal/cel_host_error_test.cc"],
+    deps = [
+        ":cel_host_error",
+        ":cel_host_hdrs",
+        ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Internal — Layer 1 of the cel_host stack.  Pure CEL semantics:
+# HostMessageBacking interface + ProtoBacking built-in.
+cc_library(
+    name = "cel_host",
+    srcs = ["internal/cel_host.cc"],
+    hdrs = ["internal/cel_host.h"],
+    deps = [
+        ":attribute",
+        ":cel_host_error",
+        ":cel_host_hdrs",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Header-only test fakes shared by every Layer-2 unit test that
+# touches MemoryView / ExternrefTable / ArenaAllocator.
+cc_library(
+    name = "cel_host_test_fakes",
+    testonly = True,
+    hdrs = ["internal/cel_host_test_fakes.h"],
+    deps = [
+        ":cel_host",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cel_host_test",
+    srcs = ["internal/cel_host_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "//testdata:host_fixture_proto2_cc_proto",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# HostMap (vector-backed Layer 1) coverage.
+cc_test(
+    name = "host_map_test",
+    srcs = ["internal/host_map_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":value",
+        "//shared:type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# ProtoMap (proto-reflection over a single map field).
+cc_test(
+    name = "proto_map_test",
+    srcs = ["internal/proto_map_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# HostList (vector-backed Layer 1) coverage.
+cc_test(
+    name = "host_list_test",
+    srcs = ["internal/host_list_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":value",
+        "//shared:type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# ProtoList (proto-reflection over a single REPEATED field).
+cc_test(
+    name = "proto_list_test",
+    srcs = ["internal/proto_list_test.cc"],
+    deps = [
+        ":cel_host",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Layer 2 trampoline body for cel_host.cel_map_lookup.
+cc_test(
+    name = "cel_map_lookup_impl_test",
+    srcs = ["internal/cel_map_lookup_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//runtime:cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Layer 2 trampoline body for cel_host.cel_list_at.
+cc_test(
+    name = "cel_list_at_impl_test",
+    srcs = ["internal/cel_list_at_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "//runtime:cel_runtime",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Internal — Layer 3 wasmtime glue for cel_host.cel_get_field.
+cc_library(
+    name = "cel_host_wasmtime",
+    srcs = ["internal/cel_host_wasmtime.cc"],
+    hdrs = ["internal/cel_host_wasmtime.h"],
+    tags = ["manual"],
+    deps = [
+        ":cel_host",
+        "//abi:cel_abi_cc_proto",
+        "//abi:runtime_catalogue",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# Internal — owns the wasmtime state held by cel::Engine.
+cc_library(
+    name = "wasmtime_engine_state",
+    srcs = ["internal/wasmtime_engine_state.cc"],
+    hdrs = ["internal/wasmtime_engine_state.h"],
+    tags = ["manual"],
+    deps = [
+        ":host_callback",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# Internal — pImpl payload for cel::Instance.  Owned via
+# unique_ptr from the public Instance.  Tagged manual; wasmtime dep.
+cc_library(
+    name = "instance_impl",
+    srcs = ["internal/instance_impl.cc"],
+    hdrs = ["internal/instance_impl.h"],
+    tags = ["manual"],
+    deps = [
+        ":abi_decode",
+        ":cel_host_wasmtime",
+        ":host_callback",
+        "//abi:cel_abi_cc_proto",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# cel::Instance — the live evaluator.  Constructed by Engine::Plan.
+cc_library(
+    name = "instance",
+    srcs = ["instance.cc"],
+    hdrs = ["instance.h"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":abi_decode",
+        ":activation",
+        ":attribute",
+        ":cel_host",
+        ":cel_host_wasmtime",
+        ":error",
+        ":instance_impl",
+        ":value",
+        ":wasmtime_engine_state",
+        "//abi:cel_abi_cc_proto",
+        "//compiler/ir:annotations",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "instance_test",
+    srcs = ["instance_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":activation",
+        ":attribute",
+        ":cel_host",
+        ":engine",
+        ":instance",
+        ":value",
+        "//shared:type",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# cel::Engine — runtime side.  Owns wasm_engine_t + parsed
+# cel_runtime.wasm.  Plan(program) → Instance.
+cc_library(
+    name = "engine",
+    srcs = ["engine.cc"],
+    hdrs = ["engine.h"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":abi_decode",
+        ":cel_host_wasmtime",
+        ":host_callback",
+        ":instance",
+        ":instance_impl",
+        ":wasmtime_engine_state",
+        "//abi:runtime_catalogue",
+        "//compiler:program",
+        "//eval/host:cel_log",
+        "//runtime:cel_runtime_wasm_bytes",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "engine_test",
+    srcs = ["engine_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":engine",
+        ":instance",
+        ":value",
+        "//compiler:compiler",
+        "//compiler:program",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)

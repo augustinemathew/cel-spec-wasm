@@ -3,7 +3,7 @@ load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = [
-    "//compiler_v2:__subpackages__",
+    "//visibility:public",
 ])
 
 # Shared proto fixtures for end-to-end tests that need realistic

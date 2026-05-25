@@ -10,7 +10,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"

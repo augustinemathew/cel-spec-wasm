@@ -13,15 +13,15 @@
 //   third_party/cel-cpp/runtime/standard/equality_functions.cc
 //   third_party/cel-cpp/runtime/standard/comparison_functions.cc
 
-#include "compiler_v2/runtime/cel_compare.h"
+#include "runtime/cel_compare.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_list.h"  // cel_list_eq dispatcher
-#include "compiler_v2/runtime/cel_log.h"
-#include "compiler_v2/runtime/cel_map.h"  // cel_map_eq dispatcher
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_list.h"  // cel_list_eq dispatcher
+#include "runtime/cel_log.h"
+#include "runtime/cel_map.h"  // cel_map_eq dispatcher
 
 // ─────────────────────────────────────────────────────────────
 // Same-kind comparison helpers via DEFINE_CMP_VV macro expansion.

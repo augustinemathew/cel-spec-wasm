@@ -7,13 +7,13 @@
 // All constructors allocate from the per-Eval arena and return the
 // byte offset into shared memory of the new CelValue (or 0 on OOM).
 
-#include "compiler_v2/runtime/cel_make.h"
+#include "runtime/cel_make.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_log.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_log.h"
 
 static uint32_t alloc_cv(void) {
   return arena_alloc((uint32_t)sizeof(CelValue));

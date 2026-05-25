@@ -37,7 +37,7 @@
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"  // HostListBacking definition
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "testdata/host_fixture_proto3.pb.h"

@@ -7,15 +7,15 @@
 // instantiation).  Per Instance, `arena_init` runs once via host
 // reentry and seeds it.
 
-#include "compiler_v2/runtime/cel_arena.h"
+#include "runtime/cel_arena.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_log.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_log.h"
 
 typedef struct {
   uint8_t* base;         // malloc'd buffer base in linear memory

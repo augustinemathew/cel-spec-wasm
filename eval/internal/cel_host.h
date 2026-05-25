@@ -25,7 +25,7 @@
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "eval/attribute.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "runtime/cel_data.h"
 

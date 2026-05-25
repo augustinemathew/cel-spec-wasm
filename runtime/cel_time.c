@@ -1,11 +1,11 @@
 // Timestamp / Duration kernels — see cel_time.h for the public ABI.
 
-#include "compiler_v2/runtime/cel_time.h"
+#include "runtime/cel_time.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
 
 // cel-cpp parity:
 //   third_party/cel-cpp/runtime/standard/time_functions.cc::
@@ -64,7 +64,7 @@ static inline int duration_in_range(int64_t seconds, int32_t nanos) {
 // therefore `|s * 1e9 + ns| <= INT64_MAX` ≈ ±292 years, much
 // tighter than the proto-Duration ±10000-year parse-side bound.
 // Empirically verified against cel-cpp (see
-// `compiler_v2/throwaway/cel_cpp_corner_probe.cc`): with
+// `a since-removed cel-cpp corner probe`): with
 // `enable_timestamp_duration_overflow_errors=true`,
 // `ts(9999) - ts(0001)` returns `OUT_OF_RANGE: integer overflow`.
 //

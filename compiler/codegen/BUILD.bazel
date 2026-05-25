@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//:internal"])
 
 # Operator-dispatch table.  M1 ships the shape (builder + frozen table +
 # collision rule) with an empty kBuiltinSeeds array; M3 fills the seeds.

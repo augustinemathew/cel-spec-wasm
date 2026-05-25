@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//visibility:public"])
 
 # Hand-authored WAT traces — one per codegen arm or host-ABI
 # surface.  Per CLAUDE.md "WAT-first for ABI and codegen design",

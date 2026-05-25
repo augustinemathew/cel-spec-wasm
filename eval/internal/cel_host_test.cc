@@ -19,7 +19,7 @@
 #include "absl/status/status_matchers.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "testdata/host_fixture_proto2.pb.h"

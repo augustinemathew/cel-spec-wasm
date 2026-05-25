@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//visibility:public"])
 
 # WAT-first prototyping harness.  Assembles a hand-written WAT
 # expression module and runs it end-to-end through wasmtime +

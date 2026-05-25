@@ -5,13 +5,13 @@
 // (arena_alloc, cel_value_at) via cel_internal.h and the public
 // cel_arena.h.
 
-#include "compiler_v2/runtime/cel_3vl.h"
+#include "runtime/cel_3vl.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_log.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_log.h"
 
 // Sorted-deduplicated merge walk over two pre-sorted u32 id arrays.
 // Mirrors v1's `merge_sorted_ids` shape (compiler/runtime/cel_runtime.c).

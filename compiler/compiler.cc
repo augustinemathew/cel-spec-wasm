@@ -10,7 +10,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "compiler/internal/compile.h"
 
 namespace celwasm::api {

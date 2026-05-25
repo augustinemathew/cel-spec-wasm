@@ -1,0 +1,31 @@
+# Root package.  Holds the first-party visibility boundary.
+#
+# Two-tier visibility regime (see doc/implementation-plan/repo-restructure.md
+# §5.5 and questions-log Q8):
+#   - PUBLIC API surface — //visibility:public on the curated targets:
+#     //compiler:{compiler,program}, //eval:{engine,instance,activation,value,
+#     error,attribute}, //shared:type, //abi:*, //runtime:*.  This is what
+#     bindings/ and any external consumer may depend on.
+#   - FIRST-PARTY INTERNAL — the package_group below.  Implementation targets
+#     (the compiler pipeline components, eval internals) are visible to any
+#     first-party package but NOT to a future //bindings/... or external
+#     consumer.  This enforces "nobody can take a dependency on non-public
+#     things" without forbidding the real intra-project wiring (abi -> codegen,
+#     eval -> ir:annotations, etc.).
+
+package_group(
+    name = "internal",
+    packages = [
+        "//compiler/...",
+        "//eval/...",
+        "//shared/...",
+        "//abi/...",
+        "//runtime/...",
+        "//tools/...",
+        "//conformance/...",
+        "//e2e/...",
+        "//bench/...",
+        "//testdata/...",
+        "//spec/...",
+    ],
+)

@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//visibility:public"])
 
 # `cel` command-line driver.  Subcommands: eval / check / compile.
 # Schema-aware (--proto / --descriptor_set) and value-aware (--var
@@ -12,7 +12,7 @@ cc_library(
     srcs = ["var_parser.cc"],
     hdrs = ["var_parser.h"],
     deps = [
-        "//common:type",
+        "//shared:type",
         "//eval:value",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:absl_check",
@@ -31,7 +31,7 @@ cc_test(
         ":var_parser",
         "//testdata:e2e_fixture_cc_proto",
         "//eval:cel_host",
-        "//common:type",
+        "//shared:type",
         "//eval:value",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
@@ -89,7 +89,7 @@ cc_binary(
         "//eval:engine",
         "//eval:instance",
         "//compiler:program",
-        "//common:type",
+        "//shared:type",
         "//eval:value",
         "//compiler/frontend:parse_and_check",
         "@com_google_absl//absl/flags:flag",
@@ -130,7 +130,7 @@ cc_test(
         "//eval:engine",
         "//eval:instance",
         "//compiler:program",
-        "//common:type",
+        "//shared:type",
         "//eval:value",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

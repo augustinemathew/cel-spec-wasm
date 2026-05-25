@@ -16,7 +16,7 @@
 // the optimizer from reasoning about the value-of-zero through the
 // pointer cast; the runtime cost is one register copy.
 
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_memory.h"
 
 #include <stdint.h>
 
@@ -41,7 +41,7 @@ uint32_t cel_memory_size_(void) {  // NOLINT(misc-use-internal-linkage)
   return 64u * 1024u;
 }
 #else
-#include "compiler_v2/runtime/cel_layout.h"
+#include "runtime/cel_layout.h"
 // Native test backing buffer must be at least the arena capacity plus
 // a slack region for the [0, 16) reserved bytes the arena leaves
 // before its own base.

@@ -9,12 +9,12 @@
 //
 // cel-cpp parity: third_party/cel-cpp/runtime/standard/string_functions.cc
 
-#include "compiler_v2/runtime/cel_string_ops.h"
+#include "runtime/cel_string_ops.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
 
 // Span equality byte-for-byte.  CEL strings are UTF-8 byte arrays
 // at the langdef level; equality is byte equality (no Unicode

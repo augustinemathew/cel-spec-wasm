@@ -20,7 +20,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"

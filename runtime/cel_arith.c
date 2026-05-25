@@ -6,12 +6,12 @@
 // public ABI; `rewrite/wat-traces.md` traces 16-17 lock the wire
 // shape.
 
-#include "compiler_v2/runtime/cel_arith.h"
+#include "runtime/cel_arith.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
 
 // Manual u64 multiply-overflow detection via split 32×32→64
 // partial products.  We avoid `__builtin_mul_overflow` for 64-bit

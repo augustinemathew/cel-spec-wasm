@@ -7,7 +7,7 @@ package(default_visibility = ["//visibility:public"])
 proto_library(
     name = "conformance_service_proto",
     srcs = ["conformance_service.proto"],
-    strip_import_prefix = "/spec/proto",
+    strip_import_prefix = "/proto",
     deps = [
         "//proto/cel/expr:checked_proto",
         "//proto/cel/expr:eval_proto",
@@ -18,7 +18,7 @@ proto_library(
 proto_library(
     name = "env_config_proto",
     srcs = ["env_config.proto"],
-    strip_import_prefix = "/spec/proto",
+    strip_import_prefix = "/proto",
     deps = [
         "//proto/cel/expr:checked_proto",
         "@com_google_protobuf//:descriptor_proto",

@@ -67,7 +67,7 @@
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "testdata/host_fixture_proto2.pb.h"
 #include "testdata/host_fixture_proto3.pb.h"

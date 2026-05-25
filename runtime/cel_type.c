@@ -5,13 +5,13 @@
 // public ABI and `rewrite/m9-type-subsystem.md` for the design
 // rationale.
 
-#include "compiler_v2/runtime/cel_type.h"
+#include "runtime/cel_type.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
 
 // Indexed by CelKind value.  NULL entries are kinds the helper
 // does not handle directly: CEL_MESSAGE dispatches to the host
@@ -48,7 +48,7 @@ static const char* const kPrimitiveTypeName[20] = {
 // (resolved at instantiation by wasmtime); host build ⇒ weak no-op
 // stub (poison kTypeMismatch) so unit tests link without the wasmtime
 // trampoline.  Strong override lives in
-// `compiler_v2/api/internal/cel_host.cc` for both directions.
+// `eval/internal/cel_host.cc` for both directions.
 #ifdef __wasm__
 extern void cel_host_resolve_message_type_name(uint32_t out_slot,
                                                uint32_t in_slot)

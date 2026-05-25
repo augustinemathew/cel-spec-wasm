@@ -17,7 +17,7 @@
 #include "absl/time/time.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_error.h"  // M11 Slice E
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"

@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//:internal"])
 
 # NodeAnnotation with the full rewrite schema (repr, field_number,
 # overload_id, local_index, scope_id, Storage, comprehension

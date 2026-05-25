@@ -1,0 +1,60 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//compiler:__subpackages__"])
+
+# cel::Program — the compiled artifact.  Pure data: bytes +
+# (future) ABI.  No wasmtime dep; can be serialized + shipped.
+cc_library(
+    name = "program",
+    hdrs = ["program.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "program_test",
+    srcs = ["program_test.cc"],
+    deps = [
+        ":program",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# cel::Compiler — pure compile-time front end.  Wraps the
+# existing celwasm::Compile pipeline; produces cel::Program.  No
+# wasmtime dep.
+cc_library(
+    name = "compiler",
+    srcs = ["compiler.cc"],
+    hdrs = ["compiler.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":program",
+        "//shared:type",
+        "//compiler/internal:compile",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "compiler_test",
+    srcs = ["compiler_test.cc"],
+    deps = [
+        ":compiler",
+        ":program",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

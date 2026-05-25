@@ -15,7 +15,7 @@
 #include "cel/expr/value.pb.h"
 #include "eval/activation.h"
 #include "compiler/compiler.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/descriptor.h"

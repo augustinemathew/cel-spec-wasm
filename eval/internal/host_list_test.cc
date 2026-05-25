@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "eval/error.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
 

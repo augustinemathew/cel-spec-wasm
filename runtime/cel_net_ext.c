@@ -14,15 +14,15 @@
 // Everything operates on the shared linear memory via cel_internal.h
 // helpers.
 
-#include "compiler_v2/runtime/cel_net_ext.h"
+#include "runtime/cel_net_ext.h"
 
 #include <arpa/inet.h>
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_make.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_make.h"
 
 // Longest IP literal we accept: a full uncompressed IPv6 address
 // ("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") is 39 bytes.  Anything

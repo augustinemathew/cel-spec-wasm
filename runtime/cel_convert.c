@@ -6,13 +6,13 @@
 // public ABI and `rewrite/m10-conversions.md` for the design
 // rationale.
 
-#include "compiler_v2/runtime/cel_convert.h"
+#include "runtime/cel_convert.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_log.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_log.h"
 
 // ─────────────────────────────────────────────────────────────
 // Numeric inter-conversion kernels.

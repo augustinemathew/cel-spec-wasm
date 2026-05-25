@@ -1,0 +1,24 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+# CelType — user-facing static type for declarations.  Leaf header; no
+# compiler dependency.  See doc/implementation-plan/rewrite/
+# cel-host-surface.md §2.  Public: every binding speaks types.
+cc_library(
+    name = "type",
+    srcs = ["type.cc"],
+    hdrs = ["type.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "type_test",
+    srcs = ["type_test.cc"],
+    deps = [
+        ":type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

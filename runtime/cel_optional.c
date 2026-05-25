@@ -1,20 +1,20 @@
 // M14 Slice A — CEL optional<T> runtime kernels.
 //
-// See `compiler_v2/runtime/cel_optional.h` for the public ABI + the
+// See `runtime/cel_optional.h` for the public ABI + the
 // OptionalCell layout + the immutability contract.  Per-kernel
 // rationale lives in `doc/.../wat/m14_optional_*.wat` headers and
 // `doc/.../wat-traces.md` §M14.1-§M14.6.
 
-#include "compiler_v2/runtime/cel_optional.h"
+#include "runtime/cel_optional.h"
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_list.h"
-#include "compiler_v2/runtime/cel_log.h"
-#include "compiler_v2/runtime/cel_map.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_list.h"
+#include "runtime/cel_log.h"
+#include "runtime/cel_map.h"
 
 // `cel_host.cel_set_field` — Layer-2 proto-field write.  Imported
 // from the host module under `wasm32-wasi-threads`; on the host

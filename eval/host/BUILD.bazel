@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//:internal"])
 
 # Host-side implementation of the `cel_env.cel_log` import.  Ported
 # verbatim from v1 compiler/host/cel_log.
@@ -34,5 +34,5 @@ cc_test(
 # host_loader was deleted in the runtime-isolation rewrite.  Its
 # role (instantiate the expr wasm + bind host imports + drive
 # $eval) is now split across cel::Engine + cel::Instance under
-# //compiler_v2/api/.  See
+# //eval/.  See
 # doc/implementation-plan/rewrite/two-phase-runtime-isolation.md.

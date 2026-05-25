@@ -17,7 +17,7 @@
 #include "eval/activation.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "runtime/cel_data.h"

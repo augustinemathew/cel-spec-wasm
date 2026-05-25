@@ -11,6 +11,36 @@ Resolution: …
 
 ---
 
+### Q8 — visibility regime: first-party `//:internal` group, not compiler⊥eval [RESOLVED 2026-05-25 — DESIGN REFINEMENT]
+Context (W3 gate): the design §5.4/§5.5 "compiler ⊥ eval, only public-contract
+edges" model FAILED the build. The real dep graph has legitimate cross-component
+edges into the compiler internals:
+  - `eval` → `compiler/ir:annotations` (abi_decode/instance decode the IR
+    annotation contract) + `compiler/internal:compile` (abi_decode_test).
+  - `abi` (the cel.abi emit side) → `compiler/{codegen,frontend,ir}`.
+  - `compiler/frontend` consumed by abi, bench, conformance, tools/cel.
+  - `compiler/ir` consumed by abi, eval, + intra-compiler.
+So the compiler internals are consumed FIRST-PARTY-WIDE, not within //compiler.
+Strict component-scoping is simply wrong for this codebase.
+Resolution: implement the 2-tier model the user actually asked for ("internal vs
+public"):
+  - **Public API** (//visibility:public): compiler:{compiler,program};
+    eval:{engine,instance,activation,value,error,attribute}; common:type;
+    abi:* ; runtime:* . This is what bindings/external consume.
+  - **First-party internal** (`//:internal` package_group in the new root
+    BUILD.bazel, listing every first-party package: compiler, eval, common, abi,
+    runtime, tools, conformance, e2e, bench, testdata, spec — NOT bindings/):
+    the compiler components (frontend, ir, codegen, celfn, internal) get
+    `default_visibility=["//:internal"]`. Reachable by any first-party package,
+    NOT by a future bindings/ or external consumer.
+  - eval internal targets (cel_host*, instance_impl, …) STAY //eval:__subpackages__
+    (only eval consumes them — verified).
+This still satisfies "nobody external can depend on non-public things" (the
+user's stated goal) while permitting the real intra-project wiring. Design
+§5.4/§5.5 + curated-list updated to describe the package_group, not compiler⊥eval.
+W5 audit: assert nothing under `//compiler/{frontend,ir,codegen,celfn,internal}`
+or eval-internal is visible to a hypothetical //bindings package.
+
 ### Q7 — internal/ as package vs subdir; api/BUILD split shape [RESOLVED 2026-05-25]
 Context (W3): design §5.5 leans on `//compiler/internal` + `//eval/internal` as
 real packages (belt-and-suspenders + the W5 `rdeps(//eval/internal/...)` audit).

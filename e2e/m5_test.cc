@@ -35,7 +35,7 @@
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"

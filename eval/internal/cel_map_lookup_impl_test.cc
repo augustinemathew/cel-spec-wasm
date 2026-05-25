@@ -23,7 +23,7 @@
 
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "runtime/cel_data.h"
 #include "gtest/gtest.h"

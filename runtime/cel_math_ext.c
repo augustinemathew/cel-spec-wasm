@@ -7,14 +7,14 @@
 // assertion source of truth.  See
 // `doc/implementation-plan/rewrite/m16-math-ext.md`.
 
-#include "compiler_v2/runtime/cel_math_ext.h"
+#include "runtime/cel_math_ext.h"
 
 #include <math.h>
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_internal.h"
 
 // ════════════════════════════════════════════════════════════════
 // Scalar: rounding (double → double).  std::ceil / floor / round /

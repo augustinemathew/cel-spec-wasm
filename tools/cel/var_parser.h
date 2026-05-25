@@ -43,7 +43,7 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"

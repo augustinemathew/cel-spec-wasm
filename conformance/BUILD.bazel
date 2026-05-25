@@ -1,6 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//visibility:public"])
 
 # Upstream conformance suite glue.  `runner` wraps one SimpleTest as
 # a pipeline invocation; `run_conformance` walks the whole
@@ -56,7 +56,7 @@ cc_library(
     deps = [
         "//eval:activation",
         "//compiler:compiler",
-        "//common:type",
+        "//shared:type",
         "//eval:value",
         "//proto/cel/expr:checked_cc_proto",
         "//proto/cel/expr:eval_cc_proto",

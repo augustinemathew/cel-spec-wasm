@@ -1,9 +1,9 @@
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 
-package(default_visibility = ["//compiler_v2:__subpackages__"])
+package(default_visibility = ["//visibility:public"])
 
-# Schema of the `cel.abi` custom section emitted by compiler_v2.
+# Schema of the `cel.abi` custom section emitted by the compiler.
 # Fresh v2 schema — decoupled from v1's compiler/codegen/cel_abi.proto.
 # See cel_abi.proto for the rationale and field-by-field docs.
 proto_library(
@@ -50,7 +50,7 @@ cc_test(
 )
 
 # Tripwire: asserts the `[codegen-helpers]` section of
-# `compiler_v2/runtime/wasm_exports.txt` is set-identical to
+# `runtime/wasm_exports.txt` is set-identical to
 # `abi::CelRuntimeHelpers()`.  Closes both directions of drift —
 # catalogue ⊆ text-file (else linker dead-strips on the wasm side)
 # and text-file ⊆ catalogue (else codegen has no metadata to emit
@@ -69,7 +69,7 @@ cc_test(
 
 # Compile-side: build a `CelAbi` from the StaticLayout.  Consumed by
 # compile.cc after LayoutPass + LowerToEvalFunction.  Pair with
-# compiler_v2/api/internal/abi_decode (load-time decoder).
+# eval/internal/abi_decode (load-time decoder).
 cc_library(
     name = "cel_abi_emit",
     srcs = ["cel_abi_emit.cc"],

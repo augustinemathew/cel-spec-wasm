@@ -6,7 +6,7 @@
 // the rest of the runtime — the body issues an import call directly,
 // so this TU links cleanly without touching `cel_internal.h`.
 
-#include "compiler_v2/runtime/cel_log.h"
+#include "runtime/cel_log.h"
 
 #include <stdint.h>
 

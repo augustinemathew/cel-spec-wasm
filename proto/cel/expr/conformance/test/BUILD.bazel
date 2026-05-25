@@ -7,7 +7,7 @@ package(default_visibility = ["//visibility:public"])
 proto_library(
     name = "simple_proto",
     srcs = ["simple.proto"],
-    strip_import_prefix = "/spec/proto",
+    strip_import_prefix = "/proto",
     deps = [
         "//proto/cel/expr:checked_proto",
         "//proto/cel/expr:eval_proto",
@@ -18,7 +18,7 @@ proto_library(
 proto_library(
     name = "suite_proto",
     srcs = ["suite.proto"],
-    strip_import_prefix = "/spec/proto",
+    strip_import_prefix = "/proto",
     deps = [
         "//proto/cel/expr:checked_proto",
         "//proto/cel/expr:eval_proto",

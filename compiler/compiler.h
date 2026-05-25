@@ -26,7 +26,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler/program.h"
-#include "common/type.h"
+#include "shared/type.h"
 #include "compiler/celfn/function_library.h"
 
 namespace celwasm::api {

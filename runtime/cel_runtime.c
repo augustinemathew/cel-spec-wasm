@@ -1,8 +1,8 @@
-#include "compiler_v2/runtime/cel_runtime.h"
+#include "runtime/cel_runtime.h"
 
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_net_ext.h"
-#include "compiler_v2/runtime/cel_optional.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_net_ext.h"
+#include "runtime/cel_optional.h"
 
 // ---- map runtime ---------------------------------------------------------
 //
@@ -1419,7 +1419,7 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
 }
 
 // Wasm-exported via `-Wl,--export=cel_equals_at_vv` in
-// compiler_v2/runtime/BUILD.bazel; `misc-use-internal-linkage` is
+// runtime/BUILD.bazel; `misc-use-internal-linkage` is
 // silenced because internal linkage would hide it from the wasm
 // export table.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
