@@ -434,6 +434,19 @@ TEST(KnownBugs, DoubleToStringExponentForm) {
   EXPECT_EQ(*v->AsString(), "1e+10");
 }
 
+TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
+  GTEST_SKIP() << "KNOWN BUG (verified: errors, want 3.14): double(string) does not strip surrounding whitespace; cel-cpp SimpleAtod does. cel_convert.c:350-362. Delete to fix.";
+  // cel-cpp double(string) uses absl::SimpleAtod, which strips surrounding
+  // ASCII whitespace before parsing; cel2's parse_double_str
+  // (cel_convert.c:350-362) does not skip leading/trailing space, so
+  // double('  3.14  ') errors. Want 3.14. (Distinct from the documented
+  // hex-float gap, m10-conversions.md:649, which is left as known.)
+  auto v = TryEval("double('  3.14  ')");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kDouble) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsDouble(), 3.14);
+}
+
 // NOTE: two wave-1 agent candidates were checked here and did NOT
 // reproduce (engine returns the correct answer), so they are NOT bugs
 // and are deliberately absent: `dyn(1) == 1u` correctly returns true

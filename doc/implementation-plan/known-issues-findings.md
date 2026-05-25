@@ -170,3 +170,17 @@ repros are clean once TestAllTypes is registered).
   lowerAscii/upperAscii, quote, and most of format (%s/%d/%o/%b/%x, precision,
   max_precision, arg-count) all CORRECT. Only divergences: indexOf/lastIndexOf
   pos bound + %f/%e type acceptance (both encoded in known_bugs_test.cc, wave 4).
+- **cel_convert.c type conversions** — audited vs absl SimpleAtoi/SimpleAtod +
+  conversions.textproto. Most CORRECT (int/uint hex-reject, whitespace-reject,
+  leading-zeros, bool(string) truth table, all range gates, int(double) trunc,
+  type(x), identity overloads, bytes<->string utf8). Divergences:
+  - double(string) whitespace -> ENCODED (DoubleFromStringRejectsWhitespace).
+  - double(string) hex-float (`double('0x1p4')`) -> NOT encoded: self-documented
+    gap (m10-conversions.md:649). Real divergence, but known/tracked.
+  - double(string) not correctly-rounded (apply_decimal_scale iterative *=10,
+    cel_convert.c:308-319) -> may differ 1 ULP on long mantissas; input-
+    dependent, conformance cases pass. FLAGGED, not encoded.
+  - Error TEXT: all reject paths poison CEL_ERR_OVERFLOW even for invalid-arg /
+    bad-utf8 cases (cel-cpp says "range"/"invalid"). Only matters if the
+    harness matched error text — it doesn't (CompareEvalError is kind-only).
+    Not a value divergence. FLAGGED.
