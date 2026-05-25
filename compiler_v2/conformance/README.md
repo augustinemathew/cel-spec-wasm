@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1842 (75.1%)  skip=463 (18.9%)  fail=149 (6.1%)
+total=2454  pass=1849 (75.3%)  skip=463 (18.9%)  fail=142 (5.8%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -103,7 +103,7 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | Fixture | Total | Pass | Skip | Fail | Pass% | Skip categories |
 |---|---:|---:|---:|---:|---:|---|
 | `encoders_ext.textproto`     |   4 |   4 |   0 |   0 | 100% | — |
-| `network_ext.textproto`      |  69 |  68 |   0 |   1 | 98% | — |
+| `network_ext.textproto`      |  69 |  69 |   0 |   0 | 100% | — |
 | `timestamps.textproto`       |  76 |  75 |   0 |   1 | 98% | — |
 | `math_ext.textproto`         | 199 | 194 |   5 |   0 | 97% | static_subset=5 |
 | `fp_math.textproto`          |  30 |  29 |   1 |   0 | 96% | disable_check=1 |
@@ -120,8 +120,8 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
 | `proto3.textproto`           |  85 |  62 |  13 |  10 | 72% | disable_check=6 static_subset=7 |
+| `enums.textproto`            |  85 |  61 |   2 |  22 | 71% | disable_check=2 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
-| `enums.textproto`            |  85 |  55 |   2 |  28 | 64% | disable_check=2 |
 | `proto2.textproto`           | 118 |  67 |  25 |  26 | 56% | disable_check=6 static_subset=19 |
 | `dynamic.textproto`          | 226 | 106 |  92 |  28 | 46% | disable_check=20 static_subset=72 |
 | `fields.textproto`           |  60 |  26 |  28 |   6 | 43% | disable_check=5 static_subset=15 type_env=8 |
@@ -157,7 +157,7 @@ Of the 463 SKIPs: ~371 are out-of-scope by design
 (`disable_check` + `static_subset`); the rest (92) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2454 - 371 = 2083) is **88%**.
+(2454 - 371 = 2083) is **89%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets

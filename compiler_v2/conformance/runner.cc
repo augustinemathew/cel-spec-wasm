@@ -677,6 +677,18 @@ Result ClassifyCompileFailure(const SimpleTest& t, const absl::Status& s) {
     return Skip(SkipCategory::kExtensionUnimpl,
                 absl::StrCat("ext-lib syntax: ", s.message()));
   }
+  // A row whose matcher expects an error is satisfied by a
+  // compile-stage error too: cel-cpp's upstream conformance/run.cc
+  // treats any error (compile OR eval) as matching an error matcher.
+  // Reaching here means the program failed to compile for a real
+  // reason (not a SKIP carve-out above), which IS the error the row
+  // expects — e.g. `isIP(cidr(...))` is a deliberate "no matching
+  // overload" type-check error the corpus asserts via eval_error.
+  // Rows expecting a concrete value have no error matcher and still
+  // Fail here.
+  if (IsEvalErrorMatcher(t)) {
+    return {Outcome::kPass, SkipCategory::kEnvelope, ""};
+  }
   return Fail("compile", s);
 }
 
