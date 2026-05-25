@@ -152,3 +152,21 @@ SetScalarField CPPTYPE_MESSAGE only handles the 9 wrapper FQNs + message→Any-p
 TODO to encode: add //proto/cel/expr/conformance/{proto2,proto3} deps + type
 registration to a new proto-aware known_bugs test (the range-check + null-prune
 repros are clean once TestAllTypes is registered).
+
+## Audited CLEAN (no divergence) — don't re-investigate
+
+- **math_ext** (cel_math_ext.c) — full audit vs cel-cpp + math_ext.textproto:
+  no bugs. greatest/least cross-type lossy-double is CORRECT here (cel-cpp's
+  internal::Number min/max is equally lossy + same first-operand tie-break);
+  abs(INT64_MIN)→overflow matches the fixture; bit-shift ≥64/negative, NaN
+  min/max, sign/round/ceil/sqrt all match. The map-key bug does NOT recur in
+  math because min/max copies the winning operand (no key-lookup semantics).
+- **Integer arithmetic** (cel_arith.c) — INT64_MIN/-1, INT64_MIN%-1, -INT64_MIN,
+  div/mod by zero, mul overflow: all correct (wave 1).
+- **base64, split/replace, list/map structural eq, NaN-in-list** — correct (wave 1).
+- **string_ext** (cel_string_ext_*.cc / cel_string_format_render.cc) — audited
+  vs cel-cpp: charAt/substring (multibyte, end-sentinel, byte-bound), replace
+  (empty needle, overlap, n-limit), split (empty-sep, final-piece), join,
+  lowerAscii/upperAscii, quote, and most of format (%s/%d/%o/%b/%x, precision,
+  max_precision, arg-count) all CORRECT. Only divergences: indexOf/lastIndexOf
+  pos bound + %f/%e type acceptance (both encoded in known_bugs_test.cc, wave 4).

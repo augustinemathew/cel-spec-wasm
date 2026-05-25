@@ -309,6 +309,44 @@ TEST(KnownBugs, MapFieldSelectSugar) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// CLASS: string extension kernels (wave 4).
+// ══════════════════════════════════════════════════════════════════
+
+TEST(KnownBugs, IndexOfPosBoundIsByteNotCodepoint) {
+  GTEST_SKIP() << "KNOWN BUG (verified: returns -1, want out-of-range error): indexOf/lastIndexOf pos bounded by byte length not code-point count, cel_string_ext_search.cc:122-133. Delete to fix.";
+  // 'éé' = 2 code points / 4 bytes. indexOf(sub, pos) bounds pos against the
+  // BYTE length (cel_string_ext_search.cc:122-133 ValidatePos), but cel-cpp
+  // bounds pos against Size() = code-point count, so pos=3 is out of range.
+  // Spec: error; cel2 silently returns -1.
+  auto v = TryEval("'éé'.indexOf('x', 3)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << "indexOf pos=3 on a 2-codepoint string should be out-of-range, kind "
+      << static_cast<int>(v->kind());
+}
+
+TEST(KnownBugs, FormatFixedRejectsInt) {
+  GTEST_SKIP() << "KNOWN BUG (verified: renders '42.000000', want error): %f/%e accept int; cel-cpp errors. cel_string_format_render.cc:277-291. Delete to fix.";
+  // cel-cpp %f/%e accept only double or the string tokens NaN/Infinity; %f of
+  // an int errors ("expected a double but got a int"). cel2's ToDouble
+  // (cel_string_format_render.cc:277-291) accepts int and renders it.
+  auto v = TryEval("'%f'.format([42])");
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << "%f of an int should error, kind " << static_cast<int>(v->kind());
+}
+
+TEST(KnownBugs, FormatFixedAcceptsNanToken) {
+  GTEST_SKIP() << "KNOWN BUG (verified: errors, want 'NaN'): %f of string token 'NaN'/'Infinity' should render; ToDouble has no string-token path, cel_string_format_render.cc:277-291. Delete to fix.";
+  // cel-cpp %f of the string "NaN" renders "NaN"; cel2 errors (ToDouble has
+  // no string-token path, cel_string_format_render.cc:277-291).
+  auto v = TryEval("'%f'.format(['NaN'])");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsString(), "NaN");
+}
+
+// ══════════════════════════════════════════════════════════════════
 // CLASS: comprehension / macro semantics (wave 3).
 // ══════════════════════════════════════════════════════════════════
 
