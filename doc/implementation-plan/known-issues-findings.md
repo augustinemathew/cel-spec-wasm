@@ -202,3 +202,43 @@ repros are clean once TestAllTypes is registered).
 - CORRECT: of/none/value/hasValue, ofNonZeroValue scalar zero-detection,
   orValue/or short-circuit, optMap/optFlatMap, [?]/.? on literals, [?…]/{?…}
   pruning, equality.
+
+## Unknowns / partial-eval findings (wave 6) — need PartialEval+pattern setup to encode
+
+- [HIGH] ERROR/UNKNOWN precedence INVERTED in &&/||: cel-cpp says UNKNOWN
+  dominates ERROR (logic_step.cc:226-238 + logic_step_test.cc:246-252,303-305);
+  cel2 returns ERROR (cel_3vl.c:177-184 cel_and, :214-221 cel_or check ERROR
+  before the unknown merge). The unit test cel_3vl_test.cc:170-221 ENSHRINES
+  the wrong expectation (E_U/U_E → CEL_ERROR) and passes — bug locked in.
+- [HIGH] Unknown-set MERGE dropped in arithmetic/compare/eq/concat: absorb_3vl_binary
+  (cel_internal.h:117-124) returns only the FIRST unknown operand, never calls
+  cel_unknown_merge → the 2nd attribute id is lost. Only cel_and/cel_or merge.
+  (ERROR-dominates-UNKNOWN for regular ops is correct; only both-unknown merge wrong.)
+- [MED] Bare-identifier unknown patterns never fire: MarshalActivation
+  (instance.cc:963-983) writes the concrete value, never consults unknown_patterns;
+  matching only happens in the field-select trampoline (cel_host.cc:1405). `c.field`
+  works (routes through select); bare `x`/scalar `c` does not.
+- [MED] Index/map-key unknown patterns never fire + non-string qualifiers can't match:
+  list-at/map-lookup trampolines take no attribute_id (cel_host.cc ~775/~917), and
+  ResolveAttribute interns every qualifier OfString (cel_host.cc:1330) so an OfInt(0)
+  pattern can never match `a[0]`.
+- [MED, code-trace] Comprehension predicate UNKNOWN aborts eagerly: *_if_bool
+  helpers (cel_runtime.c:405-407,436-438) overwrite accu with the unknown and stop;
+  a later definitive short-circuit can't override.
+- CORRECT: ternary unknown/error cond propagation, &&/|| short-circuit absorbers,
+  AttributePattern::IsMatch FULL/PARTIAL/wildcard, cel_unknown_merge sorted-dedup.
+
+## ───────────────────────── SESSION TALLY ─────────────────────────
+Overnight multi-agent hunt (13 agents, 6 waves). VERIFY-FIRST throughout.
+- 27 eval-reproduced bugs encoded as GTEST_SKIP regressions in
+  compiler_v2/e2e/known_bugs_test.cc (flip the skip to fix).
+- ~40 findings logged here that need fixture/partial-eval setup or aren't a
+  single-expression eval bug: host/proto (incl. twin lossy-numeric in cel_host.cc),
+  proto field-setter range-check/null-prune, design-invariant breakages, inaccurate
+  doc claims, unknowns/partial-eval (above), subset-strictness.
+- Audited CLEAN (don't re-hunt): math_ext, integer arith, base64, most string_ext,
+  most type conversions, optional core ops, ternary, &&/|| absorbers, AttributePattern.
+- Dropped (claimed but did NOT reproduce — no padding): dyn(1)==1u, [1]+[],
+  cross-numeric == gap.
+- Highest-leverage fixes: map-select EmitKSelect gap (flips ~6 entries), the
+  lossless-numeric-eq helper (map-key + host cross-eq), &&/|| unknown precedence.
