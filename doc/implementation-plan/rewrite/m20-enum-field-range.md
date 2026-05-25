@@ -37,6 +37,27 @@ deliberate divergence from our source of truth.
     `:1074-1075` both `set_type(IntType())` with the comment
     "preserves existing behavior in the other type checkers."  This is
     why §1 descopes strong enums.
+  - **Empirically validated by a probe** that links cel-cpp's real
+    compiler + runtime with its *own conformance-harness setup* copied
+    verbatim from `conformance/service.cc:585-614` (container +
+    `enable_qualified_type_identifiers` + `EnableReferenceResolver` +
+    `RegisterProtobufEnum`), then runs the exact `strong_proto2`
+    expressions:
+      - `GlobalEnum.GAZ` → cel-cpp yields `kInt` (int 2), NOT
+        `enum_value{GlobalEnum, 2}`.
+      - `type(GlobalEnum.GOO)` → cel-cpp yields a `type` whose name is
+        `"int"`, NOT `"cel.expr.conformance.proto2.GlobalEnum"`.
+      - `TestAllTypes.NestedEnum(2)` → int / rejected, never an enum
+        value.
+    Structural confirmation: cel-cpp's value-kind enum
+    (`common/value_kind.h`) has NO `kEnum` member — only the
+    type-system kind (`common/kind.h:57`) does — so a cel-cpp runtime
+    Value literally cannot hold an enum value to match the fixture's
+    `enum_value` matcher.  **Conclusion: cel-cpp itself FAILS the
+    `strong_proto2`/`strong_proto3` rows; matching them would mean
+    exceeding our source of truth.**  Probe:
+    `compiler_v2/probes/enums/cel_cpp_strong_enum_probe_test.cc`
+    (disposable — delete at M20 closeout).
   - **Our `cel_set_field` is a void/trap ABI.**  `CelSetFieldImpl`
     returns `absl::Status` (`cel_host.cc:2396`, `:2488-2498`), and the
     trampoline runs it through `StatusToTrap`
