@@ -73,7 +73,7 @@ cc_binary(
         "//eval:value",
         "//compiler/frontend:parse_and_check",
         "//runtime:cel_runtime",
-        "//proto/cel/expr:checked_cc_proto",
+        "@com_google_cel_spec//proto/cel/expr:checked_cc_proto",
         "@cel-cpp//common:ast_proto",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",

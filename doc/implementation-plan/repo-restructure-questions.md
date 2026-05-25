@@ -211,7 +211,7 @@ queries already scoped to `//compiler_v2/...` for the same reason — correct.
 ### Q1 — Does `docker/` + `cloudbuild.yaml` belong to compiler CI or Go-regen only? [RESOLVED 2026-05-25]
 Context: design §5.1 / W0 step 4 — delete iff not referenced by compiler CI.
 Resolution: KEEP BOTH. `docker/Dockerfile` self-documents as "Linux build
-environment for celwasmc — the CEL → WebAssembly AOT compiler" (host C++
+environment for cel-wasm — the CEL → WebAssembly AOT compiler" (host C++
 toolchain for the compiler build, not Go). `cloudbuild.yaml` runs `bazel build
 '...'` (compiler build CI). Neither is Go-regen. The only `.github/workflow`
 is `publish_to_bcr.yml` (BCR module publish — cel-spec heritage, unrelated to

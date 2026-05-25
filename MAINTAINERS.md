@@ -1,11 +1,12 @@
 # CEL Language Council
 
-| Name            | Company      | Area of Expertise |
-|-----------------|--------------|-------------------|
-| Alfred Fuller   | Facebook     | cel-cpp, cel-spec |
-| Jim Larson      | Google       | cel-go, cel-spec  |
-| Matthais Blume  | Google       | cel-spec          |
-| Tristan Swadell | Google       | cel-go, cel-spec  |
+| Name            | Company      | Area of Expertise  |
+|-----------------|--------------|--------------------|
+| Augustine Mathew| Google       | cel-wasm, cel-spec |
+| Alfred Fuller   | Facebook     | cel-cpp, cel-spec  |
+| Jim Larson      | Google       | cel-go, cel-spec   |
+| Matthais Blume  | Google       | cel-spec           |
+| Tristan Swadell | Google       | cel-go, cel-spec   |
 
 ## Emeritus
 

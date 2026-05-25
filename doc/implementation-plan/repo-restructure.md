@@ -430,7 +430,7 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
 
 ## 10. Out of scope / future
 
-  - **Rename the module** `cel-spec` → e.g. `celwasmc` — the real "disconnect
+  - **Rename the module** `cel-spec` → e.g. `cel-wasm` — the real "disconnect
     from parent"; own pass once the move settles. **This unblocks the `proto/`
     → `spec/proto/` move (Q5):** today vendored cel-cpp resolves
     `@com_google_cel_spec//proto/cel/*` to our root `//proto/cel`, so `proto/`
@@ -493,7 +493,7 @@ and bzlmod's root-wins rule makes cel-cpp's dep resolve to **us**, so
 that name.
 
 **The disconnect.**
-  1. Rename the module: `module(name = "cel-spec")` → `module(name = "celwasmc")`.
+  1. Rename the module: `module(name = "cel-spec")` → `module(name = "cel-wasm")`.
   2. Add our own `bazel_dep(name = "cel-spec", version = "0.25.1", repo_name =
      "com_google_cel_spec")`. Now `@com_google_cel_spec` resolves to the **real
      upstream cel-spec 0.25.1 from BCR** for both cel-cpp and us.

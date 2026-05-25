@@ -1,5 +1,15 @@
+# cel-wasm — an ahead-of-time compiler from the Common Expression Language (CEL)
+# to WebAssembly.  Compiles a CEL expression into a self-contained wasm module
+# plus a `cel.abi` contract, then evaluates it against a host activation.
 module(
+    name = "cel-wasm",
+)
+
+# CEL protos (cel.expr.*) and the conformance corpus come from upstream cel-spec.
+bazel_dep(
     name = "cel-spec",
+    version = "0.25.1",
+    repo_name = "com_google_cel_spec",
 )
 
 bazel_dep(

@@ -433,7 +433,7 @@ PASSES — proving the hook works, not merely that it was bypassed (§0).
 Branch: disconnect (from master, after W6). SEMANTIC change (dependency topology),
 not a path move — the conformance gate is the hard stop. See design §12.
 
-1. MODULE.bazel: module(name="cel-spec") -> module(name="celwasmc").
+1. MODULE.bazel: module(name="cel-spec") -> module(name="cel-wasm").
 2. Add bazel_dep(name="cel-spec", version="0.25.1", repo_name="com_google_cel_spec")
    so @com_google_cel_spec resolves to BCR upstream (the version cel-cpp pins).
    Reconcile any override touching cel-spec.

@@ -27,7 +27,7 @@ cc_library(
         "//compiler/celfn:function_library",
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",
-        "//proto/cel/expr:syntax_cc_proto",
+        "@com_google_cel_spec//proto/cel/expr:syntax_cc_proto",
         "@cel-cpp//checker:optional",
         "@cel-cpp//checker:standard_library",
         "@cel-cpp//checker:type_checker",
