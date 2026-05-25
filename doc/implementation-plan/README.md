@@ -75,6 +75,17 @@ Companion documents (do not duplicate — link):
   - `cleanup-backlog.md` — P2 cleanup items surfaced by code-review
     passes, tagged with the review date so the trail back to context is
     preserved.
+  - `repo-restructure.md` — **repo reorganization design**: dissolve
+    `compiler_v2/` into role-based top-level dirs (`compiler/`, `eval/`,
+    `runtime/`, `abi/`, `common/`), shed the cel-spec Go heritage into
+    `spec/`, drop the `api/` umbrella (Abseil/cel-cpp convention:
+    `internal/` + `visibility`), and reserve `bindings/` for TS/Go.
+    Carries the direction toward compiling the compiler itself to wasm
+    (§9) so bindings get full compile + eval.
+  - `repo-restructure-execution.md` — the **parallel execution plan** for
+    the above: the frozen path/label/include mapping, copy-paste agent
+    briefs, and the wave/merge procedure (peak 9 parallel agents in the
+    verification fan-out).
 
 ## Closing out a planning doc
 
