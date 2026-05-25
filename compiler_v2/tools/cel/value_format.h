@@ -44,15 +44,15 @@ absl::string_view FormatName(Format f);
 ABSL_MUST_USE_RESULT absl::StatusOr<Format> ParseFormatName(
     absl::string_view name);
 
-// Format any non-message `cel::Value`.  See header doc for shape.
+// Format any non-message `celwasm::api::Value`.  See header doc for shape.
 ABSL_MUST_USE_RESULT absl::StatusOr<std::string> FormatScalar(
-    const ::cel::Value& v);
+    const ::celwasm::api::Value& v);
 
-// Format a kMessage `cel::Value` in each requested format.  When
+// Format a kMessage `celwasm::api::Value` in each requested format.  When
 // `formats.size() == 1`, returns the body alone (no "--- X ---"
 // header).  When > 1, sections are labeled.
 ABSL_MUST_USE_RESULT absl::StatusOr<std::string> FormatMessage(
-    const ::cel::Value& v, const std::vector<Format>& formats);
+    const ::celwasm::api::Value& v, const std::vector<Format>& formats);
 
 }  // namespace celwasm::tools::cel
 

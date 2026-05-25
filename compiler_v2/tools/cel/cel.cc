@@ -34,8 +34,8 @@
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/compile.h"
 #include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/tools/cel/var_parser.h"
 #include "compiler_v2/tools/cel/value_format.h"
+#include "compiler_v2/tools/cel/var_parser.h"
 #include "google/protobuf/compiler/parser.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
@@ -87,11 +87,11 @@ ABSL_FLAG(std::string, output, "",
 namespace celwasm::tools::cel {
 namespace {
 
-using ::cel::Activation;
-using ::cel::Engine;
-using ::cel::Instance;
-using ::cel::Program;
-using ::cel::Value;
+using ::celwasm::api::Activation;
+using ::celwasm::api::Engine;
+using ::celwasm::api::Instance;
+using ::celwasm::api::Program;
+using ::celwasm::api::Value;
 
 // Same schema-loading shape as parse_and_check.cc::LoadDescriptorPool,
 // re-implemented here so the CLI can construct DynamicMessage
@@ -114,7 +114,9 @@ class StringErrorCollector : public google::protobuf::io::ErrorCollector {
   }
   void RecordWarning(int /*line*/, int /*column*/,
                      absl::string_view /*message*/) override {}
-  const std::string& text() const { return text_; }
+  const std::string& text() const {
+    return text_;
+  }
 
  private:
   std::string text_;
@@ -130,7 +132,7 @@ absl::StatusOr<google::protobuf::FileDescriptorProto> LoadProtoSource(
   std::string buf((std::istreambuf_iterator<char>(in)),
                   std::istreambuf_iterator<char>());
   google::protobuf::io::ArrayInputStream input(buf.data(),
-                                                static_cast<int>(buf.size()));
+                                               static_cast<int>(buf.size()));
   StringErrorCollector collector;
   google::protobuf::io::Tokenizer tokenizer(&input, &collector);
   google::protobuf::compiler::Parser parser;
@@ -145,7 +147,7 @@ absl::StatusOr<google::protobuf::FileDescriptorProto> LoadProtoSource(
 }
 
 absl::Status LoadDescriptorSet(absl::string_view path,
-                                google::protobuf::SimpleDescriptorDatabase& db) {
+                               google::protobuf::SimpleDescriptorDatabase& db) {
   std::ifstream in{std::string(path), std::ios::binary};
   if (!in) {
     return absl::NotFoundError(
@@ -155,14 +157,13 @@ absl::Status LoadDescriptorSet(absl::string_view path,
                     std::istreambuf_iterator<char>());
   google::protobuf::FileDescriptorSet fds;
   if (!fds.ParseFromString(bytes)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("--descriptor_set ", path,
-                     " is not a valid FileDescriptorSet"));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "--descriptor_set ", path, " is not a valid FileDescriptorSet"));
   }
   for (const auto& f : fds.file()) {
     if (!db.Add(f)) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "duplicate file `", f.name(), "` in --descriptor_set"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("duplicate file `", f.name(), "` in --descriptor_set"));
     }
   }
   return absl::OkStatus();
@@ -186,17 +187,16 @@ absl::StatusOr<PoolBundle> BuildPool() {
     auto file = LoadProtoSource(proto_path);
     if (!file.ok()) return file.status();
     if (!out.schema_db->Add(*file)) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "could not register --proto ", proto_path));
+      return absl::InvalidArgumentError(
+          absl::StrCat("could not register --proto ", proto_path));
     }
   } else {
     if (auto s = LoadDescriptorSet(fds_path, *out.schema_db); !s.ok()) {
       return s;
     }
   }
-  out.generated_db =
-      std::make_unique<google::protobuf::DescriptorPoolDatabase>(
-          *google::protobuf::DescriptorPool::generated_pool());
+  out.generated_db = std::make_unique<google::protobuf::DescriptorPoolDatabase>(
+      *google::protobuf::DescriptorPool::generated_pool());
   out.merged_db = std::make_unique<google::protobuf::MergedDescriptorDatabase>(
       out.schema_db.get(), out.generated_db.get());
   out.owned_pool =
@@ -209,8 +209,7 @@ absl::StatusOr<PoolBundle> BuildPool() {
 // the parsed --var declarations.  Variable specs flow through as
 // `name:TypeSpec` strings (the form parse_and_check.cc consumes).
 absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
-    absl::string_view source_desc,
-    const std::vector<ParsedVar>& vars) {
+    absl::string_view source_desc, const std::vector<ParsedVar>& vars) {
   celwasm::CompileOptions opts;
   opts.check.description = std::string(source_desc);
   opts.check.container = absl::GetFlag(FLAGS_container);
@@ -233,25 +232,35 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
     // formatter keeps a single source of truth and the cost is
     // dust (a few dozen StrCats per Compile).
     auto FormatType = [](const auto& self,
-                         const ::cel::CelType& t) -> std::string {
+                         const ::celwasm::api::CelType& t) -> std::string {
       switch (t.kind()) {
-        case ::cel::CelType::Kind::kBool:      return "bool";
-        case ::cel::CelType::Kind::kInt:       return "int";
-        case ::cel::CelType::Kind::kUint:      return "uint";
-        case ::cel::CelType::Kind::kDouble:    return "double";
-        case ::cel::CelType::Kind::kString:    return "string";
-        case ::cel::CelType::Kind::kBytes:     return "bytes";
-        case ::cel::CelType::Kind::kDuration:  return "duration";
-        case ::cel::CelType::Kind::kTimestamp: return "timestamp";
-        case ::cel::CelType::Kind::kType:      return "type";
-        case ::cel::CelType::Kind::kMessage:
+        case ::celwasm::api::CelType::Kind::kBool:
+          return "bool";
+        case ::celwasm::api::CelType::Kind::kInt:
+          return "int";
+        case ::celwasm::api::CelType::Kind::kUint:
+          return "uint";
+        case ::celwasm::api::CelType::Kind::kDouble:
+          return "double";
+        case ::celwasm::api::CelType::Kind::kString:
+          return "string";
+        case ::celwasm::api::CelType::Kind::kBytes:
+          return "bytes";
+        case ::celwasm::api::CelType::Kind::kDuration:
+          return "duration";
+        case ::celwasm::api::CelType::Kind::kTimestamp:
+          return "timestamp";
+        case ::celwasm::api::CelType::Kind::kType:
+          return "type";
+        case ::celwasm::api::CelType::Kind::kMessage:
           return std::string(t.message_fully_qualified_name());
-        case ::cel::CelType::Kind::kList:
+        case ::celwasm::api::CelType::Kind::kList:
           return absl::StrCat("list<", self(self, t.list_element()), ">");
-        case ::cel::CelType::Kind::kMap:
+        case ::celwasm::api::CelType::Kind::kMap:
           return absl::StrCat("map<", self(self, t.map_key()), ",",
                               self(self, t.map_value()), ">");
-        case ::cel::CelType::Kind::kUnknown: break;
+        case ::celwasm::api::CelType::Kind::kUnknown:
+          break;
       }
       ABSL_CHECK(false) << "unhandled CelType in --var spec";
     };
@@ -441,8 +450,8 @@ int RunCompile(absl::string_view expr) {
 // (caller passes that to absl::ParseCommandLine).  The original
 // `argv[0]` is preserved at the head of the result.
 std::vector<char*> ExtractRepeated(absl::Span<char* const> argv,
-                                    absl::string_view name,
-                                    std::vector<std::string>& sink) {
+                                   absl::string_view name,
+                                   std::vector<std::string>& sink) {
   std::vector<char*> out;
   out.reserve(argv.size());
   if (!argv.empty()) out.push_back(argv[0]);
@@ -506,11 +515,12 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::vector<char*> rest;
   rest.reserve(argc - 1);
   rest.push_back(argv[0]);
-  for (int i = 2; i < argc; ++i) rest.push_back(argv[i]);
+  for (int i = 2; i < argc; ++i)
+    rest.push_back(argv[i]);
   // Extract repeatable flags BEFORE absl parses, so their values
   // (which may contain commas or `=`) aren't mangled.
-  rest = celwasm::tools::cel::ExtractRepeated(
-      rest, "var", celwasm::tools::cel::VarFlags());
+  rest = celwasm::tools::cel::ExtractRepeated(rest, "var",
+                                              celwasm::tools::cel::VarFlags());
   rest = celwasm::tools::cel::ExtractRepeated(
       rest, "format", celwasm::tools::cel::FormatFlags());
   std::vector<char*> positional =
@@ -523,8 +533,8 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   }
   const absl::string_view expr = positional[1];
 
-  if (subcommand == "eval")    return celwasm::tools::cel::RunEval(expr);
-  if (subcommand == "check")   return celwasm::tools::cel::RunCheck(expr);
+  if (subcommand == "eval") return celwasm::tools::cel::RunEval(expr);
+  if (subcommand == "check") return celwasm::tools::cel::RunCheck(expr);
   if (subcommand == "compile") return celwasm::tools::cel::RunCompile(expr);
   // Unreachable: the upfront subcommand check above rejects anything
   // not in {eval, check, compile}.

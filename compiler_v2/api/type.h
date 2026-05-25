@@ -18,7 +18,7 @@
 
 #include "absl/strings/string_view.h"
 
-namespace cel {
+namespace celwasm::api {
 
 class CelType {
  public:
@@ -37,7 +37,7 @@ class CelType {
     kTimestamp = 12,
     // type-of-types declarable as a variable type
     // (`Bind("t", Value::Type(name))`).  Mirrors
-    // `cel::Value::Kind::kType = 13`.  See
+    // `celwasm::api::Value::Kind::kType = 13`.  See
     // `rewrite/m9-type-subsystem.md`.
     kType = 13,
   };
@@ -100,6 +100,6 @@ class CelType {
 
 absl::string_view CelTypeKindName(CelType::Kind k);
 
-}  // namespace cel
+}  // namespace celwasm::api
 
 #endif  // CELWASM_COMPILER_V2_API_TYPE_H_

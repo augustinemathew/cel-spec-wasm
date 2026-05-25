@@ -1,4 +1,4 @@
-// `cel::HostCallback` — the raw low-level callback type for
+// `celwasm::api::HostCallback` — the raw low-level callback type for
 // `Engine::AddFunction` (the `@host.<name>` impl).  Pulled into its
 // own header so the internal `WasmtimeEngineState` (which needs to
 // hold registered callbacks) doesn't pick up `engine.h`'s public
@@ -17,12 +17,12 @@
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 
-namespace cel {
+namespace celwasm::api {
 
 using HostCallback = std::function<absl::Status(
     uint8_t* memory, size_t mem_size, uint32_t out_slot,
     absl::Span<const uint32_t> arg_slots)>;
 
-}  // namespace cel
+}  // namespace celwasm::api
 
 #endif  // CELWASM_COMPILER_V2_API_HOST_CALLBACK_H_

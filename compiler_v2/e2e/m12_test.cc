@@ -29,7 +29,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -192,13 +192,11 @@ TEST_F(QuoteE2ETest, Verbatim) {
 }
 
 TEST_F(QuoteE2ETest, EscapesNewline) {
-  EXPECT_TRUE(
-      EvalBool(R"(strings.quote("a\nb") == "\"a\\nb\"")"));
+  EXPECT_TRUE(EvalBool(R"(strings.quote("a\nb") == "\"a\\nb\"")"));
 }
 
 TEST_F(QuoteE2ETest, EscapesBackslash) {
-  EXPECT_TRUE(
-      EvalBool(R"(strings.quote("\\") == "\"\\\\\"")"));
+  EXPECT_TRUE(EvalBool(R"(strings.quote("\\") == "\"\\\\\"")"));
 }
 
 TEST_F(QuoteE2ETest, Empty) {
@@ -218,9 +216,8 @@ TEST_F(FormatE2ETest, NoSubstitution) {
 }
 
 TEST_F(FormatE2ETest, MidStringSubstitution) {
-  EXPECT_EQ(
-      EvalString(R"("str is %s and some more".format(["filler"]))"),
-      "str is filler and some more");
+  EXPECT_EQ(EvalString(R"("str is %s and some more".format(["filler"]))"),
+            "str is filler and some more");
 }
 
 TEST_F(FormatE2ETest, PercentEscaping) {
@@ -249,9 +246,8 @@ TEST_F(FormatE2ETest, HexLowerFromString) {
 }
 
 TEST_F(FormatE2ETest, StringFromList) {
-  EXPECT_EQ(
-      EvalString(R"("%s".format([["abc", 3.14, null]]))"),
-      "[abc, 3.14, null]");
+  EXPECT_EQ(EvalString(R"("%s".format([["abc", 3.14, null]]))"),
+            "[abc, 3.14, null]");
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -261,17 +257,13 @@ TEST_F(FormatE2ETest, StringFromList) {
 class MultiFunctionE2ETest : public ::testing::Test {};
 
 TEST_F(MultiFunctionE2ETest, SplitJoinFormat) {
-  EXPECT_EQ(
-      EvalString(
-          R"("a,b,c".split(",").join("-").upperAscii())"),
-      "A-B-C");
+  EXPECT_EQ(EvalString(R"("a,b,c".split(",").join("-").upperAscii())"),
+            "A-B-C");
 }
 
 TEST_F(MultiFunctionE2ETest, FormatWithReceiverChain) {
-  EXPECT_EQ(
-      EvalString(R"("count=%d".format(["hello".size()]))"),
-      "count=5");
+  EXPECT_EQ(EvalString(R"("count=%d".format(["hello".size()]))"), "count=5");
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

@@ -25,7 +25,7 @@
 #include "wasm.h"
 #include "wasmtime.h"
 
-namespace cel {
+namespace celwasm::api {
 
 namespace {
 
@@ -238,7 +238,7 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
     // it under cel.arena_alloc here so the expr module's import call
     // resolves identically.
     if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
-                                    std::string(h.name).c_str());
+                                   std::string(h.name).c_str());
         !s.ok()) {
       return s;
     }
@@ -724,4 +724,4 @@ absl::StatusOr<Engine> Engine::Builder::Build() && {
   return Engine(std::move(*state_or));
 }
 
-}  // namespace cel
+}  // namespace celwasm::api

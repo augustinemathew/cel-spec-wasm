@@ -31,7 +31,6 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -39,10 +38,11 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -82,14 +82,14 @@ Value CompileAndEval(const Compiler& compiler, absl::string_view source,
   CompilerOptions opts;
   opts.optimize_level = optimize_level;
   auto program = compiler.Compile(source, opts);
-  ABSL_CHECK_OK(program)
-      << "source=" << source << " optimize_level=" << optimize_level;
+  ABSL_CHECK_OK(program) << "source=" << source
+                         << " optimize_level=" << optimize_level;
   auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance)
-      << "source=" << source << " optimize_level=" << optimize_level;
+  ABSL_CHECK_OK(instance) << "source=" << source
+                          << " optimize_level=" << optimize_level;
   auto value = instance->Eval(activation);
-  ABSL_CHECK_OK(value)
-      << "source=" << source << " optimize_level=" << optimize_level;
+  ABSL_CHECK_OK(value) << "source=" << source
+                       << " optimize_level=" << optimize_level;
   return *std::move(value);
 }
 
@@ -98,10 +98,10 @@ Value CompileAndEval(const Compiler& compiler, absl::string_view source,
 // approximations — every test row produces a deterministic value).
 void ExpectEvalIdentical(const Compiler& compiler, absl::string_view source,
                          const Activation& activation) {
-  Value unopt = CompileAndEval(compiler, source, /*optimize_level=*/0,
-                               activation);
-  Value opt = CompileAndEval(compiler, source, /*optimize_level=*/2,
-                             activation);
+  Value unopt =
+      CompileAndEval(compiler, source, /*optimize_level=*/0, activation);
+  Value opt =
+      CompileAndEval(compiler, source, /*optimize_level=*/2, activation);
   ASSERT_EQ(unopt.kind(), opt.kind())
       << "kind drift after Optimize(2): source=" << source;
   switch (unopt.kind()) {
@@ -131,8 +131,8 @@ void ExpectEvalIdentical(const Compiler& compiler, absl::string_view source,
       // `CelEquals` slice we don't lean on here — every row in this
       // file picks a source that evaluates to a scalar so the
       // kind+payload check is sufficient.
-      FAIL() << "test matrix produced a non-scalar result for source="
-             << source << " kind=" << static_cast<int>(unopt.kind());
+      FAIL() << "test matrix produced a non-scalar result for source=" << source
+             << " kind=" << static_cast<int>(unopt.kind());
   }
 }
 
@@ -377,4 +377,4 @@ TEST(OptimizeE2E, StringContains) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

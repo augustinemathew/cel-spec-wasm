@@ -40,7 +40,7 @@
 #include "google/protobuf/util/message_differencer.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -164,8 +164,8 @@ TEST_F(WktLiteralFieldTest, Proto3Struct) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["one"].set_number_value(1.0);
   fields["two"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'one': 1.0, 'two': 2.0}}", kP3, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'one': 1.0, 'two': 2.0}}",
+                        kP3, expected);
 }
 
 TEST_F(WktLiteralFieldTest, Proto3Value) {
@@ -280,8 +280,8 @@ TEST_F(DynamicStructFieldTest, FieldAssignProto2) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["uno"].set_number_value(1.0);
   fields["dos"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}", kP2, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}",
+                        kP2, expected);
 }
 
 TEST_F(DynamicStructFieldTest, FieldAssignProto3) {
@@ -289,8 +289,8 @@ TEST_F(DynamicStructFieldTest, FieldAssignProto3) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["uno"].set_number_value(1.0);
   fields["dos"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}", kP3, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}",
+                        kP3, expected);
 }
 
 TEST_F(DynamicStructFieldTest, FieldAssignEmptyProto2) {
@@ -572,4 +572,4 @@ TEST_F(AnyFieldTest, AnyLiteralEmptyProto3) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

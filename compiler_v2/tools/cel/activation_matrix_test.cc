@@ -1,12 +1,12 @@
 // End-to-end coverage for binding lists / maps / proto messages via
-// `cel::Activation` — the exact shape the `cel` CLI's `--var
+// `celwasm::api::Activation` — the exact shape the `cel` CLI's `--var
 // name:Type=value` flag produces.
 //
 // Why this lives under `tools/cel/` rather than `compiler_v2/e2e/`:
 // the test matrix is specifically the "user hands the compiler an
 // activation containing aggregates" use case the CLI was built to
 // surface.  Compiler / pipeline / runtime checks all happen via the
-// public API (`cel::Compiler` + `cel::Engine` + `cel::Activation`),
+// public API (`celwasm::api::Compiler` + `celwasm::api::Engine` + `celwasm::api::Activation`),
 // same path the CLI walks.
 //
 // Coverage axes (every cell exercised at least once):
@@ -30,8 +30,6 @@
 #include <vector>
 
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -39,17 +37,19 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::tools::cel {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::cel::Activation;
-using ::cel::CelType;
-using ::cel::Compiler;
-using ::cel::Engine;
-using ::cel::Value;
+using ::celwasm::api::Activation;
+using ::celwasm::api::CelType;
+using ::celwasm::api::Compiler;
+using ::celwasm::api::Engine;
+using ::celwasm::api::Value;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg3;
 
@@ -65,7 +65,7 @@ const Engine& SharedEngine() {
 // Compile + Plan + Eval helper.  One-shot: each test row gets its
 // own Compiler/Program/Instance.
 Value CompileAndEval(const Compiler& compiler, const std::string& expr,
-                      const Activation& act) {
+                     const Activation& act) {
   auto program = compiler.Compile(expr);
   EXPECT_THAT(program.status(), IsOk()) << "Compile: " << expr;
   if (!program.ok()) return Value::Null();
@@ -102,7 +102,7 @@ TEST(ActivationMatrix, BoundListIntSize) {
   Compiler c = BuildCompiler({{"xs", CelType::List(CelType::Int())}});
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(2), Value::Int(3),
-                              Value::Int(4)}));
+                            Value::Int(4)}));
   EXPECT_EQ(*CompileAndEval(c, "size(xs)", a).AsInt(), 4);
 }
 
@@ -114,7 +114,7 @@ TEST(ActivationMatrix, BoundListIntExists) {
   Compiler c = BuildCompiler({{"xs", CelType::List(CelType::Int())}});
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(3), Value::Int(5),
-                              Value::Int(7)}));
+                            Value::Int(7)}));
   EXPECT_EQ(*CompileAndEval(c, "xs.exists(x, x > 5)", a).AsBool(), true);
   EXPECT_EQ(*CompileAndEval(c, "xs.exists(x, x > 100)", a).AsBool(), false);
 }
@@ -130,18 +130,18 @@ TEST(ActivationMatrix, BoundListIntFilter) {
   Compiler c = BuildCompiler({{"xs", CelType::List(CelType::Int())}});
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(2), Value::Int(3),
-                              Value::Int(4)}));
+                            Value::Int(4)}));
   EXPECT_EQ(*CompileAndEval(c, "size(xs.filter(x, x > 2))", a).AsInt(), 2);
 }
 
 TEST(ActivationMatrix, BoundListStringTransform) {
   Compiler c = BuildCompiler({{"tags", CelType::List(CelType::String())}});
   Activation a;
-  a.Bind("tags",
-         Value::List({Value::String("alpha"), Value::String("beta"),
-                       Value::String("gamma")}));
-  EXPECT_EQ(*CompileAndEval(c, "tags.exists(t, t.startsWith('al'))", a).AsBool(),
-            true);
+  a.Bind("tags", Value::List({Value::String("alpha"), Value::String("beta"),
+                              Value::String("gamma")}));
+  EXPECT_EQ(
+      *CompileAndEval(c, "tags.exists(t, t.startsWith('al'))", a).AsBool(),
+      true);
   EXPECT_EQ(*CompileAndEval(c, "size(tags.filter(t, t == 'beta'))", a).AsInt(),
             1);
 }
@@ -156,12 +156,11 @@ TEST(ActivationMatrix, BoundListStringIn) {
   EXPECT_EQ(*CompileAndEval(c, "'guest' in tags", a).AsBool(), false);
 }
 
-
 // ---------- map<string,int> ----------
 
 TEST(ActivationMatrix, BoundMapStringIntLookup) {
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("us"), Value::Int(1)},
                           {Value::String("ca"), Value::Int(2)}}));
@@ -170,8 +169,8 @@ TEST(ActivationMatrix, BoundMapStringIntLookup) {
 }
 
 TEST(ActivationMatrix, BoundMapSize) {
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("a"), Value::Int(1)},
                           {Value::String("b"), Value::Int(2)},
@@ -180,8 +179,8 @@ TEST(ActivationMatrix, BoundMapSize) {
 }
 
 TEST(ActivationMatrix, BoundMapInOperator) {
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("us"), Value::Int(1)}}));
   EXPECT_EQ(*CompileAndEval(c, "'us' in m", a).AsBool(), true);
@@ -192,8 +191,8 @@ TEST(ActivationMatrix, BoundMapInOperator) {
 // over keys.  The runtime snapshot's stride / cursor advance is
 // asserted via .exists / .all / .filter on a multi-entry map.
 TEST(ActivationMatrix, BoundMapExistsKey) {
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("us"), Value::Int(1)},
                           {Value::String("ca"), Value::Int(2)},
@@ -203,8 +202,8 @@ TEST(ActivationMatrix, BoundMapExistsKey) {
 }
 
 TEST(ActivationMatrix, BoundMapAllKeys) {
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("us"), Value::Int(1)},
                           {Value::String("ca"), Value::Int(2)}}));
@@ -214,8 +213,8 @@ TEST(ActivationMatrix, BoundMapAllKeys) {
 TEST(ActivationMatrix, BoundMapFilterByValue) {
   // Filter walks the keys but the predicate dereferences the value
   // via m[k] — exercises iter + map_lookup interleaving.
-  Compiler c = BuildCompiler(
-      {{"m", CelType::Map(CelType::String(), CelType::Int())}});
+  Compiler c =
+      BuildCompiler({{"m", CelType::Map(CelType::String(), CelType::Int())}});
   Activation a;
   a.Bind("m", Value::Map({{Value::String("us"), Value::Int(1)},
                           {Value::String("ca"), Value::Int(2)},
@@ -240,15 +239,15 @@ TEST(ActivationMatrix, BoundMapIntStringLookup) {
       {{"codes", CelType::Map(CelType::Int(), CelType::String())}});
   Activation a;
   a.Bind("codes", Value::Map({{Value::Int(200), Value::String("OK")},
-                                {Value::Int(404), Value::String("NotFound")}}));
+                              {Value::Int(404), Value::String("NotFound")}}));
   EXPECT_EQ(*CompileAndEval(c, "codes[404]", a).AsString(), "NotFound");
 }
 
 // ---------- proto messages ----------
 
 TEST(ActivationMatrix, BoundProtoFieldReads) {
-  Compiler c = BuildCompiler(
-      {{"u", CelType::Message("celwasm.testdata.Customer")}});
+  Compiler c =
+      BuildCompiler({{"u", CelType::Message("celwasm.testdata.Customer")}});
   Customer u;
   u.set_name("Ada");
   u.set_age(36);
@@ -267,8 +266,8 @@ TEST(ActivationMatrix, BoundProtoFieldReads) {
 }
 
 TEST(ActivationMatrix, BoundProtoNestedMessage) {
-  Compiler c = BuildCompiler(
-      {{"u", CelType::Message("celwasm.testdata.Customer")}});
+  Compiler c =
+      BuildCompiler({{"u", CelType::Message("celwasm.testdata.Customer")}});
   Customer u;
   u.mutable_billing_address()->set_city("Berlin");
   u.mutable_billing_address()->set_country("DE");
@@ -281,8 +280,8 @@ TEST(ActivationMatrix, BoundProtoNestedMessage) {
 }
 
 TEST(ActivationMatrix, BoundProtoMapField) {
-  Compiler c = BuildCompiler(
-      {{"u", CelType::Message("celwasm.testdata.Customer")}});
+  Compiler c =
+      BuildCompiler({{"u", CelType::Message("celwasm.testdata.Customer")}});
   Customer u;
   (*u.mutable_metadata())["region"] = "us-west-1";
   (*u.mutable_metadata())["tier"] = "gold";
@@ -298,27 +297,25 @@ TEST(ActivationMatrix, BoundProtoMapField) {
 // the same `cel_host.cel_map_iter_open` trampoline as
 // Value::Map activation bindings.
 TEST(ActivationMatrix, BoundProtoMapFieldComprehension) {
-  Compiler c = BuildCompiler(
-      {{"u", CelType::Message("celwasm.testdata.Customer")}});
+  Compiler c =
+      BuildCompiler({{"u", CelType::Message("celwasm.testdata.Customer")}});
   Customer u;
   (*u.mutable_metadata())["region"] = "us-west-1";
   (*u.mutable_metadata())["tier"] = "gold";
   (*u.mutable_metadata())["env"] = "prod";
   Activation a;
   a.Bind("u", Value::Message(u));
-  EXPECT_EQ(
-      *CompileAndEval(c, "u.metadata.exists(k, k == 'tier')", a).AsBool(),
-      true);
-  EXPECT_EQ(
-      *CompileAndEval(c, "size(u.metadata.filter(k, u.metadata[k] != 'gold'))",
-                        a)
-            .AsInt(),
-      2);
+  EXPECT_EQ(*CompileAndEval(c, "u.metadata.exists(k, k == 'tier')", a).AsBool(),
+            true);
+  EXPECT_EQ(*CompileAndEval(
+                 c, "size(u.metadata.filter(k, u.metadata[k] != 'gold'))", a)
+                 .AsInt(),
+            2);
 }
 
 TEST(ActivationMatrix, BoundProtoRepeatedField) {
-  Compiler c = BuildCompiler(
-      {{"u", CelType::Message("celwasm.testdata.Customer")}});
+  Compiler c =
+      BuildCompiler({{"u", CelType::Message("celwasm.testdata.Customer")}});
   Customer u;
   u.add_tags("alpha");
   u.add_tags("beta");
@@ -333,8 +330,8 @@ TEST(ActivationMatrix, BoundProtoRepeatedField) {
   EXPECT_EQ(*CompileAndEval(c, "u.tags.exists(t, t == 'beta')", a).AsBool(),
             true);
   EXPECT_EQ(*CompileAndEval(c, "u.tags.all(t, size(t) > 0)", a).AsBool(), true);
-  EXPECT_EQ(*CompileAndEval(c, "size(u.tags.filter(t, t != 'beta'))", a).AsInt(),
-            2);
+  EXPECT_EQ(
+      *CompileAndEval(c, "size(u.tags.filter(t, t != 'beta'))", a).AsInt(), 2);
 }
 
 // ---------- multi-variable mixed activation ----------
@@ -355,16 +352,16 @@ TEST(ActivationMatrix, MultipleVariablesMixed) {
   // Multi-binding eval covering: proto field read, scalar
   // comparison, and proto-map lookup compared to a bound string.
   EXPECT_EQ(*CompileAndEval(
-                  c, "u.age >= min_age && u.metadata['region'] == region", a)
-                  .AsBool(),
+                 c, "u.age >= min_age && u.metadata['region'] == region", a)
+                 .AsBool(),
             true);
 }
 
 // ---------- HostMsg3 (richer wire-type matrix) ----------
 
 TEST(ActivationMatrix, BoundProtoMapWithIntKey) {
-  Compiler c = BuildCompiler(
-      {{"h", CelType::Message("celwasm.testdata.HostMsg3")}});
+  Compiler c =
+      BuildCompiler({{"h", CelType::Message("celwasm.testdata.HostMsg3")}});
   HostMsg3 h;
   (*h.mutable_i64_to_str())[100] = "hundred";
   (*h.mutable_i64_to_str())[200] = "two-hundred";
@@ -381,8 +378,8 @@ TEST(ActivationMatrix, BoundProtoMapWithIntKey) {
 // CEL_MESSAGE referencing the original externref slot, so the
 // inner predicate sees the same proto field-read path.
 TEST(ActivationMatrix, BoundListOfMessagesExists) {
-  Compiler c = BuildCompiler(
-      {{"users", CelType::List(CelType::Message("celwasm.testdata.Customer"))}});
+  Compiler c = BuildCompiler({{"users", CelType::List(CelType::Message(
+                                            "celwasm.testdata.Customer"))}});
   Customer u1;
   u1.set_name("Ada");
   u1.set_age(36);
@@ -394,14 +391,14 @@ TEST(ActivationMatrix, BoundListOfMessagesExists) {
   EXPECT_EQ(*CompileAndEval(c, "users.exists(u, u.age > 80)", a).AsBool(),
             true);
   EXPECT_EQ(*CompileAndEval(c, "users.all(u, u.age > 0)", a).AsBool(), true);
-  EXPECT_EQ(*CompileAndEval(c, "size(users.filter(u, u.name == 'Ada'))", a)
-                  .AsInt(),
-            1);
+  EXPECT_EQ(
+      *CompileAndEval(c, "size(users.filter(u, u.name == 'Ada'))", a).AsInt(),
+      1);
 }
 
 TEST(ActivationMatrix, BoundProtoRepeatedMessageIndex) {
-  Compiler c = BuildCompiler(
-      {{"h", CelType::Message("celwasm.testdata.HostMsg3")}});
+  Compiler c =
+      BuildCompiler({{"h", CelType::Message("celwasm.testdata.HostMsg3")}});
   HostMsg3 h;
   HostMsg3* a1 = h.add_rep_msg();
   a1->set_s("first");

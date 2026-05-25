@@ -42,14 +42,14 @@ namespace {
 // `AbsorbBinary`) moved out to `cel_host_error.{cc,h}` — they're
 // included via `<compiler_v2/api/internal/cel_host_error.h>` above
 // and remain callable here under the `celwasm::` namespace.
-std::optional<cel::Value> UnpackWrapperMessage(
+std::optional<celwasm::api::Value> UnpackWrapperMessage(
     const google::protobuf::Message& sub);
-std::optional<cel::Value> UnpackWellKnownTimeMessage(
+std::optional<celwasm::api::Value> UnpackWellKnownTimeMessage(
     const google::protobuf::Message& sub);
 // Forward-declared so `MaybeUnpackWktMessage` (below) can chain it;
 // the definition follows after the recursive JSON-peel helpers.
 // NOLINTNEXTLINE(readability-redundant-declaration)
-std::optional<cel::Value> UnpackJsonValueMessage(
+std::optional<celwasm::api::Value> UnpackJsonValueMessage(
     const google::protobuf::Message& sub);
 
 // Chain the well-known-type peelers in a single call site: returns
@@ -57,7 +57,7 @@ std::optional<cel::Value> UnpackJsonValueMessage(
 // is one of the recognised WKT message types, otherwise
 // `std::nullopt`.  Lets both Any-unwrap and proto-field-read share one
 // entry point without duplicating the if-cascade.
-inline std::optional<cel::Value> MaybeUnpackWktMessage(
+inline std::optional<celwasm::api::Value> MaybeUnpackWktMessage(
     const google::protobuf::Message& sub) {
   if (auto wrap = UnpackWrapperMessage(sub); wrap.has_value()) return wrap;
   if (auto wkt = UnpackWellKnownTimeMessage(sub); wkt.has_value()) return wkt;
@@ -88,7 +88,7 @@ std::optional<absl::string_view> ExtractAnyFqn(absl::string_view type_url) {
 //     checks whether the inner is itself an Any and decides whether
 //     to loop.
 struct UnpackOneAnyResult {
-  std::optional<cel::Value> terminal;
+  std::optional<celwasm::api::Value> terminal;
   std::unique_ptr<google::protobuf::Message> peeled;
 };
 
@@ -108,10 +108,10 @@ UnpackOneAnyResult UnpackOneAnyLayer(
   std::string val_scratch;
   const std::string& type_url =
       any_refl->GetStringReference(any, type_url_fd, &url_scratch);
-  if (type_url.empty()) return {cel::Value::Null(), nullptr};
+  if (type_url.empty()) return {celwasm::api::Value::Null(), nullptr};
   const auto fqn_opt = ExtractAnyFqn(type_url);
   if (!fqn_opt.has_value()) {
-    return {MakeError(cel::ErrorCode::kFieldNotFound,
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
                       absl::StrCat("Any type_url `", type_url,
                                    "` lacks `type.googleapis.com/` or "
                                    "`type.googleprod.com/` prefix")),
@@ -121,7 +121,7 @@ UnpackOneAnyResult UnpackOneAnyLayer(
   const google::protobuf::Descriptor* sub_desc =
       pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
   if (sub_desc == nullptr) {
-    return {MakeError(cel::ErrorCode::kFieldNotFound,
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
                       absl::StrCat("Any type_url FQN `", fqn,
                                    "` not registered in descriptor pool")),
             nullptr};
@@ -130,7 +130,7 @@ UnpackOneAnyResult UnpackOneAnyLayer(
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(
           sub_desc);
   if (prototype == nullptr) {
-    return {MakeError(cel::ErrorCode::kFieldNotFound,
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
                       absl::StrCat("Any type `", fqn,
                                    "` has no generated_factory prototype")),
             nullptr};
@@ -139,7 +139,7 @@ UnpackOneAnyResult UnpackOneAnyLayer(
   const std::string& bytes =
       any_refl->GetStringReference(any, value_fd, &val_scratch);
   if (!sub->ParseFromString(bytes)) {
-    return {MakeError(cel::ErrorCode::kTypeMismatch,
+    return {MakeError(celwasm::ErrorCode::kTypeMismatch,
                       absl::StrCat("Any payload bytes don't parse against `",
                                    fqn, "`")),
             nullptr};
@@ -158,8 +158,9 @@ UnpackOneAnyResult UnpackOneAnyLayer(
 // implicitly bounds depth in practice, but a malformed Any chain
 // shouldn't blow the host stack, and the M7-A design doc explicitly
 // recommended this constant.
-cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
-                            const google::protobuf::DescriptorPool* pool) {
+celwasm::api::Value UnpackAnyToValue(
+    const google::protobuf::Message& any,
+    const google::protobuf::DescriptorPool* pool) {
   std::unique_ptr<google::protobuf::Message> owned;
   const google::protobuf::Message* current = &any;
   for (int depth = 0;; ++depth) {
@@ -176,7 +177,7 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
     if (auto v = MaybeUnpackWktMessage(*owned); v.has_value()) {
       return *std::move(v);
     }
-    return cel::Value::OwnedMessage(std::move(owned));
+    return celwasm::api::Value::OwnedMessage(std::move(owned));
   }
 }
 
@@ -185,13 +186,13 @@ cel::Value UnpackAnyToValue(const google::protobuf::Message& any,
 // `google.protobuf.Timestamp` / `google.protobuf.Duration`, peel the
 // (seconds, nanos) pair via reflection (field numbers 1 and 2 are
 // pinned by the well-known type definitions) and return the matching
-// cel::Value::Timestamp / Duration.  Returns nullopt for any other
+// celwasm::api::Value::Timestamp / Duration.  Returns nullopt for any other
 // message type — caller falls back to `HostMessage(ProtoBacking)`.
 //
 // Reflection-based on purpose: works for both generated-class
 // messages (via DynamicCastToGenerated downcast) and dynamic
 // messages loaded from a runtime descriptor pool.
-std::optional<cel::Value> UnpackWellKnownTimeMessage(
+std::optional<celwasm::api::Value> UnpackWellKnownTimeMessage(
     const google::protobuf::Message& sub) {
   const google::protobuf::Descriptor* d = sub.GetDescriptor();
   if (d == nullptr) return std::nullopt;
@@ -207,23 +208,24 @@ std::optional<cel::Value> UnpackWellKnownTimeMessage(
   const int64_t s = refl->GetInt64(sub, sf);
   const int32_t ns = refl->GetInt32(sub, nf);
   if (is_timestamp) {
-    return cel::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
-                                 absl::Nanoseconds(ns));
+    return celwasm::api::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
+                                          absl::Nanoseconds(ns));
   }
-  return cel::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
+  return celwasm::api::Value::Duration(absl::Seconds(s) +
+                                       absl::Nanoseconds(ns));
 }
 
 // Forward declarations for the JSON-value peel pair — they recurse
 // (a Value can hold a Struct or ListValue, each holding Values;
 // `UnpackJsonValueMessage` is declared with the other WKT peelers
 // above).
-cel::Value UnpackJsonStruct(const google::protobuf::Message& s);
-cel::Value UnpackJsonListValue(const google::protobuf::Message& lv);
+celwasm::api::Value UnpackJsonStruct(const google::protobuf::Message& s);
+celwasm::api::Value UnpackJsonListValue(const google::protobuf::Message& lv);
 
 // Peel a `google.protobuf.Struct` into a CEL map<string, dyn>.  The
 // `fields` map field (number 1) is a map<string, Value>; each entry's
 // value is recursively peeled via `UnpackJsonValueMessage`.
-cel::Value UnpackJsonStruct(const google::protobuf::Message& s) {
+celwasm::api::Value UnpackJsonStruct(const google::protobuf::Message& s) {
   const google::protobuf::Descriptor* d = s.GetDescriptor();
   const google::protobuf::Reflection* refl = s.GetReflection();
   const google::protobuf::FieldDescriptor* fields_fd =
@@ -234,7 +236,7 @@ cel::Value UnpackJsonStruct(const google::protobuf::Message& s) {
       fields_fd->message_type()->FindFieldByNumber(1);
   const google::protobuf::FieldDescriptor* val_fd =
       fields_fd->message_type()->FindFieldByNumber(2);
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
   const int n = refl->FieldSize(s, fields_fd);
   entries.reserve(n);
   for (int i = 0; i < n; ++i) {
@@ -242,19 +244,20 @@ cel::Value UnpackJsonStruct(const google::protobuf::Message& s) {
         refl->GetRepeatedMessage(s, fields_fd, i);
     const google::protobuf::Reflection* er = entry.GetReflection();
     std::string scratch;
-    cel::Value key =
-        cel::Value::String(er->GetStringReference(entry, key_fd, &scratch));
+    celwasm::api::Value key = celwasm::api::Value::String(
+        er->GetStringReference(entry, key_fd, &scratch));
     auto val = UnpackJsonValueMessage(er->GetMessage(entry, val_fd));
-    entries.emplace_back(
-        std::move(key), val.has_value() ? *std::move(val) : cel::Value::Null());
+    entries.emplace_back(std::move(key), val.has_value()
+                                             ? *std::move(val)
+                                             : celwasm::api::Value::Null());
   }
-  return cel::Value::Map(std::move(entries));
+  return celwasm::api::Value::Map(std::move(entries));
 }
 
 // Peel a `google.protobuf.ListValue` into a CEL list<dyn>.  The
 // `values` repeated-Value field (number 1) is peeled element-by-
 // element via `UnpackJsonValueMessage`.
-cel::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
+celwasm::api::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
   const google::protobuf::Descriptor* d = lv.GetDescriptor();
   const google::protobuf::Reflection* refl = lv.GetReflection();
   const google::protobuf::FieldDescriptor* values_fd =
@@ -262,14 +265,15 @@ cel::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
   ABSL_CHECK(refl != nullptr && values_fd != nullptr &&
              values_fd->is_repeated())
       << "UnpackJsonListValue: google.protobuf.ListValue missing `values`";
-  std::vector<cel::Value> elements;
+  std::vector<celwasm::api::Value> elements;
   const int n = refl->FieldSize(lv, values_fd);
   elements.reserve(n);
   for (int i = 0; i < n; ++i) {
     auto v = UnpackJsonValueMessage(refl->GetRepeatedMessage(lv, values_fd, i));
-    elements.push_back(v.has_value() ? *std::move(v) : cel::Value::Null());
+    elements.push_back(v.has_value() ? *std::move(v)
+                                     : celwasm::api::Value::Null());
   }
-  return cel::Value::List(std::move(elements));
+  return celwasm::api::Value::List(std::move(elements));
 }
 
 // JSON well-known-type normaliser for proto field reads.  When a
@@ -280,7 +284,7 @@ cel::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
 //   ListValue → CEL list<dyn>.
 // Returns nullopt for any other message type.  Reflection-based so
 // it works for generated and dynamic-pool messages alike.
-std::optional<cel::Value> UnpackJsonValueMessage(
+std::optional<celwasm::api::Value> UnpackJsonValueMessage(
     const google::protobuf::Message& sub) {
   const google::protobuf::Descriptor* d = sub.GetDescriptor();
   if (d == nullptr) return std::nullopt;
@@ -293,18 +297,19 @@ std::optional<cel::Value> UnpackJsonValueMessage(
   const google::protobuf::FieldDescriptor* set =
       refl->GetOneofFieldDescriptor(sub, d->FindOneofByName("kind"));
   // Unset Value (no kind_case set) decodes to null per JSON rules.
-  if (set == nullptr) return cel::Value::Null();
+  if (set == nullptr) return celwasm::api::Value::Null();
   switch (set->number()) {
     case 1:  // null_value (a NullValue enum)
-      return cel::Value::Null();
+      return celwasm::api::Value::Null();
     case 2:  // number_value (double)
-      return cel::Value::Double(refl->GetDouble(sub, set));
+      return celwasm::api::Value::Double(refl->GetDouble(sub, set));
     case 3: {  // string_value
       std::string scratch;
-      return cel::Value::String(refl->GetStringReference(sub, set, &scratch));
+      return celwasm::api::Value::String(
+          refl->GetStringReference(sub, set, &scratch));
     }
     case 4:  // bool_value
-      return cel::Value::Bool(refl->GetBool(sub, set));
+      return celwasm::api::Value::Bool(refl->GetBool(sub, set));
     case 5:  // struct_value
       return UnpackJsonStruct(refl->GetMessage(sub, set));
     case 6:  // list_value
@@ -340,7 +345,7 @@ bool IsWrapperFqn(absl::string_view fqn) {
 // field resolves to one of the 9
 // google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
 // String,Bytes}Value types, peel the inner `value` field (number 1)
-// via reflection and return the matching cel::Value scalar.
+// via reflection and return the matching celwasm::api::Value scalar.
 // Returns std::nullopt for any other message type — caller falls
 // back to HostMessage(ProtoBacking).
 //
@@ -359,19 +364,19 @@ bool IsWrapperFqn(absl::string_view fqn) {
 // out of `UnpackWrapperMessage` so the parent stays under the
 // readability-function-size gate (9-branch dispatch + this branch
 // would otherwise overflow).
-cel::Value UnpackWrapperStringOrBytes(
+celwasm::api::Value UnpackWrapperStringOrBytes(
     const google::protobuf::Reflection& refl,
     const google::protobuf::Message& sub,
     const google::protobuf::FieldDescriptor& vf) {
   std::string scratch;
   std::string s(refl.GetStringReference(sub, &vf, &scratch));
   if (vf.type() == google::protobuf::FieldDescriptor::TYPE_BYTES) {
-    return cel::Value::Bytes(std::move(s));
+    return celwasm::api::Value::Bytes(std::move(s));
   }
-  return cel::Value::String(std::move(s));
+  return celwasm::api::Value::String(std::move(s));
 }
 
-std::optional<cel::Value> UnpackWrapperMessage(
+std::optional<celwasm::api::Value> UnpackWrapperMessage(
     const google::protobuf::Message& sub) {
   const google::protobuf::Descriptor* d = sub.GetDescriptor();
   if (d == nullptr) return std::nullopt;
@@ -387,19 +392,19 @@ std::optional<cel::Value> UnpackWrapperMessage(
   using FD = google::protobuf::FieldDescriptor;
   switch (vf->cpp_type()) {
     case FD::CPPTYPE_BOOL:
-      return cel::Value::Bool(refl->GetBool(sub, vf));
+      return celwasm::api::Value::Bool(refl->GetBool(sub, vf));
     case FD::CPPTYPE_INT32:
-      return cel::Value::Int(refl->GetInt32(sub, vf));
+      return celwasm::api::Value::Int(refl->GetInt32(sub, vf));
     case FD::CPPTYPE_INT64:
-      return cel::Value::Int(refl->GetInt64(sub, vf));
+      return celwasm::api::Value::Int(refl->GetInt64(sub, vf));
     case FD::CPPTYPE_UINT32:
-      return cel::Value::Uint(refl->GetUInt32(sub, vf));
+      return celwasm::api::Value::Uint(refl->GetUInt32(sub, vf));
     case FD::CPPTYPE_UINT64:
-      return cel::Value::Uint(refl->GetUInt64(sub, vf));
+      return celwasm::api::Value::Uint(refl->GetUInt64(sub, vf));
     case FD::CPPTYPE_FLOAT:
-      return cel::Value::Double(refl->GetFloat(sub, vf));
+      return celwasm::api::Value::Double(refl->GetFloat(sub, vf));
     case FD::CPPTYPE_DOUBLE:
-      return cel::Value::Double(refl->GetDouble(sub, vf));
+      return celwasm::api::Value::Double(refl->GetDouble(sub, vf));
     case FD::CPPTYPE_STRING:
       return UnpackWrapperStringOrBytes(*refl, sub, *vf);
     default:
@@ -412,32 +417,32 @@ std::optional<cel::Value> UnpackWrapperMessage(
 }
 
 // Port of v1 `ReadNumericField` — dispatches on the field's
-// `cpp_type` to build a `cel::Value` of the matching scalar kind.
+// `cpp_type` to build a `celwasm::api::Value` of the matching scalar kind.
 // Returns `std::nullopt` on non-numeric fields; the caller handles
 // string / bytes / message branches.
-std::optional<cel::Value> ReadNumericField(
+std::optional<celwasm::api::Value> ReadNumericField(
     const google::protobuf::Reflection& refl,
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field) {
   using FD = google::protobuf::FieldDescriptor;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL:
-      return cel::Value::Bool(refl.GetBool(msg, &field));
+      return celwasm::api::Value::Bool(refl.GetBool(msg, &field));
     case FD::CPPTYPE_INT32:
-      return cel::Value::Int(refl.GetInt32(msg, &field));
+      return celwasm::api::Value::Int(refl.GetInt32(msg, &field));
     case FD::CPPTYPE_INT64:
-      return cel::Value::Int(refl.GetInt64(msg, &field));
+      return celwasm::api::Value::Int(refl.GetInt64(msg, &field));
     case FD::CPPTYPE_UINT32:
-      return cel::Value::Uint(refl.GetUInt32(msg, &field));
+      return celwasm::api::Value::Uint(refl.GetUInt32(msg, &field));
     case FD::CPPTYPE_UINT64:
-      return cel::Value::Uint(refl.GetUInt64(msg, &field));
+      return celwasm::api::Value::Uint(refl.GetUInt64(msg, &field));
     case FD::CPPTYPE_FLOAT:
-      return cel::Value::Double(refl.GetFloat(msg, &field));
+      return celwasm::api::Value::Double(refl.GetFloat(msg, &field));
     case FD::CPPTYPE_DOUBLE:
-      return cel::Value::Double(refl.GetDouble(msg, &field));
+      return celwasm::api::Value::Double(refl.GetDouble(msg, &field));
     case FD::CPPTYPE_ENUM:
       // CEL treats proto enum values as ints (langdef §2.4.7).
-      return cel::Value::Int(refl.GetEnumValue(msg, &field));
+      return celwasm::api::Value::Int(refl.GetEnumValue(msg, &field));
     default:
       return std::nullopt;
   }
@@ -464,14 +469,14 @@ std::optional<cel::Value> ReadNumericField(
 //   - Wrapper → inner scalar (CEL_BOOL/INT/UINT/DOUBLE/STRING/BYTES).
 //   - Timestamp / Duration → CEL_TIMESTAMP / CEL_DURATION.
 //   - Otherwise → HostMessage(ProtoBacking).
-absl::StatusOr<cel::Value> ReadSingularMessageField(
+absl::StatusOr<celwasm::api::Value> ReadSingularMessageField(
     const google::protobuf::Reflection& refl,
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field) {
   const google::protobuf::Descriptor* mt = field.message_type();
   if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
       !refl.HasField(msg, &field)) {
-    return cel::Value::Null();
+    return celwasm::api::Value::Null();
   }
   const google::protobuf::FileDescriptor* file =
       field.containing_type()->file();
@@ -480,7 +485,7 @@ absl::StatusOr<cel::Value> ReadSingularMessageField(
       google::protobuf::FileDescriptorLegacy(file).edition() ==
           google::protobuf::EDITION_PROTO3;
   if (is_proto3 && !refl.HasField(msg, &field)) {
-    return cel::Value::Null();
+    return celwasm::api::Value::Null();
   }
   const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
   if (mt != nullptr && mt->full_name() == "google.protobuf.Any") {
@@ -489,14 +494,14 @@ absl::StatusOr<cel::Value> ReadSingularMessageField(
   if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
     return *std::move(v);
   }
-  return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+  return celwasm::api::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
 }
 
-// Read one singular proto field, returning the matching cel::Value.
+// Read one singular proto field, returning the matching celwasm::api::Value.
 // Non-OK Status is reserved for infrastructure failures (reflection
 // missing, descriptor null) — spec-level errors (field not found,
 // repeated read at M2) surface as `Value::Error`.
-absl::StatusOr<cel::Value> ReadScalarField(
+absl::StatusOr<celwasm::api::Value> ReadScalarField(
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field) {
   const google::protobuf::Reflection* refl = msg.GetReflection();
@@ -512,9 +517,9 @@ absl::StatusOr<cel::Value> ReadScalarField(
     std::string scratch;
     const std::string& s = refl->GetStringReference(msg, &field, &scratch);
     if (field.type() == FD::TYPE_BYTES) {
-      return cel::Value::Bytes(std::string(s));
+      return celwasm::api::Value::Bytes(std::string(s));
     }
-    return cel::Value::String(std::string(s));
+    return celwasm::api::Value::String(std::string(s));
   }
   if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
     return ReadSingularMessageField(*refl, msg, field);
@@ -555,9 +560,9 @@ OwnedProtoBacking::OwnedProtoBacking(
   ABSL_CHECK(msg_ != nullptr) << "OwnedProtoBacking: null message";
 }
 
-absl::StatusOr<cel::Value> OwnedProtoBacking::ReadField(
+absl::StatusOr<celwasm::api::Value> OwnedProtoBacking::ReadField(
     int field_number, absl::string_view field_name,
-    const cel::CelType& expected_type) const {
+    const celwasm::api::CelType& expected_type) const {
   return inner_.ReadField(field_number, field_name, expected_type);
 }
 
@@ -570,9 +575,9 @@ bool OwnedProtoBacking::HasField(int field_number,
 // ProtoBacking — Layer 1 over google::protobuf::Message.
 // ══════════════════════════════════════════════════════════════════
 
-absl::StatusOr<cel::Value> ProtoBacking::ReadField(
+absl::StatusOr<celwasm::api::Value> ProtoBacking::ReadField(
     int field_number, absl::string_view field_name,
-    const cel::CelType& /*expected_type*/) const {
+    const celwasm::api::CelType& /*expected_type*/) const {
   ABSL_CHECK(msg_ != nullptr) << "ProtoBacking::ReadField: null message";
   const google::protobuf::FieldDescriptor* field =
       ResolveFieldDescriptor(*msg_, field_number, field_name);
@@ -586,10 +591,12 @@ absl::StatusOr<cel::Value> ProtoBacking::ReadField(
   // `is_map()` is checked first because every map field is also
   // `is_repeated()` per descriptor.proto.
   if (field->is_map()) {
-    return cel::Value::HostMap(std::make_shared<ProtoMap>(msg_, field));
+    return celwasm::api::Value::HostMap(
+        std::make_shared<ProtoMap>(msg_, field));
   }
   if (field->is_repeated()) {
-    return cel::Value::HostList(std::make_shared<ProtoList>(msg_, field));
+    return celwasm::api::Value::HostList(
+        std::make_shared<ProtoList>(msg_, field));
   }
   return ReadScalarField(*msg_, *field);
 }
@@ -627,8 +634,9 @@ bool ProtoBacking::HasField(int field_number,
 // built maps lookup identically.  Returns OkStatus on legal compares;
 // returns false for any non-key-kind operand (caller should already
 // have rejected; this is defence-in-depth).
-static bool MapKeysEqual(const cel::Value& a, const cel::Value& b) {
-  using K = cel::Value::Kind;
+static bool MapKeysEqual(const celwasm::api::Value& a,
+                         const celwasm::api::Value& b) {
+  using K = celwasm::api::Value::Kind;
   const K ka = a.kind();
   const K kb = b.kind();
   if (ka == K::kInt && kb == K::kInt) {
@@ -657,22 +665,26 @@ static bool MapKeysEqual(const cel::Value& a, const cel::Value& b) {
 // Convenience for Get/ContainsKey: caller didn't pre-validate the
 // key's kind; emit a kTypeMismatch error value if it's not a legal
 // map key.  Mirrors the runtime's `is_valid_map_key_kind` gate.
-static bool IsValidMapKeyKind(cel::Value::Kind k) {
-  return k == cel::Value::Kind::kBool || k == cel::Value::Kind::kInt ||
-         k == cel::Value::Kind::kUint || k == cel::Value::Kind::kString;
+static bool IsValidMapKeyKind(celwasm::api::Value::Kind k) {
+  return k == celwasm::api::Value::Kind::kBool ||
+         k == celwasm::api::Value::Kind::kInt ||
+         k == celwasm::api::Value::Kind::kUint ||
+         k == celwasm::api::Value::Kind::kString;
 }
 
 // `KeyTypeMismatch` / `NoSuchKey` moved to cel_host_error.cc (M11 Slice E).
 
-HostMap::HostMap(std::vector<std::pair<cel::Value, cel::Value>> entries)
+HostMap::HostMap(
+    std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries)
     : entries_(std::move(entries)) {}
 
 size_t HostMap::Size() const {
   return entries_.size();
 }
 
-absl::StatusOr<cel::Value> HostMap::Get(
-    const cel::Value& key, const cel::CelType& /*expected_value_type*/) const {
+absl::StatusOr<celwasm::api::Value> HostMap::Get(
+    const celwasm::api::Value& key,
+    const celwasm::api::CelType& /*expected_value_type*/) const {
   if (!IsValidMapKeyKind(key.kind())) {
     return KeyTypeMismatch();
   }
@@ -682,15 +694,16 @@ absl::StatusOr<cel::Value> HostMap::Get(
   return NoSuchKey();
 }
 
-bool HostMap::ContainsKey(const cel::Value& key) const {
+bool HostMap::ContainsKey(const celwasm::api::Value& key) const {
   if (!IsValidMapKeyKind(key.kind())) return false;
   return std::any_of(entries_.begin(), entries_.end(), [&](const auto& kv) {
     return MapKeysEqual(kv.first, key);
   });
 }
 
-void HostMap::ForEach(
-    absl::FunctionRef<void(const cel::Value&, const cel::Value&)> visit) const {
+void HostMap::ForEach(absl::FunctionRef<void(const celwasm::api::Value&,
+                                             const celwasm::api::Value&)>
+                          visit) const {
   for (const auto& [k, v] : entries_) {
     visit(k, v);
   }
@@ -704,22 +717,23 @@ void HostMap::ForEach(
 
 namespace {
 
-// Decode a scalar CelValue into a cel::Value.  Map-key kinds only
+// Decode a scalar CelValue into a celwasm::api::Value.  Map-key kinds only
 // (bool/int/uint/string) — every other kind returns nullopt and the
 // caller surfaces a TYPE_MISMATCH error to the wasm side.  Strings
-// dereference through the MemoryView so the cel::Value owns a copy.
-std::optional<cel::Value> DecodeKey(const CelValue& cv, const MemoryView& mem) {
+// dereference through the MemoryView so the celwasm::api::Value owns a copy.
+std::optional<celwasm::api::Value> DecodeKey(const CelValue& cv,
+                                             const MemoryView& mem) {
   switch (cv.kind) {
     case CEL_BOOL:
-      return cel::Value::Bool(cv.payload.b != 0);
+      return celwasm::api::Value::Bool(cv.payload.b != 0);
     case CEL_INT:
-      return cel::Value::Int(cv.payload.i);
+      return celwasm::api::Value::Int(cv.payload.i);
     case CEL_UINT:
-      return cel::Value::Uint(cv.payload.u);
+      return celwasm::api::Value::Uint(cv.payload.u);
     case CEL_STRING: {
       absl::string_view bytes =
           mem.ReadSpan(cv.payload.s.ptr, cv.payload.s.len);
-      return cel::Value::String(std::string(bytes));
+      return celwasm::api::Value::String(std::string(bytes));
     }
     default:
       return std::nullopt;
@@ -729,9 +743,9 @@ std::optional<cel::Value> DecodeKey(const CelValue& cv, const MemoryView& mem) {
 // `WireErrorCode` / `WriteWireError` moved to cel_host_error.cc (M11 Slice E).
 
 // Encode the (string|bytes) span via the per-eval ArenaAllocator.
-absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
+absl::Status EncodeSpan(const celwasm::api::Value& v, CelValue* out,
                         ArenaAllocator& alloc) {
-  using K = cel::Value::Kind;
+  using K = celwasm::api::Value::Kind;
   absl::string_view s = v.kind() == K::kString ? *v.AsString() : *v.AsBytes();
   uint32_t off = 0;
   uint8_t* p = alloc.Alloc(s.size(), &off);
@@ -748,7 +762,7 @@ absl::Status EncodeSpan(const cel::Value& v, CelValue* out,
 // m7b §3.1 / Probe D — `DecomposeAbslDuration` lives in
 // `cel_host.h` (header-inline) so instance.cc shares it.
 
-absl::Status EncodeDurationValue(const cel::Value& v, CelValue* out) {
+absl::Status EncodeDurationValue(const celwasm::api::Value& v, CelValue* out) {
   auto d_or = v.AsDuration();
   if (!d_or.ok()) return d_or.status();
   out->kind = CEL_DURATION;
@@ -756,7 +770,7 @@ absl::Status EncodeDurationValue(const cel::Value& v, CelValue* out) {
   return absl::OkStatus();
 }
 
-absl::Status EncodeTimestampValue(const cel::Value& v, CelValue* out) {
+absl::Status EncodeTimestampValue(const celwasm::api::Value& v, CelValue* out) {
   auto t_or = v.AsTimestamp();
   if (!t_or.ok()) return t_or.status();
   out->kind = CEL_TIMESTAMP;
@@ -764,13 +778,13 @@ absl::Status EncodeTimestampValue(const cel::Value& v, CelValue* out) {
   return absl::OkStatus();
 }
 
-// Encode a cel::Value into a CelValue, allocating string/bytes
+// Encode a celwasm::api::Value into a CelValue, allocating string/bytes
 // payloads through the per-eval ArenaAllocator.  Returns non-OK
 // Status on infrastructure failure (arena OOM); spec-level errors
 // inside the input Value already encode as `{kind:CEL_ERROR, err:…}`.
-absl::Status EncodeValue(const cel::Value& v, CelValue* out,
+absl::Status EncodeValue(const celwasm::api::Value& v, CelValue* out,
                          ArenaAllocator& alloc) {
-  using K = cel::Value::Kind;
+  using K = celwasm::api::Value::Kind;
   switch (v.kind()) {
     case K::kNull:
       out->kind = CEL_NULL;
@@ -795,7 +809,7 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
     case K::kBytes:
       return EncodeSpan(v, out, alloc);
     case K::kError: {
-      const cel::ErrorPayload* e = *v.ErrorInfo();
+      const celwasm::ErrorPayload* e = *v.ErrorInfo();
       out->kind = CEL_ERROR;
       out->payload.err = WireErrorCode(e->code);
       return absl::OkStatus();
@@ -837,10 +851,10 @@ absl::Status EncodeValue(const cel::Value& v, CelValue* out,
 // resulting ref_slot.  Returns true if `v` is an aggregate kind and
 // has been encoded; false if `v` is a scalar (caller falls through
 // to the inline EncodeValue path).
-absl::StatusOr<bool> EncodeAggregateIfAny(const cel::Value& v,
+absl::StatusOr<bool> EncodeAggregateIfAny(const celwasm::api::Value& v,
                                           uint32_t out_slot,
                                           const TrampolineContext& ctx) {
-  using K = cel::Value::Kind;
+  using K = celwasm::api::Value::Kind;
   CelValue cv{};
   if (v.kind() == K::kMessage) {
     auto sub_or = v.SharedMessageBacking();
@@ -864,12 +878,12 @@ absl::StatusOr<bool> EncodeAggregateIfAny(const cel::Value& v,
   return true;
 }
 
-// Marshal a `cel::Value` returned by Layer 1 (ReadField / At / Get)
+// Marshal a `celwasm::api::Value` returned by Layer 1 (ReadField / At / Get)
 // into the 24-byte CelValue at `out_slot`.  Scalars + null + error
 // encode inline / via arena (`EncodeValue`); aggregate kinds intern
 // via `EncodeAggregateIfAny`.  Used by every Layer-2 trampoline so
 // the wire shape is consistent across surfaces.
-absl::Status EncodeFieldResult(const cel::Value& v, uint32_t out_slot,
+absl::Status EncodeFieldResult(const celwasm::api::Value& v, uint32_t out_slot,
                                const TrampolineContext& ctx) {
   auto encoded_or = EncodeAggregateIfAny(v, out_slot, ctx);
   if (!encoded_or.ok()) return encoded_or.status();
@@ -928,7 +942,7 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
   // backing->At returns a Value::Error(kIndexOutOfBounds) when i >=
   // Size; the encoder maps that to CEL_ERR_INDEX_OUT_OF_BOUNDS via
   // WireErrorCode.  Single round-trip, no host-side double-check.
-  auto got = backing->At(static_cast<size_t>(i), cel::CelType::Int());
+  auto got = backing->At(static_cast<size_t>(i), celwasm::api::CelType::Int());
   if (!got.ok()) return got.status();
   return EncodeFieldResult(*got, out_slot, ctx);
 }
@@ -1003,10 +1017,10 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   ctx.mem.WriteU32(header_off + 8u, elements_off);
   ctx.mem.WriteU32(header_off + 12u, 0u);
   // Snapshot every element via `At(i, …)` + EncodeFieldResult.
-  // `cel::CelType::Int()` is informational only (M4: no element-side
+  // `celwasm::api::CelType::Int()` is informational only (M4: no element-side
   // narrowing); matches the `CelListAtImpl` call site.
   for (size_t i = 0; i < count; ++i) {
-    auto got = backing->At(i, cel::CelType::Int());
+    auto got = backing->At(i, celwasm::api::CelType::Int());
     if (!got.ok()) return got.status();
     const uint32_t elem_slot =
         elements_off + static_cast<uint32_t>(i) * kElemBytes;
@@ -1052,7 +1066,7 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
                      " not found in ExternrefTable"));
   }
 
-  std::optional<cel::Value> key = DecodeKey(key_cv, ctx.mem);
+  std::optional<celwasm::api::Value> key = DecodeKey(key_cv, ctx.mem);
   if (!key.has_value()) {
     CelValue err{};
     err.kind = CEL_ERROR;
@@ -1066,7 +1080,7 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
   // type catalogue exposes no `Dyn` factory yet, and any choice
   // here is observed only by future backings that opt into typed
   // narrowing.
-  auto got = backing->Get(*key, cel::CelType::Int());
+  auto got = backing->Get(*key, celwasm::api::CelType::Int());
   if (!got.ok()) return got.status();
   // EncodeFieldResult handles scalar + every aggregate kind
   // uniformly — nested map/list/message values from Get land
@@ -1112,11 +1126,12 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   // duration of the trampoline.  Acceptable for typical map sizes;
   // a streaming variant is future work if comprehensions over huge
   // host maps become a hot path.
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
   entries.reserve(backing->Size());
-  backing->ForEach([&](const cel::Value& k, const cel::Value& v) {
-    entries.emplace_back(k, v);
-  });
+  backing->ForEach(
+      [&](const celwasm::api::Value& k, const celwasm::api::Value& v) {
+        entries.emplace_back(k, v);
+      });
   if (entries.empty()) {
     write_empty();
     return absl::OkStatus();
@@ -1209,8 +1224,9 @@ size_t ProtoMap::Size() const {
   return static_cast<size_t>(refl->FieldSize(*owner_, field_));
 }
 
-absl::StatusOr<cel::Value> ProtoMap::Get(
-    const cel::Value& key, const cel::CelType& /*expected_value_type*/) const {
+absl::StatusOr<celwasm::api::Value> ProtoMap::Get(
+    const celwasm::api::Value& key,
+    const celwasm::api::CelType& /*expected_value_type*/) const {
   if (!IsValidMapKeyKind(key.kind())) {
     return KeyTypeMismatch();
   }
@@ -1233,7 +1249,7 @@ absl::StatusOr<cel::Value> ProtoMap::Get(
   return NoSuchKey();
 }
 
-bool ProtoMap::ContainsKey(const cel::Value& key) const {
+bool ProtoMap::ContainsKey(const celwasm::api::Value& key) const {
   if (!IsValidMapKeyKind(key.kind())) return false;
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   if (refl == nullptr) return false;
@@ -1249,8 +1265,9 @@ bool ProtoMap::ContainsKey(const cel::Value& key) const {
   return false;
 }
 
-void ProtoMap::ForEach(
-    absl::FunctionRef<void(const cel::Value&, const cel::Value&)> visit) const {
+void ProtoMap::ForEach(absl::FunctionRef<void(const celwasm::api::Value&,
+                                              const celwasm::api::Value&)>
+                           visit) const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   ABSL_CHECK(refl != nullptr) << "ProtoMap::ForEach: no reflection";
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(*field_, 1);
@@ -1272,23 +1289,25 @@ void ProtoMap::ForEach(
 
 // `IndexOutOfBounds` moved to cel_host_error.cc (M11 Slice E).
 
-HostList::HostList(std::vector<cel::Value> elements)
+HostList::HostList(std::vector<celwasm::api::Value> elements)
     : elements_(std::move(elements)) {}
 
 size_t HostList::Size() const {
   return elements_.size();
 }
 
-absl::StatusOr<cel::Value> HostList::At(
-    size_t index, const cel::CelType& /*expected_element_type*/) const {
+absl::StatusOr<celwasm::api::Value> HostList::At(
+    size_t index,
+    const celwasm::api::CelType& /*expected_element_type*/) const {
   if (index >= elements_.size()) {
     return IndexOutOfBounds(index, elements_.size());
   }
   return elements_[index];
 }
 
-void HostList::ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const {
-  for (const cel::Value& v : elements_) {
+void HostList::ForEach(
+    absl::FunctionRef<void(const celwasm::api::Value&)> visit) const {
+  for (const celwasm::api::Value& v : elements_) {
     visit(v);
   }
 }
@@ -1303,41 +1322,43 @@ void HostList::ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const {
 namespace {
 
 // Read the i-th element of a REPEATED field of the given cpp_type
-// into a cel::Value.  Mirrors `ReadNumericField` + the
+// into a celwasm::api::Value.  Mirrors `ReadNumericField` + the
 // string/bytes/message branches of `ReadScalarField`, but reads the
 // repeated-element accessors instead of the singular ones.  Returns
 // non-OK Status on infrastructure failure (no reflection); the
 // caller surfaces spec-level errors as Value::Error.
-absl::StatusOr<cel::Value> ReadRepeatedElement(
+absl::StatusOr<celwasm::api::Value> ReadRepeatedElement(
     const google::protobuf::Reflection& refl,
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field, int i) {
   using FD = google::protobuf::FieldDescriptor;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL:
-      return cel::Value::Bool(refl.GetRepeatedBool(msg, &field, i));
+      return celwasm::api::Value::Bool(refl.GetRepeatedBool(msg, &field, i));
     case FD::CPPTYPE_INT32:
-      return cel::Value::Int(refl.GetRepeatedInt32(msg, &field, i));
+      return celwasm::api::Value::Int(refl.GetRepeatedInt32(msg, &field, i));
     case FD::CPPTYPE_INT64:
-      return cel::Value::Int(refl.GetRepeatedInt64(msg, &field, i));
+      return celwasm::api::Value::Int(refl.GetRepeatedInt64(msg, &field, i));
     case FD::CPPTYPE_UINT32:
-      return cel::Value::Uint(refl.GetRepeatedUInt32(msg, &field, i));
+      return celwasm::api::Value::Uint(refl.GetRepeatedUInt32(msg, &field, i));
     case FD::CPPTYPE_UINT64:
-      return cel::Value::Uint(refl.GetRepeatedUInt64(msg, &field, i));
+      return celwasm::api::Value::Uint(refl.GetRepeatedUInt64(msg, &field, i));
     case FD::CPPTYPE_FLOAT:
-      return cel::Value::Double(refl.GetRepeatedFloat(msg, &field, i));
+      return celwasm::api::Value::Double(refl.GetRepeatedFloat(msg, &field, i));
     case FD::CPPTYPE_DOUBLE:
-      return cel::Value::Double(refl.GetRepeatedDouble(msg, &field, i));
+      return celwasm::api::Value::Double(
+          refl.GetRepeatedDouble(msg, &field, i));
     case FD::CPPTYPE_ENUM:
-      return cel::Value::Int(refl.GetRepeatedEnumValue(msg, &field, i));
+      return celwasm::api::Value::Int(
+          refl.GetRepeatedEnumValue(msg, &field, i));
     case FD::CPPTYPE_STRING: {
       std::string scratch;
       const std::string& s =
           refl.GetRepeatedStringReference(msg, &field, i, &scratch);
       if (field.type() == FD::TYPE_BYTES) {
-        return cel::Value::Bytes(std::string(s));
+        return celwasm::api::Value::Bytes(std::string(s));
       }
-      return cel::Value::String(std::string(s));
+      return celwasm::api::Value::String(std::string(s));
     }
     case FD::CPPTYPE_MESSAGE: {
       const google::protobuf::Message& sub =
@@ -1352,7 +1373,8 @@ absl::StatusOr<cel::Value> ReadRepeatedElement(
       if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
         return *std::move(v);
       }
-      return cel::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+      return celwasm::api::Value::HostMessage(
+          std::make_shared<ProtoBacking>(&sub));
     }
   }
   return absl::InternalError(absl::StrCat("ProtoList::At: unhandled cpp_type ",
@@ -1378,8 +1400,9 @@ size_t ProtoList::Size() const {
   return static_cast<size_t>(refl->FieldSize(*owner_, field_));
 }
 
-absl::StatusOr<cel::Value> ProtoList::At(
-    size_t index, const cel::CelType& /*expected_element_type*/) const {
+absl::StatusOr<celwasm::api::Value> ProtoList::At(
+    size_t index,
+    const celwasm::api::CelType& /*expected_element_type*/) const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   if (refl == nullptr) {
     return absl::InternalError("ProtoList::At: no reflection");
@@ -1392,7 +1415,7 @@ absl::StatusOr<cel::Value> ProtoList::At(
 }
 
 void ProtoList::ForEach(
-    absl::FunctionRef<void(const cel::Value&)> visit) const {
+    absl::FunctionRef<void(const celwasm::api::Value&)> visit) const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   ABSL_CHECK(refl != nullptr) << "ProtoList::ForEach: no reflection";
   const int n = refl->FieldSize(*owner_, field_);
@@ -1417,7 +1440,7 @@ void ProtoList::ForEach(
 //   6. dereference externref slot → backing pointer;
 //      missing → kHostAdapterError.
 // They diverge after that: Get calls `ReadField` and marshals the
-// returned `cel::Value` (scalar inline, span via arena, message
+// returned `celwasm::api::Value` (scalar inline, span via arena, message
 // via Intern); Has calls `HasField` and writes a CEL_BOOL.
 //
 // Non-OK Status only on infrastructure failure that the wasm side
@@ -1558,7 +1581,7 @@ absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
   // milestone.
   auto v_or = prelude_or->backing->ReadField(prelude_or->field->field_number,
                                              prelude_or->field->field_name,
-                                             cel::CelType::Int());
+                                             celwasm::api::CelType::Int());
   if (!v_or.ok()) return v_or.status();
   return EncodeFieldResult(*v_or, out_slot, ctx);
 }
@@ -1698,12 +1721,12 @@ uint32_t ReadArenaListCount(const CelValue& cv, const MemoryView& mem) {
   return hdr.count;
 }
 
-// Encode a backing-returned cel::Value into a CelValue.  Aggregate
+// Encode a backing-returned celwasm::api::Value into a CelValue.  Aggregate
 // returns POISON since aggregate element equality is out of scope
 // here (mirrors arena fast path).
-absl::StatusOr<CelValue> EncodeBackingScalar(const cel::Value& v,
+absl::StatusOr<CelValue> EncodeBackingScalar(const celwasm::api::Value& v,
                                              ArenaAllocator& alloc) {
-  using K = cel::Value::Kind;
+  using K = celwasm::api::Value::Kind;
   if (v.kind() == K::kMessage || v.kind() == K::kMap || v.kind() == K::kList) {
     CelValue err{};
     err.kind = CEL_ERROR;
@@ -1759,7 +1782,7 @@ absl::Status CelListInImpl(uint32_t out_slot, uint32_t value_slot,
   }
   const size_t n = backing->Size();
   for (size_t i = 0; i < n; ++i) {
-    auto got = backing->At(i, cel::CelType::Int());
+    auto got = backing->At(i, celwasm::api::CelType::Int());
     if (!got.ok()) return got.status();
     auto enc_or = EncodeBackingScalar(*got, ctx.alloc);
     if (!enc_or.ok()) return enc_or.status();
@@ -1799,7 +1822,7 @@ absl::StatusOr<CelValue> ReadListElementAt(const CelValue& cv, size_t i,
     return absl::FailedPreconditionError(absl::StrCat(
         "list ref_slot ", cv.payload.ref_slot, " not found in ExternrefTable"));
   }
-  auto got = backing->At(i, cel::CelType::Int());
+  auto got = backing->At(i, celwasm::api::CelType::Int());
   if (!got.ok()) return got.status();
   return EncodeBackingScalar(*got, ctx.alloc);
 }
@@ -1875,7 +1898,7 @@ absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
   //        - If CEL_LIST_ARENA: memcpy the elements run into the
   //          new run at the right offset.
   //        - If CEL_LIST_HOST: walk `backing->ForEach`, encode each
-  //          `cel::Value` into a CelValue (via `EncodeBackingScalar`
+  //          `celwasm::api::Value` into a CelValue (via `EncodeBackingScalar`
   //          extended for aggregates — pending work item), and
   //          write into the destination run.
   //   3. Write `{kind:CEL_LIST_ARENA, arena_list.header_ptr=hdr_off}`
@@ -1931,7 +1954,7 @@ absl::Status CelMapInImpl(uint32_t out_slot, uint32_t key_slot,
         absl::StrCat("CelMapInImpl: map ref_slot ", map_cv.payload.ref_slot,
                      " not found in ExternrefTable"));
   }
-  std::optional<cel::Value> key = DecodeKey(key_cv, ctx.mem);
+  std::optional<celwasm::api::Value> key = DecodeKey(key_cv, ctx.mem);
   if (!key.has_value()) {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
@@ -1951,13 +1974,13 @@ absl::Status WalkMapEq(const HostMapBacking& a, const HostMapBacking& b,
                        const TrampolineContext& ctx, bool* equal) {
   *equal = true;
   absl::Status work_status = absl::OkStatus();
-  a.ForEach([&](const cel::Value& k, const cel::Value& va) {
+  a.ForEach([&](const celwasm::api::Value& k, const celwasm::api::Value& va) {
     if (!*equal || !work_status.ok()) return;
     if (!b.ContainsKey(k)) {
       *equal = false;
       return;
     }
-    auto vb_or = b.Get(k, cel::CelType::Int());
+    auto vb_or = b.Get(k, celwasm::api::CelType::Int());
     if (!vb_or.ok()) {
       work_status = vb_or.status();
       return;
@@ -2030,8 +2053,9 @@ static const google::protobuf::Message* absl_nullable PeelAnyForEq(
       m->GetDescriptor()->full_name() != "google.protobuf.Any") {
     return m;
   }
-  cel::Value peeled = UnpackAnyToValue(*m, m->GetDescriptor()->file()->pool());
-  if (peeled.kind() != cel::Value::Kind::kMessage) return nullptr;
+  celwasm::api::Value peeled =
+      UnpackAnyToValue(*m, m->GetDescriptor()->file()->pool());
+  if (peeled.kind() != celwasm::api::Value::Kind::kMessage) return nullptr;
   auto backing_or = peeled.MessageBacking();
   if (!backing_or.ok() || (*backing_or)->message() == nullptr) return nullptr;
   const google::protobuf::Message* src = (*backing_or)->message();
@@ -3051,15 +3075,15 @@ absl::Status AppendRepeatedFromCelValue(
 }
 
 // Same as `AppendRepeatedFromCelValue` but the source element comes
-// from a host-list backing as a `cel::Value` (Activation::Bind
-// path).  Per-cpp_type dispatch reads via cel::Value's typed
+// from a host-list backing as a `celwasm::api::Value` (Activation::Bind
+// path).  Per-cpp_type dispatch reads via celwasm::api::Value's typed
 // accessors instead of CelValue payloads + MemoryView.
 absl::Status AppendRepeatedFromHostListValue(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
-    const google::protobuf::Reflection& refl, const cel::Value& v) {
+    const google::protobuf::Reflection& refl, const celwasm::api::Value& v) {
   using FD = google::protobuf::FieldDescriptor;
-  using K = cel::Value::Kind;
+  using K = celwasm::api::Value::Kind;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL: {
       auto b = v.AsBool();
@@ -3165,7 +3189,7 @@ absl::Status SetRepeatedField(google::protobuf::Message& msg,
                        "` host source has no externref entry"));
     }
     absl::Status status = absl::OkStatus();
-    backing->ForEach([&](const cel::Value& v) {
+    backing->ForEach([&](const celwasm::api::Value& v) {
       if (!status.ok()) return;
       status = AppendRepeatedFromHostListValue(msg, field, *refl, v);
     });
@@ -3238,8 +3262,8 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
 absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
                                 const google::protobuf::FieldDescriptor& field,
                                 const google::protobuf::Reflection& refl,
-                                const cel::Value& key,
-                                const cel::Value& value) {
+                                const celwasm::api::Value& key,
+                                const celwasm::api::Value& value) {
   google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
   const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
@@ -3247,7 +3271,7 @@ absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
   // shape: it's cpp_type-keyed and handles every scalar + message
   // arm.  But we need *Set* on a singular sub-field, not *Add* on
   // a repeated one — so route through a small per-cpp_type
-  // dispatcher inline.  (Alternatively: convert cel::Value → CelValue
+  // dispatcher inline.  (Alternatively: convert celwasm::api::Value → CelValue
   // and reuse SetScalarField; the conversion needs arena bytes for
   // strings, which we don't have here.)
   using FD = google::protobuf::FieldDescriptor;
@@ -3398,10 +3422,11 @@ absl::Status SetMapField(google::protobuf::Message& msg,
                        "` host source has no externref entry"));
     }
     absl::Status status = absl::OkStatus();
-    backing->ForEach([&](const cel::Value& k, const cel::Value& v) {
-      if (!status.ok()) return;
-      status = InsertHostMapEntry(msg, field, *refl, k, v);
-    });
+    backing->ForEach(
+        [&](const celwasm::api::Value& k, const celwasm::api::Value& v) {
+          if (!status.ok()) return;
+          status = InsertHostMapEntry(msg, field, *refl, k, v);
+        });
     return status;
   }
   return absl::InvalidArgumentError(
@@ -3821,8 +3846,8 @@ absl::Status CelWktUnwrapTimeImpl(uint32_t out_slot, uint32_t msg_slot,
 }  // namespace celwasm
 
 // ══════════════════════════════════════════════════════════════════
-// cel::Value::Message(const google::protobuf::Message&)
-// cel::Value::Map(...) / cel::Value::HostMap(...)
+// celwasm::api::Value::Message(const google::protobuf::Message&)
+// celwasm::api::Value::Map(...) / celwasm::api::Value::HostMap(...)
 //
 // Defined in this TU — not in value.cc — so value.cc doesn't need
 // to know about ProtoBacking / HostMap.  The dependency is one-way:

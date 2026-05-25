@@ -3,7 +3,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 
-namespace cel {
+namespace celwasm {
 
 absl::string_view ErrorCodeName(ErrorCode c) {
   switch (c) {
@@ -39,4 +39,4 @@ absl::string_view ErrorCodeName(ErrorCode c) {
   ABSL_CHECK(false) << "unhandled ErrorCode = " << static_cast<int>(c);
 }
 
-}  // namespace cel
+}  // namespace celwasm

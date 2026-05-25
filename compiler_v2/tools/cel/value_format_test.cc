@@ -16,7 +16,7 @@ namespace celwasm::tools::cel {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::cel::Value;
+using ::celwasm::api::Value;
 using ::celwasm::testdata::Customer;
 
 TEST(ValueFormatTest, ScalarBool) {
@@ -66,7 +66,8 @@ TEST(ValueFormatTest, ScalarDurationTimestamp) {
 }
 
 TEST(ValueFormatTest, ScalarError) {
-  ::cel::ErrorPayload p{::cel::ErrorCode::kDivideByZero, "div by zero", 0};
+  ::celwasm::ErrorPayload p{::celwasm::ErrorCode::kDivideByZero, "div by zero",
+                            0};
   auto s = FormatScalar(Value::Error(p));
   ASSERT_THAT(s, IsOk());
   EXPECT_TRUE(absl::StrContains(*s, "error:"));

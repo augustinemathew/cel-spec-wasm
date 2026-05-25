@@ -24,14 +24,14 @@
 namespace celwasm {
 namespace {
 
-// ──── cel::Value error factories ─────────────────────────────────
+// ──── celwasm::api::Value error factories ─────────────────────────────────
 
 TEST(CelValueFactoriesTest, FieldNotFoundCarriesNameAsMessage) {
   auto v = FieldNotFound("missing_field");
   ASSERT_TRUE(v.IsError());
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kFieldNotFound);
   EXPECT_EQ((*info)->message, "missing_field");
 }
 
@@ -41,16 +41,16 @@ TEST(CelValueFactoriesTest, FieldNotFoundAcceptsEmptyName) {
   ASSERT_TRUE(v.IsError());
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kFieldNotFound);
   EXPECT_EQ((*info)->message, "");
 }
 
 TEST(CelValueFactoriesTest, MakeErrorRoundsTripCodeAndMessage) {
-  auto v = MakeError(cel::ErrorCode::kOverflow, "bigger than i64");
+  auto v = MakeError(celwasm::ErrorCode::kOverflow, "bigger than i64");
   ASSERT_TRUE(v.IsError());
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kOverflow);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kOverflow);
   EXPECT_EQ((*info)->message, "bigger than i64");
 }
 
@@ -59,7 +59,7 @@ TEST(CelValueFactoriesTest, MakeErrorMovesMessageString) {
   // shouldn't appear in the payload (it's been moved).  This is
   // mostly a smoke test on the std::move(message) chain.
   std::string msg = "transient message";
-  auto v = MakeError(cel::ErrorCode::kTypeMismatch, std::move(msg));
+  auto v = MakeError(celwasm::ErrorCode::kTypeMismatch, std::move(msg));
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
   EXPECT_EQ((*info)->message, "transient message");
@@ -69,7 +69,7 @@ TEST(CelValueFactoriesTest, KeyTypeMismatchHasPinnedMessage) {
   auto v = KeyTypeMismatch();
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kTypeMismatch);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kTypeMismatch);
   EXPECT_EQ((*info)->message, "map key kind is not bool/int/uint/string");
 }
 
@@ -77,7 +77,7 @@ TEST(CelValueFactoriesTest, NoSuchKeyHasPinnedMessage) {
   auto v = NoSuchKey();
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kKeyNotFound);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kKeyNotFound);
   EXPECT_EQ((*info)->message, "no such key");
 }
 
@@ -85,7 +85,7 @@ TEST(CelValueFactoriesTest, IndexOutOfBoundsFormatsRange) {
   auto v = IndexOutOfBounds(/*index=*/5, /*count=*/3);
   auto info = v.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kIndexOutOfBounds);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kIndexOutOfBounds);
   EXPECT_EQ((*info)->message, "index 5 out of range [0, 3)");
 }
 
@@ -102,23 +102,24 @@ TEST(CelValueFactoriesTest, IndexOutOfBoundsZeroCount) {
 TEST(WireErrorCodeTest, EveryHostCodeMapsToWireConstant) {
   // Pin the host-code → wire-code mapping.  The two enums extend
   // independently; this test catches accidental drift.
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kOverflow), CEL_ERR_OVERFLOW);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kDivideByZero),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kOverflow), CEL_ERR_OVERFLOW);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kDivideByZero),
             CEL_ERR_DIVIDE_BY_ZERO);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kModulusByZero),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kModulusByZero),
             CEL_ERR_MODULUS_BY_ZERO);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kTypeMismatch),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kTypeMismatch),
             CEL_ERR_TYPE_MISMATCH);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kTypeUnsupported),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kTypeUnsupported),
             CEL_ERR_TYPE_UNSUPPORTED);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kKeyNotFound), CEL_ERR_NO_SUCH_KEY);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kFieldNotFound),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kKeyNotFound),
+            CEL_ERR_NO_SUCH_KEY);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kFieldNotFound),
             CEL_ERR_FIELD_NOT_FOUND);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kIndexOutOfBounds),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kIndexOutOfBounds),
             CEL_ERR_INDEX_OUT_OF_BOUNDS);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kInvalidArgument),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kInvalidArgument),
             CEL_ERR_INVALID_ARGUMENT);
-  EXPECT_EQ(WireErrorCode(cel::ErrorCode::kHostAdapterError),
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kHostAdapterError),
             CEL_ERR_HOST_ADAPTER_ERROR);
 }
 

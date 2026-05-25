@@ -24,7 +24,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 TEST(MvpConcatE2ETest, FooBar) {
@@ -81,4 +81,4 @@ TEST(MvpConcatE2ETest, FooBarRepeatedAcrossManyEvals) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

@@ -24,7 +24,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 Engine& GlobalEngine() {
@@ -142,4 +142,4 @@ TEST_F(RoundTripE2ETest, EmptyRoundTrips) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

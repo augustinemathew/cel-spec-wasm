@@ -1,5 +1,5 @@
-// `cel::Program` — the compiled artifact, output of
-// `cel::Compiler::Compile(source)`.
+// `celwasm::api::Program` — the compiled artifact, output of
+// `celwasm::api::Compiler::Compile(source)`.
 //
 // Pure data: wasm bytes + (future) parsed ABI metadata.  No
 // wasmtime dependency; safe to copy across process boundaries
@@ -57,10 +57,5 @@ class Program {
 };
 
 }  // namespace celwasm::api
-
-// Backward-compat alias — see value.h for rationale.
-namespace cel {
-using ::celwasm::api::Program;
-}  // namespace cel
 
 #endif  // CELWASM_COMPILER_V2_API_PROGRAM_H_

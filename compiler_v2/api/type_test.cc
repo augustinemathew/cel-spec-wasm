@@ -5,7 +5,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 TEST(CelTypeTest, ScalarFactoriesSetKind) {
@@ -75,13 +75,14 @@ TEST(CelTypeTest, NestedContainersCompose) {
 }
 
 TEST(CelTypeDeathTest, MessageFqnOnNonMessageFires) {
-  EXPECT_DEATH({ (void)CelType::Int().message_fully_qualified_name(); },
-               "message_fully_qualified_name on a int");
+  EXPECT_DEATH(
+      { (void)CelType::Int().message_fully_qualified_name(); },
+      "message_fully_qualified_name on a int");
 }
 
 TEST(CelTypeDeathTest, ListElementOnNonListFires) {
-  EXPECT_DEATH({ (void)CelType::Int().list_element(); },
-               "list_element on a int");
+  EXPECT_DEATH(
+      { (void)CelType::Int().list_element(); }, "list_element on a int");
 }
 
 TEST(CelTypeDeathTest, MapKeyOnNonMapFires) {
@@ -97,4 +98,4 @@ TEST(CelTypeTest, KindNamesCoverAllKinds) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

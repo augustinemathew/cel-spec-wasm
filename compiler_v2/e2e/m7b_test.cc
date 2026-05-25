@@ -60,7 +60,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -68,10 +67,11 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -112,7 +112,7 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 // helpers stand ready for slice-by-slice migration.
 
 [[maybe_unused]] Instance CompilePlan(const Compiler& compiler,
-                                       absl::string_view source) {
+                                      absl::string_view source) {
   auto program = compiler.Compile(source);
   ABSL_CHECK_OK(program) << source;
   auto instance = GlobalEngine().Plan(*program);
@@ -120,15 +120,16 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
   return *std::move(instance);
 }
 
-[[maybe_unused]] Value EvalOk(Instance& instance, const Activation& activation) {
+[[maybe_unused]] Value EvalOk(Instance& instance,
+                              const Activation& activation) {
   auto v = instance.Eval(activation);
   ABSL_CHECK_OK(v);
   return *std::move(v);
 }
 
 [[maybe_unused]] void ExpectCompileFails(const Compiler& compiler,
-                                          absl::string_view source,
-                                          absl::string_view why) {
+                                         absl::string_view source,
+                                         absl::string_view why) {
   auto program_or = compiler.Compile(source);
   EXPECT_FALSE(program_or.ok())
       << "expected `" << source << "` to fail at compile (" << why << ")";
@@ -149,8 +150,7 @@ Compiler CompilerWithVar(absl::string_view name, const CelType& type) {
 // `PlanAgainstCustomer` in instance_test.cc; reused by every WKT-
 // field-read test below.
 Compiler CompilerWithCustomer() {
-  return CompilerWithVar("c",
-                         CelType::Message("celwasm.testdata.Customer"));
+  return CompilerWithVar("c", CelType::Message("celwasm.testdata.Customer"));
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ Compiler CompilerWithCustomer() {
 
 struct RoundTripCase {
   std::string label;
-  bool is_timestamp;     // false = duration.
+  bool is_timestamp;  // false = duration.
   int64_t seconds;
   int32_t nanos;
 };
@@ -185,9 +185,8 @@ TEST_P(RoundTripE2ETest, BindReturnDecode) {
       "v", p.is_timestamp ? CelType::Timestamp() : CelType::Duration());
   Instance inst = CompilePlan(compiler, "v");
   Activation act;
-  act.Bind("v", p.is_timestamp
-                    ? Value::Timestamp(absl::UnixEpoch() + delta)
-                    : Value::Duration(delta));
+  act.Bind("v", p.is_timestamp ? Value::Timestamp(absl::UnixEpoch() + delta)
+                               : Value::Duration(delta));
   Value got = EvalOk(inst, act);
   if (p.is_timestamp) {
     ASSERT_EQ(got.kind(), Value::Kind::kTimestamp) << p.label;
@@ -218,8 +217,7 @@ INSTANTIATE_TEST_SUITE_P(
         RoundTripCase{"TimestampEpochOneSec", true, 1, 0},
         RoundTripCase{"TimestampLangdef", true, 1234567890LL, 0},
         RoundTripCase{"TimestampLangdefMin", true, -62135596800LL, 0},
-        RoundTripCase{"TimestampLangdefMax", true, 253402300799LL,
-                      999'999'999},
+        RoundTripCase{"TimestampLangdefMax", true, 253402300799LL, 999'999'999},
         RoundTripCase{"TimestampMaxNanos", true, 0, 999'999'999}),
     [](const ::testing::TestParamInfo<RoundTripCase>& info) {
       return info.param.label;
@@ -242,8 +240,7 @@ TEST_F(RoundTripE2ETest, ActivationBindReturnTimestamp) {
 }
 
 TEST_F(RoundTripE2ETest, ActivationBindReturnDuration) {
-  const absl::Duration d =
-      absl::Seconds(3600) + absl::Nanoseconds(123'456'789);
+  const absl::Duration d = absl::Seconds(3600) + absl::Nanoseconds(123'456'789);
   Compiler compiler = CompilerWithVar("d", CelType::Duration());
   Instance inst = CompilePlan(compiler, "d");
   Activation act;
@@ -298,9 +295,8 @@ TEST_F(WellKnownFieldReadE2ETest, ReadTimestampFieldYieldsCelTimestampKind) {
   act.Bind("c", Value::Message(c));
   Value got = EvalOk(inst, act);
   ASSERT_EQ(got.kind(), Value::Kind::kTimestamp);
-  EXPECT_EQ(*got.AsTimestamp(),
-            absl::UnixEpoch() + absl::Seconds(1234567890) +
-                absl::Nanoseconds(500));
+  EXPECT_EQ(*got.AsTimestamp(), absl::UnixEpoch() + absl::Seconds(1234567890) +
+                                    absl::Nanoseconds(500));
 }
 
 TEST_F(WellKnownFieldReadE2ETest, ReadDurationFieldYieldsCelDurationKind) {
@@ -320,7 +316,7 @@ TEST_F(WellKnownFieldReadE2ETest, ReadDurationFieldYieldsCelDurationKind) {
 TEST_F(WellKnownFieldReadE2ETest, NonWellKnownMessageFieldStillYieldsMessage) {
   // Regression: the normaliser MUST only fire for the two well-known
   // types it knows about.  Other singular-message fields stay routed
-  // through `cel::Value::HostMessage` so the M2.C read path keeps
+  // through `celwasm::api::Value::HostMessage` so the M2.C read path keeps
   // working unchanged.  Verified indirectly: a sub-field select on
   // billing_address still produces a string, which only works if the
   // intermediate value was a message backing rather than a normalised
@@ -385,30 +381,53 @@ struct ArithDispatch {
 ArithDispatch DispatchArith(ArithOp op) {
   switch (op) {
     case ArithOp::kDurAddDur:
-      return {CelType::Duration(), CelType::Duration(), false, false, "a + b",
+      return {CelType::Duration(),
+              CelType::Duration(),
+              false,
+              false,
+              "a + b",
               false};
     case ArithOp::kDurSubDur:
-      return {CelType::Duration(), CelType::Duration(), false, false, "a - b",
+      return {CelType::Duration(),
+              CelType::Duration(),
+              false,
+              false,
+              "a - b",
               false};
     case ArithOp::kTsAddDur:
-      return {CelType::Timestamp(), CelType::Duration(), true, false, "a + b",
+      return {CelType::Timestamp(),
+              CelType::Duration(),
+              true,
+              false,
+              "a + b",
               true};
     case ArithOp::kDurAddTs:
-      return {CelType::Duration(), CelType::Timestamp(), false, true, "a + b",
+      return {CelType::Duration(),
+              CelType::Timestamp(),
+              false,
+              true,
+              "a + b",
               true};
     case ArithOp::kTsSubDur:
-      return {CelType::Timestamp(), CelType::Duration(), true, false, "a - b",
+      return {CelType::Timestamp(),
+              CelType::Duration(),
+              true,
+              false,
+              "a - b",
               true};
     case ArithOp::kTsSubTs:
-      return {CelType::Timestamp(), CelType::Timestamp(), true, true, "a - b",
+      return {CelType::Timestamp(),
+              CelType::Timestamp(),
+              true,
+              true,
+              "a - b",
               false};
   }
   ABSL_CHECK(false) << "DispatchArith: unhandled op";
 }
 
 Value MakeDurOrTs(int64_t seconds, int32_t nanos, bool is_timestamp) {
-  const absl::Duration d =
-      absl::Seconds(seconds) + absl::Nanoseconds(nanos);
+  const absl::Duration d = absl::Seconds(seconds) + absl::Nanoseconds(nanos);
   return is_timestamp ? Value::Timestamp(absl::UnixEpoch() + d)
                       : Value::Duration(d);
 }
@@ -639,8 +658,8 @@ enum class TsAccessor : uint8_t {
   kYear,
   kFullYear,  // cel-cpp alias for kYear
   kMonth,
-  kDate,         // 1-based day-of-month
-  kDayOfMonth,   // 0-based day-of-month
+  kDate,        // 1-based day-of-month
+  kDayOfMonth,  // 0-based day-of-month
   kDayOfYear,
   kDayOfWeek,
   kHours,
@@ -693,12 +712,13 @@ absl::string_view AccessorMethod(TsAccessor a) {
 TEST_P(UtcAccessorE2ETest, ProjectField) {
   const TsAccessorCase& p = GetParam();
   Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
-  const std::string source = absl::StrCat("t.", AccessorMethod(p.accessor), "()");
+  const std::string source =
+      absl::StrCat("t.", AccessorMethod(p.accessor), "()");
   Instance inst = CompilePlan(compiler, source);
   Activation act;
-  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
-                                  absl::Seconds(p.ts_seconds) +
-                                  absl::Nanoseconds(p.ts_nanos)));
+  act.Bind("t",
+           Value::Timestamp(absl::UnixEpoch() + absl::Seconds(p.ts_seconds) +
+                            absl::Nanoseconds(p.ts_nanos)));
   Value got = EvalOk(inst, act);
   ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
   EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
@@ -815,7 +835,7 @@ TEST_P(DurationAccessorE2ETest, ProjectField) {
   Instance inst = CompilePlan(compiler, source);
   Activation act;
   act.Bind("d", Value::Duration(absl::Seconds(p.dur_seconds) +
-                                 absl::Nanoseconds(p.dur_nanos)));
+                                absl::Nanoseconds(p.dur_nanos)));
   Value got = EvalOk(inst, act);
   ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
   EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
@@ -830,8 +850,8 @@ INSTANTIATE_TEST_SUITE_P(
         DurAccessorCase{"NegHour_Hours", DurAccessor::kHours, -3600, 0, -1},
         DurAccessorCase{"Zero_Minutes", DurAccessor::kMinutes, 0, 0, 0},
         DurAccessorCase{"Sixty_Minutes", DurAccessor::kMinutes, 60, 0, 1},
-        DurAccessorCase{"Almost_Minutes", DurAccessor::kMinutes, 59, 999'999'999,
-                        0},
+        DurAccessorCase{"Almost_Minutes", DurAccessor::kMinutes, 59,
+                        999'999'999, 0},
         DurAccessorCase{"NegSixty_Minutes", DurAccessor::kMinutes, -60, 0, -1},
         DurAccessorCase{"Zero_Seconds", DurAccessor::kSeconds, 0, 0, 0},
         DurAccessorCase{"OneSec_Seconds", DurAccessor::kSeconds, 1, 0, 1},
@@ -843,8 +863,8 @@ INSTANTIATE_TEST_SUITE_P(
         // cel-cpp / spec: `getMilliseconds` returns the sub-second
         // ms component (not the total).  See the duration
         // accessor body comment + cel_time_test for spec citation.
-        DurAccessorCase{"OneSecFiveHundredMs_Millis", DurAccessor::kMilliseconds,
-                        1, 500'000'000, 500},
+        DurAccessorCase{"OneSecFiveHundredMs_Millis",
+                        DurAccessor::kMilliseconds, 1, 500'000'000, 500},
         DurAccessorCase{"NegHalf_Millis", DurAccessor::kMilliseconds, 0,
                         -500'000'000, -500}),
     [](const ::testing::TestParamInfo<DurAccessorCase>& info) {
@@ -865,8 +885,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 struct ParseCase {
   std::string label;
-  std::string source;   // CEL expression to compile.
-  bool expect_admit;    // false → parse failure → CEL_ERROR
+  std::string source;  // CEL expression to compile.
+  bool expect_admit;   // false → parse failure → CEL_ERROR
 };
 
 class ParseFormatE2ETest : public ::testing::TestWithParam<ParseCase> {};
@@ -906,60 +926,70 @@ TEST_P(ParseFormatE2ETest, AdmitOrReject) {
 INSTANTIATE_TEST_SUITE_P(
     TimestampParseAdmit, ParseFormatE2ETest,
     ::testing::Values(
-        ParseCase{"TsAdmit_BaseUTC",
-                  R"(timestamp("2009-02-13T23:31:30Z") == timestamp("2009-02-13T23:31:30Z"))",
-                  true},
-        ParseCase{"TsAdmit_FixedOffset",
-                  R"(timestamp("2009-02-13T23:31:30+02:00") == timestamp("2009-02-13T21:31:30Z"))",
-                  true},
-        ParseCase{"TsAdmit_NegOffset",
-                  R"(timestamp("2009-02-13T23:31:30-08:00") == timestamp("2009-02-14T07:31:30Z"))",
-                  true},
-        ParseCase{"TsAdmit_FullNanos",
-                  R"(timestamp("2009-02-13T23:31:30.123456789Z").getMilliseconds() == 123)",
-                  true},
-        ParseCase{"TsAdmit_PartialFractional",
-                  R"(timestamp("2009-02-13T23:31:30.5Z").getMilliseconds() == 500)",
-                  true},
+        ParseCase{
+            "TsAdmit_BaseUTC",
+            R"(timestamp("2009-02-13T23:31:30Z") == timestamp("2009-02-13T23:31:30Z"))",
+            true},
+        ParseCase{
+            "TsAdmit_FixedOffset",
+            R"(timestamp("2009-02-13T23:31:30+02:00") == timestamp("2009-02-13T21:31:30Z"))",
+            true},
+        ParseCase{
+            "TsAdmit_NegOffset",
+            R"(timestamp("2009-02-13T23:31:30-08:00") == timestamp("2009-02-14T07:31:30Z"))",
+            true},
+        ParseCase{
+            "TsAdmit_FullNanos",
+            R"(timestamp("2009-02-13T23:31:30.123456789Z").getMilliseconds() == 123)",
+            true},
+        ParseCase{
+            "TsAdmit_PartialFractional",
+            R"(timestamp("2009-02-13T23:31:30.5Z").getMilliseconds() == 500)",
+            true},
         // Fractional-precision grid — three- and six-digit forms
         // alongside the existing one- (`.5`) and nine-digit
         // (`.123456789`) cases.  Probe B's "absl admits, CEL re-
         // validates" matrix should cover every well-formed digit
         // count, not just the extremes.
-        ParseCase{"TsAdmit_ThreeDigitFraction",
-                  R"(timestamp("2009-02-13T23:31:30.123Z").getMilliseconds() == 123)",
-                  true},
-        ParseCase{"TsAdmit_SixDigitFraction",
-                  R"(timestamp("2009-02-13T23:31:30.123456Z").getMilliseconds() == 123)",
-                  true},
+        ParseCase{
+            "TsAdmit_ThreeDigitFraction",
+            R"(timestamp("2009-02-13T23:31:30.123Z").getMilliseconds() == 123)",
+            true},
+        ParseCase{
+            "TsAdmit_SixDigitFraction",
+            R"(timestamp("2009-02-13T23:31:30.123456Z").getMilliseconds() == 123)",
+            true},
         // Langdef-boundary admit rows — the reject side is already
         // covered by YearOver/YearUnder.  Year 0001 / 9999 are inside
         // the proto Timestamp envelope and parse cleanly.
-        ParseCase{"TsAdmit_YearOneLowerBound",
-                  R"(timestamp("0001-01-01T00:00:00Z") == timestamp("0001-01-01T00:00:00Z"))",
-                  true},
-        ParseCase{"TsAdmit_Year9999UpperBound",
-                  R"(timestamp("9999-12-31T23:59:59Z") == timestamp("9999-12-31T23:59:59Z"))",
-                  true},
+        ParseCase{
+            "TsAdmit_YearOneLowerBound",
+            R"(timestamp("0001-01-01T00:00:00Z") == timestamp("0001-01-01T00:00:00Z"))",
+            true},
+        ParseCase{
+            "TsAdmit_Year9999UpperBound",
+            R"(timestamp("9999-12-31T23:59:59Z") == timestamp("9999-12-31T23:59:59Z"))",
+            true},
         // Pre-epoch (negative seconds).  Distinct codepath from
         // post-epoch in the langdef range check.
-        ParseCase{"TsAdmit_PreEpoch",
-                  R"(timestamp("1969-12-31T23:59:59Z") == timestamp("1969-12-31T23:59:59Z"))",
-                  true},
-        ParseCase{"TsReject_MissingTZ",
-                  R"(timestamp("2009-02-13T23:31:30"))", false},
-        ParseCase{"TsReject_LowercaseZ",
-                  R"(timestamp("2009-02-13T23:31:30z"))", false},
-        ParseCase{"TsReject_YearOver",
-                  R"(timestamp("10000-01-01T00:00:00Z"))", false},
-        ParseCase{"TsReject_YearUnder",
-                  R"(timestamp("0000-01-01T00:00:00Z"))", false},
-        ParseCase{"TsReject_LeapSecond",
-                  R"(timestamp("2016-12-31T23:59:60Z"))", false},
+        ParseCase{
+            "TsAdmit_PreEpoch",
+            R"(timestamp("1969-12-31T23:59:59Z") == timestamp("1969-12-31T23:59:59Z"))",
+            true},
+        ParseCase{"TsReject_MissingTZ", R"(timestamp("2009-02-13T23:31:30"))",
+                  false},
+        ParseCase{"TsReject_LowercaseZ", R"(timestamp("2009-02-13T23:31:30z"))",
+                  false},
+        ParseCase{"TsReject_YearOver", R"(timestamp("10000-01-01T00:00:00Z"))",
+                  false},
+        ParseCase{"TsReject_YearUnder", R"(timestamp("0000-01-01T00:00:00Z"))",
+                  false},
+        ParseCase{"TsReject_LeapSecond", R"(timestamp("2016-12-31T23:59:60Z"))",
+                  false},
         // Two-digit year — `RejectsAsTimestampPerCEL` requires the
         // first dash at byte ≥4 (i.e. zero-padded 4-digit year).
-        ParseCase{"TsReject_TwoDigitYear",
-                  R"(timestamp("70-01-01T00:00:00Z"))", false}),
+        ParseCase{"TsReject_TwoDigitYear", R"(timestamp("70-01-01T00:00:00Z"))",
+                  false}),
     [](const ::testing::TestParamInfo<ParseCase>& info) {
       return info.param.label;
     });
@@ -971,26 +1001,24 @@ INSTANTIATE_TEST_SUITE_P(
                   R"(duration("3600s") == duration("3600s"))", true},
         ParseCase{"DurAdmit_NegSec",
                   R"(duration("-3600s") == duration("-3600s"))", true},
-        ParseCase{"DurAdmit_Zero",
-                  R"(duration("0s") == duration("0s"))", true},
+        ParseCase{"DurAdmit_Zero", R"(duration("0s") == duration("0s"))", true},
         ParseCase{"DurAdmit_Million",
                   R"(duration("1000000s") == duration("1000000s"))", true},
         // sub-second ms component per cel-cpp spec (not total ms).
         ParseCase{"DurAdmit_Fractional",
                   R"(duration("1.5s").getMilliseconds() == 500)", true},
         ParseCase{"DurAdmit_NanosPrecision",
-                  R"(duration("1.000000001s").getMilliseconds() == 0)",
-                  true},
+                  R"(duration("1.000000001s").getMilliseconds() == 0)", true},
         ParseCase{"DurAdmit_Compound",
                   R"(duration("1h2m3s") == duration("3723s"))", true},
         ParseCase{"DurAdmit_NegCompound",
                   R"(duration("-1h2m3s") == duration("-3723s"))", true},
         ParseCase{"DurAdmit_Millis",
                   R"(duration("500ms").getMilliseconds() == 500)", true},
-        ParseCase{"DurAdmit_Micros",
-                  R"(duration("-1us") == duration("-1us"))", true},
-        ParseCase{"DurAdmit_Nanos",
-                  R"(duration("100ns") == duration("100ns"))", true},
+        ParseCase{"DurAdmit_Micros", R"(duration("-1us") == duration("-1us"))",
+                  true},
+        ParseCase{"DurAdmit_Nanos", R"(duration("100ns") == duration("100ns"))",
+                  true},
         // proto Duration JSON envelope boundary (±315 576 000 000 s).
         // Reject side is `DurReject_Overflow`; admit at exactly the
         // boundary distinguishes "envelope reject" from "absl
@@ -1007,16 +1035,15 @@ INSTANTIATE_TEST_SUITE_P(
         ParseCase{"DurReject_UnknownUnit", R"(duration("3600x"))", false},
         ParseCase{"DurReject_WrongOrder", R"(duration("1s2h"))", false},
         ParseCase{"DurReject_TrailingGarbage", R"(duration("1s "))", false},
-        ParseCase{"DurReject_Overflow",
-                  R"(duration("9223372036854775808s"))", false},
+        ParseCase{"DurReject_Overflow", R"(duration("9223372036854775808s"))",
+                  false},
         // Repeated unit at same rank — `RejectsAsDurationPerCEL`
         // requires strictly-decreasing units.  Distinct from
         // `DurReject_WrongOrder` (which exercises rank-increase).
-        ParseCase{"DurReject_RepeatedUnit",
-                  R"(duration("1h2h"))", false},
+        ParseCase{"DurReject_RepeatedUnit", R"(duration("1h2h"))", false},
         // Sub-second wrong order: ms before s violates "decreasing".
-        ParseCase{"DurReject_SubSecondWrongOrder",
-                  R"(duration("1ms1s"))", false},
+        ParseCase{"DurReject_SubSecondWrongOrder", R"(duration("1ms1s"))",
+                  false},
         // Proto-JSON envelope reject just outside the boundary.
         ParseCase{"DurReject_OnePastMaxBoundary",
                   R"(duration("315576000001s"))", false}),
@@ -1044,8 +1071,8 @@ Value EvalClosedExpression(absl::string_view source) {
 }  // namespace
 
 TEST_F(FormatConvertE2ETest, TimestampToString) {
-  Value v = EvalClosedExpression(
-      R"(string(timestamp("2009-02-13T23:31:30Z")))");
+  Value v =
+      EvalClosedExpression(R"(string(timestamp("2009-02-13T23:31:30Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
   // proto Timestamp text format / cel-cpp surface uses `Z` for UTC,
   // not absl::RFC3339_full's `+00:00`.  The format trampoline
@@ -1054,8 +1081,8 @@ TEST_F(FormatConvertE2ETest, TimestampToString) {
 }
 
 TEST_F(FormatConvertE2ETest, TimestampToStringNanos) {
-  Value v = EvalClosedExpression(
-      R"(string(timestamp("2009-02-13T23:31:30.500Z")))");
+  Value v =
+      EvalClosedExpression(R"(string(timestamp("2009-02-13T23:31:30.500Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
   EXPECT_EQ(*v.AsString(), "2009-02-13T23:31:30.5Z");
 }
@@ -1067,8 +1094,7 @@ TEST_F(FormatConvertE2ETest, DurationToString) {
 }
 
 TEST_F(FormatConvertE2ETest, TimestampToInt64) {
-  Value v = EvalClosedExpression(
-      R"(int(timestamp("2009-02-13T23:31:30Z")))");
+  Value v = EvalClosedExpression(R"(int(timestamp("2009-02-13T23:31:30Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kInt);
   EXPECT_EQ(*v.AsInt(), 1234567890);
 }
@@ -1101,8 +1127,8 @@ TEST_F(FormatConvertE2ETest, TimestampIdentity) {
 }
 
 TEST_F(FormatConvertE2ETest, DurationIdentity) {
-  Value v = EvalClosedExpression(
-      R"(duration(duration("60s")) == duration("60s"))");
+  Value v =
+      EvalClosedExpression(R"(duration(duration("60s")) == duration("60s"))");
   ASSERT_EQ(v.kind(), Value::Kind::kBool);
   EXPECT_TRUE(*v.AsBool());
 }
@@ -1133,7 +1159,8 @@ TEST_F(FormatConvertE2ETest, Int64ToTimestampOverflow) {
 // these tests in the same commit.
 
 TEST_F(FormatConvertE2ETest, TimestampFormatLowYearNotPaddedKernelGap) {
-  Value v = EvalClosedExpression(R"(string(timestamp("0001-01-01T00:00:00Z")))");
+  Value v =
+      EvalClosedExpression(R"(string(timestamp("0001-01-01T00:00:00Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
   // Proto JSON spec: should be "0001-01-01T00:00:00Z".  Kernel emits
   // unpadded year.  Tracked as a Phase C format-gap follow-up.
@@ -1141,8 +1168,8 @@ TEST_F(FormatConvertE2ETest, TimestampFormatLowYearNotPaddedKernelGap) {
 }
 
 TEST_F(FormatConvertE2ETest, TimestampFormatHalfSecondNotProtoPaddedKernelGap) {
-  Value v = EvalClosedExpression(
-      R"(string(timestamp("1970-01-01T00:00:00.500Z")))");
+  Value v =
+      EvalClosedExpression(R"(string(timestamp("1970-01-01T00:00:00.500Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
   // Proto JSON spec: should be "1970-01-01T00:00:00.500Z".  Kernel
   // emits the minimal-digit form.
@@ -1158,8 +1185,8 @@ TEST_F(FormatConvertE2ETest, TimestampFormatEpoch) {
 }
 
 TEST_F(FormatConvertE2ETest, TimestampFormatYear9999Boundary) {
-  Value v = EvalClosedExpression(
-      R"(string(timestamp("9999-12-31T23:59:59Z")))");
+  Value v =
+      EvalClosedExpression(R"(string(timestamp("9999-12-31T23:59:59Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kString);
   EXPECT_EQ(*v.AsString(), "9999-12-31T23:59:59Z");
 }
@@ -1244,8 +1271,7 @@ TEST_F(FormatConvertE2ETest, DurationParseFormatRoundTripCompound) {
   // `1h2m3s` parses to 3723s; format emits the compact `3723s` form
   // per proto JSON (no compound-unit output).  Documents the lossy
   // direction of the round-trip — input shape is normalised.
-  Value v = EvalClosedExpression(
-      R"(string(duration("1h2m3s")) == "3723s")");
+  Value v = EvalClosedExpression(R"(string(duration("1h2m3s")) == "3723s")");
   ASSERT_EQ(v.kind(), Value::Kind::kBool);
   EXPECT_TRUE(*v.AsBool());
 }
@@ -1269,9 +1295,9 @@ TEST_F(FormatConvertE2ETest, DurationParseFormatRoundTripNanos) {
 struct TzCase {
   std::string label;
   TsAccessor accessor;
-  std::string tz;        // CEL string literal contents (no quotes).
+  std::string tz;  // CEL string literal contents (no quotes).
   int64_t ts_seconds;
-  int64_t expected;      // -1 = expect runtime error
+  int64_t expected;  // -1 = expect runtime error
   bool expect_error;
 };
 
@@ -1280,12 +1306,12 @@ class TzAccessorE2ETest : public ::testing::TestWithParam<TzCase> {};
 TEST_P(TzAccessorE2ETest, IanaOrFixedOffset) {
   const TzCase& p = GetParam();
   Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
-  const std::string source = absl::StrCat(
-      "t.", AccessorMethod(p.accessor), "(\"", p.tz, "\")");
+  const std::string source =
+      absl::StrCat("t.", AccessorMethod(p.accessor), "(\"", p.tz, "\")");
   Instance inst = CompilePlan(compiler, source);
   Activation act;
-  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
-                                  absl::Seconds(p.ts_seconds)));
+  act.Bind("t",
+           Value::Timestamp(absl::UnixEpoch() + absl::Seconds(p.ts_seconds)));
   Value got = EvalOk(inst, act);
   if (p.expect_error) {
     EXPECT_EQ(got.kind(), Value::Kind::kError) << p.label;
@@ -1339,8 +1365,7 @@ INSTANTIATE_TEST_SUITE_P(
 class CrossFormEquivalenceE2ETest : public ::testing::Test {};
 
 TEST_F(CrossFormEquivalenceE2ETest, DurationConstructEquality) {
-  Value v = EvalClosedExpression(
-      R"(duration("1s") == duration("1s"))");
+  Value v = EvalClosedExpression(R"(duration("1s") == duration("1s"))");
   ASSERT_EQ(v.kind(), Value::Kind::kBool);
   EXPECT_TRUE(*v.AsBool());
 }
@@ -1382,8 +1407,7 @@ TEST_F(CrossFormEquivalenceE2ETest, OrderingAcrossForms) {
 }
 
 TEST_F(CrossFormEquivalenceE2ETest, CanonicalisationEqualsAcrossUnits) {
-  Value v = EvalClosedExpression(
-      R"(duration("1s") == duration("1000ms"))");
+  Value v = EvalClosedExpression(R"(duration("1s") == duration("1000ms"))");
   ASSERT_EQ(v.kind(), Value::Kind::kBool);
   EXPECT_TRUE(*v.AsBool());
 }
@@ -1409,8 +1433,7 @@ TEST_F(CrossFormEquivalenceE2ETest, NoNaNRegression) {
 class TypeRegressionE2ETest : public ::testing::Test {};
 
 TEST_F(TypeRegressionE2ETest, TypeOfTimestamp) {
-  Value v = EvalClosedExpression(
-      R"(type(timestamp("2009-02-13T23:31:30Z")))");
+  Value v = EvalClosedExpression(R"(type(timestamp("2009-02-13T23:31:30Z")))");
   ASSERT_EQ(v.kind(), Value::Kind::kType);
   EXPECT_EQ(*v.AsType(), "google.protobuf.Timestamp");
 }
@@ -1478,15 +1501,15 @@ TEST_F(RejectE2ETest, TimestampPlusIntCheckerReject) {
 TEST_F(RejectE2ETest, TzAccessorWrongArityCheckerReject) {
   Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
   ExpectCompileFails(compiler, R"(t.getYear("UTC", "extra"))",
-                      "with-TZ accessor takes only one arg");
+                     "with-TZ accessor takes only one arg");
 }
 
 TEST_F(RejectE2ETest, TzAccessorInvalidNameRuntimeError) {
   Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
   Instance inst = CompilePlan(compiler, R"(t.getFullYear("NotARealZone"))");
   Activation act;
-  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
-                                  absl::Seconds(1234567890)));
+  act.Bind("t",
+           Value::Timestamp(absl::UnixEpoch() + absl::Seconds(1234567890)));
   Value got = EvalOk(inst, act);
   EXPECT_EQ(got.kind(), Value::Kind::kError);
 }
@@ -1505,4 +1528,4 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
 // pins that non-WKT fields stay as messages.)
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

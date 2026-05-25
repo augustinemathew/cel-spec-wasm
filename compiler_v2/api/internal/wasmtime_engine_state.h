@@ -1,4 +1,4 @@
-// Internal — owns the wasmtime state held by `cel::Engine`: the
+// Internal — owns the wasmtime state held by `celwasm::api::Engine`: the
 // `wasm_engine_t` plus the parsed `cel_runtime.wasm` module.
 //
 // Lives in `celwasm::` per cel-host-surface.md §1: public API is
@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-#include "compiler_v2/api/host_callback.h"  // for cel::HostCallback
+#include "compiler_v2/api/host_callback.h"  // for celwasm::api::HostCallback
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -57,7 +57,7 @@ struct RegisteredHostCallback {
   // Total wasm function arity — params.size() + 1 (out_slot).
   // Matches the underlying `OverloadImpl::num_args`.
   std::uint8_t num_args = 0;
-  cel::HostCallback callback;
+  celwasm::api::HostCallback callback;
 };
 
 struct WasmtimeEngineState {

@@ -67,9 +67,6 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -78,10 +75,13 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -262,11 +262,11 @@ TEST_F(ProtoLiteralEmptyE2ETest, CustomerEmptyConstruction) {
 // ──────────────────────────────────────────────────────────────
 
 struct ScalarFieldCase {
-  std::string label;       // gtest test-name suffix.
-  std::string field;       // proto field name on HostMsg3 / HostMsg2.
-  std::string proto_fqn;   // fully-qualified message FQN.
-  std::string set_lit;     // CEL literal for the RHS of `field: …`.
-  std::string read_eq_rhs; // CEL literal for `== <rhs>` after read.
+  std::string label;        // gtest test-name suffix.
+  std::string field;        // proto field name on HostMsg3 / HostMsg2.
+  std::string proto_fqn;    // fully-qualified message FQN.
+  std::string set_lit;      // CEL literal for the RHS of `field: …`.
+  std::string read_eq_rhs;  // CEL literal for `== <rhs>` after read.
 };
 
 class ProtoLiteralScalarE2ETest
@@ -308,8 +308,7 @@ INSTANTIATE_TEST_SUITE_P(
         ScalarFieldCase{"Int64Zero", "i64", "celwasm.testdata.HostMsg3", "0",
                         "0"},
         ScalarFieldCase{"Int64Min", "i64", "celwasm.testdata.HostMsg3",
-                        "-9223372036854775808",
-                        "-9223372036854775808"},
+                        "-9223372036854775808", "-9223372036854775808"},
         ScalarFieldCase{"Int64Max", "i64", "celwasm.testdata.HostMsg3",
                         "9223372036854775807", "9223372036854775807"},
         // UINT32.
@@ -362,8 +361,7 @@ INSTANTIATE_TEST_SUITE_P(
         // the same number.
         ScalarFieldCase{"EnumNamed", "kind", "celwasm.testdata.HostMsg3",
                         "celwasm.testdata.HostMsg3.Kind.KIND_SEVEN", "7"},
-        ScalarFieldCase{"EnumUnspecified", "kind",
-                        "celwasm.testdata.HostMsg3",
+        ScalarFieldCase{"EnumUnspecified", "kind", "celwasm.testdata.HostMsg3",
                         "celwasm.testdata.HostMsg3.Kind.KIND_UNSPECIFIED", "0"},
         // sint32 / sint64 / fixed* / sfixed* are wire-encoding variants
         // of int32 / int64 / uint32 / uint64; cel-cpp's checker types
@@ -410,8 +408,8 @@ TEST_F(ProtoLiteralScalarE2ETest, IntFromComputedExpr) {
   // result in a scratch slot, then hands the slot to cel_set_field.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "celwasm.testdata.HostMsg3{i32: 1 + 2}.i32 == 3");
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{i32: 1 + 2}.i32 == 3");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -502,8 +500,8 @@ TEST_F(ProtoLiteralRepeatedE2ETest, RepeatedEmptyList) {
   // the read returns size 0.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "size(celwasm.testdata.HostMsg3{}.rep_i32) == 0");
+  auto instance =
+      CompilePlan(*compiler, "size(celwasm.testdata.HostMsg3{}.rep_i32) == 0");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -518,11 +516,9 @@ TEST_F(ProtoLiteralRepeatedE2ETest, RepeatedFromHostListBinding) {
   });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{rep_i32: xs}.rep_i32[2] == 30");
+      *compiler, "celwasm.testdata.HostMsg3{rep_i32: xs}.rep_i32[2] == 30");
   Activation a;
-  a.Bind("xs",
-         Value::List({Value::Int(10), Value::Int(20), Value::Int(30)}));
+  a.Bind("xs", Value::List({Value::Int(10), Value::Int(20), Value::Int(30)}));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
@@ -570,10 +566,10 @@ TEST_F(ProtoLiteralMapE2ETest, MapInt64ToStringFromLiteral) {
 TEST_F(ProtoLiteralMapE2ETest, MapUint32ToDoubleFromLiteral) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{u32_to_f64: {1u: 1.5, 2u: 2.5}}.u32_to_f64[2u] "
-      "== 2.5");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{u32_to_f64: {1u: 1.5, "
+                              "2u: 2.5}}.u32_to_f64[2u] "
+                              "== 2.5");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -581,10 +577,10 @@ TEST_F(ProtoLiteralMapE2ETest, MapUint32ToDoubleFromLiteral) {
 TEST_F(ProtoLiteralMapE2ETest, MapBoolToInt64FromLiteral) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{bool_to_i64: {true: 7, false: 9}}."
-      "bool_to_i64[true] == 7");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{bool_to_i64: {true: 7, false: 9}}."
+                  "bool_to_i64[true] == 7");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -635,8 +631,7 @@ TEST_F(ProtoLiteralOneofE2ETest, Proto2OneofFirstArmSetReadsBack) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg2{oneof_i64: 7}.oneof_i64 == 7");
+      *compiler, "celwasm.testdata.HostMsg2{oneof_i64: 7}.oneof_i64 == 7");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -645,8 +640,7 @@ TEST_F(ProtoLiteralOneofE2ETest, Proto2OneofHasFirstArmAfterSet) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "has(celwasm.testdata.HostMsg2{oneof_i64: 7}.oneof_i64)");
+      *compiler, "has(celwasm.testdata.HostMsg2{oneof_i64: 7}.oneof_i64)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -663,8 +657,7 @@ TEST_F(ProtoLiteralOneofE2ETest, Proto2OneofHasSecondArmAfterSecondSet) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-TEST_F(ProtoLiteralOneofE2ETest,
-       Proto2OneofFirstArmClearedAfterSecondSet) {
+TEST_F(ProtoLiteralOneofE2ETest, Proto2OneofFirstArmClearedAfterSecondSet) {
   // The companion to the previous test: has() on the FIRST arm
   // returns false because it was cleared by the second set.
   auto compiler = CompilerEmpty();
@@ -680,14 +673,12 @@ TEST_F(ProtoLiteralOneofE2ETest, Proto3OneofFirstArmSetReadsBack) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{oneof_i64: 7}.oneof_i64 == 7");
+      *compiler, "celwasm.testdata.HostMsg3{oneof_i64: 7}.oneof_i64 == 7");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-TEST_F(ProtoLiteralOneofE2ETest,
-       Proto3OneofFirstArmClearedAfterSecondSet) {
+TEST_F(ProtoLiteralOneofE2ETest, Proto3OneofFirstArmClearedAfterSecondSet) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
@@ -728,10 +719,10 @@ TEST_F(ProtoLiteralEnumE2ETest, EnumLiteralRhsOfFieldSet) {
   // `Reflection::SetEnumValue` with that int.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{kind: celwasm.testdata.HostMsg3.Kind.KIND_SEVEN}"
-      ".kind == 7");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{kind: "
+                              "celwasm.testdata.HostMsg3.Kind.KIND_SEVEN}"
+                              ".kind == 7");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -752,8 +743,8 @@ TEST_F(ProtoLiteralEnumE2ETest, EnumFieldRoundTripViaInt) {
   // checker accepts the cross because enum is spec-typed as int.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "celwasm.testdata.HostMsg3{kind: 7}.kind == 7");
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{kind: 7}.kind == 7");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -874,8 +865,8 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto2ExplicitDefaultScalar) {
 TEST_F(ProtoLiteralDefaultsE2ETest, Proto2HasOnUnsetIsFalse) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "has(celwasm.testdata.HostMsg2{}.default_i32)");
+  auto instance =
+      CompilePlan(*compiler, "has(celwasm.testdata.HostMsg2{}.default_i32)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
 }
@@ -896,8 +887,8 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto2HasOnExplicitlySetToDefaultIsTrue) {
 TEST_F(ProtoLiteralDefaultsE2ETest, Proto3HasOnUnsetSubmessageIsFalse) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler, "has(celwasm.testdata.HostMsg3{}.inner)");
+  auto instance =
+      CompilePlan(*compiler, "has(celwasm.testdata.HostMsg3{}.inner)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
 }
@@ -905,9 +896,9 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto3HasOnUnsetSubmessageIsFalse) {
 TEST_F(ProtoLiteralDefaultsE2ETest, Proto3HasOnSetSubmessageIsTrue) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "has(celwasm.testdata.HostMsg3{inner: celwasm.testdata.HostMsg3{}}.inner)");
+  auto instance = CompilePlan(*compiler,
+                              "has(celwasm.testdata.HostMsg3{inner: "
+                              "celwasm.testdata.HostMsg3{}}.inner)");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -968,10 +959,10 @@ TEST_F(ProtoLiteralEqualityE2ETest, NestedEquality) {
 TEST_F(ProtoLiteralEqualityE2ETest, RepeatedEquality) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{rep_i32: [1, 2, 3]} == "
-      "celwasm.testdata.HostMsg3{rep_i32: [1, 2, 3]}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{rep_i32: [1, 2, 3]} == "
+                  "celwasm.testdata.HostMsg3{rep_i32: [1, 2, 3]}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1047,8 +1038,7 @@ TEST_F(ProtoLiteralActivationE2ETest,
   });
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{rep_msg: ms}.rep_msg[0].i32 == 11");
+      *compiler, "celwasm.testdata.HostMsg3{rep_msg: ms}.rep_msg[0].i32 == 11");
   HostMsg3 m0;
   m0.set_i32(11);
   Activation a;
@@ -1080,16 +1070,14 @@ TEST_F(ProtoLiteralRejectE2ETest, UnregisteredDescriptorRejected) {
 TEST_F(ProtoLiteralRejectE2ETest, UnknownFieldOnKnownDescriptorRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler,
-                     "celwasm.testdata.HostMsg3{not_a_field: 1}",
+  ExpectCompileFails(*compiler, "celwasm.testdata.HostMsg3{not_a_field: 1}",
                      "field name not on descriptor");
 }
 
 TEST_F(ProtoLiteralRejectE2ETest, ScalarTypeMismatchRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler,
-                     R"(celwasm.testdata.HostMsg3{i32: "string"})",
+  ExpectCompileFails(*compiler, R"(celwasm.testdata.HostMsg3{i32: "string"})",
                      "string into int32 field");
 }
 
@@ -1107,8 +1095,7 @@ TEST_F(ProtoLiteralRejectE2ETest, MapKeyTypeMismatchRejected) {
   // is a checker-side type error.
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  ExpectCompileFails(*compiler,
-                     "celwasm.testdata.HostMsg3{str_to_i32: {1: 2}}",
+  ExpectCompileFails(*compiler, "celwasm.testdata.HostMsg3{str_to_i32: {1: 2}}",
                      "int key into map<string,_>");
 }
 
@@ -1128,4 +1115,4 @@ TEST_F(ProtoLiteralRejectE2ETest, MessageFieldScalarSourceRejected) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

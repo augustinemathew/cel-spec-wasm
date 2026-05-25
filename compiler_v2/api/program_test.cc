@@ -13,7 +13,7 @@
 
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 TEST(ProgramTest, ConstructFromBytes) {
@@ -41,4 +41,4 @@ TEST(ProgramTest, CopyConstructionDuplicatesBytes) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

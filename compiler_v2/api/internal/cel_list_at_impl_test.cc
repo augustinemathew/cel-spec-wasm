@@ -22,12 +22,12 @@
 #include <utility>
 #include <vector>
 
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
 #include "compiler_v2/runtime/cel_data.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "gtest/gtest.h"
 
@@ -49,7 +49,7 @@ struct Fixture {
   FakeMemory mem;
   FakeRefs refs;
   test::FakeArenaAllocator arena{&mem, /*base_offset=*/4096u,
-                                  /*capacity=*/8192u};
+                                 /*capacity=*/8192u};
   CelHostBindings bindings{};
   TrampolineContext ctx{bindings, mem, refs, arena};
 
@@ -72,8 +72,9 @@ CelValue MakeIntIdx(int64_t i) {
 }
 
 std::shared_ptr<HostList> ThreeInts() {
-  return std::make_shared<HostList>(std::vector<cel::Value>{
-      cel::Value::Int(10), cel::Value::Int(20), cel::Value::Int(30)});
+  return std::make_shared<HostList>(std::vector<celwasm::api::Value>{
+      celwasm::api::Value::Int(10), celwasm::api::Value::Int(20),
+      celwasm::api::Value::Int(30)});
 }
 
 // ════════ 3VL absorption on operand pair ════════
@@ -118,8 +119,9 @@ TEST(CelListAtImplTest, IntElementHits) {
 
 TEST(CelListAtImplTest, StringElementMarshalledViaArena) {
   Fixture f;
-  auto backing = std::make_shared<HostList>(std::vector<cel::Value>{
-      cel::Value::String("alpha"), cel::Value::String("beta")});
+  auto backing = std::make_shared<HostList>(
+      std::vector<celwasm::api::Value>{celwasm::api::Value::String("alpha"),
+                                       celwasm::api::Value::String("beta")});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(backing)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(1));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
@@ -184,8 +186,7 @@ TEST(CelListAtImplTest, MissingRefSlotReturnsNonOkStatus) {
   // ref_slot 99 was never interned.
   f.mem.Place(f.list_slot, MakeListValue(/*ref_slot=*/99));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(0));
-  EXPECT_FALSE(
-      CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
+  EXPECT_FALSE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
 }
 
 // ════════ Backing dispatch — HostList vs ProtoList ════════
@@ -213,8 +214,8 @@ TEST(CelListAtImplTest, NestedMessageElementInternsToMessageSlot) {
   // Wrap a HostMsg3 as a Value::Message and put it in a list.
   HostMsg3 sub;
   sub.set_i64(99);
-  auto backing = std::make_shared<HostList>(std::vector<cel::Value>{
-      cel::Value::Message(sub)});
+  auto backing = std::make_shared<HostList>(
+      std::vector<celwasm::api::Value>{celwasm::api::Value::Message(sub)});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(backing)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(0));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
@@ -225,10 +226,10 @@ TEST(CelListAtImplTest, NestedMessageElementInternsToMessageSlot) {
 
 TEST(CelListAtImplTest, NestedListElementInternsToListSlot) {
   Fixture f;
-  auto inner = std::make_shared<HostList>(std::vector<cel::Value>{
-      cel::Value::Int(7)});
-  auto outer = std::make_shared<HostList>(std::vector<cel::Value>{
-      cel::Value::HostList(inner)});
+  auto inner = std::make_shared<HostList>(
+      std::vector<celwasm::api::Value>{celwasm::api::Value::Int(7)});
+  auto outer = std::make_shared<HostList>(
+      std::vector<celwasm::api::Value>{celwasm::api::Value::HostList(inner)});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(outer)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(0));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());

@@ -53,8 +53,8 @@ TEST(ProtoListTest, RepeatedInt32Hits) {
   ProtoList pl(&m, RepeatedField(m, "rep_i32"));
   EXPECT_EQ(pl.Size(), 3u);
 
-  PL_ASSIGN_OR_ASSERT(v, pl.At(1, cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kInt);
+  PL_ASSIGN_OR_ASSERT(v, pl.At(1, celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kInt);
   EXPECT_EQ(*v.AsInt(), 22);
 }
 
@@ -64,7 +64,7 @@ TEST(ProtoListTest, RepeatedStringHits) {
   m.add_rep_s("beta");
   ProtoList pl(&m, RepeatedField(m, "rep_s"));
 
-  PL_ASSIGN_OR_ASSERT(v, pl.At(0, cel::CelType::String()));
+  PL_ASSIGN_OR_ASSERT(v, pl.At(0, celwasm::api::CelType::String()));
   EXPECT_EQ(*v.AsString(), "alpha");
 }
 
@@ -74,9 +74,9 @@ TEST(ProtoListTest, RepeatedBoolHits) {
   m.add_rep_b(false);
   ProtoList pl(&m, RepeatedField(m, "rep_b"));
 
-  PL_ASSIGN_OR_ASSERT(v0, pl.At(0, cel::CelType::Bool()));
+  PL_ASSIGN_OR_ASSERT(v0, pl.At(0, celwasm::api::CelType::Bool()));
   EXPECT_EQ(*v0.AsBool(), true);
-  PL_ASSIGN_OR_ASSERT(v1, pl.At(1, cel::CelType::Bool()));
+  PL_ASSIGN_OR_ASSERT(v1, pl.At(1, celwasm::api::CelType::Bool()));
   EXPECT_EQ(*v1.AsBool(), false);
 }
 
@@ -86,7 +86,7 @@ TEST(ProtoListTest, RepeatedDoubleHits) {
   m.add_rep_f64(-2.25);
   ProtoList pl(&m, RepeatedField(m, "rep_f64"));
 
-  PL_ASSIGN_OR_ASSERT(v, pl.At(1, cel::CelType::Double()));
+  PL_ASSIGN_OR_ASSERT(v, pl.At(1, celwasm::api::CelType::Double()));
   EXPECT_EQ(*v.AsDouble(), -2.25);
 }
 
@@ -96,8 +96,8 @@ TEST(ProtoListTest, RepeatedMessageWrapsAsHostMessage) {
   m.add_rep_msg()->set_i64(101);
   ProtoList pl(&m, RepeatedField(m, "rep_msg"));
 
-  PL_ASSIGN_OR_ASSERT(v, pl.At(1, cel::CelType::Int()));
-  ASSERT_EQ(v.kind(), cel::Value::Kind::kMessage);
+  PL_ASSIGN_OR_ASSERT(v, pl.At(1, celwasm::api::CelType::Int()));
+  ASSERT_EQ(v.kind(), celwasm::api::Value::Kind::kMessage);
   PL_ASSIGN_OR_ASSERT(b, v.MessageBacking());
   ASSERT_NE(b, nullptr);
 }
@@ -108,8 +108,8 @@ TEST(ProtoListTest, RepeatedTimestampPeelsToTimestamp) {
   HostMsg3 m;
   m.add_repeated_timestamp()->set_seconds(7);
   ProtoList pl(&m, RepeatedField(m, "repeated_timestamp"));
-  PL_ASSIGN_OR_ASSERT(v, pl.At(0, cel::CelType::Timestamp()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kTimestamp);
+  PL_ASSIGN_OR_ASSERT(v, pl.At(0, celwasm::api::CelType::Timestamp()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kTimestamp);
 }
 
 // ════════ Boundary ════════
@@ -119,20 +119,20 @@ TEST(ProtoListTest, EmptyRepeatedReadsAsZeroSize) {
   ProtoList pl(&m, RepeatedField(m, "rep_i32"));
   EXPECT_EQ(pl.Size(), 0u);
 
-  PL_ASSIGN_OR_ASSERT(v, pl.At(0, cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kError);
+  PL_ASSIGN_OR_ASSERT(v, pl.At(0, celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
   PL_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-  EXPECT_EQ(e->code, cel::ErrorCode::kIndexOutOfBounds);
+  EXPECT_EQ(e->code, celwasm::ErrorCode::kIndexOutOfBounds);
 }
 
 TEST(ProtoListTest, IndexAtCountErrors) {
   HostMsg3 m;
   m.add_rep_i32(11);
   ProtoList pl(&m, RepeatedField(m, "rep_i32"));
-  PL_ASSIGN_OR_ASSERT(v, pl.At(1, cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kError);
+  PL_ASSIGN_OR_ASSERT(v, pl.At(1, celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
   PL_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-  EXPECT_EQ(e->code, cel::ErrorCode::kIndexOutOfBounds);
+  EXPECT_EQ(e->code, celwasm::ErrorCode::kIndexOutOfBounds);
 }
 
 // ════════ ForEach ════════
@@ -144,7 +144,7 @@ TEST(ProtoListTest, ForEachVisitsAllInOrder) {
   m.add_rep_i32(30);
   ProtoList pl(&m, RepeatedField(m, "rep_i32"));
   std::vector<int64_t> seen;
-  pl.ForEach([&](const cel::Value& v) {
+  pl.ForEach([&](const celwasm::api::Value& v) {
     seen.push_back(*v.AsInt());
   });
   EXPECT_EQ(seen, std::vector<int64_t>({10, 20, 30}));
@@ -159,9 +159,9 @@ TEST(ProtoBackingListTest, ReadFieldRepeatedReturnsHostList) {
   m.add_rep_i32(7);
   m.add_rep_i32(8);
   ProtoBacking pb(&m);
-  PL_ASSIGN_OR_ASSERT(
-      v, pb.ReadField(/*field_number=*/18, "rep_i32", cel::CelType::Int()));
-  ASSERT_EQ(v.kind(), cel::Value::Kind::kList);
+  PL_ASSIGN_OR_ASSERT(v, pb.ReadField(/*field_number=*/18, "rep_i32",
+                                      celwasm::api::CelType::Int()));
+  ASSERT_EQ(v.kind(), celwasm::api::Value::Kind::kList);
   PL_ASSIGN_OR_ASSERT(b, v.ListBacking());
   ASSERT_NE(b, nullptr);
   EXPECT_EQ(b->Size(), 2u);

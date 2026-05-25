@@ -53,9 +53,9 @@ class HostMessageBacking {
   // `field_number == 0` means "resolve by name only" (non-proto backings).
   // Spec-level errors (missing field, repeated at M2) return
   // `Value::Error(...)`; infrastructure failures return non-OK Status.
-  virtual absl::StatusOr<cel::Value> ReadField(
+  virtual absl::StatusOr<celwasm::api::Value> ReadField(
       int field_number, absl::string_view field_name,
-      const cel::CelType& expected_type) const = 0;
+      const celwasm::api::CelType& expected_type) const = 0;
 
   // has(msg.field) per langdef proto2/proto3 presence rules.
   virtual bool HasField(int field_number,
@@ -81,9 +81,9 @@ class ProtoBacking final : public HostMessageBacking {
   explicit ProtoBacking(const google::protobuf::Message* absl_nonnull msg)
       : msg_(msg) {}
 
-  absl::StatusOr<cel::Value> ReadField(
+  absl::StatusOr<celwasm::api::Value> ReadField(
       int field_number, absl::string_view field_name,
-      const cel::CelType& expected_type) const override;
+      const celwasm::api::CelType& expected_type) const override;
 
   bool HasField(int field_number, absl::string_view field_name) const override;
 
@@ -112,9 +112,9 @@ class OwnedProtoBacking final : public HostMessageBacking {
  public:
   explicit OwnedProtoBacking(std::unique_ptr<google::protobuf::Message> msg);
 
-  absl::StatusOr<cel::Value> ReadField(
+  absl::StatusOr<celwasm::api::Value> ReadField(
       int field_number, absl::string_view field_name,
-      const cel::CelType& expected_type) const override;
+      const celwasm::api::CelType& expected_type) const override;
 
   bool HasField(int field_number, absl::string_view field_name) const override;
 
@@ -160,13 +160,14 @@ class HostMapBacking {
   // failures (backing unavailable, reflection error, etc.).
   // `expected_value_type` is informational; M3 ignores it (no
   // implicit coercion between value-side numeric kinds).
-  virtual absl::StatusOr<cel::Value> Get(
-      const cel::Value& key, const cel::CelType& expected_value_type) const = 0;
+  virtual absl::StatusOr<celwasm::api::Value> Get(
+      const celwasm::api::Value& key,
+      const celwasm::api::CelType& expected_value_type) const = 0;
 
-  virtual bool ContainsKey(const cel::Value& key) const = 0;
-  virtual void ForEach(
-      absl::FunctionRef<void(const cel::Value&, const cel::Value&)> visit)
-      const = 0;
+  virtual bool ContainsKey(const celwasm::api::Value& key) const = 0;
+  virtual void ForEach(absl::FunctionRef<void(const celwasm::api::Value&,
+                                              const celwasm::api::Value&)>
+                           visit) const = 0;
 };
 
 // Vector-backed concrete.  Used for `Activation::Bind(Value::Map(...))`
@@ -176,19 +177,21 @@ class HostMapBacking {
 // behave identically under CEL's equality rules.
 class HostMap final : public HostMapBacking {
  public:
-  explicit HostMap(std::vector<std::pair<cel::Value, cel::Value>> entries);
+  explicit HostMap(
+      std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries);
   ~HostMap() override = default;
 
   size_t Size() const override;
-  absl::StatusOr<cel::Value> Get(
-      const cel::Value& key,
-      const cel::CelType& expected_value_type) const override;
-  bool ContainsKey(const cel::Value& key) const override;
-  void ForEach(absl::FunctionRef<void(const cel::Value&, const cel::Value&)>
+  absl::StatusOr<celwasm::api::Value> Get(
+      const celwasm::api::Value& key,
+      const celwasm::api::CelType& expected_value_type) const override;
+  bool ContainsKey(const celwasm::api::Value& key) const override;
+  void ForEach(absl::FunctionRef<void(const celwasm::api::Value&,
+                                      const celwasm::api::Value&)>
                    visit) const override;
 
  private:
-  std::vector<std::pair<cel::Value, cel::Value>> entries_;
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries_;
 };
 
 // Proto reflection-backed concrete.  Wraps a single
@@ -203,11 +206,12 @@ class ProtoMap final : public HostMapBacking {
   ~ProtoMap() override = default;
 
   size_t Size() const override;
-  absl::StatusOr<cel::Value> Get(
-      const cel::Value& key,
-      const cel::CelType& expected_value_type) const override;
-  bool ContainsKey(const cel::Value& key) const override;
-  void ForEach(absl::FunctionRef<void(const cel::Value&, const cel::Value&)>
+  absl::StatusOr<celwasm::api::Value> Get(
+      const celwasm::api::Value& key,
+      const celwasm::api::CelType& expected_value_type) const override;
+  bool ContainsKey(const celwasm::api::Value& key) const override;
+  void ForEach(absl::FunctionRef<void(const celwasm::api::Value&,
+                                      const celwasm::api::Value&)>
                    visit) const override;
 
  private:
@@ -237,11 +241,12 @@ class HostListBacking {
   // `expected_element_type` is informational; M4 ignores it (no
   // implicit coercion between numeric kinds).  Mirrors
   // `HostMapBacking::Get`'s expected_value_type contract.
-  virtual absl::StatusOr<cel::Value> At(
-      size_t index, const cel::CelType& expected_element_type) const = 0;
+  virtual absl::StatusOr<celwasm::api::Value> At(
+      size_t index,
+      const celwasm::api::CelType& expected_element_type) const = 0;
 
   virtual void ForEach(
-      absl::FunctionRef<void(const cel::Value&)> visit) const = 0;
+      absl::FunctionRef<void(const celwasm::api::Value&)> visit) const = 0;
 };
 
 // Vector-backed concrete.  Used for `Activation::Bind(Value::List(...))`
@@ -249,16 +254,18 @@ class HostListBacking {
 // in insertion order.  Mirrors `HostMap`'s shape.
 class HostList final : public HostListBacking {
  public:
-  explicit HostList(std::vector<cel::Value> elements);
+  explicit HostList(std::vector<celwasm::api::Value> elements);
   ~HostList() override = default;
 
   size_t Size() const override;
-  absl::StatusOr<cel::Value> At(
-      size_t index, const cel::CelType& expected_element_type) const override;
-  void ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const override;
+  absl::StatusOr<celwasm::api::Value> At(
+      size_t index,
+      const celwasm::api::CelType& expected_element_type) const override;
+  void ForEach(
+      absl::FunctionRef<void(const celwasm::api::Value&)> visit) const override;
 
  private:
-  std::vector<cel::Value> elements_;
+  std::vector<celwasm::api::Value> elements_;
 };
 
 // Proto reflection-backed concrete.  Wraps a single
@@ -273,9 +280,11 @@ class ProtoList final : public HostListBacking {
   ~ProtoList() override = default;
 
   size_t Size() const override;
-  absl::StatusOr<cel::Value> At(
-      size_t index, const cel::CelType& expected_element_type) const override;
-  void ForEach(absl::FunctionRef<void(const cel::Value&)> visit) const override;
+  absl::StatusOr<celwasm::api::Value> At(
+      size_t index,
+      const celwasm::api::CelType& expected_element_type) const override;
+  void ForEach(
+      absl::FunctionRef<void(const celwasm::api::Value&)> visit) const override;
 
  private:
   const google::protobuf::Message* absl_nonnull owner_;
@@ -423,7 +432,7 @@ ABSL_MUST_USE_RESULT absl::Status CelHasFieldImpl(uint32_t out_slot,
 // Reads the map slot's `ref_slot`, dereferences via
 // `ExternrefTable::LookupMap` to a `HostMapBacking`, decodes the
 // key CelValue, calls `backing->Get(key, ...)`, and marshals the
-// returned `cel::Value` into `out_slot`.  Absorbs UNKNOWN / ERROR
+// returned `celwasm::api::Value` into `out_slot`.  Absorbs UNKNOWN / ERROR
 // on either operand without dereferencing the backing — same 3VL
 // contract as the runtime dispatcher.  Non-OK Status only on
 // infrastructure failure (bad slot, missing reflection); spec-level
@@ -438,7 +447,7 @@ ABSL_MUST_USE_RESULT absl::Status CelMapLookupImpl(
 // `ExternrefTable::LookupList` to a `HostListBacking`, decodes the
 // index CelValue (must be CEL_INT; non-int → kTypeMismatch;
 // negative or `>= Size()` → kIndexOutOfBounds), calls
-// `backing->At(index)`, and marshals the returned `cel::Value` into
+// `backing->At(index)`, and marshals the returned `celwasm::api::Value` into
 // `out_slot`.  Absorbs UNKNOWN / ERROR on either operand.  Same
 // non-OK Status contract as CelMapLookupImpl.
 ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(uint32_t out_slot,
