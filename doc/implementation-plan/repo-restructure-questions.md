@@ -11,6 +11,44 @@ Resolution: …
 
 ---
 
+### Q10 — `lint --branch` on a 244-file move surfaces the whole backlog [RESOLVED 2026-05-25]
+Context (W5): `scripts/lint.sh --branch` lints the branch diff vs origin/master.
+The restructure moved ~every file, so the diff is 244 lintable files — lint
+re-checks the ENTIRE tree, surfacing pre-existing lint-backlog items that normal
+(working-set) lint never re-touches: `google-readability-braces-around-statements`
+in `var_parser.cc`/`cel_runtime.c` (already in lint-backlog.md), and a
+wasmtime-edge clang-tidy CONFIG limitation (`wasmtime.h` not found when linting
+`wat_runner.cc`/`cel_log.h`; the compile-db lacks the wasmtime include dir for
+manual targets) + perf-value-param on wat_runner. These are PRE-EXISTING — the
+move changed only includes/guards (mechanical), not file logic.
+Resolution: the restructure introduced NO new lint warnings — verified by (a)
+the surfaced categories all matching lint-backlog.md / the wasmtime-config
+limitation, and (b) targeted `lint.sh` on the hand-edited CONTENT files
+(conformance/run_conformance.cc, shared/type.*) = CLEAN. clang-format -i's
+include re-sorting (37 files, from the path rewrite) was committed (formatter is
+authoritative). W5 LINT GATE scoped to: working-set/hand-edited files clean +
+header guards regenerated + no NEW warning categories beyond the documented
+backlog. Full `--branch` clean is a lint-backlog burndown, not a restructure
+gate (the backlog predates this work).
+
+### Q9 — our shared pkg `common/` collides with vendored cel-cpp `common/` [RESOLVED 2026-05-25 — DESIGN CHANGE]
+Context (W3 gate): design §3 named our shared CelType package `common/` (cel-cpp
+precedent). But we VENDOR cel-cpp and include its headers by top-level dir name
+(`common/type.h`, `common/ast.h`, …). Our `common/type.h` (celwasm::CelType)
+then collided with cel-cpp's `common/type.h` (cel::Type) in any TU pulling both
+(e.g. tools/cel via the compile pipeline) → `typed_ast.h` saw our CelType and
+lost `cel::Type` → build RED. The OLD `compiler_v2/` prefix was what AVOIDED this.
+Collision audit: only `common/type.h` AND `compiler/compiler.h` share filenames
+with cel-cpp; `eval/`,`runtime/`,`tools/`,`conformance/` are disjoint.
+`compiler/compiler.h` does NOT actually collide — we never co-include cel-cpp's
+`compiler/compiler.h` (frontend uses @cel-cpp//{parser,checker,common}, not
+//compiler; the testdata oracle uses cel-cpp compiler but not our compiler.h).
+Resolution: rename our shared package `common/` → `shared/` (`//shared:type`,
+`shared/type.h`). Includes of OUR type repointed; the 3 cel-cpp-`cel::Type`
+users (typed_ast.{cc,h}, parse_and_check.cc) keep `common/type.h`. `compiler/`
+and `eval/` names KEPT (no real collision). Design §3/§5.x + $PROJ + package_group
++ curated list updated common→shared.
+
 ### Q8 — visibility regime: first-party `//:internal` group, not compiler⊥eval [RESOLVED 2026-05-25 — DESIGN REFINEMENT]
 Context (W3 gate): the design §5.4/§5.5 "compiler ⊥ eval, only public-contract
 edges" model FAILED the build. The real dep graph has legitimate cross-component

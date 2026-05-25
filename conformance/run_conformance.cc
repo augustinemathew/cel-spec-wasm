@@ -32,8 +32,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/test/simple.pb.h"
-#include "eval/engine.h"
 #include "conformance/runner.h"
+#include "eval/engine.h"
 
 // Same suppressions as compiler/cli/celwasmc_eval_main.cc:
 //   - misc-use-internal-linkage: ABSL_FLAG generates extern helpers.
