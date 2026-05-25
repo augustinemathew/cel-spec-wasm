@@ -503,9 +503,17 @@ that name.
   4. Delete the local `proto/` (now redundant — upstream provides it) **or** keep
      a curated local copy under `spec/proto/`; consuming upstream is the cleaner
      disconnect.
-  5. Update `MODULE.bazel` overrides / `WORKSPACE*` and the BCR-publish workflow
-     (`.github/workflows/publish_to_bcr.yml`) that assume the `cel-spec` module
-     identity.
+  5. Update `MODULE.bazel` overrides / `WORKSPACE*` that assume the `cel-spec`
+     module identity.
+  6. **Remove cel-spec heritage remnants (DONE, commit `0504718`).** The
+     parent-repo governance + BCR-publish machinery we no longer need:
+     `.bcr/` (metadata/presubmit/source templates + README), the
+     `.github/workflows/publish_to_bcr.yml` publish workflow, and the root
+     `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `GOVERNANCE.md` (cel-spec
+     governance; our compiler dev-workflow stays in `doc/contributing.md`).
+     `MAINTAINERS.md` + `LICENSE` left in place. No build/script referenced
+     any of these. Landed on `master` directly — independent of, and not gated
+     by, the riskier module-rename (steps 1–5).
 
 **The risk (and the gate).** Upstream BCR cel-spec 0.25.1 must expose the same
 proto/target layout our code + cel-cpp expect, and the corpus/protos must not
