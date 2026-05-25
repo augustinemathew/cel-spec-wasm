@@ -6,7 +6,7 @@
 #include <string>
 
 #include "absl/log/absl_check.h"
-#include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
 #include "compiler_v2/api/activation.h"
@@ -20,8 +20,6 @@
 
 namespace cel {
 namespace {
-
-using ::absl_testing::IsOk;
 
 // Force generated-pool registration of descriptors referenced by the
 // proto-literal `?field:` tests below.  Runs once at static init;
@@ -56,6 +54,22 @@ Value EvalSource(absl::string_view source) {
   auto v = instance->Eval(a);
   ABSL_CHECK_OK(v) << source;
   return *std::move(v);
+}
+
+// Status-returning variant for bug probes: a compile rejection or an
+// eval-time failure surfaces as a non-OK status rather than aborting the
+// binary, so a known-bug test can document *how* an expression fails
+// (compile-stage vs eval-stage).
+absl::StatusOr<Value> TryEvalSource(absl::string_view source) {
+  Compiler::Builder b;
+  auto compiler = std::move(b).Build();
+  if (!compiler.ok()) return compiler.status();
+  auto program = compiler->Compile(source);
+  if (!program.ok()) return program.status();
+  auto instance = GlobalEngine().Plan(*program);
+  if (!instance.ok()) return instance.status();
+  Activation a;
+  return instance->Eval(a);
 }
 
 TEST(OptionalE2ETest, ConformanceChaining4ExactSource) {
@@ -747,6 +761,38 @@ TEST(ProtoOptionalFieldE2ETest, HasOnSetOptionalFieldIsTrueForWrapper) {
       "  ?single_int32_wrapper: optional.of(7)"
       "}.single_int32_wrapper)");
   EXPECT_TRUE(*v.AsBool());
+}
+
+// KNOWN BUG (eval-stage): `optional.ofNonZeroValue(<message>)` traps.
+// The expression compiles and plans (the proto-`?field:` gate was lifted,
+// so the static subset admits a message operand), then traps at EVAL:
+// `is_zero_value` (compiler_v2/runtime/cel_optional.c) has no CEL_MESSAGE
+// arm — proto zero-ness needs reflection (cel-cpp parity:
+// ParsedMessageValue::IsZeroValue), so it `__builtin_trap()`s.  Verified
+// reproducing at the M14 Slice E closeout conformance run, where
+// `optional_ofNonZeroValue_struct_…` flipped SKIP→FAIL.  Tracked as
+// cleanup-backlog #10 (fix: a `cel_host.cel_message_is_zero` trampoline).
+//
+// Running unskipped TRAPS the process (non-OK Eval status that
+// TryEvalSource would surface, but the wasm trap aborts first), so this
+// stays GTEST_SKIP'd until the trampoline lands — delete the skip then,
+// and the assertion below becomes the live regression guard.
+TEST(ProtoOptionalFieldE2ETest, OfNonZeroValueOnNonZeroMessageHasValue) {
+  GTEST_SKIP() << "KNOWN BUG (verified at M14 Slice E closeout: eval traps "
+                  "__builtin_trap, want hasValue()==true): is_zero_value has "
+                  "no CEL_MESSAGE arm (cel_optional.c) — needs a proto-"
+                  "reflection host trampoline. cleanup-backlog #10. Running "
+                  "unskipped TRAPS the process — fix first, then unskip.";
+  auto v = TryEvalSource(
+      "optional.ofNonZeroValue("
+      "cel.expr.conformance.proto3.TestAllTypes{single_int32: 1})"
+      ".hasValue()");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  // A non-zero message is non-zero -> ofNonZeroValue yields a present
+  // optional -> hasValue() is true.
+  EXPECT_TRUE(*v->AsBool())
+      << "ofNonZeroValue on a non-zero message should be a present optional";
 }
 
 }  // namespace

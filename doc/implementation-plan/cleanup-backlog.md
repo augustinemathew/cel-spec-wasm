@@ -157,6 +157,50 @@ struck through or removed.
       mirroring the existing `cel_host.cel_list_size` /
       `cel_host.cel_map_size` shape — likely 2–4 hours.
 
+- [ ] **#11** — `cel_set_field` (the proto field-write trampoline) is a
+      void ABI: it signals an out-of-range scalar (e.g. an int32 field
+      assigned `2147483648`) only by *trapping* the wasm instance, which
+      surfaces as a non-OK `Eval` status — never as a CEL error *value*.
+      The conformance `eval_error` matcher compares error KIND on a
+      returned CEL value, so these rows can't PASS: a trap is an
+      engine-level failure, not a catchable CEL error.
+      Impact: blocks the int32/uint32 `*_range` rows in
+      `tests/simple/testdata/proto2.textproto` / `proto3.textproto`
+      (4 rows; documented as GTEST_SKIP in
+      `compiler_v2/e2e/wkt_field_set_test.cc`).
+      Fix shape: give `cel_set_field` a poison-on-error return path —
+      write a `CEL_ERR_RANGE` CelValue into an out-slot and let the
+      caller propagate it as a CEL error value, instead of `__builtin_
+      trap()`.  Mirrors how arithmetic kernels already poison rather
+      than trap.
+      Surfaced: 2026-05-24 WKT field-set conformance work.
+      Files: `compiler_v2/api/internal/cel_host.cc` (`SetScalarField` /
+      `SetWrapperInnerValue` range-check arms), the `cel_set_field`
+      ABI contract, `compiler_v2/codegen/expr_lower.cc` (caller).
+      Why P2: only 4 corpus rows; the in-range assignments and the rest
+      of WKT field-set ship cleanly.  Touches the field-write ABI shape,
+      so it wants its own slice.
+
+- [ ] **#12** — mixed-origin map equality: `CelMapEqImpl` only handles
+      the case where BOTH operands are host-backed maps (or both arena
+      maps).  A host-map-field operand compared against an arena map
+      literal returns `CEL_ERR_TYPE_MISMATCH` instead of a structural
+      equality.
+      Impact: blocks the map `*_null_pruned` Eq-form rows in
+      `proto2.textproto` / `proto3.textproto` (2 rows; documented as
+      GTEST_SKIP in `compiler_v2/e2e/wkt_field_set_test.cc`).  The
+      null-prune itself is proven correct (size shrinks, surviving
+      entry reads back equal) — only the cross-origin `==` is missing.
+      Fix shape: a normalizing comparison in `CelMapEqImpl` that reads
+      both operands through the same key/value accessor regardless of
+      origin (host vs arena), mirroring how list equality already
+      bridges `CEL_LIST_HOST` vs `CEL_LIST_ARENA`.
+      Surfaced: 2026-05-24 WKT field-set conformance work.
+      Files: `compiler_v2/runtime/` (`CelMapEqImpl`), the host map
+      accessors in `compiler_v2/api/internal/cel_host.cc`.
+      Why P2: 2 corpus rows; cross-origin map `==` is a self-contained
+      runtime-kernel follow-up.
+
 ## Closed
 
 - [x] **#8** — `compiler_v2/codegen/expr_lower.cc` had two
