@@ -166,8 +166,11 @@ tool); M20 is its first consumer.
 
 ## 5. Slice plan
 
-  - **Slice 0** — this doc + WAT (`m20_set_field_poison.wat`) +
-    `wat-traces.md` entry; assemble + run through `wat_runner`.
+  - **Slice 0** ✅ — this doc + WAT (`m20_set_field_poison.wat`) +
+    `wat-traces.md` §M20.1 entry; assembles (255 B) and runs through
+    `wat_runner` against a poison-contract stub
+    (`wat_runner_test.cc::SetFieldPoisonsOnOutOfRangeAndPropagates`).
+    Plus the cel-cpp strong-enum descope probe (§2).
   - **Slice A** — cel-cpp oracle library + 3-4 smoke tests proving the
     oracle agrees with our pipeline on already-passing expressions
     (e.g. `1 + 1`, `TestAllTypes{single_int32: 7}.single_int32`).
