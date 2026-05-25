@@ -76,7 +76,11 @@ if [[ ! -s "${out_wasm}" ]]; then
   echo "FAIL compile: ${out_wasm} not written"
   fail=1
 else
-  magic=$(head -c 4 "${out_wasm}" | xxd -p)
+  # `od` (coreutils) not `xxd` — xxd ships by default on macOS but is
+  # absent from a minimal Linux (e.g. ubuntu container / CI image),
+  # where it lives in a separate `xxd`/`vim-common` package.  `od` is
+  # always present on both, so the test needs no extra install.
+  magic=$(head -c 4 "${out_wasm}" | od -An -tx1 | tr -d ' \n')
   if [[ "${magic}" != "0061736d" ]]; then
     echo "FAIL compile: wasm magic mismatch (got ${magic})"
     fail=1
