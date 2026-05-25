@@ -170,30 +170,36 @@ Formatter and linter are authoritative.  The configs live at the repo
 root (`.clang-format`, `.clang-tidy`) and mirror google3 / cel-cpp
 conventions.  `third_party/` is excluded from both.
 
-**Which lint command — this is a performance lever, not a style
-choice.**  clang-tidy parsing the absl/cel-cpp headers costs a few
-seconds *per file* even with the PCH; the floor is ~4.6 s/file.  So
-lint **fewer files, more often**, not the whole branch every time:
+**The default is the cheap, working-set-scoped operation; the
+exhaustive sweep is explicit.**  This principle holds across lint,
+test, and build — the inner loop touches only what you changed, and
+you opt in to the full pass once, at the gate.  clang-tidy parsing the
+absl/cel-cpp headers costs ~4.6 s *per file* even with the PCH (the
+floor), so this matters most for lint:
 
-  - **Per edit (inner loop):** `scripts/lint.sh <the-file-you-changed>`
-    → ~4.6 s.  Or `scripts/lint.sh --dirty` to hit only working-tree
-    edits (staged + unstaged, ~5-9 s).  This is the normal path.
-  - **Once before committing (gate):** bare `scripts/lint.sh` →
-    re-lints the **entire** branch diff vs `origin/master` (~20 files,
-    ~73 s), even files you haven't touched since the last lint.  Run it
-    once at the end, not in the loop.
+  - **Inner loop (default):** bare `scripts/lint.sh` lints only your
+    **working-tree edits** (staged + unstaged) — the 1-2 files you're
+    actively touching (~5-9 s).  `scripts/lint.sh <file>` for a single
+    named file (~4.6 s).  `--dirty` is an explicit synonym for the
+    default.
+  - **Gate (explicit):** `scripts/lint.sh --branch` re-lints the
+    **entire** branch diff vs `origin/master` plus the working tree
+    (~20 files, ~73 s).  Run it once before committing / opening a PR,
+    not in the loop.
 
 Before every commit run, in order:
 
-  1. `scripts/lint.sh` (bare, the full-branch gate above) — `clang-format
-     -i` + `clang-tidy`.  Non-zero exit on any clang-tidy warning.  Run
+  1. `scripts/lint.sh --branch` — the full-branch gate.  `clang-format
+     -i` + `clang-tidy`; non-zero exit on any clang-tidy warning.  Run
      `scripts/refresh_compile_db.sh` first if `compile_commands.json` is
      stale or missing; analysis without it is partial.  (First lint on a
      cold/fresh checkout also populates external symlinks via a one-time
-     build — see "Dev-loop performance".)
+     build — see "Dev-loop performance".)  In the loop, use bare
+     `scripts/lint.sh` (working-set only) after each edit.
   2. `bazel test //compiler_v2/<touched-package>` in the loop; bare
-     `bazel test //compiler_v2/...` is a ~10-min from-cold sweep — see
-     "Dev-loop performance".
+     `bazel test //compiler_v2/...` is a ~10-min from-cold sweep — run
+     it (or rely on CI) at the gate, not per edit.  See "Dev-loop
+     performance".
   3. Update `doc/implementation-plan/testing-checklist.md` and the
      active milestone doc (see "Authoritative docs" above).
 

@@ -25,9 +25,9 @@ estimated.  Priorities, per the team's direction:
 | Pre-push gate (`-c opt` conformance), cold | **~10 min** | a *second* full cel-cpp build in a separate config tree |
 | Pre-push gate in fastbuild, warm | **14.75 s** (verified, same pass=1774) | shares the dev tree |
 | `lint.sh` on **2 files**, cold/contended | **609 s (~10 min)** measured | NOT clang-tidy — full build, see §4 |
-| `lint.sh <one-file>`, warm | **4.6 s** (verified) | inner-loop path; ~floor (header parse) |
-| `lint.sh --dirty`, warm | **~5-9 s** | only working-tree edits |
-| bare `lint.sh` (full branch diff) | **73 s** (verified, ~20 files) | pre-commit gate only |
+| bare `lint.sh` (**default = working-tree edits**), warm | **~5-9 s** | inner-loop default |
+| `lint.sh <one-file>`, warm | **4.6 s** (verified) | ~floor (header parse) |
+| `lint.sh --branch` (full branch diff), warm | **73 s** (verified, ~20 files) | explicit pre-commit / PR gate |
 
 **The bottleneck is build, not test or lint.** And the single worst
 offender is the **pre-push gate running under `-c opt`**, a different
@@ -164,14 +164,19 @@ more often*:
 
 | Command | Scope | Cost | When |
 |---|---|---|---|
-| `lint.sh <file>` | named file(s) | **4.6 s** | per edit (inner loop) |
-| `lint.sh --dirty` | working-tree edits (staged+unstaged) | **~5-9 s** | per edit |
-| `lint.sh` (bare) | whole branch diff vs `origin/master` (~20 files) | **73 s** | once, pre-commit |
+| `lint.sh` (**default**) | working-tree edits (staged+unstaged) | **~5-9 s** | inner loop |
+| `lint.sh <file>` | named file(s) | **4.6 s** | inner loop |
+| `lint.sh --dirty` | explicit synonym for the default | ~5-9 s | inner loop |
+| `lint.sh --branch` | whole branch diff vs `origin/master` + worktree (~20 files) | **73 s** | once, pre-commit / PR |
+| `lint.sh --all` | every `compiler_v2/` source file | — | rare |
 
-**LANDED:** `--dirty` was added so a mid-loop invocation hits only the
-1-2 files you're actively touching instead of re-linting the entire
-branch every time.  Bare `lint.sh` stays the explicit full-branch
-pre-commit gate.
+**LANDED:** the default was **flipped** — bare `lint.sh` now lints only
+your working-tree edits (the inner-loop common case), and the
+exhaustive full-branch sweep is the explicit `--branch` gate.  This
+follows the general principle: *the cheap, working-set-scoped
+operation is the default; the exhaustive sweep is opt-in* (mirrors
+package-scoped `bazel test` in the loop vs `//compiler_v2/...` at the
+gate).
 
 ### The rest of lint
 

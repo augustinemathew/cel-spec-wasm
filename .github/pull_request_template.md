@@ -18,8 +18,10 @@ file paths so a reviewer can run them. -->
 
 - [ ] `bazel test //compiler_v2/...` green.
 - [ ] Manual-tagged tests run (list which: …).
-- [ ] `scripts/lint.sh` clean (or pre-existing-only — list any
-      remaining warnings + which lint-backlog entry tracks them).
+- [ ] `scripts/lint.sh --branch` clean (full branch diff; bare
+      `lint.sh` only checks working-tree edits).  Pre-existing-only is
+      OK — list any remaining warnings + which lint-backlog entry
+      tracks them.
 
 ## Conformance
 

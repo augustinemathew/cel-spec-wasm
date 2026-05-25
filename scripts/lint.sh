@@ -2,9 +2,10 @@
 # lint.sh — format + lint changed C/C++ files.
 #
 # Usage:
+#   scripts/lint.sh                    # DEFAULT: working-tree edits only (inner loop, ~5-9s)
 #   scripts/lint.sh path/to/file.cc    # inner loop: lint named file(s), ~4.6s
-#   scripts/lint.sh --dirty            # inner loop: lint working-tree edits only (~5-9s)
-#   scripts/lint.sh                    # pre-commit gate: full branch diff vs main (~73s)
+#   scripts/lint.sh --branch           # pre-commit / PR gate: full branch diff vs main (~73s)
+#   scripts/lint.sh --dirty            # explicit synonym for the default
 #   scripts/lint.sh --all              # lint every compiler_v2/ source file
 #
 # Behaviour:
@@ -36,57 +37,69 @@ for tool in "$CLANG_FORMAT" "$CLANG_TIDY"; do
   fi
 done
 
-# Build the file list.
+# Build the file list.  Scope selection (DEFAULT = working-tree edits):
+#
+#   (no args)         working-tree edits only (staged + unstaged) — the
+#                     inner-loop default.  Lints just the files you're
+#                     actively touching (~4.6s/file).  Same as --dirty.
+#   --branch          everything changed on this branch vs origin/master,
+#                     plus the working tree — the comprehensive pre-commit
+#                     / PR gate (~73s on ~20 files).
+#   --dirty           explicit synonym for the default.
+#   --all             every compiler_v2 source file.
+#   <file> [<file>…]  exactly the named files.
+#
+# Rationale + measured costs: doc/implementation-plan/dev-loop-performance.md
+# and CLAUDE.md "Lint & format".  The default is the common case (lint
+# while editing); the full-branch sweep is opt-in so the inner loop is
+# cheap by default.
 declare -a files=()
-if [[ $# -ge 1 && "$1" == "--all" ]]; then
-  while IFS= read -r -d '' f; do files+=("$f"); done < <(
-    find compiler_v2 -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
-      -print0
-  )
-elif [[ $# -ge 1 && "$1" == "--dirty" ]]; then
-  # Inner-loop fast path: lint ONLY working-tree-modified files (staged
-  # + unstaged), not the whole branch diff.  Bare `lint.sh` re-lints
-  # every file that differs from origin/master (~20 files, ~73s) even
-  # ones you haven't touched since the last lint; `--dirty` hits just
-  # the 1-2 files you're actively editing (~5-9s).  Use this per edit;
-  # run bare `lint.sh` once before committing for the full-branch gate.
-  # See CLAUDE.md "Lint & format".
-  mapfile -t files < <(
-    git diff --name-only --diff-filter=ACMR -- \
-      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
-      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
-    git diff --name-only --cached --diff-filter=ACMR -- \
-      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
-      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
-  )
+
+# C/C++ sources under compiler_v2, as git pathspecs (reused below).
+_cc_globs=(
+  'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c'
+  'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
+)
+
+_dedup_files() {
   if [[ ${#files[@]} -gt 0 ]]; then
     mapfile -t files < <(printf '%s\n' "${files[@]}" | awk 'NF' | sort -u)
   fi
-elif [[ $# -ge 1 ]]; then
-  files=("$@")
-else
-  # Files that differ from origin/master (fall back to HEAD if no upstream).
-  base_ref="origin/master"
-  if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
-    base_ref="HEAD"
-  fi
-  mapfile -t files < <(
-    git diff --name-only --diff-filter=ACMR "$base_ref"...HEAD -- \
-      'compiler/*.cc' 'compiler/*.h' 'compiler/*.c' \
-      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
-      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
-      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
-    git diff --name-only --diff-filter=ACMR -- \
-      'compiler/*.cc' 'compiler/*.h' 'compiler/*.c' \
-      'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
-      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
-      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
-  )
-  # Dedup and strip empties.
-  if [[ ${#files[@]} -gt 0 ]]; then
-    mapfile -t files < <(printf '%s\n' "${files[@]}" | awk 'NF' | sort -u)
-  fi
-fi
+}
+
+case "${1:-}" in
+  --all)
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(
+      find compiler_v2 -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
+        -print0
+    )
+    ;;
+  --branch)
+    # Full branch gate: diff vs origin/master (fall back to HEAD if no
+    # upstream) PLUS the working tree.
+    base_ref="origin/master"
+    if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+      base_ref="HEAD"
+    fi
+    mapfile -t files < <(
+      git diff --name-only --diff-filter=ACMR "$base_ref"...HEAD -- "${_cc_globs[@]}"
+      git diff --name-only --diff-filter=ACMR -- "${_cc_globs[@]}"
+      git diff --name-only --cached --diff-filter=ACMR -- "${_cc_globs[@]}"
+    )
+    _dedup_files
+    ;;
+  --dirty | "")
+    # DEFAULT + explicit --dirty: working-tree edits only (staged + unstaged).
+    mapfile -t files < <(
+      git diff --name-only --diff-filter=ACMR -- "${_cc_globs[@]}"
+      git diff --name-only --cached --diff-filter=ACMR -- "${_cc_globs[@]}"
+    )
+    _dedup_files
+    ;;
+  *)
+    files=("$@")
+    ;;
+esac
 
 # Filter out third_party/ and bazel-*/ defensively.
 declare -a targets=()
