@@ -32,6 +32,18 @@ build --enable_platform_specific_config
 build:macos --repo_env=PATH=/opt/homebrew/opt/llvm/bin:/usr/bin:/bin
 build:linux --repo_env=CC=clang --repo_env=CXX=clang++
 
+# Linux: link with lld, not gold.  Bazel's auto-detected Linux toolchain
+# defaults to `-fuse-ld=gold`, but gold crashes linking a binary this
+# large (cel-cpp + abseil + protobuf, compiled with -ffunction-sections,
+# push the object's section count past what gold's section-index code
+# handles): `ld.gold: internal error in set_xindex, at object.h:1050`.
+# lld handles the extended section indices correctly, is far faster on
+# these large static links, and is the same linker family as macOS's
+# ld64.lld — keeping one LLVM toolchain on both hosts.  `-fuse-ld=lld`
+# appended here wins over the toolchain's `-fuse-ld=gold` (clang honours
+# the last `-fuse-ld`).  Requires `lld` on PATH (apt-get install lld).
+build:linux --linkopt=-fuse-ld=lld
+
 # ── Cross-checkout disk cache: OPT-IN, not enabled by default ──────
 # A shared --disk_cache would let a second checkout reuse compiled
 # actions (measured: fresh output base → 34/34 disk-cache hits, 0
