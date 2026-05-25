@@ -395,4 +395,9 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
     `doc/implementation-plan/rewrite/` milestone sprawl, archived/superseded
     designs, the `compiler_v2`-shaped narrative throughout, and stale
     cross-references all want restructuring to match the new repo shape. Out
-    of scope here; tracked as the next docs workstream.
+    of scope here; tracked as the next docs workstream. **This includes the
+    residual `compiler_v2/` tail (Q6)** the W1·Docs mechanical sweep left in the
+    historical milestone/review/probe records (~40 files): rewriting them now
+    would falsify the record (e.g. a review whose finding IS "compiler_v2/
+    functions is drift"), so they're reconciled here, holistically, not chased
+    mid-restructure.

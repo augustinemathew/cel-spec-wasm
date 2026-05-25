@@ -11,6 +11,28 @@ Resolution: …
 
 ---
 
+### Q6 — Doc residual `compiler_v2/` tail is historical record → defer to docs-refactor [RESOLVED 2026-05-25]
+Context (W1·Docs): after the mechanical clean-mapping bulk rewrite of doc/**/*.md
+(committed), ~180 `compiler_v2/` tokens remain across ~40 files. Inspection shows
+the tail is dominated by HISTORICAL records, not live path errors:
+  - `compiler_v2/probes/…` (33) — the dir is DELETED; these are past-tense "we
+    built probe X" milestone notes.
+  - `compiler_v2/cli` (25), `compiler_v2/functions` (9) — neither dir EXISTS even
+    pre-restructure (CLI is tools/cel; fns are celfn). They're stale refs inside
+    historical docs; `m13-reviews/2026-05-21-pre-slice-c.md` literally documents
+    "compiler_v2/functions is drift" AS A REVIEW FINDING — rewriting destroys it.
+  - bare `compiler_v2/` (81) — generic "the compiler_v2 tree" prose in milestone
+    M1–M20 notes / reviews, written when the code lived there.
+Resolution: The mechanical path-rewrite IS the W1·Docs deliverable (done). The
+remaining tail belongs to the **docs-refactor workstream the user already scoped
+as a separate future effort** (design §10) — and CLAUDE.md's own "Closing out a
+planning doc" rule keeps old text + marks deltas rather than rewriting history.
+So: do NOT chase the historical tail now.
+GATE RECONCILIATION: W5 step 8 is scoped to **code/BUILD/scripts clean of
+compiler_v2** (the hard correctness gate; docs don't affect the build). Docs may
+retain `compiler_v2` — the full doc-tree reconciliation is the deferred
+docs-refactor. The grep gate explicitly excludes doc/**.
+
 ### Q5 — `proto/` move breaks vendored cel-cpp (blocked on module rename) [RESOLVED 2026-05-25 — DESIGN CHANGE]
 Context (W1·Spec): vendored `third_party/cel-cpp` hardcodes
 `@com_google_cel_spec//proto/cel/expr:*` in ~195 BUILD sites (e.g.

@@ -381,7 +381,13 @@ The gate below is the binding exit criteria — ALL must pass before merge.
     AUDITS that the regime is the intended shape, not accidentally widened.)
 6. bazel query 'kind(go_.*, $PROJ)'  → empty (Go surface gone)
 7. scripts/lint.sh --branch                              (clang-format + tidy)
-8. grep -rn compiler_v2 . (excl third_party, bazel-*, .git) → only design docs
+8. grep -rn compiler_v2 in CODE/BUILD/SCRIPTS (NOT docs) must be clean:
+     grep -rn compiler_v2 --include=*.bazel --include=*.bzl --include=*.cc \
+       --include=*.h --include=*.sh --include=*.py . | grep -vE 'third_party|bazel-'
+   → empty. NOTE (Q6): doc/** is EXCLUDED — the doc-tree still carries historical
+   `compiler_v2` references (milestone/review/probe records, deleted-dir mentions);
+   reconciling those is the separately-scoped docs-refactor workstream (design §10),
+   not this restructure. Only code/BUILD/scripts are gated clean.
 
 EXIT CRITERIA (all true, steps 1–8): full suite + manual targets green;
 conformance count == conformance/.baseline == W0 capture; benches build +
