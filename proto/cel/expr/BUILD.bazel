@@ -151,52 +151,6 @@ java_proto_library(
 )
 
 ###############################################################################
-## Go
-###############################################################################
-
-load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
-
-go_proto_library(
-    name = "expr_go_proto",
-    importpath = "cel.dev/expr",
-    protos = [":expr_proto"],
-)
-
-go_proto_library(
-    name = "syntax_go_proto",
-    importpath = "cel.dev/expr",
-    protos = [":syntax_proto"],
-)
-
-go_proto_library(
-    name = "checked_go_proto",
-    embed = [":syntax_go_proto"],
-    importpath = "cel.dev/expr",
-    protos = [":checked_proto"],
-)
-
-go_proto_library(
-    name = "value_go_proto",
-    importpath = "cel.dev/expr",
-    protos = [":value_proto"],
-)
-
-go_proto_library(
-    name = "eval_go_proto",
-    embed = [":value_go_proto"],
-    importpath = "cel.dev/expr",
-    protos = [":eval_proto"],
-)
-
-go_proto_library(
-    name = "explain_go_proto",
-    deprecation = "Use EvalState instead.",
-    embed = [":value_go_proto"],
-    importpath = "cel.dev/expr",
-    protos = [":explain_proto"],
-)
-
-###############################################################################
 ## C++
 ###############################################################################
 
