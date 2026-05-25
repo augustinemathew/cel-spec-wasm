@@ -126,3 +126,29 @@ selects) ALL share one cause: EmitKSelect (expr_lower.cc:199-261) has no
 map-operand branch, so `m.k` (== m['k']) lowers to the proto field-read
 trampoline which rejects non-message operands (cel_host.cc:1394 ->
 CEL_ERR_TYPE_MISMATCH). Codegen gap, not checker/IR. One fix flips the cluster.
+
+## Proto field-setter findings (wave 3) — conformance-verified; need proto fixtures to encode as e2e
+
+REAL BUGS (surgical fixes; all route through CelSetFieldImpl, cel_host.cc:2882):
+- [HIGH] No range-check on int32/enum/wrapper field assignment (~6 conf rows):
+  - `proto2.TestAllTypes{single_int32_wrapper: 12345678900}` → silent
+    static_cast truncation; want "range error". cel_host.cc:2135 (wrapper
+    INT32) + :2241 (scalar INT32).
+  - `proto2.TestAllTypes{standalone_enum: 5000000000}` / `{...: -7000000000}`
+    → no bounds check. cel_host.cc:2312 (singular) / :2501 (repeated).
+  - Oracle: cel-cpp struct_value_builder.cc:1090-1095 (enum) / :1125-1129
+    (Int32Value → OutOfRange). Fixtures: dynamic.textproto:88, enums.textproto:88,329.
+- [MED] No null-pruning of repeated/map MESSAGE-typed elements (~10 rows):
+  `TestAllTypes{repeated_timestamp:[timestamp(1), null]}` should drop null →
+  [timestamp(1)]; actual trap at cel_host.cc:2509 (repeated) / :2688 (map insert).
+  NOTE asymmetry: repeated_any/repeated_value RETAIN null (null is a valid
+  Any/Value) — prune only for real WKT/wrapper element types. proto3.textproto:698-757.
+
+UNIMPLEMENTED (not bugs — no codepath): ~33 rows needing a JSON-boxing kernel
+(CEL scalar/list/map → google.protobuf.Value/Struct/ListValue, raw value → Any).
+SetScalarField CPPTYPE_MESSAGE only handles the 9 wrapper FQNs + message→Any-pack
+(cel_host.cc:215-225, 2080, 2331); no Value/Struct/ListValue branch.
+
+TODO to encode: add //proto/cel/expr/conformance/{proto2,proto3} deps + type
+registration to a new proto-aware known_bugs test (the range-check + null-prune
+repros are clean once TestAllTypes is registered).
