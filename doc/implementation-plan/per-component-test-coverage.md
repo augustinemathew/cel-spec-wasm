@@ -93,11 +93,11 @@ exercises the slice's surface runs green.
 | `//compiler_v2/api:cel_host_test` | Layer-1 `ProtoBacking`, Layer-2 trampolines (`CelGetFieldImpl`, `CelHasFieldImpl`, `CelMapLookupImpl`) | Any cel_host change |
 | `//compiler_v2/api:cel_pipeline_bench` | Pipeline-stage perf bench | Major pipeline change (regression catch) |
 | `//compiler_v2/e2e:m<N>_test` | The milestone's e2e suite | Every feature in milestone N |
-| `//compiler_v2/e2e:eval_test` | Cross-cutting eval shapes (legacy compiler) | Compatibility check |
+| `//compiler_v2/e2e:eval_test` | Cross-cutting eval shapes (legacy compiler) | Compatibility check | <!-- FLAG: no `eval_test` target exists under compiler_v2/e2e/ (only m<N>_test + optimize_test + program_roundtrip_test + known_bugs_test); this row may be stale — verify before relying on it as a gate. -->
 | `//compiler_v2/runtime:cel_runtime_wasm_test` | wasm32-cross-compiled runtime, exercised under wasmtime | Any runtime primitive change |
 | `//compiler_v2/tools/wat_runner:wat_runner_test` | WAT trace re-assemble + re-run regression | Any codegen arm change (WAT-first rule) |
 | `//compiler_v2/conformance:run_conformance` | Upstream CEL conformance corpus | Every milestone close |
-| `//compiler_v2/cli:celwasmc_eval` (smoke) | CLI binary, end-to-end eval from source string | Any public-API change |
+| `//compiler_v2/tools/cel:cel_smoke_test` (smoke) | `cel` CLI binary, end-to-end eval/check/compile from source string | Any public-API change |
 
 **`scripts/run_full_suite.sh`** (or equivalent ergonomic wrapper)
 should bundle these into one invocation; the milestone doc cites

@@ -5,6 +5,10 @@ compiler.  The active design + per-milestone plans live under `rewrite/`;
 this top-level directory keeps the transverse coverage docs and backlog
 lists used across every milestone.
 
+> **Navigating the whole `doc/` tree?** Start at
+> [`../README.md`](../README.md) — the top-level index that maps every
+> doc (upstream spec vs. project planning) with a status per file.
+
 Companion documents (do not duplicate — link):
   - `rewrite/design.md` — the active "why / what" design for the
     `compiler_v2/` rewrite.  Supersedes the original
@@ -52,8 +56,11 @@ Companion documents (do not duplicate — link):
        lands; see CLAUDE.md "WAT-first" section).
      - `rewrite/cel-host-surface.md` — the host-import surface; supersedes
        the original `doc/cel-host-design.md`.
-     - `rewrite/predecessor-*.md` — retired predecessor designs kept for
-       historical context; superseded by `design.md`.
+     - `rewrite/archive/predecessor-*.md`, `rewrite/archive/m-custom-fns.md`
+       — retired / superseded designs kept for historical context;
+       superseded by `design.md` (predecessors) and `m13-custom-fns.md`
+       (the old M6 draft).  One-line pointer stubs remain at the old
+       `rewrite/*.md` paths.
   - `testing-checklist.md` — transverse CEL type × AST-variant coverage
     grid.  Has a top-of-file **Gap summary** that calls out what's open
     in the active milestone vs. deferred.
