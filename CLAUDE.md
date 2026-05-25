@@ -441,6 +441,63 @@ pipeline coverage:
 
 When a bug is fixed, add a regression test *in the same commit*.
 
+## Reporting & tracking bugs / gaps via tests
+
+This is how a fixable bug or conformance gap enters and leaves the
+codebase.  **Every bug and every behavior gap is accounted for by an
+explicit test case — never by a silent omission, a TODO, or an
+untracked FAIL.**  A reader (or `grep`) must be able to see, for any
+behavior, either a passing test that pins it or a skipped test that
+names why it isn't supported yet.
+
+**1. One test case per bug / per conformance row.**  When you fix a
+bug or unlock a conformance row, add a `TEST`/`TEST_F`/`TEST_P` that
+exercises the *exact* failing input (for conformance, the literal
+`expr:` from the `.textproto` row) and asserts the now-correct result
+(value, or expected eval-error kind).  Name it after the bug /
+conformance row (`<fixture>_<row_name>`) so the test↔row mapping is
+greppable.  Put behavior that flows through the whole pipeline in an
+`compiler_v2/e2e/*_test.cc`; put kernel-level behavior in the
+component's `*_test.cc`.
+
+**2. Verified-dead / not-yet-supported → `GTEST_SKIP() << "<reason>"`,
+never omission.**  If a row or behavior cannot pass today, still write
+the test case, and `GTEST_SKIP()` it with the reason you
+**verified** — naming the concrete blocker, not "not done":
+
+```cpp
+TEST_F(M18NetworkExt, OptionalChaining1) {
+  GTEST_SKIP() << "blocked on the map.field selection gap "
+                  "(cleanup-backlog #9); `{'c':{...}}.c` reaches as a "
+                  "kSelectExpr the runtime can't index yet";
+  // ... the expression + assertion, ready to un-skip when the blocker lands.
+}
+```
+
+Legitimate skip reasons are things you have confirmed: out of the
+static subset by design (`RejectDyn`), parse-only eval
+(`disable_check`), a named upstream/sibling gap with a tracking
+reference, an unimplemented later-milestone surface.  "This whole
+feature isn't done" is **not** a reason — that is the silent-skip
+anti-pattern that let M2 ship 29 dead `GTEST_SKIP`s (see
+`per-component-test-coverage.md`).  Never `GTEST_SKIP` a fixture's
+`SetUp`; skip the individual case so the rest of the fixture still
+runs.
+
+**3. The skip is a live TODO with the un-skip recipe baked in.**  A
+skipped case carries the assertion it *will* make, so closing the
+blocker is "delete the `GTEST_SKIP` line and confirm green."  When a
+blocker is cleared, the commit that clears it removes the matching
+`GTEST_SKIP`(s) — a skip that lingers after its blocker is gone is a
+review finding.
+
+**4. Conformance FAILs are bugs too.**  A row that FAILs (not SKIPs)
+is an untracked bug until it has a focused test case pinning the
+current-vs-expected gap — either fix it (case passes) or, if it's a
+genuine harness/scope limitation, convert it to a reasoned
+`GTEST_SKIP` AND record it in `cleanup-backlog.md`.  Do not leave a
+bare FAIL with no test documenting it.
+
 ## Build & run
 
   - Primary build: `bazel build //compiler_v2/...`.
