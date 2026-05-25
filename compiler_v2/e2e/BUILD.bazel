@@ -2,6 +2,25 @@ load("@rules_cc//cc:defs.bzl", "cc_test")
 
 package(default_visibility = ["//compiler_v2:__subpackages__"])
 
+# Known-bugs registry: confirmed defects as runnable, GTEST_SKIP-gated
+# regressions (correctness + memory-model cliffs).  See the file header.
+cc_test(
+    name = "known_bugs_test",
+    srcs = ["known_bugs_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 cc_test(
