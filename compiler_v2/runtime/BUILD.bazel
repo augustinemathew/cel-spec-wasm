@@ -69,6 +69,7 @@ cc_library(
         "cel_make.c",
         "cel_math_ext.c",
         "cel_memory.c",
+        "cel_net_ext.c",
         "cel_optional.c",
         "cel_runtime.c",
         "cel_string_ops.c",
@@ -89,6 +90,7 @@ cc_library(
         "cel_map.h",
         "cel_math_ext.h",
         "cel_memory.h",
+        "cel_net_ext.h",
         "cel_optional.h",
         "cel_runtime.h",
         "cel_string_ops.h",
@@ -197,6 +199,15 @@ cc_test(
 cc_test(
     name = "cel_math_ext_test",
     srcs = ["cel_math_ext_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_net_ext_test",
+    srcs = ["cel_net_ext_test.cc"],
     deps = [
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
@@ -543,6 +554,8 @@ cc_binary(
         "cel_map.h",
         "cel_memory.c",
         "cel_memory.h",
+        "cel_net_ext.c",
+        "cel_net_ext.h",
         "cel_runtime.c",
         "cel_runtime.h",
         "cel_string_ops.c",

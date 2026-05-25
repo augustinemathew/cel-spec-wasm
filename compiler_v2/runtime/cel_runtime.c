@@ -1,6 +1,7 @@
 #include "compiler_v2/runtime/cel_runtime.h"
 
 #include "compiler_v2/runtime/cel_internal.h"
+#include "compiler_v2/runtime/cel_net_ext.h"
 #include "compiler_v2/runtime/cel_optional.h"
 
 // ---- map runtime ---------------------------------------------------------
@@ -557,6 +558,9 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
     return a->payload.ts.seconds == b->payload.ts.seconds &&
            a->payload.ts.nanos == b->payload.ts.nanos;
   }
+  if (a->kind == CEL_IP && b->kind == CEL_IP) {
+    return net_ip_eq(a, b);
+  }
   // Bool / string / cross-kind non-numeric fall through to
   // `map_keys_equal` which itself routes numerics polymorphically
   // and returns 0 for kind mismatches.
@@ -1084,8 +1088,7 @@ static uint32_t map_iter_count(const MapIterState* state) {
 // fields at `state_offset`.  When the source is empty or
 // snapshot-allocation fails, the trampoline sets `count = 0`.
 #ifdef __wasm__
-extern void cel_host_cel_map_iter_open(uint32_t state_offset,
-                                        uint32_t map_slot)
+extern void cel_host_cel_map_iter_open(uint32_t state_offset, uint32_t map_slot)
     __attribute__((import_module("cel_host"),
                    import_name("cel_map_iter_open")));
 #else
@@ -1195,8 +1198,8 @@ static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
   if (state->kind == MAP_ITER_KIND_ARENA) {
     ArenaMapHeader* hdr =
         (ArenaMapHeader*)(cel_memory_base_() + state->payload);
-    *out =
-        want_value ? *arena_map_entry_val(hdr, i) : *arena_map_entry_key(hdr, i);
+    *out = want_value ? *arena_map_entry_val(hdr, i)
+                      : *arena_map_entry_key(hdr, i);
     return;
   }
   // HOST: snapshot entries are 48 bytes each — key at +0, value at +24.
@@ -1368,6 +1371,10 @@ static int equal_same_kind(uint32_t kind, uint32_t out_slot, uint32_t a_slot,
                      a->payload.dur.nanos == b->payload.dur.nanos);
       return 1;
     }
+    case CEL_IP:
+      write_bool(cel_value_at(out_slot),
+                 net_ip_eq(cel_value_at(a_slot), cel_value_at(b_slot)));
+      return 1;
     default:
       return 0;  // Aggregates fall through to the polymorphic arms.
   }
