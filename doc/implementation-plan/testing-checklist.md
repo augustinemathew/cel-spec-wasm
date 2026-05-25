@@ -419,14 +419,14 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `string`        | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | `bytes`         | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | `null_type`     | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
-| `timestamp`     | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
-| `duration`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `timestamp`     | [x]    | [x]     | [x]         | [x]       | [ ]     | [x]      |
+| `duration`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [x]      |
 | `list<T>`       | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | `map<K,V>`      | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
 | proto message   | [x]    | [x]     | [x]         | [x]       | [x]     | [x]      |
 | enum            | [ ]    | [ ]     | [ ]         | [ ]       | [ ]     | [ ]      |
 | wrapper (Int64Value …) | [x] | [x]  | [x]         | [x]       | [x]     | [x]      |
-| `any`           | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ]      |
+| `any`           | [x]    | [x]     | [x]         | [x]       | [ ]     | [x]      |
 | `dyn` (rejected)| —      | —       | —           | [x]       | —       | —        |
 | `error`         | —      | —       | —           | [x]       | —       | —        |
 
@@ -442,7 +442,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kCallExpr` (member) | [x]   | [x]     | [x]         | [x]       | [x]     | [x] |
 | `kCallExpr` (short-circuit `&&` / `||` / `?:`) | [ ] | [ ] | [ ] | [ ] | [x] | [x] |
 | `kListExpr` (empty + non-empty) | [x] | [x] | [x]  | [x]       | [ ]     | [ ] |
-| `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [ ] |
+| `kStructExpr` (proto ctor) | [x] | [ ] | [x]      | [x]       | [ ]     | [x] |
 | `kMapExpr`          | [x]    | [x]     | [x]         | [x]       | [ ]     | [ ] |
 | `kComprehensionExpr` (exists) | [x] | [x] | [x]  | [x]       | [x]     | [x] |
 | `kComprehensionExpr` (all)    | [x] | [x] | [x]  | [x]       | [x]     | [x] |
