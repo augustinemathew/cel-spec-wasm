@@ -17,10 +17,20 @@
 # This is macOS-only: the `ld64.lld:` bug is an Apple-clang artefact
 # and `/opt/homebrew/opt/llvm/bin` exists only on Homebrew/Apple
 # Silicon.  `--enable_platform_specific_config` makes bazel auto-apply
-# the `build:macos` / `build:linux` block matching the host OS, so a
-# Linux checkout uses its system clang/gcc untouched.
+# the `build:macos` / `build:linux` block matching the host OS.
+#
+# On Linux we force the host C/C++ compiler to clang (CC/CXX), not the
+# distro-default gcc.  The host-compiled runtime sources are written
+# against clang: `cel_runtime.c` uses `__attribute__((musttail))` for
+# the guaranteed-tail-call dispatch (GCC only gained musttail in 15;
+# Ubuntu 24.04 ships gcc 13), and `cel_layout.h` relies on clang's
+# handling of C11 `_Static_assert` in a C++ include context.  Using
+# clang on both hosts keeps a single, consistent compiler — the wasm
+# cross-compile already goes through wasi-sdk clang on every host.
+# Requires `clang` on PATH (apt-get install clang); see doc/contributing.md.
 build --enable_platform_specific_config
 build:macos --repo_env=PATH=/opt/homebrew/opt/llvm/bin:/usr/bin:/bin
+build:linux --repo_env=CC=clang --repo_env=CXX=clang++
 
 # ── Cross-checkout disk cache: OPT-IN, not enabled by default ──────
 # A shared --disk_cache would let a second checkout reuse compiled
