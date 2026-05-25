@@ -47,11 +47,13 @@ class HostListBacking;
 
 namespace celwasm::api {
 
-// Pulled in from `namespace cel` (attribute.h / error.h still live
-// there — they don't collide with cel-cpp).  These usings let the
-// Value class body refer to them without `cel::` qualification.
-using ::cel::AttributeId;
-using ::cel::ErrorPayload;
+// AttributeId lives in `namespace celwasm` (alongside the other
+// attribute types — it must not collide with cel-cpp's `cel::Attribute*`
+// when both libraries link into one binary).  ErrorPayload still lives
+// in `namespace cel`.  These usings let the Value class body refer to
+// them unqualified.
+using ::celwasm::AttributeId;
+using ::celwasm::ErrorPayload;
 
 class Value {
  public:
@@ -251,16 +253,5 @@ class Value {
 absl::string_view ValueKindName(Value::Kind k);
 
 }  // namespace celwasm::api
-
-// Backward-compat aliases.  Pre-2026-05 these symbols lived in
-// `namespace cel`, but cel-cpp (`@cel-cpp//common:value`) defines its
-// own `cel::Value` and linking both libraries into the same binary
-// produced duplicate-symbol errors.  The class lives under
-// `celwasm::api` now; the using-aliases keep existing user code
-// (`cel::Value::Int(42)` etc.) compiling unchanged.
-namespace cel {
-using ::celwasm::api::Value;
-using ::celwasm::api::ValueKindName;
-}  // namespace cel
 
 #endif  // CELWASM_COMPILER_V2_API_VALUE_H_

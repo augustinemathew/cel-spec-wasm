@@ -444,7 +444,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -458,7 +458,7 @@ cc_library(
     tags = ["manual"],
     deps = [
         ":host_callback",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -543,7 +543,7 @@ cc_library(
         ":cel_host_wasmtime",
         ":host_callback",
         "//compiler_v2/abi:cel_abi_cc_proto",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -573,7 +573,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -643,7 +643,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -660,6 +660,6 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )

@@ -1,6 +1,6 @@
-# Injected as the top-level BUILD file for the `@wasmtime_darwin_arm64`
-# repository.  Exposes a single `cc_library` with the C API headers and
-# the prebuilt static archive.  The macOS static archive pulls in
+# Injected as the top-level BUILD file for the macOS `@wasmtime_*`
+# repositories.  Exposes a single `cc_library` with the C API headers
+# and the prebuilt static archive.  The macOS static archive pulls in
 # CoreFoundation / Security via `-framework`; those are the standard
 # requirements documented in wasmtime's C API `config-cmake` template.
 
@@ -8,6 +8,7 @@ package(default_visibility = ["//visibility:public"])
 
 cc_library(
     name = "wasmtime",
+    srcs = ["lib/libwasmtime.a"],
     hdrs = glob(
         [
             "include/*.h",
@@ -23,5 +24,4 @@ cc_library(
         "-framework",
         "Security",
     ],
-    srcs = ["lib/libwasmtime.a"],
 )

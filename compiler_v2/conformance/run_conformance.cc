@@ -134,7 +134,7 @@ void RecordSkip(FileTally& out, celwasm::conformance::SkipCategory c) {
   ABSL_CHECK(false) << "unhandled SkipCategory in run_conformance";
 }
 
-FileTally RunFile(absl::string_view path, const cel::Engine& engine,
+FileTally RunFile(absl::string_view path, const celwasm::api::Engine& engine,
                   std::uint32_t max_fail_examples,
                   std::uint32_t max_skip_examples) {
   FileTally out{.path = std::string(path)};
@@ -215,9 +215,9 @@ void PrintCorpusBreakdown(
 int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   absl::ParseCommandLine(argc, argv);
 
-  auto e = cel::Engine::NewBuilder().Build();
+  auto e = celwasm::api::Engine::NewBuilder().Build();
   ABSL_CHECK_OK(e);
-  cel::Engine engine = *std::move(e);
+  celwasm::api::Engine engine = *std::move(e);
 
   const auto& paths = absl::GetFlag(FLAGS_file).empty()
                           ? DefaultCorpus()

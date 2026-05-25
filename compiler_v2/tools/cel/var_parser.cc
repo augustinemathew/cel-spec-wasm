@@ -32,8 +32,8 @@ namespace celwasm::tools::cel {
 
 namespace {
 
-using ::cel::CelType;
-using ::cel::Value;
+using ::celwasm::api::CelType;
+using ::celwasm::api::Value;
 
 // ---------- Small cursor primitive ------------------------------------------
 
@@ -172,13 +172,27 @@ absl::StatusOr<std::string> ParseQuotedString(Cursor& c) {
     if (c.Eof()) break;
     const char esc = c.src[c.pos++];
     switch (esc) {
-      case 'n': out.push_back('\n'); break;
-      case 't': out.push_back('\t'); break;
-      case 'r': out.push_back('\r'); break;
-      case '\\': out.push_back('\\'); break;
-      case '"': out.push_back('"'); break;
-      case '\'': out.push_back('\''); break;
-      case '0': out.push_back('\0'); break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      case '"':
+        out.push_back('"');
+        break;
+      case '\'':
+        out.push_back('\'');
+        break;
+      case '0':
+        out.push_back('\0');
+        break;
       case 'x': {
         if (c.pos + 2 > c.src.size()) {
           return absl::InvalidArgumentError("truncated \\x escape");
@@ -187,12 +201,15 @@ absl::StatusOr<std::string> ParseQuotedString(Cursor& c) {
         for (int i = 0; i < 2; ++i) {
           const char h = c.src[c.pos++];
           v <<= 4;
-          if (h >= '0' && h <= '9') v |= (h - '0');
-          else if (h >= 'a' && h <= 'f') v |= (h - 'a' + 10);
-          else if (h >= 'A' && h <= 'F') v |= (h - 'A' + 10);
-          else return absl::InvalidArgumentError(
-                   absl::StrCat("invalid hex digit '", std::string(1, h),
-                                "' in \\x escape"));
+          if (h >= '0' && h <= '9')
+            v |= (h - '0');
+          else if (h >= 'a' && h <= 'f')
+            v |= (h - 'a' + 10);
+          else if (h >= 'A' && h <= 'F')
+            v |= (h - 'A' + 10);
+          else
+            return absl::InvalidArgumentError(absl::StrCat(
+                "invalid hex digit '", std::string(1, h), "' in \\x escape"));
         }
         out.push_back(static_cast<char>(v));
         break;
@@ -227,11 +244,12 @@ absl::StatusOr<Value> ParseInt(Cursor& c) {
   c.Skip();
   const size_t start = c.pos;
   if (!c.Eof() && (c.Peek() == '-' || c.Peek() == '+')) ++c.pos;
-  while (!c.Eof() && absl::ascii_isdigit(static_cast<unsigned char>(c.Peek()))) {
+  while (!c.Eof() &&
+         absl::ascii_isdigit(static_cast<unsigned char>(c.Peek()))) {
     ++c.pos;
   }
-  if (c.pos == start || (c.pos == start + 1 && (c.src[start] == '-' ||
-                                                  c.src[start] == '+'))) {
+  if (c.pos == start ||
+      (c.pos == start + 1 && (c.src[start] == '-' || c.src[start] == '+'))) {
     return absl::InvalidArgumentError(absl::StrCat(
         "expected integer literal at offset ", start, " in: ", c.src));
   }
@@ -247,7 +265,8 @@ absl::StatusOr<Value> ParseInt(Cursor& c) {
 absl::StatusOr<Value> ParseUint(Cursor& c) {
   c.Skip();
   const size_t start = c.pos;
-  while (!c.Eof() && absl::ascii_isdigit(static_cast<unsigned char>(c.Peek()))) {
+  while (!c.Eof() &&
+         absl::ascii_isdigit(static_cast<unsigned char>(c.Peek()))) {
     ++c.pos;
   }
   if (c.pos == start) {
@@ -269,9 +288,10 @@ absl::StatusOr<Value> ParseDouble(Cursor& c) {
   c.Skip();
   const size_t start = c.pos;
   if (!c.Eof() && (c.Peek() == '-' || c.Peek() == '+')) ++c.pos;
-  while (!c.Eof() && (absl::ascii_isdigit(static_cast<unsigned char>(c.Peek())) ||
-                       c.Peek() == '.' || c.Peek() == 'e' || c.Peek() == 'E' ||
-                       c.Peek() == '-' || c.Peek() == '+')) {
+  while (!c.Eof() &&
+         (absl::ascii_isdigit(static_cast<unsigned char>(c.Peek())) ||
+          c.Peek() == '.' || c.Peek() == 'e' || c.Peek() == 'E' ||
+          c.Peek() == '-' || c.Peek() == '+')) {
     ++c.pos;
   }
   if (c.pos == start) {
@@ -280,9 +300,8 @@ absl::StatusOr<Value> ParseDouble(Cursor& c) {
   }
   double v;
   if (!absl::SimpleAtod(c.src.substr(start, c.pos - start), &v)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("malformed double literal: ",
-                     c.src.substr(start, c.pos - start)));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "malformed double literal: ", c.src.substr(start, c.pos - start)));
   }
   return Value::Double(v);
 }
@@ -330,8 +349,8 @@ absl::StatusOr<Value> ParseTimestamp(Cursor& c) {
   absl::Time t;
   std::string err;
   if (!absl::ParseTime(absl::RFC3339_full, *s, &t, &err)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "malformed timestamp literal \"", *s, "\": ", err));
+    return absl::InvalidArgumentError(
+        absl::StrCat("malformed timestamp literal \"", *s, "\": ", err));
   }
   return Value::Timestamp(t);
 }
@@ -359,8 +378,9 @@ absl::StatusOr<Value> ParseList(Cursor& c, const CelType& elem_t,
     c.Skip();
     if (c.ConsumeChar(',')) continue;
     if (c.ConsumeChar(']')) break;
-    return absl::InvalidArgumentError(absl::StrCat(
-        "expected ',' or ']' in list literal at offset ", c.pos, " in: ", c.src));
+    return absl::InvalidArgumentError(
+        absl::StrCat("expected ',' or ']' in list literal at offset ", c.pos,
+                     " in: ", c.src));
   }
   return Value::List(std::move(elements));
 }
@@ -388,8 +408,9 @@ absl::StatusOr<Value> ParseMap(Cursor& c, const CelType& key_t,
     c.Skip();
     if (c.ConsumeChar(',')) continue;
     if (c.ConsumeChar('}')) break;
-    return absl::InvalidArgumentError(absl::StrCat(
-        "expected ',' or '}' in map literal at offset ", c.pos, " in: ", c.src));
+    return absl::InvalidArgumentError(
+        absl::StrCat("expected ',' or '}' in map literal at offset ", c.pos,
+                     " in: ", c.src));
   }
   return Value::Map(std::move(entries));
 }
@@ -426,7 +447,7 @@ absl::Status PopulateMessage(google::protobuf::Message& m, MsgFormat fmt,
   switch (fmt) {
     case MsgFormat::kTextproto: {
       if (!google::protobuf::TextFormat::ParseFromString(std::string(body),
-                                                          &m)) {
+                                                         &m)) {
         return absl::InvalidArgumentError(
             absl::StrCat("TextFormat::Parse failed for message ",
                          m.GetDescriptor()->full_name()));
@@ -434,8 +455,8 @@ absl::Status PopulateMessage(google::protobuf::Message& m, MsgFormat fmt,
       return absl::OkStatus();
     }
     case MsgFormat::kJson: {
-      auto s = google::protobuf::util::JsonStringToMessage(std::string(body),
-                                                            &m);
+      auto s =
+          google::protobuf::util::JsonStringToMessage(std::string(body), &m);
       if (!s.ok()) {
         return absl::InvalidArgumentError(
             absl::StrCat("JsonStringToMessage failed for message ",
@@ -461,9 +482,10 @@ absl::StatusOr<Value> ParseMessage(
   const std::string fqn(t.message_fully_qualified_name());
   const google::protobuf::Descriptor* desc = pool.FindMessageTypeByName(fqn);
   if (desc == nullptr) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "message type `", fqn, "` not found in descriptor pool — "
-        "did you pass --proto or --descriptor_set?"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("message type `", fqn,
+                     "` not found in descriptor pool — "
+                     "did you pass --proto or --descriptor_set?"));
   }
   const google::protobuf::Message* proto = factory.GetPrototype(desc);
   if (proto == nullptr) {
@@ -477,9 +499,12 @@ absl::StatusOr<Value> ParseMessage(
 
   // Strip explicit format prefix if present.
   std::optional<MsgFormat> explicit_fmt;
-  if (absl::ConsumePrefix(&rest, "txtpb:")) explicit_fmt = MsgFormat::kTextproto;
-  else if (absl::ConsumePrefix(&rest, "json:")) explicit_fmt = MsgFormat::kJson;
-  else if (absl::ConsumePrefix(&rest, "pb:")) explicit_fmt = MsgFormat::kBinary;
+  if (absl::ConsumePrefix(&rest, "txtpb:"))
+    explicit_fmt = MsgFormat::kTextproto;
+  else if (absl::ConsumePrefix(&rest, "json:"))
+    explicit_fmt = MsgFormat::kJson;
+  else if (absl::ConsumePrefix(&rest, "pb:"))
+    explicit_fmt = MsgFormat::kBinary;
 
   // File reference vs inline body.
   std::string body;
@@ -499,8 +524,8 @@ absl::StatusOr<Value> ParseMessage(
   } else {
     if (!explicit_fmt.has_value()) {
       return absl::InvalidArgumentError(absl::StrCat(
-          "inline message body must use txtpb:/json:/pb: prefix, got `",
-          rest, "`"));
+          "inline message body must use txtpb:/json:/pb: prefix, got `", rest,
+          "`"));
     }
     fmt = *explicit_fmt;
     body = std::string(rest);
@@ -515,14 +540,22 @@ absl::StatusOr<Value> ParseAtomForType(
     Cursor& c, const CelType& t, const google::protobuf::DescriptorPool& pool,
     google::protobuf::DynamicMessageFactory& factory) {
   switch (t.kind()) {
-    case CelType::Kind::kBool:      return ParseBool(c);
-    case CelType::Kind::kInt:       return ParseInt(c);
-    case CelType::Kind::kUint:      return ParseUint(c);
-    case CelType::Kind::kDouble:    return ParseDouble(c);
-    case CelType::Kind::kString:    return ParseString(c);
-    case CelType::Kind::kBytes:     return ParseBytes(c);
-    case CelType::Kind::kDuration:  return ParseDuration(c);
-    case CelType::Kind::kTimestamp: return ParseTimestamp(c);
+    case CelType::Kind::kBool:
+      return ParseBool(c);
+    case CelType::Kind::kInt:
+      return ParseInt(c);
+    case CelType::Kind::kUint:
+      return ParseUint(c);
+    case CelType::Kind::kDouble:
+      return ParseDouble(c);
+    case CelType::Kind::kString:
+      return ParseString(c);
+    case CelType::Kind::kBytes:
+      return ParseBytes(c);
+    case CelType::Kind::kDuration:
+      return ParseDuration(c);
+    case CelType::Kind::kTimestamp:
+      return ParseTimestamp(c);
     case CelType::Kind::kList:
       return ParseList(c, t.list_element(), pool, factory);
     case CelType::Kind::kMap:
@@ -533,7 +566,7 @@ absl::StatusOr<Value> ParseAtomForType(
     case CelType::Kind::kUnknown:
       return absl::InvalidArgumentError(
           absl::StrCat("--var: cannot bind a value of type `",
-                       ::cel::CelTypeKindName(t.kind()), "`"));
+                       ::celwasm::api::CelTypeKindName(t.kind()), "`"));
   }
   ABSL_CHECK(false) << "ParseAtomForType: unhandled CelType::Kind = "
                     << static_cast<int>(t.kind());
@@ -549,16 +582,15 @@ absl::StatusOr<CelType> ParseTypeSpec(absl::string_view spec) {
   if (!t.ok()) return t.status();
   c.Skip();
   if (!c.Eof()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "unexpected trailing characters in type spec at offset ", c.pos,
-        ": `", spec, "`"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("unexpected trailing characters in type spec at offset ",
+                     c.pos, ": `", spec, "`"));
   }
   return t;
 }
 
 absl::StatusOr<ParsedVar> ParseVarFlag(
-    absl::string_view flag,
-    const google::protobuf::DescriptorPool& pool,
+    absl::string_view flag, const google::protobuf::DescriptorPool& pool,
     google::protobuf::DynamicMessageFactory& factory) {
   const size_t colon = flag.find(':');
   if (colon == absl::string_view::npos) {
@@ -582,8 +614,8 @@ absl::StatusOr<ParsedVar> ParseVarFlag(
   }
   auto t = ParseTypeSpec(type_spec);
   if (!t.ok()) {
-    return absl::Status(t.status().code(),
-                        absl::StrCat("--var ", name, ": ", t.status().message()));
+    return absl::Status(t.status().code(), absl::StrCat("--var ", name, ": ",
+                                                        t.status().message()));
   }
   ParsedVar out;
   out.name = std::move(name);
@@ -596,8 +628,9 @@ absl::StatusOr<ParsedVar> ParseVarFlag(
   Cursor vc{value_lit};
   auto v = ParseAtomForType(vc, out.type, pool, factory);
   if (!v.ok()) {
-    return absl::Status(v.status().code(),
-                        absl::StrCat("--var ", out.name, ": ", v.status().message()));
+    return absl::Status(
+        v.status().code(),
+        absl::StrCat("--var ", out.name, ": ", v.status().message()));
   }
   vc.Skip();
   if (!vc.Eof()) {

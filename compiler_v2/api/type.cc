@@ -7,7 +7,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 
-namespace cel {
+namespace celwasm::api {
 
 CelType CelType::Bool() {
   CelType t;
@@ -152,4 +152,4 @@ absl::string_view CelTypeKindName(CelType::Kind k) {
   ABSL_CHECK(false) << "unhandled CelType::Kind = " << static_cast<int>(k);
 }
 
-}  // namespace cel
+}  // namespace celwasm::api

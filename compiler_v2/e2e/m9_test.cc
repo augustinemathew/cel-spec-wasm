@@ -69,8 +69,6 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -79,11 +77,14 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
+using ::celwasm::AttributePattern;
 
 using ::absl_testing::IsOk;
 using ::celwasm::testdata::HostMsg2;
@@ -697,7 +698,7 @@ TEST_F(TypeActivationE2ETest, BoundTypeEqualsTypeOfRuntimeValue) {
 
 TEST_F(TypeActivationE2ETest, ReadSideDecoderReturnsValueType) {
   // Eval a root expression that produces a CEL_TYPE; assert the
-  // returned `cel::Value` is `Value::Kind::kType` with the
+  // returned `celwasm::api::Value` is `Value::Kind::kType` with the
   // expected name.  Exercises the read-side `DecodeCelValueAt`
   // for CEL_TYPE.
   auto compiler = CompilerEmpty();
@@ -817,4 +818,4 @@ TEST_F(TypeRejectE2ETest, TypeKeywordVsIntRejectedByChecker) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

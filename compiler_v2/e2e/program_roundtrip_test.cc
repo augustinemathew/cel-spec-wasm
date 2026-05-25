@@ -1,7 +1,7 @@
 // Program save/reload round-trip e2e — proves that the wasm bytes
 // emitted by `Compiler::Compile` can be persisted (to disk, a cache,
 // a remote endpoint, …) and reconstructed into an equivalent
-// `cel::Program` via the `Program(std::vector<uint8_t>)` constructor,
+// `celwasm::api::Program` via the `Program(std::vector<uint8_t>)` constructor,
 // then planned and evaluated to bit-identical results.
 //
 // `program_test.cc` covers the structural round-trip (bytes in =
@@ -33,7 +33,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 Engine& GlobalEngine() {
@@ -107,14 +107,13 @@ void RoundTripIdentical(absl::string_view source,
       EXPECT_EQ(*v_orig->AsString(), *v_reload->AsString()) << source;
       break;
     default:
-      FAIL() << "test matrix produced a non-scalar result for source="
-             << source << " kind=" << static_cast<int>(v_orig->kind());
+      FAIL() << "test matrix produced a non-scalar result for source=" << source
+             << " kind=" << static_cast<int>(v_orig->kind());
   }
 }
 
 TEST(ProgramRoundTripE2E, LiteralInt) {
-  RoundTripIdentical(
-      "42", [](Compiler::Builder&) {}, [](Activation&) {});
+  RoundTripIdentical("42", [](Compiler::Builder&) {}, [](Activation&) {});
 }
 
 TEST(ProgramRoundTripE2E, LiteralString) {
@@ -138,8 +137,12 @@ TEST(ProgramRoundTripE2E, Arithmetic) {
 TEST(ProgramRoundTripE2E, Comparison) {
   RoundTripIdentical(
       "x > 0 && x < 100",
-      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
-      [](Activation& a) { a.Bind("x", Value::Int(42)); });
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(42));
+      });
 }
 
 TEST(ProgramRoundTripE2E, Conversion) {
@@ -150,8 +153,12 @@ TEST(ProgramRoundTripE2E, Conversion) {
 TEST(ProgramRoundTripE2E, StringConcat) {
   RoundTripIdentical(
       "\"hello, \" + name",
-      [](Compiler::Builder& b) { b.DeclareVariable("name", CelType::String()); },
-      [](Activation& a) { a.Bind("name", Value::String("world")); });
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("name", CelType::String());
+      },
+      [](Activation& a) {
+        a.Bind("name", Value::String("world"));
+      });
 }
 
 TEST(ProgramRoundTripE2E, MultipleReloadsAreIndependent) {
@@ -227,4 +234,4 @@ TEST(ProgramRoundTripE2E, OptimizedBytesAlsoRoundTrip) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

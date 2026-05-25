@@ -74,7 +74,7 @@
 #include "google/protobuf/wrappers.pb.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -1397,10 +1397,9 @@ TEST_F(WrapperArithmeticE2ETest, DoubleWrapperPlusScalarPeels) {
 TEST_F(WrapperArithmeticE2ETest, Int32WrapperMinusInt32WrapperPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "google.protobuf.Int32Value{value: 5} - "
-                  "google.protobuf.Int32Value{value: 2}");
+  auto instance = CompilePlan(*compiler,
+                              "google.protobuf.Int32Value{value: 5} - "
+                              "google.protobuf.Int32Value{value: 2}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
 }
@@ -1410,8 +1409,8 @@ TEST_F(WrapperArithmeticE2ETest, Int32WrapperMinusInt32WrapperPeels) {
 TEST_F(WrapperArithmeticE2ETest, StringWrapperConcatScalarPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"(google.protobuf.StringValue{value: "ab"} + "c")");
+  auto instance = CompilePlan(
+      *compiler, R"(google.protobuf.StringValue{value: "ab"} + "c")");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsString(), "abc");
 }
@@ -1430,10 +1429,9 @@ TEST_F(WrapperArithmeticE2ETest, Int32WrapperLessThanScalarPeels) {
 TEST_F(WrapperArithmeticE2ETest, Int32WrapperGreaterEqualsWrapperPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "google.protobuf.Int32Value{value: 5} >= "
-                  "google.protobuf.Int32Value{value: 5}");
+  auto instance = CompilePlan(*compiler,
+                              "google.protobuf.Int32Value{value: 5} >= "
+                              "google.protobuf.Int32Value{value: 5}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1443,8 +1441,8 @@ TEST_F(WrapperArithmeticE2ETest, Int32WrapperGreaterEqualsWrapperPeels) {
 TEST_F(WrapperArithmeticE2ETest, SizeStringWrapperPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"(size(google.protobuf.StringValue{value: "hello"}))");
+  auto instance = CompilePlan(
+      *compiler, R"(size(google.protobuf.StringValue{value: "hello"}))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 5);
 }
@@ -1452,8 +1450,8 @@ TEST_F(WrapperArithmeticE2ETest, SizeStringWrapperPeels) {
 TEST_F(WrapperArithmeticE2ETest, SizeBytesWrapperPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, R"(size(google.protobuf.BytesValue{value: b"foo"}))");
+  auto instance = CompilePlan(
+      *compiler, R"(size(google.protobuf.BytesValue{value: b"foo"}))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
 }
@@ -1463,8 +1461,8 @@ TEST_F(WrapperArithmeticE2ETest, SizeBytesWrapperPeels) {
 TEST_F(WrapperArithmeticE2ETest, WrapperInScalarListPeels) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.Int32Value{value: 2} in [1, 2, 3]");
+  auto instance = CompilePlan(
+      *compiler, "google.protobuf.Int32Value{value: 2} in [1, 2, 3]");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -1502,11 +1500,10 @@ TEST_F(WrapperArithmeticE2ETest, EmptyInt32WrapperPlusScalarUsesDefault) {
   // the M8.C tail-unwrap path treats an unset value field as the
   // proto default (langdef §"Wrapper Types" — wrapper literals
   // are present messages whose field defaults to zero).
-  auto instance =
-      CompilePlan(*compiler, "google.protobuf.Int32Value{} + 2");
+  auto instance = CompilePlan(*compiler, "google.protobuf.Int32Value{} + 2");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

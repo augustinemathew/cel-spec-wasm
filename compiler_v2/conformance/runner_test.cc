@@ -17,9 +17,10 @@
 namespace celwasm::conformance {
 namespace {
 
-cel::Value MakeRuntimeError(cel::ErrorCode code, const std::string& message) {
-  return cel::Value::Error(
-      cel::ErrorPayload{.code = code, .message = message, .expr_id = 0});
+celwasm::api::Value MakeRuntimeError(celwasm::ErrorCode code,
+                                     const std::string& message) {
+  return celwasm::api::Value::Error(
+      celwasm::ErrorPayload{.code = code, .message = message, .expr_id = 0});
 }
 
 cel::expr::ErrorSet ParseErrorSet(absl::string_view textproto) {
@@ -36,19 +37,20 @@ cel::expr::ErrorSet ParseErrorSet(absl::string_view textproto) {
 TEST(CompareEvalErrorTest, ErrorMatchesAnyMatcher) {
   // Specific message in the matcher is informational only — kind is
   // the only load-bearing check.
-  auto got = MakeRuntimeError(cel::ErrorCode::kDivideByZero, "divide_by_zero");
+  auto got =
+      MakeRuntimeError(celwasm::ErrorCode::kDivideByZero, "divide_by_zero");
   auto want = ParseErrorSet(R"pb(errors { message: "anything" })pb");
   EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
 }
 
 TEST(CompareEvalErrorTest, EmptyMatcherStillMatches) {
-  auto got = MakeRuntimeError(cel::ErrorCode::kOverflow, "overflow");
+  auto got = MakeRuntimeError(celwasm::ErrorCode::kOverflow, "overflow");
   cel::expr::ErrorSet want;
   EXPECT_EQ(CompareEvalError(got, want), absl::OkStatus());
 }
 
 TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
-  auto got = cel::Value::Int(42);
+  auto got = celwasm::api::Value::Int(42);
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);
@@ -56,7 +58,7 @@ TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
-  auto got = cel::Value::Unknown(cel::AttributeId{.id = 1});
+  auto got = celwasm::api::Value::Unknown(celwasm::AttributeId{.id = 1});
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);
@@ -64,7 +66,7 @@ TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchNullIsNotError) {
-  auto got = cel::Value::Null();
+  auto got = celwasm::api::Value::Null();
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);

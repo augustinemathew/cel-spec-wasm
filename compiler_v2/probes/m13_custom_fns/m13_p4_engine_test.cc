@@ -25,7 +25,7 @@
 //     overload-id presence/absence from raw bytes.
 //
 // Today this is a probe-stage `ProbeEngine` helper class, not the
-// production `cel::Engine`.  Slice C will land the same model
+// production `celwasm::api::Engine`.  Slice C will land the same model
 // inside the public `Engine` API; this probe locks the design.
 
 #include <cstdint>
@@ -58,7 +58,7 @@ using ::testing::HasSubstr;
 // ProbeEngine — minimal engine-owned model for validating the M13
 // design.  Owns the wasmtime engine + store and a map of registered
 // foreign modules.  This is intentionally NOT shared with production
-// `cel::Engine` (api/engine.cc) — the probe proves the design
+// `celwasm::api::Engine` (api/engine.cc) — the probe proves the design
 // independently.
 
 class ProbeEngine {
@@ -98,8 +98,8 @@ class ProbeEngine {
     }
     wasmtime_linker_t* linker = wasmtime_linker_new(engine_);
     wasm_trap_t* trap = nullptr;
-    auto err = wasmtime_linker_instantiate(linker, ctx_, m.module, &m.instance,
-                                           &trap);
+    auto err =
+        wasmtime_linker_instantiate(linker, ctx_, m.module, &m.instance, &trap);
     wasmtime_linker_delete(linker);
     if (err != nullptr) {
       wasmtime_module_delete(m.module);
@@ -193,15 +193,15 @@ class ProbeEngine {
   };
   absl::StatusOr<Planned> Plan(absl::string_view caller_wat) {
     wasm_byte_vec_t out;
-    if (auto err = wasmtime_wat2wasm(caller_wat.data(), caller_wat.size(),
-                                     &out);
+    if (auto err =
+            wasmtime_wat2wasm(caller_wat.data(), caller_wat.size(), &out);
         err != nullptr) {
       return WrapWasmtimeError("wat2wasm", err);
     }
     wasmtime_module_t* caller_module = nullptr;
-    auto err = wasmtime_module_new(engine_,
-                                   reinterpret_cast<const uint8_t*>(out.data),
-                                   out.size, &caller_module);
+    auto err =
+        wasmtime_module_new(engine_, reinterpret_cast<const uint8_t*>(out.data),
+                            out.size, &caller_module);
     const std::vector<uint8_t> caller_bytes(
         reinterpret_cast<const uint8_t*>(out.data),
         reinterpret_cast<const uint8_t*>(out.data) + out.size);
@@ -257,20 +257,17 @@ class ProbeEngine {
       }
       wasmtime_extern_t ext;
       if (!wasmtime_instance_export_get(ctx_, &it->second.instance,
-                                        item_sv.data(), item_sv.size(),
-                                        &ext)) {
+                                        item_sv.data(), item_sv.size(), &ext)) {
         link_status = absl::FailedPreconditionError(absl::StrCat(
             "module `", mod_sv, "` does not export `", item_sv, "`"));
         break;
       }
-      if (auto e = wasmtime_linker_define(linker, ctx_, mod_sv.data(),
-                                          mod_sv.size(), item_sv.data(),
-                                          item_sv.size(), &ext);
+      if (auto e =
+              wasmtime_linker_define(linker, ctx_, mod_sv.data(), mod_sv.size(),
+                                     item_sv.data(), item_sv.size(), &ext);
           e != nullptr) {
-        link_status =
-            WrapWasmtimeError(absl::StrCat("linker.define(", mod_sv, ".",
-                                           item_sv, ")"),
-                              e);
+        link_status = WrapWasmtimeError(
+            absl::StrCat("linker.define(", mod_sv, ".", item_sv, ")"), e);
         break;
       }
     }
@@ -298,7 +295,9 @@ class ProbeEngine {
     return planned;
   }
 
-  wasmtime_context_t* ctx() { return ctx_; }
+  wasmtime_context_t* ctx() {
+    return ctx_;
+  }
 
  private:
   struct Module {
@@ -321,8 +320,8 @@ class ProbeEngine {
     char* name = nullptr;
     size_t name_len = 0;
     wasmtime_extern_t ext;
-    while (wasmtime_instance_export_nth(ctx_, &inst, i, &name, &name_len,
-                                        &ext)) {
+    while (
+        wasmtime_instance_export_nth(ctx_, &inst, i, &name, &name_len, &ext)) {
       const absl::string_view nm(name, name_len);
       if (ext.kind == WASMTIME_EXTERN_FUNC && !nm.empty() && nm[0] != '_') {
         out.emplace_back(nm);
@@ -381,25 +380,24 @@ std::string ReadWorkspaceFile(absl::string_view path) {
 
 TEST(M13Probe4Engine, AddModuleRegistersAndExposesExports) {
   ProbeEngine engine;
-  const std::string rules_bytes = ReadWorkspaceFile(
-      "compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
+  const std::string rules_bytes =
+      ReadWorkspaceFile("compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
   ASSERT_FALSE(rules_bytes.empty());
 
-  ASSERT_TRUE(engine.AddModule(
-                    "rules",
-                    absl::MakeConstSpan(
-                        reinterpret_cast<const uint8_t*>(rules_bytes.data()),
-                        rules_bytes.size()))
+  ASSERT_TRUE(engine
+                  .AddModule("rules", absl::MakeConstSpan(
+                                          reinterpret_cast<const uint8_t*>(
+                                              rules_bytes.data()),
+                                          rules_bytes.size()))
                   .ok());
-  EXPECT_TRUE(
-      engine.ModuleExportsHelper("rules", "allow_string_string"));
+  EXPECT_TRUE(engine.ModuleExportsHelper("rules", "allow_string_string"));
   EXPECT_FALSE(engine.ModuleExportsHelper("rules", "no_such_export"));
 }
 
 TEST(M13Probe4Engine, AddModuleDuplicateAliasErrors) {
   ProbeEngine engine;
-  const std::string rules_bytes = ReadWorkspaceFile(
-      "compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
+  const std::string rules_bytes =
+      ReadWorkspaceFile("compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
   const absl::Span<const uint8_t> bytes(
       reinterpret_cast<const uint8_t*>(rules_bytes.data()), rules_bytes.size());
 
@@ -416,8 +414,8 @@ TEST(M13Probe4Engine, CrossModuleOverloadConflictDetectableViaExports) {
   // a conflict at the CEL-level (cel-cpp can't tell which `allow` you
   // mean).  Engine should detect it by walking exports.
   ProbeEngine engine;
-  const std::string rules_bytes = ReadWorkspaceFile(
-      "compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
+  const std::string rules_bytes =
+      ReadWorkspaceFile("compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
   const absl::Span<const uint8_t> bytes(
       reinterpret_cast<const uint8_t*>(rules_bytes.data()), rules_bytes.size());
 
@@ -432,14 +430,13 @@ TEST(M13Probe4Engine, CrossModuleOverloadConflictDetectableViaExports) {
 
 TEST(M13Probe4Engine, PlanResolvesImportsAgainstRegisteredModules) {
   ProbeEngine engine;
-  const std::string rules_bytes = ReadWorkspaceFile(
-      "compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
+  const std::string rules_bytes =
+      ReadWorkspaceFile("compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
   ASSERT_TRUE(engine
-                  .AddModule("rules",
-                             absl::MakeConstSpan(
-                                 reinterpret_cast<const uint8_t*>(
-                                     rules_bytes.data()),
-                                 rules_bytes.size()))
+                  .AddModule("rules", absl::MakeConstSpan(
+                                          reinterpret_cast<const uint8_t*>(
+                                              rules_bytes.data()),
+                                          rules_bytes.size()))
                   .ok());
 
   const std::string caller_wat = ReadWorkspaceFile(
@@ -451,20 +448,19 @@ TEST(M13Probe4Engine, PlanResolvesImportsAgainstRegisteredModules) {
 
   // Call eval and verify result — same shape as Probe 2.
   wasmtime_extern_t eval_ext;
-  ASSERT_TRUE(wasmtime_instance_export_get(
-      engine.ctx(), &planned_or->instance, "eval", 4, &eval_ext));
+  ASSERT_TRUE(wasmtime_instance_export_get(engine.ctx(), &planned_or->instance,
+                                           "eval", 4, &eval_ext));
   wasmtime_val_t result{};
   wasmtime_func_t eval_fn = eval_ext.of.func;
   wasm_trap_t* trap = nullptr;
-  auto err = wasmtime_func_call(engine.ctx(), &eval_fn, nullptr, 0, &result, 1,
-                                &trap);
+  auto err =
+      wasmtime_func_call(engine.ctx(), &eval_fn, nullptr, 0, &result, 1, &trap);
   ASSERT_EQ(err, nullptr);
   ASSERT_EQ(trap, nullptr);
   ASSERT_EQ(result.kind, WASMTIME_I32);
 
   const uint32_t out_offset = static_cast<uint32_t>(result.of.i32);
-  const uint8_t* mem =
-      wasmtime_memory_data(engine.ctx(), &planned_or->memory);
+  const uint8_t* mem = wasmtime_memory_data(engine.ctx(), &planned_or->memory);
   CelValue out{};
   std::memcpy(&out, mem + out_offset, sizeof(out));
   EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_BOOL));
@@ -476,24 +472,21 @@ TEST(M13Probe4Engine, PlanFailsWhenForeignAliasNotRegistered) {
   // Register a non-rules module so memory resolves, then try to Plan
   // a caller that references the (still-unregistered) `rules` alias.
   // Plan should fail with a message citing the unmet import.
-  const std::string rules_bytes = ReadWorkspaceFile(
-      "compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
+  const std::string rules_bytes =
+      ReadWorkspaceFile("compiler_v2/probes/m13_custom_fns/rules/rules.wasm");
   ASSERT_TRUE(engine
-                  .AddModule("other",
-                             absl::MakeConstSpan(
-                                 reinterpret_cast<const uint8_t*>(
-                                     rules_bytes.data()),
-                                 rules_bytes.size()))
+                  .AddModule("other", absl::MakeConstSpan(
+                                          reinterpret_cast<const uint8_t*>(
+                                              rules_bytes.data()),
+                                          rules_bytes.size()))
                   .ok());
 
   const std::string caller_wat = ReadWorkspaceFile(
       "doc/implementation-plan/rewrite/wat/m13_p1_caller.wat");
   auto planned_or = engine.Plan(caller_wat);
   ASSERT_FALSE(planned_or.ok());
-  EXPECT_EQ(planned_or.status().code(),
-            absl::StatusCode::kFailedPrecondition);
-  EXPECT_THAT(std::string(planned_or.status().message()),
-              HasSubstr("rules"));
+  EXPECT_EQ(planned_or.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_THAT(std::string(planned_or.status().message()), HasSubstr("rules"));
 }
 
 TEST(M13Probe4Engine, PlanFailsWhenModuleMissingExpectedExport) {
@@ -507,12 +500,12 @@ TEST(M13Probe4Engine, PlanFailsWhenModuleMissingExpectedExport) {
 
   // Convert it to wasm bytes via wat2wasm.
   wasm_byte_vec_t out_bytes;
-  ASSERT_EQ(wasmtime_wat2wasm(mismatch_wat.data(), mismatch_wat.size(),
-                              &out_bytes),
-            nullptr);
-  std::vector<uint8_t> bytes(reinterpret_cast<const uint8_t*>(out_bytes.data),
-                             reinterpret_cast<const uint8_t*>(out_bytes.data) +
-                                 out_bytes.size);
+  ASSERT_EQ(
+      wasmtime_wat2wasm(mismatch_wat.data(), mismatch_wat.size(), &out_bytes),
+      nullptr);
+  std::vector<uint8_t> bytes(
+      reinterpret_cast<const uint8_t*>(out_bytes.data),
+      reinterpret_cast<const uint8_t*>(out_bytes.data) + out_bytes.size);
   wasm_byte_vec_delete(&out_bytes);
 
   ProbeEngine engine;

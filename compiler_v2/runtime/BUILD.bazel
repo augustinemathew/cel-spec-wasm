@@ -292,7 +292,7 @@ cc_test(
         ":cel_runtime_wasm_bytes",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_googletest//:gtest_main",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 

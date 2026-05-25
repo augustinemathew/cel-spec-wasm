@@ -30,7 +30,7 @@
 #include "wasm.h"
 #include "wasmtime.h"
 
-namespace cel {
+namespace celwasm::api {
 
 namespace {
 
@@ -97,7 +97,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // CelValue elements out of the elements run.  Each element decodes
 // through `DecodeCelValueAt`, so list values can themselves be
 // scalars or nested aggregates.  Wraps the result in a
-// `cel::Value::List(...)` (vector-backed `HostList`).
+// `celwasm::api::Value::List(...)` (vector-backed `HostList`).
 absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
                                         wasmtime_sharedmemory_t* mem,
                                         const celwasm::ExternrefTable& refs,
@@ -125,7 +125,7 @@ absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
 // `DecodeCelValueAt`, so map values can themselves be scalars or
 // nested aggregates (M3 has no nested maps from codegen, but a
 // host-bound map in a future milestone could).  Wraps the result
-// in a `cel::Value::Map(...)` (vector-backed `HostMap`).
+// in a `celwasm::api::Value::Map(...)` (vector-backed `HostMap`).
 absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
                                        wasmtime_sharedmemory_t* mem,
                                        const celwasm::ExternrefTable& refs,
@@ -152,7 +152,7 @@ absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
 // points at a `HostListBacking` interned by
 // the host trampoline (e.g. `ProtoList` from a proto repeated
 // field read).  Walk via `ForEach` to collect each element as a
-// `cel::Value`, then re-wrap in a fresh vector-backed `HostList`
+// `celwasm::api::Value`, then re-wrap in a fresh vector-backed `HostList`
 // for the user — the original backing's lifetime is per-Eval
 // (cleared on `ExternrefTable::Reset()`), so the decoded `Value`
 // must own its element-side state.
@@ -254,7 +254,7 @@ Value DecodeCelError(const CelValue& cv) {
 }
 
 // Decode a 24-byte CelValue at `offset` in linear memory into a
-// `cel::Value`.  Covers scalars, null, arena maps/lists, and
+// `celwasm::api::Value`.  Covers scalars, null, arena maps/lists, and
 // host-backed list / map arms (via the per-Instance ExternrefTable
 // threaded through `refs`).
 absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
@@ -304,7 +304,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       // stamped in payload.unk.  Reconstruct an AttributeId
       // carrying that wire id; embedders compare it against the
       // slot they queried via PartialEval.
-      return Value::Unknown(AttributeId{cv.payload.unk});
+      return Value::Unknown(celwasm::AttributeId{cv.payload.unk});
     case CEL_ERROR:
       return DecodeCelError(cv);
     case CEL_TYPE: {
@@ -1045,7 +1045,8 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
 }
 
 absl::StatusOr<Value> Instance::PartialEval(
-    const Activation& activation, absl::Span<const AttributePattern> unknowns) {
+    const Activation& activation,
+    absl::Span<const celwasm::AttributePattern> unknowns) {
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
 
   // Reset per-eval state.  Unlike Eval(), we then populate
@@ -1068,4 +1069,4 @@ absl::StatusOr<Value> Instance::PartialEval(
   return result;
 }
 
-}  // namespace cel
+}  // namespace celwasm::api

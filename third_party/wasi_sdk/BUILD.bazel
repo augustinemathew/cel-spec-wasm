@@ -5,72 +5,48 @@
 #
 # This package serves two consumers:
 #
-#   1. Legacy genrule consumers (`//compiler_v2/runtime:cel_runtime_wasm_file`)
-#      that reference `:clang`, `:ar`, etc. as `$(execpath ...)` tools.
-#      Aliased to the per-host `@wasi_sdk_*` filegroups below.
+#   1. Legacy genrule consumers that reference `:clang`, `:ar`, etc.
+#      as `$(execpath ...)` tools.  No live consumer remains (the old
+#      `cel_runtime_wasm_file` genrule was replaced by a wasm_binary
+#      transition target), but the aliases are kept non-broken so a
+#      future genrule can use them.  They dispatch to the host archive
+#      via `select()`.
 #
-#   2. The wasm32-wasi-threads `cc_toolchain` registration (Phase C).
-#      Modern bazel cc_library / cc_binary targets that opt into the
-#      wasm cross-compile via `--platforms=//third_party/wasi_sdk:wasm32_wasi`.
+#   2. The wasm32-wasi-threads `cc_toolchain` registration.  Modern
+#      bazel cc_library / cc_binary targets opt into the wasm
+#      cross-compile via `--platforms=//third_party/wasi_sdk:wasm32_wasi`.
 #      The toolchain config, three sh wrapper scripts (`wasm_clang.sh`,
 #      `wasm_ar.sh`, `wasm_nm.sh`), and the `cc_toolchain` /
 #      `toolchain` / `platform` rules live here.  Validated by
 #      probes E3-E8 (`doc/implementation-plan/rewrite/phase-c-probes/`).
 #
-# Cross-platform note.  Both the aliases and the cc_toolchain default
-# to `wasi_sdk_darwin_arm64`.  When CI extends to linux/x86_64 hosts,
-# the natural pattern is one `toolchain()` registration per host with
-# `exec_compatible_with` selecting at resolution time — see
+# Cross-platform.  Four wasm-cross toolchains are registered — one per
+# build host (darwin/linux × arm64/x86_64) — each with
+# `exec_compatible_with` pinned to that host.  Bazel toolchain
+# resolution auto-selects the one matching the build host, so a Linux
+# checkout and a macOS checkout each pick up the right wasi-sdk archive
+# with no `select()` in the toolchain itself.  The `wasm_wasi_toolchains`
+# macro below generates all four from one call.  See
 # `phase-c-plan.md` §7.6.
 
-load("@rules_cc//cc:defs.bzl", "cc_binary")
-load(":cc_toolchain_config.bzl", "cc_toolchain_config")
+load(":cc_toolchain_config.bzl", "wasm_wasi_toolchains")
 
 package(default_visibility = ["//visibility:public"])
 
-# --- Legacy aliases (genrule consumers) -----------------------------------
-
-alias(
-    name = "clang",
-    actual = "@wasi_sdk_darwin_arm64//:clang",
-)
-
-alias(
-    name = "clang++",
-    actual = "@wasi_sdk_darwin_arm64//:clang++",
-)
-
-alias(
-    name = "ar",
-    actual = "@wasi_sdk_darwin_arm64//:ar",
-)
-
-alias(
-    name = "ranlib",
-    actual = "@wasi_sdk_darwin_arm64//:ranlib",
-)
-
-alias(
-    name = "sysroot",
-    actual = "@wasi_sdk_darwin_arm64//:sysroot",
-)
-
-alias(
-    name = "all",
-    actual = "@wasi_sdk_darwin_arm64//:all",
-)
-
-# --- wasm32-wasi-threads cc_toolchain registration ------------------------
-
-# All wasi-sdk tools + sysroot are needed at action time.
-filegroup(
-    name = "wasi_sdk_all",
-    srcs = ["@wasi_sdk_darwin_arm64//:all"],
-)
+# --- Per-host wasm32-wasi-threads cc_toolchain registration ---------------
+#
+# Generates, for each (os, cpu) host:
+#   - a cc_toolchain_config keyed on that host's `@wasi_sdk_<host>` repo,
+#   - a cc_toolchain,
+#   - a toolchain() with `exec_compatible_with = [host os + cpu]` and
+#     `target_compatible_with = [wasm32, wasi]`.
+# The wrapper sh scripts and `wasm32_wasi` platform are shared across
+# hosts (the scripts glob the single fetched archive at action time).
+wasm_wasi_toolchains(name = "wasm32_wasi")
 
 # tool_paths in cc_toolchain_config are package-relative.  We place
 # wrapper sh scripts in this package; each execs the real wasi-sdk
-# binary by absolute path (computed via `dirname $0` + ../../external/).
+# binary by absolute path (glob of the single fetched archive).
 filegroup(
     name = "tool_wrappers",
     srcs = [
@@ -80,64 +56,77 @@ filegroup(
     ],
 )
 
-filegroup(
-    name = "tool_inputs",
-    srcs = [
-        ":tool_wrappers",
-        ":wasi_sdk_all",
-    ],
-)
-
-# Exec-root-relative paths into the bazel-fetched wasi_sdk archive.
-# cxx_builtin_include_directories are exec-root-relative paths the
-# cc rules accept as system include roots.
-cc_toolchain_config(
-    name = "wasm32_wasi_config",
-    clang_path = "wasm_clang.sh",
-    ar_path = "wasm_ar.sh",
-    nm_path = "wasm_nm.sh",
-    sysroot_path = "external/_main~_repo_rules~wasi_sdk_darwin_arm64/share/wasi-sysroot",
-    builtin_include_directories = [
-        # libc++ headers live under <sysroot>/include/<target>/c++/v1/.
-        # Listed FIRST so they take precedence over the C-only sysroot.
-        "external/_main~_repo_rules~wasi_sdk_darwin_arm64/share/wasi-sysroot/include/wasm32-wasi-threads/c++/v1",
-        # wasi-libc headers (per-target).
-        "external/_main~_repo_rules~wasi_sdk_darwin_arm64/share/wasi-sysroot/include/wasm32-wasi-threads",
-        # Generic sysroot includes (target-independent wasi-libc bits).
-        "external/_main~_repo_rules~wasi_sdk_darwin_arm64/share/wasi-sysroot/include",
-        # Clang's internal builtin headers (stddef.h etc.).
-        "external/_main~_repo_rules~wasi_sdk_darwin_arm64/lib/clang/19/include",
-    ],
-)
-
-cc_toolchain(
-    name = "wasm32_wasi_cc_toolchain",
-    all_files = ":tool_inputs",
-    ar_files = ":tool_inputs",
-    compiler_files = ":tool_inputs",
-    dwp_files = ":tool_inputs",
-    linker_files = ":tool_inputs",
-    objcopy_files = ":tool_inputs",
-    strip_files = ":tool_inputs",
-    toolchain_config = ":wasm32_wasi_config",
-    toolchain_identifier = "wasm32_wasi",
-)
-
-toolchain(
-    name = "wasm32_wasi_toolchain",
-    exec_compatible_with = [],
-    target_compatible_with = [
-        "@platforms//cpu:wasm32",
-        "@platforms//os:wasi",
-    ],
-    toolchain = ":wasm32_wasi_cc_toolchain",
-    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-)
-
 platform(
     name = "wasm32_wasi",
     constraint_values = [
         "@platforms//cpu:wasm32",
         "@platforms//os:wasi",
+    ],
+)
+
+# --- Legacy aliases (kept non-broken for future genrule consumers) --------
+#
+# Dispatch to the host's wasi-sdk archive by build-host config.  Only
+# the resolved host's archive is fetched, so the select arm that fires
+# names a repo that exists.
+
+_HOST_REPO = select({
+    ":host_darwin_arm64": "@wasi_sdk_darwin_arm64",
+    ":host_darwin_x86_64": "@wasi_sdk_darwin_x86_64",
+    ":host_linux_arm64": "@wasi_sdk_linux_arm64",
+    ":host_linux_x86_64": "@wasi_sdk_linux_x86_64",
+})
+
+[
+    alias(
+        name = tool,
+        actual = select({
+            ":host_darwin_arm64": "@wasi_sdk_darwin_arm64//:" + tool,
+            ":host_darwin_x86_64": "@wasi_sdk_darwin_x86_64//:" + tool,
+            ":host_linux_arm64": "@wasi_sdk_linux_arm64//:" + tool,
+            ":host_linux_x86_64": "@wasi_sdk_linux_x86_64//:" + tool,
+        }),
+    )
+    for tool in [
+        "clang",
+        "clang++",
+        "ar",
+        "ranlib",
+        "sysroot",
+        "all",
+    ]
+]
+
+# --- Host config_settings shared by the aliases above ---------------------
+
+config_setting(
+    name = "host_darwin_arm64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+config_setting(
+    name = "host_darwin_x86_64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "host_linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+config_setting(
+    name = "host_linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
     ],
 )

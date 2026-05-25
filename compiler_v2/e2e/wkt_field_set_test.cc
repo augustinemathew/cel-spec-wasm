@@ -40,7 +40,7 @@
 #include "google/protobuf/util/message_differencer.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -571,4 +571,4 @@ TEST_F(AnyFieldTest, AnyLiteralEmptyProto3) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

@@ -1,4 +1,4 @@
-// Internal — pImpl payload for `cel::Instance`.  Defined here so
+// Internal — pImpl payload for `celwasm::api::Instance`.  Defined here so
 // `Engine::Plan` (in engine.cc) and `Instance` (instance.cc) both
 // see the full layout.  Public Instance.h forward-declares this
 // type and holds it via `std::unique_ptr`.
@@ -23,7 +23,7 @@
 namespace celwasm {
 
 // M13 Slice C.1 — per-Plan host-callback env.  Carries the
-// engine-registered `cel::HostCallback` plus a borrowed pointer to
+// engine-registered `celwasm::api::HostCallback` plus a borrowed pointer to
 // the per-Instance shared memory.  The wasmtime linker callback
 // gets this struct's address as its `env` argument; the struct
 // outlives the linker via `InstanceImpl::host_fn_envs`.
@@ -31,7 +31,7 @@ struct HostFnEnv {
   // Borrowed; points into `WasmtimeEngineState::host_callbacks`.
   // The shared_ptr<WasmtimeEngineState> on the public Instance
   // outlives this struct, so the pointer stays valid.
-  const cel::HostCallback* callback = nullptr;
+  const celwasm::api::HostCallback* callback = nullptr;
   // Borrowed from `InstanceImpl::memory` (shared with the runtime
   // + every foreign module instantiated into this store).
   wasmtime_sharedmemory_t* memory = nullptr;

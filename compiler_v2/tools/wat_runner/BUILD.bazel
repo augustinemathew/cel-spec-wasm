@@ -19,7 +19,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@wasmtime_darwin_arm64//:wasmtime",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 

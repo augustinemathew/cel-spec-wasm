@@ -62,11 +62,4 @@ class Activation {
 
 }  // namespace celwasm::api
 
-// Backward-compat aliases — see value.h for the rationale (avoiding
-// `cel::Activation` ODR collision with cel-cpp `common/activation.h`).
-namespace cel {
-using ::celwasm::api::Activation;
-using ::celwasm::api::FunctionImpl;
-}  // namespace cel
-
 #endif  // CELWASM_COMPILER_V2_API_ACTIVATION_H_

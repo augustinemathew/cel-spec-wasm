@@ -9,13 +9,13 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -287,4 +287,4 @@ TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

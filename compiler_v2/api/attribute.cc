@@ -18,7 +18,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 
-namespace cel {
+namespace celwasm {
 
 // ————————— AttributeQualifier —————————
 
@@ -429,4 +429,4 @@ absl::string_view AttributePatternMatchTypeName(AttributePattern::MatchType m) {
   ABSL_CHECK(false) << "unhandled MatchType = " << static_cast<int>(m);
 }
 
-}  // namespace cel
+}  // namespace celwasm

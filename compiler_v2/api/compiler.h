@@ -1,4 +1,4 @@
-// `cel::Compiler` — pure compile-time front end.  Per
+// `celwasm::api::Compiler` — pure compile-time front end.  Per
 // cel-host-surface.md §2.1 (with the role-split correction in
 // doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
 // §4): holds declarations + the compile-time descriptor pool.
@@ -9,7 +9,7 @@
 //   - serialized (via `Program::wasm_bytes()`) and shipped
 //     elsewhere
 //   - executed in this process by passing them to
-//     `cel::Engine::Plan(program, bindings)`
+//     `celwasm::api::Engine::Plan(program, bindings)`
 //
 // The Compiler itself never touches a wasm engine.
 
@@ -34,7 +34,7 @@ namespace celwasm::api {
 // Pulled in from `namespace cel` (type.h / program.h re-exports
 // from celwasm::api but `CelType` still lives in `cel`).  Lets the
 // class bodies refer to them unqualified.
-using ::cel::CelType;
+using ::celwasm::api::CelType;
 
 // One declared free variable: name + static type.  Introspected via
 // `Compiler::declared_variables()`; the checker resolves each ident
@@ -254,14 +254,5 @@ class Compiler::Builder {
 };
 
 }  // namespace celwasm::api
-
-// Backward-compat aliases — see value.h for rationale.  cel-cpp
-// defines `cel::Compiler` in `compiler/compiler.h`; we now live under
-// `celwasm::api` to avoid the ODR collision.
-namespace cel {
-using ::celwasm::api::Compiler;
-using ::celwasm::api::CompilerOptions;
-using ::celwasm::api::VariableDeclaration;
-}  // namespace cel
 
 #endif  // CELWASM_COMPILER_V2_API_COMPILER_H_

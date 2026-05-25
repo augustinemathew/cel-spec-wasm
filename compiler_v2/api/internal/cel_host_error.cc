@@ -14,43 +14,43 @@
 
 namespace celwasm {
 
-// ──── cel::Value error factories ─────────────────────────────────
+// ──── celwasm::api::Value error factories ─────────────────────────────────
 
-cel::Value FieldNotFound(absl::string_view name) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kFieldNotFound,
+celwasm::api::Value FieldNotFound(absl::string_view name) {
+  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+      /*code=*/celwasm::ErrorCode::kFieldNotFound,
       /*message=*/std::string(name),
       /*expr_id=*/0,
   });
 }
 
-cel::Value MakeError(cel::ErrorCode code, std::string message) {
-  return cel::Value::Error(cel::ErrorPayload{
+celwasm::api::Value MakeError(celwasm::ErrorCode code, std::string message) {
+  return celwasm::api::Value::Error(celwasm::ErrorPayload{
       /*code=*/code,
       /*message=*/std::move(message),
       /*expr_id=*/0,
   });
 }
 
-cel::Value KeyTypeMismatch() {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kTypeMismatch,
+celwasm::api::Value KeyTypeMismatch() {
+  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+      /*code=*/celwasm::ErrorCode::kTypeMismatch,
       /*message=*/"map key kind is not bool/int/uint/string",
       /*expr_id=*/0,
   });
 }
 
-cel::Value NoSuchKey() {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kKeyNotFound,
+celwasm::api::Value NoSuchKey() {
+  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+      /*code=*/celwasm::ErrorCode::kKeyNotFound,
       /*message=*/"no such key",
       /*expr_id=*/0,
   });
 }
 
-cel::Value IndexOutOfBounds(std::size_t index, std::size_t count) {
-  return cel::Value::Error(cel::ErrorPayload{
-      /*code=*/cel::ErrorCode::kIndexOutOfBounds,
+celwasm::api::Value IndexOutOfBounds(std::size_t index, std::size_t count) {
+  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+      /*code=*/celwasm::ErrorCode::kIndexOutOfBounds,
       /*message=*/
       absl::StrCat("index ", index, " out of range [0, ", count, ")"),
       /*expr_id=*/0,
@@ -59,27 +59,27 @@ cel::Value IndexOutOfBounds(std::size_t index, std::size_t count) {
 
 // ──── Wire-format error encoding ─────────────────────────────────
 
-uint32_t WireErrorCode(cel::ErrorCode c) {
+uint32_t WireErrorCode(celwasm::ErrorCode c) {
   switch (c) {
-    case cel::ErrorCode::kOverflow:
+    case celwasm::ErrorCode::kOverflow:
       return CEL_ERR_OVERFLOW;
-    case cel::ErrorCode::kDivideByZero:
+    case celwasm::ErrorCode::kDivideByZero:
       return CEL_ERR_DIVIDE_BY_ZERO;
-    case cel::ErrorCode::kModulusByZero:
+    case celwasm::ErrorCode::kModulusByZero:
       return CEL_ERR_MODULUS_BY_ZERO;
-    case cel::ErrorCode::kTypeMismatch:
+    case celwasm::ErrorCode::kTypeMismatch:
       return CEL_ERR_TYPE_MISMATCH;
-    case cel::ErrorCode::kTypeUnsupported:
+    case celwasm::ErrorCode::kTypeUnsupported:
       return CEL_ERR_TYPE_UNSUPPORTED;
-    case cel::ErrorCode::kKeyNotFound:
+    case celwasm::ErrorCode::kKeyNotFound:
       return CEL_ERR_NO_SUCH_KEY;
-    case cel::ErrorCode::kFieldNotFound:
+    case celwasm::ErrorCode::kFieldNotFound:
       return CEL_ERR_FIELD_NOT_FOUND;
-    case cel::ErrorCode::kIndexOutOfBounds:
+    case celwasm::ErrorCode::kIndexOutOfBounds:
       return CEL_ERR_INDEX_OUT_OF_BOUNDS;
-    case cel::ErrorCode::kInvalidArgument:
+    case celwasm::ErrorCode::kInvalidArgument:
       return CEL_ERR_INVALID_ARGUMENT;
-    case cel::ErrorCode::kHostAdapterError:
+    case celwasm::ErrorCode::kHostAdapterError:
       return CEL_ERR_HOST_ADAPTER_ERROR;
     default:
       return CEL_ERR_TYPE_MISMATCH;
@@ -110,7 +110,7 @@ void WriteWireInt(int64_t v, uint32_t out_slot, MemoryView& mem) {
 void WriteInvalidArgumentError(uint32_t out_slot, MemoryView& mem) {
   CelValue cv{};
   cv.kind = CEL_ERROR;
-  cv.payload.err = WireErrorCode(cel::ErrorCode::kInvalidArgument);
+  cv.payload.err = WireErrorCode(celwasm::ErrorCode::kInvalidArgument);
   mem.WriteCelValue(out_slot, cv);
 }
 

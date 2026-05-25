@@ -97,7 +97,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -322,7 +322,7 @@ TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
   // §3.9 ("comprehension as operand") symmetrically.
   // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
   // now snapshot into arena format via `cel_list_arena_view`.
-Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
+  Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.exists(e, e == 5)");
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(5), Value::Int(9)}));
@@ -332,7 +332,7 @@ Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
 TEST_F(ComprehensionExistsListE2ETest, AllOverBoundList) {
   // Slice 2 (m5b §CCF-8) lifts the SKIP — host-list iter_ranges
   // now snapshot into arena format via `cel_list_arena_view`.
-Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
+  Compiler compiler = CompilerWithVar("xs", CelType::List(CelType::Int()));
   auto instance = CompilePlan(compiler, "xs.all(e, e > 0)");
   Activation a;
   a.Bind("xs", Value::List({Value::Int(1), Value::Int(2), Value::Int(3)}));
@@ -1067,4 +1067,4 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultEqualsEmptyList) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

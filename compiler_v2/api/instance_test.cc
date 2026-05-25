@@ -20,7 +20,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/compiler.h"
@@ -30,12 +29,14 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "gmock/gmock.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
+using ::celwasm::AttributePattern;
 
 // Force generated-pool registration of descriptors referenced by
 // tests below.  Runs once at static init per test binary.
@@ -387,7 +388,7 @@ TEST(InstancePartialEvalTest, EmptyPatternSetBehavesLikeEval) {
 // ────────────────────────────────────────────────────────────────────
 // M3 — `Instance::Eval` decoder grew a `CEL_MAP_ARENA` arm.  These
 // tests exercise the decoder by evaluating a map-producing
-// expression and asserting the host-side `cel::Value::Map` round-
+// expression and asserting the host-side `celwasm::api::Value::Map` round-
 // trips correctly: size matches, key kind matches, value matches
 // per entry.  Both the literal/index path (scalar value) and the
 // pure-literal path (map value) flow through `DecodeArenaMapAt`.
@@ -788,4 +789,4 @@ TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnReturnsFalseForNonDigits) {
 }  // namespace m13_c3
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

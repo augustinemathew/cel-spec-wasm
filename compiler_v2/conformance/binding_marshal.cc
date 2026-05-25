@@ -78,44 +78,45 @@ absl::StatusOr<std::unique_ptr<google::protobuf::Message>> UnpackAny(
   return msg;
 }
 
-absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
+absl::StatusOr<celwasm::api::Value> ValueFromProto(const ProtoValue& v) {
   switch (v.kind_case()) {
     case ProtoValue::kNullValue:
-      return cel::Value::Null();
+      return celwasm::api::Value::Null();
     case ProtoValue::kBoolValue:
-      return cel::Value::Bool(v.bool_value());
+      return celwasm::api::Value::Bool(v.bool_value());
     case ProtoValue::kInt64Value:
-      return cel::Value::Int(v.int64_value());
+      return celwasm::api::Value::Int(v.int64_value());
     case ProtoValue::kUint64Value:
-      return cel::Value::Uint(v.uint64_value());
+      return celwasm::api::Value::Uint(v.uint64_value());
     case ProtoValue::kDoubleValue:
-      return cel::Value::Double(v.double_value());
+      return celwasm::api::Value::Double(v.double_value());
     case ProtoValue::kStringValue:
     case ProtoValue::kBytesValue: {
       // Spec semantics differ (string interns UTF-8, bytes is opaque),
       // but the marshaller treats both as opaque byte payloads.  One
       // arm collapses what `bugprone-branch-clone` would otherwise flag
-      // as two identical-shaped `cel::Value::X(v.X_value())` cases.
+      // as two identical-shaped `celwasm::api::Value::X(v.X_value())` cases.
       auto kind = v.kind_case();
       const std::string& bytes = (kind == ProtoValue::kStringValue)
                                      ? v.string_value()
                                      : v.bytes_value();
-      return (kind == ProtoValue::kStringValue) ? cel::Value::String(bytes)
-                                                : cel::Value::Bytes(bytes);
+      return (kind == ProtoValue::kStringValue)
+                 ? celwasm::api::Value::String(bytes)
+                 : celwasm::api::Value::Bytes(bytes);
     }
     case ProtoValue::kEnumValue:
       // langdef §"Enumerated Types": enum values are spec-typed as
       // int.  `InlineConstantReferences` rewrites enum-name
       // resolution into Constant(int) at the AST level;
       // here we marshal an `enum_value`-typed binding the same way.
-      return cel::Value::Int(v.enum_value().value());
+      return celwasm::api::Value::Int(v.enum_value().value());
     case ProtoValue::kObjectValue: {
       // Unpack the Any-style object_value into a fresh proto
       // wrapped in OwnedProtoBacking.  Same pattern the conformance
       // matcher uses on the read side (CompareMessage in runner.cc).
       auto msg_or = UnpackAny(v.object_value());
       if (!msg_or.ok()) return msg_or.status();
-      return cel::Value::OwnedMessage(*std::move(msg_or));
+      return celwasm::api::Value::OwnedMessage(*std::move(msg_or));
     }
     case ProtoValue::kMapValue:
       return absl::UnimplementedError(
@@ -128,7 +129,7 @@ absl::StatusOr<cel::Value> ValueFromProto(const ProtoValue& v) {
       // string verbatim (`"int"`, `"bool"`, `"<msg-FQN>"`, ...).
       // No name validation; the read-side comparator does byte-equal
       // matching against the matcher.
-      return cel::Value::Type(v.type_value());
+      return celwasm::api::Value::Type(v.type_value());
     case ProtoValue::KIND_NOT_SET:
       return absl::InvalidArgumentError(
           "binding_marshal: cel.expr.Value has no kind set");
@@ -251,7 +252,8 @@ absl::StatusOr<std::string> VariableSpecFromDecl(const ProtoDecl& d) {
 }
 
 absl::Status PopulateActivation(
-    const cel::expr::conformance::test::SimpleTest& t, cel::Activation& act) {
+    const cel::expr::conformance::test::SimpleTest& t,
+    celwasm::api::Activation& act) {
   for (const auto& kv : t.bindings()) {
     const ProtoExprValue& ev = kv.second;
     switch (ev.kind_case()) {
@@ -297,24 +299,25 @@ absl::Status PopulateVariableSpecs(
 
 namespace {
 
-// Mirror of `PrimitiveSpec` but producing a `cel::CelType` directly,
+// Mirror of `PrimitiveSpec` but producing a `celwasm::api::CelType` directly,
 // for the `DeclareVariablesOnBuilder` path that doesn't want to
 // round-trip through the spec-string parser.  Aggregates / WKTs all
 // SKIP — the matching arms in `TypeSpecFragment` already gate them.
-absl::StatusOr<cel::CelType> CelTypeFromPrimitive(ProtoType::PrimitiveType p) {
+absl::StatusOr<celwasm::api::CelType> CelTypeFromPrimitive(
+    ProtoType::PrimitiveType p) {
   switch (p) {
     case ProtoType::BOOL:
-      return cel::CelType::Bool();
+      return celwasm::api::CelType::Bool();
     case ProtoType::INT64:
-      return cel::CelType::Int();
+      return celwasm::api::CelType::Int();
     case ProtoType::UINT64:
-      return cel::CelType::Uint();
+      return celwasm::api::CelType::Uint();
     case ProtoType::DOUBLE:
-      return cel::CelType::Double();
+      return celwasm::api::CelType::Double();
     case ProtoType::STRING:
-      return cel::CelType::String();
+      return celwasm::api::CelType::String();
     case ProtoType::BYTES:
-      return cel::CelType::Bytes();
+      return celwasm::api::CelType::Bytes();
     case ProtoType::PRIMITIVE_TYPE_UNSPECIFIED:
       return absl::InvalidArgumentError(
           "binding_marshal: PrimitiveType is UNSPECIFIED");
@@ -323,7 +326,7 @@ absl::StatusOr<cel::CelType> CelTypeFromPrimitive(ProtoType::PrimitiveType p) {
                     << static_cast<int>(p);
 }
 
-absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
+absl::StatusOr<celwasm::api::CelType> CelTypeFromProtoType(const ProtoType& t) {
   if (t.type_kind_case() == ProtoType::kPrimitive) {
     return CelTypeFromPrimitive(t.primitive());
   }
@@ -335,12 +338,12 @@ absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
       return absl::InvalidArgumentError(
           "binding_marshal: message_type with empty name");
     }
-    return cel::CelType::Message(t.message_type());
+    return celwasm::api::CelType::Message(t.message_type());
   }
   // `type` declarable as a variable type.  No payload to
   // unpack — the type-of-types is uninhabited as a distinct shape.
   if (t.type_kind_case() == ProtoType::kType) {
-    return cel::CelType::Type();
+    return celwasm::api::CelType::Type();
   }
   // Anything else (list_type / map_type / wrapper / well_known / dyn /
   // ...) is still SKIP territory.  Re-use `TypeSpecFragment`'s
@@ -360,7 +363,7 @@ absl::StatusOr<cel::CelType> CelTypeFromProtoType(const ProtoType& t) {
 
 absl::Status DeclareVariablesOnBuilder(
     const cel::expr::conformance::test::SimpleTest& t,
-    cel::Compiler::Builder& b) {
+    celwasm::api::Compiler::Builder& b) {
   for (const auto& d : t.type_env()) {
     if (d.decl_kind_case() != ProtoDecl::kIdent) {
       return absl::UnimplementedError(

@@ -1,9 +1,9 @@
-// `cel::Instance` — the live evaluator.  Per cel-host-surface.md
+// `celwasm::api::Instance` — the live evaluator.  Per cel-host-surface.md
 // §2.3: holds the wasmtime store + instances + per-instance state
 // (host-owned memory, linker, runtime instance, expr instance,
 // eval_fn).  Thread-owned (single-threaded; bind one per worker).
 //
-// Constructed by `cel::Engine::Plan(program, bindings)`; never by
+// Constructed by `celwasm::api::Engine::Plan(program, bindings)`; never by
 // the user directly.  An Instance keeps a `shared_ptr` to the
 // originating Engine's wasmtime state, so Engine can be dropped
 // while live Instances continue running.
@@ -30,7 +30,7 @@ struct WasmtimeEngineState;
 struct InstanceImpl;
 }  // namespace celwasm
 
-namespace cel {
+namespace celwasm::api {
 
 class Engine;
 
@@ -79,7 +79,7 @@ class Instance {
   // See `rewrite/m2-ident-select-unknowns.md`.
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> PartialEval(
       const Activation& activation,
-      absl::Span<const AttributePattern> unknowns);
+      absl::Span<const celwasm::AttributePattern> unknowns);
 
   // Linear-memory byte size for this Instance's host-owned memory.
   // Reads through the wasmtime store, so will crash / UB if the
@@ -108,6 +108,6 @@ class Instance {
   std::unique_ptr<celwasm::InstanceImpl> impl_;
 };
 
-}  // namespace cel
+}  // namespace celwasm::api
 
 #endif  // CELWASM_COMPILER_V2_API_INSTANCE_H_

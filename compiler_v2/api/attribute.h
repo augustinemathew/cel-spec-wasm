@@ -43,7 +43,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 
-namespace cel {
+namespace celwasm {
 
 // ————————— AttributeQualifier —————————
 //
@@ -239,6 +239,6 @@ struct AttributeId {
   }
 };
 
-}  // namespace cel
+}  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_V2_API_ATTRIBUTE_H_
