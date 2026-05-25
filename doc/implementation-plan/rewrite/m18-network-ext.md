@@ -1,9 +1,20 @@
 # M18 — `network_ext` extension (IP / CIDR)
 
-Status: **plan — drafted 2026-05-24, not yet started.**  Target:
+Status: **plan — drafted 2026-05-24; checker assumptions probe-validated
+2026-05-24 (GREEN).**  Target:
 `tests/simple/testdata/network_ext.textproto` (69 rows, currently
 0 PASS — all SKIP under `ext_unimpl`).  Conformance is the definition
 of done.
+
+> **Slice-0 checker probe: GREEN** (`m18-ast-probe-findings.md`;
+> `compiler_v2/probes/network/ast_shape_probe_test.cc`, 9 tests).
+> The load-bearing risk — "can we self-declare the two types + ~16
+> overloads with no cel-cpp library?" — is **retired**: all 69 corpus
+> shapes type-check against a plain `TypeCheckerBuilder`, including the
+> `type(...) == net.IP/net.CIDR` rows.  The working decl recipe is in
+> the findings doc.  §3.1 / §8 below are reconciled to it; the only
+> remaining Slice-0 work is the §3.2 runtime-representation WAT (the
+> probe covered the checker surface only).
 
 > **The big architectural delta from M12/M16.**  `string_ext`, `math`,
 > `optionals`, and `encoders` all came with a cel-cpp checker library
@@ -65,7 +76,7 @@ Enumerated from the corpus (`grep` of `network_ext.textproto`):
 | `<cidr>.ip()` | receiver | `() → net.IP` | network address |
 | `<cidr>.masked()` | receiver | `() → net.CIDR` | zero the host bits |
 | `<cidr>.prefixLength()` | receiver | `() → int` | mask length |
-| `==` on `net.IP` / `net.CIDR` | operator | structural equality | bool |
+| `==` on `net.IP` / `net.CIDR` | operator | structural equality | bool — **no decl needed** (standard `equals` resolves on the abstract types; probe-confirmed). Runtime still needs new-kind arms in `cel_equals`. |
 
 Both IPv4 and IPv6 are in scope (the corpus exercises `2001:db8::68`,
 `::ffff:192.168.0.1`, zone-id rejection `fe80::1%en0`, non-canonical
@@ -82,22 +93,39 @@ uppercase, etc.).
 These are the M18-specific unknowns; resolve them WAT-first + with a
 checker probe before any production code, mirroring M16's probe.
 
-### 3.1 Declaring the functions + types without a cel-cpp library
+### 3.1 Declaring the functions + types without a cel-cpp library — **RESOLVED (probe GREEN)**
 
-We already hand-declare decls in two places:
-`parse_and_check.cc` (`AddVariable`, and the custom-fn path
-`RegisterCustomFunctionsOnChecker`).  Slice 0 probe answers:
+Confirmed working recipe (full code in `m18-ast-probe-findings.md`):
 
-  - Can cel-cpp's `TypeCheckerBuilder` register **abstract type
-    decls** (`net.IP`, `net.CIDR`) + the ~16 function overloads
-    directly (no library wrapper)?  What's the API
-    (`AddFunction` / `MergeFunction` / `AddTypeDecl`)?
-  - How does a receiver overload (`<cidr>.containsIP(...)`) get
-    declared so it reaches codegen as a `kCallExpr` with target —
-    same shape as string_ext receivers (probe Q from M12)?
-  - Does `type(ip(...))` need `net.IP` registered as an **ident** of
-    type `type(net.IP)` (mirrors how `optional_type` was handled in
-    M14)?
+  - **Types**: `cel::Type(cel::OpaqueType(arena, "net.IP", /*params=*/{}))`
+    and `"net.CIDR"` — named zero-param abstract types, identical to how
+    `OptionalType` is an `OpaqueType`.  **No `AddTypeDecl` call exists
+    or is needed** — the types live only as overload arg/result types +
+    the `TypeType` of the bare-literal variables.
+  - **Functions**: `MakeFunctionDecl(name, MakeOverloadDecl(id, result,
+    args…) / MakeMemberOverloadDecl(id, result, receiver, args…))` then
+    `builder.AddFunction(decl)` — the same path
+    `RegisterCustomFunctionsOnChecker` already uses.
+  - **Shared names need `MergeFunction` (not `AddFunction`)**: `string`
+    (extend the stdlib's), and `ip` (the member `<cidr>.ip()` shares the
+    name with the global `ip()` constructor — member-vs-global flag
+    disambiguates).
+  - **Receiver methods** use `MakeMemberOverloadDecl` (receiver is the
+    first decl arg) → reach codegen as `kCallExpr` with `has_target=true`
+    — the exact string_ext receiver shape M12 already handles.
+  - **Bare type literals** `net.IP` / `net.CIDR`:
+    `AddVariable(MakeVariableDecl("net.IP", TypeType(arena, ipType)))`
+    (mirrors `optional_type`).  They reach the AST as a single
+    `kIdentExpr` (the qualified-name resolver swallows the dot).
+  - **`ip.isCanonical`** is a **global function literally named
+    `"ip.isCanonical"`** (`has_target=false`), NOT a receiver or a select
+    — codegen routes on the function name; no namespace special-casing.
+  - **`==` and `type()` need no decl** — the standard `equals` / `type`
+    overloads resolve on the abstract types for free.
+
+The probe's overload-id strings (`net_ip_string`, `net_cidr_containsIP_ip`,
+…) become the Slice-D `overload_table.cc` seeds (adjust to the repo id
+convention).
 
 ### 3.2 Runtime representation of `net.IP` / `net.CIDR`
 
@@ -147,11 +175,10 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
 
 ## 6. Slicing
 
-  - **Slice 0 — probe + WAT (mandatory).**  Checker probe answering
-    §3.1 (can we declare the types + overloads without a library, and
-    what AST shapes result).  WAT traces freezing §3.2 (IP value
-    layout + parse + contains ABI).  Milestone doc reconciled to the
-    evidence (as M16 did).
+  - **Slice 0 — probe + WAT.**  *Checker probe: DONE (GREEN, see
+    `m18-ast-probe-findings.md`).*  **Remaining:** WAT traces freezing
+    §3.2 (IP value layout + parse + contains ABI:
+    `wat/m18_ip_parse_string.wat`, `wat/m18_cidr_contains.wat`).
   - **Slice A — `ip` type + parse/validate.**  `ip()`, `isIP`,
     `ip.isCanonical`, `string(ip)`, `type(ip)`, `==` on IP.  IPv4 +
     IPv6 parser + canonicaliser (the hardest single piece).
@@ -167,16 +194,19 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
 
 ## 7. Risks
 
-  - **Self-declared decls are new ground.**  We've never registered
-    abstract *types* in the checker without a cel-cpp library — Slice
-    0 must prove the API works (else fall back to representing IP/CIDR
-    as opaque/string-typed with runtime-only semantics, losing
-    `type()`-distinctness rows).
-  - **IPv6 parsing is fiddly.**  `::` compression, v4-mapped
-    (`::ffff:1.2.3.4`), zone IDs (rejected), canonical-form rules
-    (lowercase, `::` placement).  Pin every case to the corpus, not
-    intuition; consider vendoring a small parser rather than
-    hand-rolling.
+  - ~~**Self-declared decls are new ground.**~~ **RETIRED by the
+    Slice-0 probe** — self-declaration works for all 69 shapes; no
+    string-typed fallback needed.
+  - **IPv6 parsing is the real work, and it's fiddly.**  `::`
+    compression, v4-mapped forms, zone IDs, canonical-form rules.
+    Corpus subtlety the probe surfaced: `ip('::ffff:192.168.0.1')`
+    (dotted-decimal v4-mapped) is **rejected** ("IPv4-mapped IPv6
+    address is not allowed"), but `ip('::ffff:c0a8:1')` (hex
+    v4-mapped) is **accepted** and compares **equal** to
+    `ip('192.168.0.1')`.  So v4-mapped handling is *form-sensitive* —
+    pin both.  Pin every parse case to the corpus's exact eval-error
+    strings (enumerated in the findings doc §"Eval-error message
+    strings"); consider vendoring a small parser over hand-rolling.
   - **Equality/type() integration touches shared runtime.**  New
     `CelKind`s ripple into `cel_equals`, `cel_type_of`, the host
     pretty-printer, and any closed-`switch` over kinds (each gets a
@@ -186,16 +216,19 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
     `type(...) == net.IP` rows fail — so the type work is load-bearing
     for the row count, not optional polish.
 
-## 8. Open questions (for Slice 0)
+## 8. Open questions
 
-  - §3.1 — exact checker API for self-declared types + overloads;
-    whether receiver overloads need anything beyond M12's pattern.
-  - §3.2 — new `CelKind`s vs opaque tag; 16-byte-always vs
-    version-tagged payload.
-  - Does `isIP(s, ver)` (2-arg version) appear, and what `ver` values
-    (4 / 6)?  Confirm from the corpus during Slice 0.
-  - Vendor a parser (e.g. a tiny inet_pton-style routine) vs
-    hand-roll — decide once the parse matrix is enumerated.
+  - ~~§3.1 checker API~~ — **RESOLVED** (probe; see §3.1).
+  - ~~`isIP(s, ver)` 2-arg form~~ — **RESOLVED**: does NOT appear in the
+    corpus; declaring it is optional (out of M18 scope unless we want
+    spec parity).
+  - **§3.2 — still open** (runtime representation): new `CelKind`s
+    (`CEL_IP`/`CEL_CIDR`) vs opaque tag; 16-byte-always vs
+    version-tagged payload.  The sole remaining Slice-0 item; resolve
+    WAT-first.
+  - **Parser: vendor vs hand-roll** — decide once the parse matrix is
+    enumerated (the findings doc's error-string table + the v4-mapped
+    form-sensitivity are the seed of that matrix).
 
 ## 9. Closeout gate (copy into the PR)
 
