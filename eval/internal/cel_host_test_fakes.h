@@ -33,8 +33,7 @@ namespace test {
 // at the requested offset; ReadSpan returns a view into the buffer.
 class FakeMemoryView final : public MemoryView {
  public:
-  explicit FakeMemoryView(size_t size = size_t{64u} * 1024u)
-      : mem_(size, 0) {}
+  explicit FakeMemoryView(size_t size = size_t{64u} * 1024u) : mem_(size, 0) {}
 
   CelValue ReadCelValue(uint32_t offset) const override {
     CelValue cv{};
@@ -51,7 +50,9 @@ class FakeMemoryView final : public MemoryView {
     return {reinterpret_cast<const char*>(mem_.data() + ptr), len};
   }
 
-  uint8_t* absl_nonnull data() { return mem_.data(); }
+  uint8_t* absl_nonnull data() {
+    return mem_.data();
+  }
 
   // Convenience: stage a CelValue at a slot, return the slot offset.
   uint32_t Place(uint32_t slot, const CelValue& v) {

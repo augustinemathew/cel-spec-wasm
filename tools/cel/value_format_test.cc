@@ -9,8 +9,8 @@
 #include "absl/strings/match.h"
 #include "eval/error.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm::tools::cel {
 namespace {

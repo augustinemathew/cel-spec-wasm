@@ -6,6 +6,9 @@
 #include <utility>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
+#include "abi/cel_abi_emit.h"
+#include "abi/runtime_catalogue.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -14,9 +17,6 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "binaryen-c.h"
-#include "abi/cel_abi.pb.h"
-#include "abi/cel_abi_emit.h"
-#include "abi/runtime_catalogue.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/layout_pass.h"
 #include "compiler/codegen/module.h"

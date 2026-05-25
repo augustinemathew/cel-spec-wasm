@@ -16,9 +16,9 @@
 #include <vector>
 
 #include "eval/error.h"
-#include "shared/type.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
 
 namespace celwasm {
 namespace {

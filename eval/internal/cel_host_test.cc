@@ -19,11 +19,7 @@
 #include "absl/status/status_matchers.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
-#include "testdata/host_fixture_proto2.pb.h"
-#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
@@ -31,6 +27,10 @@
 #include "google/protobuf/timestamp.pb.h"
 #include "google/protobuf/wrappers.pb.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto2.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {

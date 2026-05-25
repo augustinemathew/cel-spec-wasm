@@ -9,13 +9,13 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "compiler/codegen/resolve_pass.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
-#include "runtime/cel_data.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_data.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {

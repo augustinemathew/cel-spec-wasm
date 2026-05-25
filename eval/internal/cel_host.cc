@@ -17,13 +17,13 @@
 #include "absl/time/time.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_error.h"  // M11 Slice E
-#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/descriptor_legacy.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "shared/type.h"
 
 namespace celwasm {
 

@@ -1267,8 +1267,8 @@ std::vector<BinaryenExpressionRef> EmitCustomFnParamPrelude(
   out.reserve(variables.size());
   for (const LaidOutVariable& v : variables) {
     ABSL_CHECK(v.kind == ResolvedVariableKind::kFreeVariable)
-        << "LowerToCustomFn: variable `" << v.name
-        << "` has non-free kind " << static_cast<int>(v.kind)
+        << "LowerToCustomFn: variable `" << v.name << "` has non-free kind "
+        << static_cast<int>(v.kind)
         << " — CEL-defined bodies may only reference declared params"
            " (m13-custom-fns §3.5)";
     auto it = param_for_name.find(v.name);
@@ -1296,8 +1296,12 @@ absl::StatusOr<LoweredFunction> LowerToCustomFn(
 
   std::vector<FieldRefRow> field_refs;
   field_refs.push_back(FieldRefRow{});
-  EmitCtx ctx{mod,         ast,            layout,
-              field_refs,  overload_table, /*wasm_local_offset=*/num_wasm_params};
+  EmitCtx ctx{mod,
+              ast,
+              layout,
+              field_refs,
+              overload_table,
+              /*wasm_local_offset=*/num_wasm_params};
 
   auto root_ref = Emit(ctx, ast.ast().root_expr());
   if (!root_ref.ok()) return root_ref.status();

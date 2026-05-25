@@ -12,10 +12,10 @@
 #include <memory>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
-#include "abi/cel_abi.pb.h"
 #include "eval/internal/cel_host.h"
 #include "google/protobuf/descriptor.h"
 #include "wasmtime.h"

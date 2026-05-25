@@ -46,8 +46,7 @@ TEST(FunctionLibrary, ExtractsHostDecl) {
 }
 
 TEST(FunctionLibrary, ExtractsForeignDecl) {
-  auto r = ParseCelfnSource(
-      "bool rules.allow(this string user, string r);");
+  auto r = ParseCelfnSource("bool rules.allow(this string user, string r);");
   ASSERT_TRUE(r.ok()) << r.status();
   ASSERT_EQ(r->decls().size(), 1u);
   const auto& d = r->decls()[0];
@@ -109,29 +108,23 @@ TEST(FunctionLibrary, SynthesisesOverloadIdsForAllTypes) {
 // ─── §4.5.1 v1 cross-foreign-boundary constraint ───────────────────
 
 TEST(FunctionLibrary, RejectsForeignDeclWithProtoArg) {
-  auto r = ParseCelfnSource(
-      "bool rules.is_admin(proto(acme.User) u);");
+  auto r = ParseCelfnSource("bool rules.is_admin(proto(acme.User) u);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("foreign-backed"));
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("proto"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("foreign-backed"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
 }
 
 TEST(FunctionLibrary, RejectsForeignDeclWithProtoReturn) {
-  auto r = ParseCelfnSource(
-      "proto(acme.User) rules.fetch(string id);");
+  auto r = ParseCelfnSource("proto(acme.User) rules.fetch(string id);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("proto"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
 }
 
 TEST(FunctionLibrary, RejectsForeignDeclWithProtoInList) {
-  auto r = ParseCelfnSource(
-      "bool rules.any_admin(list<proto(acme.User)> users);");
+  auto r =
+      ParseCelfnSource("bool rules.any_admin(list<proto(acme.User)> users);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("proto"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
 }
 
 TEST(FunctionLibrary, HostDeclAllowedToCarryProtos) {
@@ -159,10 +152,8 @@ TEST(FunctionLibrary, RejectsBareHostDecl) {
   // `host.foo(...)` (without the `@`) — user likely meant `@host.foo`.
   auto r = ParseCelfnSource("bool host.allow(string r);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("reserved alias"));
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("@host."));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("reserved alias"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("@host."));
 }
 
 TEST(FunctionLibrary, RejectsModuleDirectiveCollidingWithForeignAlias) {
@@ -170,16 +161,14 @@ TEST(FunctionLibrary, RejectsModuleDirectiveCollidingWithForeignAlias) {
       "Module rules;\n"
       "bool rules.allow(string r);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("collides"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("collides"));
 }
 
 TEST(FunctionLibrary, RejectsCelDefinedFnWithoutModuleDirective) {
-  auto r = ParseCelfnSource(
-      "bool is_number(this string s) = s.matches(\"a\");");
+  auto r =
+      ParseCelfnSource("bool is_number(this string s) = s.matches(\"a\");");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("no module name"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("no module name"));
 }
 
 TEST(FunctionLibrary, RejectsDuplicateOverloadId) {
@@ -187,16 +176,13 @@ TEST(FunctionLibrary, RejectsDuplicateOverloadId) {
       "bool @host.f(int x);"
       "bool @host.f(int y);");  // same sig
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("duplicate"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("duplicate"));
 }
 
 TEST(FunctionLibrary, RejectsThisModifierOnNonFirstParam) {
-  auto r = ParseCelfnSource(
-      "bool @host.f(int x, this string s);");
+  auto r = ParseCelfnSource("bool @host.f(int x, this string s);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()),
-              HasSubstr("first parameter"));
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("first parameter"));
 }
 
 // ─── Programmatic Builder API tests ────────────────────────────────
@@ -237,23 +223,25 @@ TEST(FunctionLibraryBuilder, ProgrammaticForeignDecl) {
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedNeedsModuleName) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddCelDefined("isNum", Prim(CelfnType::Kind::kBool),
-                                   {{true, Prim(CelfnType::Kind::kString), "s"}},
-                                   "s.matches(\"a\")")
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddCelDefined("isNum", Prim(CelfnType::Kind::kBool),
+                         {{true, Prim(CelfnType::Kind::kString), "s"}},
+                         "s.matches(\"a\")")
+          .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()),
               HasSubstr("no module name"));
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedWithModuleName) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .SetModuleName("foo")
-                    .AddCelDefined("isNum", Prim(CelfnType::Kind::kBool),
-                                   {{true, Prim(CelfnType::Kind::kString), "s"}},
-                                   "s.matches(\"a\")")
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .SetModuleName("foo")
+          .AddCelDefined("isNum", Prim(CelfnType::Kind::kBool),
+                         {{true, Prim(CelfnType::Kind::kString), "s"}},
+                         "s.matches(\"a\")")
+          .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
   EXPECT_EQ(lib_or->module_name(), "foo");
   ASSERT_EQ(lib_or->decls().size(), 1u);
@@ -266,24 +254,22 @@ TEST(FunctionLibraryBuilder, ProgrammaticForeignWithProtoIsRejected) {
   CelfnType proto_user;
   proto_user.kind = CelfnType::Kind::kProto;
   proto_user.proto_fqn = "acme.User";
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeign("rules", "is_admin",
-                                Prim(CelfnType::Kind::kBool),
-                                {{false, proto_user, "u"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeign("rules", "is_admin", Prim(CelfnType::Kind::kBool),
+                      {{false, proto_user, "u"}})
+          .Build();
   ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()),
-              HasSubstr("proto"));
+  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("proto"));
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticDuplicateOverloadIdIsRejected) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddHost("f", Prim(CelfnType::Kind::kBool),
-                   {{false, Prim(CelfnType::Kind::kInt), "x"}})
-          .AddHost("f", Prim(CelfnType::Kind::kBool),
-                   {{false, Prim(CelfnType::Kind::kInt), "y"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("f", Prim(CelfnType::Kind::kBool),
+                             {{false, Prim(CelfnType::Kind::kInt), "x"}})
+                    .AddHost("f", Prim(CelfnType::Kind::kBool),
+                             {{false, Prim(CelfnType::Kind::kInt), "y"}})
+                    .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("duplicate"));
 }

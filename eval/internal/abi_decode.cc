@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <cstring>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
 #include "compiler/ir/annotations.h"
 
 namespace celwasm {

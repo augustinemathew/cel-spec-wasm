@@ -20,13 +20,13 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
-#include "shared/type.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/json_util.h"
+#include "shared/type.h"
 
 namespace celwasm::tools::cel {
 

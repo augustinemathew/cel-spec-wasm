@@ -24,12 +24,12 @@
 
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "runtime/cel_data.h"
-#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_data.h"
+#include "shared/type.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {

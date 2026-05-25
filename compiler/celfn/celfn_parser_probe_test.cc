@@ -37,7 +37,9 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
     errors_.push_back(ss.str());
   }
 
-  const std::vector<std::string>& errors() const { return errors_; }
+  const std::vector<std::string>& errors() const {
+    return errors_;
+  }
 
  private:
   std::vector<std::string> errors_;
@@ -132,8 +134,7 @@ TEST(CelfnParserProbe, ParsesCelDefinedFn) {
   EXPECT_EQ(def->Identifier()->getText(), "is_number");
   ASSERT_NE(def->celExprBody(), nullptr);
   // Body text matched as one token; trims to the raw expression.
-  EXPECT_THAT(def->celExprBody()->getText(),
-              ::testing::HasSubstr("s.matches"));
+  EXPECT_THAT(def->celExprBody()->getText(), ::testing::HasSubstr("s.matches"));
 }
 
 TEST(CelfnParserProbe, ParsesAllThreeShapesInOneFile) {
@@ -162,8 +163,7 @@ bool rules.allow(this string user, string r);
 }
 
 TEST(CelfnParserProbe, ParsesProtoTypeArgument) {
-  auto r = ParseCelfn(
-      "bool @host.is_admin(proto(acme.User) user);");
+  auto r = ParseCelfn("bool @host.is_admin(proto(acme.User) user);");
   EXPECT_TRUE(r.errors.empty())
       << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
   ASSERT_EQ(r.file->fileItem().size(), 1u);
@@ -193,8 +193,7 @@ TEST(CelfnParserProbe, RejectsBareDeclWithoutBody) {
   // match `celFnDef` minus the body and reject at the `;` —
   // verifies the grammar's structure rejects this.
   auto r = ParseCelfn("bool plain_name(int x);");
-  EXPECT_FALSE(r.errors.empty())
-      << "bare-name no-body decl should not parse";
+  EXPECT_FALSE(r.errors.empty()) << "bare-name no-body decl should not parse";
 }
 
 TEST(CelfnParserProbe, IgnoresLineAndBlockComments) {

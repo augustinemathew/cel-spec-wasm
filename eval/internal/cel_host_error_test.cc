@@ -18,8 +18,8 @@
 #include "eval/internal/cel_host.h"
 #include "eval/internal/cel_host_test_fakes.h"
 #include "eval/value.h"
-#include "runtime/cel_data.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm {
 namespace {

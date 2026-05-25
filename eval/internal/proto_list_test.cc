@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "eval/error.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {

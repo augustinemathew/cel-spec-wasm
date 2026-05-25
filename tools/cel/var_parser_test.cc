@@ -10,13 +10,13 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "eval/internal/cel_host.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/text_format.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm::tools::cel {
 namespace {

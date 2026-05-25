@@ -115,8 +115,12 @@ class FunctionLibrary {
   FunctionLibrary& operator=(FunctionLibrary&&) = default;
 
   // Read accessors.
-  const std::string& module_name() const { return module_name_; }
-  const std::vector<CelfnDecl>& decls() const { return decls_; }
+  const std::string& module_name() const {
+    return module_name_;
+  }
+  const std::vector<CelfnDecl>& decls() const {
+    return decls_;
+  }
   const std::vector<std::string>& foreign_aliases() const {
     return foreign_aliases_;
   }
@@ -138,15 +142,13 @@ class FunctionLibrary {
     // import-module name; the embedder supplies the instance at
     // Plan time via RuntimeBindings::AddModule(alias, …).
     Builder& AddForeign(absl::string_view alias, absl::string_view fn_name,
-                        CelfnType return_type,
-                        std::vector<CelfnParam> params);
+                        CelfnType return_type, std::vector<CelfnParam> params);
 
     // Add a CEL-defined function (body is a CEL expression).
     // celwasmc compiles the body into the wasm module named by
     // SetModuleName().  The body string is taken verbatim — no
     // surrounding whitespace stripping; cel-cpp's parser handles it.
-    Builder& AddCelDefined(absl::string_view fn_name,
-                           CelfnType return_type,
+    Builder& AddCelDefined(absl::string_view fn_name, CelfnType return_type,
                            std::vector<CelfnParam> params,
                            absl::string_view body);
 

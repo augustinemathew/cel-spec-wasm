@@ -27,15 +27,13 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/internal/compile.h"
+#include "compiler/program.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "compiler/internal/compile.h"
-#include "compiler/frontend/parse_and_check.h"
-#include "tools/cel/value_format.h"
-#include "tools/cel/var_parser.h"
 #include "google/protobuf/compiler/parser.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
@@ -43,6 +41,8 @@
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "tools/cel/value_format.h"
+#include "tools/cel/var_parser.h"
 
 // Flag-parse helpers register external symbols; absl's parser
 // machinery emits "use internal linkage" warnings on the generated

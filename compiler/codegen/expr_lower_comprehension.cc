@@ -377,8 +377,7 @@ uint32_t ListIterPointerLocal(const CompContext& c) {
 // doc + m5b §CCF-8.
 BinaryenExpressionRef SourceAddrExpr(EmitCtx& ctx, const CompContext& c) {
   if (c.source_via_local) {
-    return BinaryenLocalGet(ctx.mod.raw(), c.source_local,
-                            BinaryenTypeInt32());
+    return BinaryenLocalGet(ctx.mod.raw(), c.source_local, BinaryenTypeInt32());
   }
   return I32Const(ctx.mod, c.source_slot);
 }
@@ -474,8 +473,8 @@ BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
     return BinaryenCall(mod, "cel_map_count", args, 1, BinaryenTypeInt32());
   }
   // List path: read through the resolved (arena-shaped) source addr.
-  BinaryenExpressionRef src_addr = BinaryenLocalGet(
-      mod, c.list_source_addr_local(), BinaryenTypeInt32());
+  BinaryenExpressionRef src_addr =
+      BinaryenLocalGet(mod, c.list_source_addr_local(), BinaryenTypeInt32());
   BinaryenExpressionRef hdr_ptr =
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
                    /*align=*/4, BinaryenTypeInt32(), src_addr, "memory");
@@ -576,10 +575,10 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   // kind-dispatching internally.  See m5b §CCF-8 Slice 2.
   if (!c.map_source) {
     BinaryenExpressionRef view_args[1] = {SourceAddrExpr(ctx, c)};
-    instrs->push_back(BinaryenLocalSet(
-        mod, c.list_source_addr_local(),
-        BinaryenCall(mod, "cel_list_arena_view", view_args, 1,
-                     BinaryenTypeInt32())));
+    instrs->push_back(
+        BinaryenLocalSet(mod, c.list_source_addr_local(),
+                         BinaryenCall(mod, "cel_list_arena_view", view_args, 1,
+                                      BinaryenTypeInt32())));
   }
   if (IsPresizableCollectionAccu(comp, *init_ann)) {
     const LoopStepShape shape =

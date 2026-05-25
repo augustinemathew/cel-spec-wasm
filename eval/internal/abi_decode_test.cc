@@ -13,17 +13,17 @@
 #include <string>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "testdata/e2e_fixture.pb.h"
-#include "abi/cel_abi.pb.h"
 #include "compiler/internal/compile.h"
 #include "compiler/ir/annotations.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {

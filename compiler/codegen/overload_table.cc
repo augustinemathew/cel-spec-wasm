@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "abi/runtime_catalogue.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -775,9 +775,12 @@ namespace {
 // per-program).
 abi::AbiModule ToAbiModule(ImportModule m) {
   switch (m) {
-    case ImportModule::kCelRuntime: return abi::AbiModule::kCelRuntime;
-    case ImportModule::kCelHost:    return abi::AbiModule::kCelHost;
-    case ImportModule::kCelFn:      return abi::AbiModule::kCelFn;
+    case ImportModule::kCelRuntime:
+      return abi::AbiModule::kCelRuntime;
+    case ImportModule::kCelHost:
+      return abi::AbiModule::kCelHost;
+    case ImportModule::kCelFn:
+      return abi::AbiModule::kCelFn;
     case ImportModule::kUserModule:
       ABSL_CHECK(false) << "ToAbiModule: kUserModule has no catalogue mapping "
                            "— customs supply arity via RegisterCustom";

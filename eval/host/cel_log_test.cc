@@ -7,8 +7,8 @@
 
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "runtime/cel_runtime.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_runtime.h"
 
 namespace celwasm {
 namespace {

@@ -11,10 +11,10 @@
 
 #include <cstdint>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
 #include "compiler/ir/annotations.h"  // for Repr
 
 namespace celwasm {

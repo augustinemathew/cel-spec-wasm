@@ -55,8 +55,8 @@ std::string CelfnType::Argkind() const {
       return absl::StrCat("map_", map_kv[0].Argkind(), "_",
                           map_kv[1].Argkind());
     case Kind::kProto:
-      return absl::StrCat("message_", absl::StrReplaceAll(proto_fqn,
-                                                          {{".", "_"}}));
+      return absl::StrCat("message_",
+                          absl::StrReplaceAll(proto_fqn, {{".", "_"}}));
   }
   return "unknown";
 }
@@ -127,8 +127,8 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddHost(
 }
 
 FunctionLibrary::Builder& FunctionLibrary::Builder::AddForeign(
-    absl::string_view alias, absl::string_view fn_name,
-    CelfnType return_type, std::vector<CelfnParam> params) {
+    absl::string_view alias, absl::string_view fn_name, CelfnType return_type,
+    std::vector<CelfnParam> params) {
   CelfnDecl d{};
   d.backend = CelfnDecl::Backend::kForeign;
   d.fn_name = std::string(fn_name);
@@ -185,9 +185,9 @@ absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
       return s;
     }
     if (!seen_overload_ids.insert(d.overload_id).second) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "duplicate declaration: overload-id `", d.overload_id,
-          "` already declared in this library"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("duplicate declaration: overload-id `", d.overload_id,
+                       "` already declared in this library"));
     }
     if (d.backend == CelfnDecl::Backend::kForeign) {
       if (MentionsProto(d.return_type)) {
@@ -238,7 +238,9 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
     errors_.push_back(absl::StrCat("line ", line, ":", column, " ", msg));
   }
 
-  const std::vector<std::string>& errors() const { return errors_; }
+  const std::vector<std::string>& errors() const {
+    return errors_;
+  }
 
  private:
   std::vector<std::string> errors_;
@@ -253,12 +255,18 @@ absl::StatusOr<CelfnType> ExtractType(celfn::CelfnParser::TypeContext* ctx) {
   }
   if (ctx->primitiveType() != nullptr) {
     const std::string txt = ctx->primitiveType()->getText();
-    if (txt == "bool") t.kind = CelfnType::Kind::kBool;
-    else if (txt == "int") t.kind = CelfnType::Kind::kInt;
-    else if (txt == "uint") t.kind = CelfnType::Kind::kUint;
-    else if (txt == "double") t.kind = CelfnType::Kind::kDouble;
-    else if (txt == "string") t.kind = CelfnType::Kind::kString;
-    else if (txt == "bytes") t.kind = CelfnType::Kind::kBytes;
+    if (txt == "bool")
+      t.kind = CelfnType::Kind::kBool;
+    else if (txt == "int")
+      t.kind = CelfnType::Kind::kInt;
+    else if (txt == "uint")
+      t.kind = CelfnType::Kind::kUint;
+    else if (txt == "double")
+      t.kind = CelfnType::Kind::kDouble;
+    else if (txt == "string")
+      t.kind = CelfnType::Kind::kString;
+    else if (txt == "bytes")
+      t.kind = CelfnType::Kind::kBytes;
     else
       return absl::InternalError(absl::StrCat("unknown primitive type: ", txt));
     return t;
@@ -284,10 +292,14 @@ absl::StatusOr<CelfnType> ExtractType(celfn::CelfnParser::TypeContext* ctx) {
     t.kind = CelfnType::Kind::kMap;
     CelfnType k{};
     const std::string ktxt = ctx->mapType()->mapKeyType()->getText();
-    if (ktxt == "bool") k.kind = CelfnType::Kind::kBool;
-    else if (ktxt == "int") k.kind = CelfnType::Kind::kInt;
-    else if (ktxt == "uint") k.kind = CelfnType::Kind::kUint;
-    else if (ktxt == "string") k.kind = CelfnType::Kind::kString;
+    if (ktxt == "bool")
+      k.kind = CelfnType::Kind::kBool;
+    else if (ktxt == "int")
+      k.kind = CelfnType::Kind::kInt;
+    else if (ktxt == "uint")
+      k.kind = CelfnType::Kind::kUint;
+    else if (ktxt == "string")
+      k.kind = CelfnType::Kind::kString;
     else
       return absl::InvalidArgumentError(
           absl::StrCat("map key type `", ktxt,
@@ -353,8 +365,8 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
 
   auto* file_ctx = parser.file();
   if (!errors.errors().empty()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "parse error: ", absl::StrJoin(errors.errors(), "; ")));
+    return absl::InvalidArgumentError(
+        absl::StrCat("parse error: ", absl::StrJoin(errors.errors(), "; ")));
   }
 
   FunctionLibrary::Builder b;
@@ -384,17 +396,17 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
       b.AddForeign(alias, fgn->Identifier(1)->getText(), std::move(*rt),
                    std::move(*ps));
     } else if (auto* bare = item->bareHostDecl(); bare != nullptr) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "`host` is a reserved alias; use `@host.",
-          bare->Identifier()->getText(), "(…)` instead of `host.",
-          bare->Identifier()->getText(), "(…)`"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("`host` is a reserved alias; use `@host.",
+                       bare->Identifier()->getText(), "(…)` instead of `host.",
+                       bare->Identifier()->getText(), "(…)`"));
     } else if (auto* def = item->celFnDef(); def != nullptr) {
       auto rt = ExtractType(def->type());
       if (!rt.ok()) return rt.status();
       auto ps = ExtractParams(def->params());
       if (!ps.ok()) return ps.status();
-      const std::string body = std::string(absl::StripAsciiWhitespace(
-          def->celExprBody()->getText()));
+      const std::string body = std::string(
+          absl::StripAsciiWhitespace(def->celExprBody()->getText()));
       b.AddCelDefined(def->Identifier()->getText(), std::move(*rt),
                       std::move(*ps), body);
     } else {

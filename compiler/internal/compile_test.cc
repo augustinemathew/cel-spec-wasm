@@ -8,8 +8,8 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "binaryen-c.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {

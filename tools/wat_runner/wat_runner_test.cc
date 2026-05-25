@@ -21,8 +21,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "runtime/cel_data.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm {
 namespace {

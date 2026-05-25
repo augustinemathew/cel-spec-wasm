@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -15,11 +17,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
-#include "abi/runtime_catalogue.h"
 #include "eval/internal/cel_host.h"
-#include "runtime/cel_data.h"
 #include "google/protobuf/descriptor.h"
+#include "runtime/cel_data.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -253,9 +253,9 @@ extern "C" wasm_trap_t* CelMapIterOpenTrampoline(
   WasmtimeMemoryView mem(ctx, env->memory);
   WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
-  return StatusToTrap(
-      CelMapIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
-                         static_cast<uint32_t>(args[1].of.i32), tctx));
+  return StatusToTrap(CelMapIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
+                                         static_cast<uint32_t>(args[1].of.i32),
+                                         tctx));
 }
 
 extern "C" wasm_trap_t* CelListAtTrampoline(
@@ -278,9 +278,9 @@ extern "C" wasm_trap_t* CelListIterOpenTrampoline(
   WasmtimeMemoryView mem(ctx, env->memory);
   WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
   const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
-  return StatusToTrap(
-      CelListIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
-                          static_cast<uint32_t>(args[1].of.i32), tctx));
+  return StatusToTrap(CelListIterOpenImpl(static_cast<uint32_t>(args[0].of.i32),
+                                          static_cast<uint32_t>(args[1].of.i32),
+                                          tctx));
 }
 
 // Aggregate-op kHost trampolines.  Three-arg helpers
