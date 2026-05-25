@@ -23,9 +23,11 @@ estimated.  Priorities, per the team's direction:
 | └ sum of all 80 tests' *execution* | **44.8 s** | tests are NOT the cost |
 | └ everything else (~573 s, 93%) | **compiling** test binaries | **cel-cpp from source dominates** |
 | Pre-push gate (`-c opt` conformance), cold | **~10 min** | a *second* full cel-cpp build in a separate config tree |
-| Pre-push gate in fastbuild, warm | **24 s** (same pass=1774) | shares the dev tree |
-| `lint.sh` on **2 files**, cold/contended | **609 s (~10 min)** measured | NOT clang-tidy — see below |
-| `lint.sh` on 2 files, warm tree | **~seconds** | the guard below makes warm the common case |
+| Pre-push gate in fastbuild, warm | **14.75 s** (verified, same pass=1774) | shares the dev tree |
+| `lint.sh` on **2 files**, cold/contended | **609 s (~10 min)** measured | NOT clang-tidy — full build, see §4 |
+| `lint.sh <one-file>`, warm | **4.6 s** (verified) | inner-loop path; ~floor (header parse) |
+| `lint.sh --dirty`, warm | **~5-9 s** | only working-tree edits |
+| bare `lint.sh` (full branch diff) | **73 s** (verified, ~20 files) | pre-commit gate only |
 
 **The bottleneck is build, not test or lint.** And the single worst
 offender is the **pre-push gate running under `-c opt`**, a different
@@ -153,6 +155,23 @@ full project build first."  `clang-tidy` itself, fanned out over
 external symlinks (`abseil`, `protobuf`, `cel-cpp`) are actually
 missing.  On a warm tree (the common case) lint now skips it entirely
 and is back to seconds.  A fresh checkout pays it once.
+
+### Lint the right number of files (the real per-loop lever)
+
+clang-tidy parsing absl/cel-cpp headers is ~4.6 s **per file** even
+with the PCH — that's the floor.  So the win is linting *fewer files,
+more often*:
+
+| Command | Scope | Cost | When |
+|---|---|---|---|
+| `lint.sh <file>` | named file(s) | **4.6 s** | per edit (inner loop) |
+| `lint.sh --dirty` | working-tree edits (staged+unstaged) | **~5-9 s** | per edit |
+| `lint.sh` (bare) | whole branch diff vs `origin/master` (~20 files) | **73 s** | once, pre-commit |
+
+**LANDED:** `--dirty` was added so a mid-loop invocation hits only the
+1-2 files you're actively touching instead of re-linting the entire
+branch every time.  Bare `lint.sh` stays the explicit full-branch
+pre-commit gate.
 
 ### The rest of lint
 

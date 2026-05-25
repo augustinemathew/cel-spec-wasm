@@ -2,9 +2,10 @@
 # lint.sh — format + lint changed C/C++ files.
 #
 # Usage:
-#   scripts/lint.sh                    # lint files that differ from main
-#   scripts/lint.sh --all              # lint every compiler/ source file
-#   scripts/lint.sh path/to/file.cc    # lint the named files only
+#   scripts/lint.sh path/to/file.cc    # inner loop: lint named file(s), ~4.6s
+#   scripts/lint.sh --dirty            # inner loop: lint working-tree edits only (~5-9s)
+#   scripts/lint.sh                    # pre-commit gate: full branch diff vs main (~73s)
+#   scripts/lint.sh --all              # lint every compiler_v2/ source file
 #
 # Behaviour:
 #   1. Run clang-format -i on each target file (in-place rewrite).
@@ -39,9 +40,28 @@ done
 declare -a files=()
 if [[ $# -ge 1 && "$1" == "--all" ]]; then
   while IFS= read -r -d '' f; do files+=("$f"); done < <(
-    find compiler -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
+    find compiler_v2 -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
       -print0
   )
+elif [[ $# -ge 1 && "$1" == "--dirty" ]]; then
+  # Inner-loop fast path: lint ONLY working-tree-modified files (staged
+  # + unstaged), not the whole branch diff.  Bare `lint.sh` re-lints
+  # every file that differs from origin/master (~20 files, ~73s) even
+  # ones you haven't touched since the last lint; `--dirty` hits just
+  # the 1-2 files you're actively editing (~5-9s).  Use this per edit;
+  # run bare `lint.sh` once before committing for the full-branch gate.
+  # See CLAUDE.md "Lint & format".
+  mapfile -t files < <(
+    git diff --name-only --diff-filter=ACMR -- \
+      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
+      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
+    git diff --name-only --cached --diff-filter=ACMR -- \
+      'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c' \
+      'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
+  )
+  if [[ ${#files[@]} -gt 0 ]]; then
+    mapfile -t files < <(printf '%s\n' "${files[@]}" | awk 'NF' | sort -u)
+  fi
 elif [[ $# -ge 1 ]]; then
   files=("$@")
 else
