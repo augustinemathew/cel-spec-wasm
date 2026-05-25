@@ -1,6 +1,6 @@
 # Repo restructure: making the compiler the repo
 
-Status: shipped (W0–W6) 2026-05-25.  W7 (disconnect from cel-spec) in progress — §12.
+Status: shipped (W0–W7) 2026-05-25.  W7 (disconnect from cel-spec) landed — module is now `cel-wasm`, local proto/ consumed from upstream BCR; conformance held at 1898.
 
 **What landed (as-built deltas from the as-written plan).** The restructure
 executed and is green; `compiler_v2/` is dissolved into the top-level role dirs
