@@ -17,7 +17,7 @@ classifier graceful-classifies unregistered extension symbols
 Conformance delta: **+86 PASS**, headline 1287 → **1373 / 2454**
 (55.9%).  Per-fixture: `macros` 0→38 PASS, `macros2` 0→39 PASS,
 `bindings_ext` 0→7 PASS, `namespace` 4→6 PASS, `block_ext` 37
-FAIL → 25 SKIP + 12 FAIL.  See `compiler_v2/conformance/README.md`
+FAIL → 25 SKIP + 12 FAIL.  See `conformance/README.md`
 for the closed-milestone entry.
 
 Plan-vs-execution deltas captured per-slice as inline callouts
@@ -49,7 +49,7 @@ cleanup pass.
 >     key off `iter_var == "#unused"` alongside
 >     `iter_range == kCreateList(size=0) && loop_cond == const(false)`.
 >   - **`map`'s `loop_step` overload-resolves to `add_list`** (NOT
->     `add_int64`).  Already seeded in `compiler_v2/codegen/overload_table.cc:107`
+>     `add_int64`).  Already seeded in `compiler/codegen/overload_table.cc:107`
 >     pointing at `cel_list_concat` (O(N²)).  Slice D's
 >     append-pattern detection rewrites the shape
 >     `Call(_+_, Ident(@result), CreateList(size=1))` to
@@ -73,7 +73,7 @@ cleanup pass.
 >     hidden select appears.
 >   - **e2e file shape**: the §4.9 inventory called for 5
 >     separate `m5b_*_test.cc` files; we shipped a single
->     `compiler_v2/e2e/m5b_test.cc` (~1145 lines, 9 fixture
+>     `e2e/m5b_test.cc` (~1145 lines, 9 fixture
 >     classes, 71 tests) following the M7B / M8 pattern.  Easier
 >     to thread shared helpers; per-fixture skip / un-skip
 >     remains per-slice.
@@ -95,7 +95,7 @@ remaining in the post-M7B corpus: every `exists` / `all` /
 `exists_one` / `map` / `filter` comprehension currently classifies
 as SKIP because `ResolvePass`'s `ComprehensionDetector` early-rejects
 any `kComprehensionExpr` (see
-`compiler_v2/codegen/resolve_pass.cc:456-462`).  In one milestone
+`compiler/codegen/resolve_pass.cc:456-462`).  In one milestone
 we lift the gate, ship the scope/codegen machinery underneath it,
 and as a near-free consequence unlock the customer-named
 `cel.bind(name, value, body)` macro (it's a degenerate
@@ -200,7 +200,7 @@ collapse the moment comprehensions ship.
 ### 1.3 Envelope boundary probes
 
 The envelope tightens with this milestone — `IsInM7Envelope` in
-`compiler_v2/conformance/runner.cc` already admits comprehension-
+`conformance/runner.cc` already admits comprehension-
 shaped programs but they short-circuit at compile.  After this
 milestone:
 
@@ -405,7 +405,7 @@ Three notes on the codegen:
 
 ### 3.2 ResolvePass — scope handler
 
-Today (`compiler_v2/codegen/resolve_pass.cc:456-462`):
+Today (`compiler/codegen/resolve_pass.cc:456-462`):
 
 ```cpp
 ComprehensionDetector comprehension_detector;
@@ -450,7 +450,7 @@ Replace with a scope-aware visitor.  Required behaviour:
     user could write `cel.bind(@result, 5, ...)`).  We
     follow cel-cpp: the inner binding wins, no error reported.
 
-New file: `compiler_v2/codegen/scope_resolver.h` / `.cc`.
+New file: `compiler/codegen/scope_resolver.h` / `.cc`.
 
 ### 3.3 LayoutPass — scope-aware slot allocation
 
@@ -470,7 +470,7 @@ For comprehensions we need:
     Each push records the free-list cursor at entry; pop
     restores it.
 
-Affects: `compiler_v2/codegen/layout_pass.cc`.  New struct:
+Affects: `compiler/codegen/layout_pass.cc`.  New struct:
 `ComprehensionFrame { uint32_t iter_slot; uint32_t accu_slot;
 uint32_t step_workspace_slot; uint32_t free_cursor_at_entry; };`.
 
@@ -586,8 +586,8 @@ to slot size).  **Choose Option β.**  See WAT
 > old positional `cel_list_set` path.  Comprehension accu codegen
 > calls `cel_list_create(slot, iter_range.count)` in the prologue
 > (per §10.A) and `cel_list_append_at` per loop step; the growth
-> branch is gone entirely.  See `compiler_v2/runtime/cel_list.h`
-> and `compiler_v2/runtime/cel_runtime.c` for the as-shipped
+> branch is gone entirely.  See `runtime/cel_list.h`
+> and `runtime/cel_runtime.c` for the as-shipped
 > bodies; commits 5060b78 (Slice G land) + the consolidation
 > commit (this one).
 
@@ -601,15 +601,15 @@ to one helper (`EmitPresizeAccu`) and amounts to ~10 LoC.
 
 Three changes:
 
-  1. `compiler_v2/frontend/parse_and_check.cc` — when building
+  1. `compiler/frontend/parse_and_check.cc` — when building
      the `ParserBuilder`, call
      `cel::extensions::BindingsCompilerLibrary().ConfigureParser(builder)`.
   2. `MODULE.bazel` / `BUILD.bazel` — add a dep on
      `@com_google_cel_cpp//extensions:bindings_ext`.
-  3. `compiler_v2/conformance/runner.cc` — confirm the
+  3. `conformance/runner.cc` — confirm the
      `bindings_ext.textproto` fixture is loaded.  It already is
      (see the per-fixture inventory in
-     `compiler_v2/conformance/README.md`); no change needed
+     `conformance/README.md`); no change needed
      beyond verifying.
 
 Once those three changes are in, the 8 `bindings_ext.textproto`
@@ -702,7 +702,7 @@ behaviour and our existing `cel_map` semantics).
 
 ## 4 Surfaces introduced
 
-### 4.1 `compiler_v2/codegen/scope_resolver.h` / `.cc` (NEW)
+### 4.1 `compiler/codegen/scope_resolver.h` / `.cc` (NEW)
 
 ```cpp
 namespace celwasm {
@@ -732,7 +732,7 @@ struct ResolveTarget {
 }  // namespace celwasm
 ```
 
-### 4.2 `compiler_v2/codegen/resolve_pass.cc` (DELETE+EXTEND)
+### 4.2 `compiler/codegen/resolve_pass.cc` (DELETE+EXTEND)
 
   - Delete `ComprehensionDetector` and the early-reject.
   - Add `kComprehensionExpr` visitor that:
@@ -747,7 +747,7 @@ struct ResolveTarget {
   - Extends `kIdent` visitor to consult `ScopeResolver` before
     falling through to the activation lookup.
 
-### 4.3 `compiler_v2/codegen/layout_pass.cc` (EXTEND)
+### 4.3 `compiler/codegen/layout_pass.cc` (EXTEND)
 
   - New `ComprehensionFrame` struct (see §3.3).
   - On `kComprehensionExpr` enter: capture free-list cursor;
@@ -756,13 +756,13 @@ struct ResolveTarget {
   - On exit: release `iter_slot` + `step_workspace_slot`; `accu_slot`
     survives until after `result` is lowered.
 
-### 4.4 `compiler_v2/codegen/expr_lower.cc` (EXTEND)
+### 4.4 `compiler/codegen/expr_lower.cc` (EXTEND)
 
   - New `LowerComprehension` arm (~150 LoC) per §3.4 pseudocode.
   - `kIdent` arm extended to consult ResolvePass output for
     iter-local / accu-slot bindings.
 
-### 4.5 `compiler_v2/runtime/cel_list.{h,c}` (EXTEND)
+### 4.5 `runtime/cel_list.{h,c}` (EXTEND)
 
   - New: `void cel_list_append_at(uint32_t list_slot, uint32_t
     value_slot)`.  Grows the list payload geometrically (2×
@@ -771,7 +771,7 @@ struct ResolveTarget {
     cross-type-disallowed (matches existing `cel_list_concat`
     coverage), large-list (10k elements).
 
-### 4.6 `compiler_v2/runtime/cel_map.{h,c}` (EXTEND)
+### 4.6 `runtime/cel_map.{h,c}` (EXTEND)
 
   - New: `cel_map_iter_init(uint32_t map_slot) → uint32_t`
     (returns an iterator handle / cursor).
@@ -799,7 +799,7 @@ struct ResolveTarget {
     (only when source map types as `map(K, V)` with concrete K;
     `dyn(map)` keys remain rejected at `RejectDyn`).
 
-### 4.7 `compiler_v2/codegen/expr_lower.cc` — index counter for two-iter-var list (Slice F)
+### 4.7 `compiler/codegen/expr_lower.cc` — index counter for two-iter-var list (Slice F)
 
   - Inline lowering, no new runtime helper.  When `iter_var2`
     is non-empty AND `iter_range` types as `list(T)`: emit an
@@ -815,7 +815,7 @@ struct ResolveTarget {
     iteration via `cel_map_iter_key_at` /
     `cel_map_iter_value_at`.
 
-### 4.8 `compiler_v2/frontend/parse_and_check.cc` (EXTEND)
+### 4.8 `compiler/frontend/parse_and_check.cc` (EXTEND)
 
   - Call `BindingsCompilerLibrary().ConfigureParser(builder)`
     (Slice I).
@@ -827,19 +827,19 @@ struct ResolveTarget {
 
 ### 4.9 New e2e test files
 
-  - `compiler_v2/e2e/m5b_comprehension_basic_test.cc`
+  - `e2e/m5b_comprehension_basic_test.cc`
     (Slices A–C closeout).  Covers `exists` / `all` /
     `exists_one` over list literals + bound lists.
-  - `compiler_v2/e2e/m5b_comprehension_filter_map_test.cc`
+  - `e2e/m5b_comprehension_filter_map_test.cc`
     (Slice D closeout).  Covers `map(v, t)`, `map(v, p, t)`,
     `filter(v, p)` end-to-end.
-  - `compiler_v2/e2e/m5b_comprehension_map_iter_test.cc`
+  - `e2e/m5b_comprehension_map_iter_test.cc`
     (Slice E closeout).  Covers `m.exists(k, p)`, `m.all(k, p)`,
     `m.map(k, t)`.
-  - `compiler_v2/e2e/m5b_cel_bind_test.cc` (Slice G).  Covers
+  - `e2e/m5b_cel_bind_test.cc` (Slice G).  Covers
     `cel.bind(name, value, body)` shapes, including nested
     binds, bind-inside-comprehension, bind-shadows-outer.
-  - `compiler_v2/e2e/m5b_three_arg_comprehension_test.cc` (Slice F).
+  - `e2e/m5b_three_arg_comprehension_test.cc` (Slice F).
 
 ### 4.10 New WAT traces
 
@@ -1122,9 +1122,9 @@ on:** Slice C.
 **Owner:** primary agent.  **Size:** 0.25 session.
 
   - Re-run `scripts/run_full_suite.sh`.  All green.
-  - Re-run `bazel run //compiler_v2/conformance:run_conformance`.
+  - Re-run `bazel run //conformance:run_conformance`.
     Capture PASS / SKIP / FAIL counts.
-  - Update `compiler_v2/conformance/README.md`:
+  - Update `conformance/README.md`:
     - Headline.
     - "Top remaining unlock buckets" — remove "Comprehensions
       follow-on".
@@ -1221,22 +1221,22 @@ conventions).  Slice C explicitly supersedes it.
 
 ### 7.1 Unit tests (per file)
 
-  - `compiler_v2/codegen/scope_resolver_test.cc` (new): scope
+  - `compiler/codegen/scope_resolver_test.cc` (new): scope
     push/pop, nested scopes, shadowing, name resolution
     priority.
-  - `compiler_v2/codegen/resolve_pass_test.cc` (extend): see
+  - `compiler/codegen/resolve_pass_test.cc` (extend): see
     Slice A coverage list.
-  - `compiler_v2/codegen/layout_pass_test.cc` (extend): see
+  - `compiler/codegen/layout_pass_test.cc` (extend): see
     Slice B coverage list.
-  - `compiler_v2/codegen/expr_lower_test.cc` (extend): see
+  - `compiler/codegen/expr_lower_test.cc` (extend): see
     Slice C coverage list.
-  - `compiler_v2/runtime/cel_list_test.cc` (extend): see Slice
+  - `runtime/cel_list_test.cc` (extend): see Slice
     D coverage list.
-  - `compiler_v2/runtime/cel_map_test.cc` (extend): iterator
+  - `runtime/cel_map_test.cc` (extend): iterator
     init/next/key/value semantics, empty-map iteration,
     iteration-after-mutation (rejected — maps are immutable
     in CEL).
-  - `compiler_v2/codegen/wat_runner_test.cc` (extend): every
+  - `compiler/codegen/wat_runner_test.cc` (extend): every
     new WAT file (60–67) gets a run + byte-for-byte
     equivalence check against its codegen emission.
 
@@ -1255,19 +1255,19 @@ Per CLAUDE.md, manual-tagged tests carry load-bearing assertions
 that `bazel test //compiler_v2/...` does not.  Closeout requires
 running:
 
-  - `bazel run //compiler_v2/conformance:run_conformance` —
+  - `bazel run //conformance:run_conformance` —
     full corpus.  Confirm headline matches projection (1144 →
     ~1286 if all slices ship; ~1232 if Slice F deferred).
-  - `bazel run //compiler_v2/conformance:run_conformance --
+  - `bazel run //conformance:run_conformance --
     --file=tests/simple/testdata/macros.textproto` — must
     show 38 newly-passing rows.
-  - `bazel run //compiler_v2/conformance:run_conformance --
+  - `bazel run //conformance:run_conformance --
     --file=tests/simple/testdata/bindings_ext.textproto` — must
     show 8/8 PASS.
-  - `bazel run //compiler_v2/conformance:run_conformance --
+  - `bazel run //conformance:run_conformance --
     --file=tests/simple/testdata/macros2.textproto` (Slice F)
     — must show 46/46 PASS.
-  - `bazel run //compiler_v2/conformance:run_conformance --
+  - `bazel run //conformance:run_conformance --
     --file=tests/simple/testdata/namespace.textproto` — must
     show 6 newly-passing rows.
 
@@ -1280,7 +1280,7 @@ keystone gate:
 ```
 [ ] scripts/run_full_suite.sh — green (no GTEST_SKIP at fixture level)
 [ ] bazel test //compiler_v2/... — green
-[ ] bazel run //compiler_v2/conformance:run_conformance — headline
+[ ] bazel run //conformance:run_conformance — headline
     matches §5 closeout projection
 [ ] All new WAT files re-run + assemble cleanly through wat_runner
 [ ] testing-checklist.md "Rewrite M5 follow-on" section all ticked
@@ -1304,7 +1304,7 @@ keystone gate:
     comprehension that produces a large list under
     `cel_list_append_at` consumes O(N log N) arena bytes due
     to geometric growth abandoning old payloads.  Under the
-    `compiler_v2/bench/large_list_bench` synthetic the cost
+    `bench/large_list_bench` synthetic the cost
     needs to stay bounded.  *Mitigation:* bench it; if real,
     add a "compact at end" pass that copies the final list
     into a tight allocation before the comprehension exits.
@@ -1447,7 +1447,7 @@ keystone gate:
     `MapLargeListGrowthPath` (all green).  Plus every
     activation-bound list/map and proto repeated/map field
     comprehension that previously failed silently is now
-    correct.  See `compiler_v2/tools/cel/
+    correct.  See `tools/cel/
     activation_matrix_test.cc::Bound*Comprehension*` /
     `BoundProtoRepeatedField` / `BoundProtoMapFieldComprehension`
     for the 7 new e2e cases locking the behavior.
@@ -1514,7 +1514,7 @@ keystone gate:
     `namespace celwasm::api` to break a duplicate-symbol
     collision with cel-cpp's same-named classes (`cel::Value`,
     `cel::Compiler`, …) that became visible the moment
-    `compiler_v2/frontend/parse_and_check.cc` started linking
+    `compiler/frontend/parse_and_check.cc` started linking
     against `@cel-cpp//extensions:comprehensions_v2` (which
     transitively pulls in `@cel-cpp//common:value`).  The
     minimum-disruption fix was to add backward-compat
@@ -1524,7 +1524,7 @@ keystone gate:
     `cel::Value`, `cel::Activation`, … unchanged.  That
     shim is now load-bearing for ~40 source files but
     has two costs: (a) the public API namespace is misleading
-    — a reader looking at `compiler_v2/api/value.h` sees
+    — a reader looking at `eval/value.h` sees
     `namespace celwasm::api { class Value … }` but every
     call site writes `cel::Value`, so there's a permanent
     cognitive bridge to cross; and (b) when we eventually
@@ -1533,8 +1533,8 @@ keystone gate:
     workaround has to be re-applied per type rather than
     being structurally impossible.  The clean shape is to
     rename `namespace cel { … }` declarations in
-    `compiler_v2/api/`, `compiler_v2/cli/`, `compiler_v2/e2e/`,
-    `compiler_v2/internal/`, `compiler_v2/tools/` to either
+    `eval/`, `compiler_v2/cli/`, `e2e/`,
+    `compiler_v2/internal/`, `tools/` to either
     `namespace celwasm` (drop the `api` segment — short, no
     risk of further cel-cpp collisions since cel-cpp doesn't
     use this namespace) or commit to `namespace celwasm::api`
@@ -1547,7 +1547,7 @@ keystone gate:
     (subagent run 2026-05-17)**: 35 files declare
     `namespace cel { … }`, all isolated to the public-API
     layer.  Breakdown:
-      - 8 API headers (`compiler_v2/api/{value,program,
+      - 8 API headers (`eval/{value,program,
         activation,compiler}.h`) contain the load-bearing
         `using ::celwasm::api::X;` aliases — the rename's
         primary action is deleting these EOF blocks.
@@ -1582,7 +1582,7 @@ keystone gate:
         zero external blast radius.
     **Triggers**: any future class that collides with
     cel-cpp; any contributor confusion when first reading
-    `compiler_v2/api/`; or simply doing it once Slice J
+    `eval/`; or simply doing it once Slice J
     ships and the diff has no feature-work to fight with.
     Estimated effort: one focused agent session, ~35 files
     touched, single atomic commit.
@@ -1642,7 +1642,7 @@ churning twice.
 
 **As shipped:**
 
-  - Codegen (`compiler_v2/codegen/expr_lower.cc`):
+  - Codegen (`compiler/codegen/expr_lower.cc`):
     `ResolveCompContext` returns a plain `CompContext` (no flags
     carried).  `EmitCompPrologue` inlines a
     `IsPresizableCollectionAccu(comp, init_ann)` predicate at the
@@ -1655,7 +1655,7 @@ churning twice.
     dispatched in `LowerComprehension` BEFORE `EmitCompPrologue`
     runs, so the predicate cannot fire spuriously for a bind
     whose `value` happens to be `[]`.
-  - Runtime (`compiler_v2/runtime/cel_runtime.c`):
+  - Runtime (`runtime/cel_runtime.c`):
     `cel_list_create` (collapsed; see §3.6) and `cel_map_create`
     (unchanged signature, count=0 at create) are the universal
     creates.  `cel_list_append_at` and `cel_map_insert_at` use
@@ -1883,13 +1883,13 @@ to the list-side §10.A.1 above):
     codegen-classification work).  Extensions pass
     (independent — different fixtures).
   - **Sequencing-with-other-work-in-flight:** the other agent's
-    M7-B parse work touches `compiler_v2/compile.cc` and
-    `compiler_v2/runtime/cel_time.{c,h}`.  This milestone
+    M7-B parse work touches `compiler/internal/compile.cc` and
+    `runtime/cel_time.{c,h}`.  This milestone
     touches none of those; merge-clean expected.
 
 ## 12 Conformance inventory — fixture-by-fixture unlock
 
-From `compiler_v2/conformance/README.md`'s per-fixture table,
+From `conformance/README.md`'s per-fixture table,
 post-M7B baseline.  Per-slice contributions reflect the
 corrected slice plan in §5; full derivation in
 `m5-comprehensions-design.md` §10.

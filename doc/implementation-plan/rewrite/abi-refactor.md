@@ -16,13 +16,13 @@ shape).
 
 ## What landed (one paragraph)
 
-The catalogue (`compiler_v2/abi/runtime_catalogue.{h,cc}`) is the
+The catalogue (`abi/runtime_catalogue.{h,cc}`) is the
 single authoritative source for codegen-imported helpers, with
 arity + return shape.  `engine.cc::BindAllRuntimeExports` iterates
 it; `OverloadTableBuilder` consults it instead of sniffing helper
 names; the `cel_host` trampoline registry bijection-checks against
 it at registration time; `cel_runtime.wasm`'s linker `--export=`
-list comes from `compiler_v2/runtime/wasm_exports.txt` (whose
+list comes from `runtime/wasm_exports.txt` (whose
 `[codegen-helpers]` section is set-identical to the catalogue,
 enforced by `runtime_catalogue_consistency_test`); and every
 compiled program carries `runtime_abi_version` in its `cel.abi`
@@ -33,7 +33,7 @@ an opaque wasmtime trap at first helper call.
 ## 0. TL;DR
 
 Every wasm import an emitted expr module declares now derives from one
-authoritative C++ catalogue: `compiler_v2/abi/runtime_catalogue.{h,cc}`.
+authoritative C++ catalogue: `abi/runtime_catalogue.{h,cc}`.
 Three pre-existing hand-maintained surfaces — `kRuntimeExports` in
 `engine.cc`, `-Wl,--export=` flags in `runtime/BUILD.bazel`, and
 `InferHelperArity`'s 15-entry exception table in `overload_table.cc` —
@@ -148,7 +148,7 @@ enum and the wire is bumped.
 |------------------------------------------|---------------------------------------------------------------|---------------------------------------------------------------------|-------|
 | Codegen-side arity recovery              | `InferHelperArity` suffix sniff + 15-entry exception list     | `FindBuiltinHelper(module, name)->num_args`; CHECK at Build time if a seed names an unknown helper | A     |
 | Engine-side runtime export bind          | 109-line `kRuntimeExports[]` in `engine.cc`                   | `for (const auto& h : CelRuntimeHelpers()) Bind(...)`               | B     |
-| Linker `--export=` list in runtime BUILD | 236 lines of hand-maintained `-Wl,--export=...` flags         | Replaced by `compiler_v2/runtime/wasm_exports.txt` — single canonical text file with `[codegen-helpers]` + `[host-only]` sections; genrule emits the wasm-ld response file; cc_binary consumes via `-Wl,@<rsp>`.  Drift caught by test below. | C (revised) |
+| Linker `--export=` list in runtime BUILD | 236 lines of hand-maintained `-Wl,--export=...` flags         | Replaced by `runtime/wasm_exports.txt` — single canonical text file with `[codegen-helpers]` + `[host-only]` sections; genrule emits the wasm-ld response file; cc_binary consumes via `-Wl,@<rsp>`.  Drift caught by test below. | C (revised) |
 | Host trampoline registry                 | `kEntries[]` in `cel_host_wasmtime.cc`                        | Derived from `CelHostFunctions()` + paired-trampoline registry; bijection check (catalogue ⇄ trampoline pointers) at `RegisterCelHostImports` time | D     |
 | ABI version sentinel                     | none                                                          | `kRuntimeAbiVersion` written into `cel.abi.runtime_abi_version`; `CheckRuntimeAbiVersion` at `Plan` time emits a clear FailedPrecondition naming both versions on mismatch | E     |
 | Custom-fn import namespace               | engine accepted user wasm with arbitrary export names; codegen had no canonicalisation | DEFERRED — intersects M13 §4.6's per-backend `module_name` (HOST=cel_fn, FOREIGN=alias, CEL_DEFINED=Module name).  Resolution awaiting decision; see Slice F section. | F (deferred to M13) |
@@ -157,7 +157,7 @@ enum and the wire is bumped.
 
 ### Slice A — catalogue + InferHelperArity removal
 
-`compiler_v2/abi/runtime_catalogue.{h,cc}` introduced.  Macros
+`abi/runtime_catalogue.{h,cc}` introduced.  Macros
 (`K_AT_V`/`VV`/`VVV`/`VVVV`, `RT_VOID`/`RT_I32`, `HOST_VOID`,
 `ENV_VOID`) compress the ~85% of entries that follow the
 "`out_slot + N value slots, void return`" shape; non-suffix and
@@ -200,7 +200,7 @@ test that parsed BUILD.bazel.  Tripwire detects drift but doesn't
 eliminate it — two hand-maintained lists (catalogue C++ and BUILD
 flags) stayed in sync only because a test caught divergence.  Dirty.
 
-Replaced with `compiler_v2/runtime/wasm_exports.txt` as the single
+Replaced with `runtime/wasm_exports.txt` as the single
 canonical surface for the symbols `cel_runtime.wasm` exports.  Two
 sections:
 
@@ -215,7 +215,7 @@ sections:
 
 Two consumers:
 
-  1. `//compiler_v2/runtime:wasm_export_args` — genrule that
+  1. `//runtime:wasm_export_args` — genrule that
      `awk`-strips comments + section headers and emits a wasm-ld
      response file (one `--export=<name>` per line).  The
      `cel_runtime_wasm.bin` cc_binary consumes it via
@@ -318,7 +318,7 @@ verify it at engine load time.
 **Plan.**
 
 1. Add `uint32 runtime_abi_version = 6;` to `CelAbi` in
-   `compiler_v2/abi/cel_abi.proto` (next free field number; the
+   `abi/cel_abi.proto` (next free field number; the
    existing `version = 1` is intentionally a separate concept —
    "schema version of the proto message" — and stays).  Field 6
    carries the runtime ABI version the program was compiled against.
@@ -471,17 +471,17 @@ construction, "bad" = at instantiate / eval time with an opaque trap.
 
 ## 9. References
 
-  - `compiler_v2/abi/runtime_catalogue.{h,cc}` — the catalogue itself.
-  - `compiler_v2/abi/runtime_catalogue_test.cc` — invariant tests.
-  - `compiler_v2/abi/runtime_catalogue_consistency_test.cc` — BUILD ↔
+  - `abi/runtime_catalogue.{h,cc}` — the catalogue itself.
+  - `abi/runtime_catalogue_test.cc` — invariant tests.
+  - `abi/runtime_catalogue_consistency_test.cc` — BUILD ↔
     catalogue tripwire.
-  - `compiler_v2/codegen/overload_table.cc::OverloadTableBuilder` —
+  - `compiler/codegen/overload_table.cc::OverloadTableBuilder` —
     consumer of `FindBuiltinHelper`.
-  - `compiler_v2/api/engine.cc::BindAllRuntimeExports` — consumer of
+  - `eval/engine.cc::BindAllRuntimeExports` — consumer of
     `CelRuntimeHelpers()`.
-  - `compiler_v2/api/internal/cel_host_wasmtime.cc::RegisterCelHostImports`
+  - `eval/internal/cel_host_wasmtime.cc::RegisterCelHostImports`
     — Slice D target.
-  - `compiler_v2/abi/cel_abi.proto` — Slice E target (add
+  - `abi/cel_abi.proto` — Slice E target (add
     `runtime_abi_version` field).
   - `doc/implementation-plan/rewrite/m13-custom-fns.md` — Slice F's
     sibling design.

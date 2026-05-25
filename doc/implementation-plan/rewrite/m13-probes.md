@@ -38,7 +38,7 @@ claim and CAN be deleted once production code subsumes it
     import on the caller against an export of the same name on a
     sibling module — the foreign-alias namespace from §3 of the
     main design doc lands at the wasmtime level cleanly.
-  - The 24-byte CelValue wire layout from `compiler_v2/runtime/cel_data.h`
+  - The 24-byte CelValue wire layout from `runtime/cel_data.h`
     is the right ABI surface: the caller pre-stages args + an
     out_slot, the foreign module reads + writes via slot offsets,
     and the host decodes the result cleanly.
@@ -263,7 +263,7 @@ Plus the toolchain probe from Probe 2:
     Rust no_std + bare-C don't.  The engine's "call if exported,
     skip if not" rule is exercised by all four probes.
   - **No surprises on the CelValue ABI.**  The 24-byte layout from
-    `compiler_v2/runtime/cel_data.h` decodes identically in Go,
+    `runtime/cel_data.h` decodes identically in Go,
     Rust, and C.  No alignment / endianness / packing issues.
   - **Memory page-size constraint is real.**  Caller WAT imports
     `(memory 2)` (min 2 pages = 128 KiB).  Bare-C defaulted to 1
@@ -458,7 +458,7 @@ celwasmc -e 'user.allow("/admin")' --functions=fns.celfn  ──►  expr.wasm
 ```
 
 This is the slice-E acceptance test, not a probe — it lives
-under `compiler_v2/e2e/` and is what proves the entire pipeline
+under `e2e/` and is what proves the entire pipeline
 ships.
 
 ## Probe 2 Go source (preview)
@@ -485,7 +485,7 @@ package main
 
 import "unsafe"
 
-// CelKind tags — must match compiler_v2/runtime/cel_data.h.  Frozen
+// CelKind tags — must match runtime/cel_data.h.  Frozen
 // as of M13.A; cel.abi.toolchain_abi_version embedded by celfnc
 // will assert match at Engine::Instantiate.
 const (
@@ -494,7 +494,7 @@ const (
     CEL_MESSAGE = 10
 )
 
-// CelValue layout — must match compiler_v2/runtime/cel_data.h's
+// CelValue layout — must match runtime/cel_data.h's
 // 24-byte struct.  We don't read message references here (probe 2
 // doesn't decode the User proto; that's a follow-up); we just
 // read enough to validate args were received.

@@ -167,7 +167,7 @@ At the call site in the expression's wasm, all three look identical:
 
 Four components are new; everything else is reuse:
 
-  1. **`compiler_v2/celfn/`** — `.celfn` parser + `FunctionLibrary`
+  1. **`compiler/celfn/`** — `.celfn` parser + `FunctionLibrary`
      in-memory rep + `FunctionDecl` builder.
   2. **`OverloadTable` extension** — `ImportModule` becomes a tagged
      `(kind, module_name)` value (§5.3) so the table can name
@@ -251,7 +251,7 @@ apart; that's intentional.
 Surface additions to `cel-host-surface.md`:
 
 ```cpp
-// compiler_v2/celfn/function_library.h  (new — landed in Slice B)
+// compiler/celfn/function_library.h  (new — landed in Slice B)
 class FunctionLibrary {
  public:
   FunctionLibrary() = default;
@@ -283,7 +283,7 @@ class FunctionLibrary {
 // Builder directly.
 absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source);
 
-// compiler_v2/api/runtime_bindings.h  (extension)
+// eval/runtime_bindings.h  (extension)
 class RuntimeBindings {
  public:
   // … existing surface from cel-host-surface.md §2.4 …
@@ -299,7 +299,7 @@ class RuntimeBindings {
       wasmtime::Instance instance);
 };
 
-// compiler_v2/api/engine.h  (extension)
+// eval/engine.h  (extension)
 class Engine {
  public:
   // … existing surface …
@@ -623,8 +623,8 @@ produce the same argkind token.
 ### 3.7 Parser implementation
 
 **ANTLR4 generated** parser + lexer driven by the grammar at
-`compiler_v2/celfn/Celfn.g4`.  The generated C++ is wrapped by the
-visitor at `compiler_v2/celfn/function_library.{h,cc}` which calls
+`compiler/celfn/Celfn.g4`.  The generated C++ is wrapped by the
+visitor at `compiler/celfn/function_library.{h,cc}` which calls
 into `FunctionLibrary::Builder` to populate a typed Library.
 Surface:
 
@@ -1169,7 +1169,7 @@ recommendation is at §5.3.
 ### 5.1 Option A — Extend `OverloadTable` (one path for both)
 
 `OverloadTableBuilder::RegisterCustom` already exists (see
-`compiler_v2/codegen/overload_table.cc:547`).  The builder stores
+`compiler/codegen/overload_table.cc:547`).  The builder stores
 custom entries in the same `impls_` vector as built-ins,
 deduplicated by overload-id, with a stable interned id.  Codegen
 emits `(call $<helper_name>)` via `InternOverloadId` regardless of
@@ -1517,7 +1517,7 @@ backend; until a TinyGo-built `rules.wasm` round-trips
 end-to-end through this pipeline, the slice is not done.
 
 Test fixture for this lives at
-`compiler_v2/e2e/testdata/custom_fns/go_rules/` and is the
+`e2e/testdata/custom_fns/go_rules/` and is the
 canonical "user side" template the M13.E e2e suite (§12) drives.
 
 ### 8.4 Other tooling
@@ -1525,7 +1525,7 @@ canonical "user side" template the M13.E e2e suite (§12) drives.
   - **`cel_value.h`** ships under `include/cel/` as the public C
     ABI header (§4.5).  Versioned; future deltas require a major
     bump.
-  - **`compiler_v2/e2e/testdata/custom_fns/`** gains one
+  - **`e2e/testdata/custom_fns/`** gains one
     sub-fixture per supported language so the e2e suite covers
     every supported target end-to-end (Go + Rust at minimum; AS
     + C as the suite grows).
@@ -1696,7 +1696,7 @@ Per [per-component-test-coverage.md](per-component-test-coverage.md)
 discipline: positive + negative + boundary at every component.
 Manual-tagged where the test requires a wasmtime-instantiated module.
 
-### 11.1 `compiler_v2/celfn/celfn_parser_test.cc`
+### 11.1 `compiler/celfn/celfn_parser_test.cc`
 
 Positive:
 
@@ -1762,7 +1762,7 @@ Negative:
   - File without `Module foo;` directive but containing a
     CEL-defined fn → parse error.
 
-### 11.2 `compiler_v2/codegen/overload_table_custom_test.cc`
+### 11.2 `compiler/codegen/overload_table_custom_test.cc`
 
 Already partially covered by `overload_table_test.cc` (Slice F).
 New cases:
@@ -1778,7 +1778,7 @@ New cases:
   - Custom-id collision with a built-in → AlreadyExists.
   - Custom-id collision with another custom → AlreadyExists.
 
-### 11.3 `compiler_v2/codegen/custom_fn_codegen_test.cc`
+### 11.3 `compiler/codegen/custom_fn_codegen_test.cc`
 
   - One `@host.`-prefixed fn → expected import + `(call $...)` at
     the use site, byte-matched against a WAT golden.
@@ -1790,7 +1790,7 @@ New cases:
   - Receiver-style call lowers identically to free-form call
     (only the cel-cpp `target` differs; codegen output should match).
 
-### 11.4 `compiler_v2/celfn/cel_body_compiler_test.cc`
+### 11.4 `compiler/celfn/cel_body_compiler_test.cc`
 
 The CEL-defined-backend sub-compiler.
 
@@ -1829,7 +1829,7 @@ The CEL-defined-backend sub-compiler.
     body calls `is_adult`; assert composition.
   - **A foreign-module fn (the Go forcing function)** — build
     `rules.wasm` via TinyGo from
-    `compiler_v2/e2e/testdata/custom_fns/go_rules/`, bind via
+    `e2e/testdata/custom_fns/go_rules/`, bind via
     `RuntimeBindings::AddModule`, assert end-to-end eval of
     `user.allow("/admin")`.
   - **A foreign-module fn from Rust** — same fixture, Rust-side
@@ -1870,7 +1870,7 @@ Tentative order — adjust at slice-start time when reality intervenes:
     written and assembled (no codegen yet).
   - **Slice B** — `.celfn` parser + `FunctionLibrary` rep (without
     CEL bodies yet — parser stashes them as raw text, sub-compile
-    is Slice D).  Lives in `compiler_v2/celfn/`.  Parser tests
+    is Slice D).  Lives in `compiler/celfn/`.  Parser tests
     (§11.1) land here, except the body-coverage sub-suite.
   - **Slice C** — host backend end-to-end.  Split into four
     sub-slices because the surface ripples across the engine
@@ -1922,7 +1922,7 @@ Tentative order — adjust at slice-start time when reality intervenes:
   - **Slice E** — foreign-module backend: `Engine::LoadModule` +
     `Engine::Instantiate` land; the `cel.toolchain` custom section
     verification lands; `celfnc --target=go` lands; the
-    `compiler_v2/e2e/testdata/custom_fns/go_rules/` fixture lands
+    `e2e/testdata/custom_fns/go_rules/` fixture lands
     and the Go-via-TinyGo e2e test (§11.5) becomes the slice's
     acceptance test.  `celfnc --target=rust` lands alongside if
     schedule permits; otherwise punted to F or a follow-up.

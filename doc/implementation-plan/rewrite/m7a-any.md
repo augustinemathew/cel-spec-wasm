@@ -49,7 +49,7 @@ Depends on M7 (shipped); independent of M8 and M7-B.
 > findings against the running build (conformance + reflection
 > behaviour + perf), §11 lists the implementation scaffolds (e2e
 > test file, bench file, no WAT trace required) already in tree.
-> Production code under `compiler_v2/api/internal/cel_host.cc`
+> Production code under `eval/internal/cel_host.cc`
 > remains unchanged pending M7-A.A's implementation slice.
 
 The plan covers `google.protobuf.Any` semantics end-to-end — packing
@@ -57,7 +57,7 @@ a typed-message RHS into an `Any`-typed field at construction time,
 unpacking an `Any`-typed read into a value typed as the underlying
 message, and the equality / `type(...)` paths that must look through
 the wrapper.  No new ABI tables, no new codegen arms; the entirety
-of the work sits in `compiler_v2/api/internal/cel_host.cc` (Layer-2)
+of the work sits in `eval/internal/cel_host.cc` (Layer-2)
 and the cross-Instance descriptor-pool plumbing that already lives
 on `CelHostBindings`.
 
@@ -72,7 +72,7 @@ follow-ups per M7's §9 future-work backlog.
 
 After M7.A–E + M9 + M10, conformance sits at `pass=1058 / skip=693
 / fail=703 / total=2454` (43.1%).  Per the
-`compiler_v2/conformance/README.md` "Forecast by open milestone"
+`conformance/README.md` "Forecast by open milestone"
 table, **`Any` packing (M7-future)** is named separately from M7
 itself with an estimated **+5–9 PASS**, gating on:
 
@@ -99,7 +99,7 @@ itself with an estimated **+5–9 PASS**, gating on:
 
 ### 1.1 What fails today (probed 2026-05-16)
 
-Ran `bazel run //compiler_v2/conformance:run_conformance --
+Ran `bazel run //conformance:run_conformance --
 --max_fail_examples=2000` and grepped for the M7-tripwire string
 "`Any packing / wrapper auto-wrap is M7-future / M8`".  Result: **15
 distinct callsite hits**, distributed across:
@@ -393,8 +393,8 @@ the wrapped value's concrete CelType.  This is a v2-frontend
 extension that mirrors what cel-cpp's runtime already does at eval
 time, lifted into the type checker so RejectDyn doesn't see `dyn`.
 
-  - Lives in `compiler_v2/frontend/parse_and_check.cc` as a post-
-    check rewrite (or in `compiler_v2/ir/typed_ast.cc`'s
+  - Lives in `compiler/frontend/parse_and_check.cc` as a post-
+    check rewrite (or in `compiler/ir/typed_ast.cc`'s
     `ReprOfWellKnown` if cleaner).
   - Decision boundary: a `dyn`-typed expression whose direct
     ancestor in the AST chain has a `well_known` type of Any.
@@ -410,7 +410,7 @@ is `google.protobuf.Any`, accept the source as `list(dyn)` /
 `map(_, dyn)` and let the runtime pack arm handle the per-element
 descriptor at write time.
 
-  - Lives in `compiler_v2/frontend/parse_and_check.cc::RejectDyn`
+  - Lives in `compiler/frontend/parse_and_check.cc::RejectDyn`
     as an opt-in based on the destination field descriptor.
 
 **§3.5.C — Admit direct `Any{type_url, value}` literal.**  cel-cpp
@@ -420,7 +420,7 @@ struct literal's resolved descriptor is `google.protobuf.Any`,
 admit it as `kStructExpr` typed as `google.protobuf.Any` (not
 `dyn`); the existing M7 pack path handles the two-field set.
 
-  - Lives in `compiler_v2/ir/typed_ast.cc::ReprOfWellKnown` — flip
+  - Lives in `compiler/ir/typed_ast.cc::ReprOfWellKnown` — flip
     Any from `dyn` repr to `kMessage` repr keyed on the Any FQN.
 
 **Scope split.**  §3.5.A and §3.5.B land with M7-A.B (so customers
@@ -530,7 +530,7 @@ each site's old-form guard becomes a call to
 
 ### 4.2 Layer-2 — `ProtoBacking::ReadField` Any-unwrap arm
 
-`compiler_v2/api/internal/cel_host.cc::ProtoBacking::ReadField`
+`eval/internal/cel_host.cc::ProtoBacking::ReadField`
 (and `OwnedProtoBacking::ReadField` via composition) handles
 CPPTYPE_MESSAGE singular reads by returning
 `Value::HostMessage(make_shared<ProtoBacking>(*sub))`.
@@ -562,7 +562,7 @@ Body (sketch):
   2. Parse `type_url`: the prefix before the last `/` is
      discarded (per cel-cpp's `AnyTypeFqn` helper already
      present in
-     `compiler_v2/conformance/binding_marshal.cc:35`).  The
+     `conformance/binding_marshal.cc:35`).  The
      suffix is the FQN.
   3. Look up the FQN in `bindings.descriptor_pool` (new field
      — see §4.4).  Not found → `Value::Error(kFieldNotFound)`.
@@ -575,12 +575,12 @@ Body (sketch):
      `cel_make_message`) and return as shared_ptr.
 
 The existing `binding_marshal::UnpackAny` in
-`compiler_v2/conformance/binding_marshal.cc:51` is a near-exact
+`conformance/binding_marshal.cc:51` is a near-exact
 template for the body — the only differences are (a) it lives
 in the conformance harness (test-side, not runtime-side), and
 (b) it constructs a `unique_ptr<Message>` and trusts the caller
 to wrap.  M7-A.B factors it out: lift the body into
-`compiler_v2/api/internal/cel_host.cc`, export the
+`eval/internal/cel_host.cc`, export the
 `HostMessageBacking`-shaped wrapper for runtime use, and have
 the conformance harness call into the same helper to keep the
 test and production paths from drifting.
@@ -747,9 +747,9 @@ Both operands peeled if either is an Any; re-enter
 
 ### M7-A.D — closeout
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance` and
+  - Run `bazel run //conformance:run_conformance` and
     record the post-M7-A deltas in
-    `compiler_v2/conformance/README.md`.
+    `conformance/README.md`.
   - Run `scripts/run_full_suite.sh` (the closeout gate per
     CLAUDE.md "manual-tagged tests carry the load-bearing e2e
     assertions").
@@ -763,7 +763,7 @@ Both operands peeled if either is an Any; re-enter
     - `m7-proto-literals.md` §9 future-work — strike the
       `Any pack/unpack` bullet and replace with
       `→ shipped at M7-A`.
-    - `compiler_v2/conformance/README.md` "Forecast by open
+    - `conformance/README.md` "Forecast by open
       milestone" — remove the `Any packing (M7-future)` row.
     - `cel-host-surface.md` §6 — note the
       `CelHostBindings.descriptor_pool` field (host-side, not
@@ -798,7 +798,7 @@ matrix in §6):
     fields — assertions that *don't* select through the Any.
     Byte-level pack invariants (type_url suffix, value round-
     trip) move to Layer-2 unit tests in
-    `compiler_v2/api/internal/cel_host_test.cc`, which drive
+    `eval/internal/cel_host_test.cc`, which drive
     `CelSetFieldImpl` directly without the checker.
   - **Test factoring.**  Structural matrices use `TEST_P` +
     `INSTANTIATE_TEST_SUITE_P`; one-off invariants stay as
@@ -872,15 +872,15 @@ collapses structurally-identical cells to ~25 rows.
 
 ### 6.4 Test placement
 
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     parameterised tables: `CelSetFieldImplAnyPackTable`,
     `CelGetFieldImplAnyUnwrapTable`, `CelMessageEqAnyPeelTable`.
-  - `compiler_v2/conformance/binding_marshal_test.cc` —
+  - `conformance/binding_marshal_test.cc` —
     regression that `binding_marshal::UnpackAny` and
     `cel_host::UnpackAnyToBacking` agree on every test row
     (the two paths share the lifted body, so this is mostly a
     smoke check).
-  - `compiler_v2/e2e/m7a_test.cc` (new) — every conformance-
+  - `e2e/m7a_test.cc` (new) — every conformance-
     row-shape, parameterised against §6.1–6.3.
 
 ## 7. Risks + open questions
@@ -1109,7 +1109,7 @@ types Any literals as `dyn`; v2's `RejectDyn` gate rejects.
 
 ### 10.4 Probe D — TypeUrl parse micro-perf
 
-Bench results from `compiler_v2/bench/kernel_bench.cc`
+Bench results from `bench/kernel_bench.cc`
 (`BM_AnyTypeUrlParse_HappyPath` / `BM_AnyTypeUrlParse_NoSlash`,
 `bazel -c opt`):
 
@@ -1126,7 +1126,7 @@ no perf concern; do not cache type_url parses.
 
 Original §4.4 proposed adding a `descriptor_pool` field to
 `CelHostBindings`.  Re-read of
-`compiler_v2/api/engine.cc::Plan` confirmed
+`eval/engine.cc::Plan` confirmed
 `BuildCelHostBindings(impl->abi, pool, impl->host_env)` already
 threads the pool — but the pointer isn't stored on the bindings
 struct.  Two viable shapes:
@@ -1158,17 +1158,17 @@ run.  Two paths:
     HostMsg3.**  Mirror the M3.G / M4.D pattern.
   - **Use `cel.expr.conformance.proto3.TestAllTypes` directly.**
     Adds the conformance proto's `cc_proto_library` to
-    `compiler_v2/e2e/BUILD.bazel`.
+    `e2e/BUILD.bazel`.
 
 Recommend option 1 (fixture extension); follows M3/M4 precedent.
 M7-A.A includes the proto change as a sub-step.
 
 Until the fixture extension lands, every M7-A test in
-`compiler_v2/e2e/m7a_test.cc` skips with
+`e2e/m7a_test.cc` skips with
 `kFixtureExtensionPending`.  31 tests scaffolded; 2 PASS (probe C
 dyn-rejection regression) + 29 SKIP today.
 
-### 11.2 E2e tests — `compiler_v2/e2e/m7a_test.cc`
+### 11.2 E2e tests — `e2e/m7a_test.cc`
 
 Comprehensive coverage matrix per §6, organised into 7 test
 classes:
@@ -1183,11 +1183,11 @@ classes:
 | `AnyNullClearE2ETest` (2 tests) | M7-shipped null-clear regression | SKIP — fixture |
 | `AnyLiteralRoundTripE2ETest` (2 tests) | **PASS** — probe C dyn-rejection invariant | PASS (active today) |
 
-Build target: `bazel build //compiler_v2/e2e:m7a_test` (green).
-Run: `./bazel-bin/compiler_v2/e2e/m7a_test` →
+Build target: `bazel build //e2e:m7a_test` (green).
+Run: `./bazel-bin/e2e/m7a_test` →
 `31 tests from 7 test suites ran. [ PASSED ] 2 tests.`
 
-### 11.3 Bench — collocated in `compiler_v2/bench/kernel_bench.cc`
+### 11.3 Bench — collocated in `bench/kernel_bench.cc`
 
 Per the bench discipline (one binary per bench tier; kernel
 microbenches live in `kernel_bench`, pipeline-shaped scenarios in
@@ -1207,8 +1207,8 @@ parse micros execute (no production-code dependency); all others
   - `BM_AnyEq_AnyVsTyped` / `_AnyVsAny` / `_BaselineNonAny`.
   - `BM_AnyTypeUrlParse_HappyPath` / `_NoSlash` (run today).
 
-Build target: `bazel build -c opt //compiler_v2/bench:kernel_bench`
-(green).  Run: `./bazel-bin/compiler_v2/bench/kernel_bench
+Build target: `bazel build -c opt //bench:kernel_bench`
+(green).  Run: `./bazel-bin/bench/kernel_bench
 --benchmark_filter='BM_Any'`.
 
 Pipeline-shaped Any scenarios (`Compile + Plan + Eval` of an
@@ -1230,20 +1230,20 @@ forgot the WAT" review feedback.
 
 For M7-A.A/B/C the touchpoints are:
 
-  - `compiler_v2/api/internal/cel_host.cc` — add
+  - `eval/internal/cel_host.cc` — add
     `AssignMessageOrPack` helper (8 callsite replacements per
     §4.1).  Add `UnpackAnyToBacking` helper.  Add
     `ProtoBacking::ReadField` Any-aware arm.  Add
     `CelMessageEqImpl` peel prelude.
-  - `compiler_v2/api/internal/cel_host.h` — add
+  - `eval/internal/cel_host.h` — add
     `descriptor_pool` field to `CelHostBindings` (per §10.5: raw
     `const DescriptorPool*` pointer).
-  - `compiler_v2/api/engine.cc` — pass pool pointer through
+  - `eval/engine.cc` — pass pool pointer through
     `BuildCelHostBindings`.
   - `compiler/testdata/host_fixture_proto3.proto` — add
     `google.protobuf.Any single_any = 30;` +
     `repeated google.protobuf.Any repeated_any = 31;`.
-  - `compiler_v2/conformance/binding_marshal.cc::UnpackAny` —
+  - `conformance/binding_marshal.cc::UnpackAny` —
     consolidate with `cel_host.cc::UnpackAnyToBacking` to avoid
     double-implementation.
 
@@ -1253,7 +1253,7 @@ the M7-A.A/B/C implementation scope.
 ## 12. Conformance inventory (M7-A target rows)
 
 Surveyed 2026-05-16 against `tests/simple/testdata/*.textproto` (the
-in-tree conformance corpus; `compiler_v2/conformance/runner.cc`
+in-tree conformance corpus; `conformance/runner.cc`
 consumes the same set).  39 distinct rows across 5 fixtures, grouped
 by the slice that unlocks them.  M7-A.A's pack arm unlocks rows
 that exercise pack-side construction *without* selecting through

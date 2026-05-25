@@ -67,7 +67,7 @@ in the probes as fallback context only; they are not recommended.
   - `single_version_override` block for `abseil-cpp` to apply
     the sysinfo patch.
 
-### `//compiler_v2/runtime/` changes
+### `//runtime/` changes
 
   - New `cc_library(name = "cel_time_parse")` with srcs =
     `cel_time_parse.cc`, deps = `absl/strings + absl/time + re2`.
@@ -90,13 +90,13 @@ in the probes as fallback context only; they are not recommended.
 | `third_party/wasi_sdk/wasm_ar.sh` | NEW (from E3) |
 | `third_party/wasi_sdk/wasm_nm.sh` | NEW (from E3) |
 | `third_party/wasi_sdk/BUILD.bazel` | EXTEND with cc_toolchain + toolchain + platform |
-| `compiler_v2/runtime/cel_time_parse.cc` | NEW |
-| `compiler_v2/runtime/cel_strings_format.cc` | NEW |
-| `compiler_v2/runtime/cel_time_parse.h` | NEW (extern "C" declarations) |
-| `compiler_v2/runtime/BUILD.bazel` | EXTEND: cc_library × 2, convert genrule → cc_binary |
-| `compiler_v2/codegen/overload_table.cc` | reroute 4 ids; delete 2 from unimplemented |
-| `compiler_v2/api/internal/cel_host.cc` | delete ~180 LoC (the 4 Impl trampolines + RegisterHost calls) |
-| `compiler_v2/api/internal/host_loader.cc` | add `__wasm_call_ctors` invocation post-instantiate (5 LoC) |
+| `runtime/cel_time_parse.cc` | NEW |
+| `runtime/cel_strings_format.cc` | NEW |
+| `runtime/cel_time_parse.h` | NEW (extern "C" declarations) |
+| `runtime/BUILD.bazel` | EXTEND: cc_library × 2, convert genrule → cc_binary |
+| `compiler/codegen/overload_table.cc` | reroute 4 ids; delete 2 from unimplemented |
+| `eval/internal/cel_host.cc` | delete ~180 LoC (the 4 Impl trampolines + RegisterHost calls) |
+| `eval/internal/host_loader.cc` | add `__wasm_call_ctors` invocation post-instantiate (5 LoC) |
 | `scripts/lint.sh` | extend coverage to new `.bzl` + sh + .cc files |
 
 ## 4 Per-kernel implementation plan
@@ -162,7 +162,7 @@ in the probes as fallback context only; they are not recommended.
     the compile path, leaving `CachedRe()` null; fixed by
     adding a `CachedInitialized` flag and a kernel-layer
     regression test that doesn't rely on test-suite ordering.
-  - **Tests:** `compiler_v2/runtime/cel_matches_test.cc` —
+  - **Tests:** `runtime/cel_matches_test.cc` —
     21 cases covering 3VL absorb, kind-mismatch, pattern-compile
     failure (sticky-error cache), the 9 spec rows as a TEST_P
     matrix, cache behaviour (warm-path 1000× + alternating
@@ -189,7 +189,7 @@ in the probes as fallback context only; they are not recommended.
 
 ## 5 Test plan
 
-### 5.1 Unit tests (under `compiler_v2/runtime/`)
+### 5.1 Unit tests (under `runtime/`)
 
   - `cel_time_parse_test.cc` — TEST_P matrix over RFC3339 inputs
     (valid + invalid + boundary).  At least 30 rows: valid
@@ -206,13 +206,13 @@ in the probes as fallback context only; they are not recommended.
 
 ### 5.2 E2E tests
 
-  - `compiler_v2/api/instance_test.cc` — add a parametric row per
+  - `eval/instance_test.cc` — add a parametric row per
     new kernel under the existing `MatchesTest` /
     `TimestampParseTest` patterns.
 
 ### 5.3 Conformance
 
-  - `bazel run //compiler_v2/conformance:conformance_runner --
+  - `bazel run //conformance:conformance_runner --
     --skip_envelope=...` — capture the diff:
       - `timestamps.textproto`: 75 → 76 PASS.
       - `string.textproto::matches/*`: 0 → 9 PASS.

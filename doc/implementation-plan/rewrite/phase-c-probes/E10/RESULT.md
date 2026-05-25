@@ -7,20 +7,20 @@
 Audited the existing call sites for the four host trampolines and
 the two unimplemented overload ids that Phase C retires:
 
-  - `compiler_v2/api/internal/cel_host.cc:3031-3199` — the four
+  - `eval/internal/cel_host.cc:3031-3199` — the four
     `CelTimestampParseImpl` / `CelDurationParseImpl` /
     `CelTimestampFormatImpl` / `CelDurationFormatImpl` trampolines
     + their `RegisterHost(...)` registrations.
-  - `compiler_v2/codegen/overload_table.cc:332-339` — the four
+  - `compiler/codegen/overload_table.cc:332-339` — the four
     `kCelHost` seeds that route the spec overload ids to those
     trampolines.
-  - `compiler_v2/codegen/overload_table.cc:469-480` — the
+  - `compiler/codegen/overload_table.cc:469-480` — the
     `kExplicitlyUnimplementedIds` array containing `"matches"` and
     `"matches_string"`.
 
 Wrote `integration_sketch.md` with:
 
-  - The new `compiler_v2/runtime/cel_time_parse.cc` C++ TU sketch
+  - The new `runtime/cel_time_parse.cc` C++ TU sketch
     (signatures + body shapes for the four parse/format kernels
     plus `cel_matches_at_vv`).
   - The `cc_library` + `cc_binary` BUILD.bazel changes to fold the

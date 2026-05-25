@@ -1,7 +1,7 @@
 # Known-issues findings (overnight hunt)
 
 Running log from the multi-agent bug hunt.  **Eval-reproducible bugs**
-live as GTEST_SKIP regressions in `compiler_v2/e2e/known_bugs_test.cc`
+live as GTEST_SKIP regressions in `e2e/known_bugs_test.cc`
 (verified before landing).  This doc collects the **non-eval findings**:
 design-invariant breakages, inaccurate claims, latent hazards — things
 that aren't a single wrong-value expression but still matter.  Each is
@@ -231,7 +231,7 @@ repros are clean once TestAllTypes is registered).
 ## ───────────────────────── SESSION TALLY ─────────────────────────
 Overnight multi-agent hunt (13 agents, 6 waves). VERIFY-FIRST throughout.
 - 27 eval-reproduced bugs encoded as GTEST_SKIP regressions in
-  compiler_v2/e2e/known_bugs_test.cc (flip the skip to fix).
+  e2e/known_bugs_test.cc (flip the skip to fix).
 - ~40 findings logged here that need fixture/partial-eval setup or aren't a
   single-expression eval bug: host/proto (incl. twin lossy-numeric in cel_host.cc),
   proto field-setter range-check/null-prune, design-invariant breakages, inaccurate

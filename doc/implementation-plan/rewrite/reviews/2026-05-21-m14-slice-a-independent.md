@@ -35,7 +35,7 @@ Substantive deltas:
   - 56 modified pre-existing WAT files (renamed
     `cel_reset`/`cel_alloc` → `arena_reset`/`arena_alloc` and
     dropped the bogus 2-arg signature on `arena_reset`).
-  - `compiler_v2/conformance/.baseline`: 1476 → 1568 (+92).
+  - `conformance/.baseline`: 1476 → 1568 (+92).
 
 ## Verdict — mixed, leaning clean
 
@@ -240,7 +240,7 @@ this rewrite happens."
 
 ### 1.2 Sibling-component drift — `cel_log.cc` still stubs CEL_OPTIONAL
 
-`compiler_v2/host/cel_log.cc:228-230` still prints
+`eval/host/cel_log.cc:228-230` still prints
 CEL_OPTIONAL as `optional(inner=%u)` where `%u` is the raw
 `payload.opt` byte offset.  No dereferencing of the
 OptionalCell, no Some/None distinction, no recursion into the
@@ -849,7 +849,7 @@ extra rows through the `select_optional_field` overload now
 that the kernel exists.  Three things would lock this:
 
   - **Run the conformance harness and read the row list**.
-    `bazel run //compiler_v2/conformance:conformance_main --
+    `bazel run //conformance:conformance_main --
     --conformance_corpus_path=$PWD/conformance` and grep for
     PASS rows in `optionals.textproto`.  Cross-check each
     against the corresponding expected result.  ~30 min.
@@ -1025,7 +1025,7 @@ P2.
 | A6 | P1 | `cel_select_optional_field_at_vv` out-of-bounds index → None reinterpretation untested. | ~20 min | `cel_optional_test.cc` |
 | A7 | P1 | `cel_equals_at_vv` cross-kind `optional.of(1) == 1` returns-false-not-error untested; explicitly listed in the file header as in-scope. | ~15 min | `cel_optional_test.cc` |
 | A8 | P1 | Conformance went 1476→1568 (+92) vs. design projection +25.  Spot-check 5-10 PASS rows in optionals.textproto to confirm none are passing by accident. | ~30 min | conformance corpus |
-| A9 | P2 | `cel_log.cc:228-230` still pretty-prints CEL_OPTIONAL as `optional(inner=<u32>)` — no dereferencing, no Some/None.  Surfaced as D12 in the Slice 0 review. | ~30 min | `compiler_v2/host/cel_log.cc:228` |
+| A9 | P2 | `cel_log.cc:228-230` still pretty-prints CEL_OPTIONAL as `optional(inner=<u32>)` — no dereferencing, no Some/None.  Surfaced as D12 in the Slice 0 review. | ~30 min | `eval/host/cel_log.cc:228` |
 | A10 | P2 | `is_zero_value`'s 3VL absorption-at-callers (`cel_optional_of_non_zero_at_v` line 147) isn't tested.  Same for has_value, value, or, or_value's absorb calls (4 untested 3VL paths).  Each ~10 min. | ~40 min total | `cel_optional_test.cc` |
 | A11 | P2 | `cel_optional_value_at_v` on a non-optional (TYPE_MISMATCH) is untested even though the kernel handles it. | ~10 min | `cel_optional_test.cc` |
 | A12 | P2 | Scope-creep deltas (14 seeds vs 7; wat_runner refactor; .bazelrc; 56-WAT rename) shipped without doc callouts.  Capture as plan-vs-execution deltas in m14-optionals.md per CLAUDE.md "Closing out a planning doc" rule 2. | ~20 min | `m14-optionals.md` |
@@ -1180,7 +1180,7 @@ In priority order:
      `PreprocessWatMemoryImport`) are the kind of thing that
      a future contributor authoring a WAT will need to know.
      A short section in `wat-traces.md` chapeau or in
-     `compiler_v2/tools/wat_runner/README.md` (create if
+     `tools/wat_runner/README.md` (create if
      missing) would help.  ~20 min.
   6. **Fix `cel_log.cc` CEL_OPTIONAL arm (A9).**  Was already
      P2 in the Slice 0 review; Slice A had the perfect
@@ -1206,7 +1206,7 @@ follow-up pass.  Recorded here for the next reviewer's benefit.
 
 ### A8 spot-check — conformance overshoot explained, not accidental
 
-Ran `bazel run //compiler_v2/conformance:run_conformance --
+Ran `bazel run //conformance:run_conformance --
 --file=tests/simple/testdata/optionals.textproto` and walked the
 PASS-by-elimination set.  Sampled 8 PASS rows (out of 14):
 

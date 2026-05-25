@@ -2,11 +2,11 @@
 
 Captured 2026-05-18 on `wasi-malloc-migration` @ commit `5d8156a`
 (after M7 landed).  Apple M1, light load.  Same machine + same
-bench binary (`//compiler_v2/api:cel_pipeline_bench`) as the
+bench binary (`//bench:cel_pipeline_bench`) as the
 DESIGN.md §10 baseline.
 
 ```
-bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+bazel run -c opt //bench:cel_pipeline_bench -- \
   --benchmark_min_time=2s
 ```
 
@@ -78,11 +78,11 @@ The ~600 ns / 5.2× gap on scalar Eval is dominated by:
 - ~~Compile cel_runtime with `-DCEL_LOG_DISABLED` in opt builds
   (saves the ~30 ns per kernel call).~~  **Shipped 2026-05-19.**
   Gated via `config_setting "opt_mode"` in
-  `compiler_v2/runtime/BUILD.bazel`; opt builds now define
+  `runtime/BUILD.bazel`; opt builds now define
   `CEL_LOG_DISABLED` for both the native `cc_library` and the
   wasm32 `cc_binary`.  CEL_LOG stays live for `dbg` / `fastbuild`
   so the dead-code audit (see `cel_log.h`) still works.  Effect
-  measured on `//compiler_v2/bench:pipeline_bench` (the richer
+  measured on `//bench:pipeline_bench` (the richer
   bench, not the narrow api one this doc was originally captured
   on):
     - `BM_Eval_TwentyTermCompare`: 16 383 → 2 867 ns (5.7× faster)
@@ -122,7 +122,7 @@ re-evaluated after that lands.
 ## Reproduce
 
 ```sh
-bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+bazel run -c opt //bench:cel_pipeline_bench -- \
   --benchmark_min_time=2s
 ```
 

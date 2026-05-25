@@ -14,7 +14,7 @@ Any-chain, kStructExpr tail-unwrap).
 > reshaped the doc:
 >
 > 1.  **Conformance baseline** (master c33dab1, full
->     `bazel run //compiler_v2/conformance`): **153 wrapper-related
+>     `bazel run //conformance`): **153 wrapper-related
 >     FAIL rows** across 7 fixtures.  `dynamic.textproto` carries 95
 >     of them — the original plan didn't enumerate this fixture.
 >     Net M8-deliverable unlock is **+151 PASS** (~2× the original
@@ -108,7 +108,7 @@ google.protobuf.Value / ListValue / Struct / FieldMask / Empty);
 `dynamic.textproto :: literal_no_field_access` (9 — harness
 disable_check); `type_deduction.textproto` wrapper rows (9 —
 harness check_only); `optionals.textproto` (2 — `?` syntax).
-See `compiler_v2/conformance/README.md` and the baseline report
+See `conformance/README.md` and the baseline report
 at `/tmp/m8_baseline_report.md` for the row-by-row inventory.
 
 Carved out of M7 (originally M7.C in the now-superseded combined
@@ -241,7 +241,7 @@ three options:
     to int on the way out at `==`.
 
 Implementation site: `Instance::EncodeMessage` in
-`compiler_v2/api/instance.cc` (line ~428) gains an "if the
+`eval/instance.cc` (line ~428) gains an "if the
 declared type is a wrapper message and the bound `Value` is a
 matching scalar, synthesise the wrapper" prelude.
 
@@ -271,7 +271,7 @@ In either outcome, M8.A's actual code change is small.
 > **Plan-vs-execution delta:** the original §4 weighed two
 > wrapper-equality peel options (codegen-emit at `_==_` vs
 > runtime-peel in `cel_message_eq`).  Both are unnecessary.
-> `compiler_v2/ir/typed_ast.cc:56` already maps every wrapper
+> `compiler/ir/typed_ast.cc:56` already maps every wrapper
 > Repr to its eponymous scalar Repr, so codegen at `_==_`
 > already lowers as a scalar comparison.  The breakage is at
 > the OPERAND boundaries: literal wrapper construction emits
@@ -432,7 +432,7 @@ is a third design that pays the full cost of both).
 
   - **Layer-1 helper.**  Add `UnpackWrapperMessage(const Message&)
     → optional<cel::Value>` to the anonymous namespace in
-    `compiler_v2/api/internal/cel_host.cc`.  Mirrors the existing
+    `eval/internal/cel_host.cc`.  Mirrors the existing
     `UnpackWellKnownTimeMessage`: descriptor `full_name()` against
     the 9 wrapper FQNs; on match, reflection-read field number 1
     (`value`); return matching `cel::Value::{Bool, Int, Uint,
@@ -523,7 +523,7 @@ is a third design that pays the full cost of both).
   - **Probe-spike outcome.**  The cel-cpp probe (PR #4) confirmed
     that `TestAllTypes{single_int32_wrapper: 5}` is admitted at
     check time — the checker auto-promotes scalar literals into
-    wrapper-typed message fields.  `compiler_v2/codegen` therefore
+    wrapper-typed message fields.  `compiler/codegen` therefore
     sees the source-AST as a struct-with-int-field, which means
     `cel_set_field` is called with a scalar `CelValue` against a
     `CPPTYPE_MESSAGE` field.  No frontend / typed_ast change is
@@ -551,7 +551,7 @@ is a third design that pays the full cost of both).
     wrapper and the bound `cel::Value` is the matching scalar
     kind, synthesise the wrapper proto on the way in.  When
     the bound value is `Null`, leave the field unset.
-    Implementation site: `compiler_v2/api/instance.cc`
+    Implementation site: `eval/instance.cc`
     (alongside the existing m7b `TryEncodeWktTimeMessage`
     helper — extract a shared `TryEncodeWktAnyMessage`
     super-helper that dispatches by FQN).
@@ -569,7 +569,7 @@ is a third design that pays the full cost of both).
 ### M8.D — closeout
 
   - Run full conformance + record post-M8 numbers in
-    `compiler_v2/conformance/README.md`.
+    `conformance/README.md`.
   - Run `scripts/run_full_suite.sh`.
   - Reconcile `cel-host-surface.md` (new `cel_wkt_unwrap_wrapper`
     trampoline doc); `m7-proto-literals.md` (drop M8-placeholder
@@ -637,8 +637,8 @@ sequencing is the three-arm split above.
 
 ### Original M8.C — closeout
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance` and
-    record the post-M8 deltas in `compiler_v2/conformance/README.md`.
+  - Run `bazel run //conformance:run_conformance` and
+    record the post-M8 deltas in `conformance/README.md`.
   - Run `scripts/run_full_suite.sh`.
   - Flip `design.md` §11.5 wrapper rows to "shipped".
   - Flip this doc's status header to `shipped YYYY-MM-DD`.
@@ -694,16 +694,16 @@ sequencing is the three-arm split above.
 
 ### 6.4 Test placement
 
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     `CelUnwrapWrapperImpl` table (per wrapper kind, set / unset /
     wrong-descriptor).
-  - `compiler_v2/codegen/expr_lower_test.cc` — `_==_` / `_!=_`
+  - `compiler/codegen/expr_lower_test.cc` — `_==_` / `_!=_`
     emits `cel_unwrap_wrapper` when either operand's type
     `IsWrapper()`; doesn't emit it for non-wrapper message
     operands.
-  - `compiler_v2/api/instance_test.cc` — activation auto-wrap
+  - `eval/instance_test.cc` — activation auto-wrap
     table (9 wrappers × matching scalars).
-  - `compiler_v2/e2e/m8_test.cc` (new) — every conformance-row-
+  - `e2e/m8_test.cc` (new) — every conformance-row-
     shape, parameterised against the matrix above.
   - `doc/implementation-plan/rewrite/wat/14_wrapper_equivalence.wat`.
 
@@ -759,7 +759,7 @@ Surfaced during M8 execution but not in scope for this milestone:
     line 484-486; cel-cpp's `enable_empty_wrapper_null_unboxing`
     default returns scalar-zero — not arithmetic-specific).
     Coverage pinned by `WrapperArithmeticE2ETest` in
-    `compiler_v2/e2e/m8_test.cc` (14 rows: + - * / on wrappers,
+    `e2e/m8_test.cc` (14 rows: + - * / on wrappers,
     ordering, size, `in`, scalar constructors, string concat,
     field-read arithmetic, empty-wrapper-default-arithmetic).
   - **Runtime peel fallback (Option B)** if `dyn(wrappermsg)` is

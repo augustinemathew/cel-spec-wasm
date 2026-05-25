@@ -39,7 +39,7 @@ comprehension-driven message construction, and `Timestamp` /
 
 After M5.G + Slices 0/1/1.5/1.55/1.6 + the `eval_error` matcher,
 conformance sits at `pass=700 / skip=1274 / fail=480 / total=2454`
-(28.5%).  Per `compiler_v2/conformance/README.md` the dominant
+(28.5%).  Per `conformance/README.md` the dominant
 remaining unlock is M7 — proto literal construction is the
 biggest absolute count if everything lights up.
 
@@ -298,7 +298,7 @@ Two helper emitters added to `expr_lower.cc` (private free functions):
 
 One additive change to `cel.abi` (a new `TypeEntry` table on the
 `CelAbi` top-level message), matching the existing `FieldEntry`
-shape from `compiler_v2/abi/cel_abi.proto`:
+shape from `abi/cel_abi.proto`:
 
 ```proto
 // One row of the message-type intern table — M7.A.  Populated
@@ -342,7 +342,7 @@ would be redundant and a drift hazard.
 
 ### 4.4 Host primitives — new Layer-2 trampolines
 
-`compiler_v2/api/internal/cel_host.{h,cc}` grows two functions
+`eval/internal/cel_host.{h,cc}` grows two functions
 matching the existing `CelGetFieldImpl` / `CelHasFieldImpl` shape:
 
 ```cpp
@@ -380,21 +380,21 @@ existing `CelGetFieldTrampoline` shape — unwrap wasmtime args,
 borrow the memory view, call the Layer-2 impl, surface non-OK
 Status as a wasm trap.
 
-`compiler_v2/runtime/cel_runtime.c` adds two
+`runtime/cel_runtime.c` adds two
 `__attribute__((import_module, import_name))` extern declarations
 so Binaryen sees the imports during link.
 
 ### 4.5 Activation marshalling — non-wrapper polish
 
   - **List-of-message bindings**: today `EncodeList` in
-    `compiler_v2/api/instance.cc` iterates a list and encodes each
+    `eval/instance.cc` iterates a list and encodes each
     element via the existing recursive `EncodeValue`.  Verify that
     `EncodeValue` for `kMessage` works — it should, since
     `kMessage` ships at M2.C — and add a regression test if any
     proto-typed list binding exercises a missing path.
   - **Map-typed bindings** (`Activation::Bind("m", Value::Map(...))`):
     today `EncodeValue` for `kMap` is a stubbed kind in the
-    encoder per `compiler_v2/conformance/README.md`'s outstanding-
+    encoder per `conformance/README.md`'s outstanding-
     activation-marshalling list ("Still SKIP at the encoder: kMap,
     kDuration, kTimestamp, kEnum, kType, kUnknown").  M7 doesn't
     have to ship `kMap` — but if `proto2.textproto` rows include a
@@ -539,8 +539,8 @@ lower.  (Scalar-RHS-into-wrapper-field auto-wrap, e.g.
 
 ### M7.F — closeout
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance` and
-    record the post-M7 deltas in `compiler_v2/conformance/README.md`.
+  - Run `bazel run //conformance:run_conformance` and
+    record the post-M7 deltas in `conformance/README.md`.
   - Run `scripts/run_full_suite.sh` (the closeout gate per CLAUDE.md
     "manual-tagged tests carry the load-bearing e2e assertions").
   - Flip `design.md` §4.7.1 / §4.7.5 row status to "shipped".
@@ -626,15 +626,15 @@ shortcut around Reflection.
 
 ### 6.5 Test placement
 
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     `CelMakeMessageImpl` + `CelSetFieldImpl` parameterised tables
     (per cpp_type, per boundary).
-  - `compiler_v2/codegen/expr_lower_test.cc` — kStructExpr
+  - `compiler/codegen/expr_lower_test.cc` — kStructExpr
     lowering shape (asserts the emitted wasm matches the WAT
     trace byte-for-byte modulo Binaryen-assigned names).
-  - `compiler_v2/api/instance_test.cc` — activation marshalling for
+  - `eval/instance_test.cc` — activation marshalling for
     list-of-message and map bindings.
-  - `compiler_v2/e2e/m7_test.cc` (new) — every conformance-row-
+  - `e2e/m7_test.cc` (new) — every conformance-row-
     shape, parameterised against the matrix above, plus the §6.3
     default-value regression rows.
   - `doc/implementation-plan/rewrite/wat/11_kstruct_make_message
@@ -671,7 +671,7 @@ Ranked highest → lowest.
     but the *test expectations* still need to know what a given
     descriptor's default is.  Mitigation: maintain separate
     proto2 and proto3 test descriptor sets in
-    `compiler_v2/testdata/`; tag every row with its syntax
+    `testdata/`; tag every row with its syntax
     source.
   - **R4 — Enum checker emit shape**.  Probe-spike at start of
     M7.D (§3.3).  Mitigation: write the spike before any M7.D
@@ -716,7 +716,7 @@ graduates, and the milestone-or-slice that picks it up.
 
   - **§4.5 read-side encoder polish** — **shipped** (+10 PASS).
     Added `DecodeHostListAt` + `DecodeHostMapAt` in
-    `compiler_v2/api/instance.cc`; thread `ExternrefTable&` through
+    `eval/instance.cc`; thread `ExternrefTable&` through
     the recursive decoder; new `CEL_LIST_HOST` / `CEL_MAP_HOST`
     arms in `DecodeCelValueAt`.  Walks the per-Instance backing
     via `ForEach`, wraps elements in fresh vector-backed

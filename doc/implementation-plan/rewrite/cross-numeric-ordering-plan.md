@@ -148,7 +148,7 @@ Out (deferred, called out below):
 
 > **Probe spike findings (2026-04-25):**
 >
-> The probe (`compiler_v2/codegen/probe_overloads.cc`, deleted post-
+> The probe (`compiler/codegen/probe_overloads.cc`, deleted post-
 > spike) compiled each shape end-to-end and printed the
 > `reference_map.overload_id()` list plus the post-resolve
 > annotation.  Findings:
@@ -565,7 +565,7 @@ Extensions:
     list, assert the polymorphic one is picked.  May be a no-op
     if cel-cpp emits only `in_list`.
 
-### E2E (`compiler_v2/e2e/m5_test.cc` —
+### E2E (`e2e/m5_test.cc` —
 `CrossNumericOrderingE2ETest` fixture)
 
 **Exhaustive across the full numeric type matrix.**  This is a

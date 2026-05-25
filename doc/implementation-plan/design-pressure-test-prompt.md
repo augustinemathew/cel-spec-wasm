@@ -174,7 +174,7 @@ void cel_set_field_at_if_present(uint32_t msg_slot,
 ```
 
 **D. The sibling:** `cel_map_insert_at_if_present` and
-`cel_list_append_at_if_present` in `compiler_v2/runtime/cel_optional.c`
+`cel_list_append_at_if_present` in `runtime/cel_optional.c`
 already do exactly this pattern for arena maps/lists.  They share
 a helper `absorb_optional_predicate` for the 3VL-absorb +
 None-no-op + kind-mismatch portion.  The proto case fits the

@@ -39,7 +39,7 @@ type system named in §2.2.
 After M7.A–E + the §4.5 encoder polish + the M7 envelope/matcher
 widen, conformance sits at `pass=921 / skip=843 / fail=690 /
 total=2454` (37.5%).  Per the per-fixture SKIP-by-category breakdown
-in `compiler_v2/conformance/README.md`, of the 843 SKIPs the largest
+in `conformance/README.md`, of the 843 SKIPs the largest
 **scope-not-yet-shipped** bucket is the 255-row `envelope:`
 category — almost entirely (~253 / 255) `type_value:` matcher rows
 on `type(...)` tests like `type(true) → "bool"`.  Plus 47 rows in
@@ -81,7 +81,7 @@ subsystem"), so it lands in the same milestone.
 ### 2.1 In-scope (per `langdef.md` §"Type Values" + cel-cpp's `type_conversion_functions.cc`)
 
   - **`CEL_TYPE` runtime kind.**  The wire kind already exists at
-    `compiler_v2/runtime/cel_data.h:CEL_TYPE = 11` with
+    `runtime/cel_data.h:CEL_TYPE = 11` with
     `payload.type_id` (a uint32).  M9 fills in everything that
     produces, decodes, compares, prints, and surfaces this kind:
     runtime helpers, codegen, host primitives, runner, public API.
@@ -126,7 +126,7 @@ subsystem"), so it lands in the same milestone.
 
   - **`Value::Kind::kType` + `Value::Type(name)` factory + `AsType()`
     accessor** on the public surface
-    (`compiler_v2/api/value.h`).  Plus `CEL_TYPE` arms in
+    (`eval/value.h`).  Plus `CEL_TYPE` arms in
     `Instance::Eval`'s `DecodeCelValueAt` (read-side encoder)
     and `Activation`'s `EncodeValue` (activation marshalling, so
     `Bind("t", Value::Type("bool"))` works for tests that bind a
@@ -434,7 +434,7 @@ rewriter replaces a kIdentExpr with a kConstantExpr carrying
     which `ReprOf(TypeSpec)` already maps to `Repr::kType`).
     No change — already works.
   - **PackPass** (the rodata packer; see
-    `compiler_v2/codegen/static_memory_builder.cc`) sees a
+    `compiler/codegen/static_memory_builder.cc`) sees a
     `kConstantExpr` with `Repr::kType` and writes a
     `{kind: CEL_TYPE, payload.s: {ptr: <data_offset>, len}}`
     CelValue into rodata (instead of the CEL_STRING shape it
@@ -493,7 +493,7 @@ wasm — it's just a rodata pre-pack that the consumer reads.
     path.
 
   - **`Repr::kType`** is **already declared** at
-    `compiler_v2/ir/annotations.h:32` (predates M9).  `ReprName`
+    `compiler/ir/annotations.h:32` (predates M9).  `ReprName`
     already returns `"type"` (`annotations.cc:38`); `ReprOf(cel::Type)`
     already maps `TypeKind::kType → Repr::kType`
     (`typed_ast.cc:97-98`); `ReprOf(cel::TypeSpec)` already maps
@@ -539,7 +539,7 @@ type-name resolution).
 
 ### 4.5 Host primitives — one trampoline
 
-`compiler_v2/api/internal/cel_host.{h,cc}` grows exactly **one**
+`eval/internal/cel_host.{h,cc}` grows exactly **one**
 trampoline (down from the earlier draft's two):
 
 ```cpp
@@ -613,13 +613,13 @@ amortised across every `type(<scalar>)` call.
     linear memory into a `std::string`, returns
     `Value::Type(name)`.
 
-`compiler_v2/conformance/binding_marshal.cc::ValueFromProto` grows
+`conformance/binding_marshal.cc::ValueFromProto` grows
 a `kTypeValue` arm: reads the proto's `type_value` (a string),
 returns `Value::Type(name)`.
 
 ### 4.7 `cel::Value::Kind::kType` + `Value::Type(name)` factory
 
-`compiler_v2/api/value.h`:
+`eval/value.h`:
 
 ```cpp
 enum class Kind : uint8_t {
@@ -644,7 +644,7 @@ kType: equal iff `name == other.name` (byte-equality).
 
 ### 4.7 Conformance runner — `CompareType` arm + `IsInM7Envelope` widen
 
-`compiler_v2/conformance/runner.cc`:
+`conformance/runner.cc`:
 
   - `CompareValue` grows `case ProtoValue::kTypeValue: return
     CompareType(got, want.type_value());`.  `CompareType`
@@ -660,7 +660,7 @@ kType: equal iff `name == other.name` (byte-equality).
     spec parser.
 
 The new SKIP-message taxonomy (per
-`compiler_v2/conformance/README.md` "SKIP-message taxonomy"):
+`conformance/README.md` "SKIP-message taxonomy"):
 M9 adds no new SKIP categories — it removes the
 "value matcher kind `type_value` not in scope" instance from the
 existing `envelope:` category by graduating those rows to
@@ -745,13 +745,13 @@ exists, can be bound through Activation, can be read out through
     `ArgIsAdmissibleScalar` admit-but-no-rejection step at
     M9.A.
   - **Tests.**  `Value::Type` / `AsType` unit
-    (`compiler_v2/api/value_test.cc` — round-trip + invalid-kind
+    (`eval/value_test.cc` — round-trip + invalid-kind
     accessor + `StructurallyEquals` byte-equal + `static_assert
     static_cast<int>(Value::Kind::kType) == 13` invariant).
-    Wire-encoding unit (`compiler_v2/api/instance_test.cc` —
+    Wire-encoding unit (`eval/instance_test.cc` —
     `Bind("t", Value::Type("bool"))` → eval returns
     `Value::Type("bool")` round-trip).  Runner unit
-    (`compiler_v2/conformance/binding_marshal_test.cc` —
+    (`conformance/binding_marshal_test.cc` —
     `ValueFromProto` for `type_value`).
   - **Conformance unlock.**  ~+5 PASS — limited because nothing
     codegen-side produces a CEL_TYPE yet.  Activation-bound
@@ -891,7 +891,7 @@ Light up `type_deduction.textproto`'s 47 `check_only:` +
     `cel::expr::Type` recursively and asserts shape-equality
     against a `cel::Type`.
   - **Test placement.**  Lives in
-    `compiler_v2/conformance/runner_test.cc` (typed_result
+    `conformance/runner_test.cc` (typed_result
     matcher unit).  No m9_test.cc rows for this slice — m9_test
     asserts capabilities, not harness behaviour.
   - **Conformance unlock.**  ~+25–47 PASS in
@@ -902,8 +902,8 @@ Light up `type_deduction.textproto`'s 47 `check_only:` +
 
 ### M9.G — closeout
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance`
-    and record post-M9 deltas in `compiler_v2/conformance/
+  - Run `bazel run //conformance:run_conformance`
+    and record post-M9 deltas in `conformance/
     README.md`.
   - Run `scripts/run_full_suite.sh` (closeout gate per
     CLAUDE.md "manual-tagged tests carry the load-bearing
@@ -1027,22 +1027,22 @@ not the error strings).
 
 ### 6.6 Test placement
 
-  - `compiler_v2/api/value_test.cc` — `Value::Type` / `AsType`
+  - `eval/value_test.cc` — `Value::Type` / `AsType`
     / `StructurallyEquals` / `ValueKindName` unit.
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     trampolines (`CelInternTypeNameImpl`,
     `CelHostResolveMessageTypeIdImpl`).
-  - `compiler_v2/codegen/expr_lower_test.cc` — `type(x)` and
+  - `compiler/codegen/expr_lower_test.cc` — `type(x)` and
     `__type_value_of__` codegen shape (asserts the emitted
     wasm matches the WAT trace byte-for-byte).
-  - `compiler_v2/api/instance_test.cc` — activation encoding
+  - `eval/instance_test.cc` — activation encoding
     + read-side decoding for kType.
-  - `compiler_v2/conformance/binding_marshal_test.cc` —
+  - `conformance/binding_marshal_test.cc` —
     `ValueFromProto` `kTypeValue` arm; `CelTypeFromProtoType`
     `TYPE` arm.
-  - `compiler_v2/conformance/runner_test.cc` —
+  - `conformance/runner_test.cc` —
     `RunCheckOnlyBranch` (M9.F).
-  - `compiler_v2/e2e/m9_test.cc` (new) — the load-bearing e2e
+  - `e2e/m9_test.cc` (new) — the load-bearing e2e
     spec; classes per §6.1–§6.5 above.
   - `doc/implementation-plan/rewrite/wat/14_type_of_scalar.wat`
     (M9.A) + `15_type_value_of_ident.wat` (M9.C).

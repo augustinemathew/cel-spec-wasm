@@ -3,7 +3,7 @@
 Status: **shipped 2026-04-25.**  All slices M2.A–M2.F land
 end-to-end; `scripts/run_full_suite.sh` green (default suite +
 all manual-tagged targets); `bazel run
-//compiler_v2/conformance:run_conformance` shows
+//conformance:run_conformance` shows
 `pass=203 / skip=1848 / fail=403` (up from M1 snapshot
 `178 / 1935 / 341` — +25 PASS from kSelect / has() / PartialEval
 graduating).
@@ -12,7 +12,7 @@ graduating).
 > commit marked this doc "shipped 2026-04-24," but a routine
 > validation that day found M2 was actually half-done: every
 > `SelectE2ETest` (12), `HasE2ETest` (6), and `UnknownE2ETest`
-> (7) test in `compiler_v2/e2e/m2_test.cc` had a fixture-level
+> (7) test in `e2e/m2_test.cc` had a fixture-level
 > `GTEST_SKIP` ("pending M2.C" / "pending M2.E") that hid the
 > gap from `bazel test //compiler_v2/...` (the e2e target is
 > tagged `manual`).  Today's commit closes the gap by:
@@ -164,7 +164,7 @@ WAT-first rule added during M2).
 
 **Failing e2e test suite (milestone gate)**
 
-  - `compiler_v2/e2e/m2_test.cc` — 41 e2e tests over the real
+  - `e2e/m2_test.cc` — 41 e2e tests over the real
     `Customer` / `HostMsg3` fixtures, covering every cell of the
     §6.2 matrix plus the envelope-boundary row.  Currently does
     not build (references Instance::Eval(Activation),
@@ -183,7 +183,7 @@ WAT-first rule added during M2).
     forward-look).
   - `doc/implementation-plan/rewrite/wat/*.wat` — five checked-in
     WAT files, all assembling.
-  - `compiler_v2/tools/wat_runner/` — harness that executes WAT
+  - `tools/wat_runner/` — harness that executes WAT
     end-to-end through wasmtime + the real
     `cel_runtime.wasm` (NOT mocked), with optional stub impls
     for `cel_host.cel_get_field` / `cel_has_field` and
@@ -333,7 +333,7 @@ wasm — bodies that read bindings, traverse proto graphs, and
 short-circuit on UNKNOWN.  It also graduates the conformance
 harness's envelope filter from "scalar matcher only" to "scalar
 or `unknown` matcher" (see
-`compiler_v2/conformance/README.md` — forecast unlocks ~100
+`conformance/README.md` — forecast unlocks ~100
 tests, plus whatever fraction of the corpus uses `unknown:` /
 `any_unknowns:` matchers).
 
@@ -347,7 +347,7 @@ $ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "x" \
 42
 
 $ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "c.name" \
-    --schema compiler_v2/e2e/testdata/customer.proto \
+    --schema e2e/testdata/customer.proto \
     -V c:celwasm.testdata.Customer -bind c=<serialised customer>
 "Alice"
 
@@ -542,7 +542,7 @@ semantics) is pure-C++ testable without wasmtime — see §6.1.1
 for the smoke test harness that exercises layers 1 + 2 + the
 ABI round-trip in one shot.
 
-Path: `compiler_v2/api/internal/cel_host.{h,cc,_test.cc}`.
+Path: `eval/internal/cel_host.{h,cc,_test.cc}`.
 Namespace `celwasm`; header guard
 `CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_`.  Public
 consumer: `Engine::Plan` (the only call site that registers
@@ -941,7 +941,7 @@ and `//compiler/testdata:host_fixture_proto3_cc_proto` /
 carry `//compiler_v2:__subpackages__` visibility — see
 `compiler/testdata/BUILD.bazel`.  M2's `cel_host_test`,
 `abi_decode_test`, and `eval_test` depend on them directly; no
-`compiler_v2/e2e/testdata/` directory is created.  Rationale:
+`e2e/testdata/` directory is created.  Rationale:
 one proto schema, two milestones — fewer places for the
 fixture to drift out of sync.
 
@@ -955,7 +955,7 @@ for the first time — future M7 proto-literal work (`cel_make_message`
   - `compiler/host/cel_host.cc::ReadField` + `HasField` +
     `ReadNumericField` + `WriteSpanPayload` — the per-cpp_type
     switch, span-allocate-copy, and HasField presence rules.
-    Transcribed into `compiler_v2/api/internal/cel_host.cc` as
+    Transcribed into `eval/internal/cel_host.cc` as
     the body of the new `ProtoBacking` class (§2.4.1); the
     logic doesn't change, only the free-function-vs-method
     shape does.
@@ -965,7 +965,7 @@ for the first time — future M7 proto-literal work (`cel_make_message`
     `NodeAnnotation::field_number` from `ResolvePass` rather than
     the in-line resolution v1 did.
   - `compiler/codegen/attribute_pool.cc` — the `AttributeId`
-    interning logic.  Moves to `compiler_v2/codegen/resolve_pass.cc`
+    interning logic.  Moves to `compiler/codegen/resolve_pass.cc`
     as the per-node `attribute_id` assignment site.
   - `runtime/cel_runtime.{h,c}` already has `cel_unknown_merge` from
     v1 M4 Slice A; no changes to the runtime source file.
@@ -1045,7 +1045,7 @@ ones landed.
        `ExternrefTable` / `ArenaAllocator` impls against the
        wasmtime store, call `CelGetFieldImpl` /
        `CelHasFieldImpl`.
-     - `compiler_v2/api/engine.cc` — wires
+     - `eval/engine.cc` — wires
        `BuildBindingsFromAbi` + `RegisterCelHostImports` into
        `Engine::Plan` before instantiating the expr module.
      - `ResolvePass` populates `field_number`.
@@ -1078,7 +1078,7 @@ ones landed.
    `--unknown_attrs "c.name"` produces `UNKNOWN(c.name)`.
 
 6. **Slice M2.F — conformance harness envelope update.**
-   `compiler_v2/conformance/runner.cc::IsM1Eligible` renamed or
+   `conformance/runner.cc::IsM1Eligible` renamed or
    generalised; the envelope filter accepts `unknown` /
    `any_unknowns` matchers.  `RunOne` routes to `PartialEval`
    when the matcher is unknown-shaped.  Re-run
@@ -1177,7 +1177,7 @@ test in M2.C confirms byte-identical output against wasmtime.
 Fixture deps:
 
 ```bzl
-# compiler_v2/api/internal/BUILD.bazel  (smoke-test target)
+# eval/internal/BUILD.bazel  (smoke-test target)
 cc_test(
     name = "cel_host_test",
     srcs = ["cel_host_test.cc"],
@@ -1187,7 +1187,7 @@ cc_test(
         "//compiler/testdata:e2e_fixture_cc_proto",
         "//compiler/testdata:host_fixture_proto3_cc_proto",
         "//compiler/testdata:host_fixture_proto2_cc_proto",
-        "//compiler_v2/api:value",
+        "//eval:value",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -1223,7 +1223,7 @@ cc_test(
   - `RunOne` routes unknown matchers to `PartialEval` with the
     test's declared attribute patterns parsed into
     `AttributePattern`s.
-  - Per the forecast in `compiler_v2/conformance/README.md`:
+  - Per the forecast in `conformance/README.md`:
     `fields` (60), `namespace` (14), `has()` slice of `macros`,
     pieces of `enums` unlock via the M2 capability; cross-fixture
     `unknown:` matcher tests unlock via the M2 harness change.
@@ -1245,12 +1245,12 @@ Flip these rows on `doc/implementation-plan/testing-checklist.md`
 ## 7. Exit criteria
 
   - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance` shows
+  - [ ] `bazel run //conformance:run_conformance` shows
         no `kFail` regressions vs the M1 snapshot.  New PASSes
         appear for `fields.textproto`, `namespace.textproto`, the
         `has()` slice of `macros.textproto`, and unknown-matcher
         tests scattered across the corpus.
-  - [ ] `compiler_v2/conformance/README.md` inventory table
+  - [ ] `conformance/README.md` inventory table
         refreshed with the new headline (`total`, `pass`, `skip`,
         `fail`) and per-fixture row updates.
   - [ ] `doc/implementation-plan/testing-checklist.md` §"Rewrite M2"

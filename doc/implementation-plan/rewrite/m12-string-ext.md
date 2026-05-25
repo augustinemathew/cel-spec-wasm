@@ -175,7 +175,7 @@ cc_library(
 
 ### 4.2 Codegen change summary
 
-`compiler_v2/codegen/overload_table.cc` — seed 19 overload IDs.
+`compiler/codegen/overload_table.cc` — seed 19 overload IDs.
 Each points at one of the new runtime exports.  All 19 leave
 `kExplicitlyUnimplementedIds` (today's classification).  Seed
 count 158 → 177.
@@ -264,7 +264,7 @@ test files + targeted entries in existing e2e files.
 | `cel_string_ext_quote` | `cel_string_ext_quote_test.cc` | Slice D quote: every escape sequence (`\\`, `\"`, `\n`, `\t`, `\r`, `\0`, `\xNN`).  Verbatim strings (no escape needed) round-trip. |
 | `cel_string_format` (directive parser + renderer) | `cel_string_format_test.cc` | Per-directive happy path × per accepting-CelKind × precision boundaries × negative precision rejected × precision > 1000 rejected.  Malformed format strings: `%` at end, `%.` with no type, unknown directive type, repeated `.` in precision.  Arg-list mismatches: too few args, too many args, kind mismatch per directive.  Per-CelKind `%s` canonical-form test: timestamp formats as RFC3339, duration as Go-style, list as `[a, b, c]`, map as `{k: v}`, null as `null`, bool as `true`/`false`.  Cache behaviour: same format string 100× hits cache, alternating format strings recompile.  Boundary: empty format string (returns empty), very long format string (4 KiB literal + 100 directives). |
 | Codegen wiring | `overload_table_test.cc` (existing) | Seed-count bump 158 → 178.  Per-overload `LookupById` returns the right runtime export.  No new `kExplicitlyUnimplementedIds` entries. |
-| E2E | `compiler_v2/e2e/m12_test.cc` (new) | ~30 tests covering the spec rows from each `string_ext.textproto` section: at least one per function, plus the three biggest sections (`format` 78 rows, `quote` 21 rows, `last_index_of` / `index_of` 14 each) get a 5-test sample.  Locks the Compile → Plan → Eval pipeline end-to-end. |
+| E2E | `e2e/m12_test.cc` (new) | ~30 tests covering the spec rows from each `string_ext.textproto` section: at least one per function, plus the three biggest sections (`format` 78 rows, `quote` 21 rows, `last_index_of` / `index_of` 14 each) get a 5-test sample.  Locks the Compile → Plan → Eval pipeline end-to-end. |
 
 ### 5.2 Conformance lock
 
@@ -278,7 +278,7 @@ test files + targeted entries in existing e2e files.
 ### 5.3 Shared test fixtures
 
   - `MakeStringArg(s)` / `MakeIntArg(i)` / `MakeListArg(vec<string>)`
-    in a new `compiler_v2/runtime/string_ext_test_helpers.h`.
+    in a new `runtime/string_ext_test_helpers.h`.
     Mirrors `cel_matches_test.cc`'s `MakeStr` / `MakeInt`
     pattern but generalised to the multi-arg shape format
     needs.
@@ -302,7 +302,7 @@ runtime TU shape + the test-file pattern that B-D inherit.
 `cel_string_ext.{cc,h}` skeleton lands here; `cel_string_format`
 TU stays empty.
 
-> **Shipped 2026-05-20.** `compiler_v2/runtime/cel_string_ext.{h,cc}`
+> **Shipped 2026-05-20.** `runtime/cel_string_ext.{h,cc}`
 > + `cel_string_ext_test.cc` landed with:
 > - `Utf8Decode` / `Utf8DecodeMulti` shared UTF-8 helpers (1- to
 >   4-byte sequence decoder; malformed input falls back to a
@@ -325,7 +325,7 @@ TU stays empty.
 > - BUILD wiring: new `:cel_string_ext` cc_library + matching
 >   `:cel_string_ext_test`.  WASM-side export wiring + checker
 >   registration + overload-table seeding all defer to Slice F.
-> - `bazel test //compiler_v2/runtime/...`: 18/18 PASS.  Lint
+> - `bazel test //runtime/...`: 18/18 PASS.  Lint
 >   clean (PCH path validated).
 >
 > Plan-vs-execution delta: `Utf8DecodeMulti` factored out of
@@ -372,7 +372,7 @@ empty-needle, needle-longer-than-haystack).
 > replace matrices (spec-row + boundary + envelope).  Total test
 > count now ~70.
 >
-> `bazel test //compiler_v2/runtime/...`: 18/18 PASS.
+> `bazel test //runtime/...`: 18/18 PASS.
 > `scripts/lint.sh`: clean.
 
 ### Slice C — list-bridging family (~1.5 days)
@@ -416,7 +416,7 @@ remain valid until `arena_reset` at the next Eval).
 > trailing delimiter), join spec rows + boundary matrix (empty
 > list, single element, multi-byte sep, non-string element error).
 >
-> `bazel test //compiler_v2/runtime/...`: 20/20 PASS (+1 from the
+> `bazel test //runtime/...`: 20/20 PASS (+1 from the
 > new list_test target).  `scripts/lint.sh`: clean.
 
 ### Slice D — `quote` + start of `format` (~1.5 days)
@@ -468,7 +468,7 @@ stub until M12 Slice E"`).
 >   conformance-output diff-clean against upstream.
 >
 > 22 quote tests + 27 parser tests; full runtime suite
-> `bazel test //compiler_v2/runtime/...`: 22/22 PASS (+2 from
+> `bazel test //runtime/...`: 22/22 PASS (+2 from
 > the new test targets).  `scripts/lint.sh`: clean.
 >
 > Plan-vs-execution delta: `cel_string_format` is its own
@@ -494,7 +494,7 @@ a single-slot most-recent-format cache (cf. `cel_matches`'s
 `CachedInitialized` flag + the empty-pattern lesson learned —
 apply the same `FormatInitialized` flag here from day one).
 
-E2E tests in `compiler_v2/e2e/m12_test.cc` land here.
+E2E tests in `e2e/m12_test.cc` land here.
 
 > **Shipped 2026-05-20.**  New TU `cel_string_format_render.cc`
 > + dispatcher upgrades in `cel_string_format.cc`.  17 of the 19
@@ -538,7 +538,7 @@ E2E tests in `compiler_v2/e2e/m12_test.cc` land here.
 > observable behaviour — we just centralise the check.
 >
 > **Plan-vs-execution delta — e2e tests deferred to Slice F.**
-> The plan had Slice E land `compiler_v2/e2e/m12_test.cc`, but
+> The plan had Slice E land `e2e/m12_test.cc`, but
 > end-to-end tests require the checker library registration +
 > overload-table seeding + wasm exports — all Slice F work.
 > Folding the e2e tests into Slice F keeps the seam clean (one
@@ -546,7 +546,7 @@ E2E tests in `compiler_v2/e2e/m12_test.cc` land here.
 > Slice F's section absorbs the +30 e2e test deliverable.
 >
 > 76 format tests + 22 quote tests; full runtime suite
-> `bazel test //compiler_v2/runtime/...`: 22/22 PASS.
+> `bazel test //runtime/...`: 22/22 PASS.
 > `scripts/lint.sh`: clean (one orphan-header entry added for
 > `cel_string_format_internal.h`).
 
@@ -601,13 +601,13 @@ Closeout per CLAUDE.md ## Closing out a planning doc.
 >   deps += `:cel_string_ext` + `:cel_string_format`.  Confirmed
 >   present in the final wasm via `wasm-objdump -x`.
 >
-> **E2E tests (compiler_v2/e2e/m12_test.cc).**  34 tests across 6
+> **E2E tests (e2e/m12_test.cc).**  34 tests across 6
 > fixtures — CodePoint / Search / ListBridge / Quote / Format /
 > MultiFunction — exercising at least one representative call
 > per function family + chained call shapes.
 >
 > **Conformance run.**  `bazel run -c opt
-> //compiler_v2/conformance:run_conformance`:
+> //conformance:run_conformance`:
 > - Pass: 1382 → **1476** (+94 — hit the §5.2 target exactly).
 > - `static_subset` skip: 198 → 178 (-20).  Format-args
 >   admission unblocked 20 rows that were previously skipped on
@@ -704,14 +704,14 @@ AI-assisted pace, ~3-4 calendar days of focused work.
 
 ## 9. Closeout gate (to copy into the PR description)
 
-Per `compiler_v2/conformance/README.md` and CLAUDE.md closeout
+Per `conformance/README.md` and CLAUDE.md closeout
 discipline:
 
   - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel test //compiler_v2/runtime:cel_string_ext_test
-        //compiler_v2/runtime:cel_string_format_test
-        //compiler_v2/e2e:m12_test` green (~165 new test cases).
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance` —
+  - [ ] `bazel test //runtime:cel_string_ext_test
+        //runtime:cel_string_format_test
+        //e2e:m12_test` green (~165 new test cases).
+  - [ ] `bazel run //conformance:run_conformance` —
         pass count delta is **+94 PASS** (1382 → 1476).  Skip
         count drops by 94 (`string_ext.textproto::ext_unimpl`
         zeroes out); fail count unchanged.
@@ -768,7 +768,7 @@ up at Slice D in a fresh session.
   `ExpectInt` / `ExpectError` / `ExpectKind`) — Slice D/E tests
   inherit from the same fixture; no new builders needed for
   scalar args.
-- `bazel test //compiler_v2/runtime/...`: 20/20 PASS.  `scripts/lint.sh`
+- `bazel test //runtime/...`: 20/20 PASS.  `scripts/lint.sh`
   clean across every file touched.
 
 **What to do next (Slice D — quote + format parser):**
@@ -821,19 +821,19 @@ up at Slice D in a fresh session.
    lesson — write the regression test for empty format string in
    Slice E.
 
-3. E2E tests in `compiler_v2/e2e/m12_test.cc` (new) — ~30 tests
+3. E2E tests in `e2e/m12_test.cc` (new) — ~30 tests
    covering the spec rows from each `string_ext.textproto` section.
 
 **What to do at Slice F — overload table + conformance lock:**
 
 1. Register cel-cpp's `StringsCheckerLibrary` in
-   `compiler_v2/frontend/parse_and_check.cc::ConfigureCheckerBuilder`
+   `compiler/frontend/parse_and_check.cc::ConfigureCheckerBuilder`
    (one `builder.AddLibrary(cel::extensions::StringsCheckerLibrary())`
    call alongside the existing `ComprehensionsV2CheckerLibrary`).
    BUILD.bazel for `:parse_and_check` gains
    `@cel-cpp//extensions:strings`.
 2. Seed 19 overload IDs in
-   `compiler_v2/codegen/overload_table.cc` per the §4.2 table.
+   `compiler/codegen/overload_table.cc` per the §4.2 table.
    Bump `kBuiltinSeedCount` 158 → 177 in `overload_table_test.cc`
    with a breadcrumb line:
    `// M12.F: 158 → 177 — added 19 string_ext overload seeds.`
@@ -846,7 +846,7 @@ up at Slice D in a fresh session.
    from the §4.2 table).
 4. Update `:cel_runtime_wasm.bin`'s `deps` to include
    `:cel_string_ext`.
-5. Run `bazel run //compiler_v2/conformance:run_conformance`,
+5. Run `bazel run //conformance:run_conformance`,
    verify +94 PASS (1382 → 1476), bump
    `scripts/check_conformance_monotonic.sh` baseline.
 6. Closeout per CLAUDE.md "Closing out a planning doc": flip

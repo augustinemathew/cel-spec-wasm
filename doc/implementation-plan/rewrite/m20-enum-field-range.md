@@ -13,7 +13,7 @@ What landed (deltas from the as-written plan):
     archive-scan-order sensitive — a second consumer binary failed to
     link while the oracle's own smoke test linked.  So the full
     differential suite (smoke cases + the 8 M20 rows + the boundary
-    matrix) lives in `compiler_v2/testdata/cel_cpp_oracle_test.cc`, the
+    matrix) lives in `testdata/cel_cpp_oracle_test.cc`, the
     one TU that links cleanly.  No standalone `m20_field_range_diff_test`.
   - **The oracle treats a non-OK cel-cpp `Evaluate()` status as a CEL
     error**, not a harness failure — cel-cpp surfaces the wrapper
@@ -38,7 +38,7 @@ wasm trap.  Concretely flips ~8 conformance rows:
     `TestAllTypes{standalone_enum: 5000000000}` must be a range error.
   - `proto2.textproto` / `proto3.textproto` int32/uint32 wrapper
     `*_range` rows (4 rows) — currently `GTEST_SKIP`'d in
-    `compiler_v2/e2e/wkt_field_set_test.cc`, blocked on the same ABI
+    `e2e/wkt_field_set_test.cc`, blocked on the same ABI
     (cleanup-backlog #11).
 
 **Explicitly descoped: strong enum types** (the 18 `strong_proto2` /
@@ -177,11 +177,11 @@ shape:**
 
 Layout:
 
-  - `compiler_v2/testdata/cel_cpp_oracle.{h,cc}` (new) — links
+  - `testdata/cel_cpp_oracle.{h,cc}` (new) — links
     `@cel-cpp//runtime:*`; exposes
     `absl::StatusOr<cel::expr::Value> EvalWithCelCpp(absl::string_view
     source, const ActivationProto& bindings)`.  No celwasm headers.
-  - `compiler_v2/e2e/m20_field_range_diff_test.cc` (new) — for each
+  - `e2e/m20_field_range_diff_test.cc` (new) — for each
     case: run our pipeline → `cel.expr.Value`; run the oracle →
     `cel.expr.Value`; assert match via the shared comparator.  This is
     the M20 test suite of record.

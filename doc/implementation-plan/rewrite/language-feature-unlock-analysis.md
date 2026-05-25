@@ -1,7 +1,7 @@
 # Language-feature unlock analysis
 
 Status: analysis — drafted 2026-05-16, ahead of next-milestone planning.
-Inputs: `compiler_v2/conformance/README.md` (post-M7B + polish, today),
+Inputs: `conformance/README.md` (post-M7B + polish, today),
 `doc/implementation-plan/rewrite/m5-kcall-comprehensions.md`,
 `third_party/cel-cpp/extensions/bindings_ext.cc`.
 

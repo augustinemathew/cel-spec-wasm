@@ -44,7 +44,7 @@ constantly, and today they hit the same `ext_unimpl` wall every
 other extension did pre-M12.  The conformance corpus already
 ships `encoders_ext.textproto` and the conformance runner already
 lists `base64` in `ExtensionNamespaceRoots()`
-(`compiler_v2/conformance/runner.cc:534`) — the infrastructure
+(`conformance/runner.cc:534`) — the infrastructure
 *expects* this extension; only the kernels + wiring are missing.
 
 It's also the lowest-risk self-host target in the backlog: pure
@@ -119,9 +119,9 @@ Same trade as M12 §3 and Phase C's `matches` kernel:
 
 | File | ~LOC | Contents |
 |---|---|---|
-| `compiler_v2/runtime/cel_base64_ext.h` | ~40 | Public ABI: `cel_base64_encode_at_v` + `cel_base64_decode_at_v` declarations + lifetime doc comment (output bytes/string are arena-allocated, valid until the next `arena_reset`). |
-| `compiler_v2/runtime/cel_base64_ext.cc` | ~120 | Both kernels.  Shared helpers (`BorrowBytes` / `BorrowString` / `WriteString` / `WriteBytes` / 3VL `AbsorbUnary`) reuse `cel_string_ext_internal.h` where the shapes already exist; anything base64-specific lives in this TU's anonymous namespace. |
-| `compiler_v2/runtime/cel_base64_ext_test.cc` | ~250 | Unit tests — see §5. |
+| `runtime/cel_base64_ext.h` | ~40 | Public ABI: `cel_base64_encode_at_v` + `cel_base64_decode_at_v` declarations + lifetime doc comment (output bytes/string are arena-allocated, valid until the next `arena_reset`). |
+| `runtime/cel_base64_ext.cc` | ~120 | Both kernels.  Shared helpers (`BorrowBytes` / `BorrowString` / `WriteString` / `WriteBytes` / 3VL `AbsorbUnary`) reuse `cel_string_ext_internal.h` where the shapes already exist; anything base64-specific lives in this TU's anonymous namespace. |
+| `runtime/cel_base64_ext_test.cc` | ~250 | Unit tests — see §5. |
 
 **BUILD wiring.**  New `:cel_base64_ext` cc_library mirroring
 `:cel_string_ext`:
@@ -150,7 +150,7 @@ two `-Wl,--export=` lines (via `wasm_exports.txt`, §4.4).
 
 ### 4.2 Codegen change summary
 
-`compiler_v2/codegen/overload_table.cc` — seed 2 overload IDs.
+`compiler/codegen/overload_table.cc` — seed 2 overload IDs.
 Both extension-only (NOT in cel-cpp's `StandardOverloadIds`), so
 no coverage-tripwire arm.  Seed count `177 → 179`.
 
@@ -181,7 +181,7 @@ unchanged.
 
 ### 4.3 ABI catalogue
 
-`compiler_v2/abi/runtime_catalogue.cc` — 2 new `K_AT_V` entries
+`abi/runtime_catalogue.cc` — 2 new `K_AT_V` entries
 (arity 2 = out + 1 value):
 
 ```cc
@@ -194,7 +194,7 @@ K_AT_V("cel_base64_decode_at_v"),
 
 ### 4.4 Runtime export registry
 
-`compiler_v2/runtime/wasm_exports.txt` — append under a new
+`runtime/wasm_exports.txt` — append under a new
 `# m17 encoders (base64) extension kernels.` comment:
 
 ```
@@ -204,7 +204,7 @@ cel_base64_decode_at_v
 
 ### 4.5 Frontend (checker library registration)
 
-`compiler_v2/frontend/parse_and_check.cc::ConfigureCheckerBuilder`
+`compiler/frontend/parse_and_check.cc::ConfigureCheckerBuilder`
 — register the encoders library alongside the existing strings /
 comprehensions libraries:
 
@@ -223,7 +223,7 @@ if (auto s = builder.AddLibrary(cel::extensions::EncodersCheckerLibrary());
 
 > **Plan-vs-execution delta.**  This step was a no-op.  The
 > hand-maintained `kRuntimeExports` array in
-> `compiler_v2/api/engine.cc` was removed (2026-05-22, M14 era);
+> `eval/engine.cc` was removed (2026-05-22, M14 era);
 > the engine now iterates `celwasm::abi::CelRuntimeHelpers()` (the
 > ABI catalogue, §4.3) to bind every runtime export.  So the §4.3
 > catalogue entry *is* the host-bridge wiring — no separate
@@ -253,7 +253,7 @@ not already present — they mirror `MakeStr` / `ExpectStr`).
 
 Target ~35 unit tests.
 
-### 5.2 E2E tests (`compiler_v2/e2e/m17_test.cc`)
+### 5.2 E2E tests (`e2e/m17_test.cc`)
 
 Lands in Slice B (needs checker registration + overload seeding +
 wasm exports — same seam as M12 §6 Slice F).  Covers the
@@ -268,7 +268,7 @@ so Slice B's "lights up" commit is a pure wiring change.
   - [x] `encoders_ext.textproto` 0/4 → 4/4 PASS.
   - [x] No regressions on other fixtures (global pass +4 = exactly
         the 4 encoders rows; fail count unchanged at 148).
-  - [x] `compiler_v2/conformance/.baseline` bumped `1770 → 1774`.
+  - [x] `conformance/.baseline` bumped `1770 → 1774`.
   - [x] `scripts/check_conformance_monotonic.sh` passes (pass ≥
         baseline).
 
@@ -319,7 +319,7 @@ the two kernel-call shapes.
   - [x] BUILD: `:cel_base64_ext` + `:cel_base64_ext_test`
         (§4.1).  Added `MakeBytes` / `BytesAt` / `ExpectBytes` to
         `string_ext_test_helpers.h`.
-  - [x] `bazel test //compiler_v2/runtime:cel_base64_ext_test`
+  - [x] `bazel test //runtime:cel_base64_ext_test`
         green (18/18).  (Lint skipped per session instruction.)
 
 > **Shipped 2026-05-24.**  Both kernels are thin absl wrappers
@@ -351,14 +351,14 @@ the two kernel-call shapes.
         engine binds from `CelRuntimeHelpers()` now (§4.6 delta).
   - [x] **Wasm deps** — `:cel_base64_ext` added to
         `cel_runtime_wasm.bin` deps; symbol comment 193 → 195.
-  - [x] **E2E** — `compiler_v2/e2e/m17_test.cc` green (§5.2).
+  - [x] **E2E** — `e2e/m17_test.cc` green (§5.2).
   - [x] **WAT-first e2e** — `wat_runner` binds the real
         `cel_base64_*` exports (`kRuntimeExports` 113 → 115); 2 new
         `WatRunnerEncodersTest` cases run `m17_base64_{encode,
         decode}.wat` end-to-end through wasmtime and assert the
         decoded output.  Closes the loop deferred from Slice 0/A.
   - [x] **Conformance** — `bazel run -c opt
-        //compiler_v2/conformance:run_conformance`: `encoders_ext`
+        //conformance:run_conformance`: `encoders_ext`
         0/4 → **4/4**; global pass **1770 → 1774** (+4, no fail
         regression).  `.baseline` bumped to 1774.
   - [x] Closeout (this edit).
@@ -408,13 +408,13 @@ the two kernel-call shapes.
 
 ## 9. Closeout gate (to copy into the PR description)
 
-  - [x] `bazel test //compiler_v2/runtime:cel_base64_ext_test
-        //compiler_v2/e2e:m17_test
-        //compiler_v2/codegen:overload_table_test
-        //compiler_v2/abi:runtime_catalogue_consistency_test
-        //compiler_v2/tools/wat_runner:wat_runner_test` green
+  - [x] `bazel test //runtime:cel_base64_ext_test
+        //e2e:m17_test
+        //compiler/codegen:overload_table_test
+        //abi:runtime_catalogue_consistency_test
+        //tools/wat_runner:wat_runner_test` green
         (20 new test cases: 18 unit + 2 wat_runner; m17_test e2e).
-  - [x] `bazel run -c opt //compiler_v2/conformance:run_conformance`
+  - [x] `bazel run -c opt //conformance:run_conformance`
         — **+4 PASS** (`encoders_ext` 0/4 → 4/4); baseline
         `1770 → 1774`.
   - [x] `scripts/check_conformance_monotonic.sh` passes.

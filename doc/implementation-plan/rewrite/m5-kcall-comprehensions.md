@@ -63,7 +63,7 @@ conformance unlock that M5.B step 2b made reachable:
     (`cross-numeric-ordering-plan.md`); 562 → 664 (+102 PASS).
 
 > M5.F as-shipped (2026-04-25): `EmitGeneralCall` lookup-by-overload-id
-> + slot-out call emit landed in `compiler_v2/codegen/expr_lower.cc`;
+> + slot-out call emit landed in `compiler/codegen/expr_lower.cc`;
 > `LowerToEvalFunction` signature gained `const OverloadTable&`;
 > `compile.cc` builds the table via `OverloadTableBuilder().Build()`
 > and installs eager imports for every kCelRuntime helper that ships
@@ -82,7 +82,7 @@ conformance unlock that M5.B step 2b made reachable:
 > `LayoutPass::AggregateStorageVisitor::PostVisitCall` now allocates
 > a workspace slot for general-arm calls; control-flow ops
 > (`_&&_` / `_||_` / `_?_:_` / `!_`) explicitly bypass slot
-> allocation pending M5.G.  Engine (`compiler_v2/api/engine.cc`)
+> allocation pending M5.G.  Engine (`eval/engine.cc`)
 > binds 50+ helper exports off the runtime instance via a new
 > `BindAllRuntimeExports` helper.  Receiver-form `s.contains(sub)`
 > flattens `target` to `args[0]` so the wasm helper's
@@ -763,7 +763,7 @@ e2e through `Instance::Eval` → milestone doc updated.
    ~~Plan.~~ **Shipped 2026-04-25.**
 
      - `NodeAnnotation::overload_id` changed from `uint32_t`
-       to `absl::string_view` (`compiler_v2/ir/annotations.h`)
+       to `absl::string_view` (`compiler/ir/annotations.h`)
        so codegen can name helpers directly out of the resolved
        overload id without a separate intern step.
      - `OverloadIdResolver` visitor in `resolve_pass.cc` walks
@@ -793,7 +793,7 @@ e2e through `Instance::Eval` → milestone doc updated.
      - `engine.cc::BindAllRuntimeExports` binds 50+ runtime
        exports onto the wasmtime linker.
      - 9 new unit tests in `expr_lower_test.cc`; 32 new e2e
-       tests in new `compiler_v2/e2e/m5_test.cc` covering
+       tests in new `e2e/m5_test.cc` covering
        arithmetic / same-kind comparison / string ops / bytes
        ops / bound-var arithmetic / proto-field arithmetic /
        pending-dispatcher guards / control-flow guards.
@@ -853,7 +853,7 @@ milestone (`m5-comprehensions-followon.md`).
   - `cel_host_test` — `CelMessageEqImpl` against two
     `Customer` fixtures; aggregate ops on each backing.
 
-### 6.2 E2E (`compiler_v2/e2e/m5_test.cc` — new)
+### 6.2 E2E (`e2e/m5_test.cc` — new)
 
 Mirror of `m4_test.cc` shape; ~50 tests across:
 
@@ -921,7 +921,7 @@ M5 closeout
 [ ] scripts/run_full_suite.sh passes (default + manual targets
     + m5_test.cc registered)
 [ ] m5_test runs green (no fixture skips)
-[ ] bazel run //compiler_v2/conformance:run_conformance —
+[ ] bazel run //conformance:run_conformance —
     README inventory refreshed; per-fixture moves documented;
     +400 PASSes minimum vs M4
 [ ] testing-checklist.md "Rewrite M5" rows ticked

@@ -174,7 +174,7 @@ on `CEL_DURATION` and `CEL_TIMESTAMP` payloads.
 The runtime kinds are already reserved on the wire — `CEL_DURATION =
 12`, `CEL_TIMESTAMP = 13` with a `CelDurTs { int64_t seconds;
 int32_t nanos; int32_t _pad; }` payload arm pinned in
-`compiler_v2/runtime/cel_data.h` — but no current code path produces
+`runtime/cel_data.h` — but no current code path produces
 them.  M7B is what lights the kinds up end-to-end.
 
 **Out of scope:** per-eval `now()` (no clock injection hook today);
@@ -185,7 +185,7 @@ that path); `Any` containing a Timestamp/Duration.
 
 ## 1. Why M7B
 
-Per `compiler_v2/conformance/README.md`, after M10 the corpus sits
+Per `conformance/README.md`, after M10 the corpus sits
 roughly at `pass=1058 / skip=693 / fail=703 / total=2454` (43.1%).
 The timestamps/duration cohort is the single largest "scope-not-yet
 -shipped" bucket remaining that is neither extension-library-shaped
@@ -217,7 +217,7 @@ parse/format and TZ-aware accessor tail.
 Captured 2026-05-16 via:
 
 ```bash
-bazel run //compiler_v2/conformance:run_conformance -- \
+bazel run //conformance:run_conformance -- \
     --file=tests/simple/testdata/timestamps.textproto \
     --max_skip_examples=2000 --max_fail_examples=2000
 ```
@@ -322,7 +322,7 @@ sampled the same run):
   - **Activation marshalling** for `Value::Duration(absl::Duration)`
     and `Value::Timestamp(absl::Time)` — write the `CelDurTs`
     payload arms in `EncodeBoundValue` at
-    `compiler_v2/api/instance.cc`.
+    `eval/instance.cc`.
   - **Decoder** for `CEL_DURATION` / `CEL_TIMESTAMP` — write the
     arms in `DecodeCelValueAt` (same file).
   - **Proto field reads** of singular `google.protobuf.Timestamp`
@@ -500,7 +500,7 @@ documents the chosen split.
 ### 4.1 Option A — pure-wasm runtime kernels
 
 Every constructor / accessor / arithmetic op is a hand-rolled C
-helper in a new `compiler_v2/runtime/cel_time.{h,c}`, following
+helper in a new `runtime/cel_time.{h,c}`, following
 the `cel_arith.h` slot-out ABI.  The RFC3339 parser is
 transliterated from cel-cpp's `absl::ParseTime` (which is
 ultimately a ~300-line state machine).  The civil-calendar
@@ -547,7 +547,7 @@ walks (days-to-y/m/d) use Howard Hinnant's documented
 ### 4.2 Option B — host trampolines for everything
 
 Every timestamp / duration overload is a Layer-2 `Impl` in
-`compiler_v2/api/internal/cel_host.cc` that defers to
+`eval/internal/cel_host.cc` that defers to
 `absl::Time` / `absl::ParseTime` / `absl::FormatTime` /
 `absl::ParseDuration`.  The 28-overload ladder maps to 28 host
 imports (or one dispatch trampoline with a sub-op enum).
@@ -585,7 +585,7 @@ The split lines up cleanly with the cel-cpp surface: the same
 `absl::TimeZone::Load` are the same ~6 that become host
 trampolines here.
 
-  - **Pure-wasm kernels** (lives in `compiler_v2/runtime/cel_time.{h,c}`):
+  - **Pure-wasm kernels** (lives in `runtime/cel_time.{h,c}`):
       - `cel_dur_add_at_vv`, `cel_dur_sub_at_vv`,
         `cel_ts_dur_add_at_vv`, `cel_dur_ts_add_at_vv`,
         `cel_ts_dur_sub_at_vv`, `cel_ts_ts_sub_at_vv` — 6
@@ -670,8 +670,8 @@ runtime wasm meaningfully vs adding ~10 host trampolines?**
 Measurement, 2026-05-16:
 
 ```
-$ bazel build //compiler_v2/runtime:cel_runtime.wasm
-$ ls -la bazel-bin/compiler_v2/runtime/cel_runtime.wasm
+$ bazel build //runtime:cel_runtime.wasm
+$ ls -la bazel-bin/runtime/cel_runtime.wasm
 -r-xr-xr-x  49611 cel_runtime.wasm   # pre-M7B baseline
 ```
 
@@ -709,7 +709,7 @@ per wasm call vs 200 ns per trampoline, the difference is
 
 **Q2: Is the assumption that "wasm32 has no libc" still true?**
 
-Checked `compiler_v2/runtime/cel_internal.h:65–88`, current state:
+Checked `runtime/cel_internal.h:65–88`, current state:
 
 ```c
 // Freestanding wasm32 cross-compile has no libc; the host build has
@@ -786,7 +786,7 @@ no schema bump.
 
 ### 4.6 Activation marshalling
 
-`EncodeBoundValue` at `compiler_v2/api/instance.cc` (around lines
+`EncodeBoundValue` at `eval/instance.cc` (around lines
 607–644) today fails loud on `kDuration` / `kTimestamp` arms.
 M7B.A replaces those arms with:
 
@@ -830,7 +830,7 @@ CelValue carries the payload in-place via the `CelDurTs` arm.
 
 ### 4.7 Decoder side
 
-`DecodeCelValueAt` at `compiler_v2/api/instance.cc` (around lines
+`DecodeCelValueAt` at `eval/instance.cc` (around lines
 257–322) today falls through to the `default:`
 `InvalidArgumentError` arm for `CEL_DURATION` / `CEL_TIMESTAMP`.
 M7B.A adds:
@@ -949,7 +949,7 @@ arms).
     parameterised over `(seconds, nanos)` boundary values
     (zero, one-nano, max, min, negative seconds, positive
     seconds + negative nanos normalisation).  E2E
-    (`compiler_v2/e2e/m7b_test.cc::RoundTripE2ETest`): bind a
+    (`e2e/m7b_test.cc::RoundTripE2ETest`): bind a
     duration / timestamp, return it, assert the decoded value
     matches.
   - **Conformance unlock estimate.**  +8 – +14 PASS (the
@@ -961,7 +961,7 @@ arms).
 ### M7B.B — pure-wasm arithmetic + ordering kernels  *(shipped 2026-05-16, ffb7256)*
 
 Land the 6 arithmetic + 8 ordering helpers in
-`compiler_v2/runtime/cel_time.{h,c}`.  Equality already works
+`runtime/cel_time.{h,c}`.  Equality already works
 post-M7B.A through `cel_equals_at_vv`.  Move the 6 arithmetic
 + 8 ordering ids from `kExplicitlyUnimplementedIds` into
 `kBuiltinSeeds` in `overload_table.cc`.
@@ -1117,9 +1117,9 @@ import name with a fixed `accessor_kind` u32 immediate.
 
 ### M7B.F — closeout  *(shipped 2026-05-16, 2cb833a)*
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance`
+  - Run `bazel run //conformance:run_conformance`
     and record the post-M7B deltas in
-    `compiler_v2/conformance/README.md` — both the per-fixture
+    `conformance/README.md` — both the per-fixture
     table and the unlock-plan timestamps row.
   - Run `scripts/run_full_suite.sh` (the closeout gate per
     CLAUDE.md "manual-tagged tests carry the load-bearing e2e
@@ -1290,19 +1290,19 @@ decoded values per langdef.  Pin:
 
 ### 6.9 Test placement
 
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     `CelTimestampParseImpl` / `CelDurationParseImpl` /
     `CelTimestampFormatImpl` / `CelDurationFormatImpl` /
     `CelTimestampTzAccessorImpl` parameterised tables.
-  - `compiler_v2/runtime/cel_time_test.cc` (new) — pure-wasm
+  - `runtime/cel_time_test.cc` (new) — pure-wasm
     helper tables (arithmetic + ordering + civil-calendar +
     UTC accessors).
-  - `compiler_v2/codegen/expr_lower_test.cc` — `_+_` /
+  - `compiler/codegen/expr_lower_test.cc` — `_+_` /
     accessor / parse lowering shapes; assert emitted wasm
     matches the WAT traces byte-for-byte.
-  - `compiler_v2/api/instance_test.cc` — activation marshalling
+  - `eval/instance_test.cc` — activation marshalling
     + decoder round-trip table (M7B.A).
-  - `compiler_v2/e2e/m7b_test.cc` (new) — every conformance-row-
+  - `e2e/m7b_test.cc` (new) — every conformance-row-
     shape, parameterised against the matrix above, plus the
     §6.5 cross-form equivalence rows and the §6.7 with-TZ rows.
   - `doc/implementation-plan/rewrite/wat/50_duration_arithmetic.wat`
@@ -1586,7 +1586,7 @@ verifying unit order is strictly decreasing (`h` > `m` > `s` >
 ### 10.4 Probe D — `CelDurTs` wire layout vs `absl::Duration`
 
 **Question.**  Does the `CelDurTs { int64 seconds; int32 nanos;
-int32 _pad }` layout in `compiler_v2/runtime/cel_data.h`
+int32 _pad }` layout in `runtime/cel_data.h`
 accommodate the full `absl::Duration` range, and what sign
 convention does the arithmetic kernel pick?
 
@@ -1635,7 +1635,7 @@ against measured cel-cpp numbers rather than the eyeballed
 ~150-200 ns trampoline-cost figure used in §4.4 Q1?
 
 **Method.**  Throwaway baseline bench at
-`//compiler_v2/bench:cel_cpp_ts_dur_bench` (`manual`-tagged;
+`//bench:cel_cpp_ts_dur_bench` (`manual`-tagged;
 shipped under a separate PR — see the "throwaway" branch
 referenced in the milestone tracker, not on master).  22
 curated expressions drawn from `timestamps.textproto` +
@@ -1734,13 +1734,13 @@ unmeasured quantity; M7B.E pipeline_bench measurements (per
 
 ## 11. Implementation scaffolding (in tree as of 2026-05-16)
 
-### 11.1 E2e tests — `compiler_v2/e2e/m7b_test.cc`
+### 11.1 E2e tests — `e2e/m7b_test.cc`
 
 ~770-line scaffold mirroring `m7_test.cc`'s shape.  Every test
 class SKIPs with a category-specific message (`M7B.A not yet
 shipped`, `M7B.B not yet shipped`, …); turns on row-by-row as
 the slices ship.  Build target:
-`bazel build //compiler_v2/e2e:m7b_test` (green 2026-05-16).
+`bazel build //e2e:m7b_test` (green 2026-05-16).
 
 Tests grouped per the §5 slice carve-out, with the §6 matrix
 materialised as `INSTANTIATE_TEST_SUITE_P` tables.  Key cross-
@@ -1796,7 +1796,7 @@ references:
 Six files added under `doc/implementation-plan/rewrite/wat/`,
 all `wasm-as` cleanly and all instantiating through `wat_runner`
 via no-op stubs registered in
-`compiler_v2/tools/wat_runner/wat_runner.cc::RegisterPendingM7BImports`
+`tools/wat_runner/wat_runner.cc::RegisterPendingM7BImports`
 (stubs move to real bindings as each kernel/trampoline ships).
 File numbering matches `§6.9` of this doc:
 
@@ -1839,7 +1839,7 @@ slot-out ABI, rodata layout, codegen call-site comment.
 Per the bench discipline (one binary per bench tier; kernel
 microbenches in `kernel_bench`, pipeline-shaped scenarios in
 `pipeline_bench`), M7B benches live in
-`compiler_v2/bench/kernel_bench.cc` alongside the existing
+`bench/kernel_bench.cc` alongside the existing
 kernel BMs — NOT a separate binary per milestone.  All M7B BMs
 are gated by `#ifdef CELWASM_M7B_SHIPPED` today; they turn on
 row-by-row as M7B.B / M7B.C land.
@@ -1889,11 +1889,11 @@ the paired pipeline_bench rows when M7B ships:
 Numbers above are darwin-arm64 `-c opt`; the M7B paired bench
 must run on the same host to make the comparison fair.
 
-Build target: `bazel build -c opt //compiler_v2/bench:kernel_bench`
+Build target: `bazel build -c opt //bench:kernel_bench`
 (green 2026-05-16).  Run M7B + M7-A kernel benches together:
 
 ```bash
-bazel run -c opt //compiler_v2/bench:kernel_bench -- \
+bazel run -c opt //bench:kernel_bench -- \
     --benchmark_filter='BM_(Duration|Timestamp|Any)'
 ```
 
@@ -1901,22 +1901,22 @@ bazel run -c opt //compiler_v2/bench:kernel_bench -- \
 
 For M7B.A–E the touchpoints are:
 
-  - `compiler_v2/runtime/cel_time.{h,c}` — NEW.  Pure-wasm
+  - `runtime/cel_time.{h,c}` — NEW.  Pure-wasm
     arithmetic + UTC accessor kernels.  Slot-out ABI per
     `design.md §4.2`.
-  - `compiler_v2/api/internal/cel_host.cc` — add
+  - `eval/internal/cel_host.cc` — add
     `CelTimestampParseImpl`, `CelDurationParseImpl`,
     `CelTimestampFormatImpl`, `CelDurationFormatImpl`, plus
     with-TZ accessor trampoline per the §4.3 single-dispatch
     decision (recommended in §4.4 Q3).
-  - `compiler_v2/api/internal/cel_host_wasmtime.cc` —
+  - `eval/internal/cel_host_wasmtime.cc` —
     `RegisterCelHostImports` rows for the new trampolines.
-  - `compiler_v2/api/instance.cc` — fill in `EncodeBoundValue`
+  - `eval/instance.cc` — fill in `EncodeBoundValue`
     arms for `Repr::kDuration` / `Repr::kTimestamp` (today they
     return `UnimplementedError`); fill in `DecodeCelValueAt`
     arms for `CEL_DURATION` / `CEL_TIMESTAMP` (today they fall
     into the default `InvalidArgument`).
-  - `compiler_v2/codegen/overload_table.cc` — move ~28
+  - `compiler/codegen/overload_table.cc` — move ~28
     timestamp / duration overload ids from
     `kExplicitlyUnimplementedIds` to `kBuiltinSeeds`, paired
     with the new runtime helpers.

@@ -60,7 +60,7 @@ Two artifacts on branch `experiment/two-phase-shared-memory-smoke`
 (forked from 800ef76 + cherry-pick of the runtime memcpy fix from
 040c043):
 
-  - `compiler_v2/host/two_phase_shared_memory_smoke_test.cc` —
+  - `eval/host/two_phase_shared_memory_smoke_test.cc` —
     proves a host-allocated `wasmtime_memory_t` imported by both
     a runtime instance and an expr instance in the same store
     actually shares bytes correctly, that two such instances are
@@ -68,7 +68,7 @@ Two artifacts on branch `experiment/two-phase-shared-memory-smoke`
     (host trampolines → bind `cel.memory` → instantiate runtime →
     bind runtime exports as `cel.cel_*` → instantiate expr)
     side-steps the "circular import" 040c043 cited.
-  - `compiler_v2/host/two_phase_topology_bench.cc` — settles the
+  - `eval/host/two_phase_topology_bench.cc` — settles the
     cost question. Numbers (darwin-arm64, opt build, 1s
     min/bench):
 
@@ -154,7 +154,7 @@ than the asm barrier does.
 
 ### 3.2 Test
 
-`compiler_v2/runtime/cel_runtime_wasm_test.cc` — new. Builds
+`runtime/cel_runtime_wasm_test.cc` — new. Builds
 `cel_runtime.wasm` via the genrule, instantiates it under wasmtime
 with a host-allocated 2-page memory bound as `cel.memory` and a
 no-op `cel_env.cel_log` trampoline, calls `cel_reset(64, 65536)`
@@ -250,7 +250,7 @@ the old `host_loader.{h,cc}` is deleted.
 >
 > | Plan SHA | Subject |
 > |---|---|
-> | A | `compiler_v2/runtime: fix null-pointer-elision in cel_memory_base_` |
+> | A | `runtime: fix null-pointer-elision in cel_memory_base_` |
 > | B (revised) | `compiler_v2/api: cel::Engine + cel::Program + cel::Compiler` |
 > | C (revised) | `compiler_v2/api: cel::Engine::Plan + cel::Instance` (+ amended for memory_size_bytes accessor and 8-thread × 4-Plan concurrent test) |
 > | F+G | `compiler_v2: codegen flips memory ownership + delete host_loader` (merged because the codegen flip breaks `host_loader_test`) |
@@ -273,13 +273,13 @@ the old `host_loader.{h,cc}` is deleted.
 
 ### 5.1 Commit A — runtime null-pointer-elision fix
 
-  - `compiler_v2/runtime/cel_runtime.c`: §3.1 patch.
-  - `compiler_v2/runtime/cel_runtime_wasm_test.cc`: §3.2 test.
-  - `compiler_v2/runtime/BUILD.bazel`: add the new cc_test
+  - `runtime/cel_runtime.c`: §3.1 patch.
+  - `runtime/cel_runtime_wasm_test.cc`: §3.2 test.
+  - `runtime/BUILD.bazel`: add the new cc_test
     target. Tagged `manual` (depends on the wasm genrule).
   - `doc/implementation-plan/lint-backlog.md`: nothing to add.
 
-Acceptance: `bazel test //compiler_v2/runtime:cel_runtime_wasm_test`
+Acceptance: `bazel test //runtime:cel_runtime_wasm_test`
 green; lint clean; existing host_loader tests still green.
 
 ### 5.2 Commit B — `Compiler::WasmtimeState`
@@ -288,7 +288,7 @@ Add private nested struct + `shared_ptr` member on `Compiler`.
 No public API change.
 
 ```cpp
-// compiler_v2/api/compiler.h (additions only)
+// compiler/compiler.h (additions only)
 class Compiler {
  public:
   // ... existing API unchanged ...
@@ -318,7 +318,7 @@ class Compiler {
     `Internal("module_new(runtime)")` + cleanup engine.
   - Move into `std::make_shared<WasmtimeState>(...)`.
 
-Tests in `compiler_v2/api/compiler_test.cc` (extending the
+Tests in `compiler/compiler_test.cc` (extending the
 existing file):
 
   - `BuildSucceedsAndProducesEngine` — `Build()` returns OK
@@ -326,10 +326,10 @@ existing file):
   - `BuilderRunsOnceCheap` — second `Build()` after the first
     returns moved-from-error (existing builder semantics).
 
-`compiler_v2/api/BUILD.bazel`: add wasmtime + cel_runtime_wasm_bytes
+`eval/BUILD.bazel`: add wasmtime + cel_runtime_wasm_bytes
 deps to the `compiler` target.
 
-Acceptance: `bazel test //compiler_v2/api:compiler_test` green; no
+Acceptance: `bazel test //compiler:compiler_test` green; no
 other targets touched.
 
 ### 5.3 Commit C — `Program` carries parsed expr module
@@ -358,7 +358,7 @@ Constructors:
     `cel-host-surface.md §2.2` to move `FromWasm` to Compiler as
     `Compiler::LoadProgram`.
 
-Tests in `compiler_v2/api/program_test.cc` (extending):
+Tests in `compiler/program_test.cc` (extending):
   - `CompileParsesExprModule` — verify Compile returns a Program
     whose `expr_module_` is non-null (via friend or behavior
     test).
@@ -369,7 +369,7 @@ Tests in `compiler_v2/api/program_test.cc` (extending):
   - `ProgramOutlivesCompiler` — drop the Compiler, the Program
     still works (shared_ptr held).
 
-Acceptance: `bazel test //compiler_v2/api:program_test` green.
+Acceptance: `bazel test //compiler:program_test` green.
 
 ### 5.4 Commit D — `Program::Plan` end-to-end
 
@@ -396,7 +396,7 @@ ceiling. The existing 800ef76 split (`InitWasmtimeHandles` /
 proven to fit; add `BindMemory` / `BindRuntimeExports` as further
 helpers.
 
-Tests in `compiler_v2/api/program_test.cc`:
+Tests in `compiler/program_test.cc`:
   - `PlanReturnsInstance` — happy path.
   - `PlanCalledManyTimesYieldsIndependentInstances` — port of the
     smoke test: two Instances from the same Program have isolated
@@ -407,7 +407,7 @@ Tests in `compiler_v2/api/program_test.cc`:
     (relying on `wasmtime_store_new` being safe to call from
     different threads with the same engine, which it is).
 
-Acceptance: `bazel test //compiler_v2/api:program_test` green.
+Acceptance: `bazel test //compiler:program_test` green.
 
 ### 5.5 Commit E — `Instance::Eval` and `Reset`
 
@@ -438,9 +438,9 @@ void Instance::Reset() {
 
 The `DecodeCelValueAtOffset` helper is mostly a port of the
 existing `host_loader_test.cc::ReadCelValue` plus the type-specific
-dispatch from `compiler_v2/api/value.cc`.
+dispatch from `eval/value.cc`.
 
-Tests in `compiler_v2/api/instance_test.cc` (new file, port from
+Tests in `eval/instance_test.cc` (new file, port from
 `host_loader_test.cc`):
   - `EvalsIntLiteral` through `EvalsBytesLiteral` — port the 7
     scalar tests.
@@ -454,16 +454,16 @@ Tests in `compiler_v2/api/instance_test.cc` (new file, port from
   - `ReadBytesBeyondEndReturnsOutOfRange` — port (now testing
     DecodeCelValueAtOffset's bounds check).
 
-`compiler_v2/api/BUILD.bazel`: add the `instance` cc_library + test.
+`eval/BUILD.bazel`: add the `instance` cc_library + test.
 
-Acceptance: `bazel test //compiler_v2/api/...` green.
+Acceptance: `bazel test //eval/...` green.
 
 ### 5.6 Commit F — codegen: stop importing `cel.cel_*`, route through runtime
 
 Codegen currently emits `(import "cel" "cel_reset" ...)` etc.
 Under (A) this becomes a runtime export. The codegen change:
 
-  - `compiler_v2/codegen/module.{h,cc}`: replace
+  - `compiler/codegen/module.{h,cc}`: replace
     `AddCelResetImport` / `AddCelAllocImport` with calls into
     the runtime instance via the same import shape — but the
     *binding* is now wasm-to-wasm (via the linker's
@@ -483,7 +483,7 @@ memory; it imports it. Per the predecessor `predecessor-memory-ownership-flip.md
 this is straightforward in `module.cc::AddMemoryImport` (which
 already exists with optional DataSegments per 040c043's commit).
 
-Tests in `compiler_v2/codegen/module_test.cc`:
+Tests in `compiler/codegen/module_test.cc`:
   - `EmittedModuleImportsCelMemory` — assert the emitted module
     has `(import "cel" "memory" ...)` and no `(memory ...)`
     definition.
@@ -491,23 +491,23 @@ Tests in `compiler_v2/codegen/module_test.cc`:
     in data segments (which now apply to the imported memory at
     instantiate-time — same wasm semantics).
 
-Acceptance: `bazel test //compiler_v2/codegen/...` green.
+Acceptance: `bazel test //compiler/codegen/...` green.
 
 ### 5.7 Commit G — delete `host_loader.{h,cc,_test.cc}`
 
 After Commits A-F land and `Cel::Compiler::Compile` →
 `Program::Plan` → `Instance::Eval` work end-to-end:
 
-  - Delete `compiler_v2/host/host_loader.h`,
-    `compiler_v2/host/host_loader.cc`,
-    `compiler_v2/host/host_loader_test.cc`.
+  - Delete `eval/host/host_loader.h`,
+    `eval/host/host_loader.cc`,
+    `eval/host/host_loader_test.cc`.
   - Remove the two `host_loader` targets from
-    `compiler_v2/host/BUILD.bazel`.
+    `eval/host/BUILD.bazel`.
   - Update `compiler_v2/cli/BUILD.bazel`:
-    `//compiler_v2/host:host_loader` → `//compiler_v2/api:program`
-    + `//compiler_v2/api:instance`.
-  - Update `compiler_v2/e2e/BUILD.bazel` similarly.
-  - Update `compiler_v2/runtime/cel_runtime.c`: drop
+    `//eval/host:host_loader` → `//compiler:program`
+    + `//eval:instance`.
+  - Update `e2e/BUILD.bazel` similarly.
+  - Update `runtime/cel_runtime.c`: drop
     `cel_reset_native` / `cel_alloc_native` (they're dead — only
     the host_loader trampolines called them). Drop the matching
     declarations in `cel_arena.h`.
@@ -536,8 +536,8 @@ Acceptance: Diffs are doc-only. No bazel target affected.
 
 ## 6. Benchmark tests against the new API
 
-`compiler_v2/api/cel_pipeline_bench.cc` — new. Replaces the
-experimental `compiler_v2/host/two_phase_topology_bench.cc`
+`bench/cel_pipeline_bench.cc` — new. Replaces the
+experimental `eval/host/two_phase_topology_bench.cc`
 (which measures raw wasmtime APIs); this one measures the
 production user-facing surface.
 
@@ -573,7 +573,7 @@ to this matrix without restructuring the bench.
 ### 6.2 Source structure
 
 ```cpp
-// compiler_v2/api/cel_pipeline_bench.cc
+// bench/cel_pipeline_bench.cc
 
 namespace cel {
 namespace {
@@ -627,7 +627,7 @@ BENCHMARK_MAIN();
 
 ### 6.3 Build target
 
-`compiler_v2/api/BUILD.bazel`:
+`eval/BUILD.bazel`:
 
 ```python
 cc_binary(
@@ -655,7 +655,7 @@ host by `//third_party/wasmtime:wasmtime`).
 ### 6.4 How to run
 
 ```
-bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+bazel run -c opt //bench:cel_pipeline_bench -- \
     --benchmark_min_time=1s
 ```
 
@@ -690,23 +690,23 @@ follow-up optimizations (memory pools, expr-module cache).
 
 | File | Test | Purpose |
 |---|---|---|
-| `compiler_v2/runtime/cel_runtime_wasm_test.cc` | `CelResetWritesArenaCursor` | §3 fix verification |
+| `runtime/cel_runtime_wasm_test.cc` | `CelResetWritesArenaCursor` | §3 fix verification |
 | `` | `CelAllocReturnsValidOffset` | §3 fix verification |
-| `compiler_v2/api/compiler_test.cc` | `BuildSucceedsAndProducesEngine` | Commit B |
-| `compiler_v2/api/program_test.cc` | `CompileParsesExprModule` | Commit C |
+| `compiler/compiler_test.cc` | `BuildSucceedsAndProducesEngine` | Commit B |
+| `compiler/program_test.cc` | `CompileParsesExprModule` | Commit C |
 | `` | `LoadProgramRoundTrip` | Commit C |
 | `` | `LoadProgramMalformedBytes` | Commit C |
 | `` | `ProgramOutlivesCompiler` | Commit C, lifetime |
 | `` | `PlanReturnsInstance` | Commit D |
 | `` | `PlanCalledManyTimesYieldsIndependentInstances` | Commit D, smoke-test port |
 | `` | `PlanIsThreadSafe` | Commit D |
-| `compiler_v2/api/instance_test.cc` | `EvalsIntLiteral` … `EvalsBytesLiteral` | Commit E, port from host_loader_test |
+| `eval/instance_test.cc` | `EvalsIntLiteral` … `EvalsBytesLiteral` | Commit E, port from host_loader_test |
 | `` | `EvalManyTimesIsDeterministic` | Commit E |
 | `` | `EvalAfterPlanFromAnotherInstanceIndependent` | Commit E |
 | `` | `MissingEvalExportFails` | Commit E, port |
 | `` | `MalformedWasmBytesFail` | Commit E, port |
 | `` | `DecodesCelValuePayloadCorrectly` | Commit E |
-| `compiler_v2/codegen/module_test.cc` | `EmittedModuleImportsCelMemory` | Commit F |
+| `compiler/codegen/module_test.cc` | `EmittedModuleImportsCelMemory` | Commit F |
 | `` | `EmittedModuleHasDataSegments` | Commit F |
 
 **Coverage delta on `testing-checklist.md`:** every M1 row that was
@@ -751,7 +751,7 @@ Explicit non-goals so review can focus:
 
 | Risk | Mitigation |
 |---|---|
-| Runtime null-pointer-elision fix doesn't survive a future clang upgrade | Test in §3.2 catches it; freeze the brew/llvm version pinned in `compiler_v2/runtime/BUILD.bazel` if needed. |
+| Runtime null-pointer-elision fix doesn't survive a future clang upgrade | Test in §3.2 catches it; freeze the brew/llvm version pinned in `runtime/BUILD.bazel` if needed. |
 | `wasmtime_memory_new` per Plan becomes a hotspot at scale | §6 bench will show it; pool memories on the engine if so. |
 | `Plan` thread-safety claim is wrong (concurrent Plans on same engine race) | `PlanIsThreadSafe` test in Commit D. wasmtime docs say engines + modules are thread-safe; if not, fall back to engine-per-thread. |
 | First-Plan latency (~160 µs) too high for some workload | Doc the WarmCompiler vs FirstEval expectations; add Compiler-level expr cache as follow-up if needed. |
@@ -776,7 +776,7 @@ Total: ~21h focused work. Realistic calendar: 3–4 days.
 This plan is "done" when:
 
   1. `bazel test //compiler_v2/...` green.
-  2. `bazel run -c opt //compiler_v2/api:cel_pipeline_bench` runs
+  2. `bazel run -c opt //bench:cel_pipeline_bench` runs
      to completion; numbers in §6.5 invariants hold.
   3. `host_loader.{h,cc,_test.cc}` no longer exists.
   4. The user-facing surface defined in `cel-host-surface.md` is

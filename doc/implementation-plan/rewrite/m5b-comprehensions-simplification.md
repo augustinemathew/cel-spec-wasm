@@ -64,7 +64,7 @@ Working tree: `/Users/augustine/cel-spec-wasm/`.
    emitters into one classifier that returns a tagged
    `LoopStepShape { kind, key, value, entries, pred }`.** The current
    six-arm cascade in `EmitCompLoopStep`
-   (`compiler_v2/codegen/expr_lower.cc:1711-1759`) re-walks the
+   (`compiler/codegen/expr_lower.cc:1711-1759`) re-walks the
    `loop_step` AST six times before falling through to the generic path;
    each `EmitConditional…` variant is a wrapper that prepends a
    `pred` arg and routes to the `_if_bool` helper. Single-pass
@@ -134,10 +134,10 @@ Cumulative as-shipped deltas vs `7e161e6`:
 
 | file | baseline LoC | HEAD LoC | net add |
 |---|---:|---:|---:|
-| `compiler_v2/codegen/expr_lower.cc` | 1101 | 2049 | **+948** |
-| `compiler_v2/codegen/resolve_pass.cc` | 481 | 666 | +185 |
-| `compiler_v2/codegen/layout_pass.cc` | 353 | 406 | +53 |
-| `compiler_v2/runtime/cel_runtime.c` | 1025 | 1241 | +216 |
+| `compiler/codegen/expr_lower.cc` | 1101 | 2049 | **+948** |
+| `compiler/codegen/resolve_pass.cc` | 481 | 666 | +185 |
+| `compiler/codegen/layout_pass.cc` | 353 | 406 | +53 |
+| `runtime/cel_runtime.c` | 1025 | 1241 | +216 |
 | **total** | **2960** | **4362** | **+1402** |
 
 New runtime exports added in M5.B (from `runtime/BUILD.bazel`):
@@ -205,10 +205,10 @@ field-cache writes/reads removed; ResolveCompContext shrinks).
 strictly closer to the data model and each removed field has a
 single trivial replacement.
 **Migration sketch:**
-- Edit `compiler_v2/codegen/expr_lower.cc` struct `CompContext` to
+- Edit `compiler/codegen/expr_lower.cc` struct `CompContext` to
   the 8-field shape above.
 - Inline `c.accu_slot` → `c.accu_v->slot_offset` everywhere
-  (~12 sites; `grep -n 'c\.accu_slot' compiler_v2/codegen/expr_lower.cc`).
+  (~12 sites; `grep -n 'c\.accu_slot' compiler/codegen/expr_lower.cc`).
 - Inline `c.two_iter` → `c.iter_v2 != nullptr` (~8 sites).
 - Inline `c.init_src_slot` at the one consumer (`EmitCompPrologue`).
 - Replace `c.exit_label.c_str()` with `ExitLabel(c).c_str()` (~5 sites);
@@ -322,7 +322,7 @@ parameterized table-driven test against every shape, derived from
 the existing six `TryMatch…` callsites' inputs.
 **Migration sketch:**
 - Add `LoopStepShape` + `ClassifyLoopStep` in
-  `compiler_v2/codegen/expr_lower.cc`.
+  `compiler/codegen/expr_lower.cc`.
 - Replace `EmitCompLoopStep`'s six `TryMatch` calls with one
   `Classify` call; switch on `shape.kind`.
 - Inline the `EmitAppendStep` / `EmitMapInsertStep` /
@@ -779,7 +779,7 @@ flag in the Cross-cutting findings instead.
 
 ### Area 9 — Test surface
 
-**Current shape.** `compiler_v2/e2e/m5b_test.cc` is 1072 LoC,
+**Current shape.** `e2e/m5b_test.cc` is 1072 LoC,
 9 fixture classes, 73 `TEST_F` cases. ~15 still `GTEST_SKIP` (per
 `grep -n GTEST_SKIP`), mostly for the bound-list / empty-map-literal
 patterns that hit RejectDyn before codegen runs.
@@ -869,7 +869,7 @@ surface.**
 | ResolvePass unit | Build expr → run ResolvePass → assert ResolvedVariable kinds + scope | YES — `ResolvePassComprehensionScopeTest` (resolve_pass_test.cc:707+) |
 | LayoutPass unit | Build expr → run LayoutPass → assert slot kinds + layout invariants | YES — `LayoutPassComprehensionTest` (layout_pass_test.cc:699+) |
 | Runtime helper unit | Call C helpers directly → assert state | PARTIAL — `cel_list_append_at` + `cel_map_iter_*` covered; `cel_list_append_at_if_bool` + `cel_map_insert_at_if_bool` NOT |
-| E2E (wasmtime) | Compile + execute + assert decoded `CelValue` | YES — `compiler_v2/e2e/m5b_test.cc` (~54 tests) |
+| E2E (wasmtime) | Compile + execute + assert decoded `CelValue` | YES — `e2e/m5b_test.cc` (~54 tests) |
 | Conformance (cel-cpp corpus) | Differential test against 2454 upstream rows | YES — drives the macros/macros2/bindings_ext fixtures |
 
 **How real compilers test this layer.**
@@ -929,7 +929,7 @@ exist for any comprehension shape.
    Would have caught the Slice G 3VL-pred bug at codegen-test
    time (1 second), instead of macros2 conformance time
    (whole-suite run).  Living target file:
-   `compiler_v2/codegen/expr_lower_comprehension_test.cc` (new).
+   `compiler/codegen/expr_lower_comprehension_test.cc` (new).
 
 2. **Pre-sizing predicate tables.**  Two `TEST_P`-style table
    tests:
@@ -1002,7 +1002,7 @@ The simplification pass should NOT start until at least Items
 behavior — they can't break what they observe, only add
 coverage.
 **Migration sketch:**
-- Create `compiler_v2/codegen/expr_lower_comprehension_test.cc`;
+- Create `compiler/codegen/expr_lower_comprehension_test.cc`;
   copy the `Pipeline` / `LowerWithDefaultOverloads` /
   `PrepareHostModule` scaffolding from `expr_lower_test.cc` (or
   refactor into a shared `expr_lower_test_lib.h` if duplication
@@ -1010,7 +1010,7 @@ coverage.
 - Write Items 1, 4, 5 in that file.
 - Write Item 2 in `expr_lower_comprehension_test.cc` too — it's
   pure-predicate testing, no IR walk needed.
-- Write Item 3 in `compiler_v2/runtime/cel_list_test.cc` /
+- Write Item 3 in `runtime/cel_list_test.cc` /
   `cel_map_test.cc`, next to the existing helper-unit tests.
 - All five items can land in one commit; ~600 LoC of pure
   test code, no production-code changes, can ship
@@ -1173,7 +1173,7 @@ trampoline that snapshots host lists into arena format so the
 existing inline list prologue walks unchanged.  All four m5b SKIPs
 (`ExistsOverBoundList`, `AllOverBoundList`, `MapOverBoundList`,
 `MapLargeListGrowthPath`) flipped to PASS.  New coverage in
-`compiler_v2/tools/cel/activation_matrix_test.cc`.
+`tools/cel/activation_matrix_test.cc`.
 
 ---
 
@@ -1228,7 +1228,7 @@ one helper (`cel_copy_slot_dyn`) if needed; Area 8 (rejected) would
 remove two; CCF-1 (rename pass) doesn't change the export count but
 touches every consumer. All other recommended changes are pure
 codegen-internal refactors with zero impact on
-`compiler_v2/runtime/`, `compile.cc`'s import set, `engine.cc`'s
+`runtime/`, `compile.cc`'s import set, `engine.cc`'s
 `kRuntimeExports`, `wat_runner.cc`'s `kRuntimeExports`, or the
 ABI emitter.
 

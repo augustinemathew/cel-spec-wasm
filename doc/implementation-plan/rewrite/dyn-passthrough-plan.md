@@ -156,7 +156,7 @@ comparison chains) seeing the underlying scalar type, NOT `dyn`.
 
 ## Frontend treatment (`RejectDyn`)
 
-The change lives in `compiler_v2/frontend/parse_and_check.cc`:
+The change lives in `compiler/frontend/parse_and_check.cc`:
 
   1. **Special-case `dyn` calls in `CheckSubsetNode`.**  Before
      the `UnacceptableLabel` lookup, detect a `kCallExpr` whose
@@ -238,7 +238,7 @@ and easier to maintain.  **Recommended: Option A.**
     rodata-resident `1` and `1u` (no helper call for the
     `dyn(...)`).
 
-### E2E (`compiler_v2/e2e/m5_test.cc`)
+### E2E (`e2e/m5_test.cc`)
 
 Under a new fixture `DynPassthroughE2ETest`:
   - `DynScalarEqualsCrossNumeric` — `dyn(1) == 1u` → `true`.

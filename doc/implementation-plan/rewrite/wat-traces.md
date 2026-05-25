@@ -15,7 +15,7 @@
 >
 > The maintained, executable trace set lives at
 > `doc/implementation-plan/rewrite/wat/*.wat` (assembled + run via
-> `//compiler_v2/tools/wat_runner` and the `wat/BUILD.bazel` targets).
+> `//tools/wat_runner` and the `wat/BUILD.bazel` targets).
 
 Companion doc to `design.md` + `m2-ident-select-unknowns.md` + (future)
 `m5-comprehensions.md`.  Purpose: for each expression shape, write the
@@ -1029,7 +1029,7 @@ Invariants the shape locks:
     §"Timestamps and Durations" (NOT wrap).
   - 3VL absorption mirrors the existing v1 M4 Slice A semantics.
 
-Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+Codegen call-site: `compiler/codegen/expr_lower.cc::EmitGeneralCall`
 (M7B.B work), table-driven from the OverloadTable.  Reuses the
 M5.B slot-out lowering machinery verbatim.
 
@@ -1098,7 +1098,7 @@ Invariants the shape locks:
   - The companion two-arg form `ts.getFullYear('America/Los_Angeles')`
     goes through a different (host trampoline) ABI surface — see §54.
 
-Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+Codegen call-site: `compiler/codegen/expr_lower.cc::EmitGeneralCall`
 (M7B.C work).  The 9 sibling timestamp UTC accessors AND the 4
 duration accessors use this same lowering shape with a different
 helper name.
@@ -1163,7 +1163,7 @@ Invariants the shape locks:
   - The companion overloads `cel_host.cel_duration_parse`,
     `cel_host.cel_timestamp_format` use the same 2-arg shape.
 
-Codegen call-site: `compiler_v2/codegen/expr_lower.cc::EmitGeneralCall`
+Codegen call-site: `compiler/codegen/expr_lower.cc::EmitGeneralCall`
 once `string_to_timestamp` / `timestamp_to_timestamp` graduate from
 `kExplicitlyUnimplementedIds`.
 
@@ -1411,7 +1411,7 @@ Memory layout:
     the ExternrefTable, not in linear memory).
 
 Why this is the **tail** of kStructExpr, not a separate AST node:
-`compiler_v2/ir/typed_ast.cc:56` maps every `wrapper(XX)` type to
+`compiler/ir/typed_ast.cc:56` maps every `wrapper(XX)` type to
 `Repr::kXX`, so every consumer of a wrapper-typed expression
 (equality, arithmetic-guard, list-element-assignment) already
 expects a scalar slot.  Without the tail-unwrap, kStructExpr would
@@ -1436,7 +1436,7 @@ either CHECK-fail or silently miscompile.  See
     onto `CEL_DOUBLE=4`, matching CEL's value algebra.
 
 Layer-2 trampoline (`CelWktUnwrapWrapperImpl`, to land in
-`compiler_v2/api/internal/cel_host.cc` alongside
+`eval/internal/cel_host.cc` alongside
 `CelWktUnwrapTimeImpl`):
 
   1. Read CelValue at `msg_slot`.  3VL absorption — if CEL_ERROR
@@ -1453,7 +1453,7 @@ Layer-2 trampoline (`CelWktUnwrapWrapperImpl`, to land in
 
 Cross-ref to the m7b analog (§51 + `expr_lower.h:72-84`): the
 codegen seam is identical (`MaybeEmitWktUnwrapTailCall` in
-`compiler_v2/codegen/expr_lower.cc:439-451`), extended to dispatch
+`compiler/codegen/expr_lower.cc:439-451`), extended to dispatch
 on wrapper FQNs in addition to Timestamp/Duration and to thread the
 `wrapper_kind` enum through the 3rd call arg.
 

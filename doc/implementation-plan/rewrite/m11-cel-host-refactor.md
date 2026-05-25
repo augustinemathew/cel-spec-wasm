@@ -28,7 +28,7 @@ Drafted 2026-05-18.  As-shipped delta vs. as-written plan:
 
 Scope is the simplification, bug-fixing, runtime-relocation of
 WKT peel logic, and test-coverage debt that accumulated in
-`compiler_v2/api/internal/cel_host.cc` across milestones M3 →
+`eval/internal/cel_host.cc` across milestones M3 →
 M10.  Conformance ceiling: small (~+3 PASS from Any-of-Any).
 Headline gains are architectural:
 
@@ -36,7 +36,7 @@ Headline gains are architectural:
      with a dedicated unit test file.
   2. **WKT peel logic (Any iteration + wrapper unwrap +
      timestamp/duration unwrap) moves from host C++ trampolines
-     into a new runtime TU `compiler_v2/runtime/cel_wkt_wire.{c,h}`**
+     into a new runtime TU `runtime/cel_wkt_wire.{c,h}`**
      (hand-rolled wire-format decoder, ~300 LOC).  Eliminates the
      per-layer host roundtrip for Any-of-Any; eliminates 4 of the
      existing host-side WKT trampolines.
@@ -111,7 +111,7 @@ In scope:
      deletes again in Slice C (when the runtime version takes
      over) but the cost is ~30 lines temporary; it's worth it
      for the immediate correctness fix.
-  2. **Hand-roll `compiler_v2/runtime/cel_wkt_wire.{c,h}`** —
+  2. **Hand-roll `runtime/cel_wkt_wire.{c,h}`** —
      wire-format decoder for the 9 wrapper types + Timestamp +
      Duration + Any.  Pure C, no protobuf-lite dep.  ~300 LOC.
      Exports `cel_any_peel`, `cel_wkt_peel_wrapper`,
@@ -200,8 +200,8 @@ each piece separately) but the net is less work and less risk.
 
 | File | ~LOC | Contents |
 |---|---|---|
-| `compiler_v2/runtime/cel_wkt_wire.h` | ~80 | Public ABI: `cel_any_peel(out_slot, in_slot)`, `cel_wkt_peel_wrapper(out_slot, in_slot, wrapper_kind)`, `cel_wkt_peel_time(out_slot, in_slot, is_duration)`.  Wire-format constants (tag numbers, wire-type codes).  `CelWrapperKind` enum mirrors host-side enum (shared via `cel_data.h`). |
-| `compiler_v2/runtime/cel_wkt_wire.c` | ~300 | Wire-format decoder for: varint, length-delimited, fixed64, fixed32.  Per-WKT decode: 9 wrapper types (each is `message X { T value = 1; }` — trivial), Timestamp/Duration (`int64 seconds = 1; int32 nanos = 2;`), Any (`string type_url = 1; bytes value = 2;` — recurses for Any-of-Any).  Strict URL prefix check (`type.googleapis.com/` or `type.googleprod.com/`).  Depth `CHECK` at 1024 layers. |
+| `runtime/cel_wkt_wire.h` | ~80 | Public ABI: `cel_any_peel(out_slot, in_slot)`, `cel_wkt_peel_wrapper(out_slot, in_slot, wrapper_kind)`, `cel_wkt_peel_time(out_slot, in_slot, is_duration)`.  Wire-format constants (tag numbers, wire-type codes).  `CelWrapperKind` enum mirrors host-side enum (shared via `cel_data.h`). |
+| `runtime/cel_wkt_wire.c` | ~300 | Wire-format decoder for: varint, length-delimited, fixed64, fixed32.  Per-WKT decode: 9 wrapper types (each is `message X { T value = 1; }` — trivial), Timestamp/Duration (`int64 seconds = 1; int32 nanos = 2;`), Any (`string type_url = 1; bytes value = 2;` — recurses for Any-of-Any).  Strict URL prefix check (`type.googleapis.com/` or `type.googleprod.com/`).  Depth `CHECK` at 1024 layers. |
 
 ### 4.2 New host files
 
@@ -227,7 +227,7 @@ wrapper-field reflection becomes `cel_host_wrappers.cc`.)
 
 ### 4.3 Codegen change summary
 
-`compiler_v2/codegen/expr_lower.cc` — three call-site edits:
+`compiler/codegen/expr_lower.cc` — three call-site edits:
 
   1. `LowerSelectField` on an Any-typed field: emit
      `(call $cel_any_peel ...)` instead of host trampoline.
@@ -316,7 +316,7 @@ adds ~250 tests across 9 new test files (8 host + 1 runtime).
 
 ~250 new tests across 9 files (median 27 per file).  Today's
 total cel_host coverage: 6.  Expected runtime: <8s under
-`bazel test //compiler_v2/runtime/... //compiler_v2/api/internal/...`.
+`bazel test //runtime/... //eval/internal/...`.
 
 ### 5.3 Shared test fixtures
 
@@ -333,7 +333,7 @@ total cel_host coverage: 6.  Expected runtime: <8s under
     of any registered FQN with given field values.  Used in
     `cel_host_proto_read_test.cc` and `cel_host_proto_write_test.cc`.
 
-Lives in `compiler_v2/api/internal/cel_host_test_helpers.{cc,h}`
+Lives in `eval/internal/cel_host_test_helpers.{cc,h}`
 (new file, exported as a `cc_library` with `testonly = True`).
 
 ## 6. Slicing
@@ -561,25 +561,25 @@ AI-assisted pace, ~3-4 calendar days of focused work.
     no-cache route for M11; revisit if profiling shows
     descriptor-lookup cost matters.
   4. **Shared test-helper file location.**  `cel_host_test_helpers.{cc,h}`
-    lives in `compiler_v2/api/internal/` — but the runtime
-    `cel_wkt_wire_test.cc` lives in `compiler_v2/runtime/` and
+    lives in `eval/internal/` — but the runtime
+    `cel_wkt_wire_test.cc` lives in `runtime/` and
     also needs `BuildNestedAny`/`BuildWrapperMessage`.  Either
     (a) duplicate the helpers, (b) put them in a shared
     `compiler_v2/test_helpers/` package, or (c) put runtime-
-    specific helpers in `compiler_v2/runtime/cel_wkt_wire_test_helpers.cc`.
+    specific helpers in `runtime/cel_wkt_wire_test_helpers.cc`.
     Recommend (b) — one shared helpers package.
 
 ## 9. Closeout gate (to copy into the PR description)
 
-Per `compiler_v2/conformance/README.md` and CLAUDE.md closeout
+Per `conformance/README.md` and CLAUDE.md closeout
 discipline:
 
   - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel test //compiler_v2/runtime/cel_wkt_wire_test` green
+  - [ ] `bazel test //runtime/cel_wkt_wire_test` green
         (~50 new tests including the death tests).
-  - [ ] `bazel test //compiler_v2/api/internal/...` green (all 8
+  - [ ] `bazel test //eval/internal/...` green (all 8
         new host test files PASS, ~200 new test cases).
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance` —
+  - [ ] `bazel run //conformance:run_conformance` —
         pass count delta is **+2 to +3** (Any-of-Any rows).  Skip
         and fail counts unchanged.
   - [ ] `scripts/lint.sh` clean across all touched files.

@@ -9,7 +9,7 @@ Two reference points:
 
   1. Current `cel_runtime.wasm` (master @ Phase C branch point):
      **241,386 bytes / 53,738 bytes gzipped** (per the existing
-     `compiler_v2/runtime/cel_runtime_wasm_file` genrule output).
+     `runtime/cel_runtime_wasm_file` genrule output).
   2. The E7 kernels (+ str_format, time, strings) and E8 re2_match
      wasm, both rebuilt with `-Oz` for apples-to-apples comparison
      against exp1_re2's CMake build.
@@ -55,7 +55,7 @@ granularity**:
     cross-TU DCE without `-flto`).
   - **Path A should enable `-flto` in the cc_toolchain_config**
     for the production runtime build (mirroring the existing
-    `compiler_v2/runtime/BUILD.bazel` genrule, which passes
+    `runtime/BUILD.bazel` genrule, which passes
     `-O3 -flto`).  The E3 toolchain config did NOT include
     `-flto` (deliberate, to avoid bloating the canary probe).
     The implementation-plan should add an `lto` feature.

@@ -30,15 +30,15 @@ struck through or removed.
       Why P2: works for the dev box today; CI matrix expansion is
       a Phase B / M1.1 follow-up, not a merge blocker.
 
-- [ ] **#2** — `kRuntimeExports[]` in `compiler_v2/api/engine.cc`
+- [ ] **#2** — `kRuntimeExports[]` in `eval/engine.cc`
       is the third source of truth for the runtime's exported
       kernel names — the other two are
-      `compiler_v2/runtime/BUILD.bazel`'s `-Wl,--export=…` flags
+      `runtime/BUILD.bazel`'s `-Wl,--export=…` flags
       and `wasm_imports.txt`.  Nothing checks they match;
       regressing one of the three lights up at instantiate-time
       as `unknown import: cel::<name>`.
       Surfaced: 2026-05-18 MVP review (P2).
-      Files: `compiler_v2/api/engine.cc`, `compiler_v2/runtime/BUILD.bazel`.
+      Files: `eval/engine.cc`, `runtime/BUILD.bazel`.
       Why P2: every new kernel is caught at next instantiate; a
       consolidation pass (single header generating both lists)
       is the right fix but doesn't unblock anything in flight.
@@ -52,7 +52,7 @@ struck through or removed.
       Why P2: experimental directory; doesn't affect production
       build paths.
 
-- [ ] **#4** — `compiler_v2/runtime/cel_memory.c` has an inline-asm
+- [ ] **#4** — `runtime/cel_memory.c` has an inline-asm
       opacity barrier (`asm volatile("" :: "r"(...))`) that
       prevents clang from miscompiling `*(base + off)` stores as
       no-ops when `base` is a zero pointer literal.  Verify the
@@ -60,18 +60,18 @@ struck through or removed.
       the emitted `.wasm` for the expected store instructions
       (was historically clang-15-specific).
       Surfaced: 2026-05-18 MVP review (P2).
-      Files: `compiler_v2/runtime/cel_memory.c`.
+      Files: `runtime/cel_memory.c`.
       Why P2: tests + e2e currently pass, so the barrier is
       working at runtime; the concern is that a future clang
       could regress.  Add a disassembly assertion in a follow-up.
 
-- [ ] **#5** — `compiler_v2/runtime/cel_memory.c:1-15` comment block
+- [ ] **#5** — `runtime/cel_memory.c:1-15` comment block
       describes a "1-page memory" + the `cel_alloc` ABI that no
       longer exists.  Comment is stale post-MVP; the wasi-sdk
       runtime imports a 2-page memory and `cel_alloc` was deleted
       in B1.
       Surfaced: 2026-05-18 MVP review (P2).
-      Files: `compiler_v2/runtime/cel_memory.c`.
+      Files: `runtime/cel_memory.c`.
       Why P2: comment-only; no runtime impact.
 
 - [ ] **#6** — `cel_memory_size_()` on wasm returns a hard-coded
@@ -82,7 +82,7 @@ struck through or removed.
       no kernel actually consults `cel_memory_size_()` on the
       wasm side (only the native build does).
       Surfaced: 2026-05-18 MVP review.
-      Files: `compiler_v2/runtime/cel_memory.c`.
+      Files: `runtime/cel_memory.c`.
       Why P2: not yet observable; lands when the host_string_arena
       cleanup goes in (M7).
 
@@ -112,15 +112,15 @@ struck through or removed.
       types do not need the sugar — the spec only permits `.field`
       on string-keyed maps.
       Surfaced: 2026-05-21 M14 Slice B implementation.
-      Files: `compiler_v2/codegen/expr_lower.cc::EmitKSelect`,
-      `compiler_v2/codegen/layout_pass.cc::SelectKeyRodataVisitor`
+      Files: `compiler/codegen/expr_lower.cc::EmitKSelect`,
+      `compiler/codegen/layout_pass.cc::SelectKeyRodataVisitor`
       (extend the operand-Repr predicate to include `kMap`).
       Why P2: out of scope for M14 (Slice B mandate was
       Select-on-optional, not Select-on-map).  Self-contained
       follow-up slice — likely 2–4 hours of work, mostly mirroring
       Slice B's structure.
 
-- [ ] **#10** — `is_zero_value` in `compiler_v2/runtime/cel_optional.c`
+- [ ] **#10** — `is_zero_value` in `runtime/cel_optional.c`
       traps with `__builtin_trap()` on `CEL_MESSAGE` (and
       `CEL_LIST_HOST` / `CEL_MAP_HOST`) because the proto-zero
       predicate needs proto reflection (cel-cpp parity:
@@ -148,10 +148,10 @@ struck through or removed.
       already exist — wasm can read them directly without a new
       trampoline; trap arm replaced with `return hdr.size == 0`).
       Surfaced: 2026-05-22 M14 Slice E closeout conformance run.
-      Files: `compiler_v2/runtime/cel_optional.c::is_zero_value`,
-      `compiler_v2/api/internal/cel_host.{h,cc}` (new
+      Files: `runtime/cel_optional.c::is_zero_value`,
+      `eval/internal/cel_host.{h,cc}` (new
       `cel_message_is_zero` trampoline),
-      `compiler_v2/api/internal/cel_host_wasmtime.cc` (register).
+      `eval/internal/cel_host_wasmtime.cc` (register).
       Why P2: only one corpus row newly FAILing; the rest of M14
       ships cleanly.  Self-contained follow-up slice, mostly
       mirroring the existing `cel_host.cel_list_size` /
@@ -182,7 +182,7 @@ struck through or removed.
       equality.
       Impact: blocks the map `*_null_pruned` Eq-form rows in
       `proto2.textproto` / `proto3.textproto` (2 rows; documented as
-      GTEST_SKIP in `compiler_v2/e2e/wkt_field_set_test.cc`).  The
+      GTEST_SKIP in `e2e/wkt_field_set_test.cc`).  The
       null-prune itself is proven correct (size shrinks, surviving
       entry reads back equal) — only the cross-origin `==` is missing.
       Fix shape: a normalizing comparison in `CelMapEqImpl` that reads
@@ -190,14 +190,14 @@ struck through or removed.
       origin (host vs arena), mirroring how list equality already
       bridges `CEL_LIST_HOST` vs `CEL_LIST_ARENA`.
       Surfaced: 2026-05-24 WKT field-set conformance work.
-      Files: `compiler_v2/runtime/` (`CelMapEqImpl`), the host map
-      accessors in `compiler_v2/api/internal/cel_host.cc`.
+      Files: `runtime/` (`CelMapEqImpl`), the host map
+      accessors in `eval/internal/cel_host.cc`.
       Why P2: 2 corpus rows; cross-origin map `==` is a self-contained
       runtime-kernel follow-up.
 
 ## Closed
 
-- [x] **#8** — `compiler_v2/codegen/expr_lower.cc` had two
+- [x] **#8** — `compiler/codegen/expr_lower.cc` had two
       `ABSL_CHECK(false)` stubs that Slice A of M14 converted to
       `return absl::UnimplementedError(...)`:
         - `EmitKStructExpr` ~line 507 — `f.optional()` proto-literal
@@ -208,8 +208,8 @@ struck through or removed.
           Repr-detection).
       Surfaced: 2026-05-21 M14 Slice A independent review.
       Closed: 2026-05-21 by M14 Slice B.
-      Files: `compiler_v2/codegen/expr_lower.cc`,
-      `compiler_v2/frontend/parse_and_check.cc`.
+      Files: `compiler/codegen/expr_lower.cc`,
+      `compiler/frontend/parse_and_check.cc`.
       Resolution: `CheckSubsetStruct` rejects `?field:` proto-literal
       entries at the static-subset gate so the harness classifies
       affected rows as SKIP-static_subset; both codegen arms restored
@@ -228,15 +228,15 @@ struck through or removed.
       per-Eval cost on aggregate-heavy expressions (`Eval_ListAt_Arena`
       took 3.6 µs / Eval where the WASI-free body would take 0.6 µs).
       Fix: gate `-DCEL_LOG_DISABLED` on `-c opt` via `config_setting`
-      in `compiler_v2/runtime/BUILD.bazel`; CEL_LOG stays live for
+      in `runtime/BUILD.bazel`; CEL_LOG stays live for
       `dbg` / `fastbuild` so the dead-code audit per `cel_log.h`
       still works.  Measured improvement: 1.4×–5.7× faster on the
-      `BM_Eval_*` rows of `//compiler_v2/bench:pipeline_bench`.  See
+      `BM_Eval_*` rows of `//bench:pipeline_bench`.  See
       `bench/README.md` updated baseline and
       `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md`
       "Mitigation paths" item 1.
       Surfaced: 2026-05-18 post-Phase-C perf-run investigation.
       Closed: 2026-05-19.
-      Files: `compiler_v2/runtime/BUILD.bazel`,
-      `compiler_v2/bench/README.md`,
+      Files: `runtime/BUILD.bazel`,
+      `bench/README.md`,
       `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md`.

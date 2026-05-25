@@ -26,7 +26,7 @@ On 2026-04-24, a routine validation of M2 found:
     described M2 as substantially shipped; subsequent work (M3
     map literals, conformance harness) had been built on top of
     that assumption.
-  - But `compiler_v2/e2e:m2_test` is `tags = ["manual"]` and
+  - But `e2e:m2_test` is `tags = ["manual"]` and
     therefore excluded from `bazel test //...`.  Running it
     explicitly revealed **29 of 44 tests `GTEST_SKIP`ped at the
     fixture level**: every `SelectE2ETest` (12), every
@@ -52,14 +52,14 @@ A feature is **not done** until **all** of the following are true:
      code path (positive + negative + boundary, per CLAUDE.md
      "Cover the edge-case matrix").
   2. The end-to-end test for the feature exists in
-     `compiler_v2/e2e/m<N>_test.cc` and is **not** `GTEST_SKIP`ped
+     `e2e/m<N>_test.cc` and is **not** `GTEST_SKIP`ped
      at the fixture or test level.
   3. **All** `manual`-tagged test targets affected by the slice
      run green explicitly — see §2 below for the catalog.
   4. The corresponding rows in `testing-checklist.md` are ticked
      and reference the test that proves them.
-  5. `bazel run //compiler_v2/conformance:run_conformance` is
-     re-run; `compiler_v2/conformance/README.md` headline + the
+  5. `bazel run //conformance:run_conformance` is
+     re-run; `conformance/README.md` headline + the
      per-fixture rows that moved are refreshed in the same
      commit.
   6. The milestone doc's status header reflects shipping (not
@@ -88,16 +88,16 @@ exercises the slice's surface runs green.
 
 | Target | Module under test | When required |
 |---|---|---|
-| `//compiler_v2/api:instance_test` | `Instance::Eval`, `Instance::PartialEval`, decoder, activation marshal, full Compile→Plan→Eval | Any change to compile / engine / instance / value / activation |
-| `//compiler_v2/api:engine_test` | `Engine::Plan`, runtime instantiation, linker wiring | Any change to engine, host imports, runtime exports |
-| `//compiler_v2/api:cel_host_test` | Layer-1 `ProtoBacking`, Layer-2 trampolines (`CelGetFieldImpl`, `CelHasFieldImpl`, `CelMapLookupImpl`) | Any cel_host change |
-| `//compiler_v2/api:cel_pipeline_bench` | Pipeline-stage perf bench | Major pipeline change (regression catch) |
-| `//compiler_v2/e2e:m<N>_test` | The milestone's e2e suite | Every feature in milestone N |
-| `//compiler_v2/e2e:eval_test` | Cross-cutting eval shapes (legacy compiler) | Compatibility check | <!-- FLAG: no `eval_test` target exists under compiler_v2/e2e/ (only m<N>_test + optimize_test + program_roundtrip_test + known_bugs_test); this row may be stale — verify before relying on it as a gate. -->
-| `//compiler_v2/runtime:cel_runtime_wasm_test` | wasm32-cross-compiled runtime, exercised under wasmtime | Any runtime primitive change |
-| `//compiler_v2/tools/wat_runner:wat_runner_test` | WAT trace re-assemble + re-run regression | Any codegen arm change (WAT-first rule) |
-| `//compiler_v2/conformance:run_conformance` | Upstream CEL conformance corpus | Every milestone close |
-| `//compiler_v2/tools/cel:cel_smoke_test` (smoke) | `cel` CLI binary, end-to-end eval/check/compile from source string | Any public-API change |
+| `//eval:instance_test` | `Instance::Eval`, `Instance::PartialEval`, decoder, activation marshal, full Compile→Plan→Eval | Any change to compile / engine / instance / value / activation |
+| `//eval:engine_test` | `Engine::Plan`, runtime instantiation, linker wiring | Any change to engine, host imports, runtime exports |
+| `//eval:cel_host_test` | Layer-1 `ProtoBacking`, Layer-2 trampolines (`CelGetFieldImpl`, `CelHasFieldImpl`, `CelMapLookupImpl`) | Any cel_host change |
+| `//bench:cel_pipeline_bench` | Pipeline-stage perf bench | Major pipeline change (regression catch) |
+| `//e2e:m<N>_test` | The milestone's e2e suite | Every feature in milestone N |
+| `//e2e:eval_test` | Cross-cutting eval shapes (legacy compiler) | Compatibility check | <!-- FLAG: no `eval_test` target exists under e2e/ (only m<N>_test + optimize_test + program_roundtrip_test + known_bugs_test); this row may be stale — verify before relying on it as a gate. -->
+| `//runtime:cel_runtime_wasm_test` | wasm32-cross-compiled runtime, exercised under wasmtime | Any runtime primitive change |
+| `//tools/wat_runner:wat_runner_test` | WAT trace re-assemble + re-run regression | Any codegen arm change (WAT-first rule) |
+| `//conformance:run_conformance` | Upstream CEL conformance corpus | Every milestone close |
+| `//tools/cel:cel_smoke_test` (smoke) | `cel` CLI binary, end-to-end eval/check/compile from source string | Any public-API change |
 
 **`scripts/run_full_suite.sh`** (or equivalent ergonomic wrapper)
 should bundle these into one invocation; the milestone doc cites
@@ -113,7 +113,7 @@ component" — every layer your slice touched must have an
 assertion at the layer's boundary, not just a downstream e2e that
 happens to pass.
 
-### 3.1 Frontend (`compiler_v2/frontend/parse_and_check_test.cc`)
+### 3.1 Frontend (`compiler/frontend/parse_and_check_test.cc`)
 
 For each new feature touching parse / check:
 
@@ -130,7 +130,7 @@ For each new feature touching parse / check:
     `overload_id`, `map_origin`), at least one test asserts the
     annotation lands on the right node ID.
 
-### 3.2 IR (`compiler_v2/ir/{annotations,typed_ast}_test.cc`)
+### 3.2 IR (`compiler/ir/{annotations,typed_ast}_test.cc`)
 
   - **Repr coverage** — every CEL type the feature exposes maps
     to its `Repr`; assert via the parameterised Repr suite.
@@ -339,7 +339,7 @@ For each new feature touching parse / check:
     bound activation marshals; PartialEval routes through
     pattern matching; `DecodeCelValueAt` arm for every CelKind.
 
-### 3.11 E2E (`compiler_v2/e2e/m<N>_test.cc`)
+### 3.11 E2E (`e2e/m<N>_test.cc`)
 
   - **One fixture per feature theme** (idents, selects, has,
     unknowns, maps, …).  `SetUp` does **not** unconditionally
@@ -407,13 +407,13 @@ M<N>.<slice> closeout
 [ ] All component _test.cc files written (per §3 above)
 [ ] No fixture-level GTEST_SKIPs added to e2e/m<N>_test.cc
 [ ] bazel test //compiler_v2/... passes
-[ ] bazel test //compiler_v2/api:instance_test passes
-[ ] bazel test //compiler_v2/api:engine_test passes
-[ ] bazel test //compiler_v2/api:cel_host_test passes
-[ ] bazel test //compiler_v2/e2e:m<N>_test passes (no fixture skips)
-[ ] bazel test //compiler_v2/runtime:cel_runtime_wasm_test passes
-[ ] bazel test //compiler_v2/tools/wat_runner:wat_runner_test passes
-[ ] bazel run //compiler_v2/conformance:run_conformance — README inventory refreshed
+[ ] bazel test //eval:instance_test passes
+[ ] bazel test //eval:engine_test passes
+[ ] bazel test //eval:cel_host_test passes
+[ ] bazel test //e2e:m<N>_test passes (no fixture skips)
+[ ] bazel test //runtime:cel_runtime_wasm_test passes
+[ ] bazel test //tools/wat_runner:wat_runner_test passes
+[ ] bazel run //conformance:run_conformance — README inventory refreshed
 [ ] testing-checklist.md rows ticked with test refs
 [ ] m<N>-*.md status header reflects shipping
 [ ] feature-pipeline-checklist.md rows ticked

@@ -45,7 +45,7 @@ agreement CHECK — the M5 scope handler will replace that gate.
 | **M4.G** — `ProtoBacking::ReadField` REPEATED flip | shipped | REPEATED → `Value::HostList(ProtoList{...})` (was `kTypeUnsupported`).  Two existing tests flipped to assert HostList; m2 envelope test re-targeted at M4.F+H (e2e Eval needs codegen + decoder). |
 | **M4.H** — activation marshaller + Eval decoder | shipped | `EncodeList` arm in `EncodeScalarValue` (interns `Value::List` / `Value::HostList` via `ExternrefTable::InternList` and writes `{CEL_LIST_HOST, payload.ref_slot}`).  `DecodeArenaListAt` reads `ArenaListHeader` + walks `count × 24B` and recursively decodes via `DecodeCelValueAt`; new `CEL_LIST_ARENA` arm in the top-level decoder.  `instance` build dep on `cel_host` added so `ExternrefTable::InternList` resolves.  m2_test's `SelectRepeatedFieldReturnsHostList` flipped from SKIP to a green `customer.tags[0] == "tag0"` assertion. |
 | **M4.I** — conformance harness envelope | shipped | `IsInM3Envelope` → `IsInM4Envelope`; `IsAggregateMatcherKindForM3` → `IsAggregateMatcherKindForM4` admitting `kListValue`.  New `CompareList` mirrors `CompareMap` but is order-aware (lists are ordered per langdef § "List equality").  `CompareValue` factored: scalar arm extracted into a `CompareScalar` helper so the dispatcher stays under the function-size lint gate after the kListValue arm landed.  Conformance: 203 → 212 PASSes (`lists.textproto` 0 → 4 first PASS, `parse.textproto` 148 → 150, `fields.textproto` 13 → 14). |
-| **M4.J** — m4_test.cc + doc reconcile | shipped | New `compiler_v2/e2e/m4_test.cc` (16 tests across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`, `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto fixture extended with `repeated string tags = 12`.  `scripts/run_full_suite.sh` MANUAL_TARGETS += `//compiler_v2/e2e:m4_test`.  This doc's status flipped to shipped + per-slice notes filled in. |
+| **M4.J** — m4_test.cc + doc reconcile | shipped | New `e2e/m4_test.cc` (16 tests across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`, `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto fixture extended with `repeated string tags = 12`.  `scripts/run_full_suite.sh` MANUAL_TARGETS += `//e2e:m4_test`.  This doc's status flipped to shipped + per-slice notes filled in. |
 
 **Manual targets that gate close (per §6.4 / `per-component-test-coverage.md §5`):**
 all 6 currently green — `cel_host_test`, `engine_test`, `instance_test`,
@@ -760,7 +760,7 @@ tagged); each can be reverted independently.
     `cel_host.cel_list_at`; ABI carries `kList` repr on
     declared list variables.
 
-### 6.2 E2E (`compiler_v2/e2e/m4_test.cc` — new)
+### 6.2 E2E (`e2e/m4_test.cc` — new)
 
 Mirror of `m3_test.cc` shape (when it lands).  Three
 fixtures:
@@ -822,7 +822,7 @@ M4 closeout
 [ ] scripts/run_full_suite.sh passes (default + 6 manual
     targets)
 [ ] m4_test runs green (no fixture skips)
-[ ] bazel run //compiler_v2/conformance:run_conformance —
+[ ] bazel run //conformance:run_conformance —
     README inventory refreshed; per-fixture moves documented
 [ ] testing-checklist.md "Rewrite M4" rows ticked
 [ ] m4-list-literals.md status header reflects shipping

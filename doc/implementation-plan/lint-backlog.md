@@ -62,19 +62,19 @@ Cleared as part of the M9 closeout lint pass:
 
 | file | check | resolution |
 |---|---|---|
-| `compiler_v2/api/type.cc` | `bugprone-branch-clone` | `operator==` switch rewritten as if/else chain (the three container arms have distinct branches but identical AST shape). |
-| `compiler_v2/conformance/binding_marshal.cc` | `bugprone-branch-clone` ×2 | kStringValue/kBytesValue collapsed into one fall-through arm with a runtime select; PrimitiveSpec switch rewritten as a lookup table. |
-| `compiler_v2/conformance/binding_marshal.cc` | `misc-use-internal-linkage` ×2 | `VariableSpecFromDecl` / `PopulateVariableSpecs` are declared in the header; NOLINT with rationale (clang-tidy can't see cross-TU callers). |
-| `compiler_v2/runtime/cel_runtime.c` | `readability-redundant-declaration` ×2 | Forward decls of `cel_string_eq_at_vv` / `cel_bytes_eq_at_vv` removed; they come in transitively via `cel_runtime.h` → `cel_string_ops.h`. |
-| `compiler_v2/runtime/cel_runtime.c` | `misc-use-internal-linkage` ×2 | `cel_equals_at_vv` / `cel_not_equals_at_vv` are wasm-exported (`-Wl,--export=`); NOLINT with rationale per CLAUDE.md. |
-| `compiler_v2/runtime/cel_runtime.c` | `google-readability-braces-around-statements` ×2 | UnknownSet merge while-loops now braced. |
-| `compiler_v2/frontend/parse_and_check.cc` | `readability-function-size` ×2 | `InlineConstantReferences` / `InlineTypeIdentifierReferences` share a new `VisitInlineConstantChildren` helper; the second split out `MaybeRewriteTypeIdent`. |
-| `compiler_v2/conformance/runner.cc` | `readability-function-size` | `RunOne` split into `ScopeReject` + `RunTypedResultBranch` + slim driver. |
-| `compiler_v2/api/internal/cel_host.cc` | `modernize-use-auto` | `size_t count = static_cast<...>(...)` → `auto count = ...`. |
-| `compiler_v2/api/internal/cel_host.cc` | `modernize-return-braced-init-list` | `cel::Attribute(a, b)` return → `{a, b}`. |
-| `compiler_v2/api/internal/cel_host.cc` | `readability-use-anyofallof` | Pattern-match loop in `MatchesAnyUnknownPattern` rewritten as `std::any_of`. |
-| `compiler_v2/api/internal/cel_host.cc` | `cppcoreguidelines-pro-type-const-cast` | NOLINT with rationale — `OwnedProtoBacking` const-strip is intentional; `ExternrefTable::Lookup` returns `const` for the read path, and `cel_set_field` re-asserts mutability via dynamic_cast first. |
-| `compiler_v2/api/value.cc` | `readability-function-size` | `StructurallyEquals` 68 lines → 60 by trimming per-arm comments (the rationale they captured is now in the function header). |
+| `common/type.cc` | `bugprone-branch-clone` | `operator==` switch rewritten as if/else chain (the three container arms have distinct branches but identical AST shape). |
+| `conformance/binding_marshal.cc` | `bugprone-branch-clone` ×2 | kStringValue/kBytesValue collapsed into one fall-through arm with a runtime select; PrimitiveSpec switch rewritten as a lookup table. |
+| `conformance/binding_marshal.cc` | `misc-use-internal-linkage` ×2 | `VariableSpecFromDecl` / `PopulateVariableSpecs` are declared in the header; NOLINT with rationale (clang-tidy can't see cross-TU callers). |
+| `runtime/cel_runtime.c` | `readability-redundant-declaration` ×2 | Forward decls of `cel_string_eq_at_vv` / `cel_bytes_eq_at_vv` removed; they come in transitively via `cel_runtime.h` → `cel_string_ops.h`. |
+| `runtime/cel_runtime.c` | `misc-use-internal-linkage` ×2 | `cel_equals_at_vv` / `cel_not_equals_at_vv` are wasm-exported (`-Wl,--export=`); NOLINT with rationale per CLAUDE.md. |
+| `runtime/cel_runtime.c` | `google-readability-braces-around-statements` ×2 | UnknownSet merge while-loops now braced. |
+| `compiler/frontend/parse_and_check.cc` | `readability-function-size` ×2 | `InlineConstantReferences` / `InlineTypeIdentifierReferences` share a new `VisitInlineConstantChildren` helper; the second split out `MaybeRewriteTypeIdent`. |
+| `conformance/runner.cc` | `readability-function-size` | `RunOne` split into `ScopeReject` + `RunTypedResultBranch` + slim driver. |
+| `eval/internal/cel_host.cc` | `modernize-use-auto` | `size_t count = static_cast<...>(...)` → `auto count = ...`. |
+| `eval/internal/cel_host.cc` | `modernize-return-braced-init-list` | `cel::Attribute(a, b)` return → `{a, b}`. |
+| `eval/internal/cel_host.cc` | `readability-use-anyofallof` | Pattern-match loop in `MatchesAnyUnknownPattern` rewritten as `std::any_of`. |
+| `eval/internal/cel_host.cc` | `cppcoreguidelines-pro-type-const-cast` | NOLINT with rationale — `OwnedProtoBacking` const-strip is intentional; `ExternrefTable::Lookup` returns `const` for the read path, and `cel_set_field` re-asserts mutability via dynamic_cast first. |
+| `eval/value.cc` | `readability-function-size` | `StructurallyEquals` 68 lines → 60 by trimming per-arm comments (the rationale they captured is now in the function header). |
 
 ### Intentionally left in place (M9 closeout)
 
@@ -82,7 +82,7 @@ The following warnings remain on the file list `scripts/lint.sh`
 reports for the M9 closeout commits; they are larger refactors
 better done in their own milestones:
 
-- `compiler_v2/api/internal/cel_host.cc` — `EncodeValue`,
+- `eval/internal/cel_host.cc` — `EncodeValue`,
   `SetScalarField`, `SetWrapperInnerValue` (M8.A),
   `AppendRepeatedFromCelValue`, `AppendRepeatedFromHostListValue`,
   `InsertArenaMapEntry`, `InsertHostMapEntry`, `CelSetFieldImpl` —
@@ -95,18 +95,18 @@ better done in their own milestones:
   it) — the inner 8-arm dispatch hits the gate; splitting further
   would lose locality.
 
-- `compiler_v2/api/instance.cc` — `DecodeCelValueAt` flagged for
+- `eval/instance.cc` — `DecodeCelValueAt` flagged for
   size; the per-CelKind decoder ladder is the natural place to
   split (one helper per kind family).
 
-- ~~`compiler_v2/api/engine.cc` — `InstantiateRuntime` flagged for
+- ~~`eval/engine.cc` — `InstantiateRuntime` flagged for
   size~~ — addressed M12.F (2026-05-20).  Split into
   `BindRuntimeFuncHandles` + `SeedRuntimeArena` +
   `EnforceRuntimeMemoryInvariants` helpers; the function body
   is now the sequence of stage calls.
 
 - A handful of `clang-analyzer-*` warnings under
-  `compiler_v2/api/internal/cel_host.cc` (`NullArg`,
+  `eval/internal/cel_host.cc` (`NullArg`,
   `NullableDereferenced`) — likely false positives from
   inter-procedural analysis without full header visibility; defer
   to a dedicated triage pass.

@@ -77,12 +77,12 @@ works under the new architecture.
 | **C3** | `cel_matches_at_vv` + per-Instance regex cache | ☒ | [phase-c-plan.md §4.5](../phase-c-plan.md) | 1.0 |
 | **C4** | `cel_timestamp_parse_at_v` / `_format_at_v` / `cel_duration_parse_at_v` / `_format_at_v` calling absl directly inside cel_runtime.wasm; 4 host trampolines deleted | ☒ | [phase-c-plan.md §4.1-4.4](../phase-c-plan.md) | 0.5 |
 | **C5** | Conformance: `string.textproto::matches/*` (9 SKIPs) flip to PASS | ☒ | — | 0.5 |
-| **C6** | Bench delta (Chrome retest deferred — Phase D) | ☒ | [bench/README.md](../../../../compiler_v2/bench/README.md) | 0.5 |
+| **C6** | Bench delta (Chrome retest deferred — Phase D) | ☒ | [bench/README.md](../../../../bench/README.md) | 0.5 |
 
 **Plan-vs-execution notes:**
 
   - **C3** — `cel_matches_at_vv` kernel in
-    `compiler_v2/runtime/cel_matches.{h,cc}`.  RE2 PartialMatch
+    `runtime/cel_matches.{h,cc}`.  RE2 PartialMatch
     with a per-Instance **single-slot most-recent-pattern cache**
     (module-static `std::string` key + `unique_ptr<RE2>`).
     Compile-failure stores `nullptr` so the failure is sticky for
@@ -101,7 +101,7 @@ works under the new architecture.
     + alternating-pattern correctness + sticky-error + anchors +
     embedded NUL).
   - **C4** — shipped as four runtime kernels in
-    `compiler_v2/runtime/cel_time_parse.{h,cc}`.  `overload_table.cc`
+    `runtime/cel_time_parse.{h,cc}`.  `overload_table.cc`
     routes `string_to_timestamp` / `string_to_duration` /
     `timestamp_to_string` / `duration_to_string` to
     `ImportModule::kCelRuntime`; the four host trampolines
@@ -109,7 +109,7 @@ works under the new architecture.
     `CelTimestampFormatImpl` / `CelDurationFormatImpl`) are deleted
     from `cel_host.cc`.  Unit tests in `cel_time_parse_test.cc`
     (71 sub-tests, parameterized matrix per `phase-c-plan.md` §5.1);
-    e2e cases in `compiler_v2/e2e/m7b_test.cc::ParseFormatE2ETest`
+    e2e cases in `e2e/m7b_test.cc::ParseFormatE2ETest`
     and `FormatConvertE2ETest` covering admit / reject / boundary /
     round-trip.  Known proto-JSON gaps (year padding for years
     <1000; fractional-second digit count) are locked-in as recorded
@@ -119,7 +119,7 @@ works under the new architecture.
     `size/unicode` — pre-existing byte-vs-codepoint gap in
     `cel_string_size_at_v`, separate concern).  Full-corpus delta:
     1373 → 1382 PASS (+9, exactly the matches rows).
-  - **C6** — `compiler_v2/bench/README.md` carries the bench delta
+  - **C6** — `bench/README.md` carries the bench delta
     (Compile/Plan +14-40% from wasi-libc instantiation, Eval below
     pre-WASI baseline net of the CEL_LOG_DISABLED gate).  Chrome
     retest is the only Phase D work item.

@@ -180,7 +180,7 @@ into the imported `cel_host_cel_map_lookup` becomes
 **Runtime toolchain requirements** (new):
 
   - clang wasm32 cross-compile: add `-mtail-call` to the flags
-    in `compiler_v2/runtime/BUILD.bazel`'s genrule.
+    in `runtime/BUILD.bazel`'s genrule.
   - Binaryen: pass `--enable-tail-call` through
     `wasm-opt` / `BinaryenModuleValidate` / our codegen emit
     pipeline.
@@ -513,7 +513,7 @@ independently.
   - `layout_pass_test` (extended) — kCreateMap result + per-
     entry scratch slots at expected offsets; scratch reuse.
 
-### 6.2 E2E (`compiler_v2/e2e/m3_test.cc` — new)
+### 6.2 E2E (`e2e/m3_test.cc` — new)
 
   - Map literal × each scalar key/value kind (null/bool/int/
     uint/double/string/bytes combinations that are spec-legal
@@ -561,7 +561,7 @@ Flip on `testing-checklist.md §"Rewrite M3"`:
 ## 7. Exit criteria
 
   - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance`
+  - [ ] `bazel run //conformance:run_conformance`
         shows no `kFail` regressions vs the post-M2 +
         binding-marshaller snapshot.  New PASSes appear in
         map-indexing rows.

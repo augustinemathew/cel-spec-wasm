@@ -22,7 +22,7 @@ where it will compound if Phase B drags.
 
 **Top three to look at first**:
 
-  1. **`compiler_v2/api/instance.cc:344-455` + `instance_impl.h:42-56`** —
+  1. **`eval/instance.cc:344-455` + `instance_impl.h:42-56`** —
      the `host_string_arena` machinery (110 LoC + 2 fields) that
      DESIGN §1 lists as removed is still load-bearing for every
      activation-marshalled string/bytes/type binding.  Its design
@@ -34,7 +34,7 @@ where it will compound if Phase B drags.
      the old design have not been touched and are now actively
      misleading.
 
-  2. **`compiler_v2/runtime/BUILD.bazel:280` re-adding
+  2. **`runtime/BUILD.bazel:280` re-adding
      `--import-memory=cel,memory`** after M2's removal.  The M6-M8
      milestone doc captures the revert honestly, but the resulting
      state — runtime built with wasi-sdk but still importing memory
@@ -44,7 +44,7 @@ where it will compound if Phase B drags.
      There is no `static_assert` or runtime `ABSL_CHECK` validating
      either invariant.
 
-  3. **`compiler_v2/codegen/expr_lower.cc:114-122` + `layout_pass.cc:390`** —
+  3. **`compiler/codegen/expr_lower.cc:114-122` + `layout_pass.cc:390`** —
      codegen still computes `arena_base`, still threads
      `mem_size_bytes` through `LoweringOptions`, and still emits
      `EmitCelResetCall(arena_base, arena_limit)`.  The `cel_reset`
@@ -61,14 +61,14 @@ hidden behind a compat layer.  Drift inventory:
 
 | DESIGN §1 promise | As-built shape | Where |
 |---|---|---|
-| `cel_reset(arena_base, arena_limit)` codegen prologue removed | Still emitted; args still computed; runtime shim ignores them | `compiler_v2/codegen/expr_lower.cc:114-122`, `:1084-1094`; `runtime/cel_arena.c:129-139` |
-| `LoweringOptions::mem_size_bytes` threading dropped | Still in struct, still defaulted to 64 KiB, still wired into `EmitCelResetCall` | `compiler_v2/codegen/expr_lower.h:140-148` |
-| `LayoutPass::arena_base` field dropped | Still computed at end of LayoutPass | `compiler_v2/codegen/layout_pass.cc:390`; `layout_pass.h:105` |
-| Fixed cursor slot at bytes 8/12 gone | Code no longer USES bytes 8/12, but `cel_arena.c:64` reserves bytes [0, 16) of native `g_memory` "in case anything still pokes there" — i.e. the slot is leftover rather than removed | `compiler_v2/runtime/cel_arena.c:62-68` |
-| Inline-asm opacity barrier in `cel_memory.c` removed (clang wasm32 backend workaround no longer needed under wasi-sdk) | Still present at `cel_memory.c:33`; header comment still describes the old reason; nothing tests whether wasi-sdk's clang actually needs it | `compiler_v2/runtime/cel_memory.c:9-17, 31-35` |
-| `host_string_arena` workaround in `api/instance.cc` (~110 LoC) deleted | Still present in full; `EncodeStringOrBytes`, `EncodeType`, `EnsureHostStringArenaCapacity`, `TotalHostStringBytes`, `HostStringArena` struct, `host_string_arena_floor` + `_capacity` fields all intact | `compiler_v2/api/instance.cc:344-455, 740-790`; `api/internal/instance_impl.h:42-56` |
-| 2-arg memory typing in `engine.cc` (host stops allocating memory) | `InitStoreAndMemory` still does `wasmtime_memorytype_new(min=2, max_present=false, ...)` and `wasmtime_memory_new` — host owns memory | `compiler_v2/api/engine.cc:141-157` |
-| `--import-memory=cel,memory` linker dance removed | Removed in M2, **re-added in M6 commit `582def9`** | `compiler_v2/runtime/BUILD.bazel:280` |
+| `cel_reset(arena_base, arena_limit)` codegen prologue removed | Still emitted; args still computed; runtime shim ignores them | `compiler/codegen/expr_lower.cc:114-122`, `:1084-1094`; `runtime/cel_arena.c:129-139` |
+| `LoweringOptions::mem_size_bytes` threading dropped | Still in struct, still defaulted to 64 KiB, still wired into `EmitCelResetCall` | `compiler/codegen/expr_lower.h:140-148` |
+| `LayoutPass::arena_base` field dropped | Still computed at end of LayoutPass | `compiler/codegen/layout_pass.cc:390`; `layout_pass.h:105` |
+| Fixed cursor slot at bytes 8/12 gone | Code no longer USES bytes 8/12, but `cel_arena.c:64` reserves bytes [0, 16) of native `g_memory` "in case anything still pokes there" — i.e. the slot is leftover rather than removed | `runtime/cel_arena.c:62-68` |
+| Inline-asm opacity barrier in `cel_memory.c` removed (clang wasm32 backend workaround no longer needed under wasi-sdk) | Still present at `cel_memory.c:33`; header comment still describes the old reason; nothing tests whether wasi-sdk's clang actually needs it | `runtime/cel_memory.c:9-17, 31-35` |
+| `host_string_arena` workaround in `api/instance.cc` (~110 LoC) deleted | Still present in full; `EncodeStringOrBytes`, `EncodeType`, `EnsureHostStringArenaCapacity`, `TotalHostStringBytes`, `HostStringArena` struct, `host_string_arena_floor` + `_capacity` fields all intact | `eval/instance.cc:344-455, 740-790`; `api/internal/instance_impl.h:42-56` |
+| 2-arg memory typing in `engine.cc` (host stops allocating memory) | `InitStoreAndMemory` still does `wasmtime_memorytype_new(min=2, max_present=false, ...)` and `wasmtime_memory_new` — host owns memory | `eval/engine.cc:141-157` |
+| `--import-memory=cel,memory` linker dance removed | Removed in M2, **re-added in M6 commit `582def9`** | `runtime/BUILD.bazel:280` |
 
 The M6-M8 milestone doc honestly captures the deferrals.  The drift
 is not that the work was hidden — it's that the **design's
@@ -115,7 +115,7 @@ Each entry: `file:line — severity — effort — what needs to happen`.
 
 ### From the MVP itself (compat shims + deferrals)
 
-  - `compiler_v2/runtime/cel_arena.c:116-143` — **P1**, 0.25 days.
+  - `runtime/cel_arena.c:116-143` — **P1**, 0.25 days.
     The `cel_reset` / `cel_alloc` compat shims with auto-init are
     the load-bearing bridge.  Delete after B1 (kernel rename) +
     M5 (codegen prologue swap).  The auto-init branch
@@ -130,13 +130,13 @@ Each entry: `file:line — severity — effort — what needs to happen`.
     `unimplemented-features` rule's correct shape; we silently
     return 0.
 
-  - `compiler_v2/api/engine.cc:141-157` (`InitStoreAndMemory`) — **P1**,
+  - `eval/engine.cc:141-157` (`InitStoreAndMemory`) — **P1**,
     1 day.  Host still allocates memory; should be deleted entirely
     once M6 ships properly.  The comment above the function still
     references "Slice 0 of the conformance unlock plan" and
     `arena_limit` semantics that no longer apply.
 
-  - `compiler_v2/api/instance.cc:344-455, 740-790` —
+  - `eval/instance.cc:344-455, 740-790` —
     **P1**, 1.5 days.  `EncodeStringOrBytes` + `EncodeType` +
     `EnsureHostStringArenaCapacity` + `HostStringArena` struct +
     `TotalHostStringBytes` + `MarshalActivation`'s pre-pass.  All
@@ -148,27 +148,27 @@ Each entry: `file:line — severity — effort — what needs to happen`.
     `instance.cc:344-360` describe the OLD arena design verbatim;
     they need rewriting in the same commit.
 
-  - `compiler_v2/api/internal/instance_impl.h:42-56` — **P1**,
+  - `eval/internal/instance_impl.h:42-56` — **P1**,
     0.25 days.  `host_string_arena_floor` and `host_string_arena_capacity`
     fields go away with the M7 work.  The 13-line comment above
     them describes the old `cel_reset(arena_base, arena_limit)`
     contract that no longer holds.
 
-  - `compiler_v2/codegen/expr_lower.cc:110-122` (`EmitCelResetCall`) —
+  - `compiler/codegen/expr_lower.cc:110-122` (`EmitCelResetCall`) —
     **P1**, 0.5 days.  Replace with `EmitArenaResetCall` (no args).
     M5 work.
 
-  - `compiler_v2/codegen/expr_lower.h:140-148` (`LoweringOptions::mem_size_bytes`) —
+  - `compiler/codegen/expr_lower.h:140-148` (`LoweringOptions::mem_size_bytes`) —
     **P1**, 0.25 days.  Delete the field and its threading.  M5.
 
-  - `compiler_v2/codegen/layout_pass.cc:390`, `layout_pass.h:67-105`
+  - `compiler/codegen/layout_pass.cc:390`, `layout_pass.h:67-105`
     (`StaticLayout::arena_base`) — **P1**, 0.5 days.  Delete field
     and the computation.  M5.
 
-  - `compiler_v2/runtime/BUILD.bazel:280` (`--import-memory=cel,memory`) —
+  - `runtime/BUILD.bazel:280` (`--import-memory=cel,memory`) —
     **P1**, embedded in the M6 engine.cc rewrite above.
 
-  - `compiler_v2/runtime/cel_memory.c:9-42` (inline-asm opacity barrier
+  - `runtime/cel_memory.c:9-42` (inline-asm opacity barrier
     + stale wasm `cel_memory_size_`) — **P2**, 0.25 days.  Verify
     whether wasi-sdk's clang elides null-pointer-derived stores;
     if not, delete the asm + the load-bearing header comment.
@@ -176,7 +176,7 @@ Each entry: `file:line — severity — effort — what needs to happen`.
     either fixed to read `__heap_base`/memory.size or deleted as
     dead.
 
-  - `compiler_v2/runtime/cel_arena.c:60-69` (the "in case anything
+  - `runtime/cel_arena.c:60-69` (the "in case anything
     still pokes there during the migration" `[0, 16)` reservation
     in the native build) — **P2**, 0.1 days.  Delete after B1; the
     `g_arena.base = cel_memory_base_() + 16` should become
@@ -196,7 +196,7 @@ Each entry: `file:line — severity — effort — what needs to happen`.
     real, and a Phase B regression that violates them will not
     surface until something else breaks.
 
-  - `compiler_v2/runtime/cel_arena.c:62` — **P2**.  The
+  - `runtime/cel_arena.c:62` — **P2**.  The
     "leaves the null sentinel + the legacy cursor slot bytes 8/12
     untouched, in case anything still pokes there during the
     migration" comment is a tripwire: it admits the native arena
@@ -357,11 +357,11 @@ Each entry: `file:line — severity — effort — what needs to happen`.
 
 The user asked for a holistic pass.  Findings:
 
-  - **`compiler_v2/api/engine.cc:228-303`** — `kRuntimeExports[]` is
+  - **`eval/engine.cc:228-303`** — `kRuntimeExports[]` is
     a flat constexpr array of ~130 names.  Every kernel addition
     requires editing this list **and** the export list in
-    `compiler_v2/runtime/BUILD.bazel:299-477` **and**
-    `compiler_v2/runtime/wasm_imports.txt` (the
+    `runtime/BUILD.bazel:299-477` **and**
+    `runtime/wasm_imports.txt` (the
     `allow-undefined-file`).  Three places to keep in sync;
     nothing checks they match.  **P2**, 1 day: generate one list
     from the other (a small bazel genrule that reads
@@ -369,14 +369,14 @@ The user asked for a holistic pass.  Findings:
     This will also delete drift risk before the M5.B step 7 string
     `_v` absorbers add another 9 entries.
 
-  - **`compiler_v2/runtime/cel_arena.c:75-99` (`arena_alloc`)** is
+  - **`runtime/cel_arena.c:75-99` (`arena_alloc`)** is
     correctly small.  But `align_up_8` at line 33 + the local var
     `need` rename + the `if (need == 0) need = 8u` line is a place
     `readability-isolate-declaration` or `readability-magic-numbers`
     is likely to fire under stricter lint.  Currently fine; flag
     only if the lint backlog list grows.
 
-  - **`compiler_v2/api/internal/instance_impl.h:22-29`** — the
+  - **`eval/internal/instance_impl.h:22-29`** — the
     struct has 8 public data members.  Mixing `wasmtime_*` raw
     handles (5) with C++-owned domain state (`abi`, `host_env`,
     arena bookkeeping fields) makes the lifetime invariants
@@ -388,15 +388,15 @@ The user asked for a holistic pass.  Findings:
   - **`doc/implementation-plan/lint-backlog.md` shipped with 8
     known function-size exceedances** ("Intentionally left in
     place").  None added by the MVP — confirmed via spot grep
-    over `compiler_v2/runtime/cel_arena.c` (all functions ≤ 30
+    over `runtime/cel_arena.c` (all functions ≤ 30
     lines).  Backlog stable.
 
-  - **`compiler_v2/runtime/BUILD.bazel:299-477`** — the `cc_library`
+  - **`runtime/BUILD.bazel:299-477`** — the `cc_library`
     + the `genrule` BOTH list the kernel `.c` files.  Adding a new
     kernel `.c` requires two edits.  **P2**, same fix as the export
     list consolidation: derive one from the other.
 
-  - **`compiler_v2/codegen/expr_lower.cc:1084-1094`** — `EmitCelResetCall`
+  - **`compiler/codegen/expr_lower.cc:1084-1094`** — `EmitCelResetCall`
     is called unconditionally in the eval-function epilogue
     construction.  Per the WASI migration plan this will become
     `EmitArenaResetCall` with no args.  Worth confirming during M5
@@ -416,7 +416,7 @@ The user asked for a holistic pass.  Findings:
 
 ## On the neighboring-component pick — why codegen/
 
-I picked `compiler_v2/codegen/` over `compiler_v2/api/internal/cel_host.cc`
+I picked `compiler/codegen/` over `eval/internal/cel_host.cc`
 because:
 
   - `cel_host.cc`'s involvement in the migration is symmetric
@@ -440,14 +440,14 @@ because:
 
 Drift caught in codegen specifically:
 
-  - `compiler_v2/codegen/layout_pass.h:60-105` — the diagram in
+  - `compiler/codegen/layout_pass.h:60-105` — the diagram in
     the header comment shows "bytes 8/12 — arena cursor + limit
     written by cel_reset" as a live concept.  Still true today
     (compat shim), false after M5.  Update with M5.
-  - `compiler_v2/codegen/expr_lower.h:39-42` — `kCelResetInternalName`
+  - `compiler/codegen/expr_lower.h:39-42` — `kCelResetInternalName`
     is `"cel_reset"`.  Rename to `kArenaResetInternalName` =
     `"arena_reset"` in M5.  Search-and-replace target.
-  - `compiler_v2/codegen/module.h:12` — header comment names
+  - `compiler/codegen/module.h:12` — header comment names
     `cel.cel_reset` / `cel.cel_alloc` as imports.  Update with M5.
 
 ---

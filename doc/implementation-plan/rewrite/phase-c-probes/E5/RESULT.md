@@ -74,7 +74,7 @@ around offset 0x25890 (stack pointer init).  The lib was linked
 with `-Wl,--initial-memory=1048576` (1 MB initial memory, max=64
 MB) so the driver can place test data at 0x80000 without growing
 memory.  The runtime's existing genrule in
-`compiler_v2/runtime/BUILD.bazel` already does similar memory
+`runtime/BUILD.bazel` already does similar memory
 sizing.
 
 ## Size budget contribution

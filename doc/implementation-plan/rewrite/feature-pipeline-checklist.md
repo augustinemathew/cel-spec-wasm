@@ -20,43 +20,43 @@ each file as you go.
 ┌──────────────────────────────────────────────────────────────────┐
 │  Stage                      Files (the "spine")                  │
 ├──────────────────────────────────────────────────────────────────┤
-│  Frontend (parse + check)   compiler_v2/frontend/parse_and_check │
-│  Typed IR                   compiler_v2/ir/annotations            │
-│                             compiler_v2/ir/typed_ast              │
-│  Codegen passes             compiler_v2/codegen/resolve_pass      │
-│                             compiler_v2/codegen/layout_pass       │
-│                             compiler_v2/codegen/static_memory_*   │
-│                             compiler_v2/codegen/slot_allocator    │
-│                             compiler_v2/codegen/overload_table    │
-│                             compiler_v2/codegen/expr_lower        │
-│                             compiler_v2/codegen/module            │
-│  Top-level facade           compiler_v2/compile                   │
-│  Runtime (wasm side)        compiler_v2/runtime/cel_data.h        │
-│                             compiler_v2/runtime/cel_runtime.{h,c} │
-│                             compiler_v2/runtime/cel_make          │
-│                             compiler_v2/runtime/cel_arena         │
-│                             compiler_v2/runtime/cel_memory        │
-│                             compiler_v2/runtime/cel_log           │
-│  Host imports               compiler_v2/host/cel_log              │
-│                             compiler_v2/api/internal/cel_host     │
-│  ABI                        compiler_v2/abi/cel_abi.proto         │
-│                             compiler_v2/abi/cel_abi_emit          │
-│                             compiler_v2/api/internal/abi_decode   │
-│  Public API                 compiler_v2/api/type                  │
-│                             compiler_v2/api/value                 │
-│                             compiler_v2/api/attribute             │
-│                             compiler_v2/api/activation            │
-│                             compiler_v2/api/compiler              │
-│                             compiler_v2/api/program               │
-│                             compiler_v2/api/engine                │
-│                             compiler_v2/api/instance              │
-│                             compiler_v2/api/internal/instance_impl│
-│                             compiler_v2/api/internal/wasmtime_*   │
+│  Frontend (parse + check)   compiler/frontend/parse_and_check │
+│  Typed IR                   compiler/ir/annotations            │
+│                             compiler/ir/typed_ast              │
+│  Codegen passes             compiler/codegen/resolve_pass      │
+│                             compiler/codegen/layout_pass       │
+│                             compiler/codegen/static_memory_*   │
+│                             compiler/codegen/slot_allocator    │
+│                             compiler/codegen/overload_table    │
+│                             compiler/codegen/expr_lower        │
+│                             compiler/codegen/module            │
+│  Top-level facade           compiler/internal/compile.                  │
+│  Runtime (wasm side)        runtime/cel_data.h        │
+│                             runtime/cel_runtime.{h,c} │
+│                             runtime/cel_make          │
+│                             runtime/cel_arena         │
+│                             runtime/cel_memory        │
+│                             runtime/cel_log           │
+│  Host imports               eval/host/cel_log              │
+│                             eval/internal/cel_host     │
+│  ABI                        abi/cel_abi.proto         │
+│                             abi/cel_abi_emit          │
+│                             eval/internal/abi_decode   │
+│  Public API                 common/type                  │
+│                             eval/value                 │
+│                             eval/attribute             │
+│                             eval/activation            │
+│                             compiler/compiler              │
+│                             compiler/program               │
+│                             eval/engine                │
+│                             eval/instance              │
+│                             eval/internal/instance_impl│
+│                             eval/internal/wasmtime_*   │
 │  CLI + e2e + conformance    compiler_v2/cli                       │
-│                             compiler_v2/e2e                       │
-│                             compiler_v2/conformance               │
+│                             e2e                       │
+│                             conformance               │
 │  WAT prototyping            doc/.../wat/                           │
-│                             compiler_v2/tools/wat_runner          │
+│                             tools/wat_runner          │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -352,10 +352,10 @@ Scope per §2.4 — attribute-pool plumbing +
 
 ### Planned: M2.F (conformance envelope)
 
-  - [ ] `compiler_v2/conformance/runner.cc` — envelope filter
+  - [ ] `conformance/runner.cc` — envelope filter
         accepts `unknown:` / `any_unknowns:` matchers; `RunOne`
         routes to `PartialEval`.
-  - [ ] `compiler_v2/conformance/README.md` — inventory refresh.
+  - [ ] `conformance/README.md` — inventory refresh.
 
 ---
 

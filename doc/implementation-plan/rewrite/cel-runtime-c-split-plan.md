@@ -4,7 +4,7 @@ Status: **shipped 2026-05-14 (P1-P8 carved; P9 punted — see Future work).**
 
 ## What landed (2026-05-14)
 
-Eight of the nine planned carves shipped.  `compiler_v2/runtime/cel_runtime.c`
+Eight of the nine planned carves shipped.  `runtime/cel_runtime.c`
 shrank from ~3330 lines (post-M9 + M10) to ~1000 lines.  Each carved
 topic now owns its own `.c` translation unit alongside the existing
 header, plus a shared `cel_internal.h` umbrella for cross-TU
@@ -187,9 +187,9 @@ together. Then P6+ one TU per CL.
 
 ### Concrete spec for the first carve (P1)
 
-**New file** `compiler_v2/runtime/cel_log.c`:
+**New file** `runtime/cel_log.c`:
 
-- `#include "compiler_v2/runtime/cel_log.h"`
+- `#include "runtime/cel_log.h"`
 - Move lines 2249-2283 of current `cel_runtime.c` verbatim (both
   the `__wasm__` arm — `cel_log_emit` — and the host arm — weak
   `cel_log` + `cel_log_emit`).
@@ -309,11 +309,11 @@ at symbols by name so they work no matter which TU contributes them.
 
 ## Critical files
 
-- `compiler_v2/runtime/cel_runtime.c`
-- `compiler_v2/runtime/BUILD.bazel`
-- `compiler_v2/runtime/cel_log.h`
-- `compiler_v2/runtime/cel_runtime.h` (umbrella)
-- `compiler_v2/runtime/cel_data.h`
+- `runtime/cel_runtime.c`
+- `runtime/BUILD.bazel`
+- `runtime/cel_log.h`
+- `runtime/cel_runtime.h` (umbrella)
+- `runtime/cel_data.h`
 
 ## Future work
 

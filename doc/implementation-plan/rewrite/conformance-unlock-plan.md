@@ -18,7 +18,7 @@ Working sequence to maximise conformance PASS count from the
 M5.D-step-2 baseline.  Ordered by unlock-per-LoC; each slice is
 self-contained and ships independently.
 
-See `compiler_v2/conformance/README.md` for the per-fixture
+See `conformance/README.md` for the per-fixture
 inventory + the projection method these numbers come from.
 
 ## Why this order
@@ -38,7 +38,7 @@ in the order that minimises blocking.
 **Projection (as written)**: +50–100 PASS standalone.
 **Projection (as shipped)**: +78 PASS (412 → 490 total).
 
-**Scope.**  `compiler_v2/api/instance.cc::EncodeBoundValue`
+**Scope.**  `eval/instance.cc::EncodeBoundValue`
 (formerly `EncodeScalarValue`) routed `Repr::kString` and
 `Repr::kBytes` to a new `EncodeStringOrBytes` arm.  The original
 plan was to allocate via `cel_alloc` reentry — but during
@@ -68,7 +68,7 @@ range, stomping any pre-marshalled bytes.  As-shipped solution:
      reused for the activation encoder (the direct linear-memory
      write path replaces it).
 
-**Tests required.**  E2E coverage in `compiler_v2/e2e/m5_test.cc`
+**Tests required.**  E2E coverage in `e2e/m5_test.cc`
 under a new `StringBytesActivationE2ETest` fixture (avoid colliding
 with Slice 1's m5_test additions):
 
@@ -230,7 +230,7 @@ SKIP, making `kFail == 0` a viable CI gate.
 **Scope.**  In `runner.cc`, when compile returns `InvalidArgument`
 "type check failed: undeclared reference to 'X'", look up X in the
 active overload set; if missing, classify `kUnsupported`.  Tracked
-in `compiler_v2/conformance/README.md` Future Work "Classifier
+in `conformance/README.md` Future Work "Classifier
 tightening".
 
 ## Projected trajectory

@@ -571,7 +571,7 @@ Three libraries to register at parse time:
     builder.AddLibrary(cel::extensions::ComprehensionsV2CompilerLibrary());
     ```
 
-The registration happens in `compiler_v2/frontend/parse_and_check.cc`'s
+The registration happens in `compiler/frontend/parse_and_check.cc`'s
 parser-builder setup.
 
 ### 8.2 Checker — type inference for comprehension results
@@ -830,7 +830,7 @@ nested} × {list source, map source where applicable}.
     select, comprehension itself (nested in outer).
 
 Conformance closeout: run the harness per
-`compiler_v2/conformance/README.md` against the four
+`conformance/README.md` against the four
 comprehension-bearing fixtures (`macros`, `macros2`,
 `bindings_ext`, `namespace`); confirm the per-fixture deltas in
 §5 of `m5-comprehensions-followon.md`.  Watch for new FAIL rows

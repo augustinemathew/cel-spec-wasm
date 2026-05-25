@@ -17,11 +17,11 @@ three to look at first:
   1. **Doc-rename drift** — every `compiler_v2/functions/` reference
      in `m13-custom-fns.md` (§2 architecture overview, §3.7 parser
      surface, §11 testing obligations, §12 slice plan) must become
-     `compiler_v2/celfn/`.  Reader will trip on this on every
+     `compiler/celfn/`.  Reader will trip on this on every
      re-read.  (P1)
   2. **`tools/celwasmc/BUILD.bazel` references a missing
      `celwasmc_v2.cc` source.**  The BUILD target is unbuildable
-     today — anyone running `bazel build //compiler_v2/tools/...`
+     today — anyone running `bazel build //tools/...`
      will fail.  (P0 if CI enforces; P1 if Slice C lands the file
      in the same commit.)
   3. **`m13-probes.md` "Probe 7" names `m13_p3_test.cc`** as its
@@ -43,7 +43,7 @@ absl::Span<const cel::FunctionDecl> decls() const;
 absl::Span<const FunctionBackend> backends() const;
 ```
 
-The shipped class (`compiler_v2/celfn/function_library.h:109-178`)
+The shipped class (`compiler/celfn/function_library.h:109-178`)
 diverges in three load-bearing ways:
 
   - **No `FromCelfnFile(path, pool)`.**  File I/O is delegated to
@@ -84,7 +84,7 @@ need to mediate this (probe wires the callback directly).
 
 Design §4.6 declares `cel.abi.functions.host_custom_imports[]` will
 gain a `CustomFunctionEntry` shape.  The proto under
-`compiler_v2/abi/cel_abi.proto` does NOT contain this message today
+`abi/cel_abi.proto` does NOT contain this message today
 (grep confirms no `CustomFunctionEntry`, no `host_custom_imports`).
 This is **expected for Slice A/B** (proto landing is Slice C work
 per the slice plan), but worth noting so reviewer doesn't try to
@@ -95,9 +95,9 @@ plan; Slice C lands the proto.
 
 ## Tech-debt inventory
 
-### T1. `compiler_v2/tools/celwasmc/BUILD.bazel` references a missing source — P0/P1
+### T1. `tools/celwasmc/BUILD.bazel` references a missing source — P0/P1
 
-`compiler_v2/tools/celwasmc/BUILD.bazel:5-8` declares:
+`tools/celwasmc/BUILD.bazel:5-8` declares:
 
 ```python
 cc_binary(
@@ -107,17 +107,17 @@ cc_binary(
 )
 ```
 
-…but `compiler_v2/tools/celwasmc/celwasmc_v2.cc` does not exist
+…but `tools/celwasmc/celwasmc_v2.cc` does not exist
 (directory contains only `BUILD.bazel`).  The target is marked
 `tags = ["manual"]` so `bazel test //compiler_v2/...` won't catch
-it, but any `bazel build //compiler_v2/tools/celwasmc:...` fails.
+it, but any `bazel build //tools/celwasmc:...` fails.
 Either land the placeholder source in Slice C (likely intent) or
 remove the target until then.  Effort: 1 commit either way.
 
 ### T2. `compiler_v2/cli/BUILD.bazel` deleted but referenced in 9+ design docs — P2
 
 `git status` shows `D compiler_v2/cli/BUILD.bazel`; the new home is
-`compiler_v2/tools/celwasmc/`.  But docs still name the old path:
+`tools/celwasmc/`.  But docs still name the old path:
 `design.md`, `m1-scalar-pipeline.md`, `m5-comprehensions-followon.md`,
 `two-phase-runtime-isolation.md`, `feature-pipeline-checklist.md`,
 `per-component-test-coverage.md`, `m2-ident-select-unknowns.md`,
@@ -246,7 +246,7 @@ prologue).  Effort: 30 min either way.
 
 ### C5. Tests are all `tags = ["manual"]` — expected, not a gap, but flag for Slice C
 
-Every `compiler_v2/celfn/...` and `compiler_v2/probes/m13_custom_fns/...`
+Every `compiler/celfn/...` and `compiler_v2/probes/m13_custom_fns/...`
 target is `tags = ["manual"]`, so `bazel test //compiler_v2/...`
 will not catch regressions.  This is correct for probes (per the
 BUILD.bazel comment) but UNTAGGING `function_library_test` and
@@ -270,7 +270,7 @@ Stale path `compiler_v2/functions/` appears at:
     in §11.4
   - line 1853 — `compiler_v2/functions/` in Slice B description
 
-Real path is `compiler_v2/celfn/`.  Effort: `sed` + spot-check, ~5 min.
+Real path is `compiler/celfn/`.  Effort: `sed` + spot-check, ~5 min.
 
 ### D2. `m13-custom-fns.md` §2.1 + §3.7 describe an unshipped API
 
@@ -332,7 +332,7 @@ sequence.  Effort: 15 min.
 
 P0 (ships-breaking, before Slice C):
   - none today (T1 is P0 only if anyone runs `bazel build
-    //compiler_v2/tools/celwasmc:...`; gate on Slice C delivering
+    //tools/celwasmc:...`; gate on Slice C delivering
     the source).
 
 P1 (must-fix-before-Slice-C):

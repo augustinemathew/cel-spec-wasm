@@ -171,7 +171,7 @@ families are organised by section comments within the file.  All plain
 C against the `CelValue` ABI; the libm-backed kernels
 (`ceil`/`floor`/`round`/`trunc`/`sqrt`/`is*`) include `<math.h>`.
 
-  - `compiler_v2/runtime/cel_math_ext.c` — every math kernel: the 4
+  - `runtime/cel_math_ext.c` — every math kernel: the 4
     min/max (`cel_math_min`/`max`/`min_list`/`max_list`), 10 scalar
     (`abs`, `sign`, `ceil`, `floor`, `round`, `trunc`, `sqrt`,
     `is_inf`, `is_nan`, `is_finite`), and 6 bitwise (`bit_and`/`or`/
@@ -179,14 +179,14 @@ C against the `CelValue` ABI; the libm-backed kernels
     comment.  Internal static helpers (`Poison`, 3VL absorption,
     numeric kind dispatch, the cross-type compare fold) live at file
     scope here.
-  - `compiler_v2/runtime/cel_math_ext.h` — public ABI header; all 20
+  - `runtime/cel_math_ext.h` — public ABI header; all 20
     kernel declarations + the arity / `out_slot` convention comment.
 
 Tests:
 
-  - `compiler_v2/runtime/math_ext_test_helpers.h` — `MakeIntArg`,
+  - `runtime/math_ext_test_helpers.h` — `MakeIntArg`,
     `MakeUintArg`, `MakeDoubleArg`, `MakeListArg` (shared fixture).
-  - `compiler_v2/runtime/cel_math_ext_test.cc` — the kernel unit
+  - `runtime/cel_math_ext_test.cc` — the kernel unit
     tests (positive + negative + boundary matrix, §5.1).  May be split
     per family for readability if it grows unwieldy; the single-file
     rule is about the kernel source, not the test.
@@ -197,18 +197,18 @@ Tests:
 
 ### 4.2 Registration (data, not code)
 
-  - `compiler_v2/runtime/wasm_exports.txt` — +20 export lines, new
+  - `runtime/wasm_exports.txt` — +20 export lines, new
     `# math_ext extension kernels` section.
-  - `compiler_v2/runtime/BUILD.bazel` — `:cel_math_ext` cc_library
+  - `runtime/BUILD.bazel` — `:cel_math_ext` cc_library
     (3 TUs + 2 headers, dep `:cel_runtime` + `absl/strings`); add to
     `cel_runtime_wasm.bin` deps; 3 cc_test targets.
-  - `compiler_v2/abi/runtime_catalogue.cc` — +20 `K_AT_V`/`K_AT_VV`
+  - `abi/runtime_catalogue.cc` — +20 `K_AT_V`/`K_AT_VV`
     entries in a `// math_ext extension kernels` block.
-  - `compiler_v2/codegen/overload_table.cc` — ~40 `Seed{}` entries
+  - `compiler/codegen/overload_table.cc` — ~40 `Seed{}` entries
     mapping resolved overload IDs → the ~20 kernels (many-to-one,
     like string_ext).  Bump `kBuiltinSeedCount` in
     `overload_table_test.cc`.
-  - `compiler_v2/frontend/parse_and_check.cc` — register
+  - `compiler/frontend/parse_and_check.cc` — register
     `cel::extensions::MathCheckerLibrary()` (one `AddLibrary` call,
     mirrors the `StringsCheckerLibrary()` block).  Add
     `@cel-cpp//extensions:math` to `frontend/BUILD.bazel`.
@@ -243,7 +243,7 @@ edge-case matrix that matters for a compiler:
 
 ### 5.2 E2E test
 
-`compiler_v2/e2e/m16_test.cc` — one fixture per family
+`e2e/m16_test.cc` — one fixture per family
 (`MinMaxE2ETest`, `ScalarE2ETest`, `BitwiseE2ETest`), plus a
 `MacroExpansion` fixture asserting `math.least(1,2,3)` and
 `math.greatest([a,b])` compile + evaluate correctly through the macro
@@ -252,7 +252,7 @@ rewrite.
 ### 5.3 Conformance lock
 
 Add `tests/simple/testdata/math_ext.textproto` to
-`compiler_v2/conformance/BUILD.bazel` + `run_conformance.cc`.  Target:
+`conformance/BUILD.bazel` + `run_conformance.cc`.  Target:
 the addressable (non-`disable_check`) `math_ext` rows flip 0 → PASS.
 Re-measure `.baseline`, regenerate `conformance/README.md` (the
 pre-push drift gate), tick `testing-checklist.md` rows.

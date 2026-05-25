@@ -78,7 +78,7 @@ problem above — a symptom, not a solution.
 ### 3.1 LANDED — gate runs in the dev config (single tree)
 
 `scripts/check_conformance_monotonic.sh` dropped `-c opt`; the gate now
-runs `bazel run //compiler_v2/conformance:run_conformance` in the
+runs `bazel run //conformance:run_conformance` in the
 **default (fastbuild)** config — the same one dev and `bazel test`
 use.
 
@@ -88,7 +88,7 @@ use.
 - **Effect:** the gate reuses the warm dev tree.  Cold `-c opt`
   ~10 min → warm fastbuild **24 s**.  No second tree, no cel-cpp
   rebuild on push.
-- `-c opt` is reserved for `//compiler_v2/bench` and CI, where eval
+- `-c opt` is reserved for `//bench` and CI, where eval
   wall-time matters and the machine is dedicated.
 
 **This is the one-config principle:** dev, `bazel test`, conformance,
@@ -128,7 +128,7 @@ machine.
 
 The 618 s number is "test everything from a cold tree."  Day to day:
 build/test only the touched package (`bazel test
-//compiler_v2/runtime:cel_base64_ext_test`), not `//compiler_v2/...`.
+//runtime:cel_base64_ext_test`), not `//compiler_v2/...`.
 Bazel's local cache already makes re-runs of unchanged targets
 instant within a checkout.
 

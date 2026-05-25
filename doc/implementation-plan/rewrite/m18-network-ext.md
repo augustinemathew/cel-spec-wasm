@@ -184,15 +184,15 @@ Decided + frozen in the two Slice-0 WATs (`wat/m18_ip_parse_string.wat`,
 
 All kernels in one `cel_net_ext.c` (per the one-file convention):
 
-  - `compiler_v2/runtime/cel_net_ext.h` — public ABI: parse
+  - `runtime/cel_net_ext.h` — public ABI: parse
     (`cel_ip_parse_at_v`, `cel_cidr_parse_at_v`), `isIP`,
     `is_canonical`, `family`, the 5 classification predicates,
     `contains_ip` / `contains_cidr`, `cidr_ip`, `masked`,
     `prefix_length`, `string`-conversions, `==` (or route through
     `cel_equals` with new-kind arms).
-  - `compiler_v2/runtime/cel_net_ext.c` — IPv4/IPv6 parser +
+  - `runtime/cel_net_ext.c` — IPv4/IPv6 parser +
     canonicaliser + the kernels (the bulk of the work).
-  - `compiler_v2/runtime/cel_net_ext_test.cc` — parse matrix
+  - `runtime/cel_net_ext_test.cc` — parse matrix
     (valid/invalid v4+v6, zone rejection, canonical vs not, boundary
     masks /0 /32 /128), containment, masking, classification truth
     tables, equality.

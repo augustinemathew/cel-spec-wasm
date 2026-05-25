@@ -56,7 +56,7 @@ respectively, both shipped).
 
 ## 1. Why M10
 
-Per `compiler_v2/conformance/README.md`, after M9.A–F the
+Per `conformance/README.md`, after M9.A–F the
 corpus sits at `pass=975 / skip=781 / fail=698 / total=2454`
 (39.7%).  `conversions.textproto` accounts for **109 SKIPs**
 (28 PASS today, 81 SKIP, 0 FAIL) — entirely from the
@@ -327,7 +327,7 @@ M5.F arm.
 
 ### 4.1 OverloadTable seed updates
 
-`compiler_v2/codegen/overload_table.cc`:
+`compiler/codegen/overload_table.cc`:
 
   - **Remove** every M10-in-scope id from
     `kExplicitlyUnimplementedIds` (line 268).  Bump the
@@ -356,7 +356,7 @@ constant must be updated in the same commit.
 hand-rolled byte-loop parsers cover all 17 in-scope
 conversions; the wasm runtime stays freestanding.
 
-New header `compiler_v2/runtime/cel_convert.h` (parallels
+New header `runtime/cel_convert.h` (parallels
 `cel_arith.h` / `cel_string_ops.h` / `cel_type.h` from M9.B).
 Declarations only; bodies in `cel_runtime.c`.  Naming follows
 the existing convention `cel_<from>_to_<to>_at_v` for unary
@@ -501,7 +501,7 @@ work.
 
 ### 4.5 New error code — `CEL_ERR_INVALID_UTF8`
 
-`compiler_v2/runtime/cel_data.h` grows one wire error code:
+`runtime/cel_data.h` grows one wire error code:
 
 ```c
 enum {
@@ -513,8 +513,8 @@ enum {
 };
 ```
 
-Mirror in `compiler_v2/api/error.h::ErrorCode` (the user-facing
-enum) and `compiler_v2/api/internal/cel_host.cc::ErrorCodeName`
+Mirror in `eval/error.h::ErrorCode` (the user-facing
+enum) and `eval/internal/cel_host.cc::ErrorCodeName`
 + the runner's error-message map (so conformance rows whose
 matcher expects `"invalid_argument"` continue to match via
 `LooseMessageMatch`).
@@ -634,9 +634,9 @@ RFC3629.
 
 ### M10.F — closeout
 
-  - Run `bazel run //compiler_v2/conformance:run_conformance`;
+  - Run `bazel run //conformance:run_conformance`;
     record the post-M10 deltas in
-    `compiler_v2/conformance/README.md`.
+    `conformance/README.md`.
   - Run `scripts/run_full_suite.sh` (closeout gate per
     CLAUDE.md).
   - Flip this doc's status header to `shipped YYYY-MM-DD`
@@ -730,19 +730,19 @@ on glibc/libc++) and pins specific values for normal numbers.
 
 ### 6.6 Test placement
 
-  - `compiler_v2/runtime/cel_arith_test.cc` (or new
+  - `runtime/cel_arith_test.cc` (or new
     `cel_convert_test.cc`) — unit tests for each pure-runtime
     helper, exercising the conversion + 3VL absorption +
     type-mismatch poison.
-  - `compiler_v2/api/internal/cel_host_test.cc` — Layer-2
+  - `eval/internal/cel_host_test.cc` — Layer-2
     `CelHostDoubleToStringImpl` unit (precision + arena
     write).
-  - `compiler_v2/codegen/expr_lower_test.cc` — codegen shape
+  - `compiler/codegen/expr_lower_test.cc` — codegen shape
     for `int(x)` calls (asserts the emitted wasm calls the
     right helper symbol).
-  - `compiler_v2/conformance/binding_marshal_test.cc` — no
+  - `conformance/binding_marshal_test.cc` — no
     new tests; existing surface unchanged.
-  - `compiler_v2/e2e/m10_test.cc` (new) — load-bearing e2e
+  - `e2e/m10_test.cc` (new) — load-bearing e2e
     spec; classes per §6.1–§6.5 above.
   - `doc/implementation-plan/rewrite/wat/16_double_to_string.wat`
     (M10.D).
@@ -767,7 +767,7 @@ Ranked highest → lowest.
   - **R2 — Wasm linker dropping the 8 new exports.**  The
     `runtime/BUILD.bazel` genrule is manual-tag; touching
     `cel_runtime.c` requires explicit
-    `bazel build //compiler_v2/runtime:cel_runtime_wasm_bytes`
+    `bazel build //runtime:cel_runtime_wasm_bytes`
     invocation to refresh the cached wasm bytes.  Mitigation:
     document this in the M10.B + M10.C + M10.D commit messages
     so a future builder remembers; the closeout runs the

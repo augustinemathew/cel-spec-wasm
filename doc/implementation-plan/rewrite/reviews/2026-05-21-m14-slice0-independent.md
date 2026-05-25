@@ -8,8 +8,8 @@ diff + the cel-cpp source + the runtime headers.
 Range reviewed: working-tree diff against `origin/master` on branch
 `cel_optional`:
 
-  - 4 modified files: `compiler_v2/tools/wat_runner/wat_runner.cc`,
-    `compiler_v2/tools/wat_runner/wat_runner_test.cc`,
+  - 4 modified files: `tools/wat_runner/wat_runner.cc`,
+    `tools/wat_runner/wat_runner_test.cc`,
     `doc/implementation-plan/rewrite/m14-optionals.md`,
     `doc/implementation-plan/rewrite/wat-traces.md`.
   - 4 new WATs under `doc/implementation-plan/rewrite/wat/m14_*.wat`.
@@ -217,7 +217,7 @@ zero-predicate ABI decision into WAT before C code is written).
 
 ### 2.1 Re-derived from scratch
 
-Reading `compiler_v2/runtime/cel_data.h:46` and lines 108-144:
+Reading `runtime/cel_data.h:46` and lines 108-144:
 
   - `CelValue` is 24 bytes, asserted at `cel_data.h:146`.
   - `CEL_OPTIONAL = 14` is declared at `cel_data.h:46`.
@@ -363,13 +363,13 @@ Existing kernels follow `(out_slot, arg0, arg1, ...) → void`
 uniformly.  Spot-checks:
 
   - `cel_int_add_at_vv(out, a, b)` —
-    `compiler_v2/runtime/cel_arith.h:49`.
+    `runtime/cel_arith.h:49`.
   - `cel_string_size_at_v(out, v)` —
-    `compiler_v2/runtime/cel_string_ops.h:44`.
+    `runtime/cel_string_ops.h:44`.
   - `cel_string_char_at_at_vv(out, s, idx)` —
-    `compiler_v2/runtime/cel_string_ext.h:52`.
+    `runtime/cel_string_ext.h:52`.
   - `cel_string_format_at_vv(out, s, args)` —
-    `compiler_v2/runtime/cel_string_format.h:39`.
+    `runtime/cel_string_format.h:39`.
 
 The Slice 0 kernels match:
 
@@ -469,7 +469,7 @@ scope was: WAT traces + harness wiring.  Let's verify:
   - ✅ **No `expr_lower.cc` edits.**  `git diff --stat` shows
     zero codegen files touched.
   - ✅ **No `runtime/cel_optional.{h,c}` created.**  Confirmed
-    by `ls compiler_v2/runtime/cel_optional*` — no such files.
+    by `ls runtime/cel_optional*` — no such files.
   - ✅ **No `OverloadTable::kBuiltinSeeds` rows added.**  No
     overload_table changes in the diff.
   - ✅ **No production `kRuntimeExports` additions.**  The
@@ -738,7 +738,7 @@ ABI byte.  This is the entire coverage gap rolled into one.
 | D9 | P2 | Kernel naming `cel_optional_select_field` vs cel-cpp's `select_optional_field` — inverted word order. | ~5min rename | all 4 WATs + trace doc |
 | D10 | P2 | WAT filenames use `m14_` prefix; existing convention is numeric ordinal.  Inconsistent. | ~10min rename | 4 WATs + trace doc |
 | D11 | P2 | wat-traces.md Slice 0 sections use `## M14.N.` headers; existing sections use `## N.`.  Inconsistent TOC. | ~5min header rename | `wat-traces.md:1697-1827` |
-| D12 | P2 | `cel_log.cc:228-230` prints CEL_OPTIONAL as `optional(inner=<offset>)` — doesn't dereference the cell.  Pre-existing stub but will need to print Some/None and recurse once Slice A lands. | ~30min | `compiler_v2/host/cel_log.cc:228` |
+| D12 | P2 | `cel_log.cc:228-230` prints CEL_OPTIONAL as `optional(inner=<offset>)` — doesn't dereference the cell.  Pre-existing stub but will need to print Some/None and recurse once Slice A lands. | ~30min | `eval/host/cel_log.cc:228` |
 | D13 | P2 | The polymorphic-by-source dispatch pattern in `cel_optional_select_field_at_vv` is chosen by feel, not by reference to the kDispatch/kArena precedent.  Document the choice in the trace. | ~15min doc update | trace doc §M14.3 |
 | D14 | P2 | Inline-scalar layout alternative (cel-cpp does this in `OptionalValue::Of`) not considered in §3.1's "Alternatives" list. | ~30min doc | `m14-optionals.md:241-249` |
 | D15 | P2 | The "value()" success kernel ABI is asserted to share shape with `hasValue` — but its error case (`CEL_ERR_INVALID_ARGUMENT` on None) is not WAT-locked. | ~30min new WAT | new `m14_optional_value_on_none.wat` |
@@ -826,7 +826,7 @@ Findings:
 Adjacent file that DIDN'T get touched but probably should
 have been at least skimmed:
 
-  - **`compiler_v2/codegen/expr_lower_call.cc`** (or wherever
+  - **`compiler/codegen/expr_lower_call.cc`** (or wherever
     `EmitGeneralCall` lives — receiver-flatten origin).  The
     WAT 2 header asserts that M5.F's pattern will be reused
     for `hasValue`.  I'd verify the existing function is

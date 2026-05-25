@@ -156,7 +156,7 @@ except:
 ### 2.2 What the kernel does (runtime C, post-migration)
 
 ```c
-// compiler_v2/runtime/cel_string_ops.c
+// runtime/cel_string_ops.c
 void cel_string_concat_at_vv(uint32_t out_slot,
                              uint32_t a_slot,
                              uint32_t b_slot) {
@@ -186,7 +186,7 @@ The kernel signature stays identical.  The only delta is
 ### 2.3 What the host decoder does
 
 ```cpp
-// compiler_v2/api/internal/abi_decode.cc
+// eval/internal/abi_decode.cc
 cel::Value DecodeStringCelValue(const MemoryView& mem, uint32_t slot_off) {
   const CelValue* cv = mem.Read<CelValue>(slot_off);
   if (cv->kind == CEL_STRING) {
@@ -206,11 +206,11 @@ need to care.
 
 | Layer | Test | File | What it proves |
 |---|---|---|---|
-| Runtime C kernel | `arena_init(64K)` + write two CelValues into mock memory + call `cel_string_concat_at_vv` + verify result CelValue + payload bytes | `compiler_v2/runtime/cel_string_ops_test.cc` (extend existing) | Kernel works against the new arena API. |
-| Arena module | `arena_init` + sequence of `arena_alloc` + `arena_reset` + re-alloc returns the same offset | `compiler_v2/runtime/cel_arena_test.cc` (rewrite) | Bump arena over malloc has correct semantics. |
+| Runtime C kernel | `arena_init(64K)` + write two CelValues into mock memory + call `cel_string_concat_at_vv` + verify result CelValue + payload bytes | `runtime/cel_string_ops_test.cc` (extend existing) | Kernel works against the new arena API. |
+| Arena module | `arena_init` + sequence of `arena_alloc` + `arena_reset` + re-alloc returns the same offset | `runtime/cel_arena_test.cc` (rewrite) | Bump arena over malloc has correct semantics. |
 | WAT trace | Hand-coded `.wat` from §2.1 runs through `wat_runner`, returns offset 72; host decodes CelValue at offset 72 and verifies `{kind=STRING, payload.s={ptr=arena_base, len=6}}` | `doc/implementation-plan/rewrite/wasi/experiments/mvp_concat.wat` (NEW) | Codegen ABI shape locked. |
-| Codegen | Compile `'foo' + 'bar'` through `compiler_v2`; assert emitted wasm matches the WAT byte-for-byte (modulo Binaryen-assigned names) | `compiler_v2/codegen/expr_lower_test.cc` (extend) | Codegen produces the right output. |
-| Host integration | Build, instantiate, eval; result is the `cel::Value::String("foobar")` | `compiler_v2/e2e/mvp_concat_test.cc` (NEW) | Engine + Instance + decoder all work. |
+| Codegen | Compile `'foo' + 'bar'` through `compiler_v2`; assert emitted wasm matches the WAT byte-for-byte (modulo Binaryen-assigned names) | `compiler/codegen/expr_lower_test.cc` (extend) | Codegen produces the right output. |
+| Host integration | Build, instantiate, eval; result is the `cel::Value::String("foobar")` | `e2e/mvp_concat_test.cc` (NEW) | Engine + Instance + decoder all work. |
 | Chrome | Same MVP wasm loaded via `WebAssembly.instantiate` in headless Chrome (Puppeteer or similar); JS reads memory at returned offset and verifies `"foobar"` | `doc/implementation-plan/rewrite/wasi/experiments/mvp_concat_chrome/` (NEW) | Browser target works. |
 
 ---
@@ -333,7 +333,7 @@ possible; runtime check where the value is dynamic.
 A single source of truth for the magic numbers:
 
 ```c
-// compiler_v2/runtime/cel_layout.h  (NEW)
+// runtime/cel_layout.h  (NEW)
 #define kInitialMemoryPages    2u
 #define kReservedLowMemoryBytes 8192u   // == --global-base on the runtime build
 #define kArenaCapacityBytes    (64u * 1024u)
@@ -439,12 +439,12 @@ migration starts.
 |---|---|---|---:|
 | **M1** | wasi-sdk in `MODULE.bazel` (4 platforms) + `third_party/wasi_sdk/BUILD.external.bazel`. | `bazel build @wasi_sdk//:clang` works. | 0.5 |
 | **M2** | `runtime/BUILD.bazel`: switch to wasi-sdk, `--target=wasm32-wasi`, drop `-ffreestanding -nostdlib`, add `-Wl,--global-base=8192`.  Add `cel_layout.h` (§5.1) + all `static_assert`s (A1-A8).  Add temporary `cel_alloc`/`cel_reset` shims that route to `arena_alloc`/`arena_reset` so old kernels still build. | `cel_runtime.wasm` builds and existing runtime tests pass. | 1.0 |
-| **M3** | Implement new `cel_arena.c` (~50 LoC: arena_init/alloc/reset over malloc).  Replace inline-asm in `cel_memory.c` with wasi-sdk-friendly version.  Unit-test the arena module. | `bazel test //compiler_v2/runtime:cel_arena_test` passes; A9-A10 + A16 asserts active. | 0.5 |
-| **M4** | Migrate ONE kernel: `cel_string_concat_at_vv` from `cel_alloc` → `arena_alloc`.  Update its unit test. | `bazel test //compiler_v2/runtime:cel_string_ops_test` passes. | 0.5 |
+| **M3** | Implement new `cel_arena.c` (~50 LoC: arena_init/alloc/reset over malloc).  Replace inline-asm in `cel_memory.c` with wasi-sdk-friendly version.  Unit-test the arena module. | `bazel test //runtime:cel_arena_test` passes; A9-A10 + A16 asserts active. | 0.5 |
+| **M4** | Migrate ONE kernel: `cel_string_concat_at_vv` from `cel_alloc` → `arena_alloc`.  Update its unit test. | `bazel test //runtime:cel_string_ops_test` passes. | 0.5 |
 | **M5** | Codegen prologue: replace `EmitCelResetCall(arena_base, mem_size)` with `EmitArenaResetCall()`.  Drop `arena_base` from `StaticLayout`.  Drop `mem_size_bytes` from `LoweringOptions`.  Add A11-A12 asserts in LayoutPass.  Add A17 assert in compile.cc. | Compile `"foo" + "bar"`; emitted wasm matches the MVP `.wat` byte-for-byte. | 1.0 |
 | **M6** | Engine: stop host-allocating memory; pull runtime_instance.memory.  Add A13-A14 asserts.  Bind `arena_*` + `malloc` + `free` on the linker.  Call `arena_init` once per Instance. | `Engine::Plan(program)` succeeds for the MVP program. | 0.5 |
 | **M7** | Instance: rewrite `EncodeStringOrBytes` over malloc'd binding buffer.  Delete `EnsureHostStringArenaCapacity` and helpers (~110 LoC).  Add A15 assert. | Activation marshal works for the MVP test. | 0.5 |
-| **M8** | E2E test: `compiler_v2/e2e/mvp_concat_test.cc`.  Asserts `Compile("'foo' + 'bar'")` → `Plan` → `Eval` → `cel::Value::String("foobar")`. | Test passes. | 0.25 |
+| **M8** | E2E test: `e2e/mvp_concat_test.cc`.  Asserts `Compile("'foo' + 'bar'")` → `Plan` → `Eval` → `cel::Value::String("foobar")`. | Test passes. | 0.25 |
 | **M9** | Chrome smoke-test: `experiments/mvp_concat_chrome/` with the compiled MVP `.wasm` + a small `index.html` driver that calls `WebAssembly.instantiate`, calls `eval()`, reads memory at offset returned, decodes string, asserts `"foobar"`. | Loads + evaluates in Chrome via Puppeteer or manual confirmation. | 0.5 |
 | **MVP total** | | | **5.25 days** |
 
@@ -487,7 +487,7 @@ the architectural payoff.
 The migration **ships** when ALL of:
 
   - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel run //compiler_v2/conformance:run_conformance` → **1,144 PASS** (matches baseline).
+  - [ ] `bazel run //conformance:run_conformance` → **1,144 PASS** (matches baseline).
   - [ ] Per-Eval cost ≤ **5× baseline**:
     - Scalar Eval: ≤ 705 ns (today 141 ns).
     - String Eval: ≤ 785 ns (today 157 ns).
@@ -534,7 +534,7 @@ header.
 
 To reproduce:
 ```sh
-bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+bazel run -c opt //bench:cel_pipeline_bench -- \
   --benchmark_min_time=2s
 ```
 

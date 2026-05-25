@@ -498,8 +498,8 @@ variant to the right `Repr`. `RejectDyn` tests live in
       `uint64_mul_overflows` / `int64_mul_overflows` use a split
       32×32→64 partial-product shape to avoid `__multi3` (compiler-rt
       128-bit multiply) which the wasm32 freestanding build doesn't
-      link.  Locked in `compiler_v2/runtime/cel_arith_test.cc` (23
-      tests) + `compiler_v2/runtime/cel_compare_test.cc` (initial
+      link.  Locked in `runtime/cel_arith_test.cc` (23
+      tests) + `runtime/cel_compare_test.cc` (initial
       same-kind matrix; cross-type added in step 2).  WATs 16
       (`arith_int_add`) + 17 (`compare_int_eq`) lock the slot-out
       helper ABI shape end-to-end through `wat_runner`.  47 helper
@@ -515,8 +515,8 @@ variant to the right `Repr`. `RejectDyn` tests live in
       via a new `DEFINE_SPAN_CMP_VV` macro.  34 ids moved from
       `kExplicitlyUnimplementedIds` to `kBuiltinSeeds`; seed count
       46 → 80; unimplemented count 120 → 86.  64 new test cases
-      across `compiler_v2/runtime/cel_compare_test.cc` (28 total) +
-      `compiler_v2/runtime/cel_string_ops_test.cc` (27 total).
+      across `runtime/cel_compare_test.cc` (28 total) +
+      `runtime/cel_string_ops_test.cc` (27 total).
       One cel-cpp parity edge case mirrored verbatim:
       `kGreaterEqualsUintDouble` (typo missing `64`) at
       `third_party/cel-cpp/common/standard_definitions.h:212`.
@@ -530,7 +530,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       `span_match_at` so each per-helper body is two lines.  WAT 18
       (`string_concat`) locks the arena-alloc slot-out shape; concat
       is the only M5.C helper that calls `cel_alloc`.  Locked in
-      `compiler_v2/runtime/cel_string_ops_test.cc` (initial 18 tests
+      `runtime/cel_string_ops_test.cc` (initial 18 tests
       covering happy path, empty / multi-byte UTF-8 / embedded-NUL,
       byte-vs-string lt unsigned ordering, 3VL / type-mismatch
       envelope; step 2 added 9 more for the le/gt/ge tail).  11 helper
@@ -548,7 +548,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       `cel_numeric_*` ladder.  WATs 21 (`size_list`) + 22 (`in_list`)
       lock the 1-operand and 2-operand slot-out shapes end-to-end
       through `wat_runner`.  Locked in
-      `compiler_v2/runtime/cel_aggregate_arena_test.cc` (21 tests)
+      `runtime/cel_aggregate_arena_test.cc` (21 tests)
       covering per-helper happy path × empty boundary × cross-type
       numeric `in` × map order-irrelevance × 3VL absorption × type
       mismatch.  kDynamic dispatchers + 7 kHost trampolines +
@@ -565,7 +565,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       cel-cpp `StandardOverloadIds::k*` is either resolvable via
       `InternOverloadId` or in `kExplicitlyUnimplementedIds` —
       forcing-function for the next vendoring of cel-cpp.  Locked
-      in `compiler_v2/codegen/overload_table_test.cc`.
+      in `compiler/codegen/overload_table_test.cc`.
 - [x] **Rewrite M5.F** — general kCall arm (`EmitGeneralCall`)
       wires `OverloadTable::Lookup(ann.overload_id)` into
       `expr_lower.cc`.  Arithmetic / same-kind comparison /
@@ -574,8 +574,8 @@ variant to the right `Repr`. `RejectDyn` tests live in
       (`_&&_` / `_||_` / `_?_:_` / `!_`) and M5.D-step-2 pending
       dispatchers (`size_list` / `size_map` / `add_list` / `in_list` /
       `in_map`) surface as Unimplemented.  Conformance: 207 → 391
-      PASS.  Locked in `compiler_v2/codegen/expr_lower_test.cc`
-      (9 new lowering tests) + `compiler_v2/e2e/m5_test.cc`
+      PASS.  Locked in `compiler/codegen/expr_lower_test.cc`
+      (9 new lowering tests) + `e2e/m5_test.cc`
       (32 e2e tests across arithmetic, comparison, string ops,
       bytes, bound vars, proto fields, pending guards).
 
@@ -592,9 +592,9 @@ variant to the right `Repr`. `RejectDyn` tests live in
       `numeric_compare_kernel` for any numeric pair.  Conformance:
       562 → 664 PASS (+102); `comparisons.textproto` 189 → 287,
       `lists.textproto` 23 → 27.  Locked in
-      `compiler_v2/codegen/expr_lower_test.cc` (3 re-pick tests),
-      `compiler_v2/runtime/cel_aggregate_arena_test.cc` (8
-      polymorphic membership tests), `compiler_v2/e2e/m5_test.cc`
+      `compiler/codegen/expr_lower_test.cc` (3 re-pick tests),
+      `runtime/cel_aggregate_arena_test.cc` (8
+      polymorphic membership tests), `e2e/m5_test.cc`
       (`CrossNumericOrderingE2ETest` — 152 tests across the full
       operand-kind × operator × dyn-position matrix + boundary +
       NaN matrix + membership matrix + same-kind regression
@@ -649,7 +649,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       Per-fixture: macros 0→38 PASS, macros2 0→39 PASS,
       bindings_ext 0→7 PASS, namespace 4→6 PASS, block_ext
       37 FAIL → 25 SKIP + 12 FAIL.  Locked in
-      `compiler_v2/e2e/m5b_test.cc` (54 tests across 9
+      `e2e/m5b_test.cc` (54 tests across 9
       fixture classes — exists/all/exists_one, map/filter,
       map-iter, two-iter-var, cel.bind, transformMap,
       transformMapEntry, nested, consumer; per-fixture
@@ -1069,23 +1069,23 @@ v1 stays in its own sections; v2 (everything under `compiler_v2/`)
 is tracked here.
 
   - [x] Static-literal lowering × bool —
-        `compiler_v2/api/instance_test.cc::EvalsBoolLiteralTrue/False`
+        `eval/instance_test.cc::EvalsBoolLiteralTrue/False`
   - [x] Static-literal lowering × int —
-        `compiler_v2/api/instance_test.cc::EvalsIntLiteral`,
+        `eval/instance_test.cc::EvalsIntLiteral`,
         `EvalsNegIntLiteral`
   - [x] Static-literal lowering × uint —
-        `compiler_v2/api/instance_test.cc::EvalsUintLiteral`
+        `eval/instance_test.cc::EvalsUintLiteral`
   - [x] Static-literal lowering × double —
-        `compiler_v2/api/instance_test.cc::EvalsDoubleLiteral`
+        `eval/instance_test.cc::EvalsDoubleLiteral`
   - [x] Static-literal lowering × null —
-        `compiler_v2/api/instance_test.cc::EvalsNullLiteral`
+        `eval/instance_test.cc::EvalsNullLiteral`
   - [x] Static-literal lowering × string —
-        `compiler_v2/api/instance_test.cc::EvalsStringLiteral`
+        `eval/instance_test.cc::EvalsStringLiteral`
   - [x] Static-literal lowering × bytes —
-        `compiler_v2/api/instance_test.cc::EvalsBytesLiteral`
+        `eval/instance_test.cc::EvalsBytesLiteral`
   - [x] Two-phase instantiation × fresh memory per `Engine::Plan` —
-        `compiler_v2/api/engine_test.cc::PlanCalledTwiceProducesIndependentInstances`,
-        `compiler_v2/api/instance_test.cc::TwoInstancesEvaluateIndependently`
+        `eval/engine_test.cc::PlanCalledTwiceProducesIndependentInstances`,
+        `eval/instance_test.cc::TwoInstancesEvaluateIndependently`
   - [x] No-`cel_alloc` × static-only eval — implicit by
         `EvalsNullLiteral` / `EvalsBoolLiteral` succeeding without
         binding `cel_alloc` to anything bigger than its 2-page
@@ -1118,7 +1118,7 @@ under `compiler_v2/`) is tracked here.
 **Slice M2.A — `cel::Activation`**
 
   - [x] `Bind` / `BindLazy` / `Find` per scalar kind —
-        `compiler_v2/api/activation_test.cc`
+        `eval/activation_test.cc`
   - [x] `Find` on unbound → `NotFoundError`,
         `BindLazy` memoises across `Find` —
         `activation_test.cc`
@@ -1127,9 +1127,9 @@ under `compiler_v2/`) is tracked here.
 `cel.abi.variables[]`**
 
   - [x] `kIdent` emits `local.get` (workspace slot) —
-        `compiler_v2/codegen/expr_lower_test.cc`
+        `compiler/codegen/expr_lower_test.cc`
   - [x] `Instance::Eval(Activation)` per scalar kind —
-        `compiler_v2/e2e/m2_test.cc::IdentE2ETest::{Bool,Int,Uint,
+        `e2e/m2_test.cc::IdentE2ETest::{Bool,Int,Uint,
         Double,String,Bytes}`
   - [x] Unbound declared variable → `FailedPrecondition` —
         `m2_test.cc::IdentE2ETest::UnboundDeclaredVariableFailsPrecondition`
@@ -1137,7 +1137,7 @@ under `compiler_v2/`) is tracked here.
         `m2_test.cc::IdentE2ETest::BackToBackEvalRebindsIdent`
   - [x] `cel.abi.variables[]` serialised with name /
         local_index / slot_offset / repr —
-        `compiler_v2/abi/cel_abi_emit_test.cc`
+        `abi/cel_abi_emit_test.cc`
   - [x] ABI wire round-trip through proto serialization —
         `cel_abi_emit_test::EmittedProtoSerializesAndRoundTripsThroughProtoParse`
 
@@ -1157,7 +1157,7 @@ under `compiler_v2/`) is tracked here.
   - [x] Back-to-back Eval with different message bindings —
         `m2_test.cc::SelectE2ETest::BackToBackEvalWithDifferentMessages`
   - [x] Unit kSelect lowering shape —
-        `compiler_v2/api/instance_test.cc::InstanceSelectEvalTest::{
+        `eval/instance_test.cc::InstanceSelectEvalTest::{
         IntFieldOnMessageRoundTrips, BoolFieldOnMessageRoundTrips,
         NestedSelectReadsSubBackingString}`
   - [x] `cel.abi.fields[]` dense with sentinel at 0 —
@@ -1185,7 +1185,7 @@ under `compiler_v2/`) is tracked here.
 
   - [x] `AttributePattern::Parse` × each wildcard position +
         every rejection case —
-        `compiler_v2/api/attribute_test.cc` (24 parse tests:
+        `eval/attribute_test.cc` (24 parse tests:
         single-segment, dotted, wildcard-mid / trailing, array /
         map keys, leading / trailing / consecutive dot rejection)
   - [x] `PartialEval` × leaf unknown short-circuit —
@@ -1218,10 +1218,10 @@ under `compiler_v2/`) is tracked here.
 
   - [x] `IsInM2Envelope` admits `unknown:` / `any_unknowns:`
         matchers; `RunOne` routes them to `PartialEval` with
-        empty pattern set — `compiler_v2/conformance/runner.{h,cc}`.
+        empty pattern set — `conformance/runner.{h,cc}`.
   - [x] `run_conformance` shows no regressions vs the M1
         snapshot (`total=2454 · pass=178 · skip=1935 · fail=341`)
-        — `compiler_v2/conformance/README.md` inventory table
+        — `conformance/README.md` inventory table
         refreshed.
 
 Architectural deltas vs as-written M2 plan (see
@@ -1328,7 +1328,7 @@ Architectural deltas vs as-written M2 plan (see
         `basic.{"k":"v"}` pass via `CompareMap`; `parse.repeat/map_literal`
         + `plumbing.eval_results/eval_map_results` graduate now
         that the runtime instantiates with map imports bound.
-        `compiler_v2/conformance/README.md` inventory updated.
+        `conformance/README.md` inventory updated.
 
 ### Rewrite M4 — list literals + indexing (shipped 2026-04-25)
 
@@ -1445,14 +1445,14 @@ direct user direction.  Past-count `set` poisons.  See
         resolution; M5 keeps the gate in place); fixes a crash that
         previously aborted the conformance binary on
         comprehension-bearing list_value tests.
-  - [x] M4.J e2e suite — `compiler_v2/e2e/m4_test.cc` (16 tests
+  - [x] M4.J e2e suite — `e2e/m4_test.cc` (16 tests
         across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`,
         `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto
         gained `repeated string tags = 12` for the kHost-list
         e2e flows.  `map-list-dispatch.md §11` reconciliation
         checklist fully ticked; header flipped to "fully
         reconciled into design.md 2026-04-25".
-        `scripts/run_full_suite.sh` MANUAL_TARGETS += `//compiler_v2/e2e:m4_test`.
+        `scripts/run_full_suite.sh` MANUAL_TARGETS += `//e2e:m4_test`.
 
 **M2.C.0b interim** (interleaved with M3 work)
 
@@ -1470,7 +1470,7 @@ direct user direction.  Past-count `set` poisons.  See
 
 ### Conformance unlock — Slice 0 (kString / kBytes activation encoder, shipped 2026-04-25)
 
-`compiler_v2/api/instance.cc::EncodeBoundValue` now routes
+`eval/instance.cc::EncodeBoundValue` now routes
 `Repr::kString` and `Repr::kBytes` to a new `EncodeStringOrBytes`
 arm.  Payload bytes land in a host-managed arena above
 `arena_limit` (codegen's `cel_reset` ceiling), grown via
@@ -1480,7 +1480,7 @@ that previously stomped any pre-eval `cel_alloc` allocations.  See
 
   - [x] String round-trip through Activation::Bind →
         `Instance::Eval(Activation)` →
-        `compiler_v2/api/instance_test.cc::InstanceActivationStringEncoderTest::
+        `eval/instance_test.cc::InstanceActivationStringEncoderTest::
         {NonEmptyStringRoundTrips,EmptyStringRoundTrips,
         EmbeddedNulSurvives,MultibyteUtf8RoundTrips,
         ArenaRewindsBetweenEvals}`
@@ -1491,14 +1491,14 @@ that previously stomped any pre-eval `cel_alloc` allocations.  See
         `instance_test.cc::InstanceActivationStringEncoderTest::
         KindMismatchRejected`
   - [x] E2E composing string-bound activation with `+` / `size()` →
-        `compiler_v2/e2e/m5_test.cc::StringBytesActivationE2ETest::
+        `e2e/m5_test.cc::StringBytesActivationE2ETest::
         {BindStringPlusLiteral,BindBytesSize,BindEmptyString,
         BindEmbeddedNul,BindMultibyteUtf8,BindTwoStringsConcat,
         RebindAcrossEvalsRewindsArena,BindBytesWithNul}`
   - [x] Conformance harness flips kString-blocked SKIPs to live
         Eval — `namespace.textproto` 3 → 4 PASS; total 486 → 490
         (full per-fixture deltas in
-        `compiler_v2/conformance/README.md` post-Slice-0 row).
+        `conformance/README.md` post-Slice-0 row).
 
 ### Rewrite M7 — proto message literals (slices A–E shipped 2026-04-25)
 
@@ -1511,7 +1511,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
 
 **M7.A — `kStructExpr` admission + `cel_make_message`**
 
-  - [x] `cel.abi.types[]` ABI table — `compiler_v2/abi/cel_abi.proto`
+  - [x] `cel.abi.types[]` ABI table — `abi/cel_abi.proto`
         `TypeEntry { id, fully_qualified_name }` (FQN-only, descriptor
         resolved at Plan time, mirroring `FieldEntry.owner_fqn`).
         Serialized in `cel_abi_emit.cc::BuildCelAbi`.
@@ -1527,7 +1527,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         per-entry `cel_host.cel_set_field` calls.
         `codegen/expr_lower.cc`.
   - [x] `InstallStructImports` adds `cel_make_message` (2-arg) +
-        `cel_set_field` (3-arg) imports.  `compiler_v2/compile.cc`.
+        `cel_set_field` (3-arg) imports.  `compiler/internal/compile.cc`.
   - [x] `OwnedProtoBacking` (composes `ProtoBacking` for read-side;
         owns `unique_ptr<Message>`) + virtual `HostMessageBacking
         ::message()` so `cel_message_eq` works for both M7-built and
@@ -1546,14 +1546,14 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         §"Field Selection" (was returning default-instance backing).
         `api/internal/cel_host.cc`.
   - [x] `wat/40_kstruct_make_message.wat` + `wat-traces.md` §40.
-  - [x] E2E: `compiler_v2/e2e/m7_test.cc::ProtoLiteralEmptyE2ETest`
+  - [x] E2E: `e2e/m7_test.cc::ProtoLiteralEmptyE2ETest`
         — 9/9 PASS (proto3 zero/explicit-default/null-submessage,
         proto2 explicit-default×3, Customer empty).
 
 **M7.B — `cel_set_field` for scalar fields**
 
   - [x] `kCelHostSetFieldInternalName` constant + 3-arg `cel_set_field`
-        import.  `codegen/expr_lower.h`, `compiler_v2/compile.cc`.
+        import.  `codegen/expr_lower.h`, `compiler/internal/compile.cc`.
   - [x] `EmitCelSetFieldCall` helper + per-entry emit loop in
         `EmitKStructExpr`; field_ref_id interns per entry with
         `field_number=0` + `name` + `owner_fqn=s.name()`.
@@ -1633,7 +1633,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
 
 **M7.F — closeout (in progress)**
 
-  - [x] `compiler_v2/conformance/README.md` refreshed: headline
+  - [x] `conformance/README.md` refreshed: headline
         700 → 831 PASS; per-fixture inventory rows for `comparisons`
         / `dynamic` / `enums` / `proto2` / `proto3` / `wrappers`;
         forecast table reordered with §4.5 encoder polish + M8
@@ -1773,7 +1773,7 @@ conformance `975 → 1058 PASS` (+83).
   - [x] `testing-checklist.md` — this section.
   - [x] `scripts/run_full_suite.sh --quick`: 8/8 PASS.
   - [x] Conformance: `bazel run
-        //compiler_v2/conformance:run_conformance` →
+        //conformance:run_conformance` →
         `pass=1058 / skip=693 / fail=703` (was `975 / 781 / 698`
         pre-M10; +83 PASS / −88 SKIP / +5 FAIL).  README refresh
         + Slice 3 classifier-tightening pass land separately.
@@ -1965,9 +1965,9 @@ header — it's exercised indirectly by every runtime test.
 ### Bench (post-M10) — first baseline shipped 2026-05-14
 
 Two `manual`-tagged Google Benchmark binaries under
-`compiler_v2/bench/`.  Out of the default test suite — run explicitly
-via `bazel run -c opt //compiler_v2/bench:{kernel,pipeline}_bench`.
-Baseline numbers captured in `compiler_v2/bench/README.md`.
+`bench/`.  Out of the default test suite — run explicitly
+via `bazel run -c opt //bench:{kernel,pipeline}_bench`.
+Baseline numbers captured in `bench/README.md`.
 
   - [x] `kernel_bench.cc` — runtime kernel microbenches covering
         arithmetic (`cel_int_add` / `_mul` / `_div`, `cel_double_add`),
@@ -2021,7 +2021,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         (proves the pass list actually runs), and
         `LevelOutOfRangeIsInvalidArgument` (closed-range
         contract).
-  - [x] **`compiler_v2/e2e/optimize_test`** (manual-tagged) — 21
+  - [x] **`e2e/optimize_test`** (manual-tagged) — 21
         representative expressions run at both opt=0 and opt=2
         with CelValue-identity asserted.  The "Binaryen
         miscompile" gate; 9/9 manual targets now green in
@@ -2048,7 +2048,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
 ### Rewrite M7-A — google.protobuf.Any pack/unpack/equality (shipped 2026-05-16)
 
   - [x] **M7-A.A pack arm** — `WriteMessageOrPack` helper in
-        `compiler_v2/api/internal/cel_host.cc` threaded through
+        `eval/internal/cel_host.cc` threaded through
         4 cpp_type-MESSAGE call sites (singular set, repeated
         arena append, repeated host append, host-map insert).
         One helper, three shapes (CopyFrom / Any reflection-pack /
@@ -2058,14 +2058,14 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         `map_str_to_any = 32`; `BUILD.bazel` depends on
         `@com_google_protobuf//:any_proto`.
   - [x] **M7-A.B read-side unwrap** — `UnpackAnyToValue` in
-        `compiler_v2/api/internal/cel_host.cc` parses type_url +
+        `eval/internal/cel_host.cc` parses type_url +
         value against the Any descriptor's own pool; wired into
         `ProtoBacking::ReadField`'s CPPTYPE_MESSAGE arm.  Error
         envelope per probe B: empty type_url → null, FQN
         unresolved → `kFieldNotFound`, corrupt bytes →
         `kTypeMismatch`.
   - [x] **Frontend §3.5.A carve-out** — `IsSelectThroughAny` in
-        `compiler_v2/frontend/parse_and_check.cc` admits SelectExpr
+        `compiler/frontend/parse_and_check.cc` admits SelectExpr
         nodes whose operand types as `google.protobuf.Any`,
         recursive so chained selects through Any land too.  This
         is the dyn-gate concession that makes Any usable for
@@ -2078,7 +2078,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         `cel_host_test.cc::CelSetFieldAnyPackTest` (round-trip,
         empty payload, cross-syntax, CopyFrom branch, M8 mismatch
         rejection, null-clear ordering, repeated-host, map-host).
-  - [x] **E2E coverage** — `compiler_v2/e2e/m7a_test.cc`:
+  - [x] **E2E coverage** — `e2e/m7a_test.cc`:
         AnyPackShape (4 parameterised + 1 TEST_F), AnyUnpack (6),
         AnyTypeOf (2), AnyReject (5 — probe-B error envelope),
         AnyEquality (9 — Any-vs-typed, symmetric, two-field-reads,
@@ -2149,7 +2149,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         (parse failures); `CelDurTs` payload arm reused for both
         kinds; 28 OverloadTable seeds added (kBuiltinSeeds:
         108 → 156).  `InstallOverloadImports` learned `kCelHost`.
-  - [x] **E2E coverage** — `compiler_v2/e2e/m7b_test.cc`:
+  - [x] **E2E coverage** — `e2e/m7b_test.cc`:
         176 / 180 rows passing.  Round-trip × §6.1 boundary grid,
         arithmetic × §6.3 grid, ordering × LexCompareGrid,
         accessors × §6.4 quirk grid (41 rows), parse admit/reject
@@ -2171,7 +2171,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         end-to-end across the three boundaries (construction-side
         auto-wrap, read-side auto-peel + Any-chain, kStructExpr
         tail-unwrap).  All 9 wrapper kinds covered.
-  - [x] **e2e — 86-test matrix in `compiler_v2/e2e/m8_test.cc`.**
+  - [x] **e2e — 86-test matrix in `e2e/m8_test.cc`.**
         80 PASS / 6 SKIP (skipped rows are reject-matrix cases that
         sit outside M8's scope per §6.3 of the plan).  Sections:
         `WrapperLiteralUnwrapE2ETest` (M8.C — 29 tests covering
@@ -2194,7 +2194,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
   - [x] **WAT trace 56 (`56_wrapper_kstruct_unwrap.wat`)**
         documents the kStructExpr tail-unwrap codegen shape;
         `wat_runner` stub + test (`WrapperKStructTailUnwrapProducesCelInt`)
-        in `compiler_v2/tools/wat_runner/wat_runner_test.cc` pin
+        in `tools/wat_runner/wat_runner_test.cc` pin
         the trampoline ABI (3-arg `(out_slot, msg_slot,
         wrapper_kind)`).
   - [x] **Conformance: 1144 → 1287 (+143 PASS, ~95% of the +151
@@ -2221,12 +2221,12 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
 ### C3 — regex `matches` kernel (shipped 2026-05-19)
 
   - [x] **`cel_matches_at_vv` kernel** — RE2-backed PartialMatch,
-        self-hosted in `compiler_v2/runtime/cel_matches.cc`.
+        self-hosted in `runtime/cel_matches.cc`.
         Per-Instance single-slot most-recent-pattern cache
         (the common `list.exists(x, x.matches(pat))` shape hits
         the cache every iteration past the first; multi-pattern
         sites recompile each switch at RE2-compile cost ~µs).
-  - [x] **Unit tests** at `compiler_v2/runtime/cel_matches_test.cc` —
+  - [x] **Unit tests** at `runtime/cel_matches_test.cc` —
         focused TEST_F for 3VL absorb (error/unknown × text/pat),
         kind-mismatch (non-string × text/pat), pattern-compile
         failure + sticky-error cache; parameterised TEST_P over
@@ -2235,7 +2235,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         boundary (embedded NUL, anchors, empty-empty,
         invalid-UTF-8 no-crash, 4 KiB text).
   - [x] **Overload-table seeds** — `matches` + `matches_string`
-        seeds added in `compiler_v2/codegen/overload_table.cc`
+        seeds added in `compiler/codegen/overload_table.cc`
         pointing at `cel_matches_at_vv`; both removed from
         `kExplicitlyUnimplementedIds`.  Seed count 156 → 158.
   - [x] **Runtime BUILD wiring** — `cel_runtime` cc_binary
@@ -2288,14 +2288,14 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         `AnyOfWktTimeTest::*UnwrapsTo*`.
   - [x] **`cel_host_error` TU (Slice E).**  Wire-error helpers
         + 3VL absorbers extracted out of `cel_host.cc` into a
-        new leaf-level TU at `compiler_v2/api/internal/cel_host_error.{cc,h}`.
-        New `cc_library` + `cc_test` targets in `compiler_v2/api/BUILD.bazel`.
+        new leaf-level TU at `eval/internal/cel_host_error.{cc,h}`.
+        New `cc_library` + `cc_test` targets in `eval/BUILD.bazel`.
         Slice-E delta vs the plan: also introduced
         `:cel_host_hdrs` headers-only target to break the dep
         cycle that would otherwise arise as helpers extract out;
         every future cel_host_* TU will depend on it.
   - [x] **`cel_host_error` direct unit tests** at
-        `compiler_v2/api/internal/cel_host_error_test.cc` —
+        `eval/internal/cel_host_error_test.cc` —
         positive + negative + boundary coverage per CLAUDE.md
         testing principles.  ~17 tests covering: cel::Value
         error factories per pinned code, `WireErrorCode`
@@ -2313,7 +2313,7 @@ printf-style `format` directive, all self-hosted inside
 `cel_runtime.wasm`.  Conformance: `string_ext.textproto` 0/216
 → 94/216, total 1382 → 1476 PASS (+94, hit §5.2 target
 exactly).  Self-hosted runtime kernels in
-`compiler_v2/runtime/cel_string_ext_*.cc` (Slices A-D) +
+`runtime/cel_string_ext_*.cc` (Slices A-D) +
 `cel_string_format*.cc` (Slices D-E) + checker library
 registration + 19 overload-table seeds + wasm exports + linker
 bindings (Slice F).
@@ -2352,14 +2352,14 @@ bindings (Slice F).
         wasm exports + `engine.cc::kRuntimeExports` table
         extensions; literal-list `format` arg static-subset
         admission.  34 e2e tests in
-        `compiler_v2/e2e/m12_test.cc`.  Conformance baseline
+        `e2e/m12_test.cc`.  Conformance baseline
         bumped 1382 → 1476.
 
 ## Rewrite M16 — math_ext extension (shipped 2026-05-24)
 
 cel-cpp `math` extension: 17 functions.  `greatest`/`least` expand
 (parser macros) to `math.@min`/`@max`; the rest are plain global
-calls.  20 self-hosted kernels in a single `compiler_v2/runtime/
+calls.  20 self-hosted kernels in a single `runtime/
 cel_math_ext.c`; no new codegen (generic kCall).  Conformance:
 `math_ext.textproto` 0 → 194/199 PASS (5 SKIP dyn-error rows, 0
 FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
@@ -2384,7 +2384,7 @@ FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
         `parse_and_check.cc`; 20 wasm exports + catalogue entries;
         targeted static-subset admission for `dyn`-typed cross-type
         / mixed-list `math.@min`/`@max`.  67-case e2e in
-        `compiler_v2/e2e/m16_test.cc`.  Baseline → 1770 (post-M14 merge).
+        `e2e/m16_test.cc`.  Baseline → 1770 (post-M14 merge).
 ### Rewrite M14 — CEL `optional<T>` (shipped 2026-05-22)
 
 `m14-optionals.md` shipped `optional<T>` end-to-end:

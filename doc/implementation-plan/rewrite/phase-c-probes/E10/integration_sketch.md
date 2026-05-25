@@ -2,12 +2,12 @@
 
 **Status:** PASS — sketch only (no code committed under `compiler_v2/`).
 
-## What changes in `compiler_v2/runtime/`
+## What changes in `runtime/`
 
 Add a new C++ TU `cel_time_parse.cc` (sibling to `cel_time.c`):
 
 ```cpp
-// compiler_v2/runtime/cel_time_parse.cc — runtime kernels for
+// runtime/cel_time_parse.cc — runtime kernels for
 // `timestamp(string) -> timestamp` etc.  Compiled with wasi-sdk
 // clang++ via the wasm32-wasi-threads cc_toolchain probed in E3.
 
@@ -18,9 +18,9 @@ Add a new C++ TU `cel_time_parse.cc` (sibling to `cel_time.c`):
 extern "C" {
 
 // Existing C API the runtime exposes.
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_layout.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_layout.h"
 
 // `string_to_timestamp` overload id routes here (M7B.D shape).
 // out_slot: CelValue * to populate (CEL_TIMESTAMP).
@@ -80,7 +80,7 @@ void cel_matches_at_vv(CelValue* out,
 }  // extern "C"
 ```
 
-Add to `compiler_v2/runtime/BUILD.bazel`:
+Add to `runtime/BUILD.bazel`:
 
 ```python
 # C++ kernels that need abseil-cpp / RE2.  Linked into
@@ -105,7 +105,7 @@ cc_library(
 And update `cel_runtime_wasm_file` to be a real `cc_binary` (not a
 genrule), depending on `cel_time_parse` + the existing C srcs.
 
-## What changes in `compiler_v2/codegen/overload_table.cc`
+## What changes in `compiler/codegen/overload_table.cc`
 
 Reroute four `kCelHost` seeds to `kCelRuntime`, and graduate
 two ids out of `kExplicitlyUnimplementedIds`:
@@ -142,7 +142,7 @@ And in the kExplicitlyUnimplementedIds array, **delete**:
 
 This drops the array size from 10 → 8.
 
-## What gets deleted in `compiler_v2/api/internal/cel_host.cc`
+## What gets deleted in `eval/internal/cel_host.cc`
 
 Four `absl::Status Impl(...)` functions (lines 3031-3199 in current
 master): `CelTimestampParseImpl`, `CelDurationParseImpl`,
@@ -219,7 +219,7 @@ their `cc_library` dependency.
    doesn't call `_initialize` automatically.  The runtime's host
    loader needs to call `_initialize` (or `__wasm_call_ctors`)
    right after instantiate.  This is a 5-LoC change in
-   `compiler_v2/api/internal/host_loader.cc`.
+   `eval/internal/host_loader.cc`.
 2. **Cross-platform CI.**  The toolchain config currently hardcodes
    `@wasi_sdk_darwin_arm64`.  Add platform selects so it dispatches
    on `@platforms//os` × `@platforms//cpu`.  Mirror the existing

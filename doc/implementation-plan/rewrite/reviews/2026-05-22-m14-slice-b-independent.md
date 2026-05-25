@@ -13,7 +13,7 @@ pass, and the documented +4 PASS unlock reproduces (`pass=1572` vs
 master baseline `1476` → Slice A's `1568` → Slice B's `1572`).
 However the slice has three classes of honest problems:
 
-  1. **`.baseline` file was not bumped.**  `compiler_v2/conformance/.baseline`
+  1. **`.baseline` file was not bumped.**  `conformance/.baseline`
      reads `1568` in the working tree but the actual run is `1572`.
      The doc punts this to Slice D, which is acceptable per the plan
      — flagged here because someone reading "Slice B shipped" will
@@ -57,7 +57,7 @@ m14-optionals.md §1.7 and §4 well.  Specifically:
 
 ### 1.1 `Repr::kOptional` plumbing is stamped consistently
 
-Both `ReprOf` overloads in `compiler_v2/ir/typed_ast.cc` stamp
+Both `ReprOf` overloads in `compiler/ir/typed_ast.cc` stamp
 `Repr::kOptional`:
 
   - The `cel::TypeSpec` overload (wire-format / proto-derived) at
@@ -82,7 +82,7 @@ No `kUnknown` fall-through bug evident.  **No drift.**
 
 ### 1.2 `SelectKeyRodataVisitor` pass-ordering is correct
 
-`LayoutPass` (compiler_v2/codegen/layout_pass.cc:387-397):
+`LayoutPass` (compiler/codegen/layout_pass.cc:387-397):
 
 ```
 StaticMemoryBuilder builder(layout.rodata_base);
@@ -183,7 +183,7 @@ overload seeds would not be caught.  **P1 coverage gap.**
 ### 1.5 Conformance unlock honesty
 
 Doc says +4 PASS (1568 → 1572).  Verified via running
-`bazel-bin/compiler_v2/conformance/run_conformance`:
+`bazel-bin/conformance/run_conformance`:
 `summary: total=2454  pass=1572  skip=735  fail=147`.  ✓
 
 `optionals.textproto` slice: `total=70  pass=18  skip=49  fail=3`.
@@ -213,7 +213,7 @@ this is genuinely a pre-existing gap and not Slice-B-introduced.
 
 ### 2.1 Stub-body inconsistencies (P1)
 
-`compiler_v2/runtime/cel_optional.c::dispatch_lookup` lines 283-291:
+`runtime/cel_optional.c::dispatch_lookup` lines 283-291:
 
 ```c
 case CEL_MAP_HOST:
@@ -272,7 +272,7 @@ de-duplicate this across ~4 sites.  Effort 1-2 hours.
 
 ### 2.4 Comment block describing old shape (P2)
 
-`compiler_v2/codegen/expr_lower.cc:226-229` originally explained
+`compiler/codegen/expr_lower.cc:226-229` originally explained
 the `field_ref_id` path before the optional branch was inserted.
 The current comment still describes the path as if it's the only
 one ("looks up that path and appends `sel.field()` at runtime.
@@ -282,7 +282,7 @@ benefit from a one-liner naming the two paths.
 
 ### 2.5 Test file metadata stale (P2)
 
-`compiler_v2/runtime/cel_optional_test.cc` line 1 reads:
+`runtime/cel_optional_test.cc` line 1 reads:
 
 ```
 // M14 Slice A — per-TU tests for `cel_optional.{h,c}`.
@@ -308,22 +308,22 @@ excluding the carved-out `stub until` form:
 
 **Violations in Slice B-attributed files:**
 
-  - `compiler_v2/codegen/overload_table.cc:496`:
+  - `compiler/codegen/overload_table.cc:496`:
     `// ── M14 — CEL optionals ──────────────────────────────────`
-  - `compiler_v2/codegen/expr_lower_test.cc:1170`:
+  - `compiler/codegen/expr_lower_test.cc:1170`:
     `// M14 Slice B — Select / index on optional-typed operand`
-  - `compiler_v2/codegen/expr_lower_test.cc:1232`:
+  - `compiler/codegen/expr_lower_test.cc:1232`:
     `// optional-typed Select chain.  Per m14-optionals.md §1.7 we emit`
     (this one cites the doc path — borderline; CLAUDE.md says
     "Cite a design-doc path only when the doc explains a
     non-obvious invariant" — §1.7 is exactly that, so this one
     is *probably* legitimate.  Keep, but lean toward the
     invariant-not-the-milestone phrasing.)
-  - `compiler_v2/frontend/parse_and_check.cc:433`:
+  - `compiler/frontend/parse_and_check.cc:433`:
     `// M7-Slice-9 path).  Reject here so the conformance harness`
     (the M7-Slice-9 is in a regular code comment, NOT inside a
     `stub until` message — violation).
-  - `compiler_v2/frontend/parse_and_check.cc:678-680`:
+  - `compiler/frontend/parse_and_check.cc:678-680`:
     `// M14 optionals: registers the `optional.of` / ...`
     `// M14: optional syntax (...`
     `// additionally registers `optMap` / `optFlatMap` (M14).`
@@ -332,15 +332,15 @@ excluding the carved-out `stub until` form:
 also touch other workstreams (still NEW comments, still
 violations):**
 
-  - `compiler_v2/api/engine.cc`: `// M14 — CEL optional<T> kernels`
-  - `compiler_v2/runtime/BUILD.bazel`: `# M14 — optional<T> kernels`
-  - `compiler_v2/runtime/cel_type.c`: `// CEL_OPTIONAL = 14 (M14 Slice A)`
-  - `compiler_v2/runtime/cel_type_test.cc`: `// in M14 Slice A by filling ...`
-  - `compiler_v2/tools/wat_runner/wat_runner.cc`:
+  - `eval/engine.cc`: `// M14 — CEL optional<T> kernels`
+  - `runtime/BUILD.bazel`: `# M14 — optional<T> kernels`
+  - `runtime/cel_type.c`: `// CEL_OPTIONAL = 14 (M14 Slice A)`
+  - `runtime/cel_type_test.cc`: `// in M14 Slice A by filling ...`
+  - `tools/wat_runner/wat_runner.cc`:
     `// M14 — optional<T> kernels.  Slice A landed these; the`
     `// `RegisterPendingM14Imports` no-op shim that used to bind them`
     `// (including the M14 Slice 0 ones we can't modify) declare a`
-  - `compiler_v2/tools/wat_runner/wat_runner_test.cc`:
+  - `tools/wat_runner/wat_runner_test.cc`:
     `// M14 — CEL optionals end-to-end WAT tests.`
     plus six test names `WatRunnerM14Test`.
 
@@ -528,7 +528,7 @@ filing for the 3 remaining FAILs.  ✓
 ### 6.1 Summary numbers reproduce
 
 ```
-$ bazel-bin/compiler_v2/conformance/run_conformance 2>&1 | grep "^summary:"
+$ bazel-bin/conformance/run_conformance 2>&1 | grep "^summary:"
 summary: total=2454  pass=1572  skip=735  fail=147
 ```
 
@@ -550,7 +550,7 @@ Slice D's closeout be a no-op for `.baseline`.
 Verified directly:
 
 ```
-$ bazel-bin/compiler_v2/conformance/run_conformance \
+$ bazel-bin/conformance/run_conformance \
     --file=$PWD/tests/simple/testdata/optionals.textproto \
     --max_fail_examples=20 2>&1 | tail -20
 ...

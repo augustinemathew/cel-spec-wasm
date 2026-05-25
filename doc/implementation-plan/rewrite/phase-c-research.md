@@ -43,7 +43,7 @@ After Phase C, `cel_runtime.wasm` self-hosts:
 
 The four host trampolines for parse/format
 (`CelTimestampParseImpl`, `CelDurationParseImpl`, `CelTimestampFormatImpl`,
-`CelDurationFormatImpl` in `compiler_v2/api/internal/cel_host.cc`)
+`CelDurationFormatImpl` in `eval/internal/cel_host.cc`)
 are **deleted**.  Every host (wasmtime, Chrome, embedders) inherits
 these for free from the runtime.
 
@@ -302,7 +302,7 @@ size is reasonable (~400 KB stripped per `exp1_re2` baseline).
 Current baseline: 241 KB stripped.
 
 **Method:**
-  1. Hypothetical link: combine `compiler_v2/runtime/*.c` (existing) +
+  1. Hypothetical link: combine `runtime/*.c` (existing) +
      the chosen absl subset + RE2.
   2. Measure stripped + gzipped sizes.
 
@@ -320,10 +320,10 @@ codegen routing change.
 **Method:**
   1. Pseudocode `cel_time_parse.cc` (C++) with `extern "C"` C entry points
      that call absl::ParseTime + write to the arena.
-  2. Show the `compiler_v2/codegen/overload_table.cc` diff that routes
+  2. Show the `compiler/codegen/overload_table.cc` diff that routes
      `string_to_timestamp` from `cel_host.cel_timestamp_parse` to
      `cel_runtime.cel_timestamp_parse_at_v`.
-  3. Show the `compiler_v2/api/internal/cel_host.cc` deletion (the
+  3. Show the `eval/internal/cel_host.cc` deletion (the
      CelTimestampParseImpl trampoline and its registration).
 
 **Pass:** the sketches compile mentally; no obvious blockers.
@@ -366,7 +366,7 @@ Document the chosen path + the migration cost in `phase-c-plan.md`
 
 ## 5 What the research agent should NOT do
 
-  - Don't modify `compiler_v2/runtime/` or `compiler_v2/api/` source.
+  - Don't modify `runtime/` or `eval/` source.
     All work goes under `doc/implementation-plan/rewrite/phase-c-probes/`.
   - Don't commit pre-built `.a` files to the repo until the plan
     chooses Path C explicitly.  For probes, use the existing
@@ -431,7 +431,7 @@ directory level as this phase-c-research.md.  Cap at 600 lines.
 >     CMake-built absl proved
 >   - `wasm_compilation_experiments/exp1_re2/wasi-toolchain.cmake` —
 >     the toolchain file that worked
->   - `compiler_v2/runtime/BUILD.bazel` — how cel_runtime.wasm builds
+>   - `runtime/BUILD.bazel` — how cel_runtime.wasm builds
 >     today (genrule pattern)
 >   - `third_party/wasi_sdk/BUILD.bazel` + `BUILD.external.bazel` —
 >     how the wasi-sdk is exposed to bazel today

@@ -9,7 +9,7 @@ threading discipline, reasonable wasmtime resource ownership, and
 9 new tests covering the registration matrix.  Three concerns
 stand out: (1) the host-callback trampoline relies on the *caller*
 exporting "memory" — which probe 5's WAT did but the production
-expr codegen does NOT (`compiler_v2/codegen/module.cc` only ever
+expr codegen does NOT (`compiler/codegen/module.cc` only ever
 imports memory).  The smoke test never invokes the callback, so
 this is latent — but the moment a real C.2/C.3 slice actually
 fires a `cel_fn.<id>` import, it traps with "caller lacks `memory`

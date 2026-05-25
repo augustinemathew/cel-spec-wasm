@@ -3,7 +3,7 @@
 Status: **shipped 2026-04-25.**
 
 What landed: runtime helpers `cel_and` / `cel_or` / `cel_not` /
-`cel_unknown_merge` / `cel_copy_slot` (`compiler_v2/runtime/cel_3vl.h`
+`cel_unknown_merge` / `cel_copy_slot` (`runtime/cel_3vl.h`
 + `cel_runtime.c`), 4×4 truth-table unit coverage in
 `cel_3vl_test.cc`, WAT traces 30–33 + walkthroughs in
 `wat-traces.md`, LayoutPass slot-allocation flip + tests, expr_lower
@@ -84,7 +84,7 @@ cel-cpp parity:
 
 ## What ships in this slice
 
-### A. Runtime helpers (`compiler_v2/runtime/cel_runtime.c`)
+### A. Runtime helpers (`runtime/cel_runtime.c`)
 
 Slot-out helpers, each `(out_slot, operand_slots...)`:
 
@@ -152,7 +152,7 @@ when `MatchesAnyUnknownPattern` fires (M2.E); we need
   - **UnknownSet wire shape: identical to v1.**  `payload.unk` is
     a u32 offset to a 2-word descriptor `(ids_off:u32, len:u32)`;
     the ids array (sorted ascending, deduped) lives separately
-    in the arena.  Confirmed by `compiler_v2/host/cel_log.cc::FormatUnknown`
+    in the arena.  Confirmed by `eval/host/cel_log.cc::FormatUnknown`
     at line 138 — it parses exactly that layout when rendering
     UNKNOWN values.
   - **`cel_data.h` enum:** `CEL_UNKNOWN = 15`, `CEL_ERROR = 16`
@@ -176,7 +176,7 @@ when `MatchesAnyUnknownPattern` fires (M2.E); we need
     config.  `cel_copy_slot(uint32_t dst, uint32_t src)` is
     ~5 lines of C.
   - **MintUnknown reference site:** v2 host trampoline path in
-    `compiler_v2/api/internal/cel_host.cc` (M2.E) already mints
+    `eval/internal/cel_host.cc` (M2.E) already mints
     UNKNOWN values via `cel_alloc` + writing the descriptor.
     `cel_unknown_merge` reuses the same allocator pattern.
 
@@ -291,7 +291,7 @@ Update `wat-traces.md` with one section per WAT.
 
 ## Tests
 
-### Unit (`compiler_v2/runtime/cel_3vl_test.cc` — new)
+### Unit (`runtime/cel_3vl_test.cc` — new)
 
 Truth-table parameterised matrix per langdef.  Cases per helper:
 
@@ -330,7 +330,7 @@ Add tests:
     / `TernaryStillUnimplemented` document the carve-out;
     rewrite them to assert correct results.
 
-### E2E (`compiler_v2/e2e/m5_test.cc`)
+### E2E (`e2e/m5_test.cc`)
 
 #### `ControlFlowE2ETest` — happy path + ERROR propagation
 
@@ -362,8 +362,8 @@ Add tests:
 
 UNKNOWN values are minted by `Instance::PartialEval` when an
 operand matches one of the activation's `AttributePattern`s
-(M2.E shipped this — see `compiler_v2/api/instance.cc::PartialEval`
-and `compiler_v2/api/attribute.h`).  The harness pattern:
+(M2.E shipped this — see `eval/instance.cc::PartialEval`
+and `eval/attribute.h`).  The harness pattern:
 
   ```cpp
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
@@ -429,7 +429,7 @@ both kinds appear in `&&` / `||`:
 
 Asserting an UNKNOWN result requires extracting it from the
 returned `Value` — use `Value::IsUnknown()` + `AsUnknown()`
-(returns the AttributeId set).  See `compiler_v2/api/value.h`
+(returns the AttributeId set).  See `eval/value.h`
 for the accessor signatures.  If the harness's
 `Value::AsUnknown` returns the raw set, write a small helper
 in the test to compare against an expected

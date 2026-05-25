@@ -43,7 +43,7 @@ and a plan-vs-execution callout where the as-shipped shape diverged.
 > `wasi/DESIGN.md` §4–§5 is authoritative for the detailed runtime
 > + host memory ABI and the asserted layout invariants (A1–A17);
 > this doc carries the architectural overview.  Constants here are
-> mirrored from `compiler_v2/runtime/cel_layout.h` (the single
+> mirrored from `runtime/cel_layout.h` (the single
 > source of truth).  Note `wasi/DESIGN.md` itself predates the
 > shared-memory + wasm32-wasi-threads decision (it was drafted for
 > a vanilla `wasm32-wasi`, host-imported `(memory 2)` target); the
@@ -348,7 +348,7 @@ The runtime module provides `arena_init` / `arena_alloc` /
 `arena_reset` / 3VL / arithmetic helpers; the expr module imports
 them as `cel.*`.  The `INITIAL_MEMORY_PAGES`,
 `RESERVED_LOW_MEMORY_BYTES`, and `ARENA_CAPACITY_BYTES` constants live
-in `compiler_v2/runtime/cel_layout.h`, shared by codegen, host, and
+in `runtime/cel_layout.h`, shared by codegen, host, and
 runtime so the three can't drift; see `wasi/DESIGN.md` §5 for the full
 asserted-invariant table (A1–A17).
 
@@ -609,14 +609,14 @@ set. The shape is a builder that seeds built-ins unconditionally,
 accepts custom registrations with a hard collision check, and freezes
 into an immutable table.
 
-As-shipped (`compiler_v2/codegen/overload_table.h`, M5.E + M5.F):
+As-shipped (`compiler/codegen/overload_table.h`, M5.E + M5.F):
 
 ```cpp
 struct Seed {
   absl::string_view overload_id = {};
   OverloadImpl impl = {};
 };
-// `compiler_v2/codegen/overload_table.cc`: 80 entries today (M5.E +
+// `compiler/codegen/overload_table.cc`: 80 entries today (M5.E +
 // M5.B step 2 same-kind + cross-type numeric ladder).
 constexpr std::array<Seed, 80> kBuiltinSeeds{ /* see §4.3.2 */ };
 
@@ -844,7 +844,7 @@ install via M6 — outside the M5 slice.
 
 ##### 4.4.1 `kPendingRuntimeExports` guard (M5.F → M5.D step 2)
 
-`compiler_v2/codegen/expr_lower.cc` carries a 7-element
+`compiler/codegen/expr_lower.cc` carries a 7-element
 `kPendingRuntimeExports` set:
 
 ```cpp
@@ -856,9 +856,9 @@ constexpr std::array<absl::string_view, 7> kPendingRuntimeExports = {
 
 These are the kDynamic dispatcher names the M5.E seeds point at
 (Option B aggregate routing — see §4.3.2 callout).  As of
-2026-04-25 the **runtime exports** (`compiler_v2/runtime/cel_runtime.c`
+2026-04-25 the **runtime exports** (`runtime/cel_runtime.c`
 + `BUILD.bazel`'s `--export=` list) and the **kHost trampolines**
-(`compiler_v2/api/internal/cel_host_wasmtime.cc::RegisterCelHostImports`
+(`eval/internal/cel_host_wasmtime.cc::RegisterCelHostImports`
 binds all twelve `cel_host.*` entries including the seven
 aggregate ops + `cel_message_eq`; corresponding `Cel*Impl` bodies
 in `cel_host.cc`) **have shipped** — the M5.D-step-2 host /
@@ -899,7 +899,7 @@ keeping the array internal so callers can't accidentally treat
 > filtering (`langdef.md`'s "embedders may restrict which standard
 > functions are available" rule) by adding `allowed_overloads` to
 > `CompileOptions` and pruning the table before freezing.  As of
-> 2026-04-25 (M5.F) `compiler_v2/compile.h::CompileOptions` carries
+> 2026-04-25 (M5.F) `compiler/internal/compile.h::CompileOptions` carries
 > only `check`, `mem_size_bytes`, `eval_internal_name`,
 > `eval_export_name`, `validate`, `serialize` — no
 > `allowed_overloads` field.  Both rejection routes
@@ -1278,7 +1278,7 @@ stack never grows.  Toolchain config: `-mtail-call` (clang),
 `--enable-tail-call` (Binaryen), `wasmtime_config_wasm_tail_call_set`
 (wasmtime).
 
-**Runtime surface (as-shipped — `compiler_v2/runtime/cel_runtime.{h,c}`).**
+**Runtime surface (as-shipped — `runtime/cel_runtime.{h,c}`).**
 
 ```c
 // Construction (arena-side; called from kCreateMap codegen).
@@ -1392,7 +1392,7 @@ as maps; codegen branches on `operand.list_origin` (M4
 The dispatcher tail-calls into the arena or host arm via
 `__attribute__((musttail))`.
 
-**Runtime surface (as-shipped — `compiler_v2/runtime/cel_list.h`).**
+**Runtime surface (as-shipped — `runtime/cel_list.h`).**
 
 ```c
 // Construction.  All element slots zero-init to CEL_NULL; codegen
@@ -1837,7 +1837,7 @@ Mandatory coverage in `api/internal/cel_host_test.cc`:
     correctly (each call resolves against the *passed*
     message's descriptor, not a cached pool).
 
-E2E parity (`compiler_v2/e2e/eval_test.cc`) covers the full
+E2E parity (`e2e/eval_test.cc`) covers the full
 pipeline; the unit tests above lock the host interface itself.
 
 ### 4.8 Scope stack (ResolvePass internal)
@@ -2001,7 +2001,7 @@ loudly — not a design concern.
 
 #### 6.2.2 `SlotAllocator` — workspace assignment
 
-As-shipped (`compiler_v2/codegen/slot_allocator.h`):
+As-shipped (`compiler/codegen/slot_allocator.h`):
 
 ```cpp
 namespace celwasm {
@@ -2032,7 +2032,7 @@ nodes).
 > to M5.**  The original §6.2.2 promised `PushScope` / `PopScope`
 > on `SlotAllocator` so per-iteration intermediate slots could die
 > at `PopScope` instead of leaking across iterations.  These
-> methods don't exist yet — `compiler_v2/codegen/slot_allocator.h`
+> methods don't exist yet — `compiler/codegen/slot_allocator.h`
 > ships only `Acquire` / `Release` / `peak_slots` / `total_bytes`.
 > Comprehension lowering moved to a follow-on milestone after M5
 > (`m5-comprehensions-followon.md`); the scope-aware allocator is
@@ -2080,7 +2080,7 @@ is 2). Pathological (full balanced tree of depth N) hits `O(log N)`.
 
 ### 7.1 Interface
 
-As-shipped (`compiler_v2/codegen/expr_lower.h`, M5.F):
+As-shipped (`compiler/codegen/expr_lower.h`, M5.F):
 
 ```cpp
 namespace celwasm {
@@ -2250,7 +2250,7 @@ they become dead code on the codegen path.
 ### 7.4 What stays
 
   - Import declarations — the scaffolding stays but the driver
-    changes.  As-shipped (`compiler_v2/compile.cc`,
+    changes.  As-shipped (`compiler/internal/compile.cc`,
     `InstallOverloadImports` + the per-feature `Install*Imports`
     helpers): `InstallExprModuleImports` first declares the imported
     shared `cel.memory` (with the rodata active data segment) +
@@ -2303,7 +2303,7 @@ they become dead code on the codegen path.
 
 ## 8. Runtime changes — `compiler/runtime/*`
 
-### 8.1 Build flags — `compiler_v2/runtime/BUILD.bazel`
+### 8.1 Build flags — `runtime/BUILD.bazel`
 
 > **Phase C delta (shipped).**  `--import-memory` is gone: the
 > runtime now DEFINES + exports its (shared) memory rather than
@@ -2325,7 +2325,7 @@ they become dead code on the codegen path.
 `--export-all` is retired.  Every exported symbol is explicit
 (`wasm_exports.txt`, the single source of truth, cross-checked
 against `celwasm::abi::CelRuntimeHelpers()` by
-`//compiler_v2/abi:runtime_catalogue_consistency_test`) so new
+`//abi:runtime_catalogue_consistency_test`) so new
 additions are visible in code review.
 
 **Original drafting (historical):** the pre-migration freestanding
@@ -2337,11 +2337,11 @@ build imported memory (`-Wl,--import-memory=cel,memory`) and exported
 > **Phase C delta (shipped) — the fixed bytes-8/12 cursor is gone.**
 > The arena is now **malloc-backed and per-Instance**, with its
 > state in a runtime BSS struct, not at fixed memory offsets.  See
-> `compiler_v2/runtime/cel_arena.c` and `wasi/DESIGN.md` §4.  The
+> `runtime/cel_arena.c` and `wasi/DESIGN.md` §4.  The
 > as-shipped ABI:
 >
 > ```c
-> // compiler_v2/runtime/cel_arena.c
+> // runtime/cel_arena.c
 > typedef struct {
 >   uint8_t* base;        // malloc'd buffer base in linear memory
 >   uint32_t capacity;    // total bytes (CELWASM_ARENA_CAPACITY_BYTES = 64 KiB)
@@ -2406,7 +2406,7 @@ at known constant offsets; no wasm-globals machinery. Rationale:
     resolves to the imported memory, not to any shared runtime
     state.
 
-As-shipped (`compiler_v2/runtime/cel_runtime.c`, M1):
+As-shipped (`runtime/cel_runtime.c`, M1):
 
 ```c
 enum {
@@ -2531,7 +2531,7 @@ already maintains (`CheckedExpr.source_info`).
 Survives slot reuse because the ERROR CelValue travels through slots
 — its payload is copied, not reconstructed.
 
-## 9. Host runtime — `compiler_v2/api/engine.{h,cc}`, `compiler_v2/api/instance.{h,cc}`
+## 9. Host runtime — `eval/engine.{h,cc}`, `eval/instance.{h,cc}`
 
 The runtime side of the host surface lives across two classes:
 `cel::Engine` (process-shared wasmtime fixture, owns the engine +
@@ -2542,7 +2542,7 @@ public entry point: `cel::Engine::Plan(program)` — see
 spins up the wasmtime store, instantiates both modules, and
 returns an Instance ready for `Eval`.
 
-`compiler_v2/host/host_loader.{h,cc}` was deleted in the runtime-
+`eval/host/host_loader.{h,cc}` was deleted in the runtime-
 isolation work.  Its earlier role (single-class wasmtime
 boilerplate) is now split for clarity: Engine is the "what's
 shared across all Plans" half; Instance is the "what's owned per
@@ -2574,7 +2574,7 @@ Plan" half.
 > "host-allocated `cel.memory`, both modules import" model the
 > original §9.1 (below) described.
 
-As-shipped (`compiler_v2/api/engine.cc::Engine::Plan` →
+As-shipped (`eval/engine.cc::Engine::Plan` →
 `InstantiateRuntime`):
 
 ```cpp
@@ -2633,7 +2633,7 @@ all resolve.
 > `OverloadTable::UsedImports(used_ids)`.  As-shipped,
 > `BindAllRuntimeExports` (`engine.cc`) iterates
 > `celwasm::abi::CelRuntimeHelpers()` — the `cel`-namespace span of
-> the ABI catalogue (`compiler_v2/abi/runtime_catalogue`) — and binds
+> the ABI catalogue (`abi/runtime_catalogue`) — and binds
 > every helper unconditionally.  This is the single source of truth:
 > codegen's import-declaration pass (`compile.cc`) consumes the same
 > catalogue, so the bind set and the import set cannot drift, and
@@ -2683,7 +2683,7 @@ alongside 3VL + message equality.  It moved to M2 because
 (declaring "this path is unknown"), and `Activation` already
 ships in M2 as the vehicle for idents.  M4 now owns just 3VL
 + the error surface.  See `m1-scalar-pipeline.md §10` for the
-milestone list and `compiler_v2/conformance/README.md` for the
+milestone list and `conformance/README.md` for the
 conformance forecast this unlocks.
 
 #### 10.1.1 What M2 adds
@@ -3102,8 +3102,8 @@ our purposes:
     Slice 1, then again in the runtime-isolation work (now lives
     in `api/engine.cc` + `api/instance.cc`).
 
-**Rewritten from scratch.** Everything under `compiler_v2/codegen/`
-and `compiler_v2/runtime/`. The ABI and memory model is new; there
+**Rewritten from scratch.** Everything under `compiler/codegen/`
+and `runtime/`. The ABI and memory model is new; there
 is no value in a file-level diff against v1.
 
 ### 11.3 Invariants that hold across every slice
@@ -3123,7 +3123,7 @@ to split:
     If a slice wants to share code, it copies — not symlinks, not
     `cc_library` cross-references.
   - **Every slice ticks ≥ 1 testing-checklist row.** Rows are
-    retargeted at v2 paths (e.g. `compiler_v2/codegen/...` instead
+    retargeted at v2 paths (e.g. `compiler/codegen/...` instead
     of `compiler/codegen/...`). Post-swap, the checklist is
     re-based to the renamed paths in one commit.
   - **Each slice is one squashable commit.** Revert = `git revert
@@ -3242,7 +3242,7 @@ always "e2e check runs green and tests pass".
 **Scope.** Enough v2 to evaluate `42` under the v2 CLI.
 
   - `compiler_v2/` directory structure (§11.2).
-  - `compiler_v2/runtime/`: header split into topic headers
+  - `runtime/`: header split into topic headers
     (`cel_data.h` / `cel_memory.h` / `cel_arena.h` / `cel_make.h`
     / `cel_log.h`) plus umbrella `cel_runtime.h`; `cel_runtime.c`
     defines `cel_alloc` / `cel_reset` / `cel_make_int`. **Arena
@@ -3251,18 +3251,18 @@ always "e2e check runs green and tests pass".
     `cel_reset(<rodata_size>, <mem_size>)` call as the first
     instruction of `$eval` (§8.3) — there is no host-side reset
     phase.
-  - `compiler_v2/api/engine.{h,cc}` + `compiler_v2/api/instance.{h,cc}`:
+  - `eval/engine.{h,cc}` + `eval/instance.{h,cc}`:
     two-phase instantiation (§9.1).  Originally this slice planned
-    `compiler_v2/host/host_loader.{h,cc}`; it was rewritten and split
+    `eval/host/host_loader.{h,cc}`; it was rewritten and split
     in the runtime-isolation work — see `two-phase-runtime-isolation.md`.
-  - `compiler_v2/frontend/{parse,check}.{h,cc}`: copied verbatim
+  - `compiler/frontend/{parse,check}.{h,cc}`: copied verbatim
     from v1 (already thin wrappers over cel-cpp).
-  - `compiler_v2/codegen/expr_lower.{h,cc}`: minimal — `kConst` for
+  - `compiler/codegen/expr_lower.{h,cc}`: minimal — `kConst` for
     `int64` only, via `.rodata`.
-  - `compiler_v2/codegen/static_memory_builder.{h,cc}` with
+  - `compiler/codegen/static_memory_builder.{h,cc}` with
     `AllocateInt`.
   - `compiler_v2/cli/celwasmc_v2.cc`: CLI entry.
-  - `compiler_v2/e2e/eval_test.cc`: `EvalInt("42", 42)`.
+  - `e2e/eval_test.cc`: `EvalInt("42", 42)`.
 
 **E2E check.** `bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42"`
 prints `42`.
@@ -3310,16 +3310,16 @@ after a span payload.
 **Scope.** Merge that prepares the pipeline but doesn't change
 executing behavior — codegen ignores the new fields until S4.
 
-  - `compiler_v2/ir/annotations.h` extends `NodeAnnotation` with
+  - `compiler/ir/annotations.h` extends `NodeAnnotation` with
     `overload_id`, `local_index`, `scope_id`, `storage` (§4.1).
-  - `compiler_v2/codegen/overload_table.{h,cc}` with
+  - `compiler/codegen/overload_table.{h,cc}` with
     `OverloadTableBuilder` / `OverloadTable` / `kBuiltinSeeds[]`
     seeded with an **empty list** (real entries land in S5).
     `RegisterCustom` + `AlreadyExists` collision rule work now.
-  - `compiler_v2/codegen/resolve_pass.{h,cc}` lands; populates
+  - `compiler/codegen/resolve_pass.{h,cc}` lands; populates
     `local_index` (ident) and `field_number` (SelectExpr) only.
     Overload interning is stubbed to "lookup returns nullptr".
-  - `compiler_v2/codegen/layout_pass.{h,cc}` lands as no-op —
+  - `compiler/codegen/layout_pass.{h,cc}` lands as no-op —
     `kStaticRodata` for consts (consumed by S2), everything else
     unset.
   - Pipeline driver: `parse → check → resolve → layout → emit`.
@@ -3350,7 +3350,7 @@ on fixture ASTs (ident + select); `layout_pass_test` no-op.
 
 **Scope.**
 
-  - `compiler_v2/api/internal/cel_host.{h,cc}` with `cel_get_field`
+  - `eval/internal/cel_host.{h,cc}` with `cel_get_field`
     and `cel_has_field` (transcribed from v1 host/cel_host —
     proven code). Lives at `api/internal/` per the convention
     already set by `instance_impl.{h,cc}` +
@@ -3365,7 +3365,7 @@ on fixture ASTs (ident + select); `layout_pass_test` no-op.
     allocator — fresh slot, no release).
 
 **E2E check.** Against a `Customer` proto fixture copied to
-`compiler_v2/e2e/testdata/`: `-e "x.name" -V x=<Customer>`
+`e2e/testdata/`: `-e "x.name" -V x=<Customer>`
 returns the string; `-e "x.age"` returns the int; `-e "x.order.total"`
 (nested) works.
 
@@ -3461,7 +3461,7 @@ Transcribed from v1 M3 slices G3/G4. `cel_host` gets `cel_message_eq`.
 **E2E check.** `has(x.name)`, `has(x.order)`, `x == y` (proto-to-
 proto), `has(x.order.items)`.
 
-**Tests.** Transcribed G3/G4 e2e tests under `compiler_v2/e2e/eval_test.cc`.
+**Tests.** Transcribed G3/G4 e2e tests under `e2e/eval_test.cc`.
 
 **Risk.** Low — straight port.
 
@@ -3654,10 +3654,10 @@ them. **Mitigation:**
 
 **Scope.** No new features — close gaps.
 
-  - Copy `compiler/e2e/eval_test.cc` into `compiler_v2/e2e/` (drop
+  - Copy `compiler/e2e/eval_test.cc` into `e2e/` (drop
     v1-specific fixtures only if they're genuinely untranslatable),
     run, fix regressions.
-  - Wire `compiler_v2/bench/eval_bench.cc` from v1; assert v2 is
+  - Wire `bench/eval_bench.cc` from v1; assert v2 is
     within 20% of v1 on existing microbenchmarks (expect v2 faster
     on most; flag slowdowns > 20%).
   - `scripts/lint.sh` clean for all `compiler_v2/` files. Any
@@ -3795,7 +3795,7 @@ The rewrite is done when:
   - [ ] Zero references to `LoweringContext::scratch_slot`,
         `prologue_setups`, `EmitCheckedArithmetic`, `_at_ii`,
         `_at_uu` remain in `compiler_v2/` (or `compiler/` post-swap).
-  - [ ] `rg cel_make_bool|cel_make_int|cel_make_uint|cel_make_double|cel_make_null compiler_v2/codegen` returns zero hits (runtime/host boxing paths excluded).
+  - [ ] `rg cel_make_bool|cel_make_int|cel_make_uint|cel_make_double|cel_make_null compiler/codegen` returns zero hits (runtime/host boxing paths excluded).
   - [ ] Every `cel_*` helper in `cel_runtime.h` has a cel-cpp parity
         comment pointing at the source-of-truth impl.  (Map/list
         primitives shipped at M3/M4 already carry these; full
@@ -3897,57 +3897,57 @@ landed.  At swap, all `compiler_v2/...` paths become
 
 **Shipped (M1–M4):**
 
-  - [x] `compiler_v2/ir/annotations.h` — extended `NodeAnnotation`
+  - [x] `compiler/ir/annotations.h` — extended `NodeAnnotation`
         + `StorageKind` / `Storage` + `Origin` (M3/M4)
-  - [x] `compiler_v2/codegen/overload_table.{h,cc,_test.cc}` —
+  - [x] `compiler/codegen/overload_table.{h,cc,_test.cc}` —
         builder + frozen table; `kBuiltinSeeds` empty (M5 fills)
-  - [x] `compiler_v2/codegen/resolve_pass.{h,cc,_test.cc}` —
+  - [x] `compiler/codegen/resolve_pass.{h,cc,_test.cc}` —
         ident, field_number, attribute_id, map_origin, list_origin
         (overload_id stays at zero until M5)
-  - [x] `compiler_v2/codegen/layout_pass.{h,cc,_test.cc}` — kConst
+  - [x] `compiler/codegen/layout_pass.{h,cc,_test.cc}` — kConst
         rodata; kIdent local; kSelect + kMapExpr + kListExpr +
         kCallExpr(`_[_]`) workspace slots (naive allocator —
         Sethi–Ullman is S10)
-  - [x] `compiler_v2/codegen/static_memory_builder.{h,cc,_test.cc}` —
+  - [x] `compiler/codegen/static_memory_builder.{h,cc,_test.cc}` —
         every scalar kind + null
-  - [x] `compiler_v2/codegen/slot_allocator.{h,cc,_test.cc}` —
+  - [x] `compiler/codegen/slot_allocator.{h,cc,_test.cc}` —
         naive path (debug-layout style); `Release` is a no-op
         until S10
-  - [x] `compiler_v2/codegen/expr_lower.{h,cc}` — annotation-driven;
+  - [x] `compiler/codegen/expr_lower.{h,cc}` — annotation-driven;
         kConst, kIdent, kSelect (incl. test_only), kCreateMap,
         kCreateList, kCallExpr(`_[_]`) on map + list × 3 origins
-  - [x] `compiler_v2/codegen/module.{h,cc}` — memory import + active
+  - [x] `compiler/codegen/module.{h,cc}` — memory import + active
         rodata segment
-  - [x] `compiler_v2/runtime/cel_data.h` — CelKind split for maps
+  - [x] `runtime/cel_data.h` — CelKind split for maps
         + lists; `ArenaMapHeader` + `ArenaListHeader`; CEL_ERR_*
         codes incl. `INDEX_OUT_OF_BOUNDS`
-  - [x] `compiler_v2/runtime/cel_runtime.{h,c}` — `cel_reset` /
+  - [x] `runtime/cel_runtime.{h,c}` — `cel_reset` /
         `cel_alloc` (M1) + map/list arena primitives + kDynamic
         dispatchers with `__attribute__((musttail))` (M3/M4)
-  - [x] `compiler_v2/runtime/BUILD.bazel` — `--import-memory`,
+  - [x] `runtime/BUILD.bazel` — `--import-memory`,
         explicit exports, `-mtail-call` for the dispatcher
-  - [x] `compiler_v2/runtime/wasm_imports.txt` — `cel_log` (M1) +
+  - [x] `runtime/wasm_imports.txt` — `cel_log` (M1) +
         `cel_host.cel_get_field` / `cel_has_field` (M2) +
         `cel_host.cel_map_lookup` (M3) + `cel_host.cel_list_at` (M4)
-  - [x] `compiler_v2/api/{compiler,program,engine,instance,
+  - [x] `eval/{compiler,program,engine,instance,
         value,activation,attribute,type,error}.{h,cc,_test.cc}` —
         public surface
-  - [x] `compiler_v2/api/engine.{h,cc}` + `instance.{h,cc}` —
+  - [x] `eval/engine.{h,cc}` + `instance.{h,cc}` —
         two-phase instantiation; replaces the planned
-        `compiler_v2/host/host_loader.{h,cc}`
+        `eval/host/host_loader.{h,cc}`
         (see `rewrite/two-phase-runtime-isolation.md`)
-  - [x] `compiler_v2/api/internal/cel_host.{h,cc,_test.cc}` —
+  - [x] `eval/internal/cel_host.{h,cc,_test.cc}` —
         Layer-1 backings (`HostMessageBacking` / `ProtoBacking` /
         `HostMap` / `ProtoMap` / `HostList` / `ProtoList`) +
         Layer-2 trampoline bodies (`CelGetFieldImpl` /
         `CelHasFieldImpl` / `CelMapLookupImpl` /
         `CelListAtImpl`) + `ExternrefTable`
-  - [x] `compiler_v2/api/internal/cel_host_wasmtime.{h,cc}` —
+  - [x] `eval/internal/cel_host_wasmtime.{h,cc}` —
         Layer-3 wasmtime trampoline registration via
         `RegisterCelHostImports`
-  - [x] `compiler_v2/conformance/runner.{h,cc}` —
+  - [x] `conformance/runner.{h,cc}` —
         `IsInM4Envelope` + `CompareMap` + `CompareList`
-  - [x] `compiler_v2/tools/wat_runner/{wat_runner,wat_runner_test}.{h,cc}` —
+  - [x] `tools/wat_runner/{wat_runner,wat_runner_test}.{h,cc}` —
         WAT-first harness; binds map/list runtime exports + 3-arg
         `cel_host.*` stubs
   - [x] `doc/implementation-plan/rewrite/wat/0[1-9]_*.wat` +
@@ -3971,7 +3971,7 @@ landed.  At swap, all `compiler_v2/...` paths become
   - [ ] `kBuiltinSeeds` populated for every
         `StandardOverloadIds::k*` (or marked
         `kExplicitlyUnimplemented`).  S5 work, lands with M5.
-  - [ ] `compiler_v2/runtime/cel_runtime.{h,c}` — full helper
+  - [ ] `runtime/cel_runtime.{h,c}` — full helper
         set (`_add/sub/mul/div/mod/lt/le/gt/ge/eq/ne_at_vv` per
         scalar kind; `_concat/_eq/_contains/_starts_with/
         _ends_with/_matches_at_vv` for string/bytes;

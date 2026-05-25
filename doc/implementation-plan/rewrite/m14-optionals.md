@@ -200,7 +200,7 @@ leaves the `kSelectExpr` alone and promotes the result type to
 `optional<inner_field_type>`.
 
 **Codegen implication:** `LowerSelect` in
-`compiler_v2/codegen/expr_lower.cc` needs a new branch: when the
+`compiler/codegen/expr_lower.cc` needs a new branch: when the
 operand annotation says optional-typed, route to the same kernel
 `.?` uses.  Both paths converge on the same runtime helper —
 just two codegen entry points.
@@ -418,26 +418,26 @@ both were folded into this revision before Slice A starts.
 
 Depends: Slice 0 WAT traces locked.
 
-  - [x] `compiler_v2/frontend/parse_and_check.cc`:
+  - [x] `compiler/frontend/parse_and_check.cc`:
     `enable_optional_syntax = true` via `DefaultParserOptions()` +
     `builder.AddLibrary(cel::OptionalCheckerLibrary())`.  Plus
     BUILD.bazel dep on `@cel-cpp//checker:optional`.
-  - [x] `compiler_v2/runtime/cel_optional.{h,c}`: arena alloc + 8
+  - [x] `runtime/cel_optional.{h,c}`: arena alloc + 8
     kernels (`of`, `of_non_zero`, `none`, `has_value`, `value`,
     `or`, `or_value`, `select_field`) plus a `cel_equals_at_vv`
     arm.  Per-TU test suite at `cel_optional_test.cc` — 32 unit
     tests.
-  - [x] `compiler_v2/runtime/cel_type.c`: replaced `NULL` at index
+  - [x] `runtime/cel_type.c`: replaced `NULL` at index
     14 with `"optional_type"`; matching test
     `OptionalReturnsOptionalType` in `cel_type_test.cc`.
-  - [x] `compiler_v2/codegen/overload_table.cc`: 14 new Seed rows
+  - [x] `compiler/codegen/overload_table.cc`: 14 new Seed rows
     (size 177 → 191) covering the 7 value-level IDs *plus* the 7
     `.?field` / `[?key]` Call IDs all routed through
     `cel_select_optional_field_at_vv`.  See **Plan-vs-execution
     delta 1** below.
-  - [x] `compiler_v2/api/engine.cc` `kRuntimeExports`: 8 new export
+  - [x] `eval/engine.cc` `kRuntimeExports`: 8 new export
     names (one per kernel).
-  - [x] `compiler_v2/runtime/BUILD.bazel`
+  - [x] `runtime/BUILD.bazel`
     `cel_runtime_wasm.bin --export=` lines: 8 new entries.
   - [x] **Conformance unlock: +92 PASS (1476 → 1568).** Target was
     ~25; actual unlock was 3.6× larger because the
@@ -749,11 +749,11 @@ In order of importance:
      declarations, source of truth for §1.8.
   3. `third_party/cel-cpp/parser/macro.cc` lines 296-326 —
      `optMap`/`optFlatMap` expansion (the Shape-C generator).
-  4. `compiler_v2/runtime/cel_data.h:46` — `CEL_OPTIONAL = 14`
+  4. `runtime/cel_data.h:46` — `CEL_OPTIONAL = 14`
      declaration + payload field.
-  5. `compiler_v2/runtime/cel_type.c:39` — the NULL arm waiting
+  5. `runtime/cel_type.c:39` — the NULL arm waiting
      to be filled in.
-  6. `compiler_v2/frontend/parse_and_check.cc:633-672` — where
+  6. `compiler/frontend/parse_and_check.cc:633-672` — where
      the 2-line wiring goes.
   7. `doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md`
      §1.5 — the Shape-C detector that `optMap` will ride.

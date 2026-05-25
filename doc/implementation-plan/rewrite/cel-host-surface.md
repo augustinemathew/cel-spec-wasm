@@ -209,7 +209,7 @@ Compile-time configuration. Contains **no runtime state** —
 declarations, types, and the compile-time descriptor pool only.
 
 ```cpp
-// compiler_v2/api/compiler.h
+// compiler/compiler.h
 namespace cel {  // public top-level namespace; internal machinery
                  // stays in `celwasm::`.
 
@@ -289,7 +289,7 @@ through wasmtime.  An `Engine` is required to evaluate; the
 wasmtime parse happens inside `Engine::Plan(program)`.
 
 ```cpp
-// compiler_v2/api/program.h
+// compiler/program.h
 namespace cel {
 
 class Program {
@@ -321,7 +321,7 @@ docs and shareable across all `Plan` calls.  Process-shared
 typically; per-tenant in multi-tenant hosts.
 
 ```cpp
-// compiler_v2/api/engine.h
+// eval/engine.h
 namespace cel {
 
 class Engine {
@@ -364,7 +364,7 @@ The live evaluator. Not serializable. Single-threaded (bind one
 per thread for concurrency).
 
 ```cpp
-// compiler_v2/api/instance.h — as-shipped M2
+// eval/instance.h — as-shipped M2
 namespace cel {
 
 class Instance {
@@ -411,7 +411,7 @@ Runtime-side config. Built with chainable methods and supplied to
 `Engine::Plan(program, bindings)`.
 
 ```cpp
-// compiler_v2/api/runtime_bindings.h
+// eval/runtime_bindings.h
 namespace cel {
 
 class RuntimeBindings {
@@ -483,7 +483,7 @@ The user-facing counterpart to the 24-byte `CelValue` wire struct.
 Construct, inspect, extract.
 
 ```cpp
-// compiler_v2/api/value.h
+// eval/value.h
 namespace celwasm {
 
 class Value {
@@ -559,7 +559,7 @@ doesn't pay to unbox each element through the C++ surface.
 ### 2.6 `Activation`
 
 ```cpp
-// compiler_v2/api/activation.h — as-shipped M2
+// eval/activation.h — as-shipped M2
 namespace cel {
 
 class Activation {
@@ -767,7 +767,7 @@ What *does* live at this layer is the representation of the two
 ### 4.1 `UNKNOWN` — payload is `AttributeId`
 
 ```cpp
-// compiler_v2/api/attribute.h
+// eval/attribute.h
 namespace cel {
 
 struct AttributeId {
@@ -799,7 +799,7 @@ done yet"). That behaves identically.
 ### 4.2 `ERROR` — payload is `(code, message, expr_id)`
 
 ```cpp
-// compiler_v2/api/error.h
+// eval/error.h
 namespace cel {
 
 struct ErrorPayload {
@@ -875,7 +875,7 @@ to one `CustomFunctionEntry` in the ABI. **No impl** — impls
 live in `RuntimeBindings` (§2.4), keyed by `overload_id`.
 
 ```cpp
-// compiler_v2/api/function.h
+// eval/function.h
 namespace cel {
 
 struct FunctionDecl {
@@ -1068,7 +1068,7 @@ the mismatch implies a build bug rather than a registry bug.
 ## 6. `cel.abi` — the self-contained contract
 
 v2 schema. Preserves v1 and extends. Lives at
-`compiler_v2/host/cel_abi.proto`.
+`eval/host/cel_abi.proto`.
 
 ```proto
 syntax = "proto3";
@@ -1240,8 +1240,8 @@ The section an intern reads first.
 ### 7.1 Basic
 
 ```cpp
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/value.h"
+#include "compiler/compiler.h"
+#include "eval/value.h"
 
 using ::cel::Compiler;
 using ::cel::RuntimeBindings;

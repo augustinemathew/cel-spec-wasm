@@ -423,13 +423,13 @@ compiler_v2/
 
 Each item is a `cp` from v1 to the v2 tree **without edits**. BUILD
 target names adjust (`//compiler/ir:typed_ast` →
-`//compiler_v2/ir:typed_ast`); file contents do not.
+`//compiler/ir:typed_ast`); file contents do not.
 
 | v1 path | v2 path | Why safe to port verbatim |
 |---|---|---|
-| `compiler/ir/typed_ast.{h,cc,_test.cc}` | `compiler_v2/ir/` | Thin wrapper over cel-cpp's `CheckedExpr`; stable, no M1 design depends on changing it |
-| `compiler/frontend/parse_and_check.{h,cc,_test.cc}` + `compiler/ir/static_subset.{h,cc,_test.cc}` | `compiler_v2/frontend/parse_and_check.{h,cc,_test.cc}` (merged) | Cel-cpp parser/checker wrapper **with `RejectDyn` folded in**. Static-subset enforcement is a frontend concern — it runs on checker output before the IR is built — so v2 collapses the two files into one translation unit: `ParseAndCheck` returns a `TypedAst` only if the static-subset gate passes. v1's `static_subset` header stops existing as a separate surface. |
-| `compiler/host/cel_log.{h,cc,_test.cc}` | `compiler_v2/host/` | Already-new log surface |
+| `compiler/ir/typed_ast.{h,cc,_test.cc}` | `compiler/ir/` | Thin wrapper over cel-cpp's `CheckedExpr`; stable, no M1 design depends on changing it |
+| `compiler/frontend/parse_and_check.{h,cc,_test.cc}` + `compiler/ir/static_subset.{h,cc,_test.cc}` | `compiler/frontend/parse_and_check.{h,cc,_test.cc}` (merged) | Cel-cpp parser/checker wrapper **with `RejectDyn` folded in**. Static-subset enforcement is a frontend concern — it runs on checker output before the IR is built — so v2 collapses the two files into one translation unit: `ParseAndCheck` returns a `TypedAst` only if the static-subset gate passes. v1's `static_subset` header stops existing as a separate surface. |
+| `compiler/host/cel_log.{h,cc,_test.cc}` | `eval/host/` | Already-new log surface |
 
 Everything else under `compiler_v2/` is **written from scratch**.
 Specifically:
@@ -444,8 +444,8 @@ Specifically:
     trap (v1's shape encodes the assumptions we're eliminating).
   - The wasmtime boilerplate (error mapping, linker setup) from
     `compiler/host/host_loader.{h,cc}` is **reauthored** —
-    transcribed into `compiler_v2/api/engine.cc` +
-    `compiler_v2/api/instance.cc` — and split: the engine + parsed
+    transcribed into `eval/engine.cc` +
+    `eval/instance.cc` — and split: the engine + parsed
     runtime half lives on `cel::Engine`, the per-Plan handles on
     `cel::Instance`.  See `two-phase-runtime-isolation.md` §4
     for the cut.
@@ -704,7 +704,7 @@ Next milestones, in order (each against the frozen M1 skeleton):
         the smallest surface increment that lets the conformance
         harness score `result_matcher: unknown` /
         `any_unknowns` tests — see
-        `compiler_v2/conformance/README.md`.
+        `conformance/README.md`.
   - **M3** — `kCall` + built-in overload set; fills
     `kBuiltinSeeds`; adds arithmetic / comparison / string ops in
     `cel_runtime`.
@@ -744,9 +744,9 @@ readers see what M1 left behind without grepping git history.
     paths.  Trivial; awaiting a profile that says it matters.
   - **`cel_log` source location.**  Inconsistent layout: the
     runtime-isolation work put the Engine/Instance internals
-    under `compiler_v2/api/internal/`, but `cel_log.{h,cc}` —
+    under `eval/internal/`, but `cel_log.{h,cc}` —
     structurally a peer (host-side wasmtime trampoline) —
-    stayed in `compiler_v2/host/`.  Either move `cel_log` to
+    stayed in `eval/host/`.  Either move `cel_log` to
     `api/internal/` (collapses host/) or move the engine-state
     structs back into `host/` (matches the original
     `cel-host-surface.md §8` layout for the planned
@@ -761,7 +761,7 @@ readers see what M1 left behind without grepping git history.
     blocker; the existing tests already verify literal eval
     works without allocation churn.
   - **Stale CLI / e2e BUILD targets.** `compiler_v2/cli/celwasmc_v2`
-    and `compiler_v2/e2e/eval_test` reference `srcs` files that
+    and `e2e/eval_test` reference `srcs` files that
     don't exist yet.  The runtime-isolation slice updated their
     deps to point at the new api/ trio but didn't write the
     sources.  Pre-existing condition; folded into M2 when the
