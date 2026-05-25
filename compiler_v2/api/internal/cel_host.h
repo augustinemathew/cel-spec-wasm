@@ -386,7 +386,7 @@ struct MessageTypeEntry {
 struct CelHostBindings {
   absl::Span<const FieldRefEntry> field_refs;
   absl::Span<const AttributeEntry> attributes;
-  absl::Span<const cel::AttributePattern> unknown_patterns;
+  absl::Span<const celwasm::AttributePattern> unknown_patterns;
   // type_id → resolved descriptor lookup.  Index 0 is the
   // sentinel; rows [1..N] are the ids `cel_make_message` calls
   // reference.

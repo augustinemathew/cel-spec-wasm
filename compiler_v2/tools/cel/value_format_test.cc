@@ -7,9 +7,9 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/match.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::tools::cel {
@@ -45,7 +45,9 @@ TEST(ValueFormatTest, ScalarString) {
 }
 
 TEST(ValueFormatTest, ScalarBytes) {
-  EXPECT_EQ(*FormatScalar(Value::Bytes(std::string("\x00\x01" "ab", 4))),
+  EXPECT_EQ(*FormatScalar(Value::Bytes(std::string("\x00\x01"
+                                                   "ab",
+                                                   4))),
             "b\"\\x00\\x01ab\"");
 }
 
@@ -72,7 +74,7 @@ TEST(ValueFormatTest, ScalarError) {
 }
 
 TEST(ValueFormatTest, ScalarUnknown) {
-  auto s = FormatScalar(Value::Unknown(::cel::AttributeId{7}));
+  auto s = FormatScalar(Value::Unknown(::celwasm::AttributeId{7}));
   ASSERT_THAT(s, IsOk());
   EXPECT_EQ(*s, "<unknown:7>");
 }

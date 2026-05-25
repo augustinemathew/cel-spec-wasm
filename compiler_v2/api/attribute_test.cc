@@ -8,7 +8,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOkAndHolds;
@@ -75,8 +75,7 @@ TEST(AttributeQualifierTest, CanonicalStringFormats) {
 TEST(AttributeQualifierTest, CanonicalStringRejectsUnprintable) {
   EXPECT_THAT(
       AttributeQualifier::OfString(std::string("\x01", 1)).AsCanonicalString(),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               HasSubstr("unprintable")));
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("unprintable")));
   EXPECT_THAT(AttributeQualifier::OfString("has\"quote").AsCanonicalString(),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("unprintable or quote")));
@@ -118,9 +117,8 @@ TEST(AttributeTest, BareVariable) {
 }
 
 TEST(AttributeTest, WithQualifiers) {
-  Attribute a("request",
-              {AttributeQualifier::OfString("auth"),
-               AttributeQualifier::OfString("claims")});
+  Attribute a("request", {AttributeQualifier::OfString("auth"),
+                          AttributeQualifier::OfString("claims")});
   EXPECT_EQ(a.variable_name(), "request");
   ASSERT_EQ(a.qualifier_path().size(), 2u);
   EXPECT_EQ(a.qualifier_path()[0].AsString(), "auth");
@@ -146,16 +144,14 @@ TEST(AttributeTest, OrderByVariableThenPath) {
 }
 
 TEST(AttributeTest, CanonicalStringDottedForStringQualifiers) {
-  Attribute a("request",
-              {AttributeQualifier::OfString("auth"),
-               AttributeQualifier::OfString("claims")});
+  Attribute a("request", {AttributeQualifier::OfString("auth"),
+                          AttributeQualifier::OfString("claims")});
   EXPECT_THAT(a.AsString(), IsOkAndHolds("request.auth.claims"));
 }
 
 TEST(AttributeTest, CanonicalStringBracketedForIndexQualifiers) {
-  Attribute a("xs",
-              {AttributeQualifier::OfInt(0),
-               AttributeQualifier::OfString("name")});
+  Attribute a("xs", {AttributeQualifier::OfInt(0),
+                     AttributeQualifier::OfString("name")});
   EXPECT_THAT(a.AsString(), IsOkAndHolds("xs[0].name"));
 }
 
@@ -171,57 +167,46 @@ TEST(AttributePatternTest, FullMatchExactPath) {
   AttributePattern p("request",
                      {AttributeQualifierPattern::OfString("auth"),
                       AttributeQualifierPattern::OfString("claims")});
-  Attribute a("request",
-              {AttributeQualifier::OfString("auth"),
-               AttributeQualifier::OfString("claims")});
+  Attribute a("request", {AttributeQualifier::OfString("auth"),
+                          AttributeQualifier::OfString("claims")});
   EXPECT_EQ(p.IsMatch(a), AttributePattern::MatchType::kFull);
 }
 
 TEST(AttributePatternTest, FullMatchWhenAttributeExtendsPattern) {
   // Pattern is a prefix of attribute — FULL: the attribute itself
   // (and every child) matches.
-  AttributePattern p("request",
-                     {AttributeQualifierPattern::OfString("auth")});
-  Attribute a("request",
-              {AttributeQualifier::OfString("auth"),
-               AttributeQualifier::OfString("claims")});
+  AttributePattern p("request", {AttributeQualifierPattern::OfString("auth")});
+  Attribute a("request", {AttributeQualifier::OfString("auth"),
+                          AttributeQualifier::OfString("claims")});
   EXPECT_EQ(p.IsMatch(a), AttributePattern::MatchType::kFull);
 }
 
 TEST(AttributePatternTest, PartialMatchWhenPatternExtendsAttribute) {
   // Pattern is longer than attribute — PARTIAL: the pattern names
   // something nested inside the attribute.
-  AttributePattern p("request",
-                     {AttributeQualifierPattern::OfString("auth"),
-                      AttributeQualifierPattern::OfString("claims"),
-                      AttributeQualifierPattern::OfString("iss")});
+  AttributePattern p("request", {AttributeQualifierPattern::OfString("auth"),
+                                 AttributeQualifierPattern::OfString("claims"),
+                                 AttributeQualifierPattern::OfString("iss")});
   Attribute a("request", {AttributeQualifier::OfString("auth")});
   EXPECT_EQ(p.IsMatch(a), AttributePattern::MatchType::kPartial);
 }
 
 TEST(AttributePatternTest, WildcardsMatchAnyQualifier) {
-  AttributePattern p(
-      "request",
-      {AttributeQualifierPattern::Wildcard(),
-       AttributeQualifierPattern::OfString("iss")});
-  Attribute a1("request",
-               {AttributeQualifier::OfString("auth"),
-                AttributeQualifier::OfString("iss")});
-  Attribute a2("request",
-               {AttributeQualifier::OfString("headers"),
-                AttributeQualifier::OfString("iss")});
+  AttributePattern p("request", {AttributeQualifierPattern::Wildcard(),
+                                 AttributeQualifierPattern::OfString("iss")});
+  Attribute a1("request", {AttributeQualifier::OfString("auth"),
+                           AttributeQualifier::OfString("iss")});
+  Attribute a2("request", {AttributeQualifier::OfString("headers"),
+                           AttributeQualifier::OfString("iss")});
   EXPECT_EQ(p.IsMatch(a1), AttributePattern::MatchType::kFull);
   EXPECT_EQ(p.IsMatch(a2), AttributePattern::MatchType::kFull);
 }
 
 TEST(AttributePatternTest, ConcreteMismatchDominatesWildcard) {
-  AttributePattern p(
-      "request",
-      {AttributeQualifierPattern::OfString("auth"),
-       AttributeQualifierPattern::Wildcard()});
-  Attribute a("request",
-              {AttributeQualifier::OfString("other"),
-               AttributeQualifier::OfString("anything")});
+  AttributePattern p("request", {AttributeQualifierPattern::OfString("auth"),
+                                 AttributeQualifierPattern::Wildcard()});
+  Attribute a("request", {AttributeQualifier::OfString("other"),
+                          AttributeQualifier::OfString("anything")});
   EXPECT_EQ(p.IsMatch(a), AttributePattern::MatchType::kNone);
 }
 
@@ -358,19 +343,20 @@ TEST(AttributePatternParseTest, BracketedBoolTrueAndFalse) {
   ASSERT_THAT(t, absl_testing::IsOk());
   ASSERT_THAT(f, absl_testing::IsOk());
   EXPECT_TRUE(t->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(true)));
-  EXPECT_FALSE(t->qualifier_path()[0].IsMatch(
-      AttributeQualifier::OfBool(false)));
-  EXPECT_TRUE(f->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
+  EXPECT_FALSE(
+      t->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
+  EXPECT_TRUE(
+      f->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
 }
 
 TEST(AttributePatternParseTest, BracketedQuotedString) {
   auto p = AttributePattern::Parse("m[\"key\"]");
   ASSERT_THAT(p, absl_testing::IsOk());
   ASSERT_EQ(p->qualifier_path().size(), 1u);
-  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(
-      AttributeQualifier::OfString("key")));
-  EXPECT_FALSE(p->qualifier_path()[0].IsMatch(
-      AttributeQualifier::OfString("other")));
+  EXPECT_TRUE(
+      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("key")));
+  EXPECT_FALSE(
+      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("other")));
 }
 
 TEST(AttributePatternParseTest, BracketedWildcard) {
@@ -379,7 +365,8 @@ TEST(AttributePatternParseTest, BracketedWildcard) {
   ASSERT_EQ(p->qualifier_path().size(), 1u);
   EXPECT_TRUE(p->qualifier_path()[0].IsWildcard());
   EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfInt(99)));
-  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
+  EXPECT_TRUE(
+      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
 }
 
 TEST(AttributePatternParseTest, MixedDottedAndBracketed) {
@@ -388,11 +375,11 @@ TEST(AttributePatternParseTest, MixedDottedAndBracketed) {
   ASSERT_THAT(p, absl_testing::IsOk());
   EXPECT_EQ(p->variable(), "request");
   ASSERT_EQ(p->qualifier_path().size(), 3u);
-  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(
-      AttributeQualifier::OfString("messages")));
+  EXPECT_TRUE(
+      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("messages")));
   EXPECT_TRUE(p->qualifier_path()[1].IsMatch(AttributeQualifier::OfInt(3)));
-  EXPECT_TRUE(p->qualifier_path()[2].IsMatch(
-      AttributeQualifier::OfString("text")));
+  EXPECT_TRUE(
+      p->qualifier_path()[2].IsMatch(AttributeQualifier::OfString("text")));
 }
 
 TEST(AttributePatternParseTest, EmptyBracketIsInvalid) {
@@ -424,12 +411,10 @@ TEST(AttributePatternParseTest, BracketedAtRootIsInvalid) {
 TEST(AttributePatternParseTest, WildcardParsedMatchesAnyMidQualifier) {
   auto parsed = AttributePattern::Parse("c.*.city");
   ASSERT_THAT(parsed, absl_testing::IsOk());
-  Attribute billing(
-      "c", {AttributeQualifier::OfString("billing_address"),
-            AttributeQualifier::OfString("city")});
-  Attribute shipping(
-      "c", {AttributeQualifier::OfString("shipping_address"),
-            AttributeQualifier::OfString("city")});
+  Attribute billing("c", {AttributeQualifier::OfString("billing_address"),
+                          AttributeQualifier::OfString("city")});
+  Attribute shipping("c", {AttributeQualifier::OfString("shipping_address"),
+                           AttributeQualifier::OfString("city")});
   EXPECT_EQ(parsed->IsMatch(billing), AttributePattern::MatchType::kFull);
   EXPECT_EQ(parsed->IsMatch(shipping), AttributePattern::MatchType::kFull);
 }
@@ -446,4 +431,4 @@ TEST(AttributeIdTest, EqualityByNumericId) {
 // into compiler_v2/api/error.h to keep attribute/ compilation lean.
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm

@@ -1441,17 +1441,17 @@ const FieldRefEntry* absl_nullable ResolveFieldRef(
 // AttributeEntry.qualifiers are interned as strings (the CEL paths
 // are dotted-only at M2; no array indexing).  Returns nullopt if
 // `attribute_id` is the sentinel (0) or OOR.
-std::optional<cel::Attribute> ResolveAttribute(const CelHostBindings& bindings,
-                                               uint32_t attribute_id) {
+std::optional<celwasm::Attribute> ResolveAttribute(
+    const CelHostBindings& bindings, uint32_t attribute_id) {
   if (attribute_id == 0) return std::nullopt;
   if (attribute_id >= bindings.attributes.size()) return std::nullopt;
   const AttributeEntry& a = bindings.attributes[attribute_id];
-  std::vector<cel::AttributeQualifier> path;
+  std::vector<celwasm::AttributeQualifier> path;
   path.reserve(a.qualifiers.size());
   for (const std::string& q : a.qualifiers) {
-    path.push_back(cel::AttributeQualifier::OfString(q));
+    path.push_back(celwasm::AttributeQualifier::OfString(q));
   }
-  return cel::Attribute(a.root_variable, std::move(path));
+  return celwasm::Attribute(a.root_variable, std::move(path));
 }
 
 // Build the effective attribute for the kSelect being evaluated:
@@ -1461,12 +1461,13 @@ std::optional<cel::Attribute> ResolveAttribute(const CelHostBindings& bindings,
 // node interned its own; M2 only interns the operand and lets the
 // trampoline append the leaf qualifier here so the pattern matcher
 // sees the full path the user wrote (`c.name`, not just `c`).
-cel::Attribute EffectiveSelectAttribute(const cel::Attribute& operand_attr,
-                                        absl::string_view field_name) {
-  std::vector<cel::AttributeQualifier> path(
+celwasm::Attribute EffectiveSelectAttribute(
+    const celwasm::Attribute& operand_attr, absl::string_view field_name) {
+  std::vector<celwasm::AttributeQualifier> path(
       operand_attr.qualifier_path().begin(),
       operand_attr.qualifier_path().end());
-  path.push_back(cel::AttributeQualifier::OfString(std::string(field_name)));
+  path.push_back(
+      celwasm::AttributeQualifier::OfString(std::string(field_name)));
   return {std::string(operand_attr.variable_name()), std::move(path)};
 }
 
@@ -1482,11 +1483,11 @@ bool MatchesAnyUnknownPattern(const CelHostBindings& bindings,
   if (bindings.unknown_patterns.empty()) return false;
   auto attr = ResolveAttribute(bindings, attribute_id);
   if (!attr.has_value()) return false;
-  const cel::Attribute eff = EffectiveSelectAttribute(*attr, field_name);
+  const celwasm::Attribute eff = EffectiveSelectAttribute(*attr, field_name);
   return std::any_of(
       bindings.unknown_patterns.begin(), bindings.unknown_patterns.end(),
-      [&eff](const cel::AttributePattern& pat) {
-        return pat.IsMatch(eff) == cel::AttributePattern::MatchType::kFull;
+      [&eff](const celwasm::AttributePattern& pat) {
+        return pat.IsMatch(eff) == celwasm::AttributePattern::MatchType::kFull;
       });
 }
 

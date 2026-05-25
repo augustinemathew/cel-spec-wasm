@@ -29,7 +29,6 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/compiler.h"
@@ -38,11 +37,13 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
 namespace {
+using ::celwasm::AttributePattern;
 
 using ::absl_testing::IsOk;
 using ::celwasm::testdata::Customer;
@@ -641,13 +642,15 @@ TEST_F(ControlFlowE2ETest, AndOfTrueAndTrueIsTrue) {
 }
 
 TEST_F(ControlFlowE2ETest, AndOfTrueAndFalseIsFalse) {
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "true && false"), {}).AsBool(),
-            false);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "true && false"), {}).AsBool(),
+      false);
 }
 
 TEST_F(ControlFlowE2ETest, OrOfFalseAndTrueIsTrue) {
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "false || true"), {}).AsBool(),
-            true);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "false || true"), {}).AsBool(),
+      true);
 }
 
 TEST_F(ControlFlowE2ETest, OrOfFalseAndFalseIsFalse) {
@@ -657,11 +660,13 @@ TEST_F(ControlFlowE2ETest, OrOfFalseAndFalseIsFalse) {
 }
 
 TEST_F(ControlFlowE2ETest, NotOfTrueIsFalse) {
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "!true"), {}).AsBool(), false);
+  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "!true"), {}).AsBool(),
+            false);
 }
 
 TEST_F(ControlFlowE2ETest, NotOfFalseIsTrue) {
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "!false"), {}).AsBool(), true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "!false"), {}).AsBool(),
+            true);
 }
 
 TEST_F(ControlFlowE2ETest, TernaryTrueSelectsThenArm) {
@@ -953,9 +958,8 @@ TEST_F(DynPassthroughE2ETest, DynScalarEqualsCrossNumeric) {
   // `dyn(int) == uint` reaches the runtime's cross-numeric ladder
   // — the kernel returns true since 1 and 1u compare equal under
   // langdef §"Numeric equality".
-  EXPECT_EQ(
-      *EvalOk(CompilePlan(*CompilerEmpty(), "dyn(1) == 1u"), {}).AsBool(),
-      true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "dyn(1) == 1u"), {}).AsBool(),
+            true);
 }
 
 TEST_F(DynPassthroughE2ETest, DynScalarEqualsDouble) {
@@ -991,9 +995,9 @@ TEST_F(DynPassthroughE2ETest, DynBoolThroughTernary) {
   // ternary cond reads the dyn call's annotation, which Slice 1.5
   // forwards to the bool literal's storage — so the ternary
   // detects bool-kind / true-payload and selects the then-arm.
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "dyn(true) ? 1 : 2"), {})
-                 .AsInt(),
-            1);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "dyn(true) ? 1 : 2"), {}).AsInt(),
+      1);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1067,7 +1071,9 @@ INSTANTIATE_TEST_SUITE_P(
         CrossNumCmpRow{"lt_double_dyn_int", "1.0 < dyn(2)", true},
         CrossNumCmpRow{"lt_double_dyn_uint", "1.0 < dyn(2u)", true},
         CrossNumCmpRow{"lt_double_dyn_double", "1.0 < dyn(2.0)", true}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     LeMatrix, CrossNumericCmpExhaustive,
@@ -1090,7 +1096,9 @@ INSTANTIATE_TEST_SUITE_P(
         CrossNumCmpRow{"le_double_dyn_int_eq", "2.0 <= dyn(2)", true},
         CrossNumCmpRow{"le_double_dyn_uint_eq", "2.0 <= dyn(2u)", true},
         CrossNumCmpRow{"le_double_dyn_double_eq", "2.0 <= dyn(2.0)", true}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     GtMatrix, CrossNumericCmpExhaustive,
@@ -1113,7 +1121,9 @@ INSTANTIATE_TEST_SUITE_P(
         CrossNumCmpRow{"gt_double_dyn_int", "3.0 > dyn(2)", true},
         CrossNumCmpRow{"gt_double_dyn_uint", "3.0 > dyn(2u)", true},
         CrossNumCmpRow{"gt_double_dyn_double", "3.0 > dyn(2.0)", true}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     GeMatrix, CrossNumericCmpExhaustive,
@@ -1136,7 +1146,9 @@ INSTANTIATE_TEST_SUITE_P(
         CrossNumCmpRow{"ge_double_dyn_int_eq", "2.0 >= dyn(2)", true},
         CrossNumCmpRow{"ge_double_dyn_uint_eq", "2.0 >= dyn(2u)", true},
         CrossNumCmpRow{"ge_double_dyn_double_eq", "2.0 >= dyn(2.0)", true}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Boundary TEST_F's — each names one langdef-cited invariant.
 
@@ -1255,7 +1267,9 @@ INSTANTIATE_TEST_SUITE_P(
         NaNOrderRow{"ge_nan_double", "dyn(0.0/0.0) >= 0.0"},
         NaNOrderRow{"ge_nan_nan", "dyn(0.0/0.0) >= 0.0/0.0"},
         NaNOrderRow{"ge_finite_nan", "dyn(0) >= 0.0/0.0"}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Membership matrix: `<query> in <list>` and `<query> in <map>`
 // across query × element kinds × {true, false}.  Per langdef
@@ -1288,31 +1302,31 @@ INSTANTIATE_TEST_SUITE_P(
         MembershipRow{"int_in_ints_false", "dyn(4) in [1, 2, 3]", false},
         MembershipRow{"int_in_uints_true", "dyn(2) in [1u, 2u, 3u]", true},
         MembershipRow{"int_in_uints_false", "dyn(4) in [1u, 2u, 3u]", false},
-        MembershipRow{"int_in_doubles_true",
-                      "dyn(2) in [1.0, 2.0, 3.0]", true},
-        MembershipRow{"int_in_doubles_false",
-                      "dyn(4) in [1.0, 2.0, 3.0]", false},
+        MembershipRow{"int_in_doubles_true", "dyn(2) in [1.0, 2.0, 3.0]", true},
+        MembershipRow{"int_in_doubles_false", "dyn(4) in [1.0, 2.0, 3.0]",
+                      false},
         // uint query.
         MembershipRow{"uint_in_ints_true", "dyn(2u) in [1, 2, 3]", true},
         MembershipRow{"uint_in_ints_false", "dyn(4u) in [1, 2, 3]", false},
         MembershipRow{"uint_in_uints_true", "dyn(2u) in [1u, 2u, 3u]", true},
         MembershipRow{"uint_in_uints_false", "dyn(4u) in [1u, 2u, 3u]", false},
-        MembershipRow{"uint_in_doubles_true",
-                      "dyn(2u) in [1.0, 2.0, 3.0]", true},
-        MembershipRow{"uint_in_doubles_false",
-                      "dyn(4u) in [1.0, 2.0, 3.0]", false},
+        MembershipRow{"uint_in_doubles_true", "dyn(2u) in [1.0, 2.0, 3.0]",
+                      true},
+        MembershipRow{"uint_in_doubles_false", "dyn(4u) in [1.0, 2.0, 3.0]",
+                      false},
         // double query.
         MembershipRow{"double_in_ints_true", "dyn(2.0) in [1, 2, 3]", true},
         MembershipRow{"double_in_ints_false", "dyn(4.0) in [1, 2, 3]", false},
-        MembershipRow{"double_in_uints_true",
-                      "dyn(2.0) in [1u, 2u, 3u]", true},
-        MembershipRow{"double_in_uints_false",
-                      "dyn(4.0) in [1u, 2u, 3u]", false},
-        MembershipRow{"double_in_doubles_true",
-                      "dyn(2.0) in [1.0, 2.0, 3.0]", true},
-        MembershipRow{"double_in_doubles_false",
-                      "dyn(4.0) in [1.0, 2.0, 3.0]", false}),
-    [](const auto& info) { return info.param.name; });
+        MembershipRow{"double_in_uints_true", "dyn(2.0) in [1u, 2u, 3u]", true},
+        MembershipRow{"double_in_uints_false", "dyn(4.0) in [1u, 2u, 3u]",
+                      false},
+        MembershipRow{"double_in_doubles_true", "dyn(2.0) in [1.0, 2.0, 3.0]",
+                      true},
+        MembershipRow{"double_in_doubles_false", "dyn(4.0) in [1.0, 2.0, 3.0]",
+                      false}),
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     MapMembership, CrossNumericMembershipE2ETest,
@@ -1321,16 +1335,16 @@ INSTANTIATE_TEST_SUITE_P(
         // rejects it on cel_map_insert — so map keys are int / uint /
         // (string / bool).  The query side, however, accepts any
         // numeric kind via the polymorphic ladder.
-        MembershipRow{"int_in_intkeys_true",
-                      "dyn(1) in {1: \"a\", 2: \"b\"}", true},
-        MembershipRow{"int_in_intkeys_false",
-                      "dyn(3) in {1: \"a\", 2: \"b\"}", false},
+        MembershipRow{"int_in_intkeys_true", "dyn(1) in {1: \"a\", 2: \"b\"}",
+                      true},
+        MembershipRow{"int_in_intkeys_false", "dyn(3) in {1: \"a\", 2: \"b\"}",
+                      false},
         MembershipRow{"int_in_uintkeys_true",
                       "dyn(1) in {1u: \"a\", 2u: \"b\"}", true},
         MembershipRow{"int_in_uintkeys_false",
                       "dyn(3) in {1u: \"a\", 2u: \"b\"}", false},
-        MembershipRow{"uint_in_intkeys_true",
-                      "dyn(1u) in {1: \"a\", 2: \"b\"}", true},
+        MembershipRow{"uint_in_intkeys_true", "dyn(1u) in {1: \"a\", 2: \"b\"}",
+                      true},
         MembershipRow{"uint_in_intkeys_false",
                       "dyn(3u) in {1: \"a\", 2: \"b\"}", false},
         MembershipRow{"uint_in_uintkeys_true",
@@ -1347,7 +1361,9 @@ INSTANTIATE_TEST_SUITE_P(
                       "dyn(1.0) in {1u: \"a\", 2u: \"b\"}", true},
         MembershipRow{"double_in_uintkeys_false",
                       "dyn(3.0) in {1u: \"a\", 2u: \"b\"}", false}),
-    [](const auto& info) { return info.param.name; });
+    [](const auto& info) {
+      return info.param.name;
+    });
 
 // ── Membership NaN edges.  Spec: NaN is unequal to all values
 // including itself; therefore NaN is NEVER `in` any list/map.

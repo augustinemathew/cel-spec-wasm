@@ -13,6 +13,7 @@
 
 namespace cel {
 namespace {
+using ::celwasm::AttributeId;
 
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
@@ -105,9 +106,8 @@ TEST(ValueTest, UnknownCarriesAttributeId) {
 }
 
 TEST(ValueTest, ErrorCarriesPayload) {
-  auto v = Value::Error(ErrorPayload{.code = ErrorCode::kDivideByZero,
-                                     .message = "bad math",
-                                     .expr_id = 42});
+  auto v = Value::Error(ErrorPayload{
+      .code = ErrorCode::kDivideByZero, .message = "bad math", .expr_id = 42});
   EXPECT_TRUE(v.IsError());
   EXPECT_FALSE(v.IsUnknown());
   auto info = v.ErrorInfo();
@@ -121,9 +121,8 @@ TEST(ValueTest, StructurallyEqualsSameKindSameValue) {
   EXPECT_TRUE(Value::Int(5).StructurallyEquals(Value::Int(5)));
   EXPECT_TRUE(Value::String("a").StructurallyEquals(Value::String("a")));
   EXPECT_TRUE(Value::Null().StructurallyEquals(Value::Null()));
-  EXPECT_TRUE(
-      Value::Unknown(AttributeId{3})
-          .StructurallyEquals(Value::Unknown(AttributeId{3})));
+  EXPECT_TRUE(Value::Unknown(AttributeId{3})
+                  .StructurallyEquals(Value::Unknown(AttributeId{3})));
 }
 
 TEST(ValueTest, StructurallyDoesNotEqualAcrossKinds) {
@@ -144,14 +143,12 @@ TEST(ValueTest, StructurallyDoesNotEqualSameKindDifferentValue) {
 TEST(ValueTest, ErrorStructurallyEqualsFieldByField) {
   EXPECT_TRUE(
       Value::Error({.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})
-          .StructurallyEquals(Value::Error({.code = ErrorCode::kOverflow,
-                                            .message = "x",
-                                            .expr_id = 1})));
+          .StructurallyEquals(Value::Error(
+              {.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})));
   EXPECT_FALSE(
       Value::Error({.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})
-          .StructurallyEquals(Value::Error({.code = ErrorCode::kOverflow,
-                                            .message = "y",
-                                            .expr_id = 1})));
+          .StructurallyEquals(Value::Error(
+              {.code = ErrorCode::kOverflow, .message = "y", .expr_id = 1})));
 }
 
 // Value::List + Value::Map both land in cel_host.cc (one-way dep:
@@ -169,10 +166,10 @@ TEST(ValueTest, KindNamesCoverAllKinds) {
 
 TEST(ValueTest, CopyableAndMovable) {
   auto a = Value::String("abc");
-  Value b = a;                                      // copy
+  Value b = a;  // copy
   EXPECT_THAT(b.AsString(), IsOkAndHolds("abc"));
-  EXPECT_THAT(a.AsString(), IsOkAndHolds("abc"));   // original intact
-  Value c = std::move(a);                           // move
+  EXPECT_THAT(a.AsString(), IsOkAndHolds("abc"));  // original intact
+  Value c = std::move(a);                          // move
   EXPECT_THAT(c.AsString(), IsOkAndHolds("abc"));
 }
 

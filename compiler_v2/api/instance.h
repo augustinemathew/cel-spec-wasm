@@ -79,7 +79,7 @@ class Instance {
   // See `rewrite/m2-ident-select-unknowns.md`.
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> PartialEval(
       const Activation& activation,
-      absl::Span<const AttributePattern> unknowns);
+      absl::Span<const celwasm::AttributePattern> unknowns);
 
   // Linear-memory byte size for this Instance's host-owned memory.
   // Reads through the wasmtime store, so will crash / UB if the
