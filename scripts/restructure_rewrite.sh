@@ -181,10 +181,12 @@ SED_RULES=(
   's#compiler_v2/testdata/#testdata/#g'
 
   # ===================================================================
-  # Heritage proto/tests moves (§1.2 spec rows).
+  # Heritage moves (§1.2 spec rows).
+  # NOTE: proto/ move is DEFERRED (Q5 — vendored cel-cpp pins
+  # @com_google_cel_spec//proto/cel; moving it breaks the build). proto/ STAYS
+  # at root, so NO //proto/cel rewrite here — adding one would break W3.
+  # Only tests/ moves.
   # ===================================================================
-  's#@cel-spec//proto/cel#//spec/proto/cel#g'
-  's#//proto/cel#//spec/proto/cel#g'
   's#//tests/simple#//spec/tests/simple#g'
 )
 

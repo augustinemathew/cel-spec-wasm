@@ -114,8 +114,10 @@ The key facts that shape the split:
 ├── testdata/            shared proto fixtures + cel_cpp_oracle
 │
 ├── spec/                cel-spec HERITAGE (inherited contract)
-│   ├── proto/           cel/expr/*.proto + conformance/* + policy
 │   └── tests/simple/testdata/*.textproto
+│   # proto/ STAYS at root for now — DEFERRED (Q5): vendored cel-cpp pins
+│   # @com_google_cel_spec//proto/cel/*, which resolves to our root //proto/cel;
+│   # the move is folded into the module-rename workstream (§10).
 │
 └── doc/  scripts/  third_party/   unchanged
 ```
@@ -165,11 +167,20 @@ deferrable workstream).
 `docker/` + `cloudbuild.yaml` are compiler CI or Go-regen-only before deleting.
 
 ### 5.2 Heritage → `spec/`
-`mv proto spec/proto`, `mv tests spec/tests`. **Fix `strip_import_prefix`:**
-`"/proto"` → `"/spec/proto"` in every `proto_library` (the `.proto`
-`import "cel/expr/…"` statements do **not** change — load-bearing). Rewrite
-labels: `//proto/cel/` → `//spec/proto/cel/`, `@cel-spec//proto/cel/` →
-`//spec/proto/cel/`, `//tests/simple:` → `//spec/tests/simple:`.
+`mv tests spec/tests`; rewrite `//tests/simple:` → `//spec/tests/simple:`.
+
+> **Plan-vs-execution delta (Q5, 2026-05-25): the `proto/` move is DEFERRED.**
+> Vendored `third_party/cel-cpp` hardcodes `@com_google_cel_spec//proto/cel/*`
+> in ~195 BUILD sites; our `module(name="cel-spec")` + `local_path_override` of
+> cel-cpp makes that resolve to our root `//proto/cel`, which we build via
+> cel-cpp's parser/checker. Moving `proto/` breaks the build and every fix is
+> out of scope (editing cel-cpp is forbidden; `local_path_override` takes no
+> patch; an alias-shim doesn't actually shed `proto/` and adds unrequested
+> debt). The move is the natural tail of the module rename (§10): once we stop
+> being the `cel-spec` module, cel-cpp consumes upstream cel-spec protos and our
+> local `proto/` relocates to `spec/proto/` cleanly. So `tests/` moves now;
+> `proto/` stays at root with `strip_import_prefix = "/proto"` unchanged until
+> the rename. See questions-log Q5.
 
 ### 5.3 `compiler_v2/` strip + role grouping
 `git mv` each child to its §3 home, then repo-wide rewrite of
@@ -367,7 +378,13 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
 ## 10. Out of scope / future
 
   - **Rename the module** `cel-spec` → e.g. `celwasmc` — the real "disconnect
-    from parent"; own pass once the move settles.
+    from parent"; own pass once the move settles. **This unblocks the `proto/`
+    → `spec/proto/` move (Q5):** today vendored cel-cpp resolves
+    `@com_google_cel_spec//proto/cel/*` to our root `//proto/cel`, so `proto/`
+    cannot move while we remain the `cel-spec` module. Post-rename, cel-cpp
+    consumes the upstream cel-spec protos (BCR) and our local `proto/` relocates
+    to `spec/proto/` cleanly. Until then `proto/` stays at root (the `tests/`
+    half of the heritage move shipped; the `proto/` half rides with this rename).
   - **First TS/Go binding** under `bindings/` — slot reserved, no code now.
   - **Collapse the doubled `conformance` in `spec/proto/cel/expr/conformance/`**
     — inherited package layout; flattening changes proto package names. Skip.

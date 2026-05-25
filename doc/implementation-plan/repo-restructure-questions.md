@@ -11,6 +11,42 @@ Resolution: …
 
 ---
 
+### Q5 — `proto/` move breaks vendored cel-cpp (blocked on module rename) [RESOLVED 2026-05-25 — DESIGN CHANGE]
+Context (W1·Spec): vendored `third_party/cel-cpp` hardcodes
+`@com_google_cel_spec//proto/cel/expr:*` in ~195 BUILD sites (e.g.
+`parser/BUILD:71`). Our root module is `module(name = "cel-spec")` and cel-cpp is
+wired via `local_path_override(module_name="cel-cpp")` with
+`bazel_dep(name="cel-spec", repo_name="com_google_cel_spec")`, so
+`@com_google_cel_spec//proto/cel/expr` resolves to **our root `//proto/cel/expr`**.
+We build cel-cpp's `parser`/`checker`/`common` libs, so moving `proto/` →
+`spec/proto/` makes those deps dangle → build RED. The W1·Spec agent correctly
+refused to commit and reverted to W0.
+
+Why every in-scope fix is bad:
+  - Edit cel-cpp's 195 refs → forbidden (CLAUDE.md: don't edit third_party/cel-cpp).
+  - Patch via override → `local_path_override` takes no `patches`; would require
+    switching cel-cpp to an archive/git override = out-of-scope infra change.
+  - Alias-shim packages at `//proto/cel/**` → does NOT shed `proto/` from root
+    (the packages still exist), adds a ~20-target compat layer nobody asked for,
+    and is exactly the "temporary shim that becomes load-bearing" debt CLAUDE.md
+    warns against.
+
+The real enabler is the **module rename / "disconnect from parent"**, which the
+design ALREADY scopes to future work (design §10): once our module stops being
+`cel-spec`, cel-cpp would consume the real upstream cel-spec protos (from BCR)
+and our local protos move to `spec/proto/` cleanly with no cel-cpp coupling.
+
+RESOLUTION (design change, applied to the plan):
+  - **`tests/` → `spec/tests/` proceeds now** — SAFE: only consumer is
+    `compiler_v2/conformance/BUILD` (→ `//spec/tests/simple`); cel-cpp's own
+    conformance/BUILD references `cel_spec//tests` but we never build it.
+  - **`proto/` stays at root `//proto/cel/**` for now** — its move is folded into
+    the module-rename workstream (design §10). Documented in design §3/§5.2/§8/§10
+    and execution §1.1/§1.4/W1·Spec. Reversible, zero third_party edits, green.
+  - FLAG FOR OWNER on return: if you want `proto/` under `spec/` before the module
+    rename, the only green path is the alias-shim (call it explicitly and I'll do
+    it); otherwise it lands free with the rename.
+
 ### Q4 — git worktree isolation unavailable in this environment [RESOLVED 2026-05-25]
 Context: plan assumes parallel agents run in `isolation: worktree`. The Agent
 tool errors: "Cannot create agent worktree: not in a git repository and no

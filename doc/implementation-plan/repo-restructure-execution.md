@@ -77,7 +77,7 @@ For `rdeps(universe, …)` / `visible(…)` queries the *universe* is `$PROJ`, n
 | `compiler_v2/abi/` | `abi/` |
 | `compiler_v2/runtime/` | `runtime/` |
 | `compiler_v2/{tools,conformance,e2e,bench,testdata}/` | `{tools,conformance,e2e,bench,testdata}/` |
-| `proto/` | `spec/proto/` |
+| ~~`proto/`~~ | ~~`spec/proto/`~~ — **DEFERRED to the module-rename workstream (Q5, design §10).** Vendored cel-cpp pins `@com_google_cel_spec//proto/cel/*` → our root `//proto/cel`; moving it breaks the build with no in-scope fix. `proto/` STAYS at root for now. |
 | `tests/` | `spec/tests/` |
 
 DELETE: `compiler_v2/probes/`, `wasm_compilation_experiments/`, Go surface
@@ -97,7 +97,7 @@ DELETE: `compiler_v2/probes/`, `wasm_compilation_experiments/`, Go surface
 | `//compiler_v2/runtime` | `//runtime` |
 | `//compiler_v2/{tools,conformance,e2e,bench,testdata}` | `//{tools,conformance,e2e,bench,testdata}` |
 | `//compiler_v2/host` | `//eval` (host folds into eval target, or `//eval:host`) |
-| `//proto/cel`, `@cel-spec//proto/cel` | `//spec/proto/cel` |
+| ~~`//proto/cel`, `@cel-spec//proto/cel`~~ | ~~`//spec/proto/cel`~~ — **DEFERRED (Q5): `proto/` stays at root, labels unchanged.** |
 | `//tests/simple` | `//spec/tests/simple` |
 
 ### 1.3 `#include` rewrites
@@ -115,9 +115,9 @@ Same prefix logic, applied to `#include "compiler_v2/…"`:
 | `compiler_v2/abi/`, `…/runtime/`, `…/{tools,conformance,e2e,bench,testdata}/` | strip `compiler_v2/` |
 
 ### 1.4 Other rewrites
-  - `strip_import_prefix = "/proto"` → `"/spec/proto"` in every `proto_library`
-    under `spec/proto/**/BUILD.bazel`. **`.proto` `import "cel/expr/…"` lines do
-    NOT change.**
+  - ~~`strip_import_prefix = "/proto"` → `"/spec/proto"`~~ — **DEFERRED with the
+    `proto/` move (Q5).** `proto/` stays at root; its `proto_library`s keep
+    `strip_import_prefix = "/proto"` unchanged. (Only `tests/` moves in W1.)
   - `namespace celwasm::api` (802 sites) — **out of scope here**; W6 (design §7).
     Leave `celwasm::api` intact in W0–W5.
   - `default_visibility = ["//compiler_v2:__subpackages__"]` (18 of 19 BUILDs)
@@ -211,28 +211,26 @@ GATE: bazel build //compiler_v2/... green (deletions don't break the build).
 Commit: "restructure: delete probes/experiments/Go surface; add rewrite script".
 ```
 
-### W1·Spec — Heritage → spec/ [PARALLEL, worktree]
+### W1·Spec — Heritage → spec/ [SERIAL on restructure branch]
 ```
-Branch: restructure-spec (from restructure@W0).
-1. git mv proto spec/proto ; git mv tests spec/tests.
-2. §1.4: strip_import_prefix "/proto" → "/spec/proto" in every proto_library
-   under spec/proto/**/BUILD.bazel. Leave .proto import lines untouched.
-3. Apply §1.2 spec rows: //proto/cel & @cel-spec//proto/cel → //spec/proto/cel ;
-   //tests/simple → //spec/tests/simple — across ALL BUILD files
-   (the ~10 compiler_v2 consumers + the internal spec/proto BUILDs).
-4. Remove leftover emptied conformance/{proto2,proto3,test} dirs if W0 left them.
-GATE: bazel build //compiler_v2/conformance/... //compiler_v2/e2e/... green.
-FILES: spec/proto/**, spec/tests/**, and the BUILD files referencing proto/tests
-       ONLY. Do not touch .cc/.h or docs.
-Report TOUCHED.
+NOTE: proto/ move DEFERRED (Q5) — only tests/ moves in W1. Worktree isolation
+unavailable (Q4) so this runs serially on the restructure branch.
+1. git mv tests spec/tests.   (proto/ stays at root — see Q5/§1.1.)
+2. §1.2: //tests/simple → //spec/tests/simple across ALL BUILD files
+   (the only consumer is compiler_v2/conformance/BUILD).
+GATE: bazel build //compiler_v2/conformance/... //compiler_v2/e2e/... green;
+      git ls-files tests → empty; no //tests/simple left outside third_party.
+DONE in this session by the orchestrator directly (small move).
 ```
 
 ### W1·Docs — Path references in PLAN docs [PARALLEL, worktree]
 ```
 Branch: restructure-docs (from restructure@W0).
-Rewrite every compiler_v2/, proto/, tests/ path string to its FINAL §1.1 target
+Rewrite every compiler_v2/ and tests/ path string to its FINAL §1.1 target
 in: doc/**/*.md ONLY (the forward-looking design + milestone plans).
 Also fix relative doc links broken by the moves.
+DO NOT rewrite proto/ paths — the proto/ move is DEFERRED (Q5); proto/ stays at
+root, so proto/cel/… references in docs remain correct as-is.
 EXCLUDE: CLAUDE.md and the root README.md — those are AS-BUILT operational
 docs that need substantive (not just path) rewrites and must describe a shape
 that exists; they are handled post-W3 by W4·Conventions, NOT here. Rewriting
