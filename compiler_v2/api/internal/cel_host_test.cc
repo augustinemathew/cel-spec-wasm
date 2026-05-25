@@ -7,6 +7,7 @@
 #include "compiler_v2/api/internal/cel_host.h"
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -16,16 +17,17 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "compiler_v2/api/error.h"
 #include "compiler_v2/api/internal/cel_host_test_fakes.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
+#include "google/protobuf/struct.pb.h"
 #include "google/protobuf/timestamp.pb.h"
 #include "google/protobuf/wrappers.pb.h"
 #include "gtest/gtest.h"
@@ -723,6 +725,95 @@ class PackHarness {
     f_.mem.WriteCelValue(kSrcSlot, cv);
   }
 
+  // Stage a bare scalar / null CelValue at kSrcSlot.  String/bytes
+  // payloads must be written into the arena separately; this overload
+  // covers null / bool / int / uint / double.
+  void StageScalar(const CelValue& cv) {
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a CEL_STRING at kSrcSlot, copying `s` into the arena.
+  void StageString(absl::string_view s) {
+    const uint32_t off = arena_top_;
+    std::memcpy(f_.mem.data() + off, s.data(), s.size());
+    arena_top_ += static_cast<uint32_t>(s.size());
+    CelValue cv{};
+    cv.kind = CEL_STRING;
+    cv.payload.s.ptr = off;
+    cv.payload.s.len = static_cast<uint32_t>(s.size());
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a CEL_DURATION / CEL_TIMESTAMP at kSrcSlot from a
+  // (seconds, nanos) pair.
+  void StageDurTs(CelKind kind, int64_t seconds, int32_t nanos) {
+    CelValue cv{};
+    cv.kind = kind;
+    CelDurTs dt{seconds, nanos, 0};
+    if (kind == CEL_DURATION) {
+      cv.payload.dur = dt;
+    } else {
+      cv.payload.ts = dt;
+    }
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a CEL_LIST_ARENA at kSrcSlot from a vector of element
+  // CelValues.  Lays out an ArenaListHeader + contiguous 24-byte
+  // element run in a scratch arena region.
+  void StageArenaList(const std::vector<CelValue>& elems) {
+    const uint32_t elems_off = arena_top_;
+    for (const CelValue& e : elems) {
+      f_.mem.WriteCelValue(arena_top_, e);
+      arena_top_ += static_cast<uint32_t>(sizeof(CelValue));
+    }
+    const uint32_t hdr_off = arena_top_;
+    f_.mem.WriteU32(hdr_off + 0, static_cast<uint32_t>(elems.size()));
+    f_.mem.WriteU32(hdr_off + 4, static_cast<uint32_t>(elems.size()));
+    f_.mem.WriteU32(hdr_off + 8, elems_off);
+    f_.mem.WriteU32(hdr_off + 12, 0);
+    arena_top_ += 16;
+    CelValue cv{};
+    cv.kind = CEL_LIST_ARENA;
+    cv.payload.arena_list.header_ptr = hdr_off;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage a CEL_MAP_ARENA at kSrcSlot from (key, val) CelValue pairs.
+  // Lays out an ArenaMapHeader + contiguous 48-byte entry run.
+  void StageArenaMap(
+      const std::vector<std::pair<CelValue, CelValue>>& entries) {
+    const uint32_t entries_off = arena_top_;
+    for (const auto& [k, v] : entries) {
+      f_.mem.WriteCelValue(arena_top_, k);
+      f_.mem.WriteCelValue(arena_top_ + 24, v);
+      arena_top_ += 48;
+    }
+    const uint32_t hdr_off = arena_top_;
+    f_.mem.WriteU32(hdr_off + 0, static_cast<uint32_t>(entries.size()));
+    f_.mem.WriteU32(hdr_off + 4, static_cast<uint32_t>(entries.size()));
+    f_.mem.WriteU32(hdr_off + 8, entries_off);
+    f_.mem.WriteU32(hdr_off + 12, 0);
+    arena_top_ += 16;
+    CelValue cv{};
+    cv.kind = CEL_MAP_ARENA;
+    cv.payload.arena_map.header_ptr = hdr_off;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Build a standalone arena string CelValue (for embedding inside a
+  // staged arena list / map) without overwriting kSrcSlot.
+  CelValue MakeArenaString(absl::string_view s) {
+    const uint32_t off = arena_top_;
+    std::memcpy(f_.mem.data() + off, s.data(), s.size());
+    arena_top_ += static_cast<uint32_t>(s.size());
+    CelValue cv{};
+    cv.kind = CEL_STRING;
+    cv.payload.s.ptr = off;
+    cv.payload.s.len = static_cast<uint32_t>(s.size());
+    return cv;
+  }
+
   // Drive CelSetFieldImpl pointing at `field_name`.  Returns the
   // trampoline's Status; on OK the caller reads back via outer().
   absl::Status SetField(uint32_t field_number, absl::string_view field_name) {
@@ -742,6 +833,9 @@ class PackHarness {
   Layer2Fixture f_;
   HostMsg3* outer_ = nullptr;
   uint32_t outer_slot_ = 0;
+  // Scratch arena cursor — kArenaBase is 2048 in Layer2Fixture; the
+  // FakeMemoryView is 4096 bytes, leaving room for small literals.
+  uint32_t arena_top_ = 2048;
 };
 
 // Expected type_url for HostMsg3 / HostMsg2.
@@ -867,6 +961,209 @@ TEST(CelSetFieldAnyPackTest, MapStringToAnyHostSourcePacksTwoEntries) {
   ASSERT_TRUE(
       round.ParseFromString(h.outer()->map_str_to_any().at("a").value()));
   EXPECT_EQ(round.i32(), 1);
+}
+
+// ═══════════ WKT pack arm — Duration/Timestamp/Value/Struct ═══════
+//
+// Inverse of the read-side WKT peelers: a non-message CelValue
+// assigned to a Duration / Timestamp / Value / Struct / ListValue /
+// Any field synthesises the matching well-known message.
+
+// Singular Duration field ← CEL_DURATION payload (seconds, nanos).
+TEST(CelSetFieldWktPackTest, SingularDurationFromCelDuration) {
+  PackHarness h;
+  h.StageDurTs(CEL_DURATION, /*seconds=*/123, /*nanos=*/0);
+  ASSERT_THAT(h.SetField(/*field_number=*/33, "single_duration"), IsOk());
+  EXPECT_TRUE(h.outer()->has_single_duration());
+  EXPECT_EQ(h.outer()->single_duration().seconds(), 123);
+  EXPECT_EQ(h.outer()->single_duration().nanos(), 0);
+}
+
+// Singular Timestamp field ← CEL_TIMESTAMP payload (seconds since
+// epoch + nanos).
+TEST(CelSetFieldWktPackTest, SingularTimestampFromCelTimestamp) {
+  PackHarness h;
+  h.StageDurTs(CEL_TIMESTAMP, /*seconds=*/1234567890, /*nanos=*/500);
+  ASSERT_THAT(h.SetField(/*field_number=*/34, "single_timestamp"), IsOk());
+  EXPECT_TRUE(h.outer()->has_single_timestamp());
+  EXPECT_EQ(h.outer()->single_timestamp().seconds(), 1234567890);
+  EXPECT_EQ(h.outer()->single_timestamp().nanos(), 500);
+}
+
+// Singular Value field ← CEL_STRING → string_value.
+TEST(CelSetFieldWktPackTest, SingularValueFromString) {
+  PackHarness h;
+  h.StageString("foo");
+  ASSERT_THAT(h.SetField(/*field_number=*/35, "single_value"), IsOk());
+  EXPECT_EQ(h.outer()->single_value().kind_case(),
+            google::protobuf::Value::kStringValue);
+  EXPECT_EQ(h.outer()->single_value().string_value(), "foo");
+}
+
+// Singular Value field ← CEL_INT → number_value (ints become doubles
+// in JSON Value).
+TEST(CelSetFieldWktPackTest, SingularValueFromInt) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_INT;
+  cv.payload.i = 42;
+  h.StageScalar(cv);
+  ASSERT_THAT(h.SetField(/*field_number=*/35, "single_value"), IsOk());
+  EXPECT_EQ(h.outer()->single_value().kind_case(),
+            google::protobuf::Value::kNumberValue);
+  EXPECT_EQ(h.outer()->single_value().number_value(), 42.0);
+}
+
+// Singular Value field ← CEL_NULL → null_value.
+TEST(CelSetFieldWktPackTest, SingularValueFromNull) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_NULL;
+  h.StageScalar(cv);
+  ASSERT_THAT(h.SetField(/*field_number=*/35, "single_value"), IsOk());
+  EXPECT_EQ(h.outer()->single_value().kind_case(),
+            google::protobuf::Value::kNullValue);
+}
+
+// Singular Value field ← CEL_BOOL → bool_value.
+TEST(CelSetFieldWktPackTest, SingularValueFromBool) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_BOOL;
+  cv.payload.b = 1;
+  h.StageScalar(cv);
+  ASSERT_THAT(h.SetField(/*field_number=*/35, "single_value"), IsOk());
+  EXPECT_EQ(h.outer()->single_value().kind_case(),
+            google::protobuf::Value::kBoolValue);
+  EXPECT_TRUE(h.outer()->single_value().bool_value());
+}
+
+// Singular Struct field ← CEL_MAP_ARENA {'one':1, 'two':2}.  Each
+// value packs into a number_value (ints → doubles).
+TEST(CelSetFieldWktPackTest, SingularStructFromArenaMap) {
+  PackHarness h;
+  CelValue v1{};
+  v1.kind = CEL_INT;
+  v1.payload.i = 1;
+  CelValue v2{};
+  v2.kind = CEL_INT;
+  v2.payload.i = 2;
+  std::vector<std::pair<CelValue, CelValue>> entries;
+  entries.emplace_back(h.MakeArenaString("one"), v1);
+  entries.emplace_back(h.MakeArenaString("two"), v2);
+  h.StageArenaMap(entries);
+  ASSERT_THAT(h.SetField(/*field_number=*/36, "single_struct"), IsOk());
+  ASSERT_EQ(h.outer()->single_struct().fields_size(), 2);
+  EXPECT_EQ(h.outer()->single_struct().fields().at("one").number_value(), 1.0);
+  EXPECT_EQ(h.outer()->single_struct().fields().at("two").number_value(), 2.0);
+}
+
+// Singular ListValue field ← CEL_LIST_ARENA [1, 'x'].  Heterogeneous
+// elements each pack into a Value of the matching kind.
+TEST(CelSetFieldWktPackTest, SingularListValueFromArenaList) {
+  PackHarness h;
+  CelValue e0{};
+  e0.kind = CEL_INT;
+  e0.payload.i = 1;
+  h.StageArenaList({e0, h.MakeArenaString("x")});
+  ASSERT_THAT(h.SetField(/*field_number=*/37, "single_list_value"), IsOk());
+  ASSERT_EQ(h.outer()->single_list_value().values_size(), 2);
+  EXPECT_EQ(h.outer()->single_list_value().values(0).number_value(), 1.0);
+  EXPECT_EQ(h.outer()->single_list_value().values(1).string_value(), "x");
+}
+
+// Singular Value field ← CEL_LIST_ARENA → list_value (nested
+// ListValue inside a Value).
+TEST(CelSetFieldWktPackTest, SingularValueFromList) {
+  PackHarness h;
+  CelValue e0{};
+  e0.kind = CEL_INT;
+  e0.payload.i = 7;
+  h.StageArenaList({e0});
+  ASSERT_THAT(h.SetField(/*field_number=*/35, "single_value"), IsOk());
+  EXPECT_EQ(h.outer()->single_value().kind_case(),
+            google::protobuf::Value::kListValue);
+  ASSERT_EQ(h.outer()->single_value().list_value().values_size(), 1);
+  EXPECT_EQ(h.outer()->single_value().list_value().values(0).number_value(),
+            7.0);
+}
+
+// Singular Any field ← CEL_STRING — scalar wraps into a
+// google.protobuf.Value, then Any-packs that.  type_url names Value.
+TEST(CelSetFieldWktPackTest, SingularAnyFromScalarWrapsViaValue) {
+  PackHarness h;
+  h.StageString("foo");
+  ASSERT_THAT(h.SetField(/*field_number=*/30, "single_any"), IsOk());
+  EXPECT_TRUE(h.outer()->has_single_any());
+  EXPECT_EQ(h.outer()->single_any().type_url(),
+            "type.googleapis.com/google.protobuf.Value");
+  google::protobuf::Value round;
+  ASSERT_TRUE(round.ParseFromString(h.outer()->single_any().value()));
+  EXPECT_EQ(round.string_value(), "foo");
+}
+
+// Singular Any field ← CEL_INT — wraps into an Int64Value (NOT a JSON
+// number) so the value round-trips as an int through the read-side
+// wrapper peel.  type_url names Int64Value.
+TEST(CelSetFieldWktPackTest, SingularAnyFromIntWrapsInt64Value) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_INT;
+  cv.payload.i = 5;
+  h.StageScalar(cv);
+  ASSERT_THAT(h.SetField(/*field_number=*/30, "single_any"), IsOk());
+  EXPECT_EQ(h.outer()->single_any().type_url(),
+            "type.googleapis.com/google.protobuf.Int64Value");
+  google::protobuf::Int64Value round;
+  ASSERT_TRUE(round.ParseFromString(h.outer()->single_any().value()));
+  EXPECT_EQ(round.value(), 5);
+}
+
+// Singular Any field ← CEL_BYTES — wraps into a BytesValue.
+TEST(CelSetFieldWktPackTest, SingularAnyFromBytesWrapsBytesValue) {
+  PackHarness h;
+  CelValue cv = h.MakeArenaString("foo");
+  cv.kind = CEL_BYTES;
+  h.StageScalar(cv);
+  ASSERT_THAT(h.SetField(/*field_number=*/30, "single_any"), IsOk());
+  EXPECT_EQ(h.outer()->single_any().type_url(),
+            "type.googleapis.com/google.protobuf.BytesValue");
+  google::protobuf::BytesValue round;
+  ASSERT_TRUE(round.ParseFromString(h.outer()->single_any().value()));
+  EXPECT_EQ(round.value(), "foo");
+}
+
+// Repeated Timestamp field ← [timestamp(1), null]: the null element
+// is PRUNED, leaving a single timestamp.
+TEST(CelSetFieldWktPackTest, RepeatedTimestampNullElementPruned) {
+  PackHarness h;
+  CelValue ts{};
+  ts.kind = CEL_TIMESTAMP;
+  ts.payload.ts = CelDurTs{1, 0, 0};
+  CelValue nul{};
+  nul.kind = CEL_NULL;
+  h.StageArenaList({ts, nul});
+  ASSERT_THAT(h.SetField(/*field_number=*/38, "repeated_timestamp"), IsOk());
+  ASSERT_EQ(h.outer()->repeated_timestamp_size(), 1);
+  EXPECT_EQ(h.outer()->repeated_timestamp(0).seconds(), 1);
+}
+
+// Map<string, Timestamp> ← {'a': timestamp(1), 'b': null}: the
+// null-valued entry is PRUNED.
+TEST(CelSetFieldWktPackTest, MapTimestampNullValuePruned) {
+  PackHarness h;
+  CelValue ts{};
+  ts.kind = CEL_TIMESTAMP;
+  ts.payload.ts = CelDurTs{1, 0, 0};
+  CelValue nul{};
+  nul.kind = CEL_NULL;
+  std::vector<std::pair<CelValue, CelValue>> entries;
+  entries.emplace_back(h.MakeArenaString("a"), ts);
+  entries.emplace_back(h.MakeArenaString("b"), nul);
+  h.StageArenaMap(entries);
+  ASSERT_THAT(h.SetField(/*field_number=*/39, "map_str_to_ts"), IsOk());
+  ASSERT_EQ(h.outer()->map_str_to_ts_size(), 1);
+  EXPECT_EQ(h.outer()->map_str_to_ts().at("a").seconds(), 1);
 }
 
 // ═══════════ M11 Slice A — Any-of-Any iterative unwrap ═══════════
