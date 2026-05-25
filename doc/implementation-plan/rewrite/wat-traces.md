@@ -2447,6 +2447,46 @@ wrong-kind → `CEL_ERR_TYPE_MISMATCH`; ERROR/UNKNOWN absorbed.
 
 ---
 
+## M18.1 — IP parse + to-string — `string(ip('192.168.0.1'))` (M18 Slice 0)
+
+File: `wat/m18_ip_parse_string.wat`.  Status: assembles (208 B); runs
+through `wat_runner` once `cel_ip_parse_at_v` / `cel_ip_to_string_at_v`
+land (Slice A).
+
+Freezes the **`net.IP` runtime representation** (the §3.2 decision):
+
+  - `CEL_IP = 18` — next CelKind after `CEL_LIST_HOST = 17`.
+  - `CelValue.payload` gains a `uint32_t net_ref` arm = arena byte
+    offset to a `NetIp { uint32_t family; uint8_t addr[16]; }` (20 B),
+    mirroring the `arena_list.header_ptr` pattern.
+  - `cel_ip_parse_at_v(out, str)` allocates the `NetIp` and writes the
+    `CEL_IP` value; `cel_ip_to_string_at_v(out, ip)` re-canonicalises
+    to a `CEL_STRING`.
+  - `==` is `memcmp` over `{family, addr}` — the parser normalises v4
+    and hex-v4-mapped (`::ffff:c0a8:1`) to `family=4` + the 4 v4 bytes
+    so they compare equal (corpus `ipv4_equals_ipv6`).
+  - parse failure → `poison(CEL_ERROR, CEL_ERR_INVALID_ARGUMENT)`; the
+    corpus's rich message strings are **not** compared
+    (`runner.cc::CompareEvalError` checks `IsError()` only), so a
+    numeric code suffices.
+
+## M18.2 — CIDR contains-IP — `cidr('192.168.0.0/24').containsIP(ip('192.168.0.1'))` (M18 Slice 0)
+
+File: `wat/m18_cidr_contains.wat`.  Status: assembles (306 B); runs via
+`wat_runner` once the CIDR kernels land (Slice C).
+
+Freezes the **`net.CIDR` representation** + the receiver-method ABI:
+
+  - `CEL_CIDR = 19`; `payload.net_ref` → `NetCidr { uint32_t family;
+    uint32_t prefix; uint8_t addr[16]; }` (24 B).
+  - `<cidr>.containsIP(<ip>)` is a receiver `kCallExpr` (probe-
+    confirmed `has_target=true`); codegen flattens target→arg0, so the
+    kernel is a plain 3-slot call
+    `cel_cidr_contains_ip_at_vv(out, cidr, ip)`.
+  - Semantics: family must match (cross-family → `false`, not error);
+    compare the first `prefix` bits.  `containsIP` is overloaded
+    (net.IP arg and string arg) — this trace covers the net.IP form.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool
