@@ -1,0 +1,110 @@
+# Known-issues findings (overnight hunt)
+
+Running log from the multi-agent bug hunt.  **Eval-reproducible bugs**
+live as GTEST_SKIP regressions in `compiler_v2/e2e/known_bugs_test.cc`
+(verified before landing).  This doc collects the **non-eval findings**:
+design-invariant breakages, inaccurate claims, latent hazards — things
+that aren't a single wrong-value expression but still matter.  Each is
+the agent's claim; `[verified]` = I confirmed against source.
+
+## Design-invariant breakages (wave 1)
+
+1. **[HIGH] Codegen makes a semantic overload decision.**
+   `expr_lower.cc:770-1092` `MaybeRepickCrossNumericOverload` inspects
+   both operands' `Repr` and *overrides* the resolved `overload_id`
+   (line 1091) — exactly the "no type-based helper-name derivation in
+   codegen" rule design.md:196-200 forbids. Belongs in ResolvePass
+   (which already has `Repr`). The `greater_equals_uint_double` vs
+   `_uint64` asymmetry (line 852/864) hand-mirrors `overload_table.cc:188`
+   and can silently drift. [verified — see eval probe in known_bugs]
+2. **[HIGH] CelValue ABI constants hand-copied into codegen.** Bare
+   magic numbers for kinds/offsets instead of `cel_data.h`:
+   `expr_lower_comprehension.cc:612` (`Int32(2)`=CEL_INT),
+   `expr_lower.cc:1064` (`1`=CEL_BOOL), offsets `0/4/8` at
+   `expr_lower.cc:1060`. `_Static_assert`s still pass if the enum is
+   renumbered → silent wrong-kind emits. No compile-time tie to the enum.
+3. **[HIGH] `WrapperKindFromFqn` re-derives CelKind in codegen**
+   (`expr_lower.cc:536-547`) as a bare-int ladder, a second copy of the
+   wrapper-kind map already in `cel_host.cc` (`IsWrapperFqn`). Drift risk.
+4. **[MEDIUM] Binaryen global state mutated in `Optimize`.**
+   `module.cc:265-266` sets process-global `BinaryenSetOptimizeLevel` /
+   `ShrinkLevel` before `BinaryenModuleOptimize`. Two threads compiling
+   `Program`s at different levels race — contradicts the marketed
+   process-wide-Engine / concurrent-compile model. Not in backlog.
+5. **[MEDIUM] LayoutPass computes a dead `arena_base`**
+   (`layout_pass.cc:422-423`) that design.md:312-314 itself says codegen
+   no longer consults (arena is malloc-backed post-Phase-C). Stale
+   `[0,8192)` offset that collides with wasi-libc static data if trusted.
+6. **[LOW] `overload_id` string_view lifetime mixing.**
+   `expr_lower.cc:1087-1092` re-points a copied annotation's
+   `string_view` to a `constexpr` literal — safe only because today's
+   substitutes are static-duration; a future temporary-sourced id dangles.
+   Worth an assert/comment.
+
+Top root cause: #1/#2/#3 are the same — codegen re-deciding type→helper/
+kind facts the design says it must only read. Fix = move the decision to
+ResolvePass + a generated constants header tied to `cel_data.h`.
+
+## Eval-divergence candidates (wave 1) — being verified into known_bugs_test.cc
+
+Confirmed-by-conformance or strong code trace; encoded as probe tests
+(verify-then-skip). Listed here for the record:
+- size(string) counts BYTES not code points — cel_string_ops.c:132 (size_at
+  uses payload.s.len for strings). size('ÿ')→2 want 1; size('😀')→4 want 1.
+- int(double) low-boundary: cel_convert.c:79 rejects only `< min` (non-strict);
+  int(-9223372036854775808.0) returns INT64_MIN, cel-cpp errors.
+- int('+5')/uint('+5'): cel_convert.c:203-223 mishandle leading '+'; error vs 5.
+- has() on map field, dyn(double/uint) list index coercion, reserved-word &
+  quoted-field map selectors, cel.bind selector, comprehension-var selector —
+  all return error; conformance fixtures expect values (fields/parse/lists/
+  namespace/bindings_ext .textproto).
+- `[1] + []` rejected by static subset (empty-list elem = dyn); cel-cpp: list(int).
+
+## Host / proto marshalling findings (wave 1) — need host/proto fixtures to test
+
+- [HIGH] HostNumericCrossEq (cel_host.cc:1518-1541) casts int64/uint64→double
+  for cross-type eq in host list `in`/eq + map eq — same lossy class as the
+  map-key bug but in the host path; >2^53 ints collapse. Untested.
+- [MED-HIGH] Host maps reject double query keys (cel_host.cc DecodeKey:600-616,
+  no CEL_DOUBLE) — runtime ACCEPTS them (map_keys_equal), so host vs runtime
+  diverge: `1.0 in hostMap{1:..}` → error (host) vs true (runtime).
+- [MED] Any field resolution uses the Any descriptor's pool, not the containing
+  msg's pool (cel_host.cc:375-376, UnpackOneAnyLayer:114-124) — dynamic-pool
+  payloads → spurious kFieldNotFound.
+- [LOW-MED] Value::StructurallyEquals (value.cc:244-256) compares msg/map/list
+  by shared_ptr identity, not contents.
+
+## Codegen findings (wave 1)
+
+- [HIGH] Ternary with a bare-ident condition reads wrong address: expr_lower.cc:1050
+  treats cond_ann.storage.payload as an addr, but kIdent storage payload is the
+  wasm LOCAL INDEX. `b ? 1 : 2` (b:bool=true) → wrong. Needs a bound var to test.
+- [MED-HIGH] cel.bind with a non-const (ident) value CRASHES the compiler:
+  expr_lower_comprehension.cc:352-356 ABSL_CHECK(false) for kLocal accu_init.
+  `cel.bind(x, y, x+1)` (y:int). Verify in isolation (aborts process).
+- (cross-numeric == gap — encoded as CrossNumericEqualityViaDyn probe.)
+
+## Checker / frontend findings (wave 1)
+
+- [HIGH, wrongly-rejected] TypeParser has no `optional<T>` keyword
+  (parse_and_check.cc:298-308) though OptionalCheckerLibrary IS registered —
+  `v:optional<int>` var spec rejected. Library/spec asymmetry.
+- [MED, wrongly-accepted/latent] UnacceptableLabel (parse_and_check.cc:373-377)
+  admits any abstract type whose params are scalar w/o checking name(); only
+  optional_type maps to a repr (typed_ast.cc:63) → others get kUnknown into codegen.
+- [MED] IsSelectThroughAny admits has() through Any + arbitrary field names
+  (parse_and_check.cc:575-622) → kUnknown repr, field_number 0. `has(a.foo)` a:any.
+- [MED] ReprOf(cel::Type)→kEnum is dead; enum field reads stamp kInt
+  (typed_ast.cc:54-71 has no enum arm) — enum/int indistinguishable downstream.
+
+## Inaccurate claims (wave 1)
+
+- [MED] README §7 (README.md:465-468) describes the DELETED pre-Phase-C arena
+  ("bottom ~16 bytes reserved for arena cursor ... rest is the bump arena") —
+  arena is now a 64 KiB malloc buffer, cursor in BSS (cel_arena.c). Lone stale
+  authoritative doc (design.md is correct). NOT the known wat-traces.md drift.
+- [MED] design.md:17 + cel_layout.h:22-28 say "min ~4 pages" / "3-4"; the
+  enforced floor (cel_layout.h:29, engine.cc:321 ABSL_CHECK_GE) is 2 — guard
+  weaker than the doc claims.
+- [LOW] cel_string_ext.h:2 "13 ... functions" miscount (12 kernel families /
+  11 cel-cpp non-format); also calls `trim` a strings-ext fn (it's not).

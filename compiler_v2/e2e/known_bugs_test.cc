@@ -174,5 +174,129 @@ TEST(KnownBugs, MapSizeArenaCliff) {
       << "map intermediate exceeded the 64 KiB arena (cel_layout.h:41)";
 }
 
+// ══════════════════════════════════════════════════════════════════
+// CLASS: conformance-confirmed divergences (mined from the 148 FAIL
+// rows in tests/simple/testdata/*.textproto).  Plain-CEL only (no proto
+// / host fixtures).  Added in verify mode first; skips applied only to
+// the ones that actually reproduce through this engine.
+// ══════════════════════════════════════════════════════════════════
+
+TEST(KnownBugs, SizeStringCountsBytesNotCodepoints) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // string.textproto: size('ÿ') == 1 code point (got 2 = byte length).
+  auto v = TryEval("size('ÿ')");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 1) << "size() counted UTF-8 bytes, not code points";
+}
+
+TEST(KnownBugs, SizeStringMultibyte) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // string.textproto: size('πέντε') == 5 (got 10).
+  auto v = TryEval("size('πέντε')");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 5);
+}
+
+TEST(KnownBugs, HasOnMapPresentKey) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // fields.textproto: has({'a':1,'b':2}.a) == true.
+  auto v = TryEval("has({'a': 1, 'b': 2}.a)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, HasOnMapAbsentKey) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // fields.textproto: has({'a':1,'b':2}.c) == false.
+  auto v = TryEval("has({'a': 1, 'b': 2}.c)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_FALSE(*v->AsBool());
+}
+
+TEST(KnownBugs, DynDoubleListIndexCoercion) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // lists.textproto: [7,8,9][dyn(0.0)] == 7 (whole-number double index).
+  auto v = TryEval("[7, 8, 9][dyn(0.0)]");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 7);
+}
+
+TEST(KnownBugs, DynUintListIndexCoercion) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // lists.textproto: [7,8,9][dyn(0u)] == 7.
+  auto v = TryEval("[7, 8, 9][dyn(0u)]");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 7);
+}
+
+TEST(KnownBugs, IntFromDoubleOutOfRange) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // conversions.textproto: int(-9223372036854775808.0) is out of range ->
+  // error per spec; cel2 returns a valid int instead.
+  auto v = TryEval("int(-9223372036854775808.0)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << "int(-2^63 double) should be a range error, got kind "
+      << static_cast<int>(v->kind());
+}
+
+TEST(KnownBugs, CelBindSelectorOnBoundVar) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // bindings_ext.textproto: cel.bind(x, {'y': 0}, x.y == 0) == true.
+  auto v = TryEval("cel.bind(x, {'y': 0}, x.y == 0)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, ComprehensionVarSelector) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // namespace.textproto: [{'z': 0}].exists(y, y.z == 0) == true.
+  auto v = TryEval("[{'z': 0}].exists(y, y.z == 0)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, ReservedWordMapSelector) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // parse.textproto: {'as': 1}.as == 1 (reserved-but-not-keyword selector).
+  auto v = TryEval("{'as': 1}.as");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 1);
+}
+
+TEST(KnownBugs, IntFromStringLeadingPlus) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // cel_convert.c:203-215 — parse_int64_str handles only leading '-';
+  // cel-cpp's absl::SimpleAtoi accepts '+5'. Expected 5, got error.
+  auto v = TryEval("int('+5')");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 5);
+}
+
+TEST(KnownBugs, UintFromStringLeadingPlus) {
+  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — the assertions below then guard it. See the per-test comment + doc/implementation-plan/known-issues-findings.md.";
+  // cel_convert.c:217-223 — parse_uint64_str has no sign handling.
+  auto v = TryEval("uint('+5')");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kUint) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsUint(), 5u);
+}
+
+// NOTE: two wave-1 agent candidates were checked here and did NOT
+// reproduce (engine returns the correct answer), so they are NOT bugs
+// and are deliberately absent: `dyn(1) == 1u` correctly returns true
+// (cross-numeric == via dyn works), and `[1] + []` correctly evaluates
+// to list(int) (the static subset does NOT reject it).  Verify-first.
+
 }  // namespace
 }  // namespace cel
