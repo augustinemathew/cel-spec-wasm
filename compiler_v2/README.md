@@ -10,78 +10,20 @@ and `doc/implementation-plan/rewrite/cel-host-surface.md`.  For per-
 component test coverage and the milestone closeout discipline, see
 `doc/implementation-plan/per-component-test-coverage.md`.
 
-> The repository-root `README.md` is the upstream cel-spec *language*
-> README and is intentionally left untouched; this file is the
-> getting-started page for the compiler.
-
 ## Getting started
 
-### Platform support (read this first)
+Prerequisites, the macOS / Linux setup steps, the `bazel build` / `bazel
+test` commands, the CLI, the conformance runner, and the Docker Linux
+image all live in the repository-root
+[`README.md`](../README.md#getting-started).  `celwasmc` builds on
+**macOS (Apple Silicon)** and **Linux (arm64 / x86_64)** with the same
+`bazel` invocations — Bazel fetches the wasi-sdk cross-compile toolchain,
+binaryen, and wasmtime for the build host automatically.
 
-| Host                              | Build + non-wasm tests | wasm-execution tests¹ | Lint (clang-tidy) |
-|-----------------------------------|:----------------------:|:---------------------:|:-----------------:|
-| **macOS, Apple Silicon (arm64)**  | ✅ supported            | ✅ supported           | ✅ brew `llvm`     |
-| macOS, Intel (x86_64)             | ⚠️ untested             | ❌ not wired²          | ✅ brew `llvm`     |
-| Linux (arm64 / x86_64)            | ⚠️ untested             | ❌ not wired²          | ✅ distro `llvm`   |
-
-¹ "wasm-execution tests" = anything that instantiates the compiled
-module under wasmtime: `tools/wat_runner`, the `runtime` / `host` wasm
-tests, the `e2e` suites, and the conformance harness.
-
-² **The wasm toolchain is currently pinned to `darwin_arm64`.** The
-`@wasmtime_darwin_arm64` dep is hard-referenced across the wasm targets
-(`tools/wat_runner`, `runtime`, `host`, probes), and the
-`//third_party/wasi_sdk` cc-toolchain + aliases default to
-`@wasi_sdk_darwin_arm64`.  The Linux/Intel **wasi-sdk archives are
-already declared** in `MODULE.bazel`
-(`wasi_sdk_{linux_arm64,linux_x86_64,darwin_x86_64}`), so generalising
-is a finite job, but it has not been done — today the only
-fully-exercised configuration is **Apple Silicon macOS**.  See "Porting
-to another host" at the bottom of this file.
-
-### Prerequisites
-
-| Tool                               | Why                                          | Version |
-|------------------------------------|----------------------------------------------|---------|
-| `bazel`                            | Build / test driver (install via `bazelisk`).| pinned in `.bazelversion` (currently 7.3.2) |
-| LLVM `clang-tidy` / `clang-format` | Lint + format gate (Google C++ style).       | a modern LLVM (≥ 17) |
-| `python3`                          | Fallback `compile_commands.json` generator.  | system Python 3 |
-
-Bazel fetches everything else itself — cel-cpp, abseil, protobuf,
-**binaryen** (built from source), the **wasi-sdk** cross-compile
-sysroot, and **wasmtime**.  You do **not** install a wasm toolchain by
-hand.  The first build is long: it compiles cel-cpp + binaryen from
-source (see `doc/implementation-plan/dev-loop-performance.md`).
-
-#### macOS (Apple Silicon) — the supported path
-
-```bash
-brew install bazelisk llvm
-# scripts/lint.sh auto-prepends this when present; add to your shell rc
-# so the same clang-tidy is on PATH for command-line use:
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-
-bazel test //compiler_v2/...        # builds + runs the full suite
-```
-
-#### Linux — host C++ build only (wasm path not yet wired)
-
-```bash
-# bazel via bazelisk
-curl -L https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 \
-    -o /usr/local/bin/bazel && chmod +x /usr/local/bin/bazel
-# LLVM for the lint gate (Debian/Ubuntu; or use https://apt.llvm.org)
-sudo apt-get install -y clang-tidy clang-format
-```
-
-The frontend / IR / codegen / host-side **unit** tests build and run
-with the autodetected system toolchain.  Targets that link
-`@wasmtime_darwin_arm64` or cross-compile through the wasi-sdk fail to
-configure on Linux until the toolchain is generalised — so
-`bazel test //compiler_v2/...` will not pass wholesale on Linux today.
-
-Full install detail (compile-db, the PCH gotcha, lint flow) lives in
-`doc/contributing.md`.
+This page is the orientation guide for working *inside* the compiler:
+the layout, the Compile → Plan → Eval lifecycle, the API quickstart,
+artifact sizes, and the build/test knobs.  For the lint/format gate and
+the compile-db / PCH details, see `doc/contributing.md`.
 
 ## Layout
 
@@ -674,22 +616,6 @@ discipline.
   - Pipeline Eval steady-state: 160 ns (literal) to 11 us (20-term
     comparison chain).  Setting `optimize_level = 2` cuts the chain
     case to 5.4 us at +120% Compile cost.
-
-## Porting to another host (the wasm path)
-
-To unblock Linux / Intel macOS for the wasm-execution targets:
-
-1. Add a `wasmtime_<host>` `http_archive` in `MODULE.bazel` (only
-   `wasmtime_darwin_arm64` exists today) and `select()` it per-host
-   everywhere the wasm targets reference `@wasmtime_darwin_arm64`
-   (`tools/wat_runner`, `runtime`, `host`, `probes/*`).
-2. Replace the `@wasi_sdk_darwin_arm64` defaults in
-   `//third_party/wasi_sdk:BUILD.bazel` — the cc-toolchain
-   `sysroot_path` / `cxx_builtin_include_directories` and the legacy
-   aliases — with a host `select()`, registering one `toolchain()` per
-   host with `exec_compatible_with` (the cc_toolchain_config file's own
-   header notes this as the intended pattern).  The Linux/Intel
-   `wasi_sdk_*` archives are already declared in `MODULE.bazel`.
 
 ## Pointers
 

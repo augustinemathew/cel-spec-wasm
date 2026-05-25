@@ -14,13 +14,11 @@
 //   - dynamic.textproto int32/uint32 field_assign_proto{2,3}_range
 // plus an INT32 boundary matrix (MIN, MAX, ±1 past each, 0).
 //
-// NOTE — single-TU constraint.  Our public `cel::Value` /
-// `cel::Attribute` symbols (`//compiler_v2/api`) collide at link time
-// with cel-cpp's same-named symbols pulled in by the oracle.  Whether
-// the link succeeds is order-of-archive-scan sensitive, so the
-// our-pipeline-vs-oracle differential MUST stay consolidated in this
-// one test TU (which links cleanly); do not spread it across a second
-// binary that also links both sides.
+// NOTE.  Our public API now lives in `celwasm::api` (no symbols in
+// `namespace cel`), so it no longer collides at link time with the
+// `cel::` symbols cel-cpp pulls in through the oracle — the
+// our-pipeline-and-oracle differential links cleanly in one binary.
+// It stays consolidated here for cohesion, not out of necessity.
 
 #include "compiler_v2/testdata/cel_cpp_oracle.h"
 
@@ -45,7 +43,7 @@
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 
-namespace celwasm {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -56,20 +54,19 @@ constexpr absl::string_view kP3 = "cel.expr.conformance.proto3";
 // Force the proto2/proto3 conformance descriptors into the generated
 // pool so container-qualified names resolve in OUR pipeline (the oracle
 // links its own copy in cel_cpp_oracle.cc).
-[[maybe_unused]] const int kDescriptorsLinked =
-    [] {
-      google::protobuf::LinkMessageReflection<
-          ::cel::expr::conformance::proto2::TestAllTypes>();
-      google::protobuf::LinkMessageReflection<
-          ::cel::expr::conformance::proto3::TestAllTypes>();
-      return 0;
-    }();
+[[maybe_unused]] const int kDescriptorsLinked = [] {
+  google::protobuf::LinkMessageReflection<
+      ::cel::expr::conformance::proto2::TestAllTypes>();
+  google::protobuf::LinkMessageReflection<
+      ::cel::expr::conformance::proto3::TestAllTypes>();
+  return 0;
+}();
 
-cel::Engine& GlobalEngine() {
-  static cel::Engine* engine = [] {
-    auto e = cel::Engine::NewBuilder().Build();
+Engine& GlobalEngine() {
+  static Engine* engine = [] {
+    auto e = Engine::NewBuilder().Build();
     ABSL_CHECK_OK(e);
-    return new cel::Engine(*std::move(e));
+    return new Engine(*std::move(e));
   }();
   return *engine;
 }
@@ -78,18 +75,18 @@ cel::Engine& GlobalEngine() {
 // non-OK status only on a HOST TRAP — the poison contract means an
 // out-of-range field assignment evaluates OK to a CEL error value, not
 // a trap, so a non-OK here is a genuine regression.
-absl::StatusOr<cel::Value> EvalOurs(absl::string_view source,
-                                    absl::string_view container) {
-  cel::CompilerOptions opts;
+absl::StatusOr<Value> EvalOurs(absl::string_view source,
+                               absl::string_view container) {
+  CompilerOptions opts;
   opts.container = std::string(container);
-  cel::Compiler::Builder b;
+  Compiler::Builder b;
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
   auto program = compiler->Compile(source, opts);
   if (!program.ok()) return program.status();
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();
-  cel::Activation a;
+  Activation a;
   return instance->Eval(a);
 }
 
@@ -118,9 +115,15 @@ void ExpectAgree(absl::string_view source, absl::string_view container) {
 
 // ── Oracle smoke cases (non-proto + a proto field select) ──
 
-TEST(CelCppOracle, IntArithmeticAgrees) { ExpectAgree("1 + 1", kP3); }
-TEST(CelCppOracle, StringConcatAgrees) { ExpectAgree("'foo' + 'bar'", kP3); }
-TEST(CelCppOracle, BoolComparisonAgrees) { ExpectAgree("2 < 3", kP3); }
+TEST(CelCppOracle, IntArithmeticAgrees) {
+  ExpectAgree("1 + 1", kP3);
+}
+TEST(CelCppOracle, StringConcatAgrees) {
+  ExpectAgree("'foo' + 'bar'", kP3);
+}
+TEST(CelCppOracle, BoolComparisonAgrees) {
+  ExpectAgree("2 < 3", kP3);
+}
 TEST(CelCppOracle, ProtoFieldSelectAgrees) {
   ExpectAgree("TestAllTypes{single_int32: 7}.single_int32", kP3);
 }
@@ -171,29 +174,29 @@ TEST(M20EnumBoundary, Zero) {
   ExpectAgree("TestAllTypes{standalone_enum: 0}.standalone_enum", kP3);
 }
 TEST(M20EnumBoundary, Int32Max) {
-  ExpectAgree(absl::StrCat("TestAllTypes{standalone_enum: ",
-                           std::numeric_limits<int32_t>::max(),
-                           "}.standalone_enum"),
-              kP3);
+  ExpectAgree(
+      absl::StrCat("TestAllTypes{standalone_enum: ",
+                   std::numeric_limits<int32_t>::max(), "}.standalone_enum"),
+      kP3);
 }
 TEST(M20EnumBoundary, Int32Min) {
-  ExpectAgree(absl::StrCat("TestAllTypes{standalone_enum: ",
-                           std::numeric_limits<int32_t>::min(),
-                           "}.standalone_enum"),
-              kP3);
+  ExpectAgree(
+      absl::StrCat("TestAllTypes{standalone_enum: ",
+                   std::numeric_limits<int32_t>::min(), "}.standalone_enum"),
+      kP3);
 }
 TEST(M20EnumBoundary, Int32MaxPlusOne) {
   ExpectAgree(
-      absl::StrCat("TestAllTypes{standalone_enum: ",
-                   static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1,
-                   "}"),
+      absl::StrCat(
+          "TestAllTypes{standalone_enum: ",
+          static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1, "}"),
       kP3);
 }
 TEST(M20EnumBoundary, Int32MinMinusOne) {
   ExpectAgree(
-      absl::StrCat("TestAllTypes{standalone_enum: ",
-                   static_cast<int64_t>(std::numeric_limits<int32_t>::min()) - 1,
-                   "}"),
+      absl::StrCat(
+          "TestAllTypes{standalone_enum: ",
+          static_cast<int64_t>(std::numeric_limits<int32_t>::min()) - 1, "}"),
       kP3);
 }
 
@@ -211,4 +214,4 @@ TEST(M20WrapperBoundary, Int32WrapperMin) {
 }
 
 }  // namespace
-}  // namespace celwasm
+}  // namespace celwasm::api
