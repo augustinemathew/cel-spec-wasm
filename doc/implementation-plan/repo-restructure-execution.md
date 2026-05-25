@@ -428,6 +428,29 @@ corrected pre-push gate (conformance + README drift, now on the new paths)
 PASSES — proving the hook works, not merely that it was bypassed (§0).
 ```
 
+### W7 — Disconnect from cel-spec (module rename + proto) [SERIAL on a branch]
+```
+Branch: disconnect (from master, after W6). SEMANTIC change (dependency topology),
+not a path move — the conformance gate is the hard stop. See design §12.
+
+1. MODULE.bazel: module(name="cel-spec") -> module(name="celwasmc").
+2. Add bazel_dep(name="cel-spec", version="0.25.1", repo_name="com_google_cel_spec")
+   so @com_google_cel_spec resolves to BCR upstream (the version cel-cpp pins).
+   Reconcile any override touching cel-spec.
+3. Repoint OUR non-third_party //proto/cel... consumers -> @com_google_cel_spec//proto/cel...
+   (grep -rln '//proto/cel' --include=*.bazel . | grep -vE 'third_party|bazel-')
+4. Delete local proto/ (upstream provides it) OR move to spec/proto/. Prefer
+   delete (cleaner disconnect) if upstream layout matches.
+5. Update .github/workflows/publish_to_bcr.yml + docs asserting cel-spec identity.
+GATE (HARD — land only if ALL green; else hold on branch + report for review):
+  - bazel build $PROJ green.
+  - check_conformance_monotonic.sh: PASS == 1898 (drift => upstream 0.25.1 differs
+    from our fork — STOP, report, do NOT merge).
+  - bazel test $PROJ + manual targets green.
+If green: merge disconnect -> master. Else: hold on branch, report the exact
+divergence (missing target / conformance delta) for the user to decide.
+```
+
 ## 4. What can run when (scheduling summary)
 
   - **Now → W0**: one agent, serial. Captures the baseline; blocks everything.

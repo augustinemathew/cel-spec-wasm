@@ -1,6 +1,6 @@
 # Repo restructure: making the compiler the repo
 
-Status: shipped (W0–W5) 2026-05-25.
+Status: shipped (W0–W6) 2026-05-25.  W7 (disconnect from cel-spec) in progress — §12.
 
 **What landed (as-built deltas from the as-written plan).** The restructure
 executed and is green; `compiler_v2/` is dissolved into the top-level role dirs
@@ -462,11 +462,12 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
 Open follow-ups the restructure surfaced or deferred, so a reader sees what's
 done AND what's still open without reading the git log:
 
-  - **`proto/` → `spec/proto/` move (Q5)** — deferred to the module-rename
-    workstream (§10); `proto/` stays at root until our module stops being
-    `cel-spec`.
-  - **W6 namespace flatten** `celwasm::api` → `celwasm` (§7) — the committed
-    immediate follow-on after W5; not yet run.
+  - **`proto/` move + disconnect from cel-spec (Q5)** — PROMOTED to an active
+    workstream **W7 (§12)** at the user's request (2026-05-25): rename our module
+    off `cel-spec` so cel-cpp consumes upstream cel-spec from BCR, unpinning our
+    local `proto/`.
+  - **W6 namespace flatten** `celwasm::api` → `celwasm` (§7) — SHIPPED 2026-05-25
+    (commit `c0ec349`): 78 files, build green, 83 tests, conformance 1898.
   - **Full lint-backlog burndown (Q10)** — the 244-file move surfaced the
     pre-existing `lint.sh --branch` backlog (braces-around-statements in
     `var_parser.cc`/`cel_runtime.c`; the wasmtime-edge clang-tidy config
@@ -476,3 +477,41 @@ done AND what's still open without reading the git log:
     historical `compiler_v2/` tail (~40 files); its own workstream.
   - **First `bindings/` (TS/Go)** — slot reserved, no code; will embed
     `cel_runtime.wasm` (and `compiler.wasm` once §9 lands).
+
+## 12. W7 — Disconnect from cel-spec (module rename + proto)
+
+Requested 2026-05-25. The real "disconnect from parent": stop **being** the
+`cel-spec` module and instead **consume** cel-spec as a normal dependency. This
+is what unpins our local `proto/` (Q5).
+
+**Why `proto/` is pinned today.** cel-cpp (vendored, `local_path_override`)
+declares `bazel_dep(name = "cel-spec", version = "0.25.1", repo_name =
+"com_google_cel_spec")`. Our root module is *also* `module(name = "cel-spec")`,
+and bzlmod's root-wins rule makes cel-cpp's dep resolve to **us**, so
+`@com_google_cel_spec//proto/cel/*` (≈195 refs in cel-cpp BUILDs) points at our
+`//proto/cel`. We can't edit cel-cpp and can't move `proto/` while we answer to
+that name.
+
+**The disconnect.**
+  1. Rename the module: `module(name = "cel-spec")` → `module(name = "celwasmc")`.
+  2. Add our own `bazel_dep(name = "cel-spec", version = "0.25.1", repo_name =
+     "com_google_cel_spec")`. Now `@com_google_cel_spec` resolves to the **real
+     upstream cel-spec 0.25.1 from BCR** for both cel-cpp and us.
+  3. Repoint our own `//proto/cel...` consumers (conformance, testdata,
+     binding_marshal — the non-third_party referrers) to
+     `@com_google_cel_spec//proto/cel...`.
+  4. Delete the local `proto/` (now redundant — upstream provides it) **or** keep
+     a curated local copy under `spec/proto/`; consuming upstream is the cleaner
+     disconnect.
+  5. Update `MODULE.bazel` overrides / `WORKSPACE*` and the BCR-publish workflow
+     (`.github/workflows/publish_to_bcr.yml`) that assume the `cel-spec` module
+     identity.
+
+**The risk (and the gate).** Upstream BCR cel-spec 0.25.1 must expose the same
+proto/target layout our code + cel-cpp expect, and the corpus/protos must not
+drift from our fork — so **conformance must stay 1898 and the build green**.
+That is a *semantic* change (dependency topology), unlike the path-only moves of
+W0–W6: if 0.25.1 differs from our fork in a way that moves conformance, the
+change wants user review. Execution therefore runs on a branch with the 1898
+gate as the hard stop — land only if green; otherwise hold on the branch and
+report findings. See the W7 brief in `repo-restructure-execution.md`.
