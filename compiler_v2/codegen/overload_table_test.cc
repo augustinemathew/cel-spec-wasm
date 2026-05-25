@@ -88,7 +88,7 @@ TEST(ImportModuleNameTest, MapsEveryEnumerator) {
 // The seed count rises monotonically as kernels land.  When it
 // changes, update both `kBuiltinSeeds`'s std::array size in
 // `overload_table.cc` and this constant.
-constexpr size_t kBuiltinSeedCount = 251;
+constexpr size_t kBuiltinSeedCount = 271;
 
 TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
   // M5.E populated `kBuiltinSeeds` with the cel-cpp standard
