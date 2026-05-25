@@ -71,7 +71,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -316,7 +316,7 @@ TEST_F(WellKnownFieldReadE2ETest, ReadDurationFieldYieldsCelDurationKind) {
 TEST_F(WellKnownFieldReadE2ETest, NonWellKnownMessageFieldStillYieldsMessage) {
   // Regression: the normaliser MUST only fire for the two well-known
   // types it knows about.  Other singular-message fields stay routed
-  // through `celwasm::api::Value::HostMessage` so the M2.C read path keeps
+  // through `celwasm::Value::HostMessage` so the M2.C read path keeps
   // working unchanged.  Verified indirectly: a sub-field select on
   // billing_address still produces a string, which only works if the
   // intermediate value was a message backing rather than a normalised
@@ -1528,4 +1528,4 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
 // pins that non-WKT fields stay as messages.)
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

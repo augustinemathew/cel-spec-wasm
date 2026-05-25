@@ -5,7 +5,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 TEST(CelTypeTest, ScalarFactoriesSetKind) {
@@ -98,4 +98,4 @@ TEST(CelTypeTest, KindNamesCoverAllKinds) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

@@ -44,7 +44,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -665,4 +665,4 @@ TEST(ProtoRepeatedHostMsg3E2ETest, RepeatedMessageIndexedThenField) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

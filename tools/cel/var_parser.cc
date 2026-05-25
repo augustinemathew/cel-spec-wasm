@@ -32,8 +32,8 @@ namespace celwasm::tools::cel {
 
 namespace {
 
-using ::celwasm::api::CelType;
-using ::celwasm::api::Value;
+using ::celwasm::CelType;
+using ::celwasm::Value;
 
 // ---------- Small cursor primitive ------------------------------------------
 
@@ -566,7 +566,7 @@ absl::StatusOr<Value> ParseAtomForType(
     case CelType::Kind::kUnknown:
       return absl::InvalidArgumentError(
           absl::StrCat("--var: cannot bind a value of type `",
-                       ::celwasm::api::CelTypeKindName(t.kind()), "`"));
+                       ::celwasm::CelTypeKindName(t.kind()), "`"));
   }
   ABSL_CHECK(false) << "ParseAtomForType: unhandled CelType::Kind = "
                     << static_cast<int>(t.kind());

@@ -54,8 +54,8 @@ TEST(ProtoBackingMapTest, ReadFieldReturnsHostMapForMapField) {
 
   ProtoBacking pb(&m);
   PM_ASSIGN_OR_ASSERT(v, pb.ReadField(/*field_number=*/19, "str_to_i32",
-                                      celwasm::api::CelType::Int()));
-  ASSERT_EQ(v.kind(), celwasm::api::Value::Kind::kMap);
+                                      celwasm::CelType::Int()));
+  ASSERT_EQ(v.kind(), celwasm::Value::Kind::kMap);
   PM_ASSIGN_OR_ASSERT(b, v.MapBacking());
   ASSERT_NE(b, nullptr);
   EXPECT_EQ(b->Size(), 2u);
@@ -65,7 +65,7 @@ TEST(ProtoBackingMapTest, EmptyMapReadsAsZeroSizedHostMap) {
   HostMsg3 m;  // map empty by default
   ProtoBacking pb(&m);
   PM_ASSIGN_OR_ASSERT(
-      v, pb.ReadField(19, "str_to_i32", celwasm::api::CelType::Int()));
+      v, pb.ReadField(19, "str_to_i32", celwasm::CelType::Int()));
   PM_ASSIGN_OR_ASSERT(b, v.MapBacking());
   EXPECT_EQ(b->Size(), 0u);
 }
@@ -78,9 +78,9 @@ TEST(ProtoMapTest, StringKeyHits) {
   (*m.mutable_str_to_i32())["beta"] = 20;
   ProtoMap pm(&m, MapField(m, "str_to_i32"));
 
-  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::api::Value::String("beta"),
-                                celwasm::api::CelType::Int()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kInt);
+  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::Value::String("beta"),
+                                celwasm::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kInt);
   EXPECT_EQ(*v.AsInt(), 20);
 }
 
@@ -91,8 +91,8 @@ TEST(ProtoMapTest, IntKeyHits) {
   ProtoMap pm(&m, MapField(m, "i64_to_str"));
 
   PM_ASSIGN_OR_ASSERT(
-      v, pm.Get(celwasm::api::Value::Int(42), celwasm::api::CelType::String()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kString);
+      v, pm.Get(celwasm::Value::Int(42), celwasm::CelType::String()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kString);
   EXPECT_EQ(*v.AsString(), "forty-two");
 }
 
@@ -102,8 +102,8 @@ TEST(ProtoMapTest, UintKeyHits) {
   ProtoMap pm(&m, MapField(m, "u32_to_f64"));
 
   PM_ASSIGN_OR_ASSERT(
-      v, pm.Get(celwasm::api::Value::Uint(3), celwasm::api::CelType::Double()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kDouble);
+      v, pm.Get(celwasm::Value::Uint(3), celwasm::CelType::Double()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kDouble);
   EXPECT_DOUBLE_EQ(*v.AsDouble(), 3.14);
 }
 
@@ -113,11 +113,11 @@ TEST(ProtoMapTest, BoolKeyHits) {
   (*m.mutable_bool_to_i64())[false] = 222;
   ProtoMap pm(&m, MapField(m, "bool_to_i64"));
 
-  PM_ASSIGN_OR_ASSERT(vt, pm.Get(celwasm::api::Value::Bool(true),
-                                 celwasm::api::CelType::Int()));
+  PM_ASSIGN_OR_ASSERT(vt, pm.Get(celwasm::Value::Bool(true),
+                                 celwasm::CelType::Int()));
   EXPECT_EQ(*vt.AsInt(), 111);
-  PM_ASSIGN_OR_ASSERT(vf, pm.Get(celwasm::api::Value::Bool(false),
-                                 celwasm::api::CelType::Int()));
+  PM_ASSIGN_OR_ASSERT(vf, pm.Get(celwasm::Value::Bool(false),
+                                 celwasm::CelType::Int()));
   EXPECT_EQ(*vf.AsInt(), 222);
 }
 
@@ -131,8 +131,8 @@ TEST(ProtoMapTest, IntKeyHitsViaUintLookup) {
   (*m.mutable_i64_to_str())[42] = "match";
   ProtoMap pm(&m, MapField(m, "i64_to_str"));
 
-  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::api::Value::Uint(42),
-                                celwasm::api::CelType::String()));
+  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::Value::Uint(42),
+                                celwasm::CelType::String()));
   EXPECT_EQ(*v.AsString(), "match");
 }
 
@@ -142,8 +142,8 @@ TEST(ProtoMapTest, NegativeIntNeverMatchesUintKey) {
   ProtoMap pm(&m, MapField(m, "u32_to_f64"));
 
   PM_ASSIGN_OR_ASSERT(
-      v, pm.Get(celwasm::api::Value::Int(-1), celwasm::api::CelType::Double()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
+      v, pm.Get(celwasm::Value::Int(-1), celwasm::CelType::Double()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kError);
   PM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
   EXPECT_EQ(e->code, celwasm::ErrorCode::kKeyNotFound);
 }
@@ -155,9 +155,9 @@ TEST(ProtoMapTest, MissingKeyReturnsNoSuchKey) {
   (*m.mutable_str_to_i32())["alpha"] = 1;
   ProtoMap pm(&m, MapField(m, "str_to_i32"));
 
-  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::api::Value::String("missing"),
-                                celwasm::api::CelType::Int()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
+  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::Value::String("missing"),
+                                celwasm::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kError);
   PM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
   EXPECT_EQ(e->code, celwasm::ErrorCode::kKeyNotFound);
 }
@@ -166,9 +166,9 @@ TEST(ProtoMapTest, InvalidKeyKindReturnsTypeMismatch) {
   HostMsg3 m;
   ProtoMap pm(&m, MapField(m, "str_to_i32"));
 
-  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::api::Value::Double(1.0),
-                                celwasm::api::CelType::Int()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
+  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::Value::Double(1.0),
+                                celwasm::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kError);
   PM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
   EXPECT_EQ(e->code, celwasm::ErrorCode::kTypeMismatch);
 }
@@ -180,10 +180,10 @@ TEST(ProtoMapTest, ContainsKeyMatchesGetSemantics) {
   (*m.mutable_str_to_i32())["alpha"] = 1;
   ProtoMap pm(&m, MapField(m, "str_to_i32"));
 
-  EXPECT_TRUE(pm.ContainsKey(celwasm::api::Value::String("alpha")));
-  EXPECT_FALSE(pm.ContainsKey(celwasm::api::Value::String("missing")));
+  EXPECT_TRUE(pm.ContainsKey(celwasm::Value::String("alpha")));
+  EXPECT_FALSE(pm.ContainsKey(celwasm::Value::String("missing")));
   EXPECT_FALSE(
-      pm.ContainsKey(celwasm::api::Value::Double(1.0)));  // invalid kind
+      pm.ContainsKey(celwasm::Value::Double(1.0)));  // invalid kind
 }
 
 TEST(ProtoMapTest, ForEachVisitsAllEntries) {
@@ -195,7 +195,7 @@ TEST(ProtoMapTest, ForEachVisitsAllEntries) {
 
   std::vector<int64_t> keys;
   std::vector<std::string> values;
-  pm.ForEach([&](const celwasm::api::Value& k, const celwasm::api::Value& v) {
+  pm.ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
     keys.push_back(*k.AsInt());
     values.push_back(std::string(*v.AsString()));
   });
@@ -212,13 +212,13 @@ TEST(ProtoMapTest, MessageValueWrapsAsHostMessage) {
   (*m.mutable_str_to_msg())["k"] = inner;
   ProtoMap pm(&m, MapField(m, "str_to_msg"));
 
-  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::api::Value::String("k"),
-                                celwasm::api::CelType::Int()));
-  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kMessage);
+  PM_ASSIGN_OR_ASSERT(v, pm.Get(celwasm::Value::String("k"),
+                                celwasm::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::Value::Kind::kMessage);
   PM_ASSIGN_OR_ASSERT(b, v.MessageBacking());
   ASSERT_NE(b, nullptr);
   // Read back the i32 field through the wrapped backing.
-  PM_ASSIGN_OR_ASSERT(i, b->ReadField(2, "i32", celwasm::api::CelType::Int()));
+  PM_ASSIGN_OR_ASSERT(i, b->ReadField(2, "i32", celwasm::CelType::Int()));
   EXPECT_EQ(*i.AsInt(), 42);
 }
 

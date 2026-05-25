@@ -1,19 +1,19 @@
-// `celwasm::api::Engine` — runtime side of the host surface.  Owns the
+// `celwasm::Engine` — runtime side of the host surface.  Owns the
 // wasm execution machinery shared across all evaluations: the
 // `wasm_engine_t` and the parsed `cel_runtime.wasm` module.
 //
 // Per doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
-// §4 (revised): role-separated from `celwasm::api::Compiler`.  Compiler is
+// §4 (revised): role-separated from `celwasm::Compiler`.  Compiler is
 // pure compile-time and has no wasmtime dependency.  Engine is
 // pure runtime and has no compile-time dependency.  A Program
 // (bytes + ABI) is the serialization boundary between them.
 //
 // Lifecycle:
 //
-//   celwasm::api::Compiler  ─Compile(source)─►  celwasm::api::Program
+//   celwasm::Compiler  ─Compile(source)─►  celwasm::Program
 //                                            │
 //                                            ▼
-//                  celwasm::api::Engine ─Plan(program, bindings)─►  celwasm::api::Instance
+//                  celwasm::Engine ─Plan(program, bindings)─►  celwasm::Instance
 //
 // The Engine is process-shared (or per-tenant in multi-tenant
 // hosts).  `wasm_engine_t` and `wasmtime_module_t` are documented
@@ -48,7 +48,7 @@ namespace celwasm {
 struct WasmtimeEngineState;
 }  // namespace celwasm
 
-namespace celwasm::api {
+namespace celwasm {
 
 // Raw low-level callback type for `Engine::AddFunction` — the impl
 // for a single `@host.<name>` declaration in a `.celfn` library.
@@ -69,7 +69,7 @@ namespace celwasm::api {
 //
 // CelValue layout is the canonical 24-byte shape from
 // `runtime/cel_data.h`.  Slice C.1 ships this raw
-// shape; Slice C.2 wires the typed `celwasm::api::FunctionImpl` (from
+// shape; Slice C.2 wires the typed `celwasm::FunctionImpl` (from
 // `api/activation.h`, signature `Value(Span<const Value>) const`)
 // on top as the user-facing layer, with a coercion shim that
 // decodes raw CelValues into typed `Value`s and back.
@@ -183,6 +183,6 @@ class Engine::Builder {
   ABSL_MUST_USE_RESULT absl::StatusOr<Engine> Build() &&;
 };
 
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 #endif  // CELWASM_EVAL_ENGINE_H_

@@ -1,10 +1,10 @@
 // Per-stage cost across the user-facing pipeline:
 //
-//   celwasm::api::Compiler::Builder::Build      compile-time setup (M1: ~0)
-//   celwasm::api::Engine::Builder::Build        wasm engine + parse runtime (~167us)
-//   celwasm::api::Compiler::Compile             source → Program bytes (per-source)
-//   celwasm::api::Engine::Plan                  Program → Instance (per-Plan)
-//   celwasm::api::Instance::Eval                $eval call + CelValue decode
+//   celwasm::Compiler::Builder::Build      compile-time setup (M1: ~0)
+//   celwasm::Engine::Builder::Build        wasm engine + parse runtime (~167us)
+//   celwasm::Compiler::Compile             source → Program bytes (per-source)
+//   celwasm::Engine::Plan                  Program → Instance (per-Plan)
+//   celwasm::Instance::Eval                $eval call + CelValue decode
 //
 // Per Plan §6 (revised after the Compiler/Engine split): bench
 // against the production user-facing surface, not the raw wasmtime
@@ -54,7 +54,7 @@
 #include "eval/instance.h"
 #include "compiler/program.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 // ——— Inputs ———
@@ -265,6 +265,6 @@ void BM_Pipeline_HotEval(benchmark::State& state) {
 BENCHMARK(BM_Pipeline_HotEval)->DenseRange(0, kNumInputs - 1);
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 BENCHMARK_MAIN();

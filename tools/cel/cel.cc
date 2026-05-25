@@ -87,11 +87,11 @@ ABSL_FLAG(std::string, output, "",
 namespace celwasm::tools::cel {
 namespace {
 
-using ::celwasm::api::Activation;
-using ::celwasm::api::Engine;
-using ::celwasm::api::Instance;
-using ::celwasm::api::Program;
-using ::celwasm::api::Value;
+using ::celwasm::Activation;
+using ::celwasm::Engine;
+using ::celwasm::Instance;
+using ::celwasm::Program;
+using ::celwasm::Value;
 
 // Same schema-loading shape as parse_and_check.cc::LoadDescriptorPool,
 // re-implemented here so the CLI can construct DynamicMessage
@@ -232,34 +232,34 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
     // formatter keeps a single source of truth and the cost is
     // dust (a few dozen StrCats per Compile).
     auto FormatType = [](const auto& self,
-                         const ::celwasm::api::CelType& t) -> std::string {
+                         const ::celwasm::CelType& t) -> std::string {
       switch (t.kind()) {
-        case ::celwasm::api::CelType::Kind::kBool:
+        case ::celwasm::CelType::Kind::kBool:
           return "bool";
-        case ::celwasm::api::CelType::Kind::kInt:
+        case ::celwasm::CelType::Kind::kInt:
           return "int";
-        case ::celwasm::api::CelType::Kind::kUint:
+        case ::celwasm::CelType::Kind::kUint:
           return "uint";
-        case ::celwasm::api::CelType::Kind::kDouble:
+        case ::celwasm::CelType::Kind::kDouble:
           return "double";
-        case ::celwasm::api::CelType::Kind::kString:
+        case ::celwasm::CelType::Kind::kString:
           return "string";
-        case ::celwasm::api::CelType::Kind::kBytes:
+        case ::celwasm::CelType::Kind::kBytes:
           return "bytes";
-        case ::celwasm::api::CelType::Kind::kDuration:
+        case ::celwasm::CelType::Kind::kDuration:
           return "duration";
-        case ::celwasm::api::CelType::Kind::kTimestamp:
+        case ::celwasm::CelType::Kind::kTimestamp:
           return "timestamp";
-        case ::celwasm::api::CelType::Kind::kType:
+        case ::celwasm::CelType::Kind::kType:
           return "type";
-        case ::celwasm::api::CelType::Kind::kMessage:
+        case ::celwasm::CelType::Kind::kMessage:
           return std::string(t.message_fully_qualified_name());
-        case ::celwasm::api::CelType::Kind::kList:
+        case ::celwasm::CelType::Kind::kList:
           return absl::StrCat("list<", self(self, t.list_element()), ">");
-        case ::celwasm::api::CelType::Kind::kMap:
+        case ::celwasm::CelType::Kind::kMap:
           return absl::StrCat("map<", self(self, t.map_key()), ",",
                               self(self, t.map_value()), ">");
-        case ::celwasm::api::CelType::Kind::kUnknown:
+        case ::celwasm::CelType::Kind::kUnknown:
           break;
       }
       ABSL_CHECK(false) << "unhandled CelType in --var spec";

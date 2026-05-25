@@ -30,7 +30,7 @@
 #include "eval/value.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 Engine& GlobalEngine() {
@@ -525,4 +525,4 @@ TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
 // to list(int) (the static subset does NOT reject it).  Verify-first.
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

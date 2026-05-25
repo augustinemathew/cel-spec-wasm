@@ -17,9 +17,9 @@
 namespace celwasm::conformance {
 namespace {
 
-celwasm::api::Value MakeRuntimeError(celwasm::ErrorCode code,
+celwasm::Value MakeRuntimeError(celwasm::ErrorCode code,
                                      const std::string& message) {
-  return celwasm::api::Value::Error(
+  return celwasm::Value::Error(
       celwasm::ErrorPayload{.code = code, .message = message, .expr_id = 0});
 }
 
@@ -50,7 +50,7 @@ TEST(CompareEvalErrorTest, EmptyMatcherStillMatches) {
 }
 
 TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
-  auto got = celwasm::api::Value::Int(42);
+  auto got = celwasm::Value::Int(42);
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);
@@ -58,7 +58,7 @@ TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
-  auto got = celwasm::api::Value::Unknown(celwasm::AttributeId{.id = 1});
+  auto got = celwasm::Value::Unknown(celwasm::AttributeId{.id = 1});
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);
@@ -66,7 +66,7 @@ TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchNullIsNotError) {
-  auto got = celwasm::api::Value::Null();
+  auto got = celwasm::Value::Null();
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);

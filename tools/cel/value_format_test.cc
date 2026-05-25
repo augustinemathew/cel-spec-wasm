@@ -16,7 +16,7 @@ namespace celwasm::tools::cel {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::celwasm::api::Value;
+using ::celwasm::Value;
 using ::celwasm::testdata::Customer;
 
 TEST(ValueFormatTest, ScalarBool) {

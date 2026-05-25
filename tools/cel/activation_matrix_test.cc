@@ -1,12 +1,12 @@
 // End-to-end coverage for binding lists / maps / proto messages via
-// `celwasm::api::Activation` — the exact shape the `cel` CLI's `--var
+// `celwasm::Activation` — the exact shape the `cel` CLI's `--var
 // name:Type=value` flag produces.
 //
 // Why this lives under `tools/cel/` rather than `e2e/`:
 // the test matrix is specifically the "user hands the compiler an
 // activation containing aggregates" use case the CLI was built to
 // surface.  Compiler / pipeline / runtime checks all happen via the
-// public API (`celwasm::api::Compiler` + `celwasm::api::Engine` + `celwasm::api::Activation`),
+// public API (`celwasm::Compiler` + `celwasm::Engine` + `celwasm::Activation`),
 // same path the CLI walks.
 //
 // Coverage axes (every cell exercised at least once):
@@ -45,11 +45,11 @@ namespace celwasm::tools::cel {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::celwasm::api::Activation;
-using ::celwasm::api::CelType;
-using ::celwasm::api::Compiler;
-using ::celwasm::api::Engine;
-using ::celwasm::api::Value;
+using ::celwasm::Activation;
+using ::celwasm::CelType;
+using ::celwasm::Compiler;
+using ::celwasm::Engine;
+using ::celwasm::Value;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg3;
 

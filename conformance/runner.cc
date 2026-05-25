@@ -134,7 +134,7 @@ bool IsEvalErrorMatcher(const SimpleTest& t) {
 // the switch-heavy per-kind formatters out of the TU also sidesteps
 // clang-tidy's `bugprone-branch-clone` on structurally-similar
 // `return absl::StrCat(...)` arms.
-absl::Status Mismatch(const celwasm::api::Value& got, const ProtoValue& want) {
+absl::Status Mismatch(const celwasm::Value& got, const ProtoValue& want) {
   return absl::FailedPreconditionError(
       absl::StrCat("want-kind=", static_cast<int>(want.kind_case()),
                    " got-kind=", ValueKindName(got.kind())));
@@ -149,9 +149,9 @@ absl::Status CompareDouble(double got, double want) {
 }
 
 // Forward decls — these recurse with CompareValue.
-absl::Status CompareMap(const celwasm::api::Value& got,
+absl::Status CompareMap(const celwasm::Value& got,
                         const cel::expr::MapValue& want);
-absl::Status CompareList(const celwasm::api::Value& got,
+absl::Status CompareList(const celwasm::Value& got,
                          const cel::expr::ListValue& want);
 
 }  // namespace
@@ -275,7 +275,7 @@ std::string EnvelopeRejectReason(const cel::expr::Value::KindCase kind) {
 
 namespace {
 
-absl::Status CompareScalar(const celwasm::api::Value& got,
+absl::Status CompareScalar(const celwasm::Value& got,
                            const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kNullValue:
@@ -322,7 +322,7 @@ absl::Status CompareScalar(const celwasm::api::Value& got,
 // Unpacks via `binding_marshal::UnpackAny` (generated pool +
 // `ForceLinkFixtureDescriptors`) and runs `MessageDifferencer::Equals`.
 // NOLINTBEGIN(misc-use-internal-linkage)
-absl::Status CompareMessage(const celwasm::api::Value& got,
+absl::Status CompareMessage(const celwasm::Value& got,
                             const google::protobuf::Any& want) {
   auto got_backing_or = got.MessageBacking();
   if (!got_backing_or.ok()) {
@@ -356,7 +356,7 @@ absl::Status CompareMessage(const celwasm::api::Value& got,
 
 // Enum matcher: enums are spec-typed as int (langdef §"Enumerated
 // Types").  Compare against the numeric value; ignore the type field.
-absl::Status CompareEnum(const celwasm::api::Value& got,
+absl::Status CompareEnum(const celwasm::Value& got,
                          const cel::expr::EnumValue& want) {
   auto i = got.AsInt();
   if (!i.ok() || *i != want.value()) {
@@ -369,7 +369,7 @@ absl::Status CompareEnum(const celwasm::api::Value& got,
 
 // Type matcher: byte-equal on the spec type-name string per langdef
 // §"Type Values".
-absl::Status CompareType(const celwasm::api::Value& got,
+absl::Status CompareType(const celwasm::Value& got,
                          absl::string_view want) {
   auto name_or = got.AsType();
   if (!name_or.ok()) {
@@ -383,7 +383,7 @@ absl::Status CompareType(const celwasm::api::Value& got,
   return absl::OkStatus();
 }
 
-absl::Status CompareValue(const celwasm::api::Value& got,
+absl::Status CompareValue(const celwasm::Value& got,
                           const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kMapValue:
@@ -401,7 +401,7 @@ absl::Status CompareValue(const celwasm::api::Value& got,
   }
 }
 
-absl::Status CompareUnknown(const celwasm::api::Value& got) {
+absl::Status CompareUnknown(const celwasm::Value& got) {
   if (got.IsUnknown()) return absl::OkStatus();
   return absl::FailedPreconditionError(
       absl::StrCat("want-kind=unknown got-kind=", ValueKindName(got.kind())));
@@ -417,7 +417,7 @@ absl::Status CompareUnknown(const celwasm::api::Value& got) {
 // punctuation, even non-semantic placeholders like "foo") for any
 // stricter rule to be useful.  Kind mismatch is the only failure
 // path.
-absl::Status CompareEvalError(const celwasm::api::Value& got,
+absl::Status CompareEvalError(const celwasm::Value& got,
                               const cel::expr::ErrorSet& /*want*/) {
   if (!got.IsError()) {
     return absl::FailedPreconditionError(
@@ -432,7 +432,7 @@ namespace {
 // Order-agnostic map equality per langdef §"Map equality": same
 // size, and every want-entry has a got-entry whose key is
 // structurally equal and whose value matches recursively.
-absl::Status CompareMap(const celwasm::api::Value& got,
+absl::Status CompareMap(const celwasm::Value& got,
                         const cel::expr::MapValue& want) {
   auto bk_or = got.MapBacking();
   if (!bk_or.ok()) {
@@ -446,10 +446,10 @@ absl::Status CompareMap(const celwasm::api::Value& got,
         absl::StrCat("map size want=", want_size, " got=", backing->Size()));
   }
 
-  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> got_entries;
+  std::vector<std::pair<celwasm::Value, celwasm::Value>> got_entries;
   got_entries.reserve(backing->Size());
   backing->ForEach(
-      [&](const celwasm::api::Value& k, const celwasm::api::Value& v) {
+      [&](const celwasm::Value& k, const celwasm::Value& v) {
         got_entries.emplace_back(k, v);
       });
 
@@ -474,7 +474,7 @@ absl::Status CompareMap(const celwasm::api::Value& got,
 }
 
 // Order-aware list equality per langdef §"List equality".
-absl::Status CompareList(const celwasm::api::Value& got,
+absl::Status CompareList(const celwasm::Value& got,
                          const cel::expr::ListValue& want) {
   auto bk_or = got.ListBacking();
   if (!bk_or.ok()) {
@@ -488,9 +488,9 @@ absl::Status CompareList(const celwasm::api::Value& got,
         absl::StrCat("list size want=", want_size, " got=", backing->Size()));
   }
 
-  std::vector<celwasm::api::Value> got_elems;
+  std::vector<celwasm::Value> got_elems;
   got_elems.reserve(backing->Size());
-  backing->ForEach([&](const celwasm::api::Value& v) {
+  backing->ForEach([&](const celwasm::Value& v) {
     got_elems.push_back(v);
   });
 
@@ -630,25 +630,25 @@ namespace {
 // The default compiler is reused for every row whose `type_env` is
 // empty (the bulk of the corpus).  Rows with declared variables
 // build a per-test compiler via `BuildPerTestCompiler` below.
-const celwasm::api::Compiler& SharedDefaultCompiler() {
-  static const absl::NoDestructor<celwasm::api::Compiler> kShared([] {
-    auto c = celwasm::api::Compiler::NewBuilder().Build();
+const celwasm::Compiler& SharedDefaultCompiler() {
+  static const absl::NoDestructor<celwasm::Compiler> kShared([] {
+    auto c = celwasm::Compiler::NewBuilder().Build();
     ABSL_CHECK_OK(c) << "default Compiler::Build failed";
     return *std::move(c);
   }());
   return *kShared;
 }
 
-absl::StatusOr<celwasm::api::Compiler> BuildPerTestCompiler(
+absl::StatusOr<celwasm::Compiler> BuildPerTestCompiler(
     const SimpleTest& t) {
-  auto b = celwasm::api::Compiler::NewBuilder();
+  auto b = celwasm::Compiler::NewBuilder();
   if (auto s = DeclareVariablesOnBuilder(t, b); !s.ok()) return s;
   return std::move(b).Build();
 }
 
-absl::StatusOr<celwasm::api::Program> CompileForTest(
-    const celwasm::api::Compiler& compiler, const SimpleTest& t) {
-  celwasm::api::CompilerOptions opts;
+absl::StatusOr<celwasm::Program> CompileForTest(
+    const celwasm::Compiler& compiler, const SimpleTest& t) {
+  celwasm::CompilerOptions opts;
   opts.container = t.container();
   return compiler.Compile(t.expr(), opts);
 }
@@ -708,16 +708,16 @@ Result ClassifyEvalFailure(absl::string_view stage, const absl::Status& s) {
 
 // Per-matcher-kind eval branches ---------------------------------
 
-Result RunUnknownBranch(celwasm::api::Instance& inst,
-                        const celwasm::api::Activation& act) {
+Result RunUnknownBranch(celwasm::Instance& inst,
+                        const celwasm::Activation& act) {
   auto val_or = inst.PartialEval(act, {});
   if (!val_or.ok()) return ClassifyEvalFailure("partial_eval", val_or.status());
   if (auto s = CompareUnknown(*val_or); !s.ok()) return Fail("compare", s);
   return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-Result RunValueBranch(celwasm::api::Instance& inst,
-                      const celwasm::api::Activation& act,
+Result RunValueBranch(celwasm::Instance& inst,
+                      const celwasm::Activation& act,
                       const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
@@ -730,8 +730,8 @@ Result RunValueBranch(celwasm::api::Instance& inst,
 // Implicit-bool-true: a SimpleTest with no result_matcher set is a
 // bool-asserting expression; success means it evaluates to true.
 // Per the upstream cel-cpp convention in `conformance/run.cc`.
-Result RunImplicitBoolTrueBranch(celwasm::api::Instance& inst,
-                                 const celwasm::api::Activation& act) {
+Result RunImplicitBoolTrueBranch(celwasm::Instance& inst,
+                                 const celwasm::Activation& act) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
   cel::expr::Value want;
@@ -746,8 +746,8 @@ Result RunImplicitBoolTrueBranch(celwasm::api::Instance& inst,
 // `any_eval_errors` succeeds if any of its contained `errors[]`
 // matches (kind-only semantics make all entries equivalent, so we
 // can just compare against the first or an empty set).
-Result RunEvalErrorBranch(celwasm::api::Instance& inst,
-                          const celwasm::api::Activation& act,
+Result RunEvalErrorBranch(celwasm::Instance& inst,
+                          const celwasm::Activation& act,
                           const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
@@ -761,8 +761,8 @@ Result RunEvalErrorBranch(celwasm::api::Instance& inst,
   return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-Result RunTypedResultBranch(celwasm::api::Instance& inst,
-                            const celwasm::api::Activation& act,
+Result RunTypedResultBranch(celwasm::Instance& inst,
+                            const celwasm::Activation& act,
                             const SimpleTest& t) {
   // typed_result rows compare on the embedded `result` via the
   // standard value comparator.  Pure-`deduced_type` rows (no
@@ -810,7 +810,7 @@ std::optional<Result> ScopeReject(const SimpleTest& t) {
 // per-test path can SKIP gracefully (aggregate type_env decls) or
 // FAIL (real Builder errors).  Variant ordering: 0 = shared, 1 =
 // owned per-test build, 2 = SKIP/FAIL result already produced.
-std::variant<const celwasm::api::Compiler*, celwasm::api::Compiler, Result>
+std::variant<const celwasm::Compiler*, celwasm::Compiler, Result>
 ResolveCompiler(const SimpleTest& t) {
   if (t.type_env_size() == 0) return &SharedDefaultCompiler();
   auto built = BuildPerTestCompiler(t);
@@ -824,8 +824,8 @@ ResolveCompiler(const SimpleTest& t) {
 
 // Dispatches the matcher-kind eval branch.  `RunOne`'s tail is just
 // "plan + dispatch"; lifting it keeps `RunOne` under the lint gate.
-Result DispatchEvalBranch(celwasm::api::Instance& inst,
-                          const celwasm::api::Activation& act,
+Result DispatchEvalBranch(celwasm::Instance& inst,
+                          const celwasm::Activation& act,
                           const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
@@ -841,19 +841,19 @@ Result DispatchEvalBranch(celwasm::api::Instance& inst,
 }  // namespace
 
 // NOLINTBEGIN(misc-use-internal-linkage)
-Result RunOne(const SimpleTest& t, const celwasm::api::Engine& engine) {
+Result RunOne(const SimpleTest& t, const celwasm::Engine& engine) {
   if (auto skip = ScopeReject(t)) return *skip;
 
   auto compiler_var = ResolveCompiler(t);
   if (std::holds_alternative<Result>(compiler_var)) {
     return std::get<Result>(std::move(compiler_var));
   }
-  const celwasm::api::Compiler* compiler =
-      std::holds_alternative<const celwasm::api::Compiler*>(compiler_var)
-          ? std::get<const celwasm::api::Compiler*>(compiler_var)
-          : &std::get<celwasm::api::Compiler>(compiler_var);
+  const celwasm::Compiler* compiler =
+      std::holds_alternative<const celwasm::Compiler*>(compiler_var)
+          ? std::get<const celwasm::Compiler*>(compiler_var)
+          : &std::get<celwasm::Compiler>(compiler_var);
 
-  celwasm::api::Activation act;
+  celwasm::Activation act;
   if (auto s = PopulateActivation(t, act); !s.ok()) {
     if (s.code() == absl::StatusCode::kUnimplemented) {
       return Skip(SkipCategory::kBindingUnsupported, std::string(s.message()));
@@ -867,7 +867,7 @@ Result RunOne(const SimpleTest& t, const celwasm::api::Engine& engine) {
   auto inst_or = engine.Plan(*prog_or);
   if (!inst_or.ok()) return Fail("plan", inst_or.status());
 
-  celwasm::api::Instance inst = *std::move(inst_or);
+  celwasm::Instance inst = *std::move(inst_or);
   return DispatchEvalBranch(inst, act, t);
 }
 

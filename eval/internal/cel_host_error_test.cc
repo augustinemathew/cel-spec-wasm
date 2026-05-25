@@ -24,7 +24,7 @@
 namespace celwasm {
 namespace {
 
-// ──── celwasm::api::Value error factories ─────────────────────────────────
+// ──── celwasm::Value error factories ─────────────────────────────────
 
 TEST(CelValueFactoriesTest, FieldNotFoundCarriesNameAsMessage) {
   auto v = FieldNotFound("missing_field");

@@ -34,7 +34,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 using ::celwasm::AttributePattern;
 
@@ -388,7 +388,7 @@ TEST(InstancePartialEvalTest, EmptyPatternSetBehavesLikeEval) {
 // ────────────────────────────────────────────────────────────────────
 // M3 — `Instance::Eval` decoder grew a `CEL_MAP_ARENA` arm.  These
 // tests exercise the decoder by evaluating a map-producing
-// expression and asserting the host-side `celwasm::api::Value::Map` round-
+// expression and asserting the host-side `celwasm::Value::Map` round-
 // trips correctly: size matches, key kind matches, value matches
 // per entry.  Both the literal/index path (scalar value) and the
 // pure-literal path (map value) flow through `DecodeArenaMapAt`.
@@ -789,4 +789,4 @@ TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnReturnsFalseForNonDigits) {
 }  // namespace m13_c3
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

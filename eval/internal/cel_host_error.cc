@@ -14,42 +14,42 @@
 
 namespace celwasm {
 
-// ──── celwasm::api::Value error factories ─────────────────────────────────
+// ──── celwasm::Value error factories ─────────────────────────────────
 
-celwasm::api::Value FieldNotFound(absl::string_view name) {
-  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+celwasm::Value FieldNotFound(absl::string_view name) {
+  return celwasm::Value::Error(celwasm::ErrorPayload{
       /*code=*/celwasm::ErrorCode::kFieldNotFound,
       /*message=*/std::string(name),
       /*expr_id=*/0,
   });
 }
 
-celwasm::api::Value MakeError(celwasm::ErrorCode code, std::string message) {
-  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+celwasm::Value MakeError(celwasm::ErrorCode code, std::string message) {
+  return celwasm::Value::Error(celwasm::ErrorPayload{
       /*code=*/code,
       /*message=*/std::move(message),
       /*expr_id=*/0,
   });
 }
 
-celwasm::api::Value KeyTypeMismatch() {
-  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+celwasm::Value KeyTypeMismatch() {
+  return celwasm::Value::Error(celwasm::ErrorPayload{
       /*code=*/celwasm::ErrorCode::kTypeMismatch,
       /*message=*/"map key kind is not bool/int/uint/string",
       /*expr_id=*/0,
   });
 }
 
-celwasm::api::Value NoSuchKey() {
-  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+celwasm::Value NoSuchKey() {
+  return celwasm::Value::Error(celwasm::ErrorPayload{
       /*code=*/celwasm::ErrorCode::kKeyNotFound,
       /*message=*/"no such key",
       /*expr_id=*/0,
   });
 }
 
-celwasm::api::Value IndexOutOfBounds(std::size_t index, std::size_t count) {
-  return celwasm::api::Value::Error(celwasm::ErrorPayload{
+celwasm::Value IndexOutOfBounds(std::size_t index, std::size_t count) {
+  return celwasm::Value::Error(celwasm::ErrorPayload{
       /*code=*/celwasm::ErrorCode::kIndexOutOfBounds,
       /*message=*/
       absl::StrCat("index ", index, " out of range [0, ", count, ")"),

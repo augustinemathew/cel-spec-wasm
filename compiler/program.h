@@ -1,5 +1,5 @@
-// `celwasm::api::Program` — the compiled artifact, output of
-// `celwasm::api::Compiler::Compile(source)`.
+// `celwasm::Program` — the compiled artifact, output of
+// `celwasm::Compiler::Compile(source)`.
 //
 // Pure data: wasm bytes + (future) parsed ABI metadata.  No
 // wasmtime dependency; safe to copy across process boundaries
@@ -27,7 +27,7 @@
 
 #include "absl/types/span.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 class Program {
  public:
@@ -56,6 +56,6 @@ class Program {
   std::vector<uint8_t> wasm_bytes_;
 };
 
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_PROGRAM_H_

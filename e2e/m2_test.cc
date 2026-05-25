@@ -54,7 +54,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 using ::celwasm::AttributeId;
 using ::celwasm::AttributePattern;
@@ -710,4 +710,4 @@ TEST(EnvelopeBoundaryE2ETest, SelectRepeatedFieldReturnsHostList) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

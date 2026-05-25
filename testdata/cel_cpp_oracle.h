@@ -4,7 +4,7 @@
 // pipeline's result can be compared against.
 //
 // Why a separate TU.  Our public API type `cel::Value` is
-// `celwasm::api::Value` aliased into `namespace cel` (`api/value.h`);
+// `celwasm::Value` aliased into `namespace cel` (`api/value.h`);
 // cel-cpp's `cel::Value` (`common/value.h`) collides.  Anything that
 // links cel-cpp's runtime therefore cannot also include our
 // `api/value.h`.  This header exposes ONLY neutral types

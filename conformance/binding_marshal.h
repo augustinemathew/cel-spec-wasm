@@ -1,6 +1,6 @@
 // Conformance-harness marshaller from upstream test-fixture proto
 // shapes (`cel.expr.ExprValue`, `cel.expr.Decl`, `cel.expr.Type`)
-// into the public `cel::` surface (`celwasm::api::Value`, `celwasm::api::Activation`,
+// into the public `cel::` surface (`celwasm::Value`, `celwasm::Activation`,
 // the `name:type` spec strings consumed by
 // `Compiler::Builder::DeclareVariable`).
 //
@@ -14,7 +14,7 @@
 //   - scalar values (null / bool / int / uint / double / string / bytes)
 //   - `enum_value` (decoded as int per langdef §"Enumerated Types")
 //   - `object_value` (Any-unpacked via the generated descriptor pool)
-//   - `type_value` (decoded to `celwasm::api::Value::Type(name)`)
+//   - `type_value` (decoded to `celwasm::Value::Type(name)`)
 //   - primitive / message-type / type-of-types `Decl` ident types
 //
 // Still `Unimplemented` (graceful SKIP — see follow-ups in
@@ -47,10 +47,10 @@
 
 namespace celwasm::conformance {
 
-// Decode a `cel.expr.Value` (scalar kind only) into a `celwasm::api::Value`.
+// Decode a `cel.expr.Value` (scalar kind only) into a `celwasm::Value`.
 // Returns `Unimplemented` for any aggregate / enum / type kind, and
 // `InvalidArgument` if no `kind` is set on the proto.
-ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::api::Value> ValueFromProto(
+ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::Value> ValueFromProto(
     const cel::expr::Value& v);
 
 // M7: unpack an Any-style `object_value` payload into a heap-owned
@@ -66,7 +66,7 @@ UnpackAny(const google::protobuf::Any& any);
 // `Type`) into a `name:type` spec string consumed by
 // `CheckOptions::variable_specs` (the lower-level frontend surface).
 // The harness uses this for unit tests; for actually declaring a
-// variable on a `celwasm::api::Compiler::Builder` use
+// variable on a `celwasm::Compiler::Builder` use
 // `DeclareVariablesOnBuilder` below, which goes via the typed
 // `CelType` surface and skips a round-trip through the spec parser.
 //
@@ -84,7 +84,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<std::string> VariableSpecFromDecl(
 // `VariableSpecFromDecl` (aggregates / functions SKIP).
 ABSL_MUST_USE_RESULT absl::Status DeclareVariablesOnBuilder(
     const cel::expr::conformance::test::SimpleTest& t,
-    celwasm::api::Compiler::Builder& b);
+    celwasm::Compiler::Builder& b);
 
 // Iterate `t.bindings()` and for each entry decode the wrapped
 // `Value` via `ValueFromProto`, then `Bind` it on `act`.
@@ -96,7 +96,7 @@ ABSL_MUST_USE_RESULT absl::Status DeclareVariablesOnBuilder(
 //     `ValueFromProto` (aggregate / enum / type_value)
 ABSL_MUST_USE_RESULT absl::Status PopulateActivation(
     const cel::expr::conformance::test::SimpleTest& t,
-    celwasm::api::Activation& act);
+    celwasm::Activation& act);
 
 // Iterate `t.type_env()` and append a spec string per decl into
 // `out`.  Same Unimplemented contract as `VariableSpecFromDecl`.

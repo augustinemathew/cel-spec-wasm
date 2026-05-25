@@ -25,7 +25,7 @@
 #include "wasm.h"
 #include "wasmtime.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 // Mirror of the smoke test's expr WAT (see the experiment branch's
@@ -216,7 +216,7 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
 // ─── M13 Slice C.1 — Engine::AddModule + Engine::AddFunction ───
 //
 // Mirrors Probe 4 + Probe 5's coverage, but against the production
-// `celwasm::api::Engine` API rather than the probe-stage `ProbeEngine` /
+// `celwasm::Engine` API rather than the probe-stage `ProbeEngine` /
 // inline wasmtime harness.
 
 // A minimal self-contained custom-module wasm: defines + exports
@@ -354,4 +354,4 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

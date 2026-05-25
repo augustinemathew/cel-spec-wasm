@@ -29,7 +29,7 @@
 #include "eval/value.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -266,4 +266,4 @@ TEST_F(MultiFunctionE2ETest, FormatWithReceiverChain) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

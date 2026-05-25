@@ -20,7 +20,7 @@
 #include "absl/strings/string_view.h"
 #include "eval/value.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 // Forward: `FunctionImpl` lives in `api/function.h`.  Declared via
 // duplicate `using` so this header doesn't pull function.h into its
@@ -60,6 +60,6 @@ class Activation {
   absl::flat_hash_map<std::string, Value> bindings_;
 };
 
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 #endif  // CELWASM_EVAL_ACTIVATION_H_

@@ -33,7 +33,7 @@ struct Row {
   // string spec.  Both name the same variable.
   struct Decl {
     std::string name;
-    celwasm::api::CelType type;
+    celwasm::CelType type;
     std::string spec;  // e.g. "int", "string", "list<int>"
   };
   std::vector<Decl> decls;
@@ -55,19 +55,19 @@ std::size_t CheckedExprSize(const Row& row) {
 }
 
 void Emit(const Row& row) {
-  celwasm::api::Compiler::Builder b;
+  celwasm::Compiler::Builder b;
   for (const auto& d : row.decls) {
     b.DeclareVariable(d.name, d.type);
   }
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler);
 
-  celwasm::api::CompilerOptions o0;
+  celwasm::CompilerOptions o0;
   o0.optimize_level = 0;
   auto p0 = compiler->Compile(row.source, o0);
   ABSL_CHECK_OK(p0);
 
-  celwasm::api::CompilerOptions o2;
+  celwasm::CompilerOptions o2;
   o2.optimize_level = 2;
   auto p2 = compiler->Compile(row.source, o2);
   ABSL_CHECK_OK(p2);
@@ -88,10 +88,10 @@ int main() {
   // Per-row variable decls.  Helper lambdas keep the call sites
   // readable; tuples are (name, public CelType, checker spec string).
   auto INT = [](std::string name) -> Row::Decl {
-    return {std::move(name), celwasm::api::CelType::Int(), "int"};
+    return {std::move(name), celwasm::CelType::Int(), "int"};
   };
   auto STR = [](std::string name) -> Row::Decl {
-    return {std::move(name), celwasm::api::CelType::String(), "string"};
+    return {std::move(name), celwasm::CelType::String(), "string"};
   };
 
   std::printf(
@@ -121,19 +121,19 @@ int main() {
 
   std::printf("\n");
   std::printf("In-memory C++ object sizes (sizeof):\n");
-  std::printf("  celwasm::api::Value         %zu B\n",
-              sizeof(celwasm::api::Value));
-  std::printf("  celwasm::api::Activation    %zu B\n",
-              sizeof(celwasm::api::Activation));
+  std::printf("  celwasm::Value         %zu B\n",
+              sizeof(celwasm::Value));
+  std::printf("  celwasm::Activation    %zu B\n",
+              sizeof(celwasm::Activation));
   std::printf(
-      "  celwasm::api::Program       %zu B (plus the wasm bytes vector data)\n",
-      sizeof(celwasm::api::Program));
+      "  celwasm::Program       %zu B (plus the wasm bytes vector data)\n",
+      sizeof(celwasm::Program));
   std::printf(
-      "  celwasm::api::Compiler      %zu B (plus the declared-variable "
+      "  celwasm::Compiler      %zu B (plus the declared-variable "
       "vector)\n",
-      sizeof(celwasm::api::Compiler));
-  std::printf("  celwasm::api::CompilerOptions  %zu B\n",
-              sizeof(celwasm::api::CompilerOptions));
+      sizeof(celwasm::Compiler));
+  std::printf("  celwasm::CompilerOptions  %zu B\n",
+              sizeof(celwasm::CompilerOptions));
   std::printf(
       "  CelValue (wire)    %zu B  // arena-resident; pinned by "
       "static_assert\n",

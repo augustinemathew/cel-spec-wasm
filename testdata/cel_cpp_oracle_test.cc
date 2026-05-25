@@ -14,7 +14,7 @@
 //   - dynamic.textproto int32/uint32 field_assign_proto{2,3}_range
 // plus an INT32 boundary matrix (MIN, MAX, ±1 past each, 0).
 //
-// NOTE.  Our public API now lives in `celwasm::api` (no symbols in
+// NOTE.  Our public API now lives in `celwasm` (no symbols in
 // `namespace cel`), so it no longer collides at link time with the
 // `cel::` symbols cel-cpp pulls in through the oracle — the
 // our-pipeline-and-oracle differential links cleanly in one binary.
@@ -43,7 +43,7 @@
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -214,4 +214,4 @@ TEST(M20WrapperBoundary, Int32WrapperMin) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

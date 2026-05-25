@@ -61,13 +61,13 @@ namespace celwasm::tools::cel {
 // them, so the caller pins the parsed-var vector for that lifetime.
 struct ParsedVar {
   std::string name;
-  ::celwasm::api::CelType type;
+  ::celwasm::CelType type;
   // `value` is meaningful iff `has_value` is true.  The `name:Type`
   // (declaration-only) form leaves `has_value == false` and `value`
   // default-constructed.  Used by `cel check` / `cel compile` to
   // declare a variable's type without binding it.
   bool has_value = false;
-  ::celwasm::api::Value value;
+  ::celwasm::Value value;
 };
 
 // Parse a single `--var name:Type=value` flag.  The descriptor
@@ -85,7 +85,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<ParsedVar> ParseVarFlag(
 // Parse just the type-spec portion (everything between `:` and `=`).
 // Exposed for tests and for the `cel check` subcommand, which
 // declares variables without binding values.
-ABSL_MUST_USE_RESULT absl::StatusOr<::celwasm::api::CelType> ParseTypeSpec(
+ABSL_MUST_USE_RESULT absl::StatusOr<::celwasm::CelType> ParseTypeSpec(
     absl::string_view spec);
 
 }  // namespace celwasm::tools::cel

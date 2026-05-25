@@ -72,9 +72,9 @@ CelValue MakeIntIdx(int64_t i) {
 }
 
 std::shared_ptr<HostList> ThreeInts() {
-  return std::make_shared<HostList>(std::vector<celwasm::api::Value>{
-      celwasm::api::Value::Int(10), celwasm::api::Value::Int(20),
-      celwasm::api::Value::Int(30)});
+  return std::make_shared<HostList>(std::vector<celwasm::Value>{
+      celwasm::Value::Int(10), celwasm::Value::Int(20),
+      celwasm::Value::Int(30)});
 }
 
 // ════════ 3VL absorption on operand pair ════════
@@ -120,8 +120,8 @@ TEST(CelListAtImplTest, IntElementHits) {
 TEST(CelListAtImplTest, StringElementMarshalledViaArena) {
   Fixture f;
   auto backing = std::make_shared<HostList>(
-      std::vector<celwasm::api::Value>{celwasm::api::Value::String("alpha"),
-                                       celwasm::api::Value::String("beta")});
+      std::vector<celwasm::Value>{celwasm::Value::String("alpha"),
+                                       celwasm::Value::String("beta")});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(backing)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(1));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
@@ -215,7 +215,7 @@ TEST(CelListAtImplTest, NestedMessageElementInternsToMessageSlot) {
   HostMsg3 sub;
   sub.set_i64(99);
   auto backing = std::make_shared<HostList>(
-      std::vector<celwasm::api::Value>{celwasm::api::Value::Message(sub)});
+      std::vector<celwasm::Value>{celwasm::Value::Message(sub)});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(backing)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(0));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
@@ -227,9 +227,9 @@ TEST(CelListAtImplTest, NestedMessageElementInternsToMessageSlot) {
 TEST(CelListAtImplTest, NestedListElementInternsToListSlot) {
   Fixture f;
   auto inner = std::make_shared<HostList>(
-      std::vector<celwasm::api::Value>{celwasm::api::Value::Int(7)});
+      std::vector<celwasm::Value>{celwasm::Value::Int(7)});
   auto outer = std::make_shared<HostList>(
-      std::vector<celwasm::api::Value>{celwasm::api::Value::HostList(inner)});
+      std::vector<celwasm::Value>{celwasm::Value::HostList(inner)});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(outer)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(0));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());

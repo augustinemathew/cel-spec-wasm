@@ -85,15 +85,15 @@ CelValue MakeStringKey(FakeMemory& mem, uint32_t bytes_off,
 }
 
 std::shared_ptr<HostMap> SimpleMap() {
-  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
-  entries.emplace_back(celwasm::api::Value::Int(7),
-                       celwasm::api::Value::Int(70));
-  entries.emplace_back(celwasm::api::Value::String("k"),
-                       celwasm::api::Value::String("v"));
-  entries.emplace_back(celwasm::api::Value::Bool(true),
-                       celwasm::api::Value::Int(1));
-  entries.emplace_back(celwasm::api::Value::Uint(42),
-                       celwasm::api::Value::Int(420));
+  std::vector<std::pair<celwasm::Value, celwasm::Value>> entries;
+  entries.emplace_back(celwasm::Value::Int(7),
+                       celwasm::Value::Int(70));
+  entries.emplace_back(celwasm::Value::String("k"),
+                       celwasm::Value::String("v"));
+  entries.emplace_back(celwasm::Value::Bool(true),
+                       celwasm::Value::Int(1));
+  entries.emplace_back(celwasm::Value::Uint(42),
+                       celwasm::Value::Int(420));
   return std::make_shared<HostMap>(std::move(entries));
 }
 

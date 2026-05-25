@@ -1,7 +1,7 @@
 // Program save/reload round-trip e2e — proves that the wasm bytes
 // emitted by `Compiler::Compile` can be persisted (to disk, a cache,
 // a remote endpoint, …) and reconstructed into an equivalent
-// `celwasm::api::Program` via the `Program(std::vector<uint8_t>)` constructor,
+// `celwasm::Program` via the `Program(std::vector<uint8_t>)` constructor,
 // then planned and evaluated to bit-identical results.
 //
 // `program_test.cc` covers the structural round-trip (bytes in =
@@ -33,7 +33,7 @@
 #include "eval/value.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 Engine& GlobalEngine() {
@@ -234,4 +234,4 @@ TEST(ProgramRoundTripE2E, OptimizedBytesAlsoRoundTrip) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

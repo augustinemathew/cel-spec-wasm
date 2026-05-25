@@ -25,7 +25,7 @@
 #include "wasm.h"
 #include "wasmtime.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 namespace {
 
@@ -724,4 +724,4 @@ absl::StatusOr<Engine> Engine::Builder::Build() && {
   return Engine(std::move(*state_or));
 }
 
-}  // namespace celwasm::api
+}  // namespace celwasm

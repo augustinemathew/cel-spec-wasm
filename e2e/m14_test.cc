@@ -18,7 +18,7 @@
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 // Force generated-pool registration of descriptors referenced by the
@@ -796,4 +796,4 @@ TEST(ProtoOptionalFieldE2ETest, OfNonZeroValueOnNonZeroMessageHasValue) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

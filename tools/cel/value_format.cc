@@ -23,7 +23,7 @@ namespace celwasm::tools::cel {
 
 namespace {
 
-using ::celwasm::api::Value;
+using ::celwasm::Value;
 
 absl::StatusOr<std::string> ToCelLiteral(const Value& v);
 
@@ -80,7 +80,7 @@ absl::StatusOr<std::string> FormatListBacking(
   bool first = true;
   absl::Status err = absl::OkStatus();
   for (std::size_t i = 0; i < l.Size(); ++i) {
-    auto e = l.At(i, ::celwasm::api::CelType{});
+    auto e = l.At(i, ::celwasm::CelType{});
     if (!e.ok()) {
       err = e.status();
       break;

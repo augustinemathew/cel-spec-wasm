@@ -40,7 +40,7 @@
 #include "eval/value.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -372,4 +372,4 @@ TEST_F(CompileErrorE2ETest, IsIpAppliedToCidrRejected) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

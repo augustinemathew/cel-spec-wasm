@@ -135,7 +135,7 @@ class WasmModule {
   // `BinaryenSetShrinkLevel` mutate static variables in the library.
   // Concurrent calls from multiple threads to `Optimize` with
   // different levels would race.  Today every caller is on the
-  // Compile thread and serialised by `celwasm::api::Compiler` ownership;
+  // Compile thread and serialised by `celwasm::Compiler` ownership;
   // surface this here so a future async-compile slice doesn't miss
   // it.  A future-cleaner shape would be `BinaryenModuleRunPasses`
   // with an explicit pass list (no global state); deferred until a

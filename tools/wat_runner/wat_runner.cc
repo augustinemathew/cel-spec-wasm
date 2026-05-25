@@ -169,7 +169,7 @@ constexpr std::array<absl::string_view, 115> kRuntimeExports = {
     "cel_base64_decode_at_v",
 };
 
-// ── Status helpers — mirror celwasm::api::Engine's shape ─────────────
+// ── Status helpers — mirror celwasm::Engine's shape ─────────────
 
 absl::Status WasmtimeErrorToStatus(absl::string_view context,
                                    wasmtime_error_t* err) {

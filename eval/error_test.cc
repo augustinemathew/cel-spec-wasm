@@ -2,7 +2,7 @@
 
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 
 TEST(ErrorCodeTest, NamesCoverEveryCode) {
@@ -35,4 +35,4 @@ TEST(ErrorPayloadTest, AggregateInitHonoursFields) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

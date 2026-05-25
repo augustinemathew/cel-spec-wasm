@@ -4,9 +4,9 @@
 //
 // Two distinct concerns live here:
 //
-//   1. `celwasm::api::Value` factories for the standard error shapes the
+//   1. `celwasm::Value` factories for the standard error shapes the
 //      host emits inline (FieldNotFound, KeyTypeMismatch, etc.).
-//      These return a `celwasm::api::Value::Error` payload that travels up
+//      These return a `celwasm::Value::Error` payload that travels up
 //      through the public API surface.
 //
 //   2. Wire-format encoders that write CEL_BOOL / CEL_INT /
@@ -33,29 +33,29 @@
 
 namespace celwasm {
 
-// ──── celwasm::api::Value error factories ─────────────────────────────────
+// ──── celwasm::Value error factories ─────────────────────────────────
 
 // `Value::Error(kFieldNotFound, name)` — emitted by proto-field
 // readers when the requested field number / name doesn't resolve
 // against the message's descriptor.
-celwasm::api::Value FieldNotFound(absl::string_view name);
+celwasm::Value FieldNotFound(absl::string_view name);
 
 // Generic error factory.  Caller picks the `celwasm::ErrorCode` and
 // formats the message.  Every other factory in this header is a
 // pinned-message specialisation of this.
-celwasm::api::Value MakeError(celwasm::ErrorCode code, std::string message);
+celwasm::Value MakeError(celwasm::ErrorCode code, std::string message);
 
 // `Value::Error(kTypeMismatch, "map key kind is not bool/int/uint/string")`.
 // Used by host-side map ops when the requested key kind violates the
 // langdef map-key constraint.
-celwasm::api::Value KeyTypeMismatch();
+celwasm::Value KeyTypeMismatch();
 
 // `Value::Error(kKeyNotFound, "no such key")`.  Used by map.Get when
 // the key kind is valid but the key isn't present.
-celwasm::api::Value NoSuchKey();
+celwasm::Value NoSuchKey();
 
 // `Value::Error(kIndexOutOfBounds, "index N out of range [0, M)")`.
-celwasm::api::Value IndexOutOfBounds(std::size_t index, std::size_t count);
+celwasm::Value IndexOutOfBounds(std::size_t index, std::size_t count);
 
 // ──── Wire-format error encoding ─────────────────────────────────
 

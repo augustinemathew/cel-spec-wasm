@@ -1,4 +1,4 @@
-// `celwasm::api::Compiler` — pure compile-time front end.  Per
+// `celwasm::Compiler` — pure compile-time front end.  Per
 // cel-host-surface.md §2.1 (with the role-split correction in
 // doc/implementation-plan/rewrite/two-phase-runtime-isolation.md
 // §4): holds declarations + the compile-time descriptor pool.
@@ -9,7 +9,7 @@
 //   - serialized (via `Program::wasm_bytes()`) and shipped
 //     elsewhere
 //   - executed in this process by passing them to
-//     `celwasm::api::Engine::Plan(program, bindings)`
+//     `celwasm::Engine::Plan(program, bindings)`
 //
 // The Compiler itself never touches a wasm engine.
 
@@ -29,12 +29,12 @@
 #include "shared/type.h"
 #include "compiler/celfn/function_library.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 // Pulled in from `namespace cel` (type.h / program.h re-exports
-// from celwasm::api but `CelType` still lives in `cel`).  Lets the
+// from celwasm but `CelType` still lives in `cel`).  Lets the
 // class bodies refer to them unqualified.
-using ::celwasm::api::CelType;
+using ::celwasm::CelType;
 
 // One declared free variable: name + static type.  Introspected via
 // `Compiler::declared_variables()`; the checker resolves each ident
@@ -253,6 +253,6 @@ class Compiler::Builder {
   absl::Status deferred_status_;
 };
 
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_COMPILER_H_

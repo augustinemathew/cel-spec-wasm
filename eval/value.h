@@ -45,7 +45,7 @@ class HostMapBacking;
 class HostListBacking;
 }  // namespace celwasm
 
-namespace celwasm::api {
+namespace celwasm {
 
 // AttributeId lives in `namespace celwasm` (alongside the other
 // attribute types — it must not collide with cel-cpp's `cel::Attribute*`
@@ -252,6 +252,6 @@ class Value {
 
 absl::string_view ValueKindName(Value::Kind k);
 
-}  // namespace celwasm::api
+}  // namespace celwasm
 
 #endif  // CELWASM_EVAL_VALUE_H_

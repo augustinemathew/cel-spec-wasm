@@ -10,7 +10,7 @@
 #include "absl/strings/string_view.h"
 #include "eval/value.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 Activation& Activation::Bind(std::string name, Value value) {
   bindings_.insert_or_assign(std::move(name), std::move(value));
@@ -43,4 +43,4 @@ const Value* absl_nullable Activation::Find(absl::string_view name) const {
   return &it->second;
 }
 
-}  // namespace celwasm::api
+}  // namespace celwasm

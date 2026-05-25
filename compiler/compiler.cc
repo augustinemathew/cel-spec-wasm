@@ -13,7 +13,7 @@
 #include "shared/type.h"
 #include "compiler/internal/compile.h"
 
-namespace celwasm::api {
+namespace celwasm {
 
 namespace {
 
@@ -191,4 +191,4 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
   return Program(std::move(artifact_or->wasm_bytes));
 }
 
-}  // namespace celwasm::api
+}  // namespace celwasm

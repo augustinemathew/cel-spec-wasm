@@ -82,7 +82,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::api {
+namespace celwasm {
 namespace {
 using ::celwasm::AttributePattern;
 
@@ -698,7 +698,7 @@ TEST_F(TypeActivationE2ETest, BoundTypeEqualsTypeOfRuntimeValue) {
 
 TEST_F(TypeActivationE2ETest, ReadSideDecoderReturnsValueType) {
   // Eval a root expression that produces a CEL_TYPE; assert the
-  // returned `celwasm::api::Value` is `Value::Kind::kType` with the
+  // returned `celwasm::Value` is `Value::Kind::kType` with the
   // expected name.  Exercises the read-side `DecodeCelValueAt`
   // for CEL_TYPE.
   auto compiler = CompilerEmpty();
@@ -818,4 +818,4 @@ TEST_F(TypeRejectE2ETest, TypeKeywordVsIntRejectedByChecker) {
 }
 
 }  // namespace
-}  // namespace celwasm::api
+}  // namespace celwasm

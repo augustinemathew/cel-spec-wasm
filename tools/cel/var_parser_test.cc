@@ -23,8 +23,8 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
-using ::celwasm::api::CelType;
-using ::celwasm::api::Value;
+using ::celwasm::CelType;
+using ::celwasm::Value;
 using ::celwasm::testdata::Customer;
 
 // Test fixture exposing the generated descriptor pool — the Customer
@@ -171,8 +171,8 @@ TEST_F(VarParserTest, ListValues) {
   auto backing = v->value.ListBacking();
   ASSERT_THAT(backing, IsOk());
   EXPECT_EQ((*backing)->Size(), 3u);
-  EXPECT_EQ(*(*backing)->At(0, ::celwasm::api::CelType{})->AsInt(), 1);
-  EXPECT_EQ(*(*backing)->At(2, ::celwasm::api::CelType{})->AsInt(), 3);
+  EXPECT_EQ(*(*backing)->At(0, ::celwasm::CelType{})->AsInt(), 1);
+  EXPECT_EQ(*(*backing)->At(2, ::celwasm::CelType{})->AsInt(), 3);
 
   // Empty list.
   auto empty = ParseVarFlag("xs:list<int>=[]", pool(), factory_);
