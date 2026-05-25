@@ -304,7 +304,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       // stamped in payload.unk.  Reconstruct an AttributeId
       // carrying that wire id; embedders compare it against the
       // slot they queried via PartialEval.
-      return Value::Unknown(AttributeId{cv.payload.unk});
+      return Value::Unknown(celwasm::AttributeId{cv.payload.unk});
     case CEL_ERROR:
       return DecodeCelError(cv);
     case CEL_TYPE: {
@@ -1045,7 +1045,8 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
 }
 
 absl::StatusOr<Value> Instance::PartialEval(
-    const Activation& activation, absl::Span<const AttributePattern> unknowns) {
+    const Activation& activation,
+    absl::Span<const celwasm::AttributePattern> unknowns) {
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
 
   // Reset per-eval state.  Unlike Eval(), we then populate

@@ -316,7 +316,7 @@ struct Layer2Fixture {
   FakeArenaAllocator alloc{&mem, kArenaBase, /*capacity=*/2048};
   std::vector<FieldRefEntry> field_refs{FieldRefEntry{}};  // index 0 sentinel
   std::vector<AttributeEntry> attributes;
-  std::vector<cel::AttributePattern> unknown_patterns;
+  std::vector<celwasm::AttributePattern> unknown_patterns;
   CelHostBindings bindings_scratch;  // outlives TrampolineContext ref
 
   TrampolineContext Ctx() {
@@ -568,7 +568,7 @@ TEST(Layer2UnknownPatternTest, MatchingPatternAbsorbs) {
   f.BindMessage(std::make_shared<ProtoBacking>(&c), 1, "name");
   f.attributes.push_back(AttributeEntry{});  // sentinel
   f.attributes.push_back(AttributeEntry{/*root=*/"c", /*quals=*/{}});
-  auto pat = cel::AttributePattern::Parse("c.name");
+  auto pat = celwasm::AttributePattern::Parse("c.name");
   ASSERT_THAT(pat, IsOk());
   f.unknown_patterns.push_back(*std::move(pat));
 
@@ -584,7 +584,7 @@ TEST(Layer2UnknownPatternTest, NonMatchingPatternFallsThrough) {
   f.BindMessage(std::make_shared<ProtoBacking>(&c), 1, "name");
   f.attributes.push_back(AttributeEntry{});
   f.attributes.push_back(AttributeEntry{"c", {}});
-  auto pat = cel::AttributePattern::Parse("c.age");  // different field
+  auto pat = celwasm::AttributePattern::Parse("c.age");  // different field
   ASSERT_THAT(pat, IsOk());
   f.unknown_patterns.push_back(*std::move(pat));
 
@@ -599,7 +599,7 @@ TEST(Layer2UnknownPatternTest, WildcardMatchesConcreteSelect) {
   f.BindMessage(std::make_shared<ProtoBacking>(&c), 9, "billing_address");
   f.attributes.push_back(AttributeEntry{});
   f.attributes.push_back(AttributeEntry{"c", {}});
-  auto pat = cel::AttributePattern::Parse("c.*");
+  auto pat = celwasm::AttributePattern::Parse("c.*");
   ASSERT_THAT(pat, IsOk());
   f.unknown_patterns.push_back(*std::move(pat));
 

@@ -20,7 +20,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/attribute.h"
 #include "compiler_v2/api/compiler.h"
@@ -30,12 +29,14 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "gmock/gmock.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
 namespace cel {
 namespace {
+using ::celwasm::AttributePattern;
 
 // Force generated-pool registration of descriptors referenced by
 // tests below.  Runs once at static init per test binary.

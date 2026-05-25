@@ -56,7 +56,7 @@ TEST(CompareEvalErrorTest, MismatchValueRatherThanError) {
 }
 
 TEST(CompareEvalErrorTest, MismatchUnknownIsNotError) {
-  auto got = cel::Value::Unknown(cel::AttributeId{.id = 1});
+  auto got = cel::Value::Unknown(celwasm::AttributeId{.id = 1});
   auto want = ParseErrorSet(R"pb(errors { message: "any" })pb");
   auto s = CompareEvalError(got, want);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition);

@@ -47,11 +47,13 @@ class HostListBacking;
 
 namespace celwasm::api {
 
-// Pulled in from `namespace cel` (attribute.h / error.h still live
-// there — they don't collide with cel-cpp).  These usings let the
-// Value class body refer to them without `cel::` qualification.
-using ::cel::AttributeId;
+// AttributeId lives in `namespace celwasm` (alongside the other
+// attribute types — it must not collide with cel-cpp's `cel::Attribute*`
+// when both libraries link into one binary).  ErrorPayload still lives
+// in `namespace cel`.  These usings let the Value class body refer to
+// them unqualified.
 using ::cel::ErrorPayload;
+using ::celwasm::AttributeId;
 
 class Value {
  public:
