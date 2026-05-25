@@ -1,9 +1,35 @@
 # Repo rules for Claude (celwasmc)
 
-This repo is a CEL → WebAssembly AOT compiler.  Existing cel-spec artefacts
-(Go protos, conformance tests, `doc/langdef.md`) are untouched; the new
-compiler lives under `compiler/` and vendors `third_party/cel-cpp/` for
-parser + type-checker reuse.
+This repo is a CEL → WebAssembly AOT compiler.  Its source is organised by
+**lifecycle role** at the top level (the layout cel-cpp itself uses):
+
+  - `compiler/` — compile-time: CEL source → `Program` (wasm bytes + `cel.abi`).
+    Children: `frontend/` (parse + type-check, wraps cel-cpp), `ir/` (typed
+    AST + annotations), `codegen/` (Binaryen lowering), `celfn/` (function
+    library), `internal/` (the private `compile.{h,cc}` pipeline facade);
+    the public face is `compiler.{h,cc}` + `program.h`.
+  - `eval/` — eval-time: `Program` + `Activation` → `Value` (the C++/wasmtime
+    evaluator).  Public leaves `engine/instance/activation/value/error/
+    attribute`; `host/` (cel_log trampolines) and `internal/` (wasmtime glue,
+    `abi_decode`, `cel_host`) are private.
+  - `shared/` — `CelType`, the type vocabulary both compile and eval speak.
+    (Named `shared/`, NOT `common/`: a `common/` here collided with vendored
+    cel-cpp's own `common/` top-level include dir.)
+  - `abi/` — the `cel.abi` wire contract (emit *and* parse; shared).
+  - `runtime/` — `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel).
+  - `tools/` (cel CLI, wat_runner), `conformance/`, `e2e/`, `bench/`,
+    `testdata/` — leaf binaries/tests.
+  - `spec/` — cel-spec heritage (the `.textproto` conformance corpus under
+    `spec/tests/`).  `proto/` STAYS at repo root for now (the move is deferred
+    to a module-rename workstream).
+
+`compiler/` and `eval/` both depend on `shared/`; **neither depends on the
+other.**  `compiler/` stays wasm-targetable — no `eval/`-side or wasmtime
+dependency — so `compiler.wasm` stays reachable as a future build target.
+
+Existing cel-spec artefacts (`doc/langdef.md`, the conformance corpus) are
+upstream contract; we vendor `third_party/cel-cpp/` for parser + type-checker
+reuse.
 
 ## Authoritative docs
 
@@ -39,7 +65,7 @@ something in them, update them in the same commit as the code.
     `GTEST_SKIP` an entire fixture's `SetUp` for "this whole feature
     isn't done yet" — that's how M2 silently shipped half-done with 29
     skipped tests), and the closeout gate to copy into every milestone
-    PR description.  **`bazel test //compiler_v2/...` being green does
+    PR description.  **`bazel test $PROJ` being green does
     NOT mean a milestone is done — manual-tagged tests carry the
     load-bearing e2e assertions; they MUST be run explicitly.**
 
@@ -127,7 +153,7 @@ a compiler that silently miscodegens in release builds is worse than
 one that crashes.  Only return a fallback value from `default:` when
 the switch is genuinely open — e.g. parsing untrusted wire bytes, where
 unknown bytes should pass through (see `FormatDirective` in
-`compiler_v2/host/cel_log.cc` for an example of the legitimate form).
+`eval/host/cel_log.cc` for an example of the legitimate form).
 
 **Unimplemented features.**  When a code path is a stub until a later
 milestone — an arm of a switch that M1 doesn't handle, a
@@ -140,7 +166,7 @@ release build that silently miscompiles is worse than one that
 crashes, and naming the symbol + milestone in the message turns an
 earlier-than-expected caller into a directly actionable backtrace.
 See `StaticMemoryBuilder::AllocateList` in
-`compiler_v2/codegen/static_memory_builder.cc` for the canonical form.
+`compiler/codegen/static_memory_builder.cc` for the canonical form.
 
 **The rule applies to every control-flow shape, not just switches.**
 Any branch that reaches a path a later milestone will light up gets
@@ -196,10 +222,11 @@ Before every commit run, in order:
      cold/fresh checkout also populates external symlinks via a one-time
      build — see "Dev-loop performance".)  In the loop, use bare
      `scripts/lint.sh` (working-set only) after each edit.
-  2. `bazel test //compiler_v2/<touched-package>` in the loop; bare
-     `bazel test //compiler_v2/...` is a ~10-min from-cold sweep — run
-     it (or rely on CI) at the gate, not per edit.  See "Dev-loop
-     performance".
+  2. `bazel test //<role>/<touched-package>` in the loop (e.g.
+     `//compiler/codegen:...`, `//eval:...`, `//runtime:...`); the bare
+     full sweep over `$PROJ` (see "Build & run") is a ~10-min from-cold
+     run — do it (or rely on CI) at the gate, not per edit.  See
+     "Dev-loop performance".
   3. Update `doc/implementation-plan/testing-checklist.md` and the
      active milestone doc (see "Authoritative docs" above).
 
@@ -211,11 +238,11 @@ unusable, **and the warning set itself changes**:
 
   - The PCH lives at `.lint-cache/lint_pch.h.pch` and is built from
     `scripts/lint_pch.h` (the union of absl + protobuf headers
-    referenced by `compiler_v2/`).
+    referenced by the first-party C++ tree).
   - `scripts/build_lint_pch.sh` rebuilds the PCH iff `lint_pch.h` or
     `compile_commands.json` is newer than the cached PCH.  Update
-    `lint_pch.h` whenever a new absl / protobuf header lands in
-    `compiler_v2/`; run `scripts/refresh_compile_db.sh` after a bazel
+    `lint_pch.h` whenever a new absl / protobuf header lands in the
+    first-party tree; run `scripts/refresh_compile_db.sh` after a bazel
     dep update so the PCH rebuilds against the right paths.
   - **PCH NOT loading is silent and changes warnings.**  When PCH
     fails to load (most commonly because the build/release
@@ -275,8 +302,9 @@ grep -n "MakeOverloadDecl\|InvalidArgumentError\|absl::Base64" \
 For anything a grep can't settle — does the type-checker actually
 stamp this overload id? does this absl primitive accept the
 unpadded input the corpus feeds? — **write a throwaway probe**
-under `compiler_v2/probes/<milestone>/` (the `m13_custom_fns` /
-`optionals` probe dirs are the precedent).  A probe is a small
+under `compiler/probes/<milestone>/` (created ad hoc per milestone;
+there is no committed `probes/` dir — past milestones' probes were
+deleted at closeout, which is the discipline below).  A probe is a small
 `cc_test` that links the real cel-cpp library (or our pipeline)
 and asserts the assumption — e.g. compile `base64.encode(b'x')`
 and print `annotations_[id].overload_id`, or feed a value through
@@ -321,7 +349,7 @@ wasm-as doc/implementation-plan/rewrite/wat/NN_name.wat -o /tmp/foo.wasm
 
 Then — whenever the wasm plausibly runs (all imports exist, real or
 stubbed) — execute it through the evaluator-runtime harness
-(`compiler_v2/tools/wat_runner`) with stub impls for any not-yet-
+(`tools/wat_runner`) with stub impls for any not-yet-
 implemented host functions.  The harness takes a `.wat` file and
 optional pre-populated memory bytes and runs $eval through wasmtime
 against `cel_runtime.wasm`, returning the decoded `CelValue`.
@@ -381,7 +409,7 @@ a positive and a negative test.**  Before a milestone is marked done:
   1. `compiler/<path>_test.cc` exists for every non-trivial source file.
   2. The relevant rows in `doc/implementation-plan/testing-checklist.md`
      are ticked for that milestone.
-  3. `bazel test //compiler_v2/...` is green.
+  3. `bazel test $PROJ` is green.
 
 **Testing principles.**  This codebase is a pipeline — frontend → IR →
 codegen → runtime/host.  Each stage is a component, and any non-trivial
@@ -424,7 +452,7 @@ change touches several of them.  Apply these rules every time:
     table.  Keep tests with distinct stories (a specific
     bug-surface, a specific spec citation, a one-off invariant) as
     individual `TEST_F`s — parameterizing those obscures intent
-    rather than clarifying it.  See `compiler_v2/runtime/cel_map_test.cc`
+    rather than clarifying it.  See `runtime/cel_map_test.cc`
     for the canonical shape: parameterized round-trip / cross-type /
     disallowed-kind tables coexist with focused single-`TEST_F`
     cases for embedded-NUL strings and bool-vs-int distinctness.
@@ -457,7 +485,7 @@ exercises the *exact* failing input (for conformance, the literal
 (value, or expected eval-error kind).  Name it after the bug /
 conformance row (`<fixture>_<row_name>`) so the test↔row mapping is
 greppable.  Put behavior that flows through the whole pipeline in an
-`compiler_v2/e2e/*_test.cc`; put kernel-level behavior in the
+`e2e/*_test.cc`; put kernel-level behavior in the
 component's `*_test.cc`.
 
 **2. Verified-dead / not-yet-supported → `GTEST_SKIP() << "<reason>"`,
@@ -500,9 +528,25 @@ bare FAIL with no test documenting it.
 
 ## Build & run
 
-  - Primary build: `bazel build //compiler_v2/...`.
-  - Primary tests: `bazel test //compiler_v2/...`.
-  - CLI: `bazel-bin/compiler_v2/tools/cel/...` (see `compiler_v2/tools/cel`).
+  - **`$PROJ` — the project-package set; use it, never `//...`.**  `bazel
+    … //...` is unusable here: the vendored
+    `third_party/cel-cpp/tools/testdata/BUILD` loads
+    `@com_github_google_flatbuffers`, a repo not declared in our
+    `MODULE.bazel`, so `//...` dies on a package-loading error before
+    evaluating anything (a false RED that also masks real failures).  Every
+    build/test/query that means "the whole project" therefore enumerates the
+    repo's own top-level packages explicitly:
+
+    ```
+    //compiler/... //eval/... //shared/... //abi/... //runtime/... \
+    //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
+    ```
+
+    For `rdeps(universe, …)` / `visible(…)` queries the *universe* is this
+    set, `+`-joined, not `//...`.
+  - Primary build: `bazel build $PROJ`.
+  - Primary tests: `bazel test $PROJ`.
+  - CLI: `bazel-bin/tools/cel/...` (see `tools/cel`).
   - The wasm32-wasi cross-compile is handled by a bazel-registered
     `@wasi_sdk_<host>` toolchain (the host system clang has no wasm32
     target).  The repo builds on both macOS (Apple Silicon) and Linux
@@ -510,13 +554,61 @@ bare FAIL with no test documenting it.
     native build and resolves the matching wasi-sdk archive for the
     wasm cross-compile by `exec_compatible_with`.  No host-specific
     setup beyond bazel itself.
-  - The legacy V1 `compiler/` tree was deleted (2026-05-24); shared proto
-    fixtures live at `//compiler_v2/testdata`.
+  - Shared proto fixtures live at `//testdata`.  The legacy V1 compiler
+    tree was deleted (2026-05-24), and the `compiler_v2/` umbrella that
+    succeeded it was dissolved into the top-level role dirs (2026-05-25).
+
+## `bazel/` vs `third_party/`
+
+  - **`third_party/`** is the external-dependency integration layer: the
+    cel-cpp fetch, Binaryen + wasmtime BUILD glue, the wasi-sdk toolchain,
+    and any upstream patches.  Do not edit files under
+    `third_party/cel-cpp/` — it is vendored; a bug there gets an
+    upstream-style patch under `third_party/patches/`.
+  - **`bazel/`** is reserved for *first-party*, dependency-independent
+    Starlark (a reusable macro or rule we author, e.g. a future
+    `cel_wasm_embed` rule or a `wat_test` macro).  There is no `bazel/`
+    dir today — we have almost no such macros (the wasi-sdk `.bzl` lives
+    with its dep; `antlr_cc_library` is borrowed from `@cel-cpp//bazel`).
+    When the first reusable first-party macro appears, it goes in a
+    top-level `bazel/` mirroring cel-cpp — never scattered into package
+    dirs, and never in `third_party/`.
+
+## Visibility regime (standing rule)
+
+The public/internal boundary is **`internal/` + Bazel `visibility`** (the
+Abseil/cel-cpp convention), enforced at analysis time — a bad `deps` edge
+fails the build.  The model is **two-tier**:
+
+  - **Public API** — a curated, small set of targets carrying explicit
+    `//visibility:public`.  Exactly: `//compiler:{compiler,program}`;
+    `//eval:{engine,instance,activation,value,error,attribute}`;
+    `//shared:type`; `//abi:*`; `//runtime:*`.  This is what a future
+    `bindings/` or any external consumer may depend on.
+  - **First-party internal** — everything else, scoped to the root
+    `//:internal` `package_group` (defined in the root `BUILD.bazel`,
+    listing every first-party package).  The compiler pipeline components
+    (`frontend`, `ir`, `codegen`, `celfn`, `compiler/internal`) and the
+    eval internals (`cel_host*`, `abi_decode`, `instance_impl`, the
+    wasmtime glue) default to `//:internal`: reachable by any first-party
+    package (the real intra-project wiring — `abi` → `codegen`, `eval` →
+    `ir:annotations`, …), NOT by `bindings/` or an external consumer.
+
+Rules for contributors:
+
+  - You may **not** widen a target to `//visibility:public` without
+    review — the public surface is a contract, and growing it is a
+    reviewable event.
+  - Implementation targets stay on `//:internal` (or a narrower
+    component scope).  Do not add a `//visibility:public` to make a
+    one-off dep compile; wire it through `//:internal` instead.
+  - `internal/` subdirs are the readability signal that pairs with the
+    visibility scope — keep private code under `internal/`.
 
 ## Dev-loop performance (read before you wonder why it's slow)
 
 Full analysis + numbers: `doc/implementation-plan/dev-loop-performance.md`.
-The build dominates everything — of a 618 s `bazel test //compiler_v2/...`,
+The build dominates everything — of a 618 s `bazel test $PROJ`,
 only ~45 s is test execution; the rest is compiling cel-cpp from source.
 So:
 
@@ -525,11 +617,11 @@ So:
     conformance or anything else under `-c opt` in the inner loop: `opt`
     is a *separate* build tree that shares nothing with fastbuild, so
     switching recompiles cel-cpp (~10 min).  `-c opt` is for
-    `//compiler_v2/bench` and CI only.  The conformance gate
+    `//bench/...` and CI only.  The conformance gate
     (`scripts/check_conformance_monotonic.sh`) deliberately runs
     fastbuild — pass count is identical to opt (verified 1774==1774).
-  - **Don't `bazel test //compiler_v2/...` in the inner loop.**  Build/test
-    the touched package (`bazel test //compiler_v2/runtime:cel_foo_test`).
+  - **Don't `bazel test $PROJ` in the inner loop.**  Build/test
+    the touched package (`bazel test //runtime:cel_foo_test`).
     The full sweep is a "from-cold" cost; Bazel's local cache makes
     targeted re-runs instant.
   - **Lint is fast on a warm tree, slow on a cold one** — because

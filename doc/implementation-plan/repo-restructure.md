@@ -1,6 +1,34 @@
 # Repo restructure: making the compiler the repo
 
-Status: plan — drafted 2026-05-25, revised 2026-05-25 (final shape), not yet started.
+Status: shipped (W0–W5) 2026-05-25.
+
+**What landed (as-built deltas from the as-written plan).** The restructure
+executed and is green; `compiler_v2/` is dissolved into the top-level role dirs
+below. Four decisions diverged from the original draft (resolved in
+`repo-restructure-questions.md`, cited inline):
+
+  - **`proto/` move DEFERRED (Q5).** Vendored cel-cpp pins
+    `@com_google_cel_spec//proto/cel/*` → our root `//proto/cel`; moving `proto/`
+    breaks the build with no in-scope fix. `tests/` → `spec/tests/` shipped;
+    `proto/` STAYS at root, folded into the future module-rename workstream (§10).
+  - **Shared package is `shared/`, NOT `common/` (Q9).** Our `common/type.h`
+    (`celwasm::CelType`) collided with vendored cel-cpp's `common/type.h`
+    (`cel::Type`) in any TU pulling both. Renamed `common/` → `shared/`
+    (`//shared:type`); the cel-cpp `cel::Type` users keep its `common/`.
+  - **Visibility is a 2-tier `//:internal` `package_group`, NOT strict
+    `compiler ⊥ eval` (Q8).** The real dep graph has legitimate first-party
+    cross-component edges (`eval` → `compiler/ir:annotations`; `abi` →
+    `compiler/{codegen,frontend,ir}`), so component-scoping failed analysis.
+    Public is still the curated `//visibility:public` list; everything else is
+    the root `//:internal` `package_group` (first-party-wide, not external).
+  - **Lint gate scoped to the working set, not a full `--branch` burndown
+    (Q10).** The 244-file move makes `lint.sh --branch` re-lint the whole tree
+    and surface the *pre-existing* lint-backlog; the restructure introduced no
+    new warning categories. The full `--branch` clean is a backlog task, not a
+    restructure gate.
+
+W6 (the `celwasm::api` → `celwasm` namespace flatten, §7) is the committed
+immediate follow-on, not yet run.
 
 > **Operational companion:** the step-by-step parallel rollout — the frozen
 > path/label/include mapping, copy-paste agent briefs, and wave/merge
@@ -79,7 +107,8 @@ The key facts that shape the split:
   - This mirrors cel-cpp, which keeps shared `Value`/`Type` in `common/`. We
     diverge on one point: our `Value` crosses the wasm boundary and is decoded
     host-side, so it is genuinely eval-only and stays in `eval/`; only
-    `CelType` graduates to `common/`.
+    `CelType` graduates to our shared package (`shared/`, renamed from
+    `common/` per Q9 to avoid the cel-cpp `common/` collision).
 
 ## 3. Target shape
 
@@ -99,7 +128,8 @@ The key facts that shape the split:
 │   ├── host/            cel_log trampolines
 │   └── internal/        wasmtime glue, abi_decode, cel_host
 │
-├── common/              CelType — shared type vocabulary (cel-cpp precedent)
+├── shared/              CelType — shared type vocabulary (cel-cpp precedent;
+│                        named shared/ not common/ — Q9 collision avoidance)
 ├── abi/                 cel.abi wire contract (shared: emit + parse)
 ├── runtime/             cel_runtime.c → cel_runtime.wasm (language-agnostic)
 │
@@ -124,7 +154,7 @@ The key facts that shape the split:
 
 The public/private boundary is **`internal/` + Bazel `visibility`**, the
 Abseil/cel-cpp convention — not a separate header tree. `compiler/` and
-`eval/` both depend on `common/`; neither depends on the other. `bindings/`
+`eval/` both depend on `shared/`; neither depends on the other. `bindings/`
 never reimplements the compiler in-language — it embeds the **wasm
 artifacts** (`cel_runtime.wasm` today; `compiler.wasm` once §9 lands) and
 drives them through the host's own wasm runtime.
@@ -136,7 +166,7 @@ drives them through the host's own wasm runtime.
 | `compiler_v2/frontend ir codegen celfn` | `compiler/{frontend,ir,codegen,celfn}` | move |
 | `compiler_v2/compile.{h,cc,_test.cc}` | `compiler/internal/compile.*` | move |
 | `compiler_v2/api/compiler.*`, `program.h` | `compiler/` (public) | move + repoint |
-| `compiler_v2/api/type.*` | `common/type.*` | move (shared) |
+| `compiler_v2/api/type.*` | `shared/type.*` | move (shared; renamed common→shared, Q9) |
 | `compiler_v2/api/{engine,instance,activation,value,error,attribute}.*`, `host_callback.h`, `internal/` | `eval/` | move |
 | `compiler_v2/host/` | `eval/host/` | fold into eval |
 | `compiler_v2/api/cel_pipeline_bench.cc` | `bench/` | relocate (belongs in bench) |
@@ -191,11 +221,14 @@ pass so `compiler_v2/` disappears and the tree stays green — the split is 5.4.
 
 ### 5.4 `api/` split (the judgment step)
 Repoint each `//api:foo` dependent to the new owner: `compiler` /
-(`compiler`, `program`) → `compiler/`; `type` → `common/`; `engine`,
+(`compiler`, `program`) → `compiler/`; `type` → `shared/`; `engine`,
 `instance`, `activation`, `value`, `error`, `attribute`, `cel_host`,
 `internal/*` → `eval/`. Fold `host/` into `eval/host/`. New inter-package
-deps: `compiler` → `common`, `eval` → `common` + `runtime` + `abi`. No
-`compiler` ↔ `eval` edge.
+deps: `compiler` → `shared`, `eval` → `shared` + `runtime` + `abi`. No
+`compiler` ↔ `eval` *public-API* edge — but as-built (Q8) there ARE
+first-party internal edges (`eval` → `compiler/ir:annotations`; `abi` →
+`compiler/{codegen,frontend,ir}`), which is why the visibility regime below
+is the `//:internal` package_group, not strict component-scoping.
 
 ### 5.5 Visibility regime — the enforced public/internal boundary
 
@@ -208,48 +241,68 @@ done in W3). The rule we want: **nobody can take a dependency on a non-public
 target** — Bazel `visibility` enforces this at analysis time (an out-of-scope
 `deps` edge fails the build), so it is the mechanism, not a convention.
 
-The regime (default-private, curated-public):
+> **Plan-vs-execution delta (Q8, 2026-05-25).** The as-written regime below was
+> strict component-scoping (`compiler/**` → `//compiler:__subpackages__`,
+> `eval/**` → `//eval:__subpackages__`), justified by "`compiler ⊥ eval`, all
+> cross-component edges land on public targets." That **failed analysis**: the
+> real dep graph has legitimate first-party cross-component edges into the
+> compiler internals — `eval` → `compiler/ir:annotations` (abi_decode/instance
+> decode the IR annotation contract) and `compiler/internal:compile`
+> (abi_decode_test); `abi` (the `cel.abi` emit side) → `compiler/{codegen,
+> frontend,ir}`. The compiler internals are consumed first-party-wide, not
+> within `//compiler`. So the **as-built** regime is the 2-tier model below; the
+> original component-scoped paragraphs are retained after it, marked, for the
+> reasoning trail.
 
-  - **Default is the narrowest scope, never public.** Each component's packages
-    default-scope to that component only:
-      - `compiler/**` → `default_visibility = ["//compiler:__subpackages__"]`
-      - `eval/**`     → `default_visibility = ["//eval:__subpackages__"]`
-    So `compiler/codegen`, `compiler/ir`, `compiler/internal`, `eval/host`,
-    `eval/internal`, … are reachable only from within their own component.
-    `eval/` cannot reach into `compiler/`'s guts and vice-versa (the
-    architecture has no such edge — §2 — so this costs nothing).
+**As-built regime (2-tier: public API vs first-party `//:internal`):**
 
-  - **The curated public surface is explicit, per-target `//visibility:public`**
-    — and small. Exactly these:
+  - **Public API** — a curated, small set carrying explicit
+    `//visibility:public`. Exactly these (unchanged from the plan except
+    `common→shared`):
       - `//compiler:compiler`, `//compiler:program`
       - `//eval:engine`, `//eval:instance`, `//eval:activation`,
         `//eval:value`, `//eval:error`, `//eval:attribute`
-      - `//common:type`
-      - the shared contract: `//abi:*` (public emit/parse + `cel.abi` proto)
-        and `//runtime:*` (the `cel_runtime.wasm` artifact + native test lib)
-        — these are intentionally public because every binding speaks them.
-    Adding `//visibility:public` to anything else is a reviewable event.
+      - `//shared:type`
+      - the shared contract: `//abi:*` and `//runtime:*` — public because
+        every binding speaks them.
+    Adding `//visibility:public` to anything else is a reviewable event. This
+    is what `bindings/` and any external consumer may depend on.
 
-  - **`internal/` is belt-and-suspenders.** A target under `compiler/internal`
-    or `eval/internal` is both physically in `internal/` *and* scoped to its
-    component — a doubly-clear "do not depend on this from outside."
+  - **First-party internal** — a `package_group(name = "internal", …)` in the
+    root `BUILD.bazel` listing every first-party package (`//compiler/...`,
+    `//eval/...`, `//shared/...`, `//abi/...`, `//runtime/...`, `//tools/...`,
+    `//conformance/...`, `//e2e/...`, `//bench/...`, `//testdata/...`,
+    `//spec/...` — NOT a future `//bindings/...`). The compiler pipeline
+    components (`frontend`, `ir`, `codegen`, `celfn`, `compiler/internal`) get
+    `default_visibility = ["//:internal"]`: reachable by any first-party
+    package, NOT by `bindings/` or an external consumer.
 
-  - **Tests / testdata** get repo-wide test visibility as needed
-    (`//visibility:public` is acceptable for `testonly = True` fixtures), but
-    never widen a non-test target to reach them.
+  - **eval internals stay component-scoped.** `cel_host*`, `abi_decode`,
+    `instance_impl`, `wasmtime_engine_state`, `cel_host_wasmtime`,
+    `host_callback` are consumed only within `eval/` (verified), so they keep
+    `//eval:__subpackages__` — narrower than `//:internal`.
 
-Because `compiler ⊥ eval` and both depend only on the public contract
-(`common`, `abi`, `runtime`), this regime has no awkward exceptions: the only
-cross-component edges land on intentionally-public targets. `bindings/` and any
-external consumer can reach the curated public list and nothing else.
+  - **`internal/` is the readability signal** that pairs with the visibility
+    scope; tests/testdata get test visibility as needed (`//visibility:public`
+    is acceptable for `testonly` fixtures).
 
-**Enforcement is automatic + audited.** Visibility is checked by every `bazel
-build`, so a bad `deps` edge can't merge. The gate additionally *audits the
-surface* so public doesn't creep: assert the set of `//visibility:public`
-non-test targets equals the curated list above (a `bazel query` diff), and that
-no target outside `//compiler/...` depends on `//compiler/internal/...` (resp.
-`eval`) — `rdeps(//..., //compiler/internal/...) except //compiler/...` is
-empty.
+This still satisfies "nobody external can depend on a non-public target": a
+hypothetical `//bindings` package is outside `//:internal`, so it can reach the
+curated public list and nothing else. The W5 audit asserts that nothing under
+`//compiler/{frontend,ir,codegen,celfn,internal}` or the eval internals is
+visible to such a package, and that the public set equals the curated list.
+
+> **(Plan, superseded by Q8 — retained for the reasoning trail.)**
+> The regime as originally drafted (default-private, curated-public):
+> - *Default is the narrowest scope, never public.* `compiler/**` →
+>   `["//compiler:__subpackages__"]`; `eval/**` → `["//eval:__subpackages__"]`,
+>   on the premise that `eval/` never reaches into `compiler/`'s guts and
+>   vice-versa.
+> - Curated public surface as above.
+> - `internal/` as belt-and-suspenders (physically `internal/` AND
+>   component-scoped).
+> This was discarded because the premise — no cross-component edge into compiler
+> internals — was false (Q8); strict component-scoping fails the real build.
 
 ## 6. Parallelizable execution (summary)
 
@@ -274,7 +327,7 @@ W0 ─── W1 ═╗(∥ ×2) ═══ W3 ─── W4 ═╗(∥ ×N) ══
 |---|---|---|---|
 | **W0** | serial | capture baseline + deletions (probes, experiments, Go surface) + author the frozen rewrite script | §5.1 |
 | **W1** | ∥ ×2 | **Spec:** heritage → `spec/` ‖ **Docs:** path-rewrite `doc/**/*.md` | §5.2 |
-| **W3** | serial, scripted | `git mv` per §4 + apply mapping + split `api/` into `compiler`/`common`/`eval` + set `visibility` | §5.3–5.5 |
+| **W3** | serial, scripted | `git mv` per §4 + apply mapping + split `api/` into `compiler`/`shared`/`eval` (Q9) + set `visibility` | §5.3–5.5 |
 | **W4** | ∥ ×N | per-package verifiers (`bazel test //<pkg>/...` + straggler fixups) **+ W4·Conventions** (CLAUDE.md + root README rewrite, post-W3) | — |
 | **W5** | serial | **exit-criteria gate** (below) → merge to master | — |
 | **W6** | serial, scripted | flatten `celwasm::api` → `celwasm`; re-run exit criteria | §7 |
@@ -366,8 +419,8 @@ What this restructure does to keep the door open:
     host-only (wasmtime) dependency — so a `wasm32-wasi` build target can be
     added later without untangling it. `eval/` (wasmtime) is the C++ host's
     evaluator; other bindings bring their own wasm host (JS `WebAssembly`,
-    Go `wazero`, …), so wasmtime never leaks into `compiler/` or `common/`.
-  - **`common/` and `abi/` are the cross-binding contract** — the type
+    Go `wazero`, …), so wasmtime never leaks into `compiler/` or `shared/`.
+  - **`shared/` and `abi/` are the cross-binding contract** — the type
     vocabulary and the `cel.abi` wire format are what every binding speaks;
     keeping them dep-light keeps them wasm-portable.
 
@@ -386,8 +439,10 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
     to `spec/proto/` cleanly. Until then `proto/` stays at root (the `tests/`
     half of the heritage move shipped; the `proto/` half rides with this rename).
   - **First TS/Go binding** under `bindings/` — slot reserved, no code now.
-  - **Collapse the doubled `conformance` in `spec/proto/cel/expr/conformance/`**
+  - **Collapse the doubled `conformance` in `proto/cel/expr/conformance/`**
     — inherited package layout; flattening changes proto package names. Skip.
+    (Path stays under root `proto/` until the module rename moves it to
+    `spec/proto/` — Q5.)
   - **Docs refactor (separate, sizeable, AFTER this restructure).** This move
     only path-rewrites docs and rewrites CLAUDE.md + root README (W1·Docs,
     W4·Conventions) — it does **not** reorganize the doc tree itself. A real
@@ -401,3 +456,23 @@ whether the parser/checker portion of cel-cpp builds clean for wasm32.
     would falsify the record (e.g. a review whose finding IS "compiler_v2/
     functions is drift"), so they're reconciled here, holistically, not chased
     mid-restructure.
+
+## 11. Future work (surfaced during execution)
+
+Open follow-ups the restructure surfaced or deferred, so a reader sees what's
+done AND what's still open without reading the git log:
+
+  - **`proto/` → `spec/proto/` move (Q5)** — deferred to the module-rename
+    workstream (§10); `proto/` stays at root until our module stops being
+    `cel-spec`.
+  - **W6 namespace flatten** `celwasm::api` → `celwasm` (§7) — the committed
+    immediate follow-on after W5; not yet run.
+  - **Full lint-backlog burndown (Q10)** — the 244-file move surfaced the
+    pre-existing `lint.sh --branch` backlog (braces-around-statements in
+    `var_parser.cc`/`cel_runtime.c`; the wasmtime-edge clang-tidy config
+    limitation). The restructure introduced no new categories; clearing the
+    backlog is a separate task (`doc/implementation-plan/lint-backlog.md`).
+  - **Docs refactor (Q6, §10)** — the doc-tree reorganisation and the residual
+    historical `compiler_v2/` tail (~40 files); its own workstream.
+  - **First `bindings/` (TS/Go)** — slot reserved, no code; will embed
+    `cel_runtime.wasm` (and `compiler.wasm` once §9 lands).

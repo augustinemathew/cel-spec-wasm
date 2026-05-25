@@ -458,10 +458,14 @@ The single `compiler_v2/api/BUILD.bazel` (666 lines, all targets) + the
 api/internal/ files stay a SUBDIR of the eval package (Q7); compiler/internal IS
 its own package (one target).
 
+> **Q9 as-built:** the shared `type` package shipped as `shared/`, not
+> `common/` (collision with vendored cel-cpp's `common/`). This appendix uses
+> the as-built `shared/` / `//shared:type` below.
+
 ### 6.1 git mv (file moves)
 ```
-# common
-compiler_v2/api/type.{h,cc}  compiler_v2/api/type_test.cc        -> common/
+# shared (renamed from common — Q9)
+compiler_v2/api/type.{h,cc}  compiler_v2/api/type_test.cc        -> shared/
 # compiler (public)
 compiler_v2/api/compiler.{h,cc} compiler_v2/api/compiler_test.cc -> compiler/
 compiler_v2/api/program.h    compiler_v2/api/program_test.cc     -> compiler/
@@ -487,7 +491,7 @@ After: `git ls-files compiler_v2/ | head` → EMPTY (compiler_v2/ gone).
 ### 6.2 Target → new package (authored BUILDs)
 | New package / BUILD | Targets (from api/BUILD unless noted) |
 |---|---|
-| `common/BUILD` | `type`, `type_test` |
+| `shared/BUILD` | `type`, `type_test` |
 | `compiler/BUILD` | `compiler`(+`compiler_test`), `program`(+`program_test`) |
 | `compiler/internal/BUILD` | `compile`(+`compile_test`) — from `compiler_v2/BUILD` |
 | `eval/BUILD` | `attribute`(+test), `error`(+test), `value`(+test), `activation`(+test), `host_callback`; and (srcs under `internal/`) `abi_decode`(+test), `cel_host_hdrs`, `cel_host_error`(+test), `cel_host`, `cel_host_test_fakes`, `cel_host_test`, `host_map_test`, `proto_map_test`, `host_list_test`, `proto_list_test`, `cel_map_lookup_impl_test`, `cel_list_at_impl_test`, `cel_host_wasmtime`, `wasmtime_engine_state`, `instance_impl`, `instance`(+test), `engine`(+test) |
@@ -500,8 +504,8 @@ BUILDs move WITH their dirs; `restructure_rewrite.sh` rewrites every
 those — only the api split + compile move are hand-authored.
 
 ### 6.3 Dep repointing the script does NOT do (relative `:foo` labels crossing
-packages — hand-fix in the authored common/compiler/eval BUILDs):
-  - `:type`     → `//common:type`   (in compiler/ + eval/ targets that dep it)
+packages — hand-fix in the authored shared/compiler/eval BUILDs):
+  - `:type`     → `//shared:type`   (in compiler/ + eval/ targets that dep it)
   - `:compiler` → `//compiler:compiler` (eval `instance_test`,`engine_test`; bench `cel_pipeline_bench`)
   - `:program`  → `//compiler:program`  (same callers)
   - intra-eval `:value`/`:error`/`:attribute`/`:activation`/`:cel_host`/`:engine`/
@@ -511,9 +515,9 @@ packages — hand-fix in the authored common/compiler/eval BUILDs):
   - All `//compiler_v2/{abi,ir,runtime,host,celfn,testdata,…}:…` → SCRIPT does it.
 
 ### 6.4 Visibility (design §5.5) — set in the authored BUILDs
-  - `common/BUILD`:           `package(default_visibility=["//visibility:public"])`
+  - `shared/BUILD`:           `package(default_visibility=["//visibility:public"])`
     is WRONG — instead leave default private and mark `type` `//visibility:public`.
-    Simplest: `common/BUILD` has `cc_library(name="type", …, visibility=["//visibility:public"])`.
+    Simplest: `shared/BUILD` has `cc_library(name="type", …, visibility=["//visibility:public"])`.
   - `compiler/BUILD`:  `package(default_visibility=["//compiler:__subpackages__"])`;
     `compiler` + `program` each `visibility=["//visibility:public"]`.
   - `compiler/internal/BUILD`: `default_visibility=["//compiler:__subpackages__"]`
