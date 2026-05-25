@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1849 (75.3%)  skip=463 (18.9%)  fail=142 (5.8%)
+total=2454  pass=1890 (77.0%)  skip=463 (18.9%)  fail=101 (4.1%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -116,19 +116,19 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `basic.textproto`            |  43 |  37 |   6 |   0 | 86% | disable_check=4 static_subset=2 |
 | `macros.textproto`           |  44 |  38 |   6 |   0 | 86% | static_subset=6 |
 | `macros2.textproto`          |  46 |  39 |   7 |   0 | 84% | static_subset=7 |
-| `parse.textproto`            | 219 | 181 |  18 |  20 | 82% | disable_check=17 type_env=1 |
+| `parse.textproto`            | 219 | 182 |  18 |  19 | 83% | disable_check=17 type_env=1 |
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
+| `proto3.textproto`           |  85 |  68 |  13 |   4 | 80% | disable_check=6 static_subset=7 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
-| `proto3.textproto`           |  85 |  62 |  13 |  10 | 72% | disable_check=6 static_subset=7 |
 | `enums.textproto`            |  85 |  61 |   2 |  22 | 71% | disable_check=2 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
-| `proto2.textproto`           | 118 |  67 |  25 |  26 | 56% | disable_check=6 static_subset=19 |
-| `dynamic.textproto`          | 226 | 106 |  92 |  28 | 46% | disable_check=20 static_subset=72 |
+| `proto2.textproto`           | 118 |  73 |  25 |  20 | 61% | disable_check=6 static_subset=19 |
+| `dynamic.textproto`          | 226 | 125 |  92 |   9 | 55% | disable_check=20 static_subset=72 |
+| `wrappers.textproto`         |  36 |  18 |  18 |   0 | 50% | static_subset=18 |
 | `fields.textproto`           |  60 |  26 |  28 |   6 | 43% | disable_check=5 static_subset=15 type_env=8 |
 | `namespace.textproto`        |  14 |   6 |   4 |   4 | 42% | disable_check=4 |
 | `type_deduction.textproto`   |  47 |  20 |  25 |   2 | 42% | check_only=25 |
 | `optionals.textproto`        |  70 |  22 |  44 |   4 | 31% | static_subset=44 |
-| `wrappers.textproto`         |  36 |   9 |  18 |   9 | 25% | static_subset=18 |
 | `block_ext.textproto`        |  37 |   0 |  37 |   0 |  0% | ext_unimpl=37 |
 | `proto2_ext.textproto`       |  18 |   0 |  18 |   0 |  0% | ext_unimpl=18 |
 | `unknowns.textproto`         |   0 |   0 |   0 |   0 |  —  | (empty fixture) |
@@ -157,7 +157,7 @@ Of the 463 SKIPs: ~371 are out-of-scope by design
 (`disable_check` + `static_subset`); the rest (92) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2454 - 371 = 2083) is **89%**.
+(2454 - 371 = 2083) is **91%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets
