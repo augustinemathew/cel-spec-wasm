@@ -93,7 +93,7 @@ namespace {
 // `expr_lower.cc` can do a single lookup-and-emit (mirrors
 // arithmetic / compare). Three-path origin dispatch is documented
 // in `rewrite/map-list-dispatch.md`.
-constexpr std::array<Seed, 251> kBuiltinSeeds{
+constexpr std::array<Seed, 271> kBuiltinSeeds{
     // ── Arithmetic same-kind ──────────────────────────────────
     Seed{"add_int64", {ImportModule::kCelRuntime, "cel_int_add_at_vv"}},
     Seed{"add_uint64", {ImportModule::kCelRuntime, "cel_uint_add_at_vv"}},
@@ -688,6 +688,48 @@ constexpr std::array<Seed, 251> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
     Seed{"optional_map_index_value",
          {ImportModule::kCelRuntime, "cel_select_optional_field_at_vv"}},
+    // ── network_ext (net.IP / net.CIDR) overloads ────────────
+    // Overload IDs are the self-declared decls in
+    // `frontend/parse_and_check.cc` (no cel-cpp library exists for
+    // network_ext); they MUST match the decl ids there.  Kernels
+    // self-hosted in `cel_runtime.wasm` (`runtime/cel_net_ext.{h,c}`).
+    // Several ids fold onto one kernel: both string-arg overloads of
+    // containsIP/containsCIDR runtime-parse, and the two `isIP`
+    // overloads + the string-arg `string()` round-trips share their
+    // value-kernel.  Extension-only IDs → no coverage-tripwire arm.
+    Seed{"net_ip_string", {ImportModule::kCelRuntime, "cel_ip_parse_at_v"}},
+    Seed{"net_cidr_string", {ImportModule::kCelRuntime, "cel_cidr_parse_at_v"}},
+    Seed{"net_isIP_string", {ImportModule::kCelRuntime, "cel_isip_at_v"}},
+    Seed{"net_isIP_string_int", {ImportModule::kCelRuntime, "cel_isip_at_v"}},
+    Seed{"net_ip_isCanonical_string",
+         {ImportModule::kCelRuntime, "cel_ip_is_canonical_at_v"}},
+    Seed{"net_string_ip", {ImportModule::kCelRuntime, "cel_ip_to_string_at_v"}},
+    Seed{"net_string_cidr",
+         {ImportModule::kCelRuntime, "cel_cidr_to_string_at_v"}},
+    Seed{"net_ip_family", {ImportModule::kCelRuntime, "cel_ip_family_at_v"}},
+    Seed{"net_ip_isLoopback",
+         {ImportModule::kCelRuntime, "cel_ip_is_loopback_at_v"}},
+    Seed{"net_ip_isUnspecified",
+         {ImportModule::kCelRuntime, "cel_ip_is_unspecified_at_v"}},
+    Seed{"net_ip_isGlobalUnicast",
+         {ImportModule::kCelRuntime, "cel_ip_is_global_unicast_at_v"}},
+    Seed{"net_ip_isLinkLocalUnicast",
+         {ImportModule::kCelRuntime, "cel_ip_is_link_local_unicast_at_v"}},
+    Seed{"net_ip_isLinkLocalMulticast",
+         {ImportModule::kCelRuntime, "cel_ip_is_link_local_multicast_at_v"}},
+    Seed{"net_cidr_containsIP_ip",
+         {ImportModule::kCelRuntime, "cel_cidr_contains_ip_at_vv"}},
+    Seed{"net_cidr_containsIP_string",
+         {ImportModule::kCelRuntime, "cel_cidr_contains_ip_at_vv"}},
+    Seed{"net_cidr_containsCIDR_cidr",
+         {ImportModule::kCelRuntime, "cel_cidr_contains_cidr_at_vv"}},
+    Seed{"net_cidr_containsCIDR_string",
+         {ImportModule::kCelRuntime, "cel_cidr_contains_cidr_at_vv"}},
+    Seed{"net_cidr_ip", {ImportModule::kCelRuntime, "cel_cidr_ip_at_v"}},
+    Seed{"net_cidr_masked",
+         {ImportModule::kCelRuntime, "cel_cidr_masked_at_v"}},
+    Seed{"net_cidr_prefixLength",
+         {ImportModule::kCelRuntime, "cel_cidr_prefix_length_at_v"}},
 };
 
 // Overload ids the OverloadTable does NOT seed.  Every cel-cpp

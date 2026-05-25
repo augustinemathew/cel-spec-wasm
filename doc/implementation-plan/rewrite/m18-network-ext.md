@@ -1,10 +1,32 @@
 # M18 — `network_ext` extension (IP / CIDR)
 
-Status: **plan — drafted 2026-05-24; checker assumptions probe-validated
-2026-05-24 (GREEN).**  Target:
-`tests/simple/testdata/network_ext.textproto` (69 rows, currently
-0 PASS — all SKIP under `ext_unimpl`).  Conformance is the definition
-of done.
+Status: **shipped 2026-05-24** (Slices 0 + A + B + C + D).  Target was
+`tests/simple/testdata/network_ext.textproto` (69 rows, was 0 PASS /
+all `ext_unimpl` SKIP).
+
+> **What landed.**  `net.IP` / `net.CIDR` end-to-end, self-declared in
+> the checker (no cel-cpp library exists — `OpaqueType` +
+> `MakeFunctionDecl`/`MakeMemberOverloadDecl`/`AddFunction`/
+> `MergeFunction` + `AddVariable` type-idents, per the Slice-0 probe).
+> 17 self-hosted kernels in `cel_net_ext.c` over **wasi-libc
+> `inet_pton`/`inet_ntop`** (not hand-rolled) behind a thin CEL-policy
+> wrapper (zone / dotted-v4-mapped / leading-zero rejection, hex-v4-
+> mapped folding, Go-`net/netip` classification incl. the v4-broadcast
+> `isGlobalUnicast` case).  New kinds `CEL_IP=18`/`CEL_CIDR=19` with
+> arena `NetIp`/`NetCidr`; equality + `type()` arms; a generic
+> `SpecTypeName` `abstract_type` arm so `type(ip(...)) == net.IP`
+> reifies (also fixes `optional_type`).  20 overload seeds, e2e
+> `m18_test.cc`.  Conformance: `network_ext.textproto` **0 → 68/69
+> PASS** (corpus-wide **1774 → 1842**, +68).
+>
+> **The 1 remaining FAIL** (`is_ip_cidr_compile_error`,
+> `isIP(cidr(...))`) is a *harness* gap, not a wiring bug: our checker
+> emits the byte-identical expected "no matching overload" error, but
+> at compile stage, and `runner.cc::ClassifyCompileFailure` routes a
+> compile error to FAIL instead of matching the row's `eval_error`
+> matcher (cel-go counts an error at any stage as a match).  Fixing it
+> is a one-branch runner change tracked as a separate follow-up — see
+> "Future work".
 
 > **Slice-0 checker probe: GREEN** (`m18-ast-probe-findings.md`;
 > `compiler_v2/probes/network/ast_shape_probe_test.cc`, 9 tests).

@@ -282,6 +282,27 @@ cel_math_max_list_at_v
 cel_base64_encode_at_v
 cel_base64_decode_at_v
 
+# network_ext (net.IP / net.CIDR) extension kernels.  Self-hosted in
+# cel_net_ext.c.  net_ip_eq / net_cidr_eq are NOT here — they are
+# called internally by cel_equals, not codegen-imported.
+cel_ip_parse_at_v
+cel_ip_to_string_at_v
+cel_isip_at_v
+cel_ip_is_canonical_at_v
+cel_ip_family_at_v
+cel_ip_is_loopback_at_v
+cel_ip_is_unspecified_at_v
+cel_ip_is_global_unicast_at_v
+cel_ip_is_link_local_unicast_at_v
+cel_ip_is_link_local_multicast_at_v
+cel_cidr_parse_at_v
+cel_cidr_to_string_at_v
+cel_cidr_ip_at_v
+cel_cidr_masked_at_v
+cel_cidr_prefix_length_at_v
+cel_cidr_contains_ip_at_vv
+cel_cidr_contains_cidr_at_vv
+
 [host-only]
 # Symbols exported by cel_runtime.wasm that are NOT codegen-imported
 # helpers.  Three sub-buckets:

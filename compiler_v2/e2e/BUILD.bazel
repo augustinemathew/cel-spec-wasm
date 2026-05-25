@@ -398,6 +398,23 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "m18_test",
+    srcs = ["m18_test.cc"],
+    deps = [
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Program save / reload round-trip e2e — proves the wasm bytes from
 # Compiler::Compile round-trip through `Program(std::vector<uint8_t>)`
 # reconstruction, Plan, and Eval to bit-identical Values.  Locks the

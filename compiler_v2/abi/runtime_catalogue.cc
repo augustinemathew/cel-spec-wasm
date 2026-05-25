@@ -288,6 +288,28 @@ constexpr AbiHelper kCelRuntimeHelpersArr[] = {
     K_AT_VV("cel_math_max_at_vv"),
     K_AT_V("cel_math_min_list_at_v"),
     K_AT_V("cel_math_max_list_at_v"),
+
+    // ── network_ext (net.IP / net.CIDR) kernels ───────────────
+    // Parse / string / classification / accessor kernels are unary
+    // out-slot (_at_v = out + 1 value); containsIP / containsCIDR
+    // take the receiver CIDR + an arg (_at_vv = out + 2 values).
+    K_AT_V("cel_ip_parse_at_v"),
+    K_AT_V("cel_ip_to_string_at_v"),
+    K_AT_V("cel_isip_at_v"),
+    K_AT_V("cel_ip_is_canonical_at_v"),
+    K_AT_V("cel_ip_family_at_v"),
+    K_AT_V("cel_ip_is_loopback_at_v"),
+    K_AT_V("cel_ip_is_unspecified_at_v"),
+    K_AT_V("cel_ip_is_global_unicast_at_v"),
+    K_AT_V("cel_ip_is_link_local_unicast_at_v"),
+    K_AT_V("cel_ip_is_link_local_multicast_at_v"),
+    K_AT_V("cel_cidr_parse_at_v"),
+    K_AT_V("cel_cidr_to_string_at_v"),
+    K_AT_V("cel_cidr_ip_at_v"),
+    K_AT_V("cel_cidr_masked_at_v"),
+    K_AT_V("cel_cidr_prefix_length_at_v"),
+    K_AT_VV("cel_cidr_contains_ip_at_vv"),
+    K_AT_VV("cel_cidr_contains_cidr_at_vv"),
 };
 
 // ════════════════════════════════════════════════════════════════

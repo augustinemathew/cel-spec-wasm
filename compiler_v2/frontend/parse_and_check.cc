@@ -807,6 +807,176 @@ absl::Status RegisterCustomFunctionsOnChecker(
   return absl::OkStatus();
 }
 
+// The two `network_ext` abstract types.  Named zero-parameter opaque
+// types, identical to how `OptionalType` is an `OpaqueType`; the arena
+// must outlive the checker.  They exist purely as overload arg/result
+// types and the `TypeType` of the bare-literal variables — no
+// `AddTypeDecl` call is needed.
+cel::Type NetIpType(google::protobuf::Arena* arena) {
+  return {cel::OpaqueType(arena, "net.IP", /*parameters=*/{})};
+}
+cel::Type NetCidrType(google::protobuf::Arena* arena) {
+  return {cel::OpaqueType(arena, "net.CIDR", /*parameters=*/{})};
+}
+
+// `string(net.IP)` / `string(net.CIDR)` extend the stdlib `string`
+// function: MergeFunction, not AddFunction.
+absl::Status MergeNetStringOverloads(cel::TypeCheckerBuilder& builder,
+                                     google::protobuf::Arena* arena) {
+  const cel::Type ip = NetIpType(arena);
+  const cel::Type cidr = NetCidrType(arena);
+  const cel::Type str = cel::StringType();
+  auto strconv = cel::MakeFunctionDecl(
+      "string", cel::MakeOverloadDecl("net_string_ip", str, ip),
+      cel::MakeOverloadDecl("net_string_cidr", str, cidr));
+  if (!strconv.ok()) return strconv.status();
+  return builder.MergeFunction(*strconv);
+}
+
+// Global `network_ext` functions: the `ip` / `cidr` constructors, the
+// `isIP` / `ip.isCanonical` validators, and the two `string()`
+// overloads (merged into the stdlib `string`).
+absl::Status RegisterNetGlobals(cel::TypeCheckerBuilder& builder,
+                                google::protobuf::Arena* arena) {
+  const cel::Type ip = NetIpType(arena);
+  const cel::Type cidr = NetCidrType(arena);
+  const cel::Type str = cel::StringType();
+  const cel::Type bln = cel::BoolType();
+  const cel::Type i64 = cel::IntType();
+  auto ipc = cel::MakeFunctionDecl(
+      "ip", cel::MakeOverloadDecl("net_ip_string", ip, str));
+  if (!ipc.ok()) return ipc.status();
+  if (auto s = builder.AddFunction(*ipc); !s.ok()) return s;
+  auto cidrc = cel::MakeFunctionDecl(
+      "cidr", cel::MakeOverloadDecl("net_cidr_string", cidr, str));
+  if (!cidrc.ok()) return cidrc.status();
+  if (auto s = builder.AddFunction(*cidrc); !s.ok()) return s;
+  auto isip = cel::MakeFunctionDecl(
+      "isIP", cel::MakeOverloadDecl("net_isIP_string", bln, str),
+      cel::MakeOverloadDecl("net_isIP_string_int", bln, str, i64));
+  if (!isip.ok()) return isip.status();
+  if (auto s = builder.AddFunction(*isip); !s.ok()) return s;
+  // `ip.isCanonical` is a global function literally named
+  // "ip.isCanonical" (NOT a receiver) — the parser folds the dotted
+  // name into the call's function name.
+  auto canon = cel::MakeFunctionDecl(
+      "ip.isCanonical",
+      cel::MakeOverloadDecl("net_ip_isCanonical_string", bln, str));
+  if (!canon.ok()) return canon.status();
+  if (auto s = builder.AddFunction(*canon); !s.ok()) return s;
+  return MergeNetStringOverloads(builder, arena);
+}
+
+// `net.IP` receiver methods: `family` and the five classification
+// predicates.
+absl::Status RegisterNetIpMethods(cel::TypeCheckerBuilder& builder,
+                                  google::protobuf::Arena* arena) {
+  const cel::Type ip = NetIpType(arena);
+  const cel::Type bln = cel::BoolType();
+  const cel::Type i64 = cel::IntType();
+  auto fam = cel::MakeFunctionDecl(
+      "family", cel::MakeMemberOverloadDecl("net_ip_family", i64, ip));
+  if (!fam.ok()) return fam.status();
+  if (auto s = builder.AddFunction(*fam); !s.ok()) return s;
+  struct Pred {
+    absl::string_view fn;
+    absl::string_view id;
+  };
+  for (const Pred& p : {
+           Pred{"isLoopback", "net_ip_isLoopback"},
+           Pred{"isUnspecified", "net_ip_isUnspecified"},
+           Pred{"isGlobalUnicast", "net_ip_isGlobalUnicast"},
+           Pred{"isLinkLocalUnicast", "net_ip_isLinkLocalUnicast"},
+           Pred{"isLinkLocalMulticast", "net_ip_isLinkLocalMulticast"},
+       }) {
+    auto d = cel::MakeFunctionDecl(std::string(p.fn),
+                                   cel::MakeMemberOverloadDecl(p.id, bln, ip));
+    if (!d.ok()) return d.status();
+    if (auto s = builder.AddFunction(*d); !s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
+// The overloaded `<cidr>.containsIP` / `<cidr>.containsCIDR` member
+// predicates (each takes a net.IP/net.CIDR or a string operand).
+absl::Status RegisterNetCidrContains(cel::TypeCheckerBuilder& builder,
+                                     google::protobuf::Arena* arena) {
+  const cel::Type ip = NetIpType(arena);
+  const cel::Type cidr = NetCidrType(arena);
+  const cel::Type str = cel::StringType();
+  const cel::Type bln = cel::BoolType();
+  auto cip = cel::MakeFunctionDecl(
+      "containsIP",
+      cel::MakeMemberOverloadDecl("net_cidr_containsIP_ip", bln, cidr, ip),
+      cel::MakeMemberOverloadDecl("net_cidr_containsIP_string", bln, cidr,
+                                  str));
+  if (!cip.ok()) return cip.status();
+  if (auto s = builder.AddFunction(*cip); !s.ok()) return s;
+  auto ccidr = cel::MakeFunctionDecl(
+      "containsCIDR",
+      cel::MakeMemberOverloadDecl("net_cidr_containsCIDR_cidr", bln, cidr,
+                                  cidr),
+      cel::MakeMemberOverloadDecl("net_cidr_containsCIDR_string", bln, cidr,
+                                  str));
+  if (!ccidr.ok()) return ccidr.status();
+  return builder.AddFunction(*ccidr);
+}
+
+// The `<cidr>.ip` / `<cidr>.masked` / `<cidr>.prefixLength` accessors
+// plus the bare `net.IP` / `net.CIDR` type-literal variables.
+absl::Status RegisterNetCidrAccessors(cel::TypeCheckerBuilder& builder,
+                                      google::protobuf::Arena* arena) {
+  const cel::Type ip = NetIpType(arena);
+  const cel::Type cidr = NetCidrType(arena);
+  const cel::Type i64 = cel::IntType();
+  // `<cidr>.ip()` shares the name "ip" with the global constructor;
+  // the member-vs-global flag disambiguates, so MergeFunction joins
+  // the member overload to the existing decl.
+  auto cidrip = cel::MakeFunctionDecl(
+      "ip", cel::MakeMemberOverloadDecl("net_cidr_ip", ip, cidr));
+  if (!cidrip.ok()) return cidrip.status();
+  if (auto s = builder.MergeFunction(*cidrip); !s.ok()) return s;
+  auto masked = cel::MakeFunctionDecl(
+      "masked", cel::MakeMemberOverloadDecl("net_cidr_masked", cidr, cidr));
+  if (!masked.ok()) return masked.status();
+  if (auto s = builder.AddFunction(*masked); !s.ok()) return s;
+  auto plen = cel::MakeFunctionDecl(
+      "prefixLength",
+      cel::MakeMemberOverloadDecl("net_cidr_prefixLength", i64, cidr));
+  if (!plen.ok()) return plen.status();
+  if (auto s = builder.AddFunction(*plen); !s.ok()) return s;
+  // Bare type literals: `net.IP` / `net.CIDR` as variables of TypeType,
+  // mirroring how `optional.cc` registers `optional_type`.  The
+  // qualified-name resolver swallows the dot into a single kIdent.
+  if (auto s = builder.AddVariable(
+          cel::MakeVariableDecl("net.IP", cel::Type(cel::TypeType(arena, ip))));
+      !s.ok()) {
+    return s;
+  }
+  return builder.AddVariable(
+      cel::MakeVariableDecl("net.CIDR", cel::Type(cel::TypeType(arena, cidr))));
+}
+
+// `net.CIDR` receiver methods (overloaded `containsIP`/`containsCIDR`,
+// `ip`, `masked`, `prefixLength`) plus the bare type-literal variables.
+absl::Status RegisterNetCidrMethods(cel::TypeCheckerBuilder& builder,
+                                    google::protobuf::Arena* arena) {
+  if (auto s = RegisterNetCidrContains(builder, arena); !s.ok()) return s;
+  return RegisterNetCidrAccessors(builder, arena);
+}
+
+// Self-declares the `network_ext` types + overloads on the checker.
+// cel-cpp ships no network extension library, so unlike math /
+// optionals / encoders these decls are built by hand from the recipe
+// proven by the AST-shape probe (`m18-ast-probe-findings.md`).  The
+// overload-id strings here must match the `overload_table.cc` seeds.
+absl::Status RegisterNetworkExtDecls(cel::TypeCheckerBuilder& builder,
+                                     google::protobuf::Arena* arena) {
+  if (auto s = RegisterNetGlobals(builder, arena); !s.ok()) return s;
+  if (auto s = RegisterNetIpMethods(builder, arena); !s.ok()) return s;
+  return RegisterNetCidrMethods(builder, arena);
+}
+
 // Registers the cel-cpp checker libraries whose function/overload
 // decls our pipeline supports.  Each `AddLibrary` teaches the
 // type-checker a family of declarations; the matching runtime kernels
@@ -872,6 +1042,11 @@ absl::Status ConfigureCheckerBuilder(
     const google::protobuf::DescriptorPool* pool,
     std::vector<Variable>& variables_out) {
   if (auto s = AddCheckerLibraries(builder); !s.ok()) {
+    return s;
+  }
+  // `network_ext` has no cel-cpp library — self-declare its types +
+  // overloads (recipe in `rewrite/m18-ast-probe-findings.md`).
+  if (auto s = RegisterNetworkExtDecls(builder, builder.arena()); !s.ok()) {
     return s;
   }
   if (!opts.container.empty()) {
@@ -1181,9 +1356,17 @@ std::optional<std::string> SpecTypeName(const cel::TypeSpec& inner) {
     // standalone ident whose body is a bare type-param).
     return std::string("type");
   }
-  // Out-of-scope inner kinds (`function`, `error`, `dyn`,
-  // `abstract_type`).  Don't rewrite; let the original kIdent
-  // surface its own downstream diagnostic.
+  // Named abstract (opaque) types — `net.IP`, `net.CIDR`,
+  // `optional_type`, … — render to their declared name so the
+  // type-literal ident (e.g. `type(ip(...)) == net.IP`) is rewritten
+  // to a Repr::kType constant carrying that name.  AbstractType.name
+  // is proto field 1.
+  if (inner.has_abstract_type()) {
+    return std::string(inner.abstract_type().name());
+  }
+  // Out-of-scope inner kinds (`function`, `error`, `dyn`).
+  // Don't rewrite; let the original kIdent surface its own
+  // downstream diagnostic.
   return std::nullopt;
 }
 
