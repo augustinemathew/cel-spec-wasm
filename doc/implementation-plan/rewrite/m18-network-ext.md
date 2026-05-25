@@ -127,18 +127,36 @@ The probe's overload-id strings (`net_ip_string`, `net_cidr_containsIP_ip`,
 …) become the Slice-D `overload_table.cc` seeds (adjust to the repo id
 convention).
 
-### 3.2 Runtime representation of `net.IP` / `net.CIDR`
+### 3.2 Runtime representation of `net.IP` / `net.CIDR` — **RESOLVED (WAT-frozen)**
 
-  - **New `CelKind`s** (`CEL_IP`, `CEL_CIDR` — next tail values after
-    `CEL_LIST_HOST = 17`) vs a tagged opaque encoding.  New kinds are
-    cleanest for `type()` / `==` dispatch.
-  - Payload: store the **parsed 16-byte form + family + (CIDR) prefix
-    len**, not the source string — `containsIP` / `masked` /
-    classification need bit math, and `==` needs normalized bytes.
-    `string()` re-canonicalizes from bytes.
-  - WAT-first trace (`wat/m18_ip_parse_string.wat`,
-    `wat/m18_cidr_contains.wat`) freezes the value layout + the
-    parse/contain kernel ABI before C is written.
+Decided + frozen in the two Slice-0 WATs (`wat/m18_ip_parse_string.wat`,
+`wat/m18_cidr_contains.wat`, both assemble; write-ups in
+`wat-traces.md` §M18.1/§M18.2):
+
+  - **New `CelKind`s**: `CEL_IP = 18`, `CEL_CIDR = 19` (next tail values
+    after `CEL_LIST_HOST = 17`).  Chosen over an opaque tag for clean
+    `type()` / `==` dispatch.
+  - **Payload**: a new `uint32_t net_ref` arm on `CelValue.payload` =
+    arena byte offset to a parsed struct, mirroring
+    `arena_list.header_ptr`:
+      - `NetIp  { uint32_t family; uint8_t addr[16]; }` (20 B)
+      - `NetCidr { uint32_t family; uint32_t prefix; uint8_t addr[16]; }` (24 B)
+    Parsed bytes (not the source string) so `containsIP` / `masked` /
+    classification do bit math and `==` is `memcmp` on `{family, addr
+    [, prefix]}`.  `string()` re-canonicalises from bytes.
+  - **v4 normalisation**: the parser stores `family=4` + 4 v4 bytes for
+    both dotted-decimal v4 and hex-v4-mapped (`::ffff:c0a8:1`) so they
+    compare equal (corpus `ipv4_equals_ipv6`); dotted-decimal v4-mapped
+    (`::ffff:192.168.0.1`) is rejected.
+  - **Errors**: parse failure → `poison(CEL_ERROR,
+    CEL_ERR_INVALID_ARGUMENT)`.  **Validated**: the conformance harness
+    (`runner.cc::CompareEvalError`) compares error *kind* only, not
+    message text — so the corpus's rich IP/CIDR error strings need no
+    message-carrying error path; a numeric code is sufficient.
+  - **Ripple**: `CEL_IP`/`CEL_CIDR` get arms in `cel_equals`
+    (memcmp) and `cel_type_of` (→ `"net.IP"`/`"net.CIDR"` type-name
+    strings), plus every closed kind-`switch` (host pretty-printer,
+    decoders) — each gets a real arm or a loud `ABSL_CHECK`.
 
 ## 4. File structure (self-hosted, mirrors M16 §4.1)
 
@@ -175,10 +193,10 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
 
 ## 6. Slicing
 
-  - **Slice 0 — probe + WAT.**  *Checker probe: DONE (GREEN, see
-    `m18-ast-probe-findings.md`).*  **Remaining:** WAT traces freezing
-    §3.2 (IP value layout + parse + contains ABI:
-    `wat/m18_ip_parse_string.wat`, `wat/m18_cidr_contains.wat`).
+  - **Slice 0 — probe + WAT — DONE.**  Checker probe GREEN
+    (`m18-ast-probe-findings.md`); both representation WATs assemble
+    and are written up (`wat-traces.md` §M18.1/§M18.2); §3.1/§3.2/§8
+    all resolved.  Slice 0 complete — ready for Slice A.
   - **Slice A — `ip` type + parse/validate.**  `ip()`, `isIP`,
     `ip.isCanonical`, `string(ip)`, `type(ip)`, `==` on IP.  IPv4 +
     IPv6 parser + canonicaliser (the hardest single piece).
@@ -222,13 +240,14 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
   - ~~`isIP(s, ver)` 2-arg form~~ — **RESOLVED**: does NOT appear in the
     corpus; declaring it is optional (out of M18 scope unless we want
     spec parity).
-  - **§3.2 — still open** (runtime representation): new `CelKind`s
-    (`CEL_IP`/`CEL_CIDR`) vs opaque tag; 16-byte-always vs
-    version-tagged payload.  The sole remaining Slice-0 item; resolve
-    WAT-first.
-  - **Parser: vendor vs hand-roll** — decide once the parse matrix is
-    enumerated (the findings doc's error-string table + the v4-mapped
-    form-sensitivity are the seed of that matrix).
+  - ~~§3.2 runtime representation~~ — **RESOLVED (WAT-frozen)**: new
+    kinds `CEL_IP=18`/`CEL_CIDR=19` + arena `NetIp`/`NetCidr` structs;
+    numeric-code errors (harness compares error kind only).  See §3.2.
+  - **Parser: vendor vs hand-roll** — the one remaining design call,
+    deferred to Slice A.  Decide once the parse matrix is enumerated
+    (the findings doc's error-string table + the v4-mapped
+    form-sensitivity are the seed of that matrix).  *Not blocking —
+    it's an implementation choice inside Slice A, not a Slice-0 gate.*
 
 ## 9. Closeout gate (copy into the PR)
 
