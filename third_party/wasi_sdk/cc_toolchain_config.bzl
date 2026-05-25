@@ -16,15 +16,18 @@ is intentionally minimal — 8 features only — because most of the
 reference's surface (PIC variants, sanitizers, layering checks,
 profile-guided opts) is irrelevant to a wasm32 cross-compile.
 
-Cross-platform note.  Today the config + BUILD bake in
-`wasi_sdk_darwin_arm64`, matching the alias pattern in
-`//third_party/wasi_sdk:BUILD.bazel`.  Multi-host CI is a separable
-follow-up: the bazel idiom is one `toolchain()` registration per
-(host, target) pair with `exec_compatible_with` set; a Starlark
-macro can compress the four variants into one call.  See
-`phase-c-plan.md` §7.6.
+Cross-platform.  One `toolchain()` is registered per build host
+(darwin/linux × arm64/x86_64), each with `exec_compatible_with` pinned
+to that host and a `cc_toolchain_config` whose sysroot + builtin
+include paths spell out that host's `@wasi_sdk_<host>` external repo.
+Bazel toolchain resolution auto-selects the one matching the build
+host — no `select()` in the toolchain itself.  The
+`wasm_wasi_toolchains` macro at the bottom of this file generates all
+four from one call; `//third_party/wasi_sdk:BUILD.bazel` invokes it.
+See `phase-c-plan.md` §7.6.
 """
 
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load(
     "@rules_cc//cc:cc_toolchain_config_lib.bzl",
     "feature",
@@ -314,3 +317,97 @@ cc_toolchain_config = rule(
     },
     provides = [CcToolchainConfigInfo],
 )
+
+# Build hosts we cross-compile wasm from.  Each entry maps a short host
+# id to the matching `@wasi_sdk_<id>` external repo and the
+# `@platforms//{os,cpu}` constraints that gate `exec_compatible_with`.
+_HOSTS = {
+    "darwin_arm64": struct(
+        os = "@platforms//os:macos",
+        cpu = "@platforms//cpu:arm64",
+    ),
+    "darwin_x86_64": struct(
+        os = "@platforms//os:macos",
+        cpu = "@platforms//cpu:x86_64",
+    ),
+    "linux_arm64": struct(
+        os = "@platforms//os:linux",
+        cpu = "@platforms//cpu:arm64",
+    ),
+    "linux_x86_64": struct(
+        os = "@platforms//os:linux",
+        cpu = "@platforms//cpu:x86_64",
+    ),
+}
+
+# Canonical external-repo path prefix for a module-extension http_archive
+# under bazel 7.x.  The `~` separator is bazel-version-specific (bazel 8
+# switched to `+`); if the build's bazel version changes, this is the
+# one literal to revisit.  Only the resolved host's archive is fetched,
+# so a stale prefix for a non-host arm is harmless until that host builds.
+def _external_prefix(host):
+    return "external/_main~_repo_rules~wasi_sdk_" + host
+
+# Generates a per-host wasm32-wasi-threads cc_toolchain stack:
+# cc_toolchain_config + cc_toolchain + toolchain (with
+# `exec_compatible_with` pinned to the host).  Bazel resolves the one
+# matching the build host at analysis time.
+def wasm_wasi_toolchains(name):
+    for host, plat in _HOSTS.items():
+        prefix = _external_prefix(host)
+        sysroot = prefix + "/share/wasi-sysroot"
+
+        cc_toolchain_config(
+            name = "%s_config_%s" % (name, host),
+            clang_path = "wasm_clang.sh",
+            ar_path = "wasm_ar.sh",
+            nm_path = "wasm_nm.sh",
+            sysroot_path = sysroot,
+            builtin_include_directories = [
+                # libc++ headers live under
+                # <sysroot>/include/<target>/c++/v1/.  Listed FIRST so
+                # they take precedence over the C-only sysroot.
+                sysroot + "/include/wasm32-wasi-threads/c++/v1",
+                # wasi-libc headers (per-target).
+                sysroot + "/include/wasm32-wasi-threads",
+                # Generic sysroot includes (target-independent
+                # wasi-libc bits).
+                sysroot + "/include",
+                # Clang's internal builtin headers (stddef.h etc.).
+                prefix + "/lib/clang/19/include",
+            ],
+        )
+
+        # All wasi-sdk tools + sysroot + the wrapper scripts are needed
+        # at action time.
+        native.filegroup(
+            name = "%s_tool_inputs_%s" % (name, host),
+            srcs = [
+                ":tool_wrappers",
+                "@wasi_sdk_%s//:all" % host,
+            ],
+        )
+
+        cc_toolchain(
+            name = "%s_cc_toolchain_%s" % (name, host),
+            all_files = ":%s_tool_inputs_%s" % (name, host),
+            ar_files = ":%s_tool_inputs_%s" % (name, host),
+            compiler_files = ":%s_tool_inputs_%s" % (name, host),
+            dwp_files = ":%s_tool_inputs_%s" % (name, host),
+            linker_files = ":%s_tool_inputs_%s" % (name, host),
+            objcopy_files = ":%s_tool_inputs_%s" % (name, host),
+            strip_files = ":%s_tool_inputs_%s" % (name, host),
+            toolchain_config = ":%s_config_%s" % (name, host),
+            toolchain_identifier = "wasm32_wasi_%s" % host,
+        )
+
+        native.toolchain(
+            name = "%s_toolchain_%s" % (name, host),
+            exec_compatible_with = [plat.os, plat.cpu],
+            target_compatible_with = [
+                "@platforms//cpu:wasm32",
+                "@platforms//os:wasi",
+            ],
+            toolchain = ":%s_cc_toolchain_%s" % (name, host),
+            toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+        )

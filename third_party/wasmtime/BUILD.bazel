@@ -1,6 +1,51 @@
-# Marker package so `//third_party/wasmtime:BUILD.external.bazel` is
-# visible to the `http_archive(build_file = …)` call in MODULE.bazel.
+# Host-selected wasmtime C API library.
+#
+# Four per-host `@wasmtime_<host>` archives are declared in
+# //:MODULE.bazel (the macOS one carries `-framework` linkopts, the
+# Linux ones carry `-lpthread -ldl -lm -lrt`).  `:wasmtime` aliases to
+# the one matching the build host, so e2e targets just depend on
+# `//third_party/wasmtime:wasmtime` regardless of platform.
+#
+# The `BUILD.macos.bazel` / `BUILD.linux.bazel` files are exported so
+# the `http_archive(build_file = …)` calls in MODULE.bazel can inject
+# the right one per archive.
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["BUILD.external.bazel"])
+exports_files([
+    "BUILD.macos.bazel",
+    "BUILD.linux.bazel",
+])
+
+alias(
+    name = "wasmtime",
+    actual = select({
+        ":host_darwin_arm64": "@wasmtime_darwin_arm64//:wasmtime",
+        ":host_linux_arm64": "@wasmtime_linux_arm64//:wasmtime",
+        ":host_linux_x86_64": "@wasmtime_linux_x86_64//:wasmtime",
+    }),
+)
+
+config_setting(
+    name = "host_darwin_arm64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+config_setting(
+    name = "host_linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+config_setting(
+    name = "host_linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)

@@ -8,7 +8,16 @@
 #
 # Package depth: //third_party/wasi_sdk/ is two levels from the repo
 # root, so `../../external/<repo>` reaches bazel's external store.
-WASI_BIN="$(dirname "$0")/../../external/_main~_repo_rules~wasi_sdk_darwin_arm64/bin"
+#
+# Host-agnostic: toolchain resolution fetches exactly one
+# `@wasi_sdk_<host>` archive (the one matching the build host), so the
+# glob `external/*wasi_sdk_*/bin` resolves to a single directory.  The
+# canonical external repo name embeds a bazel-version-specific
+# separator (`_main~_repo_rules~wasi_sdk_<host>` on bazel 7.x), so we
+# glob rather than spell it out.
+for d in "$(dirname "$0")"/../../external/*wasi_sdk_*/bin; do
+  WASI_BIN="$d"
+done
 for arg in "$@"; do
   case "$arg" in
     *.cc|*.cpp|*.cxx|*.C)
