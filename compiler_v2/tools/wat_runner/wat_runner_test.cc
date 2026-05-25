@@ -1189,5 +1189,74 @@ TEST(WatRunnerM14Test, SetFieldIfPresentSomeCallsHostNoneShortCircuits) {
   EXPECT_EQ(calls[0].value_slot, expected_inner_off);
 }
 
+// ─────────────────────────────────────────────────────────
+// m20_set_field_poison.wat — poison-on-error `cel_set_field`
+// contract (M20 / cleanup-backlog #11).  Two cel_set_field calls on
+// the same msg_slot:
+//   1. an out-of-int32-range value -> stub poisons the slot to
+//      CEL_ERROR{CEL_ERR_OVERFLOW};
+//   2. an in-range value -> stub sees the slot is already CEL_ERROR
+//      and early-outs (no-op), proving the poison rides the slot and
+//      a later valid field can't un-poison the result.
+// $eval returns the (now-poisoned) msg_slot.
+// ─────────────────────────────────────────────────────────
+TEST(WatRunnerProtoFieldTest, SetFieldPoisonsOnOutOfRangeAndPropagates) {
+  auto wat = LoadWat("m20_set_field_poison.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+
+  struct Call {
+    uint32_t msg_slot;
+    uint32_t field_ref_id;
+    uint32_t value_slot;
+    bool early_out;
+    bool poisoned;
+  };
+  auto calls = std::make_shared<std::vector<Call>>();
+
+  // Models the production CelSetFieldImpl contract: early-out on an
+  // already-poisoned msg, poison on an out-of-int32-range scalar.
+  in.cel_host_cel_set_field_stub =
+      [calls](uint32_t msg_slot, uint32_t field_ref_id, uint32_t value_slot,
+              uint8_t* memory, size_t /*size*/) {
+        Call c{msg_slot, field_ref_id, value_slot, false, false};
+        const CelValue m = ReadCelValue(memory, msg_slot);
+        if (m.kind == CEL_ERROR) {
+          c.early_out = true;  // poison already present — no-op.
+          calls->push_back(c);
+          return;
+        }
+        const CelValue v = ReadCelValue(memory, value_slot);
+        if (v.kind == CEL_INT &&
+            (v.payload.i < INT32_MIN || v.payload.i > INT32_MAX)) {
+          CelValue err{};
+          err.kind = CEL_ERROR;
+          err.payload.err = CEL_ERR_OVERFLOW;
+          WriteCelValue(memory, msg_slot, err);
+          c.poisoned = true;
+        }
+        calls->push_back(c);
+      };
+
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 40u);
+
+  // The result slot now carries the poison, not the message.
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cv.payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+
+  // Two calls: first poisoned (out-of-range), second early-out.
+  ASSERT_EQ(calls->size(), 2u);
+  EXPECT_TRUE((*calls)[0].poisoned);
+  EXPECT_FALSE((*calls)[0].early_out);
+  EXPECT_EQ((*calls)[0].field_ref_id, 100u);
+  EXPECT_TRUE((*calls)[1].early_out);
+  EXPECT_FALSE((*calls)[1].poisoned);
+  EXPECT_EQ((*calls)[1].field_ref_id, 101u);
+}
+
 }  // namespace
 }  // namespace celwasm

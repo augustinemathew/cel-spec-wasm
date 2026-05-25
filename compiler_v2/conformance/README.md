@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1890 (77.0%)  skip=463 (18.9%)  fail=101 (4.1%)
+total=2454  pass=1898 (77.3%)  skip=463 (18.9%)  fail=93 (3.8%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -120,10 +120,10 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
 | `proto3.textproto`           |  85 |  68 |  13 |   4 | 80% | disable_check=6 static_subset=7 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
-| `enums.textproto`            |  85 |  61 |   2 |  22 | 71% | disable_check=2 |
+| `enums.textproto`            |  85 |  65 |   2 |  18 | 76% | disable_check=2 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
 | `proto2.textproto`           | 118 |  73 |  25 |  20 | 61% | disable_check=6 static_subset=19 |
-| `dynamic.textproto`          | 226 | 125 |  92 |   9 | 55% | disable_check=20 static_subset=72 |
+| `dynamic.textproto`          | 226 | 129 |  92 |   5 | 57% | disable_check=20 static_subset=72 |
 | `wrappers.textproto`         |  36 |  18 |  18 |   0 | 50% | static_subset=18 |
 | `fields.textproto`           |  60 |  26 |  28 |   6 | 43% | disable_check=5 static_subset=15 type_env=8 |
 | `namespace.textproto`        |  14 |   6 |   4 |   4 | 42% | disable_check=4 |
@@ -162,18 +162,18 @@ graduate.  Effective pass rate against the addressable corpus
 
 ## Top remaining FAIL buckets
 
-101 FAILs across 14 fixtures — every one is a real gap, not a
+93 FAILs across 14 fixtures — every one is a real gap, not a
 classifier miss.  Buckets sorted by FAIL count; cleanup-backlog
 references point at the tracked follow-up slice.
 
 | Fixture | FAIL | Root cause |
 |---|---:|---|
-| `enums.textproto`         | 22 | Enums decay to plain `int`: `type(GlobalEnum.GOO)` yields `int` not the enum type (6); the `EnumType(i)` / `EnumType('NAME')` constructor and strong-enum field assignment are rejected by the checker (12); out-of-int32-range int assigned to an enum field builds a message instead of erroring (4).  One feature — real enum types in checker + runtime. |
 | `proto2.textproto`        | 20 | proto2 **extension fields** — backtick-qualified extension selectors `msg.​`pkg.ext`` are unsupported: `has()` returns the wrong bool, the read errors out (18; same feature the standalone `proto2_ext.textproto` SKIPs as `ext_unimpl`).  Plus mixed-origin map equality on a null-pruned WKT map (2, cleanup-backlog #12). |
 | `parse.textproto`         | 19 | TextFormat-roundtrip rows, quoted-key map rows, and parse-error matcher cases the harness doesn't yet diff. |
-| `dynamic.textproto`       |  9 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen). |
+| `enums.textproto`         | 18 | Enums decay to plain `int`: `type(GlobalEnum.GOO)` yields `int` not the enum type (6); the `EnumType(i)` / `EnumType('NAME')` constructor and strong-enum field assignment are rejected by the checker (12).  One feature — real enum types in checker + runtime; descoped deliberately (cel-cpp itself decays enums to int, see `rewrite/m20-enum-field-range.md` §6).  The out-of-int32-range enum-field assignment rows were fixed in M20. |
 | `fields.textproto`        |  6 | `has({...}.k)` map-dispatch gap — `kSelect` on a literal map operand (cleanup-backlog #9). |
 | `conversions.textproto`   |  5 | `double('123.456')` precision — string→double parse and embedded-literal double differ by 1 ULP; `CompareDouble` uses `==`. |
+| `dynamic.textproto`       |  5 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  The int32/uint32 `field_assign_*_range` rows were fixed in M20. |
 | `proto3.textproto`        |  4 | Unset singular message field returns `null` instead of the default message instance, so the subfield read errors (2); mixed-origin map equality (2, cleanup-backlog #12). |
 | `namespace.textproto`     |  4 | Namespace-shadowing resolution (`cel.bind(x, ..., x.y)` resolves the wrong `x` against a container-qualified shape). |
 | `optionals.textproto`     |  4 | Map-index / optional-index select on a map operand — `.c['k']` / `.c[?'k']` errors (3, cleanup-backlog #9); `optional.ofNonZeroValue(<message>)` traps at eval (1, cleanup-backlog #10). |
@@ -187,7 +187,7 @@ references point at the tracked follow-up slice.
 
   - **CI gate.**  `run_conformance` exits 0 unconditionally.  Two
     viable shapes: a corpus-wide `kFail == 0` cc_test (now within
-    reach — 126 FAILs left, all real gaps that a few targeted
+    reach — 93 FAILs left, all real gaps that a few targeted
     fixes would close), or a pinned-`(pass, fail)`-per-fixture
     tuple test (catches both regressions and silent graduations).
   - **Single corpus list.**  `SIMPLE_TESTDATA` (BUILD), `DefaultCorpus()`

@@ -2509,6 +2509,43 @@ ids, `absl::Base64{Escape,Unescape}`, `"invalid base64 data"`).
         wired into `cel_runtime_wasm.bin`.  `m17_test.cc` e2e
         (9 tests).  `.baseline` 1770 → 1774.
 
+### Rewrite M20 — enum/scalar field-assignment range errors (shipped 2026-05-25)
+
+`m20-enum-field-range.md` made out-of-range scalar/enum proto field
+assignments produce a CEL error VALUE (matching cel-cpp) via a
+poison-on-error `cel_set_field` contract — no ABI/codegen change.
+Conformance: corpus-wide 1890 → 1898 (+8, no fail regression):
+`enums.textproto` legacy_proto{2,3} `assign_standalone_int_too_{big,neg}`
+(4) + `dynamic.textproto` int32/uint32 `field_assign_proto{2,3}_range`
+(4).  Strong enum types remain descoped (cel-cpp itself decays enums to
+int — validated by the now-deleted strong-enum probe).
+
+  - [x] **Slice 0 — WAT-first.**  `m20_set_field_poison.wat` locks the
+        poison contract (poison on overflow + no-op on already-poisoned
+        slot); runs through `wat_runner`
+        (`SetFieldPoisonsOnOutOfRangeAndPropagates`).  `wat-traces.md`
+        §M20.1.
+  - [x] **Slice A — cel-cpp differential oracle.**
+        `testdata/cel_cpp_oracle.{h,cc}` (namespace-isolated, links
+        `@cel-cpp//runtime`, emits `cel.expr.Value`); a non-OK
+        `Evaluate()` status folds into `is_error` to match cel-cpp's
+        conformance harness.
+  - [x] **Slice B — poison-on-error `cel_set_field`.**  `CelSetFieldImpl`
+        early-outs on a CEL_ERROR `msg_slot`, classifies `OutOfRange`
+        field writes → `CEL_ERROR{CEL_ERR_OVERFLOW}` poison in place
+        (else trap).  Unit tests: `cel_host_test.cc::CelSetFieldPoisonTest`
+        (5 cases — int32 over/underflow, enum overflow, no-op-on-poison,
+        in-range control).
+  - [x] **Slice C — enum range checks.**  `CheckInt32Range` added to all
+        four enum write arms (singular / repeated / host-list /
+        map-entry); int32/uint32 arms were already checked.
+  - [x] **Slice D — differential suite + un-skips.**
+        `testdata/cel_cpp_oracle_test.cc` (20 cases: smoke + the 8 M20
+        rows + INT32 boundary matrix, our-pipeline-vs-oracle).  The four
+        `wkt_field_set_test.cc` `*_range` cases un-skipped (assert a CEL
+        error VALUE).  `.baseline` 1890 → 1898; cleanup-backlog #11
+        closed.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

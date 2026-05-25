@@ -2519,6 +2519,13 @@ absl::Status SetScalarField(
             "CelSetFieldImpl: field `", field.name(),
             "` is ENUM but value kind is ", static_cast<int>(value.kind)));
       }
+      // Enum values narrow to int32 on the wire; an out-of-range
+      // assignment is a CEL error in cel-cpp (struct_value_builder.cc
+      // `CPPTYPE_ENUM` returns TypeConversionError), surfaced here via
+      // the poison contract rather than a silent truncation.
+      if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
+        return s;
+      }
       refl->SetEnumValue(&msg, &field, static_cast<int>(ReadInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_MESSAGE: {
@@ -3024,6 +3031,9 @@ absl::Status AppendRepeatedFromCelValue(
             absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
                          "` ENUM element kind=", static_cast<int>(cv.kind)));
       }
+      if (auto s = CheckInt32Range(cv.payload.i, field.name()); !s.ok()) {
+        return s;
+      }
       refl.AddEnumValue(&msg, &field, static_cast<int>(cv.payload.i));
       return absl::OkStatus();
     case FD::CPPTYPE_MESSAGE: {
@@ -3136,6 +3146,9 @@ absl::Status AppendRepeatedFromHostListValue(
     case FD::CPPTYPE_ENUM: {
       auto i = v.AsInt();
       if (!i.ok()) return i.status();
+      if (auto s = CheckInt32Range(*i, field.name()); !s.ok()) {
+        return s;
+      }
       refl.AddEnumValue(&msg, &field, static_cast<int>(*i));
       return absl::OkStatus();
     }
@@ -3375,6 +3388,9 @@ absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
     case FD::CPPTYPE_ENUM: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
+      if (auto s = CheckInt32Range(*i, val_fd->name()); !s.ok()) {
+        return s;
+      }
       entry_refl->SetEnumValue(entry, val_fd, static_cast<int>(*i));
       return absl::OkStatus();
     }
@@ -3441,6 +3457,15 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
                              uint32_t value_slot,
                              const TrampolineContext& ctx) {
   const CelValue msg_cv = ctx.mem.ReadCelValue(msg_slot);
+  // Poison propagation: a prior field-set on this same message slot
+  // overflowed and wrote a CEL_ERROR there.  Leave it untouched and
+  // no-op so the error rides the construction's result slot out to the
+  // expression value — cel-cpp likewise short-circuits a struct
+  // constructor once one argument errors.  This is the read side of the
+  // poison contract; see the out-of-range tail below.
+  if (msg_cv.kind == CEL_ERROR) {
+    return absl::OkStatus();
+  }
   if (msg_cv.kind != CEL_MESSAGE) {
     return absl::InvalidArgumentError(
         absl::StrCat("CelSetFieldImpl: msg_slot kind is ",
@@ -3494,24 +3519,42 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   // Route map / repeated source kinds through dedicated walkers.
   // Map check precedes repeated because every proto map field is
   // also `is_repeated()` per descriptor.proto.
-  if (field->is_map()) {
-    return SetMapField(*msg, *field, value_cv, ctx.mem, ctx.refs);
-  }
-  if (field->is_repeated()) {
-    return SetRepeatedField(*msg, *field, value_cv, ctx.mem, ctx.refs);
-  }
+  const absl::Status set_status = [&]() -> absl::Status {
+    if (field->is_map()) {
+      return SetMapField(*msg, *field, value_cv, ctx.mem, ctx.refs);
+    }
+    if (field->is_repeated()) {
+      return SetRepeatedField(*msg, *field, value_cv, ctx.mem, ctx.refs);
+    }
+    if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
+      // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a
+      // clean trap matches the "trust the checker" stance — a
+      // properly-typed CEL program won't pass an Unknown / Error to
+      // a typed scalar field.  Revisit when partial-eval ×
+      // construction is exercised by a fixture row.
+      return absl::UnimplementedError(absl::StrCat(
+          "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
+          " on field set not yet supported"));
+    }
+    return SetScalarField(*msg, *field, value_cv, ctx.mem, &ctx.refs);
+  }();
 
-  if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
-    // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a
-    // clean trap matches the "trust the checker" stance — a
-    // properly-typed CEL program won't pass an Unknown / Error to
-    // a typed scalar field.  Revisit when partial-eval ×
-    // construction is exercised by a fixture row.
-    return absl::UnimplementedError(absl::StrCat(
-        "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
-        " on field set not yet supported"));
+  // Poison-on-range-error (the write side of the poison contract).  An
+  // out-of-range scalar/enum assignment is a CEL value-level error —
+  // cel-cpp returns an ErrorValue, so the expression result is a CEL
+  // error, not a host trap.  The field-write helpers signal this with
+  // `kOutOfRange`; convert it to a CEL_ERROR poison stamped into
+  // msg_slot, overwriting the partially-built message, and report
+  // success.  The construction's trailing `(i32.const out_slot)` then
+  // naturally carries the error.  Every other non-OK status is an
+  // internal invariant violation (kind mismatch, missing reflection,
+  // unsupported 3VL) and stays non-OK → trap, per the "a release build
+  // that miscompiles silently is worse than one that crashes" rule.
+  if (set_status.code() == absl::StatusCode::kOutOfRange) {
+    WriteWireError(CEL_ERR_OVERFLOW, msg_slot, ctx.mem);
+    return absl::OkStatus();
   }
-  return SetScalarField(*msg, *field, value_cv, ctx.mem, &ctx.refs);
+  return set_status;
 }
 
 // `cel_host.resolve_message_type_name` — descriptor-FQN resolver

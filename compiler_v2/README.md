@@ -10,6 +10,21 @@ and `doc/implementation-plan/rewrite/cel-host-surface.md`.  For per-
 component test coverage and the milestone closeout discipline, see
 `doc/implementation-plan/per-component-test-coverage.md`.
 
+## Getting started
+
+Prerequisites, the macOS / Linux setup steps, the `bazel build` / `bazel
+test` commands, the CLI, the conformance runner, and the Docker Linux
+image all live in the repository-root
+[`README.md`](../README.md#getting-started).  `celwasmc` builds on
+**macOS (Apple Silicon)** and **Linux (arm64 / x86_64)** with the same
+`bazel` invocations — Bazel fetches the wasi-sdk cross-compile toolchain,
+binaryen, and wasmtime for the build host automatically.
+
+This page is the orientation guide for working *inside* the compiler:
+the layout, the Compile → Plan → Eval lifecycle, the API quickstart,
+artifact sizes, and the build/test knobs.  For the lint/format gate and
+the compile-db / PCH details, see `doc/contributing.md`.
+
 ## Layout
 
 ```

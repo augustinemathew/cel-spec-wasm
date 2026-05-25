@@ -2487,6 +2487,39 @@ Freezes the **`net.CIDR` representation** + the receiver-method ABI:
     compare the first `prefix` bits.  `containsIP` is overloaded
     (net.IP arg and string arg) — this trace covers the net.IP form.
 
+## M20.1 — poison-on-error `cel_set_field` — `TestAllTypes{standalone_enum: 5000000000, single_int32: 7}` (M20 Slice 0)
+
+File: `wat/m20_set_field_poison.wat`.  Status: assembles (255 B); runs
+through `wat_runner` against a stub modelling the poison contract
+(`wat_runner_test.cc::SetFieldPoisonsOnOutOfRangeAndPropagates`).
+
+Freezes the **poison-on-error contract** for `cel_host.cel_set_field`
+(cleanup-backlog #11).  The ABI signature is **unchanged** —
+`(msg_slot, field_ref_id, value_slot)` → () — so kStructExpr codegen is
+byte-identical to today (`make_message` + one `cel_set_field` per entry
++ trailing `i32.const out_slot`).  What this trace locks is the
+*semantic* contract on the existing `msg_slot` cell:
+
+  - **Early-out:** if `msg_slot.kind == CEL_ERROR`, return immediately —
+    a poison set by an earlier entry rides the slot through the
+    remaining sets untouched.
+  - **Value-error → poison, not trap:** an int outside
+    `[INT32_MIN, INT32_MAX]` assigned to an int32 / enum / uint32-or-
+    int32-wrapper field writes `CEL_ERROR{CEL_ERR_OVERFLOW}` into
+    `msg_slot` and returns OK.  Matches cel-cpp's `TypeConversionError`
+    (`struct_value_builder.cc:1081`); the kind-only `eval_error`
+    matcher means the numeric code suffices.
+  - **Internal violation → trap:** wrong value kind, bad descriptor,
+    non-mutable backing stay non-OK Status → `StatusToTrap`.  Those are
+    codegen/checker invariant breaks, not CEL semantics.
+
+Because the poison rides the existing out_slot, the trailing
+`i32.const out_slot` returns the error with **zero codegen change** —
+the WAT's two-`cel_set_field` body is exactly what codegen already
+emits.  The trace proves: entry 1 (out-of-range) poisons the slot,
+entry 2 (in-range `7`) hits the early-out and cannot un-poison it, and
+`$eval` returns `CEL_ERROR{CEL_ERR_OVERFLOW}`.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool
