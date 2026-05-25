@@ -561,6 +561,9 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_IP && b->kind == CEL_IP) {
     return net_ip_eq(a, b);
   }
+  if (a->kind == CEL_CIDR && b->kind == CEL_CIDR) {
+    return net_cidr_eq(a, b);
+  }
   // Bool / string / cross-kind non-numeric fall through to
   // `map_keys_equal` which itself routes numerics polymorphically
   // and returns 0 for kind mismatches.
@@ -1374,6 +1377,10 @@ static int equal_same_kind(uint32_t kind, uint32_t out_slot, uint32_t a_slot,
     case CEL_IP:
       write_bool(cel_value_at(out_slot),
                  net_ip_eq(cel_value_at(a_slot), cel_value_at(b_slot)));
+      return 1;
+    case CEL_CIDR:
+      write_bool(cel_value_at(out_slot),
+                 net_cidr_eq(cel_value_at(a_slot), cel_value_at(b_slot)));
       return 1;
     default:
       return 0;  // Aggregates fall through to the polymorphic arms.

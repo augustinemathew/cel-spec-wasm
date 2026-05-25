@@ -48,6 +48,7 @@ typedef enum {
   CEL_ERROR = 16,
   CEL_LIST_HOST = 17,
   CEL_IP = 18,
+  CEL_CIDR = 19,
 } CelKind;
 
 typedef struct {
@@ -122,6 +123,21 @@ typedef struct {
   uint8_t addr[16];
 } NetIp;
 
+// Parsed `net.CIDR` value (network extension).  Arena-allocated by the
+// `cidr(string)` parse kernel; like `NetIp`, the byte offset is carried
+// in `CelValue.payload.net_ref` — the generic arena-offset arm serves
+// both CEL_IP (→ NetIp) and CEL_CIDR (→ NetCidr); the CelKind
+// disambiguates which struct the offset points at.  `family` is 4
+// (IPv4) or 6 (IPv6); `prefix` is the mask length (0..32 for v4,
+// 0..128 for v6).  The address is stored AS PARSED (not masked) —
+// `cidr('192.168.0.1/24')` keeps the host bits; `masked()` zeroes
+// them into a fresh NetCidr.
+typedef struct {
+  uint32_t family;
+  uint32_t prefix;
+  uint8_t addr[16];
+} NetCidr;
+
 typedef struct CelValue CelValue;
 struct CelValue {
   uint32_t kind;
@@ -141,8 +157,10 @@ struct CelValue {
                               // has its own `msg_slot` to keep
                               // cel_host call sites unchanged).
     uint32_t msg_slot;
-    uint32_t net_ref;  // CEL_IP — arena byte offset to a NetIp
-                       // struct (mirrors arena_list.header_ptr).
+    uint32_t net_ref;  // CEL_IP → NetIp / CEL_CIDR → NetCidr — arena
+                       // byte offset to the parsed struct (mirrors
+                       // arena_list.header_ptr).  The CelKind selects
+                       // which struct the offset points at.
     // CEL_TYPE values reuse the `s` arm above (CelSpan = ptr+len).
     // The bytes pointed at are the spec type-name string ("int",
     // "bool", "<message-FQN>", "null_type", "list", "map", "type",
