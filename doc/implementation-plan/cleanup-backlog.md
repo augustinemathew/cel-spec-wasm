@@ -157,29 +157,23 @@ struck through or removed.
       mirroring the existing `cel_host.cel_list_size` /
       `cel_host.cel_map_size` shape — likely 2–4 hours.
 
-- [ ] **#11** — `cel_set_field` (the proto field-write trampoline) is a
-      void ABI: it signals an out-of-range scalar (e.g. an int32 field
+- [x] **#11** — `cel_set_field` (the proto field-write trampoline) was a
+      void ABI: it signalled an out-of-range scalar (e.g. an int32 field
       assigned `2147483648`) only by *trapping* the wasm instance, which
-      surfaces as a non-OK `Eval` status — never as a CEL error *value*.
+      surfaced as a non-OK `Eval` status — never as a CEL error *value*.
       The conformance `eval_error` matcher compares error KIND on a
-      returned CEL value, so these rows can't PASS: a trap is an
+      returned CEL value, so these rows couldn't PASS: a trap is an
       engine-level failure, not a catchable CEL error.
-      Impact: blocks the int32/uint32 `*_range` rows in
-      `tests/simple/testdata/proto2.textproto` / `proto3.textproto`
-      (4 rows; documented as GTEST_SKIP in
-      `compiler_v2/e2e/wkt_field_set_test.cc`).
-      Fix shape: give `cel_set_field` a poison-on-error return path —
-      write a `CEL_ERR_RANGE` CelValue into an out-slot and let the
-      caller propagate it as a CEL error value, instead of `__builtin_
-      trap()`.  Mirrors how arithmetic kernels already poison rather
-      than trap.
-      Surfaced: 2026-05-24 WKT field-set conformance work.
-      Files: `compiler_v2/api/internal/cel_host.cc` (`SetScalarField` /
-      `SetWrapperInnerValue` range-check arms), the `cel_set_field`
-      ABI contract, `compiler_v2/codegen/expr_lower.cc` (caller).
-      Why P2: only 4 corpus rows; the in-range assignments and the rest
-      of WKT field-set ship cleanly.  Touches the field-write ABI shape,
-      so it wants its own slice.
+      RESOLVED 2026-05-25 (M20, `rewrite/m20-enum-field-range.md`).
+      `CelSetFieldImpl` now classifies an `OutOfRange` field-write
+      status as a value-level error: it poisons the message slot in
+      place with `CEL_ERROR{CEL_ERR_OVERFLOW}` and returns OK, and
+      early-outs on an already-poisoned slot so the first overflow in a
+      multi-field constructor propagates.  No ABI/codegen change (the
+      poison rides the existing `out_slot`).  Flipped the 4 int32/uint32
+      `*_range` rows plus the 4 enum `standalone_enum` range rows;
+      `wkt_field_set_test.cc` `*_range` cases un-skipped, differential
+      coverage in `testdata/cel_cpp_oracle_test.cc`.
 
 - [ ] **#12** — mixed-origin map equality: `CelMapEqImpl` only handles
       the case where BOTH operands are host-backed maps (or both arena

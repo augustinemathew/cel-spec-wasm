@@ -1,5 +1,6 @@
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = [
     "//compiler_v2:__subpackages__",
@@ -51,4 +52,72 @@ proto_library(
 cc_proto_library(
     name = "host_fixture_proto2_cc_proto",
     deps = [":host_fixture_proto2_proto"],
+)
+
+# Differential oracle: evaluates a CEL source expression through
+# cel-cpp's own compiler + runtime and returns the result as a neutral
+# `cel.expr.Value` proto, for comparison against our pipeline.  Lives
+# in its own TU because cel-cpp's `cel::Value` collides with our
+# `cel::Value` alias — see cel_cpp_oracle.h.  Test-only.
+cc_library(
+    name = "cel_cpp_oracle",
+    testonly = True,
+    srcs = ["cel_cpp_oracle.cc"],
+    hdrs = ["cel_cpp_oracle.h"],
+    deps = [
+        "//proto/cel/expr:checked_cc_proto",
+        "//proto/cel/expr:value_cc_proto",
+        "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@cel-cpp//common:ast_proto",
+        "@cel-cpp//common:value",
+        "@cel-cpp//common/internal:value_conversion",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//extensions/protobuf:enum_adapter",
+        "@cel-cpp//extensions/protobuf:runtime_adapter",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:reference_resolver",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# The differential suite: smoke cases + the M20 enum/int32/uint32
+# field-range rows, run through BOTH the oracle and our pipeline.  This
+# TU includes both the neutral oracle header and our pipeline headers —
+# the oracle's cel-cpp linkage is hidden inside cel_cpp_oracle.cc.  The
+# our-pipeline-vs-oracle differential lives ENTIRELY here (and not in a
+# second binary): linking both sides exposes a `cel::Value` /
+# `cel::Attribute` symbol clash whose resolution is archive-scan-order
+# sensitive, so it is kept to this one TU that links cleanly.
+cc_test(
+    name = "cel_cpp_oracle_test",
+    size = "medium",
+    srcs = ["cel_cpp_oracle_test.cc"],
+    deps = [
+        ":cel_cpp_oracle",
+        "//compiler_v2/api:activation",
+        "//compiler_v2/api:compiler",
+        "//compiler_v2/api:engine",
+        "//compiler_v2/api:instance",
+        "//compiler_v2/api:program",
+        "//compiler_v2/api:value",
+        "//compiler_v2/conformance:runner",
+        "//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
 )

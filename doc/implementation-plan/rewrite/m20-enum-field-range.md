@@ -1,6 +1,31 @@
 # M20 — enum/scalar field-assignment range errors via a poison-on-error `cel_set_field` ABI
 
-Status: plan — drafted 2026-05-25, not yet started.
+Status: shipped 2026-05-25.
+
+What landed (deltas from the as-written plan):
+
+  - **The differential test consolidated into ONE TU, not a separate
+    e2e binary.**  The plan put the oracle library in `testdata/` and a
+    consumer test in `e2e/m20_field_range_diff_test.cc`.  Linking our
+    pipeline (`//compiler_v2/api`, which defines `cel::Value` /
+    `cel::Attribute`) AND the oracle (which pulls cel-cpp's same-named
+    symbols) in one binary is a genuine ODR clash whose link success is
+    archive-scan-order sensitive — a second consumer binary failed to
+    link while the oracle's own smoke test linked.  So the full
+    differential suite (smoke cases + the 8 M20 rows + the boundary
+    matrix) lives in `compiler_v2/testdata/cel_cpp_oracle_test.cc`, the
+    one TU that links cleanly.  No standalone `m20_field_range_diff_test`.
+  - **The oracle treats a non-OK cel-cpp `Evaluate()` status as a CEL
+    error**, not a harness failure — cel-cpp surfaces the wrapper
+    `int64->int32` overflow that way (vs the enum overflow, which comes
+    back as an `ErrorValue`).  Both fold into `OracleResult::is_error`,
+    matching cel-cpp's own conformance harness (`service.cc`).
+  - **int32/uint32 range checks already existed** (`CheckInt32Range` /
+    `CheckUint32Range` in `cel_host.cc`, applied to the singular and
+    wrapper int32/uint32 arms); they returned `OutOfRange` → trap.  So
+    Slice C reduced to adding `CheckInt32Range` to the four ENUM write
+    arms; the keystone was Slice B (poison-on-`OutOfRange`), which
+    unblocked the int32/uint32 wrapper rows for free.
 
 ## 1. Scope (as decided)
 
@@ -171,20 +196,24 @@ tool); M20 is its first consumer.
     `wat_runner` against a poison-contract stub
     (`wat_runner_test.cc::SetFieldPoisonsOnOutOfRangeAndPropagates`).
     Plus the cel-cpp strong-enum descope probe (§2).
-  - **Slice A** — cel-cpp oracle library + 3-4 smoke tests proving the
-    oracle agrees with our pipeline on already-passing expressions
-    (e.g. `1 + 1`, `TestAllTypes{single_int32: 7}.single_int32`).
-  - **Slice B** — poison-on-error `cel_set_field` ABI: early-out +
-    value-error poison + trap-classification in `CelSetFieldImpl`.
-    Unit-test the trampoline behaviour.
-  - **Slice C** — int32 range check at every enum / int32 / uint32
-    write site (`cel_host.cc:2497`, `:3002`, `:3114`, `:3353`, and the
-    int32/uint32 wrapper arms).
-  - **Slice D** — M20 differential test suite (the 8 rows + a boundary
-    matrix: INT32_MIN, INT32_MAX, ±1 past each, 0); un-skip the
-    `wkt_field_set_test.cc` `*_range` cases; conformance run; tick
-    `testing-checklist.md`; close cleanup-backlog #11 (+ note #12
-    untouched).
+  - **Slice A** ✅ — cel-cpp oracle library
+    (`testdata/cel_cpp_oracle.{h,cc}`, namespace-isolated, links
+    `@cel-cpp//runtime`, emits `cel.expr.Value`) + smoke tests proving
+    it agrees with our pipeline on already-passing expressions.
+  - **Slice B** ✅ — poison-on-error `cel_set_field`: early-out on a
+    CEL_ERROR `msg_slot`, classify `OutOfRange` from the field-write
+    helpers → poison the slot with `CEL_ERROR{CEL_ERR_OVERFLOW}` in
+    place and return OK (every other non-OK status still traps).  Zero
+    codegen change.  Unit-tested in `cel_host_test.cc`
+    (`CelSetFieldPoisonTest`).
+  - **Slice C** ✅ — `CheckInt32Range` added to all four ENUM write
+    arms (singular / repeated / host-list / map-entry); the int32 /
+    uint32 singular + wrapper arms were already range-checked.
+  - **Slice D** ✅ — differential suite (smoke + the 8 rows + the INT32
+    boundary matrix) in `testdata/cel_cpp_oracle_test.cc`; un-skipped
+    the four `wkt_field_set_test.cc` `*_range` cases (now assert a CEL
+    error VALUE via `ExpectEvalError`); conformance run; ticked
+    `testing-checklist.md`; closed cleanup-backlog #11 (#12 untouched).
 
 ## 6. Future work
 

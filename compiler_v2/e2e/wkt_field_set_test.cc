@@ -105,6 +105,17 @@ void ExpectBoolTrue(absl::string_view source, absl::string_view container) {
   EXPECT_TRUE(*b) << source;
 }
 
+// Assert `source` evaluates to a CEL error VALUE (not a host trap).
+// Used by the range-overflow rows: an out-of-range field assignment
+// poisons the message slot in place (cel_set_field's poison contract),
+// so Eval succeeds and the result is a CEL error value — matching
+// cel-cpp's ErrorValue and the corpus's kind-only `eval_error` matcher.
+void ExpectEvalError(absl::string_view source, absl::string_view container) {
+  Value v = EvalOk(source, container);
+  EXPECT_TRUE(v.IsError()) << source << " (kind=" << static_cast<int>(v.kind())
+                           << ")";
+}
+
 // Evaluate a message-construction expression and assert the resulting
 // proto equals `expected` (a textproto-populated message of the same
 // type).  Used for struct / Value rows whose field read-back is a
@@ -164,8 +175,8 @@ TEST_F(WktLiteralFieldTest, Proto3Struct) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["one"].set_number_value(1.0);
   fields["two"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'one': 1.0, 'two': 2.0}}", kP3, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'one': 1.0, 'two': 2.0}}",
+                        kP3, expected);
 }
 
 TEST_F(WktLiteralFieldTest, Proto3Value) {
@@ -280,8 +291,8 @@ TEST_F(DynamicStructFieldTest, FieldAssignProto2) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["uno"].set_number_value(1.0);
   fields["dos"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}", kP2, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}",
+                        kP2, expected);
 }
 
 TEST_F(DynamicStructFieldTest, FieldAssignProto3) {
@@ -289,8 +300,8 @@ TEST_F(DynamicStructFieldTest, FieldAssignProto3) {
   auto& fields = *expected.mutable_single_struct()->mutable_fields();
   fields["uno"].set_number_value(1.0);
   fields["dos"].set_number_value(2.0);
-  ExpectConstructsProto(
-      "TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}", kP3, expected);
+  ExpectConstructsProto("TestAllTypes{single_struct: {'uno': 1.0, 'dos': 2.0}}",
+                        kP3, expected);
 }
 
 TEST_F(DynamicStructFieldTest, FieldAssignEmptyProto2) {
@@ -425,38 +436,26 @@ TEST_F(SetNullPruneTest, MapDurationNullPrunedEqProto3) {
 
 class WrapperRangeTest : public ::testing::Test {};
 
+// dynamic int32/uint32 `field_assign_*_range`: the wrapped value
+// exceeds the int32/uint32 range, and the corpus expects an eval
+// error.  cel_set_field's poison contract turns the OutOfRange field
+// write into a CEL error value (not a host trap), so the construction
+// evaluates to an error — matching the corpus `eval_error` matcher.
 TEST_F(WrapperRangeTest, Int32WrapperRangeProto2) {
-  // dynamic int32/field_assign_proto2_range:
-  //   TestAllTypes{single_int32_wrapper: 12345678900} — the value
-  //   exceeds int32 range and the corpus expects an eval error.
-  GTEST_SKIP()
-      << "Blocked on cel_set_field ABI: the host import returns () with "
-         "errors signalled only via wasm trap (StatusToTrap in "
-         "cel_host_wasmtime.cc). A range overflow surfaces as a non-OK "
-         "Eval status (ClassifyEvalFailure -> Fail), not a CEL error "
-         "VALUE, so the corpus eval_error matcher (kind-only, requires "
-         "Value::Error) cannot match. The range check itself is "
-         "implemented in SetWrapperInnerValue (returns OutOfRange instead "
-         "of silently truncating); graduating the row to PASS needs an "
-         "error out-slot on the cel_set_field ABI.";
+  ExpectEvalError("TestAllTypes{single_int32_wrapper: 12345678900}", kP2);
 }
 
 TEST_F(WrapperRangeTest, Int32WrapperRangeProto3) {
-  GTEST_SKIP() << "Same cel_set_field-ABI blocker as "
-                  "Int32WrapperRangeProto2 (dynamic "
-                  "int32/field_assign_proto3_range).";
+  ExpectEvalError("TestAllTypes{single_int32_wrapper: -998877665544332211}",
+                  kP3);
 }
 
 TEST_F(WrapperRangeTest, Uint32WrapperRangeProto2) {
-  GTEST_SKIP() << "Same cel_set_field-ABI blocker as "
-                  "Int32WrapperRangeProto2 (dynamic "
-                  "uint32/field_assign_proto2_range).";
+  ExpectEvalError("TestAllTypes{single_uint32_wrapper: 6111222333u}", kP2);
 }
 
 TEST_F(WrapperRangeTest, Uint32WrapperRangeProto3) {
-  GTEST_SKIP() << "Same cel_set_field-ABI blocker as "
-                  "Int32WrapperRangeProto2 (dynamic "
-                  "uint32/field_assign_proto3_range).";
+  ExpectEvalError("TestAllTypes{single_uint32_wrapper: 6111222333u}", kP3);
 }
 
 // In-range wrapper assignment still round-trips (positive control for

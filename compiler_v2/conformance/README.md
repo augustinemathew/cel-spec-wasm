@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1890 (77.0%)  skip=463 (18.9%)  fail=101 (4.1%)
+total=2454  pass=1898 (77.3%)  skip=463 (18.9%)  fail=93 (3.8%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -120,10 +120,10 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
 | `proto3.textproto`           |  85 |  68 |  13 |   4 | 80% | disable_check=6 static_subset=7 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
-| `enums.textproto`            |  85 |  61 |   2 |  22 | 71% | disable_check=2 |
+| `enums.textproto`            |  85 |  65 |   2 |  18 | 76% | disable_check=2 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
 | `proto2.textproto`           | 118 |  73 |  25 |  20 | 61% | disable_check=6 static_subset=19 |
-| `dynamic.textproto`          | 226 | 125 |  92 |   9 | 55% | disable_check=20 static_subset=72 |
+| `dynamic.textproto`          | 226 | 129 |  92 |   5 | 57% | disable_check=20 static_subset=72 |
 | `wrappers.textproto`         |  36 |  18 |  18 |   0 | 50% | static_subset=18 |
 | `fields.textproto`           |  60 |  26 |  28 |   6 | 43% | disable_check=5 static_subset=15 type_env=8 |
 | `namespace.textproto`        |  14 |   6 |   4 |   4 | 42% | disable_check=4 |
@@ -162,32 +162,31 @@ graduate.  Effective pass rate against the addressable corpus
 
 ## Top remaining FAIL buckets
 
-126 FAILs across 14 fixtures — every one is a real gap, not a
+93 FAILs across 14 fixtures — every one is a real gap, not a
 classifier miss.
 
 | Fixture | FAIL | Root cause |
 |---|---:|---|
-| `dynamic.textproto`       | 28 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  Most fold to SKIP once the classifier-tightening tracking item lands. |
-| `enums.textproto`         | 28 | Out-of-range numeric assignment to enum wrapper fields, plus a few wrapper / repeated-enum patterns. |
-| `parse.textproto`         | 20 | TextFormat-roundtrip rows, quoted-key map rows, and parse-error matcher cases the harness doesn't yet diff. |
-| `proto3.textproto`        | 10 | M8 wrapper-field auto-convert (`int32_wrapper`, …), `Value`/`Struct`/`Duration`/`Timestamp` literal field construction. |
-| `proto2.textproto`        |  8 | Same pattern as proto3 — M8 wrapper construction + WKT literal fields. |
-| `wrappers.textproto`      |  9 | `to_any` conversions where the inner type is a wrapper message (M8 follow-up). |
+| `proto2.textproto`        | 20 | `dyn(...)` / static-subset escapes plus WKT-literal field-construction patterns the harness reaches as dyn-typed. |
+| `parse.textproto`         | 19 | TextFormat-roundtrip rows, quoted-key map rows, and parse-error matcher cases the harness doesn't yet diff. |
+| `enums.textproto`         | 18 | Strong-enum-type rows (`strong_proto2` / `strong_proto3`) — a real enum-carrying runtime value.  Descoped deliberately: cel-cpp itself decays enums to int and FAILs these (see `rewrite/m20-enum-field-range.md` §6).  The numeric-range assignment rows were fixed in M20. |
 | `fields.textproto`        |  6 | `has({...}.k)` map-dispatch gap (`kSelect` on a literal map operand). |
 | `conversions.textproto`   |  5 | `double('123.456')` precision — string→double parse and embedded-literal double differ by 1 ULP; `CompareDouble` uses `==`. |
+| `dynamic.textproto`       |  5 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  The int32/uint32 field-range rows were fixed in M20. |
+| `proto3.textproto`        |  4 | `Value`/`Struct`/`Duration`/`Timestamp` literal field construction reaching as dyn. |
 | `namespace.textproto`     |  4 | Namespace-shadowing resolution (`cel.bind(x, ..., x.y)` resolves the wrong `x` against a container-qualified shape). |
-| `optionals.textproto`     |  0 | (Fully reclassified — every row now SKIPs as `ext_unimpl`.) |
-| `type_deduction.textproto`|  2 | `null`-assignable-to-wrapper-field rows that produce `null` but the matcher expects `message`. |
+| `optionals.textproto`     |  4 | `kSelect` on a map operand (`{...}.field`) inside optional chaining (cleanup-backlog #9). |
 | `string.textproto`        |  2 | `size('multibyte')` — we count code points but the matcher expects byte length (or vice versa). |
 | `lists.textproto`         |  2 | `[7,8,9][dyn(0.0)]` / `[dyn(0u)]` — dyn-typed index reaches past the static-subset gate. |
-| `timestamps.textproto`    |  1 | `string(timestamp('9999-12-31T23:59:59.999999999Z'))` — nanosecond precision in the conversion. |
+| `type_deduction.textproto`|  2 | `null`-assignable-to-wrapper-field rows that produce `null` but the matcher expects `message`. |
 | `bindings_ext.textproto`  |  1 | `kSelect` on a map operand (`{...}.x` inside a `cel.bind`). |
+| `timestamp_conversions`   |  1 | `string(timestamp('9999-12-31T23:59:59.999999999Z'))` — nanosecond precision in the conversion. |
 
 ## Future work
 
   - **CI gate.**  `run_conformance` exits 0 unconditionally.  Two
     viable shapes: a corpus-wide `kFail == 0` cc_test (now within
-    reach — 126 FAILs left, all real gaps that a few targeted
+    reach — 93 FAILs left, all real gaps that a few targeted
     fixes would close), or a pinned-`(pass, fail)`-per-fixture
     tuple test (catches both regressions and silent graduations).
   - **Single corpus list.**  `SIMPLE_TESTDATA` (BUILD), `DefaultCorpus()`

@@ -827,6 +827,13 @@ class PackHarness {
     return outer_;
   }
 
+  // Read back the CelValue at the outer message slot.  Used to observe
+  // the poison contract: a range-overflow field write overwrites this
+  // slot with a CEL_ERROR in place rather than trapping.
+  CelValue MsgSlot() const {
+    return f_.mem.ReadCelValue(kOuterMsgSlot);
+  }
+
  private:
   static constexpr uint32_t kOuterMsgSlot = 16;
   static constexpr uint32_t kSrcSlot = 48;
@@ -1164,6 +1171,80 @@ TEST(CelSetFieldWktPackTest, MapTimestampNullValuePruned) {
   ASSERT_THAT(h.SetField(/*field_number=*/39, "map_str_to_ts"), IsOk());
   ASSERT_EQ(h.outer()->map_str_to_ts_size(), 1);
   EXPECT_EQ(h.outer()->map_str_to_ts().at("a").seconds(), 1);
+}
+
+// ═══════════ Field-set poison contract (range overflow) ═══════════
+//
+// An out-of-range scalar / enum field assignment is a CEL value-level
+// error (cel-cpp returns an ErrorValue), surfaced through the void
+// cel_set_field ABI by poisoning the message slot in place with a
+// CEL_ERROR{CEL_ERR_OVERFLOW} rather than trapping.  These tests pin
+// each branch of that contract at the trampoline boundary.
+
+namespace {
+// CEL_INT CelValue carrying `v` (poison-test source operand).
+CelValue IntCv(int64_t v) {
+  CelValue cv{};
+  cv.kind = CEL_INT;
+  cv.payload.i = v;
+  return cv;
+}
+}  // namespace
+
+// An int32 field write past INT32_MAX poisons the slot (no trap) with
+// the overflow error code; the helper reports OK so the poison rides
+// out via the message slot.
+TEST(CelSetFieldPoisonTest, Int32OverflowPoisonsSlot) {
+  PackHarness h;
+  h.StageScalar(IntCv(5000000000));  // > INT32_MAX
+  ASSERT_THAT(h.SetField(/*field_number=*/2, "i32"), IsOk());
+  const CelValue slot = h.MsgSlot();
+  EXPECT_EQ(slot.kind, CEL_ERROR);
+  EXPECT_EQ(slot.payload.err, CEL_ERR_OVERFLOW);
+}
+
+// Negative int32 overflow (< INT32_MIN) likewise poisons.
+TEST(CelSetFieldPoisonTest, Int32UnderflowPoisonsSlot) {
+  PackHarness h;
+  h.StageScalar(IntCv(-7000000000));  // < INT32_MIN
+  ASSERT_THAT(h.SetField(/*field_number=*/2, "i32"), IsOk());
+  EXPECT_EQ(h.MsgSlot().kind, CEL_ERROR);
+}
+
+// An out-of-range enum field write poisons the same way — the enum arm
+// narrows to int32 and shares the range check.
+TEST(CelSetFieldPoisonTest, EnumOverflowPoisonsSlot) {
+  PackHarness h;
+  h.StageScalar(IntCv(5000000000));
+  ASSERT_THAT(h.SetField(/*field_number=*/16, "kind"), IsOk());
+  const CelValue slot = h.MsgSlot();
+  EXPECT_EQ(slot.kind, CEL_ERROR);
+  EXPECT_EQ(slot.payload.err, CEL_ERR_OVERFLOW);
+}
+
+// Once a slot is poisoned, a subsequent field set on the SAME message
+// no-ops and leaves the error untouched — so the first overflow in a
+// multi-field constructor propagates to the result.
+TEST(CelSetFieldPoisonTest, SetOnPoisonedSlotIsNoOp) {
+  PackHarness h;
+  h.StageScalar(IntCv(5000000000));
+  ASSERT_THAT(h.SetField(/*field_number=*/2, "i32"), IsOk());
+  ASSERT_EQ(h.MsgSlot().kind, CEL_ERROR);
+  // A perfectly valid second assignment must not resurrect the message.
+  h.StageScalar(IntCv(7));
+  ASSERT_THAT(h.SetField(/*field_number=*/3, "i64"), IsOk());
+  EXPECT_EQ(h.MsgSlot().kind, CEL_ERROR);
+}
+
+// Positive control: an in-range value sets the field and leaves the
+// slot a live CEL_MESSAGE (the poison path is not taken at the
+// boundary INT32_MAX).
+TEST(CelSetFieldPoisonTest, InRangeInt32SetsFieldNoPoison) {
+  PackHarness h;
+  h.StageScalar(IntCv(2147483647));  // INT32_MAX, in range
+  ASSERT_THAT(h.SetField(/*field_number=*/2, "i32"), IsOk());
+  EXPECT_EQ(h.MsgSlot().kind, CEL_MESSAGE);
+  EXPECT_EQ(h.outer()->i32(), 2147483647);
 }
 
 // ═══════════ M11 Slice A — Any-of-Any iterative unwrap ═══════════
