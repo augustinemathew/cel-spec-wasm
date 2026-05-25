@@ -309,6 +309,54 @@ TEST(KnownBugs, MapFieldSelectSugar) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// CLASS: comprehension / macro semantics (wave 3).
+// ══════════════════════════════════════════════════════════════════
+
+TEST(KnownBugs, ExistsAbsorbsErrorAccumulator) {
+  GTEST_SKIP() << "KNOWN BUG (verified: returns error, want true): exists short-circuits on an ERROR/UNKNOWN accumulator (expr_lower_comprehension.cc:642-645 checks bool-payload bits, not accu.kind). Delete to fix.";
+  // `exists` is `@result || pred`: an error from one element is absorbed
+  // once a LATER element matches; the error only surfaces if NO element
+  // ever matches. cel2's loop-cond peephole (expr_lower_comprehension.cc:
+  // 642-645) br_if-exits on the accu's bool-payload bits without checking
+  // accu.kind==CEL_BOOL, so an ERROR accu (non-zero err code in the bool
+  // slot) short-circuits and becomes the result.
+  // [0, 2].exists(x, 2/x == 1): x=0 errors, x=2 matches -> spec: true.
+  auto v = TryEval("[0, 2].exists(x, 2/x == 1)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool()) << "exists short-circuited on an error accumulator";
+}
+
+TEST(KnownBugs, TransformMapEntryDuplicateKey) {
+  GTEST_SKIP() << "KNOWN BUG (verified: returns {0:4}, want duplicate-key error): cel_map_insert_at overwrites last-write-wins (cel_runtime.c:157-162). Delete to fix.";
+  // comprehensions_v2 builds the result via cel.@mapInsert == MapBuilder::Put,
+  // which errors on a duplicate key (cel-cpp value_builder.cc). cel2's
+  // cel_map_insert_at (cel_runtime.c:157-162) overwrites last-write-wins.
+  // {1:2,3:4}.transformMapEntry(k, v, {0: v}) collides on key 0 -> want
+  // a duplicate-key error; cel2 returns {0: 4}.
+  auto v = TryEval("{1: 2, 3: 4}.transformMapEntry(k, v, {0: v})");
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << "duplicate map key silently overwrote (cel_runtime.c:157-162), kind "
+      << static_cast<int>(v->kind());
+}
+
+TEST(KnownBugs, TransformMapEntryComputedEntryCrash) {
+  // CRASH (verified via the cel CLI): a transformMapEntry whose entry expr
+  // is not a literal kMapExpr (here a ternary) hits ABSL_CHECK(false) at
+  // expr_lower_comprehension.cc:800-805 / :826-831 and ABORTS the compiler
+  // instead of returning a status. Kept SKIPPED because running it would
+  // abort this whole test binary; delete the skip only alongside the fix.
+  GTEST_SKIP() << "KNOWN BUG (verified via cel CLI: ABSL_CHECK abort): "
+                  "transformMapEntry with a computed (non-literal) entry "
+                  "crashes the compiler, expr_lower_comprehension.cc:800-805. "
+                  "Running unskipped ABORTS the process — fix first, then unskip.";
+  auto v = TryEval(
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {})");
+  EXPECT_TRUE(v.ok()) << "should return a value/status, not crash: " << v.status();
+}
+
+// ══════════════════════════════════════════════════════════════════
 // CLASS: timestamp range + value formatting (wave 2).
 // ══════════════════════════════════════════════════════════════════
 
