@@ -47,6 +47,7 @@ typedef enum {
   CEL_UNKNOWN = 15,
   CEL_ERROR = 16,
   CEL_LIST_HOST = 17,
+  CEL_IP = 18,
 } CelKind;
 
 typedef struct {
@@ -105,6 +106,22 @@ typedef struct {
   int32_t _pad;
 } CelDurTs;
 
+// Parsed `net.IP` value (network extension).  Arena-allocated by the
+// `ip(string)` parse kernel; `CelValue.payload.net_ref` carries the
+// byte offset of this struct into the shared linear memory (mirrors
+// `ArenaListRef.header_ptr`).  `family` is 4 (IPv4) or 6 (IPv6).
+//
+// v4 normalization invariant (load-bearing for `==`): an IPv4 address
+// — whether written dotted-decimal (`192.168.0.1`) or as the hex
+// IPv4-mapped form (`::ffff:c0a8:1`) — is stored as `family = 4` with
+// the four address bytes in `addr[0..4]` and the rest zero, so the two
+// forms compare equal under a `{family, addr}` memcmp.  IPv6 stores
+// `family = 6` and all 16 bytes.
+typedef struct {
+  uint32_t family;
+  uint8_t addr[16];
+} NetIp;
+
 typedef struct CelValue CelValue;
 struct CelValue {
   uint32_t kind;
@@ -124,6 +141,8 @@ struct CelValue {
                               // has its own `msg_slot` to keep
                               // cel_host call sites unchanged).
     uint32_t msg_slot;
+    uint32_t net_ref;  // CEL_IP — arena byte offset to a NetIp
+                       // struct (mirrors arena_list.header_ptr).
     // CEL_TYPE values reuse the `s` arm above (CelSpan = ptr+len).
     // The bytes pointed at are the spec type-name string ("int",
     // "bool", "<message-FQN>", "null_type", "list", "map", "type",
