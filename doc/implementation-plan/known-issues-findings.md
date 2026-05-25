@@ -108,3 +108,21 @@ Confirmed-by-conformance or strong code trace; encoded as probe tests
   weaker than the doc claims.
 - [LOW] cel_string_ext.h:2 "13 ... functions" miscount (12 kernel families /
   11 cel-cpp non-format); also calls `trim` a strings-ext fn (it's not).
+
+## Wave 2 additions (encoded in known_bugs_test.cc)
+
+- Max-range timestamp construction rejects valid nanos at the MAX second:
+  cel_time_parse.cc:178 / cel_time.c:46 (`seconds==MAX && nanos>0`).
+  `string(timestamp('9999-12-31T23:59:59.999999999Z'))` -> overflow.
+- double->string is NOT shortest-round-trip: cel_convert.c:579-724.
+  string(123.456)->"123.45600000000000306"; string(1e10)->"10000000000"
+  want "1e+10"; -0.0->"0" want "-0"; Inf->"+Inf" want "inf".
+
+## ROOT CAUSE: the map-select cluster is ONE bug (verified)
+
+HasOnMap{Present,Absent}Key, ReservedWordMapSelector, CelBindSelectorOnBoundVar,
+ComprehensionVarSelector, MapFieldSelectSugar (+ backtick/nested/var map
+selects) ALL share one cause: EmitKSelect (expr_lower.cc:199-261) has no
+map-operand branch, so `m.k` (== m['k']) lowers to the proto field-read
+trampoline which rejects non-message operands (cel_host.cc:1394 ->
+CEL_ERR_TYPE_MISMATCH). Codegen gap, not checker/IR. One fix flips the cluster.

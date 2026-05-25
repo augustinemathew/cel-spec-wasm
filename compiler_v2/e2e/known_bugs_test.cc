@@ -292,6 +292,62 @@ TEST(KnownBugs, UintFromStringLeadingPlus) {
   EXPECT_EQ(*v->AsUint(), 5u);
 }
 
+TEST(KnownBugs, MapFieldSelectSugar) {
+  GTEST_SKIP() << "KNOWN BUG (verified: CEL_ERR_TYPE_MISMATCH, want 1): EmitKSelect has no map-operand path; m.k sugar hits the message field trampoline (expr_lower.cc:199-261 / cel_host.cc:1394). One fix flips the whole map-select cluster. Delete to fix.";
+  // ROOT CAUSE + minimal repro of the map-select cluster: HasOnMapPresentKey,
+  // HasOnMapAbsentKey, ReservedWordMapSelector, CelBindSelectorOnBoundVar,
+  // ComprehensionVarSelector (and backtick-quoted selectors) ALL share this.
+  // EmitKSelect (expr_lower.cc:199-261) has no map-operand branch, so `m.k`
+  // (≡ m['k'] sugar) lowers to the proto field-read trampoline, which
+  // rejects a non-message operand at cel_host.cc:1394 -> CEL_ERR_TYPE_MISMATCH.
+  // {'a': 1}.a should be 1.  One fix (map branch in EmitKSelect) flips the
+  // whole cluster.
+  auto v = TryEval("{'a': 1}.a");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 1);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// CLASS: timestamp range + value formatting (wave 2).
+// ══════════════════════════════════════════════════════════════════
+
+TEST(KnownBugs, MaxRangeTimestampConstruction) {
+  GTEST_SKIP() << "KNOWN BUG (verified: CEL_ERR_OVERFLOW, want the timestamp string): max-range timestamp nanos rejected, cel_time_parse.cc:178 / cel_time.c:46. Delete to fix.";
+  // timestamps.textproto: the maximum timestamp
+  // 9999-12-31T23:59:59.999999999Z is valid (cel-cpp MaxTimestamp =
+  // seconds 253402300799 + nanos 999999999), but cel2 rejects ANY
+  // positive nanos at the max second — cel_time_parse.cc:178
+  // (`seconds==MAX && nanos>0`) / cel_time.c:46. Want the round-trip
+  // string; got CEL_ERR_OVERFLOW at construction.
+  auto v = TryEval("string(timestamp('9999-12-31T23:59:59.999999999Z'))");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsString(), "9999-12-31T23:59:59.999999999Z");
+}
+
+TEST(KnownBugs, DoubleToStringShortestRoundTrip) {
+  GTEST_SKIP() << "KNOWN BUG (verified: '123.45600000000000306', want '123.456'): double->string is not shortest-round-trip, cel_convert.c:579-724. Delete to fix.";
+  // conversions.textproto: string(123.456) == "123.456". cel2's iterative
+  // frac*10 formatter (cel_convert.c:579-724) is not shortest-round-trip
+  // and emits trailing garbage ("123.45600000000000306").
+  auto v = TryEval("string(123.456)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsString(), "123.456");
+}
+
+TEST(KnownBugs, DoubleToStringExponentForm) {
+  GTEST_SKIP() << "KNOWN BUG (verified: '10000000000', want '1e+10'): double->string exponent threshold differs from std::to_chars(general), cel_convert.c:665-699. Delete to fix.";
+  // cel-cpp uses std::to_chars(general): string(1e10) == "1e+10".
+  // cel2 emits "10000000000" (wrong exponent threshold,
+  // cel_convert.c:665-699).
+  auto v = TryEval("string(1e10)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsString(), "1e+10");
+}
+
 // NOTE: two wave-1 agent candidates were checked here and did NOT
 // reproduce (engine returns the correct answer), so they are NOT bugs
 // and are deliberately absent: `dyn(1) == 1u` correctly returns true
