@@ -1,6 +1,6 @@
 // HostMap (Layer 1, vector-backed) — host-surface coverage.  Mirrors
 // the runtime-side `cel_map_test.cc` matrix on the host side: same
-// equality ladder, same poison rules, but operating on `cel::Value`
+// equality ladder, same poison rules, but operating on `celwasm::api::Value`
 // instead of `CelValue`.  Host- and arena-built maps must agree
 // under langdef map-key equality.
 //
@@ -31,17 +31,18 @@ namespace {
   ASSERT_TRUE(lhs##_or.ok()) << lhs##_or.status(); \
   auto lhs = *std::move(lhs##_or)
 
-cel::Value SinglePair(int64_t k, int64_t v) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(k), cel::Value::Int(v));
-  return cel::Value::Map(std::move(entries));
+celwasm::api::Value SinglePair(int64_t k, int64_t v) {
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(k),
+                       celwasm::api::Value::Int(v));
+  return celwasm::api::Value::Map(std::move(entries));
 }
 
 // ════════ Value::Map / Value::HostMap factories ════════
 
 TEST(ValueMapTest, MapBuilderProducesKMapKind) {
-  cel::Value m = SinglePair(1, 10);
-  EXPECT_EQ(m.kind(), cel::Value::Kind::kMap);
+  celwasm::api::Value m = SinglePair(1, 10);
+  EXPECT_EQ(m.kind(), celwasm::api::Value::Kind::kMap);
   ASSERT_TRUE(m.MapBacking().ok());
   const HostMapBacking* b = *m.MapBacking();
   ASSERT_NE(b, nullptr);
@@ -49,11 +50,12 @@ TEST(ValueMapTest, MapBuilderProducesKMapKind) {
 }
 
 TEST(ValueMapDeathTest, HostMapNullBackingFires) {
-  EXPECT_DEATH({ (void)cel::Value::HostMap(nullptr); }, "must not be null");
+  EXPECT_DEATH(
+      { (void)celwasm::api::Value::HostMap(nullptr); }, "must not be null");
 }
 
 TEST(ValueMapTest, MapBackingMismatchKindReturnsInvalidArgument) {
-  cel::Value v = cel::Value::Int(7);
+  celwasm::api::Value v = celwasm::api::Value::Int(7);
   EXPECT_FALSE(v.MapBacking().ok());
   EXPECT_FALSE(v.SharedMapBacking().ok());
 }
@@ -61,44 +63,51 @@ TEST(ValueMapTest, MapBackingMismatchKindReturnsInvalidArgument) {
 // ════════ HostMap::Get — hit, miss, invalid kind ════════
 
 TEST(HostMapTest, GetReturnsValueOnHit) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(7), cel::Value::Int(70));
-  entries.emplace_back(cel::Value::String("k"), cel::Value::Int(99));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(7),
+                       celwasm::api::Value::Int(70));
+  entries.emplace_back(celwasm::api::Value::String("k"),
+                       celwasm::api::Value::Int(99));
   HostMap m(std::move(entries));
 
-  HM_ASSIGN_OR_ASSERT(v, m.Get(cel::Value::Int(7), cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kInt);
+  HM_ASSIGN_OR_ASSERT(
+      v, m.Get(celwasm::api::Value::Int(7), celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kInt);
   EXPECT_EQ(*v.AsInt(), 70);
 
-  HM_ASSIGN_OR_ASSERT(s, m.Get(cel::Value::String("k"), cel::CelType::Int()));
+  HM_ASSIGN_OR_ASSERT(
+      s, m.Get(celwasm::api::Value::String("k"), celwasm::api::CelType::Int()));
   EXPECT_EQ(*s.AsInt(), 99);
 }
 
 TEST(HostMapTest, GetMissingKeyReturnsErrorValue) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(1), cel::Value::Int(10));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(1),
+                       celwasm::api::Value::Int(10));
   HostMap m(std::move(entries));
 
-  HM_ASSIGN_OR_ASSERT(v, m.Get(cel::Value::Int(999), cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kError);
+  HM_ASSIGN_OR_ASSERT(
+      v, m.Get(celwasm::api::Value::Int(999), celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
   HM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-  EXPECT_EQ(e->code, cel::ErrorCode::kKeyNotFound);
+  EXPECT_EQ(e->code, celwasm::ErrorCode::kKeyNotFound);
 }
 
 TEST(HostMapTest, GetInvalidKeyKindReturnsTypeMismatch) {
   HostMap m({});
-  HM_ASSIGN_OR_ASSERT(v, m.Get(cel::Value::Double(1.5), cel::CelType::Int()));
-  EXPECT_EQ(v.kind(), cel::Value::Kind::kError);
+  HM_ASSIGN_OR_ASSERT(
+      v, m.Get(celwasm::api::Value::Double(1.5), celwasm::api::CelType::Int()));
+  EXPECT_EQ(v.kind(), celwasm::api::Value::Kind::kError);
   HM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-  EXPECT_EQ(e->code, cel::ErrorCode::kTypeMismatch);
+  EXPECT_EQ(e->code, celwasm::ErrorCode::kTypeMismatch);
 }
 
 // ════════ Cross-type numeric equality (langdef §"Equality") ════════
 
 struct CrossTypeCase {
   const char* name;
-  cel::Value (*store)();
-  cel::Value (*lookup)();
+  celwasm::api::Value (*store)();
+  celwasm::api::Value (*lookup)();
   bool expect_hit;
   int64_t value;
 };
@@ -106,17 +115,17 @@ class HostMapCrossTypeTest : public ::testing::TestWithParam<CrossTypeCase> {};
 
 TEST_P(HostMapCrossTypeTest, RespectsMathematicalValue) {
   const CrossTypeCase& c = GetParam();
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(c.store(), cel::Value::Int(c.value));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(c.store(), celwasm::api::Value::Int(c.value));
   HostMap m(std::move(entries));
-  HM_ASSIGN_OR_ASSERT(v, m.Get(c.lookup(), cel::CelType::Int()));
+  HM_ASSIGN_OR_ASSERT(v, m.Get(c.lookup(), celwasm::api::CelType::Int()));
   if (c.expect_hit) {
-    ASSERT_EQ(v.kind(), cel::Value::Kind::kInt) << c.name;
+    ASSERT_EQ(v.kind(), celwasm::api::Value::Kind::kInt) << c.name;
     EXPECT_EQ(*v.AsInt(), c.value) << c.name;
   } else {
-    ASSERT_EQ(v.kind(), cel::Value::Kind::kError) << c.name;
+    ASSERT_EQ(v.kind(), celwasm::api::Value::Kind::kError) << c.name;
     HM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-    EXPECT_EQ(e->code, cel::ErrorCode::kKeyNotFound) << c.name;
+    EXPECT_EQ(e->code, celwasm::ErrorCode::kKeyNotFound) << c.name;
   }
 }
 
@@ -125,10 +134,10 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(CrossTypeCase{
                           "int_stored_uint_lookup_hits",
                           +[]() {
-                            return cel::Value::Int(42);
+                            return celwasm::api::Value::Int(42);
                           },
                           +[]() {
-                            return cel::Value::Uint(42);
+                            return celwasm::api::Value::Uint(42);
                           },
                           true,
                           420,
@@ -136,10 +145,10 @@ INSTANTIATE_TEST_SUITE_P(
                       CrossTypeCase{
                           "uint_stored_int_lookup_hits",
                           +[]() {
-                            return cel::Value::Uint(7);
+                            return celwasm::api::Value::Uint(7);
                           },
                           +[]() {
-                            return cel::Value::Int(7);
+                            return celwasm::api::Value::Int(7);
                           },
                           true,
                           700,
@@ -147,10 +156,10 @@ INSTANTIATE_TEST_SUITE_P(
                       CrossTypeCase{
                           "negative_int_never_matches_uint",
                           +[]() {
-                            return cel::Value::Uint(0);
+                            return celwasm::api::Value::Uint(0);
                           },
                           +[]() {
-                            return cel::Value::Int(-1);
+                            return celwasm::api::Value::Int(-1);
                           },
                           false,
                           0,
@@ -158,10 +167,10 @@ INSTANTIATE_TEST_SUITE_P(
                       CrossTypeCase{
                           "uint_above_int_max_never_matches_int",
                           +[]() {
-                            return cel::Value::Uint(uint64_t{1} << 63);
+                            return celwasm::api::Value::Uint(uint64_t{1} << 63);
                           },
                           +[]() {
-                            return cel::Value::Int(INT64_MAX);
+                            return celwasm::api::Value::Int(INT64_MAX);
                           },
                           false,
                           0,
@@ -173,27 +182,34 @@ INSTANTIATE_TEST_SUITE_P(
 // ════════ ContainsKey, ForEach, edge cases ════════
 
 TEST(HostMapTest, ContainsKey) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(1), cel::Value::Int(10));
-  entries.emplace_back(cel::Value::String("k"), cel::Value::Int(20));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(1),
+                       celwasm::api::Value::Int(10));
+  entries.emplace_back(celwasm::api::Value::String("k"),
+                       celwasm::api::Value::Int(20));
   HostMap m(std::move(entries));
-  EXPECT_TRUE(m.ContainsKey(cel::Value::Int(1)));
-  EXPECT_TRUE(m.ContainsKey(cel::Value::String("k")));
-  EXPECT_TRUE(m.ContainsKey(cel::Value::Uint(1)));  // cross-type
-  EXPECT_FALSE(m.ContainsKey(cel::Value::Int(999)));
-  EXPECT_FALSE(m.ContainsKey(cel::Value::Double(1.0)));  // invalid kind
-  EXPECT_FALSE(m.ContainsKey(cel::Value::Int(-1)));      // never matches uint
+  EXPECT_TRUE(m.ContainsKey(celwasm::api::Value::Int(1)));
+  EXPECT_TRUE(m.ContainsKey(celwasm::api::Value::String("k")));
+  EXPECT_TRUE(m.ContainsKey(celwasm::api::Value::Uint(1)));  // cross-type
+  EXPECT_FALSE(m.ContainsKey(celwasm::api::Value::Int(999)));
+  EXPECT_FALSE(
+      m.ContainsKey(celwasm::api::Value::Double(1.0)));  // invalid kind
+  EXPECT_FALSE(
+      m.ContainsKey(celwasm::api::Value::Int(-1)));  // never matches uint
 }
 
 TEST(HostMapTest, ForEachVisitsAllInOrder) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(1), cel::Value::Int(10));
-  entries.emplace_back(cel::Value::Int(2), cel::Value::Int(20));
-  entries.emplace_back(cel::Value::Int(3), cel::Value::Int(30));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(1),
+                       celwasm::api::Value::Int(10));
+  entries.emplace_back(celwasm::api::Value::Int(2),
+                       celwasm::api::Value::Int(20));
+  entries.emplace_back(celwasm::api::Value::Int(3),
+                       celwasm::api::Value::Int(30));
   HostMap m(std::move(entries));
   std::vector<int64_t> seen_keys;
   std::vector<int64_t> seen_vals;
-  m.ForEach([&](const cel::Value& k, const cel::Value& v) {
+  m.ForEach([&](const celwasm::api::Value& k, const celwasm::api::Value& v) {
     seen_keys.push_back(*k.AsInt());
     seen_vals.push_back(*v.AsInt());
   });
@@ -204,11 +220,12 @@ TEST(HostMapTest, ForEachVisitsAllInOrder) {
 TEST(HostMapTest, EmptyMap) {
   HostMap m({});
   EXPECT_EQ(m.Size(), 0u);
-  EXPECT_FALSE(m.ContainsKey(cel::Value::Int(1)));
-  HM_ASSIGN_OR_ASSERT(v, m.Get(cel::Value::Int(1), cel::CelType::Int()));
+  EXPECT_FALSE(m.ContainsKey(celwasm::api::Value::Int(1)));
+  HM_ASSIGN_OR_ASSERT(
+      v, m.Get(celwasm::api::Value::Int(1), celwasm::api::CelType::Int()));
   HM_ASSIGN_OR_ASSERT(e, v.ErrorInfo());
-  EXPECT_EQ(e->code, cel::ErrorCode::kKeyNotFound);
-  m.ForEach([](const cel::Value&, const cel::Value&) {
+  EXPECT_EQ(e->code, celwasm::ErrorCode::kKeyNotFound);
+  m.ForEach([](const celwasm::api::Value&, const celwasm::api::Value&) {
     FAIL() << "ForEach on empty map should not invoke visitor";
   });
 }
@@ -216,14 +233,18 @@ TEST(HostMapTest, EmptyMap) {
 // langdef: bool(true) and int(1) are distinct keys — kinds don't
 // compare across the bool / int boundary.
 TEST(HostMapTest, BoolAndIntOneAreDistinct) {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Bool(true), cel::Value::Int(900));
-  entries.emplace_back(cel::Value::Int(1), cel::Value::Int(800));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Bool(true),
+                       celwasm::api::Value::Int(900));
+  entries.emplace_back(celwasm::api::Value::Int(1),
+                       celwasm::api::Value::Int(800));
   HostMap m(std::move(entries));
   EXPECT_EQ(m.Size(), 2u);
-  HM_ASSIGN_OR_ASSERT(vb, m.Get(cel::Value::Bool(true), cel::CelType::Int()));
+  HM_ASSIGN_OR_ASSERT(
+      vb, m.Get(celwasm::api::Value::Bool(true), celwasm::api::CelType::Int()));
   EXPECT_EQ(*vb.AsInt(), 900);
-  HM_ASSIGN_OR_ASSERT(vi, m.Get(cel::Value::Int(1), cel::CelType::Int()));
+  HM_ASSIGN_OR_ASSERT(
+      vi, m.Get(celwasm::api::Value::Int(1), celwasm::api::CelType::Int()));
   EXPECT_EQ(*vi.AsInt(), 800);
 }
 

@@ -41,7 +41,7 @@
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 using ::celwasm::AttributePattern;
 
@@ -1593,4 +1593,4 @@ TEST_F(MessageEqualityE2ETest, MessageReflexiveEquality) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

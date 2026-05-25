@@ -8,7 +8,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 TEST(ActivationTest, UnboundNameReturnsNullptr) {
@@ -39,8 +39,9 @@ TEST(ActivationTest, BindOverwritesPrior) {
 
 TEST(ActivationTest, BindReturnsReferenceForFluency) {
   Activation act;
-  act.Bind("x", Value::Int(1)).Bind("y", Value::String("hi")).Bind(
-      "z", Value::Bool(true));
+  act.Bind("x", Value::Int(1))
+      .Bind("y", Value::String("hi"))
+      .Bind("z", Value::Bool(true));
   EXPECT_NE(act.Find("x"), nullptr);
   EXPECT_NE(act.Find("y"), nullptr);
   EXPECT_NE(act.Find("z"), nullptr);
@@ -50,9 +51,9 @@ TEST(ActivationDeathTest, BindLazyFiresCheckUntilM2) {
   Activation act;
   EXPECT_DEATH(
       {
-        act.BindLazy(
-            "x",
-            []() -> absl::StatusOr<Value> { return Value::Int(1); });
+        act.BindLazy("x", []() -> absl::StatusOr<Value> {
+          return Value::Int(1);
+        });
       },
       "stub until M2");
 }
@@ -61,11 +62,12 @@ TEST(ActivationDeathTest, OverrideFunctionFiresCheckUntilM5) {
   Activation act;
   EXPECT_DEATH(
       {
-        act.OverrideFunction(
-            "foo", [](auto) -> Value { return Value::Null(); });
+        act.OverrideFunction("foo", [](auto) -> Value {
+          return Value::Null();
+        });
       },
       "stub until M5");
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

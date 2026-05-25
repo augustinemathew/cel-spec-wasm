@@ -4,9 +4,9 @@
 //
 // Two distinct concerns live here:
 //
-//   1. `cel::Value` factories for the standard error shapes the
+//   1. `celwasm::api::Value` factories for the standard error shapes the
 //      host emits inline (FieldNotFound, KeyTypeMismatch, etc.).
-//      These return a `cel::Value::Error` payload that travels up
+//      These return a `celwasm::api::Value::Error` payload that travels up
 //      through the public API surface.
 //
 //   2. Wire-format encoders that write CEL_BOOL / CEL_INT /
@@ -33,37 +33,37 @@
 
 namespace celwasm {
 
-// ──── cel::Value error factories ─────────────────────────────────
+// ──── celwasm::api::Value error factories ─────────────────────────────────
 
 // `Value::Error(kFieldNotFound, name)` — emitted by proto-field
 // readers when the requested field number / name doesn't resolve
 // against the message's descriptor.
-cel::Value FieldNotFound(absl::string_view name);
+celwasm::api::Value FieldNotFound(absl::string_view name);
 
-// Generic error factory.  Caller picks the `cel::ErrorCode` and
+// Generic error factory.  Caller picks the `celwasm::ErrorCode` and
 // formats the message.  Every other factory in this header is a
 // pinned-message specialisation of this.
-cel::Value MakeError(cel::ErrorCode code, std::string message);
+celwasm::api::Value MakeError(celwasm::ErrorCode code, std::string message);
 
 // `Value::Error(kTypeMismatch, "map key kind is not bool/int/uint/string")`.
 // Used by host-side map ops when the requested key kind violates the
 // langdef map-key constraint.
-cel::Value KeyTypeMismatch();
+celwasm::api::Value KeyTypeMismatch();
 
 // `Value::Error(kKeyNotFound, "no such key")`.  Used by map.Get when
 // the key kind is valid but the key isn't present.
-cel::Value NoSuchKey();
+celwasm::api::Value NoSuchKey();
 
 // `Value::Error(kIndexOutOfBounds, "index N out of range [0, M)")`.
-cel::Value IndexOutOfBounds(std::size_t index, std::size_t count);
+celwasm::api::Value IndexOutOfBounds(std::size_t index, std::size_t count);
 
 // ──── Wire-format error encoding ─────────────────────────────────
 
-// Map a host-side `cel::ErrorCode` to the wire-level `CEL_ERR_*`
+// Map a host-side `celwasm::ErrorCode` to the wire-level `CEL_ERR_*`
 // constant carried in `CelValue.payload.err`.  Both catalogues
 // extend independently; unrecognised host-side codes surface as
 // `CEL_ERR_TYPE_MISMATCH` rather than dropping silently.
-uint32_t WireErrorCode(cel::ErrorCode c);
+uint32_t WireErrorCode(celwasm::ErrorCode c);
 
 // Write a CEL_ERROR slot with the supplied wire code to `out_slot`.
 void WriteWireError(uint32_t wire_code, uint32_t out_slot, MemoryView& mem);

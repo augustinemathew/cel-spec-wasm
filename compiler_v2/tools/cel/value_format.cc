@@ -23,7 +23,7 @@ namespace celwasm::tools::cel {
 
 namespace {
 
-using ::cel::Value;
+using ::celwasm::api::Value;
 
 absl::StatusOr<std::string> ToCelLiteral(const Value& v);
 
@@ -32,11 +32,21 @@ std::string QuoteString(absl::string_view s) {
   std::string out = "\"";
   for (const char ch : s) {
     switch (ch) {
-      case '\\': out += "\\\\"; break;
-      case '"':  out += "\\\""; break;
-      case '\n': out += "\\n"; break;
-      case '\t': out += "\\t"; break;
-      case '\r': out += "\\r"; break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
           absl::StrAppendFormat(&out, "\\x%02x",
@@ -70,7 +80,7 @@ absl::StatusOr<std::string> FormatListBacking(
   bool first = true;
   absl::Status err = absl::OkStatus();
   for (std::size_t i = 0; i < l.Size(); ++i) {
-    auto e = l.At(i, ::cel::CelType{});
+    auto e = l.At(i, ::celwasm::api::CelType{});
     if (!e.ok()) {
       err = e.status();
       break;
@@ -122,9 +132,9 @@ absl::StatusOr<std::string> MessageToTextproto(
   google::protobuf::TextFormat::Printer p;
   p.SetExpandAny(true);
   if (!p.PrintToString(m, &out)) {
-    return absl::InternalError(absl::StrCat(
-        "TextFormat::PrintToString failed for message ",
-        m.GetDescriptor()->full_name()));
+    return absl::InternalError(
+        absl::StrCat("TextFormat::PrintToString failed for message ",
+                     m.GetDescriptor()->full_name()));
   }
   return out;
 }
@@ -136,9 +146,9 @@ absl::StatusOr<std::string> MessageToJson(const google::protobuf::Message& m) {
   opts.preserve_proto_field_names = true;
   auto s = google::protobuf::util::MessageToJsonString(m, &out, opts);
   if (!s.ok()) {
-    return absl::InternalError(absl::StrCat(
-        "MessageToJsonString failed for message ",
-        m.GetDescriptor()->full_name(), ": ", s.message()));
+    return absl::InternalError(
+        absl::StrCat("MessageToJsonString failed for message ",
+                     m.GetDescriptor()->full_name(), ": ", s.message()));
   }
   return out;
 }
@@ -227,13 +237,13 @@ absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
     case Value::Kind::kBytes:
       return QuoteBytes(*v.AsBytes());
     case Value::Kind::kDuration:
-      return absl::StrCat("duration(\"",
-                           absl::FormatDuration(*v.AsDuration()), "\")");
+      return absl::StrCat("duration(\"", absl::FormatDuration(*v.AsDuration()),
+                          "\")");
     case Value::Kind::kTimestamp:
       return absl::StrCat("timestamp(\"",
-                           absl::FormatTime(absl::RFC3339_full,
-                                            *v.AsTimestamp(), absl::UTCTimeZone()),
-                           "\")");
+                          absl::FormatTime(absl::RFC3339_full, *v.AsTimestamp(),
+                                           absl::UTCTimeZone()),
+                          "\")");
     case Value::Kind::kType:
       return absl::StrCat("type(", *v.AsType(), ")");
     case Value::Kind::kList: {
@@ -263,9 +273,8 @@ absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
     case Value::Kind::kError: {
       auto e = v.ErrorInfo();
       if (!e.ok()) return absl::StrCat("error: <opaque>");
-      return absl::StrCat("error: ",
-                           ::cel::ErrorCodeName((*e)->code),
-                           " ", (*e)->message);
+      return absl::StrCat("error: ", ::celwasm::ErrorCodeName((*e)->code), " ",
+                          (*e)->message);
     }
   }
   ABSL_CHECK(false) << "ToCelLiteral: unhandled Value::Kind = "
@@ -276,12 +285,14 @@ absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
 
 absl::string_view FormatName(Format f) {
   switch (f) {
-    case Format::kTextproto: return "textproto";
-    case Format::kJson:      return "json";
-    case Format::kCel:       return "cel";
+    case Format::kTextproto:
+      return "textproto";
+    case Format::kJson:
+      return "json";
+    case Format::kCel:
+      return "cel";
   }
-  ABSL_CHECK(false) << "FormatName: unhandled Format = "
-                    << static_cast<int>(f);
+  ABSL_CHECK(false) << "FormatName: unhandled Format = " << static_cast<int>(f);
 }
 
 absl::StatusOr<Format> ParseFormatName(absl::string_view name) {
@@ -290,8 +301,8 @@ absl::StatusOr<Format> ParseFormatName(absl::string_view name) {
   }
   if (name == "json") return Format::kJson;
   if (name == "cel") return Format::kCel;
-  return absl::InvalidArgumentError(absl::StrCat(
-      "--format: expected textproto|json|cel, got `", name, "`"));
+  return absl::InvalidArgumentError(
+      absl::StrCat("--format: expected textproto|json|cel, got `", name, "`"));
 }
 
 absl::StatusOr<std::string> FormatScalar(const Value& v) {
@@ -323,9 +334,15 @@ absl::StatusOr<std::string> FormatMessage(const Value& v,
     }
     absl::StatusOr<std::string> body;
     switch (effective[i]) {
-      case Format::kTextproto: body = MessageToTextproto(*m); break;
-      case Format::kJson:      body = MessageToJson(*m); break;
-      case Format::kCel:       body = MessageToCelLiteral(*m); break;
+      case Format::kTextproto:
+        body = MessageToTextproto(*m);
+        break;
+      case Format::kJson:
+        body = MessageToJson(*m);
+        break;
+      case Format::kCel:
+        body = MessageToCelLiteral(*m);
+        break;
     }
     if (!body.ok()) return body.status();
     out += *body;

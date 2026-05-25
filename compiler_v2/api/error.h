@@ -13,7 +13,7 @@
 
 #include "absl/strings/string_view.h"
 
-namespace cel {
+namespace celwasm {
 
 // Extensible error-code catalogue.  Numeric values are stable on
 // the wire and MUST mirror `runtime/cel_data.h::CEL_ERR_*` so a
@@ -64,6 +64,6 @@ struct ErrorPayload {
   uint32_t expr_id = 0;
 };
 
-}  // namespace cel
+}  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_V2_API_ERROR_H_

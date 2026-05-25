@@ -11,7 +11,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 using ::celwasm::AttributeId;
 
@@ -174,4 +174,4 @@ TEST(ValueTest, CopyableAndMovable) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

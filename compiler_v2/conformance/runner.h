@@ -1,9 +1,9 @@
 // Conformance harness for compiler_v2.
 //
 // Wraps a single upstream `cel.expr.conformance.test.SimpleTest` row
-// as a compiler_v2 pipeline invocation (`cel::Compiler::Compile` →
-// `cel::Engine::Plan` → `cel::Instance::Eval`) and compares the
-// decoded `cel::Value` against the test's `cel.expr.Value` matcher.
+// as a compiler_v2 pipeline invocation (`celwasm::api::Compiler::Compile` →
+// `celwasm::api::Engine::Plan` → `celwasm::api::Instance::Eval`) and compares the
+// decoded `celwasm::api::Value` against the test's `cel.expr.Value` matcher.
 //
 // Every row resolves to exactly one of three outcomes:
 //
@@ -117,25 +117,26 @@ struct Result {
 // checked separately in `RunOne` and route to their own categories.
 bool IsInEnvelope(const cel::expr::conformance::test::SimpleTest& t);
 
-// Compare a decoded `cel::Value` against a proto matcher.  Returns
+// Compare a decoded `celwasm::api::Value` against a proto matcher.  Returns
 // `OkStatus` on equality, `FailedPrecondition` with a kind/value
 // diff on mismatch, `InvalidArgument` if `want`'s kind has no
 // comparator (caller should pre-screen via `IsInEnvelope`).
-absl::Status CompareValue(const cel::Value& got, const cel::expr::Value& want);
+absl::Status CompareValue(const celwasm::api::Value& got,
+                          const cel::expr::Value& want);
 
-// Compare a `cel::Value` against an unknown-set matcher.  OK iff
+// Compare a `celwasm::api::Value` against an unknown-set matcher.  OK iff
 // `got.IsUnknown()` — the matcher's `exprs` field carries AST IDs
 // the harness can't currently round-trip through `AttributeId`
 // (future work — see README).
-absl::Status CompareUnknown(const cel::Value& got);
+absl::Status CompareUnknown(const celwasm::api::Value& got);
 
-// Compare a `cel::Value` against an `eval_error` / `any_eval_errors`
+// Compare a `celwasm::api::Value` against an `eval_error` / `any_eval_errors`
 // matcher.  CEL errors are values (langdef §"Error propagation");
 // the matcher passes iff `got.IsError()`.  Per cel-cpp's upstream
 // `conformance/run.cc` semantics, message-level matching is NOT
 // part of conformance — any error matches any non-empty matcher at
 // the kind level.  Kind mismatch is the only failure path.
-absl::Status CompareEvalError(const cel::Value& got,
+absl::Status CompareEvalError(const celwasm::api::Value& got,
                               const cel::expr::ErrorSet& want);
 
 // Run one test end-to-end.  Never throws; always returns a `Result`.
@@ -143,7 +144,7 @@ absl::Status CompareEvalError(const cel::Value& got,
 // when the row declares variables and is otherwise served from a
 // process-wide shared default.
 Result RunOne(const cel::expr::conformance::test::SimpleTest& t,
-              const cel::Engine& engine);
+              const celwasm::api::Engine& engine);
 
 // Load a `SimpleTestFile` from a workspace-relative textproto path
 // (runfiles lookup handled by the caller — we just `ifstream` it).

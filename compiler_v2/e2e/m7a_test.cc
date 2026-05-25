@@ -58,10 +58,8 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "absl/strings/string_view.h"
 #include "absl/strings/str_cat.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "absl/strings/string_view.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -71,11 +69,13 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
+#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -244,10 +244,10 @@ class AnyUnpackE2ETest : public ::testing::Test {};
 TEST_F(AnyUnpackE2ETest, ReadAnyFieldReturnsUnwrappedTypedValue) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 42}}.single_any.i32 == 42");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 42}}.single_any.i32 == 42");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -259,8 +259,7 @@ TEST_F(AnyUnpackE2ETest, ReadUnsetAnyFieldReturnsNull) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
-      CompilePlan(*compiler,
-                  "celwasm.testdata.HostMsg3{}.single_any == null");
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{}.single_any == null");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -284,10 +283,10 @@ TEST_F(AnyUnpackE2ETest, ChainedSelectOnUnpackedMessage) {
 TEST_F(AnyUnpackE2ETest, ReadAnyFieldUnwrapsStringField) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{s: 'abc'}}.single_any.s == 'abc'");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{s: 'abc'}}.single_any.s == 'abc'");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -296,10 +295,9 @@ TEST_F(AnyUnpackE2ETest, ReadAnyFieldUnwrapsStringField) {
 TEST_F(AnyUnpackE2ETest, HasOnPackedSingularAnyIsTrue) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "has(celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any)");
+  auto instance = CompilePlan(*compiler,
+                              "has(celwasm.testdata.HostMsg3{single_any: "
+                              "celwasm.testdata.HostMsg3{i32: 1}}.single_any)");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -307,9 +305,8 @@ TEST_F(AnyUnpackE2ETest, HasOnPackedSingularAnyIsTrue) {
 TEST_F(AnyUnpackE2ETest, HasOnUnsetSingularAnyIsFalse) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "has(celwasm.testdata.HostMsg3{}.single_any) == false");
+  auto instance = CompilePlan(
+      *compiler, "has(celwasm.testdata.HostMsg3{}.single_any) == false");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -336,33 +333,32 @@ class AnyEqualityE2ETest : public ::testing::Test {};
 TEST_F(AnyEqualityE2ETest, AnyFieldReadEqualsMatchingTypedMessage) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
-      "celwasm.testdata.HostMsg3{i32: 1}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+                  "celwasm.testdata.HostMsg3{i32: 1}");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 TEST_F(AnyEqualityE2ETest, AnyFieldReadUnequalToMismatchingTypedMessage) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
-      "celwasm.testdata.HostMsg3{i32: 2}");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+                  "celwasm.testdata.HostMsg3{i32: 2}");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), false);
 }
 
 TEST_F(AnyEqualityE2ETest, TypedMessageEqualsAnyFieldReadSymmetric) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{i32: 1} == "
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{i32: 1} == "
+                              "celwasm.testdata.HostMsg3{single_any: "
+                              "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -371,12 +367,12 @@ TEST_F(AnyEqualityE2ETest, TypedMessageEqualsAnyFieldReadSymmetric) {
 TEST_F(AnyEqualityE2ETest, TwoAnyFieldReadsEqual) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 1}}.single_any == "
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 1}}.single_any");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -389,12 +385,11 @@ TEST_F(AnyEqualityE2ETest, TwoAnyFieldReadsEqual) {
 TEST_F(AnyEqualityE2ETest, OuterMessageEqualityCarryingPackedAny) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}} == "
-      "celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{single_any: "
+                              "celwasm.testdata.HostMsg3{i32: 1}} == "
+                              "celwasm.testdata.HostMsg3{single_any: "
+                              "celwasm.testdata.HostMsg3{i32: 1}}");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -403,9 +398,8 @@ TEST_F(AnyEqualityE2ETest, OuterMessageEqualityCarryingPackedAny) {
 TEST_F(AnyEqualityE2ETest, UnsetAnyEqualsNull) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{}.single_any == null");
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{}.single_any == null");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -493,11 +487,11 @@ class AnyTypeOfE2ETest : public ::testing::Test {};
 TEST_F(AnyTypeOfE2ETest, TypeOfUnpackedAnyReturnsUnwrappedFqn) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "type(celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 1}}.single_any) == "
-      "celwasm.testdata.HostMsg3");
+  auto instance =
+      CompilePlan(*compiler,
+                  "type(celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 1}}.single_any) == "
+                  "celwasm.testdata.HostMsg3");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -508,10 +502,10 @@ TEST_F(AnyTypeOfE2ETest, TypeOfUnpackedAnyReturnsUnwrappedFqn) {
 TEST_F(AnyTypeOfE2ETest, TypeOfDirectlyConstructedAnyReturnsAny) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "type(google.protobuf.Any{type_url: 'type.googleapis.com/X', "
-      "value: b''}) == google.protobuf.Any");
+  auto instance =
+      CompilePlan(*compiler,
+                  "type(google.protobuf.Any{type_url: 'type.googleapis.com/X', "
+                  "value: b''}) == google.protobuf.Any");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -541,9 +535,8 @@ Value EvalReject(absl::string_view literal_any_inline) {
   // is a field-read of `single_any` (Any-typed).  The unwrap parses
   // the literal Any's type_url + value against the field's pool.
   auto instance = CompilePlan(
-      *compiler,
-      absl::StrCat("celwasm.testdata.HostMsg3{single_any: ",
-                   literal_any_inline, "}.single_any.i32"));
+      *compiler, absl::StrCat("celwasm.testdata.HostMsg3{single_any: ",
+                              literal_any_inline, "}.single_any.i32"));
   return EvalOk(instance, Activation{});
 }
 
@@ -564,8 +557,8 @@ TEST_F(AnyRejectE2ETest, ReadAnyWithEmptyTypeUrlIsNull) {
 // Malformed type_url with no slash — FQN is the whole string, pool
 // lookup fails → kFieldNotFound.
 TEST_F(AnyRejectE2ETest, ReadAnyWithMalformedTypeUrlIsError) {
-  Value v = EvalReject(
-      "google.protobuf.Any{type_url: 'not_a_url', value: b''}");
+  Value v =
+      EvalReject("google.protobuf.Any{type_url: 'not_a_url', value: b''}");
   auto err = v.ErrorInfo();
   ASSERT_THAT(err, IsOk());
   EXPECT_EQ((*err)->code, ErrorCode::kFieldNotFound);
@@ -606,11 +599,11 @@ TEST_F(AnyRejectE2ETest, NonGoogleApisPrefixIsAccepted) {
   // through-cel Any and verify it unwraps via the prefix-stripped
   // FQN.  Direct construction with a non-googleapis prefix is
   // possible because the prefix isn't enforced.
-  auto instance = CompilePlan(
-      *compiler,
-      "type(celwasm.testdata.HostMsg3{single_any: "
-      "celwasm.testdata.HostMsg3{i32: 7}}.single_any) == "
-      "celwasm.testdata.HostMsg3");
+  auto instance =
+      CompilePlan(*compiler,
+                  "type(celwasm.testdata.HostMsg3{single_any: "
+                  "celwasm.testdata.HostMsg3{i32: 7}}.single_any) == "
+                  "celwasm.testdata.HostMsg3");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -704,9 +697,8 @@ TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralTypeUrlReadRoundTrips) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
-      R"(value: b'hello'}.type_url == 'type.googleapis.com/X')");
+      *compiler, R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
+                 R"(value: b'hello'}.type_url == 'type.googleapis.com/X')");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
@@ -714,11 +706,10 @@ TEST_F(AnyLiteralRoundTripE2ETest, DirectAnyLiteralValueReadRoundTrips) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
-      *compiler,
-      R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
-      R"(value: b'hello'}.value == b'hello')");
+      *compiler, R"(google.protobuf.Any{type_url: 'type.googleapis.com/X', )"
+                 R"(value: b'hello'}.value == b'hello')");
   EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

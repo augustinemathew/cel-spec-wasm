@@ -65,7 +65,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -858,4 +858,4 @@ TEST_F(DeferredTimestampE2ETest, DurationFromString) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

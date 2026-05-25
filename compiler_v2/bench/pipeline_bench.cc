@@ -1,14 +1,14 @@
 // End-to-end pipeline wall-clock benches — deliverable B of the
-// post-M10 bench suite.  Times the public `cel::Compiler::Compile` +
-// `cel::Engine::Plan` + `cel::Instance::Eval` surface on a
+// post-M10 bench suite.  Times the public `celwasm::api::Compiler::Compile` +
+// `celwasm::api::Engine::Plan` + `celwasm::api::Instance::Eval` surface on a
 // representative AST-kind matrix.
 //
 // Setup discipline (mirrors the e2e fixtures in
 // `compiler_v2/e2e/m{2,4,5,7,9,10}_test.cc`):
-//   - One shared `cel::Engine` per process (`GlobalEngine()`) — its
+//   - One shared `celwasm::api::Engine` per process (`GlobalEngine()`) — its
 //     construction cost is amortised across thousands of Plans / Evals
 //     in real use, and our bench shouldn't double-charge it.
-//   - One `cel::Compiler` per benchmark — declared variables matter for
+//   - One `celwasm::api::Compiler` per benchmark — declared variables matter for
 //     compile-time, but constructing the compiler itself isn't the
 //     interesting number.
 //
@@ -42,7 +42,6 @@
 
 #include "absl/log/absl_check.h"
 #include "benchmark/benchmark.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/activation.h"
 #include "compiler_v2/api/compiler.h"
 #include "compiler_v2/api/engine.h"
@@ -50,9 +49,10 @@
 #include "compiler_v2/api/program.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 // Force generated-pool registration of descriptors used below.
@@ -527,6 +527,6 @@ void BM_Eval_TwentyTermCompare_Opt2(benchmark::State& state) {
 BENCHMARK(BM_Eval_TwentyTermCompare_Opt2);
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api
 
 BENCHMARK_MAIN();

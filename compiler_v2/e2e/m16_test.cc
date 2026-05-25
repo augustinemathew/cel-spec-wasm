@@ -56,7 +56,7 @@
 #include "compiler_v2/api/value.h"
 #include "gtest/gtest.h"
 
-namespace cel {
+namespace celwasm::api {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -227,7 +227,8 @@ TEST_F(MinMaxE2ETest, MinMaxUintBoundary) {
 }
 
 TEST_F(MinMaxE2ETest, MinMaxDoubleBoundary) {
-  EXPECT_DOUBLE_EQ(EvalDouble("math.greatest(1.797693e308, 1.5)"), 1.797693e308);
+  EXPECT_DOUBLE_EQ(EvalDouble("math.greatest(1.797693e308, 1.5)"),
+                   1.797693e308);
   EXPECT_DOUBLE_EQ(EvalDouble("math.least(-1.797693e308, 1.5)"), -1.797693e308);
 }
 
@@ -326,23 +327,23 @@ TEST_F(MacroExpansionE2ETest, TernaryMixedTypeCollapse) {
 }
 
 TEST_F(MacroExpansionE2ETest, QuaternaryMixedCollapse) {
-  EXPECT_TRUE(EvalBool(
-      "math.greatest(5.4, 10, 3u, -5.0, 9223372036854775807) == "
-      "9223372036854775807"));
+  EXPECT_TRUE(
+      EvalBool("math.greatest(5.4, 10, 3u, -5.0, 9223372036854775807) == "
+               "9223372036854775807"));
   EXPECT_TRUE(
       EvalBool("math.least(5.4, 10, 3u, -5.0, 9223372036854775807) == -5.0"));
-  EXPECT_TRUE(EvalBool(
-      "math.greatest(5.4, 10, 3u, -5.0, 18446744073709551615u) == "
-      "18446744073709551615u"));
+  EXPECT_TRUE(
+      EvalBool("math.greatest(5.4, 10, 3u, -5.0, 18446744073709551615u) == "
+               "18446744073709551615u"));
 }
 
 TEST_F(MacroExpansionE2ETest, DynListLiteral) {
   EXPECT_TRUE(EvalBool(
       "math.greatest([dyn(5.4), dyn(10), dyn(3u), dyn(-5.0), dyn(3.5)]) "
       "== 10"));
-  EXPECT_TRUE(EvalBool(
-      "math.least([dyn(5.4), dyn(10), dyn(3u), dyn(-5.0), dyn(3.5)]) "
-      "== -5.0"));
+  EXPECT_TRUE(
+      EvalBool("math.least([dyn(5.4), dyn(10), dyn(3u), dyn(-5.0), dyn(3.5)]) "
+               "== -5.0"));
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -563,4 +564,4 @@ TEST_F(ErrorE2ETest, ShiftRightNegativeOffset) {
 }
 
 }  // namespace
-}  // namespace cel
+}  // namespace celwasm::api

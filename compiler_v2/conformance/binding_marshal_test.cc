@@ -109,7 +109,7 @@ TEST(ValueFromProto, EnumDecodesToInt) {
   v.mutable_enum_value()->set_value(7);
   auto out = ValueFromProto(v);
   ASSERT_TRUE(out.ok()) << out.status();
-  ASSERT_EQ(out->kind(), cel::Value::Kind::kInt);
+  ASSERT_EQ(out->kind(), celwasm::api::Value::Kind::kInt);
   EXPECT_EQ(*out->AsInt(), 7);
 }
 
@@ -120,7 +120,7 @@ TEST(ValueFromProto, TypeProducesValueType) {
   v.set_type_value("int");
   auto out_or = ValueFromProto(v);
   ASSERT_THAT(out_or, IsOk());
-  ASSERT_EQ(out_or->kind(), cel::Value::Kind::kType);
+  ASSERT_EQ(out_or->kind(), celwasm::api::Value::Kind::kType);
   ASSERT_THAT(out_or->AsType(), IsOk());
   EXPECT_EQ(*out_or->AsType(), "int");
 }
@@ -234,7 +234,7 @@ TEST(PopulateActivation, ScalarsBoundCorrectly) {
         }
       )pb",
       &t));
-  cel::Activation act;
+  celwasm::api::Activation act;
   ASSERT_THAT(PopulateActivation(t, act), IsOk());
   ASSERT_NE(act.Find("b"), nullptr);
   EXPECT_EQ(*act.Find("b")->AsBool(), true);
@@ -252,7 +252,7 @@ TEST(PopulateActivation, UnknownBindingIsUnimplemented) {
              value { unknown { exprs: 1 } }
            })pb",
       &t));
-  cel::Activation act;
+  celwasm::api::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
 }
@@ -265,7 +265,7 @@ TEST(PopulateActivation, ErrorBindingIsUnimplemented) {
              value { error { errors {} } }
            })pb",
       &t));
-  cel::Activation act;
+  celwasm::api::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
 }
@@ -278,7 +278,7 @@ TEST(PopulateActivation, AggregateValueBindingIsUnimplemented) {
              value { value { list_value {} } }
            })pb",
       &t));
-  cel::Activation act;
+  celwasm::api::Activation act;
   EXPECT_THAT(PopulateActivation(t, act),
               StatusIs(absl::StatusCode::kUnimplemented));
 }

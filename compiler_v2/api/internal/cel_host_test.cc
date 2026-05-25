@@ -53,12 +53,13 @@ using ::celwasm::testdata::HostMsg3;
     }();
 
 // Dummy — ProtoBacking reads via reflection, not the hint.
-const cel::CelType& IgnoredType() {
-  static const auto& kAny = *new cel::CelType(cel::CelType::Int());
+const celwasm::api::CelType& IgnoredType() {
+  static const auto& kAny =
+      *new celwasm::api::CelType(celwasm::api::CelType::Int());
   return kAny;
 }
 
-const HostMessageBacking* BackingFromValue(const cel::Value& v) {
+const HostMessageBacking* BackingFromValue(const celwasm::api::Value& v) {
   auto b = v.MessageBacking();
   EXPECT_TRUE(b.ok()) << b.status();
   return b.ok() ? *b : nullptr;
@@ -119,7 +120,7 @@ TEST(ProtoBackingReadFieldTest, NestedMessageReturnsSubBacking) {
   ProtoBacking pb(&m);
   auto v = pb.ReadField(17, "inner", IgnoredType());
   ASSERT_THAT(v, IsOk());
-  ASSERT_EQ(v->kind(), cel::Value::Kind::kMessage);
+  ASSERT_EQ(v->kind(), celwasm::api::Value::Kind::kMessage);
   auto inner = BackingFromValue(*v)->ReadField(1, "b", IgnoredType());
   ASSERT_THAT(inner, IsOk());
   EXPECT_EQ(*inner->AsBool(), true);
@@ -155,7 +156,7 @@ TEST(ProtoBackingReadFieldTest, RepeatedReturnsHostList) {
   ProtoBacking pb(&m);
   auto v = pb.ReadField(18, "rep_i32", IgnoredType());
   ASSERT_THAT(v, IsOk());
-  EXPECT_EQ(v->kind(), cel::Value::Kind::kList);
+  EXPECT_EQ(v->kind(), celwasm::api::Value::Kind::kList);
   auto b = v->ListBacking();
   ASSERT_THAT(b, IsOk());
   EXPECT_EQ((*b)->Size(), 2u);
@@ -168,7 +169,7 @@ TEST(ProtoBackingReadFieldTest, UnknownFieldReturnsCelError) {
   ASSERT_THAT(v, IsOk());
   auto err = v->ErrorInfo();
   ASSERT_THAT(err, IsOk());
-  EXPECT_EQ((*err)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
 }
 
 TEST(ProtoBackingReadFieldTest, FieldNumberZeroFallsBackToName) {
@@ -187,7 +188,7 @@ TEST(ProtoBackingReadFieldTest, FieldNumberZeroUnknownNameIsFieldNotFound) {
   ASSERT_THAT(v, IsOk());
   auto err = v->ErrorInfo();
   ASSERT_THAT(err, IsOk());
-  EXPECT_EQ((*err)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
 }
 
 TEST(ProtoBackingHasFieldTest, Proto3Presence) {
@@ -221,7 +222,7 @@ TEST(ProtoBackingHasFieldTest, Proto2ExplicitPresence) {
 TEST(ValueMessageTest, MessageConstructorWrapsProtoBacking) {
   HostMsg3 m;
   m.set_i32(7);
-  auto v = cel::Value::Message(m);
+  auto v = celwasm::api::Value::Message(m);
   auto field = BackingFromValue(v)->ReadField(2, "i32", IgnoredType());
   ASSERT_THAT(field, IsOk());
   EXPECT_EQ(*field->AsInt(), 7);
@@ -230,12 +231,12 @@ TEST(ValueMessageTest, MessageConstructorWrapsProtoBacking) {
 TEST(ValueMessageTest, HostMessageCarriesSuppliedBackingPointer) {
   HostMsg3 m;
   auto backing = std::make_shared<ProtoBacking>(&m);
-  auto v = cel::Value::HostMessage(backing);
+  auto v = celwasm::api::Value::HostMessage(backing);
   EXPECT_EQ(BackingFromValue(v), backing.get());
 }
 
 TEST(ValueMessageTest, MessageBackingOnNonMessageFails) {
-  auto v = cel::Value::Int(42);
+  auto v = celwasm::api::Value::Int(42);
   EXPECT_EQ(v.MessageBacking().status().code(),
             absl::StatusCode::kInvalidArgument);
 }
@@ -247,14 +248,15 @@ class JsonLikeBacking : public HostMessageBacking {
   explicit JsonLikeBacking(absl::flat_hash_map<std::string, int64_t> fields)
       : fields_(std::move(fields)) {}
 
-  absl::StatusOr<cel::Value> ReadField(int, absl::string_view name,
-                                       const cel::CelType&) const override {
+  absl::StatusOr<celwasm::api::Value> ReadField(
+      int, absl::string_view name,
+      const celwasm::api::CelType&) const override {
     auto it = fields_.find(std::string(name));
     if (it == fields_.end()) {
-      return cel::Value::Error(cel::ErrorPayload{cel::ErrorCode::kFieldNotFound,
-                                                 std::string(name), 0});
+      return celwasm::api::Value::Error(celwasm::ErrorPayload{
+          celwasm::ErrorCode::kFieldNotFound, std::string(name), 0});
     }
-    return cel::Value::Int(it->second);
+    return celwasm::api::Value::Int(it->second);
   }
 
   bool HasField(int, absl::string_view name) const override {
@@ -282,13 +284,13 @@ TEST(JsonLikeBackingTest, MissingFieldReturnsCelError) {
   ASSERT_THAT(v, IsOk());
   auto err = v->ErrorInfo();
   ASSERT_THAT(err, IsOk());
-  EXPECT_EQ((*err)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
 }
 
 TEST(JsonLikeBackingTest, RoundTripsThroughValueHostMessage) {
   auto backing = std::make_shared<JsonLikeBacking>(
       absl::flat_hash_map<std::string, int64_t>{{"n", 99}});
-  auto v = cel::Value::HostMessage(backing);
+  auto v = celwasm::api::Value::HostMessage(backing);
   auto field = BackingFromValue(v)->ReadField(0, "n", IgnoredType());
   ASSERT_THAT(field, IsOk());
   EXPECT_EQ(*field->AsInt(), 99);
@@ -376,12 +378,13 @@ TEST(Layer2AbsorptionTest, ErrorInputPropagates) {
   f.field_refs.push_back(FieldRefEntry{1, "any"});
   CelValue in{};
   in.kind = CEL_ERROR;
-  in.payload.err = static_cast<uint32_t>(cel::ErrorCode::kOverflow);
+  in.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
   f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
 
   const CelValue out = f.Get();
   EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err, static_cast<uint32_t>(cel::ErrorCode::kOverflow));
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kOverflow));
 }
 
 TEST(Layer2AbsorptionTest, NonMessageInputYieldsTypeMismatch) {
@@ -395,7 +398,7 @@ TEST(Layer2AbsorptionTest, NonMessageInputYieldsTypeMismatch) {
   const CelValue out = f.Get();
   EXPECT_EQ(out.kind, CEL_ERROR);
   EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(cel::ErrorCode::kTypeMismatch));
+            static_cast<uint32_t>(celwasm::ErrorCode::kTypeMismatch));
 }
 
 TEST(Layer2AbsorptionTest, OutOfRangeFieldRefIdYieldsFieldNotFound) {
@@ -410,7 +413,7 @@ TEST(Layer2AbsorptionTest, OutOfRangeFieldRefIdYieldsFieldNotFound) {
   const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
   EXPECT_EQ(out.kind, CEL_ERROR);
   EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(cel::ErrorCode::kFieldNotFound));
+            static_cast<uint32_t>(celwasm::ErrorCode::kFieldNotFound));
 }
 
 TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
@@ -424,7 +427,7 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
   const CelValue out = f.Get();
   EXPECT_EQ(out.kind, CEL_ERROR);
   EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(cel::ErrorCode::kHostAdapterError));
+            static_cast<uint32_t>(celwasm::ErrorCode::kHostAdapterError));
 }
 
 // ═══════════ Layer 2 — happy paths ═══════════
@@ -703,9 +706,9 @@ class PackHarness {
     f_.mem.WriteCelValue(kSrcSlot, cv);
   }
 
-  // Stage a HostList-backed src (vector of cel::Value::Message) and
+  // Stage a HostList-backed src (vector of celwasm::api::Value::Message) and
   // wire a CEL_LIST_HOST CelValue at kSrcSlot.
-  void StageHostListSrc(std::vector<cel::Value> elements) {
+  void StageHostListSrc(std::vector<celwasm::api::Value> elements) {
     auto list_backing = std::make_shared<HostList>(std::move(elements));
     const uint32_t slot = f_.refs.InternList(std::move(list_backing));
     CelValue cv{};
@@ -714,9 +717,11 @@ class PackHarness {
     f_.mem.WriteCelValue(kSrcSlot, cv);
   }
 
-  // Stage a HostMap-backed src (vector of <key, value> cel::Value
+  // Stage a HostMap-backed src (vector of <key, value> celwasm::api::Value
   // pairs) and wire a CEL_MAP_HOST CelValue at kSrcSlot.
-  void StageHostMapSrc(std::vector<std::pair<cel::Value, cel::Value>> entries) {
+  void StageHostMapSrc(
+      std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>>
+          entries) {
     auto map_backing = std::make_shared<HostMap>(std::move(entries));
     const uint32_t slot = f_.refs.InternMap(std::move(map_backing));
     CelValue cv{};
@@ -926,9 +931,9 @@ TEST(CelSetFieldAnyPackTest, RepeatedAnyHostSourcePacksTwoElements) {
   auto e0 = std::make_unique<HostMsg3>();
   e0->set_i32(11);
   auto e1 = std::make_unique<HostMsg2>();
-  std::vector<cel::Value> elems;
-  elems.push_back(cel::Value::OwnedMessage(std::move(e0)));
-  elems.push_back(cel::Value::OwnedMessage(std::move(e1)));
+  std::vector<celwasm::api::Value> elems;
+  elems.push_back(celwasm::api::Value::OwnedMessage(std::move(e0)));
+  elems.push_back(celwasm::api::Value::OwnedMessage(std::move(e1)));
   h.StageHostListSrc(std::move(elems));
   ASSERT_THAT(h.SetField(/*field_number=*/31, "repeated_any"), IsOk());
   ASSERT_EQ(h.outer()->repeated_any_size(), 2);
@@ -947,11 +952,11 @@ TEST(CelSetFieldAnyPackTest, MapStringToAnyHostSourcePacksTwoEntries) {
   auto va = std::make_unique<HostMsg3>();
   va->set_i32(1);
   auto vb = std::make_unique<HostMsg2>();
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::String("a"),
-                       cel::Value::OwnedMessage(std::move(va)));
-  entries.emplace_back(cel::Value::String("b"),
-                       cel::Value::OwnedMessage(std::move(vb)));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::String("a"),
+                       celwasm::api::Value::OwnedMessage(std::move(va)));
+  entries.emplace_back(celwasm::api::Value::String("b"),
+                       celwasm::api::Value::OwnedMessage(std::move(vb)));
   h.StageHostMapSrc(std::move(entries));
   ASSERT_THAT(h.SetField(/*field_number=*/32, "map_str_to_any"), IsOk());
   ASSERT_EQ(h.outer()->map_str_to_any_size(), 2);
@@ -1202,13 +1207,13 @@ std::unique_ptr<google::protobuf::Any> WrapInAny(
 
 // Read `host_msg.single_any` through ProtoBacking — same path the
 // runtime takes for `msg.single_any` expressions.
-cel::Value ReadSingleAny(const HostMsg3& host_msg) {
+celwasm::api::Value ReadSingleAny(const HostMsg3& host_msg) {
   // ProtoBacking::ReadField for field number 30 (single_any) goes
   // through UnpackAnyToValue, which is the function under test.
   ProtoBacking backing(&host_msg);
   auto v = backing.ReadField(/*field_number=*/30, "single_any", IgnoredType());
   EXPECT_TRUE(v.ok()) << v.status();
-  return v.ok() ? *std::move(v) : cel::Value::Null();
+  return v.ok() ? *std::move(v) : celwasm::api::Value::Null();
 }
 
 }  // namespace
@@ -1219,7 +1224,7 @@ TEST(AnyOfAnyTest, Depth1WrappedInt32PeelsToInt) {
   auto wrapped = WrapInAny(*inner);  // Any<Int32Value{value:7}>
   *outer.mutable_single_any() = *wrapped;
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), 7);
 }
@@ -1236,7 +1241,7 @@ TEST(AnyOfAnyTest, Depth2WrappedInt32PeelsToInt) {
       WrapInAny(*wrapped_once);  // Any<Any<Int32Value{value:7}>>
   *outer.mutable_single_any() = *wrapped_twice;
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk()) << "Any-of-Any depth 2 did not peel to int";
   EXPECT_EQ(*got.AsInt(), 7);
 }
@@ -1249,7 +1254,7 @@ TEST(AnyOfAnyTest, Depth3WrappedInt32PeelsToInt) {
   auto w3 = WrapInAny(*w2);  // Any<Any<Any<Int32Value{value:42}>>>
   *outer.mutable_single_any() = *w3;
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), 42);
 }
@@ -1263,7 +1268,7 @@ TEST(AnyOfAnyTest, Depth4WrappedInt32PeelsToInt) {
   auto w4 = WrapInAny(*w3);
   *outer.mutable_single_any() = *w4;
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), -1);
 }
@@ -1279,8 +1284,8 @@ TEST(AnyOfAnyTest, NonWktInnerSurfacesAsMessage) {
   HostMsg3 outer;
   *outer.mutable_single_any() = *wrapped;
 
-  cel::Value got = ReadSingleAny(outer);
-  ASSERT_EQ(got.kind(), cel::Value::Kind::kMessage)
+  celwasm::api::Value got = ReadSingleAny(outer);
+  ASSERT_EQ(got.kind(), celwasm::api::Value::Kind::kMessage)
       << "Any<HostMsg3> should surface as a CEL_MESSAGE, got kind="
       << static_cast<int>(got.kind());
 }
@@ -1302,7 +1307,7 @@ TEST(AnyOfAnyTest, StrictUrlPrefixRejectsNonStandardPrefix) {
   ASSERT_TRUE(payload.SerializeToString(&bytes));
   outer.mutable_single_any()->set_value(bytes);
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   EXPECT_TRUE(got.IsError())
       << "Non-standard URL prefix should produce an error, got kind="
       << static_cast<int>(got.kind());
@@ -1316,7 +1321,7 @@ TEST(AnyOfAnyTest, EmptyTypeUrlYieldsNull) {
   outer.mutable_single_any();  // Sets `has_single_any() == true`,
                                // type_url empty.
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   EXPECT_TRUE(got.IsNull());
 }
 
@@ -1332,7 +1337,7 @@ TEST(AnyOfAnyTest, GprodPrefixAccepted) {
   ASSERT_TRUE(payload.SerializeToString(&bytes));
   outer.mutable_single_any()->set_value(bytes);
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), 5);
 }
@@ -1348,11 +1353,11 @@ TEST(AnyOfAnyTest, MalformedPayloadBytesProduceError) {
       "type.googleapis.com/google.protobuf.Int32Value");
   outer.mutable_single_any()->set_value("\xFFnot-a-valid-int32-wire-format");
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_TRUE(got.IsError());
   auto info = got.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kTypeMismatch);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kTypeMismatch);
 }
 
 TEST(AnyOfAnyTest, UnknownFqnInRegisteredPrefixProducesError) {
@@ -1363,11 +1368,11 @@ TEST(AnyOfAnyTest, UnknownFqnInRegisteredPrefixProducesError) {
       "type.googleapis.com/no.such.package.Message");
   outer.mutable_single_any()->set_value("");
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_TRUE(got.IsError());
   auto info = got.ErrorInfo();
   ASSERT_TRUE(info.ok());
-  EXPECT_EQ((*info)->code, cel::ErrorCode::kFieldNotFound);
+  EXPECT_EQ((*info)->code, celwasm::ErrorCode::kFieldNotFound);
 }
 
 TEST(AnyOfAnyTest, UrlWithoutSlashRejected) {
@@ -1377,7 +1382,7 @@ TEST(AnyOfAnyTest, UrlWithoutSlashRejected) {
   outer.mutable_single_any()->set_type_url("google.protobuf.Int32Value");
   outer.mutable_single_any()->set_value("");
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   EXPECT_TRUE(got.IsError());
 }
 
@@ -1394,7 +1399,7 @@ namespace {
 // Build `Any<wrapper>` carrying a wrapper-typed `inner` and read
 // it back through HostMsg3.single_any.
 template <typename WrapperT>
-cel::Value AnyOfWrapper(const WrapperT& inner) {
+celwasm::api::Value AnyOfWrapper(const WrapperT& inner) {
   HostMsg3 outer;
   auto wrapped = WrapInAny(inner);
   *outer.mutable_single_any() = *wrapped;
@@ -1406,7 +1411,7 @@ cel::Value AnyOfWrapper(const WrapperT& inner) {
 TEST(AnyOfWrapperKindsTest, BoolValueUnwrapsToBool) {
   google::protobuf::BoolValue w;
   w.set_value(true);
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsBool(), IsOk());
   EXPECT_EQ(*got.AsBool(), true);
 }
@@ -1414,7 +1419,7 @@ TEST(AnyOfWrapperKindsTest, BoolValueUnwrapsToBool) {
 TEST(AnyOfWrapperKindsTest, Int64ValueUnwrapsToInt) {
   google::protobuf::Int64Value w;
   w.set_value(-9001);
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), -9001);
 }
@@ -1422,7 +1427,7 @@ TEST(AnyOfWrapperKindsTest, Int64ValueUnwrapsToInt) {
 TEST(AnyOfWrapperKindsTest, UInt32ValueUnwrapsToUint) {
   google::protobuf::UInt32Value w;
   w.set_value(42u);
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsUint(), IsOk());
   EXPECT_EQ(*got.AsUint(), 42u);
 }
@@ -1430,7 +1435,7 @@ TEST(AnyOfWrapperKindsTest, UInt32ValueUnwrapsToUint) {
 TEST(AnyOfWrapperKindsTest, UInt64ValueUnwrapsToUint) {
   google::protobuf::UInt64Value w;
   w.set_value(std::numeric_limits<uint64_t>::max());
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsUint(), IsOk());
   EXPECT_EQ(*got.AsUint(), std::numeric_limits<uint64_t>::max());
 }
@@ -1439,7 +1444,7 @@ TEST(AnyOfWrapperKindsTest, FloatValueUnwrapsToDouble) {
   // FloatValue.value : float — CEL widens to double on unwrap.
   google::protobuf::FloatValue w;
   w.set_value(1.5f);
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsDouble(), IsOk());
   EXPECT_EQ(*got.AsDouble(), 1.5);
 }
@@ -1447,7 +1452,7 @@ TEST(AnyOfWrapperKindsTest, FloatValueUnwrapsToDouble) {
 TEST(AnyOfWrapperKindsTest, DoubleValueUnwrapsToDouble) {
   google::protobuf::DoubleValue w;
   w.set_value(3.14159);
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsDouble(), IsOk());
   EXPECT_EQ(*got.AsDouble(), 3.14159);
 }
@@ -1455,7 +1460,7 @@ TEST(AnyOfWrapperKindsTest, DoubleValueUnwrapsToDouble) {
 TEST(AnyOfWrapperKindsTest, StringValueUnwrapsToString) {
   google::protobuf::StringValue w;
   w.set_value("hello");
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsString(), IsOk());
   EXPECT_EQ(*got.AsString(), "hello");
 }
@@ -1463,7 +1468,7 @@ TEST(AnyOfWrapperKindsTest, StringValueUnwrapsToString) {
 TEST(AnyOfWrapperKindsTest, BytesValueUnwrapsToBytes) {
   google::protobuf::BytesValue w;
   w.set_value(std::string("\x00\x01\xff", 3));
-  cel::Value got = AnyOfWrapper(w);
+  celwasm::api::Value got = AnyOfWrapper(w);
   ASSERT_THAT(got.AsBytes(), IsOk());
   EXPECT_EQ(*got.AsBytes(), std::string("\x00\x01\xff", 3));
 }
@@ -1480,7 +1485,7 @@ TEST(AnyOfWrapperKindsTest, Int32ValueViaAnyOfAnyUnwrapsToInt) {
   auto w2 = WrapInAny(*w1);
   *outer.mutable_single_any() = *w2;
 
-  cel::Value got = ReadSingleAny(outer);
+  celwasm::api::Value got = ReadSingleAny(outer);
   ASSERT_THAT(got.AsInt(), IsOk());
   EXPECT_EQ(*got.AsInt(), 11);
 }
@@ -1491,8 +1496,8 @@ TEST(AnyOfWktTimeTest, TimestampUnwrapsToTimestamp) {
   google::protobuf::Timestamp ts;
   ts.set_seconds(1577836800);  // 2020-01-01T00:00:00Z
   ts.set_nanos(0);
-  cel::Value got = AnyOfWrapper(ts);
-  EXPECT_EQ(got.kind(), cel::Value::Kind::kTimestamp)
+  celwasm::api::Value got = AnyOfWrapper(ts);
+  EXPECT_EQ(got.kind(), celwasm::api::Value::Kind::kTimestamp)
       << "Any<Timestamp> should peel to a CEL_TIMESTAMP, got kind="
       << static_cast<int>(got.kind());
 }
@@ -1501,8 +1506,8 @@ TEST(AnyOfWktTimeTest, DurationUnwrapsToDuration) {
   google::protobuf::Duration d;
   d.set_seconds(3600);
   d.set_nanos(0);
-  cel::Value got = AnyOfWrapper(d);
-  EXPECT_EQ(got.kind(), cel::Value::Kind::kDuration)
+  celwasm::api::Value got = AnyOfWrapper(d);
+  EXPECT_EQ(got.kind(), celwasm::api::Value::Kind::kDuration)
       << "Any<Duration> should peel to a CEL_DURATION, got kind="
       << static_cast<int>(got.kind());
 }

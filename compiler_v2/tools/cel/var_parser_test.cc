@@ -9,10 +9,10 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "compiler_v2/api/internal/cel_host.h"
 #include "compiler_v2/api/type.h"
 #include "compiler_v2/api/value.h"
+#include "compiler_v2/testdata/e2e_fixture.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/text_format.h"
@@ -23,8 +23,8 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
-using ::cel::CelType;
-using ::cel::Value;
+using ::celwasm::api::CelType;
+using ::celwasm::api::Value;
 using ::celwasm::testdata::Customer;
 
 // Test fixture exposing the generated descriptor pool — the Customer
@@ -109,36 +109,33 @@ TEST_F(VarParserTest, IntValues) {
 
 TEST_F(VarParserTest, UintValues) {
   EXPECT_EQ(*ParseVarFlag("x:uint=42", pool(), factory_)->value.AsUint(), 42u);
-  EXPECT_EQ(*ParseVarFlag("x:uint=42u", pool(), factory_)->value.AsUint(),
-            42u);
+  EXPECT_EQ(*ParseVarFlag("x:uint=42u", pool(), factory_)->value.AsUint(), 42u);
   EXPECT_THAT(ParseVarFlag("x:uint=-1", pool(), factory_),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(VarParserTest, DoubleValues) {
-  EXPECT_DOUBLE_EQ(*ParseVarFlag("x:double=3.14", pool(), factory_)
-                        ->value.AsDouble(),
-                   3.14);
-  EXPECT_DOUBLE_EQ(*ParseVarFlag("x:double=-0.5", pool(), factory_)
-                        ->value.AsDouble(),
-                   -0.5);
+  EXPECT_DOUBLE_EQ(
+      *ParseVarFlag("x:double=3.14", pool(), factory_)->value.AsDouble(), 3.14);
+  EXPECT_DOUBLE_EQ(
+      *ParseVarFlag("x:double=-0.5", pool(), factory_)->value.AsDouble(), -0.5);
   EXPECT_DOUBLE_EQ(
       *ParseVarFlag("x:double=1e9", pool(), factory_)->value.AsDouble(), 1e9);
 }
 
 TEST_F(VarParserTest, StringValues) {
-  EXPECT_EQ(*ParseVarFlag(R"(s:string="hello")", pool(), factory_)
-                 ->value.AsString(),
-            "hello");
-  EXPECT_EQ(*ParseVarFlag(R"(s:string='hi')", pool(), factory_)
-                 ->value.AsString(),
-            "hi");
+  EXPECT_EQ(
+      *ParseVarFlag(R"(s:string="hello")", pool(), factory_)->value.AsString(),
+      "hello");
+  EXPECT_EQ(
+      *ParseVarFlag(R"(s:string='hi')", pool(), factory_)->value.AsString(),
+      "hi");
   EXPECT_EQ(*ParseVarFlag(R"(s:string="a\nb\tc")", pool(), factory_)
                  ->value.AsString(),
             "a\nb\tc");
-  EXPECT_EQ(*ParseVarFlag(R"(s:string="\x41")", pool(), factory_)
-                 ->value.AsString(),
-            "A");
+  EXPECT_EQ(
+      *ParseVarFlag(R"(s:string="\x41")", pool(), factory_)->value.AsString(),
+      "A");
   // Missing closing quote.
   EXPECT_THAT(ParseVarFlag(R"(s:string="oops)", pool(), factory_),
               StatusIs(absl::StatusCode::kInvalidArgument));
@@ -147,11 +144,13 @@ TEST_F(VarParserTest, StringValues) {
 TEST_F(VarParserTest, BytesValues) {
   EXPECT_EQ(*ParseVarFlag(R"(s:bytes=b"\x00\x01ab")", pool(), factory_)
                  ->value.AsBytes(),
-            std::string("\x00\x01" "ab", 4));
+            std::string("\x00\x01"
+                        "ab",
+                        4));
   // Without b prefix is also accepted.
-  EXPECT_EQ(*ParseVarFlag(R"(s:bytes="abc")", pool(), factory_)
-                 ->value.AsBytes(),
-            "abc");
+  EXPECT_EQ(
+      *ParseVarFlag(R"(s:bytes="abc")", pool(), factory_)->value.AsBytes(),
+      "abc");
 }
 
 TEST_F(VarParserTest, DurationAndTimestampValues) {
@@ -159,8 +158,8 @@ TEST_F(VarParserTest, DurationAndTimestampValues) {
   ASSERT_THAT(d, IsOk());
   EXPECT_EQ(*d->value.AsDuration(), absl::Seconds(3));
 
-  auto t = ParseVarFlag(R"(t:timestamp="2024-01-01T00:00:00Z")", pool(),
-                        factory_);
+  auto t =
+      ParseVarFlag(R"(t:timestamp="2024-01-01T00:00:00Z")", pool(), factory_);
   ASSERT_THAT(t, IsOk());
 }
 
@@ -172,8 +171,8 @@ TEST_F(VarParserTest, ListValues) {
   auto backing = v->value.ListBacking();
   ASSERT_THAT(backing, IsOk());
   EXPECT_EQ((*backing)->Size(), 3u);
-  EXPECT_EQ(*(*backing)->At(0, ::cel::CelType{})->AsInt(), 1);
-  EXPECT_EQ(*(*backing)->At(2, ::cel::CelType{})->AsInt(), 3);
+  EXPECT_EQ(*(*backing)->At(0, ::celwasm::api::CelType{})->AsInt(), 1);
+  EXPECT_EQ(*(*backing)->At(2, ::celwasm::api::CelType{})->AsInt(), 3);
 
   // Empty list.
   auto empty = ParseVarFlag("xs:list<int>=[]", pool(), factory_);
@@ -182,8 +181,8 @@ TEST_F(VarParserTest, ListValues) {
 }
 
 TEST_F(VarParserTest, MapValues) {
-  auto v = ParseVarFlag(R"(m:map<string,int>={"us": 1, "ca": 2})", pool(),
-                        factory_);
+  auto v =
+      ParseVarFlag(R"(m:map<string,int>={"us": 1, "ca": 2})", pool(), factory_);
   ASSERT_THAT(v, IsOk());
   auto backing = v->value.MapBacking();
   ASSERT_THAT(backing, IsOk());
@@ -196,9 +195,9 @@ TEST_F(VarParserTest, MapValues) {
 
 TEST_F(VarParserTest, InlineTextprotoMessage) {
   // Customer is a generated proto registered in the generated pool.
-  auto v = ParseVarFlag(
-      R"(c:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36)", pool(),
-      factory_);
+  auto v =
+      ParseVarFlag(R"(c:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36)",
+                   pool(), factory_);
   ASSERT_THAT(v, IsOk());
   ASSERT_EQ(v->value.kind(), Value::Kind::kMessage);
   auto backing = v->value.MessageBacking();
@@ -239,8 +238,8 @@ TEST_F(VarParserTest, FileTextprotoMessage) {
 age: 36
 )";
   }
-  auto v = ParseVarFlag(
-      absl::StrCat("c:celwasm.testdata.Customer=@", path), pool(), factory_);
+  auto v = ParseVarFlag(absl::StrCat("c:celwasm.testdata.Customer=@", path),
+                        pool(), factory_);
   ASSERT_THAT(v, IsOk());
   const auto* m = (*v->value.MessageBacking())->message();
   ASSERT_NE(m, nullptr);
@@ -252,24 +251,21 @@ age: 36
 }
 
 TEST_F(VarParserTest, MessageUnknownType) {
-  EXPECT_THAT(
-      ParseVarFlag("c:no.such.Message=txtpb:", pool(), factory_),
-      StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(ParseVarFlag("c:no.such.Message=txtpb:", pool(), factory_),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(VarParserTest, MessageInlineMissingPrefix) {
-  EXPECT_THAT(ParseVarFlag(
-                  "c:celwasm.testdata.Customer={name: \"Ada\"}", pool(),
-                  factory_),
+  EXPECT_THAT(ParseVarFlag("c:celwasm.testdata.Customer={name: \"Ada\"}",
+                           pool(), factory_),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(VarParserTest, MessageBadInferredFormat) {
   // Unknown extension and no explicit prefix.
-  EXPECT_THAT(
-      ParseVarFlag("c:celwasm.testdata.Customer=@/tmp/foo.unknown", pool(),
-                   factory_),
-      StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(ParseVarFlag("c:celwasm.testdata.Customer=@/tmp/foo.unknown",
+                           pool(), factory_),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // ---------- Flag-level shape ------------------------------------------------

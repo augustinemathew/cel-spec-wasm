@@ -169,7 +169,7 @@ constexpr std::array<absl::string_view, 115> kRuntimeExports = {
     "cel_base64_decode_at_v",
 };
 
-// ── Status helpers — mirror cel::Engine's shape ─────────────
+// ── Status helpers — mirror celwasm::api::Engine's shape ─────────────
 
 absl::Status WasmtimeErrorToStatus(absl::string_view context,
                                    wasmtime_error_t* err) {
@@ -546,12 +546,8 @@ absl::Status RegisterCelHostBulkNoopImports(wasmtime_linker_t* linker) {
   // Aggregate-op kHost imports.  Tests link the dispatchers but
   // don't exercise the host arms; no-op stubs suffice.
   static constexpr absl::string_view kThreeArg[] = {
-      "cel_list_in",
-      "cel_list_eq",
-      "cel_list_concat",
-      "cel_map_in",
-      "cel_map_eq",
-      "cel_message_eq",
+      "cel_list_in", "cel_list_eq", "cel_list_concat",
+      "cel_map_in",  "cel_map_eq",  "cel_message_eq",
   };
   for (absl::string_view name : kThreeArg) {
     if (auto st = RegisterCelHostThreeArgNoop(linker, name); !st.ok()) {

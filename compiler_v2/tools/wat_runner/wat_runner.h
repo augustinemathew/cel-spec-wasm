@@ -15,7 +15,7 @@
 //
 //   1. Assembles a WAT string to wasm bytes via `wasmtime_wat2wasm`.
 //   2. Initialises a per-run wasmtime store + 2-page memory, matching
-//      `cel::Engine::Plan`'s M1 wiring.
+//      `celwasm::api::Engine::Plan`'s M1 wiring.
 //   3. Instantiates `cel_runtime.wasm`, binds its `arena_reset` /
 //      `arena_alloc` exports onto the linker.
 //   4. Optionally registers `cel_host.cel_get_field` /
@@ -31,7 +31,7 @@
 // What this is NOT:
 //
 //   - Production code.  Production instantiation flows through
-//     `cel::Engine::Plan` + per-Instance state.  This harness shares
+//     `celwasm::api::Engine::Plan` + per-Instance state.  This harness shares
 //     no code with Engine::Plan on purpose — if the prototype here
 //     depended on the shape of Engine::Plan, the harness couldn't be
 //     used to design changes to that shape.

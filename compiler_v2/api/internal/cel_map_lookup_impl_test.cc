@@ -39,11 +39,11 @@ struct Fixture {
   FakeMemory mem;
   FakeRefs refs;
   test::FakeArenaAllocator arena{&mem, /*base_offset=*/4096u,
-                                  /*capacity=*/8192u};
+                                 /*capacity=*/8192u};
   CelHostBindings bindings{};
   TrampolineContext ctx{bindings, mem, refs, arena};
 
-  uint32_t map_slot = 24;   // offsets aligned to CelValue size for clarity
+  uint32_t map_slot = 24;  // offsets aligned to CelValue size for clarity
   uint32_t key_slot = 48;
   uint32_t out_slot = 72;
 };
@@ -85,11 +85,15 @@ CelValue MakeStringKey(FakeMemory& mem, uint32_t bytes_off,
 }
 
 std::shared_ptr<HostMap> SimpleMap() {
-  std::vector<std::pair<cel::Value, cel::Value>> entries;
-  entries.emplace_back(cel::Value::Int(7), cel::Value::Int(70));
-  entries.emplace_back(cel::Value::String("k"), cel::Value::String("v"));
-  entries.emplace_back(cel::Value::Bool(true), cel::Value::Int(1));
-  entries.emplace_back(cel::Value::Uint(42), cel::Value::Int(420));
+  std::vector<std::pair<celwasm::api::Value, celwasm::api::Value>> entries;
+  entries.emplace_back(celwasm::api::Value::Int(7),
+                       celwasm::api::Value::Int(70));
+  entries.emplace_back(celwasm::api::Value::String("k"),
+                       celwasm::api::Value::String("v"));
+  entries.emplace_back(celwasm::api::Value::Bool(true),
+                       celwasm::api::Value::Int(1));
+  entries.emplace_back(celwasm::api::Value::Uint(42),
+                       celwasm::api::Value::Int(420));
   return std::make_shared<HostMap>(std::move(entries));
 }
 
@@ -155,8 +159,7 @@ TEST(CelMapLookupImplTest, StringKeyHitsAndEncodesValueViaArena) {
   Fixture f;
   f.mem.Place(f.map_slot, MakeMapValue(f.refs.InternMap(SimpleMap())));
   // Stage the lookup-key bytes at offset 200 (well below arena base).
-  f.mem.WriteCelValue(f.key_slot,
-                      MakeStringKey(f.mem, /*bytes_off=*/200, "k"));
+  f.mem.WriteCelValue(f.key_slot, MakeStringKey(f.mem, /*bytes_off=*/200, "k"));
   ASSERT_TRUE(CelMapLookupImpl(f.out_slot, f.map_slot, f.key_slot, f.ctx).ok());
   CelValue out = f.mem.ReadCelValue(f.out_slot);
   ASSERT_EQ(out.kind, static_cast<uint32_t>(CEL_STRING));

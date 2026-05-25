@@ -214,7 +214,7 @@ _Static_assert(sizeof(CelValue) == kCelListEntryStride,
 // pretty-printer maps code → message when formatting a failed eval.
 //
 // Numeric values are stable on the wire and mirror
-// `cel::ErrorCode` (api/error.h).  Append only; never renumber.
+// `celwasm::ErrorCode` (api/error.h).  Append only; never renumber.
 enum {
   CEL_ERR_OVERFLOW = 10,
   CEL_ERR_DIVIDE_BY_ZERO = 11,
@@ -237,7 +237,7 @@ enum {
   // arena arm) when the index is outside `[0, count)`.  Per langdef
   // §"Indexing": list indexing on a negative index or `>= size` is
   // an error (not Python-style wrap-around).  Wire value mirrors
-  // `cel::ErrorCode::kIndexOutOfBounds` (api/error.h).
+  // `celwasm::ErrorCode::kIndexOutOfBounds` (api/error.h).
   CEL_ERR_INDEX_OUT_OF_BOUNDS = 17,
   // Parse failures on `timestamp(str)` / `duration(str)` —
   // bad input (lowercase `z`, unordered compound, unknown unit,
@@ -250,14 +250,14 @@ enum {
   // returns this when the resolver can't find a FieldDescriptor for
   // the (field_number, field_name) pair the AST referenced — usually
   // because field_ref_id is out-of-range against `cel.abi.fields[]`.
-  // Mirrors `cel::ErrorCode::kFieldNotFound` (api/error.h).
+  // Mirrors `celwasm::ErrorCode::kFieldNotFound` (api/error.h).
   CEL_ERR_FIELD_NOT_FOUND = 20,
   // Layer-2 trampoline returns this when the externref slot
   // pointed at by a CEL_MESSAGE CelValue has not been interned (or
   // was interned in a different generation that has since been
   // Reset()).  Distinct from kTypeMismatch — the operand kind was
   // valid, the host-side dereference failed.  Mirrors
-  // `cel::ErrorCode::kHostAdapterError`.
+  // `celwasm::ErrorCode::kHostAdapterError`.
   CEL_ERR_HOST_ADAPTER_ERROR = 41,
 };
 
