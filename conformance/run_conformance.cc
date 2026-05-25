@@ -1,5 +1,5 @@
 // Exploration binary: walks every upstream
-// `tests/simple/testdata/*.textproto` fixture, runs each
+// `spec/tests/simple/testdata/*.textproto` fixture, runs each
 // `SimpleTest` through the celwasm pipeline, and prints a
 // per-file `pass / skip / fail` tally + a SKIP-by-category
 // breakdown (using `SkipCategory` from `runner.h`).  Optionally
@@ -15,7 +15,7 @@
 //
 //   bazel run //conformance:run_conformance
 //   bazel run //conformance:run_conformance -- \
-//       --file tests/simple/testdata/comparisons.textproto
+//       --file spec/tests/simple/testdata/comparisons.textproto
 //   bazel run //conformance:run_conformance -- \
 //       --max_skip_examples=2000   # dump every SKIP detail
 
@@ -55,43 +55,43 @@ ABSL_FLAG(std::uint32_t, max_fail_examples, 5,
 
 namespace {
 
-// Default corpus: every textproto we ship under `tests/simple/testdata`.
+// Default corpus: every textproto we ship under `spec/tests/simple/testdata`.
 // Listed once here and re-used by the BUILD `data =` attribute via
 // `SIMPLE_TESTDATA` in BUILD.bazel; both lists MUST stay in sync (a
 // new fixture lands here AND there).  Future cleanup tracked in
 // `conformance/README.md`'s "Future work" section.
 const std::vector<std::string>& DefaultCorpus() {
   static const auto* files = new std::vector<std::string>{
-      "tests/simple/testdata/basic.textproto",
-      "tests/simple/testdata/bindings_ext.textproto",
-      "tests/simple/testdata/block_ext.textproto",
-      "tests/simple/testdata/comparisons.textproto",
-      "tests/simple/testdata/conversions.textproto",
-      "tests/simple/testdata/dynamic.textproto",
-      "tests/simple/testdata/encoders_ext.textproto",
-      "tests/simple/testdata/enums.textproto",
-      "tests/simple/testdata/fields.textproto",
-      "tests/simple/testdata/fp_math.textproto",
-      "tests/simple/testdata/integer_math.textproto",
-      "tests/simple/testdata/lists.textproto",
-      "tests/simple/testdata/logic.textproto",
-      "tests/simple/testdata/macros.textproto",
-      "tests/simple/testdata/macros2.textproto",
-      "tests/simple/testdata/math_ext.textproto",
-      "tests/simple/testdata/namespace.textproto",
-      "tests/simple/testdata/network_ext.textproto",
-      "tests/simple/testdata/optionals.textproto",
-      "tests/simple/testdata/parse.textproto",
-      "tests/simple/testdata/plumbing.textproto",
-      "tests/simple/testdata/proto2.textproto",
-      "tests/simple/testdata/proto2_ext.textproto",
-      "tests/simple/testdata/proto3.textproto",
-      "tests/simple/testdata/string.textproto",
-      "tests/simple/testdata/string_ext.textproto",
-      "tests/simple/testdata/timestamps.textproto",
-      "tests/simple/testdata/type_deduction.textproto",
-      "tests/simple/testdata/unknowns.textproto",
-      "tests/simple/testdata/wrappers.textproto",
+      "spec/tests/simple/testdata/basic.textproto",
+      "spec/tests/simple/testdata/bindings_ext.textproto",
+      "spec/tests/simple/testdata/block_ext.textproto",
+      "spec/tests/simple/testdata/comparisons.textproto",
+      "spec/tests/simple/testdata/conversions.textproto",
+      "spec/tests/simple/testdata/dynamic.textproto",
+      "spec/tests/simple/testdata/encoders_ext.textproto",
+      "spec/tests/simple/testdata/enums.textproto",
+      "spec/tests/simple/testdata/fields.textproto",
+      "spec/tests/simple/testdata/fp_math.textproto",
+      "spec/tests/simple/testdata/integer_math.textproto",
+      "spec/tests/simple/testdata/lists.textproto",
+      "spec/tests/simple/testdata/logic.textproto",
+      "spec/tests/simple/testdata/macros.textproto",
+      "spec/tests/simple/testdata/macros2.textproto",
+      "spec/tests/simple/testdata/math_ext.textproto",
+      "spec/tests/simple/testdata/namespace.textproto",
+      "spec/tests/simple/testdata/network_ext.textproto",
+      "spec/tests/simple/testdata/optionals.textproto",
+      "spec/tests/simple/testdata/parse.textproto",
+      "spec/tests/simple/testdata/plumbing.textproto",
+      "spec/tests/simple/testdata/proto2.textproto",
+      "spec/tests/simple/testdata/proto2_ext.textproto",
+      "spec/tests/simple/testdata/proto3.textproto",
+      "spec/tests/simple/testdata/string.textproto",
+      "spec/tests/simple/testdata/string_ext.textproto",
+      "spec/tests/simple/testdata/timestamps.textproto",
+      "spec/tests/simple/testdata/type_deduction.textproto",
+      "spec/tests/simple/testdata/unknowns.textproto",
+      "spec/tests/simple/testdata/wrappers.textproto",
   };
   return *files;
 }
