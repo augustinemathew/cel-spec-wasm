@@ -40,6 +40,24 @@ was bypassed.
 Authored once in W0; **do not deviate**. Every later agent rewrites strictly
 per this table.
 
+### 1.0 The PROJECT-PACKAGE SET (use this, never `//...`)
+
+`bazel … //...` is **unusable in this repo**: the vendored
+`third_party/cel-cpp/tools/testdata/BUILD` loads `@com_github_google_flatbuffers`,
+a repo not declared in our `MODULE.bazel`, so `//...` dies on a package-loading
+error before evaluating anything (a false RED that also masks real failures).
+Every build/test/query gate therefore targets the repo's own top-level packages
+explicitly. **Post-restructure project-package set** (`$PROJ`):
+
+```
+//compiler/... //eval/... //common/... //abi/... //runtime/... \
+//tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
+```
+
+Pre-restructure equivalent (W0): `//compiler_v2/... //proto/... //tests/...`.
+For `rdeps(universe, …)` / `visible(…)` queries the *universe* is `$PROJ`, not
+`//...`. (See questions-log Q2.)
+
 ### 1.1 Directory / file moves
 
 | Old | New |
@@ -120,7 +138,7 @@ script's file glob **must widen** beyond `*.bazel *.cc *.h *.bzl` to include:
 |---|---|
 | `scripts/run_full_suite.sh` | hardcoded manual-tagged labels `//compiler_v2/api:…`, `//compiler_v2/e2e:…`, `//compiler_v2/conformance:run_conformance` → `//eval:…`, `//e2e:…`, `//conformance:…` |
 | `scripts/check_conformance_monotonic.sh` | `BASELINE_FILE="compiler_v2/conformance/.baseline"`; `//compiler_v2/conformance:run_conformance` |
-| `scripts/refresh_compile_db.sh` (+ `_aquery_to_compdb.py`) | `//compiler_v2/...` build/aquery + manual-tag query patterns → `//...` |
+| `scripts/refresh_compile_db.sh` (+ `_aquery_to_compdb.py`) | `//compiler_v2/...` build/aquery + manual-tag query patterns → `$PROJ` (§1.0; `+`-joined in query strings, space-joined on the build command — Q3) |
 | `scripts/lint.sh`, `scripts/build_lint_pch.sh`, `scripts/lint_pch.h` | `compiler_v2/` globs/comments; PCH header set |
 | `scripts/regen_conformance_readme.sh`, `scripts/check_doc_drift.sh` | `compiler_v2/conformance/README.md` + doc paths |
 | `.clang-tidy`, `.clang-format-ignore` | path-scoped includes/excludes (third_party already excluded) |
@@ -145,7 +163,7 @@ W0 ─── W1 ═╗(∥ ×2) ═══ W3 ─── W4 ═╗(∥ ×N) ══
 |---|---|---|---|
 | W0 | serial | 1 (Foundation) | hooks off; baseline captured; `bazel build //compiler_v2/...` green |
 | W1 | ∥ ×2 | Spec, Docs | per-agent (below) |
-| W3 | serial | 1 (Sweep) | `bazel build //...` green; PCH loads; no `compiler_v2` in BUILD/includes/scripts |
+| W3 | serial | 1 (Sweep) | `bazel build $PROJ` green (§1.0 set, not `//...`); PCH loads; no `compiler_v2` in BUILD/includes/scripts |
 | W4 | ∥ ×N+1 | per test package + Conventions (CLAUDE.md) | each `bazel test //<pkg>/...` green |
 | W5 | serial | 1 (Gate) | run_full_suite + conformance baseline + benches + dev-loop speed + lint |
 | W6 | serial | 1 (Namespace) | flatten `celwasm::api`; re-run W5 gate; re-enable hooks |
@@ -234,6 +252,18 @@ Branch: restructure (after W1 merged).
    compiler_v2/ must not exist afterward.
 2. Run scripts/restructure_rewrite.sh → applies §1.2 + §1.3 across the WIDE
    glob (BUILD + includes + scripts + configs + pre-push hook, §1.5).
+2b. HAND-CONVERT the literal wildcard `//compiler_v2/...` (the rewrite script
+   deliberately skips it — Q3) to the §1.0 PROJECT-PACKAGE SET in three scripts:
+   - run_full_suite.sh: `bazel test //compiler_v2/...` → `bazel test` + the
+     space-joined $PROJ.
+   - build_lint_pch.sh: `bazel build //compiler_v2/... //compiler_v2/bench:…`
+     → space-joined $PROJ (the `:kernel_bench` target is already covered by
+     `//bench/...`; drop the now-redundant explicit ref or keep it, it resolves).
+   - refresh_compile_db.sh: the aquery/query strings use `+`-union — expand to
+     the `+`-JOINED $PROJ (`//compiler/... + //eval/... + …`); the `bazel build
+     --config=lint //compiler_v2/...` command line uses the space-joined form.
+   Prefer introducing a `PROJ="//compiler/... //eval/... …"` shell var at the top
+   of each script and referencing it, over inlining the long list repeatedly.
 3. Add BUILD.bazel for new packages: common/, eval/, compiler/ (public targets
    compiler/compiler, compiler/program; compiler/internal:compile), splitting
    the old compiler_v2/api/BUILD targets to their new owners.
@@ -251,7 +281,8 @@ Branch: restructure (after W1 merged).
 5. REBUILD the dev-loop caches (paths moved → both are stale):
    scripts/refresh_compile_db.sh  (regenerates compile_commands.json);
    scripts/build_lint_pch.sh      (rebuilds .lint-cache/lint_pch.h.pch).
-GATE: bazel build //... green; `grep -rn compiler_v2 --include=*.bazel
+GATE: bazel build $PROJ green (§1.0 set, NOT `//...` — that fails to load on
+      third_party/flatbuffers); `grep -rn compiler_v2 --include=*.bazel
       --include=*.cc --include=*.h --include=*.sh .` (excl. third_party,
       bazel-*) empty; scripts/lint.sh (a file) runs with PCH LOADED — no
       "'-pch=…' file not found" canary in output (CLAUDE.md: a silent PCH
@@ -322,15 +353,15 @@ The gate below is the binding exit criteria — ALL must pass before merge.
 
 0. scripts/refresh_compile_db.sh                         (paths moved)
 1. scripts/run_full_suite.sh — the canonical milestone-close runner: default
-   `bazel test //...` PLUS every MANUAL-tagged target (instance/engine/cel_host
-   tests, e2e m*/optimize/roundtrip, runtime wasm, wat_runner) PLUS the
-   conformance run. `bazel test //...` alone SKIPS the manual targets, which
+   `bazel test $PROJ` (§1.0 set) PLUS every MANUAL-tagged target (instance/engine/
+   cel_host tests, e2e m*/optimize/roundtrip, runtime wasm, wat_runner) PLUS the
+   conformance run. `bazel test $PROJ` alone SKIPS the manual targets, which
    carry the load-bearing e2e assertions (CLAUDE.md). Cross-check its label
    list against per-component-test-coverage.md §5.
 2. CONFORMANCE baseline — scripts/check_conformance_monotonic.sh: pass count
    EQUAL to conformance/.baseline (the moved baseline, §1.5) and to the W0
    capture (path-only move ⇒ identical; a drop = a label/prefix slip).
-3. BENCHMARKS — bench targets build under //... (step 1); then a representative
+3. BENCHMARKS — bench targets build under $PROJ (step 1); then a representative
    run under -c opt to confirm they still execute:
      bazel run -c opt //bench:<a_pipeline_bench> -- --benchmark_min_time=0
    (opt is a separate build tree — see CLAUDE.md dev-loop notes; CI may own
@@ -341,15 +372,16 @@ The gate below is the binding exit criteria — ALL must pass before merge.
    compile_commands.json resolves the new paths.
 5. VISIBILITY AUDIT (design §5.5) — nobody deps non-public targets:
    a. No internal target reachable from outside its component:
-        bazel query 'rdeps(//..., //compiler/internal/...) except //compiler/...' → empty
-        bazel query 'rdeps(//..., //eval/internal/...) except //eval/...'         → empty
+        bazel query 'rdeps($PROJ, //compiler/internal/...) except //compiler/...' → empty
+        bazel query 'rdeps($PROJ, //eval/internal/...) except //eval/...'         → empty
+      (universe is $PROJ — §1.0 — never `//...`, which fails to load.)
    b. Public surface hasn't crept — the set of //visibility:public non-test
       targets equals the curated list (design §5.5):
-        bazel query 'visible(//bindings/..., //...) except attr(testonly,1,//...)'
+        bazel query 'attr(visibility, "//visibility:public", $PROJ) except attr(testonly,1,$PROJ)'
       compared against the curated public targets; any extra is a review event.
    (Visibility is already enforced by `bazel build` at analysis time; this step
     AUDITS that the regime is the intended shape, not accidentally widened.)
-6. bazel query 'kind(go_.*, //...)'  → empty (Go surface gone)
+6. bazel query 'kind(go_.*, $PROJ)'  → empty (Go surface gone)
 7. scripts/lint.sh --branch                              (clang-format + tidy)
 8. grep -rn compiler_v2 . (excl third_party, bazel-*, .git) → only design docs
 

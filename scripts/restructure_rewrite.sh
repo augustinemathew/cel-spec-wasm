@@ -25,6 +25,15 @@
 #     visibility decision) — left verbatim.
 #   - the `git mv` directory moves themselves (W3 step 1) — this script only
 #     rewrites the textual references inside files.
+#   - the LITERAL wildcard `//compiler_v2/...` (3-dot) in run_full_suite.sh,
+#     build_lint_pch.sh, refresh_compile_db.sh. There is no single correct sed:
+#     those scripts use it in TWO incompatible syntaxes — space-separated on
+#     `bazel test/build` command lines vs. `+`-union inside aquery/query strings
+#     (`//compiler_v2/... + //compiler_v2/...`). It must expand to the
+#     PROJECT-PACKAGE SET ($PROJ, exec-doc §1.0) hand-converted per context:
+#     command lines get the space-joined set, query strings get the `+`-joined
+#     set. W3 does this by hand; the "no compiler_v2 in scripts" grep gate and
+#     W5 (which RUNS these scripts) catch any miss. (questions-log Q3.)
 #
 set -euo pipefail
 

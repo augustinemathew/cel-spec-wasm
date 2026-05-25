@@ -274,18 +274,21 @@ Every agent edits only its assigned file-set, lands green-or-isolated, and
 reports the exact paths it touched for merge triage.
 
 **Exit criteria (W5).** A path-only move must regress nothing — so W5 is binding
-and goes beyond a green `bazel test //...`:
+and goes beyond a green `bazel test $PROJ`. (`$PROJ` = the project-package set,
+not `//...` — the vendored cel-cpp `tools/testdata/BUILD` references an undeclared
+`@com_github_google_flatbuffers`, so `//...` fails to *load*; see execution-doc
+§1.0.):
 
-  - `bazel test //...` green (all unit/component/e2e).
-  - **Manual-tagged tests run explicitly** — `bazel test //...` skips them, but
+  - `bazel test $PROJ` green (all unit/component/e2e).
+  - **Manual-tagged tests run explicitly** — `bazel test $PROJ` skips them, but
     they carry the load-bearing e2e assertions (CLAUDE.md); run every
-    `attr(tags, manual, //...)` target, cross-checked against the catalog in
+    `attr(tags, manual, $PROJ)` target, cross-checked against the catalog in
     `per-component-test-coverage.md`.
-  - **Conformance pass count == the master baseline** captured in W0 (path-only
-    ⇒ identical; any drop is a label/prefix slip).
-  - **Benchmarks build** under `//...` and a representative bench **runs** under
+  - **Conformance pass count == the master baseline** (1898) captured in W0
+    (path-only ⇒ identical; any drop is a label/prefix slip).
+  - **Benchmarks build** under `$PROJ` and a representative bench **runs** under
     `-c opt`.
-  - `scripts/lint.sh --branch` clean; `bazel query 'kind(go_.*, //...)'` empty;
+  - `scripts/lint.sh --branch` clean; `bazel query 'kind(go_.*, $PROJ)'` empty;
     no `compiler_v2` left in code/BUILD.
 
 ## 7. Namespace rename — `celwasm::api` → `celwasm` (W6, committed follow-on)
