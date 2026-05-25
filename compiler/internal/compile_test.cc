@@ -1,4 +1,4 @@
-#include "compiler_v2/compile.h"
+#include "compiler/internal/compile.h"
 
 #include <cstdint>
 #include <cstring>
@@ -8,7 +8,7 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "binaryen-c.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -196,7 +196,7 @@ TEST(CompileTest, MemSizeBytesLargerThanOnePageGrowsPageCount) {
 // layout → emit → validate) and assert that map-bearing source
 // reaches a valid wasm artifact with the expected import surface,
 // without instantiating wasmtime.  E2E (Compile→Plan→Eval) lives in
-// `compiler_v2/e2e/m3_test.cc`.
+// `e2e/m3_test.cc`.
 // ────────────────────────────────────────────────────────────────────
 
 namespace {

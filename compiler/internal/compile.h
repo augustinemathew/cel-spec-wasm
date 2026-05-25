@@ -27,11 +27,11 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/codegen/expr_lower.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -121,7 +121,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<CompiledArtifact> Compile(
 // Installs the standard expr-module imports (`cel.memory`,
 // `cel.arena_reset`, `cel.arena_alloc`, `cel_host.*` trampolines,
 // `cel.cel_map_*` / `cel.cel_list_*`) onto `mod`.  Shared with
-// `compiler_v2/celfn/library_module.cc` so a CEL-defined-fn library
+// `compiler/celfn/library_module.cc` so a CEL-defined-fn library
 // module's wasm imports the same surface the expr module does.
 //
 // `layout.rodata` is installed as an active data segment on the

@@ -3,7 +3,7 @@
 // `VariableEntry` per variable with name, local_index, slot_offset,
 // and repr copied across.
 
-#include "compiler_v2/abi/cel_abi_emit.h"
+#include "abi/cel_abi_emit.h"
 
 #include <string>
 #include <utility>
@@ -11,13 +11,13 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/codegen/expr_lower.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/resolve_pass.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "abi/cel_abi.pb.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/resolve_pass.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

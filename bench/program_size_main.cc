@@ -1,9 +1,9 @@
 // program_size_main — prints expr-module byte sizes across a
 // representative expression matrix at optimize_level 0 and 2.  Used
-// to populate the "Program size" table in `compiler_v2/README.md`
-// and `compiler_v2/bench/README.md`; not a benchmark per se.
+// to populate the "Program size" table in `README.md`
+// and `bench/README.md`; not a benchmark per se.
 //
-// Manual; run with `bazel run -c opt //compiler_v2/bench:program_size_main`.
+// Manual; run with `bazel run -c opt //bench:program_size_main`.
 
 #include <cstdio>
 #include <string>
@@ -14,13 +14,13 @@
 #include "absl/strings/string_view.h"
 #include "cel/expr/checked.pb.h"
 #include "common/ast_proto.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "runtime/cel_data.h"
 
 namespace {
 

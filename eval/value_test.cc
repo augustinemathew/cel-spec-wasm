@@ -1,4 +1,4 @@
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 
 #include <cstdint>
 #include <string>
@@ -6,8 +6,8 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/error.h"
+#include "eval/attribute.h"
+#include "eval/error.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -155,7 +155,7 @@ TEST(ValueTest, ErrorStructurallyEqualsFieldByField) {
 // cel_host → value, never the reverse).  Positive coverage —
 // HostList / HostMap construction, ListBacking / MapBacking
 // retrieval, StructurallyEquals on aggregate kinds — lives in
-// compiler_v2/api/internal/cel_host_test.cc, not here.
+// eval/internal/cel_host_test.cc, not here.
 
 TEST(ValueTest, KindNamesCoverAllKinds) {
   EXPECT_EQ(ValueKindName(Value::Kind::kNull), "null");

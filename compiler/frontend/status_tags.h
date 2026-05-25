@@ -27,9 +27,9 @@ namespace celwasm {
 //     SKIP-as-ext-unimpl vs FAIL.
 
 inline constexpr absl::string_view kStaticSubsetViolationUrl =
-    "compiler_v2/static-subset-violation";
+    "celwasm/static-subset-violation";
 inline constexpr absl::string_view kUndeclaredReferencesUrl =
-    "compiler_v2/undeclared-references";
+    "celwasm/undeclared-references";
 
 }  // namespace celwasm
 

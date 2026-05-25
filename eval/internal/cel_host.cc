@@ -1,4 +1,4 @@
-#include "compiler_v2/api/internal/cel_host.h"
+#include "eval/internal/cel_host.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,10 +15,10 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host_error.h"  // M11 Slice E
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host_error.h"  // M11 Slice E
+#include "common/type.h"
+#include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/descriptor_legacy.h"
@@ -40,7 +40,7 @@ namespace {
 // `WriteWireBool`, `WriteWireInt`, `WriteInvalidArgumentError`,
 // `PoisonCelValue`) plus the 3VL absorbers (`AbsorbUnary`,
 // `AbsorbBinary`) moved out to `cel_host_error.{cc,h}` — they're
-// included via `<compiler_v2/api/internal/cel_host_error.h>` above
+// included via `<eval/internal/cel_host_error.h>` above
 // and remain callable here under the `celwasm::` namespace.
 std::optional<celwasm::api::Value> UnpackWrapperMessage(
     const google::protobuf::Message& sub);
@@ -3623,7 +3623,7 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
 
 // ══════════════════════════════════════════════════════════════════
 // Timestamp / duration parse + format kernels are now self-hosted in
-// `compiler_v2/runtime/cel_time_parse.cc`; codegen routes the four
+// `runtime/cel_time_parse.cc`; codegen routes the four
 // ids there directly.  See
 // `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 

@@ -28,7 +28,7 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 
 namespace celwasm::tools::cel {
 

@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/overload_table.h"
+#include "compiler/codegen/overload_table.h"
 
 #include <algorithm>
 #include <array>
@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
+#include "abi/runtime_catalogue.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -50,7 +50,7 @@ absl::string_view ImportModuleName(const OverloadImpl& impl) {
 }
 
 // `InferHelperArity` and its name-suffix + 15-entry exception list
-// are gone.  Arity now comes from `compiler_v2/abi/runtime_catalogue`
+// are gone.  Arity now comes from `abi/runtime_catalogue`
 // — the single source of truth across codegen, the engine's
 // runtime-export allowlist, and the wasm linker's `--export=` set.
 //
@@ -344,7 +344,7 @@ constexpr std::array<Seed, 271> kBuiltinSeeds{
     // ── String <-> Timestamp / Duration ──────────────────────
     // RFC3339 parse / proto-Duration text-format parse + format.
     // Self-hosted inside cel_runtime.wasm via vendored absl
-    // (`compiler_v2/runtime/cel_time_parse.cc`); see
+    // (`runtime/cel_time_parse.cc`); see
     // `rewrite/phase-c-plan.md` §4.1-4.4 for the kernel contracts
     // (admit/reject envelope, error codes, RFC3339 format spec).
     Seed{"string_to_timestamp",
@@ -651,7 +651,7 @@ constexpr std::array<Seed, 271> kBuiltinSeeds{
     // ── CEL `optional<T>` overloads ──────────────────────────
     // Overload IDs from `third_party/cel-cpp/checker/optional.cc`.
     // Kernels self-hosted in `cel_runtime.wasm` (see
-    // `compiler_v2/runtime/cel_optional.{h,c}` + the
+    // `runtime/cel_optional.{h,c}` + the
     // `-Wl,--export=cel_optional_*` lines in
     // `runtime/BUILD.bazel`).
     //
@@ -794,7 +794,7 @@ OverloadTableBuilder::OverloadTableBuilder() {
     // module-lifetime storage, so no copy is needed here.
     const uint32_t interned_id = static_cast<uint32_t>(impls_.size()) + 1u;
     OverloadImpl impl = s.impl;
-    // Arity comes from the ABI catalogue (`compiler_v2/abi/
+    // Arity comes from the ABI catalogue (`abi/
     // runtime_catalogue`) — the single source of truth across
     // codegen, engine runtime-export binding, and linker --export
     // lists.  Every built-in seed MUST appear in the catalogue;
@@ -805,7 +805,7 @@ OverloadTableBuilder::OverloadTableBuilder() {
         << "OverloadTableBuilder: seed `" << s.overload_id << "` → `"
         << abi::AbiModuleName(ToAbiModule(impl.module)) << "." << impl.name
         << "` is not in the ABI catalogue.  Add it to "
-           "`compiler_v2/abi/runtime_catalogue.cc::kCelRuntimeHelpersArr` "
+           "`abi/runtime_catalogue.cc::kCelRuntimeHelpersArr` "
            "(or remove the seed if the helper is dropped).";
     impl.num_args = helper->num_args;
     impls_.push_back(impl);

@@ -24,13 +24,13 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::api {

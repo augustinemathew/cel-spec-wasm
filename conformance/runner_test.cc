@@ -2,7 +2,7 @@
 // matcher-kind envelope predicate.  End-to-end coverage of `RunOne`
 // lives in `run_conformance` against the upstream fixture corpus.
 
-#include "compiler_v2/conformance/runner.h"
+#include "conformance/runner.h"
 
 #include "gtest/gtest.h"
 
@@ -10,8 +10,8 @@
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "cel/expr/eval.pb.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/value.h"
+#include "eval/error.h"
+#include "eval/value.h"
 #include "google/protobuf/text_format.h"
 
 namespace celwasm::conformance {

@@ -1,9 +1,9 @@
-// Heavy headers shared by ~every compiler_v2 C++ TU.  Built into a PCH
+// Heavy headers shared by ~every project C++ TU.  Built into a PCH
 // by scripts/build_lint_pch.sh and consumed by scripts/lint.sh via
 // `-include-pch=<path>` on every clang-tidy invocation.  The list is
 // the union of every absl/* and google/protobuf/* header referenced
-// by any source under compiler_v2/ (regenerate with
-// `grep -rh '#include "absl/\|#include "google/protobuf/' compiler_v2`).
+// by any source under the project tree (regenerate with
+// `grep -rh '#include "absl/\|#include "google/protobuf/' compiler eval common abi runtime`).
 //
 // Bazel reaches absl via `-iquote external/abseil-cpp~`, so quoted
 // form is required — `<absl/...>` won't resolve.  Protobuf is reached

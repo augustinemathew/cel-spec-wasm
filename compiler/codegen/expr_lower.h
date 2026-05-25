@@ -29,10 +29,10 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "binaryen-c.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/codegen/overload_table.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/codegen/overload_table.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -135,8 +135,8 @@ inline constexpr absl::string_view kCelHostListAtInternalName =
 // `cel_optional_has_value_at_v` is the present-flag reader chained
 // after the select kernel for test_only Select on optional; signature
 // `(out_slot, opt_slot) -> ()`.  Both are exported in
-// `compiler_v2/runtime/BUILD.bazel` and seeded in
-// `compiler_v2/api/engine.cc::kRuntimeExports`.
+// `runtime/BUILD.bazel` and seeded in
+// `eval/engine.cc::kRuntimeExports`.
 inline constexpr absl::string_view kCelSelectOptionalFieldInternalName =
     "cel_select_optional_field_at_vv";
 inline constexpr absl::string_view kCelOptionalHasValueInternalName =

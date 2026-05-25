@@ -1,4 +1,4 @@
-#include "compiler_v2/tools/cel/var_parser.h"
+#include "tools/cel/var_parser.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -9,10 +9,10 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "eval/internal/cel_host.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/text_format.h"

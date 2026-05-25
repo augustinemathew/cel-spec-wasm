@@ -24,10 +24,10 @@
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "eval/attribute.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "runtime/cel_data.h"
 
 namespace google::protobuf {
 class Descriptor;
@@ -617,7 +617,7 @@ ABSL_MUST_USE_RESULT absl::Status CelSetFieldImpl(uint32_t msg_slot,
 
 // Timestamp / duration parse + format trampolines (formerly four
 // host-side Impls) are now self-hosted in
-// `compiler_v2/runtime/cel_time_parse.cc`; codegen routes
+// `runtime/cel_time_parse.cc`; codegen routes
 // `string_to_timestamp` etc. to `cel_runtime.cel_*_at_v` directly.
 // See `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 

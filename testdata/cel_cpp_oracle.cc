@@ -1,4 +1,4 @@
-#include "compiler_v2/testdata/cel_cpp_oracle.h"
+#include "testdata/cel_cpp_oracle.h"
 
 #include <string>
 #include <utility>

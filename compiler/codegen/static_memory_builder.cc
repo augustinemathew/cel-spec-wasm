@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/static_memory_builder.h"
+#include "compiler/codegen/static_memory_builder.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -9,14 +9,14 @@
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/runtime/cel_runtime.h"
+#include "runtime/cel_runtime.h"
 
 namespace celwasm {
 
 namespace {
 
 // CelValue is 24 bytes, 8-byte aligned.  The runtime struct
-// (compiler_v2/runtime/cel_runtime.h) has a `_Static_assert
+// (runtime/cel_runtime.h) has a `_Static_assert
 // sizeof(CelValue) == 24` guarding the frame size; tests pin the
 // byte layout within the frame.
 constexpr size_t kCelValueSize = 24;

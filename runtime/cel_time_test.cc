@@ -4,14 +4,14 @@
 // boundary grid in `m7b-duration-timestamp.md` is materialised as
 // parameterised tables; spec-citation cases stay as focused TEST_F.
 
-#include "compiler_v2/runtime/cel_time.h"
+#include "runtime/cel_time.h"
 
 #include <cstdint>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

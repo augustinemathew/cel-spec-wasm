@@ -98,12 +98,12 @@
 #include "absl/strings/string_view.h"
 #include "binaryen-c.h"
 #include "common/expr.h"
-#include "compiler_v2/codegen/expr_lower.h"
-#include "compiler_v2/codegen/expr_lower_internal.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/expr_lower_internal.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 namespace {

@@ -8,7 +8,7 @@
 // gate.  A codegen arm that stops producing shape-matching wasm
 // is caught HERE before it contaminates e2e tests downstream.
 
-#include "compiler_v2/tools/wat_runner/wat_runner.h"
+#include "tools/wat_runner/wat_runner.h"
 
 #include <cstdint>
 #include <cstring>
@@ -21,7 +21,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "runtime/cel_data.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

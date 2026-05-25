@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/overload_table.h"
+#include "compiler/codegen/overload_table.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -283,7 +283,7 @@ TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
 }
 
 // `InferHelperArity` and its name-suffix sniff are gone — arity now
-// comes from the ABI catalogue (`compiler_v2/abi/runtime_catalogue`).
+// comes from the ABI catalogue (`abi/runtime_catalogue`).
 // The per-suffix unit tests that used to live here moved to
 // `runtime_catalogue_test.cc::KernelArityCanaries`; the seed-table
 // integration test `OverloadTableSeedArityAgainstCatalogue` below
@@ -579,7 +579,7 @@ TEST(OverloadTableTest, CoverageTripwireClassifiesEveryStandardId) {
         << "cel-cpp StandardOverloadIds id `" << id << "` is unclassified — "
         << "add it to `kBuiltinSeeds` (with a runtime helper) or to "
         << "`kExplicitlyUnimplementedIds` (with a comment naming the deferral "
-        << "milestone) in compiler_v2/codegen/overload_table.cc.";
+        << "milestone) in compiler/codegen/overload_table.cc.";
     EXPECT_FALSE(resolvable && unimplemented)
         << "id `" << id << "` is BOTH resolvable AND in "
         << "kExplicitlyUnimplementedIds; remove from one of the two sets.";

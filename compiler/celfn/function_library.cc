@@ -1,4 +1,4 @@
-#include "compiler_v2/celfn/function_library.h"
+#include "compiler/celfn/function_library.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,8 +17,8 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "antlr4-runtime.h"
-#include "compiler_v2/celfn/CelfnLexer.h"
-#include "compiler_v2/celfn/CelfnParser.h"
+#include "compiler/celfn/CelfnLexer.h"
+#include "compiler/celfn/CelfnParser.h"
 
 namespace celwasm {
 

@@ -1,6 +1,6 @@
 // Emit the `cel.abi` custom section from the compile-time layout.
 //
-// Compile-side counterpart to `compiler_v2/api/internal/abi_decode.h`
+// Compile-side counterpart to `eval/internal/abi_decode.h`
 // (load-time decoder).  Compile.cc calls `EmitCelAbi` after
 // LayoutPass + LowerToEvalFunction and before module.Serialize();
 // Engine::Plan calls the decoder after reading the wasm bytes.
@@ -15,9 +15,9 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/codegen/expr_lower.h"
-#include "compiler_v2/codegen/layout_pass.h"
+#include "abi/cel_abi.pb.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/layout_pass.h"
 
 namespace celwasm {
 

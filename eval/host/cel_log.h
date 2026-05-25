@@ -12,7 +12,7 @@
 //     a `wasmtime_linker_t` under the `cel_env` module namespace.
 //
 // Format mini-language (matching the docstring in
-// `compiler_v2/runtime/cel_runtime.h`):
+// `runtime/cel_runtime.h`):
 //
 //   %s   string span           (u32 ptr, u32 len) packed into payload
 //   %d   signed i64

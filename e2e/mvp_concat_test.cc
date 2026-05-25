@@ -18,10 +18,10 @@
 #include <string>
 
 #include "absl/status/statusor.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/value.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::api {

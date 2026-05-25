@@ -1,13 +1,13 @@
-#include "compiler_v2/runtime/cel_matches.h"
+#include "runtime/cel_matches.h"
 
 #include <cstdint>
 #include <memory>
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
 #include "re2/re2.h"
 
 namespace {

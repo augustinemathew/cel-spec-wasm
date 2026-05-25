@@ -29,9 +29,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_format_internal.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_format_internal.h"
 
 namespace celwasm::string_format_internal {
 

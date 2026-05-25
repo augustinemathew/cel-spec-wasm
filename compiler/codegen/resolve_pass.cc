@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/resolve_pass.h"
+#include "compiler/codegen/resolve_pass.h"
 
 #include <cstdint>
 #include <string>
@@ -12,8 +12,8 @@
 #include "common/ast_traverse.h"
 #include "common/ast_visitor_base.h"
 #include "common/expr.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 

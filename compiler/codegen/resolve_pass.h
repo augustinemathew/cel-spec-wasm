@@ -7,8 +7,8 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 

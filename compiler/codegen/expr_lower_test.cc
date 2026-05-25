@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/expr_lower.h"
+#include "compiler/codegen/expr_lower.h"
 
 #include <cstdint>
 #include <cstring>
@@ -9,13 +9,13 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "binaryen-c.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/codegen/overload_table.h"
-#include "compiler_v2/codegen/resolve_pass.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/codegen/overload_table.h"
+#include "compiler/codegen/resolve_pass.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

@@ -7,7 +7,7 @@
 //   - Error paths: malformed magic / version, missing section,
 //     truncated / invalid payload, truncated LEB128.
 
-#include "compiler_v2/api/internal/abi_decode.h"
+#include "eval/internal/abi_decode.h"
 
 #include <cstdint>
 #include <string>
@@ -18,10 +18,10 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/compile.h"
-#include "compiler_v2/ir/annotations.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "abi/cel_abi.pb.h"
+#include "compiler/internal/compile.h"
+#include "compiler/ir/annotations.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 

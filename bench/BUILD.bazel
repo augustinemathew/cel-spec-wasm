@@ -6,8 +6,8 @@ package(default_visibility = ["//compiler_v2:__subpackages__"])
 # (`bazel test //compiler_v2/...` skips them).  Run explicitly when
 # you want numbers:
 #
-#   bazel run -c opt //compiler_v2/bench:kernel_bench
-#   bazel run -c opt //compiler_v2/bench:pipeline_bench
+#   bazel run -c opt //bench:kernel_bench
+#   bazel run -c opt //bench:pipeline_bench
 #
 # Always pass `-c opt`; debug builds with sanitizers blow the timing
 # numbers up by ~10x and are useless as a baseline.
@@ -22,7 +22,7 @@ cc_binary(
     copts = ["-std=c++17"],
     tags = ["manual"],
     deps = [
-        "//compiler_v2/runtime:cel_runtime",
+        "//runtime:cel_runtime",
         "@com_google_absl//absl/strings",
         "@com_google_benchmark//:benchmark_main",
     ],
@@ -39,15 +39,15 @@ cc_binary(
     copts = ["-std=c++17"],
     tags = ["manual"],
     deps = [
-        "//compiler_v2/testdata:e2e_fixture_cc_proto",
-        "//compiler_v2/api:activation",
-        "//compiler_v2/api:cel_host",  # for Value::Message(proto)
-        "//compiler_v2/api:compiler",
-        "//compiler_v2/api:engine",
-        "//compiler_v2/api:instance",
-        "//compiler_v2/api:program",
-        "//compiler_v2/api:type",
-        "//compiler_v2/api:value",
+        "//testdata:e2e_fixture_cc_proto",
+        "//eval:activation",
+        "//eval:cel_host",  # for Value::Message(proto)
+        "//compiler:compiler",
+        "//eval:engine",
+        "//eval:instance",
+        "//compiler:program",
+        "//common:type",
+        "//eval:value",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
         "@com_google_benchmark//:benchmark_main",
@@ -59,20 +59,20 @@ cc_binary(
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in compiler_v2/README.md.  Not a benchmark (no timing); just a
 # size reporter.  Run with:
-#   bazel run -c opt //compiler_v2/bench:program_size_main
+#   bazel run -c opt //bench:program_size_main
 cc_binary(
     name = "program_size_main",
     srcs = ["program_size_main.cc"],
     copts = ["-std=c++17"],
     tags = ["manual"],
     deps = [
-        "//compiler_v2/api:activation",
-        "//compiler_v2/api:compiler",
-        "//compiler_v2/api:program",
-        "//compiler_v2/api:type",
-        "//compiler_v2/api:value",
-        "//compiler_v2/frontend:parse_and_check",
-        "//compiler_v2/runtime:cel_runtime",
+        "//eval:activation",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//common:type",
+        "//eval:value",
+        "//compiler/frontend:parse_and_check",
+        "//runtime:cel_runtime",
         "//proto/cel/expr:checked_cc_proto",
         "@cel-cpp//common:ast_proto",
         "@com_google_absl//absl/log:absl_check",

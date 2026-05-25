@@ -13,7 +13,7 @@
 //   - per-element-kind round-trip (int / string)
 //   - nested message / list element interns into the right namespace
 
-#include "compiler_v2/api/internal/cel_host.h"
+#include "eval/internal/cel_host.h"
 
 #include <cstdint>
 #include <cstring>
@@ -22,12 +22,12 @@
 #include <utility>
 #include <vector>
 
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host_test_fakes.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host_test_fakes.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "runtime/cel_data.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "gtest/gtest.h"
 

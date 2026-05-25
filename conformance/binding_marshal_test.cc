@@ -1,4 +1,4 @@
-#include "compiler_v2/conformance/binding_marshal.h"
+#include "conformance/binding_marshal.h"
 
 #include <string>
 #include <vector>
@@ -9,8 +9,8 @@
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/eval.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "eval/value.h"
 #include "google/protobuf/text_format.h"
 #include "gtest/gtest.h"
 

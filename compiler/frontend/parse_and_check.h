@@ -7,8 +7,8 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/celfn/function_library.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/celfn/function_library.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 

@@ -12,9 +12,9 @@ cc_library(
     hdrs = ["wat_runner.h"],
     tags = ["manual"],
     deps = [
-        "//compiler_v2/host:cel_log",
-        "//compiler_v2/runtime:cel_runtime",
-        "//compiler_v2/runtime:cel_runtime_wasm_bytes",
+        "//eval/host:cel_log",
+        "//runtime:cel_runtime",
+        "//runtime:cel_runtime_wasm_bytes",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -35,7 +35,7 @@ cc_test(
     tags = ["manual"],
     deps = [
         ":wat_runner",
-        "//compiler_v2/runtime:cel_runtime",
+        "//runtime:cel_runtime",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

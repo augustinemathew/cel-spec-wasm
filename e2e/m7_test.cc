@@ -67,17 +67,17 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/internal/cel_host.h"  // HostListBacking definition
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/internal/cel_host.h"  // HostListBacking definition
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto2.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
@@ -1002,7 +1002,7 @@ TEST_F(ProtoLiteralEqualityE2ETest, ConstructedEqualsBoundProto) {
 //     two polish bullets.  list-of-message verifies kMessage
 //     element encoding inside the list-encoder.  map-from-
 //     activation may pull in the kMap encoder (currently SKIP
-//     per `compiler_v2/conformance/README.md`); if so, M7.C
+//     per `conformance/README.md`); if so, M7.C
 //     lands the encoder.
 // ──────────────────────────────────────────────────────────────
 

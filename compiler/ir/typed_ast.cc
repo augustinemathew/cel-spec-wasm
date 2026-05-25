@@ -1,4 +1,4 @@
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/ir/typed_ast.h"
 
 #include "absl/types/variant.h"
 #include "common/ast.h"
@@ -8,7 +8,7 @@
 #include "common/expr.h"
 #include "common/type.h"
 #include "common/type_kind.h"
-#include "compiler_v2/ir/annotations.h"
+#include "compiler/ir/annotations.h"
 #include "google/protobuf/descriptor.h"
 
 namespace celwasm {

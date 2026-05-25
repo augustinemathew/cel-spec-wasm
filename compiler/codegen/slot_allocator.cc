@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/slot_allocator.h"
+#include "compiler/codegen/slot_allocator.h"
 
 #include <cstdint>
 

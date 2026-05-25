@@ -1,4 +1,4 @@
-#include "compiler_v2/ir/annotations.h"
+#include "compiler/ir/annotations.h"
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"

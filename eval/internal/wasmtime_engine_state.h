@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-#include "compiler_v2/api/host_callback.h"  // for celwasm::api::HostCallback
+#include "eval/host_callback.h"  // for celwasm::api::HostCallback
 #include "wasm.h"
 #include "wasmtime.h"
 

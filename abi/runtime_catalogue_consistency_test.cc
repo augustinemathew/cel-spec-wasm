@@ -1,9 +1,9 @@
 // Tripwire: the `[codegen-helpers]` section in
-// `compiler_v2/runtime/wasm_exports.txt` MUST be a set-identical
+// `runtime/wasm_exports.txt` MUST be a set-identical
 // mirror of `abi::CelRuntimeHelpers()`.
 //
 // Why: that text file is the single source of truth feeding the
-// wasm-ld response file (`//compiler_v2/runtime:wasm_export_args`).
+// wasm-ld response file (`//runtime:wasm_export_args`).
 // If a helper lands in the catalogue without being added to the
 // text file, the linker dead-strips it and `Engine::Plan`'s
 // `BindAllRuntimeExports` trips on "missing export <name>" at
@@ -29,17 +29,17 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
+#include "abi/runtime_catalogue.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::abi {
 namespace {
 
 // Path relative to the test's cwd at runtime.  The text file is
-// declared as `data = ["//compiler_v2/runtime:wasm_exports.txt"]`
+// declared as `data = ["//runtime:wasm_exports.txt"]`
 // in the consuming BUILD target, so bazel stages it at this path.
 constexpr absl::string_view kExportsTxt =
-    "compiler_v2/runtime/wasm_exports.txt";
+    "runtime/wasm_exports.txt";
 
 // Section in the text file we mirror against the catalogue.
 constexpr absl::string_view kCodegenSection = "codegen-helpers";
@@ -81,7 +81,7 @@ TEST(RuntimeCatalogueConsistency, CodegenSectionMatchesCatalogueExactly) {
   std::ifstream in{std::string(kExportsTxt)};
   ASSERT_TRUE(in.is_open())
       << "could not open " << kExportsTxt << " — confirm the test's BUILD "
-      << "entry includes `data = [\"//compiler_v2/runtime:wasm_exports.txt\"]`";
+      << "entry includes `data = [\"//runtime:wasm_exports.txt\"]`";
   std::stringstream buf;
   buf << in.rdbuf();
   const auto sections = ParseExportsTxt(buf.str());

@@ -13,22 +13,22 @@
 //
 // Spec citations: timestamp / duration acceptance envelope is pinned
 // by the existing host trampolines (`CelTimestampParseImpl` /
-// `CelDurationParseImpl` in `compiler_v2/api/internal/cel_host.cc`),
+// `CelDurationParseImpl` in `eval/internal/cel_host.cc`),
 // which the runtime kernels mirror verbatim per `phase-c-plan.md`
 // §4.1-4.4.  Langdef bounds: years 0001..9999 (RFC3339 lexical),
 // duration |seconds| ≤ 315_576_000_000 (proto JSON envelope).
 
-#include "compiler_v2/runtime/cel_time_parse.h"
+#include "runtime/cel_time_parse.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

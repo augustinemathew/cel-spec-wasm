@@ -49,7 +49,7 @@
 
 #include <stdint.h>
 
-#include "compiler_v2/runtime/cel_data.h"
+#include "runtime/cel_data.h"
 
 #ifdef __cplusplus
 extern "C" {

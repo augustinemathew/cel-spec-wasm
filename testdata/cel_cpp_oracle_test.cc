@@ -20,7 +20,7 @@
 // our-pipeline-and-oracle differential links cleanly in one binary.
 // It stays consolidated here for cohesion, not out of necessity.
 
-#include "compiler_v2/testdata/cel_cpp_oracle.h"
+#include "testdata/cel_cpp_oracle.h"
 
 #include <cstdint>
 #include <limits>
@@ -33,13 +33,13 @@
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto2/test_all_types.pb.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/conformance/runner.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
+#include "conformance/runner.h"
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 

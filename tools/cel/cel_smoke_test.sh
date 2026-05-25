@@ -4,10 +4,10 @@
 # value_format_test against real descriptor pools.
 set -eo pipefail
 
-CEL="${TEST_SRCDIR}/_main/compiler_v2/tools/cel/cel"
+CEL="${TEST_SRCDIR}/_main/tools/cel/cel"
 if [[ ! -x "${CEL}" ]]; then
   echo "FAIL: cannot find cel binary at ${CEL}" >&2
-  ls -la "${TEST_SRCDIR}/_main/compiler_v2/tools/cel/" >&2 || true
+  ls -la "${TEST_SRCDIR}/_main/tools/cel/" >&2 || true
   exit 1
 fi
 
@@ -47,7 +47,7 @@ expect "duration cmp" "true" \
   "${CEL}" eval 'd > duration("1s")' --var 'd:duration="2s"'
 
 # --var values containing commas (the CLI-handling concern under
-# test).  Run via `check` because compiler_v2's eval path doesn't
+# test).  Run via `check` because celwasm's eval path doesn't
 # yet support comprehensions over activation-bound lists or any
 # activation-bound map (codebase-level "later milestone" gates) —
 # `check` exercises the CLI's argv extraction + value parsing

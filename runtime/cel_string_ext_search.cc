@@ -12,7 +12,7 @@
 // `::LastIndexOf` / `::Substring` / `::Replace`
 // (`common/values/string_value.cc`) line-for-line.
 
-#include "compiler_v2/runtime/cel_string_ext.h"
+#include "runtime/cel_string_ext.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -22,9 +22,9 @@
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_ext_internal.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_ext_internal.h"
 
 namespace {
 

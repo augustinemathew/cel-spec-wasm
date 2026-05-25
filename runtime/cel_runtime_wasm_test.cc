@@ -7,7 +7,7 @@
 // clang would treat `*(uint32_t*)(0+off) = v` as undefined and
 // elide the store; `arena_reset` would compile to a no-op +
 // `cel_log` call and `arena_alloc` to `unreachable`.  See
-// `compiler_v2/runtime/cel_runtime.c::cel_memory_base_()`.
+// `runtime/cel_runtime.c::cel_memory_base_()`.
 //
 // This test stands up a minimal wasmtime harness that:
 //   1. Allocates a host-owned 2-page wasmtime_memory_t.
@@ -31,7 +31,7 @@
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "runtime/cel_runtime_wasm_bytes.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"

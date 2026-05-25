@@ -1,11 +1,11 @@
-#include "compiler_v2/abi/cel_abi_emit.h"
+#include "abi/cel_abi_emit.h"
 
 #include <cstdint>
 
 #include "absl/status/statusor.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
-#include "compiler_v2/codegen/layout_pass.h"
+#include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.h"
+#include "compiler/codegen/layout_pass.h"
 
 namespace celwasm {
 

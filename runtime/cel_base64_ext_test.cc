@@ -8,12 +8,12 @@
 // round-trip over a 256-byte blob, and the 3VL / kind-mismatch
 // envelope over both kernels.
 
-#include "compiler_v2/runtime/cel_base64_ext.h"
+#include "runtime/cel_base64_ext.h"
 
 #include <string>
 
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/string_ext_test_helpers.h"
+#include "runtime/cel_data.h"
+#include "runtime/string_ext_test_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

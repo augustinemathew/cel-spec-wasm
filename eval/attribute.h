@@ -24,7 +24,7 @@
 //                  Attributes travel directly).
 //
 // ErrorCode / ErrorPayload (the other 3VL carrier) live in
-// `compiler_v2/api/error.h` — kept separate so code that only
+// `eval/error.h` — kept separate so code that only
 // needs attribute matching (e.g. partial-eval plumbing) doesn't
 // pull in the error header.
 

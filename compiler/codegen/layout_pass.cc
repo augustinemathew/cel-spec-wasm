@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/layout_pass.h"
+#include "compiler/codegen/layout_pass.h"
 
 #include <cstdint>
 #include <utility>
@@ -10,12 +10,12 @@
 #include "common/ast_visitor_base.h"
 #include "common/constant.h"
 #include "common/expr.h"
-#include "compiler_v2/codegen/resolve_pass.h"
-#include "compiler_v2/codegen/slot_allocator.h"
-#include "compiler_v2/codegen/static_memory_builder.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "compiler/codegen/resolve_pass.h"
+#include "compiler/codegen/slot_allocator.h"
+#include "compiler/codegen/static_memory_builder.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm {
 

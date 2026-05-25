@@ -18,16 +18,16 @@
 // Slice B.  Negative coverage for those kinds is the trap itself
 // (CLAUDE.md "Unimplemented features" — crash at the call site).
 
-#include "compiler_v2/runtime/cel_optional.h"
+#include "runtime/cel_optional.h"
 
 #include <cstdint>
 #include <cstring>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_runtime.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_runtime.h"
 #include "gtest/gtest.h"
 
 extern "C" {

@@ -71,7 +71,7 @@ fi
 #
 # Portability + boundary design: BSD sed (macOS) does NOT support `\b`, and the
 # repo builds on both macOS and Linux, so the rules use NO word-boundary
-# escape. Each rule is a pure PREFIX replacement: `//compiler_v2/api:engine`
+# escape. Each rule is a pure PREFIX replacement: `//eval:engine`
 # -> `//eval:engine` rewrites the prefix and leaves any suffix intact, so a
 # suffixed target (`:engine_test`, `:instance_impl`) follows its base leaf to
 # the same destination package. This is safe ONLY because every api leaf that
@@ -83,7 +83,7 @@ fi
 # ---------------------------------------------------------------------------
 SED_RULES=(
   # ---- §1.4 strip_import_prefix (proto_library under spec/proto/**) ----
-  's#strip_import_prefix = "/proto"#strip_import_prefix = "/spec/proto"#g'
+  's#strip_import_prefix = "/spec/proto"#strip_import_prefix = "/spec/proto"#g'
 
   # ===================================================================
   # api/ FAN-OUT — explicit, longest-match-first (the one non-prefix case).
@@ -95,36 +95,36 @@ SED_RULES=(
   #      cel_host, ...other leaves} -> eval/
   # ===================================================================
 
-  # --- api/type -> common/type  (label `//compiler_v2/api:type` and include
-  #     "compiler_v2/api/type.h"; must precede the generic api rule) ---
-  's#//compiler_v2/api:type#//common:type#g'
+  # --- api/type -> common/type  (label `//common:type` and include
+  #     "common/type.h"; must precede the generic api rule) ---
+  's#//common:type#//common:type#g'
   's#"compiler_v2/api/type\.h"#"common/type.h"#g'
 
   # --- api/compiler, api/program -> //compiler:compiler, //compiler:program ---
-  's#//compiler_v2/api:compiler#//compiler:compiler#g'
-  's#//compiler_v2/api:program#//compiler:program#g'
+  's#//compiler:compiler#//compiler:compiler#g'
+  's#//compiler:program#//compiler:program#g'
   's#"compiler_v2/api/compiler\.h"#"compiler/compiler.h"#g'
   's#"compiler_v2/api/program\.h"#"compiler/program.h"#g'
 
   # --- api/cel_pipeline_bench -> bench/ ---
-  's#//compiler_v2/api:cel_pipeline_bench#//bench:cel_pipeline_bench#g'
-  's#"compiler_v2/api/cel_pipeline_bench#"bench/cel_pipeline_bench#g'
+  's#//bench:cel_pipeline_bench#//bench:cel_pipeline_bench#g'
+  's#"bench/cel_pipeline_bench#"bench/cel_pipeline_bench#g'
 
   # --- api/internal/ -> eval/internal/ (more specific than api/<leaf>) ---
-  's#//compiler_v2/api/internal#//eval/internal#g'
-  's#"compiler_v2/api/internal/#"eval/internal/#g'
+  's#//eval/internal#//eval/internal#g'
+  's#"eval/internal/#"eval/internal/#g'
 
   # --- api/<eval leaves> -> eval/ : engine, instance, activation, value,
   #     error, attribute, host_callback, cel_host (label) ---
   #     Labels (named targets):
-  's#//compiler_v2/api:engine#//eval:engine#g'
-  's#//compiler_v2/api:instance#//eval:instance#g'
-  's#//compiler_v2/api:activation#//eval:activation#g'
-  's#//compiler_v2/api:value#//eval:value#g'
-  's#//compiler_v2/api:error#//eval:error#g'
-  's#//compiler_v2/api:attribute#//eval:attribute#g'
-  's#//compiler_v2/api:host_callback#//eval:host_callback#g'
-  's#//compiler_v2/api:cel_host#//eval:cel_host#g'
+  's#//eval:engine#//eval:engine#g'
+  's#//eval:instance#//eval:instance#g'
+  's#//eval:activation#//eval:activation#g'
+  's#//eval:value#//eval:value#g'
+  's#//eval:error#//eval:error#g'
+  's#//eval:attribute#//eval:attribute#g'
+  's#//eval:host_callback#//eval:host_callback#g'
+  's#//eval:cel_host#//eval:cel_host#g'
   #     Includes (header files) for the same eval leaves:
   's#"compiler_v2/api/engine\.h"#"eval/engine.h"#g'
   's#"compiler_v2/api/instance\.h"#"eval/instance.h"#g'
@@ -139,46 +139,46 @@ SED_RULES=(
   # ===================================================================
 
   # --- compiler_v2/host/ -> eval/host/ ---
-  's#//compiler_v2/host#//eval/host#g'
-  's#"compiler_v2/host/#"eval/host/#g'
+  's#//eval/host#//eval/host#g'
+  's#"eval/host/#"eval/host/#g'
 
   # --- compiler_v2/{frontend,ir,codegen,celfn}/ -> compiler/<same> ---
-  's#//compiler_v2/frontend#//compiler/frontend#g'
-  's#//compiler_v2/ir#//compiler/ir#g'
-  's#//compiler_v2/codegen#//compiler/codegen#g'
-  's#//compiler_v2/celfn#//compiler/celfn#g'
-  's#"compiler_v2/frontend/#"compiler/frontend/#g'
-  's#"compiler_v2/ir/#"compiler/ir/#g'
-  's#"compiler_v2/codegen/#"compiler/codegen/#g'
-  's#"compiler_v2/celfn/#"compiler/celfn/#g'
+  's#//compiler/frontend#//compiler/frontend#g'
+  's#//compiler/ir#//compiler/ir#g'
+  's#//compiler/codegen#//compiler/codegen#g'
+  's#//compiler/celfn#//compiler/celfn#g'
+  's#"compiler/frontend/#"compiler/frontend/#g'
+  's#"compiler/ir/#"compiler/ir/#g'
+  's#"compiler/codegen/#"compiler/codegen/#g'
+  's#"compiler/celfn/#"compiler/celfn/#g'
 
-  # --- compiler_v2/compile.{h} + //compiler_v2:compile -> compiler/internal ---
-  's#//compiler_v2:compile#//compiler/internal:compile#g'
+  # --- compiler_v2/compile.{h} + //compiler/internal:compile -> compiler/internal ---
+  's#//compiler/internal:compile#//compiler/internal:compile#g'
   's#"compiler_v2/compile\.h"#"compiler/internal/compile.h"#g'
 
   # --- compiler_v2/{abi,runtime}/ -> strip compiler_v2/ ---
-  's#//compiler_v2/abi#//abi#g'
-  's#//compiler_v2/runtime#//runtime#g'
-  's#"compiler_v2/abi/#"abi/#g'
-  's#"compiler_v2/runtime/#"runtime/#g'
+  's#//abi#//abi#g'
+  's#//runtime#//runtime#g'
+  's#"abi/#"abi/#g'
+  's#"runtime/#"runtime/#g'
 
   # --- compiler_v2/{tools,conformance,e2e,bench,testdata}/ -> strip ---
-  's#//compiler_v2/tools#//tools#g'
-  's#//compiler_v2/conformance#//conformance#g'
-  's#//compiler_v2/e2e#//e2e#g'
-  's#//compiler_v2/bench#//bench#g'
-  's#//compiler_v2/testdata#//testdata#g'
-  's#"compiler_v2/tools/#"tools/#g'
-  's#"compiler_v2/conformance/#"conformance/#g'
-  's#"compiler_v2/e2e/#"e2e/#g'
-  's#"compiler_v2/bench/#"bench/#g'
-  's#"compiler_v2/testdata/#"testdata/#g'
+  's#//tools#//tools#g'
+  's#//conformance#//conformance#g'
+  's#//e2e#//e2e#g'
+  's#//bench#//bench#g'
+  's#//testdata#//testdata#g'
+  's#"tools/#"tools/#g'
+  's#"conformance/#"conformance/#g'
+  's#"e2e/#"e2e/#g'
+  's#"bench/#"bench/#g'
+  's#"testdata/#"testdata/#g'
   #     bare-path (non-label, non-include) forms used in scripts / configs:
-  's#compiler_v2/conformance/#conformance/#g'
-  's#compiler_v2/tools/#tools/#g'
-  's#compiler_v2/e2e/#e2e/#g'
-  's#compiler_v2/bench/#bench/#g'
-  's#compiler_v2/testdata/#testdata/#g'
+  's#conformance/#conformance/#g'
+  's#tools/#tools/#g'
+  's#e2e/#e2e/#g'
+  's#bench/#bench/#g'
+  's#testdata/#testdata/#g'
 
   # ===================================================================
   # Heritage moves (§1.2 spec rows).
@@ -187,7 +187,7 @@ SED_RULES=(
   # at root, so NO //proto/cel rewrite here — adding one would break W3.
   # Only tests/ moves.
   # ===================================================================
-  's#//tests/simple#//spec/tests/simple#g'
+  's#//spec/tests/simple#//spec/tests/simple#g'
 )
 
 # ---------------------------------------------------------------------------

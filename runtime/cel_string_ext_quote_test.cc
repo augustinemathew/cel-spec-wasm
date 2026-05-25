@@ -7,9 +7,9 @@
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_string_ext.h"
-#include "compiler_v2/runtime/string_ext_test_helpers.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_string_ext.h"
+#include "runtime/string_ext_test_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

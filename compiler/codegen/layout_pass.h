@@ -7,9 +7,9 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "compiler_v2/codegen/resolve_pass.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/codegen/resolve_pass.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -54,7 +54,7 @@ struct LayoutOptions {
   // reserved low slots.  Non-zero values shift every rodata-,
   // workspace-, and arena-derived offset by the same amount.
   //
-  // Used by `compiler_v2/celfn/library_module.cc` to give each
+  // Used by `compiler/celfn/library_module.cc` to give each
   // bundled CEL-defined-fn body a non-overlapping rodata range in
   // the shared `cel.memory` — without this, two modules instantiated
   // against the same memory would write their data segments on top

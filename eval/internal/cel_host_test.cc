@@ -4,7 +4,7 @@
 // unknown-pattern match, aliasing, marshal) through fake
 // MemoryView/ExternrefTable/ArenaAllocator impls.
 
-#include "compiler_v2/api/internal/cel_host.h"
+#include "eval/internal/cel_host.h"
 
 #include <cstdint>
 #include <cstring>
@@ -17,13 +17,13 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host_test_fakes.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host_test_fakes.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto2.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
@@ -147,7 +147,7 @@ TEST(ProtoBackingReadFieldTest, Proto3UnsetStringDefaultsEmpty) {
 
 // M4.G flipped: REPEATED fields now return Value::HostList(ProtoList).
 // Detailed coverage of element kinds + boundary semantics lives in
-// compiler_v2/api/internal/proto_list_test.cc; this test pins the
+// eval/internal/proto_list_test.cc; this test pins the
 // shape ProtoBacking::ReadField returns.
 TEST(ProtoBackingReadFieldTest, RepeatedReturnsHostList) {
   HostMsg3 m;

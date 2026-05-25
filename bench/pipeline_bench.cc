@@ -4,7 +4,7 @@
 // representative AST-kind matrix.
 //
 // Setup discipline (mirrors the e2e fixtures in
-// `compiler_v2/e2e/m{2,4,5,7,9,10}_test.cc`):
+// `e2e/m{2,4,5,7,9,10}_test.cc`):
 //   - One shared `celwasm::api::Engine` per process (`GlobalEngine()`) — its
 //     construction cost is amortised across thousands of Plans / Evals
 //     in real use, and our bench shouldn't double-charge it.
@@ -42,14 +42,14 @@
 
 #include "absl/log/absl_check.h"
 #include "benchmark/benchmark.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 
 namespace celwasm::api {

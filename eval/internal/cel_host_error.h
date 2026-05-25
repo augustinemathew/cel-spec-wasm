@@ -26,10 +26,10 @@
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host.h"
+#include "eval/value.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm {
 

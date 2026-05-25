@@ -1,4 +1,4 @@
-#include "compiler_v2/api/compiler.h"
+#include "compiler/compiler.h"
 
 #include <string>
 #include <utility>
@@ -9,9 +9,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/compile.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "compiler/internal/compile.h"
 
 namespace celwasm::api {
 

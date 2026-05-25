@@ -9,17 +9,17 @@
 // `matches` section verbatim — these are the cases C5 conformance
 // flips from SKIP to PASS).
 
-#include "compiler_v2/runtime/cel_matches.h"
+#include "runtime/cel_matches.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

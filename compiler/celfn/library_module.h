@@ -20,8 +20,8 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
-#include "compiler_v2/celfn/function_library.h"
-#include "compiler_v2/compile.h"
+#include "compiler/celfn/function_library.h"
+#include "compiler/internal/compile.h"
 
 namespace celwasm {
 

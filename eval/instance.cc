@@ -1,4 +1,4 @@
-#include "compiler_v2/api/instance.h"
+#include "eval/instance.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,17 +15,17 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/abi_decode.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/internal/instance_impl.h"
-#include "compiler_v2/api/internal/wasmtime_engine_state.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
+#include "eval/activation.h"
+#include "eval/attribute.h"
+#include "eval/error.h"
+#include "eval/internal/abi_decode.h"
+#include "eval/internal/cel_host.h"
+#include "eval/internal/instance_impl.h"
+#include "eval/internal/wasmtime_engine_state.h"
+#include "eval/value.h"
+#include "compiler/ir/annotations.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
 #include "google/protobuf/message.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -488,7 +488,7 @@ absl::Status KindMismatch(absl::string_view name, absl::string_view declared,
 // `TryEncodeWktWrapperMessage` so the parent stays under the
 // readability-function-size gate.  Returns 0 (not a valid CelKind
 // for the unwrap path) if `fqn` isn't a wrapper.  Mirrors
-// `WrapperKindFromFqn` in `compiler_v2/codegen/expr_lower.cc`.
+// `WrapperKindFromFqn` in `compiler/codegen/expr_lower.cc`.
 uint32_t WrapperFqnToCelKind(absl::string_view fqn) {
   if (fqn == "google.protobuf.BoolValue") return CEL_BOOL;
   if (fqn == "google.protobuf.Int32Value" ||
@@ -548,7 +548,7 @@ bool WriteNumericWrapperPayload(const google::protobuf::Reflection& refl,
 
 // Wrapper-coercion at activation bind.  When a declared variable
 // is a wrapper type (`Int32Value`, `BoolValue`, …) the
-// `compiler_v2/ir/typed_ast.cc:56` mapping collapses it to the
+// `compiler/ir/typed_ast.cc:56` mapping collapses it to the
 // matching scalar Repr (see `rewrite/m8-wrapper-types.md`).  When the embedder binds a
 // `Value::Message(Int32Value{value: 5})` against an Int32Value-
 // declared variable, the Encode path that fires here is `EncodeInt`

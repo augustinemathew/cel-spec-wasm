@@ -1,5 +1,5 @@
 // Conformance runner — drives one `SimpleTest` row through the
-// compiler_v2 pipeline (Compile → Plan → Eval) and classifies the
+// celwasm pipeline (Compile → Plan → Eval) and classifies the
 // outcome as PASS / SKIP / FAIL.  SKIP rows always carry a
 // `SkipCategory` tag (declared in runner.h) so the aggregator can
 // group counts by category without parsing detail text.
@@ -29,7 +29,7 @@
 // Adding a new SKIP category: extend `SkipCategory` + `SkipCategoryName`
 // in runner.h, then route to it from `RunOne` (or a helper).
 
-#include "compiler_v2/conformance/runner.h"
+#include "conformance/runner.h"
 
 #include <algorithm>
 #include <cmath>
@@ -63,15 +63,15 @@
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/conformance/binding_marshal.h"
-#include "compiler_v2/frontend/status_tags.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/internal/cel_host.h"
+#include "compiler/program.h"
+#include "eval/value.h"
+#include "conformance/binding_marshal.h"
+#include "compiler/frontend/status_tags.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/message_differencer.h"

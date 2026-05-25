@@ -21,9 +21,9 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "eval/attribute.h"
+#include "eval/value.h"
 
 namespace celwasm {
 struct WasmtimeEngineState;

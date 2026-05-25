@@ -1,14 +1,14 @@
-#include "compiler_v2/runtime/cel_compare.h"
+#include "runtime/cel_compare.h"
 
 #include <cmath>
 #include <cstdint>
 #include <limits>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 // M5.B comparison helper coverage.  The bulk of the matrix

@@ -14,8 +14,8 @@
 #include <vector>
 
 #include "antlr4-runtime.h"
-#include "compiler_v2/celfn/CelfnLexer.h"
-#include "compiler_v2/celfn/CelfnParser.h"
+#include "compiler/celfn/CelfnLexer.h"
+#include "compiler/celfn/CelfnParser.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 

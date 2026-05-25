@@ -41,16 +41,16 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/activation.h"
+#include "eval/attribute.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
@@ -681,7 +681,7 @@ TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
 //  from `Value::Error(kTypeUnsupported)` to
 //  `Value::HostList(ProtoList{...})`.  Host-side coverage of
 //  that flip lives in
-//  compiler_v2/api/internal/proto_list_test.cc::ReadFieldRepeatedReturnsHostList
+//  eval/internal/proto_list_test.cc::ReadFieldRepeatedReturnsHostList
 //  + cel_host_test.cc::RepeatedFieldSurfacesAsHostList.
 //
 //  The end-to-end Eval flow (`customer.tags[0]` returns "tag0")

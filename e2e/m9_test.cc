@@ -13,7 +13,7 @@
 // the `typed_result:` runner matcher in M9.F (harness-only) and
 // is NOT exercised here — m9_test asserts user-visible
 // capabilities, not harness behaviour.  Those rows are covered
-// by `compiler_v2/conformance/runner_test.cc`.
+// by `conformance/runner_test.cc`.
 //
 // Fixtures grouped by capability (one section per slice):
 //
@@ -69,16 +69,16 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/internal/cel_host.h"  // Value::Message(proto)
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/host_fixture_proto2.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/internal/cel_host.h"  // Value::Message(proto)
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/host_fixture_proto2.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 

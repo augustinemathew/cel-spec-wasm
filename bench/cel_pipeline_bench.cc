@@ -9,12 +9,12 @@
 // Per Plan §6 (revised after the Compiler/Engine split): bench
 // against the production user-facing surface, not the raw wasmtime
 // API.  The experiment-branch bench
-// (compiler_v2/host/two_phase_topology_bench.cc) measured raw
+// (eval/host/two_phase_topology_bench.cc) measured raw
 // wasmtime APIs and stand-alone WAT modules; this one measures
 // what users actually call.
 //
 // Run:
-//   bazel run -c opt //compiler_v2/api:cel_pipeline_bench -- \
+//   bazel run -c opt //bench:cel_pipeline_bench -- \
 //       --benchmark_min_time=1s
 //
 // Inputs.  M1 ships scalar literals only.  Five representative
@@ -49,10 +49,10 @@
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 #include "benchmark/benchmark.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
 
 namespace celwasm::api {
 namespace {

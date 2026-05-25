@@ -22,12 +22,12 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::api {
@@ -60,7 +60,7 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 // ──────────────────────────────────────────────────────────────────
 // BUG: lossy double rounding in numeric map-key equality.
 //
-// `map_keys_equal` (compiler_v2/runtime/cel_runtime.c:42-43) compares
+// `map_keys_equal` (runtime/cel_runtime.c:42-43) compares
 // two numeric keys with `numeric_compare_kernel(...) == kCmpEqual`,
 // which for the int-vs-double case casts the int to double
 // (cel_compare.c:139, `cmp_double((double)a, b)`).  For |int| > 2^53

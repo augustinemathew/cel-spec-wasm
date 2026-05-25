@@ -8,18 +8,18 @@
 // Mirrors the shape of cel_map_test.cc; coverage targets enumerated
 // in `m4-list-literals.md §6.1`.
 
-#include "compiler_v2/runtime/cel_list.h"
+#include "runtime/cel_list.h"
 
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 extern "C" {

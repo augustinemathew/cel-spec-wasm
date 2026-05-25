@@ -5,7 +5,7 @@
 // wasmtime dependency; safe to copy across process boundaries
 // (serialize the bytes, reconstruct on the other end via
 // `Program::FromWasm(bytes)`).  An `Engine` is required to Plan a
-// Program into an Instance — see compiler_v2/api/engine.h — but
+// Program into an Instance — see eval/engine.h — but
 // the Program itself never holds engine state.
 //
 // This split (Compiler / Program / Engine / Instance) replaces an

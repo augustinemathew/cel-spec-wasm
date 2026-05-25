@@ -1,4 +1,4 @@
-#include "compiler_v2/api/internal/cel_host_error.h"
+#include "eval/internal/cel_host_error.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,10 +7,10 @@
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/runtime/cel_data.h"  // CEL_ERR_* wire codes
+#include "eval/error.h"
+#include "eval/internal/cel_host.h"
+#include "eval/value.h"
+#include "runtime/cel_data.h"  // CEL_ERR_* wire codes
 
 namespace celwasm {
 

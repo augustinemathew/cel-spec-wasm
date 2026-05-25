@@ -1,10 +1,10 @@
-#include "compiler_v2/api/activation.h"
+#include "eval/activation.h"
 
 #include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 

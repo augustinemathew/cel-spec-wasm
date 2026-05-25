@@ -21,7 +21,7 @@
 // Diagnostic strings match cel-cpp's `ParsePrecision` / `Format`
 // verbatim so future drift surfaces immediately.
 
-#include "compiler_v2/runtime/cel_string_format_internal.h"
+#include "runtime/cel_string_format_internal.h"
 
 #include "absl/status/status.h"
 #include "gtest/gtest.h"
@@ -292,11 +292,11 @@ TEST(ParseFormatTest, RejectsPercentAfterPercentPercent) {
 #include <limits>
 
 #include "absl/strings/str_cat.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_format.h"
-#include "compiler_v2/runtime/string_ext_test_helpers.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_format.h"
+#include "runtime/string_ext_test_helpers.h"
 
 namespace celwasm {
 namespace {

@@ -8,7 +8,7 @@
 // wiring is tested in isolation and the test doesn't regress when
 // the codegen flip lands.
 
-#include "compiler_v2/api/engine.h"
+#include "eval/engine.h"
 
 #include <cstdint>
 #include <thread>
@@ -17,10 +17,10 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
+#include "compiler/compiler.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"

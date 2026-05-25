@@ -27,8 +27,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/error.h"
+#include "eval/attribute.h"
+#include "eval/error.h"
 
 // Forward-decl to avoid pulling protobuf into api/value.h's transitive
 // set.  Users that build a `Value::Message` already include protobuf.
@@ -38,7 +38,7 @@ class Message;
 
 // Forward-decl so Value can carry a shared_ptr<HostMessageBacking> in
 // its payload without pulling cel_host.h into every includer.  Full
-// definition lives in `compiler_v2/api/internal/cel_host.h`.
+// definition lives in `eval/internal/cel_host.h`.
 namespace celwasm {
 class HostMessageBacking;
 class HostMapBacking;
@@ -121,7 +121,7 @@ class Value {
   // `google::protobuf::Message`; embedders with JSON / XML /
   // struct-of-structs data shapes provide their own subclass of
   // `celwasm::HostMessageBacking` (see
-  // `compiler_v2/api/internal/cel_host.h`).
+  // `eval/internal/cel_host.h`).
   static Value HostMessage(
       std::shared_ptr<celwasm::HostMessageBacking> backing);
 
@@ -131,7 +131,7 @@ class Value {
   // observes this Value (typically the Activation-Bind-to-Eval
   // window).
   //
-  // Implemented in `compiler_v2/api/internal/cel_host.cc` rather
+  // Implemented in `eval/internal/cel_host.cc` rather
   // than `value.cc` — the implementation needs `ProtoBacking`'s
   // complete definition, and keeping the dependency one-way
   // (cel_host -> value, never the reverse) avoids a library cycle.

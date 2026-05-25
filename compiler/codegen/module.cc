@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/module.h"
+#include "compiler/codegen/module.h"
 
 #include <cstdint>
 #include <cstdlib>

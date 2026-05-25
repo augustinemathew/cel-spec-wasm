@@ -3,13 +3,13 @@
 #include <string>
 #include <utility>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_list.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_map.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_list.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_map.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 // M5.D step 1 — aggregate-op kArena fast paths.  Coverage:

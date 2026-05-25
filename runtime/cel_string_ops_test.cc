@@ -1,14 +1,14 @@
-#include "compiler_v2/runtime/cel_string_ops.h"
+#include "runtime/cel_string_ops.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 // M5.C string + bytes op coverage.  Exercises every helper at the

@@ -23,8 +23,8 @@
 
 #include "absl/base/nullability.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "eval/internal/cel_host.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm {
 namespace test {

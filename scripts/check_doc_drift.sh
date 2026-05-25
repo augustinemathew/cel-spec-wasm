@@ -10,7 +10,7 @@
 #
 # Two reference classes:
 #
-#   1. **Backtick-quoted paths**:  `compiler_v2/foo/bar.cc`,
+#   1. **Backtick-quoted paths**:  `compiler/foo/bar.cc`,
 #      `doc/implementation-plan/rewrite/baz.md` — checked via
 #      `[[ -e <path> ]]`.
 #
@@ -87,8 +87,13 @@ is_ignored() {
 # Two-line grep: identifier-ish tokens in tracked source files.
 src_corpus=$(mktemp)
 trap 'rm -f "$src_corpus"' EXIT
-git ls-files 'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c' \
-              'compiler/**/*.cc' 'compiler/**/*.h' 2>/dev/null \
+git ls-files 'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
+              'eval/**/*.cc' 'eval/**/*.h' 'eval/**/*.c' \
+              'common/**/*.cc' 'common/**/*.h' \
+              'abi/**/*.cc' 'abi/**/*.h' 'runtime/**/*.cc' 'runtime/**/*.h' 'runtime/**/*.c' \
+              'tools/**/*.cc' 'tools/**/*.h' 'conformance/**/*.cc' 'conformance/**/*.h' \
+              'e2e/**/*.cc' 'e2e/**/*.h' 'bench/**/*.cc' 'bench/**/*.h' \
+              'testdata/**/*.cc' 'testdata/**/*.h' 2>/dev/null \
   | xargs -I{} grep -hoE '\b[A-Za-z_][A-Za-z0-9_]+\b' {} 2>/dev/null \
   | sort -u > "$src_corpus"
 

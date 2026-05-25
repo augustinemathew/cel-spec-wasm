@@ -60,14 +60,14 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 
@@ -520,7 +520,7 @@ INSTANTIATE_TEST_SUITE_P(
         // ±10000-year range but OUTSIDE the int64-nanos bound
         // cel-cpp / arith_duration_in_range enforces (verified
         // against cel-cpp empirically; see
-        // `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
+        // `throwaway/cel_cpp_corner_probe.cc`).
         ArithCase{"TsSubTs_LangdefSpan", ArithOp::kTsSubTs, 253402300799LL, 0,
                   -62135596800LL, 0, true, 0, 0}),
     [](const ::testing::TestParamInfo<ArithCase>& info) {

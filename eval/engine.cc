@@ -1,4 +1,4 @@
-#include "compiler_v2/api/engine.h"
+#include "eval/engine.h"
 
 #include <cstddef>
 #include <cstring>
@@ -12,14 +12,14 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
-#include "compiler_v2/api/internal/abi_decode.h"
-#include "compiler_v2/api/internal/instance_impl.h"
-#include "compiler_v2/api/internal/wasmtime_engine_state.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/host/cel_log.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "abi/runtime_catalogue.h"
+#include "eval/internal/abi_decode.h"
+#include "eval/internal/instance_impl.h"
+#include "eval/internal/wasmtime_engine_state.h"
+#include "compiler/program.h"
+#include "eval/host/cel_log.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_runtime_wasm_bytes.h"
 #include "google/protobuf/descriptor.h"
 #include "wasi.h"
 #include "wasm.h"
@@ -218,7 +218,7 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
 //
 // Categories below mirror the seed grouping in
 // The pre-2026-05-22 hand-maintained `kRuntimeExports` array was
-// removed in favour of `compiler_v2/abi/runtime_catalogue` — the
+// removed in favour of `abi/runtime_catalogue` — the
 // `cel`-namespace span there drives both `BindAllRuntimeExports`
 // below and codegen's import-declaration pass in
 // `compile.cc::InstallOverloadImports`.  Single source of truth.

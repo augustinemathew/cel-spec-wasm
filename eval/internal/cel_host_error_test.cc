@@ -5,7 +5,7 @@
 // inside `cel_host.cc` and only exercised transitively via the
 // Compile → Plan → Eval e2e suite; this file pins them directly.
 
-#include "compiler_v2/api/internal/cel_host_error.h"
+#include "eval/internal/cel_host_error.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,11 +14,11 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/internal/cel_host_test_fakes.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host.h"
+#include "eval/internal/cel_host_test_fakes.h"
+#include "eval/value.h"
+#include "runtime/cel_data.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

@@ -2,7 +2,7 @@
 // in the header catch most of these; this file pins the values at
 // the test boundary so a renumber fails loudly during `bazel test`.
 
-#include "compiler_v2/runtime/cel_data.h"
+#include "runtime/cel_data.h"
 
 #include <cstddef>
 #include <cstdint>

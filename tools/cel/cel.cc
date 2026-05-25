@@ -5,8 +5,8 @@
 //   cel check   <expr> [--var name:Type] [--proto ... | --descriptor_set ...]
 //   cel compile <expr> -o <out.wasm> [--O 0..3] ...
 //
-// See compiler_v2/tools/cel/var_parser.h for the `--var` literal
-// grammar and compiler_v2/tools/cel/value_format.h for `--format`.
+// See tools/cel/var_parser.h for the `--var` literal
+// grammar and tools/cel/value_format.h for `--format`.
 
 #include <cstdint>
 #include <fstream>
@@ -27,15 +27,15 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/compile.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/tools/cel/value_format.h"
-#include "compiler_v2/tools/cel/var_parser.h"
+#include "eval/activation.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
+#include "compiler/internal/compile.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "tools/cel/value_format.h"
+#include "tools/cel/var_parser.h"
 #include "google/protobuf/compiler/parser.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"

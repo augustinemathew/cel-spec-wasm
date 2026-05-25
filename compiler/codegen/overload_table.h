@@ -84,7 +84,7 @@ struct OverloadImpl {
 absl::string_view ImportModuleName(const OverloadImpl& impl);
 
 // `InferHelperArity` was removed 2026-05-22.  Helper arities now
-// come from the ABI catalogue in `compiler_v2/abi/runtime_catalogue.h`
+// come from the ABI catalogue in `abi/runtime_catalogue.h`
 // — the single source of truth across codegen, the engine's
 // runtime-export allowlist, and the wasm linker's `--export=` set.
 // Callers that need arity for a built-in helper name use

@@ -6,7 +6,7 @@
 // spans.  Pre-empts the kind of drift that motivated the catalogue
 // in the first place.
 
-#include "compiler_v2/abi/runtime_catalogue.h"
+#include "abi/runtime_catalogue.h"
 
 #include <cstdint>
 #include <string>
@@ -15,7 +15,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
+#include "abi/cel_abi.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::abi {

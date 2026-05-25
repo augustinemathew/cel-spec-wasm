@@ -5,7 +5,7 @@
 // Compile / Plan integration is covered by compiler_test.cc and
 // (later) engine_test.cc respectively.
 
-#include "compiler_v2/api/program.h"
+#include "compiler/program.h"
 
 #include <cstdint>
 #include <utility>

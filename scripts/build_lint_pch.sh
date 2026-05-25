@@ -2,7 +2,7 @@
 # build_lint_pch.sh — build the precompiled-header used by lint.sh.
 #
 # Reads flags from compile_commands.json (the first non-test
-# compiler_v2 .cc entry — gtest's `-I` is absent from non-test TUs,
+# project .cc entry — gtest's `-I` is absent from non-test TUs,
 # so the resulting PCH is valid for both test and non-test files),
 # substitutes brew clang as the compiler, and emits
 # scripts/lint_pch.h → .lint-cache/lint_pch.h.pch.
@@ -12,6 +12,10 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+
+# Project-package set (exec-doc §1.0) — space-joined for build command lines.
+# `//...` is unusable (vendored third_party/cel-cpp loads an undeclared repo).
+PROJ="//compiler/... //eval/... //common/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/..."
 
 PCH_HEADER="scripts/lint_pch.h"
 PCH_OUT=".lint-cache/lint_pch.h.pch"
@@ -35,7 +39,7 @@ fi
 # warm bazel cache.
 # GUARD (perf): the line below used to run UNCONDITIONALLY on every
 # lint.  On a warm tree it's ~2s, but on a cold/evicted tree it is a
-# full `bazel build //compiler_v2/...` — i.e. a from-scratch cel-cpp
+# full `bazel build $PROJ` — i.e. a from-scratch cel-cpp
 # compile — which made `lint.sh` take ~10 min (measured 609s for two
 # files).  The symlinks only need repopulating when they're actually
 # gone, so skip the build entirely when the heavy externals are
@@ -47,7 +51,7 @@ if [[ -z "$exec_root" ]] \
    || ! compgen -G "$exec_root/external/*cel-cpp*" >/dev/null 2>&1; then
   echo "build_lint_pch.sh: external symlinks missing — populating" \
        "(one-time; subsequent lints skip this)." >&2
-  bazel build //compiler_v2/... //compiler_v2/bench:kernel_bench \
+  bazel build $PROJ \
     >/dev/null 2>&1 || true
 fi
 
@@ -79,15 +83,19 @@ header_abs, pch_out_abs, clang = sys.argv[1:4]
 with open('compile_commands.json') as f:
     db = json.load(f)
 
-# Pick a non-test compiler_v2 .cc entry whose `-iquote`/`-I` set
+# Pick a non-test project .cc entry whose `-iquote`/`-I` set
 # actually pulls in absl + protobuf — otherwise the PCH-build clang
 # can't resolve the absl headers and the PCH never produces.  Bazel
 # generates many tiny TUs that don't depend on absl (e.g. proto-only
 # emitters); skip those.
+PROJ_DIRS = ('compiler/', 'eval/', 'common/', 'abi/', 'runtime/',
+             'tools/', 'conformance/', 'e2e/', 'bench/', 'testdata/')
 entry = None
 for e in db:
     f = e.get('file', '')
-    if 'compiler_v2' not in f or not f.endswith('.cc'):
+    if not f.endswith('.cc') or not any(d in f for d in PROJ_DIRS):
+        continue
+    if 'external/' in f or 'third_party/' in f:
         continue
     if '_test.cc' in f or '/test_' in f:
         continue
@@ -105,7 +113,7 @@ for e in db:
     entry = e
     break
 if entry is None:
-    sys.exit('no non-test compiler_v2 .cc entry with absl+protobuf deps')
+    sys.exit('no non-test project .cc entry with absl+protobuf deps')
 
 args = list(entry['arguments'])
 out = []

@@ -40,9 +40,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/host_callback.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
+#include "eval/host_callback.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
 
 namespace celwasm {
 struct WasmtimeEngineState;
@@ -68,7 +68,7 @@ namespace celwasm::api {
 //     wasm execution with the error message.
 //
 // CelValue layout is the canonical 24-byte shape from
-// `compiler_v2/runtime/cel_data.h`.  Slice C.1 ships this raw
+// `runtime/cel_data.h`.  Slice C.1 ships this raw
 // shape; Slice C.2 wires the typed `celwasm::api::FunctionImpl` (from
 // `api/activation.h`, signature `Value(Span<const Value>) const`)
 // on top as the user-facing layer, with a coercion shim that

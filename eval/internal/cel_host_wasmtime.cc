@@ -1,4 +1,4 @@
-#include "compiler_v2/api/internal/cel_host_wasmtime.h"
+#include "eval/internal/cel_host_wasmtime.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,10 +15,10 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.h"
+#include "eval/internal/cel_host.h"
+#include "runtime/cel_data.h"
 #include "google/protobuf/descriptor.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -389,7 +389,7 @@ extern "C" wasm_trap_t* CelResolveMessageTypeNameTrampoline(
 // The timestamp / duration parse + format trampolines previously
 // here have been deleted along with their `*Impl` bodies; codegen
 // now routes the four ids to runtime-hosted absl kernels.  See
-// `compiler_v2/runtime/cel_time_parse.cc` and
+// `runtime/cel_time_parse.cc` and
 // `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
 extern "C" wasm_trap_t* CelWktUnwrapTimeTrampoline(
@@ -561,7 +561,7 @@ BuildHostTrampolineIndex() {
                nullptr)
         << "cel_host trampoline `" << t.name
         << "` is not in abi::CelHostFunctions() — add a catalogue entry "
-           "in compiler_v2/abi/runtime_catalogue.cc or delete the "
+           "in abi/runtime_catalogue.cc or delete the "
            "trampoline.";
   }
   return idx;

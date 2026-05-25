@@ -1,4 +1,4 @@
-#include "compiler_v2/api/activation.h"
+#include "eval/activation.h"
 
 #include <string>
 #include <utility>
@@ -8,7 +8,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 
 namespace celwasm::api {
 

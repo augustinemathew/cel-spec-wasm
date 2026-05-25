@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # regen_conformance_readme.sh — regenerate the auto-managed tables
-# in compiler_v2/conformance/README.md from a live run_conformance
+# in conformance/README.md from a live run_conformance
 # invocation.
 #
 # Two tables are auto-managed (between AUTOGEN markers):
@@ -28,7 +28,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-README="compiler_v2/conformance/README.md"
+README="conformance/README.md"
 MODE="rewrite"
 FROM_LOG=""
 
@@ -64,7 +64,7 @@ else
   TMPOUT="$(mktemp -t conformance.XXXXXX)"
   trap 'rm -f "$TMPOUT"' EXIT
   echo "==> Running conformance (slow on a cold bazel cache)..." >&2
-  bazel run -c opt //compiler_v2/conformance:run_conformance \
+  bazel run -c opt //conformance:run_conformance \
       --ui_event_filters=-info,-stdout,-stderr --noshow_progress \
       > "$TMPOUT" 2>/dev/null
 fi

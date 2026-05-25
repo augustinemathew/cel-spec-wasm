@@ -1,4 +1,4 @@
-#include "compiler_v2/api/internal/instance_impl.h"
+#include "eval/internal/instance_impl.h"
 
 namespace celwasm {
 

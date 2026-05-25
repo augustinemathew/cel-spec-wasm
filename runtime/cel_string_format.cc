@@ -22,7 +22,7 @@
 // status too, so a malformed format string sticks without
 // re-reporting.
 
-#include "compiler_v2/runtime/cel_string_format.h"
+#include "runtime/cel_string_format.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -38,10 +38,10 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_format_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_format_internal.h"
 
 namespace celwasm::string_format_internal {
 

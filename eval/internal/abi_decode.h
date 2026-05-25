@@ -14,8 +14,8 @@
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/ir/annotations.h"  // for Repr
+#include "abi/cel_abi.pb.h"
+#include "compiler/ir/annotations.h"  // for Repr
 
 namespace celwasm {
 

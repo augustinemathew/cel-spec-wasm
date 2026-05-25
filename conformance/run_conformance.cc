@@ -1,6 +1,6 @@
 // Exploration binary: walks every upstream
 // `tests/simple/testdata/*.textproto` fixture, runs each
-// `SimpleTest` through the compiler_v2 pipeline, and prints a
+// `SimpleTest` through the celwasm pipeline, and prints a
 // per-file `pass / skip / fail` tally + a SKIP-by-category
 // breakdown (using `SkipCategory` from `runner.h`).  Optionally
 // prints individual FAIL details and SKIP-detail samples.
@@ -8,15 +8,15 @@
 // Not a CI gate — exits 0 regardless of outcome.  Use this to
 // answer "how much of the spec conformance does this branch
 // cover?" and to regenerate the per-fixture inventory + the
-// SKIP-by-category aggregate that `compiler_v2/conformance/README.md`
+// SKIP-by-category aggregate that `conformance/README.md`
 // quotes.
 //
 // Invocation:
 //
-//   bazel run //compiler_v2/conformance:run_conformance
-//   bazel run //compiler_v2/conformance:run_conformance -- \
+//   bazel run //conformance:run_conformance
+//   bazel run //conformance:run_conformance -- \
 //       --file tests/simple/testdata/comparisons.textproto
-//   bazel run //compiler_v2/conformance:run_conformance -- \
+//   bazel run //conformance:run_conformance -- \
 //       --max_skip_examples=2000   # dump every SKIP detail
 
 #include <array>
@@ -32,8 +32,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/test/simple.pb.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/conformance/runner.h"
+#include "eval/engine.h"
+#include "conformance/runner.h"
 
 // Same suppressions as compiler/cli/celwasmc_eval_main.cc:
 //   - misc-use-internal-linkage: ABSL_FLAG generates extern helpers.
@@ -231,7 +231,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::size_t fail = 0;
   std::array<std::size_t, kCategories.size()> corpus_by_category{};
 
-  std::cout << "compiler_v2 conformance run\n";
+  std::cout << "celwasm conformance run\n";
   for (const auto& path : paths) {
     FileTally t = RunFile(path, engine, max_fail, max_skip);
     PrintTally(t);

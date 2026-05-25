@@ -1,4 +1,4 @@
-#include "compiler_v2/runtime/cel_time_parse.h"
+#include "runtime/cel_time_parse.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -9,9 +9,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
 
 namespace {
 
@@ -51,7 +51,7 @@ inline absl::string_view BorrowSpan(const CelSpan& s) {
 
 // Decompose an absl::Duration into the proto-style (seconds, nanos)
 // pair the CelDurTs payload holds.  Mirrors `DecomposeAbslDuration`
-// in `compiler_v2/api/internal/cel_host.h`.
+// in `eval/internal/cel_host.h`.
 void DecomposeAbslDuration(absl::Duration d, CelDurTs* out) {
   out->seconds = absl::IDivDuration(d, absl::Seconds(1), &d);
   out->nanos =

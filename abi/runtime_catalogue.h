@@ -26,12 +26,12 @@
 // This catalogue replaces three pre-existing hand-maintained
 // surfaces that drifted independently:
 //
-//   1. `kRuntimeExports` in `compiler_v2/api/engine.cc` (the
+//   1. `kRuntimeExports` in `eval/engine.cc` (the
 //      allowlist binding runtime exports onto the linker).
-//   2. `-Wl,--export=...` flags in `compiler_v2/runtime/BUILD.bazel`
+//   2. `-Wl,--export=...` flags in `runtime/BUILD.bazel`
 //      (the wasm-link export list).
 //   3. `InferHelperArity` + the 15-entry exception table in
-//      `compiler_v2/codegen/overload_table.cc` (the name-suffix
+//      `compiler/codegen/overload_table.cc` (the name-suffix
 //      sniff that recovered arity at OverloadTable::Build time).
 //
 // All three are now derived from `kCelRuntimeHelpers` /
@@ -55,7 +55,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
+#include "abi/cel_abi.pb.h"
 
 namespace celwasm::abi {
 

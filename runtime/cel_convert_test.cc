@@ -1,4 +1,4 @@
-#include "compiler_v2/runtime/cel_convert.h"
+#include "runtime/cel_convert.h"
 
 #include <cmath>
 #include <cstdint>
@@ -6,11 +6,11 @@
 #include <limits>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 // M10 — conversion-kernel coverage.  Four sections, one per

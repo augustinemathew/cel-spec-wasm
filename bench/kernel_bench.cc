@@ -1,6 +1,6 @@
 // Runtime kernel microbenches — deliverable A of the post-M10 bench
 // suite.  Each BENCHMARK function micro-measures one load-bearing kernel
-// out of `compiler_v2/runtime/cel_*.c`, with operands staged once outside
+// out of `runtime/cel_*.c`, with operands staged once outside
 // the hot loop and the arena pre-reset so the timed window is just the
 // kernel call.
 //
@@ -36,18 +36,18 @@
 
 #include "absl/strings/string_view.h"
 #include "benchmark/benchmark.h"
-#include "compiler_v2/runtime/cel_3vl.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_arith.h"
-#include "compiler_v2/runtime/cel_compare.h"
-#include "compiler_v2/runtime/cel_convert.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_list.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_map.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_ops.h"
+#include "runtime/cel_3vl.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_arith.h"
+#include "runtime/cel_compare.h"
+#include "runtime/cel_convert.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_list.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_map.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_ops.h"
 
 // NOLINTBEGIN(clang-analyzer-deadcode.DeadStores)
 // `for (auto _ : state)` is the standard Google Benchmark loop

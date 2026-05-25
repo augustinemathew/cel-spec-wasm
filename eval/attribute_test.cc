@@ -1,4 +1,4 @@
-#include "compiler_v2/api/attribute.h"
+#include "eval/attribute.h"
 
 #include <string>
 #include <vector>
@@ -428,7 +428,7 @@ TEST(AttributeIdTest, EqualityByNumericId) {
 }
 
 // Error tests live in error_test.cc — ErrorCode/ErrorPayload moved
-// into compiler_v2/api/error.h to keep attribute/ compilation lean.
+// into eval/error.h to keep attribute/ compilation lean.
 
 }  // namespace
 }  // namespace celwasm

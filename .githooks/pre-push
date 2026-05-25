@@ -8,7 +8,7 @@
 #      /tmp/conformance_last_run.log.
 #   2. Re-uses that log to verify the per-fixture / skip-totals /
 #      headline / addressable-prose markers in
-#      compiler_v2/conformance/README.md are in sync with the live
+#      conformance/README.md are in sync with the live
 #      run (scripts/regen_conformance_readme.sh --check --from-log).
 #
 # Cost: ~30s on a warm bazel cache, 5-10 min on a cold one.  Skip

@@ -1,13 +1,13 @@
-#include "compiler_v2/runtime/cel_3vl.h"
+#include "runtime/cel_3vl.h"
 
 #include <cstdint>
 #include <vector>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 

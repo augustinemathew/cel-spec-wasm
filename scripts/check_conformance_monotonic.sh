@@ -6,7 +6,7 @@
 # the conformance suite is the canonical "does CEL behave per
 # spec" gate.  PASS count must rise monotonically on master.
 #
-# Baseline lives at `compiler_v2/conformance/.baseline` — a single
+# Baseline lives at `conformance/.baseline` — a single
 # integer line, the lowest PASS count master is allowed to drop
 # to.  Update only when a new milestone closes out (the new
 # baseline = the count locked at closeout).
@@ -24,7 +24,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-BASELINE_FILE="compiler_v2/conformance/.baseline"
+BASELINE_FILE="conformance/.baseline"
 mode="check"
 explicit_baseline=""
 
@@ -52,9 +52,9 @@ run_conformance() {
   # cold rebuild).  Pass count is identical across configs (verified
   # 1774==1774); the gate checks correctness, not eval throughput, so
   # the slower fastbuild eval is the right trade.  `-c opt` is reserved
-  # for benchmarks (//compiler_v2/bench) and CI.  See
+  # for benchmarks (//bench) and CI.  See
   # doc/implementation-plan/dev-loop-performance.md.
-  bazel run //compiler_v2/conformance:run_conformance 2>&1 \
+  bazel run //conformance:run_conformance 2>&1 \
     | tee /tmp/conformance_last_run.log \
     | grep -aE '^summary:' \
     | head -n1 \

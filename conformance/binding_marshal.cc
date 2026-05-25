@@ -1,4 +1,4 @@
-#include "compiler_v2/conformance/binding_marshal.h"
+#include "conformance/binding_marshal.h"
 
 #include <memory>
 #include <string>
@@ -13,10 +13,10 @@
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/eval.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "common/type.h"
+#include "eval/value.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"

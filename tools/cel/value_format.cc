@@ -1,4 +1,4 @@
-#include "compiler_v2/tools/cel/value_format.h"
+#include "tools/cel/value_format.h"
 
 #include <cstdint>
 #include <string>
@@ -12,9 +12,9 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/internal/cel_host.h"
-#include "compiler_v2/api/value.h"
+#include "eval/error.h"
+#include "eval/internal/cel_host.h"
+#include "eval/value.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/json_util.h"

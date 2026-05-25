@@ -1,4 +1,4 @@
-#include "compiler_v2/host/cel_log.h"
+#include "eval/host/cel_log.h"
 
 #include <cstdint>
 #include <cstring>
@@ -7,7 +7,7 @@
 
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/runtime/cel_runtime.h"
+#include "runtime/cel_runtime.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

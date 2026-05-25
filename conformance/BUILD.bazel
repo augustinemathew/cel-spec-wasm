@@ -15,14 +15,14 @@ cc_library(
     hdrs = ["runner.h"],
     deps = [
         ":binding_marshal",
-        "//compiler_v2/api:activation",
-        "//compiler_v2/api:cel_host",
-        "//compiler_v2/api:compiler",
-        "//compiler_v2/api:engine",
-        "//compiler_v2/api:instance",
-        "//compiler_v2/api:program",
-        "//compiler_v2/api:value",
-        "//compiler_v2/frontend:status_tags",
+        "//eval:activation",
+        "//eval:cel_host",
+        "//compiler:compiler",
+        "//eval:engine",
+        "//eval:instance",
+        "//compiler:program",
+        "//eval:value",
+        "//compiler/frontend:status_tags",
         # `TestAllTypes` descriptors registered at load time so
         # TextFormat::Parse can resolve google.protobuf.Any values
         # in the conformance textprotos (block_ext / dynamic / enums
@@ -54,10 +54,10 @@ cc_library(
     srcs = ["binding_marshal.cc"],
     hdrs = ["binding_marshal.h"],
     deps = [
-        "//compiler_v2/api:activation",
-        "//compiler_v2/api:compiler",
-        "//compiler_v2/api:type",
-        "//compiler_v2/api:value",
+        "//eval:activation",
+        "//compiler:compiler",
+        "//common:type",
+        "//eval:value",
         "//proto/cel/expr:checked_cc_proto",
         "//proto/cel/expr:eval_cc_proto",
         "//proto/cel/expr:value_cc_proto",
@@ -75,8 +75,8 @@ cc_test(
     srcs = ["runner_test.cc"],
     deps = [
         ":runner",
-        "//compiler_v2/api:error",
-        "//compiler_v2/api:value",
+        "//eval:error",
+        "//eval:value",
         "//proto/cel/expr:eval_cc_proto",
         "//proto/cel/expr/conformance/test:simple_cc_proto",
         "@com_google_absl//absl/log:absl_check",
@@ -92,12 +92,12 @@ cc_test(
     srcs = ["binding_marshal_test.cc"],
     deps = [
         ":binding_marshal",
-        "//compiler_v2/api:activation",
+        "//eval:activation",
         # M7: Value::OwnedMessage impl lives in cel_host.cc (needs
         # OwnedProtoBacking's complete definition).  Link cel_host
         # so binding_marshal_test resolves the symbol.
-        "//compiler_v2/api:cel_host",
-        "//compiler_v2/api:value",
+        "//eval:cel_host",
+        "//eval:value",
         "//proto/cel/expr:checked_cc_proto",
         "//proto/cel/expr:eval_cc_proto",
         "//proto/cel/expr:value_cc_proto",
@@ -164,8 +164,8 @@ cc_binary(
     tags = ["manual"],
     deps = [
         ":runner",
-        "//compiler_v2/api:compiler",
-        "//compiler_v2/api:engine",
+        "//compiler:compiler",
+        "//eval:engine",
         "//proto/cel/expr/conformance/test:simple_cc_proto",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",

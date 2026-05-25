@@ -8,18 +8,18 @@
 // (every valid/invalid v4+v6 form the corpus exercises) is the
 // load-bearing half.
 
-#include "compiler_v2/runtime/cel_net_ext.h"
+#include "runtime/cel_net_ext.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

@@ -2,7 +2,7 @@
 // `celwasm::api::Activation` — the exact shape the `cel` CLI's `--var
 // name:Type=value` flag produces.
 //
-// Why this lives under `tools/cel/` rather than `compiler_v2/e2e/`:
+// Why this lives under `tools/cel/` rather than `e2e/`:
 // the test matrix is specifically the "user hands the compiler an
 // activation containing aggregates" use case the CLI was built to
 // surface.  Compiler / pipeline / runtime checks all happen via the
@@ -30,15 +30,15 @@
 #include <vector>
 
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::tools::cel {

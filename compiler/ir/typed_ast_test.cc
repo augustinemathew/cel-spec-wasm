@@ -1,4 +1,4 @@
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/ir/typed_ast.h"
 
 #include <cstdint>
 #include <memory>
@@ -11,7 +11,7 @@
 #include "common/ast.h"
 #include "common/ast/metadata.h"
 #include "common/expr.h"
-#include "compiler_v2/ir/annotations.h"
+#include "compiler/ir/annotations.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "gtest/gtest.h"
@@ -141,7 +141,7 @@ TEST(ReprOfTest, AbstractTypeIsUnknown) {
 
 // `optional<T>` is wire-encoded as AbstractType{name="optional_type",
 // parameter_types=[inner]} by cel-cpp's checker (probed in
-// `compiler_v2/probes/optionals/ast_shape_probe_test.cc` Q8).  ReprOf
+// `probes/optionals/ast_shape_probe_test.cc` Q8).  ReprOf
 // must distinguish it from the generic AbstractTypeIsUnknown path so
 // codegen can route through `cel_select_optional_field_at_vv`.
 TEST(ReprOfTest, OptionalTypeAbstractIsKOptional) {

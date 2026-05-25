@@ -1,6 +1,6 @@
-#include "compiler_v2/frontend/parse_and_check.h"
+#include "compiler/frontend/parse_and_check.h"
 
-#include "compiler_v2/celfn/function_library.h"
+#include "compiler/celfn/function_library.h"
 
 #include <cstdint>
 #include <fstream>
@@ -39,9 +39,9 @@
 #include "common/expr.h"
 #include "common/source.h"
 #include "common/type.h"
-#include "compiler_v2/frontend/status_tags.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/frontend/status_tags.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 #include "extensions/bindings_ext.h"
 #include "extensions/comprehensions_v2.h"
 #include "extensions/encoders.h"

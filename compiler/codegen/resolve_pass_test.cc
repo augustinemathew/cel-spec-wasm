@@ -22,7 +22,7 @@
 //      expressions; locks first-seen dense indexing and per-node
 //      annotation correctness.
 
-#include "compiler_v2/codegen/resolve_pass.h"
+#include "compiler/codegen/resolve_pass.h"
 
 #include <cstdint>
 #include <string>
@@ -36,11 +36,11 @@
 #include "common/ast_traverse.h"
 #include "common/ast_visitor_base.h"
 #include "common/expr.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
-#include "compiler_v2/testdata/host_fixture_proto3.pb.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

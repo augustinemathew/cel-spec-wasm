@@ -14,7 +14,7 @@
 //     instantiate-time check then rejects programs compiled
 //     against the old version with a clear diagnostic.
 
-#include "compiler_v2/abi/runtime_catalogue.h"
+#include "abi/runtime_catalogue.h"
 
 #include <array>
 #include <cstdint>
@@ -26,7 +26,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
+#include "abi/cel_abi.pb.h"
 
 namespace celwasm::abi {
 

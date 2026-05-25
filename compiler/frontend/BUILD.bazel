@@ -24,9 +24,9 @@ cc_library(
     hdrs = ["parse_and_check.h"],
     deps = [
         ":status_tags",
-        "//compiler_v2/celfn:function_library",
-        "//compiler_v2/ir:annotations",
-        "//compiler_v2/ir:typed_ast",
+        "//compiler/celfn:function_library",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
         "//proto/cel/expr:syntax_cc_proto",
         "@cel-cpp//checker:optional",
         "@cel-cpp//checker:standard_library",
@@ -63,12 +63,12 @@ cc_test(
     srcs = ["parse_and_check_test.cc"],
     data = [
         "parse_and_check.h",
-        "//compiler_v2/testdata:e2e_fixture.proto",
+        "//testdata:e2e_fixture.proto",
     ],
     deps = [
         ":parse_and_check",
-        "//compiler_v2/ir:annotations",
-        "//compiler_v2/ir:typed_ast",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:expr",
         "@com_google_absl//absl/status",

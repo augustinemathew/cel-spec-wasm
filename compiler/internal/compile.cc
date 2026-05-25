@@ -1,4 +1,4 @@
-#include "compiler_v2/compile.h"
+#include "compiler/internal/compile.h"
 
 #include <cstdint>
 #include <optional>
@@ -14,16 +14,16 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "binaryen-c.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/abi/cel_abi_emit.h"
-#include "compiler_v2/abi/runtime_catalogue.h"
-#include "compiler_v2/codegen/expr_lower.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/codegen/overload_table.h"
-#include "compiler_v2/codegen/resolve_pass.h"
-#include "compiler_v2/frontend/parse_and_check.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "abi/cel_abi.pb.h"
+#include "abi/cel_abi_emit.h"
+#include "abi/runtime_catalogue.h"
+#include "compiler/codegen/expr_lower.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/codegen/overload_table.h"
+#include "compiler/codegen/resolve_pass.h"
+#include "compiler/frontend/parse_and_check.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -283,7 +283,7 @@ void InstallOverloadImportsExport(WasmModule& mod,
         abi::FindBuiltinHelper(abi::AbiModule::kCelRuntime, "cel_copy_slot");
     ABSL_CHECK(helper != nullptr)
         << "cel_copy_slot missing from ABI catalogue — see "
-           "compiler_v2/abi/runtime_catalogue.cc";
+           "abi/runtime_catalogue.cc";
     InstallOverloadImport(mod, "cel_copy_slot", "cel", helper->num_args);
     installed.insert(std::move(copy_key));
   }

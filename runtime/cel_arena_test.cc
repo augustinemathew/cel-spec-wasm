@@ -14,14 +14,14 @@
 //   - cel_value_at(0) is the absent sentinel; cel_value_at(off) for
 //     `off = arena_alloc(...)` is a valid pointer.
 
-#include "compiler_v2/runtime/cel_arena.h"
+#include "runtime/cel_arena.h"
 
 #include <cstdint>
 #include <cstring>
 
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

@@ -1,4 +1,4 @@
-#include "compiler_v2/tools/cel/var_parser.h"
+#include "tools/cel/var_parser.h"
 
 #include <cctype>
 #include <cstdint>
@@ -20,8 +20,8 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "common/type.h"
+#include "eval/value.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/message.h"

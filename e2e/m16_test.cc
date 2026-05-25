@@ -13,9 +13,9 @@
 // being completed in parallel (M16 Slices B/C/D).  Until those land
 // the checker rejects every `math.*` reference, so the target is
 // `tags = ["manual"]` in BUILD to keep it out of
-// `bazel test //compiler_v2/...` / CI.  When Slice D wires the
+// the project-package test sweep / CI.  When Slice D wires the
 // pipeline, remove the `tags = ["manual"]` line from the `m16_test`
-// target in `compiler_v2/e2e/BUILD.bazel` and this suite becomes a
+// target in `e2e/BUILD.bazel` and this suite becomes a
 // live acceptance gate.
 //
 // Sliced by function family per `rewrite/m16-math-ext.md` §5.2:
@@ -48,12 +48,12 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::api {

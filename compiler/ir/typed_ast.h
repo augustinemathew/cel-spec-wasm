@@ -9,7 +9,7 @@
 #include "common/ast.h"
 #include "common/ast/metadata.h"
 #include "common/type.h"
-#include "compiler_v2/ir/annotations.h"
+#include "compiler/ir/annotations.h"
 #include "google/protobuf/descriptor.h"
 
 namespace celwasm {

@@ -1,5 +1,5 @@
 // Single source of truth for runtime memory-layout constants.  Codegen
-// (compiler_v2/codegen), host glue (compiler_v2/api), and the runtime
+// (compiler/codegen), host glue (eval), and the runtime
 // itself all #include this header — drift between the three would
 // otherwise cause silent miscompiles or out-of-bounds writes.
 //

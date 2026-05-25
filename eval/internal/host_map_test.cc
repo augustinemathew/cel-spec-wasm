@@ -7,7 +7,7 @@
 // Lives in its own translation unit so the M3.D coverage doesn't
 // pull in cel_host_test.cc's wasmtime-trampoline dependencies.
 
-#include "compiler_v2/api/internal/cel_host.h"
+#include "eval/internal/cel_host.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,9 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "eval/error.h"
+#include "common/type.h"
+#include "eval/value.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

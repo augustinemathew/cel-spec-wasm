@@ -15,8 +15,8 @@
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/api/internal/cel_host.h"
+#include "abi/cel_abi.pb.h"
+#include "eval/internal/cel_host.h"
 #include "google/protobuf/descriptor.h"
 #include "wasmtime.h"
 

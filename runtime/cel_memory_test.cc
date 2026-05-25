@@ -1,4 +1,4 @@
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_memory.h"
 
 #include <cstdint>
 

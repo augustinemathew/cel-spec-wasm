@@ -18,7 +18,7 @@
 #include "absl/functional/any_invocable.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 
 namespace celwasm::api {
 

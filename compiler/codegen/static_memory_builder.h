@@ -41,7 +41,7 @@
 
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/runtime/cel_runtime.h"
+#include "runtime/cel_runtime.h"
 
 namespace celwasm {
 

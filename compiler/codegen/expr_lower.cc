@@ -1,4 +1,4 @@
-#include "compiler_v2/codegen/expr_lower.h"
+#include "compiler/codegen/expr_lower.h"
 
 #include <cstdint>
 #include <string>
@@ -13,12 +13,12 @@
 #include "absl/types/span.h"
 #include "binaryen-c.h"
 #include "common/expr.h"
-#include "compiler_v2/codegen/expr_lower_internal.h"
-#include "compiler_v2/codegen/layout_pass.h"
-#include "compiler_v2/codegen/module.h"
-#include "compiler_v2/codegen/overload_table.h"
-#include "compiler_v2/ir/annotations.h"
-#include "compiler_v2/ir/typed_ast.h"
+#include "compiler/codegen/expr_lower_internal.h"
+#include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
+#include "compiler/codegen/overload_table.h"
+#include "compiler/ir/annotations.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -527,7 +527,7 @@ BinaryenExpressionRef EmitCelSetFieldIfPresentCall(
 // tail-unwrap trampoline expects as its third argument.  Returns
 // 0 (not a valid CelKind for the unwrap path) for non-wrapper
 // FQNs — caller falls through.  Mirrors `IsWrapperFqn` in
-// `compiler_v2/api/internal/cel_host.cc` but maps to the inner
+// `eval/internal/cel_host.cc` but maps to the inner
 // scalar kind in a single call; Int32/Int64 collapse onto CEL_INT,
 // UInt32/UInt64 onto CEL_UINT, Float/Double onto CEL_DOUBLE per
 // CEL's value algebra (no 32-vs-64 distinction; see
@@ -550,7 +550,7 @@ uint32_t WrapperKindFromFqn(absl::string_view fqn) {
 // after the recursive build sets the message fields, emit a host
 // trampoline call that overwrites the message slot IN PLACE with
 // the equivalent scalar / Timestamp / Duration CelValue.  Necessary
-// because `compiler_v2/ir/typed_ast.cc:56` maps WKT-typed
+// because `compiler/ir/typed_ast.cc:56` maps WKT-typed
 // expressions to scalar Repr — the downstream pipeline expects a
 // scalar at this slot, not a `CEL_MESSAGE`.  See
 // `rewrite/m8-wrapper-types.md` and `rewrite/m7b-duration-timestamp.md`.

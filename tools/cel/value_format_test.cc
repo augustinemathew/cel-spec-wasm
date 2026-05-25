@@ -1,4 +1,4 @@
-#include "compiler_v2/tools/cel/value_format.h"
+#include "tools/cel/value_format.h"
 
 #include <memory>
 #include <string>
@@ -7,9 +7,9 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/match.h"
-#include "compiler_v2/api/error.h"
-#include "compiler_v2/api/value.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "eval/error.h"
+#include "eval/value.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::tools::cel {

@@ -1,4 +1,4 @@
-#include "compiler_v2/api/type.h"
+#include "common/type.h"
 
 #include <string>
 

@@ -9,17 +9,17 @@
 // individual TESTs.  Reading the test names should reveal the
 // invariant matrix at a glance.
 
-#include "compiler_v2/runtime/cel_map.h"
+#include "runtime/cel_map.h"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_make.h"
-#include "compiler_v2/runtime/cel_memory.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_make.h"
+#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
 
 extern "C" {

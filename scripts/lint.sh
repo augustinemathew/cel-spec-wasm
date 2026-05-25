@@ -6,7 +6,7 @@
 #   scripts/lint.sh path/to/file.cc    # inner loop: lint named file(s), ~4.6s
 #   scripts/lint.sh --branch           # pre-commit / PR gate: full branch diff vs main (~73s)
 #   scripts/lint.sh --dirty            # explicit synonym for the default
-#   scripts/lint.sh --all              # lint every compiler_v2/ source file
+#   scripts/lint.sh --all              # lint every project source file
 #
 # Behaviour:
 #   1. Run clang-format -i on each target file (in-place rewrite).
@@ -46,7 +46,7 @@ done
 #                     plus the working tree — the comprehensive pre-commit
 #                     / PR gate (~73s on ~20 files).
 #   --dirty           explicit synonym for the default.
-#   --all             every compiler_v2 source file.
+#   --all             every project source file.
 #   <file> [<file>…]  exactly the named files.
 #
 # Rationale + measured costs: doc/implementation-plan/dev-loop-performance.md
@@ -55,10 +55,18 @@ done
 # cheap by default.
 declare -a files=()
 
-# C/C++ sources under compiler_v2, as git pathspecs (reused below).
+# C/C++ sources under the project packages, as git pathspecs (reused below).
 _cc_globs=(
-  'compiler_v2/*.cc' 'compiler_v2/*.h' 'compiler_v2/*.c'
-  'compiler_v2/**/*.cc' 'compiler_v2/**/*.h' 'compiler_v2/**/*.c'
+  'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c'
+  'eval/**/*.cc' 'eval/**/*.h' 'eval/**/*.c'
+  'common/**/*.cc' 'common/**/*.h' 'common/**/*.c'
+  'abi/**/*.cc' 'abi/**/*.h' 'abi/**/*.c'
+  'runtime/**/*.cc' 'runtime/**/*.h' 'runtime/**/*.c'
+  'tools/**/*.cc' 'tools/**/*.h' 'tools/**/*.c'
+  'conformance/**/*.cc' 'conformance/**/*.h' 'conformance/**/*.c'
+  'e2e/**/*.cc' 'e2e/**/*.h' 'e2e/**/*.c'
+  'bench/**/*.cc' 'bench/**/*.h' 'bench/**/*.c'
+  'testdata/**/*.cc' 'testdata/**/*.h' 'testdata/**/*.c'
 )
 
 _dedup_files() {
@@ -70,7 +78,8 @@ _dedup_files() {
 case "${1:-}" in
   --all)
     while IFS= read -r -d '' f; do files+=("$f"); done < <(
-      find compiler_v2 -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
+      find compiler eval common abi runtime tools conformance e2e bench testdata \
+        -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
         -print0
     )
     ;;
@@ -182,11 +191,11 @@ echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s) — jobs=$JOBS, pch
 # `clang++` as the driver for every entry, even plain C files — which
 # errors out as `-std=c11 not allowed with C++` when clang-tidy replays
 # the entry. Forcing `-xc` on C inputs sidesteps that. `.h` headers
-# under `compiler/runtime/` and `compiler_v2/runtime/` are treated as C because the runtime is a
+# under `runtime/` are treated as C because the runtime is a
 # C translation unit shared with C++ tests (wrapped in `extern "C"`).
 declare -a c_targets=()
 declare -a cpp_targets=()
-# `compiler_v2/runtime/*_internal.h` and `string_ext_test_helpers.h`
+# `runtime/*_internal.h` and `string_ext_test_helpers.h`
 # are C++-only orphan headers (use absl + gtest, no matching `.cc`
 # basename clang-tidy could pull a compile entry from).  Skip the
 # direct analysis — they're transitively covered by the `.cc` files
@@ -194,14 +203,13 @@ declare -a cpp_targets=()
 # discovery glob so a forced `--all` run still skips them.
 for f in "${targets[@]}"; do
   case "$f" in
-    compiler_v2/runtime/cel_string_ext_internal.h) continue ;;
-    compiler_v2/runtime/cel_string_format_internal.h) continue ;;
-    compiler_v2/runtime/string_ext_test_helpers.h) continue ;;
+    runtime/cel_string_ext_internal.h) continue ;;
+    runtime/cel_string_format_internal.h) continue ;;
+    runtime/string_ext_test_helpers.h) continue ;;
   esac
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
-    compiler/runtime/*.h)         c_targets+=("$f") ;;
-    compiler_v2/runtime/*.h)      c_targets+=("$f") ;;
+    runtime/*.h)                  c_targets+=("$f") ;;
     *)                            cpp_targets+=("$f") ;;
   esac
 done

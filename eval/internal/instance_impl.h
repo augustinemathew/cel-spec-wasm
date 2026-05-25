@@ -15,9 +15,9 @@
 #include <memory>
 #include <vector>
 
-#include "compiler_v2/abi/cel_abi.pb.h"
-#include "compiler_v2/api/host_callback.h"
-#include "compiler_v2/api/internal/cel_host_wasmtime.h"
+#include "abi/cel_abi.pb.h"
+#include "eval/host_callback.h"
+#include "eval/internal/cel_host_wasmtime.h"
 #include "wasmtime.h"
 
 namespace celwasm {

@@ -1,4 +1,4 @@
-#include "compiler_v2/tools/wat_runner/wat_runner.h"
+#include "tools/wat_runner/wat_runner.h"
 
 #include <array>
 #include <cstddef>
@@ -13,9 +13,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/host/cel_log.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_runtime_wasm_bytes.h"
+#include "eval/host/cel_log.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_runtime_wasm_bytes.h"
 #include "wasi.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -678,7 +678,7 @@ absl::Status RegisterPendingM7BImports(wasmtime_linker_t* linker) {
   }
   // 2-arg `cel_host.*` parse/format trampolines (M7B.D).  Each WAT
   // assumes `(out_slot, in_slot) -> ()`.  Production Layer-2 impls
-  // land in `compiler_v2/api/internal/cel_host.cc`.
+  // land in `eval/internal/cel_host.cc`.
   static constexpr absl::string_view kCelHostTwoArg[] = {
       "cel_timestamp_parse",
       "cel_duration_parse",

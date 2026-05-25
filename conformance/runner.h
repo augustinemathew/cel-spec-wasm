@@ -1,7 +1,7 @@
-// Conformance harness for compiler_v2.
+// Conformance harness for celwasm.
 //
 // Wraps a single upstream `cel.expr.conformance.test.SimpleTest` row
-// as a compiler_v2 pipeline invocation (`celwasm::api::Compiler::Compile` →
+// as a celwasm pipeline invocation (`celwasm::api::Compiler::Compile` →
 // `celwasm::api::Engine::Plan` → `celwasm::api::Instance::Eval`) and compares the
 // decoded `celwasm::api::Value` against the test's `cel.expr.Value` matcher.
 //
@@ -34,8 +34,8 @@
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/eval.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/value.h"
+#include "eval/engine.h"
+#include "eval/value.h"
 
 namespace celwasm::conformance {
 

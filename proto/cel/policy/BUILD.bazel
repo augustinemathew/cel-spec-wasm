@@ -16,7 +16,7 @@ proto_library(
     srcs = [
         "policy.proto",
     ],
-    strip_import_prefix = "/proto",
+    strip_import_prefix = "/spec/proto",
 )
 
 ##############################################################################

@@ -3,15 +3,15 @@
 // is pure compile-time and never touches wasmtime; tests here
 // reflect that — no wasm engine setup, no wasmtime deps.
 
-#include "compiler_v2/api/compiler.h"
+#include "compiler/compiler.h"
 
 #include <utility>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/testdata/e2e_fixture.pb.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 

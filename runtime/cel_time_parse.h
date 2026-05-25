@@ -2,7 +2,7 @@
 // `cel_runtime.wasm` module.  Self-hosted inside the runtime via
 // vendored absl + a small set of langdef-strict gates, replacing the
 // equivalent host-side trampolines previously in
-// `compiler_v2/api/internal/cel_host.cc`.
+// `eval/internal/cel_host.cc`.
 //
 // ABI: each kernel takes the canonical `(out_slot, in_slot)` pair of
 // linear-memory offsets, mirroring every other `_at_v` runtime

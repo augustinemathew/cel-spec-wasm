@@ -5,7 +5,7 @@
 // validations on top — overload-id synthesis, proto-on-foreign
 // rejection (§4.5.1), alias collisions, etc.
 
-#include "compiler_v2/celfn/function_library.h"
+#include "compiler/celfn/function_library.h"
 
 #include <string>
 

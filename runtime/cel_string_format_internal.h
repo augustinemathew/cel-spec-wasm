@@ -26,7 +26,7 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_data.h"
+#include "runtime/cel_data.h"
 
 namespace celwasm::string_format_internal {
 

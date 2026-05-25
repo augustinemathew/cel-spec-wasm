@@ -25,9 +25,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/celfn/function_library.h"
+#include "compiler/program.h"
+#include "common/type.h"
+#include "compiler/celfn/function_library.h"
 
 namespace celwasm::api {
 
@@ -57,7 +57,7 @@ struct VariableDeclaration {
 // Scope.  These knobs control the EXPR module (the per-expression
 // wasm bytes emitted by `Compile`).  They do NOT control the runtime
 // module (`cel_runtime.wasm`), which is compiled once at build time
-// with `-O3 -flto` unconditionally — see `compiler_v2/runtime/BUILD.
+// with `-O3 -flto` unconditionally — see `runtime/BUILD.
 // bazel` for the rationale.
 //
 // All three fields below are forwarded into the internal
@@ -93,7 +93,7 @@ struct CompilerOptions {
   //   2 — balanced (canonical `wasm-opt -O2` pipeline); ~2-3×
   //       Compile cost vs level 0, -50% Eval on chain-heavy bodies
   //       (e.g. 20-term comparison chain: 11.2 us → 5.4 us per Eval
-  //       on darwin-arm64, see compiler_v2/bench/README.md).  Short
+  //       on darwin-arm64, see bench/README.md).  Short
   //       bodies (3-term arith) are a wash on Eval but still pay
   //       the Compile penalty.
   //   3 — aggressive; some passes have superlinear cost.  Rarely
@@ -138,7 +138,7 @@ class Compiler {
   //   - FailedPrecondition: Binaryen validate failure (compiler bug —
   //                         should never escape; file a regression).
   //
-  // See `compiler_v2/README.md` for the high-level compile / plan /
+  // See `README.md` for the high-level compile / plan /
   // eval lifecycle and the runtime build-time flags that frame
   // these compile-time knobs.
   ABSL_MUST_USE_RESULT absl::StatusOr<Program> Compile(

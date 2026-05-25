@@ -8,16 +8,16 @@
 // sqrt(neg)=NaN) stay as focused TEST_F so the source of truth is
 // explicit at each assertion.
 
-#include "compiler_v2/runtime/cel_math_ext.h"
+#include "runtime/cel_math_ext.h"
 
 #include <cmath>
 #include <cstdint>
 
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_internal.h"
-#include "compiler_v2/runtime/cel_layout.h"
-#include "compiler_v2/runtime/cel_list.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_internal.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_list.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {

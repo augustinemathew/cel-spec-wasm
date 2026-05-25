@@ -9,12 +9,12 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/program.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "compiler/program.h"
+#include "eval/value.h"
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 
@@ -766,7 +766,7 @@ TEST(ProtoOptionalFieldE2ETest, HasOnSetOptionalFieldIsTrueForWrapper) {
 // KNOWN BUG (eval-stage): `optional.ofNonZeroValue(<message>)` traps.
 // The expression compiles and plans (the proto-`?field:` gate was lifted,
 // so the static subset admits a message operand), then traps at EVAL:
-// `is_zero_value` (compiler_v2/runtime/cel_optional.c) has no CEL_MESSAGE
+// `is_zero_value` (runtime/cel_optional.c) has no CEL_MESSAGE
 // arm — proto zero-ness needs reflection (cel-cpp parity:
 // ParsedMessageValue::IsZeroValue), so it `__builtin_trap()`s.  Verified
 // reproducing at the M14 Slice E closeout conformance run, where

@@ -1,4 +1,4 @@
-#include "compiler_v2/api/value.h"
+#include "eval/value.h"
 
 #include <cstdint>
 #include <memory>
@@ -12,8 +12,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "compiler_v2/api/attribute.h"
-#include "compiler_v2/api/error.h"
+#include "eval/attribute.h"
+#include "eval/error.h"
 #include "google/protobuf/message.h"  // needed for ~unique_ptr<Message>
 
 namespace celwasm::api {

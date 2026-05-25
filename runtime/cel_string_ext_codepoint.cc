@@ -13,7 +13,7 @@
 // conformance fixture (`tests/simple/testdata/string_ext.textproto`)
 // matches byte-for-byte.
 
-#include "compiler_v2/runtime/cel_string_ext.h"
+#include "runtime/cel_string_ext.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,10 +21,10 @@
 
 #include "absl/strings/ascii.h"
 #include "absl/strings/string_view.h"
-#include "compiler_v2/runtime/cel_arena.h"
-#include "compiler_v2/runtime/cel_data.h"
-#include "compiler_v2/runtime/cel_memory.h"
-#include "compiler_v2/runtime/cel_string_ext_internal.h"
+#include "runtime/cel_arena.h"
+#include "runtime/cel_data.h"
+#include "runtime/cel_memory.h"
+#include "runtime/cel_string_ext_internal.h"
 
 namespace {
 

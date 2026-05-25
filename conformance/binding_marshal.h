@@ -18,7 +18,7 @@
 //   - primitive / message-type / type-of-types `Decl` ident types
 //
 // Still `Unimplemented` (graceful SKIP — see follow-ups in
-// `compiler_v2/conformance/README.md`):
+// `conformance/README.md`):
 //   - `map_value` / `list_value` bindings (aggregate marshal)
 //   - `error` / `unknown` `ExprValue` bindings (no per-test expr-id
 //     → AttributeId plumbing)
@@ -38,10 +38,10 @@
 #include "cel/expr/checked.pb.h"
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/value.pb.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/type.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "compiler/compiler.h"
+#include "common/type.h"
+#include "eval/value.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
 
