@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_IR_TYPED_AST_H_
-#define CELWASM_COMPILER_V2_IR_TYPED_AST_H_
+#ifndef CELWASM_COMPILER_IR_TYPED_AST_H_
+#define CELWASM_COMPILER_IR_TYPED_AST_H_
 
 #include <memory>
 #include <string>
@@ -107,4 +107,4 @@ void PopulateAnnotations(const cel::Ast& ast,
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_IR_TYPED_AST_H_
+#endif  // CELWASM_COMPILER_IR_TYPED_AST_H_

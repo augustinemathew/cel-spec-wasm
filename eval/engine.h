@@ -29,8 +29,8 @@
 // Plan() lands in a later commit; this one only stands up the
 // engine + parsed runtime fixture and the Builder.
 
-#ifndef CELWASM_COMPILER_V2_API_ENGINE_H_
-#define CELWASM_COMPILER_V2_API_ENGINE_H_
+#ifndef CELWASM_EVAL_ENGINE_H_
+#define CELWASM_EVAL_ENGINE_H_
 
 #include <cstdint>
 #include <memory>
@@ -185,4 +185,4 @@ class Engine::Builder {
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_ENGINE_H_
+#endif  // CELWASM_EVAL_ENGINE_H_

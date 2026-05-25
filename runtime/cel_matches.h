@@ -9,8 +9,8 @@
 // and `cel_time_parse.cc`).  Cache state is module-static so each
 // Instance gets its own copy at instantiation time.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MATCHES_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_MATCHES_H_
+#ifndef CELWASM_RUNTIME_CEL_MATCHES_H_
+#define CELWASM_RUNTIME_CEL_MATCHES_H_
 
 #include <stdint.h>
 
@@ -30,4 +30,4 @@ void cel_matches_at_vv(uint32_t out_slot, uint32_t text_slot,
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MATCHES_H_
+#endif  // CELWASM_RUNTIME_CEL_MATCHES_H_

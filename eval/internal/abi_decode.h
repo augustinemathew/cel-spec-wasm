@@ -6,8 +6,8 @@
 // mirror struct (MarshalActivation iterates `variables()` linearly
 // at M2; no hash-by-name is warranted).
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_ABI_DECODE_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_ABI_DECODE_H_
+#ifndef CELWASM_EVAL_INTERNAL_ABI_DECODE_H_
+#define CELWASM_EVAL_INTERNAL_ABI_DECODE_H_
 
 #include <cstdint>
 
@@ -38,4 +38,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> DecodeCelAbiFromWasm(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_ABI_DECODE_H_
+#endif  // CELWASM_EVAL_INTERNAL_ABI_DECODE_H_

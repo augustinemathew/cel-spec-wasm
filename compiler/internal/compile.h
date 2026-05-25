@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_COMPILE_H_
-#define CELWASM_COMPILER_V2_COMPILE_H_
+#ifndef CELWASM_COMPILER_INTERNAL_COMPILE_H_
+#define CELWASM_COMPILER_INTERNAL_COMPILE_H_
 
 // Top-level pipeline facade.  Stitches parse → check → resolve → layout →
 // module-setup → LowerToEvalFunction into one call so downstream callers
@@ -142,4 +142,4 @@ void InstallOverloadImportsExport(WasmModule& mod,
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_COMPILE_H_
+#endif  // CELWASM_COMPILER_INTERNAL_COMPILE_H_

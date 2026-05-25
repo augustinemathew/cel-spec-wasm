@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
-#define CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
+#ifndef CELWASM_COMPILER_CODEGEN_SLOT_ALLOCATOR_H_
+#define CELWASM_COMPILER_CODEGEN_SLOT_ALLOCATOR_H_
 
 // Hands out 24-byte CelValue cells in the workspace region of
 // linear memory.  Callers `Acquire` a cell for each computed
@@ -128,4 +128,4 @@ class SlotAllocator {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_SLOT_ALLOCATOR_H_
+#endif  // CELWASM_COMPILER_CODEGEN_SLOT_ALLOCATOR_H_

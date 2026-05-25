@@ -17,8 +17,8 @@
 // This header is NOT exposed via `cel_string_format.h`; only the
 // `cel_string_format_test.cc` parser test #includes it directly.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_
+#ifndef CELWASM_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_
+#define CELWASM_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_
 
 #include <cstdint>
 #include <string>
@@ -128,4 +128,4 @@ bool RenderHex(std::string& buf, const CelValue* v, bool upper);
 
 }  // namespace celwasm::string_format_internal
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_
+#endif  // CELWASM_RUNTIME_CEL_STRING_FORMAT_INTERNAL_H_

@@ -11,8 +11,8 @@
 // drifted independently when new namespaces (M3 maps, M4 lists)
 // landed.
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_TEST_FAKES_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_TEST_FAKES_H_
+#ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_TEST_FAKES_H_
+#define CELWASM_EVAL_INTERNAL_CEL_HOST_TEST_FAKES_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -143,4 +143,4 @@ class FakeArenaAllocator final : public ArenaAllocator {
 }  // namespace test
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_TEST_FAKES_H_
+#endif  // CELWASM_EVAL_INTERNAL_CEL_HOST_TEST_FAKES_H_

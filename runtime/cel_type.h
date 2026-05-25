@@ -19,8 +19,8 @@
 //   Without that host wiring, the arm poisons with kTypeMismatch
 //   — no silent miscompiles.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_TYPE_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_TYPE_H_
+#ifndef CELWASM_RUNTIME_CEL_TYPE_H_
+#define CELWASM_RUNTIME_CEL_TYPE_H_
 
 #include <stdint.h>
 
@@ -38,4 +38,4 @@ void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_TYPE_H_
+#endif  // CELWASM_RUNTIME_CEL_TYPE_H_

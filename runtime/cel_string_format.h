@@ -17,8 +17,8 @@
 // `ABSL_CHECK(false)`-fails per the CLAUDE.md unimplemented-feature
 // rule.  Slice E lifts the CHECK and lands the renderer.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_H_
+#ifndef CELWASM_RUNTIME_CEL_STRING_FORMAT_H_
+#define CELWASM_RUNTIME_CEL_STRING_FORMAT_H_
 
 #include <stdint.h>
 
@@ -43,4 +43,4 @@ void cel_string_format_at_vv(uint32_t out_slot, uint32_t s_slot,
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_FORMAT_H_
+#endif  // CELWASM_RUNTIME_CEL_STRING_FORMAT_H_

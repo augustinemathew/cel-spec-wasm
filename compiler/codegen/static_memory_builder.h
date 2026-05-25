@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
-#define CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
+#ifndef CELWASM_COMPILER_CODEGEN_STATIC_MEMORY_BUILDER_H_
+#define CELWASM_COMPILER_CODEGEN_STATIC_MEMORY_BUILDER_H_
 
 // Packs compile-time-known CelValues into a byte buffer destined
 // for the wasm module's `.rodata` data segment.  LayoutPass calls
@@ -111,4 +111,4 @@ class StaticMemoryBuilder {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_STATIC_MEMORY_BUILDER_H_
+#endif  // CELWASM_COMPILER_CODEGEN_STATIC_MEMORY_BUILDER_H_

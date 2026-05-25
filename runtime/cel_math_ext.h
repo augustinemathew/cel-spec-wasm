@@ -20,8 +20,8 @@
 // and the list folds dispatch on each operand's runtime CelKind via
 // the shared numeric compare ladder.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MATH_EXT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_MATH_EXT_H_
+#ifndef CELWASM_RUNTIME_CEL_MATH_EXT_H_
+#define CELWASM_RUNTIME_CEL_MATH_EXT_H_
 
 #include <stdint.h>
 
@@ -78,4 +78,4 @@ void cel_math_max_list_at_v(uint32_t out_slot, uint32_t list_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MATH_EXT_H_
+#endif  // CELWASM_RUNTIME_CEL_MATH_EXT_H_

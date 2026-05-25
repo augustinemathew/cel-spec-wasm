@@ -32,8 +32,8 @@
 //     zero → `CEL_ERR_MODULUS_BY_ZERO`.  Double divides by zero
 //     produce IEEE 754 inf/nan (NOT errors) per langdef.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_ARITH_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_ARITH_H_
+#ifndef CELWASM_RUNTIME_CEL_ARITH_H_
+#define CELWASM_RUNTIME_CEL_ARITH_H_
 
 #include <stdint.h>
 
@@ -76,4 +76,4 @@ void cel_double_neg_at_v(uint32_t out, uint32_t v);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_ARITH_H_
+#endif  // CELWASM_RUNTIME_CEL_ARITH_H_

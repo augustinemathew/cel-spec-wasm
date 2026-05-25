@@ -13,8 +13,8 @@
 //
 // The Compiler itself never touches a wasm engine.
 
-#ifndef CELWASM_COMPILER_V2_API_COMPILER_H_
-#define CELWASM_COMPILER_V2_API_COMPILER_H_
+#ifndef CELWASM_COMPILER_COMPILER_H_
+#define CELWASM_COMPILER_COMPILER_H_
 
 #include <cstdint>
 #include <string>
@@ -255,4 +255,4 @@ class Compiler::Builder {
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_COMPILER_H_
+#endif  // CELWASM_COMPILER_COMPILER_H_

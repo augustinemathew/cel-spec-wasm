@@ -18,8 +18,8 @@
 //     custom_functions[], etc., decoded from the cel.abi custom
 //     section of the wasm bytes).
 
-#ifndef CELWASM_COMPILER_V2_API_PROGRAM_H_
-#define CELWASM_COMPILER_V2_API_PROGRAM_H_
+#ifndef CELWASM_COMPILER_PROGRAM_H_
+#define CELWASM_COMPILER_PROGRAM_H_
 
 #include <cstdint>
 #include <utility>
@@ -58,4 +58,4 @@ class Program {
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_PROGRAM_H_
+#endif  // CELWASM_COMPILER_PROGRAM_H_

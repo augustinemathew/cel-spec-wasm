@@ -20,8 +20,8 @@
 // Not exported from `cel_string_ext.h` — call sites that include
 // the public header don't need these.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_INTERNAL_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_INTERNAL_H_
+#ifndef CELWASM_RUNTIME_CEL_STRING_EXT_INTERNAL_H_
+#define CELWASM_RUNTIME_CEL_STRING_EXT_INTERNAL_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -182,4 +182,4 @@ inline const uint8_t* PrevCodepoint(const uint8_t* end, const uint8_t* begin) {
 
 }  // namespace celwasm::string_ext_internal
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_INTERNAL_H_
+#endif  // CELWASM_RUNTIME_CEL_STRING_EXT_INTERNAL_H_

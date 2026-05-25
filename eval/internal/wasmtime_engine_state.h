@@ -21,8 +21,8 @@
 // Destruction order: runtime_module before engine (modules are
 // owned by their engine in wasmtime's C API).
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_WASMTIME_ENGINE_STATE_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_WASMTIME_ENGINE_STATE_H_
+#ifndef CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
+#define CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 
 #include <cstdint>
 #include <map>
@@ -78,4 +78,4 @@ struct WasmtimeEngineState {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_WASMTIME_ENGINE_STATE_H_
+#endif  // CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_

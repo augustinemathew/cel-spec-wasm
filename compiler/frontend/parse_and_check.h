@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_FRONTEND_PARSE_AND_CHECK_H_
-#define CELWASM_COMPILER_V2_FRONTEND_PARSE_AND_CHECK_H_
+#ifndef CELWASM_COMPILER_FRONTEND_PARSE_AND_CHECK_H_
+#define CELWASM_COMPILER_FRONTEND_PARSE_AND_CHECK_H_
 
 #include <string>
 #include <variant>
@@ -71,4 +71,4 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_FRONTEND_PARSE_AND_CHECK_H_
+#endif  // CELWASM_COMPILER_FRONTEND_PARSE_AND_CHECK_H_

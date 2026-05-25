@@ -23,8 +23,8 @@
 //   %v   CelValue offset u32   pretty-printed kind + payload
 //   %%   literal percent
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_LOG_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_LOG_H_
+#ifndef CELWASM_RUNTIME_CEL_LOG_H_
+#define CELWASM_RUNTIME_CEL_LOG_H_
 
 #include <stdint.h>
 
@@ -98,4 +98,4 @@ static inline uint32_t cel_strlen_(const char* s) {
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_LOG_H_
+#endif  // CELWASM_RUNTIME_CEL_LOG_H_

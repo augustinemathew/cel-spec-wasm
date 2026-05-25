@@ -8,8 +8,8 @@
 // See `engine.h` for the full contract; this header carries only
 // the type alias.
 
-#ifndef CELWASM_COMPILER_V2_API_HOST_CALLBACK_H_
-#define CELWASM_COMPILER_V2_API_HOST_CALLBACK_H_
+#ifndef CELWASM_EVAL_HOST_CALLBACK_H_
+#define CELWASM_EVAL_HOST_CALLBACK_H_
 
 #include <cstdint>
 #include <functional>
@@ -25,4 +25,4 @@ using HostCallback = std::function<absl::Status(
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_HOST_CALLBACK_H_
+#endif  // CELWASM_EVAL_HOST_CALLBACK_H_

@@ -8,8 +8,8 @@
 //            ArenaAllocator).
 //   Layer 3: wasmtime glue.
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_
+#ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_H_
+#define CELWASM_EVAL_INTERNAL_CEL_HOST_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -676,4 +676,4 @@ inline void DecomposeAbslDuration(absl::Duration d, CelDurTs* out) {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_H_
+#endif  // CELWASM_EVAL_INTERNAL_CEL_HOST_H_

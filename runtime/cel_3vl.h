@@ -29,8 +29,8 @@
 // cel_host trampoline mints UNKNOWNs that way for FULL pattern
 // matches before per-id provenance is wired through.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_3VL_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_3VL_H_
+#ifndef CELWASM_RUNTIME_CEL_3VL_H_
+#define CELWASM_RUNTIME_CEL_3VL_H_
 
 #include <stdint.h>
 
@@ -69,4 +69,4 @@ void cel_copy_slot(uint32_t dst_slot, uint32_t src_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_3VL_H_
+#endif  // CELWASM_RUNTIME_CEL_3VL_H_

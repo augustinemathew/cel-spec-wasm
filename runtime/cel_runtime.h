@@ -34,8 +34,8 @@
 // collection primitives land with the milestones that add the
 // corresponding codegen arms.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_
+#ifndef CELWASM_RUNTIME_CEL_RUNTIME_H_
+#define CELWASM_RUNTIME_CEL_RUNTIME_H_
 
 #include "runtime/cel_3vl.h"
 #include "runtime/cel_arena.h"
@@ -51,4 +51,4 @@
 #include "runtime/cel_string_ops.h"
 #include "runtime/cel_type.h"
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_H_
+#endif  // CELWASM_RUNTIME_CEL_RUNTIME_H_

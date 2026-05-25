@@ -44,8 +44,8 @@
 //   - `third_party/cel-cpp/common/values/optional_value.cc` —
 //     OptionalValue semantics + the static-None reference design.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_OPTIONAL_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_OPTIONAL_H_
+#ifndef CELWASM_RUNTIME_CEL_OPTIONAL_H_
+#define CELWASM_RUNTIME_CEL_OPTIONAL_H_
 
 #include <stdint.h>
 
@@ -205,4 +205,4 @@ void cel_set_field_at_if_present(uint32_t msg_slot, uint32_t field_ref_id,
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_OPTIONAL_H_
+#endif  // CELWASM_RUNTIME_CEL_OPTIONAL_H_

@@ -18,8 +18,8 @@
 //
 // Per split-plan §2 "Recommended internal header layout".
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_INTERNAL_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_INTERNAL_H_
+#ifndef CELWASM_RUNTIME_CEL_INTERNAL_H_
+#define CELWASM_RUNTIME_CEL_INTERNAL_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -178,4 +178,4 @@ static inline int spans_equal(CelSpan a, CelSpan b) {
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_INTERNAL_H_
+#endif  // CELWASM_RUNTIME_CEL_INTERNAL_H_

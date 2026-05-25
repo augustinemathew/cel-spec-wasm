@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_MODULE_H_
-#define CELWASM_COMPILER_V2_CODEGEN_MODULE_H_
+#ifndef CELWASM_COMPILER_CODEGEN_MODULE_H_
+#define CELWASM_COMPILER_CODEGEN_MODULE_H_
 
 // Thin RAII wrapper over Binaryen's C API `BinaryenModuleRef`.  Exposes
 // only the surface expr_lower + the module emitter need: memory (defined
@@ -154,4 +154,4 @@ class WasmModule {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_MODULE_H_
+#endif  // CELWASM_COMPILER_CODEGEN_MODULE_H_

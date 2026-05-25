@@ -28,8 +28,8 @@
 // needs attribute matching (e.g. partial-eval plumbing) doesn't
 // pull in the error header.
 
-#ifndef CELWASM_COMPILER_V2_API_ATTRIBUTE_H_
-#define CELWASM_COMPILER_V2_API_ATTRIBUTE_H_
+#ifndef CELWASM_EVAL_ATTRIBUTE_H_
+#define CELWASM_EVAL_ATTRIBUTE_H_
 
 #include <cstdint>
 #include <memory>
@@ -241,4 +241,4 @@ struct AttributeId {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_ATTRIBUTE_H_
+#endif  // CELWASM_EVAL_ATTRIBUTE_H_

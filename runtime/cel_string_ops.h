@@ -25,8 +25,8 @@
 // **Regex `matches`** is implemented as a separate Phase C kernel
 // (see `rewrite/phase-c-plan.md` §4.5) — needs RE2 vendoring.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_OPS_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_OPS_H_
+#ifndef CELWASM_RUNTIME_CEL_STRING_OPS_H_
+#define CELWASM_RUNTIME_CEL_STRING_OPS_H_
 
 #include <stdint.h>
 
@@ -73,4 +73,4 @@ void cel_bytes_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_OPS_H_
+#endif  // CELWASM_RUNTIME_CEL_STRING_OPS_H_

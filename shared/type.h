@@ -8,8 +8,8 @@
 // `CelType::List(CelType::String())`, `CelType::Message("com.ex.Foo")`)
 // so the type hierarchy reads top-down at the call site.
 
-#ifndef CELWASM_COMPILER_V2_API_TYPE_H_
-#define CELWASM_COMPILER_V2_API_TYPE_H_
+#ifndef CELWASM_SHARED_TYPE_H_
+#define CELWASM_SHARED_TYPE_H_
 
 #include <cstdint>
 #include <memory>
@@ -102,4 +102,4 @@ absl::string_view CelTypeKindName(CelType::Kind k);
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_TYPE_H_
+#endif  // CELWASM_SHARED_TYPE_H_

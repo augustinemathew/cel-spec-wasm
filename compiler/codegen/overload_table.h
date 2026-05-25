@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_OVERLOAD_TABLE_H_
-#define CELWASM_COMPILER_V2_CODEGEN_OVERLOAD_TABLE_H_
+#ifndef CELWASM_COMPILER_CODEGEN_OVERLOAD_TABLE_H_
+#define CELWASM_COMPILER_CODEGEN_OVERLOAD_TABLE_H_
 
 // Maps CEL overload ids (e.g. `kAddInt`, `kSizeString`) to the wasm
 // import that implements them.  Built-ins come from a frozen
@@ -251,4 +251,4 @@ bool OverloadTableIsExplicitlyUnimplemented(absl::string_view overload_id);
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_OVERLOAD_TABLE_H_
+#endif  // CELWASM_COMPILER_CODEGEN_OVERLOAD_TABLE_H_

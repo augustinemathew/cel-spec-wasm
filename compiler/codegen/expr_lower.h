@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_H_
-#define CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_H_
+#ifndef CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_
+#define CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_
 
 // Lowers a fully-resolved, fully-laid-out `TypedAst` into the `$eval`
 // wasm function.  M1 handles only the `kConst` arm: every literal's
@@ -251,4 +251,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToCustomFn(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_H_
+#endif  // CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_

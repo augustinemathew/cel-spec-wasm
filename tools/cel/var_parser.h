@@ -35,8 +35,8 @@
 // `:int=`, `Value::Uint(42)` under `:uint=`, `Value::Double(42.0)`
 // under `:double=`).  No silent coercion — `:int=3.14` errors.
 
-#ifndef CELWASM_COMPILER_V2_TOOLS_CEL_VAR_PARSER_H_
-#define CELWASM_COMPILER_V2_TOOLS_CEL_VAR_PARSER_H_
+#ifndef CELWASM_TOOLS_CEL_VAR_PARSER_H_
+#define CELWASM_TOOLS_CEL_VAR_PARSER_H_
 
 #include <string>
 
@@ -90,4 +90,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<::celwasm::api::CelType> ParseTypeSpec(
 
 }  // namespace celwasm::tools::cel
 
-#endif  // CELWASM_COMPILER_V2_TOOLS_CEL_VAR_PARSER_H_
+#endif  // CELWASM_TOOLS_CEL_VAR_PARSER_H_

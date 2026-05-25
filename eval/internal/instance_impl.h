@@ -9,8 +9,8 @@
 // (engine state is held externally via a shared_ptr on the public
 // Instance — outlives this struct).
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
+#ifndef CELWASM_EVAL_INTERNAL_INSTANCE_IMPL_H_
+#define CELWASM_EVAL_INTERNAL_INSTANCE_IMPL_H_
 
 #include <memory>
 #include <vector>
@@ -93,4 +93,4 @@ struct InstanceImpl {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_INSTANCE_IMPL_H_
+#endif  // CELWASM_EVAL_INTERNAL_INSTANCE_IMPL_H_

@@ -6,8 +6,8 @@
 // Engine::Plan owns a `CelHostCallbackEnv` per Instance; the linker
 // callback borrows it by pointer.
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_WASMTIME_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_WASMTIME_H_
+#ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_
+#define CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_
 
 #include <memory>
 #include <vector>
@@ -131,4 +131,4 @@ ABSL_MUST_USE_RESULT absl::Status RegisterCelHostImports(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_WASMTIME_H_
+#endif  // CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_

@@ -17,8 +17,8 @@
 // build uses.  Callable before any `arena_reset` — `cel_mem_base` in
 // particular is how unit tests stage rodata bytes before eval.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MEMORY_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_MEMORY_H_
+#ifndef CELWASM_RUNTIME_CEL_MEMORY_H_
+#define CELWASM_RUNTIME_CEL_MEMORY_H_
 
 #include <stdint.h>
 
@@ -33,4 +33,4 @@ uint32_t cel_mem_size(void);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MEMORY_H_
+#endif  // CELWASM_RUNTIME_CEL_MEMORY_H_

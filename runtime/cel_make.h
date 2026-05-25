@@ -5,8 +5,8 @@
 // without copying — used when the host has already streamed bytes in
 // via a prior `arena_alloc`.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MAKE_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_MAKE_H_
+#ifndef CELWASM_RUNTIME_CEL_MAKE_H_
+#define CELWASM_RUNTIME_CEL_MAKE_H_
 
 #include <stdint.h>
 
@@ -31,4 +31,4 @@ uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MAKE_H_
+#endif  // CELWASM_RUNTIME_CEL_MAKE_H_

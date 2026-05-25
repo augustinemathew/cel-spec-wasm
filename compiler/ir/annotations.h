@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_IR_ANNOTATIONS_H_
-#define CELWASM_COMPILER_V2_IR_ANNOTATIONS_H_
+#ifndef CELWASM_COMPILER_IR_ANNOTATIONS_H_
+#define CELWASM_COMPILER_IR_ANNOTATIONS_H_
 
 #include <cstdint>
 
@@ -159,4 +159,4 @@ class WasmAnnotations {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_IR_ANNOTATIONS_H_
+#endif  // CELWASM_COMPILER_IR_ANNOTATIONS_H_

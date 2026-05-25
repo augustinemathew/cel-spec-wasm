@@ -12,8 +12,8 @@
 // same arena, so all reads (`StringAt` / `At`) stay valid for the
 // duration of a single `TEST_F` body.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_STRING_EXT_TEST_HELPERS_H_
-#define CELWASM_COMPILER_V2_RUNTIME_STRING_EXT_TEST_HELPERS_H_
+#ifndef CELWASM_RUNTIME_STRING_EXT_TEST_HELPERS_H_
+#define CELWASM_RUNTIME_STRING_EXT_TEST_HELPERS_H_
 
 #include <cstdint>
 #include <cstring>
@@ -123,4 +123,4 @@ class StringExtFixture : public ::testing::Test {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_STRING_EXT_TEST_HELPERS_H_
+#endif  // CELWASM_RUNTIME_STRING_EXT_TEST_HELPERS_H_

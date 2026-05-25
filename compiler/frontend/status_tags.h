@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_FRONTEND_STATUS_TAGS_H_
-#define CELWASM_COMPILER_V2_FRONTEND_STATUS_TAGS_H_
+#ifndef CELWASM_COMPILER_FRONTEND_STATUS_TAGS_H_
+#define CELWASM_COMPILER_FRONTEND_STATUS_TAGS_H_
 
 #include "absl/strings/string_view.h"
 
@@ -33,4 +33,4 @@ inline constexpr absl::string_view kUndeclaredReferencesUrl =
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_FRONTEND_STATUS_TAGS_H_
+#endif  // CELWASM_COMPILER_FRONTEND_STATUS_TAGS_H_

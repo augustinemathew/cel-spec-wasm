@@ -19,8 +19,8 @@
 // always print as a single tagged line — the multi-format
 // machinery is message-specific.
 
-#ifndef CELWASM_COMPILER_V2_TOOLS_CEL_VALUE_FORMAT_H_
-#define CELWASM_COMPILER_V2_TOOLS_CEL_VALUE_FORMAT_H_
+#ifndef CELWASM_TOOLS_CEL_VALUE_FORMAT_H_
+#define CELWASM_TOOLS_CEL_VALUE_FORMAT_H_
 
 #include <cstdint>
 #include <string>
@@ -56,4 +56,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<std::string> FormatMessage(
 
 }  // namespace celwasm::tools::cel
 
-#endif  // CELWASM_COMPILER_V2_TOOLS_CEL_VALUE_FORMAT_H_
+#endif  // CELWASM_TOOLS_CEL_VALUE_FORMAT_H_

@@ -12,8 +12,8 @@
 // this commit ships the lifecycle + the wasmtime handle ownership
 // the smoke test verified end-to-end.
 
-#ifndef CELWASM_COMPILER_V2_API_INSTANCE_H_
-#define CELWASM_COMPILER_V2_API_INSTANCE_H_
+#ifndef CELWASM_EVAL_INSTANCE_H_
+#define CELWASM_EVAL_INSTANCE_H_
 
 #include <cstddef>
 #include <memory>
@@ -110,4 +110,4 @@ class Instance {
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_INSTANCE_H_
+#endif  // CELWASM_EVAL_INSTANCE_H_

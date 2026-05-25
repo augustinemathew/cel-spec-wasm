@@ -18,8 +18,8 @@
 // through UNKNOWN / ERROR operands without invoking the real op —
 // mirrors `cel_runtime.c::absorb_3vl_unary/binary` on the wasm side.
 
-#ifndef CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_ERROR_H_
-#define CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_ERROR_H_
+#ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_ERROR_H_
+#define CELWASM_EVAL_INTERNAL_CEL_HOST_ERROR_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -104,4 +104,4 @@ bool AbsorbBinary(const CelValue& a, const CelValue& b, uint32_t out_slot,
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_INTERNAL_CEL_HOST_ERROR_H_
+#endif  // CELWASM_EVAL_INTERNAL_CEL_HOST_ERROR_H_

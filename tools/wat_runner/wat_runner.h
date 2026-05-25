@@ -38,8 +38,8 @@
 //   - A test runner.  Tests use this harness but the harness itself
 //     ships no assertions.
 
-#ifndef CELWASM_COMPILER_V2_TOOLS_WAT_RUNNER_WAT_RUNNER_H_
-#define CELWASM_COMPILER_V2_TOOLS_WAT_RUNNER_WAT_RUNNER_H_
+#ifndef CELWASM_TOOLS_WAT_RUNNER_WAT_RUNNER_H_
+#define CELWASM_TOOLS_WAT_RUNNER_WAT_RUNNER_H_
 
 #include <cstdint>
 #include <functional>
@@ -154,4 +154,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<WatRunOutput> RunWat(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_TOOLS_WAT_RUNNER_WAT_RUNNER_H_
+#endif  // CELWASM_TOOLS_WAT_RUNNER_WAT_RUNNER_H_

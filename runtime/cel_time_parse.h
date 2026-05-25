@@ -12,8 +12,8 @@
 // per-kernel design notes and the conformance envelopes each kernel
 // unlocks.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_PARSE_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_PARSE_H_
+#ifndef CELWASM_RUNTIME_CEL_TIME_PARSE_H_
+#define CELWASM_RUNTIME_CEL_TIME_PARSE_H_
 
 #include <stdint.h>
 
@@ -49,4 +49,4 @@ void cel_duration_format_at_v(uint32_t out_slot, uint32_t in_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_PARSE_H_
+#endif  // CELWASM_RUNTIME_CEL_TIME_PARSE_H_

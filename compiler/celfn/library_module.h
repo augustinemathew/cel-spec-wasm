@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CELFN_LIBRARY_MODULE_H_
-#define CELWASM_COMPILER_V2_CELFN_LIBRARY_MODULE_H_
+#ifndef CELWASM_COMPILER_CELFN_LIBRARY_MODULE_H_
+#define CELWASM_COMPILER_CELFN_LIBRARY_MODULE_H_
 
 // Compiles the CEL-defined function bodies in a `FunctionLibrary` into
 // a single wasm module exporting each body under its `overload_id`.
@@ -47,4 +47,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>> CompileLibraryBodies(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CELFN_LIBRARY_MODULE_H_
+#endif  // CELWASM_COMPILER_CELFN_LIBRARY_MODULE_H_

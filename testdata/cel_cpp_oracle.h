@@ -16,8 +16,8 @@
 // would for a given expression — not merely the same as a pre-baked
 // corpus literal.  The oracle is the cel-cpp side of that comparison.
 
-#ifndef CELWASM_COMPILER_V2_TESTDATA_CEL_CPP_ORACLE_H_
-#define CELWASM_COMPILER_V2_TESTDATA_CEL_CPP_ORACLE_H_
+#ifndef CELWASM_TESTDATA_CEL_CPP_ORACLE_H_
+#define CELWASM_TESTDATA_CEL_CPP_ORACLE_H_
 
 #include <string>
 
@@ -65,4 +65,4 @@ absl::StatusOr<OracleResult> EvalWithCelCpp(absl::string_view source,
 
 }  // namespace celwasm::testdata
 
-#endif  // CELWASM_COMPILER_V2_TESTDATA_CEL_CPP_ORACLE_H_
+#endif  // CELWASM_TESTDATA_CEL_CPP_ORACLE_H_

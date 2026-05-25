@@ -25,8 +25,8 @@
 //   - `wrapper`, `well_known`, `list_type`, `map_type`, `abstract_type`,
 //     `type_param`, `error`, `dyn`, `function` decls
 
-#ifndef CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
-#define CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
+#ifndef CELWASM_CONFORMANCE_BINDING_MARSHAL_H_
+#define CELWASM_CONFORMANCE_BINDING_MARSHAL_H_
 
 #include <memory>
 #include <string>
@@ -106,4 +106,4 @@ ABSL_MUST_USE_RESULT absl::Status PopulateVariableSpecs(
 
 }  // namespace celwasm::conformance
 
-#endif  // CELWASM_COMPILER_V2_CONFORMANCE_BINDING_MARSHAL_H_
+#endif  // CELWASM_CONFORMANCE_BINDING_MARSHAL_H_

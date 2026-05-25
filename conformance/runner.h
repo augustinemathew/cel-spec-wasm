@@ -23,8 +23,8 @@
 // for `bindings:` / `type_env:` entries whose shape the harness
 // doesn't yet support (aggregate types, error/unknown bindings).
 
-#ifndef CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
-#define CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
+#ifndef CELWASM_CONFORMANCE_RUNNER_H_
+#define CELWASM_CONFORMANCE_RUNNER_H_
 
 #include <cstdint>
 #include <string>
@@ -154,4 +154,4 @@ absl::Status LoadTestFile(absl::string_view path,
 
 }  // namespace celwasm::conformance
 
-#endif  // CELWASM_COMPILER_V2_CONFORMANCE_RUNNER_H_
+#endif  // CELWASM_CONFORMANCE_RUNNER_H_

@@ -46,8 +46,8 @@
 // FailedPrecondition with both versions, rather than wasmtime's
 // opaque "type mismatch on call $cel_..." trap.
 
-#ifndef CELWASM_COMPILER_V2_ABI_RUNTIME_CATALOGUE_H_
-#define CELWASM_COMPILER_V2_ABI_RUNTIME_CATALOGUE_H_
+#ifndef CELWASM_ABI_RUNTIME_CATALOGUE_H_
+#define CELWASM_ABI_RUNTIME_CATALOGUE_H_
 
 #include <cstdint>
 
@@ -132,4 +132,4 @@ absl::Status CheckRuntimeAbiVersion(const CelAbi& abi);
 
 }  // namespace celwasm::abi
 
-#endif  // CELWASM_COMPILER_V2_ABI_RUNTIME_CATALOGUE_H_
+#endif  // CELWASM_ABI_RUNTIME_CATALOGUE_H_

@@ -29,8 +29,8 @@
 // test matrix and slice plan, and `wat/m17_base64_{encode,decode}.wat`
 // for the locked call shapes.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_BASE64_EXT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_BASE64_EXT_H_
+#ifndef CELWASM_RUNTIME_CEL_BASE64_EXT_H_
+#define CELWASM_RUNTIME_CEL_BASE64_EXT_H_
 
 #include <stdint.h>
 
@@ -59,4 +59,4 @@ void cel_base64_decode_at_v(uint32_t out_slot, uint32_t str_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_BASE64_EXT_H_
+#endif  // CELWASM_RUNTIME_CEL_BASE64_EXT_H_

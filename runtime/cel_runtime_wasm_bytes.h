@@ -11,8 +11,8 @@
 // surface small — no runfiles lookup, no `std::ifstream`, no filesystem
 // dependency at load time.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_
+#ifndef CELWASM_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_
+#define CELWASM_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_
 
 namespace celwasm {
 
@@ -21,4 +21,4 @@ extern const unsigned int kCelRuntimeWasmBytesSize;
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_
+#endif  // CELWASM_RUNTIME_CEL_RUNTIME_WASM_BYTES_H_

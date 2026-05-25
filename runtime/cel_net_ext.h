@@ -22,8 +22,8 @@
 // CompareEvalError), so the corpus's rich message text is not
 // reproduced — a numeric code is sufficient.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_NET_EXT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_NET_EXT_H_
+#ifndef CELWASM_RUNTIME_CEL_NET_EXT_H_
+#define CELWASM_RUNTIME_CEL_NET_EXT_H_
 
 #include <stdint.h>
 
@@ -129,4 +129,4 @@ int net_cidr_eq(const CelValue* a, const CelValue* b);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_NET_EXT_H_
+#endif  // CELWASM_RUNTIME_CEL_NET_EXT_H_

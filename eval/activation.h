@@ -9,8 +9,8 @@
 // the surface shape doesn't change later, bodies `ABSL_CHECK`
 // until the milestone that lights them up.
 
-#ifndef CELWASM_COMPILER_V2_API_ACTIVATION_H_
-#define CELWASM_COMPILER_V2_API_ACTIVATION_H_
+#ifndef CELWASM_EVAL_ACTIVATION_H_
+#define CELWASM_EVAL_ACTIVATION_H_
 
 #include <string>
 
@@ -62,4 +62,4 @@ class Activation {
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_ACTIVATION_H_
+#endif  // CELWASM_EVAL_ACTIVATION_H_

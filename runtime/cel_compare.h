@@ -21,8 +21,8 @@
 // String / bytes comparisons live in `cel_string_ops.h` because
 // they share span-walking machinery with concat / contains.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_COMPARE_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_COMPARE_H_
+#ifndef CELWASM_RUNTIME_CEL_COMPARE_H_
+#define CELWASM_RUNTIME_CEL_COMPARE_H_
 
 #include <stdint.h>
 
@@ -96,4 +96,4 @@ void cel_numeric_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_COMPARE_H_
+#endif  // CELWASM_RUNTIME_CEL_COMPARE_H_

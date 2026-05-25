@@ -25,8 +25,8 @@
 // Any other byte (including a bare `%x`) is emitted verbatim — logging
 // must never trap.
 
-#ifndef CELWASM_COMPILER_V2_HOST_CEL_LOG_H_
-#define CELWASM_COMPILER_V2_HOST_CEL_LOG_H_
+#ifndef CELWASM_EVAL_HOST_CEL_LOG_H_
+#define CELWASM_EVAL_HOST_CEL_LOG_H_
 
 #include <cstdint>
 #include <functional>
@@ -94,4 +94,4 @@ ABSL_MUST_USE_RESULT absl::Status RegisterCelLog(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_HOST_CEL_LOG_H_
+#endif  // CELWASM_EVAL_HOST_CEL_LOG_H_

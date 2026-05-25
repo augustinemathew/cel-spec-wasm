@@ -5,8 +5,8 @@
 // pull in the error catalogue, and so error-code evolution has a
 // single obvious home.
 
-#ifndef CELWASM_COMPILER_V2_API_ERROR_H_
-#define CELWASM_COMPILER_V2_API_ERROR_H_
+#ifndef CELWASM_EVAL_ERROR_H_
+#define CELWASM_EVAL_ERROR_H_
 
 #include <cstdint>
 #include <string>
@@ -66,4 +66,4 @@ struct ErrorPayload {
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_API_ERROR_H_
+#endif  // CELWASM_EVAL_ERROR_H_

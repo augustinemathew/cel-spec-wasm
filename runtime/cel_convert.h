@@ -27,8 +27,8 @@
 // `CEL_ERR_OVERFLOW`.  Bytes ↔ string aliases the source span — no
 // arena allocation, safe for `out_slot == in_slot`.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_CONVERT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_CONVERT_H_
+#ifndef CELWASM_RUNTIME_CEL_CONVERT_H_
+#define CELWASM_RUNTIME_CEL_CONVERT_H_
 
 #include <stdint.h>
 
@@ -73,4 +73,4 @@ void cel_bytes_to_string_at_v(uint32_t out, uint32_t in);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_CONVERT_H_
+#endif  // CELWASM_RUNTIME_CEL_CONVERT_H_

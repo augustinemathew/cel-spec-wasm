@@ -14,8 +14,8 @@
 // The stubs keep the header stable across M1-Mn — populating an arm
 // later does not change the user surface.
 
-#ifndef CELWASM_COMPILER_V2_API_VALUE_H_
-#define CELWASM_COMPILER_V2_API_VALUE_H_
+#ifndef CELWASM_EVAL_VALUE_H_
+#define CELWASM_EVAL_VALUE_H_
 
 #include <cstdint>
 #include <memory>
@@ -254,4 +254,4 @@ absl::string_view ValueKindName(Value::Kind k);
 
 }  // namespace celwasm::api
 
-#endif  // CELWASM_COMPILER_V2_API_VALUE_H_
+#endif  // CELWASM_EVAL_VALUE_H_

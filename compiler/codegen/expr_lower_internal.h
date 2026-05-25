@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_INTERNAL_H_
-#define CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_INTERNAL_H_
+#ifndef CELWASM_COMPILER_CODEGEN_EXPR_LOWER_INTERNAL_H_
+#define CELWASM_COMPILER_CODEGEN_EXPR_LOWER_INTERNAL_H_
 
 // Internal header shared between expr_lower.cc and
 // expr_lower_comprehension.cc.  Not part of the public surface —
@@ -106,4 +106,4 @@ absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CODEGEN_EXPR_LOWER_INTERNAL_H_
+#endif  // CELWASM_COMPILER_CODEGEN_EXPR_LOWER_INTERNAL_H_

@@ -28,8 +28,8 @@
 // See `doc/implementation-plan/rewrite/m12-string-ext.md` for the
 // per-kernel test matrix and slice plan.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_H_
+#ifndef CELWASM_RUNTIME_CEL_STRING_EXT_H_
+#define CELWASM_RUNTIME_CEL_STRING_EXT_H_
 
 #include <stdint.h>
 
@@ -185,4 +185,4 @@ void cel_string_quote_at_v(uint32_t out_slot, uint32_t s_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_STRING_EXT_H_
+#endif  // CELWASM_RUNTIME_CEL_STRING_EXT_H_

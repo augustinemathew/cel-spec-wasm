@@ -7,8 +7,8 @@
 // rationale; the static_asserts in this file enforce the assumptions
 // A5-A7 catalogued there.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_LAYOUT_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_LAYOUT_H_
+#ifndef CELWASM_RUNTIME_CEL_LAYOUT_H_
+#define CELWASM_RUNTIME_CEL_LAYOUT_H_
 
 #include <stdint.h>
 
@@ -55,4 +55,4 @@ _Static_assert((CELWASM_ARENA_CAPACITY_BYTES &
                "Arena capacity should be power-of-2 (helps growth math)");
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_LAYOUT_H_
+#endif  // CELWASM_RUNTIME_CEL_LAYOUT_H_

@@ -11,8 +11,8 @@
 // All offsets are u32 byte offsets into the shared linear memory
 // (parent design §8.2).
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_
+#ifndef CELWASM_RUNTIME_CEL_MAP_H_
+#define CELWASM_RUNTIME_CEL_MAP_H_
 
 #include <stdint.h>
 
@@ -154,4 +154,4 @@ void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_MAP_H_
+#endif  // CELWASM_RUNTIME_CEL_MAP_H_

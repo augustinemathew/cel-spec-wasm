@@ -16,8 +16,8 @@
 //      memory (or 0 on OOM).  Allocations are 8-byte aligned and
 //      zero-initialized.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_ARENA_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_ARENA_H_
+#ifndef CELWASM_RUNTIME_CEL_ARENA_H_
+#define CELWASM_RUNTIME_CEL_ARENA_H_
 
 #include <stdint.h>
 
@@ -55,4 +55,4 @@ CelValue* cel_value_at(uint32_t off);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_ARENA_H_
+#endif  // CELWASM_RUNTIME_CEL_ARENA_H_

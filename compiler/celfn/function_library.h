@@ -1,5 +1,5 @@
-#ifndef CELWASM_COMPILER_V2_CELFN_FUNCTION_LIBRARY_H_
-#define CELWASM_COMPILER_V2_CELFN_FUNCTION_LIBRARY_H_
+#ifndef CELWASM_COMPILER_CELFN_FUNCTION_LIBRARY_H_
+#define CELWASM_COMPILER_CELFN_FUNCTION_LIBRARY_H_
 
 // `FunctionLibrary` — the embedder-facing collection of custom CEL
 // function declarations.  Plug into `Compiler::Builder::AddLibrary(lib)`
@@ -189,4 +189,4 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source);
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_CELFN_FUNCTION_LIBRARY_H_
+#endif  // CELWASM_COMPILER_CELFN_FUNCTION_LIBRARY_H_

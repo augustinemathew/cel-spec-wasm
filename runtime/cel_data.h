@@ -4,8 +4,8 @@
 // implementation file — so it can be included freely without dragging
 // in function declarations.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_DATA_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_DATA_H_
+#ifndef CELWASM_RUNTIME_CEL_DATA_H_
+#define CELWASM_RUNTIME_CEL_DATA_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -265,4 +265,4 @@ enum {
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_DATA_H_
+#endif  // CELWASM_RUNTIME_CEL_DATA_H_

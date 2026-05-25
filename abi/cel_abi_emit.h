@@ -9,8 +9,8 @@
 // a wasm custom section named `"cel.abi"` (appended to the module
 // via `WasmModule::AddCustomSection`).
 
-#ifndef CELWASM_COMPILER_V2_ABI_CEL_ABI_EMIT_H_
-#define CELWASM_COMPILER_V2_ABI_CEL_ABI_EMIT_H_
+#ifndef CELWASM_ABI_CEL_ABI_EMIT_H_
+#define CELWASM_ABI_CEL_ABI_EMIT_H_
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
@@ -37,4 +37,4 @@ ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_COMPILER_V2_ABI_CEL_ABI_EMIT_H_
+#endif  // CELWASM_ABI_CEL_ABI_EMIT_H_

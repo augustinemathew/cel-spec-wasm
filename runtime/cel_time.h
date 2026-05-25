@@ -31,8 +31,8 @@
 //     text format / `absl::IDivDuration` form per Probe D) — seconds
 //     and nanos share sign; |nanos| < 1e9 post-normalise.
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_H_
+#ifndef CELWASM_RUNTIME_CEL_TIME_H_
+#define CELWASM_RUNTIME_CEL_TIME_H_
 
 #include <stdint.h>
 
@@ -183,4 +183,4 @@ typedef enum {
 }  // extern "C"
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_TIME_H_
+#endif  // CELWASM_RUNTIME_CEL_TIME_H_

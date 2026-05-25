@@ -12,8 +12,8 @@
 // All offsets are u32 byte offsets into the shared linear memory
 // (parent design §8.2).
 
-#ifndef CELWASM_COMPILER_V2_RUNTIME_CEL_LIST_H_
-#define CELWASM_COMPILER_V2_RUNTIME_CEL_LIST_H_
+#ifndef CELWASM_RUNTIME_CEL_LIST_H_
+#define CELWASM_RUNTIME_CEL_LIST_H_
 
 #include <stdint.h>
 
@@ -137,4 +137,4 @@ void cel_list_concat(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 }
 #endif
 
-#endif  // CELWASM_COMPILER_V2_RUNTIME_CEL_LIST_H_
+#endif  // CELWASM_RUNTIME_CEL_LIST_H_
