@@ -649,7 +649,8 @@ cc_binary(
 ```
 
 Tagged `manual` matching the rest of the wasmtime-dependent
-targets (darwin-arm64-only).
+targets (these link the host wasmtime C API, selected per build
+host by `//third_party/wasmtime:wasmtime`).
 
 ### 6.4 How to run
 

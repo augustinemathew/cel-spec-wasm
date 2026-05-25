@@ -45,12 +45,20 @@ bazel_dep(
     version = "2025-11-05.bcr.1",
 )
 
-# Phase C — register the wasm32-wasi-threads cc_toolchain.  Auto-
-# discovered by bazel toolchain resolution whenever a target is
-# built with `--platforms=//third_party/wasi_sdk:wasm32_wasi` (or
-# transitioned in via `wasm_cc_binary`).  The toolchain config +
+# Register the wasm32-wasi-threads cc_toolchains — one per build host
+# (darwin/linux × arm64/x86_64).  Auto-discovered by bazel toolchain
+# resolution whenever a target is built with
+# `--platforms=//third_party/wasi_sdk:wasm32_wasi` (or transitioned in
+# via `wasm_cc_binary`); resolution picks the toolchain whose
+# `exec_compatible_with` matches the build host, so each host fetches
+# only its own `@wasi_sdk_<host>` archive.  The toolchain configs +
 # wrapper sh scripts live under `//third_party/wasi_sdk/`.
-register_toolchains("//third_party/wasi_sdk:wasm32_wasi_toolchain")
+register_toolchains(
+    "//third_party/wasi_sdk:wasm32_wasi_toolchain_darwin_arm64",
+    "//third_party/wasi_sdk:wasm32_wasi_toolchain_darwin_x86_64",
+    "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_arm64",
+    "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_x86_64",
+)
 
 # Binaryen — vendored as a pinned GitHub release tarball and built via
 # its own CMakeLists.txt inside Bazel (rules_foreign_cc).  We consume
@@ -71,17 +79,35 @@ http_archive(
 
 # wasmtime — prebuilt C API release tarball used only by the e2e
 # eval test (instantiates a compiler-emitted .wasm module and checks
-# the call returns the expected literal).  We pin the darwin-arm64
-# tarball because that's the only platform this repo currently builds
-# on (see CLAUDE.md); other platforms can gain a matching archive when
-# they're brought online.  libwasmtime.a is the ~30 MiB static lib.
+# the call returns the expected literal).  One archive per build host
+# (darwin/linux × arm64/x86_64); `//third_party/wasmtime:wasmtime`
+# selects the matching one by build-host `@platforms//{os,cpu}`.
+# libwasmtime.a is the ~30 MiB static lib.
 http_archive(
     name = "wasmtime_darwin_arm64",
-    build_file = "//third_party/wasmtime:BUILD.external.bazel",
+    build_file = "//third_party/wasmtime:BUILD.macos.bazel",
     sha256 = "6e5c423f69d50d2c3fd6ad6a5e0953c299a4db1eae27fb727bf7b6f4f83d51ce",
     strip_prefix = "wasmtime-v43.0.1-aarch64-macos-c-api",
     urls = [
         "https://github.com/bytecodealliance/wasmtime/releases/download/v43.0.1/wasmtime-v43.0.1-aarch64-macos-c-api.tar.xz",
+    ],
+)
+http_archive(
+    name = "wasmtime_linux_arm64",
+    build_file = "//third_party/wasmtime:BUILD.linux.bazel",
+    sha256 = "64670a608f50f8d3e5564590ebf49a1c1fa9dc778152d5b87cd7c4fa415029a9",
+    strip_prefix = "wasmtime-v43.0.1-aarch64-linux-c-api",
+    urls = [
+        "https://github.com/bytecodealliance/wasmtime/releases/download/v43.0.1/wasmtime-v43.0.1-aarch64-linux-c-api.tar.xz",
+    ],
+)
+http_archive(
+    name = "wasmtime_linux_x86_64",
+    build_file = "//third_party/wasmtime:BUILD.linux.bazel",
+    sha256 = "794a65220cf8de8903c367c938d156b0f894be60aaff35c02329e09792ecf927",
+    strip_prefix = "wasmtime-v43.0.1-x86_64-linux-c-api",
+    urls = [
+        "https://github.com/bytecodealliance/wasmtime/releases/download/v43.0.1/wasmtime-v43.0.1-x86_64-linux-c-api.tar.xz",
     ],
 )
 

@@ -1,0 +1,27 @@
+# Injected as the top-level BUILD file for the Linux `@wasmtime_*`
+# repositories.  Exposes a single `cc_library` with the C API headers
+# and the prebuilt static archive.  The Linux static archive needs
+# libpthread / libdl / libm / librt at link time — the standard
+# dependencies of wasmtime's C API on glibc.
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "wasmtime",
+    srcs = ["lib/libwasmtime.a"],
+    hdrs = glob(
+        [
+            "include/*.h",
+            "include/*.hh",
+            "include/wasmtime/**/*.h",
+            "include/wasmtime/**/*.hh",
+        ],
+    ),
+    includes = ["include"],
+    linkopts = [
+        "-lpthread",
+        "-ldl",
+        "-lm",
+        "-lrt",
+    ],
+)

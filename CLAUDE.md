@@ -503,8 +503,13 @@ bare FAIL with no test documenting it.
   - Primary build: `bazel build //compiler_v2/...`.
   - Primary tests: `bazel test //compiler_v2/...`.
   - CLI: `bazel-bin/compiler_v2/tools/cel/...` (see `compiler_v2/tools/cel`).
-  - Apple clang does **not** have a wasm32 target.  Cross-compilation uses
-    brew's `llvm` + `binaryen` (already installed on this machine).
+  - The wasm32-wasi cross-compile is handled by a bazel-registered
+    `@wasi_sdk_<host>` toolchain (the host system clang has no wasm32
+    target).  The repo builds on both macOS (Apple Silicon) and Linux
+    (arm64 / x86_64): bazel auto-detects the host C++ toolchain for the
+    native build and resolves the matching wasi-sdk archive for the
+    wasm cross-compile by `exec_compatible_with`.  No host-specific
+    setup beyond bazel itself.
   - The legacy V1 `compiler/` tree was deleted (2026-05-24); shared proto
     fixtures live at `//compiler_v2/testdata`.
 
