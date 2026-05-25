@@ -11,6 +11,32 @@ Resolution: …
 
 ---
 
+### Q7 — internal/ as package vs subdir; api/BUILD split shape [RESOLVED 2026-05-25]
+Context (W3): design §5.5 leans on `//compiler/internal` + `//eval/internal` as
+real packages (belt-and-suspenders + the W5 `rdeps(//eval/internal/...)` audit).
+But api/internal/ today is a SUBDIR of the single api package (targets define
+`srcs=["internal/abi_decode.cc"]`), not its own package. Making eval/internal a
+package means moving ~8 target defs + repointing intra-eval `:foo`→`//eval/internal:foo`
+= more edit surface/risk.
+Resolution:
+  - **compiler/internal IS a package** — `compile.{h,cc,_test.cc}` (today
+    `//compiler_v2:compile` at the compiler_v2 root) moves to `compiler/internal/`
+    with its own BUILD (`//compiler/internal:compile`). Clean single target; the
+    W3 brief already mandates this label.
+  - **eval/internal stays a SUBDIR of the eval package** — the ~8 internal targets
+    (abi_decode, cel_host*, instance_impl, wasmtime_engine_state, cel_host_wasmtime)
+    are defined in `eval/BUILD` with `srcs=["internal/…"]`, exactly as api/BUILD
+    does today. They get the eval package's component-scoped default_visibility
+    (NOT public), so external packages cannot depend on them — the boundary is
+    enforced by VISIBILITY, which is directory-independent. The physical
+    `internal/` subdir is preserved as the readability signal.
+  - W5 AUDIT adjustment: the primary guarantee is "public-target set == curated
+    list" (step 5b) — that already proves nothing internal is reachable. The
+    `rdeps(//eval/internal/...)` query (step 5a) is replaced by an explicit
+    enumeration of eval's non-public targets: `rdeps($PROJ, <eval internal
+    targets>) except //eval:*` → empty. compiler/internal keeps the package-form
+    query.
+
 ### Q6 — Doc residual `compiler_v2/` tail is historical record → defer to docs-refactor [RESOLVED 2026-05-25]
 Context (W1·Docs): after the mechanical clean-mapping bulk rewrite of doc/**/*.md
 (committed), ~180 `compiler_v2/` tokens remain across ~40 files. Inspection shows

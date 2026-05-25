@@ -444,3 +444,90 @@ binding exit criteria; W6 re-runs it after the namespace flatten.
 
 Each wave is one commit on `restructure`; `git reset --hard` to the prior
 wave's commit reverts cleanly. `master` is untouched until W5 passes.
+
+## 6. W3 APPENDIX — exact api/BUILD split (frozen target→package map)
+
+The single `compiler_v2/api/BUILD.bazel` (666 lines, all targets) + the
+`compile` target in `compiler_v2/BUILD.bazel` split into FOUR new packages.
+api/internal/ files stay a SUBDIR of the eval package (Q7); compiler/internal IS
+its own package (one target).
+
+### 6.1 git mv (file moves)
+```
+# common
+compiler_v2/api/type.{h,cc}  compiler_v2/api/type_test.cc        -> common/
+# compiler (public)
+compiler_v2/api/compiler.{h,cc} compiler_v2/api/compiler_test.cc -> compiler/
+compiler_v2/api/program.h    compiler_v2/api/program_test.cc     -> compiler/
+# compiler/internal (the pipeline facade)
+compiler_v2/compile.{h,cc}   compiler_v2/compile_test.cc         -> compiler/internal/
+# eval (public eval leaves + host_callback)
+compiler_v2/api/{engine,instance,activation,value,error,attribute}.{h,cc} \
+compiler_v2/api/{engine,instance,activation,value,error,attribute}_test.cc \
+compiler_v2/api/host_callback.h                                  -> eval/
+# eval/internal (SUBDIR of eval pkg — keep the internal/ path)
+compiler_v2/api/internal/*                                       -> eval/internal/
+# bench
+compiler_v2/api/cel_pipeline_bench.cc                            -> bench/
+# host folds into eval
+compiler_v2/host/*                                               -> eval/host/
+# straightforward dir moves (children keep their BUILDs; script rewrites refs)
+compiler_v2/{frontend,ir,codegen,celfn}                          -> compiler/{…}
+compiler_v2/{abi,runtime,tools,conformance,e2e,bench,testdata}   -> {…} (strip prefix)
+compiler_v2/conformance/.baseline                                -> conformance/.baseline
+```
+After: `git ls-files compiler_v2/ | head` → EMPTY (compiler_v2/ gone).
+
+### 6.2 Target → new package (authored BUILDs)
+| New package / BUILD | Targets (from api/BUILD unless noted) |
+|---|---|
+| `common/BUILD` | `type`, `type_test` |
+| `compiler/BUILD` | `compiler`(+`compiler_test`), `program`(+`program_test`) |
+| `compiler/internal/BUILD` | `compile`(+`compile_test`) — from `compiler_v2/BUILD` |
+| `eval/BUILD` | `attribute`(+test), `error`(+test), `value`(+test), `activation`(+test), `host_callback`; and (srcs under `internal/`) `abi_decode`(+test), `cel_host_hdrs`, `cel_host_error`(+test), `cel_host`, `cel_host_test_fakes`, `cel_host_test`, `host_map_test`, `proto_map_test`, `host_list_test`, `proto_list_test`, `cel_map_lookup_impl_test`, `cel_list_at_impl_test`, `cel_host_wasmtime`, `wasmtime_engine_state`, `instance_impl`, `instance`(+test), `engine`(+test) |
+| `bench/BUILD` | ADD `cel_pipeline_bench` (cc_binary, tags=["manual"]) |
+| `eval/host/BUILD` | the moved `compiler_v2/host` BUILD (script rewrites its refs) |
+
+The frontend/ir/codegen/celfn/abi/runtime/tools/conformance/e2e/bench/testdata
+BUILDs move WITH their dirs; `restructure_rewrite.sh` rewrites every
+`//compiler_v2/…` label + `compiler_v2/…` include inside them. Do NOT re-author
+those — only the api split + compile move are hand-authored.
+
+### 6.3 Dep repointing the script does NOT do (relative `:foo` labels crossing
+packages — hand-fix in the authored common/compiler/eval BUILDs):
+  - `:type`     → `//common:type`   (in compiler/ + eval/ targets that dep it)
+  - `:compiler` → `//compiler:compiler` (eval `instance_test`,`engine_test`; bench `cel_pipeline_bench`)
+  - `:program`  → `//compiler:program`  (same callers)
+  - intra-eval `:value`/`:error`/`:attribute`/`:activation`/`:cel_host`/`:engine`/
+    `:instance`/`:abi_decode`/… STAY `:foo` (same eval package).
+  - `//compiler_v2:compile` → `//compiler/internal:compile` — the SCRIPT does this
+    (it has the rule), incl. api `compiler` target's dep.
+  - All `//compiler_v2/{abi,ir,runtime,host,celfn,testdata,…}:…` → SCRIPT does it.
+
+### 6.4 Visibility (design §5.5) — set in the authored BUILDs
+  - `common/BUILD`:           `package(default_visibility=["//visibility:public"])`
+    is WRONG — instead leave default private and mark `type` `//visibility:public`.
+    Simplest: `common/BUILD` has `cc_library(name="type", …, visibility=["//visibility:public"])`.
+  - `compiler/BUILD`:  `package(default_visibility=["//compiler:__subpackages__"])`;
+    `compiler` + `program` each `visibility=["//visibility:public"]`.
+  - `compiler/internal/BUILD`: `default_visibility=["//compiler:__subpackages__"]`
+    (compile is internal — reachable only within //compiler; the public `compiler`
+    lib deps it from within //compiler). `compile_test` needs no extra vis.
+  - `eval/BUILD`: `package(default_visibility=["//eval:__subpackages__"])`; then
+    `engine,instance,activation,value,error,attribute` each
+    `visibility=["//visibility:public"]`. All internal targets (cel_host*,
+    abi_decode, instance_impl, wasmtime_engine_state, cel_host_wasmtime,
+    host_callback) inherit the package default → NOT public.
+  - `eval/host/BUILD`: `default_visibility=["//eval:__subpackages__"]`.
+  - testonly fixtures (cel_host_test_fakes, testdata cc_protos) may stay
+    public/test-visible as needed.
+  - The moved component BUILDs (frontend/ir/codegen/celfn/abi/runtime/tools/…):
+    their `package(default_visibility=["//compiler_v2:__subpackages__"])` must
+    change. compiler-side (frontend,ir,codegen,celfn) → `//compiler:__subpackages__`.
+    abi,runtime → `//visibility:public` (shared contract, every binding speaks them).
+    tools,conformance,e2e,bench,testdata → `//visibility:public` is fine (leaf
+    consumers/tests; nobody deps them inward) OR component-scoped; testdata is
+    testonly-public. KEEP IT SIMPLE: abi,runtime,testdata public; frontend,ir,
+    codegen,celfn → //compiler:__subpackages__; tools,conformance,e2e,bench →
+    //visibility:public (they're top-level binaries/tests).
+
