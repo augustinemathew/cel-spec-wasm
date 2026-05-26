@@ -4,6 +4,15 @@ Branch: `phase-c-libraries` (forked from `wasi-malloc-migration` @ `a43ee8b`).
 
 **Status: in flight, started 2026-05-18.**
 
+> **Memory consequence consolidated into
+> [`memory-layout-design.md`](memory-layout-design.md).** Phase C's
+> structural memory change — the flip to `wasm32-wasi-threads` + a
+> **shared** `(memory 4 1024 shared)` (cctz needs `<mutex>`) — is
+> captured in that singular memory doc (§1, §7). **This doc remains the
+> historical build-plan** for the in-runtime parsers + RE2/`matches()`
+> work (Slice 1/2, the vendoring approach, risks). Read
+> `memory-layout-design.md` for the live memory model.
+
 The wasi-malloc-migration cleared the path: runtime now uses
 wasi-sdk + dlmalloc, so cross-compiled C/C++ libraries (RE2, absl)
 can link in without dual-allocator pain.  Phase C delivers on that
