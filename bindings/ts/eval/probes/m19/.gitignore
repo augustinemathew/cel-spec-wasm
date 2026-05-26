@@ -1,0 +1,4 @@
+# Throwaway probe deps + generated artifacts (deleted at M19 closeout).
+node_modules/
+package-lock.json
+*.fds.bin

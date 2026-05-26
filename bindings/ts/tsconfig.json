@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // DOM lib supplies the Web platform types the host uses on both
+    // targets — `WebAssembly.*`, `crypto`, `TextEncoder/Decoder`,
+    // `fetch` — since the eval host runs in the browser as well as Node.
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "eval/src/**/*.ts",
+    "eval/test/**/*.ts",
+    "conformance/src/**/*.ts",
+    "conformance/test/**/*.ts"
+  ]
+}

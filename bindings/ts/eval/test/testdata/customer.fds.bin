@@ -1,0 +1,43 @@
+
+û
+google/protobuf/duration.protogoogle.protobuf":
+Duration
+seconds (Rseconds
+nanos (RnanosBƒ
+com.google.protobufBDurationProtoPZ1google.golang.org/protobuf/types/known/durationpbø¢GPBªGoogle.Protobuf.WellKnownTypesbproto3
+ÿ
+google/protobuf/timestamp.protogoogle.protobuf";
+	Timestamp
+seconds (Rseconds
+nanos (RnanosB…
+com.google.protobufBTimestampProtoPZ2google.golang.org/protobuf/types/known/timestamppbø¢GPBªGoogle.Protobuf.WellKnownTypesbproto3
+”
+&compiler_v2/testdata/e2e_fixture.protocelwasm.testdatagoogle/protobuf/duration.protogoogle/protobuf/timestamp.proto"7
+Address
+city (	Rcity
+country (	Rcountry"Õ
+Customer
+name (	Rname
+age (Rage
+user_id (RuserId
+priority (Rpriority#
+balance_cents (RbalanceCents!
+credit_score (RcreditScore
+
+is_premium (R	isPremium#
+session_token (RsessionTokenB
+billing_address	 (2.celwasm.testdata.AddressRbillingAddressD
+metadata
+ (2(.celwasm.testdata.Customer.MetadataEntryRmetadataK
+tier_quotas (2*.celwasm.testdata.Customer.TierQuotasEntryR
+tierQuotas
+tags (	Rtags9
+
+created_at (2.google.protobuf.TimestampR	createdAt@
+session_length (2.google.protobuf.DurationRsessionLength;
+MetadataEntry
+key (	Rkey
+value (	Rvalue:8=
+TierQuotasEntry
+key (Rkey
+value (Rvalue:8bproto3

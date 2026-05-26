@@ -1,0 +1,2 @@
+{ "name": "m19-probes", "private": true, "type": "module",
+  "dependencies": { "@bufbuild/protobuf": "^2" } }

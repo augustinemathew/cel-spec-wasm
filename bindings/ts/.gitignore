@@ -1,0 +1,12 @@
+# TS toolchain + build artifacts — never committed.
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Conformance fixtures are regenerated from C++ on every gate run
+# (scripts/check_conformance_ts.sh) — never committed (a stale fixture
+# would hide a C++ conformance change).  See m19 §5.6 "Staying in sync".
+fixtures/
+
+# vitest coverage output
+coverage/
