@@ -334,6 +334,50 @@ Why this is mandatory, not a nice-to-have:
     that starts at a codegen error or a conformance regression
     four layers downstream.
 
+### The oracle is the empirical tiebreaker — reading cel-cpp source is not always enough
+
+`testdata/cel_cpp_oracle_test.cc` (+ `cel_cpp_oracle.{h,cc}`) links the
+**real cel-cpp parser + checker + runtime** and evaluates an expression
+end-to-end (`EvalWithCelCpp(source, container)` → `OracleResult`).  It
+is the **authoritative answer** to any "what is the correct result?"
+question — value, canonical string form, error vs. value, rounding,
+overflow, heterogeneous-equality edge — and it OUTRANKS a guess derived
+from reading the source.
+
+**Reading cel-cpp source tells you what the code does at one site;
+the oracle tells you what the whole pipeline actually produces.**
+The two diverge more often than you'd expect: a behavior is the
+emergent product of parser desugaring + checker reference-resolution +
+runtime dispatch + a registered extension's options, and eyeballing
+one `.cc` misses the interaction.  Several times a "the source clearly
+says X" conclusion has been wrong because a layer upstream rewrote the
+input first.  So:
+
+  - **For any behavioral uncertainty, ADD A CASE TO THE ORACLE TEST
+    and run it** — that is the fastest way to settle the question, and
+    it leaves a permanent regression pin (cite the oracle case in the
+    test that depends on the fact).  Do this BEFORE writing the design
+    doc or the assertion; an assertion whose expected value you
+    *reasoned out* rather than *oracle-confirmed* is a guess.
+  - **When the conflict is "codebase comment / memory / spec-reading
+    says A, oracle says B," the oracle wins** — cel-cpp is the
+    reference implementation and conformance is scored against it.
+    (This is how `int(-2^63.0)` was settled: a code comment claimed
+    cel-cpp admits `INT64_MIN`; the oracle returned a range error;
+    the oracle won and the conversion path was fixed to match.)
+  - **The oracle has gaps — extend it, don't fall back to guessing.**
+    Today `EvalWithCelCpp` takes only `(source, container)`: it has no
+    activation bindings and no unknown-attribute / partial-eval path,
+    so partial-eval questions (e.g. "comprehension over an unknown
+    range") can't be asked through it yet.  When a question needs a
+    surface the oracle lacks, the correct move is to **extend the
+    oracle** (add the binding / unknown-pattern parameter) or write a
+    **throwaway cel-cpp probe** that drives the real runtime with that
+    surface — NOT to settle it by reading alone.  Record the
+    confirmed fact with the cel-cpp `file:line` (see backlog #14 for
+    the pattern: comprehension-over-unknown-range confirmed against
+    `eval/eval/comprehension_step.cc`).
+
 ## WAT-first for ABI and codegen design
 
 Before implementing any new codegen arm (kSelect, kCall, kComprehension,
