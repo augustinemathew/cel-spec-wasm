@@ -477,6 +477,62 @@ TEST_F(ListBindingE2ETest, OutOfBoundsOnBoundListFails) {
   EXPECT_TRUE(v_or->IsError());
 }
 
+// Passing a List<ProtoMessage> as a bound argument: declare `xs` as
+// list<Customer>, bind a vector of Value::Message, then index the list
+// and select a scalar field.  Uses the int32 `age` field to stay clear
+// of the host-arena span gap that BoundStringListUnimplemented documents.
+TEST_F(ListBindingE2ETest, BoundListOfMessageIndexedField) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable(
+        "xs", CelType::List(CelType::Message("celwasm.testdata.Customer")));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto program = compiler->Compile("xs[1].age");
+  ASSERT_THAT(program, IsOk())
+      << "list<Customer> arg + index + scalar-field select should compile";
+  auto instance = GlobalEngine().Plan(*program);
+  ASSERT_THAT(instance, IsOk());
+  Customer c0;
+  c0.set_age(30);
+  Customer c1;
+  c1.set_age(41);
+  Activation a;
+  a.Bind("xs", Value::List({Value::Message(c0), Value::Message(c1)}));
+  auto v = instance->Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 41);
+}
+
+// More complex: a map<string, list<int>> bound argument.  Bind a map
+// whose values are (bound) lists, then index map-then-list (`m['b'][1]`)
+// so the nested host backing (map lookup returning a list, indexed in
+// turn) is exercised end-to-end.  Result is an int, so no string
+// read-back (sidesteps the host-arena span gap).
+TEST_F(ListBindingE2ETest, BoundMapOfStringToListIndexed) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable(
+        "m", CelType::Map(CelType::String(), CelType::List(CelType::Int())));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto program = compiler->Compile("m['b'][1]");
+  ASSERT_THAT(program, IsOk())
+      << "map<string, list<int>> arg + map-index + list-index should compile";
+  auto instance = GlobalEngine().Plan(*program);
+  ASSERT_THAT(instance, IsOk());
+  Activation a;
+  a.Bind("m",
+         Value::Map({
+             {Value::String("a"), Value::List({Value::Int(10)})},
+             {Value::String("b"),
+              Value::List({Value::Int(20), Value::Int(21)})},
+         }));
+  auto v = instance->Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 21);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  DispatcherE2ETest — Plan §6.2 / §1.1.  `(cond ? [1,2] : xs)
 //  [0]` — the `?:` operand is mixed-origin (kArena from the
