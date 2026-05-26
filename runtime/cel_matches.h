@@ -23,6 +23,7 @@ extern "C" {
 // failure on `pat` poisons `out` with CEL_ERR_INVALID_ARGUMENT;
 // kind-mismatch on either operand likewise.  3VL absorbs ERROR /
 // UNKNOWN from either operand.
+// cel:codegen-export
 void cel_matches_at_vv(uint32_t out_slot, uint32_t text_slot,
                        uint32_t pat_slot);
 

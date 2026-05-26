@@ -802,15 +802,17 @@ OverloadTableBuilder::OverloadTableBuilder() {
     // codegen, engine runtime-export binding, and linker --export
     // lists.  Every built-in seed MUST appear in the catalogue;
     // a missing entry is a hard error caught here at Build() time.
-    const abi::AbiHelper* helper =
+    const abi::CelRuntimeFunction* helper =
         abi::FindBuiltinHelper(ToAbiModule(impl.module), impl.name);
     ABSL_CHECK(helper != nullptr)
         << "OverloadTableBuilder: seed `" << s.overload_id << "` → `"
         << abi::AbiModuleName(ToAbiModule(impl.module)) << "." << impl.name
-        << "` is not in the ABI catalogue.  Add it to "
-           "`abi/runtime_catalogue.cc::kCelRuntimeHelpersArr` "
-           "(or remove the seed if the helper is dropped).";
-    impl.num_args = helper->num_args;
+        << "` is not in the ABI catalogue.  For a `cel`-module helper, "
+           "mark its declaration in `runtime/cel_*.{h,c}` with "
+           "`// cel:codegen-export`; for a host / env import, add the row "
+           "in `abi/runtime_catalogue.cc` (or remove the seed if the "
+           "helper is dropped).";
+    impl.num_args = static_cast<uint8_t>(helper->num_args());
     impls_.push_back(impl);
     auto [it, inserted] = index_.emplace(s.overload_id, interned_id);
     ABSL_CHECK(inserted) << "kBuiltinSeeds duplicate: " << s.overload_id;

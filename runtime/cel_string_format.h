@@ -36,6 +36,7 @@ extern "C" {
 // 3VL absorb: ERROR / UNKNOWN in either input passes through.  Kind
 // mismatch on `s` (non-string) or `args` (non-list) poisons with
 // `CEL_ERR_TYPE_MISMATCH`.
+// cel:codegen-export
 void cel_string_format_at_vv(uint32_t out_slot, uint32_t s_slot,
                              uint32_t args_slot);
 

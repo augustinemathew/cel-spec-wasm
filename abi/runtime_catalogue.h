@@ -34,9 +34,15 @@
 //      `compiler/codegen/overload_table.cc` (the name-suffix
 //      sniff that recovered arity at OverloadTable::Build time).
 //
-// All three are now derived from `kCelRuntimeHelpers` /
-// `kCelHostFunctions` / `kCelEnvFunctions`.  Same data, one
-// authoritative location.
+// The `cel`-module set (`CelRuntimeHelpers()`) is itself DERIVED
+// from the `cel_runtime` C source: every codegen-imported helper is
+// marked with a `// cel:codegen-export` comment at its declaration,
+// and `//bazel:gen_runtime_catalogue` reads the marker (membership)
+// plus the `void`/`uint32_t` signature (arity + return shape) into a
+// `CelRuntimeCatalogue` textproto that this TU embeds and parses at
+// first use.  The `cel_host` / `cel_env` import sets stay
+// hand-maintained (they describe host imports, which have no
+// `cel_runtime.wasm` export to derive from).
 //
 // ABI versioning.  `kRuntimeAbiVersion` is bumped on any breaking
 // change to the catalogue (renamed helper, changed arity, dropped
@@ -51,11 +57,12 @@
 
 #include <cstdint>
 
+#include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.pb.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
 
 namespace celwasm::abi {
 
@@ -68,19 +75,20 @@ enum class AbiModule : uint8_t {
 
 absl::string_view AbiModuleName(AbiModule m);
 
-// One imported wasm function.  `num_args` is the exact i32
-// parameter count (no out-slot semantics layered on; "out_slot"
-// vs "value" is a calling convention the codegen + impls share
-// — the wasm signature is just i32×N).  `returns_i32` discriminates
-// the two result shapes that appear in practice: void (the vast
-// majority — every "_at_v*" kernel, every host trampoline) and i32
-// (arena helpers, iter handles, count helpers).
-struct AbiHelper {
-  absl::string_view name;
-  AbiModule module;
-  uint8_t num_args;
-  bool returns_i32;
-};
+// The catalogue-entry type is the GENERATED proto message
+// `celwasm::abi::CelRuntimeFunction` (`runtime_catalogue.proto`) — there
+// is no hand-defined POD; the proto IS the type used everywhere.  Its
+// accessors:
+//   - `name()`        the exported symbol.
+//   - `module()`      the `CelRuntimeModule` enum (`CEL` / `CEL_HOST` /
+//                     `CEL_ENV`); mirrors the C++ `AbiModule` below.
+//   - `num_args()`    exact i32 parameter count (no out-slot semantics
+//                     layered on; the wasm signature is just i32×N).
+//   - `returns_i32()` true iff the wasm function returns one i32 (arena
+//                     helpers, iter handles, count helpers); false for
+//                     the void-returning majority (every `_at_*` kernel
+//                     and every host trampoline writes through an
+//                     out-slot in linear memory).
 
 // Current ABI version.  Bumped on any change to the helper
 // catalogues below.  The cel.abi custom section in every emitted
@@ -89,15 +97,17 @@ struct AbiHelper {
 constexpr uint32_t kRuntimeAbiVersion = 2;
 
 // All helpers exported by `cel_runtime.wasm` (module name "cel").
-absl::Span<const AbiHelper> CelRuntimeHelpers();
+// Loaded once from the generated, embedded `CelRuntimeCatalogue`
+// textproto; the returned span has process lifetime.
+absl::Span<const CelRuntimeFunction> CelRuntimeHelpers();
 
 // All host trampolines registered by the wasmtime layer (module
 // name "cel_host").
-absl::Span<const AbiHelper> CelHostFunctions();
+absl::Span<const CelRuntimeFunction> CelHostFunctions();
 
 // All host environment helpers (module name "cel_env").  Currently
 // just `cel_log`.
-absl::Span<const AbiHelper> CelEnvFunctions();
+absl::Span<const CelRuntimeFunction> CelEnvFunctions();
 
 // Lookup a helper by name in a specific namespace.  Returns
 // nullptr if not found.  Used by codegen's import-installation
@@ -110,8 +120,8 @@ absl::Span<const AbiHelper> CelEnvFunctions();
 //
 // `kCelFn` is rejected — custom fns aren't in the catalogue;
 // their arity comes from `Compiler::Builder::AddFunction`.
-const AbiHelper* absl_nullable FindBuiltinHelper(AbiModule module,
-                                                  absl::string_view name);
+const CelRuntimeFunction* absl_nullable FindBuiltinHelper(
+    AbiModule module, absl::string_view name);
 
 // Version-check policy for the `runtime_abi_version` field in a
 // decoded `cel.abi` section.  Used by `Engine::Plan` (Slice E).

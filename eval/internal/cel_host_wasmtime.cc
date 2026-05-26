@@ -577,12 +577,13 @@ absl::Status RegisterCelHostImports(wasmtime_linker_t* linker,
   // linker can't resolve, and instantiate fails with an opaque
   // wasmtime error — exactly the failure mode the single-source-
   // of-truth refactor exists to prevent.
-  for (const abi::AbiHelper& h : abi::CelHostFunctions()) {
-    auto it = by_name.find(h.name);
+  for (const abi::CelRuntimeFunction& h : abi::CelHostFunctions()) {
+    auto it = by_name.find(h.name());
     ABSL_CHECK(it != by_name.end())
-        << "abi::CelHostFunctions() entry `" << h.name
+        << "abi::CelHostFunctions() entry `" << h.name()
         << "` has no trampoline in cel_host_wasmtime.cc::kHostTrampolines";
-    if (auto s = DefineHostFunc(linker, h.name, h.num_args, it->second, env);
+    if (auto s =
+            DefineHostFunc(linker, h.name(), h.num_args(), it->second, env);
         !s.ok()) {
       return s;
     }

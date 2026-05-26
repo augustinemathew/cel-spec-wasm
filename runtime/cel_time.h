@@ -52,11 +52,17 @@ extern "C" {
 //                                 timestamp; non-commutative)
 //   (ts, ts) -> dur            : sub  (delta between two timestamps)
 
+// cel:codegen-export
 void cel_dur_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_dur_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_dur_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_dur_ts_add_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_dur_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_ts_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // ----- Ordering (8 helpers) -----------------------------------------------
@@ -66,13 +72,21 @@ void cel_ts_ts_sub_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // Equality / inequality route through the existing
 // `cel_equals_at_vv` / `cel_not_equals_at_vv` dispatch.
 
+// cel:codegen-export
 void cel_dur_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_dur_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_dur_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_dur_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // ----- UTC timestamp accessors (10 helpers) --------------------------------
@@ -91,15 +105,25 @@ void cel_ts_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 //   hours / minutes / seconds : int (0..23 / 0..59 / 0..59)
 //   milliseconds   : int  (nanos / 1_000_000, truncating)
 
+// cel:codegen-export
 void cel_ts_year_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_month_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_day_of_month_1_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_day_of_month_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_day_of_year_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_day_of_week_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_hours_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_minutes_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_seconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_ts_milliseconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
 
 // ----- Duration accessors (4 helpers) --------------------------------------
@@ -114,9 +138,13 @@ void cel_ts_milliseconds_utc_at_v(uint32_t out_slot, uint32_t ts_slot);
 //                     duration in ms is `Duration / 1ms` and shipped
 //                     as `getMilliseconds` only on the in-second part).
 
+// cel:codegen-export
 void cel_dur_hours_at_v(uint32_t out_slot, uint32_t d_slot);
+// cel:codegen-export
 void cel_dur_minutes_at_v(uint32_t out_slot, uint32_t d_slot);
+// cel:codegen-export
 void cel_dur_seconds_at_v(uint32_t out_slot, uint32_t d_slot);
+// cel:codegen-export
 void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
 
 // ----- Conversions (4 helpers — pure-wasm half) ----------------------------
@@ -129,9 +157,13 @@ void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
 //   int64_to_timestamp : (seconds, 0) with langdef-range check
 //   int64_to_duration  : (seconds, 0); no range check (any int64 fits)
 
+// cel:codegen-export
 void cel_ts_to_int_at_v(uint32_t out_slot, uint32_t ts_slot);
+// cel:codegen-export
 void cel_dur_to_int_at_v(uint32_t out_slot, uint32_t dur_slot);
+// cel:codegen-export
 void cel_int_to_ts_at_v(uint32_t out_slot, uint32_t int_slot);
+// cel:codegen-export
 void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot);
 
 // ----- With-TZ accessor shims (10 helpers) ---------------------------------
@@ -141,24 +173,34 @@ void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot);
 // trampoline absorbs all 10 surfaces — see
 // `rewrite/m7b-duration-timestamp.md` §4.3 "single dispatch trampoline".
 
+// cel:codegen-export
 void cel_ts_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                 uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_day_of_month_1_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                          uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_day_of_month_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                        uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_day_of_year_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                       uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_day_of_week_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                       uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_hours_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                 uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_minutes_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                   uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_seconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                   uint32_t tz_slot);
+// cel:codegen-export
 void cel_ts_milliseconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                        uint32_t tz_slot);
 

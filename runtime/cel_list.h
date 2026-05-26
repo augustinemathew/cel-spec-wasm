@@ -37,6 +37,7 @@ extern "C" {
 //     filter ≤ N, per followon §10.A); per-iter appends.
 //     Final `count ≤ capacity`.
 // On OOM poisons `out_slot` with `{CEL_ERROR, CEL_ERR_OVERFLOW}`.
+// cel:codegen-export
 void cel_list_create(uint32_t out_slot, uint32_t capacity);
 
 // Append the value at `value_slot` to the arena list at
@@ -49,11 +50,13 @@ void cel_list_create(uint32_t out_slot, uint32_t capacity);
 // 3VL: ERROR / UNKNOWN value propagates verbatim into the list
 // slot; subsequent appends see the error kind and become silent
 // no-ops.
+// cel:codegen-export
 void cel_list_append_at(uint32_t list_slot, uint32_t value_slot);
 
 // Predicate-gated append for `filter(v, p)` / conditional-map.
 // Combines 3VL on the predicate with the append in a single
 // helper.  See impl notes in cel_runtime.c.
+// cel:codegen-export
 void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
                                 uint32_t value_slot);
 
@@ -68,6 +71,7 @@ void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
 //   `{CEL_ERROR, CEL_ERR_INDEX_OUT_OF_BOUNDS}`.
 // On non-int index: writes `{CEL_ERROR, CEL_ERR_TYPE_MISMATCH}`.
 // On unknown/error operand or index: propagates (3VL).
+// cel:codegen-export
 void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
                        uint32_t index_slot);
 
@@ -79,6 +83,7 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
 // growing the wasm stack.  Same toolchain requirements as
 // `cel_map_lookup` (`-mtail-call`,
 // `wasmtime::Config::wasm_tail_call(true)`).
+// cel:codegen-export
 void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot);
 
 // =====================================================================
@@ -128,9 +133,13 @@ void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // take the corresponding fast path).
 // =====================================================================
 
+// cel:codegen-export
 void cel_list_size(uint32_t out_slot, uint32_t list_slot);
+// cel:codegen-export
 void cel_list_in(uint32_t out_slot, uint32_t value_slot, uint32_t list_slot);
+// cel:codegen-export
 void cel_list_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_list_concat(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 #ifdef __cplusplus

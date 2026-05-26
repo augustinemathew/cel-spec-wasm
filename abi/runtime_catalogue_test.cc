@@ -1,10 +1,8 @@
-// Invariants over the runtime catalogue.  Compile-time validation
-// happens via the catalogue's internal static_asserts; this test
-// adds the data-shape checks: no duplicate names across namespaces,
-// arities are in the supported 0-5 range, returns_i32 matches the
-// kind sentinel, and FindBuiltinHelper agrees with the per-namespace
-// spans.  Pre-empts the kind of drift that motivated the catalogue
-// in the first place.
+// Invariants over the runtime catalogue (loaded shape, regardless of
+// where the data came from): no duplicate names within a namespace,
+// arities in the supported 0-5 range, returns_i32 vs module sanity, and
+// FindBuiltinHelper agreeing with the per-namespace spans.  Pre-empts
+// the kind of drift that motivated the catalogue in the first place.
 
 #include "abi/runtime_catalogue.h"
 
@@ -16,6 +14,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.pb.h"
 #include "gtest/gtest.h"
 
 namespace celwasm::abi {
@@ -26,11 +25,12 @@ namespace {
 // `cel.cel_list_at` and the trampoline `cel_host.cel_list_at` it
 // tail-calls share a name).
 TEST(RuntimeCatalogue, NoDuplicateNamesWithinNamespace) {
-  auto check = [](absl::Span<const AbiHelper> span, absl::string_view ns) {
+  auto check = [](absl::Span<const CelRuntimeFunction> span,
+                  absl::string_view ns) {
     absl::flat_hash_set<absl::string_view> seen;
     for (const auto& h : span) {
-      EXPECT_TRUE(seen.insert(h.name).second)
-          << "duplicate helper `" << ns << "." << h.name << "` in catalogue";
+      EXPECT_TRUE(seen.insert(h.name()).second)
+          << "duplicate helper `" << ns << "." << h.name() << "` in catalogue";
     }
   };
   check(CelRuntimeHelpers(), "cel");
@@ -60,31 +60,31 @@ TEST(RuntimeCatalogue, AritiesInRange) {
   // 0 args = niladic helpers (`arena_reset`, `arena_cursor`).
   // 5 args = the M12 `cel_string_replace_n_at_vvvv` upper bound.
   for (const auto& h : CelRuntimeHelpers()) {
-    EXPECT_LE(h.num_args, 5u) << "runtime helper `" << h.name
-                              << "` has unsupported arity " << +h.num_args;
+    EXPECT_LE(h.num_args(), 5u) << "runtime helper `" << h.name()
+                                << "` has unsupported arity " << h.num_args();
   }
   for (const auto& h : CelHostFunctions()) {
     // Host trampolines always have an out_slot + 1+ operands.
-    EXPECT_GE(h.num_args, 2u) << "host trampoline `" << h.name
-                              << "` has arity < 2 (no out_slot)";
-    EXPECT_LE(h.num_args, 5u) << "host trampoline `" << h.name
-                              << "` has unsupported arity " << +h.num_args;
+    EXPECT_GE(h.num_args(), 2u) << "host trampoline `" << h.name()
+                                << "` has arity < 2 (no out_slot)";
+    EXPECT_LE(h.num_args(), 5u) << "host trampoline `" << h.name()
+                                << "` has unsupported arity " << h.num_args();
   }
   for (const auto& h : CelEnvFunctions()) {
-    EXPECT_GE(h.num_args, 1u);
-    EXPECT_LE(h.num_args, 5u);
+    EXPECT_GE(h.num_args(), 1u);
+    EXPECT_LE(h.num_args(), 5u);
   }
 }
 
 TEST(RuntimeCatalogue, ModuleAssignmentMatchesNamespace) {
   for (const auto& h : CelRuntimeHelpers()) {
-    EXPECT_EQ(h.module, AbiModule::kCelRuntime) << h.name;
+    EXPECT_EQ(h.module(), CEL) << h.name();
   }
   for (const auto& h : CelHostFunctions()) {
-    EXPECT_EQ(h.module, AbiModule::kCelHost) << h.name;
+    EXPECT_EQ(h.module(), CEL_HOST) << h.name();
   }
   for (const auto& h : CelEnvFunctions()) {
-    EXPECT_EQ(h.module, AbiModule::kCelEnv) << h.name;
+    EXPECT_EQ(h.module(), CEL_ENV) << h.name();
   }
 }
 
@@ -94,31 +94,31 @@ TEST(RuntimeCatalogue, HostAndEnvTrampolinesReturnVoid) {
   // returns void.  Only runtime helpers can return i32 (iter
   // handles, count helpers, arena_alloc).
   for (const auto& h : CelHostFunctions()) {
-    EXPECT_FALSE(h.returns_i32) << "cel_host." << h.name
-                                << " returns i32 — host trampolines "
-                                   "should write through out_slot";
+    EXPECT_FALSE(h.returns_i32()) << "cel_host." << h.name()
+                                  << " returns i32 — host trampolines "
+                                     "should write through out_slot";
   }
   for (const auto& h : CelEnvFunctions()) {
-    EXPECT_FALSE(h.returns_i32) << "cel_env." << h.name;
+    EXPECT_FALSE(h.returns_i32()) << "cel_env." << h.name();
   }
 }
 
 TEST(RuntimeCatalogue, FindBuiltinHelperResolvesEveryEntry) {
   for (const auto& h : CelRuntimeHelpers()) {
-    const auto* found = FindBuiltinHelper(AbiModule::kCelRuntime, h.name);
-    ASSERT_NE(found, nullptr) << h.name;
-    EXPECT_EQ(found->module, AbiModule::kCelRuntime);
-    EXPECT_EQ(found->num_args, h.num_args);
+    const auto* found = FindBuiltinHelper(AbiModule::kCelRuntime, h.name());
+    ASSERT_NE(found, nullptr) << h.name();
+    EXPECT_EQ(found->module(), CEL);
+    EXPECT_EQ(found->num_args(), h.num_args());
   }
   for (const auto& h : CelHostFunctions()) {
-    const auto* found = FindBuiltinHelper(AbiModule::kCelHost, h.name);
-    ASSERT_NE(found, nullptr) << h.name;
-    EXPECT_EQ(found->module, AbiModule::kCelHost);
+    const auto* found = FindBuiltinHelper(AbiModule::kCelHost, h.name());
+    ASSERT_NE(found, nullptr) << h.name();
+    EXPECT_EQ(found->module(), CEL_HOST);
   }
   for (const auto& h : CelEnvFunctions()) {
-    const auto* found = FindBuiltinHelper(AbiModule::kCelEnv, h.name);
-    ASSERT_NE(found, nullptr) << h.name;
-    EXPECT_EQ(found->module, AbiModule::kCelEnv);
+    const auto* found = FindBuiltinHelper(AbiModule::kCelEnv, h.name());
+    ASSERT_NE(found, nullptr) << h.name();
+    EXPECT_EQ(found->module(), CEL_ENV);
   }
 }
 
@@ -179,8 +179,8 @@ TEST(RuntimeCatalogue, KernelArityCanaries) {
   for (const auto& c : kCanaries) {
     const auto* h = FindBuiltinHelper(AbiModule::kCelRuntime, c.name);
     ASSERT_NE(h, nullptr) << c.name;
-    EXPECT_EQ(h->num_args, c.arity) << c.name;
-    EXPECT_EQ(h->returns_i32, c.returns_i32) << c.name;
+    EXPECT_EQ(h->num_args(), c.arity) << c.name;
+    EXPECT_EQ(h->returns_i32(), c.returns_i32) << c.name;
   }
 }
 

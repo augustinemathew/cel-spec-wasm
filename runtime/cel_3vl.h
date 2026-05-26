@@ -42,13 +42,16 @@ extern "C" {
 
 // `_&&_` — non-strict 3VL conjunction.  Same-slot aliasing is
 // well-defined: the body never reads `a`/`b` after writing `out`.
+// cel:codegen-export
 void cel_and(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // `_||_` — non-strict 3VL disjunction.
+// cel:codegen-export
 void cel_or(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // `!_` — unary boolean inverse.  ERROR / UNKNOWN propagate
 // verbatim; non-bool / non-3VL operand → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_not(uint32_t out_slot, uint32_t a_slot);
 
 // Sorted-deduplicated union of two UnknownSets.  Both operands
@@ -57,12 +60,14 @@ void cel_not(uint32_t out_slot, uint32_t a_slot);
 // out-of-arena failure surfaces as CEL_ERR_OVERFLOW.  Empty side
 // (`payload.unk == 0`) yields the other side verbatim; both empty
 // → empty UNKNOWN.
+// cel:codegen-export
 void cel_unknown_merge(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // Memcpy a 24-byte CelValue from src_slot into dst_slot.  Used by
 // the ternary lowering to materialise the chosen branch's result
 // into the expression's out slot.  Aliasing (dst == src) is a
 // no-op-equivalent self-copy.
+// cel:codegen-export
 void cel_copy_slot(uint32_t dst_slot, uint32_t src_slot);
 
 #ifdef __cplusplus

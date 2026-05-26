@@ -2,23 +2,39 @@
 // module declares.  See `runtime_catalogue.h` for the design
 // rationale and the three pre-existing surfaces this consolidates.
 //
-// Maintenance discipline:
-//   - Adding a runtime helper or host trampoline: ONE line here,
-//     plus the impl + linker `--export=` plumbing.  Codegen
-//     consumes arity from this catalogue (no more name-suffix
-//     sniff).  The engine's runtime-export-binding pass derives
-//     its allowlist from `CelRuntimeHelpers()`; the host trampoline
-//     registry checks against `CelHostFunctions()`.
+// The catalogue entry type is the generated proto message
+// `celwasm::abi::CelRuntimeFunction`; there is NO hand-defined POD
+// struct.  The `cel`-module set is parsed once at first use from the
+// embedded `CelRuntimeCatalogue` textproto, which
+// `//bazel:gen_runtime_catalogue` generates from the
+// `// cel:codegen-export` markers in `runtime/cel_*.{h,c}`.  Adding a
+// runtime helper is therefore a single edit: mark its declaration with
+// `// cel:codegen-export`.  The generator picks up name + arity +
+// return shape; the linker `--export=` set and this catalogue both
+// flow from the marker.
+//
+// The `cel_host` / `cel_env` import sets are host IMPORTS with no
+// `cel_runtime.wasm` export to derive from, so they are constructed
+// programmatically below as `CelRuntimeFunction` protos (the cleaner
+// option than a second hand-edited textproto resource: the data is
+// tiny and stays right next to the cross-checks in
+// `cel_host_wasmtime.cc`).
+//
+// Maintenance discipline (host / env imports — still hand-maintained):
+//   - Adding a host trampoline: ONE entry in `CelHostFunctionsVec()`
+//     below, plus the trampoline impl in `cel_host_wasmtime.cc`.
 //   - Changing a helper's arity or return shape is a breaking ABI
-//     change — bump `kRuntimeAbiVersion` in the header.  Engine's
-//     instantiate-time check then rejects programs compiled
-//     against the old version with a clear diagnostic.
+//     change — bump `kRuntimeAbiVersion` in the header.
 
 #include "abi/runtime_catalogue.h"
 
-#include <array>
 #include <cstdint>
+#include <string>
+#include <vector>
 
+#include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.pb.h"
+#include "abi/runtime_catalogue_textproto.h"
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -26,16 +42,20 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
+#include "google/protobuf/text_format.h"
 
 namespace celwasm::abi {
 
 absl::string_view AbiModuleName(AbiModule m) {
   switch (m) {
-    case AbiModule::kCelRuntime: return "cel";
-    case AbiModule::kCelHost:    return "cel_host";
-    case AbiModule::kCelEnv:     return "cel_env";
-    case AbiModule::kCelFn:      return "cel_fn";
+    case AbiModule::kCelRuntime:
+      return "cel";
+    case AbiModule::kCelHost:
+      return "cel_host";
+    case AbiModule::kCelEnv:
+      return "cel_env";
+    case AbiModule::kCelFn:
+      return "cel_fn";
   }
   ABSL_CHECK(false) << "AbiModuleName: unhandled AbiModule="
                     << static_cast<int>(m);
@@ -43,368 +63,145 @@ absl::string_view AbiModuleName(AbiModule m) {
 
 namespace {
 
-// ────────────────────────────────────────────────────────────────
-// Compact-form helpers — collapse the four common shapes that
-// account for ~85% of entries.  Each macro takes the helper name
-// and expands to a full `AbiHelper` struct literal.  Non-suffix
-// helpers and non-void returns are written out long-form below.
-//
-// Convention: "_at_v" → 2 args (out + 1 value); "_at_vv" → 3
-// (out + 2); "_at_vvv" → 4; "_at_vvvv" → 5.  Every "_at_*" kernel
-// is void-returning by construction (results land in out_slot via
-// linear memory, not in the wasm return value).
-// ────────────────────────────────────────────────────────────────
-
-#define K_AT_V(n)    AbiHelper{n, AbiModule::kCelRuntime, 2, false}
-#define K_AT_VV(n)   AbiHelper{n, AbiModule::kCelRuntime, 3, false}
-#define K_AT_VVV(n)  AbiHelper{n, AbiModule::kCelRuntime, 4, false}
-#define K_AT_VVVV(n) AbiHelper{n, AbiModule::kCelRuntime, 5, false}
-
-// Non-suffix dispatchers / control-flow / aggregate ops — explicit
-// arity per entry.  `_RT_VOID` / `_RT_I32` discriminate result.
-#define RT_VOID(n, a) AbiHelper{n, AbiModule::kCelRuntime, (a), false}
-#define RT_I32(n, a)  AbiHelper{n, AbiModule::kCelRuntime, (a), true}
-
-#define HOST_VOID(n, a) AbiHelper{n, AbiModule::kCelHost, (a), false}
-#define ENV_VOID(n, a)  AbiHelper{n, AbiModule::kCelEnv, (a), false}
+// Builds a `CelRuntimeFunction` proto for a host import.  The two host
+// namespaces (`cel_host` / `cel_env`) describe wasm IMPORTS the engine
+// registers, not `cel_runtime.wasm` exports, so they have no marker to
+// derive from and are constructed here.  Every host trampoline writes
+// its result through an out_slot in linear memory, so `returns_i32` is
+// always false.
+CelRuntimeFunction MakeHostFn(absl::string_view name, CelRuntimeModule module,
+                              uint32_t num_args) {
+  CelRuntimeFunction fn;
+  fn.set_name(std::string(name));
+  fn.set_module(module);
+  fn.set_num_args(num_args);
+  fn.set_returns_i32(false);
+  return fn;
+}
 
 // ════════════════════════════════════════════════════════════════
-// `cel` namespace — pure-wasm helpers exported by cel_runtime.wasm
-// that the expr module imports.  Grouped by category.  Total: see
-// `kCelRuntimeHelpersArr` static_assert below.
+// `cel` namespace — pure-wasm helpers exported by cel_runtime.wasm.
+// Parsed once from the embedded, generated `CelRuntimeCatalogue`
+// textproto.  Function-local static → process lifetime, so the spans
+// and the `string_view`s into each proto's `name()` stay valid.
 // ════════════════════════════════════════════════════════════════
-constexpr AbiHelper kCelRuntimeHelpersArr[] = {
-    // ── Arena primitives (host trampolines also call these) ────
-    RT_VOID("arena_reset", 0),
-    RT_I32("arena_alloc", 1),
-
-    // ── Same-kind arithmetic ──────────────────────────────────
-    K_AT_VV("cel_int_add_at_vv"), K_AT_VV("cel_int_sub_at_vv"),
-    K_AT_VV("cel_int_mul_at_vv"), K_AT_VV("cel_int_div_at_vv"),
-    K_AT_VV("cel_int_mod_at_vv"), K_AT_V("cel_int_neg_at_v"),
-    K_AT_VV("cel_uint_add_at_vv"), K_AT_VV("cel_uint_sub_at_vv"),
-    K_AT_VV("cel_uint_mul_at_vv"), K_AT_VV("cel_uint_div_at_vv"),
-    K_AT_VV("cel_uint_mod_at_vv"), K_AT_VV("cel_double_add_at_vv"),
-    K_AT_VV("cel_double_sub_at_vv"), K_AT_VV("cel_double_mul_at_vv"),
-    K_AT_VV("cel_double_div_at_vv"), K_AT_V("cel_double_neg_at_v"),
-
-    // ── Same-kind comparison ─────────────────────────────────
-    K_AT_VV("cel_int_lt_at_vv"), K_AT_VV("cel_int_le_at_vv"),
-    K_AT_VV("cel_int_gt_at_vv"), K_AT_VV("cel_int_ge_at_vv"),
-    K_AT_VV("cel_uint_lt_at_vv"), K_AT_VV("cel_uint_le_at_vv"),
-    K_AT_VV("cel_uint_gt_at_vv"), K_AT_VV("cel_uint_ge_at_vv"),
-    K_AT_VV("cel_double_lt_at_vv"), K_AT_VV("cel_double_le_at_vv"),
-    K_AT_VV("cel_double_gt_at_vv"), K_AT_VV("cel_double_ge_at_vv"),
-    K_AT_VV("cel_bool_lt_at_vv"), K_AT_VV("cel_bool_le_at_vv"),
-    K_AT_VV("cel_bool_gt_at_vv"), K_AT_VV("cel_bool_ge_at_vv"),
-
-    // ── Cross-type numeric ladder ─────────────────────────────
-    K_AT_VV("cel_numeric_lt_at_vv"), K_AT_VV("cel_numeric_le_at_vv"),
-    K_AT_VV("cel_numeric_gt_at_vv"), K_AT_VV("cel_numeric_ge_at_vv"),
-
-    // ── String + bytes ops ────────────────────────────────────
-    K_AT_VV("cel_string_concat_at_vv"), K_AT_V("cel_string_size_at_v"),
-    K_AT_VV("cel_string_lt_at_vv"), K_AT_VV("cel_string_le_at_vv"),
-    K_AT_VV("cel_string_gt_at_vv"), K_AT_VV("cel_string_ge_at_vv"),
-    K_AT_VV("cel_string_contains_at_vv"),
-    K_AT_VV("cel_string_starts_with_at_vv"),
-    K_AT_VV("cel_string_ends_with_at_vv"),
-    K_AT_VV("cel_bytes_concat_at_vv"), K_AT_V("cel_bytes_size_at_v"),
-    K_AT_VV("cel_bytes_lt_at_vv"), K_AT_VV("cel_bytes_le_at_vv"),
-    K_AT_VV("cel_bytes_gt_at_vv"), K_AT_VV("cel_bytes_ge_at_vv"),
-
-    // ── Aggregate construction / mutation ─────────────────────
-    RT_VOID("cel_list_create", 2),
-    RT_VOID("cel_list_append_at", 2),
-    RT_VOID("cel_list_append_at_if_bool", 3),
-    RT_VOID("cel_list_at_arena", 3),
-    RT_VOID("cel_list_at", 3),
-    RT_VOID("cel_map_create", 2),
-    RT_VOID("cel_map_insert", 3),
-    RT_VOID("cel_map_insert_at", 3),
-    RT_VOID("cel_map_insert_at_if_bool", 4),
-    RT_VOID("cel_map_lookup_arena", 3),
-    RT_VOID("cel_map_lookup", 3),
-
-    // ── Aggregate kDynamic dispatchers ────────────────────────
-    RT_VOID("cel_list_size", 2),
-    RT_VOID("cel_list_in", 3),
-    RT_VOID("cel_list_eq", 3),
-    RT_VOID("cel_list_concat", 3),
-    RT_VOID("cel_map_size", 2),
-    RT_VOID("cel_map_in", 3),
-    RT_VOID("cel_map_eq", 3),
-
-    // ── Comprehension iter ABI ────────────────────────────────
-    RT_I32("cel_map_iter_init", 1),
-    RT_I32("cel_map_iter_next", 1),
-    RT_VOID("cel_map_iter_key_at", 2),
-    RT_VOID("cel_map_iter_value_at", 2),
-    // Kind-dispatching count helper for comprehension pre-sizing
-    // over host-backed maps (m5b §CCF-8).
-    RT_I32("cel_map_count", 1),
-    // Kind-dispatching list-iter snapshot for host lists (m5b §CCF-8
-    // Slice 2).  Arena passthrough; host calls back through the
-    // matching cel_host.cel_list_iter_open trampoline.
-    RT_I32("cel_list_arena_view", 1),
-
-    // ── Polymorphic equality ──────────────────────────────────
-    K_AT_VV("cel_equals_at_vv"),
-    K_AT_VV("cel_not_equals_at_vv"),
-
-    // ── 3VL / control flow ────────────────────────────────────
-    RT_VOID("cel_and", 3),
-    RT_VOID("cel_or", 3),
-    RT_VOID("cel_not", 2),
-    RT_VOID("cel_unknown_merge", 3),
-    RT_VOID("cel_copy_slot", 2),
-
-    // ── Type system ───────────────────────────────────────────
-    K_AT_V("cel_type_of_at_v"),
-
-    // ── Numeric inter-conversion ──────────────────────────────
-    K_AT_V("cel_uint_to_int_at_v"), K_AT_V("cel_double_to_int_at_v"),
-    K_AT_V("cel_int_to_uint_at_v"), K_AT_V("cel_double_to_uint_at_v"),
-    K_AT_V("cel_int_to_double_at_v"), K_AT_V("cel_uint_to_double_at_v"),
-
-    // ── String-parse ──────────────────────────────────────────
-    K_AT_V("cel_string_to_int_at_v"), K_AT_V("cel_string_to_uint_at_v"),
-    K_AT_V("cel_string_to_double_at_v"), K_AT_V("cel_string_to_bool_at_v"),
-
-    // ── Number/bool/bytes-to-string formatters ───────────────
-    K_AT_V("cel_int_to_string_at_v"), K_AT_V("cel_uint_to_string_at_v"),
-    K_AT_V("cel_bool_to_string_at_v"), K_AT_V("cel_double_to_string_at_v"),
-    K_AT_V("cel_string_to_bytes_at_v"), K_AT_V("cel_bytes_to_string_at_v"),
-
-    // ── Timestamp / duration arithmetic + ordering ────────────
-    K_AT_VV("cel_dur_add_at_vv"), K_AT_VV("cel_dur_sub_at_vv"),
-    K_AT_VV("cel_ts_dur_add_at_vv"), K_AT_VV("cel_dur_ts_add_at_vv"),
-    K_AT_VV("cel_ts_dur_sub_at_vv"), K_AT_VV("cel_ts_ts_sub_at_vv"),
-    K_AT_VV("cel_dur_lt_at_vv"), K_AT_VV("cel_dur_le_at_vv"),
-    K_AT_VV("cel_dur_gt_at_vv"), K_AT_VV("cel_dur_ge_at_vv"),
-    K_AT_VV("cel_ts_lt_at_vv"), K_AT_VV("cel_ts_le_at_vv"),
-    K_AT_VV("cel_ts_gt_at_vv"), K_AT_VV("cel_ts_ge_at_vv"),
-
-    // ── Timestamp UTC + duration accessors ────────────────────
-    K_AT_V("cel_ts_year_utc_at_v"), K_AT_V("cel_ts_month_utc_at_v"),
-    K_AT_V("cel_ts_day_of_month_1_utc_at_v"),
-    K_AT_V("cel_ts_day_of_month_utc_at_v"),
-    K_AT_V("cel_ts_day_of_year_utc_at_v"),
-    K_AT_V("cel_ts_day_of_week_utc_at_v"),
-    K_AT_V("cel_ts_hours_utc_at_v"), K_AT_V("cel_ts_minutes_utc_at_v"),
-    K_AT_V("cel_ts_seconds_utc_at_v"),
-    K_AT_V("cel_ts_milliseconds_utc_at_v"),
-    K_AT_V("cel_dur_hours_at_v"), K_AT_V("cel_dur_minutes_at_v"),
-    K_AT_V("cel_dur_seconds_at_v"), K_AT_V("cel_dur_milliseconds_at_v"),
-
-    // ── Int <-> ts/dur ────────────────────────────────────────
-    K_AT_V("cel_ts_to_int_at_v"), K_AT_V("cel_dur_to_int_at_v"),
-    K_AT_V("cel_int_to_ts_at_v"), K_AT_V("cel_int_to_dur_at_v"),
-
-    // ── Timestamp with-TZ accessors ───────────────────────────
-    K_AT_VV("cel_ts_year_with_tz_at_vv"),
-    K_AT_VV("cel_ts_month_with_tz_at_vv"),
-    K_AT_VV("cel_ts_day_of_month_1_with_tz_at_vv"),
-    K_AT_VV("cel_ts_day_of_month_with_tz_at_vv"),
-    K_AT_VV("cel_ts_day_of_year_with_tz_at_vv"),
-    K_AT_VV("cel_ts_day_of_week_with_tz_at_vv"),
-    K_AT_VV("cel_ts_hours_with_tz_at_vv"),
-    K_AT_VV("cel_ts_minutes_with_tz_at_vv"),
-    K_AT_VV("cel_ts_seconds_with_tz_at_vv"),
-    K_AT_VV("cel_ts_milliseconds_with_tz_at_vv"),
-
-    // ── Runtime-hosted parse / format ─────────────────────────
-    K_AT_V("cel_timestamp_parse_at_v"), K_AT_V("cel_duration_parse_at_v"),
-    K_AT_V("cel_timestamp_format_at_v"), K_AT_V("cel_duration_format_at_v"),
-
-    // ── Regex matches ─────────────────────────────────────────
-    K_AT_VV("cel_matches_at_vv"),
-
-    // ── M12 string_ext extension kernels ──────────────────────
-    K_AT_VV("cel_string_char_at_at_vv"),
-    K_AT_V("cel_string_lower_ascii_at_v"),
-    K_AT_V("cel_string_upper_ascii_at_v"),
-    K_AT_V("cel_string_trim_at_v"),
-    K_AT_V("cel_string_reverse_at_v"),
-    K_AT_VV("cel_string_index_of_at_vv"),
-    K_AT_VVV("cel_string_index_of_at_vvv"),
-    K_AT_VV("cel_string_last_index_of_at_vv"),
-    K_AT_VVV("cel_string_last_index_of_at_vvv"),
-    K_AT_VV("cel_string_substring_at_vv"),
-    K_AT_VVV("cel_string_substring_range_at_vvv"),
-    K_AT_VVV("cel_string_replace_at_vvv"),
-    K_AT_VVVV("cel_string_replace_n_at_vvvv"),
-    K_AT_VV("cel_string_split_at_vv"),
-    K_AT_VVV("cel_string_split_n_at_vvv"),
-    K_AT_V("cel_string_join_at_v"),
-    K_AT_VV("cel_string_join_sep_at_vv"),
-    K_AT_V("cel_string_quote_at_v"),
-    K_AT_VV("cel_string_format_at_vv"),
-
-    // ── M17 encoders (base64) kernels ─────────────────────────
-    // base64.encode(bytes)->string, base64.decode(string)->bytes.
-    // Both unary out-slot kernels (out + 1 value arg).
-    K_AT_V("cel_base64_encode_at_v"),
-    K_AT_V("cel_base64_decode_at_v"),
-
-    // ── CEL optional<T> kernels ───────────────────────────────
-    // Eight value-level helpers + select-field + three
-    // predicate-gated `_if_present` mutators for map / list / proto
-    // entries.  The `_if_present` trio mutates its first arg in place
-    // (no out_slot), matching the `_if_bool` siblings above.
-    RT_VOID("cel_optional_none_at", 1),
-    K_AT_V("cel_optional_of_at_v"),
-    K_AT_V("cel_optional_of_non_zero_at_v"),
-    K_AT_V("cel_optional_has_value_at_v"),
-    K_AT_V("cel_optional_value_at_v"),
-    K_AT_VV("cel_optional_or_at_vv"),
-    K_AT_VV("cel_optional_or_value_at_vv"),
-    K_AT_VV("cel_select_optional_field_at_vv"),
-    RT_VOID("cel_map_insert_at_if_present", 3),
-    RT_VOID("cel_list_append_at_if_present", 2),
-    RT_VOID("cel_set_field_at_if_present", 3),
-
-    // ── math_ext extension kernels ────────────────────────────
-    // Scalar (rounding / predicates / abs / sign / sqrt).
-    K_AT_V("cel_math_ceil_at_v"),
-    K_AT_V("cel_math_floor_at_v"),
-    K_AT_V("cel_math_round_at_v"),
-    K_AT_V("cel_math_trunc_at_v"),
-    K_AT_V("cel_math_is_inf_at_v"),
-    K_AT_V("cel_math_is_nan_at_v"),
-    K_AT_V("cel_math_is_finite_at_v"),
-    K_AT_V("cel_math_abs_at_v"),
-    K_AT_V("cel_math_sign_at_v"),
-    K_AT_V("cel_math_sqrt_at_v"),
-    // Bitwise.
-    K_AT_VV("cel_math_bit_and_at_vv"),
-    K_AT_VV("cel_math_bit_or_at_vv"),
-    K_AT_VV("cel_math_bit_xor_at_vv"),
-    K_AT_V("cel_math_bit_not_at_v"),
-    K_AT_VV("cel_math_bit_shift_left_at_vv"),
-    K_AT_VV("cel_math_bit_shift_right_at_vv"),
-    // Variadic min / max (post-macro math.@min / math.@max).
-    K_AT_VV("cel_math_min_at_vv"),
-    K_AT_VV("cel_math_max_at_vv"),
-    K_AT_V("cel_math_min_list_at_v"),
-    K_AT_V("cel_math_max_list_at_v"),
-
-    // ── network_ext (net.IP / net.CIDR) kernels ───────────────
-    // Parse / string / classification / accessor kernels are unary
-    // out-slot (_at_v = out + 1 value); containsIP / containsCIDR
-    // take the receiver CIDR + an arg (_at_vv = out + 2 values).
-    K_AT_V("cel_ip_parse_at_v"),
-    K_AT_V("cel_ip_to_string_at_v"),
-    K_AT_V("cel_isip_at_v"),
-    K_AT_V("cel_ip_is_canonical_at_v"),
-    K_AT_V("cel_ip_family_at_v"),
-    K_AT_V("cel_ip_is_loopback_at_v"),
-    K_AT_V("cel_ip_is_unspecified_at_v"),
-    K_AT_V("cel_ip_is_global_unicast_at_v"),
-    K_AT_V("cel_ip_is_link_local_unicast_at_v"),
-    K_AT_V("cel_ip_is_link_local_multicast_at_v"),
-    K_AT_V("cel_cidr_parse_at_v"),
-    K_AT_V("cel_cidr_to_string_at_v"),
-    K_AT_V("cel_cidr_ip_at_v"),
-    K_AT_V("cel_cidr_masked_at_v"),
-    K_AT_V("cel_cidr_prefix_length_at_v"),
-    K_AT_VV("cel_cidr_contains_ip_at_vv"),
-    K_AT_VV("cel_cidr_contains_cidr_at_vv"),
-};
+const std::vector<CelRuntimeFunction>& CelRuntimeHelpersVec() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kHelpers([] {
+    CelRuntimeCatalogue catalogue;
+    ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
+        std::string(RuntimeCatalogueTextproto()), &catalogue))
+        << "abi: failed to parse the embedded CelRuntimeCatalogue "
+           "textproto — the genrule output is malformed";
+    std::vector<CelRuntimeFunction> v;
+    v.reserve(catalogue.functions_size());
+    for (const CelRuntimeFunction& fn : catalogue.functions()) {
+      ABSL_CHECK(fn.module() == CEL) << "abi: generated catalogue row `"
+                                     << fn.name() << "` has module != CEL";
+      v.push_back(fn);
+    }
+    return v;
+  }());
+  return *kHelpers;
+}
 
 // ════════════════════════════════════════════════════════════════
 // `cel_host` namespace — wasmtime host trampolines registered by
 // `cel_host_wasmtime.cc::RegisterCelHostImports`.  Names + arities
-// MUST agree with `kEntries[]` in that file; the static_assert
-// loop below trips at compile time if they drift.
+// MUST agree with `kHostTrampolines[]` in that file; the cross-check
+// loop there CHECK-fails at startup if they drift.
 // ════════════════════════════════════════════════════════════════
-constexpr AbiHelper kCelHostFunctionsArr[] = {
-    HOST_VOID("cel_get_field", 4),
-    HOST_VOID("cel_has_field", 4),
-    HOST_VOID("cel_map_lookup", 3),
-    HOST_VOID("cel_map_iter_open", 2),
-    HOST_VOID("cel_list_iter_open", 2),
-    HOST_VOID("cel_list_at", 3),
-    HOST_VOID("cel_list_size", 2),
-    HOST_VOID("cel_list_in", 3),
-    HOST_VOID("cel_list_eq", 3),
-    HOST_VOID("cel_list_concat", 3),
-    HOST_VOID("cel_map_size", 2),
-    HOST_VOID("cel_map_in", 3),
-    HOST_VOID("cel_map_eq", 3),
-    HOST_VOID("cel_message_eq", 3),
-    HOST_VOID("cel_make_message", 2),
-    HOST_VOID("cel_set_field", 3),
-    HOST_VOID("resolve_message_type_name", 2),
-    HOST_VOID("cel_timestamp_tz_accessor", 4),
-    HOST_VOID("cel_wkt_unwrap_time", 2),
-    HOST_VOID("cel_wkt_unwrap_wrapper", 3),
-};
+const std::vector<CelRuntimeFunction>& CelHostFunctionsVec() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns([] {
+    return std::vector<CelRuntimeFunction>{
+        MakeHostFn("cel_get_field", CEL_HOST, 4),
+        MakeHostFn("cel_has_field", CEL_HOST, 4),
+        MakeHostFn("cel_map_lookup", CEL_HOST, 3),
+        MakeHostFn("cel_map_iter_open", CEL_HOST, 2),
+        MakeHostFn("cel_list_iter_open", CEL_HOST, 2),
+        MakeHostFn("cel_list_at", CEL_HOST, 3),
+        MakeHostFn("cel_list_size", CEL_HOST, 2),
+        MakeHostFn("cel_list_in", CEL_HOST, 3),
+        MakeHostFn("cel_list_eq", CEL_HOST, 3),
+        MakeHostFn("cel_list_concat", CEL_HOST, 3),
+        MakeHostFn("cel_map_size", CEL_HOST, 2),
+        MakeHostFn("cel_map_in", CEL_HOST, 3),
+        MakeHostFn("cel_map_eq", CEL_HOST, 3),
+        MakeHostFn("cel_message_eq", CEL_HOST, 3),
+        MakeHostFn("cel_make_message", CEL_HOST, 2),
+        MakeHostFn("cel_set_field", CEL_HOST, 3),
+        MakeHostFn("resolve_message_type_name", CEL_HOST, 2),
+        MakeHostFn("cel_timestamp_tz_accessor", CEL_HOST, 4),
+        MakeHostFn("cel_wkt_unwrap_time", CEL_HOST, 2),
+        MakeHostFn("cel_wkt_unwrap_wrapper", CEL_HOST, 3),
+    };
+  }());
+  return *kFns;
+}
 
 // ════════════════════════════════════════════════════════════════
 // `cel_env` namespace — host environment trampolines.  Currently
 // just `cel_log`; reserved for future cross-cutting concerns.
 // ════════════════════════════════════════════════════════════════
-constexpr AbiHelper kCelEnvFunctionsArr[] = {
-    ENV_VOID("cel_log", 4),
-};
-
-#undef K_AT_V
-#undef K_AT_VV
-#undef K_AT_VVV
-#undef K_AT_VVVV
-#undef RT_VOID
-#undef RT_I32
-#undef HOST_VOID
-#undef ENV_VOID
+const std::vector<CelRuntimeFunction>& CelEnvFunctionsVec() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns([] {
+    return std::vector<CelRuntimeFunction>{
+        MakeHostFn("cel_log", CEL_ENV, 4),
+    };
+  }());
+  return *kFns;
+}
 
 // Name→helper lookups, eagerly built per namespace on first use.
 // Distinct maps because `cel.cel_list_at` (the dispatcher) and
 // `cel_host.cel_list_at` (the trampoline it tail-calls) share a
-// name across namespaces by design.
-template <std::size_t N>
-absl::flat_hash_map<absl::string_view, const AbiHelper*> BuildIndex(
-    const AbiHelper (&arr)[N]) {
-  absl::flat_hash_map<absl::string_view, const AbiHelper*> m;
-  m.reserve(N);
-  for (const auto& h : arr) m[h.name] = &h;
+// name across namespaces by design.  The `string_view` keys alias
+// each proto's `name()` storage, which lives for the process.
+absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*> BuildIndex(
+    const std::vector<CelRuntimeFunction>& fns) {
+  absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*> m;
+  m.reserve(fns.size());
+  for (const CelRuntimeFunction& h : fns) {
+    m[h.name()] = &h;
+  }
   return m;
 }
 
-const absl::flat_hash_map<absl::string_view, const AbiHelper*>&
+const absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>&
 RuntimeIndex() {
   static const absl::NoDestructor<
-      absl::flat_hash_map<absl::string_view, const AbiHelper*>>
-      kIndex(BuildIndex(kCelRuntimeHelpersArr));
+      absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>>
+      kIndex(BuildIndex(CelRuntimeHelpersVec()));
   return *kIndex;
 }
 
-const absl::flat_hash_map<absl::string_view, const AbiHelper*>& HostIndex() {
+const absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>&
+HostIndex() {
   static const absl::NoDestructor<
-      absl::flat_hash_map<absl::string_view, const AbiHelper*>>
-      kIndex(BuildIndex(kCelHostFunctionsArr));
+      absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>>
+      kIndex(BuildIndex(CelHostFunctionsVec()));
   return *kIndex;
 }
 
-const absl::flat_hash_map<absl::string_view, const AbiHelper*>& EnvIndex() {
+const absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>&
+EnvIndex() {
   static const absl::NoDestructor<
-      absl::flat_hash_map<absl::string_view, const AbiHelper*>>
-      kIndex(BuildIndex(kCelEnvFunctionsArr));
+      absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>>
+      kIndex(BuildIndex(CelEnvFunctionsVec()));
   return *kIndex;
 }
 
 }  // namespace
 
-absl::Span<const AbiHelper> CelRuntimeHelpers() {
-  return absl::MakeConstSpan(kCelRuntimeHelpersArr);
+absl::Span<const CelRuntimeFunction> CelRuntimeHelpers() {
+  return absl::MakeConstSpan(CelRuntimeHelpersVec());
 }
 
-absl::Span<const AbiHelper> CelHostFunctions() {
-  return absl::MakeConstSpan(kCelHostFunctionsArr);
+absl::Span<const CelRuntimeFunction> CelHostFunctions() {
+  return absl::MakeConstSpan(CelHostFunctionsVec());
 }
 
-absl::Span<const AbiHelper> CelEnvFunctions() {
-  return absl::MakeConstSpan(kCelEnvFunctionsArr);
+absl::Span<const CelRuntimeFunction> CelEnvFunctions() {
+  return absl::MakeConstSpan(CelEnvFunctionsVec());
 }
 
 absl::Status CheckRuntimeAbiVersion(const CelAbi& abi) {
@@ -421,19 +218,27 @@ absl::Status CheckRuntimeAbiVersion(const CelAbi& abi) {
         "(engine ABI v",
         engine_v, ")"));
   }
-  return absl::FailedPreconditionError(absl::StrCat(
-      "cel.abi: runtime ABI version mismatch — program compiled "
-      "against v",
-      prog_v, ", this engine ships v", engine_v,
-      "; recompile the program against this engine's compiler"));
+  return absl::FailedPreconditionError(
+      absl::StrCat("cel.abi: runtime ABI version mismatch — program compiled "
+                   "against v",
+                   prog_v, ", this engine ships v", engine_v,
+                   "; recompile the program against this engine's compiler"));
 }
 
-const AbiHelper* FindBuiltinHelper(AbiModule module, absl::string_view name) {
-  const absl::flat_hash_map<absl::string_view, const AbiHelper*>* idx = nullptr;
+const CelRuntimeFunction* FindBuiltinHelper(AbiModule module,
+                                            absl::string_view name) {
+  const absl::flat_hash_map<absl::string_view, const CelRuntimeFunction*>* idx =
+      nullptr;
   switch (module) {
-    case AbiModule::kCelRuntime: idx = &RuntimeIndex(); break;
-    case AbiModule::kCelHost:    idx = &HostIndex(); break;
-    case AbiModule::kCelEnv:     idx = &EnvIndex(); break;
+    case AbiModule::kCelRuntime:
+      idx = &RuntimeIndex();
+      break;
+    case AbiModule::kCelHost:
+      idx = &HostIndex();
+      break;
+    case AbiModule::kCelEnv:
+      idx = &EnvIndex();
+      break;
     case AbiModule::kCelFn:
       // Custom-fn helpers aren't in the catalogue; arity comes
       // from the per-compile registration in Compiler::Builder.

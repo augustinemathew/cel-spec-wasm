@@ -35,17 +35,25 @@ extern "C" {
 // int64 — full eq/ne/lt/le/gt/ge matrix.
 void cel_int_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_int_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_int_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_int_le_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_int_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_int_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 // uint64 — same matrix.
 void cel_uint_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_uint_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_uint_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_uint_le_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_uint_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_uint_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 // double — IEEE 754 ordering.  NaN comparisons follow IEEE: any
@@ -53,9 +61,13 @@ void cel_uint_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // Mirrors cel-cpp `equality_functions.cc::Equal` for double.
 void cel_double_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_double_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_double_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_double_le_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_double_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_double_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 // bool — eq/ne plus ordering (false < true).  Per langdef
@@ -63,9 +75,13 @@ void cel_double_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // CEL defines a total order on bool with `false < true`.
 void cel_bool_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_bool_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_bool_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_bool_le_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_bool_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_bool_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 // null — eq only.  `null == null → true`; type-mismatch (other
@@ -87,9 +103,13 @@ void cel_null_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // 3VL absorption is identical to the same-kind helpers.
 void cel_numeric_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_numeric_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_numeric_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_numeric_le_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_numeric_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
+// cel:codegen-export
 void cel_numeric_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 #ifdef __cplusplus

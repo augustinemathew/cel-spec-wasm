@@ -1,0 +1,20 @@
+# First-party, dependency-independent Starlark / build tooling (the
+# top-level `bazel/` dir mandated by CLAUDE.md — first-party reusable
+# build assets live here, never scattered into package dirs and never in
+# `third_party/`).
+
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Derives the runtime-helper catalogue from the `cel_runtime` C source:
+# every codegen-imported helper is marked `// cel:codegen-export` at its
+# declaration, and this tool reads the marker (membership) plus the
+# `void`/`uint32_t` signature (arity + return shape).  Two outputs:
+#   --mode=textproto  -> the `CelRuntimeCatalogue` (`//abi`).
+#   --mode=names      -> the codegen-helper `--export=` names (`//runtime`).
+py_binary(
+    name = "gen_runtime_catalogue",
+    srcs = ["gen_runtime_catalogue.py"],
+    visibility = ["//:internal"],
+)

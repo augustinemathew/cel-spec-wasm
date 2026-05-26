@@ -284,7 +284,7 @@ void InstallOverloadImportsExport(WasmModule& mod,
     ABSL_CHECK(helper != nullptr)
         << "cel_copy_slot missing from ABI catalogue — see "
            "abi/runtime_catalogue.cc";
-    InstallOverloadImport(mod, "cel_copy_slot", "cel", helper->num_args);
+    InstallOverloadImport(mod, "cel_copy_slot", "cel", helper->num_args());
     installed.insert(std::move(copy_key));
   }
 }
