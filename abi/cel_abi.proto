@@ -96,11 +96,26 @@ message FieldEntry {
 // the cel_host trampoline at runtime to match against the active
 // unknown-pattern set.
 //
-//   id          dense index; 0 is the sentinel "no attribute id"
-//               (used for nodes that aren't ident-rooted).
-//   variable    root variable name.
-//   qualifiers  ordered list of string qualifiers (field names for
-//               selects).
+//   id          dense intern index in [1, N]; 0 is the sentinel "no
+//               attribute id", stamped on any node that is not
+//               ident-rooted (a literal, a call result, etc.) so the
+//               runtime treats it as "no unknown-pattern match possible".
+//   variable    root variable name (the ident at the base of the chain).
+//   qualifiers  ordered field-select names from root to this node.
+//
+// ResolvePass interns the root ident with empty qualifiers, then each
+// `.field` select copies the operand's row and appends `field` — so
+// every PREFIX of a chain gets its own row.  Concrete examples:
+//
+//   `x`                      -> {variable:"x",       qualifiers:[]}
+//   `request.auth`           -> {variable:"request", qualifiers:["auth"]}
+//   `request.auth.claims`    -> {variable:"request", qualifiers:["auth","claims"]}
+//        (compiling this last one interns all three rows above, because
+//         the operand of each select is interned first.)
+//   `1 + 2`, `f().g`         -> id 0 (not ident-rooted; no row emitted).
+//
+// Only `.field` selects extend `qualifiers`; index/key qualifiers
+// (`x[0]`, `m['k']`) are not part of this attribute path.
 message AttributeEntry {
   uint32 id = 1;
   string variable = 2;
