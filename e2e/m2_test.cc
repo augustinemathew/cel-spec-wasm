@@ -609,6 +609,48 @@ TEST_F(UnknownE2ETest, RootIdentUnknownShortCircuitsSelect) {
   EXPECT_EQ(v.kind(), Value::Kind::kUnknown);
 }
 
+// ── Maps/lists have NO per-key / per-index unknown granularity — BY
+//    DESIGN.  ResolvePass interns attribute qualifiers only from
+//    `.field` selects (resolve_pass.cc:351-352); `[key]` / `[i]` index
+//    access never extends the attribute path.  So every keyed read on
+//    `c.tier_quotas` shares the single attribute `c.tier_quotas`.  This
+//    is a deliberate conservative over-approximation (see cel_abi.proto
+//    AttributeEntry): mark the whole field-path unknown, not one key. ──
+
+// Coarse works: marking the whole map unknown makes ANY keyed read
+// unknown (the unknown propagates from the shared `c.tier_quotas`
+// select operand through the `[key]` index).
+TEST_F(UnknownE2ETest, MapWholePathUnknownIsCoarseButWorks) {
+  auto instance = CompilePlan(compiler_, "c.tier_quotas[5]");
+  Customer msg;
+  (*msg.mutable_tier_quotas())[5] = 100;
+  Activation a;
+  a.Bind("c", Value::Message(msg));
+  AttributePattern patterns[] = {MakePattern("c.tier_quotas")};
+  auto v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
+      << "marking the whole map unknown must make a keyed read unknown";
+}
+
+// Per-key does NOT work: a key-qualified pattern is wire-expressible
+// (AttributePattern::Parse accepts `c.tier_quotas[5]`) but the key is
+// never interned into the attribute, so it matches NOTHING — the read
+// returns its CONCRETE value rather than unknown.  You cannot mark
+// `c.tier_quotas[5]` unknown while `c.tier_quotas[6]` stays known.
+TEST_F(UnknownE2ETest, MapPerKeyUnknownDoesNotMatchByDesign) {
+  auto instance = CompilePlan(compiler_, "c.tier_quotas[5]");
+  Customer msg;
+  (*msg.mutable_tier_quotas())[5] = 100;
+  Activation a;
+  a.Bind("c", Value::Message(msg));
+  AttributePattern patterns[] = {MakePattern("c.tier_quotas[5]")};
+  auto v = PartialEvalOk(instance, a, patterns);
+  ASSERT_EQ(v.kind(), Value::Kind::kInt)
+      << "per-key unknown patterns don't match (key not interned) — kind "
+      << static_cast<int>(v.kind());
+  EXPECT_EQ(*v.AsInt(), 100);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  AttributePattern::Parse — dotted-path + wildcard
 // ──────────────────────────────────────────────────────────────

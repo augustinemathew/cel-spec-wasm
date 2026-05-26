@@ -114,8 +114,33 @@ message FieldEntry {
 //         the operand of each select is interned first.)
 //   `1 + 2`, `f().g`         -> id 0 (not ident-rooted; no row emitted).
 //
-// Only `.field` selects extend `qualifiers`; index/key qualifiers
-// (`x[0]`, `m['k']`) are not part of this attribute path.
+// FieldEntry vs AttributeEntry — why both exist (they are populated
+// TOGETHER at a `.field` select but answer different runtime questions):
+//   - FieldEntry  = HOW to read a field: proto field_number + owner_fqn
+//                   + name, consumed by the `cel_get_field` trampoline.
+//                   One row PER select SITE; proto-resolution data.
+//   - AttributeEntry = WHAT symbolic path this node denotes
+//                   (variable + qualifiers), consumed by the unknown-
+//                   pattern matcher for partial eval.  INTERNED /
+//                   deduplicated per distinct path; carries no proto
+//                   data.  A single `cel_get_field` call uses both:
+//                   FieldEntry to read, AttributeEntry to decide whether
+//                   the result is UNKNOWN (cel_host.cc steps 4 & 5).
+//
+// Index/key granularity — BY DESIGN, NOT a gap.  Only `.field` selects
+// extend `qualifiers`; index/key access (`x[0]`, `m['k']`) never does,
+// so `m['a']` and `m['b']` share the one attribute `m`.  This is a
+// deliberate conservative over-approximation: marking the containing
+// path unknown (pattern `m`) correctly makes EVERY keyed read unknown,
+// which is the real partial-eval need (defer a named input subtree).
+// You cannot mark one key/index unknown while a sibling stays known.
+// `AttributePattern::Parse` accepts a key qualifier (`m["a"]`) on the
+// wire, but since the key is never interned such a pattern matches
+// NOTHING.  Pinned by e2e/m2_test.cc {MapWholePathUnknownIsCoarseButWorks,
+// MapPerKeyUnknownDoesNotMatchByDesign}.  (If per-KEY unknowns ever
+// become a real need — e.g. lazily-resolved config keys — interning a
+// string/int AttributeQualifier on `[key]` lowering is the change;
+// list-index granularity is not expected to be needed.)
 message AttributeEntry {
   uint32 id = 1;
   string variable = 2;
