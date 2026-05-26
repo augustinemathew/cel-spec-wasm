@@ -213,5 +213,23 @@ TEST(M20WrapperBoundary, Int32WrapperMin) {
       kP3);
 }
 
+// ── Tier-1 conversion bug fixes, validated against the real cel-cpp
+//    oracle (known_bugs_test guards the same behaviors as standalone
+//    regressions; here we pin them to cel-cpp directly). ──
+
+// cel-cpp int(string)/uint(string) use absl::SimpleAtoi, which accepts a
+// leading '+' (type_conversion_functions.cc:140,295).
+TEST(Tier1Conversions, IntFromStringLeadingPlusAgrees) {
+  ExpectAgree("int('+5')", kP3);
+}
+TEST(Tier1Conversions, UintFromStringLeadingPlusAgrees) {
+  ExpectAgree("uint('+5')", kP3);
+}
+// cel-cpp rejects int(-2^63.0) as a range error (the double -2^63 is not a
+// valid int conversion); our pipeline must error identically.
+TEST(Tier1Conversions, IntFromDoubleMinIsRangeError) {
+  ExpectAgree("int(-9223372036854775808.0)", kP3);
+}
+
 }  // namespace
 }  // namespace celwasm

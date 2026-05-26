@@ -168,12 +168,15 @@ TEST_F(ConvertNumericTest, DoubleToIntTruncatesTowardZero) {
   EXPECT_EQ(cel_value_at(out2)->payload.i, -3);
 }
 
-TEST_F(ConvertNumericTest, DoubleToIntMinAdmitted) {
-  // -2^63 is exactly representable; admitted per cel-cpp parity.
+TEST_F(ConvertNumericTest, DoubleToIntMinRejected) {
+  // The double -2^63 is REJECTED as a range error — validated against the
+  // real cel-cpp oracle (cel_cpp_oracle_test.cc IntFromDoubleMinIsRangeError)
+  // and the conformance corpus (conversions.textproto: int(-9223372036854775808.0)
+  // -> "range").  No double lies strictly between -2^63 and the next
+  // representable value, so INT64_MIN is unreachable via int(double).
   uint32_t out = MakeOut();
   cel_double_to_int_at_v(out, cel_make_double(static_cast<double>(INT64_MIN)));
-  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT));
-  EXPECT_EQ(cel_value_at(out)->payload.i, INT64_MIN);
+  ExpectError(out, CEL_ERR_OVERFLOW);
 }
 
 TEST_F(ConvertNumericTest, DoubleToIntPositiveBoundaryRejected) {
@@ -339,11 +342,13 @@ TEST_F(ConvertParseTest, StringToIntTrailingGarbage) {
   ExpectError(out, CEL_ERR_OVERFLOW);
 }
 
-TEST_F(ConvertParseTest, StringToIntLeadingPlusRejected) {
-  // Per cel-cpp: leading + is NOT admitted for ints (only doubles).
+TEST_F(ConvertParseTest, StringToIntLeadingPlusAccepted) {
+  // cel-cpp int(string) uses absl::SimpleAtoi (type_conversion_functions.cc:140),
+  // whose safe_strtoi_base accepts an optional leading '+'.  int('+1') == 1.
   uint32_t out = MakeOut();
   cel_string_to_int_at_v(out, cel_make_string("+1", 2));
-  ExpectError(out, CEL_ERR_OVERFLOW);
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(cel_value_at(out)->payload.i, 1);
 }
 
 TEST_F(ConvertParseTest, StringToIntWhitespaceRejected) {

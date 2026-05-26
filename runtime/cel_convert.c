@@ -31,12 +31,14 @@
 // (`third_party/cel-cpp/internal/overflow.cc`).
 //
 // Double bounds for int / uint use the exact-representable
-// boundaries 2^63 and 2^64.  Per cel-cpp's `CheckedDoubleToInt64`,
-// `INT64_MIN` is admitted (it's exactly representable as a double),
-// but `INT64_MAX + 1 == 2^63` is rejected — the largest admissible
-// double is `2^63 - 1024` (the next-lower representable below 2^63).
-// NaN is rejected via the `v != v` idiom (works without <math.h>
-// which the freestanding wasm32 build does not link).
+// boundaries 2^63 and 2^64.  Per the conformance corpus
+// (conversions.textproto: int(-9223372036854775808.0) -> "range" error),
+// the double `-2^63` is REJECTED — and since no double lies strictly
+// between `-2^63` and the next representable value, `INT64_MIN` is simply
+// unreachable via int(double).  `INT64_MAX + 1 == 2^63` is likewise
+// rejected; the largest admissible double is `2^63 - 1024`.
+// NaN is rejected via the `is_nan` helper (the `v != v` idiom — works
+// without <math.h>, which the freestanding wasm32 build does not link).
 // ─────────────────────────────────────────────────────────────
 
 // Exact-representable double bounds.  `kDoubleInt64Min == -2^63`
@@ -46,6 +48,14 @@
 static const double kDoubleInt64Min = -9223372036854775808.0;
 static const double kDoubleInt64MaxPlus1 = 9223372036854775808.0;
 static const double kDoubleUint64MaxPlus1 = 18446744073709551616.0;
+
+// True iff `v` is NaN.  IEEE-754 makes NaN the only value that compares
+// unequal to itself, so `v != v` is the canonical isnan() — used here
+// because the freestanding wasm32 runtime build links no <math.h> (and
+// thus has no isnan()).  Named so call sites read as intent, not a typo.
+static inline int is_nan(double v) {
+  return v != v;
+}
 
 void cel_uint_to_int_at_v(uint32_t out_slot, uint32_t in_slot) {
   CEL_LOG("enter");
@@ -74,9 +84,13 @@ void cel_double_to_int_at_v(uint32_t out_slot, uint32_t in_slot) {
     return;
   }
   const double v = a->payload.d;
-  // NaN check (v != v) + range gate using exact-representable
-  // boundaries.  Rejects [-inf, -2^63), [2^63, +inf], and NaN.
-  if (v != v || v < kDoubleInt64Min || v >= kDoubleInt64MaxPlus1) {
+  // NaN check (is_nan) + range gate using exact-representable
+  // boundaries.  Rejects [-inf, -2^63], [2^63, +inf], and NaN.  Per the
+  // conformance corpus (conversions.textproto: int(-9223372036854775808.0)
+  // -> "range" error), the double -2^63 itself is REJECTED — there is no
+  // double strictly between -2^63 and the next representable value, so
+  // INT64_MIN is simply unreachable via int(double).
+  if (is_nan(v) || v <= kDoubleInt64Min || v >= kDoubleInt64MaxPlus1) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -112,7 +126,7 @@ void cel_double_to_uint_at_v(uint32_t out_slot, uint32_t in_slot) {
     return;
   }
   const double v = a->payload.d;
-  if (v != v || v < 0.0 || v >= kDoubleUint64MaxPlus1) {
+  if (is_nan(v) || v < 0.0 || v >= kDoubleUint64MaxPlus1) {
     poison(out, CEL_ERR_OVERFLOW);
     return;
   }
@@ -207,6 +221,9 @@ static int parse_int64_str(const uint8_t* p, uint32_t len, int64_t* out) {
   if (p[i] == '-') {
     neg = 1;
     ++i;
+  } else if (p[i] == '+') {
+    // cel-cpp's absl::SimpleAtoi accepts a leading '+'.
+    ++i;
   }
   if (i == len) return 0;
   uint64_t acc = 0;
@@ -216,8 +233,14 @@ static int parse_int64_str(const uint8_t* p, uint32_t len, int64_t* out) {
 
 static int parse_uint64_str(const uint8_t* p, uint32_t len, uint64_t* out) {
   if (len == 0) return 0;
+  uint32_t i = 0;
+  if (p[i] == '+') {
+    // cel-cpp's absl::SimpleAtoi accepts a leading '+' on unsigned too.
+    ++i;
+  }
+  if (i == len) return 0;
   uint64_t acc = 0;
-  if (!accumulate_u64_decimal(p, 0, len, &acc)) return 0;
+  if (!accumulate_u64_decimal(p, i, len, &acc)) return 0;
   *out = acc;
   return 1;
 }
@@ -600,7 +623,7 @@ static uint32_t append_double_fraction(uint8_t* dst, double frac,
 // Handle NaN / +Inf / -Inf / 0.0.  Returns 1 if a special was
 // written; 0 if v is a regular value (caller continues).
 static int double_to_string_special(CelValue* out, double v) {
-  if (v != v) {
+  if (is_nan(v)) {
     static const uint8_t kNan[3] = {'n', 'a', 'n'};
     (void)stamp_string(out, kNan, 3);
     return 1;

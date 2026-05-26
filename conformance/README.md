@@ -8,7 +8,7 @@ each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1898 (77.3%)  skip=463 (18.9%)  fail=93 (3.8%)
+total=2454  pass=1899 (77.4%)  skip=463 (18.9%)  fail=92 (3.7%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -109,7 +109,7 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `fp_math.textproto`          |  30 |  29 |   1 |   0 | 96% | disable_check=1 |
 | `string.textproto`           |  51 |  49 |   0 |   2 | 96% | — |
 | `integer_math.textproto`     |  64 |  61 |   3 |   0 | 95% | disable_check=3 |
-| `conversions.textproto`      | 109 | 102 |   2 |   5 | 93% | disable_check=1 static_subset=1 |
+| `conversions.textproto`      | 109 | 103 |   2 |   4 | 94% | disable_check=1 static_subset=1 |
 | `bindings_ext.textproto`     |   8 |   7 |   0 |   1 | 87% | — |
 | `comparisons.textproto`      | 406 | 354 |  52 |   0 | 87% | disable_check=21 static_subset=28 type_env=3 |
 | `lists.textproto`            |  39 |  34 |   3 |   2 | 87% | static_subset=3 |
