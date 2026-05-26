@@ -41,28 +41,25 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/compiler.h"
+#include "compiler/program.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
-#include "compiler/compiler.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
-#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {
-using ::celwasm::AttributeId;
 using ::celwasm::AttributePattern;
-using ::celwasm::AttributeQualifier;
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
-using ::celwasm::testdata::Address;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg3;
 
@@ -632,23 +629,16 @@ TEST_F(UnknownE2ETest, MapWholePathUnknownIsCoarseButWorks) {
       << "marking the whole map unknown must make a keyed read unknown";
 }
 
-// Per-key does NOT work: a key-qualified pattern is wire-expressible
-// (AttributePattern::Parse accepts `c.tier_quotas[5]`) but the key is
-// never interned into the attribute, so it matches NOTHING — the read
-// returns its CONCRETE value rather than unknown.  You cannot mark
-// `c.tier_quotas[5]` unknown while `c.tier_quotas[6]` stays known.
-TEST_F(UnknownE2ETest, MapPerKeyUnknownDoesNotMatchByDesign) {
-  auto instance = CompilePlan(compiler_, "c.tier_quotas[5]");
-  Customer msg;
-  (*msg.mutable_tier_quotas())[5] = 100;
-  Activation a;
-  a.Bind("c", Value::Message(msg));
-  AttributePattern patterns[] = {MakePattern("c.tier_quotas[5]")};
-  auto v = PartialEvalOk(instance, a, patterns);
-  ASSERT_EQ(v.kind(), Value::Kind::kInt)
-      << "per-key unknown patterns don't match (key not interned) — kind "
-      << static_cast<int>(v.kind());
-  EXPECT_EQ(*v.AsInt(), 100);
+// Per-key unknowns aren't expressible: a key-qualified pattern is
+// rejected at parse time.  The key is never interned into an
+// attribute, so a pattern naming one could only ever match NOTHING —
+// rather than silently accept such a pattern, Parse rejects the whole
+// bracket surface.  You cannot mark `c.tier_quotas[5]` unknown while
+// `c.tier_quotas[6]` stays known; mark the whole `c.tier_quotas`
+// instead (see MapWholePathUnknownIsCoarseButWorks).
+TEST_F(UnknownE2ETest, MapPerKeyUnknownRejectedAtParse) {
+  EXPECT_THAT(AttributePattern::Parse("c.tier_quotas[5]"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -687,13 +677,13 @@ TEST(AttributePatternParseTest, WildcardTrailing) {
   EXPECT_TRUE(p->qualifier_path()[1].IsWildcard());
 }
 
-// Array/map index forms also parse — relevant once lists and maps
-// are evaluable (M6), but the Parse surface is shared now.
-TEST(AttributePatternParseTest, ArrayIndexAndMapKey) {
-  auto p = AttributePattern::Parse("request.messages[3].text");
-  ASSERT_THAT(p, IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 3u);
-  EXPECT_TRUE(p->qualifier_path()[1].IsMatch(AttributeQualifier::OfInt(3)));
+// Array / map index forms are rejected: index / key access never
+// interns a qualifier, so a pattern naming one could never match.
+TEST(AttributePatternParseTest, ArrayIndexAndMapKeyRejected) {
+  EXPECT_THAT(AttributePattern::Parse("request.messages[3].text"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(AttributePattern::Parse("m[\"k\"]"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AttributePatternParseTest, EmptyInputIsInvalid) {

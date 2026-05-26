@@ -55,10 +55,12 @@ class AttributeQualifier final {
  public:
   enum class Kind : uint8_t { kInt, kUint, kString, kBool };
 
-  static AttributeQualifier OfInt(int64_t value);
-  static AttributeQualifier OfUint(uint64_t value);
+  // Only the string-keyed factory is constructible: the resolver
+  // interns string `.field` qualifiers exclusively (index / key
+  // access breaks the attribute chain), so int / uint / bool
+  // qualifiers can never be built or matched.  The Kind enum and the
+  // typed accessors stay for the canonical-string / ordering logic.
   static AttributeQualifier OfString(std::string value);
-  static AttributeQualifier OfBool(bool value);
 
   Kind kind() const;
 
@@ -100,11 +102,10 @@ class AttributeQualifierPattern final {
   // Wildcard — matches any qualifier value at this position.
   static AttributeQualifierPattern Wildcard();
 
-  // Exact-match constructors, one per qualifier kind.
-  static AttributeQualifierPattern OfInt(int64_t value);
-  static AttributeQualifierPattern OfUint(uint64_t value);
+  // Exact-match constructor.  Only string-keyed patterns are
+  // constructible — see AttributeQualifier::OfString for why int /
+  // uint / bool qualifiers are unconstructable.
   static AttributeQualifierPattern OfString(std::string value);
-  static AttributeQualifierPattern OfBool(bool value);
 
   // Wrap an existing qualifier as an exact-match pattern.
   explicit AttributeQualifierPattern(AttributeQualifier qualifier);
