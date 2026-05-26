@@ -65,10 +65,18 @@ message VariableEntry {
 // One row of the field intern table.  Populated by codegen at
 // kSelect lowering.
 //
-//   id            dense index; 0 is the sentinel "not proto-
-//                 resolvable" (used by non-proto backings in M6+).
+//   id            dense intern index in [1, N].  0 is the reserved
+//                 sentinel "no field id": fields[0] is an empty
+//                 placeholder row (pushed once before lowering;
+//                 expr_lower.cc), codegen never assigns it to a real
+//                 select, and the runtime maps a field_ref_id of 0 to
+//                 field-not-found (cel_host.cc).  Mirrors the 0-sentinel
+//                 of AttributeEntry.id / TypeEntry.id.
 //   field_number  proto wire field number, or 0 when the backing is
-//                 name-only.
+//                 name-only / not proto-resolvable (the non-proto
+//                 backings of M6+).  This — NOT id==0 — is the
+//                 "not proto-resolvable" marker; such a row is a normal
+//                 interned field (id >= 1) that just lacks a wire number.
 //   name          always populated; attribute-pattern matching
 //                 compares by name regardless of backing.
 //   owner_fqn     fully-qualified name of the message type that owns
@@ -88,11 +96,77 @@ message FieldEntry {
 // the cel_host trampoline at runtime to match against the active
 // unknown-pattern set.
 //
-//   id          dense index; 0 is the sentinel "no attribute id"
-//               (used for nodes that aren't ident-rooted).
-//   variable    root variable name.
-//   qualifiers  ordered list of string qualifiers (field names for
-//               selects).
+//   id          dense intern index in [1, N]; 0 is the sentinel "no
+//               attribute id", stamped on any node that is not
+//               ident-rooted (a literal, a call result, etc.) so the
+//               runtime treats it as "no unknown-pattern match possible".
+//   variable    root variable name (the ident at the base of the chain).
+//   qualifiers  ordered field-select names from root to this node.
+//
+// ResolvePass interns the root ident with empty qualifiers, then each
+// `.field` select copies the operand's row and appends `field` — so
+// every PREFIX of a chain gets its own row.  Concrete examples:
+//
+//   `x`                      -> {variable:"x",       qualifiers:[]}
+//   `request.auth`           -> {variable:"request", qualifiers:["auth"]}
+//   `request.auth.claims`    -> {variable:"request", qualifiers:["auth","claims"]}
+//        (compiling this last one interns all three rows above, because
+//         the operand of each select is interned first.)
+//   `1 + 2`, `f().g`         -> id 0 (not ident-rooted; no row emitted).
+//
+// FieldEntry vs AttributeEntry — why both exist (they are populated
+// TOGETHER at a `.field` select but answer different runtime questions):
+//   - FieldEntry  = HOW to read a field: proto field_number + owner_fqn
+//                   + name, consumed by the `cel_get_field` trampoline.
+//                   One row PER select SITE; proto-resolution data.
+//   - AttributeEntry = WHAT symbolic path this node denotes
+//                   (variable + qualifiers), consumed by the unknown-
+//                   pattern matcher for partial eval.  INTERNED /
+//                   deduplicated per distinct path; carries no proto
+//                   data.  A single `cel_get_field` call uses both:
+//                   FieldEntry to read, AttributeEntry to decide whether
+//                   the result is UNKNOWN (cel_host.cc steps 4 & 5).
+//
+// Index/key granularity — BY DESIGN, NOT a gap.  Only `.field` selects
+// extend `qualifiers`; index/key access (`x[0]`, `m['k']`) never does,
+// so `m['a']` and `m['b']` share the one containing attribute.
+//
+// An UNKNOWN is PRODUCED at two sites, both consulting the same pattern
+// set; everything else only PROPAGATES an unknown already produced
+// upstream (3VL absorption in cel_runtime.c / the cel_host index/key/
+// size trampolines):
+//   1. The activation marshal (eval/instance.cc BareVariableUnknownId):
+//      a declared variable whose BARE attribute (root + empty
+//      qualifiers) is kFull-matched by a pattern gets CEL_UNKNOWN
+//      written into its workspace slot instead of a bound value — so
+//      the WHOLE variable is opaque.  The verdict is independent of
+//      binding (a bound value is ignored; an unknown variable need not
+//      be bound).
+//   2. The `.field` select trampoline (cel_host.cc RunFieldPrelude →
+//      MatchesAnyUnknownPattern): the select produces CEL_UNKNOWN iff
+//      its effective attribute (operand ⊕ field name) is kFull-matched.
+//      This is the FINER lever — it marks `c.age` unknown while
+//      `c.name` stays known, which the whole-variable marshal cannot.
+// Together:
+//   - pattern `m` (kFull on bare `m`) → the marshal blanks `m`'s slot,
+//     and `m[k]`, `size(m)`, `m.field` all become UNKNOWN by absorption.
+//   - pattern `c.tier_quotas` (kPartial on bare `c`, kFull at the
+//     `.tier_quotas` select) → the select fires and `c.tier_quotas[k]`
+//     is UNKNOWN, while `c` itself stays a concrete message.
+// What stays UNEXPRESSIBLE: per-element / per-key granularity — `[i]`
+// and `[k]` never intern an attribute, so you cannot mark `m['a']`
+// unknown while `m['b']` stays known.  Marking the whole container
+// blanks every keyed read; there is no pattern between "all of it" and
+// a specific field path.  (Verified + pinned by
+// e2e/m2_partial_eval_test.cc.)
+// `AttributePattern::Parse` REJECTS bracket/key qualifiers (`m["a"]`,
+// `xs[3]`): since we never intern an index/key, we don't accept
+// patterns we can't honor — they'd silently match nothing.  Pinned by
+// e2e/m2_test.cc {MapWholePathUnknownIsCoarseButWorks,
+// MapPerKeyUnknownRejectedAtParse}.  (If per-KEY unknowns ever
+// become a real need — e.g. lazily-resolved config keys — interning a
+// string/int AttributeQualifier on `[key]` lowering is the change;
+// list-index granularity is not expected to be needed.)
 message AttributeEntry {
   uint32 id = 1;
   string variable = 2;

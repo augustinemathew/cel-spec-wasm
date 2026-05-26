@@ -44,6 +44,7 @@ extern "C" {
 // (non-bytes) → CEL_ERROR/CEL_ERR_TYPE_MISMATCH.  3VL absorbs ERROR /
 // UNKNOWN.  Arena OOM → CEL_ERROR/CEL_ERR_OVERFLOW.  Output is always
 // ASCII text, hence CEL_STRING regardless of the input bytes.
+// cel:codegen-export
 void cel_base64_encode_at_v(uint32_t out_slot, uint32_t bytes_slot);
 
 // `base64.decode(s)`.  Reads `str_slot` as CEL_STRING, base64-decodes
@@ -53,6 +54,7 @@ void cel_base64_encode_at_v(uint32_t out_slot, uint32_t bytes_slot);
 // CEL_ERROR/CEL_ERR_TYPE_MISMATCH.  Invalid base64 →
 // CEL_ERROR/CEL_ERR_INVALID_ARGUMENT (cel-cpp "invalid base64 data").
 // 3VL absorbs ERROR / UNKNOWN.  Arena OOM → CEL_ERROR/CEL_ERR_OVERFLOW.
+// cel:codegen-export
 void cel_base64_decode_at_v(uint32_t out_slot, uint32_t str_slot);
 
 #ifdef __cplusplus

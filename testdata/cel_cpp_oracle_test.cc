@@ -24,7 +24,9 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -33,13 +35,13 @@
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto2/test_all_types.pb.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "conformance/runner.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "conformance/runner.h"
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
 
@@ -54,13 +56,15 @@ constexpr absl::string_view kP3 = "cel.expr.conformance.proto3";
 // Force the proto2/proto3 conformance descriptors into the generated
 // pool so container-qualified names resolve in OUR pipeline (the oracle
 // links its own copy in cel_cpp_oracle.cc).
-[[maybe_unused]] const int kDescriptorsLinked = [] {
-  google::protobuf::LinkMessageReflection<
-      ::cel::expr::conformance::proto2::TestAllTypes>();
-  google::protobuf::LinkMessageReflection<
-      ::cel::expr::conformance::proto3::TestAllTypes>();
-  return 0;
-}();
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<
+          ::cel::expr::conformance::proto2::TestAllTypes>();
+      google::protobuf::LinkMessageReflection<
+          ::cel::expr::conformance::proto3::TestAllTypes>();
+      return 0;
+    }();
 
 Engine& GlobalEngine() {
   static Engine* engine = [] {
@@ -211,6 +215,88 @@ TEST(M20WrapperBoundary, Int32WrapperMin) {
   ExpectAgree(
       "TestAllTypes{single_int32_wrapper: -2147483648}.single_int32_wrapper",
       kP3);
+}
+
+// ── Tier-1 conversion bug fixes, validated against the real cel-cpp
+//    oracle (known_bugs_test guards the same behaviors as standalone
+//    regressions; here we pin them to cel-cpp directly). ──
+
+// cel-cpp int(string)/uint(string) use absl::SimpleAtoi, which accepts a
+// leading '+' (type_conversion_functions.cc:140,295).
+TEST(Tier1Conversions, IntFromStringLeadingPlusAgrees) {
+  ExpectAgree("int('+5')", kP3);
+}
+TEST(Tier1Conversions, UintFromStringLeadingPlusAgrees) {
+  ExpectAgree("uint('+5')", kP3);
+}
+// cel-cpp rejects int(-2^63.0) as a range error (the double -2^63 is not a
+// valid int conversion); our pipeline must error identically.
+TEST(Tier1Conversions, IntFromDoubleMinIsRangeError) {
+  ExpectAgree("int(-9223372036854775808.0)", kP3);
+}
+
+// ── Partial-eval oracle: pins cel-cpp's unknown-attribute semantics,
+//    the empirical reference that e2e/m2_partial_eval_test.cc asserts
+//    OUR pipeline against.  (Reading cel-cpp source is not enough —
+//    these RUN cel-cpp with unknown processing on.) ──
+
+cel::expr::Value OracleInt(int64_t x) {
+  cel::expr::Value v;
+  v.set_int64_value(x);
+  return v;
+}
+
+cel::expr::Value OracleListOfInts(const std::vector<int64_t>& xs) {
+  cel::expr::Value v;
+  for (int64_t x : xs) {
+    v.mutable_list_value()->add_values()->set_int64_value(x);
+  }
+  return v;
+}
+
+testdata::OracleResult PartialOracleOk(
+    absl::string_view source, const std::vector<testdata::OracleVar>& vars,
+    const std::vector<std::string>& patterns) {
+  auto r = testdata::PartialEvalWithCelCpp(source, kP3, vars, patterns);
+  ABSL_CHECK_OK(r) << source;
+  return *std::move(r);
+}
+
+// `x + 1` with `x` unknown → unknown.  cel-cpp's own
+// unknowns_end_to_end_test.cc:169 pins the equivalent (`var1 > 3` with
+// `var1` an unknown, unbound attribute → UnknownSet); confirmed here
+// through our oracle harness.
+TEST(PartialEvalOracle, WholeScalarVarUnknownThroughArithmetic) {
+  auto r = PartialOracleOk("x + 1", {{"x", std::nullopt}}, {"x"});
+  EXPECT_TRUE(r.is_unknown) << "x+1 with x unknown must be unknown";
+}
+
+// A bound value does NOT defeat a matching unknown pattern.
+TEST(PartialEvalOracle, BoundButUnknownIgnoresBinding) {
+  auto r = PartialOracleOk("x", {{"x", OracleInt(99)}}, {"x"});
+  EXPECT_TRUE(r.is_unknown);
+}
+
+// THE cleanup-backlog #14 reference: a comprehension over an UNKNOWN
+// range is unknown (not the empty-range identity our pipeline currently
+// returns).  cel-cpp comprehension_step.cc:165-169 routes a kUnknown
+// range to `result = range`; this confirms that verdict empirically.
+TEST(PartialEvalOracle, ComprehensionOverUnknownRangeIsUnknown) {
+  auto r =
+      PartialOracleOk("xs.exists(e, e > 0)", {{"xs", std::nullopt}}, {"xs"});
+  EXPECT_TRUE(r.is_unknown)
+      << "exists over an unknown range must be unknown (backlog #14)";
+}
+
+// A pattern targeting the LOOP variable name is a no-op: the iteration
+// variable is not an activation attribute root, so the pattern matches
+// nothing and the comprehension runs concretely.
+TEST(PartialEvalOracle, PatternOnLoopVarIsNoOp) {
+  auto r = PartialOracleOk("xs.exists(e, e > 10)",
+                           {{"xs", OracleListOfInts({1, 2, 30})}}, {"e"});
+  ASSERT_FALSE(r.is_unknown) << "loop var `e` cannot be patterned";
+  ASSERT_FALSE(r.is_error);
+  EXPECT_TRUE(r.value.bool_value()) << "30 > 10 → exists is true";
 }
 
 }  // namespace

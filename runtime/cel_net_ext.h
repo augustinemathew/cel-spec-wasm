@@ -35,21 +35,25 @@ extern "C" {
 
 // `ip(s)` — parse a CEL_STRING into a CEL_IP.  Parse failure →
 // CEL_ERR_INVALID_ARGUMENT; wrong operand kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_ip_parse_at_v(uint32_t out_slot, uint32_t str_slot);
 
 // `string(ipVal)` — canonical text of a CEL_IP into a fresh arena
 // CEL_STRING.  v4 → dotted-decimal; v6 → lowercase hex with RFC-5952
 // `::` compression.  Wrong operand kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_ip_to_string_at_v(uint32_t out_slot, uint32_t ip_slot);
 
 // `isIP(s)` — CEL_BOOL true iff the CEL_STRING parses as a valid IP.
 // Does NOT error on an invalid string (returns false).  Wrong operand
 // kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_isip_at_v(uint32_t out_slot, uint32_t str_slot);
 
 // `ip.isCanonical(s)` — CEL_BOOL.  Errors (CEL_ERR_INVALID_ARGUMENT) if
 // the CEL_STRING doesn't parse at all; otherwise true iff the string is
 // already in canonical form (lowercase hex, minimal `::` placement).
+// cel:codegen-export
 void cel_ip_is_canonical_at_v(uint32_t out_slot, uint32_t str_slot);
 
 // Structural equality of two CEL_IP values: memcmp over
@@ -65,20 +69,26 @@ int net_ip_eq(const CelValue* a, const CelValue* b);
 // `net/netip` `Addr` methods (cel-go wraps net/netip).
 
 // `<ip>.family()` → CEL_INT: 4 (IPv4) or 6 (IPv6).
+// cel:codegen-export
 void cel_ip_family_at_v(uint32_t out_slot, uint32_t ip_slot);
 // `<ip>.isLoopback()` → CEL_BOOL: v4 127.0.0.0/8 or v6 ::1.
+// cel:codegen-export
 void cel_ip_is_loopback_at_v(uint32_t out_slot, uint32_t ip_slot);
 // `<ip>.isUnspecified()` → CEL_BOOL: 0.0.0.0 or ::.
+// cel:codegen-export
 void cel_ip_is_unspecified_at_v(uint32_t out_slot, uint32_t ip_slot);
 // `<ip>.isGlobalUnicast()` → CEL_BOOL: Go's IsGlobalUnicast — true for
 // any addr that is not unspecified, not loopback, not multicast, not
 // link-local-unicast, and not interface-local-multicast.
+// cel:codegen-export
 void cel_ip_is_global_unicast_at_v(uint32_t out_slot, uint32_t ip_slot);
 // `<ip>.isLinkLocalUnicast()` → CEL_BOOL: v4 169.254.0.0/16 or v6
 // fe80::/10.
+// cel:codegen-export
 void cel_ip_is_link_local_unicast_at_v(uint32_t out_slot, uint32_t ip_slot);
 // `<ip>.isLinkLocalMulticast()` → CEL_BOOL: v4 224.0.0.0/24 or v6
 // ff02::/16.
+// cel:codegen-export
 void cel_ip_is_link_local_multicast_at_v(uint32_t out_slot, uint32_t ip_slot);
 
 // ── net.CIDR type + operations ────────────────────────────────────
@@ -88,10 +98,12 @@ void cel_ip_is_link_local_multicast_at_v(uint32_t out_slot, uint32_t ip_slot);
 // a decimal int (validated against the family's max).  The address is
 // stored as given (not masked).  Parse failure / zone id / bad mask →
 // CEL_ERR_INVALID_ARGUMENT; wrong operand kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_cidr_parse_at_v(uint32_t out_slot, uint32_t str_slot);
 
 // `string(cidrVal)` — canonical text "<addr>/<prefix>" into a fresh
 // arena CEL_STRING.  Wrong operand kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_cidr_to_string_at_v(uint32_t out_slot, uint32_t cidr_slot);
 
 // `<cidr>.containsIP(arg)` — CEL_BOOL.  Handles BOTH overloads: `arg`
@@ -99,6 +111,7 @@ void cel_cidr_to_string_at_v(uint32_t out_slot, uint32_t cidr_slot);
 // first; parse failure poisons CEL_ERR_INVALID_ARGUMENT).  A
 // cross-family arg yields false (not an error); otherwise compares the
 // first `prefix` bits of arg.addr against cidr.addr.
+// cel:codegen-export
 void cel_cidr_contains_ip_at_vv(uint32_t out_slot, uint32_t cidr_slot,
                                 uint32_t arg_slot);
 
@@ -106,17 +119,21 @@ void cel_cidr_contains_ip_at_vv(uint32_t out_slot, uint32_t cidr_slot,
 // CEL_STRING (parsed first).  A contains B iff same family AND
 // A.prefix <= B.prefix AND the first A.prefix bits of B.addr match
 // A.addr.
+// cel:codegen-export
 void cel_cidr_contains_cidr_at_vv(uint32_t out_slot, uint32_t cidr_slot,
                                   uint32_t arg_slot);
 
 // `<cidr>.ip()` — the stored network address as a fresh CEL_IP.
+// cel:codegen-export
 void cel_cidr_ip_at_v(uint32_t out_slot, uint32_t cidr_slot);
 
 // `<cidr>.masked()` — a fresh CEL_CIDR with all host bits beyond
 // `prefix` zeroed.
+// cel:codegen-export
 void cel_cidr_masked_at_v(uint32_t out_slot, uint32_t cidr_slot);
 
 // `<cidr>.prefixLength()` — CEL_INT: the mask length.
+// cel:codegen-export
 void cel_cidr_prefix_length_at_v(uint32_t out_slot, uint32_t cidr_slot);
 
 // Structural equality of two CEL_CIDR values: same family, same

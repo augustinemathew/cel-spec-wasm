@@ -74,28 +74,33 @@ _Static_assert(_Alignof(OptionalCell) == 8,
 // `optional.none()`.  arena_alloc'd 32-byte cell with `present=0`;
 // `out_slot` receives `{CEL_OPTIONAL, payload.opt=<cell_off>}`.
 // See `wat/m14_optional_none.wat`.
+// cel:codegen-export
 void cel_optional_none_at(uint32_t out_slot);
 
 // `optional.of(v)`.  Wraps `*v_slot` in a Some cell.  UNKNOWN/ERROR on
 // `v` propagates verbatim into `out_slot` (no cell allocated).  See
 // `wat/m14_optional_of_int.wat`.
+// cel:codegen-export
 void cel_optional_of_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // `optional.ofNonZeroValue(v)`.  Some if `*v_slot` is non-zero per the
 // per-kind matrix (m14-optionals.md §3.4 + `wat/m14_optional_of_non_zero.wat`),
 // else None.  Host-backed kinds (CEL_LIST_HOST / CEL_MAP_HOST /
 // CEL_MESSAGE) trap until Slice B / E adds the host trampolines.
+// cel:codegen-export
 void cel_optional_of_non_zero_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // `opt.hasValue()` (post-receiver-flatten — receiver is `opt_slot`,
 // not args[0]).  Reads `cell.present`, writes `CEL_BOOL` to `out_slot`.
 // Kind mismatch on `opt_slot` → TYPE_MISMATCH.  See
 // `wat/m14_optional_has_value.wat`.
+// cel:codegen-export
 void cel_optional_has_value_at_v(uint32_t out_slot, uint32_t opt_slot);
 
 // `opt.value()` (post-receiver-flatten).  Unwraps the inner CelValue
 // into `out_slot`.  None → `CEL_ERROR/CEL_ERR_INVALID_ARGUMENT`
 // (cel-cpp parity: `optional_value.cc::OptionalValueInterface::Value`).
+// cel:codegen-export
 void cel_optional_value_at_v(uint32_t out_slot, uint32_t opt_slot);
 
 // `opt.or(other_opt)` (post-receiver-flatten).  Preserves optional-ness:
@@ -110,6 +115,7 @@ void cel_optional_value_at_v(uint32_t out_slot, uint32_t opt_slot);
 // (Slice B) MUST emit a short-circuit branch instead of calling this
 // kernel.  See wat-traces.md §M14.4 "Short-circuit codegen
 // requirement".
+// cel:codegen-export
 void cel_optional_or_at_vv(uint32_t out_slot, uint32_t opt_slot,
                            uint32_t other_slot);
 
@@ -119,6 +125,7 @@ void cel_optional_or_at_vv(uint32_t out_slot, uint32_t opt_slot,
 // See `wat/m14_optional_chain_or_value.wat`.
 //
 // Same short-circuit caveat as `cel_optional_or_at_vv` above.
+// cel:codegen-export
 void cel_optional_or_value_at_vv(uint32_t out_slot, uint32_t opt_slot,
                                  uint32_t default_slot);
 
@@ -140,6 +147,7 @@ void cel_optional_or_value_at_vv(uint32_t out_slot, uint32_t opt_slot,
 // Non-absent errors from the lookup (TYPE_MISMATCH on a non-key kind,
 // etc.) propagate verbatim into `out_slot` without being wrapped in
 // an optional.  See `wat/m14_optional_select_field.wat`.
+// cel:codegen-export
 void cel_select_optional_field_at_vv(uint32_t out_slot, uint32_t src_slot,
                                      uint32_t key_slot);
 
@@ -159,6 +167,7 @@ void cel_select_optional_field_at_vv(uint32_t out_slot, uint32_t src_slot,
 // `cel_map_insert_at_if_bool`.
 //
 // See `wat/m14_map_insert_if_present.wat`.
+// cel:codegen-export
 void cel_map_insert_at_if_present(uint32_t map_slot, uint32_t key_slot,
                                   uint32_t opt_value_slot);
 
@@ -174,6 +183,7 @@ void cel_map_insert_at_if_present(uint32_t map_slot, uint32_t key_slot,
 //     CEL_ERR_TYPE_MISMATCH
 //
 // See `wat/m14_list_append_if_present.wat`.
+// cel:codegen-export
 void cel_list_append_at_if_present(uint32_t list_slot, uint32_t opt_value_slot);
 
 // `Foo{?field: opt_value}` proto-literal entry — the third member
@@ -198,6 +208,7 @@ void cel_list_append_at_if_present(uint32_t list_slot, uint32_t opt_value_slot);
 // crosses to the host.  See `wat/m14_proto_set_field_if_present.wat`
 // and m14-optionals.md §0 "Scope pull-in 2026-05-22" for the
 // rationale.
+// cel:codegen-export
 void cel_set_field_at_if_present(uint32_t msg_slot, uint32_t field_ref_id,
                                  uint32_t opt_value_slot);
 

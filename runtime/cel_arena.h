@@ -36,11 +36,13 @@ void arena_init(uint32_t cap_bytes);
 // Bump-allocate `n` bytes from the arena.  Returns the absolute
 // linear-memory offset of the allocated region, or 0 on OOM.
 // Allocations are rounded up to 8 bytes and zero-initialized.
+// cel:codegen-export
 uint32_t arena_alloc(uint32_t n);
 
 // Reset the cursor to the start of the arena.  Called from the
 // `$eval` prologue as `(call $arena_reset)`.  O(1); does not free
 // the underlying buffer.
+// cel:codegen-export
 void arena_reset(void);
 
 // Diagnostics — current bump cursor and total capacity in bytes.

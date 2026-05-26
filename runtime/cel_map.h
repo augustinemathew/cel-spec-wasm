@@ -30,6 +30,7 @@ extern "C" {
 // growth path — a subsequent `cel_map_insert` past `capacity` is a
 // codegen invariant violation and poisons the map.  On OOM poisons
 // `out_slot` with `{CEL_ERROR, CEL_ERR_OVERFLOW}`.
+// cel:codegen-export
 void cel_map_create(uint32_t out_slot, uint32_t capacity);
 
 // Linear-scan insert with duplicate-key poisoning.  If `key_slot`'s
@@ -40,6 +41,7 @@ void cel_map_create(uint32_t out_slot, uint32_t capacity);
 // past the constructed `capacity` is a codegen-side invariant
 // violation and poisons with `CEL_ERR_OVERFLOW` — the runtime never
 // resizes; the literal's entry count is fixed at compile time.
+// cel:codegen-export
 void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 
 // Dynamic-map insert for `transformMap` / `transformMapEntry`
@@ -47,6 +49,7 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 // geometric 2× growth on full; collisions overwrite (last-write-
 // wins); CEL_ERROR / CEL_UNKNOWN in key OR value propagates
 // verbatim into the map slot.
+// cel:codegen-export
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot);
 
@@ -55,6 +58,7 @@ void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
 // cel_list_append_at_if_bool: pred ERROR/UNKNOWN → propagate into
 // map slot (aborts comprehension); pred non-bool → poison TYPE_MISMATCH;
 // pred false → no-op; pred true → cel_map_insert_at delegate.
+// cel:codegen-export
 void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
                                uint32_t key_slot, uint32_t value_slot);
 
@@ -67,6 +71,7 @@ void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
 // On hit: writes the value CelValue into `out_slot`.
 // On miss: writes `{CEL_ERROR, CEL_ERR_NO_SUCH_KEY}` into `out_slot`.
 // On unknown/error key: propagates the operand into `out_slot` (3VL).
+// cel:codegen-export
 void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
                           uint32_t key_slot);
 
@@ -78,6 +83,7 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
 // growing the wasm stack.  See `cel_runtime.c` for the `musttail`
 // invariant; toolchain requires `-mtail-call` on clang and
 // `wasmtime::Config::wasm_tail_call(true)`.
+// cel:codegen-export
 void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 
 // =====================================================================
@@ -102,8 +108,11 @@ void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // cannot prove a single origin.
 // =====================================================================
 
+// cel:codegen-export
 void cel_map_size(uint32_t out_slot, uint32_t map_slot);
+// cel:codegen-export
 void cel_map_in(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
+// cel:codegen-export
 void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 // =====================================================================
@@ -145,9 +154,13 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 //       by the two-iter-var map shape (`m.exists(k, v, p)`).
 // =====================================================================
 
+// cel:codegen-export
 uint32_t cel_map_iter_init(uint32_t map_slot);
+// cel:codegen-export
 uint32_t cel_map_iter_next(uint32_t iter_handle);
+// cel:codegen-export
 void cel_map_iter_key_at(uint32_t out_slot, uint32_t iter_handle);
+// cel:codegen-export
 void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle);
 
 #ifdef __cplusplus

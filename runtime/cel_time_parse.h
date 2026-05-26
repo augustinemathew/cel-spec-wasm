@@ -26,6 +26,7 @@ extern "C" {
 // failure (wrong input kind, parse error, langdef-strict reject,
 // or out-of-range second), `out_slot` is poisoned with a CEL_ERROR
 // of kind CEL_ERR_INVALID_ARGUMENT or CEL_ERR_OVERFLOW.
+// cel:codegen-export
 void cel_timestamp_parse_at_v(uint32_t out_slot, uint32_t in_slot);
 
 // Parse an absl-style duration string (e.g. `"1h30m"`) from the
@@ -33,16 +34,19 @@ void cel_timestamp_parse_at_v(uint32_t out_slot, uint32_t in_slot);
 // `out_slot`.  Rejects out-of-range (±315B seconds, proto JSON
 // envelope) and langdef-strict rule violations (non-decreasing
 // unit order, unknown unit suffix).
+// cel:codegen-export
 void cel_duration_parse_at_v(uint32_t out_slot, uint32_t in_slot);
 
 // Format the CEL_TIMESTAMP at `in_slot` to an RFC3339 string in
 // the per-Eval arena and write a CEL_STRING reference to `out_slot`.
 // Output ends with `Z` (not `+00:00`); fractional seconds emitted at
 // 3 / 6 / 9 digits per the proto JSON convention.
+// cel:codegen-export
 void cel_timestamp_format_at_v(uint32_t out_slot, uint32_t in_slot);
 
 // Format the CEL_DURATION at `in_slot` to its proto JSON text form
 // (`[-]<seconds>[.<frac>]s`).  Result string is arena-allocated.
+// cel:codegen-export
 void cel_duration_format_at_v(uint32_t out_slot, uint32_t in_slot);
 
 #ifdef __cplusplus

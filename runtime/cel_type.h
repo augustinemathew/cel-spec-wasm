@@ -32,6 +32,7 @@ extern "C" {
 
 // `type(x)` — see file header.  `out_slot` and `in_slot` are 24-byte
 // CelValue offsets in shared linear memory.
+// cel:codegen-export
 void cel_type_of_at_v(uint32_t out_slot, uint32_t in_slot);
 
 #ifdef __cplusplus

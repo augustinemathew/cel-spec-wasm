@@ -21,25 +21,62 @@ exports_files(
     visibility = ["//abi:__subpackages__"],
 )
 
-# Convert `wasm_exports.txt` into a wasm-ld response file.  The
-# response file is one arg per line: `--export=foo`.  Consumed by
+# The runtime C sources — the single source of truth for the
+# codegen-helper export set.  Each codegen-imported helper is marked at
+# its declaration with `// cel:codegen-export`; `//bazel:gen_runtime_catalogue`
+# reads the markers (membership) plus the `void`/`uint32_t` signature
+# (arity + return shape, which clang lowers one-to-one to the wasm
+# function type).  Consumed below by `codegen_export_names` and by
+# `//abi:runtime_catalogue_textproto`.
+filegroup(
+    name = "runtime_c_sources",
+    srcs = glob([
+        "cel_*.h",
+        "cel_*.c",
+    ]),
+    visibility = ["//abi:__subpackages__"],
+)
+
+# The codegen-helper export names, derived from the C markers.  One bare
+# symbol per line, in source order.  UNIONed with `wasm_exports.txt`'s
+# host-only list to form the linker `--export=` set.
+genrule(
+    name = "codegen_export_names",
+    srcs = [":runtime_c_sources"],
+    outs = ["codegen_export_names.txt"],
+    cmd = "$(location //bazel:gen_runtime_catalogue) --mode names " +
+          "--out $@ $(locations :runtime_c_sources)",
+    tools = ["//bazel:gen_runtime_catalogue"],
+    visibility = ["//abi:__subpackages__"],
+)
+
+# Build the wasm-ld response file: one `--export=<name>` per symbol.
+# The export set is the UNION of the generated codegen-helper names and
+# the hand-maintained host-only list in `wasm_exports.txt` (system /
+# linker-internal symbols, the public arena reentry API, and the
+# same-kind eq/ne + `_arena` tail-call targets).  Consumed by
 # `cel_runtime_wasm.bin`'s linkopts via `-Wl,@$(location ...)`.
 #
-# We strip section headers (`[name]`), comments (`#...`), blanks,
-# and keep only the first whitespace-separated token of each
-# remaining line — that's the symbol name.  `awk` is on every
-# bazel-supported host; no extra toolchain dep.
+# For `wasm_exports.txt` we strip section headers (`[name]`), comments
+# (`#...`), and blanks, keeping the first whitespace token of each
+# remaining line.  `awk` is on every bazel-supported host; no extra dep.
 genrule(
     name = "wasm_export_args",
-    srcs = ["wasm_exports.txt"],
+    srcs = [
+        "wasm_exports.txt",
+        ":codegen_export_names",
+    ],
     outs = ["wasm_export_args.rsp"],
     cmd = """
-awk '
-  /^[[:space:]]*#/    { next }
-  /^[[:space:]]*$$/   { next }
-  /^[[:space:]]*\\[/  { next }
-  { print "--export=" $$1 }
-' $< > $@
+{
+  awk '
+    /^[[:space:]]*#/    { next }
+    /^[[:space:]]*$$/   { next }
+    /^[[:space:]]*\\[/  { next }
+    { print "--export=" $$1 }
+  ' $(location wasm_exports.txt)
+  awk '{ print "--export=" $$1 }' $(location :codegen_export_names)
+} > $@
 """,
 )
 

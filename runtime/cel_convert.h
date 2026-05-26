@@ -41,32 +41,48 @@ extern "C" {
 // M10.B — numeric inter-conversion (6 kernels).  Cross-kind numeric
 // arith / compare is the only domain where these surface; the checker
 // emits them when literal coercion isn't enough.
+// cel:codegen-export
 void cel_uint_to_int_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_double_to_int_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_int_to_uint_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_double_to_uint_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_int_to_double_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_uint_to_double_at_v(uint32_t out, uint32_t in);
 
 // M10.C — string parsing (4 kernels).  Hand-rolled byte-loop parsers
 // mirroring `absl::SimpleAtoi` / `SimpleAtod` admit-sets.
+// cel:codegen-export
 void cel_string_to_int_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_string_to_uint_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_string_to_double_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_string_to_bool_at_v(uint32_t out, uint32_t in);
 
 // M10.D — number / bool → string formatting (4 kernels).  Output
 // strings allocated in the per-Eval arena.
+// cel:codegen-export
 void cel_int_to_string_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_uint_to_string_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_bool_to_string_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_double_to_string_at_v(uint32_t out, uint32_t in);
 
 // M10.E — bytes ↔ string (2 kernels).  Both alias the source span
 // (no arena copy).  `bytes(string)` is unconditional (CEL strings are
 // guaranteed UTF-8 by construction); `string(bytes)` validates per
 // RFC3629 and poisons on invalid UTF-8.
+// cel:codegen-export
 void cel_string_to_bytes_at_v(uint32_t out, uint32_t in);
+// cel:codegen-export
 void cel_bytes_to_string_at_v(uint32_t out, uint32_t in);
 
 #ifdef __cplusplus

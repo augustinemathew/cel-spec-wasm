@@ -39,34 +39,49 @@ extern "C" {
 // String — concat / size / eq / lt / contains / startsWith / endsWith.
 // `size` is byte-count per langdef §"String / bytes" (NOT codepoint
 // count); cel-cpp's `Size::String` does the same.
+// cel:codegen-export
 void cel_string_concat_at_vv(uint32_t out_slot, uint32_t a_slot,
                              uint32_t b_slot);
+// cel:codegen-export
 void cel_string_size_at_v(uint32_t out_slot, uint32_t v_slot);
 void cel_string_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // String ordering — full lt/le/gt/ge matrix.  Byte-lex order;
 // per langdef §"String / bytes", UTF-8 byte order matches Unicode
 // code-point order.
+// cel:codegen-export
 void cel_string_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_string_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_string_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_string_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_string_contains_at_vv(uint32_t out_slot, uint32_t s_slot,
                                uint32_t sub_slot);
+// cel:codegen-export
 void cel_string_starts_with_at_vv(uint32_t out_slot, uint32_t s_slot,
                                   uint32_t pfx_slot);
+// cel:codegen-export
 void cel_string_ends_with_at_vv(uint32_t out_slot, uint32_t s_slot,
                                 uint32_t sfx_slot);
 
 // Bytes — concat / size / eq + full ordering matrix (lt/le/gt/ge).
 // Per langdef §"String / bytes", contains/startsWith/endsWith are
 // string-only operations; ordering compares as unsigned bytes.
+// cel:codegen-export
 void cel_bytes_concat_at_vv(uint32_t out_slot, uint32_t a_slot,
                             uint32_t b_slot);
+// cel:codegen-export
 void cel_bytes_size_at_v(uint32_t out_slot, uint32_t v_slot);
 void cel_bytes_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_bytes_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_bytes_le_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_bytes_gt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_bytes_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
 #ifdef __cplusplus

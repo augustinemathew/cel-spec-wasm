@@ -49,6 +49,7 @@ extern "C" {
 // Kind mismatch (non-string `s`, non-int `i`) poisons with
 // CEL_ERR_TYPE_MISMATCH.  3VL absorbs ERROR / UNKNOWN from either
 // operand.
+// cel:codegen-export
 void cel_string_char_at_at_vv(uint32_t out_slot, uint32_t s_slot,
                               uint32_t i_slot);
 
@@ -56,7 +57,9 @@ void cel_string_char_at_at_vv(uint32_t out_slot, uint32_t s_slot,
 // >= 0x80 pass through unchanged (the input may be non-UTF-8 or
 // contain code points outside the ASCII range).  When no fold is
 // needed the output reuses the source span without allocating.
+// cel:codegen-export
 void cel_string_lower_ascii_at_v(uint32_t out_slot, uint32_t s_slot);
+// cel:codegen-export
 void cel_string_upper_ascii_at_v(uint32_t out_slot, uint32_t s_slot);
 
 // `s.trim()`.  Strips Unicode whitespace from both ends.  The
@@ -66,12 +69,14 @@ void cel_string_upper_ascii_at_v(uint32_t out_slot, uint32_t s_slot);
 // U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F,
 // U+3000).  Returns a narrowed subspan into the original bytes
 // without allocating.
+// cel:codegen-export
 void cel_string_trim_at_v(uint32_t out_slot, uint32_t s_slot);
 
 // `s.reverse()`.  Code-point reversal (NOT byte reversal — a 3-byte
 // `©` stays a single 3-byte unit, just relocated).  Output bytes
 // are arena-allocated.  Empty input produces an empty (zero-len,
 // zero-ptr) string slot.
+// cel:codegen-export
 void cel_string_reverse_at_v(uint32_t out_slot, uint32_t s_slot);
 
 // ───────────────────────────────────────────────────────────────
@@ -86,23 +91,27 @@ void cel_string_reverse_at_v(uint32_t out_slot, uint32_t s_slot);
 
 // `s.indexOf(sub)`: code-point index of the first match, -1 if no
 // match.  Empty needle matches at index 0.
+// cel:codegen-export
 void cel_string_index_of_at_vv(uint32_t out_slot, uint32_t s_slot,
                                uint32_t sub_slot);
 
 // `s.indexOf(sub, pos)`: same, restricted to matches at code-point
 // index >= pos.  Per cel-cpp `IndexOf3`: pos > byte_size(s) →
 // CEL_ERROR(INVALID_ARGUMENT).  Negative pos is clamped to 0.
+// cel:codegen-export
 void cel_string_index_of_at_vvv(uint32_t out_slot, uint32_t s_slot,
                                 uint32_t sub_slot, uint32_t pos_slot);
 
 // `s.lastIndexOf(sub)`: code-point index of the last match, -1 if
 // no match.  Empty needle matches at the last code-point boundary.
+// cel:codegen-export
 void cel_string_last_index_of_at_vv(uint32_t out_slot, uint32_t s_slot,
                                     uint32_t sub_slot);
 
 // `s.lastIndexOf(sub, pos)`: same, restricted to matches at code-
 // point index <= pos.  Per cel-cpp `LastIndexOf3`: pos < 0 or
 // pos > byte_size(s) → CEL_ERROR(INVALID_ARGUMENT).
+// cel:codegen-export
 void cel_string_last_index_of_at_vvv(uint32_t out_slot, uint32_t s_slot,
                                      uint32_t sub_slot, uint32_t pos_slot);
 
@@ -112,8 +121,10 @@ void cel_string_last_index_of_at_vvv(uint32_t out_slot, uint32_t s_slot,
 // start/end exceeds the code-point count) → CEL_ERROR(INVALID_ARGUMENT).
 // Output reuses the source span (no alloc) — substring of an arena
 // string is still arena-backed.
+// cel:codegen-export
 void cel_string_substring_at_vv(uint32_t out_slot, uint32_t s_slot,
                                 uint32_t start_slot);
+// cel:codegen-export
 void cel_string_substring_range_at_vvv(uint32_t out_slot, uint32_t s_slot,
                                        uint32_t start_slot, uint32_t end_slot);
 
@@ -123,8 +134,10 @@ void cel_string_substring_range_at_vvv(uint32_t out_slot, uint32_t s_slot,
 // between every code-point boundary (cel-cpp parity — see
 // `StringValue::Replace` lines ~1405-1430).  Output is arena-
 // allocated.
+// cel:codegen-export
 void cel_string_replace_at_vvv(uint32_t out_slot, uint32_t s_slot,
                                uint32_t old_slot, uint32_t new_slot);
+// cel:codegen-export
 void cel_string_replace_n_at_vvvv(uint32_t out_slot, uint32_t s_slot,
                                   uint32_t old_slot, uint32_t new_slot,
                                   uint32_t n_slot);
@@ -148,8 +161,10 @@ void cel_string_replace_n_at_vvvv(uint32_t out_slot, uint32_t s_slot,
 //   - empty `sep`            → split into code-points (each piece
 //                              is one code-point of `s`).
 //   - empty `s` + non-empty sep → single-element `[""]`.
+// cel:codegen-export
 void cel_string_split_at_vv(uint32_t out_slot, uint32_t s_slot,
                             uint32_t sep_slot);
+// cel:codegen-export
 void cel_string_split_n_at_vvv(uint32_t out_slot, uint32_t s_slot,
                                uint32_t sep_slot, uint32_t n_slot);
 
@@ -164,7 +179,9 @@ void cel_string_split_n_at_vvv(uint32_t out_slot, uint32_t s_slot,
 // poison with CEL_ERR_TYPE_MISMATCH — `join()` over proto-repeated
 // fields would need a host-trampoline arm, deferred to a later
 // slice if a user asks.
+// cel:codegen-export
 void cel_string_join_at_v(uint32_t out_slot, uint32_t list_slot);
+// cel:codegen-export
 void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
                                uint32_t sep_slot);
 
@@ -179,6 +196,7 @@ void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
 // pass through verbatim — cel-cpp parity, see
 // `common/values/string_value.cc::AppendQuoteCodePoint`.  Output
 // bytes are arena-allocated.
+// cel:codegen-export
 void cel_string_quote_at_v(uint32_t out_slot, uint32_t s_slot);
 
 #ifdef __cplusplus

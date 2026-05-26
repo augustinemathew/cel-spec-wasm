@@ -31,36 +31,52 @@ extern "C" {
 
 // ── Scalar: rounding (double → double) ────────────────────────────
 // std::ceil / floor / round / trunc.  Wrong kind → CEL_ERR_TYPE_MISMATCH.
+// cel:codegen-export
 void cel_math_ceil_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_floor_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_round_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_trunc_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // ── Scalar: float predicates (double → bool) ──────────────────────
+// cel:codegen-export
 void cel_math_is_inf_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_is_nan_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_is_finite_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // ── Scalar: magnitude / sign (int / uint / double, kind-dispatch) ─
 // abs(int) overflows on INT64_MIN (→ CEL_ERR_OVERFLOW); abs(uint) is
 // identity.  sign returns the operand kind: int/uint → {-1,0,1} (uint
 // never -1); double → {-1.0, 0.0, 1.0} with NaN passed through.
+// cel:codegen-export
 void cel_math_abs_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_sign_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // ── Scalar: sqrt (int / uint / double → double) ───────────────────
 // Always double; sqrt of a negative operand yields NaN (no error).
+// cel:codegen-export
 void cel_math_sqrt_at_v(uint32_t out_slot, uint32_t v_slot);
 
 // ── Bitwise (int / uint; shift amount always int) ─────────────────
+// cel:codegen-export
 void cel_math_bit_and_at_vv(uint32_t out_slot, uint32_t a_slot,
                             uint32_t b_slot);
+// cel:codegen-export
 void cel_math_bit_or_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_math_bit_xor_at_vv(uint32_t out_slot, uint32_t a_slot,
                             uint32_t b_slot);
+// cel:codegen-export
 void cel_math_bit_not_at_v(uint32_t out_slot, uint32_t v_slot);
+// cel:codegen-export
 void cel_math_bit_shift_left_at_vv(uint32_t out_slot, uint32_t x_slot,
                                    uint32_t n_slot);
+// cel:codegen-export
 void cel_math_bit_shift_right_at_vv(uint32_t out_slot, uint32_t x_slot,
                                     uint32_t n_slot);
 
@@ -69,9 +85,13 @@ void cel_math_bit_shift_right_at_vv(uint32_t out_slot, uint32_t x_slot,
 // numeric); list forms fold a CEL_LIST_ARENA of numerics.  Result kind
 // is the winning operand's kind (dyn at the checker level for
 // cross-type / mixed-list).
+// cel:codegen-export
 void cel_math_min_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_math_max_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+// cel:codegen-export
 void cel_math_min_list_at_v(uint32_t out_slot, uint32_t list_slot);
+// cel:codegen-export
 void cel_math_max_list_at_v(uint32_t out_slot, uint32_t list_slot);
 
 #ifdef __cplusplus

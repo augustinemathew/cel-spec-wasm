@@ -3,13 +3,15 @@
 // checker reuses) and return the result in a neutral form that our
 // pipeline's result can be compared against.
 //
-// Why a separate TU.  Our public API type `cel::Value` is
-// `celwasm::Value` aliased into `namespace cel` (`api/value.h`);
-// cel-cpp's `cel::Value` (`common/value.h`) collides.  Anything that
-// links cel-cpp's runtime therefore cannot also include our
-// `api/value.h`.  This header exposes ONLY neutral types
-// (`cel.expr.Value` proto, absl), so a differential test can include
-// both this oracle and our pipeline headers without the collision.
+// The result/argument types are the neutral `cel.expr.Value` exchange
+// proto (the same type the conformance corpus uses), so a differential
+// test can hold both this oracle's result and our pipeline's result
+// side by side and compare them.  (Historically this header also had to
+// stay free of cel-cpp's own headers because OUR namespace used to be
+// `cel` and collided with cel-cpp's `cel::Value`; that limitation is
+// gone now that we live in `namespace celwasm`, so the `.cc` links
+// cel-cpp freely.  The neutral exchange type stays for comparison
+// ergonomics, not to dodge a collision.)
 //
 // Why this exists.  M20 (and differential-conformance work generally)
 // needs to assert that our pipeline produces the SAME result cel-cpp
@@ -19,10 +21,12 @@
 #ifndef CELWASM_TESTDATA_CEL_CPP_ORACLE_H_
 #define CELWASM_TESTDATA_CEL_CPP_ORACLE_H_
 
+#include <optional>
 #include <string>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "cel/expr/value.pb.h"
 
 namespace celwasm::testdata {
@@ -49,6 +53,10 @@ namespace celwasm::testdata {
 // own conformance harness.
 struct OracleResult {
   bool is_error = false;
+  // cel-cpp returned an UnknownValue (partial-eval: the result depends
+  // on an attribute marked unknown).  Mutually exclusive with is_error;
+  // when set, `value` is unset.
+  bool is_unknown = false;
   cel::expr::Value value;
   std::string error_message;
 };
@@ -62,6 +70,34 @@ struct OracleResult {
 // `GlobalEnum.GAZ` resolve and proto constructors range-check.
 absl::StatusOr<OracleResult> EvalWithCelCpp(absl::string_view source,
                                             absl::string_view container);
+
+// A free variable for a partial-eval oracle query.  Declared on the
+// checker as `dyn` (so `source` type-checks for any usage — the static
+// type is irrelevant to the unknown-propagation semantics under test)
+// and, when `value` is set, bound on the activation.  An unset `value`
+// leaves the variable UNBOUND — legal under partial eval, where an
+// unknown variable need not have a value.  `value` is the bound value
+// as the neutral `cel.expr.Value` exchange proto (the same type
+// `OracleResult::value` uses).
+struct OracleVar {
+  std::string name;
+  std::optional<cel::expr::Value> value;
+};
+
+// Partial-eval counterpart of `EvalWithCelCpp`: declares every `vars`
+// entry on the checker, binds those carrying a `value`, marks each
+// dotted `unknown_patterns` entry unknown (e.g. `"xs"`, `"c.field"` —
+// a bare name is a whole-variable pattern; dotted segments are string
+// field qualifiers), and evaluates with cel-cpp's attribute-unknown
+// processing enabled (`UnknownProcessingOptions::kAttributeOnly`).
+// `OracleResult::is_unknown` is set when cel-cpp returns an
+// UnknownValue.  This is the empirical reference for partial-eval
+// behavior (whole-variable unknowns, comprehension-over-unknown,
+// loop-variable immunity) that plain source-reading cannot settle.
+absl::StatusOr<OracleResult> PartialEvalWithCelCpp(
+    absl::string_view source, absl::string_view container,
+    absl::Span<const OracleVar> vars,
+    absl::Span<const std::string> unknown_patterns);
 
 }  // namespace celwasm::testdata
 

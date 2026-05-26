@@ -69,7 +69,10 @@ cc_library(
         "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
         "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
         "@com_google_cel_spec//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@cel-cpp//base:attributes",
         "@cel-cpp//common:ast_proto",
+        "@cel-cpp//common:decl",
+        "@cel-cpp//common:type",
         "@cel-cpp//common:value",
         "@cel-cpp//common/internal:value_conversion",
         "@cel-cpp//compiler",
@@ -85,6 +88,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
     ],
 )

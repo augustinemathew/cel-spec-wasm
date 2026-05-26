@@ -307,6 +307,7 @@ static ArenaListHeader* arena_list_header(const CelValue* l) {
 // Returns 0 only on arena_alloc failure for the snapshot slot; the
 // codegen path treats 0 as "fall back to source_slot" (which will
 // produce an empty walk for host sources at worst).
+// cel:codegen-export
 uint32_t cel_list_arena_view(uint32_t list_slot) {
   CEL_LOG("enter");
   CelValue* l = cel_value_at(list_slot);
@@ -1118,6 +1119,7 @@ cel_host_cel_map_iter_open(  // NOLINT(misc-use-internal-linkage)
 // payload.  Returns 0 for empty / poisoned / unsupported kinds; the
 // comprehension's pre-size then allocates a zero-capacity accu and
 // the loop body never runs.
+// cel:codegen-export
 uint32_t cel_map_count(uint32_t map_slot) {
   CEL_LOG("enter");
   CelValue* m = cel_value_at(map_slot);
@@ -1423,6 +1425,7 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
 // silenced because internal linkage would hide it from the wasm
 // export table.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+// cel:codegen-export
 void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   equality_kernel(out_slot, a_slot, b_slot);
@@ -1431,6 +1434,7 @@ void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 // Wasm-exported via `-Wl,--export=cel_not_equals_at_vv` — see
 // `cel_equals_at_vv` above for the linkage rationale.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+// cel:codegen-export
 void cel_not_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   equality_kernel(out_slot, a_slot, b_slot);

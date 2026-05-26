@@ -228,8 +228,6 @@ INSTANTIATE_TEST_SUITE_P(
         IntCase{"DoubleZero", "int(0.0) == 0"},
         IntCase{"DoublePositiveTruncates", "int(1.7) == 1"},
         IntCase{"DoubleNegativeTruncates", "int(-1.7) == -1"},
-        IntCase{"DoubleAtIntMin",
-                "int(-9223372036854775808.0) == -9223372036854775808"},
         // Note: int(2^63 - 1024 as double) — the largest representable
         // double < 2^63 — round-trips to a value near INT64_MAX.
         IntCase{"DoubleNearIntMax",
@@ -256,6 +254,17 @@ TEST_F(IntFamilyE2ETest, DoubleOverflowingIntMinIsError) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   ExpectEvalError(*compiler, "int(-1e30)", "double < INT64_MIN overflows int");
+}
+
+TEST_F(IntFamilyE2ETest, DoubleAtIntMinIsError) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // The double -2^63 itself is a range error (validated against the cel-cpp
+  // oracle — cel_cpp_oracle_test.cc IntFromDoubleMinIsRangeError); INT64_MIN
+  // is unreachable via int(double) since no double lies between -2^63 and the
+  // next representable value.
+  ExpectEvalError(*compiler, "int(-9223372036854775808.0)",
+                  "double -2^63 is out of int range");
 }
 
 TEST_F(IntFamilyE2ETest, DoubleNaNIsError) {

@@ -1,0 +1,66 @@
+// Schema for the generated runtime-helper catalogue — the set of
+// pure-wasm helpers `cel_runtime.wasm` exports under the `cel` module
+// that an emitted expr module imports.
+//
+// The catalogue is DERIVED, not hand-written: `//bazel:gen_runtime_catalogue`
+// reads the `[codegen-helpers]` name set from `runtime/wasm_exports.txt`
+// (the linker's `--export=` source of truth) and the C function
+// signatures in `runtime/cel_*.{h,c}` (every helper is
+// `void f(uint32_t, …)` or `uint32_t f(uint32_t, …)` — arity is the
+// param count, return shape is the return type), and emits a
+// `CelRuntimeCatalogue` textproto.  `abi/runtime_catalogue.cc` embeds
+// that textproto as a build resource and parses it at first use.
+//
+// The C source — not the wasm binary — is the derivation input: clang
+// lowers a `void f(uint32_t, …)` / `uint32_t f(uint32_t, …)` declaration
+// one-to-one to the wasm function type, so the C signature recovers the
+// identical (arity, returns_i32) tuple the wasm type section would, with
+// no external disassembler and no wasm cross-compile.
+//
+// Design decisions (mirror `abi/cel_abi.proto`):
+//   - Field numbers are dense and locked.  Extending a message is
+//     additive only — never renumber.
+
+syntax = "proto3";
+
+// The generated `CelRuntimeFunction` / `CelRuntimeCatalogue` messages
+// ARE the catalogue types used throughout the C++ surface — there is no
+// separate hand-defined POD.  `runtime_catalogue.cc` parses the embedded
+// textproto into these messages and hands out spans of them.
+package celwasm.abi;
+
+// Which import module a helper lives under.  Mirrors `abi::AbiModule`
+// in `runtime_catalogue.h`.  Only `CEL` rows are generated today; the
+// `CEL_HOST` / `CEL_ENV` members reserve their slots so the import
+// arrays can later move into the catalogue without renumbering.
+enum CelRuntimeModule {
+  CEL_RUNTIME_MODULE_UNSPECIFIED = 0;  // proto3 default sentinel.
+  CEL = 1;       // "cel"      — cel_runtime.wasm exports (generated).
+  CEL_HOST = 2;  // "cel_host" — wasmtime host trampolines (reserved).
+  CEL_ENV = 3;   // "cel_env"  — host environment helpers (reserved).
+}
+
+// One runtime helper exported by `cel_runtime.wasm`.
+//
+//   name         the exported symbol (matches `wasm_exports.txt` and the
+//                C declaration).
+//   module       the import namespace; `CEL` for every generated row.
+//   num_args     exact i32 parameter count of the wasm function (no
+//                out-slot vs value distinction layered on — the wasm
+//                signature is just i32×N).
+//   returns_i32  true iff the wasm function returns a single i32 (arena
+//                helpers, iter handles, count helpers); false for the
+//                void-returning majority (every `_at_*` kernel writes
+//                its result through an out-slot in linear memory).
+message CelRuntimeFunction {
+  string name = 1;
+  CelRuntimeModule module = 2;
+  uint32 num_args = 3;
+  bool returns_i32 = 4;
+}
+
+// The generated catalogue: every `cel`-module helper, in
+// `wasm_exports.txt` declaration order (stable diffs).
+message CelRuntimeCatalogue {
+  repeated CelRuntimeFunction functions = 1;
+}

@@ -22,11 +22,11 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
 
@@ -251,9 +251,6 @@ TEST(KnownBugs, DynUintListIndexCoercion) {
 }
 
 TEST(KnownBugs, IntFromDoubleOutOfRange) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // conversions.textproto: int(-9223372036854775808.0) is out of range ->
   // error per spec; cel2 returns a valid int instead.
   auto v = TryEval("int(-9223372036854775808.0)");
@@ -297,9 +294,6 @@ TEST(KnownBugs, ReservedWordMapSelector) {
 }
 
 TEST(KnownBugs, IntFromStringLeadingPlus) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // cel_convert.c:203-215 — parse_int64_str handles only leading '-';
   // cel-cpp's absl::SimpleAtoi accepts '+5'. Expected 5, got error.
   auto v = TryEval("int('+5')");
@@ -309,9 +303,6 @@ TEST(KnownBugs, IntFromStringLeadingPlus) {
 }
 
 TEST(KnownBugs, UintFromStringLeadingPlus) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // cel_convert.c:217-223 — parse_uint64_str has no sign handling.
   auto v = TryEval("uint('+5')");
   ASSERT_TRUE(v.ok()) << v.status();
@@ -504,9 +495,14 @@ TEST(KnownBugs, OptionalSelectOnMapRejected) {
 }
 
 TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
-  GTEST_SKIP() << "KNOWN BUG (verified: errors, want 3.14): double(string) "
-                  "does not strip surrounding whitespace; cel-cpp SimpleAtod "
-                  "does. cel_convert.c:350-362. Delete to fix.";
+  GTEST_SKIP()
+      << "KNOWN BUG (verified): double('  3.14  ') needs BOTH "
+         "whitespace stripping AND correctly-rounded decimal->double. "
+         "The whitespace strip is trivial, but cel2's parse_double_str "
+         "(cel_convert.c) is 1 ULP off (3.14 -> 3.1399999999999997) — "
+         "same imprecise-decimal<->double family as "
+         "DoubleToStringShortestRoundTrip. Needs a correctly-rounded "
+         "decimal->double; not Tier-1. Delete to fix.";
   // cel-cpp double(string) uses absl::SimpleAtod, which strips surrounding
   // ASCII whitespace before parsing; cel2's parse_double_str
   // (cel_convert.c:350-362) does not skip leading/trailing space, so

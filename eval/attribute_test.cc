@@ -17,59 +17,42 @@ using ::testing::HasSubstr;
 
 // ————————— AttributeQualifier —————————
 
+// Only string-keyed qualifiers are constructible — int / uint / bool
+// factories were removed because the resolver never interns them
+// (index / key access breaks the attribute chain).
 TEST(AttributeQualifierTest, KindDispatch) {
-  EXPECT_EQ(AttributeQualifier::OfInt(3).kind(),
-            AttributeQualifier::Kind::kInt);
-  EXPECT_EQ(AttributeQualifier::OfUint(3u).kind(),
-            AttributeQualifier::Kind::kUint);
   EXPECT_EQ(AttributeQualifier::OfString("k").kind(),
             AttributeQualifier::Kind::kString);
-  EXPECT_EQ(AttributeQualifier::OfBool(true).kind(),
-            AttributeQualifier::Kind::kBool);
 }
 
 TEST(AttributeQualifierTest, TypedAccessorsReturnValueOrNullopt) {
-  auto i = AttributeQualifier::OfInt(42);
-  EXPECT_EQ(i.AsInt(), 42);
-  EXPECT_EQ(i.AsUint(), std::nullopt);
-  EXPECT_EQ(i.AsString(), std::nullopt);
-  EXPECT_EQ(i.AsBool(), std::nullopt);
-
   auto s = AttributeQualifier::OfString("hello");
   EXPECT_EQ(s.AsString(), "hello");
   EXPECT_EQ(s.AsInt(), std::nullopt);
+  EXPECT_EQ(s.AsUint(), std::nullopt);
+  EXPECT_EQ(s.AsBool(), std::nullopt);
 }
 
 TEST(AttributeQualifierTest, MatchesStringKey) {
   EXPECT_TRUE(AttributeQualifier::OfString("x").MatchesStringKey("x"));
   EXPECT_FALSE(AttributeQualifier::OfString("x").MatchesStringKey("y"));
-  // Non-string qualifier never matches a string key.
-  EXPECT_FALSE(AttributeQualifier::OfInt(42).MatchesStringKey("42"));
 }
 
 TEST(AttributeQualifierTest, EqualityByValue) {
-  EXPECT_EQ(AttributeQualifier::OfInt(3), AttributeQualifier::OfInt(3));
-  EXPECT_NE(AttributeQualifier::OfInt(3), AttributeQualifier::OfInt(4));
-  EXPECT_NE(AttributeQualifier::OfInt(3), AttributeQualifier::OfUint(3u));
+  EXPECT_EQ(AttributeQualifier::OfString("a"),
+            AttributeQualifier::OfString("a"));
+  EXPECT_NE(AttributeQualifier::OfString("a"),
+            AttributeQualifier::OfString("b"));
 }
 
-TEST(AttributeQualifierTest, OrderingByKindThenValue) {
-  EXPECT_LT(AttributeQualifier::OfInt(1), AttributeQualifier::OfInt(2));
-  // Cross-kind ordering follows Kind enum order.
-  EXPECT_LT(AttributeQualifier::OfInt(9), AttributeQualifier::OfUint(0u));
+TEST(AttributeQualifierTest, OrderingByValue) {
+  EXPECT_LT(AttributeQualifier::OfString("a"),
+            AttributeQualifier::OfString("b"));
 }
 
 TEST(AttributeQualifierTest, CanonicalStringFormats) {
-  EXPECT_THAT(AttributeQualifier::OfInt(3).AsCanonicalString(),
-              IsOkAndHolds("[3]"));
-  EXPECT_THAT(AttributeQualifier::OfUint(3u).AsCanonicalString(),
-              IsOkAndHolds("[3u]"));
   EXPECT_THAT(AttributeQualifier::OfString("k").AsCanonicalString(),
               IsOkAndHolds(R"(["k"])"));
-  EXPECT_THAT(AttributeQualifier::OfBool(true).AsCanonicalString(),
-              IsOkAndHolds("[true]"));
-  EXPECT_THAT(AttributeQualifier::OfBool(false).AsCanonicalString(),
-              IsOkAndHolds("[false]"));
 }
 
 TEST(AttributeQualifierTest, CanonicalStringRejectsUnprintable) {
@@ -86,7 +69,6 @@ TEST(AttributeQualifierTest, CanonicalStringRejectsUnprintable) {
 TEST(AttributeQualifierPatternTest, WildcardMatchesAnything) {
   auto p = AttributeQualifierPattern::Wildcard();
   EXPECT_TRUE(p.IsWildcard());
-  EXPECT_TRUE(p.IsMatch(AttributeQualifier::OfInt(1)));
   EXPECT_TRUE(p.IsMatch(AttributeQualifier::OfString("anything")));
   EXPECT_TRUE(p.IsMatch("anykey"));
 }
@@ -100,11 +82,11 @@ TEST(AttributeQualifierPatternTest, ConcretePatternMatchesExact) {
   EXPECT_FALSE(p.IsMatch("name"));
 }
 
-TEST(AttributeQualifierPatternTest, CrossKindDoesNotMatch) {
-  EXPECT_FALSE(AttributeQualifierPattern::OfInt(3).IsMatch(
-      AttributeQualifier::OfString("3")));
-  EXPECT_FALSE(AttributeQualifierPattern::OfString("3").IsMatch(
-      AttributeQualifier::OfInt(3)));
+TEST(AttributeQualifierPatternTest, ConcreteStringMatchIsExact) {
+  EXPECT_TRUE(AttributeQualifierPattern::OfString("a").IsMatch(
+      AttributeQualifier::OfString("a")));
+  EXPECT_FALSE(AttributeQualifierPattern::OfString("a").IsMatch(
+      AttributeQualifier::OfString("b")));
 }
 
 // ————————— Attribute —————————
@@ -126,10 +108,10 @@ TEST(AttributeTest, WithQualifiers) {
 }
 
 TEST(AttributeTest, EqualityComparesVariableAndPath) {
-  Attribute a("x", {AttributeQualifier::OfInt(3)});
-  Attribute b("x", {AttributeQualifier::OfInt(3)});
-  Attribute c("x", {AttributeQualifier::OfInt(4)});
-  Attribute d("y", {AttributeQualifier::OfInt(3)});
+  Attribute a("x", {AttributeQualifier::OfString("f")});
+  Attribute b("x", {AttributeQualifier::OfString("f")});
+  Attribute c("x", {AttributeQualifier::OfString("g")});
+  Attribute d("y", {AttributeQualifier::OfString("f")});
   EXPECT_EQ(a, b);
   EXPECT_NE(a, c);
   EXPECT_NE(a, d);
@@ -138,7 +120,7 @@ TEST(AttributeTest, EqualityComparesVariableAndPath) {
 TEST(AttributeTest, OrderByVariableThenPath) {
   Attribute a("a");
   Attribute b("b");
-  Attribute a_ext("a", {AttributeQualifier::OfInt(1)});
+  Attribute a_ext("a", {AttributeQualifier::OfString("f")});
   EXPECT_LT(a, b);
   EXPECT_LT(a, a_ext);  // shorter path < longer path with same prefix
 }
@@ -149,17 +131,11 @@ TEST(AttributeTest, CanonicalStringDottedForStringQualifiers) {
   EXPECT_THAT(a.AsString(), IsOkAndHolds("request.auth.claims"));
 }
 
-TEST(AttributeTest, CanonicalStringBracketedForIndexQualifiers) {
-  Attribute a("xs", {AttributeQualifier::OfInt(0),
-                     AttributeQualifier::OfString("name")});
-  EXPECT_THAT(a.AsString(), IsOkAndHolds("xs[0].name"));
-}
-
 // ————————— AttributePattern (IsMatch) —————————
 
 TEST(AttributePatternTest, VariableMismatchReturnsNone) {
   AttributePattern p("x", {AttributeQualifierPattern::Wildcard()});
-  Attribute a("y", {AttributeQualifier::OfInt(1)});
+  Attribute a("y", {AttributeQualifier::OfString("f")});
   EXPECT_EQ(p.IsMatch(a), AttributePattern::MatchType::kNone);
 }
 
@@ -308,100 +284,48 @@ TEST(AttributePatternParseTest, ParseRoundTripsThroughIsMatch) {
   EXPECT_EQ(parsed->IsMatch(a), AttributePattern::MatchType::kFull);
 }
 
-// ——— Bracketed qualifiers: int / uint / bool / string / wildcard ———
+// ——— Bracket / index / key qualifiers are rejected by design ———
+//
+// The resolver only interns string `.field` qualifiers: index / key
+// access (`x[i]`, `m['k']`) breaks the attribute chain (resolve_pass
+// PostVisitSelect bails when its operand is an index call), so no
+// attribute ever carries an index/key qualifier.  A pattern naming
+// one could never match anything, so Parse rejects the whole bracket
+// surface rather than accept a pattern it cannot honor.
 
-TEST(AttributePatternParseTest, BracketedIntIndex) {
-  auto p = AttributePattern::Parse("xs[3]");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 1u);
-  const auto& q = p->qualifier_path()[0];
-  EXPECT_TRUE(q.IsMatch(AttributeQualifier::OfInt(3)));
-  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfInt(4)));
-  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfUint(3)));
-  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfString("3")));
-}
-
-TEST(AttributePatternParseTest, BracketedNegativeInt) {
-  auto p = AttributePattern::Parse("xs[-1]");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 1u);
-  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfInt(-1)));
-}
-
-TEST(AttributePatternParseTest, BracketedUintIndex) {
-  auto p = AttributePattern::Parse("xs[3u]");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 1u);
-  const auto& q = p->qualifier_path()[0];
-  EXPECT_TRUE(q.IsMatch(AttributeQualifier::OfUint(3u)));
-  EXPECT_FALSE(q.IsMatch(AttributeQualifier::OfInt(3)));
-}
-
-TEST(AttributePatternParseTest, BracketedBoolTrueAndFalse) {
-  auto t = AttributePattern::Parse("m[true]");
-  auto f = AttributePattern::Parse("m[false]");
-  ASSERT_THAT(t, absl_testing::IsOk());
-  ASSERT_THAT(f, absl_testing::IsOk());
-  EXPECT_TRUE(t->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(true)));
-  EXPECT_FALSE(
-      t->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
-  EXPECT_TRUE(
-      f->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
-}
-
-TEST(AttributePatternParseTest, BracketedQuotedString) {
-  auto p = AttributePattern::Parse("m[\"key\"]");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 1u);
-  EXPECT_TRUE(
-      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("key")));
-  EXPECT_FALSE(
-      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("other")));
-}
-
-TEST(AttributePatternParseTest, BracketedWildcard) {
-  auto p = AttributePattern::Parse("xs[*]");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  ASSERT_EQ(p->qualifier_path().size(), 1u);
-  EXPECT_TRUE(p->qualifier_path()[0].IsWildcard());
-  EXPECT_TRUE(p->qualifier_path()[0].IsMatch(AttributeQualifier::OfInt(99)));
-  EXPECT_TRUE(
-      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfBool(false)));
-}
-
-TEST(AttributePatternParseTest, MixedDottedAndBracketed) {
-  // Realistic: request.messages[3].text
-  auto p = AttributePattern::Parse("request.messages[3].text");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  EXPECT_EQ(p->variable(), "request");
-  ASSERT_EQ(p->qualifier_path().size(), 3u);
-  EXPECT_TRUE(
-      p->qualifier_path()[0].IsMatch(AttributeQualifier::OfString("messages")));
-  EXPECT_TRUE(p->qualifier_path()[1].IsMatch(AttributeQualifier::OfInt(3)));
-  EXPECT_TRUE(
-      p->qualifier_path()[2].IsMatch(AttributeQualifier::OfString("text")));
-}
-
-TEST(AttributePatternParseTest, EmptyBracketIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse("xs[]"),
+TEST(AttributePatternParseTest, BracketedIntRejected) {
+  EXPECT_THAT(AttributePattern::Parse("xs[3]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(AttributePattern::Parse("xs[-1]"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(AttributePatternParseTest, UnterminatedBracketIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse("xs[3"),
+TEST(AttributePatternParseTest, BracketedUintRejected) {
+  EXPECT_THAT(AttributePattern::Parse("xs[3u]"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(AttributePatternParseTest, MalformedBracketBodyIsInvalid) {
-  // Unsupported token in a bracket — not int/uint/bool/string/*.
-  EXPECT_THAT(AttributePattern::Parse("xs[abc]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(AttributePattern::Parse("xs[\"unterm]"),
+TEST(AttributePatternParseTest, BracketedBoolRejected) {
+  EXPECT_THAT(AttributePattern::Parse("m[true]"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(AttributePatternParseTest, BracketedAtRootIsInvalid) {
-  // A pattern must start with a variable name, not a bracket.
+TEST(AttributePatternParseTest, BracketedStringKeyRejected) {
+  EXPECT_THAT(AttributePattern::Parse("m[\"k\"]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, BracketedWildcardRejected) {
+  EXPECT_THAT(AttributePattern::Parse("xs[*]"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, MixedDottedAndBracketedRejected) {
+  EXPECT_THAT(AttributePattern::Parse("request.messages[3].text"),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(AttributePatternParseTest, BracketedAtRootRejected) {
   EXPECT_THAT(AttributePattern::Parse("[3]"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }

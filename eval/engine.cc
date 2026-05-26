@@ -238,7 +238,7 @@ absl::Status BindAllRuntimeExports(celwasm::InstanceImpl* impl,
     // it under cel.arena_alloc here so the expr module's import call
     // resolves identically.
     if (auto s = BindRuntimeExport(impl->linker, ctx, impl->runtime_instance,
-                                   std::string(h.name).c_str());
+                                   h.name().c_str());
         !s.ok()) {
       return s;
     }
