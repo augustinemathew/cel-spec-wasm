@@ -33,8 +33,11 @@ if [[ -t 0 ]]; then
 else
   push_input="$(cat || true)"
 fi
-if [[ -n "$push_input" ]] && ! echo "$push_input" | grep -qvE '^[^ ]+ [0-9a-f]{40} [^ ]+ 0{40}$'; then
-  # Every line is a delete (remote_sha = 0000...).  Nothing to gate.
+if [[ -n "$push_input" ]] && ! echo "$push_input" | grep -qvE '^[^ ]+ 0{40} '; then
+  # Every line is a branch DELETE — git sets the LOCAL sha (field 2) to
+  # 0000... for a delete.  Nothing to gate.  (A new-branch CREATE has a real
+  # local sha and a zero REMOTE sha, field 4 — that still needs gating, so we
+  # must key off field 2, not field 4.)
   exit 0
 fi
 
