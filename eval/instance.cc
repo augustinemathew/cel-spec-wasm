@@ -1,9 +1,11 @@
 #include "eval/instance.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +17,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "compiler/ir/annotations.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
 #include "eval/error.h"
@@ -23,10 +26,9 @@
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/wasmtime_engine_state.h"
 #include "eval/value.h"
-#include "compiler/ir/annotations.h"
+#include "google/protobuf/message.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
-#include "google/protobuf/message.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -361,7 +363,7 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
 // minimum dlmalloc chunk size on wasi-libc and amortises the cost
 // of growing the activation buffer over many small Evals.
 uint32_t RoundUpTo4K(uint64_t bytes) {
-  constexpr uint64_t k4K = 4u * 1024u;
+  constexpr uint64_t k4K = uint64_t{4} * 1024;
   return static_cast<uint32_t>(((bytes + k4K - 1) / k4K) * k4K);
 }
 
@@ -925,6 +927,94 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
 // (`activation_buf_offset` / `activation_buf_capacity`) lives at
 // instance scope without inflating MarshalActivation's parameter list
 // past the lint gate.
+// Partial-eval: a variable named by a FULL unknown pattern is opaque
+// — its workspace slot holds CEL_UNKNOWN instead of a marshaled bound
+// value, and CEL's 3VL absorption then propagates the unknown through
+// every operation that reads it (`x + 1`, `x == y`, `x[0]`, `x.f`,
+// …) per langdef "Partial state".  This is the bare-variable
+// counterpart to the `.field`-select unknown the cel_host trampoline
+// produces; both consult the same `unknown_patterns` set.
+//
+// Returns the interned attribute_id to stamp into the CEL_UNKNOWN
+// payload when the bare variable (root name + empty qualifier path)
+// is kFull-matched by some pattern; std::nullopt when no pattern
+// fully matches (the caller encodes the bound value as usual).  A
+// pattern that matches only a SUB-attribute (`x.foo` vs bare `x`) is
+// kPartial, not kFull, so it does NOT blank the whole slot — the
+// select trampoline handles that narrower case.
+//
+// The unknown verdict is INDEPENDENT of whether the variable is bound:
+// an unknown variable need not appear in the Activation, and a binding
+// that IS present is deliberately ignored (the pattern wins) — marking
+// a variable unknown means "pretend its value is not yet known," even
+// if a concrete value happens to be available.
+std::optional<uint32_t> BareVariableUnknownId(
+    const celwasm::CelHostBindings& bindings, absl::string_view name) {
+  if (bindings.unknown_patterns.empty()) return std::nullopt;
+  const celwasm::Attribute bare{std::string(name)};
+  const bool full = std::any_of(
+      bindings.unknown_patterns.begin(), bindings.unknown_patterns.end(),
+      [&bare](const celwasm::AttributePattern& p) {
+        return p.IsMatch(bare) == celwasm::AttributePattern::MatchType::kFull;
+      });
+  if (!full) return std::nullopt;
+  // The interned id is the index into the attribute table; every
+  // referenced free ident is interned (resolve_pass PostVisitIdent),
+  // so a referenced variable always has a bare-path row.  Fall back to
+  // the sentinel 0 if somehow absent — still surfaces UNKNOWN.
+  for (size_t i = 0; i < bindings.attributes.size(); ++i) {
+    const celwasm::AttributeEntry& a = bindings.attributes[i];
+    if (a.qualifiers.empty() && a.root_variable == name) {
+      return static_cast<uint32_t>(i);
+    }
+  }
+  return 0u;
+}
+
+// Marshal one declared variable into its workspace slot: CEL_UNKNOWN
+// when a pattern fully matches the bare variable (PartialEval; binding
+// ignored, may be absent), else the encoded bound value.  Bounds-checks
+// the slot against `mem_size` first.
+absl::Status MarshalOneVariable(wasmtime_context_t* absl_nonnull ctx,
+                                celwasm::InstanceImpl* absl_nonnull impl,
+                                const Activation& activation,
+                                const celwasm::abi::VariableEntry& dv,
+                                size_t mem_size, EncoderContext& ec) {
+  wasmtime_sharedmemory_t* mem = impl->memory;
+  if (static_cast<std::uint64_t>(dv.slot_offset()) + sizeof(CelValue) >
+      mem_size) {
+    return absl::OutOfRangeError(
+        absl::StrCat("Activation[", dv.name(), "]: slot offset ",
+                     dv.slot_offset(), " + 24 exceeds memory size ", mem_size));
+  }
+  // PartialEval: a fully-unknown variable's slot holds CEL_UNKNOWN
+  // regardless of whether it is bound — the pattern wins, and the
+  // variable need not appear in the Activation.
+  if (std::optional<uint32_t> unk_id =
+          BareVariableUnknownId(impl->host_env.bindings, dv.name());
+      unk_id.has_value()) {
+    CelValue unk{};
+    unk.kind = CEL_UNKNOWN;
+    unk.payload.unk = *unk_id;
+    WriteCelValueAt(ctx, mem, dv.slot_offset(), unk);
+    return absl::OkStatus();
+  }
+  const Value* bound = activation.Find(dv.name());
+  if (bound == nullptr) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("Activation: variable `", dv.name(),
+                     "` declared on Compiler but not bound on Activation"));
+  }
+  CelValue cv{};
+  if (auto s = EncodeBoundValue(*bound, celwasm::DecodeRepr(dv.repr()),
+                                dv.name(), &cv, ec);
+      !s.ok()) {
+    return s;
+  }
+  WriteCelValueAt(ctx, mem, dv.slot_offset(), cv);
+  return absl::OkStatus();
+}
+
 absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
                                celwasm::InstanceImpl* absl_nonnull impl,
                                const Activation& activation) {
@@ -961,25 +1051,10 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   (void)ctx;  // shared-memory APIs don't take a context.
 
   for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
-    if (static_cast<std::uint64_t>(dv.slot_offset()) + sizeof(CelValue) >
-        mem_size) {
-      return absl::OutOfRangeError(absl::StrCat(
-          "Activation[", dv.name(), "]: slot offset ", dv.slot_offset(),
-          " + 24 exceeds memory size ", mem_size));
-    }
-    const Value* bound = activation.Find(dv.name());
-    if (bound == nullptr) {
-      return absl::FailedPreconditionError(
-          absl::StrCat("Activation: variable `", dv.name(),
-                       "` declared on Compiler but not bound on Activation"));
-    }
-    CelValue cv{};
-    if (auto s = EncodeBoundValue(*bound, celwasm::DecodeRepr(dv.repr()),
-                                  dv.name(), &cv, ec);
+    if (auto s = MarshalOneVariable(ctx, impl, activation, dv, mem_size, ec);
         !s.ok()) {
       return s;
     }
-    WriteCelValueAt(ctx, mem, dv.slot_offset(), cv);
   }
   return absl::OkStatus();
 }

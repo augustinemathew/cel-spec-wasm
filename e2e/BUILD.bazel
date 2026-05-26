@@ -97,8 +97,8 @@ cc_test(
 # unknown granularities propagate (whole-var, message field path,
 # wildcard) and which are by-design impossible (per-element / per-key).
 cc_test(
-    name = "partial_eval_test",
-    srcs = ["partial_eval_test.cc"],
+    name = "m2_partial_eval_test",
+    srcs = ["m2_partial_eval_test.cc"],
     deps = [
         "//testdata:e2e_fixture_cc_proto",
         "//eval:activation",

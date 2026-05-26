@@ -131,18 +131,34 @@ message FieldEntry {
 // extend `qualifiers`; index/key access (`x[0]`, `m['k']`) never does,
 // so `m['a']` and `m['b']` share the one containing attribute.
 //
-// Crucially, an UNKNOWN is produced ONLY at a `.field` select trampoline
-// (cel_host.cc RunFieldPrelude → MatchesAnyUnknownPattern); a bare ident,
-// an index/key, `size()`, or an arithmetic op never consults the pattern
-// set — it only PROPAGATES an unknown already produced upstream.  So:
-//   - `c.tier_quotas[k]` under pattern `c.tier_quotas` → UNKNOWN: the
-//     `.tier_quotas` SELECT fires, and the `[k]` index propagates it.
-//   - a bound list/map VARIABLE indexed directly (`m[k]` under pattern
-//     `m`, with `m` a declared map/list variable) → CONCRETE: there is
-//     no select in the path, so nothing ever fires.  Marking such a
-//     variable unknown is currently inexpressible.
-// You also cannot mark one key/index unknown while a sibling stays known.
-// (Verified + pinned by e2e/partial_eval_test.cc.)
+// An UNKNOWN is PRODUCED at two sites, both consulting the same pattern
+// set; everything else only PROPAGATES an unknown already produced
+// upstream (3VL absorption in cel_runtime.c / the cel_host index/key/
+// size trampolines):
+//   1. The activation marshal (eval/instance.cc BareVariableUnknownId):
+//      a declared variable whose BARE attribute (root + empty
+//      qualifiers) is kFull-matched by a pattern gets CEL_UNKNOWN
+//      written into its workspace slot instead of a bound value — so
+//      the WHOLE variable is opaque.  The verdict is independent of
+//      binding (a bound value is ignored; an unknown variable need not
+//      be bound).
+//   2. The `.field` select trampoline (cel_host.cc RunFieldPrelude →
+//      MatchesAnyUnknownPattern): the select produces CEL_UNKNOWN iff
+//      its effective attribute (operand ⊕ field name) is kFull-matched.
+//      This is the FINER lever — it marks `c.age` unknown while
+//      `c.name` stays known, which the whole-variable marshal cannot.
+// Together:
+//   - pattern `m` (kFull on bare `m`) → the marshal blanks `m`'s slot,
+//     and `m[k]`, `size(m)`, `m.field` all become UNKNOWN by absorption.
+//   - pattern `c.tier_quotas` (kPartial on bare `c`, kFull at the
+//     `.tier_quotas` select) → the select fires and `c.tier_quotas[k]`
+//     is UNKNOWN, while `c` itself stays a concrete message.
+// What stays UNEXPRESSIBLE: per-element / per-key granularity — `[i]`
+// and `[k]` never intern an attribute, so you cannot mark `m['a']`
+// unknown while `m['b']` stays known.  Marking the whole container
+// blanks every keyed read; there is no pattern between "all of it" and
+// a specific field path.  (Verified + pinned by
+// e2e/m2_partial_eval_test.cc.)
 // `AttributePattern::Parse` REJECTS bracket/key qualifiers (`m["a"]`,
 // `xs[3]`): since we never intern an index/key, we don't accept
 // patterns we can't honor — they'd silently match nothing.  Pinned by

@@ -195,35 +195,72 @@ struck through or removed.
       Why P2: 2 corpus rows; cross-origin map `==` is a self-contained
       runtime-kernel follow-up.
 
-- [ ] **#13** — `Instance::PartialEval` SEGFAULTs when the activation
-      binds a list (or map) whose elements are `Value::Message`, e.g.
-      `xs[0].age` with `xs : list<Customer>`, or `m['k'][0].age` with
-      `m : map<string, list<Customer>>`.  The same expressions evaluate
-      correctly under plain `Instance::Eval` (pinned by
-      `e2e/m4_test.cc::ListBindingE2ETest.BoundListOfMessageIndexedField`),
-      and `PartialEval` on a list-of-PRIMITIVE binding works
-      (`e2e/partial_eval_test.cc::ListPrimitivePartialEvalTest.*`), so
-      the crash is specific to marshaling a host container of messages
-      while `bindings.unknown_patterns` is non-empty (it crashes even
-      under a non-matching pattern, so it is a marshal/setup fault, not
-      a pattern-match fault).  Likely in the activation-marshal path
-      that walks a `HostList`/`HostMap` of message slots under the
-      PartialEval branch of `eval/instance.cc` (vs the Eval branch).
-      Impact: cannot run partial-eval over container-of-message inputs
-      at all.  Documented as GTEST_SKIP in
-      `e2e/partial_eval_test.cc` {`ListOfMessagePartialEvalTest.*`,
-      `MapOfListOfMessagePartialEvalTest.*`}, each carrying the
-      assertion it will make once the crash is fixed (the read stays
-      CONCRETE — a container root has no `.field` select so the unknown
-      can't reach the element; see the file header).
-      Surfaced: 2026-05-25 partial-eval matrix work.
-      Files: `eval/instance.cc` (PartialEval marshal path),
-      `eval/internal/cel_host.cc` (HostList/HostMap message marshal).
-      Why P2: PartialEval over container-of-message is not on a
-      conformance row; scalar / message-field partial-eval (the shipped
-      surface) is unaffected.
+- [ ] **#14** — a comprehension whose `iter_range` is UNKNOWN (or
+      ERROR) returns the empty-range IDENTITY instead of propagating —
+      `exists`→false, `all`→true, `exists_one`→false, `map`/`filter`→[]
+      — a SILENTLY WRONG answer (soundness gap, not a crash).
+      `eval/internal/cel_host.cc::CelListIterOpenImpl` maps any
+      non-CEL_LIST_HOST range (which now includes CEL_UNKNOWN /
+      CEL_ERROR) to a zero-count arena view via `write_empty()`, and
+      the comprehension prologue in
+      `compiler/codegen/expr_lower_comprehension.cc` has no
+      3VL-absorption branch for the range value.  Reachable two ways:
+      (a) a container-typed FIELD marked unknown then iterated
+      (`c.tags.exists(e, …)` with pattern `c.tags`) — pre-dates
+      whole-variable unknowns; (b) a bare list/map VARIABLE marked
+      unknown then iterated (`xs.exists(e, …)` with pattern `xs`) —
+      newly reachable since the bare-variable marshal lever landed
+      (eval/instance.cc BareVariableUnknownId).
+      cel-cpp oracle (the correct behavior, confirmed against the
+      source): `third_party/cel-cpp/eval/eval/comprehension_step.cc`
+      `ComprehensionDirectStep::Evaluate` lines 156-172 — the iter_range
+      is evaluated first, and `switch (range.kind())` routes
+      `ValueKind::kError` and `ValueKind::kUnknown` (fall-through) to
+      `result = std::move(range); return OkStatus();` — i.e. the
+      comprehension result IS the unknown/error, no iteration.  (A map
+      range additionally gets a partial-unknown check at lines 146-150.)
+      Our fix mirrors `result = std::move(range)`.
+      Fix shape: WAT-first codegen arm — at the comprehension prologue,
+      after the iter_range value is evaluated, branch on its
+      CelValue.kind; CEL_UNKNOWN / CEL_ERROR → write the range value
+      straight to the comprehension result slot and skip the loop
+      (3VL absorption, mirroring how `+` / index / select already
+      absorb).  Pinned by GTEST_SKIP in
+      `e2e/m2_partial_eval_test.cc::ListPrimitivePartialEvalTest`
+      `.ComprehensionOverUnknownListIsUnknown`, carrying the assertion
+      it will make once fixed.
+      Surfaced: 2026-05-25 partial-eval whole-variable-unknown work.
+      Files: `compiler/codegen/expr_lower_comprehension.cc`
+      (prologue range-absorption branch), `eval/internal/cel_host.cc`
+      (CelListIterOpenImpl), a `doc/.../wat/NN_*.wat` trace.
+      Why P1 (not P2): silent wrong answer under PartialEval — exactly
+      the class of bug the codebase's no-silent-miscompile rule exists
+      to prevent; should be cleared before the next milestone closes.
+
 
 ## Closed
+
+- [x] **#13** — the "`Instance::PartialEval` SEGFAULTs on a bound
+      container-of-message" report was NOT a runtime bug — it was a
+      use-after-free in the test fixtures.  `Value::Message(const
+      Message&)` holds a NON-owning pointer to the proto (the host owns
+      the message for the Eval's lifetime; see `Value::Message` in
+      `eval/internal/cel_host.cc`).  The
+      `ListOfMessagePartialEvalTest` / `MapOfListOfMessagePartialEvalTest`
+      fixtures built the `Customer` messages as stack locals inside a
+      `BoundList()`/`BoundMap()` helper and returned the `Activation`
+      by value — so the messages were destroyed when the helper
+      returned, leaving the bound `ProtoBacking` pointers dangling.
+      `ReadField` then dereferenced freed memory and jumped to garbage.
+      It looked PartialEval-specific only because the matrix's message
+      cases used that helper while `m4_test`'s message case keeps
+      `c0`/`c1` in test-body scope; plain `Eval` through the same
+      helper crashes identically.  Fix: hoist the bound messages to
+      fixture members so they outlive every Eval (commit message cites
+      this entry).  The 4 GTEST_SKIPs are removed and the cases pass —
+      the container-root reads stay CONCRETE as the file header
+      documents.  Surfaced + fixed: 2026-05-25 partial-eval matrix work.
+      Files: `e2e/m2_partial_eval_test.cc`.
 
 - [x] **#8** — `compiler/codegen/expr_lower.cc` had two
       `ABSL_CHECK(false)` stubs that Slice A of M14 converted to
