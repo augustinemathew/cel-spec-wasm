@@ -70,11 +70,11 @@ else
 fi
 
 # Parse per-fixture blocks.  Each block looks like:
-#   <2 spaces>tests/simple/testdata/PATH.textproto
+#   <2 spaces>spec/tests/simple/testdata/PATH.textproto
 #   <4 spaces>total=N  pass=N  skip=N  fail=N
 #   <4 spaces>skip-by-category: cat1=N cat2=N    (omitted when skip=0)
 PER_FIXTURE="$(awk '
-  /^  tests\/simple\/testdata\// {
+  /^  spec\/tests\/simple\/testdata\// {
     # Strip leading 2 spaces + the testdata prefix, keep basename.
     n = split($0, a, "/")
     fixture = a[n]
@@ -106,7 +106,7 @@ PER_FIXTURE="$(awk '
     next
   }
   # Emit a record for fixtures with no skip-by-category line (skip=0).
-  /^  tests\/simple\/testdata\// && fixture != "" {
+  /^  spec\/tests\/simple\/testdata\// && fixture != "" {
     # Should not happen — previous block already emitted on skipcat
     # arrival.  But just in case, flush.
   }
@@ -136,7 +136,7 @@ PER_FIXTURE="$(awk '
   # 2>&1).  The first `summary:` line ends the first run`s per-fixture
   # section — stop there so fixtures are not emitted twice.
   done { next }
-  /^  tests\/simple\/testdata\// {
+  /^  spec\/tests\/simple\/testdata\// {
     flush()
     n = split($0, a, "/")
     fixture = a[n]
