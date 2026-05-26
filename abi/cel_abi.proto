@@ -65,10 +65,18 @@ message VariableEntry {
 // One row of the field intern table.  Populated by codegen at
 // kSelect lowering.
 //
-//   id            dense index; 0 is the sentinel "not proto-
-//                 resolvable" (used by non-proto backings in M6+).
+//   id            dense intern index in [1, N].  0 is the reserved
+//                 sentinel "no field id": fields[0] is an empty
+//                 placeholder row (pushed once before lowering;
+//                 expr_lower.cc), codegen never assigns it to a real
+//                 select, and the runtime maps a field_ref_id of 0 to
+//                 field-not-found (cel_host.cc).  Mirrors the 0-sentinel
+//                 of AttributeEntry.id / TypeEntry.id.
 //   field_number  proto wire field number, or 0 when the backing is
-//                 name-only.
+//                 name-only / not proto-resolvable (the non-proto
+//                 backings of M6+).  This — NOT id==0 — is the
+//                 "not proto-resolvable" marker; such a row is a normal
+//                 interned field (id >= 1) that just lacks a wire number.
 //   name          always populated; attribute-pattern matching
 //                 compares by name regardless of backing.
 //   owner_fqn     fully-qualified name of the message type that owns
