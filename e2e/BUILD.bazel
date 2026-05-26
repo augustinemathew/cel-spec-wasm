@@ -91,6 +91,34 @@ cc_test(
     ],
 )
 
+# Partial-eval matrix e2e suite — the cross-product of container shape
+# (scalar / list / map / message) and element kind (primitive /
+# complex) against the partial-eval attribute model.  Pins which
+# unknown granularities propagate (whole-var, message field path,
+# wildcard) and which are by-design impossible (per-element / per-key).
+cc_test(
+    name = "partial_eval_test",
+    srcs = ["partial_eval_test.cc"],
+    deps = [
+        "//testdata:e2e_fixture_cc_proto",
+        "//eval:activation",
+        "//eval:attribute",
+        "//eval:cel_host",  # for Value::Message(proto)
+        "//compiler:compiler",
+        "//eval:engine",
+        "//eval:instance",
+        "//compiler:program",
+        "//shared:type",
+        "//eval:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M4 e2e test suite — list literals, indexing, proto repeated
 # fields, dispatcher routing.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation).

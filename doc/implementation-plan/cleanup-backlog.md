@@ -195,6 +195,34 @@ struck through or removed.
       Why P2: 2 corpus rows; cross-origin map `==` is a self-contained
       runtime-kernel follow-up.
 
+- [ ] **#13** — `Instance::PartialEval` SEGFAULTs when the activation
+      binds a list (or map) whose elements are `Value::Message`, e.g.
+      `xs[0].age` with `xs : list<Customer>`, or `m['k'][0].age` with
+      `m : map<string, list<Customer>>`.  The same expressions evaluate
+      correctly under plain `Instance::Eval` (pinned by
+      `e2e/m4_test.cc::ListBindingE2ETest.BoundListOfMessageIndexedField`),
+      and `PartialEval` on a list-of-PRIMITIVE binding works
+      (`e2e/partial_eval_test.cc::ListPrimitivePartialEvalTest.*`), so
+      the crash is specific to marshaling a host container of messages
+      while `bindings.unknown_patterns` is non-empty (it crashes even
+      under a non-matching pattern, so it is a marshal/setup fault, not
+      a pattern-match fault).  Likely in the activation-marshal path
+      that walks a `HostList`/`HostMap` of message slots under the
+      PartialEval branch of `eval/instance.cc` (vs the Eval branch).
+      Impact: cannot run partial-eval over container-of-message inputs
+      at all.  Documented as GTEST_SKIP in
+      `e2e/partial_eval_test.cc` {`ListOfMessagePartialEvalTest.*`,
+      `MapOfListOfMessagePartialEvalTest.*`}, each carrying the
+      assertion it will make once the crash is fixed (the read stays
+      CONCRETE — a container root has no `.field` select so the unknown
+      can't reach the element; see the file header).
+      Surfaced: 2026-05-25 partial-eval matrix work.
+      Files: `eval/instance.cc` (PartialEval marshal path),
+      `eval/internal/cel_host.cc` (HostList/HostMap message marshal).
+      Why P2: PartialEval over container-of-message is not on a
+      conformance row; scalar / message-field partial-eval (the shipped
+      surface) is unaffected.
+
 ## Closed
 
 - [x] **#8** — `compiler/codegen/expr_lower.cc` had two
