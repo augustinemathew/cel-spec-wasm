@@ -245,35 +245,6 @@ TEST(AttributePatternParseTest, WildcardTrailing) {
   EXPECT_TRUE(p->qualifier_path()[1].IsWildcard());
 }
 
-TEST(AttributePatternParseTest, WildcardAtRootMatchesAnyVariable) {
-  // "*" as the whole pattern is treated as a bare variable named `*`
-  // rather than a wildcard root — roots are named variables.  Locks
-  // the intent so a future reader doesn't over-generalise the syntax.
-  auto p = AttributePattern::Parse("*");
-  ASSERT_THAT(p, absl_testing::IsOk());
-  EXPECT_EQ(p->variable(), "*");
-}
-
-TEST(AttributePatternParseTest, EmptyInputIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse(""),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, LeadingDotIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse(".x"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, TrailingDotIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse("x."),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
-  EXPECT_THAT(AttributePattern::Parse("x..y"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
 // Round-trip: parse → IsMatch behaves the same as the manual
 // constructor-built pattern.
 TEST(AttributePatternParseTest, ParseRoundTripsThroughIsMatch) {
@@ -284,51 +255,70 @@ TEST(AttributePatternParseTest, ParseRoundTripsThroughIsMatch) {
   EXPECT_EQ(parsed->IsMatch(a), AttributePattern::MatchType::kFull);
 }
 
-// ——— Bracket / index / key qualifiers are rejected by design ———
-//
-// The resolver only interns string `.field` qualifiers: index / key
-// access (`x[i]`, `m['k']`) breaks the attribute chain (resolve_pass
-// PostVisitSelect bails when its operand is an index call), so no
-// attribute ever carries an index/key qualifier.  A pattern naming
-// one could never match anything, so Parse rejects the whole bracket
-// surface rather than accept a pattern it cannot honor.
+// Positive edge cases the grammar admits.
+TEST(AttributePatternParseTest, MultipleWildcardQualifiers) {
+  auto p = AttributePattern::Parse("a.*.*");
+  ASSERT_THAT(p, absl_testing::IsOk());
+  EXPECT_EQ(p->variable(), "a");
+  Attribute attr("a", {AttributeQualifier::OfString("p"),
+                       AttributeQualifier::OfString("q")});
+  EXPECT_EQ(p->IsMatch(attr), AttributePattern::MatchType::kFull)
+      << "both qualifiers are wildcards and match any pair";
+}
 
-TEST(AttributePatternParseTest, BracketedIntRejected) {
-  EXPECT_THAT(AttributePattern::Parse("xs[3]"),
+TEST(AttributePatternParseTest, IdentifierCharsetDigitsAndUnderscore) {
+  // Non-leading digits and underscores are valid identifier chars.
+  EXPECT_THAT(AttributePattern::Parse("_x._y0.z_9"), absl_testing::IsOk());
+  EXPECT_THAT(AttributePattern::Parse("single_int32_wrapper"),
+              absl_testing::IsOk());
+}
+
+// `*` is only a QUALIFIER wildcard — never a root, never glued to other
+// characters.  (Previously `*` was accepted as a literal variable named
+// `*`; the grammar now rejects it — the root must be a real ident.)
+TEST(AttributePatternParseTest, WildcardAtRootRejected) {
+  EXPECT_THAT(AttributePattern::Parse("*"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(AttributePattern::Parse("xs[-1]"),
+  EXPECT_THAT(AttributePattern::Parse("*.city"),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(AttributePatternParseTest, BracketedUintRejected) {
-  EXPECT_THAT(AttributePattern::Parse("xs[3u]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
+// ── The negative matrix.  Every "almost correct" input must reject
+//    with InvalidArgument.  A silent accept of a segment the resolver
+//    can never match (index/key access breaks the attribute chain;
+//    whitespace / punctuation never appear in a field name) is the
+//    failure mode the grammar guards — fail loudly, don't match
+//    nothing.  See AttributePattern::Parse in attribute.cc. ──
+struct BadPattern {
+  absl::string_view input;
+  absl::string_view why;
+};
+
+class AttributePatternParseRejects
+    : public ::testing::TestWithParam<BadPattern> {};
+
+TEST_P(AttributePatternParseRejects, Rejected) {
+  EXPECT_THAT(AttributePattern::Parse(GetParam().input),
+              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument))
+      << "input=`" << GetParam().input << "` — " << GetParam().why;
 }
 
-TEST(AttributePatternParseTest, BracketedBoolRejected) {
-  EXPECT_THAT(AttributePattern::Parse("m[true]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, BracketedStringKeyRejected) {
-  EXPECT_THAT(AttributePattern::Parse("m[\"k\"]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, BracketedWildcardRejected) {
-  EXPECT_THAT(AttributePattern::Parse("xs[*]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, MixedDottedAndBracketedRejected) {
-  EXPECT_THAT(AttributePattern::Parse("request.messages[3].text"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
-
-TEST(AttributePatternParseTest, BracketedAtRootRejected) {
-  EXPECT_THAT(AttributePattern::Parse("[3]"),
-              absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
-}
+// One representative per rejection class (FSM unit coverage).  The
+// exhaustive "almost-correct" matrix is exercised end-to-end through
+// the partial-eval entry point in
+// e2e/m2_partial_eval_test.cc::MalformedPatternBoundaryTest.
+INSTANTIATE_TEST_SUITE_P(
+    Malformed, AttributePatternParseRejects,
+    ::testing::Values(BadPattern{"", "empty"}, BadPattern{"x.", "trailing dot"},
+                      BadPattern{"x..y", "consecutive dots"},
+                      BadPattern{"a b", "internal whitespace"},
+                      BadPattern{"1x", "digit-leading ident"},
+                      BadPattern{"a-b", "punctuation"},
+                      BadPattern{"*", "wildcard root"},
+                      BadPattern{"c.*x", "wildcard glued to ident"},
+                      BadPattern{"xs[3]", "closed bracket index"},
+                      BadPattern{"xs[3", "unclosed bracket"},
+                      BadPattern{"xs]", "lone close bracket"}));
 
 // Wildcard parsed-pattern matches the same set as a
 // hand-constructed wildcard-pattern.

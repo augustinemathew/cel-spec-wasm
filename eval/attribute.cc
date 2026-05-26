@@ -12,6 +12,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -221,90 +222,150 @@ absl::Span<const AttributeQualifierPattern> AttributePattern::qualifier_path()
 
 namespace {
 
-// Split a dotted pattern into atomic identifier segments.  Only the
-// dotted `.field` form (with `*` as the wildcard shorthand) is
-// supported: bracket / index / key qualifiers are rejected because
-// the resolver never interns them (index access breaks the attribute
-// chain), so a pattern naming one could never match an attribute.
-absl::StatusOr<std::vector<absl::string_view>> Tokenize(
-    absl::string_view dotted) {
-  std::vector<absl::string_view> out;
-  size_t i = 0;
-  // Variable name — up to the first `.`.  Any `[` here is an
-  // unsupported qualifier form (see the function comment).  May not
-  // be empty (the bare-empty case is handled by the caller).
-  size_t var_end = dotted.find('.');
-  if (var_end == absl::string_view::npos) var_end = dotted.size();
-  if (var_end == 0) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
-                     "` has an empty variable segment"));
-  }
-  absl::string_view var = dotted.substr(0, var_end);
-  if (var.find_first_of("[]") != absl::string_view::npos) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
-                     "` has an unexpected character (bracket / index / key "
-                     "qualifiers are not supported)"));
-  }
-  out.push_back(var);
-  i = var_end;
-  while (i < dotted.size()) {
-    ABSL_CHECK_EQ(dotted[i], '.');
-    ++i;
-    // Dotted identifier chunk up to next `.` or end.
-    size_t end = dotted.find('.', i);
-    if (end == absl::string_view::npos) end = dotted.size();
-    if (end == i) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("AttributePattern::Parse: pattern `", dotted,
-                       "` has an empty dotted segment"));
-    }
-    absl::string_view seg = dotted.substr(i, end - i);
-    if (seg.find_first_of("[]") != absl::string_view::npos) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("AttributePattern::Parse: pattern `", dotted,
-                       "` has an unexpected character (bracket / index / key "
-                       "qualifiers are not supported)"));
-    }
-    out.push_back(seg);
-    i = end;
-  }
-  return out;
+bool IsIdentStart(char c) {
+  return absl::ascii_isalpha(static_cast<unsigned char>(c)) || c == '_';
 }
+bool IsIdentCont(char c) {
+  return absl::ascii_isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// The reason a character ends a segment illegally — the suffix of the
+// InvalidArgument message (the caller prepends the pattern context).
+std::string BadCharReason(char c) {
+  if (c == '[' || c == ']') {
+    return "has a bracket / index / key qualifier (not supported — the "
+           "resolver never interns index/key access)";
+  }
+  if (absl::ascii_isspace(static_cast<unsigned char>(c))) {
+    return "has whitespace in a segment";
+  }
+  return absl::StrCat("has an unexpected character `", absl::string_view(&c, 1),
+                      "` in a segment");
+}
+
+// State machine implementing the pattern grammar (the ONLY syntax — see
+// the header):
+//
+//   pattern   := root ( '.' qualifier )*
+//   root      := ident
+//   qualifier := '*' | ident
+//   ident     := [A-Za-z_] [A-Za-z0-9_]*
+//
+// `*` is the wildcard qualifier; the root and every other qualifier is
+// a CEL identifier.  Everything else is rejected with InvalidArgument —
+// empty input or segment, leading / trailing / consecutive dot, any
+// bracket or index/key form, whitespace, a `*` adjacent to other
+// characters or used as the root, and a digit- or punctuation-leading
+// segment — because the resolver only interns dotted string `.field`
+// qualifiers, so a pattern it cannot match must fail loudly rather than
+// silently match nothing.  A hand-split scanner is where this kind of
+// mini-language accretes edge-case bugs, hence the explicit FSM.
+//
+//   kSegStart  — at input start or just after '.': expect an ident
+//                start, or '*' for a non-root qualifier.
+//   kInIdent   — inside an ident: ident-cont chars, '.', or end.
+//   kAfterStar — just consumed a lone '*': only '.' or end may follow.
+class PatternParser {
+ public:
+  explicit PatternParser(absl::string_view dotted) : dotted_(dotted) {}
+
+  absl::StatusOr<AttributePattern> Run() {
+    for (size_t i = 0; i < dotted_.size(); ++i) {
+      if (auto s = Step(i, dotted_[i]); !s.ok()) return s;
+    }
+    if (state_ == State::kSegStart) {
+      return dotted_.empty() ? Err("is empty") : Err("has a trailing dot");
+    }
+    Commit(dotted_.size(), /*is_star=*/state_ == State::kAfterStar);
+    return AttributePattern(std::move(variable_), std::move(path_));
+  }
+
+ private:
+  enum class State : uint8_t { kSegStart, kInIdent, kAfterStar };
+
+  absl::Status Err(absl::string_view why) const {
+    return absl::InvalidArgumentError(
+        absl::StrCat("AttributePattern::Parse: pattern `", dotted_, "` ", why));
+  }
+
+  // The first committed segment is the root variable; the rest are
+  // qualifiers (`*` -> wildcard, else a string key).
+  void Commit(size_t end, bool is_star) {
+    absl::string_view seg = dotted_.substr(seg_begin_, end - seg_begin_);
+    if (!have_root_) {
+      variable_ = std::string(seg);  // root reaches here only as an ident
+      have_root_ = true;
+    } else if (is_star) {
+      path_.push_back(AttributeQualifierPattern::Wildcard());
+    } else {
+      path_.push_back(AttributeQualifierPattern::OfString(std::string(seg)));
+    }
+  }
+
+  absl::Status Step(size_t i, char c) {
+    switch (state_) {
+      case State::kSegStart:
+        return StepSegStart(i, c);
+      case State::kInIdent:
+        return StepInIdent(i, c);
+      case State::kAfterStar:
+        return StepAfterStar(c);
+    }
+    ABSL_CHECK(false) << "unreachable PatternParser state";
+    return absl::InternalError("unreachable");
+  }
+
+  absl::Status StepSegStart(size_t i, char c) {
+    if (IsIdentStart(c)) {
+      seg_begin_ = i;
+      state_ = State::kInIdent;
+    } else if (c == '*' && have_root_) {
+      seg_begin_ = i;
+      state_ = State::kAfterStar;
+    } else if (c == '*') {
+      return Err("uses `*` as the root (the root must be a variable name)");
+    } else if (c == '.') {
+      return Err("has an empty segment (leading or consecutive dot)");
+    } else {
+      return Err(BadCharReason(c));
+    }
+    return absl::OkStatus();
+  }
+
+  absl::Status StepInIdent(size_t i, char c) {
+    if (IsIdentCont(c)) return absl::OkStatus();
+    if (c == '.') {
+      Commit(i, /*is_star=*/false);
+      state_ = State::kSegStart;
+      return absl::OkStatus();
+    }
+    return Err(BadCharReason(c));
+  }
+
+  absl::Status StepAfterStar(char c) {
+    if (c != '.') {
+      return Err(
+          "has `*` adjacent to other characters (the wildcard is a whole "
+          "segment)");
+    }
+    Commit(seg_begin_ + 1, /*is_star=*/true);  // the lone '*' segment
+    state_ = State::kSegStart;
+    return absl::OkStatus();
+  }
+
+  const absl::string_view dotted_;
+  std::string variable_;
+  std::vector<AttributeQualifierPattern> path_;
+  bool have_root_ = false;
+  size_t seg_begin_ = 0;
+  State state_ = State::kSegStart;
+};
 
 }  // namespace
 
 absl::StatusOr<AttributePattern> AttributePattern::Parse(
     absl::string_view dotted) {
-  if (dotted.empty()) {
-    return absl::InvalidArgumentError(
-        "AttributePattern::Parse: pattern is empty");
-  }
-  if (dotted.front() == '.' || dotted.back() == '.') {
-    return absl::InvalidArgumentError(
-        absl::StrCat("AttributePattern::Parse: pattern `", dotted,
-                     "` has a leading or trailing dot"));
-  }
-  auto tokens_or = Tokenize(dotted);
-  if (!tokens_or.ok()) return tokens_or.status();
-  const auto& tokens = *tokens_or;
-  ABSL_CHECK(!tokens.empty());
-  // The first segment is the root variable.  Remaining segments are
-  // qualifier patterns: dotted identifiers become string-keyed
-  // qualifiers, with `*` as the wildcard shorthand.
-  std::string variable(tokens.front());
-  std::vector<AttributeQualifierPattern> path;
-  path.reserve(tokens.size() - 1);
-  for (size_t idx = 1; idx < tokens.size(); ++idx) {
-    absl::string_view tok = tokens[idx];
-    if (tok == "*") {
-      path.push_back(AttributeQualifierPattern::Wildcard());
-    } else {
-      path.push_back(AttributeQualifierPattern::OfString(std::string(tok)));
-    }
-  }
-  return AttributePattern(std::move(variable), std::move(path));
+  return PatternParser(dotted).Run();
 }
 
 AttributePattern::MatchType AttributePattern::IsMatch(
