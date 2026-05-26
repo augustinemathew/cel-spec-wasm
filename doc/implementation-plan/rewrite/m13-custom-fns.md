@@ -1,8 +1,272 @@
 # M13 — User-defined custom functions
 
-Status: **plan — drafted 2026-05-21, not yet started.**  Supersedes
-the stale `m-custom-fns.md` (drafted under the old M6 numbering,
-pre-rewrite; never closed out).
+Status: **in flight — drafted 2026-05-21; host backend shipped
+end-to-end 2026-05-24; CEL-defined (single-module) backend shipped
+end-to-end 2026-05-24; foreign deferred.**  Supersedes the stale
+`m-custom-fns.md` (old M6 numbering, pre-rewrite).
+
+> **§0.5 below is the current, authoritative plan (2026-05-24).** It
+> supersedes the original slice plan in §12 where they disagree (§12
+> predates the single-module decision + the layering review). The deep
+> design now lives in companion docs: **memory** →
+> [`memory-layout-design.md`](memory-layout-design.md); **modules + FFI
+> + the ABI** → [`modules-and-ffi.md`](modules-and-ffi.md); **testing**
+> → the "Testing strategy" section at the end of this doc (merged in
+> from the former `m13-test-strategy.md`, 2026-05-24); **code layering**
+> → [`m13-reviews/2026-05-24-codegen-api-layering.md`](m13-reviews/2026-05-24-codegen-api-layering.md).
+
+## 0.5 Current plan (2026-05-24)
+
+**Scope of M13 finish:** two backends working end-to-end —
+**host** (`@host.`, C++ impl) and **CEL-defined** ("fully defined" —
+decl + body in the `.celfn`). **Foreign** (TinyGo/Rust/clang) is
+designed (`modules-and-ffi.md` §5) but **deferred** to a later
+milestone.
+
+**Current state.** Read this as THREE layers — a feature can be done at
+one layer and not the next, and the load-bearing distinction is
+*declared/checked* vs *evaluates end-to-end*:
+
+  - **L1 declare/check** — the `.celfn` parses, the checker resolves
+    call sites, an overload-id is synthesised, codegen emits the
+    import / internal fn.
+  - **L2 eval e2e** — a compiled expression that *calls* the fn
+    actually runs under wasmtime and returns the right value.
+  - **L3 tested** — there's an automated test pinning L2.
+
+| Component | State |
+|---|---|
+| `.celfn` IDL parse → `FunctionLibrary` (incl. proto/list/map/WKT types) | ✅ L1+L3 `function_library.cc` |
+| Checker hookup (decls → `TypeCheckerBuilder`) | ✅ L1+L3 `parse_and_check.cc` |
+| `OverloadTable::RegisterCustom` + `BuildOverloadTable` | ✅ `compile.cc` |
+| Host: `cel_fn.*` import + trampoline + `Engine::AddFunction` | ✅ `engine.cc` |
+| **Host e2e — scalar/string args, scalar return** | ✅ L2+L3 `EngineHostFnE2ETest` (`length(string)→int`) |
+| **Host — proto / list / map args or returns** | ⚠️ **L1 only** — declares + checks, but does NOT evaluate (see "Host complex-type gap" below); no L2/L3 |
+| **Host — string/bytes *return* (newly constructed)** | ⚠️ **L1 only** — callback has no `arena_alloc`; untested |
+| CEL-defined body lowering (`LowerToCustomFn`) | ✅ `codegen/expr_lower_customfn.cc` (own TU) |
+| CEL-defined body type-check (params as vars) | ✅ `CheckCelDefinedBody` (`parse_and_check.cc`); reuses `ParseAndCheck` |
+| Single-module band orchestrator | ✅ `codegen/custom_fn_emit.cc` (`EmitCustomFnBodies`) + `WasmModule::AddActiveDataSegment` |
+| CEL-defined wired into `Compile()` (single-module) | ✅ `compile.cc::LowerCustomFnBodies`; import-skip via `CelDefinedOverloadIds` |
+| **CEL-defined e2e — int/string return** | ✅ L2+L3 `EngineCelDefinedFnE2ETest` (int + string + outer-expr compose) |
+| **CEL-defined — recursion rejected** | ✅ L3 `RejectCelDefinedRecursion` (self/mutual/n-cycle → InvalidArgument) |
+| CEL-defined — proto-field select inside a body | ❌ rejected `Unimplemented` (needs unified `cel.abi.fields[]`) |
+| Typed `FunctionImpl` adapter (Value↔CelValue codec) | ❌ **not built** — every host callback hand-rolls raw CelValue memcpy |
+| Foreign trampoline / shims | ❌ deferred |
+
+**Host complex-type gap (proto / list / map / aggregate returns).**
+The raw `HostCallback` receives only `(uint8_t* mem, size_t mem_size,
+uint32_t out_slot, span<arg_slots>)` — i.e. linear memory + slot
+offsets. That's sufficient for values whose bytes live *in* linear
+memory (bool/int/uint/double in the 24-byte CelValue; string/bytes as a
+`{ptr,len}` span). It is **not** sufficient for:
+
+  - **protos** — a `proto(...)` arg arrives as a `CEL_MESSAGE` CelValue
+    carrying a `msg_slot` (an interned handle into a host-side
+    `google::protobuf::Message*`); the callback has **no access to the
+    message interner**, so it can read the tag but cannot dereference
+    fields or build a return message;
+  - **host-backed lists/maps** — same problem: the CelValue is a handle
+    into a host backing outside linear memory;
+  - **newly-constructed string/bytes/aggregate returns** — the callback
+    has no `arena_alloc`, so it can only return a span pointing at
+    bytes that already exist in memory.
+
+Closing this is the **typed `FunctionImpl` adapter** (review §B.1):
+decode each arg slot into a typed `cel::Value` (resolving `msg_slot` →
+`Value::Message` via the interner), invoke the embedder's typed impl,
+encode the result back (allocating via the arena for new
+strings/aggregates), writing `kError` on a kind mismatch.
+
+> **Value → concrete proto (TBD, but the realistic shape).** For a
+> `proto(...)` arg the adapter resolves the `msg_slot` to its
+> `HostMessageBacking`. For the built-in `ProtoBacking` (the common
+> case) that surfaces the underlying `const google::protobuf::Message&`,
+> and the impl downcasts to its generated type:
+> `dynamic_cast<const acme::User*>(&m)` (null ⇒ wrong message type ⇒
+> return a CEL error). The exact accessor isn't finalized — today
+> `Value::MessageBacking()` returns the polymorphic `HostMessageBacking*`
+> (which need NOT wrap a protobuf `Message`; an embedder may back a
+> "message" with JSON/struct data), so the target adds a proto-specific
+> convenience (e.g. `Value::AsProtoMessage() → const Message&`) leaving
+> the `dynamic_cast` to the impl; non-proto backings surface through
+> their own accessor. Construction is symmetric: the impl returns
+> `Value::Message(user)` / `Value::OwnedMessage(...)` and the adapter
+> interns it.
+
+> **Value list / map (cleaner than proto — no downcast).** A `kList` /
+> `kMap` `Value` carries a polymorphic backing that already yields
+> `cel::Value`s, so the impl never downcasts:
+> `Value::ListBacking() → const HostListBacking*` (`Size()`,
+> `At(i, elem_type) → StatusOr<Value>`, `ForEach`; OOB →
+> `Value::Error(index_out_of_bounds)`); `Value::MapBacking() → const
+> HostMapBacking*` (`Size()`, `Get(key, val_type) → StatusOr<Value>`,
+> `ContainsKey`, `ForEach`; missing key → `Value::Error(no_such_key)`).
+> Elements are `Value`s → nested aggregates recurse. Two concretes per
+> kind, transparent to the impl: vector-backed (`HostList`/`HostMap`,
+> from `Value::List`/`Value::Map`) and proto-reflection
+> (`ProtoList`/`ProtoMap`, wrapping a repeated/map field); runtime arena
+> cells vs a host backing are normalized to this view. These backings +
+> the variable-binding path **already exist** (it's how list/map
+> *variables* evaluate today); only the host-fn adapter wiring is the
+> gap. Build/return via `Value::List({...})` / `Value::Map({...})`,
+> lowered into arena cells.
+
+The
+"full-recursive lists/maps/nested" marshalling the v1 design calls for
+is THIS codec for host fns (and the canonical-ABI lift/lower for the
+deferred foreign backend) — neither is built yet. Until it lands,
+"host functions work" means **scalar + string/bytes-arg + scalar/`bool`
+return only**; proto/list/map host signatures parse and type-check but
+must not be relied on to evaluate.
+
+> **CEL-defined backend landed 2026-05-24.** As-shipped shape:
+> per-body type-check lives in the frontend (`CheckCelDefinedBody`,
+> delegating to the same `ParseAndCheck` pipeline as the top-level
+> expr); the band orchestration (`EmitCustomFnBodies`) is codegen-layer
+> over a live `WasmModule&` (the `celfn/` package stays IDL-only,
+> exposing only the introspection helpers `CelfnType::CelTypeSpec()` +
+> `CelDefinedOverloadIds()`); each body's rodata band is appended via
+> the new `WasmModule::AddActiveDataSegment`, so `Compile()` keeps a
+> single `EmitCustomFnBodies` call right after `LowerToEvalFunction`.
+> The "no `kCelDefined` ImportModule kind" question (review §C) was
+> resolved by a **skip-set** (`CelDefinedOverloadIds`) rather than a new
+> enum kind — CEL-defined fns are never imported in the single-module
+> model, so distinguishing them from foreign at import-install is a
+> filter, not a type. **Recursion is rejected:** CEL is a total
+> language with no recursion construct, and a single-module body lowers
+> to an internal wasm fn that `call`s its callees directly — so a self-
+> or mutually-recursive body would be unbounded recursion at eval.
+> `compile.cc::RejectCelDefinedRecursion` builds the CEL-defined call
+> graph (from each body's resolved call overload-ids via
+> `CalledOverloadIds`) and rejects any cycle (self-loop or multi-node)
+> with `InvalidArgument`; a non-cyclic call chain (f→g→builtin) is
+> allowed. **Known gap:** a body that emits a proto field select is
+> rejected with `Unimplemented` (its `FieldRefRow`s would need merging
+> into the expr's single `cel.abi.fields[]` intern table) — see Future
+> work.
+
+**Key decision — CEL-defined is single-module (v1).** Bodies compile
+into the **same module as the expression** as internal functions
+(direct `call`), in **disjoint static bands** of `[0,8192)`. See
+`modules-and-ffi.md` §4 + `memory-layout-design.md` §5.
+
+  - *Tradeoff:* single-module is simpler — no separate `foo.wasm`, no
+    cross-module linking, no `__memory_base`, no instantiation dance,
+    and string/aggregate literals keep absolute pointers (base 0). The
+    cost: bodies are recompiled into each expr module (no cross-program
+    reuse), and expr + all bodies must fit the **one** 8192-byte
+    reserved region (bounded by the `ResourceExhausted` guard).
+  - *Deferred alternative:* separately-instantiated reusable library
+    modules (`__memory_base` + heap regions + pointer relocation) —
+    `modules-and-ffi.md` §4.5. Prototyped (the `m13_celfn_double_*`
+    WAT traces) but not v1.
+
+**Slice order (informed by the 2026-05-24 layering review):**
+
+1. **Cleanup-before-build (P1).** Delete the contradictory
+   separate-module scaffolding (`library_module.h`,
+   `compile.h::LibraryModuleBytes`, `CompiledArtifact::library_modules`);
+   add a **`kCelDefined` ImportModule kind** so import-install can skip
+   sibling functions; add the **`uint8_t num_args` loud rejection**
+   (>254 params → `InvalidArgument`, today it silently wraps); fix the
+   3 stale comments (`compiler.h:169`, `engine.h:72`,
+   `expr_lower_internal.h:51`); reconcile §4.4/§2.1 doc drift here.
+2. **Layering (P1).** Split custom-fn lowering into
+   `codegen/expr_lower_customfn.cc`; put the single-module
+   band-orchestration in `codegen/` over a shared `WasmModule&` (not in
+   `celfn/`, which stays IDL-only).
+3. **Wire into `Compile()`.** Plan body layouts at cumulative band
+   offsets → install memory with all rodata segments → skip
+   CEL-defined imports → `LowerToEvalFunction` → emit bodies.
+4. **Tests.** The ~12 unit cases from the review (`LowerToCustomFn` +
+   `rodata_base_override` + band-disjointness), then the CEL-defined
+   e2e matrix + the scale/overflow/limit probes, all per §14
+   (Testing strategy). (Optional, gated:) the typed
+   `FunctionImpl`→raw-callback adapter so embedders stop hand-rolling
+   CelValue memcpy.
+
+**Close-out gate:** §14.5.
+
+### Remaining work — M13 close-out tracker (as of 2026-05-24)
+
+M13 is **partially shipped**: host (scalar/string-arg/scalar-return) +
+CEL-defined (scalar/string return) backends evaluate end-to-end, with
+the arg-count cap and recursion guard enforced.  The items below are
+what still stands between "partially shipped" and "M13 done".  This
+list is the doc-of-record; the session task IDs (`#n`) are the working
+mirror.
+
+**Done (✅).** Single-module CEL-defined backend + e2e (`#2`, `#3`);
+host scalar e2e (`#1`); cleanup/cleanup-of-scaffolding (`#10`);
+recursion rejection (`#12`); reserved-region overflow guard e2e —
+huge-string + many-constants reject (`#5`,
+`compile_test.cc`); ABI arg-count cap (254 accept / 255 reject) at the
+library layer (`function_library_test.cc`, part of `#8`).
+
+**Pre-close — must land before M13 is "done" (P1).**
+
+  - **Typed `FunctionImpl` adapter + host proto/list/map + aggregate/
+    new-string returns.**  THE headline gap (see "Host complex-type
+    gap" in §0.5).  Today host fns only evaluate scalars + string/bytes
+    args + scalar/bool returns; proto/list/map signatures parse + check
+    but do not run.  Needs: interner access in the callback path, the
+    recursive `Value`↔`CelValue` codec, and `arena_alloc` exposure for
+    constructed returns.  *(No task ID yet — the single largest M13
+    follow-on; size it as its own slice.)*
+  - **Type × backend e2e coverage matrix (`#9`).**  *CEL-defined column
+    + cross-cutting + non-blocked negatives LANDED 2026-05-24*
+    (`api/engine_test.cc::EngineCelDefinedMatrixTest`): scalar bool/int/
+    uint(`UINT64_MAX`)/double/string/bytes(embedded-NUL) bodies, `list<int>`
+    arg, receiver-vs-free, multi-arg ordering, sibling C→C, C→H,
+    custom-fn-in-larger-expr, determinism; negatives undeclared-fn /
+    arg-type-mismatch / unbound-host-impl.  **Host complex-type column
+    (proto/list/map args, proto/new-string returns) remains gated on the
+    typed adapter** — now pinned as a RED TDD spec
+    (`api/engine_host_types_tdd_test.cc`, manual-tagged, builds + fails-red).
+    Known gap surfaced: `map<K,V>` arg into a CEL-defined body evals to a
+    CEL error (same marshalling family; not asserted green).  Per §14.1.
+  - **Eval-at-limit probes (`#8` remainder).**  *LANDED 2026-05-24* —
+    `api/engine_test.cc::LargeArgCountCompilesAndEvals` compiles + evals a
+    32-arg CEL-defined fn with asserted ascending-sum arg ordering.  (32
+    is the demonstrated-holding count in the single-module reserved
+    region; the ABI 254-param cap rejection is already pinned in
+    `function_library_test.cc`.)
+
+**Pre-close — scale/overflow probes (P2, §14.2).**  *LANDED 2026-05-24*
+in `compile_test.cc::CompileCelfnScaleTest`.
+
+  - **Too many CEL-defined fns in one library (`#6`)** — *DONE.*
+    `ManyTinyCelDefinedFunctionsCompile` (50 trivial bodies, OK) +
+    `TooManyCelDefinedFunctionsOverrunRegion` (sweep body count until the
+    cumulative bands overrun `[0,8192)` → clean `ResourceExhausted`;
+    crossover empirically ~90 bodies, swept to 400 for robustness).
+  - **Too many string literals across expr + bodies (`#7`)** — *DONE.*
+    `ManyStringLiteralsAcrossExprAndBodyCompile` (short literals, OK) +
+    `TooManyStringLiteralsOverrunRodata` (~400-byte literals split across
+    body + expr → cumulative rodata overrun → `ResourceExhausted`).
+
+**Cleanup-backlog (P2/P3).**
+
+  - **Pre-existing `LayoutPass` function-size lint (`#11`).**  72 lines
+    / threshold 60 in `layout_pass.cc` (not modified by M13).  Sole
+    `--no-verify` residual on the M13 commits; the antlr
+    `syntaxError` visibility warning is now suppressed with a
+    documented `NOLINTNEXTLINE`.
+  - **Stale `m13_p5_host` hand-WAT probe (`#4`).**  Superseded by the
+    production `EngineHostFnE2ETest`; fix for Phase-C shared memory or
+    retire.
+
+**Deferred to a later milestone (not M13).**
+
+  - **Foreign-wasm backend** — own-memory module + canonical-ABI
+    lift/lower trampoline (`cel_call_foreign`) + generated shims
+    (mini-wit-bindgen).  Designed (`modules-and-ffi.md` §5); not v1.
+  - **Reusable separately-instantiated library modules**
+    (`__memory_base` relocation) — `modules-and-ffi.md` §4.5;
+    prototyped in the `m13_celfn_double_*` WAT traces, not v1.
+  - **Proto-field select inside a CEL-defined body** — needs a unified
+    `cel.abi.fields[]` intern table; currently rejected
+    `Unimplemented`.
 
 ## 0. TL;DR
 
@@ -330,7 +594,214 @@ headers; that's polish, not architecture.
 
 ## 3. `.celfn` IDL
 
-### 3.1 Lexical structure
+> ### 3.0 Grammar v2 — prefix-module backends (SHIPPED 2026-05-24)
+>
+> **This supersedes §3.1–§3.3 below** (which describe the retired v1
+> grammar: `Module foo;` directive + bare-name CEL-defined decls). v2
+> shipped 2026-05-24: `Celfn.g4` drops the module directive and selects
+> the backend from a prefix module token on every decl
+> (`@host`/`@native`/`<alias>`); doc-comments are captured to
+> `CelfnDecl::description`; `CelfnDecl::Backend::kCelDefined` was renamed
+> `kNative`. Parser + visitor + builder + tests all updated; full
+> `//compiler_v2/...` build + e2e green.
+>
+> > **One piece deferred:** carrying `description` into the Program's
+> > `cel.abi.custom_functions[]` for cross-process introspection is NOT
+> > done — the field is captured on `CelfnDecl` and exposed via
+> > `FunctionLibrary::decls()`, but the ABI-emit side is a separate
+> > follow-up.
+>
+> **Purpose: a `.celfn` file is a documented, reusable library of CEL
+> functions.** The whole point of the IDL is to let an embedder
+> **refactor ad-hoc CEL expressions into named, reusable, documented
+> functions** — a project "standard library" of expressions. A `.celfn`
+> file is therefore a first-class API input — the compiler accepts the
+> **whole file content as a string** (not a snippet) — but **reading the
+> file is the caller's concern**; the celfn library does no file I/O.
+> Each declaration may carry a **doc-comment** that travels with it for
+> introspection / tooling / generated reference. See "Doc-comments" and
+> "Loading a `.celfn` file" below.
+>
+> **What changes and why.**
+>
+>   1. **The `Module foo;` directive is removed.** It named the separate
+>      `foo.wasm` library module — which the single-module decision
+>      (§0.5) retired: CEL-defined bodies now compile *into the expr
+>      module*. With no separate module to name, the directive is
+>      vestigial.
+>   2. **The backend is selected by the module prefix on every decl** —
+>      uniform `<type> <module>.<fn>(<params>) [= <body>] ;`. The module
+>      token is the backend selector:
+>      - `@host`   → host-backed (C++ impl via `Engine::AddFunction`); **no body**.
+>      - `@native` → CEL-defined (body in CEL); **`= <body>` required**.
+>      - `<alias>` (a plain identifier, **no `@`**) → foreign wasm module;
+>        the alias is the module name (`Engine::AddModule`); **no body**.
+>
+>      The `@` sigil is reserved for the two built-in backends
+>      (`@host`, `@native`); any other `@name` is a parse error. A bare
+>      identifier is always a foreign alias.
+>
+> **Call-site naming.** `@host` / `@native` are *declaration-side backend
+> tags only* — `@` is not a CEL identifier char, so the function is
+> called by its bare name in CEL (`@host.len(...)` → `len(x)`;
+> `@native.dbl(...)` → `dbl(x)`; with a leading `this` param → `x.fn()`).
+> A **foreign** alias IS a CEL call namespace: `rules.allow(...)` is
+> declared *and* called as `rules.allow(r)`.
+>
+> **Grammar v2 (EBNF).**
+>
+> ```ebnf
+> file        = { decl } ;                          (* no module-directive *)
+>
+> decl        = [ doc-comment ] type module "." identifier
+>               "(" [ params ] ")" [ "=" cel-expr ] ";" ;
+>
+> (* A doc-comment is the contiguous run of "///" lines (or one
+>    "/** … */" block) IMMEDIATELY preceding a decl — no blank line
+>    between.  Captured verbatim (sigils + one leading space stripped,
+>    lines joined) as that decl's `description`.  Ordinary "//" /
+>    "/* */" comments not adjacent to a decl are discarded as before. *)
+> doc-comment = ( "///" text-to-eol )+ | "/**" text "*/" ;
+>
+> module      = "@host" | "@native" | identifier ;  (* backend selector *)
+>
+> params      = param { "," param } ;
+> param       = [ "this" ] type identifier ;        (* this: first param only *)
+>
+> type        = primitive
+>             | wkt
+>             | "list" "<" type ">"
+>             | "map"  "<" map-key "," type ">"
+>             | "proto" "(" fqn ")"
+>             | "null" ;
+> primitive   = "bool" | "int" | "uint" | "double" | "string" | "bytes" ;
+> wkt         = "Duration" | "Timestamp" ;
+> map-key     = "bool" | "int" | "uint" | "string" ;   (* langdef restriction *)
+> fqn         = identifier { "." identifier } ;
+> cel-expr    = ? CEL expression terminated by ";" ? ;
+> ```
+>
+> **Backend / body rules (semantic):**
+>
+>   - `@host`   → body **forbidden** (a `=` → parse error).
+>   - `@native` → body **required** (no `=` → parse error).
+>   - `<alias>` → body **forbidden**.
+>   - `@<other>` (anything but `host`/`native`) → parse error.
+>   - All the v1 validation carries over: `this` only on the first
+>     param; overload-id synthesised as `<fn>_<argkind>…` (§3.6);
+>     duplicate-signature / stdlib-collision rejection; `uint8_t`
+>     arg-count cap (params ≤ 254); CEL-defined body type-checked
+>     against the declared return type with params bound as variables;
+>     **recursion (self / mutual cycle) rejected** (§0.5).
+>
+> **Complex types (proto / list / map) — per-backend constraint.** The
+> type grammar is unchanged (it already admits `proto(<fqn>)`,
+> `list<T>`, `map<K,V>`). What differs is which backends may carry them:
+>
+> | Type (arg or return) | `@host` | `@native` | `<alias>` (foreign) |
+> |---|---|---|---|
+> | scalars, `string`, `bytes`, `Duration`, `Timestamp` | ✅ | ✅ | ✅ (canonical-ABI lift/lower copy) |
+> | `list<T>`, `map<K,V>` of allowed types (recursive) | ✅ | ✅ | ✅ (recursive lift/lower) |
+> | `proto(<fqn>)`, or any `list`/`map` carrying a proto | ✅ | ✅ | ⛔ **rejected** |
+>
+> Protos cross `@host`/`@native` fine (same shared memory; a proto is a
+> `msg_slot` handle into the host interner). They **cannot** cross into a
+> **foreign** module — its separate linear memory makes the handle
+> meaningless — so `proto(...)` is **initially** rejected for foreign
+> decls (the existing §9 rule). *Future lift:* pass the message
+> **serialized to protobuf-binary bytes** across the boundary and let
+> the foreign-side generated glue deserialize it into that language's
+> message type (e.g. Go `proto.Unmarshal`); the wire is language-
+> agnostic, the cost is a serialize/deserialize per call. See the user
+> guide §8.5 for the worked shape. `proto(<fqn>)` keeps its explicit
+> wrapper:
+> now that module prefixes are first-class, a bare dotted `acme.User` in
+> type position would be ambiguous against a module-qualified token; the
+> `proto(...)` wrapper stays unambiguous.
+>
+> **Worked example (v2):**
+>
+> ```celfn
+> // fns.celfn  — no Module directive
+> int    @host.now() ;                              // host, global call: now()
+> string @host.upper(this string s) ;               // host, receiver: s.upper()
+> int    @native.dbl(int x)        = x * 2 ;        // native, call: dbl(x)
+> bool   @native.adult(this proto(acme.User) u) = u.age >= 18 ;  // native + proto ok
+> bool   rules.allow(string subj, string act) ;     // foreign "rules": rules.allow(...)
+> list<int> rules.scores(map<string,int> m) ;       // foreign: list/map lift-lower ok
+> // bool rules.is_admin(proto(acme.User) u) ;      // ⛔ ERROR: proto across foreign
+> ```
+>
+> **Decisions.** *Confirmed 2026-05-24:* prefix-module backend marker
+> (vs trailing keyword); `@native` (not `@cel`); **D1 — explicit
+> `proto(<fqn>)` wrapper** (vs bare FQN — kept for unambiguity +
+> greppability). *Defaulted (flip in one line if needed):* D2 — foreign
+> + proto rejected in v1, **lifted later via protobuf-binary
+> serialization** (user guide §8.5); D3 — plain identifier
+> = foreign, `@` reserved for `@host`/`@native` (vs `@`-prefixing
+> foreign too).
+>
+> **Doc-comments.** A `///` run (or a `/** … */` block) directly above a
+> decl is its documentation, captured on `CelfnDecl::description` (new
+> field) and carried into `cel.abi.custom_functions[]` so a Program can
+> be introspected into a generated reference. This is what makes a
+> `.celfn` a *library* and not just a list of signatures:
+>
+> ```celfn
+> /// Doubles its argument.  Pure; no side effects.
+> int @native.dbl(int x) = x * 2 ;
+>
+> /// True if the user is an adult (>= 18) per their proto `age` field.
+> /// @param u  the subject user
+> bool @native.adult(this proto(acme.User) u) = u.age >= 18 ;
+> ```
+>
+> (`@param`/`@return` tags inside a doc-comment are free-form text in
+> v1 — captured as-is, not parsed; a later pass may structure them.)
+>
+> **Loading a `.celfn` file (API).** The IDL is accepted as a **whole
+> string** — the caller passes the entire file content, not a snippet —
+> via `cel::ParseCelfnSource(absl::string_view source) →
+> StatusOr<FunctionLibrary>`, then `Compiler::Builder::AddLibrary`.
+> **Reading the file is the caller's concern, by design:** the celfn
+> library performs **no file I/O** (it stays embeddable + testable, and
+> the embedder may already have the IDL in memory / from a non-file
+> source). This is the existing contract in `function_library.h`; v2
+> keeps it. (No `LoadCelfnFile`/`FromFile` reader — file access lives in
+> the CLI / embedder, which `read`s and hands us the string.)
+>
+>   - Introspection: `FunctionLibrary::decls()` exposes each
+>     `CelfnDecl` (name, signature, backend, **`description`**), so a
+>     host can list/document the library; `Compiler::function_libraries()`
+>     exposes the registered set.
+>
+> **Implementation (as shipped 2026-05-24):**
+> `compiler/celfn/Celfn.g4` — dropped `moduleDirective`; unified into
+> `fnDecl : type fnModule '.' Identifier '(' params? ')' ('=' celExprBody)? ';'`
+> with `fnModule : '@' Identifier | Identifier`; added
+> `DocLineComment`/`DocBlockComment` on the HIDDEN channel.
+> `function_library.cc` — `ParseCelfnSource` dispatches on the module
+> token (`@host`/`@native`/alias), enforces the per-backend body rule,
+> rejects `@<other>` and bare `host`/`native` aliases, and extracts the
+> doc-comment via `getHiddenTokensToLeft`; dropped the
+> `Module`-set-iff-CEL-defined rule; renamed
+> `CelfnDecl::Backend::kCelDefined` → `kNative`; `module_name` for
+> `@native` is the fixed tag `"cel_native"` (`@host` stays `"cel_fn"`).
+> `CelfnDecl` gained a `description` field; the Builder's `AddCelDefined`
+> became `AddNative` and `AddHost`/`AddForeign`/`AddNative` take an
+> optional trailing `description`. Downstream `kCelDefined` → `kNative`
+> renames in `compile.cc` + `parse_and_check.{h,cc}`. The single-module
+> codegen (§0.5) was unaffected — it never depended on the directive.
+> `function_library_test` + `celfn_parser_probe_test` rewritten to v2
+> (incl. body-rule, `@<other>`, and doc-comment cases);
+> `engine_test`/`compile_test` CEL-defined source strings migrated from
+> `Module m;` + bare-name to `@native.`. **Still open:** carrying
+> `description` into `cel.abi.custom_functions[]` (introspection works
+> today via `FunctionLibrary::decls()` only). No file-reader was added —
+> `ParseCelfnSource` accepts the whole IDL as a string; file I/O stays
+> the caller's concern.
+
+### 3.1 Lexical structure (v1 — superseded by §3.0)
 
   - Line comments: `//` to end-of-line.  Block comments: `/* … */`.
   - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
@@ -846,6 +1317,17 @@ The CEL-defined fns can freely call:
 
 ### 4.5 Cross-language ABI surface
 
+> **Superseded for foreign modules 2026-05-24 by
+> [`modules-and-ffi.md`](modules-and-ffi.md) §5.**  Phase C moved the
+> shared-memory definition into `cel_runtime.wasm`, so a foreign module
+> can no longer adopt the shared memory as its own (§4.5.2 point 3).
+> Foreign modules now keep their own memory and the host marshals
+> across a fixed C ABI (Component-Model lowering rules) via
+> IDL-generated shims.  §4.5.1 (proto constraint) and §4.5.5 (reactor
+> coexistence) still hold; §4.5.2/§4.5.4's "foreign defines shared
+> memory" stance is retired.  CEL-defined libraries still use the
+> shared-memory model (modules-and-ffi §4).
+
 > **Plan-vs-execution delta (2026-05-21, from Probe 2).**  The first
 > draft of this section tried to set strict producer-side rules
 > (every module imports memory, etc.).  Probe 2 with TinyGo and
@@ -912,6 +1394,17 @@ boundary crossings:
 | expression | foreign wasm    | ❌ (the v1 constraint) |
 | cel-defined| host / expr     | ✅ |
 | cel-defined| foreign wasm    | ❌ (transitively, same reason) |
+
+> **Plan-vs-execution delta (2026-05-24): this matrix is design-intent,
+> not as-built.** The `✅`s mark crossings the v1 design *permits*, not
+> ones that evaluate today. In particular `expression → host fn` with a
+> proto/`Value::Message` is **not implemented** — the raw `HostCallback`
+> has no message-interner access, and the typed `FunctionImpl` adapter
+> that would surface `Value::Message` to the embedder is unbuilt. As of
+> 2026-05-24 only **scalar + string/bytes-arg + scalar/bool-return**
+> host fns evaluate end-to-end; proto/list/map host signatures parse +
+> type-check but don't run. See the §0.5 "Host complex-type gap" for
+> the authoritative current state.
 
 The IDL parser enforces this at parse time: a `<alias>.<fnname>(...)`
 declaration (foreign-backed) whose signature mentions `proto(...)`
@@ -1640,6 +2133,15 @@ Three failure modes to guard against:
 
 ### 10.5 Memory model: shared linear memory vs Component Model
 
+> **Superseded 2026-05-24 by [`modules-and-ffi.md`](modules-and-ffi.md).**
+> Post-Phase-C this splits in two: **CEL-defined** library modules use
+> the shared linear memory below (+ `__memory_base` relocation,
+> modules-and-ffi §4); **foreign** modules keep their own memory and
+> the host marshals across a fixed canonical-ABI seam (modules-and-ffi
+> §5).  The "user module scribbles the host heap" risk below now applies
+> only to CEL-defined libraries — foreign modules are isolated by their
+> separate memory.
+
 Resolved 2026-05-21: shared linear memory + `arena_alloc` import
 (§4.5).  Matches what TinyGo / Rust / AssemblyScript all support
 today without component-model toolchain dependencies.  The
@@ -1940,3 +2442,163 @@ execution goes in §13.
 ## 13. Future work (populated as the slice executes)
 
 Empty until execution starts.
+
+## 14. Testing strategy (E2E + scale/limits)
+
+Merged in from the former `m13-test-strategy.md` (2026-05-24) so M13's
+test plan lives with its design.  This section owns the **end-to-end
+matrix** (compile → instantiate → eval under wasmtime) and the **scale /
+overflow / limit** probes (too many functions, too many strings, too
+many arguments, rodata+workspace overflow).  Per-arm `expr_lower` /
+`layout_pass` unit gaps are inventoried in
+[`m13-reviews/2026-05-24-codegen-api-layering.md`](m13-reviews/2026-05-24-codegen-api-layering.md)
+and folded back as `TEST_F`/`TEST_P` additions.  Both feed
+`testing-checklist.md` and `per-component-test-coverage.md`.
+
+Governing rule (CLAUDE.md): **every type and every AST/backend variant
+gets a positive AND a negative test; the negative/limit half is the
+load-bearing half** — a compiler that miscompiles an unhandled shape
+fails silently.
+
+> **Status (2026-05-24).**  §14.1 CEL-defined column + cross-cutting +
+> non-blocked negatives are GREEN (`api/engine_test.cc::
+> EngineCelDefinedMatrixTest`).  §14.2 scale/overflow probes (#6 too-many-
+> fns, #7 too-many-string-literals) are GREEN
+> (`compile_test.cc::CompileCelfnScaleTest`); the eval-at-limit probe
+> (#8 remainder, 32-arg fn) is GREEN
+> (`engine_test.cc::LargeArgCountCompilesAndEvals`).  The §14.1 **host
+> complex-type column** (proto/list/map args, proto/new-string returns,
+> return-kind→error) is the RED TDD deliverable in
+> `api/engine_host_types_tdd_test.cc` (manual-tagged; builds + fails-red;
+> goes green when the typed `FunctionImpl` adapter lands, task #13).
+> The empirical thresholds: ~90 tiny bodies overrun the 8192-byte region;
+> a CEL-defined body holds at least 32 args; `map<K,V>` arg into a
+> CEL-defined body currently evals to a CEL error (gap, captured in the
+> TDD spec).
+
+### 14.1 E2E matrix — types × backends
+
+One compiled-and-evaluated test per cell.  Backends: **H** = `@host.`
+(C++ impl via `Engine::AddFunction`), **C** = CEL-defined (body in the
+`.celfn`, single-module).
+
+> **Status note (2026-05-24):** the H-column for non-scalar types and
+> string *returns* is blocked on the typed `FunctionImpl` adapter (see
+> §0.5 "Host complex-type gap"); those cells are L1-only today.  The ✅
+> below mark the matrix's *target*, not current pass state.
+
+| Arg/return type | H positive | C positive | Notes |
+|---|---|---|---|
+| `bool` | ✅ | ✅ | identity / negation body |
+| `int` | ✅ (`length`→int landed) | ✅ (`double(x)=x*2`) | |
+| `uint` | ✅ | ✅ | boundary: `UINT64_MAX` |
+| `double` | ✅ | ✅ | |
+| `string` | ✅ (arg read) | ✅ (`sayhello`) | **return-string = arena path** (H allocs via cel.arena_alloc; C via cel_string_concat) |
+| `bytes` | ✅ | ✅ | embedded NUL, multibyte UTF-8 |
+| `list<int>` | ✅ | ✅ | empty + non-empty |
+| `map<string,int>` | ✅ | ✅ | every allowed key kind (bool/int/uint/string) |
+
+Cross-cutting positive cases (each its own e2e):
+- **Receiver vs free function**: `bool s.is_admin()` (receiver, `this`)
+  vs `is_admin(s)` (free). Both backends.
+- **Multi-arg**: `int add3(int,int,int)` — arg ordering correctness.
+- **Sibling call (C→C)**: a CEL-defined body that calls another
+  CEL-defined fn in the same library (direct wasm `call`, same module;
+  acyclic — see recursion rejection in §0.5).
+- **C→H call**: a CEL-defined body that calls a `@host.` fn.
+- **Custom fn inside a larger expr**: `double(x) + 1`, `sayhello(n) +
+  "!"`, `is_admin(u) ? a : b` — proves the call composes with built-in
+  lowering + 3VL absorption.
+- **Determinism**: same program eval'd N times returns identical bytes.
+
+Negative cases (each its own e2e or compile-level test):
+- **Undeclared fn** → checker `InvalidArgument` ("undeclared reference").
+- **Arg-type mismatch** at call site → checker rejects (`double("x")`).
+- **Host kind mismatch**: impl returns a `bool` CelValue for a fn
+  declared `int` → result decodes as `kError`, not a silent wrong int
+  (per §4.2 — kind disagreement is a user bug, surfaced).
+- **Proto across foreign** stays rejected at IDL parse (already in
+  `function_library_test.cc`).
+- **Unbound host impl**: expr calls `@host.f` but no
+  `Engine::AddFunction("f_...")` → Plan-time error naming the missing
+  `cel_fn.<id>`.
+- **Recursion**: self / mutual / n-cycle CEL-defined bodies →
+  `InvalidArgument` (landed; `CompileCelfnRecursionTest`).
+
+### 14.2 Scale / overflow / limit probes
+
+User-mandated stress cases. Each must produce a **clean, named failure**
+(`ResourceExhausted` / `InvalidArgument`) at compile or plan time —
+**never** a crash, a Binaryen validate failure, or a silent miscompile.
+
+**rodata + workspace overflow of `[0,8192)`.** Unit-level done
+(`layout_pass_test.cc` boundary tests, `compile_test.cc` huge-string /
+many-constants — landed). **Still TODO — the custom-fn-inflated case**:
+an expr plus N CEL-defined bodies whose *cumulative* rodata+workspace
+bands overrun the region (the single-module-specific path the unit
+tests don't hit): `ExprPlusBodiesOverrunRegion` → `ResourceExhausted`
+naming the offending band.
+
+**Too many CEL-defined functions** (all lowered into the one module):
+- `ManyTinyFunctionsCompileAndEval` — 50–100 trivial bodies
+  (`fN(int x)=x+N`); compile + eval calls to several; assert correct.
+- `TooManyFunctionsOverrunRegion` — push function count until the
+  cumulative workspace bands exceed 8192 → clean `ResourceExhausted`;
+  record the empirical max in the test comment.
+
+**Too many string literals** (each consumes a CelValue *plus* payload
+bytes in rodata):
+- `ManyDistinctStringLiteralsCompile` — K distinct short strings; success.
+- `TooManyStringLiteralsOverrunRodata` — K large enough that rodata
+  alone overruns → `ResourceExhausted`.
+
+**Too many arguments.** ABI cap: `CelfnDecl::num_args` is `uint8_t`
+(`params.size() + 1`), so params ≤ 254.  The loud cap rejection is
+**landed** (`function_library_test.cc`: 254 accept / 255 reject).
+**Still TODO** — `LargeArgCountCompilesAndEvals` (a 32/64/254-arg fn
+compiled + eval'd; assert arg ordering) to prove the wasm side holds at
+the limit, not just the library-layer rejection.  Layered limits to
+document in the test: our ABI `num_args ∈ [1,255]` (params ≤ 254) is the
+binding cap — assert it trips before any wasm/Binaryen/wasmtime limit.
+
+### 14.3 Limit-finding methodology
+
+Each "too many X" probe is a **boundary pair**: one case just under the
+limit that compiles+evals, one just over that fails cleanly. The
+threshold is computed from the layout arithmetic (`rodata_base=16`,
+24-byte cells, 8-byte alignment, `reserved_region_limit=8192`) and
+pinned in a comment so a layout change that moves the boundary is caught
+by the failing-at-N+1 assertion. Where the limit depends on a constant
+we control (`uint8_t` num_args, `CELWASM_RESERVED_LOW_MEMORY_BYTES`),
+reference the constant symbolically so the test tracks changes.
+
+### 14.4 Test placement
+
+| Layer | File | Owns |
+|---|---|---|
+| Unit — codegen | `codegen/expr_lower_test.cc`, `layout_pass_test.cc`, `custom_fn_emit_test.cc` | per-arm / per-scenario; band offsetting + overflow |
+| Unit — celfn | `celfn/function_library_test.cc` | IDL parse, overload-id synth, arg cap, validations |
+| Unit — frontend | `frontend/parse_and_check_test.cc` | `CheckCelDefinedBody`, `CalledOverloadIds` |
+| Unit — compile | `compile_test.cc` | overflow boundaries, recursion rejection, orchestration |
+| E2E | `api/engine_test.cc` | compile→eval under wasmtime (host + CEL-defined) |
+
+E2E tests that spin up the real runtime carry the load-bearing
+assertions and MUST run before M13 closes (not just `bazel test
+//compiler_v2/...`).
+
+### 14.5 Close-out gate
+
+M13 is not done until:
+1. Every cell in §14.1 has a green positive test; every negative case
+   asserts the named failure.
+2. Every §14.2 probe asserts a clean `ResourceExhausted`/`InvalidArgument`
+   at the boundary.
+3. The layering-review P0/P1 items are addressed (or explicitly deferred
+   with rationale).
+4. `testing-checklist.md` + `per-component-test-coverage.md` M13 rows are
+   ticked.
+5. The close-out gate from `per-component-test-coverage.md` is pasted
+   into the PR description.
+
+See the §0.5 close-out tracker for the live done/pending status of each
+of the above.

@@ -24,9 +24,19 @@ annotated in §1 + §10.  Phase D (Chrome) remains open.
 > superseded.  The browser-deployment side benefit below is also
 > weakened: the threads build is no longer "zero WASI imports."
 
-**Single source of truth.**  Supersedes the previous trail of
-docs in this dir; deviations from this doc need an explicit
-update here.
+> **Memory architecture consolidated 2026-05-24 into
+> [`../memory-layout-design.md`](../memory-layout-design.md).** That doc
+> is now the singular source of truth for memory organization (the §4
+> layout + §5 invariant table + §6/§7 lifecycle are reproduced and kept
+> current there). **This doc remains the historical build-plan** for the
+> malloc-arena migration (Phase A/B work items §8, the baseline
+> benchmarks §10, the bench workload §11, the risk register §12). Read
+> `memory-layout-design.md` for the live memory design; read on here for
+> the migration history + bench baselines.
+
+**Single source of truth (for the migration plan).**  Supersedes the
+previous trail of docs in this dir; deviations from this doc need an
+explicit update here.
 
 ---
 
