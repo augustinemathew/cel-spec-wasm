@@ -771,5 +771,81 @@ TEST_F(PerKeyNegativePartialEvalTest, KeyQualifiedPatternRejectedAtParse) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ──────────────────────────────────────────────────────────────
+//  9. Pattern syntax at the partial-eval boundary (e2e).
+//
+//  A pattern reaches Instance::PartialEval only through
+//  AttributePattern::Parse — exactly what `MakePattern` wraps above, so
+//  this is the real boundary every test in this file passes its
+//  patterns through.  Each "almost-correct" input below must be
+//  REJECTED there: a silent accept would yield a pattern PartialEval
+//  runs but that can never match an interned attribute (a silent
+//  partial-eval miss).  The accepted grammar is
+//  `root('.'qualifier)*` with `root`/`qualifier` CEL identifiers and
+//  `*` the wildcard qualifier (see eval/attribute.cc); everything else
+//  fails fast.  (Parser-internal coverage lives in eval/attribute_test
+//  AttributePatternParseRejects; this is the same matrix exercised at
+//  the entry point the evaluator actually uses.)
+// ──────────────────────────────────────────────────────────────
+
+struct MalformedPattern {
+  absl::string_view pattern;
+  absl::string_view why;
+};
+
+class MalformedPatternBoundaryTest
+    : public ::testing::TestWithParam<MalformedPattern> {};
+
+TEST_P(MalformedPatternBoundaryTest, RejectedAtParseSoNeverReachesPartialEval) {
+  EXPECT_THAT(AttributePattern::Parse(GetParam().pattern),
+              StatusIs(absl::StatusCode::kInvalidArgument))
+      << "`" << GetParam().pattern << "` — " << GetParam().why;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AlmostCorrect, MalformedPatternBoundaryTest,
+    ::testing::Values(
+        // empty / dot edges
+        MalformedPattern{"", "empty"}, MalformedPattern{".", "dot only"},
+        MalformedPattern{".x", "leading dot"},
+        MalformedPattern{"x.", "trailing dot"},
+        MalformedPattern{"..x", "leading double dot"},
+        MalformedPattern{"x..", "trailing double dot"},
+        MalformedPattern{"x..y", "consecutive dots"},
+        MalformedPattern{"x...y", "triple dots"},
+        // whitespace
+        MalformedPattern{" x", "leading space"},
+        MalformedPattern{"x ", "trailing space"},
+        MalformedPattern{"a b", "internal space"},
+        MalformedPattern{"a. b", "space after dot"},
+        MalformedPattern{"a .b", "space before dot"},
+        MalformedPattern{"a\tb", "tab"},
+        // non-identifier charset
+        MalformedPattern{"1x", "digit-leading root"},
+        MalformedPattern{"a.2b", "digit-leading qualifier"},
+        MalformedPattern{"a-b", "dash"},
+        MalformedPattern{"a.b$c", "dollar sign"},
+        // wildcard misuse
+        MalformedPattern{"*", "wildcard root"},
+        MalformedPattern{"*.city", "wildcard root with qualifier"},
+        MalformedPattern{"c.*x", "wildcard glued to suffix"},
+        MalformedPattern{"c.x*", "wildcard glued to prefix"},
+        MalformedPattern{"c.**", "double-wildcard segment"},
+        // brackets — closed, unclosed, lone, mid-path
+        MalformedPattern{"xs[3]", "closed int index"},
+        MalformedPattern{"xs[-1]", "negative index"},
+        MalformedPattern{"xs[3u]", "uint index"},
+        MalformedPattern{"m[true]", "bool key"},
+        MalformedPattern{"m[\"k\"]", "string key"},
+        MalformedPattern{"xs[*]", "wildcard index"},
+        MalformedPattern{"xs[3", "unclosed open bracket"},
+        MalformedPattern{"xs]", "lone close bracket"},
+        MalformedPattern{"xs[", "lone open bracket"},
+        MalformedPattern{"[", "open bracket only"},
+        MalformedPattern{"]", "close bracket only"},
+        MalformedPattern{"[3]", "bracket at root"},
+        MalformedPattern{"m[\"k", "unclosed string key"},
+        MalformedPattern{"request.messages[3].text", "bracket mid path"}));
+
 }  // namespace
 }  // namespace celwasm

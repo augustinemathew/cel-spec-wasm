@@ -1,0 +1,183 @@
+# Hand-maintained `cel_host` / `cel_env` rows of the runtime catalogue.
+#
+# These are the wasm IMPORTS the engine registers for an emitted expr
+# module — host trampolines (`cel_host`, in eval/internal/cel_host_wasmtime.cc)
+# and host-environment helpers (`cel_env`).  Unlike the `cel` module's
+# pure-wasm exports, they are not in `cel_runtime.wasm` and have no C
+# signature to derive from, so they live here as committed, reviewable
+# `CelRuntimeFunction` rows with their semantics documented.
+#
+# `//bazel:gen_runtime_catalogue` APPENDS the derived `cel` rows (from the
+# `// cel:codegen-export` markers in runtime/cel_*.{h,c}) to this file to
+# produce the embedded `CelRuntimeCatalogue` textproto.  This file is the
+# source of truth for host/env; the C markers are the source of truth for
+# `cel`; the genrule only composes — it is not itself a source of truth.
+#
+# Schema: abi/runtime_catalogue.proto (CelRuntimeFunction).  num_args is
+# the i32 arg count of the trampoline; returns_i32 is false for all of
+# these — every host trampoline writes its result through an out_slot in
+# linear memory rather than returning a value.  Names + arities MUST match
+# the trampolines registered in cel_host_wasmtime.cc; the startup
+# cross-check there CHECK-fails if they drift.
+
+# ── cel_host: wasmtime host trampolines ──
+
+# get(msg.field): read a proto field. args: out, msg_slot, field_ref_id,
+# attribute_id (the last drives partial-eval unknown matching).
+functions {
+  name: "cel_get_field"
+  module: CEL_HOST
+  num_args: 4
+  returns_i32: false
+}
+# has(msg.field): proto field presence. args: out, msg_slot, field_ref_id,
+# attribute_id.
+functions {
+  name: "cel_has_field"
+  module: CEL_HOST
+  num_args: 4
+  returns_i32: false
+}
+# m[k]: map index. args: out, map_slot, key_slot.
+functions {
+  name: "cel_map_lookup"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# Open a comprehension iterator over a host map. args: state_slot, map_slot.
+functions {
+  name: "cel_map_iter_open"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# Open a comprehension iterator over a host list. args: state_slot,
+# list_slot.
+functions {
+  name: "cel_list_iter_open"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# xs[i]: list index. args: out, list_slot, index_slot.
+functions {
+  name: "cel_list_at"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# size(xs): list length. args: out, list_slot.
+functions {
+  name: "cel_list_size"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# x in xs: list membership. args: out, needle_slot, list_slot.
+functions {
+  name: "cel_list_in"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# xs == ys: list equality. args: out, a_slot, b_slot.
+functions {
+  name: "cel_list_eq"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# xs + ys: list concatenation. args: out, a_slot, b_slot.
+functions {
+  name: "cel_list_concat"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# size(m): map size. args: out, map_slot.
+functions {
+  name: "cel_map_size"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# k in m: map key membership. args: out, key_slot, map_slot.
+functions {
+  name: "cel_map_in"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# m == n: map equality. args: out, a_slot, b_slot.
+functions {
+  name: "cel_map_eq"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# msg == other: proto message equality. args: out, a_slot, b_slot.
+functions {
+  name: "cel_message_eq"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# Foo{...}: construct a message literal. args: out, type_id.
+functions {
+  name: "cel_make_message"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# Set a field on a message under construction. args: msg_slot,
+# field_ref_id, value_slot.
+functions {
+  name: "cel_set_field"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+# Resolve a message type's fully-qualified name (for type()). args: out,
+# type_id.
+functions {
+  name: "resolve_message_type_name"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# Timezone-aware timestamp accessors (getHours/getDayOfWeek/...). args:
+# out, ts_slot, tz_slot, accessor_id.
+functions {
+  name: "cel_timestamp_tz_accessor"
+  module: CEL_HOST
+  num_args: 4
+  returns_i32: false
+}
+# Unwrap a well-known time type (Timestamp/Duration) to its scalar. args:
+# out, msg_slot.
+functions {
+  name: "cel_wkt_unwrap_time"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
+# Unwrap a well-known wrapper (Int32Value/StringValue/...) to its scalar.
+# args: out, msg_slot, field_ref_id.
+functions {
+  name: "cel_wkt_unwrap_wrapper"
+  module: CEL_HOST
+  num_args: 3
+  returns_i32: false
+}
+
+# ── cel_env: host environment helpers ──
+
+# cel.@log / diagnostic logging trampoline. args: out, fmt_ptr, fmt_len,
+# args_slot.
+functions {
+  name: "cel_log"
+  module: CEL_ENV
+  num_args: 4
+  returns_i32: false
+}
