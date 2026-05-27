@@ -572,24 +572,30 @@ bare FAIL with no test documenting it.
 
 ## Build & run
 
-  - **`$PROJ` — the project-package set; use it, never `//...`.**  `bazel
-    … //...` is unusable here: the vendored
+  - **`bazel build //...` works** — and is the preferred "whole project"
+    pattern.  It used to die on a package-loading error (the vendored
     `third_party/cel-cpp/tools/testdata/BUILD` loads
-    `@com_github_google_flatbuffers`, a repo not declared in our
-    `MODULE.bazel`, so `//...` dies on a package-loading error before
-    evaluating anything (a false RED that also masks real failures).  Every
-    build/test/query that means "the whole project" therefore enumerates the
-    repo's own top-level packages explicitly:
+    `@com_github_google_flatbuffers`, a repo not in our `MODULE.bazel`),
+    because `third_party/cel-cpp` is a `local_path_override` module whose
+    directory the main repo still globbed into.  Fixed by `.bazelignore`
+    (it lists `third_party/cel-cpp`): the main repo no longer discovers
+    that vendored module's packages, while `@cel-cpp//...` still resolves
+    via the module override.  `//...` builds all first-party packages
+    (the role dirs, `//third_party/{wasmtime,wasi_sdk,binaryen}`, the
+    `doc/**` probes) — 170 targets, all green.
+  - **`$PROJ` — the explicit project-package set** — still defined and
+    valid; it predates the `//...` fix and remains handy when you want
+    *only* the role packages (excluding the `doc/**` probe targets `//...`
+    now also builds).  It enumerates:
 
     ```
     //compiler/... //eval/... //shared/... //abi/... //runtime/... \
     //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
     ```
 
-    For `rdeps(universe, …)` / `visible(…)` queries the *universe* is this
-    set, `+`-joined, not `//...`.
-  - Primary build: `bazel build $PROJ`.
-  - Primary tests: `bazel test $PROJ`.
+    `//...` is fine for `rdeps` / `visible` query universes now too.
+  - Primary build: `bazel build //...` (or `bazel build $PROJ`).
+  - Primary tests: `bazel test //...` (or `bazel test $PROJ`).
   - CLI: `bazel-bin/tools/cel/...` (see `tools/cel`).
   - The wasm32-wasi cross-compile is handled by a bazel-registered
     `@wasi_sdk_<host>` toolchain (the host system clang has no wasm32
