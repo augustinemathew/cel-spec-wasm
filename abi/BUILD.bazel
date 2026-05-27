@@ -29,15 +29,21 @@ cc_proto_library(
     deps = [":runtime_catalogue_proto"],
 )
 
-# The generated `CelRuntimeCatalogue` textproto.  Produced by
-# `//bazel:gen_runtime_catalogue` from the `// cel:codegen-export`
-# markers in the runtime C sources (the single source of truth for the
-# `cel`-module helper set).
+# The generated `CelRuntimeCatalogue` textproto — the single source of
+# truth for every built-in but `cel_fn`.  Composed by
+# `//bazel:gen_runtime_catalogue`: the committed `cel_host` / `cel_env`
+# rows (`runtime_host_env.textproto`) followed by the `cel`-module rows
+# derived from the `// cel:codegen-export` markers in the runtime C
+# sources.
 genrule(
     name = "runtime_catalogue_textproto",
-    srcs = ["//runtime:runtime_c_sources"],
+    srcs = [
+        "runtime_host_env.textproto",
+        "//runtime:runtime_c_sources",
+    ],
     outs = ["runtime_catalogue.textproto"],
     cmd = "$(location //bazel:gen_runtime_catalogue) --mode textproto " +
+          "--base $(location runtime_host_env.textproto) " +
           "--out $@ $(locations //runtime:runtime_c_sources)",
     tools = ["//bazel:gen_runtime_catalogue"],
 )

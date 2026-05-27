@@ -69,12 +69,16 @@ runtime/cel_*.{h,c}  ──(markers)──>  //bazel:gen_runtime_catalogue
 The catalogue is the single source of truth for every built-in but
 `cel_fn` (user customs, registered at runtime, never catalogued).  The
 `cel_host` / `cel_env` import sets (host trampolines — NOT exports of
-`cel_runtime.wasm`, so nothing to derive them from) are **hard-coded in
-the generator** (`_HOST_FUNCTIONS` / `_ENV_FUNCTIONS`) and composed into
-the same textproto alongside the derived `cel` rows; `runtime_catalogue.cc`
-serves each module by filtering the one parsed catalogue.  The startup
-cross-check in `cel_host_wasmtime.cc` (registered trampolines vs
-`CelHostFunctions()`) guards the hard-coded host set against reality.
+`cel_runtime.wasm`, so nothing to derive them from) live in a
+**committed, commented textproto** (`abi/runtime_host_env.textproto`) —
+human-readable, reviewable, with each function's semantics documented.
+The genrule prepends that file verbatim and **appends** the derived
+`cel` rows, so the generator is a pure composer (it holds no function
+data), the host/env source of truth is the textproto, and the `cel`
+source of truth is the C markers.  `runtime_catalogue.cc` serves each
+module by filtering the one parsed catalogue.  The startup cross-check
+in `cel_host_wasmtime.cc` (registered trampolines vs `CelHostFunctions()`)
+guards the host rows against reality.
 
 ## Consistency test
 
@@ -100,7 +104,8 @@ build and test green.
     both the catalogue and the linker keep-list (and would fail at
     codegen/instantiate, not at PR time). If that ever bites, add a
     test parsing the built wasm's export section against the catalogue.
-  - The `cel_host`/`cel_env` sets are hard-coded in the generator rather
-    than derived from the trampoline registration sites; the startup
-    cross-check keeps them honest, but deriving them would remove the
-    last hand-maintained list.
+  - The `cel_host`/`cel_env` sets are hand-maintained in
+    `abi/runtime_host_env.textproto` rather than derived from the
+    trampoline registration sites; the startup cross-check keeps them
+    honest, but deriving them would remove the last hand-maintained
+    list.
