@@ -15,9 +15,13 @@
 //     declarations one-to-one to the wasm function type, so the C
 //     signature recovers the identical (arity, returns_i32) tuple the
 //     wasm type section would, with no disassembler or cross-compile.
-//   - `cel_host` / `cel_env` rows are HARD-CODED in the generator: they
-//     are wasm IMPORTS the engine registers, not `cel_runtime.wasm`
-//     exports, so there is no C signature to derive them from.
+//   - `cel_host` / `cel_env` rows live in a committed, commented
+//     textproto (`abi/runtime_host_env.textproto`): they are wasm
+//     IMPORTS the engine registers, not `cel_runtime.wasm` exports, so
+//     there is no C signature to derive them from.  The genrule prepends
+//     that file verbatim and appends the derived `cel` rows — so a human
+//     can read the host/env set (with semantics) in the repo, and the
+//     generator is a pure composer, not a source of truth.
 //
 // `abi/runtime_catalogue.cc` embeds the composed textproto as a build
 // resource, parses it once, and serves each module by filtering.
