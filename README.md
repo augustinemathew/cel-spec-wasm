@@ -27,6 +27,34 @@ takes a different path:
   [cel-cpp](https://github.com/google/cel-cpp), and behavior is gated
   byte-for-byte against the upstream CEL conformance corpus.
 
+## What you can express
+
+CEL is the small, safe language teams already reach for to express policy and
+validation over structured data — and every one of these compiles to a wasm
+module you can ship anywhere:
+
+```python
+# Presence + macros over a proto/JSON object
+has(account.user_id) || has(account.gaia_id)        # either identifier is set
+size(account.emails) > 0                             # has at least one email
+matches(account.phone_number, "[0-9-]+")             # phone matches a pattern
+
+# Comprehensions — the workhorse of real policy
+account.emails.exists(e, e.endsWith("@corp.com"))    # any corp email?
+request.auth.claims.all(c, c in allowed_claims)      # every claim allowed?
+
+# Construct lists, maps, and messages; index and compare
+{'blue': 0x000080, 'red': 0xFF0000}['red'] == 0xFF0000
+Account{user_id: 'pokemon'}.user_id == 'pokemon'
+```
+
+CEL has no loops, no I/O, and no unbounded recursion — expressions are
+guaranteed to terminate — which is exactly why it's trusted for admission
+control, authorization, and rules engines. `celwasmc` keeps those guarantees and
+hands you a portable, sandboxed artifact. See
+[`doc/intro.md`](doc/intro.md) for the guided tour and
+[`doc/langdef.md`](doc/langdef.md) for the full language.
+
 ## Bindings — coming soon
 
 The compiler emits a portable artifact, and host bindings *embed* it rather
