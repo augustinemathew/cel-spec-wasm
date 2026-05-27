@@ -514,3 +514,27 @@ cc_test(
         "//third_party/wasmtime:wasmtime",
     ],
 )
+
+# End-to-end coverage for the `@host.` custom-function backend: the
+# whole flow (parse `.celfn` → declare on Compiler → Compile a calling
+# expr → Engine::Plan with real HostCallbacks → Instance::Eval →
+# decode). wasmtime-backed, hence `manual`.
+cc_test(
+    name = "celfn_host_fn_e2e_test",
+    srcs = ["celfn_host_fn_e2e_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":activation",
+        ":engine",
+        ":instance",
+        ":value",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)

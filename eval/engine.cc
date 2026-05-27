@@ -6,21 +6,21 @@
 #include <string>
 #include <utility>
 
+#include "abi/runtime_catalogue.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "abi/runtime_catalogue.h"
+#include "compiler/program.h"
+#include "eval/host/cel_log.h"
 #include "eval/internal/abi_decode.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/wasmtime_engine_state.h"
-#include "compiler/program.h"
-#include "eval/host/cel_log.h"
+#include "google/protobuf/descriptor.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_runtime_wasm_bytes.h"
-#include "google/protobuf/descriptor.h"
 #include "wasi.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -391,9 +391,18 @@ wasm_functype_t* MakeI32sToVoidFuncType(std::uint8_t arity) {
 
 // Build a wasm trap from an `absl::Status`'s message.  Used by the
 // host-callback trampoline to surface user errors as wasm traps.
+//
+// `wasm_trap_new` expects a NUL-terminated message ("stringz"): the
+// wasmtime C API reads the bytes up to the terminator, and the
+// underlying Rust shim panics (aborting the process) if the buffer
+// is not NUL-terminated.  We copy the message into a local string —
+// which guarantees a trailing '\0' at `data()[size()]` — and pass a
+// length that includes that terminator.
 wasm_trap_t* TrapFromStatus(absl::string_view msg) {
+  std::string z(msg);
   wasm_byte_vec_t m;
-  wasm_byte_vec_new(&m, msg.size(), msg.data());
+  // +1 to include the NUL terminator std::string guarantees.
+  wasm_byte_vec_new(&m, z.size() + 1, z.c_str());
   wasm_trap_t* t = wasm_trap_new(nullptr, &m);
   wasm_byte_vec_delete(&m);
   return t;
