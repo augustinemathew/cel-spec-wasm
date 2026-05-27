@@ -63,91 +63,59 @@ absl::string_view AbiModuleName(AbiModule m) {
 
 namespace {
 
-// Builds a `CelRuntimeFunction` proto for a host import.  The two host
-// namespaces (`cel_host` / `cel_env`) describe wasm IMPORTS the engine
-// registers, not `cel_runtime.wasm` exports, so they have no marker to
-// derive from and are constructed here.  Every host trampoline writes
-// its result through an out_slot in linear memory, so `returns_i32` is
-// always false.
-CelRuntimeFunction MakeHostFn(absl::string_view name, CelRuntimeModule module,
-                              uint32_t num_args) {
-  CelRuntimeFunction fn;
-  fn.set_name(std::string(name));
-  fn.set_module(module);
-  fn.set_num_args(num_args);
-  fn.set_returns_i32(false);
-  return fn;
-}
-
-// ════════════════════════════════════════════════════════════════
-// `cel` namespace — pure-wasm helpers exported by cel_runtime.wasm.
-// Parsed once from the embedded, generated `CelRuntimeCatalogue`
-// textproto.  Function-local static → process lifetime, so the spans
-// and the `string_view`s into each proto's `name()` stay valid.
-// ════════════════════════════════════════════════════════════════
-const std::vector<CelRuntimeFunction>& CelRuntimeHelpersVec() {
-  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kHelpers([] {
+// The whole generated catalogue, parsed once.  It is the single source
+// of truth for every built-in but `cel_fn`: the `cel` rows are derived
+// from the C `// cel:codegen-export` markers, and the `cel_host` /
+// `cel_env` import rows are the generator's hard-coded sets — all
+// composed into one textproto by `//bazel:gen_runtime_catalogue`.
+// Function-local static → process lifetime, so spans and the
+// `string_view`s into each proto's `name()` stay valid.
+const std::vector<CelRuntimeFunction>& AllCatalogueFunctions() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kAll([] {
     CelRuntimeCatalogue catalogue;
     ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(
         std::string(RuntimeCatalogueTextproto()), &catalogue))
         << "abi: failed to parse the embedded CelRuntimeCatalogue "
            "textproto — the genrule output is malformed";
-    std::vector<CelRuntimeFunction> v;
-    v.reserve(catalogue.functions_size());
-    for (const CelRuntimeFunction& fn : catalogue.functions()) {
-      ABSL_CHECK(fn.module() == CEL) << "abi: generated catalogue row `"
-                                     << fn.name() << "` has module != CEL";
-      v.push_back(fn);
-    }
-    return v;
+    return std::vector<CelRuntimeFunction>(catalogue.functions().begin(),
+                                           catalogue.functions().end());
   }());
-  return *kHelpers;
+  return *kAll;
 }
 
-// ════════════════════════════════════════════════════════════════
-// `cel_host` namespace — wasmtime host trampolines registered by
-// `cel_host_wasmtime.cc::RegisterCelHostImports`.  Names + arities
-// MUST agree with `kHostTrampolines[]` in that file; the cross-check
-// loop there CHECK-fails at startup if they drift.
-// ════════════════════════════════════════════════════════════════
-const std::vector<CelRuntimeFunction>& CelHostFunctionsVec() {
-  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns([] {
-    return std::vector<CelRuntimeFunction>{
-        MakeHostFn("cel_get_field", CEL_HOST, 4),
-        MakeHostFn("cel_has_field", CEL_HOST, 4),
-        MakeHostFn("cel_map_lookup", CEL_HOST, 3),
-        MakeHostFn("cel_map_iter_open", CEL_HOST, 2),
-        MakeHostFn("cel_list_iter_open", CEL_HOST, 2),
-        MakeHostFn("cel_list_at", CEL_HOST, 3),
-        MakeHostFn("cel_list_size", CEL_HOST, 2),
-        MakeHostFn("cel_list_in", CEL_HOST, 3),
-        MakeHostFn("cel_list_eq", CEL_HOST, 3),
-        MakeHostFn("cel_list_concat", CEL_HOST, 3),
-        MakeHostFn("cel_map_size", CEL_HOST, 2),
-        MakeHostFn("cel_map_in", CEL_HOST, 3),
-        MakeHostFn("cel_map_eq", CEL_HOST, 3),
-        MakeHostFn("cel_message_eq", CEL_HOST, 3),
-        MakeHostFn("cel_make_message", CEL_HOST, 2),
-        MakeHostFn("cel_set_field", CEL_HOST, 3),
-        MakeHostFn("resolve_message_type_name", CEL_HOST, 2),
-        MakeHostFn("cel_timestamp_tz_accessor", CEL_HOST, 4),
-        MakeHostFn("cel_wkt_unwrap_time", CEL_HOST, 2),
-        MakeHostFn("cel_wkt_unwrap_wrapper", CEL_HOST, 3),
-    };
-  }());
+// The catalogue rows for one module, in catalogue order.  Each module's
+// rows are copied into their own contiguous vector so callers can hand
+// out a `Span` over just that namespace.
+std::vector<CelRuntimeFunction> FilterByModule(CelRuntimeModule module) {
+  std::vector<CelRuntimeFunction> v;
+  for (const CelRuntimeFunction& fn : AllCatalogueFunctions()) {
+    if (fn.module() == module) v.push_back(fn);
+  }
+  return v;
+}
+
+// `cel`      — pure-wasm helpers exported by cel_runtime.wasm.
+const std::vector<CelRuntimeFunction>& CelRuntimeHelpersVec() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns(
+      FilterByModule(CEL));
   return *kFns;
 }
 
-// ════════════════════════════════════════════════════════════════
-// `cel_env` namespace — host environment trampolines.  Currently
-// just `cel_log`; reserved for future cross-cutting concerns.
-// ════════════════════════════════════════════════════════════════
+// `cel_host` — wasmtime host trampolines registered by
+// `cel_host_wasmtime.cc`.  Names + arities MUST agree with the
+// trampolines registered there; the cross-check loop CHECK-fails at
+// startup if they drift (that is what guards the generator's hard-coded
+// host set against reality).
+const std::vector<CelRuntimeFunction>& CelHostFunctionsVec() {
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns(
+      FilterByModule(CEL_HOST));
+  return *kFns;
+}
+
+// `cel_env`  — host environment trampolines (currently just `cel_log`).
 const std::vector<CelRuntimeFunction>& CelEnvFunctionsVec() {
-  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns([] {
-    return std::vector<CelRuntimeFunction>{
-        MakeHostFn("cel_log", CEL_ENV, 4),
-    };
-  }());
+  static const absl::NoDestructor<std::vector<CelRuntimeFunction>> kFns(
+      FilterByModule(CEL_ENV));
   return *kFns;
 }
 
