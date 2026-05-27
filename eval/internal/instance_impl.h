@@ -22,19 +22,24 @@
 
 namespace celwasm {
 
-// M13 Slice C.1 — per-Plan host-callback env.  Carries the
-// engine-registered `celwasm::HostCallback` plus a borrowed pointer to
-// the per-Instance shared memory.  The wasmtime linker callback
-// gets this struct's address as its `env` argument; the struct
-// outlives the linker via `InstanceImpl::host_fn_envs`.
+// Per-Plan host-callback env.  Carries the engine-registered
+// `celwasm::HostCallback` plus a borrowed pointer to the per-Instance
+// `CelHostCallbackEnv`.  The wasmtime linker callback gets this
+// struct's address as its `env` argument; the struct outlives the
+// linker via `InstanceImpl::host_fn_envs`.
 struct HostFnEnv {
   // Borrowed; points into `WasmtimeEngineState::host_callbacks`.
   // The shared_ptr<WasmtimeEngineState> on the public Instance
   // outlives this struct, so the pointer stays valid.
   const celwasm::HostCallback* callback = nullptr;
-  // Borrowed from `InstanceImpl::memory` (shared with the runtime
-  // + every foreign module instantiated into this store).
-  wasmtime_sharedmemory_t* memory = nullptr;
+  // Borrowed pointer to `InstanceImpl::host_env`.  The `@host`
+  // trampoline builds its typed `HostCallContext` from this env's
+  // shared memory, arena_alloc export, and — crucially — the SAME
+  // per-eval externref table the built-in cel_host trampolines use.
+  // Sharing the table is what lets a proto / list / map argument
+  // interned upstream be dereferenced here, and an aggregate the
+  // callback returns be Lookup'd by a downstream cel_host call.
+  CelHostCallbackEnv* host_env = nullptr;
 };
 
 struct InstanceImpl {

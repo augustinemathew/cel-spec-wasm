@@ -15,10 +15,13 @@
 #include "absl/types/span.h"
 #include "compiler/program.h"
 #include "eval/host/cel_log.h"
+#include "eval/host_call_context.h"
 #include "eval/internal/abi_decode.h"
+#include "eval/internal/cel_host_wasmtime.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/wasmtime_engine_state.h"
 #include "google/protobuf/descriptor.h"
+#include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_runtime_wasm_bytes.h"
 #include "wasi.h"
@@ -408,35 +411,62 @@ wasm_trap_t* TrapFromStatus(absl::string_view msg) {
   return t;
 }
 
-// Trampoline: adapts wasmtime's func_callback_t shape to our raw
-// HostCallback.  `env_ptr` points at a `HostFnEnv` (allocated
-// per-Plan in `RegisterHostCallbacks`); reads memory through the
-// env's borrowed `wasmtime_sharedmemory_t*` (matching the shape in
-// `cel_host_wasmtime.cc::HostFieldTrampoline`).  We do NOT use
-// `wasmtime_caller_export_get(caller, "memory", ...)` because the
-// production expr codegen IMPORTS memory rather than exporting it,
-// so the caller wouldn't satisfy that lookup.
-//
-// First arg is `out_slot`, remaining args are `arg_slots`.
+// 3VL operand absorption.  Scans the arg slots; if any is CEL_ERROR
+// (error wins over unknown) or CEL_UNKNOWN, writes that value verbatim
+// (attribute id preserved) to `out_slot` and returns true — the
+// callback must NOT run, matching CEL dispatch semantics where a
+// function is not invoked on error / unknown operands.
+bool AbsorbUnknownOrErrorArg(celwasm::MemoryView& mem,
+                             absl::Span<const uint32_t> arg_slots,
+                             uint32_t out_slot) {
+  bool have_error = false;
+  bool have_unknown = false;
+  CelValue propagate{};
+  for (uint32_t slot : arg_slots) {
+    const CelValue cv = mem.ReadCelValue(slot);
+    if (cv.kind == CEL_ERROR && !have_error) {
+      have_error = true;
+      propagate = cv;
+    } else if (cv.kind == CEL_UNKNOWN && !have_unknown && !have_error) {
+      have_unknown = true;
+      propagate = cv;
+    }
+  }
+  if (have_error || have_unknown) {
+    mem.WriteCelValue(out_slot, propagate);
+    return true;
+  }
+  return false;
+}
+
+// Trampoline: adapts wasmtime's func_callback_t shape to a typed
+// `HostCallContext`.  `env_ptr` points at a `HostFnEnv` (allocated
+// per-Plan in `RegisterHostCallbacks`) whose `host_env` carries the
+// per-Instance shared memory, arena_alloc export, and externref table
+// — the same context the built-in cel_host trampolines build (see
+// `cel_host_wasmtime.cc::HostFieldTrampoline`).  First arg is
+// `out_slot`, remaining args are `arg_slots`.  Unknown / error args are
+// absorbed before the callback runs (see AbsorbUnknownOrErrorArg).
 wasm_trap_t* HostCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
                                     const wasmtime_val_t* args, size_t nargs,
                                     wasmtime_val_t* /*results*/,
                                     size_t /*nresults*/) {
   auto* env = static_cast<celwasm::HostFnEnv*>(env_ptr);
   if (env == nullptr || env->callback == nullptr ||
-      !static_cast<bool>(*env->callback)) {
+      !static_cast<bool>(*env->callback) || env->host_env == nullptr) {
     return TrapFromStatus("host callback env was null");
   }
-  if (env->memory == nullptr) {
+  celwasm::CelHostCallbackEnv* he = env->host_env;
+  if (he->memory == nullptr) {
     return TrapFromStatus("host callback env missing memory pointer");
   }
   if (nargs < 1) {
     return TrapFromStatus("host callback needs at least one arg (out_slot)");
   }
-  (void)caller;  // unused — shared memory is reached via env
 
-  uint8_t* mem = wasmtime_sharedmemory_data(env->memory);
-  const size_t mem_size = wasmtime_sharedmemory_data_size(env->memory);
+  wasmtime_context_t* ctx = wasmtime_caller_context(caller);
+  celwasm::WasmtimeMemoryView mem(ctx, he->memory);
+  celwasm::WasmtimeArenaAllocator alloc(ctx, he->arena_alloc_fn, he->memory);
 
   const auto out_slot = static_cast<uint32_t>(args[0].of.i32);
   std::vector<uint32_t> arg_slots;
@@ -445,7 +475,12 @@ wasm_trap_t* HostCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
     arg_slots.push_back(static_cast<uint32_t>(args[i].of.i32));
   }
 
-  absl::Status s = (*env->callback)(mem, mem_size, out_slot, arg_slots);
+  if (AbsorbUnknownOrErrorArg(mem, arg_slots, out_slot)) {
+    return nullptr;
+  }
+
+  celwasm::HostCallContext call_ctx(mem, he->refs, alloc, out_slot, arg_slots);
+  absl::Status s = (*env->callback)(call_ctx);
   if (!s.ok()) {
     return TrapFromStatus(s.message());
   }
@@ -520,7 +555,10 @@ absl::Status RegisterHostCallbacks(celwasm::WasmtimeEngineState* state,
   for (auto& [overload_id, rcb] : state->host_callbacks) {
     auto env = std::make_unique<celwasm::HostFnEnv>();
     env->callback = &rcb.callback;
-    env->memory = impl->memory;  // borrowed; outlives the linker
+    // Borrowed; `impl->host_env` lives for the instance's lifetime and
+    // is fully populated (memory / arena_alloc_fn / refs) before any
+    // Eval reaches this trampoline.
+    env->host_env = &impl->host_env;
     void* env_ptr = env.get();
     impl->host_fn_envs.push_back(std::move(env));
 

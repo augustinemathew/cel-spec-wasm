@@ -2546,6 +2546,72 @@ int — validated by the now-deleted strong-enum probe).
         error VALUE).  `.baseline` 1890 → 1898; cleanup-backlog #11
         closed.
 
+### Rewrite M21 — host-call adapter (typed `HostCallContext`) (shipped 2026-05-26)
+
+`m21-host-call-adapter.md` turned the raw 4-arg `@host` callback ABI
+into a typed, kind-checked `HostCallContext` (Layer 1) + a
+canonical-types-only `BindTypedFunction` / `Engine::AddTypedFunction`
+(Layer 2), and widened the host-call trampoline env to share the
+per-Instance externref table + arena (Layer 0) — the prerequisite that
+makes proto / list / map arguments and newly-allocated string /
+aggregate returns work for user host fns.  No wire-format / runtime
+`.wasm` / codegen change.
+
+  - [x] **Layer 1 — `HostCallContext` unit matrix** at
+        `eval/host_call_context_test.cc`.  Every `ArgXxx` /
+        `ReturnXxx` over fake `MemoryView` / `ExternrefTable` /
+        `ArenaAllocator`: positive decode/encode, negative wrong-kind →
+        `InvalidArgument` (the non-bypassable kind-tag check), OOB arg
+        index → `OutOfRange`, dangling externref slot →
+        `FailedPrecondition`.  Boundary ints/uints, ±inf/nan/-0.0,
+        empty / embedded-NUL / multi-byte strings & bytes.  Complex:
+        `list<customer>` (host + arena-of-messages),
+        `map<string,list<customer>>`, int-keyed maps, nested arena
+        decode.  Aggregate returns intern host backings; `ReturnUnknown`
+        stamps `kFunctionUnknownSentinel`; `ReturnValue(Unknown)`
+        preserves a propagated input attribute id.
+  - [x] **Layer 2 — `BindTypedFunction`** at
+        `eval/typed_function_test.cc`.  Canonical param/return types
+        round-trip through typed lambdas over the fake context; arity =
+        params + 1; concrete `const M&` (dynamic_cast, wrong-type →
+        error) and polymorphic `const Message*`; function-pointer bind;
+        wrong-kind arg / non-OK lambda surface as error status.
+        Must-not-compile set covered by `static_assert` on the exposed
+        `kIsCanonicalHostArg` / `kIsCanonicalHostReturn` predicate
+        (`int`, `unsigned`, `float`, `char*`, `std::string` arg,
+        by-value proto rejected; `int`/`float`/`string_view` return
+        rejected).  **Also exercised end-to-end through real wasmtime**
+        (`host_fn_test.cc` `Typed*` — the full kind matrix incl. arena
+        `string` return, concrete + polymorphic proto arg, owning proto
+        return, `HostListView`/`HostMapView` args, and `bytes` / unknown
+        / error returns via the `Value` escape hatch — all via
+        `Engine::AddTypedFunction`), so the typed sugar is proven over
+        the full pipeline, not just the fake context.
+  - [x] **Layer 0 + integration — e2e through real wasmtime** at
+        `e2e/host_fn_test.cc` (67 cases).  Every test inlines the real
+        customer flow (no test-only wrappers); the full kind matrix runs
+        on **both** the typed (`AddTypedFunction`) and context
+        (`AddFunction`) registration paths — incl. Duration / Timestamp,
+        concrete + polymorphic proto arg, owning proto return,
+        `list`/`map` (bound + literal) and the nested
+        `map<string,list<proto>>`, arena `ReturnString`, and `bytes` /
+        unknown / error returns.  `instance_test.cc` + `engine_test.cc`
+        callbacks use `HostCallContext`.
+  - [x] **3VL — PartialEval dimension** (e2e): host fns dispatch
+        normally on the PartialEval path with known args
+        (`PartialEvalKnownArgInvokesHostFn`); an arg marked unknown by an
+        `AttributePattern` is absorbed by the trampoline before the
+        callback runs (callback NOT invoked, asserted via a flag) and
+        propagates with its real attribute id (≠ sentinel) — verified
+        across int / string / proto / list / map
+        (`UnknownArgAutoPropagatesWithoutInvokingCallback` +
+        `PartialEvalUnknownArgTest`), the five wire-representation
+        classes (the absorption check is kind-independent in the
+        trampoline).  A function-origin `ReturnUnknown()` stays
+        distinguishable and survives an operator merge
+        (`FunctionOriginUnknownSurvivesOperatorMerge`).  Error args
+        propagate (error precedence over unknown).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

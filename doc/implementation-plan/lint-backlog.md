@@ -107,9 +107,17 @@ better done in their own milestones:
 
 - A handful of `clang-analyzer-*` warnings under
   `eval/internal/cel_host.cc` (`NullArg`,
-  `NullableDereferenced`) — likely false positives from
+  `NullableDereferenced`) — false positives from
   inter-procedural analysis without full header visibility; defer
-  to a dedicated triage pass.
+  to a dedicated triage pass.  Confirmed FPs:
+  `clang-analyzer-unix.cstring.NullArg` at `cel_host.cc:746` and
+  `:3608` (`std::memcpy(dst, fqn.data(), …)`) — the preceding
+  `if (dst == nullptr && !fqn.empty()) return …;` guard already
+  makes `dst` non-null whenever the `!fqn.empty()` memcpy runs, but
+  the analyzer does not correlate the two `!fqn.empty()` conditions.
+  Both lines are unchanged since 2026-05-14 (commit `1ce02eb6`); they
+  re-surface when nearby edits shift the analyzer's explored paths
+  (e.g. the m21 `EncodeValueToSlot` additions).
 
 - `Error while processing <header>.h` + `'<inc>' file not found`
   lines (binaryen-c.h, common/ast.h, gmock/gmock.h, gtest/gtest.h):

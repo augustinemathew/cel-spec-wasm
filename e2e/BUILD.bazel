@@ -519,3 +519,34 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# Host functions (@host.) end-to-end: parse .celfn IDL → declare on
+# Compiler → Compile a calling expr → Engine::Plan with real host
+# callbacks → Instance::Eval / PartialEval → decode.  Covers the typed
+# (AddTypedFunction) and context (AddFunction / HostCallContext)
+# registration paths over the full type matrix.  wasmtime-backed.
+cc_test(
+    name = "host_fn_test",
+    srcs = ["host_fn_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//eval:activation",
+        "//eval:attribute",
+        "//eval:cel_host",  # for Value::Message(proto) + HostListBacking nav
+        "//eval:engine",
+        "//eval:host_call_context",
+        "//eval:instance",
+        "//eval:value",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)

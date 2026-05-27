@@ -42,6 +42,7 @@
 #include "absl/types/span.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
+#include "eval/typed_function.h"
 #include "compiler/program.h"
 
 namespace celwasm {
@@ -50,32 +51,14 @@ struct WasmtimeEngineState;
 
 namespace celwasm {
 
-// Raw low-level callback type for `Engine::AddFunction` — the impl
-// for a single `@host.<name>` declaration in a `.celfn` library.
-//
-// The engine invokes the callback when a Planned program's wasm
-// imports `cel_fn.<overload_id>` and that import is reached during
-// `Instance::Eval`.  Contract:
-//
-//   - `memory` points at the program's shared `cel.memory` linear
-//     memory.  `mem_size` is the total memory size in bytes.
-//   - `out_slot` is the byte offset of the 24-byte CelValue the
-//     callback must write the result to.
-//   - `arg_slots` are the byte offsets of the input CelValues (one
-//     per `.celfn`-declared parameter, including the `this`-receiver
-//     if any).  Empty for a zero-arg callback.
-//   - Return OK on success.  Returning a non-OK status traps the
-//     wasm execution with the error message.
-//
-// CelValue layout is the canonical 24-byte shape from
-// `runtime/cel_data.h`.  Slice C.1 ships this raw
-// shape; Slice C.2 wires the typed `celwasm::FunctionImpl` (from
-// `api/activation.h`, signature `Value(Span<const Value>) const`)
-// on top as the user-facing layer, with a coercion shim that
-// decodes raw CelValues into typed `Value`s and back.
-using HostCallback = std::function<absl::Status(
-    uint8_t* memory, size_t mem_size, uint32_t out_slot,
-    absl::Span<const uint32_t> arg_slots)>;
+// `HostCallback` (the impl for a single `@host.<name>` declaration) is
+// defined in `eval/host_callback.h` as
+// `std::function<absl::Status(HostCallContext&)>`.  The engine invokes
+// it when a Planned program's wasm imports `cel_fn.<overload_id>` and
+// that import is reached during `Instance::Eval`; the typed
+// `HostCallContext` (eval/host_call_context.h) gives the callback
+// kind-checked accessors over the argument slots and setters for the
+// result slot.  Returning a non-OK status traps the wasm execution.
 
 class Engine {
  public:
@@ -148,6 +131,23 @@ class Engine {
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
                                                 HostCallback impl);
+
+  // Typed sugar over `AddFunction` (host-call adapter Layer 2,
+  // eval/typed_function.h): adapts a plain typed lambda into a
+  // `HostCallback`, deriving the wasm arity from the lambda's parameter
+  // count.  Only canonical CEL parameter / return spellings compile —
+  // see typed_function.h for the closed type set and the rationale.
+  //
+  //   engine.AddTypedFunction("double_it_int",
+  //       [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });
+  //
+  // Same conflict / thread-safety contract as AddFunction.
+  template <typename Fn>
+  ABSL_MUST_USE_RESULT absl::Status AddTypedFunction(
+      absl::string_view overload_id, Fn fn) {
+    TypedFunction tf = BindTypedFunction(std::move(fn));
+    return AddFunction(overload_id, tf.num_args, std::move(tf.callback));
+  }
 
  private:
   friend class Builder;

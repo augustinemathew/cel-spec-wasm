@@ -127,38 +127,10 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
 namespace {
 
 // ═══════════ Wasmtime-backed Layer 2 adapters ═══════════
-
-class WasmtimeMemoryView final : public MemoryView {
- public:
-  WasmtimeMemoryView(wasmtime_context_t* ctx, wasmtime_sharedmemory_t* mem)
-      : ctx_(ctx), mem_(mem) {}
-
-  CelValue ReadCelValue(uint32_t offset) const override {
-    CelValue cv{};
-    std::memcpy(&cv, Data() + offset, sizeof(cv));
-    return cv;
-  }
-
-  void WriteCelValue(uint32_t offset, const CelValue& v) override {
-    std::memcpy(Data() + offset, &v, sizeof(v));
-  }
-
-  void WriteU32(uint32_t offset, uint32_t value) override {
-    std::memcpy(Data() + offset, &value, sizeof(value));
-  }
-
-  absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
-    return {reinterpret_cast<const char*>(Data() + ptr), len};
-  }
-
- private:
-  uint8_t* Data() const {
-    return wasmtime_sharedmemory_data(mem_);
-  }
-
-  wasmtime_context_t* ctx_;
-  wasmtime_sharedmemory_t* mem_;
-};
+//
+// `WasmtimeMemoryView` lives in the header (shared with the user
+// `@host` callback trampoline in engine.cc); `WasmtimeArenaAllocator`
+// is declared there too with its `Alloc` body below.
 
 // `WasmtimeArenaAllocator::Alloc` — calls the runtime's
 // `arena_alloc(size) -> offset` wasm export.  Reentrant into wasm

@@ -69,6 +69,20 @@ something in them, update them in the same commit as the code.
     NOT mean a milestone is done — manual-tagged tests carry the
     load-bearing e2e assertions; they MUST be run explicitly.**
 
+### Naming a new design doc
+
+Every new design / planning doc under
+`doc/implementation-plan/rewrite/` is named **`mNN-<name>.md`** — a
+milestone number prefix, then a short kebab-case slug
+(e.g. `m13-custom-fns.md`, `m18-network-ext.md`,
+`m21-host-call-adapter.md`).  Do NOT create un-prefixed names like
+`host-call-adapter.md` or `foo-design.md`.  Pick `NN` as the next free
+milestone number (scan the existing `mNN-*.md` files for the highest;
+gaps left by milestones living on other branches are not refilled —
+take the next number after the highest).  Sub-slices of one milestone
+share its number with a letter suffix (`m5b-…`, `m7a-…`).  The number
+is the doc's stable handle; the slug can be terse.
+
 ### Closing out a planning doc
 
 Planning docs (`doc/implementation-plan/**/*.md`) are living artifacts.
@@ -459,6 +473,18 @@ a positive and a negative test.**  Before a milestone is marked done:
 codegen → runtime/host.  Each stage is a component, and any non-trivial
 change touches several of them.  Apply these rules every time:
 
+  - **Strict author order: interface → tests → implementation.**  When
+    coding anything, write the interface (`.h`) first; then write the
+    tests *fully* — the complete positive + negative + boundary matrix —
+    against that interface, each test body present but `GTEST_SKIP()`'d
+    (or otherwise compiling green) *before any implementation exists*;
+    then write the implementation, deleting the skip on each case as its
+    path goes green.  Do NOT write the `.cc` before the tests — the
+    tests are the spec the implementation satisfies, and writing them
+    first is what stops the implementation from quietly defining its own
+    (wrong) contract.  **Every individual source file gets its own
+    `_test.cc`** — a new `.h`/`.cc` pair without a paired test is
+    incomplete, even if an end-to-end test happens to cover it.
   - **No feature is done without tests.**  Ship the test in the same
     commit as the code; a "will add tests later" is shipping a
     regression surface.

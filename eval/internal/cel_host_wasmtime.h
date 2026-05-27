@@ -9,6 +9,7 @@
 #ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_
 #define CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_
 
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "eval/internal/cel_host.h"
 #include "google/protobuf/descriptor.h"
 #include "wasmtime.h"
@@ -87,6 +89,43 @@ struct CelHostCallbackEnv {
   // See `doc/implementation-plan/rewrite/wasi/DESIGN.md` for the
   // activation-buffer ownership model.
   wasmtime_func_t malloc_fn = {};
+};
+
+// Wasmtime-backed `MemoryView` over a module's shared linear memory.
+// All reads / writes are bitwise memcpy at a byte offset (the wire
+// CelValue is fixed-layout, LE-pinned in cel_data.h).  Used by every
+// Layer-3 trampoline — the cel_host field/aggregate trampolines and
+// the user `@host` callback trampoline — to read arg slots and write
+// the out slot.
+class WasmtimeMemoryView final : public MemoryView {
+ public:
+  // `ctx` is accepted for call-site symmetry with the arena allocator
+  // (and a possible future bounds-checked read), but shared-memory data
+  // is reachable without it via `wasmtime_sharedmemory_data`.
+  WasmtimeMemoryView(wasmtime_context_t* absl_nonnull /*ctx*/,
+                     wasmtime_sharedmemory_t* absl_nonnull mem)
+      : mem_(mem) {}
+
+  CelValue ReadCelValue(uint32_t offset) const override {
+    CelValue cv{};
+    std::memcpy(&cv, Data() + offset, sizeof(cv));
+    return cv;
+  }
+  void WriteCelValue(uint32_t offset, const CelValue& v) override {
+    std::memcpy(Data() + offset, &v, sizeof(v));
+  }
+  void WriteU32(uint32_t offset, uint32_t value) override {
+    std::memcpy(Data() + offset, &value, sizeof(value));
+  }
+  absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
+    return {reinterpret_cast<const char*>(Data() + ptr), len};
+  }
+
+ private:
+  uint8_t* absl_nonnull Data() const {
+    return wasmtime_sharedmemory_data(mem_);
+  }
+  wasmtime_sharedmemory_t* absl_nonnull mem_;
 };
 
 // Wasmtime-backed `ArenaAllocator` — calls the runtime's

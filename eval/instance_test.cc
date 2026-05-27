@@ -24,6 +24,7 @@
 #include "eval/attribute.h"
 #include "compiler/compiler.h"
 #include "eval/engine.h"
+#include "eval/host_call_context.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
 #include "compiler/program.h"
@@ -674,62 +675,20 @@ TEST(InstanceActivationStringEncoderTest, ArenaRewindsBetweenEvals) {
 // and Instance decode.
 namespace m13_c3 {
 
-// Read a `CelValue` (24 bytes) from `mem` at `slot`.  Replays the
-// memcpy pattern probe 5 uses; the high-level `HostCallback` shape
-// hides the wasmtime caller-export-`memory` plumbing for us.
-struct CelValueWire {
-  uint32_t kind;
-  uint32_t pad;
-  uint32_t payload_lo;
-  uint32_t payload_hi;
-  uint32_t payload_mid;
-  uint32_t payload_top;
-};
-static_assert(sizeof(CelValueWire) == 24, "CelValueWire must be 24 bytes");
-
-// CEL_STRING = 5, CEL_BOOL = 1.  Pulled from runtime/cel_data.h
-// directly to avoid bringing the whole C header into this test;
-// the values are part of the frozen ABI.
-constexpr uint32_t kCelString = 5;
-constexpr uint32_t kCelBool = 1;
-
-absl::Status IsAllDigitsCallback(uint8_t* memory, size_t mem_size,
-                                 uint32_t out_slot,
-                                 absl::Span<const uint32_t> arg_slots) {
-  if (arg_slots.size() != 1) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("is_number expects 1 arg, got ", arg_slots.size()));
-  }
-  const uint32_t s_slot = arg_slots[0];
-  if (s_slot + sizeof(CelValueWire) > mem_size) {
-    return absl::OutOfRangeError("string slot out of bounds");
-  }
-  CelValueWire input{};
-  std::memcpy(&input, memory + s_slot, sizeof(input));
-  if (input.kind != kCelString) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("is_number: expected CEL_STRING, got kind=", input.kind));
-  }
-  // Decode the CelSpan { ptr=payload_lo, len=payload_hi } and read
-  // the bytes from memory.  ptr is a wasm-memory offset.
-  const uint32_t str_ptr = input.payload_lo;
-  const uint32_t str_len = input.payload_hi;
-  if (str_ptr + str_len > mem_size) {
-    return absl::OutOfRangeError("string bytes out of bounds");
-  }
-  bool all_digits = str_len > 0;
-  for (uint32_t i = 0; i < str_len; ++i) {
-    const uint8_t c = memory[str_ptr + i];
+// `is_number(this string s)` over the typed HostCallContext: ArgString
+// kind-checks the receiver slot for us; ReturnBool encodes the result.
+absl::Status IsAllDigitsCallback(HostCallContext& ctx) {
+  auto s_or = ctx.ArgString(0);
+  if (!s_or.ok()) return s_or.status();
+  const absl::string_view s = *s_or;
+  bool all_digits = !s.empty();
+  for (const char c : s) {
     if (c < '0' || c > '9') {
       all_digits = false;
       break;
     }
   }
-  CelValueWire output{};
-  output.kind = kCelBool;
-  output.payload_lo = all_digits ? 1u : 0u;
-  std::memcpy(memory + out_slot, &output, sizeof(output));
-  return absl::OkStatus();
+  return ctx.ReturnBool(all_digits);
 }
 
 absl::StatusOr<Compiler> MakeCompiler() {

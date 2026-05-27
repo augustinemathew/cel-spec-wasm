@@ -131,6 +131,93 @@ cc_library(
     ],
 )
 
+# Host-call adapter Layer 1 (m21) — the typed, kind-checked
+# HostCallContext that turns the raw 24-byte slot ABI an @host callback
+# sees into absl::StatusOr<T> accessors / setters.  Public: the
+# user-facing face of a host callback.
+cc_library(
+    name = "host_call_context",
+    srcs = ["host_call_context.cc"],
+    hdrs = ["host_call_context.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":attribute",
+        ":cel_host",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "host_call_context_test",
+    srcs = ["host_call_context_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":error",
+        ":host_call_context",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Host-call adapter Layer 2 (m21) — the canonical-types-only typed
+# template that adapts a plain lambda into a HostCallback.  Header-only.
+cc_library(
+    name = "typed_function",
+    hdrs = ["typed_function.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":host_call_context",
+        ":host_callback",
+        ":value",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "typed_function_test",
+    srcs = ["typed_function_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":host_call_context",
+        ":typed_function",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # Internal — decode the `cel.abi` custom section from raw wasm
 # bytes.  Consumed by Engine::Plan at load time.
 cc_library(
@@ -456,6 +543,7 @@ cc_test(
         ":attribute",
         ":cel_host",
         ":engine",
+        ":host_call_context",
         ":instance",
         ":value",
         "//shared:type",
@@ -464,6 +552,7 @@ cc_test(
         "//testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -479,11 +568,14 @@ cc_library(
     deps = [
         ":abi_decode",
         ":cel_host_wasmtime",
+        ":host_call_context",
         ":host_callback",
         ":instance",
         ":instance_impl",
+        ":typed_function",
         ":wasmtime_engine_state",
         "//abi:runtime_catalogue",
+        "//runtime:cel_runtime",
         "//compiler:program",
         "//eval/host:cel_log",
         "//runtime:cel_runtime_wasm_bytes",
@@ -515,26 +607,5 @@ cc_test(
     ],
 )
 
-# End-to-end coverage for the `@host.` custom-function backend: the
-# whole flow (parse `.celfn` → declare on Compiler → Compile a calling
-# expr → Engine::Plan with real HostCallbacks → Instance::Eval →
-# decode). wasmtime-backed, hence `manual`.
-cc_test(
-    name = "celfn_host_fn_e2e_test",
-    srcs = ["celfn_host_fn_e2e_test.cc"],
-    tags = ["manual"],
-    deps = [
-        ":activation",
-        ":engine",
-        ":instance",
-        ":value",
-        "//compiler:compiler",
-        "//compiler:program",
-        "//shared:type",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
-        "//third_party/wasmtime:wasmtime",
-    ],
-)
+# Host-fn end-to-end coverage lives in //e2e:host_fn_test (the whole
+# flow through real wasmtime belongs with the other e2e suites).

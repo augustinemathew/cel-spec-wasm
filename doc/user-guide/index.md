@@ -5,7 +5,9 @@ to compile a CEL expression to a wasm module, evaluate it, bind
 variables, and extend the language with custom functions (host-backed,
 CEL-defined, or foreign modules written in Rust/Go/C).
 
-Every code snippet uses the real public API in `compiler_v2/api/`. Where
+Every code snippet uses the real public API (`compiler/compiler.h`,
+`compiler/program.h`, `eval/engine.h`, `eval/instance.h`,
+`eval/activation.h`, `eval/value.h`, `shared/type.h`). Where
 a surface is declared but not yet fully wired, it is called out with a
 **Status** line — this guide documents the *target* API and is explicit
 about what evaluates today vs. what is planned.
@@ -13,6 +15,13 @@ about what evaluates today vs. what is planned.
 > **Implementation-status legend.** Throughout: ✅ = shipped + tested;
 > 🟡 = surface declared, behavior partial/aspirational; ⛔ = designed,
 > not yet implemented. A consolidated status table is in §10.
+
+> **Detailed guides.** Topics that warrant a deep dive with worked
+> examples live on their own pages; this index is the overview + the
+> compile/run API. So far:
+> - [Writing host functions](writing-host-functions.md) — the typed,
+>   context, and raw APIs; proto / list / map args; returns; errors;
+>   the canonical-type and kind-safety rules.
 
 ---
 
@@ -24,24 +33,24 @@ The system splits cleanly into a **compile-time** half and a
 ```
         compile time                    │            run time
   ┌─────────────────────────┐           │     ┌──────────────────────────┐
-  │ cel::Compiler            │           │     │ cel::Engine              │
+  │ celwasm::Compiler            │           │     │ celwasm::Engine              │
   │   .Compile("source")     │ ── Program ──►  │   .Plan(program)         │
-  │   → cel::Program         │  (wasm bytes +  │   → cel::Instance        │
+  │   → celwasm::Program         │  (wasm bytes +  │   → celwasm::Instance        │
   │   (no wasmtime dep)      │   cel.abi)      │     .Eval(activation)    │
-  └─────────────────────────┘           │     │     → cel::Value          │
+  └─────────────────────────┘           │     │     → celwasm::Value          │
                                           │     └──────────────────────────┘
 ```
 
-- **`cel::Compiler`** — pure compile-time. Holds variable + custom-fn
+- **`celwasm::Compiler`** — pure compile-time. Holds variable + custom-fn
   declarations and the descriptor pool. No wasmtime dependency. One
   Compiler produces many Programs. (`compiler/compiler.h`)
-- **`cel::Program`** — the compiled artifact: wasm bytes + a `cel.abi`
+- **`celwasm::Program`** — the compiled artifact: wasm bytes + a `cel.abi`
   custom section. Pure data — copyable, serializable, shippable to
   another process/host. (`compiler/program.h`)
-- **`cel::Engine`** — pure runtime. Owns the shared `wasm_engine_t` +
+- **`celwasm::Engine`** — pure runtime. Owns the shared `wasm_engine_t` +
   the parsed `cel_runtime.wasm`. **Process-shared and thread-safe for
   `Plan`.** (`eval/engine.h`)
-- **`cel::Instance`** — one live evaluator: a wasmtime store + the
+- **`celwasm::Instance`** — one live evaluator: a wasmtime store + the
   instantiated modules. **Thread-owned** (bind one per worker). Holds a
   `shared_ptr` to the Engine state, so it keeps working even after the
   Engine handle is dropped. (`eval/instance.h`)
@@ -59,8 +68,8 @@ you can compile in one process and evaluate in another (ship the
 #include "eval/engine.h"
 
 // ── Compile time ──
-auto builder = cel::Compiler::NewBuilder();
-builder.DeclareVariable("x", cel::CelType::Int());
+auto builder = celwasm::Compiler::NewBuilder();
+builder.DeclareVariable("x", celwasm::CelType::Int());
 auto compiler = std::move(builder).Build();              // StatusOr<Compiler>
 CHECK_OK(compiler);
 
@@ -68,14 +77,14 @@ auto program = compiler->Compile("x + 1");               // StatusOr<Program>
 CHECK_OK(program);
 
 // ── Run time ──
-auto engine = cel::Engine::NewBuilder().Build();         // StatusOr<Engine>
+auto engine = celwasm::Engine::NewBuilder().Build();         // StatusOr<Engine>
 CHECK_OK(engine);
 
 auto instance = engine->Plan(*program);                  // StatusOr<Instance>
 CHECK_OK(instance);
 
-cel::Activation act;
-act.Bind("x", cel::Value::Int(41));
+celwasm::Activation act;
+act.Bind("x", celwasm::Value::Int(41));
 auto result = instance->Eval(act);                       // StatusOr<Value>
 CHECK_OK(result);
 CHECK_EQ(*result->AsInt(), 42);
@@ -96,10 +105,10 @@ Build a `Compiler` once with all variables and custom functions the
 expressions will reference:
 
 ```cpp
-auto b = cel::Compiler::NewBuilder();
-b.DeclareVariable("name", cel::CelType::String());
-b.DeclareVariable("age",  cel::CelType::Int());
-b.DeclareVariable("user", cel::CelType::Message("acme.User"));   // proto by FQN
+auto b = celwasm::Compiler::NewBuilder();
+b.DeclareVariable("name", celwasm::CelType::String());
+b.DeclareVariable("age",  celwasm::CelType::Int());
+b.DeclareVariable("user", celwasm::CelType::Message("acme.User"));   // proto by FQN
 auto compiler = std::move(b).Build();
 ```
 
@@ -118,7 +127,7 @@ auto compiler = std::move(b).Build();
 ### 3.2 Compiling
 
 ```cpp
-cel::CompilerOptions opts;
+celwasm::CompilerOptions opts;
 opts.mem_size_bytes = 128 * 1024;   // linear-memory size (default: 2 wasm pages)
 opts.container      = "acme";       // optional namespace for short-form idents
 opts.optimize_level = 2;            // wasm-opt -O level: 0 (default) … 3
@@ -146,7 +155,7 @@ per-level trade-offs.)
 ```cpp
 absl::Span<const uint8_t> bytes = program->wasm_bytes();   // serialize / cache / ship
 // elsewhere / later:
-cel::Program reloaded(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+celwasm::Program reloaded(std::vector<uint8_t>(bytes.begin(), bytes.end()));
 ```
 
 A `Program` holds no engine state — copy it, write it to disk, send it
@@ -159,7 +168,7 @@ across a process boundary, then `Engine::Plan` it on the far side.
 ### 4.1 Engine — process-shared
 
 ```cpp
-auto engine = cel::Engine::NewBuilder().Build();   // do this ONCE per process
+auto engine = celwasm::Engine::NewBuilder().Build();   // do this ONCE per process
 ```
 
 Building an Engine parses `cel_runtime.wasm` into a module and stands up
@@ -193,9 +202,9 @@ many evals.
 auto v = instance->Eval();                   // StatusOr<Value>
 
 // With bindings:
-cel::Activation act;
-act.Bind("age", cel::Value::Int(20));
-act.Bind("name", cel::Value::String("Ann"));
+celwasm::Activation act;
+act.Bind("age", celwasm::Value::Int(20));
+act.Bind("name", celwasm::Value::String("Ann"));
 auto v2 = instance->Eval(act);
 ```
 
@@ -225,20 +234,20 @@ auto v = instance->PartialEval(act, /*unknowns=*/patterns);   // StatusOr<Value>
 `Activation` maps variable names → `Value`s for one Eval:
 
 ```cpp
-cel::Activation act;
-act.Bind("x", cel::Value::Int(42))
-   .Bind("s", cel::Value::String("hi"));     // fluent; overwrites prior binds
+celwasm::Activation act;
+act.Bind("x", celwasm::Value::Int(42))
+   .Bind("s", celwasm::Value::String("hi"));     // fluent; overwrites prior binds
 ```
 
 `Value` is the host-side counterpart to the 24-byte wire value. Build
 with named factories, inspect with `StatusOr<T> AsX()`:
 
 ```cpp
-cel::Value::Int(42);                 cel::Value::String("hi");
-cel::Value::Bool(true);              cel::Value::Bytes(std::string{...});
-cel::Value::Double(3.14);            cel::Value::Duration(absl::Seconds(5));
-cel::Value::Message(my_proto);       cel::Value::List({Value::Int(1), Value::Int(2)});
-cel::Value::Map({{Value::String("k"), Value::Int(1)}});
+celwasm::Value::Int(42);                 celwasm::Value::String("hi");
+celwasm::Value::Bool(true);              celwasm::Value::Bytes(std::string{...});
+celwasm::Value::Double(3.14);            celwasm::Value::Duration(absl::Seconds(5));
+celwasm::Value::Message(my_proto);       celwasm::Value::List({Value::Int(1), Value::Int(2)});
+celwasm::Value::Map({{Value::String("k"), Value::Int(1)}});
 
 auto i = v.AsInt();        // StatusOr<int64_t>   (InvalidArgument on kind mismatch)
 auto s = v.AsString();     // StatusOr<string_view>
@@ -267,7 +276,7 @@ three backends, distinguished by the *shape* of the declaration:
 | Backend | Declaration shape | Who provides the body | Registered on |
 |---|---|---|---|
 | **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
-| **CEL-defined** | `int @native.addone(int x) = x + 1;` | a CEL expression body | nothing — compiled in |
+| **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | nothing — *would be* compiled in (parses + type-checks today, does not evaluate — §7) |
 | **Foreign** | `bool rules.allow(string subject, string action);` | a Rust/Go/C wasm module | `Engine::AddModule` |
 
 The backend is the **module prefix**: `@host` (C++ impl), `@native`
@@ -278,15 +287,15 @@ sigil is reserved for the two built-ins. (Grammar reference:
 Register declarations on the `Compiler` so call sites type-check:
 
 ```cpp
-auto b = cel::Compiler::NewBuilder();
+auto b = celwasm::Compiler::NewBuilder();
 b.AddFunction("int @host.length(string s);");       // one decl from a string
-b.AddLibrary(*cel::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
+b.AddLibrary(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
 auto compiler = std::move(b).Build();
 ```
 
 `AddFunction(celfn_source)` parses one (or more) decl from a string;
 `AddLibrary(FunctionLibrary)` registers a parsed `.celfn` library (build
-one with `cel::ParseCelfnSource(text)` or programmatically via
+one with `celwasm::ParseCelfnSource(text)` or programmatically via
 `FunctionLibrary::Builder`). A call to an unregistered function fails at
 compile time with `"undeclared reference to '<fn>'"`.
 
@@ -324,10 +333,10 @@ keeps it embeddable + testable):
 
 ```cpp
 std::string text = ReadFileToString("policy.celfn");   // YOUR file read
-auto lib = cel::ParseCelfnSource(text);                // StatusOr<FunctionLibrary>
+auto lib = celwasm::ParseCelfnSource(text);                // StatusOr<FunctionLibrary>
 
-auto b = cel::Compiler::NewBuilder();
-b.DeclareVariable("u", cel::CelType::Message("acme.User"));
+auto b = celwasm::Compiler::NewBuilder();
+b.DeclareVariable("u", celwasm::CelType::Message("acme.User"));
 b.AddLibrary(*lib);
 auto compiler = std::move(b).Build();
 
@@ -348,8 +357,8 @@ via `FunctionLibrary::decls()` on the in-process library.*
 signature, backend, description) to list or document what's available:
 
 ```cpp
-for (const cel::FunctionLibrary& lib : compiler->function_libraries()) {
-  for (const cel::CelfnDecl& d : lib.decls()) {
+for (const celwasm::FunctionLibrary& lib : compiler->function_libraries()) {
+  for (const celwasm::CelfnDecl& d : lib.decls()) {
     // d.fn_name, d.params, d.return_type, d.backend, d.description
   }
 }
@@ -370,196 +379,91 @@ for (const cel::FunctionLibrary& lib : compiler->function_libraries()) {
 A host function is implemented by your C++ at runtime. The expression
 imports it; you register the impl on the `Engine`.
 
-### 6.1 Today: the raw `HostCallback` ✅ (scalars + string/bytes args)
+> **→ Full guide: [Writing host functions](writing-host-functions.md).**
+> The typed `AddTypedFunction` API (recommended), the `HostCallContext`
+> accessors, proto / list / map args, owning returns, unknown/error
+> handling, and the canonical-type + kind-safety rules — all with
+> worked examples. This section is the in-index summary.
+
+### 6.1 The typed API — `AddTypedFunction` ✅ (recommended)
+
+Write a plain C++ lambda over **canonical CEL types**; the binding
+decodes each argument, calls you, and encodes the result. No slots, no
+`memcpy`, no kind-checking by hand:
 
 ```cpp
-// Compiler side: declare it.
-auto b = cel::Compiler::NewBuilder();
-b.AddFunction("int @host.length(string s);");       // overload-id: length_string
-auto compiler = std::move(b).Build();
-auto program  = compiler->Compile(R"(length("hello world"))");
+auto b = celwasm::Compiler::NewBuilder();
+b.DeclareVariable("x", celwasm::CelType::Int());
+b.AddFunction("int @host.double_it(int x);");        // overload-id: double_it_int
+auto program = (*std::move(b).Build()).Compile("double_it(x)");
 
-// Engine side: register the impl.
-auto engine = cel::Engine::NewBuilder().Build();
-cel::HostCallback impl =
-    [](uint8_t* mem, size_t mem_size, uint32_t out_slot,
-       absl::Span<const uint32_t> arg_slots) -> absl::Status {
-  CelValue in{};
-  std::memcpy(&in, mem + arg_slots[0], sizeof(in));   // read arg 0 (a string)
-  CelValue out{};
-  out.kind = static_cast<uint32_t>(CEL_INT);
-  out.payload.i = static_cast<int64_t>(in.payload.s.len);
-  std::memcpy(mem + out_slot, &out, sizeof(out));      // write result
-  return absl::OkStatus();
-};
-engine->AddFunction("length_string", /*num_args=*/2, impl);   // num_args = params + 1
-
-auto instance = engine->Plan(*program);
-auto v = instance->Eval();                              // → 11
+auto engine = celwasm::Engine::NewBuilder().Build();
+engine->AddTypedFunction("double_it_int",
+    [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });   // ✅
 ```
 
-The raw `HostCallback` signature
-(`eval/engine.h::HostCallback`):
+The lambda must return `absl::StatusOr<R>`. Only canonical CEL types
+compile — `int`/`float`/`char*`/by-value proto are a **compile error**,
+never a silent narrowing. Each CEL type maps to exactly one C++ type:
+`int`→`int64_t`, `uint`→`uint64_t`, `double`→`double`, `bool`→`bool`,
+`string`/`bytes`→`absl::string_view` (return `std::string`),
+`Duration`→`absl::Duration`, `Timestamp`→`absl::Time`,
+`proto(M)`→`const M&` (or `const google::protobuf::Message*` for the
+polymorphic, no-cast form; return `std::unique_ptr<M>`, owning),
+`list<T>`→`HostListView`, `map<K,V>`→`HostMapView`, any→`Value`.
+Proto / list / map arguments and newly-allocated string / aggregate
+returns all work — `list<proto(...)>` and `map<…,proto(...)>` compose by
+recursing into element/value backings.
+
+### 6.2 The context API — `HostCallContext&` ✅ (per-arg control)
+
+When you need per-argument control (dynamic arity, mixed handling), the
+`HostCallback` is `std::function<absl::Status(HostCallContext&)>`; every
+accessor is kind-checked and returns `absl::StatusOr<T>`:
 
 ```cpp
-std::function<absl::Status(uint8_t* memory, size_t mem_size,
-                           uint32_t out_slot,
-                           absl::Span<const uint32_t> arg_slots)>;
-```
-
-- `memory` is the program's shared linear memory; `out_slot` and each
-  `arg_slot` are **byte offsets** of 24-byte `CelValue` cells
-  (`runtime/cel_data.h`).
-- `num_args` passed to `AddFunction` is `params + 1` (the `+1` is the
-  out_slot every callback receives).
-- Returning non-OK traps the eval with your message.
-
-This raw form is sufficient for values whose bytes live in linear
-memory: scalars (inline in the CelValue) and `string`/`bytes` (a
-`{ptr,len}` span into memory).
-
-### 6.2 Target: the typed `FunctionImpl` adapter 🟡 (proto / list / map / returns)
-
-> **Status:** the typed surface (`cel::FunctionImpl` in
-> `eval/activation.h`) is declared but **not yet wired into
-> the Engine**. Host functions taking/returning **proto / list / map**,
-> or returning a **newly-constructed string/aggregate**, parse and
-> type-check today but do **not** evaluate — the raw callback has no
-> access to the message interner or an arena allocator. This section
-> documents the intended API; the executable spec for it lives in
-> `eval/engine.host_types_tdd_test.cc` (currently red).
-
-The target is a typed callback that works in `cel::Value`, never raw
-bytes:
-
-```cpp
-using cel::FunctionImpl;   // = AnyInvocable<Value(absl::Span<const Value>) const>
-
-// Declared: int @host.user_age(proto(acme.User) u);
-engine->AddFunction("user_age_message_acme_User",
-    [](absl::Span<const cel::Value> args) -> cel::Value {
-      // A kMessage Value surfaces the underlying protobuf Message; the
-      // impl downcasts to its concrete generated type.
-      const google::protobuf::Message& m = *args[0].AsProtoMessage();   // 🟡 target accessor
-      const auto* user = dynamic_cast<const acme::User*>(&m);
-      if (user == nullptr) return cel::Value::Error(/* wrong message type */);
-      return cel::Value::Int(user->age());
+engine->AddFunction("clamp_int_int_int", /*num_args=*/4,   // 3 params + out_slot
+    [](celwasm::HostCallContext& ctx) -> absl::Status {
+      auto v = ctx.ArgInt(0);  if (!v.ok()) return v.status();
+      // ... ctx.ArgString / ArgProto / ArgList / ArgMap / ArgValue ...
+      return ctx.ReturnInt(*v);
     });
 ```
 
-**How a `Value` becomes a concrete proto (TBD — this is the realistic
-shape).** A `proto(...)` arg arrives as a `kMessage` `Value` backed by a
-`HostMessageBacking`. For the built-in `ProtoBacking` (the common case),
-the adapter surfaces the underlying `const google::protobuf::Message&`,
-and the impl recovers its concrete generated type with
-`dynamic_cast<const acme::User*>(&m)` — a null result means the bound
-message wasn't the declared type (return a CEL error). The exact
-accessor is **not finalized** (today there's `Value::MessageBacking()`
-→ `HostMessageBacking*`, which is the polymorphic backing, *not*
-necessarily a protobuf `Message` — an embedder may back a "message" with
-JSON/struct data). The target adds a convenience that yields the
-`google::protobuf::Message&` for proto-backed values (e.g.
-`Value::AsProtoMessage()`), leaving the `dynamic_cast` to the impl;
-non-proto backings would surface through their own typed accessor. The
-**construction** direction is symmetric: an impl returns
-`Value::Message(my_user)` / `Value::OwnedMessage(...)`, and the adapter
-interns it.
+Unknown / error arguments are **auto-absorbed by the trampoline before
+your callback runs** (so a body only ever sees all-known args); a
+function may explicitly emit an unknown via `ctx.ReturnUnknown()`
+(stamping `celwasm::kFunctionUnknownSentinel`). `num_args` for
+`AddFunction` is `params + 1`; `AddTypedFunction` derives arity from the
+lambda. **Full detail + worked examples:
+[Writing host functions](writing-host-functions.md).**
 
-**How a `Value` carries a list / map.** Unlike proto, list/map need
-**no `dynamic_cast`** — a `kList`/`kMap` `Value` exposes a *uniform
-polymorphic backing* that already yields `cel::Value`s:
+> ⛔ **Foreign exception:** proto-bearing aggregates are rejected for a
+> foreign (`<alias>`) decl — `proto`, `list<proto…>`, and `map<…,proto…>`
+> can't cross into a foreign module's separate memory (`MentionsProto`
+> recurses to catch the nested cases). They're allowed only for
+> `@host`/`@native` (shared memory + interner).
 
-```cpp
-// list<int> arg:
-const cel::HostListBacking* xs = *args[0].ListBacking();   // Size() + At()
-int64_t sum = 0;
-for (size_t i = 0; i < xs->Size(); ++i)
-  sum += *xs->At(i, cel::CelType::Int())->AsInt();          // each element is a Value
-// map<string,int> arg:
-const cel::HostMapBacking* m = *args[1].MapBacking();       // Size()/Get()/ContainsKey()/ForEach()
-auto v = m->Get(cel::Value::String("k"), cel::CelType::Int());   // missing key → Value::Error
-```
+## 7. CEL-defined functions (`@native`) ⛔
 
-- `HostListBacking`: `Size()`, `At(i, elem_type) → StatusOr<Value>`
-  (out-of-bounds → `Value::Error(index_out_of_bounds)`), `ForEach`.
-- `HostMapBacking`: `Size()`, `Get(key, val_type) → StatusOr<Value>`
-  (missing key → `Value::Error(no_such_key)`), `ContainsKey`, `ForEach`.
-- Elements/values are themselves `Value`s → **nested aggregates
-  recurse** (a `list<map<string, proto(...)>>` just yields more
-  backings, each handled the same way).
-- Two built-in concretes per kind, **transparent to the impl**:
-  vector-backed (`HostList`/`HostMap`, from `Value::List(...)` /
-  `Value::Map(...)`) and proto-reflection (`ProtoList`/`ProtoMap`,
-  wrapping a repeated / map proto field). The runtime form (arena cells
-  in linear memory vs a host backing) is normalized to this view.
-- Build / return: `Value::List({...})` / `Value::Map({...})`; the
-  adapter lowers them into arena cells.
+A CEL-defined function has a body written in CEL itself. The *intent* is
+that it compiles **into the same wasm module** as the expression (no
+separate module, no host callback, no runtime registration):
 
-The backings + the variable-binding path **already exist** (it's how
-`list`/`map` *variables* evaluate today); the host-fn typed-adapter
-wiring is the same 🟡 gap as proto.
-
-**Lists/maps OF protos** — e.g. `list<proto(acme.User)>` or
-`map<string, proto(acme.User)>` — just **compose the two**: the
-container backing yields each element/value as a `kMessage` `Value` (no
-downcast for the container), and *each* message is then recovered with
-the proto `dynamic_cast`:
-
-```cpp
-// Declared:  int @host.count_admins(list<proto(acme.User)> users);
-[](absl::Span<const cel::Value> args) -> cel::Value {
-  const cel::HostListBacking* users = *args[0].ListBacking();
-  int64_t n = 0;
-  for (size_t i = 0; i < users->Size(); ++i) {
-    cel::Value e = *users->At(i, cel::CelType::Message("acme.User"));  // kMessage Value
-    const auto* u = dynamic_cast<const acme::User*>(&*e.AsProtoMessage());
-    if (u != nullptr && u->is_admin()) ++n;
-  }
-  return cel::Value::Int(n);
-}
-// map<string, proto(...)>: same, via m->Get(key, CelType::Message("acme.User")).
-```
-
-The element backing may be **vector-backed** (the caller built
-`Value::List({Value::Message(u1), Value::Message(u2)})`) or
-**proto-reflection** — e.g. the param is bound from a proto field like
-`user.friends` (a `repeated User` → `ProtoList`) or a `map<string,User>`
-proto field (→ `ProtoMap`); `At`/`Get` synthesize each sub-message
-`Value` via reflection, transparently. Returning one is symmetric:
-`Value::List({Value::Message(a), Value::Message(b)})`, lowered + each
-message interned.
-
-⛔ **Foreign exception:** proto-bearing aggregates are rejected for a
-foreign (`<alias>`) decl — `proto`, `list<proto…>`, and `map<…,proto…>`
-all can't cross into a foreign module's separate memory (`MentionsProto`
-recurses to catch the nested cases). They're allowed only for
-`@host`/`@native` (shared memory + interner).
-
-What the adapter does (the contract the wiring must satisfy):
-
-1. **Decode** each arg slot into a typed `cel::Value` per the declared
-   param type — resolving a `msg_slot` into a `Value::Message` whose
-   backing exposes the `google::protobuf::Message&` (impl
-   `dynamic_cast`s to the concrete type), and list/map handles into
-   `Value::List`/`Value::Map`.
-2. **Invoke** your `FunctionImpl` with the decoded `args`.
-3. **Encode** the returned `Value` back into the out_slot — allocating
-   from the eval arena for newly-constructed strings/aggregates, and
-   interning a constructed message.
-4. **On kind mismatch** (impl returns a `Value` whose kind disagrees
-   with the declared return type) → write a CEL error, not a silent
-   wrong value.
-
-Until this lands, complex-type host signatures are declarable (so a
-schema can be expressed) but should not be relied on to evaluate.
-
----
-
-## 7. CEL-defined functions ✅
-
-A CEL-defined function has a body written in CEL itself. It is compiled
-**into the same wasm module** as the expression (no separate module, no
-host callback, no runtime registration):
+> **Status: designed + declared, not implemented.** A `@native` decl
+> **parses and type-checks today** — the grammar accepts it, the
+> `FunctionLibrary` captures the body, and the checker registers the
+> overload so call sites type-check and `Compile` succeeds. But it does
+> **not evaluate**: the body-lowering producer is an unimplemented
+> header stub. `compiler/celfn/library_module.h` *declares*
+> `CompileLibraryBodies(...)` but there is no `library_module.cc`, no
+> BUILD target, and **no caller** — `compiler/internal/compile.cc` never
+> populates `CompiledArtifact.library_modules` (`compile.h:113`), and
+> `eval/engine.cc`'s `Plan` never registers a CEL-defined library
+> module. So compiling `addone(41)` succeeds, but evaluating it cannot
+> produce a result on this branch. The earlier "N-functions-in-one-module"
+> codegen did not survive the repo reorg; only the `library_module.h`
+> scaffold remains. The syntax + API below is the **target** shape.
 
 ```celfn
 int    @native.addone(int x)      = x + 1;
@@ -568,34 +472,41 @@ bool   @native.is_adult(this proto(acme.User) u) = u.age >= 18;   // method form
 ```
 
 ```cpp
-auto b = cel::Compiler::NewBuilder();
+auto b = celwasm::Compiler::NewBuilder();
 b.AddFunction("int @native.addone(int x) = x + 1;");
 auto compiler = std::move(b).Build();
 auto program  = compiler->Compile("addone(41)");           // no Engine::AddFunction
 
-auto engine   = cel::Engine::NewBuilder().Build();
+auto engine   = celwasm::Engine::NewBuilder().Build();
 auto instance = engine->Plan(*program);
-auto v = instance->Eval();                                  // → 42
+auto v = instance->Eval();                                  // ⛔ target → 42;
+                                                            // does not evaluate today
 ```
 
-Properties:
+Intended properties (target shape — see the Status callout above):
 
 - The body is type-checked with its params injected as variables; it may
   reference **only its own declared params** (not the outer
-  expression's variables).
-- Bodies lower to internal wasm functions in disjoint static memory
-  bands; many small functions are fine, but the expression + all bodies
-  must fit the reserved low-memory region (else `ResourceExhausted`).
+  expression's variables). (This much is real today — type-checking
+  works; it is *body lowering / eval* that is unimplemented.)
+- Bodies are intended to lower to internal wasm functions in disjoint
+  static memory bands; many small functions would be fine, but the
+  expression + all bodies must fit the reserved low-memory region (else
+  `ResourceExhausted`).
 - **Recursion is rejected.** CEL is a total language; a self- or
   mutually-recursive body (a cycle in the CEL-defined call graph) is
   rejected at compile time with `InvalidArgument`. A non-cyclic call
   chain (`f` calls `g` calls a builtin) is fine.
-- A CEL-defined body may call host functions and other (non-cyclic)
-  CEL-defined functions.
+- A CEL-defined body is designed to be able to call host functions and
+  other (non-cyclic) CEL-defined functions.
 
-> **Current eval coverage:** scalar and string returns are proven
-> end-to-end. `list`/`map` params/returns inside CEL-defined bodies
-> share the same marshalling gap as §6.2 and are not yet guaranteed.
+> **Current eval coverage:** none — `@native` bodies do **not** evaluate
+> on this branch. `CompileLibraryBodies` (the producer that would lower
+> the bodies) is an unimplemented header stub with no codegen,
+> registration, or e2e; scalar/string returns are **not** proven
+> end-to-end today. When the producer lands, `list`/`map` params/returns
+> inside CEL-defined bodies will additionally share the marshalling gap
+> described in §6.2.
 
 ---
 
@@ -752,18 +663,18 @@ GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o rules.wasm ./rules
 time; the bytes are supplied to the Engine at run time:
 
 ```cpp
-auto b = cel::Compiler::NewBuilder();
-b.DeclareVariable("subject", cel::CelType::String());
+auto b = celwasm::Compiler::NewBuilder();
+b.DeclareVariable("subject", celwasm::CelType::String());
 b.AddFunction("bool rules.allow(string subject, string action);");
 auto compiler = std::move(b).Build();
 auto program  = compiler->Compile(R"(rules.allow(subject, "read"))");
 
-auto engine = cel::Engine::NewBuilder().Build();
+auto engine = celwasm::Engine::NewBuilder().Build();
 engine->AddModule("rules", ReadFileToBytes("rules.wasm"));   // alias → module bytes
 
 auto instance = engine->Plan(*program);
-cel::Activation act;
-act.Bind("subject", cel::Value::String("guest"));
+celwasm::Activation act;
+act.Bind("subject", celwasm::Value::String("guest"));
 auto v = instance->Eval(act);     // host: _initialize(rules) once at Plan, then
                                   // lowers the two strings into rules' memory,
                                   // calls allow_string_string, lifts the bool → true
@@ -890,8 +801,8 @@ wrong answer.
 ## 9. Command-line tool (`cel`)
 
 For one-shot compile / check / eval without writing C++, use the `cel`
-CLI (`compiler_v2/tools/cel/`, built via
-`bazel build //compiler_v2/tools/cel:cel`). Three subcommands ship today:
+CLI (`tools/cel/`, built via
+`bazel build //tools/cel:cel`). Three subcommands ship today:
 
 | Subcommand | What it does | Phase |
 |---|---|---|
@@ -952,7 +863,7 @@ backend of the functions it calls:
 
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
-| **`@native`** (CEL-defined) | nothing — the body is compiled *into* the wasm (single-module) | **No** — fully self-contained |
+| **`@native`** (CEL-defined) ⛔ | nothing — the body is *intended* to be compiled *into* the wasm (single-module); body lowering is unimplemented today (§7), so a `@native`-using program does not evaluate yet | **No** (by design — would be fully self-contained) |
 | **Foreign** (`<alias>`) | the foreign module's **bytes**, supplied under the alias (`Engine::AddModule` / a planned `--module alias=path.wasm`) | **No** — the call is already lowered to a trampoline keyed by alias + overload id; you supply *bytes*, not the IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
@@ -980,11 +891,12 @@ for variables too (§3.3).
 | Compile scalars / strings / arithmetic / comprehensions / proto reads | ✅ |
 | `Engine` / `Plan` / `Instance` / `Eval` / `Activation` / `Value` | ✅ |
 | `PartialEval` with unknown patterns | ✅ |
-| **Host fns** — scalar + string/bytes args, scalar/bool return | ✅ (raw `HostCallback`) |
-| **Host fns** — proto / list / map args, aggregate / new-string returns | 🟡 declared + type-checked; eval pending the typed `FunctionImpl` adapter |
-| Typed `FunctionImpl` host adapter | 🟡 surface declared; not wired |
-| **CEL-defined fns** — scalar / string return, recursion rejection | ✅ |
-| **CEL-defined fns** — list/map params/returns | 🟡 same marshalling gap |
+| **Host fns** — scalar + string/bytes args, scalar/bool return | ✅ (typed `AddTypedFunction` / `HostCallContext`) |
+| **Host fns** — proto / list / map args, aggregate / new-string returns | ✅ (m21) |
+| Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
+| **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
+| **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ `CompileLibraryBodies` is an unimplemented header stub — no `.cc`, no BUILD target, no caller; never registered in `Plan`. Does not evaluate (§7) |
+| **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
 | **Foreign fns** (Rust/Go/C, fixed C ABI + shims, WASI/plain) | ⛔ designed (`modules-and-ffi.md` §5), not implemented |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
@@ -997,7 +909,8 @@ for variables too (§3.3).
 ## 11. Where to look next
 
 - **API headers** (the source of truth for signatures):
-  `compiler_v2/api/{compiler,program,engine,instance,activation,value,type}.h`.
+  `compiler/{compiler,program}.h`, `eval/{engine,instance,activation,value}.h`,
+  `shared/type.h`.
 - **`.celfn` IDL + types:** `compiler/celfn/function_library.h`.
 - **Custom-fn design + status tracker:**
   `doc/implementation-plan/rewrite/m13-custom-fns.md` (§0.5 current
@@ -1005,4 +918,4 @@ for variables too (§3.3).
 - **Memory model:** `doc/implementation-plan/rewrite/memory-layout-design.md`.
 - **Modules + FFI (foreign backend):**
   `doc/implementation-plan/rewrite/modules-and-ffi.md`.
-- **CLI:** `compiler_v2/tools/cel/` (compile/eval from the command line).
+- **CLI:** `tools/cel/` (compile/eval from the command line).

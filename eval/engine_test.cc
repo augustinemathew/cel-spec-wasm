@@ -286,9 +286,7 @@ TEST(EngineAddModuleTest, AddModuleRejectsMalformedBytes) {
 TEST(EngineAddFunctionTest, AddFunctionAcceptsValidImpl) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
-  HostCallback impl = [](uint8_t* /*mem*/, size_t /*mem_size*/,
-                         uint32_t /*out_slot*/,
-                         absl::Span<const uint32_t> /*arg_slots*/) {
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
   EXPECT_TRUE(engine_or->AddFunction("upper_string", 2, impl).ok());
@@ -298,8 +296,7 @@ TEST(EngineAddFunctionTest, AddFunctionRejectsZeroArity) {
   // num_args must be ≥ 1 (out_slot is always present).
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
-  HostCallback impl = [](uint8_t*, size_t, uint32_t,
-                         absl::Span<const uint32_t>) {
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
   auto s = engine_or->AddFunction("zero", 0, impl);
@@ -317,8 +314,7 @@ TEST(EngineAddFunctionTest, AddFunctionRejectsEmptyImpl) {
 TEST(EngineAddFunctionTest, AddFunctionRejectsDuplicateOverloadId) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
-  HostCallback impl = [](uint8_t*, size_t, uint32_t,
-                         absl::Span<const uint32_t>) {
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
   ASSERT_TRUE(engine_or->AddFunction("upper_string", 2, impl).ok());
@@ -335,8 +331,7 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
   ASSERT_TRUE(engine_or.ok());
   ASSERT_TRUE(
       engine_or->AddModule("rules", MakeMinimalCustomModuleBytes()).ok());
-  HostCallback impl = [](uint8_t*, size_t, uint32_t,
-                         absl::Span<const uint32_t>) {
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
   ASSERT_TRUE(engine_or->AddFunction("never_called", 2, impl).ok());

@@ -1,27 +1,28 @@
-// `celwasm::HostCallback` — the raw low-level callback type for
-// `Engine::AddFunction` (the `@host.<name>` impl).  Pulled into its
-// own header so the internal `WasmtimeEngineState` (which needs to
-// hold registered callbacks) doesn't pick up `engine.h`'s public
-// surface — avoids a circular include between `engine.h` and
-// `internal/wasmtime_engine_state.h`.
+// `celwasm::HostCallback` — the callback type for `Engine::AddFunction`
+// (the `@host.<name>` impl).  Pulled into its own header so the
+// internal `WasmtimeEngineState` (which holds registered callbacks) and
+// the public `engine.h` (which exposes the type) can both depend on it
+// without an engine↔state circular include.
 //
-// See `engine.h` for the full contract; this header carries only
-// the type alias.
+// The callback receives a typed `HostCallContext&` (eval/host_call_context.h)
+// built by the engine trampoline over the per-Eval linear memory,
+// externref table, and arena allocator.  See `engine.h` /
+// `HostCallContext` for the full contract.
 
 #ifndef CELWASM_EVAL_HOST_CALLBACK_H_
 #define CELWASM_EVAL_HOST_CALLBACK_H_
 
-#include <cstdint>
 #include <functional>
 
 #include "absl/status/status.h"
-#include "absl/types/span.h"
 
 namespace celwasm {
 
-using HostCallback = std::function<absl::Status(
-    uint8_t* memory, size_t mem_size, uint32_t out_slot,
-    absl::Span<const uint32_t> arg_slots)>;
+// Full definition in eval/host_call_context.h; forward-declared here so
+// this header stays light (the type only appears behind a reference).
+class HostCallContext;
+
+using HostCallback = std::function<absl::Status(HostCallContext&)>;
 
 }  // namespace celwasm
 

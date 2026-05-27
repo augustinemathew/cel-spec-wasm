@@ -158,9 +158,8 @@ UnpackOneAnyResult UnpackOneAnyLayer(
 // implicitly bounds depth in practice, but a malformed Any chain
 // shouldn't blow the host stack, and the M7-A design doc explicitly
 // recommended this constant.
-celwasm::Value UnpackAnyToValue(
-    const google::protobuf::Message& any,
-    const google::protobuf::DescriptorPool* pool) {
+celwasm::Value UnpackAnyToValue(const google::protobuf::Message& any,
+                                const google::protobuf::DescriptorPool* pool) {
   std::unique_ptr<google::protobuf::Message> owned;
   const google::protobuf::Message* current = &any;
   for (int depth = 0;; ++depth) {
@@ -209,10 +208,9 @@ std::optional<celwasm::Value> UnpackWellKnownTimeMessage(
   const int32_t ns = refl->GetInt32(sub, nf);
   if (is_timestamp) {
     return celwasm::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
-                                          absl::Nanoseconds(ns));
+                                     absl::Nanoseconds(ns));
   }
-  return celwasm::Value::Duration(absl::Seconds(s) +
-                                       absl::Nanoseconds(ns));
+  return celwasm::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
 }
 
 // Forward declarations for the JSON-value peel pair — they recurse
@@ -244,8 +242,8 @@ celwasm::Value UnpackJsonStruct(const google::protobuf::Message& s) {
         refl->GetRepeatedMessage(s, fields_fd, i);
     const google::protobuf::Reflection* er = entry.GetReflection();
     std::string scratch;
-    celwasm::Value key = celwasm::Value::String(
-        er->GetStringReference(entry, key_fd, &scratch));
+    celwasm::Value key =
+        celwasm::Value::String(er->GetStringReference(entry, key_fd, &scratch));
     auto val = UnpackJsonValueMessage(er->GetMessage(entry, val_fd));
     entries.emplace_back(std::move(key), val.has_value()
                                              ? *std::move(val)
@@ -270,8 +268,7 @@ celwasm::Value UnpackJsonListValue(const google::protobuf::Message& lv) {
   elements.reserve(n);
   for (int i = 0; i < n; ++i) {
     auto v = UnpackJsonValueMessage(refl->GetRepeatedMessage(lv, values_fd, i));
-    elements.push_back(v.has_value() ? *std::move(v)
-                                     : celwasm::Value::Null());
+    elements.push_back(v.has_value() ? *std::move(v) : celwasm::Value::Null());
   }
   return celwasm::Value::List(std::move(elements));
 }
@@ -591,12 +588,10 @@ absl::StatusOr<celwasm::Value> ProtoBacking::ReadField(
   // `is_map()` is checked first because every map field is also
   // `is_repeated()` per descriptor.proto.
   if (field->is_map()) {
-    return celwasm::Value::HostMap(
-        std::make_shared<ProtoMap>(msg_, field));
+    return celwasm::Value::HostMap(std::make_shared<ProtoMap>(msg_, field));
   }
   if (field->is_repeated()) {
-    return celwasm::Value::HostList(
-        std::make_shared<ProtoList>(msg_, field));
+    return celwasm::Value::HostList(std::make_shared<ProtoList>(msg_, field));
   }
   return ReadScalarField(*msg_, *field);
 }
@@ -634,8 +629,7 @@ bool ProtoBacking::HasField(int field_number,
 // built maps lookup identically.  Returns OkStatus on legal compares;
 // returns false for any non-key-kind operand (caller should already
 // have rejected; this is defence-in-depth).
-static bool MapKeysEqual(const celwasm::Value& a,
-                         const celwasm::Value& b) {
+static bool MapKeysEqual(const celwasm::Value& a, const celwasm::Value& b) {
   using K = celwasm::Value::Kind;
   const K ka = a.kind();
   const K kb = b.kind();
@@ -666,16 +660,13 @@ static bool MapKeysEqual(const celwasm::Value& a,
 // key's kind; emit a kTypeMismatch error value if it's not a legal
 // map key.  Mirrors the runtime's `is_valid_map_key_kind` gate.
 static bool IsValidMapKeyKind(celwasm::Value::Kind k) {
-  return k == celwasm::Value::Kind::kBool ||
-         k == celwasm::Value::Kind::kInt ||
-         k == celwasm::Value::Kind::kUint ||
-         k == celwasm::Value::Kind::kString;
+  return k == celwasm::Value::Kind::kBool || k == celwasm::Value::Kind::kInt ||
+         k == celwasm::Value::Kind::kUint || k == celwasm::Value::Kind::kString;
 }
 
 // `KeyTypeMismatch` / `NoSuchKey` moved to cel_host_error.cc (M11 Slice E).
 
-HostMap::HostMap(
-    std::vector<std::pair<celwasm::Value, celwasm::Value>> entries)
+HostMap::HostMap(std::vector<std::pair<celwasm::Value, celwasm::Value>> entries)
     : entries_(std::move(entries)) {}
 
 size_t HostMap::Size() const {
@@ -701,9 +692,9 @@ bool HostMap::ContainsKey(const celwasm::Value& key) const {
   });
 }
 
-void HostMap::ForEach(absl::FunctionRef<void(const celwasm::Value&,
-                                             const celwasm::Value&)>
-                          visit) const {
+void HostMap::ForEach(
+    absl::FunctionRef<void(const celwasm::Value&, const celwasm::Value&)> visit)
+    const {
   for (const auto& [k, v] : entries_) {
     visit(k, v);
   }
@@ -722,7 +713,7 @@ namespace {
 // caller surfaces a TYPE_MISMATCH error to the wasm side.  Strings
 // dereference through the MemoryView so the celwasm::Value owns a copy.
 std::optional<celwasm::Value> DecodeKey(const CelValue& cv,
-                                             const MemoryView& mem) {
+                                        const MemoryView& mem) {
   switch (cv.kind) {
     case CEL_BOOL:
       return celwasm::Value::Bool(cv.payload.b != 0);
@@ -895,6 +886,16 @@ absl::Status EncodeFieldResult(const celwasm::Value& v, uint32_t out_slot,
 }
 
 }  // namespace
+
+absl::Status EncodeValueToSlot(const celwasm::Value& v, uint32_t out_slot,
+                               MemoryView& mem, ExternrefTable& refs,
+                               ArenaAllocator& alloc) {
+  // EncodeFieldResult only ever touches ctx.{mem,refs,alloc}; the
+  // bindings span is unused on the encode path, so an empty one is safe.
+  const CelHostBindings empty_bindings;
+  const TrampolineContext ctx{empty_bindings, mem, refs, alloc};
+  return EncodeFieldResult(v, out_slot, ctx);
+}
 
 absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
                            uint32_t index_slot, const TrampolineContext& ctx) {
@@ -1128,10 +1129,9 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   // host maps become a hot path.
   std::vector<std::pair<celwasm::Value, celwasm::Value>> entries;
   entries.reserve(backing->Size());
-  backing->ForEach(
-      [&](const celwasm::Value& k, const celwasm::Value& v) {
-        entries.emplace_back(k, v);
-      });
+  backing->ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
+    entries.emplace_back(k, v);
+  });
   if (entries.empty()) {
     write_empty();
     return absl::OkStatus();
@@ -1265,9 +1265,9 @@ bool ProtoMap::ContainsKey(const celwasm::Value& key) const {
   return false;
 }
 
-void ProtoMap::ForEach(absl::FunctionRef<void(const celwasm::Value&,
-                                              const celwasm::Value&)>
-                           visit) const {
+void ProtoMap::ForEach(
+    absl::FunctionRef<void(const celwasm::Value&, const celwasm::Value&)> visit)
+    const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   ABSL_CHECK(refl != nullptr) << "ProtoMap::ForEach: no reflection";
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(*field_, 1);
@@ -1297,8 +1297,7 @@ size_t HostList::Size() const {
 }
 
 absl::StatusOr<celwasm::Value> HostList::At(
-    size_t index,
-    const celwasm::CelType& /*expected_element_type*/) const {
+    size_t index, const celwasm::CelType& /*expected_element_type*/) const {
   if (index >= elements_.size()) {
     return IndexOutOfBounds(index, elements_.size());
   }
@@ -1346,11 +1345,9 @@ absl::StatusOr<celwasm::Value> ReadRepeatedElement(
     case FD::CPPTYPE_FLOAT:
       return celwasm::Value::Double(refl.GetRepeatedFloat(msg, &field, i));
     case FD::CPPTYPE_DOUBLE:
-      return celwasm::Value::Double(
-          refl.GetRepeatedDouble(msg, &field, i));
+      return celwasm::Value::Double(refl.GetRepeatedDouble(msg, &field, i));
     case FD::CPPTYPE_ENUM:
-      return celwasm::Value::Int(
-          refl.GetRepeatedEnumValue(msg, &field, i));
+      return celwasm::Value::Int(refl.GetRepeatedEnumValue(msg, &field, i));
     case FD::CPPTYPE_STRING: {
       std::string scratch;
       const std::string& s =
@@ -1373,8 +1370,7 @@ absl::StatusOr<celwasm::Value> ReadRepeatedElement(
       if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
         return *std::move(v);
       }
-      return celwasm::Value::HostMessage(
-          std::make_shared<ProtoBacking>(&sub));
+      return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
     }
   }
   return absl::InternalError(absl::StrCat("ProtoList::At: unhandled cpp_type ",
@@ -1401,8 +1397,7 @@ size_t ProtoList::Size() const {
 }
 
 absl::StatusOr<celwasm::Value> ProtoList::At(
-    size_t index,
-    const celwasm::CelType& /*expected_element_type*/) const {
+    size_t index, const celwasm::CelType& /*expected_element_type*/) const {
   const google::protobuf::Reflection* refl = owner_->GetReflection();
   if (refl == nullptr) {
     return absl::InternalError("ProtoList::At: no reflection");
@@ -3438,11 +3433,10 @@ absl::Status SetMapField(google::protobuf::Message& msg,
                        "` host source has no externref entry"));
     }
     absl::Status status = absl::OkStatus();
-    backing->ForEach(
-        [&](const celwasm::Value& k, const celwasm::Value& v) {
-          if (!status.ok()) return;
-          status = InsertHostMapEntry(msg, field, *refl, k, v);
-        });
+    backing->ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
+      if (!status.ok()) return;
+      status = InsertHostMapEntry(msg, field, *refl, k, v);
+    });
     return status;
   }
   return absl::InvalidArgumentError(

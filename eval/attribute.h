@@ -240,6 +240,17 @@ struct AttributeId {
   }
 };
 
+// Reserved attribute-id sentinel marking an unknown a host function
+// *returned* (via `HostCallContext::ReturnUnknown`), as distinct from
+// an unknown auto-propagated from an unknown input (which carries the
+// input's real attribute id).  Real ids are dense 0-based indices into
+// `cel.abi.attributes[]` — one row per referenced ident, so a real id
+// never approaches `UINT32_MAX`; `0` is the first real attribute and is
+// itself an overloaded fallback, so the sentinel is the *other* edge of
+// the range.  A consumer distinguishes the two via
+// `v.IsUnknown() && v.UnknownAttribute()->id == kFunctionUnknownSentinel`.
+inline constexpr uint32_t kFunctionUnknownSentinel = 0xFFFF'FFFFu;
+
 }  // namespace celwasm
 
 #endif  // CELWASM_EVAL_ATTRIBUTE_H_

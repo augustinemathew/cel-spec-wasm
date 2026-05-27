@@ -165,9 +165,9 @@ class HostMapBacking {
       const celwasm::CelType& expected_value_type) const = 0;
 
   virtual bool ContainsKey(const celwasm::Value& key) const = 0;
-  virtual void ForEach(absl::FunctionRef<void(const celwasm::Value&,
-                                              const celwasm::Value&)>
-                           visit) const = 0;
+  virtual void ForEach(
+      absl::FunctionRef<void(const celwasm::Value&, const celwasm::Value&)>
+          visit) const = 0;
 };
 
 // Vector-backed concrete.  Used for `Activation::Bind(Value::Map(...))`
@@ -186,9 +186,9 @@ class HostMap final : public HostMapBacking {
       const celwasm::Value& key,
       const celwasm::CelType& expected_value_type) const override;
   bool ContainsKey(const celwasm::Value& key) const override;
-  void ForEach(absl::FunctionRef<void(const celwasm::Value&,
-                                      const celwasm::Value&)>
-                   visit) const override;
+  void ForEach(
+      absl::FunctionRef<void(const celwasm::Value&, const celwasm::Value&)>
+          visit) const override;
 
  private:
   std::vector<std::pair<celwasm::Value, celwasm::Value>> entries_;
@@ -210,9 +210,9 @@ class ProtoMap final : public HostMapBacking {
       const celwasm::Value& key,
       const celwasm::CelType& expected_value_type) const override;
   bool ContainsKey(const celwasm::Value& key) const override;
-  void ForEach(absl::FunctionRef<void(const celwasm::Value&,
-                                      const celwasm::Value&)>
-                   visit) const override;
+  void ForEach(
+      absl::FunctionRef<void(const celwasm::Value&, const celwasm::Value&)>
+          visit) const override;
 
  private:
   // Non-owning views.  Caller (typically `ProtoBacking::ReadField`)
@@ -242,8 +242,7 @@ class HostListBacking {
   // implicit coercion between numeric kinds).  Mirrors
   // `HostMapBacking::Get`'s expected_value_type contract.
   virtual absl::StatusOr<celwasm::Value> At(
-      size_t index,
-      const celwasm::CelType& expected_element_type) const = 0;
+      size_t index, const celwasm::CelType& expected_element_type) const = 0;
 
   virtual void ForEach(
       absl::FunctionRef<void(const celwasm::Value&)> visit) const = 0;
@@ -658,6 +657,23 @@ ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapTimeImpl(
 ABSL_MUST_USE_RESULT absl::Status CelWktUnwrapWrapperImpl(
     uint32_t out_slot, uint32_t msg_slot, uint32_t wrapper_kind,
     const TrampolineContext& ctx);
+
+// Marshal a `celwasm::Value` produced host-side (e.g. a `@host`
+// callback return) into the 24-byte CelValue at `out_slot`: scalars +
+// null + duration + timestamp inline, string / bytes arena-allocated,
+// message / list / map interned into the externref table as a
+// CEL_*_HOST handle.  Shares the exact encoder the built-in trampolines
+// use, so a host fn's wire output is byte-identical to theirs.
+//
+// `kUnknown` / `kError`: `kError` encodes to CEL_ERROR; `kUnknown` is
+// rejected here (CHECK) — the host-call path writes CEL_UNKNOWN
+// directly so the shared backing-side "backings don't return unknowns"
+// invariant stays intact.  Callers route unknown returns around this.
+ABSL_MUST_USE_RESULT absl::Status EncodeValueToSlot(const celwasm::Value& v,
+                                                    uint32_t out_slot,
+                                                    MemoryView& mem,
+                                                    ExternrefTable& refs,
+                                                    ArenaAllocator& alloc);
 
 // m7b §3.1 / Probe D — sign-correlated (seconds, nanos)
 // decomposition for an absl::Duration.  Shared between the
