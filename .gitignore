@@ -19,3 +19,7 @@ compile_commands.json
 
 # Local, per-developer Bazel overrides (see .bazelrc try-import).
 user.bazelrc
+
+# Node deps for the TypeScript bindings — never checked in (large, and a
+# `git add` of it would sweep thousands of files).  Restored via `npm ci`.
+bindings/ts/node_modules/

@@ -400,7 +400,7 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
           absl::StrCat("`host` is a reserved alias; use `@host.",
                        bare->Identifier()->getText(), "(…)` instead of `host.",
                        bare->Identifier()->getText(), "(…)`"));
-    } else if (auto* def = item->celFnDef(); def != nullptr) {
+    } else if (auto* def = item->nativeFnDecl(); def != nullptr) {
       auto rt = ExtractType(def->type());
       if (!rt.ok()) return rt.status();
       auto ps = ExtractParams(def->params());

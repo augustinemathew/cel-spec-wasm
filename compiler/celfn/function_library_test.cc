@@ -62,7 +62,7 @@ TEST(FunctionLibrary, ExtractsForeignDecl) {
 TEST(FunctionLibrary, ExtractsCelDefinedFn) {
   auto r = ParseCelfnSource(
       "Module foo;\n"
-      "bool is_number(this string s) = s.matches(\"^[0-9]+$\");");
+      "bool @native.is_number(this string s) = s.matches(\"^[0-9]+$\");");
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->module_name(), "foo");
   ASSERT_EQ(r->decls().size(), 1u);
@@ -140,7 +140,7 @@ TEST(FunctionLibrary, HostDeclAllowedToCarryProtos) {
 TEST(FunctionLibrary, CelDefinedAllowedToCarryProtos) {
   auto r = ParseCelfnSource(
       "Module foo;\n"
-      "bool is_adult(this proto(acme.User) u) = u.age >= 18;");
+      "bool @native.is_adult(this proto(acme.User) u) = u.age >= 18;");
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->decls().size(), 1u);
   EXPECT_EQ(r->decls()[0].overload_id, "is_adult_message_acme_User");
@@ -165,8 +165,8 @@ TEST(FunctionLibrary, RejectsModuleDirectiveCollidingWithForeignAlias) {
 }
 
 TEST(FunctionLibrary, RejectsCelDefinedFnWithoutModuleDirective) {
-  auto r =
-      ParseCelfnSource("bool is_number(this string s) = s.matches(\"a\");");
+  auto r = ParseCelfnSource(
+      "bool @native.is_number(this string s) = s.matches(\"a\");");
   ASSERT_FALSE(r.ok());
   EXPECT_THAT(std::string(r.status().message()), HasSubstr("no module name"));
 }
@@ -280,8 +280,8 @@ TEST(FunctionLibrary, AcceptsFullFileShape) {
   const std::string source = R"(
 Module foo;
 
-bool is_number(this string s) = s.matches("^[0-9]+$");
-bool is_adult(this proto(acme.User) u) = u.age >= 18;
+bool @native.is_number(this string s) = s.matches("^[0-9]+$");
+bool @native.is_adult(this proto(acme.User) u) = u.age >= 18;
 
 string @host.upper(this string s);
 bool @host.is_admin(proto(acme.User) user);

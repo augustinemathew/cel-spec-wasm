@@ -82,7 +82,7 @@ struct CelfnDecl {
   enum class Backend : uint8_t {
     kHost,        // `@host.` prefix
     kForeign,     // `<alias>.` prefix
-    kCelDefined,  // body, no prefix
+    kCelDefined,  // `@native.` prefix, has body
   };
 
   Backend backend = Backend::kHost;

@@ -162,8 +162,8 @@ A CEL-defined function is `.celfn` source with a body:
 
 ```
 Module foo;
-string sayhello(string name) = "hello " + name;
-int    double(int x)         = x * 2;
+string @native.sayhello(string name) = "hello " + name;
+int    @native.double(int x)         = x * 2;
 ```
 
 > **v1 decision (2026-05-24): single module.** Each body is compiled

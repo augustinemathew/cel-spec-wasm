@@ -297,9 +297,9 @@ Module foo;                                  // CEL-defined fns compile
 
 // CEL-defined: body is a pure CEL expression.  celwasmc compiles
 // the body into the wasm module named by `Module foo;`.
-bool is_number(this string s) = s.matches("^[0-9]+$");
+bool @native.is_number(this string s) = s.matches("^[0-9]+$");
 
-string greet(this proto(acme.User) u) =
+string @native.greet(this proto(acme.User) u) =
   cel.bind(name, u.first + " " + u.last, "hi, " + name);
 
 // Host-backed: embedder C++ provides the impl, bound at Plan time.
@@ -935,10 +935,10 @@ Module foo;
 // ─── CEL-defined functions ───────────────────────────────────────────
 // Body is a pure CEL expression.  Compiled into the `foo` wasm module.
 
-bool is_number(this string s)
+bool @native.is_number(this string s)
    = s.matches("^[0-9]+$");
 
-bool is_adult(this proto(acme.User) u)
+bool @native.is_adult(this proto(acme.User) u)
    = u.age >= 18;
 
 // `cel.bind` covers the `let`-binding case.
@@ -2323,9 +2323,9 @@ The CEL-defined-backend sub-compiler.
     `Value::Unknown(attr_id)`; assert short-circuit logic absorbs
     it (`is_admin(user) || true` → `true`).
   - **A CEL-defined fn** — compile a `.celfn` with `Module foo;`
-    and `bool is_number(this string s) = s.matches(...);`; assert
+    and `bool @native.is_number(this string s) = s.matches(...);`; assert
     `"123".is_number()` → `true` and `"abc".is_number()` → `false`.
-  - **A CEL-defined fn calling a host fn** — `string headline(this proto(acme.User) u) = upper(u.first);`
+  - **A CEL-defined fn calling a host fn** — `string @native.headline(this proto(acme.User) u) = upper(u.first);`
     where `upper` is declared as `string @host.upper(this string s);`; assert end-to-end.
   - **A CEL-defined fn calling another CEL-defined fn** — `is_eligible`
     body calls `is_adult`; assert composition.

@@ -125,11 +125,12 @@ TEST(CelfnParserProbe, ParsesForeignDecl) {
 }
 
 TEST(CelfnParserProbe, ParsesCelDefinedFn) {
-  auto r = ParseCelfn("bool is_number(this string s) = s.matches(\"a\");");
+  auto r =
+      ParseCelfn("bool @native.is_number(this string s) = s.matches(\"a\");");
   EXPECT_TRUE(r.errors.empty())
       << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
   ASSERT_EQ(r.file->fileItem().size(), 1u);
-  auto* def = r.file->fileItem(0)->celFnDef();
+  auto* def = r.file->fileItem(0)->nativeFnDecl();
   ASSERT_NE(def, nullptr);
   EXPECT_EQ(def->Identifier()->getText(), "is_number");
   ASSERT_NE(def->celExprBody(), nullptr);
@@ -143,7 +144,7 @@ TEST(CelfnParserProbe, ParsesAllThreeShapesInOneFile) {
 Module foo;
 
 // CEL-defined.
-bool is_number(this string s) = s.matches("^[0-9]+$");
+bool @native.is_number(this string s) = s.matches("^[0-9]+$");
 
 // Host-backed.
 string @host.upper(this string s);
@@ -157,7 +158,7 @@ bool rules.allow(this string user, string r);
   ASSERT_NE(r.file->moduleDirective(), nullptr);
   EXPECT_EQ(r.file->moduleDirective()->Identifier()->getText(), "foo");
   ASSERT_EQ(r.file->fileItem().size(), 3u);
-  EXPECT_NE(r.file->fileItem(0)->celFnDef(), nullptr);
+  EXPECT_NE(r.file->fileItem(0)->nativeFnDecl(), nullptr);
   EXPECT_NE(r.file->fileItem(1)->hostFnDecl(), nullptr);
   EXPECT_NE(r.file->fileItem(2)->foreignFnDecl(), nullptr);
 }
@@ -186,14 +187,20 @@ TEST(CelfnParserProbe, ParsesAggregateTypes) {
   ASSERT_EQ(r.file->fileItem().size(), 2u);
 }
 
-TEST(CelfnParserProbe, RejectsBareDeclWithoutBody) {
-  // `bool plain_name(int x);` — no `@host.`, no `<alias>.`, no body.
-  // Should fail to parse (semantic v1 rule: bare names require a
-  // body, per m13-custom-fns.md §3.3).  The current grammar would
-  // match `celFnDef` minus the body and reject at the `;` —
-  // verifies the grammar's structure rejects this.
+TEST(CelfnParserProbe, RejectsBareDecl) {
+  // `bool plain_name(int x);` — no backend prefix: not `@host.`, not
+  // `@native.`, not a `<alias>.`.  Every declaration must name its
+  // backend, so a bare `<type> <name>(...)` matches no production and
+  // fails to parse.
   auto r = ParseCelfn("bool plain_name(int x);");
-  EXPECT_FALSE(r.errors.empty()) << "bare-name no-body decl should not parse";
+  EXPECT_FALSE(r.errors.empty()) << "bare-name decl should not parse";
+}
+
+TEST(CelfnParserProbe, RejectsNativeDeclWithoutBody) {
+  // `@native.` requires a `= <cel-expr>` body; the body-less form
+  // matches no production and fails to parse.
+  auto r = ParseCelfn("bool @native.plain_name(int x);");
+  EXPECT_FALSE(r.errors.empty()) << "@native without a body should not parse";
 }
 
 TEST(CelfnParserProbe, IgnoresLineAndBlockComments) {

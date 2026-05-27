@@ -28,7 +28,7 @@ fileItem
     : hostFnDecl
     | foreignFnDecl
     | bareHostDecl
-    | celFnDef
+    | nativeFnDecl
     ;
 
 // ── Declarations ────────────────────────────────────────────────────
@@ -59,9 +59,13 @@ bareHostDecl
     : type 'host' '.' Identifier '(' params? ')' ';'
     ;
 
-// `<type> <name>(<params>) = <cel-expr> ;` — CEL-defined.  Has body.
-celFnDef
-    : type Identifier '(' params? ')' '=' celExprBody ';'
+// `<type> @native.<name>(<params>) = <cel-expr> ;` — CEL-defined.  Has
+// body.  Symmetric with the `@host.` prefix above (and bare-alias
+// foreign below): `@host` is C++-backed, `@native` is CEL-body-backed,
+// a bare `<alias>.` is foreign-wasm-backed.  `native`, like `host`,
+// tokenizes as a keyword and is therefore reserved as an alias name.
+nativeFnDecl
+    : type '@' 'native' '.' Identifier '(' params? ')' '=' celExprBody ';'
     ;
 
 // ── Parameters ──────────────────────────────────────────────────────
