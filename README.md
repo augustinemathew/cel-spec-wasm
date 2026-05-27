@@ -71,6 +71,47 @@ a result. Adding a language is writing a small marshalling shim — never anothe
 CEL implementation. (The compiler stays wasm-targetable with no evaluator
 dependency precisely so the pipeline itself can also ship as `compiler.wasm`.)
 
+### Embedding from C++ (the reference host, today)
+
+The whole lifecycle is **compile once → plan once → evaluate many**:
+
+```cpp
+#include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/activation.h"
+#include "eval/value.h"
+#include "shared/type.h"
+
+using namespace celwasm;
+
+// 1. Declare the expression's free variables, then compile to a Program
+//    (wasm bytes + the cel.abi describing its inputs). Compile-time.
+Compiler::Builder b;
+b.DeclareVariable("a", CelType::Int())
+ .DeclareVariable("b", CelType::Int());
+Compiler compiler = std::move(b).Build().value();
+Program program = compiler.Compile("a * b + 1").value();
+
+// 2. Plan once — instantiates the wasm module under wasmtime. Reuse the
+//    Instance across many evaluations.
+Engine engine = Engine::NewBuilder().Build().value();
+Instance instance = engine.Plan(program).value();
+
+// 3. Bind inputs and evaluate.
+Activation act;
+act.Bind("a", Value::Int(6));
+act.Bind("b", Value::Int(7));
+Value result = instance.Eval(act).value();   // result.AsInt() => 43
+```
+
+Every fallible step returns `absl::StatusOr<…>` (the `.value()`s above are for
+brevity — check the status in real code). Public headers live at the role-dir
+roots: `compiler:{compiler,program}`, `eval:{engine,instance,activation,value}`,
+`shared:type`. The Go and TypeScript bindings will mirror this same
+declare → compile → plan → bind → eval shape over the wasm artifact.
+
 ## Getting started
 
 ```bash
