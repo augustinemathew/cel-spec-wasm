@@ -79,3 +79,32 @@ cc_binary(
         "@com_google_absl//absl/strings",
     ],
 )
+
+# Proto crossing benches — copy-vs-pull cost for moving a proto
+# message across an isolation boundary.  COPY-BY-VALUE benches
+# (`BM_ProtoSerialize_*` / `BM_ProtoParse_*` / `BM_ProtoRoundTrip_*`)
+# measure raw protobuf serialize/parse; PULL benches (`BM_Pull_*`)
+# measure the per-field trampoline read end-to-end through
+# `Instance::Eval`.  Run with:
+#   bazel run -c opt //bench:proto_crossing_bench
+cc_binary(
+    name = "proto_crossing_bench",
+    srcs = ["proto_crossing_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//testdata:e2e_fixture_cc_proto",
+        "//eval:activation",
+        "//eval:cel_host",  # for Value::Message(proto)
+        "//compiler:compiler",
+        "//eval:engine",
+        "//eval:instance",
+        "//compiler:program",
+        "//shared:type",
+        "//eval:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

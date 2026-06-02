@@ -18,6 +18,17 @@ bazel run -c opt //compiler_v2/bench:kernel_bench
 # the timed loop so the Eval-only numbers measure steady-state cost
 # without re-paying compile / plan on every iteration.
 bazel run -c opt //compiler_v2/bench:pipeline_bench
+
+# Proto crossing benches — copy-vs-pull cost for moving a proto
+# message across an isolation boundary.  COPY-BY-VALUE rows
+# (BM_ProtoSerialize_* / BM_ProtoParse_* / BM_ProtoRoundTrip_*)
+# are the raw protobuf serialize/parse cost of handing a whole
+# message across by value; PULL rows (BM_Pull_*) are the per-field
+# host-trampoline read cost end-to-end through Instance::Eval.
+# Compare ProtoRoundTrip (whole message, once) against Pull × the
+# number of fields an expression actually touches — that crossover
+# decides copy vs pull for a given access pattern.
+bazel run -c opt //bench:proto_crossing_bench
 ```
 
 Useful flags:
