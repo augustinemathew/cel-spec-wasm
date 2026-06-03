@@ -226,6 +226,11 @@ bazel build — these are disposable probes, not regression tests.
 
 ## 8. Future work / open questions
 
+  - **Compiler-side integration** of this ABI into the cel-spec-wasm
+    pipeline (frontend / overload table / codegen / eval bridge) is
+    designed in [`m24-foreign-fn-component-backend.md`](m24-foreign-fn-component-backend.md)
+    — it provides the foreign backend `m13-custom-fns.md` deferred,
+    dispatched as a host callback over the wasmtime component API.
   - **Regime A design** (trusted shared-memory custom-fn guest) is the
     cheaper, more common case and is unscoped here — its own milestone.
   - **Host-implemented `types`**: the real deployment has the native
