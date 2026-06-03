@@ -1,8 +1,8 @@
 # Stub-demo — the foreign custom-fn author experience (validated)
 
 A working, end-to-end demonstration of the developer experience designed
-in [`../../m24-foreign-fn-component-backend.md`](../../m24-foreign-fn-component-backend.md)
-(§5–§7): a custom-fn
+in [`../../m23-foreign-fn-component-abi.md`](../../m23-foreign-fn-component-abi.md)
+(§9–§11): a custom-fn
 author writes **only native C++** (`int64_t`, `std::string`,
 `std::vector`, `std::map`, nested) and a **generated codec** does all the
 marshaling. Validated on wasmtime 45: **17/17 e2e assertions pass**,
@@ -43,4 +43,4 @@ wasmtime run app.wasm     # => "17 passed, 0 failed"
 paths otherwise reference `__cxa_throw`, unresolved in this link.
 
 This is a research artifact, not part of the bazel build. The real
-generator is `celfnc` (m24 §9 / m13 §8.2).
+generator is `celfnc` (m23 §13 / m13 §8.2).
