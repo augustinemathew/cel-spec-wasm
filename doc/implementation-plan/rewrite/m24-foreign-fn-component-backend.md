@@ -155,6 +155,15 @@ callback like any other.
 
 ## 4. The marshaling adapter (`CelValue` <-> WIT `value`)
 
+> **Refined by [`m25-foreign-fn-dx.md`](m25-foreign-fn-dx.md).** For a
+> **concretely-typed** custom fn (the common case) the `value`-resource
+> path below is the wrong default — it costs ~500 ns per node. m25 uses
+> **per-function typed WIT + a generated codec** instead: the aggregate
+> crosses once as a flat `list<...>` and the codec lifts it locally
+> (one crossing, not N). The `value` resource is reserved for the rare
+> dynamic / variadic custom fn. Read m25 for the author-facing design;
+> the rule below still applies to that dynamic path.
+
 Driven by the m23 cost rule — choose representation per value:
 
   - **Scalars** (null/bool/int/uint/double/string/bytes/duration/
