@@ -1757,6 +1757,91 @@ absl::Status CelListSizeImpl(uint32_t out_slot, uint32_t list_slot,
   return absl::OkStatus();
 }
 
+// Direct equality of a backing-side `celwasm::Value` against the
+// already-decoded wire query `query_cv`.  Skips the per-element
+// `EncodeBackingScalar` arena allocation that the legacy At()-loop
+// path took — for a 1000-element 50-byte-string scan that allocation
+// alone was ~50us / scan (measured 2026-06-03; see
+// `BM_Eval_In_IamPermissions_Bound_Last/1000` vs the cel-cpp sibling).
+//
+// Same-kind comparisons cover scalar / string / bytes / temporal,
+// matching `HostScalarSameKindEq` semantics.  Aggregate kinds on
+// the backing side (kMessage / kList / kMap) return false — `in` /
+// `eq` element matching is scalar-only per the m11 contract above.
+// Cross-numeric (int / uint / double) routes through
+// `HostNumericCrossEq` against a synthesised CelValue prototype so
+// the langdef §"Equality" mathematical-value rule holds for
+// `1 in [1u, 2u]`.
+bool BackingValueEqualsQuery(const celwasm::Value& bv,
+                             const CelValue& query_cv,
+                             const MemoryView& mem) {
+  using K = celwasm::Value::Kind;
+  switch (bv.kind()) {
+    case K::kBool:
+      if (query_cv.kind != CEL_BOOL) return false;
+      return *bv.AsBool() == (query_cv.payload.b != 0);
+    case K::kInt: {
+      const int64_t i = *bv.AsInt();
+      if (query_cv.kind == CEL_INT) return query_cv.payload.i == i;
+      CelValue proto{};
+      proto.kind = CEL_INT;
+      proto.payload.i = i;
+      return HostNumericCrossEq(proto, query_cv);
+    }
+    case K::kUint: {
+      const uint64_t u = *bv.AsUint();
+      if (query_cv.kind == CEL_UINT) return query_cv.payload.u == u;
+      CelValue proto{};
+      proto.kind = CEL_UINT;
+      proto.payload.u = u;
+      return HostNumericCrossEq(proto, query_cv);
+    }
+    case K::kDouble: {
+      const double d = *bv.AsDouble();
+      if (query_cv.kind == CEL_DOUBLE) return query_cv.payload.d == d;
+      CelValue proto{};
+      proto.kind = CEL_DOUBLE;
+      proto.payload.d = d;
+      return HostNumericCrossEq(proto, query_cv);
+    }
+    case K::kString: {
+      if (query_cv.kind != CEL_STRING) return false;
+      if (query_cv.payload.s.len != bv.AsString()->size()) return false;
+      absl::string_view q =
+          mem.ReadSpan(query_cv.payload.s.ptr, query_cv.payload.s.len);
+      return q == *bv.AsString();
+    }
+    case K::kBytes: {
+      if (query_cv.kind != CEL_BYTES) return false;
+      if (query_cv.payload.s.len != bv.AsBytes()->size()) return false;
+      absl::string_view q =
+          mem.ReadSpan(query_cv.payload.s.ptr, query_cv.payload.s.len);
+      return q == *bv.AsBytes();
+    }
+    case K::kNull:
+      return query_cv.kind == CEL_NULL;
+    case K::kDuration: {
+      if (query_cv.kind != CEL_DURATION) return false;
+      const absl::Duration d = *bv.AsDuration();
+      return absl::ToInt64Seconds(d) == query_cv.payload.dur.seconds &&
+             absl::ToInt64Nanoseconds(d - absl::Seconds(absl::ToInt64Seconds(
+                                              d))) == query_cv.payload.dur.nanos;
+    }
+    case K::kTimestamp: {
+      if (query_cv.kind != CEL_TIMESTAMP) return false;
+      const absl::Time t = *bv.AsTimestamp();
+      const int64_t sec = absl::ToUnixSeconds(t);
+      const int64_t nanos = absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec));
+      return sec == query_cv.payload.ts.seconds &&
+             nanos == query_cv.payload.ts.nanos;
+    }
+    default:
+      // Aggregates + error / unknown / type aren't matchable against a
+      // scalar query in the m11 `in` / `eq` contract.
+      return false;
+  }
+}
+
 absl::Status CelListInImpl(uint32_t out_slot, uint32_t value_slot,
                            uint32_t list_slot, const TrampolineContext& ctx) {
   CelValue value_cv = ctx.mem.ReadCelValue(value_slot);
@@ -1775,18 +1860,17 @@ absl::Status CelListInImpl(uint32_t out_slot, uint32_t value_slot,
         absl::StrCat("CelListInImpl: list ref_slot ", list_cv.payload.ref_slot,
                      " not found in ExternrefTable"));
   }
-  const size_t n = backing->Size();
-  for (size_t i = 0; i < n; ++i) {
-    auto got = backing->At(i, celwasm::CelType::Int());
-    if (!got.ok()) return got.status();
-    auto enc_or = EncodeBackingScalar(*got, ctx.alloc);
-    if (!enc_or.ok()) return enc_or.status();
-    if (HostScalarValueEq(*enc_or, value_cv, ctx.mem)) {
-      WriteWireBool(true, out_slot, ctx.mem);
-      return absl::OkStatus();
-    }
-  }
-  WriteWireBool(false, out_slot, ctx.mem);
+  // Use ForEach + a direct compare against the pre-decoded wire query
+  // CelValue.  Avoids the per-element `At()` -> `StatusOr<Value>` and
+  // the per-element `EncodeBackingScalar` arena allocation.  We track
+  // `found` to short-circuit; `ForEach` itself can't break, so the
+  // post-found iterations just skip the compare.
+  bool found = false;
+  backing->ForEach([&](const celwasm::Value& v) {
+    if (found) return;
+    if (BackingValueEqualsQuery(v, value_cv, ctx.mem)) found = true;
+  });
+  WriteWireBool(found, out_slot, ctx.mem);
   return absl::OkStatus();
 }
 
