@@ -281,9 +281,25 @@ right when the fn needs the message, vs. pulling one field.
 
 ## 13. Open questions / future work
 
-  - **Component API in `eval/`**: wasmtime's component host API is a new
-    eval dependency; verify the vendored build exposes it (the C API's
-    component surface is thinner than Rust's — may force a shim).
+  - **Component API in `eval/`** — *resolved 2026-06-03 via
+    `eval/probes/m24/wasmtime_component_api_probe.{cc,BUILD.bazel}`.*
+    The vendored darwin_arm64 wasmtime archive ships the C API
+    component-model symbols (`wasmtime_component_new`,
+    `wasmtime_component_linker_{new,instantiate,instance_add_func}`,
+    `wasmtime_component_instance_get_func`,
+    `wasmtime_component_func_call`).  Every typedef and decl in
+    `wasmtime/component.h` (and its subtree `component/{func,instance,
+    linker,types,val}.h`) is gated `#ifdef
+    WASMTIME_FEATURE_COMPONENT_MODEL`, which the vendored
+    `wasmtime/conf.h` does NOT define — so any consumer TU must
+    force-define it at compile time
+    (`copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"]`).  With the
+    define set, headers compile, symbols link, and
+    `wasmtime_component_new(garbage)` returns a real error — the
+    library bodies are present, not stubs.  **No Rust shim required;
+    `Engine::AddComponent` (§3.5) can be written natively against
+    the C API.**  The probe is a throwaway per CLAUDE.md probe
+    discipline; deleted at milestone closeout.
   - **`celfnc` codec emission**: §7 is mechanical, but the generator
     must handle every §6 row + arbitrary nesting; `e2e/foreign_component_fixtures/stub_demo`'s
     codec is hand-written proof, not the generator.

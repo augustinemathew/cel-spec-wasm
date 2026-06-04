@@ -1,0 +1,25 @@
+# m24 §13 throwaway probe — verifies the vendored wasmtime C API's
+# component-model surface compiles and links.  CLAUDE.md probe
+# discipline: kept while the milestone is in flight, deleted at
+# closeout.
+#
+# The `WASMTIME_FEATURE_COMPONENT_MODEL` define is force-set here
+# because the vendored `wasmtime/conf.h` does not set it (verified
+# 2026-06-03); without the force-define every component-API
+# declaration in `wasmtime/component.h` is preprocessed out.
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//:internal"])
+
+cc_binary(
+    name = "wasmtime_component_api_probe",
+    srcs = ["wasmtime_component_api_probe.cc"],
+    copts = [
+        "-std=c++17",
+        "-DWASMTIME_FEATURE_COMPONENT_MODEL",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
