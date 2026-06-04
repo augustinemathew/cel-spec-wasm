@@ -2503,7 +2503,7 @@ TEST(CelRuntime, VvHelpersLoadInputsBeforeWritingOutput) {
 ```
 
 This test is load-bearing evidence that SlotAllocator's aliasing is
-safe. Must run under `bazel test //compiler/...` (default suite, not
+safe. Must run under `bazel test //...` (default suite, not
 `manual`).
 
 ### 8.5 Error provenance (optional, Slice 11)
@@ -2967,7 +2967,7 @@ substitutions and one runtime-API simplification.  See
 
 ## 11. Implementation plan
 
-### 11.1 Strategy: build `compiler_v2/` end-to-end, swap at the end
+### 11.1 Strategy: build `compiler/` end-to-end, swap at the end
 
 The rewrite touches new passes (`ResolvePass`, `LayoutPass`), a new
 ABI (uniform slot-out), a new memory-ownership model, and runtime
@@ -2976,13 +2976,13 @@ keep v1's ABI and v2's ABI coexisting in the same translation
 units — which is where complexity actually lives, not in the new
 code itself.
 
-**We build a parallel `compiler_v2/` tree instead.** `compiler/`
+**We build a parallel `compiler/` tree instead.** `compiler/`
 remains untouched (and shipping) throughout the rewrite. Each slice
-grows `compiler_v2/` by a vertical capability — a new expression
+grows `compiler/` by a vertical capability — a new expression
 kind that works end-to-end from parse → check → resolve → layout →
 emit → run. The first slice ships v2 evaluating `42`; the last
 slice ships v2 at feature parity with today's M3 tip, passes the
-same e2e fixtures, and renames `compiler_v2/` → `compiler/`
+same e2e fixtures, and renames `compiler/` → `compiler/`
 (deleting v1).
 
 **Why this is better for an LLM-driven rewrite.**
@@ -2992,13 +2992,13 @@ same e2e fixtures, and renames `compiler_v2/` → `compiler/`
     ABI bridge. No keeping deleted-in-v2 code alive for one more
     slice. The LLM's context budget spends on the design, not on
     reconciling two in-flight designs.
-  - **v1 stays runnable throughout.** `bazel test //compiler/...`
+  - **v1 stays runnable throughout.** `bazel test //...`
     is always green because it never moves. The user can ship bug
     fixes against v1 while v2 is being built (low probability, but
     the option costs us nothing).
   - **Each slice is end-to-end executable.** The v2 tree is a
     standalone compiler from Slice 1 onward: `bazel run
-    //compiler_v2/cli:celwasmc_v2 -- -e "42"` works. Slices add
+    //tools/cel:celwasmc_v2 -- -e "42"` works. Slices add
     capability, not ABI compatibility. This is the load-bearing
     property of the plan — no slice leaves v2 in a half-built
     state.
@@ -3013,7 +3013,7 @@ same e2e fixtures, and renames `compiler_v2/` → `compiler/`
     before the swap get v1; after the swap, v2. There is no "flag
     to opt into v2" — that's a feature flag we'd have to maintain,
     and the whole point of this strategy is not to.
-  - **Disk cost.** A second tree sits in `compiler_v2/` for the
+  - **Disk cost.** A second tree sits in `compiler/` for the
     lifetime of the rewrite (~3–4 weeks). Worth it for the
     cognitive cost it saves.
   - **Reference-copy risk.** v2 files that copy v1 literally (e.g.
@@ -3021,15 +3021,15 @@ same e2e fixtures, and renames `compiler_v2/` → `compiler/`
     not symlinked. Each slice's description calls out what gets
     copied from v1 and cites the exact source path — no guessing.
 
-### 11.2 `compiler_v2/` directory layout
+### 11.2 `compiler/` directory layout
 
 Mirrors `compiler/` one-for-one. New file names carry no `_v2`
 suffix internally (the directory already tags them); at the swap,
 rename is a pure `git mv`.
 
 ```
-compiler_v2/
-├── BUILD.bazel                      # root; re-exports //compiler_v2/... as a filegroup
+compiler/
+├── BUILD.bazel                      # root; re-exports //compiler/... as a filegroup
 ├── ir/
 │   ├── annotations.h                # NodeAnnotation (§3, §4.1)
 │   ├── typed_ast.h                  # (copied from compiler/ir/typed_ast.h verbatim in Slice 1)
@@ -3112,13 +3112,13 @@ Non-negotiable — violations mean the slice is misscoped and needs
 to split:
 
   - **v2 is always end-to-end executable.** Every slice ships a
-    `compiler_v2/cli/celwasmc_v2` binary that compiles **at least**
+    `tools/cel/celwasmc_v2` binary that compiles **at least**
     the expression families the slice claims, runs them under the
     v2 runtime+host, and returns the right answer. No slice leaves
     v2 half-built.
-  - **v2 tests are always green on HEAD.** `bazel test //compiler_v2/...`
+  - **v2 tests are always green on HEAD.** `bazel test //...`
     passes after every slice. No trailing "will fix" commits.
-  - **v1 tests are always green on HEAD.** `bazel test //compiler/...`
+  - **v1 tests are always green on HEAD.** `bazel test //...`
     passes after every slice. The v2 slices do not touch v1 files.
     If a slice wants to share code, it copies — not symlinks, not
     `cc_library` cross-references.
@@ -3241,7 +3241,7 @@ always "e2e check runs green and tests pass".
 
 **Scope.** Enough v2 to evaluate `42` under the v2 CLI.
 
-  - `compiler_v2/` directory structure (§11.2).
+  - `compiler/` directory structure (§11.2).
   - `runtime/`: header split into topic headers
     (`cel_data.h` / `cel_memory.h` / `cel_arena.h` / `cel_make.h`
     / `cel_log.h`) plus umbrella `cel_runtime.h`; `cel_runtime.c`
@@ -3261,10 +3261,10 @@ always "e2e check runs green and tests pass".
     `int64` only, via `.rodata`.
   - `compiler/codegen/static_memory_builder.{h,cc}` with
     `AllocateInt`.
-  - `compiler_v2/cli/celwasmc_v2.cc`: CLI entry.
+  - `tools/cel/celwasmc_v2.cc`: CLI entry.
   - `e2e/eval_test.cc`: `EvalInt("42", 42)`.
 
-**E2E check.** `bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42"`
+**E2E check.** `bazel run //tools/cel:celwasmc_v2 -- -e "42"`
 prints `42`.
 
 **Tests.**
@@ -3660,11 +3660,11 @@ them. **Mitigation:**
   - Wire `bench/eval_bench.cc` from v1; assert v2 is
     within 20% of v1 on existing microbenchmarks (expect v2 faster
     on most; flag slowdowns > 20%).
-  - `scripts/lint.sh` clean for all `compiler_v2/` files. Any
+  - `scripts/lint.sh` clean for all `compiler/` files. Any
     `// NOLINT` gets a bullet in
     `doc/implementation-plan/lint-backlog.md`.
 
-**E2E check.** `bazel test //compiler_v2/... //compiler/...` all
+**E2E check.** `bazel test //... //compiler/...` all
 green; v2's e2e fixture count ≥ v1's.
 
 **Tests.** Parity audit — no new test cases.
@@ -3676,7 +3676,7 @@ construction.
 
 ---
 
-#### Slice 12 — Swap: `compiler_v2/` → `compiler/` (0.5 day) — PENDING
+#### Slice 12 — Swap: `compiler/` → `compiler/` (0.5 day) — PENDING
 
 **Scope.** One commit; no code changes, only renames.
 
@@ -3684,14 +3684,14 @@ construction.
   - `git mv compiler_v2 compiler`
   - `git mv compiler/cli/celwasmc_v2.cc compiler/cli/celwasmc.cc`
     (+ BUILD.bazel target rename).
-  - Sweep `//compiler_v2/...` → `//compiler/...` in any remaining
+  - Sweep `//compiler/...` → `//compiler/...` in any remaining
     references (docs, checklist, CLAUDE.md if any).
   - Update `doc/wasm-compiler-design.md` §7.0 / §7.3.
   - Rename `m-mem-static-layout-pass.md` +
     `memory-ownership-flip.md` → `.obsolete.md`.
   - Mark this doc `Status: shipped` at the top.
 
-**E2E check.** `bazel test //compiler/...` green; `rg 'compiler_v2'`
+**E2E check.** `bazel test //...` green; `rg 'compiler_v2'`
 returns zero matches.
 
 **Risk.** Missed path reference. **Mitigation:** pre-commit
@@ -3720,7 +3720,7 @@ debugging (especially S10).
 | 9 | `cel_make_message` / `cel_set_field` host tests | `kCreateStruct` emit | Proto literal fixtures; unregistered-descriptor negative |
 | 10 | Slot-Strahler; `_at_vv` aliasing per §8.4; `CelErrorPayload.expr_id` | Debug vs prod slot count | Debug-vs-prod parity on 10k corpus; error provenance |
 | 11 | — | — | v1 M3 fixtures green under v2; bench within 20% |
-| 12 | — | — | `bazel test //compiler/...` green post-swap |
+| 12 | — | — | `bazel test //...` green post-swap |
 
 ### 11.7 Testing-checklist updates
 
@@ -3776,7 +3776,7 @@ is the plan's load-bearing artefact.
 **Pre-merge gates (per slice).**
   1. `scripts/lint.sh` — clean (zero clang-tidy warnings in touched
      files).
-  2. `bazel test //compiler/...` — green locally and on any CI
+  2. `bazel test //...` — green locally and on any CI
      that's wired up.
   3. The testing-checklist row(s) this slice ticks are ticked in
      the same commit.
@@ -3794,7 +3794,7 @@ The rewrite is done when:
         §14.
   - [ ] Zero references to `LoweringContext::scratch_slot`,
         `prologue_setups`, `EmitCheckedArithmetic`, `_at_ii`,
-        `_at_uu` remain in `compiler_v2/` (or `compiler/` post-swap).
+        `_at_uu` remain in `compiler/` (or `compiler/` post-swap).
   - [ ] `rg cel_make_bool|cel_make_int|cel_make_uint|cel_make_double|cel_make_null compiler/codegen` returns zero hits (runtime/host boxing paths excluded).
   - [ ] Every `cel_*` helper in `cel_runtime.h` has a cel-cpp parity
         comment pointing at the source-of-truth impl.  (Map/list
@@ -3891,8 +3891,8 @@ A one-paragraph summary for the post-completion CLAUDE.md update:
 
 ## 14. Deliverables checklist
 
-Paths retargeted at `compiler_v2/` since the swap (S12) hasn't
-landed.  At swap, all `compiler_v2/...` paths become
+Paths retargeted at `compiler/` since the swap (S12) hasn't
+landed.  At swap, all `compiler/...` paths become
 `compiler/...`.
 
 **Shipped (M1–M4):**

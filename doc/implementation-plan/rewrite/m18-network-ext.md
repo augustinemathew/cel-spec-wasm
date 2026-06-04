@@ -29,7 +29,7 @@ all `ext_unimpl` SKIP).
 > "Future work".
 
 > **Slice-0 checker probe: GREEN** (`m18-ast-probe-findings.md`;
-> `compiler_v2/probes/network/ast_shape_probe_test.cc`, 9 tests).
+> `compiler/probes/network/ast_shape_probe_test.cc`, 9 tests).
 > The load-bearing risk — "can we self-declare the two types + ~16
 > overloads with no cel-cpp library?" — is **retired**: all 69 corpus
 > shapes type-check against a plain `TypeCheckerBuilder`, including the
@@ -273,7 +273,7 @@ All kernels in one `cel_net_ext.c` (per the one-file convention):
 
 ## 9. Closeout gate (copy into the PR)
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] Kernel matrix: valid/invalid v4+v6 parse, canonical, masks,
         containment, classification, equality — positive + negative +
         boundary.

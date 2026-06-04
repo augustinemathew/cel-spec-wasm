@@ -1252,7 +1252,7 @@ nested binds).
 ### 7.3 Conformance unlock (closeout-gate)
 
 Per CLAUDE.md, manual-tagged tests carry load-bearing assertions
-that `bazel test //compiler_v2/...` does not.  Closeout requires
+that `bazel test //...` does not.  Closeout requires
 running:
 
   - `bazel run //conformance:run_conformance` —
@@ -1279,7 +1279,7 @@ keystone gate:
 
 ```
 [ ] scripts/run_full_suite.sh — green (no GTEST_SKIP at fixture level)
-[ ] bazel test //compiler_v2/... — green
+[ ] bazel test //... — green
 [ ] bazel run //conformance:run_conformance — headline
     matches §5 closeout projection
 [ ] All new WAT files re-run + assemble cleanly through wat_runner
@@ -1533,8 +1533,8 @@ keystone gate:
     workaround has to be re-applied per type rather than
     being structurally impossible.  The clean shape is to
     rename `namespace cel { … }` declarations in
-    `eval/`, `compiler_v2/cli/`, `e2e/`,
-    `compiler_v2/internal/`, `tools/` to either
+    `eval/`, `tools/cel/`, `e2e/`,
+    `compiler/internal/`, `tools/` to either
     `namespace celwasm` (drop the `api` segment — short, no
     risk of further cel-cpp collisions since cel-cpp doesn't
     use this namespace) or commit to `namespace celwasm::api`
@@ -1571,13 +1571,13 @@ keystone gate:
         2 benchmark files open `namespace cel` for harness
         scaffolding — same rewrite.
       - **Zero `using namespace cel;` lines exist** anywhere
-        in `compiler_v2/`; every reference is qualified
+        in `compiler/`; every reference is qualified
         (`cel::Value`, `cel::Activation`, …), so the rename
         is a mechanical `s/cel::/celwasm::/g` over the four
         target classes plus the namespace-open lines.
       - **No published `.h` aggregate or CLI public contract**
-        — `compiler_v2/cli/celwasmc_v2.cc` is a standalone
-        demo; nothing under `compiler_v2/` is exposed as a
+        — `tools/cel/celwasmc_v2.cc` is a standalone
+        demo; nothing under `compiler/` is exposed as a
         shared library / SDK header.  So the rename has
         zero external blast radius.
     **Triggers**: any future class that collides with

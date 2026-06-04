@@ -1,7 +1,7 @@
-# `compiler_v2/bench` — performance benchmarks
+# `bench` — performance benchmarks
 
 Two Google Benchmark binaries, both `manual`-tagged so they stay out of
-`bazel test //compiler_v2/...`.  Run explicitly when you want numbers.
+`bazel test //...`.  Run explicitly when you want numbers.
 
 ## How to run
 
@@ -11,13 +11,13 @@ Always build with `-c opt`.  Debug builds blow timing numbers up by
 ```bash
 # Runtime-kernel microbenches (cel_arith / cel_compare / cel_convert
 # / cel_string_ops / cel_3vl / cel_runtime aggregate kernels).
-bazel run -c opt //compiler_v2/bench:kernel_bench
+bazel run -c opt //bench:kernel_bench
 
 # End-to-end pipeline benches (Compiler::Compile / Engine::Plan /
 # Instance::Eval).  Pre-stages compiler + program + instance outside
 # the timed loop so the Eval-only numbers measure steady-state cost
 # without re-paying compile / plan on every iteration.
-bazel run -c opt //compiler_v2/bench:pipeline_bench
+bazel run -c opt //bench:pipeline_bench
 ```
 
 Useful flags:
@@ -43,7 +43,7 @@ Three orthogonal axes affect every number in this file:
     a freestanding fixed-cursor arena (see
     `doc/implementation-plan/rewrite/wasi/DESIGN.md`).
   - **`CEL_LOG_DISABLED`** (gated by `config_setting "opt_mode"` in
-    `compiler_v2/runtime/BUILD.bazel`).  Every public runtime helper
+    `runtime/BUILD.bazel`).  Every public runtime helper
     begins with `CEL_LOG("enter")`, which on the wasm runtime is a
     host-import trampoline that ends in `fprintf(stderr, ...)`.  In
     `-c opt` builds the define is active and `CEL_LOG` expands to
@@ -145,7 +145,7 @@ Two columns:
     2026-05-18, switched the wasm runtime to wasi-sdk + dlmalloc
     arena + runtime-exported memory) and **CEL_LOG disabled in
     opt builds** (`config_setting` "opt_mode" in
-    `compiler_v2/runtime/BUILD.bazel` → `-DCEL_LOG_DISABLED`).  Net
+    `runtime/BUILD.bazel` → `-DCEL_LOG_DISABLED`).  Net
     of those two changes the Eval rows uniformly improved — the
     WASI tax on each `wasm→host` trampoline call was being paid 60+
     times per Eval through CEL_LOG; disabling CEL_LOG cuts that
@@ -278,7 +278,7 @@ in a kernel is the kernel's fault.
 The runtime-kernel microbenches for the timestamp / duration surface
 scoped in
 [`doc/implementation-plan/rewrite/m7b-duration-timestamp.md`][m7b]
-live in **`bench/kernel_bench.cc`** (`//compiler_v2/bench:kernel_bench`)
+live in **`bench/kernel_bench.cc`** (`//bench:kernel_bench`)
 alongside the other runtime-kernel BMs.  No separate bench binary
 per milestone: kernels go in `kernel_bench`, pipeline scenarios go
 in `pipeline_bench`.  Today most M7B kernel BMs are guarded behind
@@ -352,7 +352,7 @@ turn on when M7-A.A/B/C ship.  Cohort:
 Run M7B + M7-A kernel benches together:
 
 ```bash
-bazel run -c opt //compiler_v2/bench:kernel_bench -- \
+bazel run -c opt //bench:kernel_bench -- \
     --benchmark_filter='BM_(Duration|Timestamp|Any)'
 ```
 

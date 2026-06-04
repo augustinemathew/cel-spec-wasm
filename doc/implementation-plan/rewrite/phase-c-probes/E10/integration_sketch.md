@@ -1,6 +1,6 @@
 # Probe E10: kernel-level integration sketch
 
-**Status:** PASS — sketch only (no code committed under `compiler_v2/`).
+**Status:** PASS — sketch only (no code committed under `compiler/`).
 
 ## What changes in `runtime/`
 

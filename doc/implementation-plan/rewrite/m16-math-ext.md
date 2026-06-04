@@ -21,7 +21,7 @@ registration, no new codegen).
 > design choices were frozen, all 199 corpus shapes were run through
 > cel-cpp's parser-macros + type-checker and the checked ASTs dumped.
 > See `m16-ast-probe-findings.md` (probe:
-> `compiler_v2/probes/math/ast_shape_probe_test.cc`, `manual`-tagged).
+> `compiler/probes/math/ast_shape_probe_test.cc`, `manual`-tagged).
 > **Verdict: every `math.*` shape rides cel-cpp's parser macros +
 > the existing generic `kCall` codegen arm — no new codegen, no
 > receiver dispatch, no list-collapse logic to write.**  We register
@@ -341,7 +341,7 @@ baseline + README regen.  Close the milestone.
 
 ## 9. Closeout gate
 
-  - [x] `bazel test //compiler_v2/...` green.
+  - [x] `bazel test //...` green.
   - [x] Per-TU runtime tests: positive + negative + boundary for every
         kernel (`cel_math_ext_test.cc`).
   - [x] `m16_test.cc` e2e: every family + macro-expansion (67 cases).

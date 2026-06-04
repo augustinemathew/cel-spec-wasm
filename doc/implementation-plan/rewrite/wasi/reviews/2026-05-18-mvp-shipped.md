@@ -336,7 +336,7 @@ Each entry: `file:line — severity — effort — what needs to happen`.
     and the comprehension-deferred set from rewrite M5 — all
     pre-existing.
 
-  - **The `bazel test //compiler_v2/...` green status hides one
+  - **The `bazel test //...` green status hides one
     thing:** `cel_runtime_wasm_test` and the genrule
     `cel_runtime_wasm_file` are `tags = ["manual"]`, as is
     `cel_runtime_wasm_bytes_cc`.  Every e2e test (including the
@@ -523,7 +523,7 @@ Ordered; each tagged P0/P1/P2.
 
 ## What's NOT in this review
 
-  - I did not run `bazel test //compiler_v2/...` or
+  - I did not run `bazel test //...` or
     `scripts/lint.sh` (per the review prompt); MVP claims of
     test/lint state are taken at face value.
   - I did not exhaustively diff every C/C++ file modified;

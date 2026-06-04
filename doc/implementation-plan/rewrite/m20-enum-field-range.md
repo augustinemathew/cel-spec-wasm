@@ -7,7 +7,7 @@ What landed (deltas from the as-written plan):
   - **The differential test consolidated into ONE TU, not a separate
     e2e binary.**  The plan put the oracle library in `testdata/` and a
     consumer test in `e2e/m20_field_range_diff_test.cc`.  Linking our
-    pipeline (`//compiler_v2/api`, which defines `cel::Value` /
+    pipeline (`//eval`, which defines `cel::Value` /
     `cel::Attribute`) AND the oracle (which pulls cel-cpp's same-named
     symbols) in one binary is a genuine ODR clash whose link success is
     archive-scan-order sensitive — a second consumer binary failed to
@@ -81,7 +81,7 @@ deliberate divergence from our source of truth.
     `enum_value` matcher.  **Conclusion: cel-cpp itself FAILS the
     `strong_proto2`/`strong_proto3` rows; matching them would mean
     exceeding our source of truth.**  Probe:
-    `compiler_v2/probes/enums/cel_cpp_strong_enum_probe_test.cc`
+    `compiler/probes/enums/cel_cpp_strong_enum_probe_test.cc`
     (disposable — delete at M20 closeout).
   - **Our `cel_set_field` is a void/trap ABI.**  `CelSetFieldImpl`
     returns `absl::Status` (`cel_host.cc:2396`, `:2488-2498`), and the

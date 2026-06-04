@@ -23,7 +23,7 @@ from the parsed `.celfn` IDL — it is the "guest half" of a scoped
 `wit-bindgen` (§5.6).
 
 Input to the generator: `FunctionLibrary` / `CelfnDecl`
-(`compiler_v2/celfn/function_library.{h,cc}`), already parsed and validated.
+(`compiler/celfn/function_library.{h,cc}`), already parsed and validated.
 The generator is a **pure function** `FunctionLibrary → {Go source files}`;
 no I/O beyond reading the IDL.
 
@@ -220,6 +220,6 @@ GenerateGo(lib FunctionLibrary, cfg GoGenConfig) -> map[filename]source:
     empirical record (toolchain, ABI, panic behavior, doc-correction list).
   - `doc/implementation-plan/rewrite/modules-and-ffi.md` §5 — the parent design
     this refines (foreign FFI, fixed ABI, shim generation).
-  - `compiler_v2/celfn/function_library.{h,cc}` — the `CelfnDecl` /
+  - `compiler/celfn/function_library.{h,cc}` — the `CelfnDecl` /
     `CelfnType` data model the generator consumes; `Argkind()` (`:30`),
     `CelTypeSpec()` (`:65`), `MentionsProto()` (`:118`).

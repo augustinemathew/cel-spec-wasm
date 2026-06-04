@@ -1065,7 +1065,7 @@ The runtime-isolation slice (8 commits on `master`,
 `825f2e3..5085f46`) closed M1.  Per
 `rewrite/m1-scalar-pipeline.md §6.3`, M1 flips the rows below.
 This block is the rewrite-tier counterpart to the v1 grids above —
-v1 stays in its own sections; v2 (everything under `compiler_v2/`)
+v1 stays in its own sections; v2 (everything under `compiler/`)
 is tracked here.
 
   - [x] Static-literal lowering × bool —
@@ -1113,7 +1113,7 @@ Architectural deltas vs as-written M1 plan (see
 The ident / select / has / unknowns slice closed M2.  Per
 `rewrite/m2-ident-select-unknowns.md §6.3 / §6.4`, M2 flips the
 rows below.  v1 grids above are untouched; v2 coverage (everything
-under `compiler_v2/`) is tracked here.
+under `compiler/`) is tracked here.
 
 **Slice M2.A — `cel::Activation`**
 
@@ -1647,7 +1647,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         / §4.7.5 / §11.5; `cel-host-surface.md` §6 for `cel.abi.types[]`)
         — pending.
   - [ ] `scripts/run_full_suite.sh` closeout gate run — pending; manual
-        verification done via `bazel test //compiler_v2/... --test_output=errors
+        verification done via `bazel test //... --test_output=errors
         --build_tests_only` (44/45 PASS — the 45th is `m7_test`'s 1
         deliberate SKIP for M8 wrapper).
 
@@ -2209,7 +2209,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         but actually unlocked by another; tracked in m8 plan §9
         "Future work".
   - [x] **Throwaway empirical probe** at
-        `compiler_v2/throwaway/m8_wrapper_probe.cc` (branch
+        `former compiler_v2/throwaway/m8_wrapper_probe.cc` (branch
         `throwaway/m8-wrapper-probe`, PR #4).  Pinned cel-cpp's
         `RuntimeOptions::enable_empty_wrapper_null_unboxing`
         toggle — default `false` peels unset wrapper fields to
@@ -2365,7 +2365,7 @@ cel_math_ext.c`; no new codegen (generic kCall).  Conformance:
 FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
 
   - [x] **Slice 0 — WAT-first.** AST-shape probe
-        (`compiler_v2/probes/math/ast_shape_probe_test.cc`) +
+        (`compiler/probes/math/ast_shape_probe_test.cc`) +
         two traces (`wat/m16_math_min_list.wat`,
         `wat/m16_math_bit_shift.wat`) assembled via `wasm-as`.
   - [x] **Slice A — scalar.** ceil/floor/round/trunc, isInf/isNaN/

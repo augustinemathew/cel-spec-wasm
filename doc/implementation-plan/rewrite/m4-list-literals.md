@@ -523,7 +523,7 @@ Map case from M3 unchanged; new repeated case lights up.
 ## 3. Source layout (M4 deliverables)
 
 ```
-compiler_v2/
+compiler/
 ├── runtime/
 │   ├── cel_data.h                       BREAKING: CEL_LIST split +
 │   │                                    ArenaListHeader +
@@ -818,7 +818,7 @@ M4 closeout
 [ ] No fixture-level GTEST_SKIPs added to e2e/m4_test.cc
 [ ] m2_test.cc::SelectRepeatedFieldReturnsUnsupportedError
     flipped (or removed in favour of new e2e test)
-[ ] bazel test //compiler_v2/... passes
+[ ] bazel test //... passes
 [ ] scripts/run_full_suite.sh passes (default + 6 manual
     targets)
 [ ] m4_test runs green (no fixture skips)

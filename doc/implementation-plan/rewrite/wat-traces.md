@@ -1730,7 +1730,7 @@ user.allow("/admin")    where  bool rules.allow(this proto(acme.User) u, string 
 The wasmtime Linker resolves the caller's `rules.allow_message_acme_User_string`
 import against the stub's export of the same name.  No cel-cpp,
 no codegen — pure wasmtime wiring.  Host harness in
-`compiler_v2/probes/m13_custom_fns/m13_p1_test.cc`:
+`compiler/probes/m13_custom_fns/m13_p1_test.cc`:
 
   1. allocate `cel.memory` (2 pages, host-owned)
   2. instantiate stub with `cel.memory` bound
@@ -1751,7 +1751,7 @@ m13-custom-fns.md).
 **Runnable today**
 
 ```
-bazel test //compiler_v2/probes/m13_custom_fns:m13_p1_test --test_output=all
+bazel test //compiler/probes/m13_custom_fns:m13_p1_test --test_output=all
 ```
 
 Passed in 6ms on first commit.

@@ -771,7 +771,7 @@ Ranked highest → lowest.
     invocation to refresh the cached wasm bytes.  Mitigation:
     document this in the M10.B + M10.C + M10.D commit messages
     so a future builder remembers; the closeout runs the
-    full `bazel test //compiler_v2/...` which catches a stale
+    full `bazel test //...` which catches a stale
     wasm via the m2/m4/m5/m7/m9 e2e tests' link checks.
 
   - **R3 — Overload-id partition test drift.**  The

@@ -182,7 +182,7 @@ module memory at the returned ptr, call `isAdult(ptr,len)`, read the bool.
 
 The two templates above are the *output*. The generator is a **pure
 function `CelfnDecl → Go source`** — no new analysis; everything it needs
-is already on the parsed struct (`compiler_v2/celfn/function_library.{h,cc}`):
+is already on the parsed struct (`compiler/celfn/function_library.{h,cc}`):
 `fn_name`, `module_name` (alias), `overload_id`, `params`, `return_type`.
 
 The algorithm: **iterate `library.decls()`, keep `kForeign`, and for each

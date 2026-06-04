@@ -20,8 +20,8 @@ cel compile <expr> [flags...]   emit wasm bytes (--output PATH or stdout)
 Exit codes: `0` success, `1` compile/eval failure, `2` usage error.
 Diagnostics go to stderr; `eval` writes the result body to stdout.
 
-Binary: `bazel-bin/compiler_v2/tools/cel/cel` (built via
-`bazel build //compiler_v2/tools/cel:cel`).
+Binary: `bazel-bin/tools/cel/cel` (built via
+`bazel build //tools/cel:cel`).
 
 ## Scalar arithmetic
 
@@ -108,22 +108,22 @@ via cel-cpp and libprotobuf.
   `DescriptorPool::generated_pool()` automatically.
 
 ```bash
-# compiler_v2/testdata/e2e_fixture.proto imports timestamp + duration
+# testdata/e2e_fixture.proto imports timestamp + duration
 # (both WKTs) — resolves cleanly.
 cel eval "u.name" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=txtpb:name: "Ada" user_id: 42'
 # → "Ada"
 
 cel eval "u.age" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=json:{"name":"Ada","age":36}'
 # → 36
 
 # Or from a file — recognised by extension (.txtpb, .json, .pb binary).
 printf 'name: "Ada"\nage: 36\n' > /tmp/ada.txtpb
 cel eval "u.name" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var "u:celwasm.testdata.Customer=@/tmp/ada.txtpb"
 # → "Ada"
 ```
@@ -207,12 +207,12 @@ construction, function lookup); it does NOT shorten the type name in
 
 ```bash
 cel check "Customer{name: 'Ada'}.name" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --container celwasm.testdata
 # → OK   (Customer resolves as celwasm.testdata.Customer)
 
 cel check "Customer{name: 'Ada'}.name" \
-  --proto compiler_v2/testdata/e2e_fixture.proto
+  --proto testdata/e2e_fixture.proto
 # ERROR: :1:9: undeclared reference to 'Customer' (in container '')
 ```
 
@@ -223,25 +223,25 @@ Message results default to textproto; `--format` is repeatable.
 
 ```bash
 cel eval "u" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36'
 # name: "Ada"
 # age: 36
 
 cel eval "u" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36' \
   --format=json
 # {"name":"Ada","age":36}
 
 cel eval "u" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36' \
   --format=cel
 # celwasm.testdata.Customer{name: "Ada", age: 36}
 
 cel eval "u" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var 'u:celwasm.testdata.Customer=txtpb:name: "Ada" age: 36' \
   --format=textproto --format=json --format=cel
 # --- textproto ---
@@ -282,12 +282,12 @@ cel check "a * b + 1" --var "a:int" --var "b:int"
 # OK
 
 cel check "u.name.endsWith('@acme.com')" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var "u:celwasm.testdata.Customer"
 # OK
 
 cel check "u.unknown_field" \
-  --proto compiler_v2/testdata/e2e_fixture.proto \
+  --proto testdata/e2e_fixture.proto \
   --var "u:celwasm.testdata.Customer"
 # ERROR: :1:2: undefined field 'unknown_field' not found in struct
 # 'celwasm.testdata.Customer'
@@ -361,8 +361,8 @@ section is preceded by a `--- <name> ---` header.
   was built to surface: scalars + lists + maps + bound messages +
   proto map / repeated / nested submessage fields.
 - `cel_smoke_test.sh` — fast end-to-end smoke against a built `cel`
-  binary; run as `bazel test //compiler_v2/tools/cel:cel_smoke_test`.
-- `compiler_v2/abi/runtime_catalogue.h` — single source of truth for
+  binary; run as `bazel test //tools/cel:cel_smoke_test`.
+- `abi/runtime_catalogue.h` — single source of truth for
   the runtime + host imports the compiled wasm depends on; relevant
   if a `cel eval` traps at instantiate with a "missing export"
   diagnostic.

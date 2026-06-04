@@ -3,7 +3,7 @@
 ;;
 ;; M8.C — kStructExpr wrapper tail-unwrap.  Direct clone of m7b's
 ;; `cel_wkt_unwrap_time` shape (see `wat-traces.md` §51 walkthrough
-;; and `compiler_v2/codegen/expr_lower.cc::MaybeEmitWktUnwrapTailCall`
+;; and `compiler/codegen/expr_lower.cc::MaybeEmitWktUnwrapTailCall`
 ;; for the m7b codegen seam).  Differs from m7b in two places:
 ;;
 ;;   1.  Trampoline is `cel_host.cel_wkt_unwrap_wrapper` (NOT
@@ -17,7 +17,7 @@
 ;;       CEL_DURATION.
 ;;
 ;; Why this is the kStructExpr tail call, not a separate AST node:
-;; the typed_ast Repr mapping at `compiler_v2/ir/typed_ast.cc:56`
+;; the typed_ast Repr mapping at `compiler/ir/typed_ast.cc:56`
 ;; already maps `wrapper(IntXX)` → `Repr::kInt` (and the
 ;; `wrapper(YY)` → `Repr::kYY` siblings).  Every consumer downstream
 ;; of the kStructExpr (equality, arithmetic-check, list-element-
@@ -31,7 +31,7 @@
 ;; trampoline writes — keeps the dispatch table at the Layer-2 impl
 ;; trivial (one switch on `wrapper_kind` selecting both the
 ;; descriptor FQN to cross-check AND the matching CelValue.kind to
-;; emit).  Values match `compiler_v2/runtime/cel_data.h::CelKind`:
+;; emit).  Values match `runtime/cel_data.h::CelKind`:
 ;;
 ;;     CEL_BOOL   = 1   ←→  google.protobuf.BoolValue
 ;;     CEL_INT    = 2   ←→  google.protobuf.Int32Value  / Int64Value
@@ -94,10 +94,10 @@
 ;; CEL_ERROR (rare — kStructExpr operands' 3VL is absorbed at the
 ;; cel_set_field level), the trampoline propagates it verbatim to
 ;; out_slot.  Mirrors `CelWktUnwrapTimeImpl`'s shape in
-;; `compiler_v2/api/internal/cel_host.cc:3119-3122`.
+;; `eval/internal/cel_host.cc:3119-3122`.
 ;;
 ;; Codegen shape (emitted by
-;; `compiler_v2/codegen/expr_lower.cc::EmitKStructExpr` once
+;; `compiler/codegen/expr_lower.cc::EmitKStructExpr` once
 ;; `MaybeEmitWktUnwrapTailCall` is extended to recognise the 9
 ;; wrapper FQNs):
 ;;

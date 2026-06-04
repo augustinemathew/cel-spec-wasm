@@ -353,7 +353,7 @@ proto literals, which will).  `variables[]` / `fields[]` /
 ## 3. Source layout (M3 deliverables)
 
 ```
-compiler_v2/
+compiler/
 ├── runtime/
 │   ├── cel_data.h                       BREAKING: CEL_MAP split +
 │   │                                    ArenaMapHeader
@@ -560,7 +560,7 @@ Flip on `testing-checklist.md §"Rewrite M3"`:
 
 ## 7. Exit criteria
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] `bazel run //conformance:run_conformance`
         shows no `kFail` regressions vs the post-M2 +
         binding-marshaller snapshot.  New PASSes appear in

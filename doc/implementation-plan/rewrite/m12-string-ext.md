@@ -707,7 +707,7 @@ AI-assisted pace, ~3-4 calendar days of focused work.
 Per `conformance/README.md` and CLAUDE.md closeout
 discipline:
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] `bazel test //runtime:cel_string_ext_test
         //runtime:cel_string_format_test
         //e2e:m12_test` green (~165 new test cases).

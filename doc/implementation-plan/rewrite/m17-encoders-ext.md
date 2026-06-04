@@ -429,7 +429,7 @@ the two kernel-call shapes.
   - [x] Status header flipped to `shipped 2026-05-24` with a
         "what landed" summary.
   - [x] Future-work section appended (§10).
-  - [ ] `bazel test //compiler_v2/...` full-suite green — targeted
+  - [ ] `bazel test //...` full-suite green — targeted
         targets above are green; full sweep not run this session.
 
 ## 10. Future work surfaced
