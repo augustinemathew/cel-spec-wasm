@@ -534,6 +534,98 @@ the same `Compile → Plan → Eval` path the m24 e2e dispatch test pins.
 
 ## 8. Testing plan
 
+### 7.5 Full-matrix integration fixture — the user direction "every single type in .idl"
+
+User direction (2026-06-04, mid-implementation feedback):
+*"Let's make sure there is sample wit containing every single type
+in .idl function. Test strategy for the thing."*
+
+The pattern is **one `.idl` file that exercises every CEL type the
+celfnc emitters handle**, threaded through the full emission
+pipeline as the integration-test source-of-truth:
+
+  - `compiler/celfn/celfnc_emit/fixtures/full_matrix.idl` — one
+    foreign-fn decl per m24 §6 row (bool / int / uint / double /
+    null / string / bytes / duration / timestamp / list / map /
+    proto), plus four nested shapes (`list<list<int>>`,
+    `list<map<string,list<int>>>`,
+    `map<string,list<map<string,int>>>`,
+    `map<int,bytes>`) and three mixed multi-param decls.
+  - `compiler/celfn/celfnc_emit/full_matrix_dumper.cc` — `cc_binary
+    main()` reading `fixtures/full_matrix.idl` (NOT hard-coded
+    decls — the .idl is the single source), running
+    `ParseCelfnSource`, calling all four emitters in turn, and
+    writing the outputs to a configured prefix (one `genrule` per
+    output: `full_matrix_fns.wit`, `full_matrix_codec.h`,
+    `full_matrix_stub.cc`, `full_matrix_user_fns.h`).
+  - `compiler/celfn/celfnc_emit/full_matrix_compile_check` —
+    `cc_library` that includes `fixtures/author.h` (the
+    wit-bindgen-shape stub) + the four emitted files + a tiny
+    `.cc` referencing every public symbol the emitters promise to
+    produce. **If any emitter regresses on any row, the build
+    fails here.**
+
+This is the §8.0 compile-check pattern extended to the **whole
+matrix at once** — instead of three per-emitter pairs, one
+co-compilation that proves the four files form a consistent set
+(codec.h includes that the stub references; stub references that
+user_fns.h declares; WIT structure that wit-bindgen accepts when
+H.1 lands).
+
+### 7.5.1 IDL syntax note — `kForeign` vs `kForeignComponent`
+
+User question (2026-06-04 design feedback): "*So we should have
+kForeign and kForeignComponent?*"  **Yes — both, intentionally.**
+They are two distinct *runtime* dispatch paths (m13 Regime A vs
+m24 Regime B):
+
+| | `kForeign` (Regime A) | `kForeignComponent` (Regime B) |
+| --- | --- | --- |
+| Runtime dispatch | `Engine::AddModule` (shared-memory module) | `Engine::AddComponent` (isolated component via wasmtime component API) |
+| Memory | shared `cel.memory` import | own linear memory |
+| Per-call cost | single-digit ns | ~410 ns + canonical-ABI copy |
+| Foreign toolchain | thin-guest compile (wasi-thin-guest) | any language (normal component) |
+| Protos | rejected at Build (m13 §4.5.1) | crosses as `list<u8>` (m24 §8) |
+| Trust model | trusted / co-compiled | untrusted / polyglot OK |
+
+**The two products are not equivalent and shouldn't be merged.**
+An embedder chooses one per fn-library based on
+perf-vs-isolation-vs-language-flexibility trade-offs.
+
+**Where they overlap (and what m26 leverages):** the
+*generation shape* — codec.h, fns.wit, generated_stub.cc,
+user_fns.h — is identical between the two backends.  Both use the
+same wit-bindgen `author.h` carriers, the same std:: ↔ canonical-
+ABI lift/lower, the same export naming.  Only the runtime
+dispatch path (which `Engine` method the embedder calls) differs.
+That is why the cel generate emitters accept BOTH backends — they
+emit identical text regardless.  The choice is purely an embedder
+concern at *runtime registration time*.
+
+**IDL grammar gap.**  Today the celfn IDL has syntax for
+`kForeign` (the `<alias>.<fn>` prefix) but NOT `kForeignComponent`.
+For v1 cel generate works against the existing `kForeign` syntax;
+the embedder picks at runtime which Engine method to call.  A
+follow-up workstream will add explicit `kForeignComponent`
+syntax — three candidates:
+
+  1. **`@component.<alias>.<fn>` prefix** — mirrors the existing
+     `@host.` / `@native.` namespace.  Most idiomatic with the
+     current grammar.
+  2. **`Module rules { backend: component; }` block** — a
+     file-level backend declaration.  Cleaner if multiple decls
+     share a backend.
+  3. **CLI flag** — `cel generate --backend=component`
+     re-tags every kForeign decl in the lib.  Smallest grammar
+     surface, biggest runtime-vs-generate-time semantic gap.
+
+Recommendation: **option 1** (`@component.<alias>.<fn>`).
+Mirrors the existing `@host.` / `@native.` patterns, keeps the
+backend choice visible at decl scope, doesn't require a file-
+level mode that could be forgotten.  Adds two grammar rules; the
+emitters don't change.  Pencilled in for the H.2.f follow-up
+slice.
+
 ### 8.0 Generated-code compile gate — the user's per-build regression pin
 
 User direction (2026-06-04, during m26 §3.5 design): *"Make sure the

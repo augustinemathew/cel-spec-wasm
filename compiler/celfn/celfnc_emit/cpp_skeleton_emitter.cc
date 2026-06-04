@@ -137,7 +137,7 @@ absl::StatusOr<std::string> EmitUserFnsH(
     const std::vector<std::string>& extra_includes) {
   IncludeProbe probe;
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     ProbeType(d.return_type, &probe);
     for (const auto& p : d.params) ProbeType(p.type, &probe);
   }
@@ -176,7 +176,7 @@ absl::StatusOr<std::string> EmitUserFnsH(
   }
 
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     auto ret = CppType(d.return_type, /*as_param=*/false);
     if (!ret.ok()) return ret.status();
     std::vector<std::string> params;

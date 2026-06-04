@@ -119,7 +119,9 @@ absl::StatusOr<std::string> WitTypeText(const CelfnType& t,
 
 absl::StatusOr<std::string> EmitOneFn(const CelfnDecl& d,
                                       std::set<RecordKind>* records) {
-  ABSL_CHECK_EQ(d.backend, CelfnDecl::Backend::kForeignComponent);
+  ABSL_CHECK(d.backend == CelfnDecl::Backend::kForeignComponent ||
+             d.backend == CelfnDecl::Backend::kForeign)
+      << "wit emitter only handles kForeignComponent / kForeign decls";
   std::vector<std::string> param_parts;
   param_parts.reserve(d.params.size());
   for (const auto& p : d.params) {
@@ -156,7 +158,7 @@ absl::StatusOr<std::string> EmitWit(const FunctionLibrary& lib,
   std::set<RecordKind> records;
   std::vector<std::string> fn_lines;
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     auto line = EmitOneFn(d, &records);
     if (!line.ok()) return line.status();
     fn_lines.push_back(*std::move(line));

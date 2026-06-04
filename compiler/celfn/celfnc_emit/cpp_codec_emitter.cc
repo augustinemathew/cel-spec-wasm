@@ -459,7 +459,7 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
                                        absl::string_view wit_package_name) {
   TypeCollector tc;
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     tc.Visit(d.return_type);
     for (const auto& p : d.params) {
       tc.Visit(p.type);
