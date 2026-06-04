@@ -55,6 +55,31 @@ cc_binary(
 )
 
 
+# Large-list `in`-operator benches.  Two shapes:
+#   - `x in [0..N-1]` for N up to 1M with x at worst-case position.
+#   - `perm in [<1K GCP IAM permissions, 50 bytes each>]`.
+# Times Compile / Plan / Eval at each shape so the wall-clock split
+# (parse + codegen vs link vs steady-state scan) is visible.
+cc_binary(
+    name = "in_operator_bench",
+    srcs = ["in_operator_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in the repo README.  Not a benchmark (no timing); just a
