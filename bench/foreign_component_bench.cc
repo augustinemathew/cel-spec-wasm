@@ -240,18 +240,17 @@ BENCHMARK(BM_Eval_HostFn_AddIntInt);
 
 constexpr size_t kBenchStringBytes = 256 * 1024;
 
-// BM_Eval_ForeignComponent_LenString_256KiB is intentionally not
-// defined.  Passing a 256 KiB string through the canonical-ABI copy
-// pulls the wasi-sdk libc++ string code path, which reads from
-// wasi:random/random.get-random-bytes for hash seeding.  Under the
-// wasmtime v43 C API, the import declarations are wired
-// (`wasmtime_component_linker_add_wasip2`) but no per-store
-// wasi-preview2 context exists, so the call traps with `cannot leave
-// component instance`.  M26 #44 tracks the fix (either a future
-// wasmtime C-API binding for wasi-preview2 ctx setup, or rebuilding
-// the demo against wasm32-wasi + the preview1 adapter so the existing
-// `wasi.hh` WasiConfig works).  The HostFn Shape B BM below stays —
-// it's the native-call baseline and is unaffected.
+// BM_Eval_ForeignComponent_LenString_256KiB stays disabled.  Even after
+// engine.cc started stubbing wasi:random/random.get-random-bytes with
+// a deterministic host fn (m26 #44 partial mitigation; lets the
+// AddIntInt scalar shape pass cleanly), passing a 256 KiB string
+// through the canonical-ABI copy still trips
+// `wasm trap: cannot leave component instance` somewhere inside
+// libc++'s post-RNG-init machinery.  See the matching SKIP reason on
+// CelWasmComponentDemo.GreetRoundTripsString.  Un-skip when wasmtime
+// exposes a real wasi-preview2 store context — or rebuild the demo
+// against wasm32-wasi + the preview1 adapter so the existing
+// `wasi.hh` WasiConfig satisfies libc++.
 
 void BM_Eval_HostFn_LenString_256KiB(benchmark::State& state) {
   auto lib = BuildLenLibAsHost();

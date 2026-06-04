@@ -127,16 +127,17 @@ TEST(CelWasmComponentDemo, AddRoundTrips) {
 
 TEST(CelWasmComponentDemo, GreetRoundTripsString) {
   GTEST_SKIP() <<
-      "blocked on wasmtime C API not exposing a wasi-preview2 store "
-      "context: `wasmtime_component_linker_add_wasip2` installs the "
-      "import declarations but the runtime traps with `cannot leave "
-      "component instance` whenever libc++'s std::string / "
-      "std::to_string operations reach into wasi:random/random for "
-      "hash seeding.  The headers ship `wasmtime/wasi.hh::WasiConfig` "
-      "for preview1 + `wasmtime_context_set_wasi` for preview1 stores, "
-      "but no preview2 equivalent.  Un-skip once wasmtime exposes a "
-      "wasi-preview2 ctx setter (or this fixture is rewritten to "
-      "target wasm32-wasi + adapter, going through preview1 stores).";
+      "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
+      "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
+      "AddRoundTrips path passes — but std::to_string + std::string "
+      "concat still trips a `wasm trap: cannot leave component instance` "
+      "INSIDE libc++ AFTER random_get returns (the trap is at the wasm "
+      "function-92 level, post-adapter, somewhere in libc++'s "
+      "post-RNG-init machinery — possibly thread-local destructor "
+      "registration or canonical-ABI re-entrancy guard).  Un-skip once "
+      "the wasmtime C API exposes a real wasi-preview2 store context, "
+      "OR once we rebuild the demo against wasm32-wasi + the preview1 "
+      "adapter so the existing wasi.hh WasiConfig satisfies libc++.";
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();

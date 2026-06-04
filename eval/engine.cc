@@ -717,6 +717,101 @@ wasm_trap_t* ComponentCallbackTrampoline(void* env_ptr,
   return nullptr;
 }
 
+// Host callback for `wasi:random/random@0.2.0 get-random-bytes(len:
+// u64) -> list<u8>` — fills the result with `len` zero bytes.  This
+// is the m26 #44 mitigation: libc++'s std::string hash-seed init
+// reads from this import as part of static initialisation in the
+// wasi-sdk wasi-preview2 libc++ build, but the wasmtime v43 C API
+// exposes no per-store WasiCtx setter to satisfy the real preview2
+// random impl.  Returning zeros is safe (libc++ doesn't depend on
+// the seed being unpredictable for correctness; the protection it
+// gives is against adversarial hash flooding, which the demo's
+// in-process embedding doesn't face) and keeps the hash machinery
+// functional so std::string operations work.
+wasmtime_error_t* RandomGetBytesStub(
+    void* /*data*/, wasmtime_context_t* /*ctx*/,
+    const wasmtime_component_func_type_t* /*type*/,
+    wasmtime_component_val_t* args, size_t nargs,
+    wasmtime_component_val_t* results, size_t nresults) {
+  ABSL_CHECK_EQ(nargs, 1u);
+  ABSL_CHECK_EQ(nresults, 1u);
+  const uint64_t len = args[0].of.u64;
+  results[0].kind = WASMTIME_COMPONENT_LIST;
+  wasmtime_component_vallist_new_uninit(&results[0].of.list,
+                                        static_cast<size_t>(len));
+  // Deterministic but non-zero bytes — libc++'s hash machinery
+  // sometimes special-cases all-zero seeds, which prevented Greet
+  // (std::to_string + std::string concat) from progressing past
+  // hash-seed init when we returned zeros.  A simple LCG over the
+  // byte index gives non-zero, non-constant output without pulling
+  // a real RNG.
+  for (size_t i = 0; i < len; ++i) {
+    results[0].of.list.data[i].kind = WASMTIME_COMPONENT_U8;
+    results[0].of.list.data[i].of.u8 =
+        static_cast<uint8_t>((i * 0xA5u + 0x5Au) & 0xFFu);
+  }
+  return nullptr;
+}
+
+// Wire two things on the linker:
+//   1. `wasi:random/random@0.2.0::get-random-bytes` → RandomGetBytesStub.
+//   2. Everything else the component imports but we don't satisfy →
+//      `wasmtime_component_linker_define_unknown_imports_as_traps` so
+//      a runaway libc++ call to e.g. `wasi:clocks/wall-clock.now`
+//      surfaces with a wasmtime trap naming the missing interface
+//      instead of a generic "cannot leave component instance".
+absl::Status InstallWasiRandomStubAndTrapStubs(
+    wasmtime_component_linker_t* clinker,
+    const wasmtime_component_t* component) {
+  constexpr absl::string_view kRandomIface = "wasi:random/random@0.2.0";
+  constexpr absl::string_view kGetRandomBytes = "get-random-bytes";
+
+  // Allow shadowing so our random impl (defined below) takes
+  // precedence over the trap-stub installed first.
+  wasmtime_component_linker_allow_shadowing(clinker, true);
+
+  // First: trap-stub everything the component imports.  Each such
+  // import becomes a `wasm trap: <name> has not been defined` when
+  // actually called.  This includes the wasi:random get-random-bytes
+  // we'll shadow next.
+  if (auto* err =
+          wasmtime_component_linker_define_unknown_imports_as_traps(
+              clinker, component);
+      err != nullptr) {
+    return WasmtimeErrorToStatus(
+        "linker_define_unknown_imports_as_traps", err);
+  }
+
+  // Then: replace the wasi:random/random.get-random-bytes trap-stub
+  // with our zero-bytes impl.
+  wasmtime_component_linker_instance_t* root =
+      wasmtime_component_linker_root(clinker);
+  if (root == nullptr) {
+    return absl::InternalError(
+        "wasmtime_component_linker_root returned null");
+  }
+  wasmtime_component_linker_instance_t* random_iface = nullptr;
+  if (auto* err = wasmtime_component_linker_instance_add_instance(
+          root, kRandomIface.data(), kRandomIface.size(), &random_iface);
+      err != nullptr) {
+    wasmtime_component_linker_instance_delete(root);
+    return WasmtimeErrorToStatus(
+        "linker_instance_add_instance(wasi:random/random@0.2.0)", err);
+  }
+  if (auto* err = wasmtime_component_linker_instance_add_func(
+          random_iface, kGetRandomBytes.data(), kGetRandomBytes.size(),
+          &RandomGetBytesStub, /*data=*/nullptr, /*finalizer=*/nullptr);
+      err != nullptr) {
+    wasmtime_component_linker_instance_delete(random_iface);
+    wasmtime_component_linker_instance_delete(root);
+    return WasmtimeErrorToStatus(
+        "linker_instance_add_func(get-random-bytes)", err);
+  }
+  wasmtime_component_linker_instance_delete(random_iface);
+  wasmtime_component_linker_instance_delete(root);
+  return absl::OkStatus();
+}
+
 absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
                                           celwasm::InstanceImpl* impl) {
   if (state->component_libraries.empty()) {
@@ -728,35 +823,37 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
     // (m26 §6) target `wasm32-wasip2`, so their core wasm pulls
     // libc / libc++ that import `wasi:io / cli / clocks / filesystem
     // / random` even when the author's user_fns.cc never explicitly
-    // touches stdio or the filesystem.  Wire the wasmtime preview2
-    // WASI linker so those imports resolve at instantiation time.
+    // touches stdio or the filesystem.
     //
-    // Important caveat: the wasmtime v43 C API exposes
+    // The wasmtime v43 C API exposes
     // `wasmtime_component_linker_add_wasip2` (sets up the import
     // declarations) but has NO matching per-store wasi-preview2
     // context setter — only preview1's `wasmtime_context_set_wasi`
-    // exists at //wasmtime/store.h.  The preview2 default impls
-    // accept calls but return trivially (e.g. random returns zeros),
-    // which works for fns that don't depend on the result.  Fns that
-    // do (e.g. `std::string` with libc++'s hash-seeded SSO) trap
-    // with `wasm trap: cannot leave component instance`.  m26 #44
-    // tracks the wider fix (wait for the C-API binding to land, or
-    // rebuild components against wasm32-wasi + the preview1 adapter
-    // and route through the existing wasi.hh WasiConfig).
+    // exists at //wasmtime/store.h, and `wasi_config_t` is preview1.
+    // Without a per-store WasiCtx the preview2 random impl traps
+    // libc++'s hash-seed init with "cannot leave component instance".
+    //
+    // Smallest unlock: define our own `wasi:random/random@0.2.0
+    //   get-random-bytes` host fn that returns the requested number
+    // of zero bytes — enough to satisfy libc++'s hash-seed precondition
+    // without bringing in a real WASI context.  The other imports
+    // (`wasi:io / cli / clocks / filesystem`) are wired as trap stubs
+    // via `wasmtime_component_linker_define_unknown_imports_as_traps`;
+    // if a fn actually reaches them the trap names the missing
+    // interface, surfacing the m26 #44 gap with a clear message.
     //
     // Pure-WAT components from `foreign_component_dispatch_test`
-    // carry no such imports; the call below is a no-op for them.
+    // carry no such imports; the wiring is a no-op for them.
     wasmtime_component_linker_t* clinker =
         wasmtime_component_linker_new(state->engine);
     if (clinker == nullptr) {
       return absl::InternalError(
           "wasmtime_component_linker_new returned null");
     }
-    if (auto* wasi_err = wasmtime_component_linker_add_wasip2(clinker);
-        wasi_err != nullptr) {
+    if (auto status = InstallWasiRandomStubAndTrapStubs(clinker, reg.component);
+        !status.ok()) {
       wasmtime_component_linker_delete(clinker);
-      return WasmtimeErrorToStatus(
-          "wasmtime_component_linker_add_wasip2", wasi_err);
+      return status;
     }
     wasmtime_component_instance_t cinst{};
     wasmtime_error_t* cerr = wasmtime_component_linker_instantiate(
