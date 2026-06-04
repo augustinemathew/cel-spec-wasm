@@ -41,6 +41,7 @@
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
 #include "tools/cel/var_parser.h"
 
@@ -82,6 +83,20 @@ ABSL_FLAG(std::uint32_t, mem_size_bytes, 128u * 1024u,
 ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
           "If empty, bytes go to stdout.");
+
+// `cel generate` flags (m26 §3 / §7).  Drive the emitter set from a
+// single `.idl` file; outputs go to --out_dir.
+ABSL_FLAG(std::string, idl, "",
+          "`cel generate` only: path to the .idl input file.");
+ABSL_FLAG(std::string, language, "cpp",
+          "`cel generate` only: target language.  v1 supports `cpp` "
+          "only; `go` arrives with H.4 (m26 §4.2).");
+ABSL_FLAG(std::string, out_dir, "",
+          "`cel generate` only: directory to write generated files into "
+          "(fns.wit, codec.h, generated_stub.cc, user_fns.h).");
+ABSL_FLAG(std::string, package, "",
+          "`cel generate` only: optional WIT package name override.  "
+          "Default: `<module>:fns` derived from the IDL `Module` directive.");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace celwasm::tools::cel {
@@ -479,6 +494,8 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  eval     compile + evaluate <expr>; print the result\n"
      << "  check    parse + type-check <expr>; print OK / errors\n"
      << "  compile  compile <expr> to wasm bytes (--output PATH)\n"
+     << "  generate emit fns.wit + codec.h + generated_stub.cc +\n"
+     << "           user_fns.h from a .idl  (m26)\n"
      << "common flags:\n"
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
@@ -487,7 +504,21 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --container PKG          name-resolution container\n"
      << "  --format FMT             (eval, repeatable) textproto|json|cel\n"
      << "  --O LEVEL                Binaryen optimize level (0..3)\n"
-     << "  --output PATH            (compile) wasm output path\n";
+     << "  --output PATH            (compile) wasm output path\n"
+     << "generate flags:\n"
+     << "  --idl PATH               required: .idl input\n"
+     << "  --out_dir PATH           required: output dir\n"
+     << "  --language LANG          cpp (default); go w/ H.4\n"
+     << "  --package PKG            WIT package name override\n";
+}
+
+int RunGenerateSubcommand() {
+  GenerateOptions opts;
+  opts.idl_path = absl::GetFlag(FLAGS_idl);
+  opts.language = absl::GetFlag(FLAGS_language);
+  opts.out_dir = absl::GetFlag(FLAGS_out_dir);
+  opts.package_name = absl::GetFlag(FLAGS_package);
+  return RunGenerate(opts);
 }
 
 }  // namespace
@@ -504,7 +535,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
     return 0;
   }
   if (subcommand != "eval" && subcommand != "check" &&
-      subcommand != "compile") {
+      subcommand != "compile" && subcommand != "generate") {
     std::cerr << "ERROR: unknown subcommand `" << subcommand << "`\n";
     celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
     return 2;
@@ -525,6 +556,19 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
       rest, "format", celwasm::tools::cel::FormatFlags());
   std::vector<char*> positional =
       absl::ParseCommandLine(static_cast<int>(rest.size()), rest.data());
+
+  // `generate` takes no positional <expr>; the input is --idl.
+  if (subcommand == "generate") {
+    if (positional.size() != 1) {
+      std::cerr << "ERROR: `generate` takes no positional argument; "
+                   "use --idl PATH instead.  Got "
+                << (positional.size() - 1) << " unexpected.\n";
+      celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
+      return 2;
+    }
+    return celwasm::tools::cel::RunGenerateSubcommand();
+  }
+
   if (positional.size() != 2) {
     std::cerr << "ERROR: expected exactly one positional <expr>, got "
               << (positional.size() - 1) << "\n";
@@ -537,6 +581,6 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   if (subcommand == "check") return celwasm::tools::cel::RunCheck(expr);
   if (subcommand == "compile") return celwasm::tools::cel::RunCompile(expr);
   // Unreachable: the upfront subcommand check above rejects anything
-  // not in {eval, check, compile}.
+  // not in {eval, check, compile, generate}.
   ABSL_CHECK(false) << "subcommand `" << subcommand << "` slipped the gate";
 }

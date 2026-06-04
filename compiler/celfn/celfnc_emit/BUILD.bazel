@@ -31,6 +31,63 @@ cc_library(
 )
 
 cc_library(
+    name = "cpp_skeleton_emitter",
+    srcs = ["cpp_skeleton_emitter.cc"],
+    hdrs = ["cpp_skeleton_emitter.h"],
+    deps = [
+        ":cpp_stub_emitter",  # for SnakeToCamel
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cpp_skeleton_emitter_test",
+    srcs = ["cpp_skeleton_emitter_test.cc"],
+    deps = [
+        ":cpp_skeleton_emitter",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "cpp_stub_emitter",
+    srcs = ["cpp_stub_emitter.cc"],
+    hdrs = ["cpp_stub_emitter.h"],
+    deps = [
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cpp_stub_emitter_test",
+    srcs = ["cpp_stub_emitter_test.cc"],
+    deps = [
+        ":cpp_stub_emitter",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "cpp_codec_emitter",
     srcs = ["cpp_codec_emitter.cc"],
     hdrs = ["cpp_codec_emitter.h"],

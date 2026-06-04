@@ -320,6 +320,43 @@ The same pattern applies to every list / map / record return — the
 codec emitter writes into the `*ret` out-param directly; cleanup
 is automatic via `cabi_post_*`.
 
+#### 4.0.1 Step-by-step return-memory lifecycle (user question, 2026-06-04)
+
+For a `std::string Greet(std::string_view)` author fn:
+
+1. **Author returns** an owned `std::string` (on the author's stack
+   inside `Greet`).
+2. **Generated stub** receives the `std::string` via the codec call
+   chain: `codec::lower(ret, rules::Greet(codec::lift(*name)))`.
+   Inside `codec::lower(author_string_t* ret, std::string_view s)`,
+   the helper `author_string_dup_n(ret, s.data(), s.size())` runs.
+3. **`author_string_dup_n`** (wit-bindgen-emitted):
+   - calls `cabi_realloc(NULL, 0, 1, len)` to allocate fresh memory
+     INSIDE the component's linear memory;
+   - `memcpy`s the source bytes into the new buffer;
+   - sets `ret->ptr` and `ret->len`.
+4. **Author's `std::string`** destructs normally at the end of the
+   stub function (standard C++ stack unwind).
+5. **Component returns** — the canonical ABI copies the `(ptr, len)`
+   tuple into a RET_AREA scratchpad the wit-bindgen-emitted adapter
+   exposes.
+6. **wasmtime copies out** — `wasmtime_component_func_call` reads
+   the bytes from component memory into the host's
+   `wasmtime_component_val_t.of.string` (m24
+   `eval/internal/cel_component.cc::LowerComponentToCel`).
+7. **CABI post-return** — wit-bindgen emits `void
+   __wasm_export_*_ret_string_post_return(uint8_t* arg0)` which
+   does `if (len > 0) free(*(uint8_t**)(arg0 + 0));`. The canonical
+   ABI runtime calls it AFTER step 6 completes; this `free()`s the
+   `cabi_realloc`'d buffer from step 3.
+
+**Net: 1 allocation in step 3, 1 free in step 7; author never
+calls `free`; no leak, no double-free.** Same shape for
+`std::vector<T>` returns (`cabi_realloc` of `n * sizeof(T)`), record
+returns (RET_AREA holds the fields directly; nothing to free),
+proto returns (`SerializeToString` into the same `cabi_realloc`'d
+buffer the bytes path uses).
+
 ### 4.1 Proto-on-foreign — already gated by m24 §A
 
 `m13 §4.5.1` bars `proto(...)` on a `kForeign` (Regime A) decl;
