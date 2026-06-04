@@ -97,6 +97,10 @@ ABSL_FLAG(std::string, out_dir, "",
 ABSL_FLAG(std::string, package, "",
           "`cel generate` only: optional WIT package name override.  "
           "Default: `<module>:fns` derived from the IDL `Module` directive.");
+ABSL_FLAG(std::vector<std::string>, include, {},
+          "`cel generate` only: comma-separated #include paths to inject "
+          "at the top of the generated user_fns.h + generated_stub.cc.  "
+          "Typical use: `--include=acme/user.pb.h` for proto-typed fns.");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace celwasm::tools::cel {
@@ -518,6 +522,7 @@ int RunGenerateSubcommand() {
   opts.language = absl::GetFlag(FLAGS_language);
   opts.out_dir = absl::GetFlag(FLAGS_out_dir);
   opts.package_name = absl::GetFlag(FLAGS_package);
+  opts.extra_includes = absl::GetFlag(FLAGS_include);
   return RunGenerate(opts);
 }
 

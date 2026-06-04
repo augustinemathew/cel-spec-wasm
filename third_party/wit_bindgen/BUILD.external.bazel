@@ -1,0 +1,8 @@
+# BUILD file injected into each `@wit_bindgen_<host>` http_archive
+# by the corresponding `http_archive(build_file = ...)` call in
+# //:MODULE.bazel.  Each archive contains a single executable at the
+# stripped root.
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["wit-bindgen"])

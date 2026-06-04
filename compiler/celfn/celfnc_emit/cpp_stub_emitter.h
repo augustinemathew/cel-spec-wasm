@@ -13,18 +13,18 @@
 //
 //   - String / bytes / list / map / record / proto return:
 //       void exports_<pkg>_<iface>_<id>(
-//           <author_T>* in1, <author_T>* in2,
-//           <author_R>* ret) {
+//           <customfn_T>* in1, <customfn_T>* in2,
+//           <customfn_R>* ret) {
 //         <module>::codec::lower(
 //             ret, <module>::<CamelFn>(<module>::codec::lift(*in1),
 //                                      <module>::codec::lift(*in2)));
 //       }
 //
 // Argument-side lift: scalars pass by value; everything else
-// passes by `<author_T>*` and gets `codec::lift(*ptr)`'d at the
+// passes by `<customfn_T>*` and gets `codec::lift(*ptr)`'d at the
 // call site.  Proto args call `codec::lift_proto<acme::User>(*ptr)`.
 //
-// File-level: emits `#include` directives for `author.h`,
+// File-level: emits `#include` directives for `customfn.h`,
 // `codec.h`, `user_fns.h`, and (when any decl is proto-typed) the
 // caller-supplied proto headers via a `--proto-deps` flag at
 // `cel generate` time.

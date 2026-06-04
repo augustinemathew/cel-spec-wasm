@@ -46,10 +46,15 @@ absl::Status WriteFile(const std::string& path, const std::string& content) {
 
 absl::Status RunCppPath(const GenerateOptions& opts,
                         const FunctionLibrary& lib) {
+  // Default package: `cel:<module>` (with fallback `cel:customfn` when
+  // the IDL has no `Module foo;` directive).  This pairs with the
+  // hardcoded `world customfn` in wit_emitter.cc so exports come out
+  // as `exports_cel_<module>_fns_*` (m26 §7.5.1).
   const std::string pkg =
       opts.package_name.empty()
-          ? absl::StrCat(lib.module_name().empty() ? "fns" : lib.module_name(),
-                         ":fns")
+          ? absl::StrCat(
+                "cel:",
+                lib.module_name().empty() ? "customfn" : lib.module_name())
           : opts.package_name;
   const std::string ver =
       opts.package_version.empty() ? "0.1.0" : opts.package_version;

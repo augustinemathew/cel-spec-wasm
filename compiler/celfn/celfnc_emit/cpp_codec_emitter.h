@@ -1,7 +1,7 @@
 // celfnc_emit/cpp_codec_emitter — emit the C++ `codec.h` translation
 // layer.  Pairs with the WIT emitter: the WIT emitter declares the
 // interface, the codec emitter writes the lift/lower fns that
-// reshape wit-bindgen's `author_*` / `exports_<pkg>_<iface>_*_t`
+// reshape wit-bindgen's `customfn_*` / `exports_<pkg>_<iface>_*_t`
 // structs into native C++ `std::` containers and back.
 //
 // Why one header (not multiple): codec.h is consumed by the
@@ -11,14 +11,14 @@
 //
 // Ownership rule (m24 §4.0, m26 §4.0): the author's user_fns NEVER
 // calls _free.  The `lower(out, ...)` impls populate `*out` via
-// `author_string_dup_n` (strings) or `cabi_realloc` (lists), and the
+// `customfn_string_dup_n` (strings) or `cabi_realloc` (lists), and the
 // canonical-ABI runtime calls the per-export `cabi_post_*` cleanup
 // hook after the host has copied the value out.
 //
 // Identifier naming (m26 §3.5.1 — settled by probing wit-bindgen
 // 0.57 at design time):
-//   - Collection types: `author_<wit_t>` (e.g. `author_list_s64_t`).
-//   - Tuple types: `author_tuple2_<a>_<b>_t`.
+//   - Collection types: `customfn_<wit_t>` (e.g. `customfn_list_s64_t`).
+//   - Tuple types: `customfn_tuple2_<a>_<b>_t`.
 //   - Records (duration / timestamp): prefix
 //     `exports_<package_normalized>_<interface>_<record>_t`, where
 //     package-normalized replaces `:` with `_`.

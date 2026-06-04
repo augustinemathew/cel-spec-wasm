@@ -1,7 +1,7 @@
 // celfnc_emit/wit_emitter — translate a parsed celfn IDL
 // (CelfnDecl set with kForeignComponent backend) into the text of a
 // `fns.wit` Component-Model interface file consumable by
-// `wit-bindgen c --world author`.
+// `wit-bindgen c --world customfn`.
 //
 // Scope:
 //   - Every CEL type the foreign-component decl surface admits, per

@@ -142,22 +142,23 @@ genrule(
 )
 
 # Per-build gate (user direction, m26 §3.5 design): the genrule-
-# emitted codec.h is compiled against the hand-curated author_stub.h
-# (which mirrors real wit-bindgen output, §3.5.1).  Failing to
-# compile == regression in the codec emitter.
+# emitted codec.h is compiled against the hand-curated customfn.h
+# (which mirrors real wit-bindgen output for `world customfn`,
+# §3.5.1).  Failing to compile == regression in the codec emitter.
 cc_library(
     name = "codec_compile_check",
     srcs = ["fixtures/codec_compile_check.cc"],
     hdrs = [
-        "fixtures/author.h",
+        "fixtures/customfn.h",
         "generated_codec.h",
     ],
-    # The generated codec.h `#include "author.h"` — strip the
+    # The generated codec.h `#include "customfn.h"` — strip the
     # fixtures/ prefix so the short name resolves.  Lives alongside
     # the genrule output, not in a separate include dir.
     includes = ["fixtures"],
     deps = [
-        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:duration_cc_proto",
+        "@com_google_protobuf//:timestamp_cc_proto",
     ],
 )
 

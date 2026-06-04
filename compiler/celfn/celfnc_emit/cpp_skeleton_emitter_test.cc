@@ -141,15 +141,18 @@ TEST(EmitUserFnsH, DurationParam) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "d"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("int64_t Ms(absl::Duration d);"));
-  EXPECT_THAT(*t, HasSubstr("#include \"absl/time/time.h\""));
+  EXPECT_THAT(
+      *t, HasSubstr("int64_t Ms(::google::protobuf::Duration d);"));
+  EXPECT_THAT(*t, HasSubstr("#include \"google/protobuf/duration.pb.h\""));
 }
 
 TEST(EmitUserFnsH, TimestampReturn) {
   auto lib = OneFn("now", Prim(CelfnType::Kind::kTimestamp), {});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("absl::Time Now();"));
+  EXPECT_THAT(*t, HasSubstr("::google::protobuf::Timestamp Now();"));
+  EXPECT_THAT(*t,
+              HasSubstr("#include \"google/protobuf/timestamp.pb.h\""));
 }
 
 // ── Aggregates ────────────────────────────────────────────────────

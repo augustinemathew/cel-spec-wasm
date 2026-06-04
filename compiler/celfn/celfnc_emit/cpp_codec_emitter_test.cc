@@ -3,15 +3,15 @@
 // Tests-first per CLAUDE.md.  Coverage:
 //   - File preamble (pragma once, include guards, includes).
 //   - Namespace wrapping derived from the IDL <module>.
-//   - Per-row of m26 §4: lift(author_T) → std::T and
-//     lower(author_T*, std::T) → void, for every CEL type the
+//   - Per-row of m26 §4: lift(customfn_T) → std::T and
+//     lower(customfn_T*, std::T) → void, for every CEL type the
 //     foreign-fn surface admits.
 //   - Records emit with the `exports_<package_normalized>_fns_<r>_t`
 //     prefix (m26 §3.5.1).
 //   - Nested aggregates recurse via the inner-type lift/lower.
 //   - Deduplication: emitter writes each lift+lower exactly once
 //     even when many decls use the same type.
-//   - Unused types are NOT emitted (no `author_list_string_t` when
+//   - Unused types are NOT emitted (no `customfn_list_string_t` when
 //     no decl uses `list<string>`).
 //   - Regression tripwire: `optional<T>` / `type` in the input
 //     surfaces FailedPrecondition.
@@ -82,7 +82,7 @@ TEST(EmitCodecH, EmitsPragmaOnceAndStandardIncludes) {
   auto t = EmitCodecH(*lib_or, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("#pragma once"));
-  EXPECT_THAT(*t, HasSubstr("#include \"author.h\""));
+  EXPECT_THAT(*t, HasSubstr("#include \"customfn.h\""));
   EXPECT_THAT(*t, HasSubstr("#include <string>"));
   EXPECT_THAT(*t, HasSubstr("#include <vector>"));
   EXPECT_THAT(*t, HasSubstr("namespace rules::codec {"));
@@ -123,22 +123,22 @@ TEST(EmitCodecH, StringLiftReturnsStringView) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(
-      *t, HasSubstr("inline std::string_view lift(const author_string_t& s)"));
+      *t, HasSubstr("inline std::string_view lift(const customfn_string_t& s)"));
   EXPECT_THAT(*t, HasSubstr("return {reinterpret_cast<const char*>(s.ptr), "
                             "s.len};"));
 }
 
 TEST(EmitCodecH, StringLowerUsesAuthorStringDupN) {
-  // Lower for string uses author_string_dup_n (the only out-path the
+  // Lower for string uses customfn_string_dup_n (the only out-path the
   // canonical ABI accepts without manual cabi_realloc bookkeeping —
   // m26 §3.5.1).  The author NEVER calls _free on the result.
   auto lib = OneFn("ident", Prim(CelfnType::Kind::kString),
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("inline void lower(author_string_t* ret, "
+  EXPECT_THAT(*t, HasSubstr("inline void lower(customfn_string_t* ret, "
                             "std::string_view s)"));
-  EXPECT_THAT(*t, HasSubstr("author_string_dup_n(ret, s.data(), s.size())"));
+  EXPECT_THAT(*t, HasSubstr("customfn_string_dup_n(ret, s.data(), s.size())"));
 }
 
 // ── Bytes — list<u8> ─────────────────────────────────────────────
@@ -149,7 +149,7 @@ TEST(EmitCodecH, BytesLiftReturnsVectorU8) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<uint8_t> lift(const "
-                            "author_list_u8_t& l)"));
+                            "customfn_list_u8_t& l)"));
 }
 
 TEST(EmitCodecH, BytesLowerUsesCabiRealloc) {
@@ -157,7 +157,7 @@ TEST(EmitCodecH, BytesLowerUsesCabiRealloc) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kBytes), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("inline void lower(author_list_u8_t* ret, const "
+  EXPECT_THAT(*t, HasSubstr("inline void lower(customfn_list_u8_t* ret, const "
                             "std::vector<uint8_t>& v)"));
   EXPECT_THAT(*t, HasSubstr("cabi_realloc"));
 }
@@ -171,7 +171,7 @@ TEST(EmitCodecH, ListIntLiftReturnsVectorInt) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<int64_t> lift(const "
-                            "author_list_s64_t& l)"));
+                            "customfn_list_s64_t& l)"));
   EXPECT_THAT(*t, HasSubstr("return {l.ptr, l.ptr + l.len};"));
 }
 
@@ -182,20 +182,20 @@ TEST(EmitCodecH, ListStringLiftRecursesThroughStringElement) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<std::string> lift(const "
-                            "author_list_string_t& l)"));
+                            "customfn_list_string_t& l)"));
   // String_view input gets copied via emplace_back(string_view -> string).
   EXPECT_THAT(*t, HasSubstr("emplace_back"));
 }
 
 TEST(EmitCodecH, NestedListOfListOfIntEmitsBothLifts) {
-  // list<list<int>> needs lift(author_list_s64_t) AND
-  // lift(author_list_list_s64_t).  The latter calls the former.
+  // list<list<int>> needs lift(customfn_list_s64_t) AND
+  // lift(customfn_list_list_s64_t).  The latter calls the former.
   CelfnType nested = ListOf(ListOf(Prim(CelfnType::Kind::kInt)));
   auto lib = OneFn("ident", nested, {CelfnParam{false, nested, "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("lift(const author_list_s64_t&"));
-  EXPECT_THAT(*t, HasSubstr("lift(const author_list_list_s64_t&"));
+  EXPECT_THAT(*t, HasSubstr("lift(const customfn_list_s64_t&"));
+  EXPECT_THAT(*t, HasSubstr("lift(const customfn_list_list_s64_t&"));
   EXPECT_THAT(*t, HasSubstr("std::vector<std::vector<int64_t>>"));
 }
 
@@ -212,7 +212,7 @@ TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::map<std::string, int64_t> lift(const "
-                            "author_list_tuple2_string_s64_t& m)"));
+                            "customfn_list_tuple2_string_s64_t& m)"));
 }
 
 // ── Records (duration / timestamp) ─────────────────────────────────
@@ -225,7 +225,8 @@ TEST(EmitCodecH, DurationUsesExportsPrefix) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_duration_t"));
-  EXPECT_THAT(*t, HasSubstr("absl::Duration"));
+  EXPECT_THAT(*t, HasSubstr("::google::protobuf::Duration"));
+  EXPECT_THAT(*t, HasSubstr("google/protobuf/duration.pb.h"));
 }
 
 TEST(EmitCodecH, TimestampUsesExportsPrefix) {
@@ -234,7 +235,8 @@ TEST(EmitCodecH, TimestampUsesExportsPrefix) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_timestamp_t"));
-  EXPECT_THAT(*t, HasSubstr("absl::Time"));
+  EXPECT_THAT(*t, HasSubstr("::google::protobuf::Timestamp"));
+  EXPECT_THAT(*t, HasSubstr("google/protobuf/timestamp.pb.h"));
 }
 
 // ── Proto crosses as list<u8> ───────────────────────────────────
@@ -264,11 +266,11 @@ TEST(EmitCodecH, SharedTypeAcrossDeclsEmittedOnce) {
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitCodecH(*lib_or, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  // The lift for author_list_s64_t appears once (used by f1 input
+  // The lift for customfn_list_s64_t appears once (used by f1 input
   // AND f2 output).  Same for lower.
   size_t lift_count = 0;
   size_t pos = 0;
-  while ((pos = t->find("lift(const author_list_s64_t&", pos)) !=
+  while ((pos = t->find("lift(const customfn_list_s64_t&", pos)) !=
          std::string::npos) {
     ++lift_count;
     ++pos;
@@ -282,8 +284,8 @@ TEST(EmitCodecH, UnusedTypesAreNotEmitted) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, Not(HasSubstr("author_list_string_t")));
-  EXPECT_THAT(*t, Not(HasSubstr("author_string_t")));
+  EXPECT_THAT(*t, Not(HasSubstr("customfn_list_string_t")));
+  EXPECT_THAT(*t, Not(HasSubstr("customfn_string_t")));
   EXPECT_THAT(*t, Not(HasSubstr("exports_cel_customfn_fns_duration_t")));
 }
 

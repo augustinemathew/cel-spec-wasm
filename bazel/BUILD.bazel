@@ -7,6 +7,12 @@ load("@rules_python//python:defs.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
 
+# The cel_wasm_component Starlark macro — drives the full hermetic
+# component build (cel generate → wit-bindgen c → wasi-sdk cc_binary
+# → wasm-tools component new) from a single celfn .idl + author
+# user_fns.cc.  See its docstring + m26 §6 for usage.
+exports_files(["cel_wasm_component.bzl"])
+
 # Derives the runtime-helper catalogue from the `cel_runtime` C source:
 # every codegen-imported helper is marked `// cel:codegen-export` at its
 # declaration, and this tool reads the marker (membership) plus the

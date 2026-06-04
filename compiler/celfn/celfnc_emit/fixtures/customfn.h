@@ -1,4 +1,4 @@
-// Hand-curated stub of the `author.h` that real wit-bindgen would
+// Hand-curated stub of the `customfn.h` that real wit-bindgen would
 // emit for a fns.wit covering every m24 §6 row.  Lives at fixtures/
 // because it pairs with the genrule-emitted codec.h to prove the
 // codec emitter's output compiles against the wit-bindgen-shaped
@@ -6,7 +6,7 @@
 //
 // **Not a substitute for real wit-bindgen output** — when the
 // toolchain integration (m26 §5, H.1) lands, this file goes away
-// and the cc_library depends on a wit-bindgen-emitted author.h
+// and the cc_library depends on a wit-bindgen-emitted customfn.h
 // directly.  Until then, this file IS the contract the codec
 // emitter promises to match.
 //
@@ -27,55 +27,55 @@ extern "C" {
 #endif
 
 // String — the (ptr, len) carrier wit-bindgen emits for `string`.
-typedef struct author_string_t {
+typedef struct customfn_string_t {
   uint8_t* ptr;
   size_t len;
-} author_string_t;
+} customfn_string_t;
 
 // Lists.  Element type is always one of:
 //   - uint8_t (list<u8> = bytes / proto)
 //   - int64_t (list<s64>)
-//   - author_string_t (list<string>)
-//   - author_list_s64_t (list<list<s64>>)
-//   - author_tuple2_*_t (list<tuple<...>> = a map)
+//   - customfn_string_t (list<string>)
+//   - customfn_list_s64_t (list<list<s64>>)
+//   - customfn_tuple2_*_t (list<tuple<...>> = a map)
 
-typedef struct author_list_u8_t {
+typedef struct customfn_list_u8_t {
   uint8_t* ptr;
   size_t len;
-} author_list_u8_t;
+} customfn_list_u8_t;
 
-typedef struct author_list_s64_t {
+typedef struct customfn_list_s64_t {
   int64_t* ptr;
   size_t len;
-} author_list_s64_t;
+} customfn_list_s64_t;
 
-typedef struct author_list_string_t {
-  author_string_t* ptr;
+typedef struct customfn_list_string_t {
+  customfn_string_t* ptr;
   size_t len;
-} author_list_string_t;
+} customfn_list_string_t;
 
-typedef struct author_list_list_s64_t {
-  author_list_s64_t* ptr;
+typedef struct customfn_list_list_s64_t {
+  customfn_list_s64_t* ptr;
   size_t len;
-} author_list_list_s64_t;
+} customfn_list_list_s64_t;
 
 // Tuples — the (f0, f1) carrier wit-bindgen emits for `tuple<a, b>`.
-typedef struct author_tuple2_string_s64_t {
-  author_string_t f0;
+typedef struct customfn_tuple2_string_s64_t {
+  customfn_string_t f0;
   int64_t f1;
-} author_tuple2_string_s64_t;
+} customfn_tuple2_string_s64_t;
 
-typedef struct author_list_tuple2_string_s64_t {
-  author_tuple2_string_s64_t* ptr;
+typedef struct customfn_list_tuple2_string_s64_t {
+  customfn_tuple2_string_s64_t* ptr;
   size_t len;
-} author_list_tuple2_string_s64_t;
+} customfn_list_tuple2_string_s64_t;
 
 // Option<u8> — `is_some` + `val`.  The export-adapter uses
 // pointer-as-maybe instead, but the codec emits the struct form.
-typedef struct author_option_u8_t {
+typedef struct customfn_option_u8_t {
   bool is_some;
   uint8_t val;
-} author_option_u8_t;
+} customfn_option_u8_t;
 
 // Records.  wit-bindgen prefixes interface-scoped records with
 // `exports_<package_normalized>_<interface>_`.  m26 fixture uses
@@ -103,7 +103,7 @@ static inline void* cabi_realloc(void* ptr, size_t /*old_size*/, size_t align,
 }
 
 // String helpers used by codec lower.
-static inline void author_string_dup_n(author_string_t* ret, const char* s,
+static inline void customfn_string_dup_n(customfn_string_t* ret, const char* s,
                                        size_t len) {
   ret->len = len;
   ret->ptr = (uint8_t*)cabi_realloc(NULL, 0, 1, len);  // NOLINT(*-no-malloc)

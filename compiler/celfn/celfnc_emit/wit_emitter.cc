@@ -39,7 +39,7 @@ package $0$1;
 interface fns {
 $2}
 
-world author { export fns; }
+world customfn { export fns; }
 world host   { import fns; }
 )wit";
 
@@ -149,7 +149,16 @@ absl::string_view RecordLine(RecordKind k) {
 }  // namespace
 
 std::string SnakeToKebab(absl::string_view snake) {
-  return absl::StrReplaceAll(snake, {{"_", "-"}});
+  // WIT identifiers (per the WIT lexer): lowercase ASCII letters,
+  // digits, and `-`.  Proto fqns we synthesise into overload ids
+  // (e.g. `is_adult_message_acme_User`) carry the proto type's
+  // CamelCase last segment — flatten it to lowercase here so the
+  // wit-bindgen parser accepts the export name.
+  std::string r = absl::StrReplaceAll(snake, {{"_", "-"}});
+  for (char& c : r) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return r;
 }
 
 absl::StatusOr<std::string> EmitWit(const FunctionLibrary& lib,

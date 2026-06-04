@@ -70,21 +70,9 @@ std::string CelfnType::Argkind() const {
 
 namespace {
 
-bool MentionsProto(const CelfnType& t) {
-  if (t.kind == CelfnType::Kind::kProto) return true;
-  if (t.kind == CelfnType::Kind::kList && !t.list_element.empty()) {
-    return MentionsProto(t.list_element[0]);
-  }
-  if (t.kind == CelfnType::Kind::kMap && t.map_kv.size() == 2) {
-    return MentionsProto(t.map_kv[0]) || MentionsProto(t.map_kv[1]);
-  }
-  if (t.kind == CelfnType::Kind::kOptional && !t.optional_element.empty()) {
-    return MentionsProto(t.optional_element[0]);
-  }
-  return false;
-}
-
-// Mirrors MentionsProto for kOptional / kType.  Used by Build() to
+// Mirrors a structural-recursion check across CelfnType for the
+// permanently-out-of-scope kinds (`optional<T>` and `type`).  Used by
+// Build() to
 // reject kForeignComponent decls whose return / any param shape
 // contains either — `optional<T>` and `type` are permanently out of
 // scope as foreign-component declarable shapes (user direction; see

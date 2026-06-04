@@ -1,0 +1,10 @@
+// celfn IDL fixture for the cel_wasm_component macro demo.
+//
+// Two non-proto fns covering the common case (scalar in/out +
+// string round-trip).  All decls are kForeignComponent
+// (`@component.<fn>`) — m26 §7.5.1.
+
+Module customfn;
+
+string @component.greet(string name, int age);
+int    @component.add(int a, int b);

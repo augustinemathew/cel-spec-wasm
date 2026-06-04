@@ -11,7 +11,7 @@
 //
 // Output assertions: we check (a) the function declaration in the
 // rendered text matches the expected WIT form byte-exactly, and
-// (b) the rendered text is what `wit-bindgen c --world author`
+// (b) the rendered text is what `wit-bindgen c --world customfn`
 // would accept (the latter implicitly via the emitter's own
 // stability contract — the integration check vs wit-bindgen runs
 // in the cel_wasm_component macro's e2e test).
@@ -88,7 +88,7 @@ TEST(EmitWit, EmptyLibraryEmitsPackageHeaderAndEmptyInterface) {
   ASSERT_THAT(text_or, IsOk());
   EXPECT_THAT(*text_or, HasSubstr("package cel:customfn@0.1.0;"));
   EXPECT_THAT(*text_or, HasSubstr("interface fns {"));
-  EXPECT_THAT(*text_or, HasSubstr("world author { export fns; }"));
+  EXPECT_THAT(*text_or, HasSubstr("world customfn { export fns; }"));
   EXPECT_THAT(*text_or, HasSubstr("world host   { import fns; }"));
 }
 
@@ -125,8 +125,10 @@ TEST(EmitWit, NonForeignComponentDeclsAreIgnored) {
 TEST(SnakeToKebab, ReplacesEachUnderscoreWithHyphen) {
   EXPECT_EQ(SnakeToKebab("add_int_int"), "add-int-int");
   EXPECT_EQ(SnakeToKebab("f5_list_int"), "f5-list-int");
+  // CamelCase last segment (e.g. proto fqn `acme.User`) flattens to
+  // lowercase — WIT identifiers are lower-only.
   EXPECT_EQ(SnakeToKebab("is_admin_message_acme_User"),
-            "is-admin-message-acme-User");
+            "is-admin-message-acme-user");
 }
 
 TEST(SnakeToKebab, LeavesAlreadyKebabAlone) {
@@ -311,7 +313,7 @@ TEST(EmitWit, ProtoCrossesAsListU8) {
                    {CelfnParam{false, ProtoOf("acme.User"), "u"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
-  ExpectFnSig(*t, "ident-message-acme-User: func(u: list<u8>) -> list<u8>;");
+  ExpectFnSig(*t, "ident-message-acme-user: func(u: list<u8>) -> list<u8>;");
   EXPECT_THAT(*t, ::testing::Not(HasSubstr("acme.User")));
 }
 

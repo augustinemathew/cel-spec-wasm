@@ -36,12 +36,12 @@ namespace {
 // kind (kDuration → "duration", kTimestamp → "timestamp") because
 // wit-bindgen emits the record type ONCE per interface.
 struct StructName {
-  // `author_list_s64_t` / `author_string_t` / `author_list_tuple2_…`
+  // `customfn_list_s64_t` / `customfn_string_t` / `customfn_list_tuple2_…`
   // etc.  Empty for primitives that pass through unwrapped
   // (bool / int / uint / double).
   std::string c_name;
   // True for kProto carriers — they share their wire shape with
-  // kBytes (`author_list_u8_t`) but the codec emits a TEMPLATE
+  // kBytes (`customfn_list_u8_t`) but the codec emits a TEMPLATE
   // `lift_proto` / `lower_proto` instead of the bytes overload set.
   bool is_proto = false;
 };
@@ -70,8 +70,8 @@ std::string SuffixFor(const CelfnType& t) {
       return absl::StrCat("list_", SuffixFor(t.list_element[0]));
     case K::kMap:
       // m24 §6: map<K,V> wire shape is list<tuple<K,V>>; the
-      // wit-bindgen C struct is `author_list_tuple2_<k>_<v>_t`,
-      // NOT `author_tuple2_<k>_<v>_t` (which is the inner tuple
+      // wit-bindgen C struct is `customfn_list_tuple2_<k>_<v>_t`,
+      // NOT `customfn_tuple2_<k>_<v>_t` (which is the inner tuple
       // element type, used only as the element type of the outer
       // list).  Empirically verified against the /tmp/witgen probe
       // output during m26 design (m26 §3.5.1).
@@ -108,20 +108,20 @@ StructName StructFor(const CelfnType& t, absl::string_view exports_prefix) {
     case K::kDouble:
       return {/*c_name=*/"", false};  // pass-through
     case K::kString:
-      return {"author_string_t", false};
+      return {"customfn_string_t", false};
     case K::kBytes:
-      return {"author_list_u8_t", false};
+      return {"customfn_list_u8_t", false};
     case K::kNull:
-      // option<u8> uses author_option_u8_t for the struct (but the
+      // option<u8> uses customfn_option_u8_t for the struct (but the
       // export adapter uses pointer-as-maybe).  Codec emits an
       // overload for the struct form for completeness; the stub
       // chooses the pointer form.
-      return {"author_option_u8_t", false};
+      return {"customfn_option_u8_t", false};
     case K::kList:
     case K::kMap:
-      return {absl::StrCat("author_", SuffixFor(t)) + "_t", false};
+      return {absl::StrCat("customfn_", SuffixFor(t)) + "_t", false};
     case K::kProto:
-      return {"author_list_u8_t", true};
+      return {"customfn_list_u8_t", true};
     case K::kDuration:
       return {absl::StrCat(exports_prefix, "duration_t"), false};
     case K::kTimestamp:
@@ -148,16 +148,20 @@ absl::StatusOr<std::string> CppTypeFor(const CelfnType& t) {
     case K::kString:
       // String lifts as string_view (zero-copy view onto component
       // memory); lowers from string_view too (a fresh
-      // author_string_dup_n copy goes to wasm memory).
+      // customfn_string_dup_n copy goes to wasm memory).
       return std::string("std::string");  // container form (return type)
     case K::kBytes:
       return std::string("std::vector<uint8_t>");
     case K::kNull:
       return std::string("std::monostate");
     case K::kDuration:
-      return std::string("absl::Duration");
+      // google.protobuf.Duration container — m26 §4.  Authors
+      // include `<google/protobuf/duration.pb.h>` (the codec.h emits
+      // the include conditionally; the wasi-sdk cc_binary needs
+      // libprotobuf as a dep when the IDL uses Duration).
+      return std::string("::google::protobuf::Duration");
     case K::kTimestamp:
-      return std::string("absl::Time");
+      return std::string("::google::protobuf::Timestamp");
     case K::kList: {
       auto inner = CppTypeFor(t.list_element[0]);
       if (!inner.ok()) return inner.status();
@@ -233,21 +237,21 @@ class TypeCollector {
 // that case.  `$0`, `$1`, … are absl::Substitute placeholders.
 
 constexpr absl::string_view kStringTpl =
-    R"cpp(inline std::string_view lift(const author_string_t& s) {
+    R"cpp(inline std::string_view lift(const customfn_string_t& s) {
             return {reinterpret_cast<const char*>(s.ptr), s.len};
           }
 
-          inline void lower(author_string_t* ret, std::string_view s) {
-            author_string_dup_n(ret, s.data(), s.size());
+          inline void lower(customfn_string_t* ret, std::string_view s) {
+            customfn_string_dup_n(ret, s.data(), s.size());
           }
     )cpp";
 
 constexpr absl::string_view kBytesTpl =
-    R"cpp(inline std::vector<uint8_t> lift(const author_list_u8_t& l) {
+    R"cpp(inline std::vector<uint8_t> lift(const customfn_list_u8_t& l) {
             return {l.ptr, l.ptr + l.len};
           }
 
-          inline void lower(author_list_u8_t* ret, const std::vector<uint8_t>& v) {
+          inline void lower(customfn_list_u8_t* ret, const std::vector<uint8_t>& v) {
             ret->len = v.size();
             ret->ptr = static_cast<uint8_t*>(cabi_realloc(NULL, 0, 1, v.size()));
             if (!v.empty()) std::memcpy(ret->ptr, v.data(), v.size());
@@ -256,14 +260,14 @@ constexpr absl::string_view kBytesTpl =
 
 constexpr absl::string_view kProtoTpl =
     R"cpp(template <typename M>
-          inline M lift_proto(const author_list_u8_t& l) {
+          inline M lift_proto(const customfn_list_u8_t& l) {
             M msg;
             if (l.len > 0) msg.ParseFromArray(l.ptr, l.len);
             return msg;
           }
 
           template <typename M>
-          inline void lower_proto(author_list_u8_t* ret, const M& msg) {
+          inline void lower_proto(customfn_list_u8_t* ret, const M& msg) {
             std::string buf;
             msg.SerializeToString(&buf);
             ret->len = buf.size();
@@ -274,37 +278,41 @@ constexpr absl::string_view kProtoTpl =
 
 // $0 = record struct name (e.g. exports_cel_customfn_fns_duration_t).
 constexpr absl::string_view kDurationTpl =
-    R"cpp(inline absl::Duration lift(const $0& r) {
-            return absl::Seconds(r.seconds) + absl::Nanoseconds(r.nanos);
-          }
+    R"cpp(inline ::google::protobuf::Duration lift(const $0& r) {
+  ::google::protobuf::Duration d;
+  d.set_seconds(r.seconds);
+  d.set_nanos(r.nanos);
+  return d;
+}
 
-          inline void lower($0* ret, absl::Duration d) {
-            const int64_t sec = absl::ToInt64Seconds(d);
-            ret->seconds = sec;
-            ret->nanos = static_cast<int32_t>(
-                absl::ToInt64Nanoseconds(d - absl::Seconds(sec)));
-          }
-    )cpp";
+inline void lower($0* ret, const ::google::protobuf::Duration& d) {
+  ret->seconds = d.seconds();
+  ret->nanos = d.nanos();
+}
+
+)cpp";
 
 constexpr absl::string_view kTimestampTpl =
-    R"cpp(inline absl::Time lift(const $0& r) {
-            return absl::FromUnixSeconds(r.seconds) + absl::Nanoseconds(r.nanos);
-          }
+    R"cpp(inline ::google::protobuf::Timestamp lift(const $0& r) {
+  ::google::protobuf::Timestamp t;
+  t.set_seconds(r.seconds);
+  t.set_nanos(r.nanos);
+  return t;
+}
 
-          inline void lower($0* ret, absl::Time t) {
-            const int64_t sec = absl::ToUnixSeconds(t);
-            ret->seconds = sec;
-            ret->nanos = static_cast<int32_t>(
-                absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec)));
-          }
-    )cpp";
+inline void lower($0* ret, const ::google::protobuf::Timestamp& t) {
+  ret->seconds = t.seconds();
+  ret->nanos = t.nanos();
+}
+
+)cpp";
 
 constexpr absl::string_view kNullTpl =
-    R"cpp(inline std::monostate lift(const author_option_u8_t& /*o*/) {
+    R"cpp(inline std::monostate lift(const customfn_option_u8_t& /*o*/) {
             return {};
           }
 
-          inline void lower(author_option_u8_t* ret, std::monostate) {
+          inline void lower(customfn_option_u8_t* ret, std::monostate) {
             ret->is_some = false;
             ret->val = 0;
           }
@@ -348,7 +356,7 @@ constexpr absl::string_view kListRecTpl =
           }
     )cpp";
 
-// $0 = cpp std::map<...>, $1 = author_list_tuple2_*_t,
+// $0 = cpp std::map<...>, $1 = customfn_list_tuple2_*_t,
 // $2 = key lift expression (uses m.ptr[i].f0),
 // $3 = value lift expression (uses m.ptr[i].f1).
 constexpr absl::string_view kMapLiftTpl =
@@ -458,11 +466,22 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   const std::string exports_prefix = absl::StrCat(
       "exports_", NormalizePkgForExportsPrefix(wit_package_name), "_fns_");
 
+  // Only pull google.protobuf.Duration / Timestamp into codec.h when
+  // the IDL actually declares Duration / Timestamp args or returns.
+  // Authors who don't use these CEL types pay no protobuf dep at the
+  // wasm cc_binary step.
+  bool needs_proto_duration = false;
+  bool needs_proto_timestamp = false;
+  for (const auto& t : tc.ordered()) {
+    if (t.kind == CelfnType::Kind::kDuration) needs_proto_duration = true;
+    if (t.kind == CelfnType::Kind::kTimestamp) needs_proto_timestamp = true;
+  }
+
   std::string out;
   absl::StrAppend(&out,
                   "// Generated by `cel generate` — DO NOT EDIT.\n"
                   "//\n"
-                  "// codec.h: lift / lower between wit-bindgen author_* "
+                  "// codec.h: lift / lower between wit-bindgen customfn_* "
                   "structs\n"
                   "// and std:: containers.  Author never includes this — "
                   "consumed\n"
@@ -479,8 +498,22 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   absl::StrAppend(&out, "#include <string_view>\n");
   absl::StrAppend(&out, "#include <variant>  // std::monostate\n");
   absl::StrAppend(&out, "#include <vector>\n\n");
-  absl::StrAppend(&out, "#include \"absl/time/time.h\"\n");
-  absl::StrAppend(&out, "#include \"author.h\"\n\n");
+  if (needs_proto_duration) {
+    absl::StrAppend(&out, "#include \"google/protobuf/duration.pb.h\"\n");
+  }
+  if (needs_proto_timestamp) {
+    absl::StrAppend(&out, "#include \"google/protobuf/timestamp.pb.h\"\n");
+  }
+  absl::StrAppend(&out, "#include \"customfn.h\"\n\n");
+
+  // wit-bindgen's customfn.c defines `cabi_realloc` as a weak,
+  // export-named symbol but customfn.h does NOT declare it.  The
+  // codec.h's lower(...) bodies call `cabi_realloc(...)` for every
+  // list / bytes / proto path — emit the forward decl here so we
+  // don't depend on header changes from wit-bindgen.
+  absl::StrAppend(
+      &out, "extern \"C\" void* cabi_realloc(void* ptr, size_t old_size, "
+            "size_t align, size_t new_size);\n\n");
 
   if (!cpp_namespace.empty()) {
     absl::StrAppend(&out, "namespace ", cpp_namespace, "::codec {\n\n");
