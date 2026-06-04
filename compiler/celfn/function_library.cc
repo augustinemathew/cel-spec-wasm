@@ -352,8 +352,15 @@ absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
 
   FunctionLibrary lib;
   lib.module_name_ = std::move(module_name_);
+  lib.wit_interface_ = std::move(wit_interface_);
   lib.decls_ = std::move(decls_);
   return lib;
+}
+
+FunctionLibrary::Builder& FunctionLibrary::Builder::SetWitInterface(
+    absl::string_view wit_interface) {
+  wit_interface_ = std::string(wit_interface);
+  return *this;
 }
 
 // ── ParseCelfnSource ────────────────────────────────────────────────

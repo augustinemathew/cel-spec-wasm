@@ -21,6 +21,7 @@
 
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_test")
 load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
 
 package(default_visibility = ["//visibility:public"])
@@ -30,6 +31,31 @@ cel_wasm_component(
     name = "demo_component",
     idl = "fns.idl",
     user_fns = ["user_fns.cc"],
+)
+
+# End-to-end gate: loads the macro-produced demo_component.wasm and
+# exercises both decls through Compile → Plan → Eval.  Closes the
+# loop on m26 H.3 — proves the bytes the macro emits are a working
+# Component-Model component, not just syntactically valid.
+cc_test(
+    name = "demo_component_e2e_test",
+    srcs = ["demo_component_e2e_test.cc"],
+    data = [":demo_component"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
 )
 
 # Proto demo — exercises the m24 §8 proto-as-bytes path.

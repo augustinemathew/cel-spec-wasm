@@ -142,6 +142,15 @@ class FunctionLibrary {
   const std::vector<CelfnDecl>& decls() const {
     return decls_;
   }
+  // Optional WIT interface name (e.g. `cel:customfn/fns@0.1.0`).
+  // When non-empty, `Engine::AddComponent` looks up each decl's
+  // export inside this interface instance rather than at the
+  // component's top level.  Pure-WAT components from
+  // `foreign_component_dispatch_test` leave it empty and the engine
+  // does the top-level lookup (m24 §3.5 v1 path).
+  const std::string& wit_interface() const {
+    return wit_interface_;
+  }
 
   class Builder {
    public:
@@ -150,6 +159,14 @@ class FunctionLibrary {
     // unset and no CEL-defined decls are added, the resulting
     // library has no Module directive.
     Builder& SetModuleName(absl::string_view module_name);
+
+    // WIT interface name the kForeignComponent decls live under in
+    // the embedded component.  Format: `<pkg-ns>:<pkg-name>/<iface>
+    // @<version>` (the `cel_wasm_component` macro produces components
+    // exporting `cel:<module>/fns@0.1.0` by default; the embedder
+    // calls this with the matching string).  When empty, the engine
+    // does a top-level export lookup (v1 inline-WAT path).
+    Builder& SetWitInterface(absl::string_view wit_interface);
 
     // Add a host-backed declaration.  Embedder C++ provides the impl
     // at Plan time via RuntimeBindings::AddFunction(overload_id, …).
@@ -191,11 +208,13 @@ class FunctionLibrary {
 
    private:
     std::string module_name_;
+    std::string wit_interface_;
     std::vector<CelfnDecl> decls_;
   };
 
  private:
   std::string module_name_;
+  std::string wit_interface_;
   std::vector<CelfnDecl> decls_;
 };
 

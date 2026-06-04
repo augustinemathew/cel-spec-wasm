@@ -724,13 +724,39 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
   }
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   for (auto& reg : state->component_libraries) {
-    // v1 components have no host imports — they cross only through
-    // their typed exports.  The linker stays empty.
+    // Components produced by the `cel_wasm_component` Starlark macro
+    // (m26 §6) target `wasm32-wasip2`, so their core wasm pulls
+    // libc / libc++ that import `wasi:io / cli / clocks / filesystem
+    // / random` even when the author's user_fns.cc never explicitly
+    // touches stdio or the filesystem.  Wire the wasmtime preview2
+    // WASI linker so those imports resolve at instantiation time.
+    //
+    // Important caveat: the wasmtime v43 C API exposes
+    // `wasmtime_component_linker_add_wasip2` (sets up the import
+    // declarations) but has NO matching per-store wasi-preview2
+    // context setter — only preview1's `wasmtime_context_set_wasi`
+    // exists at //wasmtime/store.h.  The preview2 default impls
+    // accept calls but return trivially (e.g. random returns zeros),
+    // which works for fns that don't depend on the result.  Fns that
+    // do (e.g. `std::string` with libc++'s hash-seeded SSO) trap
+    // with `wasm trap: cannot leave component instance`.  m26 #44
+    // tracks the wider fix (wait for the C-API binding to land, or
+    // rebuild components against wasm32-wasi + the preview1 adapter
+    // and route through the existing wasi.hh WasiConfig).
+    //
+    // Pure-WAT components from `foreign_component_dispatch_test`
+    // carry no such imports; the call below is a no-op for them.
     wasmtime_component_linker_t* clinker =
         wasmtime_component_linker_new(state->engine);
     if (clinker == nullptr) {
       return absl::InternalError(
           "wasmtime_component_linker_new returned null");
+    }
+    if (auto* wasi_err = wasmtime_component_linker_add_wasip2(clinker);
+        wasi_err != nullptr) {
+      wasmtime_component_linker_delete(clinker);
+      return WasmtimeErrorToStatus(
+          "wasmtime_component_linker_add_wasip2", wasi_err);
     }
     wasmtime_component_instance_t cinst{};
     wasmtime_error_t* cerr = wasmtime_component_linker_instantiate(
@@ -738,6 +764,23 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
     wasmtime_component_linker_delete(clinker);
     if (cerr != nullptr) {
       return WasmtimeErrorToStatus("instantiate(component)", cerr);
+    }
+    // When the embedder set lib.wit_interface() (the standard path
+    // for `cel_wasm_component`-built components, whose exports nest
+    // under `cel:<module>/fns@<ver>`), look up that interface
+    // instance once and use it as the parent index for every decl.
+    // When unset, all decl lookups go against the component's top
+    // level (the pure-WAT `foreign_component_dispatch_test` path).
+    wasmtime_component_export_index_t* iface_idx = nullptr;
+    if (!reg.library.wit_interface().empty()) {
+      const auto& iface = reg.library.wit_interface();
+      iface_idx = wasmtime_component_instance_get_export_index(
+          &cinst, ctx, /*instance_export_index=*/nullptr,
+          iface.data(), iface.size());
+      if (iface_idx == nullptr) {
+        return absl::FailedPreconditionError(absl::StrCat(
+            "component does not export interface `", iface, "`"));
+      }
     }
     for (const auto& decl : reg.library.decls()) {
       if (decl.backend != celwasm::CelfnDecl::Backend::kForeignComponent) {
@@ -752,14 +795,20 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
       // resolves it against the snake-case overload id from
       // codegen.  The celfnc generator emits the kebab form for
       // the WIT export name; this is the matching consumer-side
-      // translation.
+      // translation.  Proto fqns carry CamelCase last segments
+      // (e.g. `acme.User`) which become lowercase in WIT (lower-only
+      // identifier rule).  Mirror SnakeToKebab here.
       std::string export_name(decl.overload_id);
       for (char& c : export_name) {
-        if (c == '_') c = '-';
+        if (c == '_') {
+          c = '-';
+        } else if (c >= 'A' && c <= 'Z') {
+          c = static_cast<char>(c - 'A' + 'a');
+        }
       }
       wasmtime_component_export_index_t* exp_idx =
           wasmtime_component_instance_get_export_index(
-              &cinst, ctx, /*instance_export_index=*/nullptr,
+              &cinst, ctx, iface_idx,
               export_name.data(), export_name.size());
       if (exp_idx == nullptr) {
         return absl::FailedPreconditionError(absl::StrCat(
@@ -790,10 +839,16 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
           /*data=*/env_ptr, /*finalizer=*/nullptr);
       wasm_functype_delete(ftype);
       if (err != nullptr) {
+        if (iface_idx != nullptr) {
+          wasmtime_component_export_index_delete(iface_idx);
+        }
         return WasmtimeErrorToStatus(
             absl::StrCat("linker.define_func(cel_fn.", decl.overload_id, ")"),
             err);
       }
+    }
+    if (iface_idx != nullptr) {
+      wasmtime_component_export_index_delete(iface_idx);
     }
   }
   return absl::OkStatus();
