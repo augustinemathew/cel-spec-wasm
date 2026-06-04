@@ -237,6 +237,138 @@ struck through or removed.
       the class of bug the codebase's no-silent-miscompile rule exists
       to prevent; should be cleared before the next milestone closes.
 
+- [ ] **#15** — Parser hard-caps CEL source at 100 000 codepoints
+      (`expression_size_codepoint_limit`,
+      `third_party/cel-cpp/parser/options.h:37`).  Our
+      `DefaultParserOptions()` in
+      `compiler/frontend/parse_and_check.cc:1079` doesn't override
+      the default and `CompilerOptions` exposes no knob to raise it.
+      Concrete consequence: a literal `[0, 1, ..., 999_999]` source
+      (≈ 7.9 MB) is rejected at parse with
+      `INVALID_ARGUMENT: expression size exceeds codepoint limit`;
+      ~16 k int elements is the practical ceiling.  E2e repro:
+      `e2e/known_bugs_test.cc::KnownBugs.ParserSourceCodepointLimitNotConfigurable`.
+      Fix shape: add `CompilerOptions::parser_codepoint_limit` (or
+      similar) that `DefaultParserOptions()` honours; default stays
+      at 100 k.
+      Surfaced: 2026-06-03 `in`-operator benchmark (`bench/in_operator_bench.cc`).
+      Files: `compiler/compiler.h`, `compiler/frontend/parse_and_check.cc`.
+      Why P2: a real ceiling but uncommon — production CEL sources
+      rarely exceed even 10 k codepoints; embedders who need 1 M
+      elements bind a list variable, which has no parser involvement.
+
+- [ ] **#16** — Compiling + planning a literal int list of 10 000
+      elements succeeds, but the resulting wasm module **panics
+      wasmtime on Eval** (`crates/wasmtime/src/runtime/store.rs:2440:17:
+      assertion failed: fault.is_none()` — a Rust panic, not a
+      graceful `absl::Status`).  This is a more severe surfacing of
+      the same family as `e2e/known_bugs_test.cc::KnownBugs.ExpressionIntermediatesArenaCliff`
+      (a 4 000-element `size([0..n])` returns `CEL_ERR_OVERFLOW`);
+      the `in`-list path doesn't gracefully overflow — it traps the
+      whole runtime.  Root cause is likely the 64 KiB per-Eval
+      arena (`runtime/cel_layout.h:16` `CELWASM_WASM_PAGE_SIZE`)
+      being exceeded by the materialized literal list **after**
+      a runtime-side allocation that doesn't check capacity.
+      E2e repro: `e2e/known_bugs_test.cc::KnownBugs.LiteralIntListInScanTrapsAt10K`.
+      Surfaced: 2026-06-03 `in`-operator benchmark.
+      Files: `runtime/cel_runtime.c` (or wherever `cel_list_in`
+      reaches before the bounds check); `runtime/cel_arena.c`;
+      `compiler/codegen/static_memory_builder.cc` (the literal
+      list is materialised here at codegen time — the trap may
+      be a codegen issue, not a runtime one).
+      Why P0: a CEL source that the parser AND checker accept
+      crashes the host process via wasmtime panic instead of
+      returning a CEL error.  An untrusted source can crash the
+      embedder.  Fix MUST also turn the panic into a graceful
+      `absl::Status` (the test asserts post-fix Eval ok-ness; if
+      a fix leaves the panic but raises N, the test still crashes
+      the process when un-skipped, which is correct — a panic-on-
+      large-list is not "fixed").
+
+- [ ] **#17** — A bound `list<string>` of ≥ 10 000 50-byte strings
+      Eval'd through `perm in perms` returns
+      `FAILED_PRECONDITION: arena OOM in CelMapLookupImpl` from
+      inside `cel_list_in`'s trampoline.  Per-Eval arena
+      (`runtime/cel_layout.h:16` 64 KiB; `runtime/cel_arena.c`)
+      cannot hold the materialised string-set scan view.
+      Same class as backlog #16 but graceful (returns
+      a non-OK Status instead of trapping) and surfaces on the
+      bound-variable path, not the literal-list path.  Distinct
+      from `e2e/known_bugs_test.cc::KnownBugs.ExpressionIntermediatesArenaCliff`
+      because the source list isn't an intermediate — it's a bound
+      variable; the OOM happens during scan, not list construction.
+      E2e repro: `e2e/known_bugs_test.cc::KnownBugs.BoundStringListInScanArenaOomAt10K`.
+      Surfaced: 2026-06-03 `in`-operator benchmark.
+      Files: `runtime/cel_list.c` (or wherever `cel_list_in`
+      lives), `runtime/cel_arena.c`.  The fix may be to make
+      `cel_list_in` use a streaming/non-materialising scan that
+      doesn't grow the arena per-element, OR to grow the arena
+      on demand.
+      Why P1 (not P0): graceful error, not a process crash.  But a
+      10 k-element permission set is a real workload (cel-policy
+      / IAM authorisation) — this is on the production envelope.
+
+- [ ] **#18** — `Value::Message(StringValue{value: "x"})` bound
+      against a `string`-declared variable fails at Eval with
+      `INVALID_ARGUMENT: Activation[s]: declared string, bound message`.
+      The encoders for bool / int / uint / double scalars all call
+      `TryEncodeWktWrapperMessage` (`eval/instance.cc:607/620/633/647`)
+      and peel a wrapper message at bind; `EncodeStringOrBytes`
+      (`eval/instance.cc:444`) does NOT, even though
+      `WrapperFqnToCelKind` (`eval/instance.cc:494`) returns
+      `CEL_STRING` for `google.protobuf.StringValue` and
+      `CEL_BYTES` for `google.protobuf.BytesValue` (so the lookup
+      table acknowledges the wrappers; the encoder just doesn't
+      consult it).  Asymmetric API surface — the workaround is to
+      bind native `Value::String` instead.  E2e repro (negative —
+      asserts the workaround works):
+      `e2e/host_fn_type_matrix_test.cc::HostFnTypeMatrix.WktStringValueWrapperPeelAtBindNotWired`
+      (carries the `// BUG:` comment naming this entry; flip its
+      assertion to positive when this lands).
+      Fix shape: add a `TryEncodeWktWrapperMessage` call at the top
+      of `EncodeStringOrBytes` mirroring the numeric encoders, and
+      extend `WriteNumericWrapperPayload` (or add a parallel string
+      helper) to copy the wrapper's inner string/bytes into the
+      arena via the same path the native-Value path uses.
+      Surfaced: 2026-06-03 host-fn type-matrix audit (subagent).
+      Files: `eval/instance.cc:444`,
+      `eval/instance.cc:518 WriteNumericWrapperPayload`.
+      Why P1: asymmetric public surface — half the WKT wrappers
+      auto-peel at bind, half don't.  Embedders binding raw
+      `Value::Message(StringValue{…})` get a confusing kind
+      mismatch with no hint to use `Value::String` instead.
+
+- [ ] **#19** — `compiler/celfn/function_library.cc:256-322`'s
+      celfn IDL parser admits only the 12 base CEL types
+      (bool / int / uint / double / string / bytes / null /
+      timestamp / duration / list / map / message FQN); it has
+      no spelling for `google.protobuf.{Any,Struct,Value,ListValue}`
+      and no `optional<T>` keyword.  Custom fns can't take any of
+      those as a declared parameter today.  E2e repros (SKIP-pinned
+      to this entry):
+      `e2e/host_fn_type_matrix_test.cc` —
+      `HostFnTypeMatrix.WktAnyHostFnArg`,
+      `HostFnTypeMatrix.WktStructHostFnArg`,
+      `HostFnTypeMatrix.WktValueHostFnArg`,
+      `HostFnTypeMatrix.WktListValueHostFnArg`,
+      `HostFnTypeMatrix.ExplicitOptionalArgNotApplicable`
+      (and `HostFnTypeMatrix.ExplicitTypeArgNotApplicable` for
+      `type`, which is intentionally out of scope per
+      `doc/implementation-plan/rewrite/m21-host-call-adapter.md:67`).
+      Fix shape: extend the IDL grammar to admit the four WKT
+      struct types (probably as reserved FQNs) and an
+      `optional<T>` wrapper; thread them through to the
+      generated declarations and the `Backend::kHost` /
+      `Backend::kNative` codegen paths.
+      Surfaced: 2026-06-03 host-fn type-matrix audit.
+      Files: `compiler/celfn/function_library.cc`,
+      grammar in `compiler/celfn/celfn_grammar.g4` (if any),
+      `compiler/celfn/parser.cc`.
+      Why P2: feature gap, not a bug — declaring an unsupported
+      type today produces a clear parse-time error.  Reachable
+      WKT semantics are still available through the message-FQN
+      path; the gap is the convenient IDL syntax.
+
 
 ## Closed
 

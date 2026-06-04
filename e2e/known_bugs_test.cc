@@ -16,8 +16,13 @@
 // describe deferred work in prose; this file *executes* the bug, so a
 // fix is provably a fix.
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
@@ -29,6 +34,7 @@
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
 
 namespace celwasm {
 namespace {
@@ -519,6 +525,169 @@ TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
 // and are deliberately absent: `dyn(1) == 1u` correctly returns true
 // (cross-numeric == via dyn works), and `[1] + []` correctly evaluates
 // to list(int) (the static subset does NOT reject it).  Verify-first.
+
+// ══════════════════════════════════════════════════════════════════
+// CLASS: large-input ceilings surfaced by `bench/in_operator_bench.cc`.
+// Each is paired with a backlog entry in
+// `doc/implementation-plan/cleanup-backlog.md` (#15 / #16 / #17).
+// ══════════════════════════════════════════════════════════════════
+
+// Helper: Compile + Plan + Bind + Eval in one call.  `declare` runs
+// against the Compiler::Builder before Build (declares variables);
+// `bind` runs against the Activation before Eval (binds values).
+// Returns the eval result so a parse / plan / eval rejection is
+// visible to the test rather than ASSERT-failing inside the helper.
+template <typename DeclareFn, typename BindFn>
+absl::StatusOr<Value> TryEvalActivated(absl::string_view source,
+                                       DeclareFn&& declare,
+                                       BindFn&& bind) {
+  Compiler::Builder b;
+  declare(b);
+  auto compiler = std::move(b).Build();
+  if (!compiler.ok()) return compiler.status();
+  auto program = compiler->Compile(source);
+  if (!program.ok()) return program.status();
+  auto instance = GlobalEngine().Plan(*program);
+  if (!instance.ok()) return instance.status();
+  Activation a;
+  bind(a);
+  return instance->Eval(a);
+}
+
+// Builds `x in [0, 1, 2, ..., n-1]`.
+std::string MakeIntListInSource(int n) {
+  std::string s = "x in [";
+  s.reserve(static_cast<size_t>(n) * 8);
+  for (int i = 0; i < n; ++i) {
+    if (i > 0) s.append(", ");
+    s.append(std::to_string(i));
+  }
+  s.push_back(']');
+  return s;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// BUG (cleanup-backlog #15): cel-cpp parser caps source at 100 000
+// codepoints (`expression_size_codepoint_limit`,
+// `third_party/cel-cpp/parser/options.h:37`), and our
+// `DefaultParserOptions()` in
+// `compiler/frontend/parse_and_check.cc:1079` doesn't override the
+// default.  `CompilerOptions` exposes no knob to raise it.
+// Surfaced by `bench/in_operator_bench.cc` — a literal
+// `[0..999_999]` source (~7.9 MB) is rejected at parse.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
+  GTEST_SKIP()
+      << "KNOWN LIMIT (verified: returns INVALID_ARGUMENT / 'expression "
+         "size exceeds codepoint limit', want OK): cel-cpp parser "
+         "default cap of 100 k codepoints; DefaultParserOptions at "
+         "compiler/frontend/parse_and_check.cc:1079 doesn't override "
+         "it and no CompilerOptions knob exists.  Delete this line "
+         "when the cap is raised or exposed via CompilerOptions "
+         "(cleanup-backlog #15).";
+  // A 110 k-codepoint single string literal is the simplest probe;
+  // no bindings required.  cel-cpp counts the surrounding quotes too
+  // so 110 k content + 2 quotes pushes well past the cap.
+  std::string source = "'";
+  source.append(110'000, 'x');
+  source.push_back('\'');
+  auto v = TryEval(source);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(v->AsString()->size(), 110'000u);
+}
+
+// ──────────────────────────────────────────────────────────────────
+// BUG (cleanup-backlog #16, **P0**): literal `x in [0..9999]`
+// compiles and plans cleanly, but the resulting wasm module
+// PANICS wasmtime on Eval:
+//   thread '<unnamed>' panicked at
+//   crates/wasmtime/src/runtime/store.rs:2440:17:
+//   assertion failed: fault.is_none()
+// The host process aborts — Eval doesn't return a graceful Status.
+// Same arena-cliff family as `ExpressionIntermediatesArenaCliff`
+// above, but the `in`-scan path traps instead of returning
+// `CEL_ERR_OVERFLOW`.
+//
+// CAUTION: when this SKIP is removed and the bug is NOT yet fixed,
+// running the test will crash the test binary (wasmtime panic =
+// Rust abort).  That's the correct failure mode — a graceful-error
+// fix must come WITH the un-skip, not after it.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
+  GTEST_SKIP()
+      << "KNOWN BUG (verified: wasmtime panic at "
+         "store.rs:2440:17 'fault.is_none()', host process aborts, "
+         "want OK + true).  Literal int list of 10 000 elements; "
+         "`in`-scan exhausts the 64 KiB per-Eval arena "
+         "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
+         "check before allocating.  Delete this line ONLY when both "
+         "the trap-vs-graceful issue and the size limit are fixed "
+         "(cleanup-backlog #16).";
+  constexpr int kN = 10'000;
+  const std::string source = MakeIntListInSource(kN);
+  auto v = TryEvalActivated(
+      source,
+      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
+      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool());
+}
+
+// ──────────────────────────────────────────────────────────────────
+// BUG (cleanup-backlog #17): a bound `list<string>` of ≥ 10 000
+// 50-byte strings Eval'd through `perm in perms` returns
+// `FAILED_PRECONDITION: arena OOM in CelMapLookupImpl` from
+// inside `cel_list_in`'s trampoline.  Distinct from #16 because
+// (a) graceful error (no panic), (b) the source list is a bound
+// variable, not a literal — OOM happens during scan, not list
+// construction.  Production CEL-policy / IAM workloads with
+// large permission sets hit this.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
+  GTEST_SKIP()
+      << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
+         "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
+         "want OK + true).  10 k bound 50-byte strings exhaust the "
+         "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
+         "the linear scan.  Delete this line when cel_list_in "
+         "stops materialising O(N) arena state per scan, OR the "
+         "arena can grow on demand (cleanup-backlog #17).";
+  constexpr size_t kN = 10'000;
+  // Build N unique 50-byte strings deterministically.
+  std::vector<Value> elements;
+  elements.reserve(kN);
+  for (size_t i = 0; i < kN; ++i) {
+    std::string s(50, '0');
+    s.replace(0, 8, "iam.perm");
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%zu", i);
+    s.replace(40, std::strlen(buf), buf);
+    elements.push_back(Value::String(std::move(s)));
+  }
+  // Pick the last one as the needle (worst-case scan, but also the
+  // case where the scan eventually MATCHES — so the post-fix
+  // assertion is `true`).
+  std::string needle(50, '0');
+  needle.replace(0, 8, "iam.perm");
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%zu", kN - 1);
+  needle.replace(40, std::strlen(buf), buf);
+  auto v = TryEvalActivated(
+      "perm in perms",
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("perm", CelType::String());
+        b.DeclareVariable("perms", CelType::List(CelType::String()));
+      },
+      [&](Activation& a) {
+        a.Bind("perm", Value::String(needle));
+        a.Bind("perms", Value::List(std::move(elements)));
+      });
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_TRUE(*v->AsBool());
+}
 
 }  // namespace
 }  // namespace celwasm
