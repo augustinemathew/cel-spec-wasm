@@ -112,6 +112,37 @@ cc_binary(
 )
 
 
+# Foreign-component dispatch cost vs native host-fn dispatch cost
+# (m24 D.3).  Two shapes: scalar add (per-call overhead) and 256 KiB
+# string len (per-call + canonical-ABI copy throughput).  Each shape
+# runs through both backends so the delta isolates the component-call
+# overhead.  Reuses the wasmtime C API + wat2wasm to assemble the
+# component WAT in-bench, same pattern as
+# `e2e/foreign_component_dispatch_test`.
+cc_binary(
+    name = "foreign_component_bench",
+    srcs = ["foreign_component_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in the repo README.  Not a benchmark (no timing); just a

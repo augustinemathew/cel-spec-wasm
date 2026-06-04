@@ -1,0 +1,40 @@
+# `cel generate` emitter libraries — see m26 §7.
+#
+# These libraries take a parsed FunctionLibrary (kForeignComponent
+# decls) and emit one of the four output files
+# (fns.wit / codec.h / generated_stub.cc / user_fns.h) per language
+# target (C++ for now; Go arrives with H.4).  They are pure
+# functions: in → text, no I/O.  The cc_binary that ties them to a
+# CLI lives at `//tools/cel:cel`.
+
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//:internal"])
+
+cc_library(
+    name = "wit_emitter",
+    srcs = ["wit_emitter.cc"],
+    hdrs = ["wit_emitter.h"],
+    deps = [
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "wit_emitter_test",
+    srcs = ["wit_emitter_test.cc"],
+    deps = [
+        ":wit_emitter",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
