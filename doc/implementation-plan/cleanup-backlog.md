@@ -369,6 +369,305 @@ struck through or removed.
       WKT semantics are still available through the message-FQN
       path; the gap is the convenient IDL syntax.
 
+- [ ] **#21** — `cel_list_in_arena` (`runtime/cel_runtime.c:598-617`)
+      and `cel_list_eq_arena` (`runtime/cel_runtime.c:619-642`)
+      call `cel_value_eq` per element, which dispatches through
+      `cel_value_eq_polymorphic` to a kind-switch (numeric
+      ladder, bytes, null, dur/ts, IP, CIDR, map_keys_equal).
+      For the homogeneous-element common case — `[s1, s2, ..., sN]
+      in [bound]` or `[a]==[b]` — the per-call cost is the
+      polymorphic dispatch, NOT the byte compare.  After #20
+      lands (chunked byte compare), the polymorphic dispatch
+      becomes the dominant per-element cost.
+      Why a win: hot path; eliminates the kind-switch in the
+      inner loop when both lists are statically homogeneous.
+      The IR already carries `ListBacking::element_type` (per
+      `rewrite/design.md`'s typed-IR contract); codegen can pick
+      a specialized scan kernel by element type — `cel_list_in_string`,
+      `cel_list_in_int`, `cel_list_in_double` — bypassing the
+      polymorphic dispatcher entirely.  Same trick the
+      `cel_*_eq_at_vv` family in `cel_compare.c` already uses
+      for scalar pairs; this just lifts it to the loop level.
+      Concrete shape (per-kind specialization, list_in for int):
+
+      ```c
+      void cel_list_in_int_arena(uint32_t out_slot, uint32_t v_slot,
+                                 uint32_t list_slot) {
+        // 3VL + kind check identical to cel_list_in_arena.
+        ArenaListHeader* hdr = arena_list_header(l);
+        const CelValue* elems = arena_list_element(hdr, 0);
+        int64_t target = v->payload.i;
+        for (uint32_t i = 0; i < hdr->count; ++i) {
+          // Per-element: a single 8-byte compare, no kind switch,
+          // no function call — the LTO'd version of cel_value_eq
+          // currently still has the switch.
+          if (elems[i].kind == CEL_INT && elems[i].payload.i == target)
+            { write_bool(out, 1); return; }
+        }
+        write_bool(out, 0);
+      }
+      ```
+
+      Codegen picks the specialized kernel from
+      `ListBacking::element_type`; falls back to the polymorphic
+      `cel_list_in_arena` only when the list is `dyn` or
+      contains mixed numeric kinds (the cases that need the
+      cross-type ladder).
+      Risk: requires codegen to thread element-type through the
+      `_[_]` call lowering — non-trivial scope.  Mitigation: do
+      string + int first (the two by far most common element
+      kinds in real CEL fixtures); leave dyn/mixed on the
+      polymorphic path.  Mismatched kinds inside a "homogeneous"
+      list (e.g. `[1, 1u]`) currently match cross-type via
+      `numeric_compare_kernel`; the specialized kernel would
+      return 0 for those — codegen MUST gate specialization on
+      a checker-verified single-kind element type.
+      Files: `compiler/codegen/expr_lower.cc` (the `_[_]` and
+      `@in` arms), `runtime/cel_runtime.c` (new
+      `cel_list_in_<kind>_arena` exports + matching wasm export
+      list in `wasm_exports.txt`), `compiler/ir/annotations.h`
+      (already carries the element type — verify).
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — closes the residual gap after #20, but #20
+      is the load-bearing fix.
+
+- [ ] **#22** — `arena_map_entry_matches` (`runtime/cel_runtime.c:737-747`)
+      is O(N) per outer iteration, so `cel_map_eq_arena`
+      (lines 749-775) is O(N²) on map size.  For an N=1024 map
+      equality that's 1M map_keys_equal calls plus 1k value
+      eqs.  The arena map's entries are unsorted (insertion
+      order; see `cel_map_insert`), so the quadratic scan is
+      the only correct option without auxiliary structure.
+      Why a win: hot path on map-heavy expressions; replacing
+      the O(N²) scan with a single pass + key→index lookup is
+      asymptotic.  Two paths:
+
+      (a) For small N (say ≤ 16) keep the quadratic scan — the
+      constant-factor advantage of a flat array dominates.
+      (b) For larger N, sort one side's keys at first comparison
+      and bsearch — but the arena is append-only and the map
+      might be aliased; the safer shape is to *snapshot* one
+      side's keys+vals into a sorted u32 index array on first
+      large-N invocation, then bsearch.
+
+      Cheaper interim: short-circuit on first hash-trivial
+      key mismatch (the entry-count check on line 761 already
+      covers the empty case; add the obvious `if (ha->count == 0)
+      return write_bool(out, 1)` micro-shortcut).
+      Risk: introducing sort-on-equality changes the worst-case
+      allocation behaviour; only worth doing if a benchmark
+      actually shows map-eq dominating.  Recommend deferring
+      until a workload shows it.
+      Files: `runtime/cel_runtime.c:737-775`.
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — algorithmic concern only triggers at
+      N ≥ ~64; today's fixtures rarely hit that.
+
+- [ ] **#23** — `cv_at(off)` is `cel_memory_base_() + off`
+      (`runtime/cel_internal.h:93-95`), and `cel_memory_base_`
+      on wasm32 is an out-of-line function with an inline-asm
+      opacity barrier (`runtime/cel_memory.c:31-35`).  Hot
+      loops re-call `cv_at`/`cel_value_at` per iteration — every
+      call is a function call + opacity barrier (forcing the
+      base into a fresh register).  See e.g.
+      `runtime/cel_runtime.c:670-677` (`copy_elements`):
+
+      ```c
+      static void copy_elements(uint32_t elements_off, uint32_t dst_index,
+                                ArenaListHeader* src) {
+        for (uint32_t i = 0; i < src->count; ++i) {
+          *(CelValue*)(cel_memory_base_() + elements_off +
+                       ((size_t)kCelListEntryStride * (dst_index + i))) =
+              *arena_list_element(src, i);
+        }
+      }
+      ```
+
+      and `arena_list_element` itself (line 330-333) re-fetches
+      the base on every call.  With `-flto + -O3` clang ought to
+      hoist the asm-opacified return value out of the loop —
+      the asm clause is `__asm__("" : "+r"(p));` which only
+      constrains the *result*, not the function — but the call
+      to `cel_memory_base_()` is opaque to LTO across TUs
+      (definition lives in `cel_memory.c`).
+      Why a win: small fixed cost per element on every
+      aggregate construction / scan; multiplicative over loop
+      bodies that touch 3+ slots per iter (eq, lt, etc.).
+      Concrete fix: hoist the base pointer load to a local
+      `const uint8_t* base = cel_memory_base_();` at function
+      entry and index `(CelValue*)(base + …)` in the loop.
+      Already done in `spans_equal` itself (line 170) and
+      `type_eq_at_vv` (line 1298); apply consistently to
+      `arena_list_element`, `arena_map_entry_key`,
+      `arena_map_entry_val`, and their callers'
+      hot loops at `cel_runtime.c:610, 635, 672, 725, 741, 768`.
+      Risk: under LTO this *may* already be hoisted by clang
+      after `-flto` lets it see across TUs.  Verify with
+      `wasm-objdump -d cel_runtime.wasm | grep -A 4
+      cel_list_in_arena` before/after — if every iter shows a
+      `call $cel_memory_base_`, the hoist isn't happening and
+      this is a real win.
+      Files: `runtime/cel_runtime.c` (the 6 loops cited).
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — speculative until disassembly confirms;
+      cheap to apply and never a pessimization.
+
+- [ ] **#24** — `arena_alloc` (`runtime/cel_arena.c:75-104`)
+      calls `memset(p, 0, need)` on every allocation, zeroing
+      every byte the caller is about to overwrite.  Every
+      CelValue alloc (most common — `cel_make_*`, the per-eval
+      tmp slot for `cel_map_count`, the iter-state allocs)
+      zeroes 24 bytes the constructor immediately stamps; every
+      ArenaMapHeader/ArenaListHeader alloc zeroes 16 bytes
+      the header constructor stamps; every entries-run alloc
+      zeroes N×24 or N×48 bytes that `cel_list_append_at`
+      stamps element-by-element.  The zero is only load-bearing
+      for the `_pad` field of headers (and even that is
+      stamped on line 666 / 356).
+      Why a win: small fixed cost on every alloc, multiplied
+      by the per-eval alloc count.  A literal-list with N=1000
+      pays 1× 16 B header zero, 1× 24000 B elements-run zero
+      (24 KB of `i32.store8` × 24000 ≈ 6000 wasm instructions),
+      then immediately stamps every byte.  The zero is dead
+      work.  Remove with a `bool zero_init` parameter or split
+      into `arena_alloc_raw` (no zero) vs `arena_alloc_zeroed`,
+      and migrate the constructors that already stamp every
+      byte to the raw variant.
+      Risk: any caller that *implicitly* relies on the zero
+      (e.g. `cel_map_create` sets `entries_offset = 0` for
+      cap=0; but that's an explicit stamp at line 84) breaks.
+      Audit each caller before flipping; introduce a
+      `#define CELWASM_ARENA_ZERO_INIT 1` guard for an A/B
+      bench.  CEL_LOG of arena bytes might also rely on it
+      cosmetically.
+      Files: `runtime/cel_arena.c:89`,
+      `runtime/cel_make.c:18-115` (every constructor immediately
+      stamps), `runtime/cel_runtime.c:64-89, 335-359, 648-668`
+      (list/map header constructors).
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — measurable on alloc-heavy expressions
+      (large list literals, deep comprehensions); negligible
+      elsewhere.
+
+- [ ] **#25** — `arena_alloc` runs `align_up_8(n)`
+      (`runtime/cel_arena.c:33-35, 77`) on every call even
+      when the request is already a multiple of 8.
+      `sizeof(CelValue) == 24`, `sizeof(ArenaMapHeader) ==
+      sizeof(ArenaListHeader) == 16`, `kCelMapEntryStride ==
+      48`, `kCelListEntryStride == 24` — every fixed-size alloc
+      is already 8-aligned, so the round-up is unconditional
+      dead work for the static-size paths.  The general path
+      is used only for string/bytes payload allocs
+      (`cel_make_string_view`-style and `concat_into_out`),
+      where `n` is data-dependent.
+      Why a win: small fixed cost on every alloc.  Make a
+      `static inline uint32_t arena_alloc_aligned8(uint32_t n)`
+      that skips the round-up; callers with statically-known
+      multiples-of-8 sizes use it directly.
+      Risk: caller mis-uses with a non-multiple-of-8 size,
+      leading to a misaligned cursor.  Mitigate with a
+      `_Static_assert((sizeof(T) & 7) == 0, ...)` at each call
+      site, or a runtime DCHECK `ABSL_CHECK((n & 7) == 0)` in
+      the inline.
+      Files: `runtime/cel_arena.c`, every constructor in
+      `runtime/cel_make.c`, `runtime/cel_runtime.c`'s header
+      allocs.
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — sub-1% on a typical eval; only matters in
+      bench-grade tuning.
+
+- [ ] **#28** — `cel_internal.h`'s `static inline` helpers
+      (`spans_equal`, `absorb_3vl_*`, `require_kinds`,
+      `write_*`, `poison`, `cv_at`) generate a copy per TU
+      that includes the header — fine when each copy inlines,
+      but `spans_equal` does NOT always inline (clang's
+      inliner gives up on the 175-byte body when the caller is
+      large, e.g. `cel_list_in_arena`).  Under `-flto`
+      cross-TU LTO recovers this by collapsing the copies,
+      but the worst-case codegen path still emits a real call.
+      Why a win: small fixed cost; relevant only if
+      disassembly shows `call $spans_equal` in
+      `cel_list_in_arena`.
+      Fix: tag the helper `static inline __attribute__((always_inline))`
+      to force inlining where size is below the threshold.
+      Same applies to `numeric_compare_kernel` — it's
+      explicitly `__attribute__((noinline))` at
+      `cel_compare.c:160` for a good reason (avoiding
+      `__multi3` re-fold), but the wrappers
+      `cel_numeric_eq_at_vv` et al. each pay one indirect call;
+      consider an inline tri-state to-bool collapser if those
+      show up hot.
+      Risk: forcing inline grows the .wasm; usually 2–5 KB
+      total even on a 50 KB runtime.  Bench-validate.
+      Files: `runtime/cel_internal.h`, `runtime/cel_compare.c`.
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — only worth doing after disassembly
+      confirms the inliner is bailing.
+
+- [ ] **#29** — `cel_map_count` on the CEL_MAP_HOST branch
+      (`runtime/cel_runtime.c:1129-1138`) calls `arena_alloc`
+      for a scratch CelValue, invokes
+      `cel_host_cel_map_size`, then reads the int back —
+      pays an arena alloc per map-source comprehension to
+      get the size.  The alloc isn't reclaimed (arena is
+      bump-only) and the arena bytes accumulate across
+      iterations.
+      Why a win: small fixed cost per comprehension; matters
+      only for tight nested comprehensions over host maps.
+      Fix: the host trampoline `cel_host_cel_map_size` could
+      gain a `cel_host_cel_map_count` variant that returns
+      `uint32_t` directly without staging through a CelValue.
+      Symmetric with `cel_map_count`'s own `uint32_t` return.
+      Risk: new ABI surface, new host import.  Worth doing
+      only if comprehension-over-host-map shows up hot.
+      Files: `runtime/cel_runtime.c:1123-1140`, host
+      trampoline registration in `eval/host/...`.
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — cleanup-when-touched; not a current
+      regression source.
+
+- [ ] **#30** — `cel_value_eq_polymorphic`
+      (`runtime/cel_runtime.c:539-572`) is an open-coded ladder
+      of kind-pair `if`s.  Each comparison evaluates `a->kind`
+      and `b->kind` separately — two loads (already in
+      registers) but the kind-pair is re-derived per rung
+      rather than once via the `(ka<<8)|kb` shape that
+      `numeric_compare_kernel` uses
+      (`cel_compare.c:155-188`).  Converting to a single
+      `switch` on `numeric_kind_pair(ka, kb)` would let
+      clang lower to a single jump table.
+      Why a win: hot path on every cross-kind equality —
+      every `cel_value_eq` call from `cel_list_in_arena` /
+      `cel_list_eq_arena` / `cel_map_eq_arena`.  Replacing
+      4-5 sequential `if`s with one table dispatch shortens
+      the per-element cost from ~12 wasm instructions to ~4.
+      Concrete shape: same pattern as
+      `numeric_compare_kernel`'s switch.
+      Risk: the ladder's structure encodes some "either kind
+      is numeric → numeric_compare_kernel" semantics
+      (`is_numeric_kind(a->kind) && is_numeric_kind(b->kind)`)
+      — that ladder rung doesn't slot cleanly into a
+      kind-pair switch.  Two-stage: kind-pair switch for
+      same-kind same-payload arms, fall through to numeric/
+      map_keys_equal.
+      Files: `runtime/cel_runtime.c:539-572`.
+      Surfaced: 2026-06-03 runtime optimization review.
+      Severity: P2 — meaningful only when #21 (per-kind
+      specialization) doesn't apply (i.e. dyn lists).
+
+## Runtime optimization review — 2026-06-03 summary
+
+Top three of the review (#27, #20, #26) shipped 2026-06-03 — see
+"## Closed" entries.  Remaining queue:
+
+Secondary cluster: #21 (per-element-kind list_in specialization
+amortises after #20 lands), #24 (drop the unconditional memset
+in arena_alloc), #25 (skip align_up_8 for static-size allocs).
+#22 (O(N²) map_eq) and #30 (kind-pair switch in
+cel_value_eq_polymorphic) are workload-dependent — defer until
+a benchmark surfaces them.  #23 and #28 are
+disassembly-confirmation-gated speculative wins.  #29 is
+follow-up cleanup, not a current regression.
 
 ## Closed
 
@@ -437,3 +736,57 @@ struck through or removed.
       Files: `runtime/BUILD.bazel`,
       `bench/README.md`,
       `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md`.
+
+- [x] **#27** — `cel_memcpy_internal_` / `cel_memset_internal_`
+      byte-loop fallbacks in `runtime/cel_internal.h` deleted; the
+      `#ifdef __wasm__ / #else / #endif` block at lines 70-86 is
+      replaced with an unconditional `#include <string.h>` at the
+      top of the header.  Every TU that referenced `memcpy` /
+      `memset` (`cel_arena.c`, `cel_make.c`, `cel_string_ops.c`)
+      already includes `cel_internal.h` and now picks up real
+      libc symbols on both host and wasi-sdk wasm builds — call
+      sites needed no edits because the prior names were
+      `#define` macros aliasing the now-removed internals.
+      `grep cel_memcpy_internal_` confirms no surviving references.
+      Resolved: 2026-06-03 in working tree pending commit.
+      Files: `runtime/cel_internal.h`.
+
+- [x] **#26** — `arena_alloc` bounds check at
+      `runtime/cel_arena.c:85` rewritten from
+      `g_arena.cursor + need > g_arena.capacity` (additive form
+      that wraps when `need` approaches `UINT32_MAX`) to
+      `need > g_arena.capacity - g_arena.cursor` (subtraction
+      form, non-wrapping because the `cursor <= capacity`
+      invariant guarantees the subtraction stays in-range).
+      Regression test `ArenaTest.OverflowingAllocRequestRejected`
+      in `runtime/cel_arena_test.cc` pins the fix by exercising
+      `n = UINT32_MAX - 7` against a small cursor: the old
+      additive form silently admitted the alloc; the subtraction
+      form rejects with the absent-sentinel and leaves the
+      cursor untouched.
+      Resolved: 2026-06-03 in working tree pending commit.
+      Files: `runtime/cel_arena.c`, `runtime/cel_arena_test.cc`.
+
+- [x] **#20** — `spans_equal` and the sibling pointer-form
+      `span_eq` / `span_match_at` (in `runtime/cel_string_ops.c`)
+      plus the open-coded byte loop in `type_eq_at_vv`
+      (`runtime/cel_runtime.c`) all funnelled through a per-byte
+      `i32.load8_u; i32.ne; br_if` loop.  Option A landed: a new
+      shared `cel_byteptr_equal_(const uint8_t*, const uint8_t*,
+      uint32_t)` helper in `runtime/cel_internal.h` processes 8
+      bytes at a time via `__builtin_memcmp(p, q, 8)` (which on
+      wasi-sdk libc + LTO lowers to two `i64.load` + `i64.eq`)
+      plus a 0–7 byte tail loop, and the three call sites
+      (`spans_equal`, `span_eq`, `span_match_at`, `type_eq_at_vv`)
+      now delegate to it.  `span_lt` is left as a byte loop on
+      purpose — it's a lex comparator, and the first-mismatch
+      ordering is what matters there, not a wide equality test.
+      Public API of `spans_equal(CelSpan, CelSpan)` unchanged.
+      No `-msimd128` flip; portable to every wasm engine.
+      Expected impact on the cited regression (102 µs literal-
+      list bound-in path vs 6.49 µs bound-list at 1k 50-byte
+      strings) is ~16× — bench not run per the user's
+      instruction.
+      Resolved: 2026-06-03 in working tree pending commit.
+      Files: `runtime/cel_internal.h`, `runtime/cel_string_ops.c`,
+      `runtime/cel_runtime.c`.

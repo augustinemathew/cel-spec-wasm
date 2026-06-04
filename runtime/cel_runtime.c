@@ -1296,14 +1296,8 @@ static void type_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     return;
   }
   const uint8_t* base = cel_memory_base_();
-  int eq = 1;
-  for (uint32_t i = 0; i < la; ++i) {
-    if (base[a->payload.s.ptr + i] != base[b->payload.s.ptr + i]) {
-      eq = 0;
-      break;
-    }
-  }
-  write_bool(out, eq);
+  write_bool(out, cel_byteptr_equal_(base + a->payload.s.ptr,
+                                     base + b->payload.s.ptr, la));
 }
 
 // Forward declaration: the CEL_OPTIONAL arm calls back into the

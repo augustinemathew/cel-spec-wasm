@@ -185,6 +185,36 @@ TEST_F(ArenaTest, AllocReturnContractResolvesViaCelMemBase) {
   EXPECT_EQ((cel_mem_base() + off)[23], 0x99);
 }
 
+// Regression: the bounds check inside arena_alloc must NOT wrap.  The
+// additive form `cursor + need > capacity` overflows uint32_t when
+// `need` is near UINT32_MAX, silently admitting the alloc and bumping
+// the cursor past the malloc'd buffer.  The subtraction form
+// `need > capacity - cursor` (capacity - cursor never wraps because
+// cursor <= capacity is invariant) rejects correctly.
+//
+// To trigger the wrap we need `cursor + need` to wrap below capacity:
+// pick cursor small (e.g. 8 after one prior alloc), then a need close
+// to UINT32_MAX such that `cursor + need (mod 2^32) <= capacity`.
+// align_up_8(need) must not itself wrap to zero (the
+// `if (need == 0) need = 8u` line absorbs that case), so we pick a
+// value already 8-aligned: n = UINT32_MAX - 7 = 0xFFFFFFF8 gives
+// align_up_8(n) = 0xFFFFFFF8 (unchanged).  With cursor = 8, old code
+// computes 8 + 0xFFFFFFF8 = 2^32 → 0 (mod 2^32), 0 > capacity is
+// false, alloc silently admitted.  New code: need (0xFFFFFFF8) >
+// capacity - cursor (= capacity - 8), rejected.
+TEST_F(ArenaTest, OverflowingAllocRequestRejected) {
+  arena_reset();
+  // Bump cursor to a small non-zero value so the additive form can
+  // wrap (with cursor==0 the old code happens to reject correctly).
+  ASSERT_NE(arena_alloc(8), 0u);
+  ASSERT_EQ(arena_cursor(), 8u);
+  const uint32_t huge = UINT32_MAX - 7u;  // already 8-aligned
+  EXPECT_EQ(arena_alloc(huge), 0u);
+  // Cursor must not have advanced — a failing alloc must leave the
+  // arena state untouched (A10).
+  EXPECT_EQ(arena_cursor(), 8u);
+}
+
 // ── Capacity boundary (DESIGN §5 A10 — OOM returns 0, not partial) ─
 
 TEST_F(ArenaTest, AllocReturnsZeroWhenOutOfSpace) {

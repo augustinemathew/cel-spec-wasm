@@ -27,12 +27,8 @@
 // callers in cel_runtime.c.
 static int span_eq(const CelSpan* a, const CelSpan* b) {
   if (a->len != b->len) return 0;
-  const uint8_t* pa = cel_memory_base_() + a->ptr;
-  const uint8_t* pb = cel_memory_base_() + b->ptr;
-  for (uint32_t i = 0; i < a->len; ++i) {
-    if (pa[i] != pb[i]) return 0;
-  }
-  return 1;
+  const uint8_t* base = cel_memory_base_();
+  return cel_byteptr_equal_(base + a->ptr, base + b->ptr, a->len);
 }
 
 // Span lexicographic <.  Per langdef §"String / bytes": compare
@@ -54,10 +50,7 @@ static int span_lt(const CelSpan* a, const CelSpan* b) {
 static int span_match_at(const CelSpan* hay, uint32_t off, const CelSpan* sub) {
   const uint8_t* ph = cel_memory_base_() + hay->ptr + off;
   const uint8_t* ps = cel_memory_base_() + sub->ptr;
-  for (uint32_t i = 0; i < sub->len; ++i) {
-    if (ph[i] != ps[i]) return 0;
-  }
-  return 1;
+  return cel_byteptr_equal_(ph, ps, sub->len);
 }
 
 // Linear-scan substring search.  langdef pins string ops to byte
