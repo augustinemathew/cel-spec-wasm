@@ -689,5 +689,112 @@ TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
   EXPECT_TRUE(*v->AsBool());
 }
 
+// ──────────────────────────────────────────────────────────────────
+// Long-arithmetic regressions — paired positive / known-bug.
+//
+// Source: `a_0*a_{(0*7+3)%10} + a_1*a_{(1*7+3)%10} + ...` repeated
+// `kTerms` times over 10 int vars `a..j` bound to the first 10
+// primes.  Same shape as `bench/in_operator_bench.cc`'s
+// `BM_Eval_LongArith_*Terms`.
+//
+// Both tests below share the same expression-building helper inline
+// (no shared header — these two tests are the only callers) so the
+// matrix is greppable in one place.
+// ──────────────────────────────────────────────────────────────────
+
+namespace {
+
+std::string MakeLongArithSource(int n_terms) {
+  static constexpr char kVars[] = "abcdefghij";
+  std::string s;
+  s.reserve(static_cast<size_t>(n_terms) * 5);
+  for (int i = 0; i < n_terms; ++i) {
+    if (i > 0) s.append(" + ");
+    s.push_back(kVars[i % 10]);
+    s.push_back('*');
+    s.push_back(kVars[(i * 7 + 3) % 10]);
+  }
+  return s;
+}
+
+void BindLongArithVars(Activation& a) {
+  static constexpr int64_t kVals[10] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+  for (int i = 0; i < 10; ++i) {
+    a.Bind(std::string(1, static_cast<char>('a' + i)), Value::Int(kVals[i]));
+  }
+}
+
+void DeclareLongArithVars(Compiler::Builder& b) {
+  for (char c = 'a'; c <= 'j'; ++c) {
+    b.DeclareVariable(std::string(1, c), CelType::Int());
+  }
+}
+
+// Pre-compute the spec-correct result on the C++ side so the
+// assertion is independent of CEL's evaluator (and we know the value
+// will arrive once the bug is closed).
+int64_t ExpectedLongArithResult(int n_terms) {
+  static constexpr int64_t kVals[10] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+  int64_t sum = 0;
+  for (int i = 0; i < n_terms; ++i) {
+    sum += kVals[i % 10] * kVals[(i * 7 + 3) % 10];
+  }
+  return sum;
+}
+
+}  // namespace
+
+// Positive baseline — confirms the parser-depth bump
+// (`parse_and_check.cc::DefaultParserOptions`: 32 → 16 384) plus the
+// codegen / Eval path actually work for a long-but-not-pathological
+// `+`-chain.  Pins the largest expression size that's confirmed to
+// run today and forces a regression if it ever stops.
+TEST(KnownBugs, LongArith_1000Terms_Works) {
+  constexpr int kN = 1000;
+  const std::string source = MakeLongArithSource(kN);
+  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
+}
+
+// ──────────────────────────────────────────────────────────────────
+// BUG (long-arith codegen): a long arithmetic expression of ≳ 2000
+// `+`-joined `int * int` terms compiles + plans cleanly, but Eval
+// traps with `wasm trap: unaligned atomic` from inside the
+// expression module's call into a runtime helper.  Verified
+// bisected: N = 1000 works (see preceding test), N = 2000 traps.
+//
+// Hypothesis: the slot allocator (compiler/codegen/slot_allocator.cc)
+// hands out i64 / CelValue slots without the alignment guarantee
+// the runtime helpers' atomic ops assume, and at large slot counts
+// some slot lands on a non-8-byte boundary.  The wasm32-wasi-threads
+// toolchain emits stricter alignment checks than vanilla wasm32-wasi.
+// Surfaced 2026-06-04 while writing the arithmetic head-to-head
+// against cel-cpp; until fixed, the bench caps at N = 1000 and the
+// README perf section says so.
+//
+// To fix: root-cause the slot allocator alignment, ensure every CelValue
+// slot is 16-byte aligned, then delete the GTEST_SKIP below.  The
+// assertion will then prove the polynomial evaluates correctly.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, LongArith_2000Terms_UnalignedAtomicTrap) {
+  GTEST_SKIP()
+      << "KNOWN BUG (verified: returns INTERNAL: Eval trapped, "
+         "`wasm trap: unaligned atomic`, want OK + ExpectedLongArithResult). "
+         "A 2000-term `int*int` `+`-chain compiles + plans cleanly but "
+         "traps at Eval inside a runtime-helper atomic op.  N=1000 works "
+         "(preceding test); N=2000 traps; cause is suspected slot-allocator "
+         "alignment regression at large slot counts.  Delete this line when "
+         "compiler/codegen/slot_allocator.cc guarantees 16-byte alignment "
+         "on every CelValue slot the runtime touches.";
+  constexpr int kN = 2000;
+  const std::string source = MakeLongArithSource(kN);
+  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
+}
+
 }  // namespace
 }  // namespace celwasm

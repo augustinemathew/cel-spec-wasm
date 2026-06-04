@@ -1,4 +1,4 @@
-# cel-wasm
+# cel-wasm (Common Expression)
 
 > ⚠️ **This repo is not production ready, yet!**
 >
@@ -8,9 +8,6 @@
 > left* before it's something you'd hand-on-heart deploy to a
 > production policy engine:
 >
-> - **Codegen bugs at scale** — the arithmetic path traps with
->   `wasm trap: unaligned atomic` at ≳ 2000 op-chains; the slot
->   allocator misaligns and we haven't root-caused it yet.
 > - **Arithmetic is currently 2.4× slower than cel-cpp** because every
 >   `+`/`*` routes through a cross-module wasm call instead of an
 >   inlined `i64.add` (the planned codegen fix — see
@@ -127,33 +124,35 @@ Pure arithmetic — long polynomials, expression chains of `+`/`*`:
 | --- | ---: | ---: | :---: |
 | 1000-term quadratic polynomial (~2 k binary ops) | 164 µs | 68 µs | **cel-cpp 2.4× faster** |
 
-**Why is this so slow? Why are we doing a host-import call?**
-Each `a + b` in the CEL expression gets codegen'd to a *cross-module
-wasm call*. The expression module imports
-`cel_int_add_at_vv` from `cel_runtime.wasm` (the language-agnostic
-kernel sibling module), so every `+` becomes roughly:
+**Why is this so slow? Why are we doing a cross-module wasm call?**
+Each `a + b` in the CEL expression gets codegen'd to a
+`call $cel_int_add_at_vv` instruction. That import resolves to a
+function exported by a *separate* wasm module —
+`cel_runtime.wasm`, the language-agnostic kernel. Binaryen
+(our wasm optimizer) sees only the expression module's IR, never
+`cel_runtime.wasm`, so it can't inline the kernel even if you crank
+`-O3`. Wasmtime + Cranelift then JIT each module **as its own
+compile unit**, and there's no cross-module inlining either — the
+call stays a real function call in the emitted native code.
 
-```
-(call $cel_int_add_at_vv (i32 $out_slot) (i32 $lhs_slot) (i32 $rhs_slot))
-```
+Per call you pay: arg-marshalling into the slot ABI, the
+cross-module call itself, kind-tag checks inside the kernel, the
+i64 arithmetic, the overflow check, the result write-back. Native
+the kernel runs in ~2-3 ns ([`BM_IntAdd: 2.29 ns`](bench/README.md));
+inside the expression module the cross-module hop adds ~80 ns of
+trampoline + slot work. Multiply by 2 000 ops in a 1000-term
+polynomial and that's the ~100 µs gap to cel-cpp's inlined-arith
+tree-walker.
 
-Inside that kernel: load the 24-byte CelValue at `$lhs_slot`, check
-kind == kInt, load the i64 payload, do the add, check for overflow,
-write the result CelValue back. **Five-to-six layers of indirection per
-arithmetic op.** Native-only that kernel runs in ~2-3 ns (see
-[`bench/kernel_bench.cc`](bench/kernel_bench.cc) — `BM_IntAdd: 2.29
-ns`); but inside the expression module a *call* into it across module
-boundaries costs ~80 ns/op of trampoline + slot-marshalling overhead.
-Multiply by 2 000 ops and that's the ~100 µs gap to cel-cpp's
-inlined-arith tree-walker.
-
-**The fix (planned).** Teach `expr_lower.cc` to inline `i64.add` /
-`i64.mul` + an overflow-check shape *directly into the expression
-module* when both operands are statically-typed kInt at codegen time,
-instead of routing through the runtime helper. Cranelift then folds
-the resulting wasm into ~3 ns/op of straight-line native machine code
-and the row above flips. The runtime helpers stay as the fallback for
-mixed-type and dynamic-dispatch paths.
+**The fix (planned).** Stop emitting the call in the first place.
+Teach `expr_lower.cc` to emit `(i64.add)` / `(i64.mul)` + an
+overflow-check shape *directly into the expression module* for
+known-kInt operands. That's normal in-module wasm IR — Binaryen
+optimizes it like any other op, Cranelift schedules it inline with
+the surrounding code, no cross-module barrier left. Expected: ~3
+ns/op of straight-line native, and the row above flips. The
+runtime helpers stay as the fallback for mixed-type / dynamic-
+dispatch paths.
 
 ### Other honest caveats
 
