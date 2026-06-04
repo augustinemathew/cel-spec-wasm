@@ -113,16 +113,25 @@ cc_binary(
 
 
 # Foreign-component dispatch cost vs native host-fn dispatch cost
-# (m24 D.3).  Two shapes: scalar add (per-call overhead) and 256 KiB
-# string len (per-call + canonical-ABI copy throughput).  Each shape
-# runs through both backends so the delta isolates the component-call
-# overhead.  Reuses the wasmtime C API + wat2wasm to assemble the
-# component WAT in-bench, same pattern as
-# `e2e/foreign_component_dispatch_test`.
+# (m24 D.3 → m26 D.3 rewrite).  Two shapes: scalar add (per-call
+# overhead) and 256 KiB string len (per-call + canonical-ABI copy
+# throughput).  Each shape runs through both backends so the delta
+# isolates the component-call overhead.
+#
+# The component fixture is the macro-produced
+# //e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component
+# (a real wasm32-wasip2 Component-Model component, built via the
+# cel_wasm_component Starlark macro from fns.idl + user_fns.cc).
+# Loaded at bench-setup time via the bazel runfiles library; the
+# previous inline-WAT setup has been retired in favour of measuring
+# the production component shape an embedder would actually ship.
 cc_binary(
     name = "foreign_component_bench",
     srcs = ["foreign_component_bench.cc"],
     copts = ["-std=c++17"],
+    data = [
+        "//e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component",
+    ],
     tags = ["manual"],
     deps = [
         "//compiler:compiler",
@@ -133,8 +142,9 @@ cc_binary(
         "//eval:instance",
         "//eval:value",
         "//shared:type",
-        "//third_party/wasmtime:wasmtime",
+        "@bazel_tools//tools/cpp/runfiles",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",

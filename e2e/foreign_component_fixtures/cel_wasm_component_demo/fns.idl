@@ -8,3 +8,7 @@ Module customfn;
 
 string @component.greet(string name, int age);
 int    @component.add(int a, int b);
+// Used by bench/foreign_component_bench — the canonical string-payload
+// dispatch cost.  Returns the input string's length so the bench
+// measures the canonical-ABI copy throughput, not the user fn body.
+int    @component.len(string s);

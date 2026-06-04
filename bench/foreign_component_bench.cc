@@ -1,4 +1,5 @@
-// Foreign-component vs native host-fn dispatch cost — m24 D.3.
+// Foreign-component vs native host-fn dispatch cost — m24 D.3,
+// m26 D.3 rewrite.
 //
 // Two shapes, two backends, four BMs:
 //
@@ -11,8 +12,11 @@
 //
 // Two backends per shape:
 //
-//   - Foreign-component (m24 path) — a tiny component is registered via
-//     `Engine::AddComponent` and dispatched per call through
+//   - Foreign-component (m24 path) — the wasm32-wasip2 Component-Model
+//     component the cel_wasm_component macro produces at
+//     //e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component,
+//     loaded via the bazel runfiles library and registered through
+//     `Engine::AddComponent`.  Dispatched per call through
 //     wasmtime_component_func_call.
 //   - Native AddTypedFunction (the host-callback baseline) — same CEL
 //     decl, same `cel_fn.<helper>` import, but the body is a C++ lambda
@@ -35,12 +39,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <ios>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/log/absl_check.h"
+#include "absl/memory/memory.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -53,64 +60,41 @@
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "shared/type.h"
-#include "wasm.h"
-#include "wasmtime.h"
+#include "tools/cpp/runfiles/runfiles.h"
 
 namespace celwasm {
 namespace {
 
 constexpr int kBenchOptimizeLevel = 2;
 
-// Per-shape WATs — both use the explicit `alias core export` form for
-// canon-options (the inline `(core func $i "name")` is rejected by
-// wasmtime_wat2wasm; settled at e2e/foreign_component_dispatch_test).
+using ::bazel::tools::cpp::runfiles::Runfiles;
 
-constexpr absl::string_view kAddIntIntComponentWat = R"WAT(
-(component
-  (core module $m
-    (func (export "add") (param i64 i64) (result i64)
-      local.get 0 local.get 1 i64.add))
-  (core instance $i (instantiate $m))
-  (func (export "add-int-int") (param "a" s64) (param "b" s64) (result s64)
-    (canon lift (core func $i "add"))))
-)WAT";
+// argv[0] captured in main() so Runfiles::Create can find this
+// binary's runfiles tree.  benchmark::RunSpecifiedBenchmarks() does
+// not forward argv to the BM fns, so we route through a global.
+std::string& Argv0() {
+  static std::string* const v = new std::string();
+  return *v;
+}
 
-constexpr absl::string_view kLenStringComponentWat = R"WAT(
-(component
-  (core module $m
-    (memory (export "memory") 16)
-    (global $next (mut i32) (i32.const 1024))
-    (func (export "realloc")
-        (param $orig i32) (param $orig_sz i32) (param $align i32)
-        (param $new_sz i32) (result i32)
-      (local $ret i32)
-      global.get $next
-      local.set $ret
-      global.get $next
-      local.get $new_sz
-      i32.add
-      global.set $next
-      local.get $ret)
-    (func (export "len_fn") (param $ptr i32) (param $len i32) (result i64)
-      local.get $len
-      i64.extend_i32_u))
-  (core instance $i (instantiate $m))
-  (alias core export $i "memory" (core memory $mem))
-  (alias core export $i "realloc" (core func $realloc))
-  (alias core export $i "len_fn" (core func $len_fn))
-  (func (export "len-string") (param "s" string) (result s64)
-    (canon lift (core func $len_fn) (memory $mem) (realloc $realloc))))
-)WAT";
-
-std::vector<uint8_t> WatToWasm(absl::string_view wat) {
-  wasm_byte_vec_t out;
-  wasmtime_error_t* err = wasmtime_wat2wasm(wat.data(), wat.size(), &out);
-  ABSL_CHECK_EQ(err, nullptr) << "wat2wasm failed";
-  std::vector<uint8_t> bytes(
-      reinterpret_cast<const uint8_t*>(out.data),
-      reinterpret_cast<const uint8_t*>(out.data) + out.size);
-  wasm_byte_vec_delete(&out);
-  return bytes;
+// Load the macro-built demo component's bytes once.  Returned by value
+// to keep the BM-local `lib` + `bytes` lifetimes independent.
+const std::vector<uint8_t>& DemoComponentBytes() {
+  static const std::vector<uint8_t>* const bytes = []() {
+    std::string error;
+    auto runfiles = absl::WrapUnique(Runfiles::Create(Argv0(), &error));
+    ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
+    const std::string path = runfiles->Rlocation(
+        "_main/e2e/foreign_component_fixtures/cel_wasm_component_demo/"
+        "demo_component.wasm");
+    ABSL_CHECK(!path.empty()) << "demo_component.wasm not in runfiles";
+    std::ifstream f(path, std::ios::binary);
+    ABSL_CHECK(f.is_open()) << "open " << path;
+    return new std::vector<uint8_t>(
+        (std::istreambuf_iterator<char>(f)),
+        std::istreambuf_iterator<char>());
+  }();
+  return *bytes;
 }
 
 CelfnType Prim(CelfnType::Kind k) {
@@ -119,15 +103,21 @@ CelfnType Prim(CelfnType::Kind k) {
   return t;
 }
 
-// Builds a single-decl library for the named fn.
+// Component-side libraries — the demo's fns.idl declares add + len + greet
+// inside `cel:customfn/fns@0.1.0`.  The bench builds the smallest library
+// it needs for each shape; the engine's two-level lookup uses the WIT
+// interface name to find each decl's export within the demo component.
+
+constexpr absl::string_view kDemoWitInterface = "cel:customfn/fns@0.1.0";
+
 FunctionLibrary BuildAddLib() {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent("add", Prim(CelfnType::Kind::kInt),
-                               {CelfnParam{false, Prim(CelfnType::Kind::kInt),
-                                           "a"},
-                                CelfnParam{false, Prim(CelfnType::Kind::kInt),
-                                           "b"}})
+          .SetWitInterface(kDemoWitInterface)
+          .AddForeignComponent(
+              "add", Prim(CelfnType::Kind::kInt),
+              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
+               CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
           .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
@@ -135,6 +125,7 @@ FunctionLibrary BuildAddLib() {
 
 FunctionLibrary BuildLenLib() {
   auto lib_or = FunctionLibrary::Builder()
+                    .SetWitInterface(kDemoWitInterface)
                     .AddForeignComponent(
                         "len", Prim(CelfnType::Kind::kInt),
                         {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
@@ -143,8 +134,7 @@ FunctionLibrary BuildLenLib() {
   return *std::move(lib_or);
 }
 
-// Same shape as BuildAddLib but registered as a host fn — the dispatch
-// still flows through `kCelFn`, so the native lambda is the only delta.
+// Host-side baselines — same overload-id shape, body is a C++ lambda.
 FunctionLibrary BuildAddLibAsHost() {
   auto lib_or =
       FunctionLibrary::Builder()
@@ -208,8 +198,7 @@ void BM_Eval_ForeignComponent_AddIntInt(benchmark::State& state) {
       "add(a, b)", lib,
       {{"a", CelType::Int()}, {"b", CelType::Int()}});
   auto engine = NewEngine();
-  ABSL_CHECK_OK(
-      engine->AddComponent(WatToWasm(kAddIntIntComponentWat), lib));
+  ABSL_CHECK_OK(engine->AddComponent(DemoComponentBytes(), lib));
   Instance inst = PlanOrDie(*engine, prog);
   Activation act;
   act.Bind("a", Value::Int(7));
@@ -251,25 +240,18 @@ BENCHMARK(BM_Eval_HostFn_AddIntInt);
 
 constexpr size_t kBenchStringBytes = 256 * 1024;
 
-void BM_Eval_ForeignComponent_LenString_256KiB(benchmark::State& state) {
-  auto lib = BuildLenLib();
-  Program prog = CompileOrDie("len(s)", lib, {{"s", CelType::String()}});
-  auto engine = NewEngine();
-  ABSL_CHECK_OK(
-      engine->AddComponent(WatToWasm(kLenStringComponentWat), lib));
-  Instance inst = PlanOrDie(*engine, prog);
-  const std::string payload(kBenchStringBytes, 'x');
-  Activation act;
-  act.Bind("s", Value::String(payload));
-  for (auto _ : state) {
-    auto v_or = inst.Eval(act);
-    ABSL_CHECK_OK(v_or);
-    benchmark::DoNotOptimize(v_or->AsInt());
-  }
-  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) *
-                          static_cast<int64_t>(kBenchStringBytes));
-}
-BENCHMARK(BM_Eval_ForeignComponent_LenString_256KiB);
+// BM_Eval_ForeignComponent_LenString_256KiB is intentionally not
+// defined.  Passing a 256 KiB string through the canonical-ABI copy
+// pulls the wasi-sdk libc++ string code path, which reads from
+// wasi:random/random.get-random-bytes for hash seeding.  Under the
+// wasmtime v43 C API, the import declarations are wired
+// (`wasmtime_component_linker_add_wasip2`) but no per-store
+// wasi-preview2 context exists, so the call traps with `cannot leave
+// component instance`.  M26 #44 tracks the fix (either a future
+// wasmtime C-API binding for wasi-preview2 ctx setup, or rebuilding
+// the demo against wasm32-wasi + the preview1 adapter so the existing
+// `wasi.hh` WasiConfig works).  The HostFn Shape B BM below stays —
+// it's the native-call baseline and is unaffected.
 
 void BM_Eval_HostFn_LenString_256KiB(benchmark::State& state) {
   auto lib = BuildLenLibAsHost();
@@ -296,4 +278,15 @@ BENCHMARK(BM_Eval_HostFn_LenString_256KiB);
 }  // namespace
 }  // namespace celwasm
 
-BENCHMARK_MAIN();
+int main(int argc, char** argv) {
+  // Capture argv[0] for the runfiles loader before Google Benchmark
+  // consumes it.  bazel run sets argv[0] to the absolute path of the
+  // binary, which is what Runfiles::Create needs to locate the
+  // `<binary>.runfiles/` tree.
+  if (argc > 0) celwasm::Argv0() = argv[0];
+  benchmark::Initialize(&argc, argv);
+  if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
+  benchmark::RunSpecifiedBenchmarks();
+  benchmark::Shutdown();
+  return 0;
+}

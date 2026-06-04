@@ -19,4 +19,8 @@ int64_t Add(int64_t a, int64_t b) {
   return a + b;
 }
 
+int64_t Len(std::string_view s) {
+  return static_cast<int64_t>(s.size());
+}
+
 }  // namespace customfn
