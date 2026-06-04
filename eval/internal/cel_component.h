@@ -106,8 +106,7 @@ struct CelComponentContext {
 // MUST call `wasmtime_component_val_delete(out)` once it has been
 // consumed (typically by `wasmtime_component_func_call`).
 ABSL_MUST_USE_RESULT absl::Status LiftCelToComponent(
-    const CelfnType& type, const Value& value,
-    const CelComponentContext& ctx,
+    const CelfnType& type, const Value& value, const CelComponentContext& ctx,
     wasmtime_component_val_t* absl_nonnull out);
 
 // Lower: wasmtime component val → host-side `Value`.

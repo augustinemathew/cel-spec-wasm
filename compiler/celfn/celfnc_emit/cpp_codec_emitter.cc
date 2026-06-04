@@ -234,144 +234,134 @@ class TypeCollector {
 
 constexpr absl::string_view kStringTpl =
     R"cpp(inline std::string_view lift(const author_string_t& s) {
-  return {reinterpret_cast<const char*>(s.ptr), s.len};
-}
+            return {reinterpret_cast<const char*>(s.ptr), s.len};
+          }
 
-inline void lower(author_string_t* ret, std::string_view s) {
-  author_string_dup_n(ret, s.data(), s.size());
-}
-
-)cpp";
+          inline void lower(author_string_t* ret, std::string_view s) {
+            author_string_dup_n(ret, s.data(), s.size());
+          }
+    )cpp";
 
 constexpr absl::string_view kBytesTpl =
     R"cpp(inline std::vector<uint8_t> lift(const author_list_u8_t& l) {
-  return {l.ptr, l.ptr + l.len};
-}
+            return {l.ptr, l.ptr + l.len};
+          }
 
-inline void lower(author_list_u8_t* ret, const std::vector<uint8_t>& v) {
-  ret->len = v.size();
-  ret->ptr = static_cast<uint8_t*>(cabi_realloc(NULL, 0, 1, v.size()));
-  if (!v.empty()) std::memcpy(ret->ptr, v.data(), v.size());
-}
-
-)cpp";
+          inline void lower(author_list_u8_t* ret, const std::vector<uint8_t>& v) {
+            ret->len = v.size();
+            ret->ptr = static_cast<uint8_t*>(cabi_realloc(NULL, 0, 1, v.size()));
+            if (!v.empty()) std::memcpy(ret->ptr, v.data(), v.size());
+          }
+    )cpp";
 
 constexpr absl::string_view kProtoTpl =
     R"cpp(template <typename M>
-inline M lift_proto(const author_list_u8_t& l) {
-  M msg;
-  if (l.len > 0) msg.ParseFromArray(l.ptr, l.len);
-  return msg;
-}
+          inline M lift_proto(const author_list_u8_t& l) {
+            M msg;
+            if (l.len > 0) msg.ParseFromArray(l.ptr, l.len);
+            return msg;
+          }
 
-template <typename M>
-inline void lower_proto(author_list_u8_t* ret, const M& msg) {
-  std::string buf;
-  msg.SerializeToString(&buf);
-  ret->len = buf.size();
-  ret->ptr = static_cast<uint8_t*>(cabi_realloc(NULL, 0, 1, buf.size()));
-  if (!buf.empty()) std::memcpy(ret->ptr, buf.data(), buf.size());
-}
-
-)cpp";
+          template <typename M>
+          inline void lower_proto(author_list_u8_t* ret, const M& msg) {
+            std::string buf;
+            msg.SerializeToString(&buf);
+            ret->len = buf.size();
+            ret->ptr = static_cast<uint8_t*>(cabi_realloc(NULL, 0, 1, buf.size()));
+            if (!buf.empty()) std::memcpy(ret->ptr, buf.data(), buf.size());
+          }
+    )cpp";
 
 // $0 = record struct name (e.g. exports_cel_customfn_fns_duration_t).
 constexpr absl::string_view kDurationTpl =
     R"cpp(inline absl::Duration lift(const $0& r) {
-  return absl::Seconds(r.seconds) + absl::Nanoseconds(r.nanos);
-}
+            return absl::Seconds(r.seconds) + absl::Nanoseconds(r.nanos);
+          }
 
-inline void lower($0* ret, absl::Duration d) {
-  const int64_t sec = absl::ToInt64Seconds(d);
-  ret->seconds = sec;
-  ret->nanos = static_cast<int32_t>(
-      absl::ToInt64Nanoseconds(d - absl::Seconds(sec)));
-}
-
-)cpp";
+          inline void lower($0* ret, absl::Duration d) {
+            const int64_t sec = absl::ToInt64Seconds(d);
+            ret->seconds = sec;
+            ret->nanos = static_cast<int32_t>(
+                absl::ToInt64Nanoseconds(d - absl::Seconds(sec)));
+          }
+    )cpp";
 
 constexpr absl::string_view kTimestampTpl =
     R"cpp(inline absl::Time lift(const $0& r) {
-  return absl::FromUnixSeconds(r.seconds) + absl::Nanoseconds(r.nanos);
-}
+            return absl::FromUnixSeconds(r.seconds) + absl::Nanoseconds(r.nanos);
+          }
 
-inline void lower($0* ret, absl::Time t) {
-  const int64_t sec = absl::ToUnixSeconds(t);
-  ret->seconds = sec;
-  ret->nanos = static_cast<int32_t>(
-      absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec)));
-}
-
-)cpp";
+          inline void lower($0* ret, absl::Time t) {
+            const int64_t sec = absl::ToUnixSeconds(t);
+            ret->seconds = sec;
+            ret->nanos = static_cast<int32_t>(
+                absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec)));
+          }
+    )cpp";
 
 constexpr absl::string_view kNullTpl =
     R"cpp(inline std::monostate lift(const author_option_u8_t& /*o*/) {
-  return {};
-}
+            return {};
+          }
 
-inline void lower(author_option_u8_t* ret, std::monostate) {
-  ret->is_some = false;
-  ret->val = 0;
-}
-
-)cpp";
+          inline void lower(author_option_u8_t* ret, std::monostate) {
+            ret->is_some = false;
+            ret->val = 0;
+          }
+    )cpp";
 
 // $0 = cpp container (e.g. std::vector<int64_t>), $1 = author struct.
 constexpr absl::string_view kListFlatTpl =
     R"cpp(inline $0 lift(const $1& l) {
-  return {l.ptr, l.ptr + l.len};
-}
+            return {l.ptr, l.ptr + l.len};
+          }
 
-inline void lower($1* ret, const $0& v) {
-  ret->len = v.size();
-  ret->ptr = static_cast<decltype(ret->ptr)>(cabi_realloc(
-      NULL, 0, alignof(decltype(*ret->ptr)),
-      v.size() * sizeof(*ret->ptr)));
-  if (!v.empty()) std::memcpy(ret->ptr, v.data(),
-                              v.size() * sizeof(*ret->ptr));
-}
-
-)cpp";
+          inline void lower($1* ret, const $0& v) {
+            ret->len = v.size();
+            ret->ptr = static_cast<decltype(ret->ptr)>(
+                cabi_realloc(NULL, 0, alignof(decltype(*ret->ptr)),
+                             v.size() * sizeof(*ret->ptr)));
+            if (!v.empty()) std::memcpy(ret->ptr, v.data(), v.size() * sizeof(*ret->ptr));
+          }
+    )cpp";
 
 // Recursive list: per-element lift/lower call.  $0 = cpp container,
 // $1 = author struct.
 constexpr absl::string_view kListRecTpl =
     R"cpp(inline $0 lift(const $1& l) {
-  $0 r;
-  r.reserve(l.len);
-  for (size_t i = 0; i < l.len; ++i) {
-    r.emplace_back(lift(l.ptr[i]));
-  }
-  return r;
-}
+            $0 r;
+            r.reserve(l.len);
+            for (size_t i = 0; i < l.len; ++i) {
+              r.emplace_back(lift(l.ptr[i]));
+            }
+            return r;
+          }
 
-inline void lower($1* ret, const $0& v) {
-  ret->len = v.size();
-  ret->ptr = static_cast<decltype(ret->ptr)>(cabi_realloc(
-      NULL, 0, alignof(decltype(*ret->ptr)),
-      v.size() * sizeof(*ret->ptr)));
-  for (size_t i = 0; i < v.size(); ++i) {
-    lower(&ret->ptr[i], v[i]);
-  }
-}
-
-)cpp";
+          inline void lower($1* ret, const $0& v) {
+            ret->len = v.size();
+            ret->ptr = static_cast<decltype(ret->ptr)>(
+                cabi_realloc(NULL, 0, alignof(decltype(*ret->ptr)),
+                             v.size() * sizeof(*ret->ptr)));
+            for (size_t i = 0; i < v.size(); ++i) {
+              lower(&ret->ptr[i], v[i]);
+            }
+          }
+    )cpp";
 
 // $0 = cpp std::map<...>, $1 = author_list_tuple2_*_t,
 // $2 = key lift expression (uses m.ptr[i].f0),
 // $3 = value lift expression (uses m.ptr[i].f1).
 constexpr absl::string_view kMapLiftTpl =
     R"cpp(inline $0 lift(const $1& m) {
-  $0 r;
-  for (size_t i = 0; i < m.len; ++i) {
-    r.emplace($2, $3);
-  }
-  return r;
-}
+            $0 r;
+            for (size_t i = 0; i < m.len; ++i) {
+              r.emplace($2, $3);
+            }
+            return r;
+          }
 
-// TODO(m26): lower($1*, const $0&) not yet emitted; declare manually if needed.
-
-)cpp";
+          // TODO(m26): lower($1*, const $0&) not yet emitted; declare manually if needed.
+    )cpp";
 
 // Emit lift+lower for a single type that needs them.
 absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
@@ -422,10 +412,9 @@ absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
               ? "std::string(reinterpret_cast<const char*>(m.ptr[i].f0.ptr), "
                 "m.ptr[i].f0.len)"
               : "m.ptr[i].f0";
-      const bool val_scalar = t.map_kv[1].kind == K::kBool ||
-                              t.map_kv[1].kind == K::kInt ||
-                              t.map_kv[1].kind == K::kUint ||
-                              t.map_kv[1].kind == K::kDouble;
+      const bool val_scalar =
+          t.map_kv[1].kind == K::kBool || t.map_kv[1].kind == K::kInt ||
+          t.map_kv[1].kind == K::kUint || t.map_kv[1].kind == K::kDouble;
       const std::string val_expr =
           val_scalar ? "m.ptr[i].f1" : "lift(m.ptr[i].f1)";
       absl::SubstituteAndAppend(out, kMapLiftTpl, cpp, s.c_name, key_expr,
@@ -459,7 +448,7 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
                                        absl::string_view wit_package_name) {
   TypeCollector tc;
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     tc.Visit(d.return_type);
     for (const auto& p : d.params) {
       tc.Visit(p.type);

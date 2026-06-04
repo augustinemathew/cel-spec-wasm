@@ -40,7 +40,7 @@ namespace celwasm {
 // CEL type as it appears in a custom-fn signature.  Mirrors §3.6 of
 // m13-custom-fns.md, extended by §6 of m24-foreign-fn-component-backend.md
 // (the foreign-component author surface adds `type` and `optional<T>` to
-// the declarable matrix; existing host / kForeign backends do not yet
+// the declarable matrix; existing host backend does not yet
 // admit either — see m24 §6 for the type-to-WIT-to-C++ mapping).
 struct CelfnType {
   enum class Kind : uint8_t {
@@ -96,13 +96,12 @@ struct CelfnParam {
 struct CelfnDecl {
   enum class Backend : uint8_t {
     kHost,              // `@host.` prefix
-    kForeign,           // `<alias>.` prefix — m13 shared-memory `kUserModule`
-                        // backend (no protos; v1 cross-boundary constraint).
     kCelDefined,        // `@native.` prefix, has body
-    kForeignComponent,  // m24 §3 component-backed foreign fn — dispatched
-                        // as a host callback (module_name = "cel_fn"), but
-                        // marshaled through a per-fn typed WIT export of
-                        // a Component-Model component registered via
+    kForeignComponent,  // `@component.` prefix — m24 §3 component-backed
+                        // foreign fn — dispatched as a host callback
+                        // (module_name = "cel_fn"), but marshaled
+                        // through a per-fn typed WIT export of a
+                        // Component-Model component registered via
                         // `Engine::AddComponent(bytes, lib)`.  Admits
                         // protos (as serialized bytes, m24 §8); admits
                         // `type` and `optional<T>` per m24 §6.
@@ -112,9 +111,8 @@ struct CelfnDecl {
   // Plain function name as written ("allow" / "is_number" / …).
   std::string fn_name;
   // Wasm import-module name.
-  //   kHost:       always "cel_fn"
-  //   kForeign:    the alias from `<alias>.<fnname>`
-  //   kCelDefined: the file's `Module foo;` directive name
+  //   kHost / kForeignComponent: always "cel_fn"
+  //   kCelDefined:               the file's `Module foo;` directive name
   std::string module_name;
   // Synthesised: `<fn_name>_<argkind>_<argkind>…`.
   std::string overload_id;
@@ -144,9 +142,6 @@ class FunctionLibrary {
   const std::vector<CelfnDecl>& decls() const {
     return decls_;
   }
-  const std::vector<std::string>& foreign_aliases() const {
-    return foreign_aliases_;
-  }
 
   class Builder {
    public:
@@ -161,21 +156,15 @@ class FunctionLibrary {
     Builder& AddHost(absl::string_view fn_name, CelfnType return_type,
                      std::vector<CelfnParam> params);
 
-    // Add a foreign-wasm-backed declaration.  `alias` is the wasm
-    // import-module name; the embedder supplies the instance at
-    // Plan time via RuntimeBindings::AddModule(alias, …).
-    Builder& AddForeign(absl::string_view alias, absl::string_view fn_name,
-                        CelfnType return_type, std::vector<CelfnParam> params);
-
     // Add a Component-Model-backed foreign declaration.  Dispatch is via
     // the `cel_fn` host-callback path (same as kHost — see m24 §2);
     // marshaling is per-fn typed WIT + a generated codec (m24 §4–§7).
     // The embedder supplies the component bytes at Plan time via
     // `Engine::AddComponent(component_bytes, lib)`.
     //
-    // Unlike `AddForeign`, this admits `proto(...)` arguments and
-    // returns — they cross as serialized bytes (m24 §8).  It also admits
-    // `type` and `optional<T>` per m24 §6.
+    // Admits `proto(...)` arguments and returns — they cross as
+    // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
+    // m24 §6.
     Builder& AddForeignComponent(absl::string_view fn_name,
                                  CelfnType return_type,
                                  std::vector<CelfnParam> params);
@@ -188,16 +177,13 @@ class FunctionLibrary {
                            std::vector<CelfnParam> params,
                            absl::string_view body);
 
-    // Validate + finalise.  Validations applied (see §3.3 + §4.5.1
-    // of m13-custom-fns.md):
+    // Validate + finalise.  Validations applied:
     //
     //   - `Module` set iff any kCelDefined decl present.
     //   - No two decls share an overload-id.
-    //   - Foreign alias does not collide with `Module` directive.
-    //   - `host` not used as a foreign alias.
     //   - `this` modifier only on the first param.
-    //   - No foreign decl mentions `proto(...)` (v1 cross-foreign-
-    //     boundary constraint).
+    //   - kForeignComponent decls reject `optional<T>` / `type`
+    //     return + parameter shapes (m24 §6).
     //
     // Returns InvalidArgument on validation failure with the
     // offending decl identified in the message.
@@ -206,13 +192,11 @@ class FunctionLibrary {
    private:
     std::string module_name_;
     std::vector<CelfnDecl> decls_;
-    std::vector<std::string> foreign_aliases_;
   };
 
  private:
   std::string module_name_;
   std::vector<CelfnDecl> decls_;
-  std::vector<std::string> foreign_aliases_;
 };
 
 // Parse a `.celfn` source string into a FunctionLibrary.  Used by

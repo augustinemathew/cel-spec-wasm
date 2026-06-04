@@ -25,7 +25,6 @@ TEST(FunctionLibrary, EmptyFileProducesEmptyResult) {
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->module_name(), "");
   EXPECT_EQ(r->decls().size(), 0u);
-  EXPECT_EQ(r->foreign_aliases().size(), 0u);
 }
 
 TEST(FunctionLibrary, ExtractsHostDecl) {
@@ -46,18 +45,19 @@ TEST(FunctionLibrary, ExtractsHostDecl) {
   EXPECT_TRUE(d.params[0].is_receiver);
 }
 
-TEST(FunctionLibrary, ExtractsForeignDecl) {
-  auto r = ParseCelfnSource("bool rules.allow(this string user, string r);");
+TEST(FunctionLibrary, ExtractsComponentDecl) {
+  auto r =
+      ParseCelfnSource("bool @component.allow(this string user, string r);");
   ASSERT_TRUE(r.ok()) << r.status();
   ASSERT_EQ(r->decls().size(), 1u);
   const auto& d = r->decls()[0];
-  EXPECT_EQ(d.backend, CelfnDecl::Backend::kForeign);
+  EXPECT_EQ(d.backend, CelfnDecl::Backend::kForeignComponent);
   EXPECT_EQ(d.fn_name, "allow");
-  EXPECT_EQ(d.module_name, "rules");
+  // Component-backed decls share the kHost dispatch path (m24 §2):
+  // wasm `(import "cel_fn" "<helper>" …)`, NOT a per-alias module.
+  EXPECT_EQ(d.module_name, "cel_fn");
   EXPECT_EQ(d.overload_id, "allow_string_string");
   EXPECT_EQ(d.num_args, 3u);  // out + 2 args
-  ASSERT_EQ(r->foreign_aliases().size(), 1u);
-  EXPECT_EQ(r->foreign_aliases()[0], "rules");
 }
 
 TEST(FunctionLibrary, ExtractsCelDefinedFn) {
@@ -73,17 +73,6 @@ TEST(FunctionLibrary, ExtractsCelDefinedFn) {
   EXPECT_EQ(d.module_name, "foo");
   EXPECT_EQ(d.overload_id, "is_number_string");
   EXPECT_THAT(d.body, HasSubstr("s.matches"));
-}
-
-TEST(FunctionLibrary, MultipleForeignAliasesPreservedInFirstUseOrder) {
-  auto r = ParseCelfnSource(
-      "bool rules.allow(string r);"
-      "int policy.score(string u);"
-      "bool rules.deny(string r);");
-  ASSERT_TRUE(r.ok()) << r.status();
-  ASSERT_EQ(r->foreign_aliases().size(), 2u);
-  EXPECT_EQ(r->foreign_aliases()[0], "rules");
-  EXPECT_EQ(r->foreign_aliases()[1], "policy");
 }
 
 TEST(FunctionLibrary, SynthesisesOverloadIdsForAllTypes) {
@@ -106,27 +95,7 @@ TEST(FunctionLibrary, SynthesisesOverloadIdsForAllTypes) {
   EXPECT_EQ(r->decls()[6].overload_id, "f7_message_acme_User");
 }
 
-// ─── §4.5.1 v1 cross-foreign-boundary constraint ───────────────────
-
-TEST(FunctionLibrary, RejectsForeignDeclWithProtoArg) {
-  auto r = ParseCelfnSource("bool rules.is_admin(proto(acme.User) u);");
-  ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("foreign-backed"));
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
-}
-
-TEST(FunctionLibrary, RejectsForeignDeclWithProtoReturn) {
-  auto r = ParseCelfnSource("proto(acme.User) rules.fetch(string id);");
-  ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
-}
-
-TEST(FunctionLibrary, RejectsForeignDeclWithProtoInList) {
-  auto r =
-      ParseCelfnSource("bool rules.any_admin(list<proto(acme.User)> users);");
-  ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("proto"));
-}
+// ─── proto handling across backends ─────────────────────────────────
 
 TEST(FunctionLibrary, HostDeclAllowedToCarryProtos) {
   // The constraint applies to FOREIGN decls only.  Host trampolines
@@ -155,14 +124,6 @@ TEST(FunctionLibrary, RejectsBareHostDecl) {
   ASSERT_FALSE(r.ok());
   EXPECT_THAT(std::string(r.status().message()), HasSubstr("reserved alias"));
   EXPECT_THAT(std::string(r.status().message()), HasSubstr("@host."));
-}
-
-TEST(FunctionLibrary, RejectsModuleDirectiveCollidingWithForeignAlias) {
-  auto r = ParseCelfnSource(
-      "Module rules;\n"
-      "bool rules.allow(string r);");
-  ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("collides"));
 }
 
 TEST(FunctionLibrary, RejectsCelDefinedFnWithoutModuleDirective) {
@@ -209,18 +170,18 @@ TEST(FunctionLibraryBuilder, ProgrammaticHostDecl) {
   EXPECT_TRUE(d.is_receiver);
 }
 
-TEST(FunctionLibraryBuilder, ProgrammaticForeignDecl) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeign("rules", "allow", Prim(CelfnType::Kind::kBool),
-                                {{true, Prim(CelfnType::Kind::kString), "u"},
-                                 {false, Prim(CelfnType::Kind::kString), "r"}})
-                    .Build();
+TEST(FunctionLibraryBuilder, ProgrammaticComponentDecl) {
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeignComponent("allow", Prim(CelfnType::Kind::kBool),
+                               {{true, Prim(CelfnType::Kind::kString), "u"},
+                                {false, Prim(CelfnType::Kind::kString), "r"}})
+          .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
   ASSERT_EQ(lib_or->decls().size(), 1u);
+  EXPECT_EQ(lib_or->decls()[0].backend, CelfnDecl::Backend::kForeignComponent);
   EXPECT_EQ(lib_or->decls()[0].overload_id, "allow_string_string");
-  EXPECT_EQ(lib_or->decls()[0].module_name, "rules");
-  ASSERT_EQ(lib_or->foreign_aliases().size(), 1u);
-  EXPECT_EQ(lib_or->foreign_aliases()[0], "rules");
+  EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedNeedsModuleName) {
@@ -249,19 +210,6 @@ TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedWithModuleName) {
   EXPECT_EQ(lib_or->decls()[0].overload_id, "isNum_string");
   EXPECT_EQ(lib_or->decls()[0].module_name, "foo");
   EXPECT_EQ(lib_or->decls()[0].body, "s.matches(\"a\")");
-}
-
-TEST(FunctionLibraryBuilder, ProgrammaticForeignWithProtoIsRejected) {
-  CelfnType proto_user;
-  proto_user.kind = CelfnType::Kind::kProto;
-  proto_user.proto_fqn = "acme.User";
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddForeign("rules", "is_admin", Prim(CelfnType::Kind::kBool),
-                      {{false, proto_user, "u"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("proto"));
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticDuplicateOverloadIdIsRejected) {
@@ -646,7 +594,6 @@ TEST(FunctionLibraryBuilder, AcceptsLegalMapKeyKinds) {
 
 TEST(FunctionLibraryBuilder, ForeignComponentProtoAdmitted) {
   // m24 §8: kForeignComponent admits proto(...) (crosses as bytes).
-  // Counterpart to RejectsForeignDeclWithProtoArg for kForeign.
   CelfnType proto_user;
   proto_user.kind = CelfnType::Kind::kProto;
   proto_user.proto_fqn = "acme.User";
@@ -659,8 +606,7 @@ TEST(FunctionLibraryBuilder, ForeignComponentProtoAdmitted) {
 }
 
 TEST(FunctionLibrary, AcceptsFullFileShape) {
-  // Mirrors the canonical example from §3.4 of the design doc,
-  // adjusted for the v1 cross-foreign-boundary constraint.
+  // Mirrors the canonical example from §3.4 of the design doc.
   const std::string source = R"(
 Module foo;
 
@@ -671,17 +617,14 @@ string @host.upper(this string s);
 bool @host.is_admin(proto(acme.User) user);
 proto(acme.User) @host.lookup_user(string user_id);
 
-bool rules.allow(this string user_id, string resource);
-bool rules.deny(this string user_id, string resource);
-int  policy.score(this string user_id);
+bool @component.allow(this string user_id, string resource);
+bool @component.deny(this string user_id, string resource);
+int  @component.score(this string user_id);
 )";
   auto r = ParseCelfnSource(source);
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->module_name(), "foo");
   EXPECT_EQ(r->decls().size(), 8u);
-  ASSERT_EQ(r->foreign_aliases().size(), 2u);
-  EXPECT_EQ(r->foreign_aliases()[0], "rules");
-  EXPECT_EQ(r->foreign_aliases()[1], "policy");
 }
 
 }  // namespace

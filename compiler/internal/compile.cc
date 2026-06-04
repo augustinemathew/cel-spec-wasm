@@ -410,10 +410,10 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 //                             (Component-Model backend dispatched
 //                             via a host callback — m24 §2-§3
 //                             "a component fn is a host fn at the
-//                             call site"); per-alias `kUserModule`
-//                             for `kForeign` + `kCelDefined`.
-//   - `module_name`         = the user alias for kUserModule (empty
-//                             for kCelFn — OverloadTable hardcodes
+//                             call site"); per-module `kUserModule`
+//                             for `kCelDefined`.
+//   - `module_name`         = the per-decl module string for kUserModule
+//                             (empty for kCelFn — OverloadTable hardcodes
 //                             the import-module string for kCelFn).
 //   - `helper_name`         = same as `overload_id` (one wasm
 //     import per decl; the IDL guarantees uniqueness).

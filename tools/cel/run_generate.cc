@@ -25,8 +25,7 @@ namespace {
 absl::StatusOr<std::string> ReadFile(const std::string& path) {
   std::ifstream in(path);
   if (!in) {
-    return absl::NotFoundError(
-        absl::StrCat("cannot open --idl file: ", path));
+    return absl::NotFoundError(absl::StrCat("cannot open --idl file: ", path));
   }
   return std::string((std::istreambuf_iterator<char>(in)),
                      std::istreambuf_iterator<char>());
@@ -69,8 +68,7 @@ absl::Status RunCppPath(const GenerateOptions& opts,
   fs::create_directories(opts.out_dir);
   if (auto s = WriteFile(opts.out_dir + "/fns.wit", *wit); !s.ok()) return s;
   if (auto s = WriteFile(opts.out_dir + "/codec.h", *codec); !s.ok()) return s;
-  if (auto s = WriteFile(opts.out_dir + "/generated_stub.cc", *stub);
-      !s.ok()) {
+  if (auto s = WriteFile(opts.out_dir + "/generated_stub.cc", *stub); !s.ok()) {
     return s;
   }
   if (auto s = WriteFile(opts.out_dir + "/user_fns.h", *skel); !s.ok()) {

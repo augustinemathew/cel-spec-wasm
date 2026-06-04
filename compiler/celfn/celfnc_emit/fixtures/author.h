@@ -93,8 +93,8 @@ typedef struct exports_cel_customfn_fns_timestamp_t {
 
 // Canonical-ABI allocator.  Real wit-bindgen emits this as a __weak
 // export linked against `realloc`; the stub mirrors that.
-static inline void* cabi_realloc(void* ptr, size_t /*old_size*/,
-                                 size_t align, size_t new_size) {
+static inline void* cabi_realloc(void* ptr, size_t /*old_size*/, size_t align,
+                                 size_t new_size) {
   (void)align;
   if (new_size == 0) return ptr;
   void* r = realloc(ptr, new_size);
@@ -106,10 +106,10 @@ static inline void* cabi_realloc(void* ptr, size_t /*old_size*/,
 static inline void author_string_dup_n(author_string_t* ret, const char* s,
                                        size_t len) {
   ret->len = len;
-  ret->ptr =
-      (uint8_t*)cabi_realloc(NULL, 0, 1, len);  // NOLINT(*-no-malloc)
+  ret->ptr = (uint8_t*)cabi_realloc(NULL, 0, 1, len);  // NOLINT(*-no-malloc)
   if (len > 0) {
-    for (size_t i = 0; i < len; ++i) ret->ptr[i] = (uint8_t)s[i];
+    for (size_t i = 0; i < len; ++i)
+      ret->ptr[i] = (uint8_t)s[i];
   }
 }
 

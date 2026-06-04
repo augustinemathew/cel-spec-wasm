@@ -55,10 +55,10 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, std::move(ret),
-                                         std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
+          .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -99,8 +99,8 @@ TEST(EmitStubCc, EmitsStandardIncludes) {
 TEST(EmitStubCc, EmitsExtraIncludesBeforeCodecH) {
   auto lib_or = FunctionLibrary::Builder().Build();
   ASSERT_THAT(lib_or, IsOk());
-  auto t = EmitStubCc(*lib_or, kMod, kPkg,
-                      {"acme/user.pb.h", "shared/types.h"});
+  auto t =
+      EmitStubCc(*lib_or, kMod, kPkg, {"acme/user.pb.h", "shared/types.h"});
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("#include \"acme/user.pb.h\""));
   EXPECT_THAT(*t, HasSubstr("#include \"shared/types.h\""));
@@ -148,9 +148,8 @@ TEST(EmitStubCc, StringReturnUsesOutParam) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("void exports_cel_customfn_fns_greet_string("
-                        "author_string_t* name, author_string_t* ret)"));
+  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_greet_string("
+                            "author_string_t* name, author_string_t* ret)"));
   EXPECT_THAT(*t, HasSubstr("rules::codec::lower(ret, rules::Greet("
                             "rules::codec::lift(*name)));"));
 }
@@ -161,9 +160,8 @@ TEST(EmitStubCc, StringArgScalarReturnLiftsButNoLower) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("int64_t exports_cel_customfn_fns_len_string("
-                        "author_string_t* s)"));
+  EXPECT_THAT(*t, HasSubstr("int64_t exports_cel_customfn_fns_len_string("
+                            "author_string_t* s)"));
   EXPECT_THAT(*t, HasSubstr("return rules::Len(rules::codec::lift(*s));"));
 }
 
@@ -182,9 +180,9 @@ TEST(EmitStubCc, BytesArgScalarReturn) {
 // ── List args / returns ────────────────────────────────────────────
 
 TEST(EmitStubCc, ListIntArgScalarReturn) {
-  auto lib = OneFn(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib =
+      OneFn("sum", Prim(CelfnType::Kind::kInt),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("author_list_s64_t* xs"));
@@ -196,9 +194,8 @@ TEST(EmitStubCc, ListStringReturn) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("void exports_cel_customfn_fns_words_string("
-                        "author_string_t* s, author_list_string_t* ret)"));
+  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_words_string("
+                            "author_string_t* s, author_list_string_t* ret)"));
 }
 
 // ── Duration / Timestamp ──────────────────────────────────────────
@@ -215,20 +212,18 @@ TEST(EmitStubCc, TimestampReturnUsesExportsPrefixType) {
   auto lib = OneFn("now", Prim(CelfnType::Kind::kTimestamp), {});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("void exports_cel_customfn_fns_now("
-                        "exports_cel_customfn_fns_timestamp_t* ret)"));
+  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_now("
+                            "exports_cel_customfn_fns_timestamp_t* ret)"));
 }
 
 // ── Map args ──────────────────────────────────────────────────────
 
 TEST(EmitStubCc, MapStringIntArgScalarReturn) {
-  auto lib = OneFn(
-      "lookup", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false,
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  "m"}});
+  auto lib = OneFn("lookup", Prim(CelfnType::Kind::kInt),
+                   {CelfnParam{false,
+                               MapOf(Prim(CelfnType::Kind::kString),
+                                     Prim(CelfnType::Kind::kInt)),
+                               "m"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("author_list_tuple2_string_s64_t* m"));
@@ -252,9 +247,8 @@ TEST(EmitStubCc, ProtoReturnUsesLowerProtoTemplate) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kInt), "id"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("void exports_cel_customfn_fns_fetch_int("
-                        "int64_t id, author_list_u8_t* ret)"));
+  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_fetch_int("
+                            "int64_t id, author_list_u8_t* ret)"));
   EXPECT_THAT(*t, HasSubstr("rules::codec::lower_proto<acme::User>(ret, "
                             "rules::Fetch(id));"));
 }
@@ -283,9 +277,9 @@ TEST(EmitStubCc, MultipleDeclsEmitMultipleExports) {
 // ── Output stability ─────────────────────────────────────────────
 
 TEST(EmitStubCc, ByteForByteDeterministic) {
-  auto lib = OneFn(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib =
+      OneFn("sum", Prim(CelfnType::Kind::kInt),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
   auto a = EmitStubCc(lib, kMod, kPkg, {});
   auto b = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(a, IsOk());

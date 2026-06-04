@@ -3,11 +3,11 @@
 #include <cstring>
 #include <string>
 
+#include <vector>
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include <vector>
 
 #include "compiler/celfn/function_library.h"
 #include "eval/internal/cel_host.h"
@@ -30,20 +30,34 @@ namespace {
 // kind.
 absl::string_view CelfnKindName(CelfnType::Kind k) {
   switch (k) {
-    case CelfnType::Kind::kBool:      return "bool";
-    case CelfnType::Kind::kInt:       return "int";
-    case CelfnType::Kind::kUint:      return "uint";
-    case CelfnType::Kind::kDouble:    return "double";
-    case CelfnType::Kind::kString:    return "string";
-    case CelfnType::Kind::kBytes:     return "bytes";
-    case CelfnType::Kind::kNull:      return "null";
-    case CelfnType::Kind::kDuration:  return "duration";
-    case CelfnType::Kind::kTimestamp: return "timestamp";
-    case CelfnType::Kind::kList:      return "list";
-    case CelfnType::Kind::kMap:       return "map";
-    case CelfnType::Kind::kProto:     return "proto";
-    case CelfnType::Kind::kType:      return "type";
-    case CelfnType::Kind::kOptional:  return "optional";
+    case CelfnType::Kind::kBool:
+      return "bool";
+    case CelfnType::Kind::kInt:
+      return "int";
+    case CelfnType::Kind::kUint:
+      return "uint";
+    case CelfnType::Kind::kDouble:
+      return "double";
+    case CelfnType::Kind::kString:
+      return "string";
+    case CelfnType::Kind::kBytes:
+      return "bytes";
+    case CelfnType::Kind::kNull:
+      return "null";
+    case CelfnType::Kind::kDuration:
+      return "duration";
+    case CelfnType::Kind::kTimestamp:
+      return "timestamp";
+    case CelfnType::Kind::kList:
+      return "list";
+    case CelfnType::Kind::kMap:
+      return "map";
+    case CelfnType::Kind::kProto:
+      return "proto";
+    case CelfnType::Kind::kType:
+      return "type";
+    case CelfnType::Kind::kOptional:
+      return "optional";
   }
   return "unknown";
 }
@@ -56,10 +70,10 @@ absl::Status CelfnVsValueMismatch(const CelfnType& type, const Value& value) {
 
 absl::Status WasmtimeKindMismatch(const CelfnType& type, uint8_t actual_kind,
                                   absl::string_view expected_kind_name) {
-  return absl::InvalidArgumentError(absl::StrCat(
-      "cel_component: Lower expected wasmtime val of kind `", expected_kind_name,
-      "` (for CEL `", CelfnKindName(type.kind), "`), got valkind=",
-      static_cast<int>(actual_kind)));
+  return absl::InvalidArgumentError(
+      absl::StrCat("cel_component: Lower expected wasmtime val of kind `",
+                   expected_kind_name, "` (for CEL `", CelfnKindName(type.kind),
+                   "`), got valkind=", static_cast<int>(actual_kind)));
 }
 
 // ── Lift arms ───────────────────────────────────────────────────────
@@ -210,8 +224,8 @@ absl::Status LowerBool(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerInt(const CelfnType& type,
-                      const wasmtime_component_val_t& in, Value* out) {
+absl::Status LowerInt(const CelfnType& type, const wasmtime_component_val_t& in,
+                      Value* out) {
   if (in.kind != WASMTIME_COMPONENT_S64) {
     return WasmtimeKindMismatch(type, in.kind, "s64");
   }
@@ -259,8 +273,7 @@ absl::Status LowerString(const CelfnType& type,
   // is decoupled from any subsequent wasmtime_component_val_delete.
   // Empty strings: size==0; data may be null after a none-style ctor
   // but we read it through string(ptr,len) which tolerates len==0.
-  *out = Value::String(
-      std::string(in.of.string.data, in.of.string.size));
+  *out = Value::String(std::string(in.of.string.data, in.of.string.size));
   return absl::OkStatus();
 }
 
@@ -275,14 +288,13 @@ absl::Status DecodeSecondsNanosRecord(const wasmtime_component_val_t& in,
   if (in.kind != WASMTIME_COMPONENT_RECORD) {
     return absl::InvalidArgumentError(absl::StrCat(
         "cel_component: Lower for `", ctx_kind,
-        "` expected wasmtime record, got valkind=",
-        static_cast<int>(in.kind)));
+        "` expected wasmtime record, got valkind=", static_cast<int>(in.kind)));
   }
   if (in.of.record.size != 2) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_component: Lower for `", ctx_kind,
-        "` expected record with 2 fields {seconds, nanos}, got ",
-        in.of.record.size));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_component: Lower for `", ctx_kind,
+                     "` expected record with 2 fields {seconds, nanos}, got ",
+                     in.of.record.size));
   }
   bool got_seconds = false;
   bool got_nanos = false;
@@ -291,32 +303,32 @@ absl::Status DecodeSecondsNanosRecord(const wasmtime_component_val_t& in,
     const absl::string_view name(entry.name.data, entry.name.size);
     if (name == "seconds") {
       if (entry.val.kind != WASMTIME_COMPONENT_S64) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "cel_component: Lower for `", ctx_kind,
-            "` expected seconds:s64, got valkind=",
-            static_cast<int>(entry.val.kind)));
+        return absl::InvalidArgumentError(
+            absl::StrCat("cel_component: Lower for `", ctx_kind,
+                         "` expected seconds:s64, got valkind=",
+                         static_cast<int>(entry.val.kind)));
       }
       *out_seconds = entry.val.of.s64;
       got_seconds = true;
     } else if (name == "nanos") {
       if (entry.val.kind != WASMTIME_COMPONENT_S32) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "cel_component: Lower for `", ctx_kind,
-            "` expected nanos:s32, got valkind=",
-            static_cast<int>(entry.val.kind)));
+        return absl::InvalidArgumentError(
+            absl::StrCat("cel_component: Lower for `", ctx_kind,
+                         "` expected nanos:s32, got valkind=",
+                         static_cast<int>(entry.val.kind)));
       }
       *out_nanos = entry.val.of.s32;
       got_nanos = true;
     } else {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "cel_component: Lower for `", ctx_kind,
-          "` saw unexpected record field `", name, "`"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("cel_component: Lower for `", ctx_kind,
+                       "` saw unexpected record field `", name, "`"));
     }
   }
   if (!got_seconds || !got_nanos) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_component: Lower for `", ctx_kind,
-        "` record missing `seconds` or `nanos`"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_component: Lower for `", ctx_kind,
+                     "` record missing `seconds` or `nanos`"));
   }
   return absl::OkStatus();
 }
@@ -397,18 +409,17 @@ absl::Status LiftList(const CelfnType& type, const Value& v,
   for (size_t i = 0; i < n; ++i) {
     auto elem = backing->At(i, placeholder_type);
     if (!elem.ok()) {
-      loop_status = absl::Status(
-          elem.status().code(),
-          absl::StrCat("cel_component: list element ", i, ": ",
-                       elem.status().message()));
+      loop_status = absl::Status(elem.status().code(),
+                                 absl::StrCat("cel_component: list element ", i,
+                                              ": ", elem.status().message()));
       break;
     }
-    if (auto s = LiftCelToComponent(elem_type, *elem, ctx,
-                                    &out->of.list.data[i]);
+    if (auto s =
+            LiftCelToComponent(elem_type, *elem, ctx, &out->of.list.data[i]);
         !s.ok()) {
-      loop_status = absl::Status(s.code(),
-                                 absl::StrCat("cel_component: list element ",
-                                              i, ": ", s.message()));
+      loop_status = absl::Status(
+          s.code(),
+          absl::StrCat("cel_component: list element ", i, ": ", s.message()));
       break;
     }
   }
@@ -478,16 +489,14 @@ absl::Status LiftMap(const CelfnType& type, const Value& v,
     slot->of.tuple.data[1].of.boolean = false;
     if (auto s = LiftCelToComponent(key_type, k, ctx, &slot->of.tuple.data[0]);
         !s.ok()) {
-      err = absl::Status(s.code(),
-                         absl::StrCat("cel_component: map entry ", idx,
-                                      " key: ", s.message()));
+      err = absl::Status(s.code(), absl::StrCat("cel_component: map entry ",
+                                                idx, " key: ", s.message()));
       return;
     }
     if (auto s = LiftCelToComponent(val_type, vv, ctx, &slot->of.tuple.data[1]);
         !s.ok()) {
-      err = absl::Status(s.code(),
-                         absl::StrCat("cel_component: map entry ", idx,
-                                      " value: ", s.message()));
+      err = absl::Status(s.code(), absl::StrCat("cel_component: map entry ",
+                                                idx, " value: ", s.message()));
       return;
     }
     ++idx;
@@ -495,8 +504,7 @@ absl::Status LiftMap(const CelfnType& type, const Value& v,
   return err;
 }
 
-absl::Status LowerMap(const CelfnType& type,
-                      const wasmtime_component_val_t& in,
+absl::Status LowerMap(const CelfnType& type, const wasmtime_component_val_t& in,
                       const CelComponentContext& ctx, Value* out) {
   if (type.map_kv.size() != 2) {
     return absl::InvalidArgumentError(
@@ -522,22 +530,20 @@ absl::Status LowerMap(const CelfnType& type,
           " is not a tuple (valkind=", static_cast<int>(elem.kind), ")"));
     }
     if (elem.of.tuple.size != 2) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "cel_component: map entry ", i, " tuple has arity ",
-          elem.of.tuple.size, ", expected 2"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("cel_component: map entry ", i, " tuple has arity ",
+                       elem.of.tuple.size, ", expected 2"));
     }
     Value k, vv;
     if (auto s = LowerComponentToCel(key_type, elem.of.tuple.data[0], ctx, &k);
         !s.ok()) {
-      return absl::Status(s.code(),
-                          absl::StrCat("cel_component: map entry ", i,
-                                       " key: ", s.message()));
+      return absl::Status(s.code(), absl::StrCat("cel_component: map entry ", i,
+                                                 " key: ", s.message()));
     }
     if (auto s = LowerComponentToCel(val_type, elem.of.tuple.data[1], ctx, &vv);
         !s.ok()) {
-      return absl::Status(s.code(),
-                          absl::StrCat("cel_component: map entry ", i,
-                                       " value: ", s.message()));
+      return absl::Status(s.code(), absl::StrCat("cel_component: map entry ", i,
+                                                 " value: ", s.message()));
     }
     entries.emplace_back(std::move(k), std::move(vv));
   }
@@ -553,9 +559,8 @@ absl::Status LowerMap(const CelfnType& type,
 // MessageFactory, then ParseFromString.
 //
 // This is the m24 §8 escape hatch — proto messages can't cross as
-// externrefs the way m13 §4.5.1 wants for kForeign, but the bytes
-// _can_ cross, and the codec on the component side decodes them with
-// the proto runtime.
+// externrefs, but the bytes _can_ cross, and the codec on the
+// component side decodes them with the proto runtime.
 
 absl::Status LiftProto(const CelfnType& type, const Value& v,
                        wasmtime_component_val_t* out) {
@@ -566,10 +571,10 @@ absl::Status LiftProto(const CelfnType& type, const Value& v,
   if (!backing_or.ok()) return backing_or.status();
   const google::protobuf::Message* msg = (*backing_or)->message();
   if (msg == nullptr) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_component: Lift for proto(", type.proto_fqn,
-        ") cannot serialise a non-proto-backed message (custom "
-        "HostMessageBacking returned message()==nullptr)"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_component: Lift for proto(", type.proto_fqn,
+                     ") cannot serialise a non-proto-backed message (custom "
+                     "HostMessageBacking returned message()==nullptr)"));
   }
   // SerializePartialToString admits messages with unset required
   // fields — matches cel-cpp's tolerance.  The full-form
@@ -577,9 +582,9 @@ absl::Status LiftProto(const CelfnType& type, const Value& v,
   // CEL semantics don't promise.
   std::string bytes;
   if (!msg->SerializePartialToString(&bytes)) {
-    return absl::InternalError(absl::StrCat(
-        "cel_component: SerializePartialToString failed for `",
-        type.proto_fqn, "`"));
+    return absl::InternalError(
+        absl::StrCat("cel_component: SerializePartialToString failed for `",
+                     type.proto_fqn, "`"));
   }
   out->kind = WASMTIME_COMPONENT_LIST;
   wasmtime_component_vallist_new_uninit(&out->of.list, bytes.size());
@@ -604,17 +609,18 @@ absl::Status LowerProto(const CelfnType& type,
   const google::protobuf::Descriptor* desc =
       ctx.pool->FindMessageTypeByName(type.proto_fqn);
   if (desc == nullptr) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_component: proto type `", type.proto_fqn,
-        "` not found in descriptor pool"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_component: proto type `", type.proto_fqn,
+                     "` not found in descriptor pool"));
   }
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
   if (prototype == nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "cel_component: generated_factory has no prototype for `",
-        type.proto_fqn, "` (descriptor not registered with the generated "
-        "pool — link the cc_proto_library into the test binary)"));
+    return absl::InternalError(
+        absl::StrCat("cel_component: generated_factory has no prototype for `",
+                     type.proto_fqn,
+                     "` (descriptor not registered with the generated "
+                     "pool — link the cc_proto_library into the test binary)"));
   }
   // Collect bytes from the list<u8>.
   std::string bytes;
@@ -622,18 +628,18 @@ absl::Status LowerProto(const CelfnType& type,
   for (size_t i = 0; i < in.of.list.size; ++i) {
     const auto& el = in.of.list.data[i];
     if (el.kind != WASMTIME_COMPONENT_U8) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "cel_component: Lower for proto(", type.proto_fqn,
-          ") saw non-u8 element at index ", i,
-          " (valkind=", static_cast<int>(el.kind), ")"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("cel_component: Lower for proto(", type.proto_fqn,
+                       ") saw non-u8 element at index ", i,
+                       " (valkind=", static_cast<int>(el.kind), ")"));
     }
     bytes.push_back(static_cast<char>(el.of.u8));
   }
   std::unique_ptr<google::protobuf::Message> msg(prototype->New());
   if (!msg->ParseFromString(bytes)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_component: failed to parse proto(", type.proto_fqn,
-        ") from ", bytes.size(), " bytes"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_component: failed to parse proto(", type.proto_fqn,
+                     ") from ", bytes.size(), " bytes"));
   }
   *out = Value::OwnedMessage(std::move(msg));
   return absl::OkStatus();
@@ -656,9 +662,8 @@ absl::Status LowerList(const CelfnType& type,
     Value e;
     if (auto s = LowerComponentToCel(elem_type, in.of.list.data[i], ctx, &e);
         !s.ok()) {
-      return absl::Status(s.code(),
-                          absl::StrCat("cel_component: list element ", i,
-                                       ": ", s.message()));
+      return absl::Status(s.code(), absl::StrCat("cel_component: list element ",
+                                                 i, ": ", s.message()));
     }
     elems.push_back(std::move(e));
   }
@@ -738,8 +743,10 @@ absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
         return CelfnVsValueMismatch(type, value);
       }
       return LiftTimestamp(value, out);
-    case CelfnType::Kind::kList: return LiftList(type, value, ctx, out);
-    case CelfnType::Kind::kMap: return LiftMap(type, value, ctx, out);
+    case CelfnType::Kind::kList:
+      return LiftList(type, value, ctx, out);
+    case CelfnType::Kind::kMap:
+      return LiftMap(type, value, ctx, out);
     case CelfnType::Kind::kOptional:
       // Dropped from v1 (user direction 2026-06-03): foreign-component
       // fns may not declare `optional<T>` arg / return shapes.  The
@@ -749,7 +756,8 @@ absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
       return absl::InvalidArgumentError(
           "cel_component: optional<T> is not a supported argument or "
           "return shape for foreign-component fns (m24 v1)");
-    case CelfnType::Kind::kProto: return LiftProto(type, value, out);
+    case CelfnType::Kind::kProto:
+      return LiftProto(type, value, out);
     case CelfnType::Kind::kType:
       if (value.kind() != Value::Kind::kType) {
         return CelfnVsValueMismatch(type, value);
@@ -774,25 +782,36 @@ absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
 
 absl::Status LowerComponentToCel(const CelfnType& type,
                                  const wasmtime_component_val_t& in,
-                                 const CelComponentContext& ctx,
-                                 Value* out) {
+                                 const CelComponentContext& ctx, Value* out) {
   switch (type.kind) {
-    case CelfnType::Kind::kBool:      return LowerBool(type, in, out);
-    case CelfnType::Kind::kInt:       return LowerInt(type, in, out);
-    case CelfnType::Kind::kUint:      return LowerUint(type, in, out);
-    case CelfnType::Kind::kDouble:    return LowerDouble(type, in, out);
-    case CelfnType::Kind::kNull:      return LowerNull(type, in, out);
-    case CelfnType::Kind::kString: return LowerString(type, in, out);
-    case CelfnType::Kind::kBytes:  return LowerBytes(type, in, out);
-    case CelfnType::Kind::kDuration:  return LowerDuration(type, in, out);
-    case CelfnType::Kind::kTimestamp: return LowerTimestamp(type, in, out);
-    case CelfnType::Kind::kList: return LowerList(type, in, ctx, out);
-    case CelfnType::Kind::kMap: return LowerMap(type, in, ctx, out);
+    case CelfnType::Kind::kBool:
+      return LowerBool(type, in, out);
+    case CelfnType::Kind::kInt:
+      return LowerInt(type, in, out);
+    case CelfnType::Kind::kUint:
+      return LowerUint(type, in, out);
+    case CelfnType::Kind::kDouble:
+      return LowerDouble(type, in, out);
+    case CelfnType::Kind::kNull:
+      return LowerNull(type, in, out);
+    case CelfnType::Kind::kString:
+      return LowerString(type, in, out);
+    case CelfnType::Kind::kBytes:
+      return LowerBytes(type, in, out);
+    case CelfnType::Kind::kDuration:
+      return LowerDuration(type, in, out);
+    case CelfnType::Kind::kTimestamp:
+      return LowerTimestamp(type, in, out);
+    case CelfnType::Kind::kList:
+      return LowerList(type, in, ctx, out);
+    case CelfnType::Kind::kMap:
+      return LowerMap(type, in, ctx, out);
     case CelfnType::Kind::kOptional:
       return absl::InvalidArgumentError(
           "cel_component: optional<T> is not a supported return shape "
           "for foreign-component fns (m24 v1)");
-    case CelfnType::Kind::kProto: return LowerProto(type, in, ctx, out);
+    case CelfnType::Kind::kProto:
+      return LowerProto(type, in, ctx, out);
     case CelfnType::Kind::kType:
       return absl::UnimplementedError(
           "cel_component: Lower for type-of-types is a stub until "

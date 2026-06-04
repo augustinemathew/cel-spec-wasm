@@ -128,7 +128,7 @@ bool MentionsType(const CelfnType& t) {
 // Source-driven decls hit this at the grammar layer
 // (ExtractType in this file's `mapType` arm, ~ line 322);
 // programmatically-built decls (AddHost / AddForeignComponent /
-// AddForeign with a constructed CelfnType) bypass the grammar and
+// AddForeignComponent with a constructed CelfnType) bypass the grammar and
 // would otherwise surface the error at first Eval (kForeignComponent
 // via Lift) or at codegen / runtime (kHost via the trampoline).
 // Catching it here names the offending decl at registration time.
@@ -241,28 +241,6 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddHost(
   return *this;
 }
 
-FunctionLibrary::Builder& FunctionLibrary::Builder::AddForeign(
-    absl::string_view alias, absl::string_view fn_name, CelfnType return_type,
-    std::vector<CelfnParam> params) {
-  CelfnDecl d{};
-  d.backend = CelfnDecl::Backend::kForeign;
-  d.fn_name = std::string(fn_name);
-  d.module_name = std::string(alias);
-  d.return_type = std::move(return_type);
-  d.params = std::move(params);
-  Finalise(d);
-  bool seen = false;
-  for (const auto& a : foreign_aliases_) {
-    if (a == alias) {
-      seen = true;
-      break;
-    }
-  }
-  if (!seen) foreign_aliases_.emplace_back(alias);
-  decls_.push_back(std::move(d));
-  return *this;
-}
-
 FunctionLibrary::Builder& FunctionLibrary::Builder::AddForeignComponent(
     absl::string_view fn_name, CelfnType return_type,
     std::vector<CelfnParam> params) {
@@ -313,28 +291,6 @@ absl::Status CheckUniversalDeclShape(const CelfnDecl& d) {
           "`", d.fn_name, "` parameter `", p.name, "` contains map<",
           MapKeyKindName(*bad),
           ", ...> — map keys must be bool|int|uint|string (langdef)"));
-    }
-  }
-  return absl::OkStatus();
-}
-
-// kForeign cross-foreign-boundary rule (m13 §4.5.1): proto on a
-// foreign-backed decl is rejected in v1.
-absl::Status CheckForeignDeclShape(const CelfnDecl& d) {
-  if (MentionsProto(d.return_type)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("foreign-backed `", d.module_name, ".", d.fn_name,
-                     "` has a proto(...) return type — proto messages may not "
-                     "cross the foreign-wasm boundary in v1; see §4.5.1 of "
-                     "m13-custom-fns.md"));
-  }
-  for (const auto& p : d.params) {
-    if (MentionsProto(p.type)) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("foreign-backed `", d.module_name, ".", d.fn_name,
-                       "` has a proto(...) parameter — proto messages may not "
-                       "cross the foreign-wasm boundary in v1; see §4.5.1 of "
-                       "m13-custom-fns.md"));
     }
   }
   return absl::OkStatus();
@@ -401,27 +357,14 @@ absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
                        "` already declared in this library"));
     }
     if (auto s = CheckUniversalDeclShape(d); !s.ok()) return s;
-    if (d.backend == CelfnDecl::Backend::kForeign) {
-      if (auto s = CheckForeignDeclShape(d); !s.ok()) return s;
-    }
     if (d.backend == CelfnDecl::Backend::kForeignComponent) {
       if (auto s = CheckForeignComponentDeclShape(d); !s.ok()) return s;
-    }
-  }
-
-  if (!module_name_.empty()) {
-    for (const auto& a : foreign_aliases_) {
-      if (a == module_name_) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "foreign alias `", a, "` collides with the library's module name"));
-      }
     }
   }
 
   FunctionLibrary lib;
   lib.module_name_ = std::move(module_name_);
   lib.decls_ = std::move(decls_);
-  lib.foreign_aliases_ = std::move(foreign_aliases_);
   return lib;
 }
 
@@ -587,20 +530,13 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
       auto ps = ExtractParams(host->params());
       if (!ps.ok()) return ps.status();
       b.AddHost(host->Identifier()->getText(), std::move(*rt), std::move(*ps));
-    } else if (auto* fgn = item->foreignFnDecl(); fgn != nullptr) {
-      const std::string alias = fgn->Identifier(0)->getText();
-      if (alias == "host") {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "`host` is a reserved alias; use `@host.",
-            fgn->Identifier(1)->getText(), "(…)` instead of `host.",
-            fgn->Identifier(1)->getText(), "(…)`"));
-      }
-      auto rt = ExtractType(fgn->type());
+    } else if (auto* comp = item->componentFnDecl(); comp != nullptr) {
+      auto rt = ExtractType(comp->type());
       if (!rt.ok()) return rt.status();
-      auto ps = ExtractParams(fgn->params());
+      auto ps = ExtractParams(comp->params());
       if (!ps.ok()) return ps.status();
-      b.AddForeign(alias, fgn->Identifier(1)->getText(), std::move(*rt),
-                   std::move(*ps));
+      b.AddForeignComponent(comp->Identifier()->getText(), std::move(*rt),
+                            std::move(*ps));
     } else if (auto* bare = item->bareHostDecl(); bare != nullptr) {
       return absl::InvalidArgumentError(
           absl::StrCat("`host` is a reserved alias; use `@host.",

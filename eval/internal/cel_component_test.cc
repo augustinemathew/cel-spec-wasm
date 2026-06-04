@@ -32,12 +32,12 @@
 #include "compiler/celfn/function_library.h"
 #include "eval/internal/cel_host.h"
 #include "eval/value.h"
+#include "gmock/gmock.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/message.h"
+#include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "wasmtime/component/val.h"
 
 namespace celwasm {
@@ -106,9 +106,15 @@ class OwnedComponentVal {
   }
   OwnedComponentVal(const OwnedComponentVal&) = delete;
   OwnedComponentVal& operator=(const OwnedComponentVal&) = delete;
-  ~OwnedComponentVal() { wasmtime_component_val_delete(&val_); }
-  wasmtime_component_val_t* get() { return &val_; }
-  const wasmtime_component_val_t& cref() const { return val_; }
+  ~OwnedComponentVal() {
+    wasmtime_component_val_delete(&val_);
+  }
+  wasmtime_component_val_t* get() {
+    return &val_;
+  }
+  const wasmtime_component_val_t& cref() const {
+    return val_;
+  }
 
  private:
   wasmtime_component_val_t val_;
@@ -141,8 +147,8 @@ TEST(LiftCelToComponent, BoolTrue) {
 
 TEST(LiftCelToComponent, BoolFromIntValueIsKindMismatch) {
   OwnedComponentVal out;
-  EXPECT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kBool),
-                                 Value::Int(1), EmptyCtx(), out.get()),
+  EXPECT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kBool), Value::Int(1),
+                                 EmptyCtx(), out.get()),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -151,9 +157,9 @@ TEST(LowerComponentToCel, BoolRoundTrips) {
   in.kind = WASMTIME_COMPONENT_BOOL;
   in.of.boolean = true;
   Value out;
-  ASSERT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kBool), in, EmptyCtx(),
-                                  &out),
-              IsOk());
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kBool), in, EmptyCtx(), &out),
+      IsOk());
   ASSERT_EQ(out.kind(), Value::Kind::kBool);
   EXPECT_THAT(out.AsBool(), IsOk());
   EXPECT_TRUE(*out.AsBool());
@@ -164,15 +170,14 @@ TEST(LowerComponentToCel, BoolKindMismatchRejected) {
   in.kind = WASMTIME_COMPONENT_S64;
   in.of.s64 = 1;
   Value out;
-  EXPECT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kBool), in, EmptyCtx(),
-                                  &out),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kBool), in, EmptyCtx(), &out),
+      StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // ── int ─────────────────────────────────────────────────────────────
 
-class IntBoundaryRoundTrip
-    : public ::testing::TestWithParam<int64_t> {};
+class IntBoundaryRoundTrip : public ::testing::TestWithParam<int64_t> {};
 
 TEST_P(IntBoundaryRoundTrip, LiftThenInspect) {
   OwnedComponentVal out;
@@ -188,9 +193,9 @@ TEST_P(IntBoundaryRoundTrip, LowerThenInspect) {
   in.kind = WASMTIME_COMPONENT_S64;
   in.of.s64 = GetParam();
   Value out;
-  ASSERT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kInt), in, EmptyCtx(),
-                                  &out),
-              IsOk());
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kInt), in, EmptyCtx(), &out),
+      IsOk());
   ASSERT_EQ(out.kind(), Value::Kind::kInt);
   EXPECT_EQ(*out.AsInt(), GetParam());
 }
@@ -210,14 +215,14 @@ TEST(LiftCelToComponent, IntFromUintValueIsKindMismatch) {
 
 // ── uint ────────────────────────────────────────────────────────────
 
-class UintBoundaryRoundTrip
-    : public ::testing::TestWithParam<uint64_t> {};
+class UintBoundaryRoundTrip : public ::testing::TestWithParam<uint64_t> {};
 
 TEST_P(UintBoundaryRoundTrip, LiftThenInspect) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kUint),
-                                 Value::Uint(GetParam()), EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(Prim(CelfnType::Kind::kUint), Value::Uint(GetParam()),
+                         EmptyCtx(), out.get()),
+      IsOk());
   EXPECT_EQ(out.cref().kind, WASMTIME_COMPONENT_U64);
   EXPECT_EQ(out.cref().of.u64, GetParam());
 }
@@ -227,9 +232,9 @@ TEST_P(UintBoundaryRoundTrip, LowerThenInspect) {
   in.kind = WASMTIME_COMPONENT_U64;
   in.of.u64 = GetParam();
   Value out;
-  ASSERT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kUint), in, EmptyCtx(),
-                                  &out),
-              IsOk());
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kUint), in, EmptyCtx(), &out),
+      IsOk());
   EXPECT_EQ(*out.AsUint(), GetParam());
 }
 
@@ -270,28 +275,30 @@ TEST(LiftCelToComponent, DoubleNaN) {
 
 TEST(LiftCelToComponent, DoublePositiveInfinity) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDouble),
-                                 Value::Double(std::numeric_limits<double>::infinity()),
-                                 EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(Prim(CelfnType::Kind::kDouble),
+                         Value::Double(std::numeric_limits<double>::infinity()),
+                         EmptyCtx(), out.get()),
+      IsOk());
   EXPECT_TRUE(std::isinf(out.cref().of.f64));
   EXPECT_GT(out.cref().of.f64, 0.0);
 }
 
 TEST(LiftCelToComponent, DoubleNegativeInfinity) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDouble),
-                                 Value::Double(-std::numeric_limits<double>::infinity()),
-                                 EmptyCtx(), out.get()),
+  ASSERT_THAT(LiftCelToComponent(
+                  Prim(CelfnType::Kind::kDouble),
+                  Value::Double(-std::numeric_limits<double>::infinity()),
+                  EmptyCtx(), out.get()),
               IsOk());
   EXPECT_TRUE(std::isinf(out.cref().of.f64));
   EXPECT_LT(out.cref().of.f64, 0.0);
 }
 
 TEST(LiftCelToComponent, DoubleMinAndMax) {
-  for (double v : {std::numeric_limits<double>::min(),
-                   std::numeric_limits<double>::max(),
-                   -std::numeric_limits<double>::max()}) {
+  for (double v :
+       {std::numeric_limits<double>::min(), std::numeric_limits<double>::max(),
+        -std::numeric_limits<double>::max()}) {
     OwnedComponentVal out;
     ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDouble),
                                    Value::Double(v), EmptyCtx(), out.get()),
@@ -317,9 +324,9 @@ TEST(LowerComponentToCel, NullFromOptionNone) {
   in.kind = WASMTIME_COMPONENT_OPTION;
   in.of.option = nullptr;
   Value out = Value::Int(99);  // pre-poison
-  ASSERT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kNull), in, EmptyCtx(),
-                                  &out),
-              IsOk());
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kNull), in, EmptyCtx(), &out),
+      IsOk());
   EXPECT_TRUE(out.IsNull());
 }
 
@@ -360,8 +367,9 @@ TEST(LiftCelToComponent, StringWithEmbeddedNul) {
 }
 TEST(LiftCelToComponent, StringMultiByteUtf8) {
   // "héllo 世界 ✓" — mixes 2-, 3-, and 4-byte (BMP) UTF-8.
-  LiftLowerStringRoundTrip("h\xc3\xa9llo \xe4\xb8\x96\xe7\x95\x8c "
-                           "\xe2\x9c\x93");
+  LiftLowerStringRoundTrip(
+      "h\xc3\xa9llo \xe4\xb8\x96\xe7\x95\x8c "
+      "\xe2\x9c\x93");
 }
 TEST(LiftCelToComponent, StringLong) {
   // 5 KB to exercise the heap-alloc path of wasm_byte_vec_new.
@@ -377,9 +385,9 @@ TEST(LowerComponentToCel, StringRoundTripsEmbeddedNul) {
   const char payload[] = {'x', '\0', 'y'};
   wasm_byte_vec_new(&in.of.string, 3, payload);
   Value out;
-  ASSERT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kString), in,
-                                  EmptyCtx(), &out),
-              IsOk());
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kString), in, EmptyCtx(), &out),
+      IsOk());
   ASSERT_EQ(out.kind(), Value::Kind::kString);
   EXPECT_EQ(out.AsString()->size(), 3u);
   EXPECT_EQ(out.AsString()->at(1), '\0');
@@ -391,8 +399,8 @@ TEST(LowerComponentToCel, StringRoundTripsEmbeddedNul) {
 void LiftLowerBytesRoundTrip(absl::string_view payload) {
   OwnedComponentVal out;
   ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kBytes),
-                                 Value::Bytes(std::string(payload)),
-                                 EmptyCtx(), out.get()),
+                                 Value::Bytes(std::string(payload)), EmptyCtx(),
+                                 out.get()),
               IsOk());
   ASSERT_EQ(out.cref().kind, WASMTIME_COMPONENT_LIST);
   ASSERT_EQ(out.cref().of.list.size, payload.size());
@@ -437,8 +445,8 @@ TEST(LowerComponentToCel, BytesElementKindMismatchNamesIndex) {
   in.of.list.data[1].kind = WASMTIME_COMPONENT_S64;
   in.of.list.data[1].of.s64 = 99;
   Value out;
-  auto s = LowerComponentToCel(Prim(CelfnType::Kind::kBytes), in, EmptyCtx(),
-                               &out);
+  auto s =
+      LowerComponentToCel(Prim(CelfnType::Kind::kBytes), in, EmptyCtx(), &out);
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(s.message()), HasSubstr("index 1"));
   wasmtime_component_val_delete(&in);
@@ -459,7 +467,7 @@ void ExpectSecondsNanosRecord(const wasmtime_component_val_t& v,
     absl::string_view nm(v.of.record.data[i].name.data,
                          v.of.record.data[i].name.size);
     if (nm == "seconds") found_secs = static_cast<int>(i);
-    if (nm == "nanos")   found_nanos = static_cast<int>(i);
+    if (nm == "nanos") found_nanos = static_cast<int>(i);
   }
   ASSERT_NE(found_secs, -1);
   ASSERT_NE(found_nanos, -1);
@@ -499,18 +507,19 @@ TEST(LiftCelToComponent, DurationOneNanosecondNegative) {
 
 TEST(LiftCelToComponent, DurationNanosBoundary999_999_999) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDuration),
-                                 Value::Duration(absl::Nanoseconds(999'999'999)),
-                                 EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(Prim(CelfnType::Kind::kDuration),
+                         Value::Duration(absl::Nanoseconds(999'999'999)),
+                         EmptyCtx(), out.get()),
+      IsOk());
   ExpectSecondsNanosRecord(out.cref(), 0, 999'999'999);
 }
 
 TEST(LiftCelToComponent, DurationOneSecondExactly) {
   OwnedComponentVal out;
   ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDuration),
-                                 Value::Duration(absl::Seconds(1)),
-                                 EmptyCtx(), out.get()),
+                                 Value::Duration(absl::Seconds(1)), EmptyCtx(),
+                                 out.get()),
               IsOk());
   ExpectSecondsNanosRecord(out.cref(), 1, 0);
 }
@@ -527,9 +536,9 @@ TEST(LiftCelToComponent, DurationNegativeMixed) {
 }
 
 TEST(LowerComponentToCel, DurationRoundTrips) {
-  for (absl::Duration d : {absl::ZeroDuration(), absl::Seconds(1),
-                           absl::Milliseconds(-1500),
-                           absl::Nanoseconds(999'999'999)}) {
+  for (absl::Duration d :
+       {absl::ZeroDuration(), absl::Seconds(1), absl::Milliseconds(-1500),
+        absl::Nanoseconds(999'999'999)}) {
     OwnedComponentVal out;
     ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kDuration),
                                    Value::Duration(d), EmptyCtx(), out.get()),
@@ -594,8 +603,8 @@ TEST(LowerComponentToCel, DurationRecordMissingFieldNamedRejected) {
   in.of.record.data[1].val.kind = WASMTIME_COMPONENT_S32;
   in.of.record.data[1].val.of.s32 = 0;
   Value out;
-  auto s = LowerComponentToCel(Prim(CelfnType::Kind::kDuration), in,
-                               EmptyCtx(), &out);
+  auto s = LowerComponentToCel(Prim(CelfnType::Kind::kDuration), in, EmptyCtx(),
+                               &out);
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(s.message()), HasSubstr("foo"));
   wasmtime_component_val_delete(&in);
@@ -614,17 +623,17 @@ TEST(LiftCelToComponent, TimestampLargePositive) {
   // 2026-01-01 00:00:00 UTC: 1767225600 seconds since epoch.  No
   // sub-second part → nanos=0.
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kTimestamp),
-                                 Value::Timestamp(absl::FromUnixSeconds(
-                                     1'767'225'600)),
-                                 EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(Prim(CelfnType::Kind::kTimestamp),
+                         Value::Timestamp(absl::FromUnixSeconds(1'767'225'600)),
+                         EmptyCtx(), out.get()),
+      IsOk());
   ExpectSecondsNanosRecord(out.cref(), 1'767'225'600, 0);
 }
 
 TEST(LowerComponentToCel, TimestampRoundTrips) {
-  const absl::Time t = absl::FromUnixSeconds(1'767'225'600) +
-                       absl::Nanoseconds(123'456'789);
+  const absl::Time t =
+      absl::FromUnixSeconds(1'767'225'600) + absl::Nanoseconds(123'456'789);
   OwnedComponentVal out;
   ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kTimestamp),
                                  Value::Timestamp(t), EmptyCtx(), out.get()),
@@ -649,10 +658,10 @@ TEST(LiftCelToComponent, ListIntEmpty) {
 
 TEST(LiftCelToComponent, ListIntSingleElement) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kInt)),
-                                 Value::List({Value::Int(42)}), EmptyCtx(),
-                                 out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kInt)),
+                         Value::List({Value::Int(42)}), EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, 1u);
   EXPECT_EQ(out.cref().of.list.data[0].kind, WASMTIME_COMPONENT_S64);
   EXPECT_EQ(out.cref().of.list.data[0].of.s64, 42);
@@ -660,13 +669,14 @@ TEST(LiftCelToComponent, ListIntSingleElement) {
 
 TEST(LiftCelToComponent, ListIntContainsBoundary) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  ListOf(Prim(CelfnType::Kind::kInt)),
-                  Value::List({Value::Int(std::numeric_limits<int64_t>::min()),
-                               Value::Int(0),
-                               Value::Int(std::numeric_limits<int64_t>::max())}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          ListOf(Prim(CelfnType::Kind::kInt)),
+          Value::List({Value::Int(std::numeric_limits<int64_t>::min()),
+                       Value::Int(0),
+                       Value::Int(std::numeric_limits<int64_t>::max())}),
+          EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, 3u);
   EXPECT_EQ(out.cref().of.list.data[0].of.s64,
             std::numeric_limits<int64_t>::min());
@@ -681,8 +691,7 @@ TEST(LiftCelToComponent, ListListIntRaggedNesting) {
   ASSERT_THAT(LiftCelToComponent(
                   ListOf(ListOf(Prim(CelfnType::Kind::kInt))),
                   Value::List({Value::List({Value::Int(1), Value::Int(2)}),
-                               Value::List({}),
-                               Value::List({Value::Int(3)})}),
+                               Value::List({}), Value::List({Value::Int(3)})}),
                   EmptyCtx(), out.get()),
               IsOk());
   ASSERT_EQ(out.cref().of.list.size, 3u);
@@ -706,10 +715,10 @@ TEST(LiftCelToComponent, ListIntCrossKindElementErrorIncludesIndex) {
 
 TEST(LowerComponentToCel, ListIntRoundTrip) {
   OwnedComponentVal lifted;
-  ASSERT_THAT(LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kInt)),
-                                 Value::List({Value::Int(-7), Value::Int(0),
-                                              Value::Int(7)}),
-                                 EmptyCtx(), lifted.get()),
+  ASSERT_THAT(LiftCelToComponent(
+                  ListOf(Prim(CelfnType::Kind::kInt)),
+                  Value::List({Value::Int(-7), Value::Int(0), Value::Int(7)}),
+                  EmptyCtx(), lifted.get()),
               IsOk());
   Value back;
   ASSERT_THAT(LowerComponentToCel(ListOf(Prim(CelfnType::Kind::kInt)),
@@ -732,10 +741,9 @@ TEST(LowerComponentToCel, ListIntRoundTrip) {
 
 TEST(LiftCelToComponent, MapStringIntEmpty) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map({}), EmptyCtx(), out.get()),
+  ASSERT_THAT(LiftCelToComponent(MapOf(Prim(CelfnType::Kind::kString),
+                                       Prim(CelfnType::Kind::kInt)),
+                                 Value::Map({}), EmptyCtx(), out.get()),
               IsOk());
   EXPECT_EQ(out.cref().kind, WASMTIME_COMPONENT_LIST);
   EXPECT_EQ(out.cref().of.list.size, 0u);
@@ -743,13 +751,13 @@ TEST(LiftCelToComponent, MapStringIntEmpty) {
 
 TEST(LiftCelToComponent, MapAllKeyKindsBool) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kBool),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map({{Value::Bool(true), Value::Int(1)},
-                              {Value::Bool(false), Value::Int(0)}}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kBool), Prim(CelfnType::Kind::kInt)),
+          Value::Map({{Value::Bool(true), Value::Int(1)},
+                      {Value::Bool(false), Value::Int(0)}}),
+          EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, 2u);
   EXPECT_EQ(out.cref().of.list.data[0].kind, WASMTIME_COMPONENT_TUPLE);
   EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[0].kind,
@@ -758,12 +766,12 @@ TEST(LiftCelToComponent, MapAllKeyKindsBool) {
 
 TEST(LiftCelToComponent, MapAllKeyKindsInt) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kInt),
-                        Prim(CelfnType::Kind::kString)),
-                  Value::Map({{Value::Int(7), Value::String("a")}}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kInt), Prim(CelfnType::Kind::kString)),
+          Value::Map({{Value::Int(7), Value::String("a")}}), EmptyCtx(),
+          out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, 1u);
   EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[0].kind,
             WASMTIME_COMPONENT_S64);
@@ -772,24 +780,24 @@ TEST(LiftCelToComponent, MapAllKeyKindsInt) {
 
 TEST(LiftCelToComponent, MapAllKeyKindsUint) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kUint),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map({{Value::Uint(42), Value::Int(-1)}}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kUint), Prim(CelfnType::Kind::kInt)),
+          Value::Map({{Value::Uint(42), Value::Int(-1)}}), EmptyCtx(),
+          out.get()),
+      IsOk());
   EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[0].kind,
             WASMTIME_COMPONENT_U64);
 }
 
 TEST(LiftCelToComponent, MapAllKeyKindsString) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map({{Value::String("k"), Value::Int(9)}}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+          Value::Map({{Value::String("k"), Value::Int(9)}}), EmptyCtx(),
+          out.get()),
+      IsOk());
   EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[0].kind,
             WASMTIME_COMPONENT_STRING);
 }
@@ -798,9 +806,9 @@ TEST(LiftCelToComponent, MapDoubleKeyRejectedAtType) {
   // Pre-construct: a map<double, int> shape is structurally rejected
   // even though the host Value::Map could carry double keys.
   OwnedComponentVal out;
-  auto s = LiftCelToComponent(MapOf(Prim(CelfnType::Kind::kDouble),
-                                    Prim(CelfnType::Kind::kInt)),
-                              Value::Map({}), EmptyCtx(), out.get());
+  auto s = LiftCelToComponent(
+      MapOf(Prim(CelfnType::Kind::kDouble), Prim(CelfnType::Kind::kInt)),
+      Value::Map({}), EmptyCtx(), out.get());
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(s.message()), HasSubstr("double"));
 }
@@ -809,12 +817,12 @@ TEST(LiftCelToComponent, MapWithListValue) {
   // {"k": []} — value is an empty list; verifies the value type-witness
   // recurses through the value side too.
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        ListOf(Prim(CelfnType::Kind::kInt))),
-                  Value::Map({{Value::String("k"), Value::List({})}}),
-                  EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(MapOf(Prim(CelfnType::Kind::kString),
+                               ListOf(Prim(CelfnType::Kind::kInt))),
+                         Value::Map({{Value::String("k"), Value::List({})}}),
+                         EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, 1u);
   EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[1].kind,
             WASMTIME_COMPONENT_LIST);
@@ -823,18 +831,17 @@ TEST(LiftCelToComponent, MapWithListValue) {
 
 TEST(LowerComponentToCel, MapStringIntRoundTrip) {
   OwnedComponentVal lifted;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map({{Value::String("alpha"), Value::Int(1)},
-                              {Value::String("beta"), Value::Int(2)}}),
-                  EmptyCtx(), lifted.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+          Value::Map({{Value::String("alpha"), Value::Int(1)},
+                      {Value::String("beta"), Value::Int(2)}}),
+          EmptyCtx(), lifted.get()),
+      IsOk());
   Value back;
-  ASSERT_THAT(LowerComponentToCel(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  lifted.cref(), EmptyCtx(), &back),
+  ASSERT_THAT(LowerComponentToCel(MapOf(Prim(CelfnType::Kind::kString),
+                                        Prim(CelfnType::Kind::kInt)),
+                                  lifted.cref(), EmptyCtx(), &back),
               IsOk());
   ASSERT_EQ(back.kind(), Value::Kind::kMap);
   auto backing_or = back.MapBacking();
@@ -854,9 +861,9 @@ TEST(LowerComponentToCel, MapTupleArityMismatchRejected) {
     in.of.list.data[0].of.tuple.data[i].of.s64 = 0;
   }
   Value out;
-  auto s = LowerComponentToCel(MapOf(Prim(CelfnType::Kind::kInt),
-                                     Prim(CelfnType::Kind::kInt)),
-                               in, EmptyCtx(), &out);
+  auto s = LowerComponentToCel(
+      MapOf(Prim(CelfnType::Kind::kInt), Prim(CelfnType::Kind::kInt)), in,
+      EmptyCtx(), &out);
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(s.message()), HasSubstr("arity 3"));
   wasmtime_component_val_delete(&in);
@@ -987,11 +994,10 @@ TEST(LowerComponentToCel, ProtoBadBytesRejectedWithDescriptorName) {
   in.of.list.data[1].kind = WASMTIME_COMPONENT_U8;
   in.of.list.data[1].of.u8 = 0xFF;
   Value out;
-  auto s = LowerComponentToCel(ProtoOfFqn("celwasm.testdata.Customer"), in,
-                               ctx, &out);
+  auto s = LowerComponentToCel(ProtoOfFqn("celwasm.testdata.Customer"), in, ctx,
+                               &out);
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(std::string(s.message()),
-              HasSubstr("celwasm.testdata.Customer"));
+  EXPECT_THAT(std::string(s.message()), HasSubstr("celwasm.testdata.Customer"));
   wasmtime_component_val_delete(&in);
 }
 
@@ -999,10 +1005,10 @@ TEST(LowerComponentToCel, ProtoBadBytesRejectedWithDescriptorName) {
 
 TEST(LiftCelToComponent, TypeAsString) {
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kType),
-                                 Value::Type("acme.User"), EmptyCtx(),
-                                 out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(Prim(CelfnType::Kind::kType), Value::Type("acme.User"),
+                         EmptyCtx(), out.get()),
+      IsOk());
   EXPECT_EQ(out.cref().kind, WASMTIME_COMPONENT_STRING);
   EXPECT_EQ(std::string(out.cref().of.string.data, out.cref().of.string.size),
             "acme.User");
@@ -1024,8 +1030,8 @@ TEST(LowerComponentToCel, IntKindMismatchNamesBothSides) {
   in.kind = WASMTIME_COMPONENT_F64;
   in.of.f64 = 3.0;
   Value out;
-  auto s = LowerComponentToCel(Prim(CelfnType::Kind::kInt), in, EmptyCtx(),
-                               &out);
+  auto s =
+      LowerComponentToCel(Prim(CelfnType::Kind::kInt), in, EmptyCtx(), &out);
   ASSERT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(s.message()), HasSubstr("int"));
 }
@@ -1035,9 +1041,9 @@ TEST(LowerComponentToCel, UintKindMismatchNamesBothSides) {
   in.kind = WASMTIME_COMPONENT_S64;
   in.of.s64 = -1;
   Value out;
-  EXPECT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kUint), in, EmptyCtx(),
-                                  &out),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kUint), in, EmptyCtx(), &out),
+      StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // ── Large-payload boundary matrix (variable-length types) ──────────
@@ -1065,13 +1071,13 @@ TEST(LowerComponentToCel, UintKindMismatchNamesBothSides) {
 // run-length-style accidental optimisation that would mask a bug.
 
 // Scale knobs — central so a future tuning bump touches one place.
-constexpr size_t kLargeBlobBytes = 256 * 1024;       // 256 KiB
-constexpr size_t kLargeListInts  = 100'000;          // 10⁵ scalars
-constexpr size_t kLargeStrings   = 1024;             // strings in a list
-constexpr size_t kLargeStringLen = 1024;             // 1 KiB each → 1 MiB total
-constexpr size_t kLargeMapEntries = 10'000;          // 10⁴ map entries
-constexpr size_t kLargeProtoRepeats = 10'000;        // 10⁴ repeated strings
-constexpr size_t kNestedOuter = 100;                 // 100 × 100 = 10⁴ leaves
+constexpr size_t kLargeBlobBytes = 256 * 1024;  // 256 KiB
+constexpr size_t kLargeListInts = 100'000;      // 10⁵ scalars
+constexpr size_t kLargeStrings = 1024;          // strings in a list
+constexpr size_t kLargeStringLen = 1024;        // 1 KiB each → 1 MiB total
+constexpr size_t kLargeMapEntries = 10'000;     // 10⁴ map entries
+constexpr size_t kLargeProtoRepeats = 10'000;   // 10⁴ repeated strings
+constexpr size_t kNestedOuter = 100;            // 100 × 100 = 10⁴ leaves
 constexpr size_t kNestedInner = 100;
 
 // Build a deterministic, non-uniform payload so a bug that zeros or
@@ -1103,8 +1109,7 @@ TEST(LiftCelToComponent, LargeStringRoundTripsAtMiBScale) {
   const std::string payload = MakeLargeBlob(kLargeBlobBytes);
   OwnedComponentVal out;
   ASSERT_THAT(LiftCelToComponent(Prim(CelfnType::Kind::kString),
-                                 Value::String(payload), EmptyCtx(),
-                                 out.get()),
+                                 Value::String(payload), EmptyCtx(), out.get()),
               IsOk());
   ASSERT_EQ(out.cref().kind, WASMTIME_COMPONENT_STRING);
   ASSERT_EQ(out.cref().of.string.size, payload.size());
@@ -1134,8 +1139,7 @@ TEST(LiftCelToComponent, LargeBytesRoundTripsAtMiBScale) {
   // would dominate test runtime — head + middle + tail catches the
   // off-by-one + truncation cases).
   EXPECT_EQ(out.cref().of.list.data[0].kind, WASMTIME_COMPONENT_U8);
-  EXPECT_EQ(out.cref().of.list.data[0].of.u8,
-            static_cast<uint8_t>(payload[0]));
+  EXPECT_EQ(out.cref().of.list.data[0].of.u8, static_cast<uint8_t>(payload[0]));
   const size_t mid = payload.size() / 2;
   EXPECT_EQ(out.cref().of.list.data[mid].of.u8,
             static_cast<uint8_t>(payload[mid]));
@@ -1157,14 +1161,14 @@ TEST(LiftCelToComponent, LargeListIntRoundTripsAt100kElements) {
     // Non-monotone pattern: alternating sign, varying magnitude.  A
     // collapsed-to-zero allocator would fail head + tail checks; a
     // signed-vs-unsigned ladder bug would diverge here.
-    elems.push_back(Value::Int(static_cast<int64_t>(i) *
-                               ((i % 2 == 0) ? 1 : -1)));
+    elems.push_back(
+        Value::Int(static_cast<int64_t>(i) * ((i % 2 == 0) ? 1 : -1)));
   }
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kInt)),
-                                 Value::List(std::move(elems)), EmptyCtx(),
-                                 out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kInt)),
+                         Value::List(std::move(elems)), EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().kind, WASMTIME_COMPONENT_LIST);
   ASSERT_EQ(out.cref().of.list.size, kLargeListInts);
 
@@ -1191,8 +1195,7 @@ TEST(LiftCelToComponent, LargeListIntRoundTripsAt100kElements) {
   for (size_t i : {size_t{0}, size_t{1}, mid, last}) {
     auto e = (*backing_or)->At(i, placeholder);
     ASSERT_THAT(e, IsOk()) << "i=" << i;
-    EXPECT_EQ(*e->AsInt(),
-              static_cast<int64_t>(i) * ((i % 2 == 0) ? 1 : -1))
+    EXPECT_EQ(*e->AsInt(), static_cast<int64_t>(i) * ((i % 2 == 0) ? 1 : -1))
         << "i=" << i;
   }
 }
@@ -1212,10 +1215,10 @@ TEST(LiftCelToComponent, LargeListOfLargeStringsLiftsAtMiBScale) {
     elems.push_back(Value::String(std::move(s)));
   }
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kString)),
-                                 Value::List(std::move(elems)), EmptyCtx(),
-                                 out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(ListOf(Prim(CelfnType::Kind::kString)),
+                         Value::List(std::move(elems)), EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, kLargeStrings);
   // Spot-check that head + tail elements have the right length AND the
   // right index-stamp — a sliced / duplicated element would still have
@@ -1228,10 +1231,12 @@ TEST(LiftCelToComponent, LargeListOfLargeStringsLiftsAtMiBScale) {
             0u);
   const size_t last = kLargeStrings - 1;
   EXPECT_EQ(out.cref().of.list.data[last].of.string.size, kLargeStringLen);
-  EXPECT_EQ(static_cast<uint8_t>(out.cref().of.list.data[last].of.string.data[0]),
-            (last >> 8) & 0xff);
-  EXPECT_EQ(static_cast<uint8_t>(out.cref().of.list.data[last].of.string.data[1]),
-            last & 0xff);
+  EXPECT_EQ(
+      static_cast<uint8_t>(out.cref().of.list.data[last].of.string.data[0]),
+      (last >> 8) & 0xff);
+  EXPECT_EQ(
+      static_cast<uint8_t>(out.cref().of.list.data[last].of.string.data[1]),
+      last & 0xff);
 }
 
 TEST(LiftCelToComponent, LargeNestedListLiftsAt10kLeafCells) {
@@ -1249,10 +1254,10 @@ TEST(LiftCelToComponent, LargeNestedListLiftsAt10kLeafCells) {
     outer.push_back(Value::List(std::move(inner)));
   }
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  ListOf(ListOf(Prim(CelfnType::Kind::kInt))),
-                  Value::List(std::move(outer)), EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(ListOf(ListOf(Prim(CelfnType::Kind::kInt))),
+                         Value::List(std::move(outer)), EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, kNestedOuter);
   for (size_t i : {size_t{0}, kNestedOuter / 2, kNestedOuter - 1}) {
     ASSERT_EQ(out.cref().of.list.data[i].kind, WASMTIME_COMPONENT_LIST);
@@ -1261,9 +1266,8 @@ TEST(LiftCelToComponent, LargeNestedListLiftsAt10kLeafCells) {
     // (i+1)*kNestedInner - 1.
     EXPECT_EQ(out.cref().of.list.data[i].of.list.data[0].of.s64,
               static_cast<int64_t>(i * kNestedInner));
-    EXPECT_EQ(
-        out.cref().of.list.data[i].of.list.data[kNestedInner - 1].of.s64,
-        static_cast<int64_t>(i * kNestedInner + kNestedInner - 1));
+    EXPECT_EQ(out.cref().of.list.data[i].of.list.data[kNestedInner - 1].of.s64,
+              static_cast<int64_t>(i * kNestedInner + kNestedInner - 1));
   }
 }
 
@@ -1278,11 +1282,11 @@ TEST(LiftCelToComponent, LargeMapStringIntRoundTripsAt10kEntries) {
                          Value::Int(static_cast<int64_t>(i)));
   }
   OwnedComponentVal lifted;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  Value::Map(std::move(entries)), EmptyCtx(), lifted.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(
+          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+          Value::Map(std::move(entries)), EmptyCtx(), lifted.get()),
+      IsOk());
   ASSERT_EQ(lifted.cref().kind, WASMTIME_COMPONENT_LIST);
   ASSERT_EQ(lifted.cref().of.list.size, kLargeMapEntries);
 
@@ -1298,10 +1302,9 @@ TEST(LiftCelToComponent, LargeMapStringIntRoundTripsAt10kEntries) {
   }
 
   Value back;
-  ASSERT_THAT(LowerComponentToCel(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  lifted.cref(), EmptyCtx(), &back),
+  ASSERT_THAT(LowerComponentToCel(MapOf(Prim(CelfnType::Kind::kString),
+                                        Prim(CelfnType::Kind::kInt)),
+                                  lifted.cref(), EmptyCtx(), &back),
               IsOk());
   ASSERT_EQ(back.kind(), Value::Kind::kMap);
   auto backing_or = back.MapBacking();
@@ -1326,19 +1329,19 @@ TEST(LiftCelToComponent, LargeMapStringListIntLiftsAt10kLeafCells) {
                          Value::List(std::move(inner)));
   }
   OwnedComponentVal out;
-  ASSERT_THAT(LiftCelToComponent(
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        ListOf(Prim(CelfnType::Kind::kInt))),
-                  Value::Map(std::move(entries)), EmptyCtx(), out.get()),
-              IsOk());
+  ASSERT_THAT(
+      LiftCelToComponent(MapOf(Prim(CelfnType::Kind::kString),
+                               ListOf(Prim(CelfnType::Kind::kInt))),
+                         Value::Map(std::move(entries)), EmptyCtx(), out.get()),
+      IsOk());
   ASSERT_EQ(out.cref().of.list.size, kNestedOuter);
   // Spot-check one tuple's inner-list shape + magnitudes.
   ASSERT_EQ(out.cref().of.list.data[0].of.tuple.data[1].kind,
             WASMTIME_COMPONENT_LIST);
   ASSERT_EQ(out.cref().of.list.data[0].of.tuple.data[1].of.list.size,
             kNestedInner);
-  EXPECT_EQ(
-      out.cref().of.list.data[0].of.tuple.data[1].of.list.data[0].of.s64, 0);
+  EXPECT_EQ(out.cref().of.list.data[0].of.tuple.data[1].of.list.data[0].of.s64,
+            0);
   EXPECT_EQ(out.cref()
                 .of.list.data[kNestedOuter - 1]
                 .of.tuple.data[1]

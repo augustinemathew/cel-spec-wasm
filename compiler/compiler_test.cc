@@ -308,7 +308,6 @@ TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
 TEST(CompilerBuilderAddLibraryTest,
      ForeignComponentDeclAdmitsProtoAndRoutesViaCelFn) {
   // m24 §8 admits proto(...) on kForeignComponent (cross as bytes).
-  // The kForeign backend rejects this; kForeignComponent must NOT.
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType arg;

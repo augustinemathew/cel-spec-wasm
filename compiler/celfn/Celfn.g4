@@ -26,7 +26,7 @@ moduleDirective
 
 fileItem
     : hostFnDecl
-    | foreignFnDecl
+    | componentFnDecl
     | bareHostDecl
     | nativeFnDecl
     ;
@@ -38,13 +38,12 @@ hostFnDecl
     : type '@' 'host' '.' Identifier '(' params? ')' ';'
     ;
 
-// `<type> <alias>.<name>(<params>) ;` — foreign-wasm-backed.  No body.
-// `<alias>` MUST NOT be `host` (host uses the @-prefix form above);
-// the `host` keyword tokenizes separately so user inputs of that
-// shape land in `bareHostDecl` below and the visitor rejects them
-// with a suggestion to use `@host.`.
-foreignFnDecl
-    : type Identifier '.' Identifier '(' params? ')' ';'
+// `<type> @component.<name>(<params>) ;` — Component-Model-backed.
+// No body.  Dispatched via the `cel_fn` host-callback path (m24 §2);
+// marshaled through a per-fn typed WIT export of a Component-Model
+// component registered via `Engine::AddComponent(bytes, lib)`.
+componentFnDecl
+    : type '@' 'component' '.' Identifier '(' params? ')' ';'
     ;
 
 // Diagnostic-only production.  Matches `type 'host' '.' Identifier
@@ -60,10 +59,10 @@ bareHostDecl
     ;
 
 // `<type> @native.<name>(<params>) = <cel-expr> ;` — CEL-defined.  Has
-// body.  Symmetric with the `@host.` prefix above (and bare-alias
-// foreign below): `@host` is C++-backed, `@native` is CEL-body-backed,
-// a bare `<alias>.` is foreign-wasm-backed.  `native`, like `host`,
-// tokenizes as a keyword and is therefore reserved as an alias name.
+// body.  Symmetric with the `@host.` / `@component.` prefixes above:
+// `@host` is C++-backed, `@component` is component-wasm-backed,
+// `@native` is CEL-body-backed.  `native`, like `host` / `component`,
+// tokenizes as a keyword and is therefore reserved as an identifier.
 nativeFnDecl
     : type '@' 'native' '.' Identifier '(' params? ')' '=' celExprBody ';'
     ;

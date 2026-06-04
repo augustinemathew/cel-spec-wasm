@@ -63,10 +63,10 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, std::move(ret),
-                                         std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
+          .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -122,8 +122,8 @@ TEST(EmitCodecH, StringLiftReturnsStringView) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr(
-                      "inline std::string_view lift(const author_string_t& s)"));
+  EXPECT_THAT(
+      *t, HasSubstr("inline std::string_view lift(const author_string_t& s)"));
   EXPECT_THAT(*t, HasSubstr("return {reinterpret_cast<const char*>(s.ptr), "
                             "s.len};"));
 }
@@ -138,8 +138,7 @@ TEST(EmitCodecH, StringLowerUsesAuthorStringDupN) {
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline void lower(author_string_t* ret, "
                             "std::string_view s)"));
-  EXPECT_THAT(*t,
-              HasSubstr("author_string_dup_n(ret, s.data(), s.size())"));
+  EXPECT_THAT(*t, HasSubstr("author_string_dup_n(ret, s.data(), s.size())"));
 }
 
 // ── Bytes — list<u8> ─────────────────────────────────────────────
@@ -158,9 +157,8 @@ TEST(EmitCodecH, BytesLowerUsesCabiRealloc) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kBytes), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("inline void lower(author_list_u8_t* ret, const "
-                        "std::vector<uint8_t>& v)"));
+  EXPECT_THAT(*t, HasSubstr("inline void lower(author_list_u8_t* ret, const "
+                            "std::vector<uint8_t>& v)"));
   EXPECT_THAT(*t, HasSubstr("cabi_realloc"));
 }
 
@@ -183,10 +181,8 @@ TEST(EmitCodecH, ListStringLiftRecursesThroughStringElement) {
             {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(
-      *t,
-      HasSubstr("inline std::vector<std::string> lift(const "
-                "author_list_string_t& l)"));
+  EXPECT_THAT(*t, HasSubstr("inline std::vector<std::string> lift(const "
+                            "author_list_string_t& l)"));
   // String_view input gets copied via emplace_back(string_view -> string).
   EXPECT_THAT(*t, HasSubstr("emplace_back"));
 }
@@ -209,15 +205,14 @@ TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
   auto lib = OneFn(
       "ident",
       MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
-      {CelfnParam{false,
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  "x"}});
+      {CelfnParam{
+          false,
+          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+          "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("inline std::map<std::string, int64_t> lift(const "
-                        "author_list_tuple2_string_s64_t& m)"));
+  EXPECT_THAT(*t, HasSubstr("inline std::map<std::string, int64_t> lift(const "
+                            "author_list_tuple2_string_s64_t& m)"));
 }
 
 // ── Records (duration / timestamp) ─────────────────────────────────
@@ -225,33 +220,28 @@ TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
 TEST(EmitCodecH, DurationUsesExportsPrefix) {
   // Per m26 §3.5.1 the record type is `exports_<pkg_normalized>_<iface>_<r>_t`.
   // `cel:customfn` normalizes to `cel_customfn`.
-  auto lib = OneFn(
-      "ident", Prim(CelfnType::Kind::kDuration),
-      {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}});
+  auto lib = OneFn("ident", Prim(CelfnType::Kind::kDuration),
+                   {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("exports_cel_customfn_fns_duration_t"));
+  EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_duration_t"));
   EXPECT_THAT(*t, HasSubstr("absl::Duration"));
 }
 
 TEST(EmitCodecH, TimestampUsesExportsPrefix) {
-  auto lib = OneFn(
-      "ident", Prim(CelfnType::Kind::kTimestamp),
-      {CelfnParam{false, Prim(CelfnType::Kind::kTimestamp), "x"}});
+  auto lib = OneFn("ident", Prim(CelfnType::Kind::kTimestamp),
+                   {CelfnParam{false, Prim(CelfnType::Kind::kTimestamp), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("exports_cel_customfn_fns_timestamp_t"));
+  EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_timestamp_t"));
   EXPECT_THAT(*t, HasSubstr("absl::Time"));
 }
 
 // ── Proto crosses as list<u8> ───────────────────────────────────
 
 TEST(EmitCodecH, ProtoEmitsParseAndSerialize) {
-  auto lib = OneFn(
-      "ident", ProtoOf("acme.User"),
-      {CelfnParam{false, ProtoOf("acme.User"), "u"}});
+  auto lib = OneFn("ident", ProtoOf("acme.User"),
+                   {CelfnParam{false, ProtoOf("acme.User"), "u"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   // Author writes user::Fn(const acme::User&) -> acme::User.
@@ -300,9 +290,9 @@ TEST(EmitCodecH, UnusedTypesAreNotEmitted) {
 // ── Output stability ────────────────────────────────────────────
 
 TEST(EmitCodecH, ByteForByteDeterministic) {
-  auto lib = OneFn(
-      "ident", ListOf(Prim(CelfnType::Kind::kString)),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
+  auto lib =
+      OneFn("ident", ListOf(Prim(CelfnType::Kind::kString)),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
   auto a = EmitCodecH(lib, kMod, kPkg);
   auto b = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(a, IsOk());

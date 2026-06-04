@@ -237,7 +237,7 @@ TEST(ForeignComponentTypeMatrix, BoolArgComponentSeesBoundValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bool(true));
-  auto v = RunWithComponent("bool rules.echo_bool(bool b);", "echo_bool(b)",
+  auto v = RunWithComponent("bool @component.echo_bool(bool b);", "echo_bool(b)",
                             {{"b", CelType::Bool()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(*v->AsBool());
@@ -248,7 +248,7 @@ TEST(ForeignComponentTypeMatrix, BoolReturnComponentEmitsValue) {
   auto lib = ForeignLibOne("always_false", Prim(CelfnType::Kind::kBool), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("bool rules.always_false();", "always_false()", {},
+  auto v = RunWithComponent("bool @component.always_false();", "always_false()", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_FALSE(*v->AsBool());
@@ -271,7 +271,7 @@ TEST_P(IntBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(GetParam().in));
-  auto v = RunWithComponent("int rules.echo_int(int x);", "echo_int(x)",
+  auto v = RunWithComponent("int @component.echo_int(int x);", "echo_int(x)",
                             {{"x", CelType::Int()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), GetParam().in);
@@ -291,7 +291,7 @@ TEST(ForeignComponentTypeMatrix, IntReturnComponentEmitsInt64Min) {
   auto lib = ForeignLibOne("int_min", Prim(CelfnType::Kind::kInt), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("int rules.int_min();", "int_min()", {}, *lib, {},
+  auto v = RunWithComponent("int @component.int_min();", "int_min()", {}, *lib, {},
                             act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), std::numeric_limits<int64_t>::min());
@@ -314,7 +314,7 @@ TEST_P(UintBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Uint(GetParam().in));
-  auto v = RunWithComponent("uint rules.echo_uint(uint x);", "echo_uint(x)",
+  auto v = RunWithComponent("uint @component.echo_uint(uint x);", "echo_uint(x)",
                             {{"x", CelType::Uint()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsUint(), GetParam().in);
@@ -335,7 +335,7 @@ TEST(ForeignComponentTypeMatrix, UintReturnComponentEmitsUintMax) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v =
-      RunWithComponent("uint rules.uint_max();", "uint_max()", {}, *lib, {}, act);
+      RunWithComponent("uint @component.uint_max();", "uint_max()", {}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsUint(), std::numeric_limits<uint64_t>::max());
 }
@@ -357,7 +357,7 @@ TEST_P(DoubleBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Double(GetParam().in));
-  auto v = RunWithComponent("double rules.echo_double(double x);",
+  auto v = RunWithComponent("double @component.echo_double(double x);",
                             "echo_double(x)", {{"x", CelType::Double()}}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -389,7 +389,7 @@ TEST(ForeignComponentTypeMatrix, DoubleReturnComponentEmitsNan) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v =
-      RunWithComponent("double rules.nanval();", "nanval()", {}, *lib, {}, act);
+      RunWithComponent("double @component.nanval();", "nanval()", {}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   const double got = *v->AsDouble();
   EXPECT_NE(got, got);
@@ -412,7 +412,7 @@ TEST_P(StringBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("s", Value::String(GetParam().in));
-  auto v = RunWithComponent("string rules.echo_string(string s);",
+  auto v = RunWithComponent("string @component.echo_string(string s);",
                             "echo_string(s)", {{"s", CelType::String()}}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -435,7 +435,7 @@ TEST(ForeignComponentTypeMatrix, StringReturnComponentEmitsEmpty) {
   auto lib = ForeignLibOne("empty_str", Prim(CelfnType::Kind::kString), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("string rules.empty_str();", "empty_str()", {},
+  auto v = RunWithComponent("string @component.empty_str();", "empty_str()", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsString()->empty());
@@ -458,7 +458,7 @@ TEST_P(BytesBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bytes(GetParam().in));
-  auto v = RunWithComponent("bytes rules.echo_bytes(bytes b);", "echo_bytes(b)",
+  auto v = RunWithComponent("bytes @component.echo_bytes(bytes b);", "echo_bytes(b)",
                             {{"b", CelType::Bytes()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(std::string(*v->AsBytes()), GetParam().in);
@@ -479,7 +479,7 @@ TEST(ForeignComponentTypeMatrix, BytesReturnComponentEmitsEmpty) {
   auto lib = ForeignLibOne("empty_bytes", Prim(CelfnType::Kind::kBytes), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("bytes rules.empty_bytes();", "empty_bytes()", {},
+  auto v = RunWithComponent("bytes @component.empty_bytes();", "empty_bytes()", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsBytes()->empty());
@@ -500,7 +500,7 @@ TEST(ForeignComponentTypeMatrix, NullArgComponentObservesAbsence) {
                            {{false, Prim(CelfnType::Kind::kNull), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("bool rules.is_null(null x);", "is_null(null)", {},
+  auto v = RunWithComponent("bool @component.is_null(null x);", "is_null(null)", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(*v->AsBool());
@@ -511,7 +511,7 @@ TEST(ForeignComponentTypeMatrix, NullReturnComponentEmitsNull) {
   auto lib = ForeignLibOne("make_null", Prim(CelfnType::Kind::kNull), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("null rules.make_null();", "make_null()", {}, *lib,
+  auto v = RunWithComponent("null @component.make_null();", "make_null()", {}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->IsNull());
@@ -534,7 +534,7 @@ TEST_P(DurationBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("d", Value::Duration(GetParam().in));
-  auto v = RunWithComponent("Duration rules.echo_dur(Duration d);",
+  auto v = RunWithComponent("Duration @component.echo_dur(Duration d);",
                             "echo_dur(d)", {{"d", CelType::Duration()}}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -566,7 +566,7 @@ TEST_P(TimestampBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("t", Value::Timestamp(GetParam().in));
-  auto v = RunWithComponent("Timestamp rules.echo_ts(Timestamp t);",
+  auto v = RunWithComponent("Timestamp @component.echo_ts(Timestamp t);",
                             "echo_ts(t)", {{"t", CelType::Timestamp()}}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -595,7 +595,7 @@ TEST(ForeignComponentTypeMatrix, TypeArgComponentSeesTypeName) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("t", Value::Type("int"));
-  auto v = RunWithComponent("string rules.type_name(type t);", "type_name(t)",
+  auto v = RunWithComponent("string @component.type_name(type t);", "type_name(t)",
                             {{"t", CelType::Type()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(std::string(*v->AsString()), "int");
@@ -606,7 +606,7 @@ TEST(ForeignComponentTypeMatrix, TypeReturnComponentEmitsTypeValue) {
   auto lib = ForeignLibOne("ret_type", TypeOfTypes(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("type rules.ret_type();", "ret_type()", {}, *lib,
+  auto v = RunWithComponent("type @component.ret_type();", "ret_type()", {}, *lib,
                             {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kType);
@@ -669,7 +669,7 @@ TEST_P(ListByElemKind, ArgSizeIsObservable) {
   Activation act;
   act.Bind("xs", Value::List(c.elems));
   const std::string decl =
-      absl::StrCat("int rules.list_size(list<", c.elem_celfn, "> xs);");
+      absl::StrCat("int @component.list_size(list<", c.elem_celfn, "> xs);");
   auto v = RunWithComponent(decl, "list_size(xs)",
                             {{"xs", CelType::List(c.cel_elem)}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -735,7 +735,7 @@ TEST(ForeignComponentTypeMatrix, ListNestedListIntOuterSize) {
   act.Bind("xs", Value::List({Value::List({Value::Int(1), Value::Int(2)}),
                               Value::List({})}));
   auto v = RunWithComponent(
-      "int rules.outer_size(list<list<int>> xs);", "outer_size(xs)",
+      "int @component.outer_size(list<list<int>> xs);", "outer_size(xs)",
       {{"xs", CelType::List(CelType::List(CelType::Int()))}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), 2);
@@ -747,7 +747,7 @@ TEST(ForeignComponentTypeMatrix, ListReturnComponentEmitsThreeInts) {
                            ListOf(Prim(CelfnType::Kind::kInt)), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("list<int> rules.three_ints();", "three_ints()", {},
+  auto v = RunWithComponent("list<int> @component.three_ints();", "three_ints()", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kList);
@@ -786,7 +786,7 @@ TEST_P(MapByKeyKind, ArgSizeIsObservable) {
   Activation act;
   act.Bind("m", Value::Map(c.entries));
   const std::string decl =
-      absl::StrCat("int rules.map_size(map<", c.key_celfn, ", int> m);");
+      absl::StrCat("int @component.map_size(map<", c.key_celfn, ", int> m);");
   auto v = RunWithComponent(
       decl, "map_size(m)",
       {{"m", CelType::Map(c.cel_key, CelType::Int())}}, *lib, {}, act);
@@ -848,7 +848,7 @@ TEST(ForeignComponentTypeMatrix, MapValueListNestedShapeRoundTrips) {
                                      Value::Int(3)})},
                        {Value::String("b"), Value::List({})}}));
   auto v = RunWithComponent(
-      "int rules.size_at(map<string, list<int>> m);", "size_at(m)",
+      "int @component.size_at(map<string, list<int>> m);", "size_at(m)",
       {{"m", CelType::Map(CelType::String(), CelType::List(CelType::Int()))}},
       *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -863,7 +863,7 @@ TEST(ForeignComponentTypeMatrix, MapReturnComponentEmitsStringInt) {
                            {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("map<string, int> rules.ages();", "ages()", {},
+  auto v = RunWithComponent("map<string, int> @component.ages();", "ages()", {},
                             *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kMap);
@@ -900,7 +900,7 @@ TEST(ForeignComponentTypeMatrix, ProtoArgComponentReadsField) {
   Activation act;
   act.Bind("c", Value::Message(c));
   auto v = RunWithComponent(
-      "string rules.first_letter(proto(celwasm.testdata.Customer) c);",
+      "string @component.first_letter(proto(celwasm.testdata.Customer) c);",
       "first_letter(c)",
       {{"c", CelType::Message("celwasm.testdata.Customer")}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -917,16 +917,16 @@ TEST(ForeignComponentTypeMatrix, ProtoReturnComponentEmitsCustomer) {
   act.Bind("n", Value::String("Ada"));
   auto v = RunWithComponent(
       "proto(celwasm.testdata.Customer) "
-      "rules.build_customer(string n);",
+      "@component.build_customer(string n);",
       "build_customer(n).name", {{"n", CelType::String()}}, *lib, {}, act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(std::string(*v->AsString()), "Ada");
 }
 
 // One pin that DOES run today — Builder admits proto(...) for
-// kForeignComponent (the §4.5.1 ban only applies to kForeign).  This is
-// the smallest interface-layer assertion and validates the deltas this
-// commit ships against function_library.{h,cc}.
+// kForeignComponent.  This is the smallest interface-layer assertion
+// and validates the deltas this commit ships against
+// function_library.{h,cc}.
 TEST(ForeignComponentTypeMatrix, BuilderAdmitsProtoForForeignComponent) {
   auto lib = FunctionLibrary::Builder()
                  .AddForeignComponent(
@@ -939,18 +939,6 @@ TEST(ForeignComponentTypeMatrix, BuilderAdmitsProtoForForeignComponent) {
             CelfnDecl::Backend::kForeignComponent);
   EXPECT_EQ(lib->decls()[0].overload_id, "first_letter_message_acme_User");
   EXPECT_EQ(lib->decls()[0].module_name, "cel_fn");
-}
-
-// Sibling: kForeign STILL rejects proto(...) — the §4.5.1 ban is
-// scoped to the shared-memory backend, not lifted globally.
-TEST(ForeignComponentTypeMatrix, BuilderRejectsProtoForKForeign) {
-  auto lib =
-      FunctionLibrary::Builder()
-          .AddForeign("rules", "first_letter", Prim(CelfnType::Kind::kString),
-                      {{false, ProtoOf("acme.User"), "u"}})
-          .Build();
-  ASSERT_FALSE(lib.ok());
-  EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 // Argkind synthesis for the new CelfnType kinds — exercises the
@@ -1054,7 +1042,7 @@ TEST(ForeignComponentTypeMatrix, TinyGoBackedComponentProducesSameResult) {
 TEST(ForeignComponentTypeMatrix, CelfnSourceAdmitsForeignComponentDecl) {
   GTEST_SKIP() << kBlockerB1;
   // Once the grammar grows a `@component` prefix (or analogous),
-  // ParseCelfnSource("string @component.rules.first_letter(...);")
+  // ParseCelfnSource("string @component.@component.first_letter(...);")
   // produces a CelfnDecl with backend == kForeignComponent.
 }
 

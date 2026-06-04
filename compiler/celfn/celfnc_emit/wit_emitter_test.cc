@@ -105,14 +105,14 @@ TEST(EmitWit, NonForeignComponentDeclsAreIgnored) {
   // A kHost decl alongside a kForeignComponent: only the latter
   // appears in WIT (kHost is dispatched via the cel_fn callback
   // path with no WIT surface).
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddHost("h", Prim(CelfnType::Kind::kBool),
-                             {CelfnParam{false, Prim(CelfnType::Kind::kInt),
-                                         "x"}})
-                    .AddForeignComponent(
-                        "fc", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddHost("h", Prim(CelfnType::Kind::kBool),
+                   {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
+          .AddForeignComponent(
+              "fc", Prim(CelfnType::Kind::kBool),
+              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto text_or = EmitWit(*lib_or, kPkg, kVer);
   ASSERT_THAT(text_or, IsOk());
@@ -141,7 +141,8 @@ TEST(SnakeToKebab, LeavesAlreadyKebabAlone) {
 
 void ExpectFnSig(absl::string_view text, absl::string_view sig) {
   EXPECT_THAT(std::string(text), HasSubstr(std::string(sig)))
-      << "expected signature:\n  " << sig << "\nin emitted text:\n" << text;
+      << "expected signature:\n  " << sig << "\nin emitted text:\n"
+      << text;
 }
 
 TEST(EmitWit, BoolPrimitive) {
@@ -229,16 +230,15 @@ TEST(EmitWit, TimestampBecomesInlineSecondsNanosRecord) {
 TEST(EmitWit, RecordEmittedOnlyOnceEvenWithMultipleDurationDecls) {
   // The interface body must declare `record duration` exactly once
   // even when many fns reference it.  Same for timestamp.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(
-                        "f", Prim(CelfnType::Kind::kDuration),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kDuration),
-                                    "x"}})
-                    .AddForeignComponent(
-                        "g", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kDuration),
-                                    "y"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeignComponent(
+              "f", Prim(CelfnType::Kind::kDuration),
+              {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}})
+          .AddForeignComponent(
+              "g", Prim(CelfnType::Kind::kBool),
+              {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "y"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitWit(*lib_or, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
@@ -252,53 +252,51 @@ TEST(EmitWit, RecordEmittedOnlyOnceEvenWithMultipleDurationDecls) {
 }
 
 TEST(EmitWit, ListOfInt) {
-  auto lib = OneFn("ident", ListOf(Prim(CelfnType::Kind::kInt)),
-                   {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)),
-                               "x"}});
+  auto lib =
+      OneFn("ident", ListOf(Prim(CelfnType::Kind::kInt)),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
   ExpectFnSig(*t, "ident-list-int: func(x: list<s64>) -> list<s64>;");
 }
 
 TEST(EmitWit, ListOfString) {
-  auto lib = OneFn("ident", ListOf(Prim(CelfnType::Kind::kString)),
-                   {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)),
-                               "x"}});
+  auto lib =
+      OneFn("ident", ListOf(Prim(CelfnType::Kind::kString)),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
   ExpectFnSig(*t, "ident-list-string: func(x: list<string>) -> list<string>;");
 }
 
 TEST(EmitWit, MapStringInt) {
-  auto lib = OneFn("ident",
-                   MapOf(Prim(CelfnType::Kind::kString),
-                         Prim(CelfnType::Kind::kInt)),
-                   {CelfnParam{false,
-                               MapOf(Prim(CelfnType::Kind::kString),
-                                     Prim(CelfnType::Kind::kInt)),
-                               "x"}});
+  auto lib = OneFn(
+      "ident",
+      MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+      {CelfnParam{
+          false,
+          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
+          "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
-  ExpectFnSig(
-      *t,
-      "ident-map-string-int: func(x: list<tuple<string, s64>>) -> "
-      "list<tuple<string, s64>>;");
+  ExpectFnSig(*t,
+              "ident-map-string-int: func(x: list<tuple<string, s64>>) -> "
+              "list<tuple<string, s64>>;");
 }
 
 TEST(EmitWit, MapIntBytes) {
-  auto lib = OneFn("ident",
-                   MapOf(Prim(CelfnType::Kind::kInt),
-                         Prim(CelfnType::Kind::kBytes)),
-                   {CelfnParam{false,
-                               MapOf(Prim(CelfnType::Kind::kInt),
-                                     Prim(CelfnType::Kind::kBytes)),
-                               "x"}});
+  auto lib = OneFn(
+      "ident",
+      MapOf(Prim(CelfnType::Kind::kInt), Prim(CelfnType::Kind::kBytes)),
+      {CelfnParam{
+          false,
+          MapOf(Prim(CelfnType::Kind::kInt), Prim(CelfnType::Kind::kBytes)),
+          "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
-  ExpectFnSig(
-      *t,
-      "ident-map-int-bytes: func(x: list<tuple<s64, list<u8>>>) -> "
-      "list<tuple<s64, list<u8>>>;");
+  ExpectFnSig(*t,
+              "ident-map-int-bytes: func(x: list<tuple<s64, list<u8>>>) -> "
+              "list<tuple<s64, list<u8>>>;");
 }
 
 TEST(EmitWit, ProtoCrossesAsListU8) {
@@ -313,8 +311,7 @@ TEST(EmitWit, ProtoCrossesAsListU8) {
                    {CelfnParam{false, ProtoOf("acme.User"), "u"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
-  ExpectFnSig(*t,
-              "ident-message-acme-User: func(u: list<u8>) -> list<u8>;");
+  ExpectFnSig(*t, "ident-message-acme-User: func(u: list<u8>) -> list<u8>;");
   EXPECT_THAT(*t, ::testing::Not(HasSubstr("acme.User")));
 }
 
@@ -322,27 +319,22 @@ TEST(EmitWit, ProtoCrossesAsListU8) {
 
 TEST(EmitWit, NestedListOfList) {
   CelfnType nested = ListOf(ListOf(Prim(CelfnType::Kind::kInt)));
-  auto lib = OneFn("ident", nested,
-                   {CelfnParam{false, nested, "x"}});
+  auto lib = OneFn("ident", nested, {CelfnParam{false, nested, "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
   ExpectFnSig(
-      *t,
-      "ident-list-list-int: func(x: list<list<s64>>) -> list<list<s64>>;");
+      *t, "ident-list-list-int: func(x: list<list<s64>>) -> list<list<s64>>;");
 }
 
 TEST(EmitWit, NestedListOfMapStringListInt) {
-  CelfnType nested =
-      ListOf(MapOf(Prim(CelfnType::Kind::kString),
-                   ListOf(Prim(CelfnType::Kind::kInt))));
-  auto lib = OneFn("ident", nested,
-                   {CelfnParam{false, nested, "x"}});
+  CelfnType nested = ListOf(MapOf(Prim(CelfnType::Kind::kString),
+                                  ListOf(Prim(CelfnType::Kind::kInt))));
+  auto lib = OneFn("ident", nested, {CelfnParam{false, nested, "x"}});
   auto t = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(t, IsOk());
-  ExpectFnSig(
-      *t,
-      "ident-list-map-string-list-int: func(x: list<list<tuple<string, "
-      "list<s64>>>>) -> list<list<tuple<string, list<s64>>>>;");
+  ExpectFnSig(*t,
+              "ident-list-map-string-list-int: func(x: list<list<tuple<string, "
+              "list<s64>>>>) -> list<list<tuple<string, list<s64>>>>;");
 }
 
 TEST(EmitWit, MultipleParamsWithMixedShapes) {
@@ -365,9 +357,8 @@ TEST(EmitWit, MultipleParamsWithMixedShapes) {
 // ── Output stability ─────────────────────────────────────────────
 
 TEST(EmitWit, ByteForByteDeterministicAcrossInvocations) {
-  auto lib =
-      OneFn("ident", Prim(CelfnType::Kind::kInt),
-            {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib = OneFn("ident", Prim(CelfnType::Kind::kInt),
+                   {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
   auto a = EmitWit(lib, kPkg, kVer);
   auto b = EmitWit(lib, kPkg, kVer);
   ASSERT_THAT(a, IsOk());

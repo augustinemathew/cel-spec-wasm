@@ -8,45 +8,41 @@
 // compile-checks them against `fixtures/author.h`.  If any
 // emitter regresses on any type row, the build fails here.
 //
-// IDL note (m26 design): the celfn IDL grammar today exposes a
-// kForeign backend (`<alias>.<fn>` prefix), NOT kForeignComponent.
-// The cel generate emitters accept both for emission purposes (the
-// codec / WIT / stub shape is identical; runtime dispatch choice
-// is the embedder's).  m13 §4.5.1 bars proto on kForeign decls
-// today, so proto rows are commented out below — they'll land
-// when the grammar gains an explicit `@component.<alias>` prefix
-// (follow-up workstream; see m26 §7.5.1).
+// All decls use the `@component.<fn>` prefix — kForeignComponent
+// is the only foreign-fn backend the celfn IDL exposes.
 
 // Scalars (m24 §6 rows 1-5).
-bool   foreign.fn_bool(bool x);
-int    foreign.fn_int(int x);
-uint   foreign.fn_uint(uint x);
-double foreign.fn_double(double x);
-null   foreign.fn_null(null x);
+bool   @component.fn_bool(bool x);
+int    @component.fn_int(int x);
+uint   @component.fn_uint(uint x);
+double @component.fn_double(double x);
+null   @component.fn_null(null x);
 
 // Variable-length scalars (m24 §6 rows 6-7).
-string foreign.fn_string(string x);
-bytes  foreign.fn_bytes(bytes x);
+string @component.fn_string(string x);
+bytes  @component.fn_bytes(bytes x);
 
 // Records (m24 §6 rows 8-9).  Capitalised per IDL grammar.
-Duration  foreign.fn_duration(Duration x);
-Timestamp foreign.fn_timestamp(Timestamp x);
+Duration  @component.fn_duration(Duration x);
+Timestamp @component.fn_timestamp(Timestamp x);
 
 // Aggregates (m24 §6 rows 10-11).  list and map.
-list<int>          foreign.fn_list_int(list<int> x);
-list<string>       foreign.fn_list_string(list<string> x);
-map<string,int>    foreign.fn_map_string_int(map<string,int> x);
-map<int,bytes>     foreign.fn_map_int_bytes(map<int,bytes> x);
+list<int>          @component.fn_list_int(list<int> x);
+list<string>       @component.fn_list_string(list<string> x);
+map<string,int>    @component.fn_map_string_int(map<string,int> x);
+map<int,bytes>     @component.fn_map_int_bytes(map<int,bytes> x);
 
 // Nested aggregates — concrete-expansion recursion (m24 §6 / §A).
-list<list<int>>                              foreign.fn_nested_ll(list<list<int>> x);
-list<map<string,list<int>>>                  foreign.fn_nested_lml(list<map<string,list<int>>> x);
-map<string,list<map<string,int>>>            foreign.fn_nested_mlm(map<string,list<map<string,int>>> x);
+list<list<int>>                              @component.fn_nested_ll(list<list<int>> x);
+list<map<string,list<int>>>                  @component.fn_nested_lml(list<map<string,list<int>>> x);
+map<string,list<map<string,int>>>            @component.fn_nested_mlm(map<string,list<map<string,int>>> x);
 
 // Mixed multi-param decls — argument-order + naming consistency.
-int    foreign.add(int a, int b);
-string foreign.greet(string name, list<string> roles);
+int    @component.add(int a, int b);
+string @component.greet(string name, list<string> roles);
 
-// Proto rows (m24 §6 row 12) — deferred until the IDL grammar
-// gains a `@component` prefix; m13 §4.5.1 bars proto on kForeign.
-// proto(acme.User) foreign.fn_proto(proto(acme.User) x);
+// Proto rows (m24 §6 row 12) — kForeignComponent admits proto(...)
+// per m24 §8; they cross the CM boundary as serialized bytes.
+proto(acme.User)        @component.fn_proto(proto(acme.User) x);
+proto(acme.User)        @component.fn_proto_to_struct(string name);
+list<proto(acme.User)>  @component.fn_list_proto(list<proto(acme.User)> xs);

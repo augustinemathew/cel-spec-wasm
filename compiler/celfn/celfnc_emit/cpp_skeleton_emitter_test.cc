@@ -47,10 +47,10 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, std::move(ret),
-                                         std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
+          .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -123,8 +123,7 @@ TEST(EmitUserFnsH, StringInStringViewOutString) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("std::string Greet(std::string_view name);"));
+  EXPECT_THAT(*t, HasSubstr("std::string Greet(std::string_view name);"));
 }
 
 TEST(EmitUserFnsH, BytesIn) {
@@ -132,8 +131,7 @@ TEST(EmitUserFnsH, BytesIn) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kBytes), "b"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("int64_t Size(const std::vector<uint8_t>& b);"));
+  EXPECT_THAT(*t, HasSubstr("int64_t Size(const std::vector<uint8_t>& b);"));
 }
 
 // ── Records / time ────────────────────────────────────────────────
@@ -157,13 +155,12 @@ TEST(EmitUserFnsH, TimestampReturn) {
 // ── Aggregates ────────────────────────────────────────────────────
 
 TEST(EmitUserFnsH, ListIntParam) {
-  auto lib = OneFn(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib =
+      OneFn("sum", Prim(CelfnType::Kind::kInt),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr(
-                      "int64_t Sum(const std::vector<int64_t>& xs);"));
+  EXPECT_THAT(*t, HasSubstr("int64_t Sum(const std::vector<int64_t>& xs);"));
 }
 
 TEST(EmitUserFnsH, ListStringReturn) {
@@ -171,18 +168,16 @@ TEST(EmitUserFnsH, ListStringReturn) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("std::vector<std::string> Words("
-                        "std::string_view s);"));
+  EXPECT_THAT(*t, HasSubstr("std::vector<std::string> Words("
+                            "std::string_view s);"));
 }
 
 TEST(EmitUserFnsH, MapStringIntParam) {
-  auto lib = OneFn(
-      "lookup", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false,
-                  MapOf(Prim(CelfnType::Kind::kString),
-                        Prim(CelfnType::Kind::kInt)),
-                  "m"}});
+  auto lib = OneFn("lookup", Prim(CelfnType::Kind::kInt),
+                   {CelfnParam{false,
+                               MapOf(Prim(CelfnType::Kind::kString),
+                                     Prim(CelfnType::Kind::kInt)),
+                               "m"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t,
@@ -191,17 +186,15 @@ TEST(EmitUserFnsH, MapStringIntParam) {
 }
 
 TEST(EmitUserFnsH, NestedListOfMapStringListInt) {
-  CelfnType nested =
-      ListOf(MapOf(Prim(CelfnType::Kind::kString),
-                   ListOf(Prim(CelfnType::Kind::kInt))));
+  CelfnType nested = ListOf(MapOf(Prim(CelfnType::Kind::kString),
+                                  ListOf(Prim(CelfnType::Kind::kInt))));
   auto lib = OneFn("agg", Prim(CelfnType::Kind::kInt),
                    {CelfnParam{false, nested, "xs"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(
-      *t,
-      HasSubstr("int64_t Agg(const std::vector<std::map<std::string, "
-                "std::vector<int64_t>>>& xs);"));
+  EXPECT_THAT(*t,
+              HasSubstr("int64_t Agg(const std::vector<std::map<std::string, "
+                        "std::vector<int64_t>>>& xs);"));
 }
 
 // ── Proto ─────────────────────────────────────────────────────────
@@ -211,8 +204,7 @@ TEST(EmitUserFnsH, ProtoParamUsesNamespaceQualified) {
                    {CelfnParam{false, ProtoOf("acme.User"), "u"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t,
-              HasSubstr("bool Check(const acme::User& u);"));
+  EXPECT_THAT(*t, HasSubstr("bool Check(const acme::User& u);"));
 }
 
 TEST(EmitUserFnsH, ProtoReturnByValue) {
@@ -226,9 +218,9 @@ TEST(EmitUserFnsH, ProtoReturnByValue) {
 // ── Output stability ─────────────────────────────────────────────
 
 TEST(EmitUserFnsH, ByteForByteDeterministic) {
-  auto lib = OneFn(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib =
+      OneFn("sum", Prim(CelfnType::Kind::kInt),
+            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
   auto a = EmitUserFnsH(lib, kMod, {});
   auto b = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(a, IsOk());

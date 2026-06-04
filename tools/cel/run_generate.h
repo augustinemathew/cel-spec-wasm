@@ -13,7 +13,7 @@ namespace celwasm::tools::cel {
 
 struct GenerateOptions {
   std::string idl_path;
-  std::string language;       // "cpp" only in v1; "go" arrives with H.4.
+  std::string language;  // "cpp" only in v1; "go" arrives with H.4.
   std::string out_dir;
   std::vector<std::string> extra_includes;
   // Optional override for the WIT package name (default:

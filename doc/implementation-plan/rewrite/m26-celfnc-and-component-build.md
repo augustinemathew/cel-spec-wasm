@@ -357,16 +357,18 @@ returns (RET_AREA holds the fields directly; nothing to free),
 proto returns (`SerializeToString` into the same `cabi_realloc`'d
 buffer the bytes path uses).
 
-### 4.1 Proto-on-foreign — already gated by m24 §A
+### 4.1 Proto-on-foreign — accepted by the only foreign-fn backend
 
-`m13 §4.5.1` bars `proto(...)` on a `kForeign` (Regime A) decl;
-`m24 §8` lifts that ban for `kForeignComponent` (Regime B) by
-crossing protos as serialized bytes. celfnc inherits the existing
-rejection: `FunctionLibrary::Builder::Build()` already rejects
-`MentionsProto` on `kForeign` decls and accepts on `kForeignComponent`.
-The proto codec is the only emitter that needs a runtime dep on the
-author's `<acme.User>.pb.h`; the generated `user_fns.h` adds the
-`#include` automatically.
+`m24 §8` lets `kForeignComponent` carry `proto(...)` by crossing
+the wire as serialized bytes (`list<u8>`).  With `kForeign`
+deleted (m26 §7.5.1), this is no longer a multi-backend gate —
+every foreign-fn decl can take/return proto messages.  The
+proto codec is the only emitter that needs a runtime dep on the
+author's `<acme.User>.pb.h`; the `cel_wasm_component` macro
+takes `proto_deps = [":user_cc_proto"]` and threads it to the
+`cc_binary` that compiles `generated_stub.cc`.  The generated
+`user_fns.h` adds the matching `#include` automatically via
+`--extra_includes=acme/user.pb.h`.
 
 ### 4.2 Cross-language reuse — Go via TinyGo
 
@@ -572,59 +574,43 @@ co-compilation that proves the four files form a consistent set
 user_fns.h declares; WIT structure that wit-bindgen accepts when
 H.1 lands).
 
-### 7.5.1 IDL syntax note — `kForeign` vs `kForeignComponent`
+### 7.5.1 IDL syntax: one foreign-fn backend, `@component.<fn>`
 
-User question (2026-06-04 design feedback): "*So we should have
-kForeign and kForeignComponent?*"  **Yes — both, intentionally.**
-They are two distinct *runtime* dispatch paths (m13 Regime A vs
-m24 Regime B):
+User feedback (2026-06-04): "*so we should have kForeign and
+kForeignComponent?  …  Delete kForeign only.*"  Settled by
+deleting `kForeign` — an audit found no production caller of
+`Engine::AddModule` or `Builder::AddForeign` outside the m13
+unit tests; the m24 component-isolated path supersedes the
+shared-memory dispatch m13 originally drafted.
 
-| | `kForeign` (Regime A) | `kForeignComponent` (Regime B) |
-| --- | --- | --- |
-| Runtime dispatch | `Engine::AddModule` (shared-memory module) | `Engine::AddComponent` (isolated component via wasmtime component API) |
-| Memory | shared `cel.memory` import | own linear memory |
-| Per-call cost | single-digit ns | ~410 ns + canonical-ABI copy |
-| Foreign toolchain | thin-guest compile (wasi-thin-guest) | any language (normal component) |
-| Protos | rejected at Build (m13 §4.5.1) | crosses as `list<u8>` (m24 §8) |
-| Trust model | trusted / co-compiled | untrusted / polyglot OK |
+**The foreign-fn IDL surface is now exactly one shape:**
 
-**The two products are not equivalent and shouldn't be merged.**
-An embedder chooses one per fn-library based on
-perf-vs-isolation-vs-language-flexibility trade-offs.
+  - `@host.<fn>(...)`        — C++ host callback (`AddFunction`).
+  - `@component.<fn>(...)`   — Component-Model component
+                               (`AddComponent` with a wasm component).
+  - `@native.<fn>(...) = …`  — CEL-expression body (kCelDefined;
+                               codegen path still unshipped — grammar
+                               accepts; library validates; the
+                               body-into-module compile step
+                               remains a planned-but-unshipped
+                               feature, deliberately kept).
 
-**Where they overlap (and what m26 leverages):** the
-*generation shape* — codec.h, fns.wit, generated_stub.cc,
-user_fns.h — is identical between the two backends.  Both use the
-same wit-bindgen `author.h` carriers, the same std:: ↔ canonical-
-ABI lift/lower, the same export naming.  Only the runtime
-dispatch path (which `Engine` method the embedder calls) differs.
-That is why the cel generate emitters accept BOTH backends — they
-emit identical text regardless.  The choice is purely an embedder
-concern at *runtime registration time*.
+The previous bare-alias syntax (`rules.allow(...)`) is gone with
+`kForeign`.  The `Module foo;` directive remains for `kCelDefined`
+decls.
 
-**IDL grammar gap.**  Today the celfn IDL has syntax for
-`kForeign` (the `<alias>.<fn>` prefix) but NOT `kForeignComponent`.
-For v1 cel generate works against the existing `kForeign` syntax;
-the embedder picks at runtime which Engine method to call.  A
-follow-up workstream will add explicit `kForeignComponent`
-syntax — three candidates:
+The cel generate emitters filter strictly on
+`Backend::kForeignComponent`.  Any other backend gets passed
+through to the embedder's own `AddFunction` registration; the
+generator doesn't try to scaffold WIT for non-component decls.
 
-  1. **`@component.<alias>.<fn>` prefix** — mirrors the existing
-     `@host.` / `@native.` namespace.  Most idiomatic with the
-     current grammar.
-  2. **`Module rules { backend: component; }` block** — a
-     file-level backend declaration.  Cleaner if multiple decls
-     share a backend.
-  3. **CLI flag** — `cel generate --backend=component`
-     re-tags every kForeign decl in the lib.  Smallest grammar
-     surface, biggest runtime-vs-generate-time semantic gap.
-
-Recommendation: **option 1** (`@component.<alias>.<fn>`).
-Mirrors the existing `@host.` / `@native.` patterns, keeps the
-backend choice visible at decl scope, doesn't require a file-
-level mode that could be forgotten.  Adds two grammar rules; the
-emitters don't change.  Pencilled in for the H.2.f follow-up
-slice.
+**Plan-vs-execution delta vs. m26 §7.5.1 (2026-06-03).**  The
+prior version of this section listed three candidate syntax
+extensions for `kForeignComponent`.  We took option 1
+(`@component.<alias>.<fn>`), then dropped the alias as
+unnecessary (component dispatch goes through `cel_fn`, not a
+per-alias module).  The grammar today is
+`type '@' 'component' '.' Identifier '(' params ')' ';'`.
 
 ### 8.0 Generated-code compile gate — the user's per-build regression pin
 
@@ -770,6 +756,17 @@ the foreign-component-vs-host-fn delta as the m24 dispatch overhead.
   2. **Phase B — celfnc minimum** (~4 hr): emitters for the type
      matrix needed by stub_demo (the existing fixture). Each
      emitter has unit tests up front (interface→tests→impl).
+     **Shipped 2026-06-04** — all four emitters (WIT, codec.h,
+     generated_stub.cc, user_fns.h) plus `cel generate` CLI
+     subcommand + per-build compile-check gate (§8.0).  WIT +
+     codec emitters refactored to raw-string-template pattern
+     (§3.5); stub + skeleton refactor parked as M26.Z.
+     End-to-end working on `compiler/celfn/celfnc_emit/fixtures/
+     full_matrix.idl` covering every type row in §6 (scalars,
+     vlength, records, list/map, 3-deep nested, multi-param,
+     proto).  IDL grammar gained `@component.<fn>` (§7.5.1) and
+     the dead `kForeign` backend was removed in the same slice
+     (`Engine::AddModule` retained for `kCelDefined`).
   3. **Phase C — Macro v1** (~2 hr): cel_wasm_component supports
      the C++ path end-to-end. stub_demo builds under bazel,
      closing D.1.
@@ -780,7 +777,7 @@ the foreign-component-vs-host-fn delta as the m24 dispatch overhead.
   6. **Phase F — Full type matrix in celfnc** (~3 hr): every row
      in §4 wired + matrix test.
 
-Total: ~16 hr of focused work.
+Total: ~16 hr of focused work (Phase B's ~4 hr shipped).
 
 ## 11. Out of scope (will NOT do in m26)
 

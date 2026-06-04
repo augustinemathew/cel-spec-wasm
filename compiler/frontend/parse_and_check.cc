@@ -703,11 +703,11 @@ std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
       // backend per m24 §6 — the structural shape is handled in the
       // caller (kOptional has an inner element like kList; kType is
       // the type-of-types).  Neither is reachable through any current
-      // kHost / kForeign / kCelDefined decl path: the celfn IDL has
-      // no `type` or `option(...)` keyword
-      // (compiler/celfn/function_library.cc ExtractType ~line 251),
-      // and the corresponding cel::Type spellings (cel::TypeType,
-      // cel::OptionalType) are not yet wired through this scalar arm.
+      // kHost / kCelDefined decl path: the celfn IDL has no `type` or
+      // `option(...)` keyword (compiler/celfn/function_library.cc
+      // ExtractType), and the corresponding cel::Type spellings
+      // (cel::TypeType, cel::OptionalType) are not yet wired through
+      // this scalar arm.
       return std::nullopt;
   }
   ABSL_CHECK(false) << "CelfnScalarToCelType: unhandled CelfnType::Kind = "

@@ -27,10 +27,10 @@ std::string NormalizePkg(absl::string_view p) {
 
 // Top-level argument/return categories.  Drives signature shape.
 enum class Carrier {
-  kScalarValue,       // bool / int64 / uint64 / double — pass by value
-  kAuthorPtr,         // author_T* — pointer carrier
-  kRecordPtr,         // exports_<pkg>_<iface>_T* — record pointer
-  kProtoPtr,          // author_list_u8_t* — proto bytes
+  kScalarValue,  // bool / int64 / uint64 / double — pass by value
+  kAuthorPtr,    // author_T* — pointer carrier
+  kRecordPtr,    // exports_<pkg>_<iface>_T* — record pointer
+  kProtoPtr,     // author_list_u8_t* — proto bytes
 };
 
 Carrier CarrierFor(const CelfnType& t) {
@@ -148,21 +148,20 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
                                           absl::string_view exports_prefix) {
   using K = CelfnType::Kind;
   if (d.return_type.kind == K::kOptional || d.return_type.kind == K::kType) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "stub emitter saw permanently-rejected return kind for `", d.fn_name,
-        "`"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("stub emitter saw permanently-rejected return kind for `",
+                     d.fn_name, "`"));
   }
   for (const auto& p : d.params) {
     if (p.type.kind == K::kOptional || p.type.kind == K::kType) {
-      return absl::FailedPreconditionError(absl::StrCat(
-          "stub emitter saw permanently-rejected param kind for `", d.fn_name,
-          "`.", p.name));
+      return absl::FailedPreconditionError(
+          absl::StrCat("stub emitter saw permanently-rejected param kind for `",
+                       d.fn_name, "`.", p.name));
     }
   }
 
   const std::string fn_camel = SnakeToCamel(d.fn_name);
-  const std::string export_name =
-      absl::StrCat(exports_prefix, d.overload_id);
+  const std::string export_name = absl::StrCat(exports_prefix, d.overload_id);
   const Carrier ret_c = CarrierFor(d.return_type);
 
   // Argument list pieces.
@@ -174,25 +173,21 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
     Carrier c = CarrierFor(p.type);
     switch (c) {
       case Carrier::kScalarValue:
-        param_decls.push_back(
-            absl::StrCat(ScalarCType(p.type), " ", p.name));
+        param_decls.push_back(absl::StrCat(ScalarCType(p.type), " ", p.name));
         call_args.push_back(std::string(p.name));
         break;
       case Carrier::kAuthorPtr:
         param_decls.push_back(
             absl::StrCat(AuthorCStruct(p.type), "* ", p.name));
-        call_args.push_back(
-            absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
+        call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
         break;
       case Carrier::kRecordPtr:
-        param_decls.push_back(absl::StrCat(
-            RecordCType(p.type, exports_prefix), "* ", p.name));
-        call_args.push_back(
-            absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
+        param_decls.push_back(
+            absl::StrCat(RecordCType(p.type, exports_prefix), "* ", p.name));
+        call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
         break;
       case Carrier::kProtoPtr:
-        param_decls.push_back(
-            absl::StrCat("author_list_u8_t* ", p.name));
+        param_decls.push_back(absl::StrCat("author_list_u8_t* ", p.name));
         call_args.push_back(
             absl::StrCat(ns, "::codec::lift_proto<",
                          absl::StrReplaceAll(p.type.proto_fqn, {{".", "::"}}),
@@ -234,8 +229,8 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
       absl::StrAppend(
           &out, "  ", ns, "::codec::lower_proto<",
           absl::StrReplaceAll(d.return_type.proto_fqn, {{".", "::"}}),
-          ">(ret, ", ns, "::", fn_camel, "(",
-          absl::StrJoin(call_args, ", "), "));\n}\n\n");
+          ">(ret, ", ns, "::", fn_camel, "(", absl::StrJoin(call_args, ", "),
+          "));\n}\n\n");
     } else {
       absl::StrAppend(&out, "  ", ns, "::codec::lower(ret, ", ns,
                       "::", fn_camel, "(", absl::StrJoin(call_args, ", "),
@@ -266,8 +261,8 @@ absl::StatusOr<std::string> EmitStubCc(
     const FunctionLibrary& lib, absl::string_view cpp_namespace,
     absl::string_view wit_package_name,
     const std::vector<std::string>& extra_includes) {
-  const std::string exports_prefix = absl::StrCat(
-      "exports_", NormalizePkg(wit_package_name), "_fns_");
+  const std::string exports_prefix =
+      absl::StrCat("exports_", NormalizePkg(wit_package_name), "_fns_");
 
   std::string out;
   absl::StrAppend(
@@ -290,7 +285,7 @@ absl::StatusOr<std::string> EmitStubCc(
   absl::StrAppend(&out, "extern \"C\" {\n\n");
 
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeign && d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
     auto body = EmitOneExport(d, cpp_namespace, exports_prefix);
     if (!body.ok()) return body.status();
     absl::StrAppend(&out, *body);

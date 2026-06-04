@@ -90,8 +90,12 @@ namespace {
   // message type.  Using a forward-declared struct compiles too —
   // the templates are only instantiated when called.
   struct FakeMsg {
-    bool ParseFromArray(const void*, int) { return true; }
-    bool SerializeToString(std::string*) const { return true; }
+    bool ParseFromArray(const void*, int) {
+      return true;
+    }
+    bool SerializeToString(std::string*) const {
+      return true;
+    }
   };
   author_list_u8_t l{};
   FakeMsg m = rules::codec::lift_proto<FakeMsg>(l);
