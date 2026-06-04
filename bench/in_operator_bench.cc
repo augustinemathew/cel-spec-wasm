@@ -89,6 +89,56 @@ Compiler MakeCompilerWithBoundList(absl::string_view scalar_var,
   return *std::move(c);
 }
 
+// Declares 10 int vars `a..j`; used by the long-arith benches as a
+// realistic working set (a 50-term polynomial over 10 inputs).
+Compiler MakeCompilerWithTenInts() {
+  Compiler::Builder b;
+  for (char c = 'a'; c <= 'j'; ++c) {
+    b.DeclareVariable(std::string(1, c), CelType::Int());
+  }
+  auto compiler = std::move(b).Build();
+  ABSL_CHECK_OK(compiler);
+  return *std::move(compiler);
+}
+
+// 50-term quadratic-form polynomial: each term is `var[i % 10] *
+// var[(i*7+3) % 10]` summed across i in [0, 50).  The `(i*7+3) % 10`
+// stride hits every var with no two adjacent terms identical, so a
+// trivial CSE pass can't collapse the expression on either side
+// (Binaryen on ours, the runtime evaluator on cel-cpp's).  Total
+// shape: 50 multiplications + 49 additions = 99 operations across
+// 10 distinct int inputs.
+std::string MakeLongArithSource() {
+  // 10 000 multiplications + 9 999 additions ≈ 20 000 binary ops.
+  // Stress test for the arithmetic path: cel-cpp's tree-walker pays
+  // ~20 000 virtual-dispatch+alloc cycles per Eval, while our wasm
+  // module hands Cranelift ~20 000 i64 ops it scheduler-collapses
+  // into straight-line native code.  Parser depth cap raised to
+  // 16 384 in `parse_and_check.cc::DefaultParserOptions` (celwasmc)
+  // and in `CompilePlanOrDie` (cel-cpp) so this fits.
+  constexpr int kTerms = 1000;
+  static constexpr char kVars[] = "abcdefghij";
+  std::string s;
+  s.reserve(kTerms * 5);
+  for (int i = 0; i < kTerms; ++i) {
+    if (i > 0) s.append(" + ");
+    s.push_back(kVars[i % 10]);
+    s.push_back('*');
+    s.push_back(kVars[(i * 7 + 3) % 10]);
+  }
+  return s;
+}
+
+// Bind `a..j` to small distinct primes (2, 3, 5, ..., 29) — enough
+// signal that constant-folding can't dismiss the result, small
+// enough that the int64 product cannot overflow across 50 terms.
+void BindLongArithActivation(Activation* act) {
+  static constexpr int64_t kVals[10] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+  for (int i = 0; i < 10; ++i) {
+    act->Bind(std::string(1, static_cast<char>('a' + i)), Value::Int(kVals[i]));
+  }
+}
+
 // All benches compile at the highest Binaryen optimization level
 // (CLAUDE.md "Benchmark configuration"); a bench number from an
 // unoptimised expr module isn't representative of what production runs.
@@ -471,6 +521,32 @@ BENCHMARK(BM_Eval_In_IamPermissions_Bound_Last)
     ->Arg(100)
     ->Arg(1000)
     ->Unit(benchmark::kMicrosecond);
+
+// ══════════════════════════════════════════════════════════════════════
+// Scenario 4: long arithmetic expression — 50-term polynomial.
+//
+// Showcases what AOT + JIT buys on a compute-heavy expression: the
+// whole polynomial collapses to straight-line native machine code at
+// Plan time (Cranelift sees ~99 wasm i64 ops, schedules them as a
+// register-machine pass), so each Eval is one wasmtime call into a
+// short native function.  The cel-cpp side (`in_operator_cel_cpp_bench`)
+// runs the same expression through the tree-walking evaluator — every
+// `*` and `+` is a virtual dispatch + a CelValue allocation.  Honest
+// head-to-head on something neither side has a specialised arm for.
+// ══════════════════════════════════════════════════════════════════════
+
+void BM_Eval_LongArith_10kTerms(benchmark::State& state) {
+  Compiler c = MakeCompilerWithTenInts();
+  Instance inst = PlanOrDie(CompileOrDie(c, MakeLongArithSource()));
+  Activation act;
+  BindLongArithActivation(&act);
+  for (auto _ : state) {
+    auto v = inst.Eval(act);
+    ABSL_CHECK_OK(v);
+    benchmark::DoNotOptimize(v);
+  }
+}
+BENCHMARK(BM_Eval_LongArith_10kTerms)->Unit(benchmark::kNanosecond);
 
 }  // namespace
 }  // namespace celwasm

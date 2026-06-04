@@ -22,6 +22,10 @@ about what evaluates today vs. what is planned.
 > - [Writing host functions](writing-host-functions.md) — the typed,
 >   context, and raw APIs; proto / list / map args; returns; errors;
 >   the canonical-type and kind-safety rules.
+> - [Writing component functions](writing-component-functions.md) — the
+>   `@component.` backend end-to-end: `.celfn` + `user_fns.cc` →
+>   `cel_wasm_component` macro → Component-Model `.wasm` →
+>   `Engine::AddComponent`. C++ today; TinyGo planned.
 
 ---
 
@@ -277,7 +281,7 @@ three backends, distinguished by the *shape* of the declaration:
 |---|---|---|---|
 | **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
 | **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | nothing — *would be* compiled in (parses + type-checks today, does not evaluate — §7) |
-| **Component** ⛔ | `bool @component.allow(string subject, string action);` | a Rust/Go/C Component-Model component | `Engine::AddComponent` |
+| **Component** ✅ | `bool @component.allow(string subject, string action);` | a wasm Component-Model component (C++ today, TinyGo/Rust designed) | `Engine::AddComponent` |
 
 The backend is the **module prefix**: `@host` (C++ impl), `@native`
 (CEL body, with `= …`), or `@component` (Component-Model component).
@@ -510,11 +514,12 @@ Intended properties (target shape — see the Status callout above):
 
 ---
 
-## 8. Component functions — cross-component linking (Rust / Go / C) ⛔
+## 8. Component functions — cross-component linking (Rust / Go / C) ✅
 
-> **Status: designed, not yet implemented.** The full design is in
-> `doc/implementation-plan/rewrite/modules-and-ffi.md` §5. This section
-> describes the intended embedder experience.
+> **→ Full guide: [Writing component functions](writing-component-functions.md).**
+> The `cel_wasm_component` Bazel macro, `.celfn` declaration, the C++
+> author surface, the proto path, the type matrix, and the open
+> performance follow-ups. This section is the in-index summary.
 
 A component function is implemented by a **Component-Model component**
 **you** produce from another language (Rust, TinyGo, C, …). Unlike
@@ -522,22 +527,25 @@ CEL-defined functions (same module, shared memory) or host functions
 (C++ in the embedder), a component has **its own linear memory** — so
 values must be *marshalled* across the boundary by a host trampoline.
 
-### 8.1 Declaration and registration
+### 8.1 Declaration and registration ✅
 
-A component decl carries the `@component.` prefix:
-
-```
-bool @component.allow(string subject, string action);
-```
+A component decl carries the `@component.` prefix; the embedder declares
+the same shape on the C++ side (so the engine knows which exports to
+bind) and supplies the component bytes at runtime:
 
 ```cpp
 // Compile time: the decl makes `allow(...)` type-check.
 b.AddFunction("bool @component.allow(string subject, string action);");
 
-// Run time: supply the component's bytes; the engine binds every
-// `@component` decl in the library to a matching export on the component.
+// Run time: supply the component's bytes + the library so the engine
+// can two-level-resolve each `@component` decl against the component's
+// WIT interface exports (e.g. `cel:customfn/fns@0.1.0#allow-string-string`).
 engine->AddComponent(rules_component_bytes, lib);
 ```
+
+Building the `rules_component_bytes` from a `.celfn` + `user_fns.cc` is
+one Bazel macro call — see
+[Writing component functions §2](writing-component-functions.md#2-quick-start--c).
 
 ### 8.2 One fixed Component-Model ABI + generated shims
 
@@ -913,7 +921,8 @@ variables too (§3.3).
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
 | **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ `CompileLibraryBodies` is an unimplemented header stub — no `.cc`, no BUILD target, no caller; never registered in `Plan`. Does not evaluate (§7) |
 | **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
-| **Component fns** (`@component`, Rust/Go/C, Component-Model ABI + shims, WASI/plain) | ⛔ designed (`modules-and-ffi.md` §5), not implemented |
+| **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent` (m26) |
+| **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending (m26 H.4) |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |

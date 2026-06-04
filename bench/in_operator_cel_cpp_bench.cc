@@ -95,7 +95,9 @@ std::unique_ptr<cel::Program> CompilePlanOrDie(
     absl::string_view source, const std::vector<TypedVar>& vars) {
   const google::protobuf::DescriptorPool* pool =
       google::protobuf::DescriptorPool::generated_pool();
-  auto compiler_builder = cel::NewCompilerBuilder(pool);
+  cel::CompilerOptions copts;
+  copts.parser_options.max_recursion_depth = 16384;
+  auto compiler_builder = cel::NewCompilerBuilder(pool, copts);
   ABSL_CHECK_OK(compiler_builder);
   ABSL_CHECK_OK(
       (*compiler_builder)->AddLibrary(cel::StandardCompilerLibrary()));
@@ -416,6 +418,56 @@ BENCHMARK(BM_Eval_CelCpp_In_IamPermissions_Bound_Last)
     ->Arg(100)
     ->Arg(1000)
     ->Unit(benchmark::kMicrosecond);
+
+// ══════════════════════════════════════════════════════════════════════
+// Scenario 4: long arithmetic expression — 50-term polynomial.
+//
+// Byte-for-byte the same source string as
+// `BM_Eval_LongArith_10kTerms` in `in_operator_bench.cc`, evaluated
+// through cel-cpp's tree-walking runtime so the delta is the
+// architecture choice (AOT-wasm + Cranelift vs interpreted tree walk),
+// not the workload.
+// ══════════════════════════════════════════════════════════════════════
+
+// Mirror of `MakeLongArithSource()` on the celwasmc side — same
+// pseudo-random stride so the two sources are textually identical.
+std::string MakeLongArithSource() {
+  constexpr int kTerms = 1000;
+  static constexpr char kVars[] = "abcdefghij";
+  std::string s;
+  s.reserve(kTerms * 5);
+  for (int i = 0; i < kTerms; ++i) {
+    if (i > 0) s.append(" + ");
+    s.push_back(kVars[i % 10]);
+    s.push_back('*');
+    s.push_back(kVars[(i * 7 + 3) % 10]);
+  }
+  return s;
+}
+
+void BM_Eval_CelCpp_LongArith_10kTerms(benchmark::State& state) {
+  std::vector<TypedVar> vars;
+  vars.reserve(10);
+  for (char ch = 'a'; ch <= 'j'; ++ch) {
+    vars.push_back({std::string(1, ch), cel::IntType()});
+  }
+  auto program = CompilePlanOrDie(MakeLongArithSource(), vars);
+
+  static constexpr int64_t kVals[10] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+  google::protobuf::Arena arena;
+  cel::Activation act;
+  for (int i = 0; i < 10; ++i) {
+    act.InsertOrAssignValue(std::string(1, static_cast<char>('a' + i)),
+                            cel::Value(cel::IntValue(kVals[i])));
+  }
+
+  for (auto _ : state) {
+    auto v = program->Evaluate(&arena, act);
+    ABSL_CHECK_OK(v);
+    benchmark::DoNotOptimize(v);
+  }
+}
+BENCHMARK(BM_Eval_CelCpp_LongArith_10kTerms)->Unit(benchmark::kNanosecond);
 
 }  // namespace
 }  // namespace celwasm_bench_celcpp

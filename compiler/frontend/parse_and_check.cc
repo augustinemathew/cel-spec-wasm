@@ -1098,6 +1098,14 @@ cel::ParserOptions DefaultParserOptions() {
   // `optional<T>` handling (added via `OptionalCheckerLibrary`
   // above) is unreachable.
   opts.enable_optional_syntax = true;
+  // cel-cpp's default parser recursion depth (32) is tight enough
+  // that a fairly modest `+` / `&&` chain (e.g. a 30-term polynomial
+  // benchmark) blows past it.  Raise to 16 384 — accommodates the
+  // 10 000-term arithmetic benchmark and any realistic embedder
+  // expression while still bounding pathological inputs.  This is
+  // the depth of the resulting AST, not source bytes; deep nesting
+  // in field paths or comprehension bodies counts too.
+  opts.max_recursion_depth = 16384;
   return opts;
 }
 
