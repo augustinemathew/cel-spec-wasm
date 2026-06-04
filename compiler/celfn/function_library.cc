@@ -57,6 +57,12 @@ std::string CelfnType::Argkind() const {
     case Kind::kProto:
       return absl::StrCat("message_",
                           absl::StrReplaceAll(proto_fqn, {{".", "_"}}));
+    case Kind::kType:
+      return "type";
+    case Kind::kOptional:
+      return absl::StrCat("optional_", optional_element.empty()
+                                           ? "unknown"
+                                           : optional_element[0].Argkind());
   }
   return "unknown";
 }
@@ -70,6 +76,9 @@ bool MentionsProto(const CelfnType& t) {
   }
   if (t.kind == CelfnType::Kind::kMap && t.map_kv.size() == 2) {
     return MentionsProto(t.map_kv[0]) || MentionsProto(t.map_kv[1]);
+  }
+  if (t.kind == CelfnType::Kind::kOptional && !t.optional_element.empty()) {
+    return MentionsProto(t.optional_element[0]);
   }
   return false;
 }
@@ -144,6 +153,24 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddForeign(
     }
   }
   if (!seen) foreign_aliases_.emplace_back(alias);
+  decls_.push_back(std::move(d));
+  return *this;
+}
+
+FunctionLibrary::Builder& FunctionLibrary::Builder::AddForeignComponent(
+    absl::string_view fn_name, CelfnType return_type,
+    std::vector<CelfnParam> params) {
+  CelfnDecl d{};
+  d.backend = CelfnDecl::Backend::kForeignComponent;
+  d.fn_name = std::string(fn_name);
+  // Dispatch path is shared with @host (m24 §2: a component fn is a host
+  // fn at the call site).  The wasm `(import "cel_fn" "<helper>" …)`
+  // shape is therefore identical; component-ness is invisible to the
+  // codegen / overload table / checker.
+  d.module_name = "cel_fn";
+  d.return_type = std::move(return_type);
+  d.params = std::move(params);
+  Finalise(d);
   decls_.push_back(std::move(d));
   return *this;
 }

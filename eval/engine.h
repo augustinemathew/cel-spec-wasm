@@ -40,6 +40,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/celfn/function_library.h"
 #include "compiler/program.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
@@ -131,6 +132,31 @@ class Engine {
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
                                                 HostCallback impl);
+
+  // Register a Component-Model component as the backend for every
+  // `kForeignComponent` decl in `lib`.  Per m24 §3.5: instantiate the
+  // component with the wasmtime component API, validate each declared
+  // fn is exported with the matching `FuncType`, and bind a host
+  // callback (via the existing `AddFunction` path) whose body marshals
+  // args via the per-fn typed WIT codec → the component's typed export
+  // → marshals the result.
+  //
+  // Conflict checks (same shape as `AddFunction`):
+  //   - Any `overload_id` from `lib`'s kForeignComponent decls already
+  //     registered → AlreadyExists.
+  //   - `component_bytes` fail to parse as a Component-Model component
+  //     → InvalidArgument.
+  //   - A declared fn is not exported by the component, or its
+  //     exported `FuncType` does not match the decl's signature →
+  //     FailedPrecondition.
+  //
+  // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
+  //
+  // **Status: not yet implemented** — m24 is at design stage as of
+  // 2026-06-03; this returns `Unimplemented` and exists as the
+  // forward-declared surface the e2e test matrix is written against.
+  ABSL_MUST_USE_RESULT absl::Status AddComponent(
+      absl::Span<const uint8_t> component_bytes, const FunctionLibrary& lib);
 
   // Typed sugar over `AddFunction` (host-call adapter Layer 2,
   // eval/typed_function.h): adapts a plain typed lambda into a

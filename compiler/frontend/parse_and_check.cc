@@ -697,6 +697,17 @@ std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
     case CelfnType::Kind::kList:
     case CelfnType::Kind::kMap:
     case CelfnType::Kind::kProto:
+    case CelfnType::Kind::kType:
+    case CelfnType::Kind::kOptional:
+      // kType / kOptional are admitted by the kForeignComponent
+      // backend per m24 §6 — the structural shape is handled in the
+      // caller (kOptional has an inner element like kList; kType is
+      // the type-of-types).  Neither is reachable through any current
+      // kHost / kForeign / kCelDefined decl path: the celfn IDL has
+      // no `type` or `option(...)` keyword
+      // (compiler/celfn/function_library.cc ExtractType ~line 251),
+      // and the corresponding cel::Type spellings (cel::TypeType,
+      // cel::OptionalType) are not yet wired through this scalar arm.
       return std::nullopt;
   }
   ABSL_CHECK(false) << "CelfnScalarToCelType: unhandled CelfnType::Kind = "
@@ -751,9 +762,12 @@ absl::StatusOr<cel::Type> CelfnTypeToCelType(
   if (t.kind == CelfnType::Kind::kList)
     return CelfnListToCelType(t, arena, pool);
   if (t.kind == CelfnType::Kind::kMap) return CelfnMapToCelType(t, arena, pool);
-  ABSL_CHECK_EQ(static_cast<int>(t.kind),
-                static_cast<int>(CelfnType::Kind::kProto));
-  return CelfnProtoToCelType(t, pool);
+  if (t.kind == CelfnType::Kind::kProto) return CelfnProtoToCelType(t, pool);
+  // kType / kOptional are admitted on CelfnDecl by AddForeignComponent
+  // (m24 §6) but the type-checker mapping to cel::TypeType /
+  // cel::OptionalType is a stub until m24's component-backend lands.
+  ABSL_CHECK(false) << "CelfnTypeToCelType is a stub for CelfnType::Kind = "
+                    << static_cast<int>(t.kind) << " until m24";
 }
 
 // M13 Slice C.3 — build a single `OverloadDecl` from one `CelfnDecl`.

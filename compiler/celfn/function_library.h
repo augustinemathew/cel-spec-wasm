@@ -38,7 +38,10 @@
 namespace celwasm {
 
 // CEL type as it appears in a custom-fn signature.  Mirrors §3.6 of
-// m13-custom-fns.md.
+// m13-custom-fns.md, extended by §6 of m24-foreign-fn-component-backend.md
+// (the foreign-component author surface adds `type` and `optional<T>` to
+// the declarable matrix; existing host / kForeign backends do not yet
+// admit either — see m24 §6 for the type-to-WIT-to-C++ mapping).
 struct CelfnType {
   enum class Kind : uint8_t {
     kBool,
@@ -53,6 +56,14 @@ struct CelfnType {
     kList,
     kMap,
     kProto,
+    kType,      // CEL `type` (the type-of-types).  m24 §6: WIT `string`,
+                // C++ `std::string` (the type name).  Only reachable
+                // through `kForeignComponent` decls today.
+    kOptional,  // CEL `optional<T>`.  m24 §6: WIT `option<wit T>`, C++
+                // `std::optional<C++ T>`.  Element type in
+                // `optional_element[0]`.  Only reachable through
+                // `kForeignComponent` decls; the @host adapter has no
+                // canonical spelling.
   };
 
   Kind kind = Kind::kBool;
@@ -64,10 +75,14 @@ struct CelfnType {
   std::vector<CelfnType> list_element;
   // For kMap: two-element vector [key, value].  Empty for non-kMap.
   std::vector<CelfnType> map_kv;
+  // For kOptional: single-element vector holding the wrapped type.
+  // Empty for non-kOptional.
+  std::vector<CelfnType> optional_element;
 
   // Synthesises the argkind slug used in overload-ids per §3.6.
   // E.g. `int` → "int", `proto(acme.User)` → "message_acme_User",
-  // `list<int>` → "list_int".
+  // `list<int>` → "list_int", `type` → "type",
+  // `optional<int>` → "optional_int".
   std::string Argkind() const;
 };
 
@@ -80,9 +95,17 @@ struct CelfnParam {
 
 struct CelfnDecl {
   enum class Backend : uint8_t {
-    kHost,        // `@host.` prefix
-    kForeign,     // `<alias>.` prefix
-    kCelDefined,  // `@native.` prefix, has body
+    kHost,              // `@host.` prefix
+    kForeign,           // `<alias>.` prefix — m13 shared-memory `kUserModule`
+                        // backend (no protos; v1 cross-boundary constraint).
+    kCelDefined,        // `@native.` prefix, has body
+    kForeignComponent,  // m24 §3 component-backed foreign fn — dispatched
+                        // as a host callback (module_name = "cel_fn"), but
+                        // marshaled through a per-fn typed WIT export of
+                        // a Component-Model component registered via
+                        // `Engine::AddComponent(bytes, lib)`.  Admits
+                        // protos (as serialized bytes, m24 §8); admits
+                        // `type` and `optional<T>` per m24 §6.
   };
 
   Backend backend = Backend::kHost;
@@ -143,6 +166,19 @@ class FunctionLibrary {
     // Plan time via RuntimeBindings::AddModule(alias, …).
     Builder& AddForeign(absl::string_view alias, absl::string_view fn_name,
                         CelfnType return_type, std::vector<CelfnParam> params);
+
+    // Add a Component-Model-backed foreign declaration.  Dispatch is via
+    // the `cel_fn` host-callback path (same as kHost — see m24 §2);
+    // marshaling is per-fn typed WIT + a generated codec (m24 §4–§7).
+    // The embedder supplies the component bytes at Plan time via
+    // `Engine::AddComponent(component_bytes, lib)`.
+    //
+    // Unlike `AddForeign`, this admits `proto(...)` arguments and
+    // returns — they cross as serialized bytes (m24 §8).  It also admits
+    // `type` and `optional<T>` per m24 §6.
+    Builder& AddForeignComponent(absl::string_view fn_name,
+                                 CelfnType return_type,
+                                 std::vector<CelfnParam> params);
 
     // Add a CEL-defined function (body is a CEL expression).
     // celwasmc compiles the body into the wasm module named by

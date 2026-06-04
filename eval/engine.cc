@@ -763,6 +763,34 @@ absl::Status Engine::AddFunction(absl::string_view overload_id,
   return absl::OkStatus();
 }
 
+// ——— Engine::AddComponent (m24 §3.5 — forward-declared, not yet wired) ———
+//
+// The full implementation per m24 §3.5 is:
+//
+//   1. Instantiate the component with the wasmtime component API.
+//   2. For each `kForeignComponent` decl in `lib`, validate the
+//      component exports a typed fn with a matching FuncType.
+//   3. Register a host callback (via `AddFunction`) whose body marshals
+//      args through the per-fn typed WIT codec (m24 §4–§7) into the
+//      component's typed export, then marshals the result back.
+//
+// The Component-Model surface of the vendored wasmtime C API is the
+// open prerequisite (m24 §13 — "verify the vendored build exposes it;
+// the C API's component surface is thinner than Rust's — may force a
+// shim").  This sibling is the surface the e2e test matrix
+// (e2e/foreign_fn_type_matrix_test.cc) is written against; tests SKIP
+// until this returns ok.
+
+absl::Status Engine::AddComponent(absl::Span<const uint8_t> component_bytes,
+                                  const FunctionLibrary& lib) {
+  (void)component_bytes;
+  (void)lib;
+  return absl::UnimplementedError(
+      "Engine::AddComponent: m24 §3.5 component-backend wiring not yet "
+      "implemented (status: research/design 2026-06-03). See "
+      "doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md.");
+}
+
 // ——— Engine::Builder ———
 
 absl::StatusOr<Engine> Engine::Builder::Build() && {

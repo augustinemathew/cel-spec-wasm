@@ -560,6 +560,30 @@ cc_test(
 # docblock for the tier mapping and the legitimate type exclusions
 # (type, optional, WKT wrappers as separate types, WKT struct types).
 cc_test(
+    name = "foreign_fn_type_matrix_test",
+    srcs = ["foreign_fn_type_matrix_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:cel_host",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "host_fn_type_matrix_test",
     srcs = ["host_fn_type_matrix_test.cc"],
     tags = ["manual"],
