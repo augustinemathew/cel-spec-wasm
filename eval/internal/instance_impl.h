@@ -90,6 +90,16 @@ struct InstanceImpl {
   // lifetime.
   std::vector<std::unique_ptr<HostFnEnv>> host_fn_envs;
 
+  // Per-Plan envs for `kForeignComponent` callbacks bound by
+  // `Engine::Plan`'s `InstantiateAndBindComponents` step.  Type-erased
+  // (`shared_ptr<void>`) so this header does not need the wasmtime
+  // component model header dragged in — the concrete `ComponentFnEnv`
+  // type lives inside engine.cc.  Each pointer's deleter is set at
+  // construction time and runs when the InstanceImpl drops, after
+  // wasmtime's per-store cleanup, so the captured func handles stay
+  // valid until the store is torn down.
+  std::vector<std::shared_ptr<void>> component_fn_envs;
+
   InstanceImpl() = default;
   ~InstanceImpl();
   InstanceImpl(const InstanceImpl&) = delete;

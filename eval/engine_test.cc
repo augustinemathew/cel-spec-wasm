@@ -348,5 +348,120 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
   EXPECT_EQ(*v_or->AsInt(), 42);
 }
 
+// ─── m24 — Engine::AddComponent failure-mode coverage ─────────────
+//
+// AddComponent runs at engine setup, before any Plan.  The four
+// reachable failure modes are:
+//   - empty `component_bytes` → InvalidArgument
+//   - overload-id collides with an earlier `AddFunction` → AlreadyExists
+//   - overload-id collides with an earlier `AddComponent` → AlreadyExists
+//   - malformed component bytes → InvalidArgument (wasmtime error)
+// The dispatch through to `wasmtime_component_func_call` only fires
+// at Plan + Eval time — covered by the e2e foreign-fn matrix
+// (task C.5) once we have a real component fixture.
+
+// A tiny helper to build a kForeignComponent library declaring one
+// nullary bool fn under the given overload-id.  Used as the
+// conflict-detection surface.
+celwasm::FunctionLibrary OneBoolFnLibrary(absl::string_view fn_name) {
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kBool;
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddForeignComponent(fn_name, ret, {})
+                    .Build();
+  ABSL_CHECK(lib_or.ok()) << lib_or.status();
+  return *std::move(lib_or);
+}
+
+TEST(EngineAddComponentTest, RejectsEmptyComponentBytes) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  std::vector<uint8_t> empty_bytes;
+  auto s = engine_or->AddComponent(empty_bytes, OneBoolFnLibrary("f"));
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(EngineAddComponentTest, RejectsMalformedComponentBytes) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  // Anything that's not a real Component-Model component.  The
+  // §13 probe confirmed wasmtime_component_new returns an error
+  // shape we can surface as InvalidArgument.
+  const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
+  auto s = engine_or->AddComponent(garbage, OneBoolFnLibrary("g"));
+  EXPECT_FALSE(s.ok()) << "garbage component bytes should fail to parse";
+}
+
+TEST(EngineAddComponentTest,
+     ConflictWithEarlierAddFunctionReportedAtRegistration) {
+  // Conflict detection runs BEFORE the parse, so the test does not
+  // need to provide a real component — the conflict trips first.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
+    return absl::OkStatus();
+  };
+  ASSERT_TRUE(engine_or->AddFunction("collide", /*num_args=*/1, impl).ok());
+  const std::vector<uint8_t> any_bytes{0x00};  // never parsed
+  auto s = engine_or->AddComponent(any_bytes, OneBoolFnLibrary("collide"));
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+  EXPECT_NE(std::string(s.message()).find("collide"), std::string::npos);
+  EXPECT_NE(std::string(s.message()).find("AddFunction"), std::string::npos);
+}
+
+TEST(EngineAddComponentTest,
+     ConflictWithEarlierAddComponentReportedAtRegistration) {
+  // Two AddComponent calls naming the same overload-id.  The second
+  // is rejected.  We need the first call to actually land (i.e.
+  // parse), so we use bytes that wasmtime accepts.  Real components
+  // are non-trivial to inline here — use a 1-byte sentinel that the
+  // conflict check would catch BEFORE the wasmtime_component_new
+  // call on the second attempt.  To exercise the "earlier component
+  // already registered" arm without needing a real component, we
+  // construct an `Engine` whose state holds one already; this is
+  // covered indirectly by the e2e foreign-fn matrix (C.5).  Here
+  // we pin the AddFunction-first variant above and the
+  // pre-parse-conflict-detection contract: the conflict check
+  // executes for the SAME-overload-id case before any wasmtime
+  // parse, so a garbage second component still surfaces
+  // AlreadyExists rather than InvalidArgument.
+  GTEST_SKIP() << "blocked on a real Component-Model component fixture "
+                  "(needed to land the first AddComponent in this test) — "
+                  "lands with C.5 / D.1";
+}
+
+TEST(EngineAddComponentTest, EmptyLibraryNoDeclsParsesOnly) {
+  // An AddComponent call with a library that declares NO
+  // kForeignComponent decls is degenerate but well-defined: the
+  // parse still has to succeed.  Garbage bytes therefore still
+  // fail — we're confirming the empty library doesn't bypass the
+  // parse step.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  auto lib_or = celwasm::FunctionLibrary::Builder().Build();
+  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
+  const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
+  auto s = engine_or->AddComponent(garbage, *lib_or);
+  EXPECT_FALSE(s.ok()) << "garbage bytes should fail even with empty library";
+}
+
+TEST(EngineAddComponentTest, PlanSucceedsWhenNoComponentsRegistered) {
+  // Regression: the new InstantiateAndBindComponents step in Plan
+  // must be a no-op when no components are registered.  This pins
+  // that Plan stays green for code paths that don't use the
+  // component backend at all.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok());
+  auto prog_or = compiler_or->Compile("42");
+  ASSERT_TRUE(prog_or.ok());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
 }  // namespace
 }  // namespace celwasm

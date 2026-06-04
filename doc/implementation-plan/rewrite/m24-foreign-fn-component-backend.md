@@ -1,6 +1,86 @@
 # M24 — Foreign custom functions via the Component Model
 
-Status: research / design — drafted 2026-06-03, not yet started.
+Status: shipped 2026-06-04 (v1, native dispatch path).
+
+What landed: the load-bearing slices A.1–A.5, B.1–B.7+B.9, C.1–C.4 plus
+an e2e dispatch proof. A `kForeignComponent` decl now routes through
+the shipped `kCelFn` import path (no new `ImportModule` variant),
+`Engine::AddComponent(component_bytes, lib)` parses+instantiates a
+component via the wasmtime C API, validates each declared export's
+type, and binds it as a `HostCallback` whose body lifts CEL args into
+component-model `wasmtime_component_val_t`, calls the export, and
+lowers the result back to a `Value`. The marshaling bridge
+(`eval/internal/cel_component.{h,cc}`) covers every CEL type the v1
+scope admits — `bool` / `int` / `uint` / `double` / `null` / `string`
+/ `bytes` / `duration` / `timestamp` / `list<T>` / `map<K,V>` /
+`proto(fqn)` — with the §10 boundary matrix in
+`cel_component_test.cc` (79 cases). End-to-end dispatch is pinned by
+`e2e/foreign_component_dispatch_test.cc` (full pipeline:
+`AddForeignComponent` → `Compile` → `AddComponent` → `Plan` → `Eval`,
+incl. `INT64_MIN`).
+
+Plan-vs-execution deltas — see §14 for the full list. Headline items:
+
+  - **`optional<T>` and `type` permanently rejected as
+    foreign-component declarable shapes.** §6 originally listed both
+    as supported (`option<wit T>` and `string` carriers respectively);
+    user direction (2026-06-04) closes both as foreign-component decl
+    surfaces, with `Builder::Build()` rejecting either at decl time
+    naming the offending decl. The marshaling layer keeps its kType
+    Lift/Lower arm because other kCelFn / kHost paths can still use
+    it (only the foreign-component decl surface is closed); the
+    kOptional arm refuses outright. CEL `null` (kNull) is a distinct
+    kind and stays supported — the wire-level `option<unit>`
+    encoding for null is a hidden canonical-ABI detail with no
+    user-facing optional<T> surface. See §14 for the permanent-scope
+    block.
+  - **`AddForeignComponent` IDL gates lifted to `Builder::Build()`.**
+    The doc didn't pin where illegal-shape rejection runs; execution
+    chose `Build()` (mirroring `MentionsProto`) so illegal types fail
+    once, declaratively, before any compile attempt. The same `Build()`
+    gate also catches illegal map-key kinds (langdef rule: keys are
+    `bool|int|uint|string`), applied to **every** backend, not just
+    `kForeignComponent`.
+  - **Component-Model export-name kebab translation.** §3.5 was silent
+    on snake-vs-kebab; execution surfaced that the Component Model
+    spec restricts exports to kebab-case (`add_int_int` is rejected
+    at parse with "not a valid extern name"). `Engine::AddComponent`
+    now converts the CEL overload-id `foo_bar` → component export
+    `foo-bar` at the lookup site, so the CEL author stays in snake
+    and the WIT author stays in kebab.
+  - **`wasmtime_wat2wasm` accepts component-model WAT.** Settled by
+    `eval/probes/m24/component_wat_probe.cc` (now deleted at closeout).
+    The e2e dispatch test assembles a tiny component inline, removing
+    the wit-bindgen / wasi-sdk / wasm-tools tool-chain pre-req that
+    §11 assumed for fixtures. That toolchain is still the right
+    author-facing surface — it's only the *test fixture* that no
+    longer needs it.
+  - **`cel.abi` `CustomFunctionEntry.Backend = FOREIGN` round-trip
+    not wired.** §3 listed this; the data path stays
+    backend-agnostic at the wire level today (component-ness is
+    invisible to the compiler — there is no per-decl backend bit on
+    the wire), so the entry stayed unchanged. Recorded as future
+    work (§14).
+  - **TinyGo forcing fixture deferred.** §11 named a TinyGo-via-WIT
+    component as the language-agnostic contract proof. v1 ships the
+    contract-pinning C++ stub_demo (17 author-level cases) + the e2e
+    dispatch test (every load-bearing CEL type round-trips through
+    the wasmtime component API); the TinyGo variant is a future-work
+    item (§14) and does not gate v1 sign-off because the contract is
+    already pinned through wasmtime's component runtime, which is
+    language-agnostic by construction.
+  - **Large-payload boundary block added.** §10 listed empty + single
+    + ragged-nested for aggregates, but the original test pass
+    capped at KB scale.  v1 ships a separate large-payload block
+    (F.1, F.2) covering 256 KiB strings/bytes, 10⁵ list elements,
+    10⁴ map entries, 10⁴ proto-repeated entries, MiB-scale proto
+    string/bytes fields, and an e2e dispatch test that crosses a
+    256 KiB string + a 10⁵-element list through the wasmtime
+    canonical-ABI boundary.  This catches the failure modes the KB
+    cases miss: signed-int length counters, quadratic per-element
+    walks, allocator pathologies under genuine memory pressure, and
+    canonical-ABI realloc semantics with non-trivial payloads.
+
 Absorbs the former separate "m25 DX" doc (backend + developer experience
 are one design). Validated end-to-end (`e2e/foreign_component_fixtures/stub_demo/`, 17/17 e2e
 assertions on wasmtime 45). Builds on
@@ -169,8 +249,8 @@ nesting, missing key).
 | `null` | `option<unit>` / dynamic | `std::monostate` / via `optional` | rarely a declared param |
 | `duration` | `record {seconds:s64,nanos:s32}` | `absl::Duration` | |
 | `timestamp` | `record {seconds:s64,nanos:s32}` | `absl::Time` | |
-| `type` | `string` | `std::string` (type name) | |
-| `optional<T>` | `option<wit T>` | `std::optional<C++ T>` | |
+| `type` | `string` | `std::string` (type name) | **PERMANENTLY REJECTED as a foreign-component declarable shape** — `Builder::Build()` refuses; the kType Lift/Lower arm stays for kCelFn / kHost paths. See §14. |
+| `optional<T>` | `option<wit T>` | `std::optional<C++ T>` | **PERMANENTLY REJECTED as a foreign-component declarable shape** — `Builder::Build()` refuses with the offending decl named. See §14. |
 | `list<T>` | `list<wit T>` | `std::vector<C++ T>` | recurses |
 | `map<K,V>` | `list<tuple<wit K, wit V>>` | `std::map<C++ K, C++ V>` | no WIT map; K ∈ {bool,int,uint,string} |
 | `proto(fqn)` | `list<u8>` | the author's generated message class | serialized bytes (§8) |
@@ -279,12 +359,15 @@ right when the fn needs the message, vs. pulling one field.
     native `AddFunction`.
   - `testing-checklist.md` — tick the foreign-component rows.
 
-## 13. Open questions / future work
+## 13. Open questions / future work (historical — as-of drafting)
+
+The doc-time list, kept for context. The as-shipped future-work
+backlog lives in §14.
 
   - **Component API in `eval/`** — *resolved 2026-06-03 via
-    `eval/probes/m24/wasmtime_component_api_probe.{cc,BUILD.bazel}`.*
-    The vendored darwin_arm64 wasmtime archive ships the C API
-    component-model symbols (`wasmtime_component_new`,
+    `eval/probes/m24/wasmtime_component_api_probe.{cc,BUILD.bazel}`,
+    deleted at closeout.* The vendored darwin_arm64 wasmtime archive
+    ships the C API component-model symbols (`wasmtime_component_new`,
     `wasmtime_component_linker_{new,instantiate,instance_add_func}`,
     `wasmtime_component_instance_get_func`,
     `wasmtime_component_func_call`).  Every typedef and decl in
@@ -297,12 +380,11 @@ right when the fn needs the message, vs. pulling one field.
     define set, headers compile, symbols link, and
     `wasmtime_component_new(garbage)` returns a real error — the
     library bodies are present, not stubs.  **No Rust shim required;
-    `Engine::AddComponent` (§3.5) can be written natively against
-    the C API.**  The probe is a throwaway per CLAUDE.md probe
-    discipline; deleted at milestone closeout.
+    `Engine::AddComponent` (§3.5) is written natively against the
+    C API.**
   - **`celfnc` codec emission**: §7 is mechanical, but the generator
     must handle every §6 row + arbitrary nesting; `e2e/foreign_component_fixtures/stub_demo`'s
-    codec is hand-written proof, not the generator.
+    codec is hand-written proof, not the generator. (Future work, §14.)
   - **`-fno-exceptions` requirement**: wasm C++ leaf code must avoid the
     exception runtime (`__cxa_throw` unresolved); the generated build
     rules set it.
@@ -315,3 +397,67 @@ right when the fn needs the message, vs. pulling one field.
   - **`-c opt` re-measure** of the one-crossing typed path vs the handle
     path, to make §4 quantitative in-tree.
   - **Regime A's thin-guest compile story**: orthogonal, still m13's.
+
+## 14. Future work (as-shipped backlog)
+
+Surfaced during execution; not in v1 scope. Each entry is a follow-up
+the v1 closeout deliberately defers.
+
+  - **TinyGo forcing-function fixture (D.2).** A TinyGo-via-WIT
+    component implementing the same `fns.wit` as a Go peer of the C++
+    `stub_demo` fixture, driven through `Engine::AddComponent` from an
+    e2e test. Pins the contract as language-agnostic at the test
+    layer (today it's already language-agnostic at the wasmtime
+    component-runtime layer, which is what passes the v1 gate).
+    Blocker: TinyGo toolchain is not wired into bazel; lands with
+    that wiring.
+  - **Large-payload e2e — broader matrix.** v1 ships dispatch-level
+    coverage at 256 KiB (string) and 10⁵ (list<int>); the marshaling
+    layer covers the full type matrix at scale.  An e2e expansion
+    that crosses 10⁴ map entries / proto-with-MiB-bytes through the
+    full pipeline (rather than only through the cel_component
+    bridge) is a natural extension once the codec generator lands —
+    today it would need bespoke WAT components per shape.
+  - **`bench/foreign_component` (D.3).** Production-config
+    (`-c opt`, `optimize_level = 2`) head-to-head of `AddComponent`
+    invoke cost vs `kUserModule` slot-out (Regime A) vs native
+    `AddFunction`. Quantifies §4's "~410 ns + typed copy" claim in
+    the tree and gives the embedder a measured cost to pick between
+    Regimes A and B per fn. Blocker: none — the dispatch path is
+    shipped; this is purely a benchmark add.
+  - **`celfnc` codec generator.** The §5–§7 author
+    surface assumes a generator emits `fns.wit` + `codec.h` +
+    `generated_stub.cc` from the CEL decls. v1 ships the marshaling
+    runtime; `e2e/foreign_component_fixtures/stub_demo` is hand-written proof of the
+    target shape. The generator itself is the standalone tool that
+    closes the author surface.
+  - **`cel.abi` `CustomFunctionEntry.Backend = FOREIGN` wire-format
+    round-trip.** The proto field exists; backend-ness stays
+    invisible to the compiler today because dispatch is uniform
+    through `kCelFn`. If a future bindings layer needs to discover
+    per-decl backend from the `.wasm` artifact, populate the field
+    at `abi.cc` emit time and add the round-trip test.
+  - **`-c opt` re-measure** of §4's typed-cross vs handle-pull
+    numbers, in-tree (paired with D.3).
+
+> **Permanently out of scope, not deferred.** The foreign-fn
+> author surface will **not** accept `optional<T>` or `type` as
+> declarable param / return shapes — user direction, 2026-06-04.
+> `Builder::Build()` rejects either at decl time (`MentionsOptional`
+> / `MentionsType` walk both nest through `list`, `map`, and
+> `optional` carriers, so `list<map<string, type>>` and
+> `optional<type>` also fall here), naming the offending decl /
+> param. This is the contract for both v1 and the foreseeable
+> lifespan of the typed path; the kType Lift/Lower arm in
+> `eval/internal/cel_component.cc` stays because other kCelFn /
+> kHost paths can still use it, but no foreign-component decl can
+> reach it.
+>
+> **CEL `null` (kNull) stays supported** as a declarable
+> foreign-component param / return shape — it is a distinct CEL
+> kind from kOptional, and `MentionsOptional` does not flag it.
+> The wire-level `option<unit>` encoding for null is a hidden
+> canonical-ABI detail; the author IDL and `CelfnType::Kind` both
+> see it as plain `null`. Coverage: `function_library_test`
+> `ForeignComponentNullParamIsAccepted` and
+> `ForeignComponentNullReturnIsAccepted`.

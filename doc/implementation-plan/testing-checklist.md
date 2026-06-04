@@ -2612,6 +2612,91 @@ aggregate returns work for user host fns.  No wire-format / runtime
         (`FunctionOriginUnknownSurvivesOperatorMerge`).  Error args
         propagate (error precedence over unknown).
 
+### Rewrite M24 — foreign custom functions via Component Model (shipped 2026-06-04)
+
+`m24-foreign-fn-component-backend.md` adds **Regime B** — a foreign
+custom-fn backend that dispatches a normal isolated WebAssembly
+*component* (any language toolchain, own memory, protos cross as
+bytes) over the shipped `kCelFn` host-callback path.  The compiler,
+checker, overload table, codegen, and 3VL absorption are
+**unchanged**; the new surface is one Eval-side entry-point
+(`Engine::AddComponent`) and one marshaling bridge
+(`eval/internal/cel_component.{h,cc}`) that lifts/lowers
+`CelfnType` × `Value` ↔ `wasmtime_component_val_t`.
+
+  - [x] **A.1–A.5 — IDL + Builder gates** at
+        `compiler/celfn/function_library.cc`,
+        `compiler/celfn/function_library_test.cc` (+12 cases) and
+        `compiler/compiler_test.cc` (+4 cases).
+        `Builder::AddForeignComponent(fn_name, return_type, params)`
+        registers as `kCelFn` (so codegen routing is invisible to the
+        compiler); `Builder::Build()` rejects (a) `kForeignComponent`
+        decls whose return or any param mentions `optional<T>` (v1
+        decision: optional dropped, named in the error) and (b) **any**
+        backend whose return contains `map<K, V>` for a K outside
+        `{bool, int, uint, string}` (langdef rule).
+  - [x] **B.1–B.7 + B.9 — typed marshaling at the canonical-ABI
+        boundary** at `eval/internal/cel_component_test.cc`.  The full
+        type matrix from m24 §6 (minus the dropped `optional<T>` row)
+        round-trips through `LiftCelToComponent` / `LowerComponentToCel`:
+        `bool` / `int` / `uint` / `double` / `null` / `string` / `bytes`
+        / `duration` / `timestamp` / `type` / `list<T>` / `map<K,V>` /
+        `proto(fqn)`.  Boundary discipline covers every scalar
+        extremum (`INT64_MIN/MAX`, `UINT64_MAX`, `±0.0`, `NaN`, `±Inf`,
+        nanos 0 / 999_999_999 / out-of-range), every string/bytes
+        edge (empty, embedded NUL, multi-byte UTF-8, KB-scale), every
+        aggregate shape (empty / single / ragged-nested), every legal
+        map-key kind and the `double`-key rejection, the missing-pool
+        / unknown-fqn / bad-bytes proto-decode failures, and a
+        cross-kind defence-in-depth row per scalar.  **Plus the
+        large-payload boundary block** (F.1) at the bottom of the
+        file: `LargeStringRoundTripsAtMiBScale` (256 KiB), `…Bytes…`
+        (256 KiB), `LargeListIntRoundTripsAt100kElements` (10⁵
+        scalars), `LargeListOfLargeStringsLiftsAtMiBScale` (1 K × 1 KiB),
+        `LargeNestedListLiftsAt10kLeafCells` (100 × 100),
+        `LargeMapStringIntRoundTripsAt10kEntries` (10⁴ entries),
+        `LargeMapStringListIntLiftsAt10kLeafCells` (10⁴ leaves),
+        `LargeProtoLargeStringFieldLiftsAtMiBScale` (256 KiB UTF-8 in
+        `Customer.name`), `LargeProtoLargeBytesFieldLiftsAtMiBScale`
+        (256 KiB binary in `Customer.session_token`), and
+        `LargeProtoRepeatedStringLiftsAt10kEntries` (10⁴
+        `Customer.tags`).
+  - [x] **C.1–C.4 — `Engine::AddComponent(component_bytes, lib)`** at
+        `eval/engine.{h,cc}` (+`_test.cc`).  Per-Plan: parses the
+        component via `wasmtime_component_new`, instantiates it,
+        translates each declared overload-id from snake to **kebab**
+        for the component-export lookup (Component-Model spec rejects
+        `_`), validates the export shape (positive — used by every
+        e2e case below; negative — overload-id conflict + unknown
+        export, two passing tests).  Each export is bound as a
+        `HostCallback` whose body marshals args via the cel_component
+        bridge, calls `wasmtime_component_func_call`, and lowers the
+        result.  3VL absorption fires upstream of the callback
+        (covered by m21's `UnknownArgAutoPropagatesWithoutInvokingCallback`).
+  - [x] **D.1 / F.2 — e2e dispatch path proof** at
+        `e2e/foreign_component_dispatch_test.cc` (4 cases).  Each
+        test goes through the full pipeline: `AddForeignComponent` →
+        `Compile` → `AddComponent` (parses inline component-model WAT
+        via `wasmtime_wat2wasm`) → `Plan` → `Eval` against an
+        Activation.  Cases: `IntAddRoundTripsBoundaryValues` (scalar
+        path + `INT64_MIN`); `BoolPassthroughRoundTrips` (scalar bool);
+        `LargeStringTransportsAtMiBScale` (256 KiB string into a
+        component with `(canon lift … (realloc …))`); and
+        `LargeListIntTransportsAt100kElements` (10⁵ list<int> summed
+        inside the component).  Pins the *transport* size, not just
+        the value range — the place a bug in canonical-ABI handoff or
+        the eval-side memcpy / HostCallContext::ArgString path would
+        surface.
+
+**As-of-v1 deferrals (tracked in m24 §14 Future Work).**  D.2 TinyGo
+forcing-fn fixture, D.3 production-config `bench/foreign_component`
+(`AddComponent` invoke cost vs `kUserModule` slot-out vs native
+`AddFunction`), E.1 `celfnc` codec generator + IDL `type` keyword,
+and `optional<T>` re-introduction at the typed path.  None gate v1
+because the contract is pinned today by the wasmtime component
+runtime (language-agnostic by construction) and the dispatch path
+is proven byte-exact against `INT64_MIN` and MiB-scale payloads.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

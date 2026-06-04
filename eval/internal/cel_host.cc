@@ -1772,8 +1772,7 @@ absl::Status CelListSizeImpl(uint32_t out_slot, uint32_t list_slot,
 // `HostNumericCrossEq` against a synthesised CelValue prototype so
 // the langdef §"Equality" mathematical-value rule holds for
 // `1 in [1u, 2u]`.
-bool BackingValueEqualsQuery(const celwasm::Value& bv,
-                             const CelValue& query_cv,
+bool BackingValueEqualsQuery(const celwasm::Value& bv, const CelValue& query_cv,
                              const MemoryView& mem) {
   using K = celwasm::Value::Kind;
   switch (bv.kind()) {
@@ -1824,14 +1823,16 @@ bool BackingValueEqualsQuery(const celwasm::Value& bv,
       if (query_cv.kind != CEL_DURATION) return false;
       const absl::Duration d = *bv.AsDuration();
       return absl::ToInt64Seconds(d) == query_cv.payload.dur.seconds &&
-             absl::ToInt64Nanoseconds(d - absl::Seconds(absl::ToInt64Seconds(
-                                              d))) == query_cv.payload.dur.nanos;
+             absl::ToInt64Nanoseconds(d -
+                                      absl::Seconds(absl::ToInt64Seconds(d))) ==
+                 query_cv.payload.dur.nanos;
     }
     case K::kTimestamp: {
       if (query_cv.kind != CEL_TIMESTAMP) return false;
       const absl::Time t = *bv.AsTimestamp();
       const int64_t sec = absl::ToUnixSeconds(t);
-      const int64_t nanos = absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec));
+      const int64_t nanos =
+          absl::ToInt64Nanoseconds(t - absl::FromUnixSeconds(sec));
       return sec == query_cv.payload.ts.seconds &&
              nanos == query_cv.payload.ts.nanos;
     }
