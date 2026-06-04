@@ -3,7 +3,7 @@
 This is the embedder's guide to the CEL-to-WebAssembly AOT compiler: how
 to compile a CEL expression to a wasm module, evaluate it, bind
 variables, and extend the language with custom functions (host-backed,
-CEL-defined, or foreign modules written in Rust/Go/C).
+CEL-defined, or Component-Model components written in Rust/Go/C).
 
 Every code snippet uses the real public API (`compiler/compiler.h`,
 `compiler/program.h`, `eval/engine.h`, `eval/instance.h`,
@@ -177,8 +177,8 @@ across the process. **`Engine::Plan` is safe to call concurrently from
 many threads** — each call mints an independent store/linker/memory,
 sharing only the (thread-safe) engine + parsed runtime module.
 
-> **Not** thread-safe: `Engine::AddFunction` / `AddModule` (custom-fn
-> registration — see §6, §7). Configure those once at startup, *then*
+> **Not** thread-safe: `Engine::AddFunction` / `AddComponent` (custom-fn
+> registration — see §6, §8). Configure those once at startup, *then*
 > `Plan` from many threads.
 
 ### 4.2 Plan — Program → Instance
@@ -262,7 +262,7 @@ bool err    = v.IsError();
 |---|---|---|
 | `Compiler` | value, copyable | immutable after Build; share freely |
 | `Program` | value, copyable | immutable; share/serialize freely |
-| `Engine` | one per process | `Plan` concurrent-safe; `AddFunction`/`AddModule` single-thread setup |
+| `Engine` | one per process | `Plan` concurrent-safe; `AddFunction`/`AddComponent` single-thread setup |
 | `Instance` | one per worker thread | thread-owned; outlives the Engine handle (shared_ptr) |
 | `Activation` | per-eval, reusable | not shared across threads |
 
@@ -277,12 +277,12 @@ three backends, distinguished by the *shape* of the declaration:
 |---|---|---|---|
 | **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
 | **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | nothing — *would be* compiled in (parses + type-checks today, does not evaluate — §7) |
-| **Foreign** | `bool rules.allow(string subject, string action);` | a Rust/Go/C wasm module | `Engine::AddModule` |
+| **Component** ⛔ | `bool @component.allow(string subject, string action);` | a Rust/Go/C Component-Model component | `Engine::AddComponent` |
 
 The backend is the **module prefix**: `@host` (C++ impl), `@native`
-(CEL body, with `= …`), or a plain alias (foreign wasm module). The `@`
-sigil is reserved for the two built-ins. (Grammar reference:
-`m13-custom-fns.md` §3.0.)
+(CEL body, with `= …`), or `@component` (Component-Model component).
+Every declaration carries an `@<backend>.` prefix; there is no
+unprefixed form. (Grammar reference: `m13-custom-fns.md` §3.0.)
 
 Register declarations on the `Compiler` so call sites type-check:
 
@@ -364,13 +364,13 @@ for (const celwasm::FunctionLibrary& lib : compiler->function_libraries()) {
 }
 ```
 
-> **Grammar status.** ✅ The `@host`/`@native`/`<alias>` prefix-module
+> **Grammar status.** ✅ The `@host`/`@native`/`@component` prefix-module
 > grammar + doc-comment capture shown here is the **in-tree grammar**
-> (`m13-custom-fns.md` §3.0, shipped 2026-05-24): the backend is selected
-> by the module token, there is no `Module` directive, and a `///` run or
-> `/** … */` block above a decl is captured as its `description`. The
-> loading model is unchanged: `ParseCelfnSource(text)` takes the whole
-> IDL as a string and the caller reads the file.
+> (`m13-custom-fns.md` §3.0): the backend is selected by the `@<backend>.`
+> module token, every declaration carries one (there is no unprefixed
+> form), and a `///` run or `/** … */` block above a decl is captured as
+> its `description`. The loading model is unchanged: `ParseCelfnSource(text)`
+> takes the whole IDL as a string and the caller reads the file.
 
 ---
 
@@ -438,11 +438,11 @@ function may explicitly emit an unknown via `ctx.ReturnUnknown()`
 lambda. **Full detail + worked examples:
 [Writing host functions](writing-host-functions.md).**
 
-> ⛔ **Foreign exception:** proto-bearing aggregates are rejected for a
-> foreign (`<alias>`) decl — `proto`, `list<proto…>`, and `map<…,proto…>`
-> can't cross into a foreign module's separate memory (`MentionsProto`
-> recurses to catch the nested cases). They're allowed only for
-> `@host`/`@native` (shared memory + interner).
+> **Component backend note:** a `@component` decl crosses into a
+> separately-instantiated Component-Model component, so values are
+> marshalled across the boundary (proto messages travel as serialized
+> bytes; see §8). The shared-memory zero-copy path used by `@host` /
+> `@native` is not available across that boundary.
 
 ## 7. CEL-defined functions (`@native`) ⛔
 
@@ -510,79 +510,77 @@ Intended properties (target shape — see the Status callout above):
 
 ---
 
-## 8. Foreign functions — cross-module linking (Rust / Go / C) ⛔
+## 8. Component functions — cross-component linking (Rust / Go / C) ⛔
 
 > **Status: designed, not yet implemented.** The full design is in
 > `doc/implementation-plan/rewrite/modules-and-ffi.md` §5. This section
 > describes the intended embedder experience.
 
-A foreign function is implemented by a wasm module **you** produce from
-another language (Rust, TinyGo, C, …). Unlike CEL-defined functions
-(same module, shared memory) or host functions (C++ in the embedder), a
-foreign module has **its own linear memory** — so values must be
-*marshalled* across the boundary by a host trampoline.
+A component function is implemented by a **Component-Model component**
+**you** produce from another language (Rust, TinyGo, C, …). Unlike
+CEL-defined functions (same module, shared memory) or host functions
+(C++ in the embedder), a component has **its own linear memory** — so
+values must be *marshalled* across the boundary by a host trampoline.
 
 ### 8.1 Declaration and registration
 
-A foreign decl carries an `<alias>.` prefix (no `@`); the alias is
-implicit by use:
+A component decl carries the `@component.` prefix:
 
 ```
-bool rules.allow(string subject, string action);     // alias = "rules"
+bool @component.allow(string subject, string action);
 ```
 
 ```cpp
-// Compile time: the decl makes `rules.allow(...)` type-check.
-b.AddFunction("bool rules.allow(string subject, string action);");
+// Compile time: the decl makes `allow(...)` type-check.
+b.AddFunction("bool @component.allow(string subject, string action);");
 
-// Run time: supply the foreign module's bytes under the alias.
-engine->AddModule("rules", rules_wasm_bytes);
+// Run time: supply the component's bytes; the engine binds every
+// `@component` decl in the library to a matching export on the component.
+engine->AddComponent(rules_component_bytes, lib);
 ```
 
-### 8.2 One fixed C ABI + generated shims
+### 8.2 One fixed Component-Model ABI + generated shims
 
-A foreign call is bridged by **three generated pieces**: (1) **caller
+A component call is bridged by **three generated pieces**: (1) **caller
 slot glue** the compiler emits in the expr module — it reads each
 argument's 24-byte CelValue from its slot and writes it into the call's
 arg area, and reads the result back from the out_slot; (2) the
-**language-agnostic host trampoline** (`cel_call_foreign`) — hand-written
-C++ that does the cross-memory lift/lower, dispatching on CEL type, not
-source language; (3) the **per-language foreign shim** that `celfnc` (a
-mini `wit-bindgen`) generates from the IDL so your Rust/Go function
-signature looks natural while the wire contract stays fixed. The
-slot read/write (1) is the universal contract — `@host` functions use
-the same slot glue, minus the cross-memory copy.
+**language-agnostic host trampoline** — hand-written C++ that does the
+cross-memory lift/lower, dispatching on CEL type, not source language;
+(3) the **per-language component shim** that `celfnc` (driven by the
+generated WIT) produces so your Rust/Go function signature looks natural
+while the wire contract stays fixed. The slot read/write (1) is the
+universal contract — `@host` functions use the same slot glue, minus
+the cross-memory copy.
 
-The trampoline does a **recursive lift/lower** (a scoped subset of the
-WASI Component Model canonical ABI): it copies (lowers) the CEL argument
-values into the foreign module's memory (allocating there via the
-module's exported `celfn_realloc`), calls the export, then copies
-(lifts) the result back out. Supported types: scalars, `string`,
-`bytes`, `list<T>`, `map<K,V>`, nested aggregates, `Duration`,
-`Timestamp`. **Proto messages, `type`, and `optional` are (initially)
-rejected at the foreign boundary** — a `msg_slot` handle is meaningless
-in another module's memory. A future path lifts the proto restriction
-by passing the message **serialized to bytes** instead of by handle; see
-§8.5. The wire also carries a **status channel** so a guest failure
-becomes a CEL error rather than a wrong value — see §8.6.
+The trampoline does a **recursive lift/lower** following the WASI
+Component Model canonical ABI: it copies (lowers) the CEL argument
+values into the component's memory (allocating there via the component's
+exported `cabi_realloc`), calls the export, then copies (lifts) the
+result back out. Supported types: scalars, `string`, `bytes`, `list<T>`,
+`map<K,V>`, nested aggregates, `Duration`, `Timestamp`, and **proto
+messages serialized to bytes** (§8.5). `type` and `optional` are
+rejected at the component boundary. The wire also carries a **status
+channel** so a guest failure becomes a CEL error rather than a wrong
+value — see §8.6.
 
 ### 8.3 WASI vs plain — which toolchain target?
 
-Foreign modules differ in whether they pull in WASI and whether they
+Components differ in whether they pull in WASI and whether they
 own/initialize their memory:
 
 | Toolchain target | Memory | Init call | Notes |
 |---|---|---|---|
-| **Plain** `wasm32-unknown-unknown` (Rust `no_std`), `--target=wasm32 -nostdlib` (C) | defines its own, no WASI | none | smallest; closest to hand-WAT; just exports the fn + `celfn_realloc` |
+| **Plain** `wasm32-unknown-unknown` (Rust `no_std`), `--target=wasm32 -nostdlib` (C) | defines its own, no WASI | none | smallest; closest to hand-WAT; just exports the fn + `cabi_realloc` |
 | **WASI reactor** `wasm32-wasip1 -mexec-model=reactor` (C/clang), TinyGo `-target=wasip1 -buildmode=c-shared` | defines its own | **must call `_initialize`** | full libc available; the host calls `_initialize` once after instantiation before any export |
 | Stock Go (`GOOS=wasip1`), Rust `wasm32-wasi` | defines + WASI imports | yes | heavier runtime; full WASI preview1 stdlib |
 
-The engine negotiates this at `AddModule` time: it instantiates the
-foreign module in the same store, calls `_initialize` if the module is a
-WASI reactor, and binds its exports under the alias. The **plain**
-targets are the lightest and the recommended default for a pure
-compute function; choose **WASI** when the function genuinely needs libc
-or stdlib facilities.
+The engine negotiates this at `AddComponent` time: it instantiates the
+component in the same store, calls `_initialize` if the component is a
+WASI reactor, and binds its exports to the declared `@component` fns.
+The **plain** targets are the lightest and the recommended default for
+a pure compute function; choose **WASI** when the function genuinely
+needs libc or stdlib facilities.
 
 > **Empirically confirmed (probe — `foreign-go-bindgen-findings.md`).**
 > A stock-Go module (`GOOS=wasip1`) is a reactor: `_initialize` is
@@ -598,16 +596,16 @@ or stdlib facilities.
 > modules sharing the runtime's memory via `__memory_base` relocation —
 > is prototyped (`modules-and-ffi.md` §4.5) but not the v1 path.
 
-### 8.4 Worked example: a foreign function in Go (`GOOS=wasip1`)
+### 8.4 Worked example: a component function in Go (`GOOS=wasip1`)
 
-Say you want an authorization predicate `rules.allow(subject, action)`
+Say you want an authorization predicate `allow(subject, action)`
 implemented in Go and reused across many CEL expressions.
 
-**1. Declare it** in your `.celfn` (the alias `rules` is the Go module):
+**1. Declare it** in your `.celfn`:
 
 ```celfn
-/// True if `subject` may perform `action`, per the Go policy module.
-bool rules.allow(string subject, string action);
+/// True if `subject` may perform `action`, per the Go policy component.
+bool @component.allow(string subject, string action);
 ```
 
 **2. Write the Go function.** You write a *natural* Go function; the
@@ -618,7 +616,7 @@ marshalling and the wasm export, so you don't hand-write pointer math:
 // rules.go
 package main
 
-//celfn:export rules.allow
+//celfn:export allow
 func Allow(subject, action string) bool {
     return subject == "admin" || action == "read"
 }
@@ -628,9 +626,9 @@ func main() {} // required; a reactor module has no real entry point
 
 Under the hood the generated glue produces the fixed-ABI exports the
 host trampoline calls — one per function, named by the **overload id**
-(`fn_name` + each arg's type token, joined by `_`; the `rules` alias is
-the CEL-side / `AddModule` key, *not* part of the export name), plus the
-allocator the host uses to place arguments in *this* module's memory:
+(`fn_name` + each arg's type token, joined by `_`), plus the canonical
+ABI allocator the host uses to place arguments in *this* component's
+memory:
 
 ```go
 //go:wasmexport allow_string_string   // export name == overload id (verbatim)
@@ -641,86 +639,93 @@ func _allow_string_string(subjPtr, subjLen, actPtr, actLen uint32) uint32 {
     return 0
 }
 
-//go:wasmexport celfn_realloc   // host allocates arg bytes in our memory through this
-func _celfn_realloc(ptr, oldLen, align, newLen uint32) uint32 { /* … */ }
+//go:wasmexport cabi_realloc   // host allocates arg bytes in our memory through this
+func _cabi_realloc(ptr, oldLen, align, newLen uint32) uint32 { /* … */ }
 ```
 
 *(Shown value-only for clarity — the real generated export also carries
 a `recover()` guard and a status slot so a panic surfaces as a CEL
 error, not a trap or a spurious `false`; see §8.6.)*
 
-**3. Build it** to a WASI-reactor wasm module:
+**3. Build it** to a component (WASI-reactor core module wrapped with
+`wasm-tools component new`):
 
 ```bash
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o rules.wasm ./rules
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o rules.core.wasm ./rules
+wasm-tools component new rules.core.wasm -o rules.wasm
 # TinyGo — far smaller (118 KB vs 1.6 MB) for a SCALAR/STRING fn, but
 # cannot carry the §8.5 proto path (reflection trap); also needs
 # -buildmode=c-shared for the //go:wasmexport reactor shape:
-#   tinygo build -target=wasip1 -buildmode=c-shared -o rules.wasm ./rules
+#   tinygo build -target=wasip1 -buildmode=c-shared -o rules.core.wasm ./rules
 ```
 
 **4. Register + use** — the decl makes the call type-check at compile
-time; the bytes are supplied to the Engine at run time:
+time; the component bytes are supplied to the Engine at run time, along
+with the library so the engine knows which decls to bind:
 
 ```cpp
+auto lib = *celwasm::ParseCelfnSource(
+    "bool @component.allow(string subject, string action);");
+
 auto b = celwasm::Compiler::NewBuilder();
 b.DeclareVariable("subject", celwasm::CelType::String());
-b.AddFunction("bool rules.allow(string subject, string action);");
+b.AddLibrary(lib);
 auto compiler = std::move(b).Build();
-auto program  = compiler->Compile(R"(rules.allow(subject, "read"))");
+auto program  = compiler->Compile(R"(allow(subject, "read"))");
 
 auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddModule("rules", ReadFileToBytes("rules.wasm"));   // alias → module bytes
+engine->AddComponent(ReadFileToBytes("rules.wasm"), lib);
 
 auto instance = engine->Plan(*program);
 celwasm::Activation act;
 act.Bind("subject", celwasm::Value::String("guest"));
-auto v = instance->Eval(act);     // host: _initialize(rules) once at Plan, then
-                                  // lowers the two strings into rules' memory,
-                                  // calls allow_string_string, lifts the bool → true
+auto v = instance->Eval(act);     // host: _initialize(rules) once at AddComponent,
+                                  // then lowers the two strings into the component's
+                                  // memory, calls allow_string_string, lifts the
+                                  // bool → true
 ```
 
-At `Plan`/`AddModule` the engine instantiates `rules.wasm` in the same
+At `AddComponent` the engine instantiates `rules.wasm` in the same
 store **with a full WASI preview1 context** (a stock-Go module imports
 `fd_write`/`random_get`/`clock_time_get`/`fd_prestat_*`… — these must be
 provided, not stubbed), calls `_initialize` (Go wasip1 is a reactor —
-mandatory, skipping it traps), and binds its exports under `rules`. Per
-call, the host trampoline lowers the CEL `string` args into the Go
-module's memory (via `celfn_realloc`), invokes `allow_string_string`, and lifts
-the `bool` result back. *(All confirmed by the probe —
+mandatory, skipping it traps), and binds every `@component` decl in the
+library to a matching exported function. Per call, the host trampoline
+lowers the CEL `string` args into the component's memory (via
+`cabi_realloc`), invokes `allow_string_string`, and lifts the `bool`
+result back. *(All confirmed by the probe —
 `foreign-go-bindgen-findings.md`.)*
 
-### 8.5 Lifting the proto restriction — pass the message as bytes
+### 8.5 Proto messages cross as serialized bytes
 
-The initial foreign ABI rejects `proto(...)` because a message lives in
-the host's interner, not in the foreign module's memory. The planned way
-to lift that is **serialization**: instead of a handle, the host passes
-the proto's **binary-serialized bytes** (a `(ptr, len)` byte reference
-allocated in the foreign memory via `celfn_realloc`), and the foreign
-side's generated glue **deserializes** them into that language's
-generated message type. The wire is plain protobuf binary —
-language-agnostic — so it works for any foreign language with a protobuf
-runtime:
+A proto message lives in the host's interner, not in the component's
+memory, so it cannot cross by handle. The component ABI carries it as
+**serialized bytes** instead: the host passes the proto's
+**binary-serialized bytes** (a `(ptr, len)` byte reference allocated in
+the component's memory via `cabi_realloc`), and the component side's
+generated glue **deserializes** them into that language's generated
+message type. The wire is plain protobuf binary — language-agnostic —
+so it works for any language with a protobuf runtime:
 
 ```celfn
-/// ⛔ today; ✅ once foreign-proto serialization lands.
-bool rules.is_admin(proto(acme.User) u);
+/// ⛔ today; ✅ once component-proto serialization lands.
+bool @component.is_admin(proto(acme.User) u);
 ```
 
 ```go
-//celfn:export rules.is_admin
+//celfn:export is_admin
 func IsAdmin(u *acmepb.User) bool { return u.GetRole() == "admin" }
 // generated glue: var u acmepb.User; proto.Unmarshal(argBytes, &u); → IsAdmin(&u)
 // (argBytes = the host-serialized acme.User, copied into our memory)
 ```
 
-Host side: serialize `u` → bytes → `celfn_realloc` + copy into the
-module → pass `(ptr, len)`. A returned proto is symmetric: the foreign
-side marshals, the host deserializes against the descriptor. The trade
-vs. `@host`/`@native` (which pass a zero-copy `msg_slot` handle) is a
-serialize/deserialize **per call** — which is exactly why it's opt-in
-for the foreign boundary and not the default. Both sides need the proto
-generated from the same `.proto`.
+Host side: serialize `u` → bytes → `cabi_realloc` + copy into the
+component → pass `(ptr, len)`. A returned proto is symmetric: the
+component side marshals, the host deserializes against the descriptor.
+The trade vs. `@host`/`@native` (which pass a zero-copy `msg_slot`
+handle) is a serialize/deserialize **per call** — inherent to the
+component-memory boundary. Both sides need the proto generated from the
+same `.proto`.
 
 > **Probe-confirmed, with two real costs.** `proto.Unmarshal` does link
 > and run inside stock-Go wasip1 wasm (validated end-to-end). But: (1) it
@@ -731,15 +736,15 @@ generated from the same `.proto`.
 > module is stock-Go, multi-MB, opt-in. See
 > `foreign-go-bindgen-findings.md`.
 
-> **Status of §8.4/§8.5:** the entire foreign backend (trampoline,
-> `celfnc` shim generator, `AddModule` wiring, and this serialization
+> **Status of §8.4/§8.5:** the entire component backend (trampoline,
+> `celfnc` shim generator, `AddComponent` wiring, and this serialization
 > path) is **designed, not implemented** (`modules-and-ffi.md` §5). The
 > shapes above are now **probe-validated** (Go 1.24, wasmtime) — see
 > `foreign-go-bindgen-findings.md` for the working experiment.
 
-### 8.6 When a foreign function fails — panics, traps, and the error channel
+### 8.6 When a component function fails — panics, traps, and the error channel
 
-A foreign function can fail in ways a `@host`/`@native` function can't:
+A component function can fail in ways a `@host`/`@native` function can't:
 it runs untrusted guest code in its own memory, and a Go `panic` (or a
 runtime fault — nil deref, index out of range) **unwinds to a wasm
 `unreachable`**, surfacing to the host as a trap, not a return. The
@@ -758,7 +763,7 @@ crash and never a wrong answer:
 
   ```go
   //go:wasmexport allow_string_string   // export name == overload id (verbatim)
-  func _allow_string_string(...) (status uint32) {   // status: 0 = ok, 1 = foreign error
+  func _allow_string_string(...) (status uint32) {   // status: 0 = ok, 1 = component error
       defer func() {
           if recover() != nil { status = 1 }   // panic → typed error, no trap
       }()
@@ -773,21 +778,21 @@ crash and never a wrong answer:
   in the ambiguous post-abort state.
 
 - **The fixed ABI carries a `status` slot alongside the value**, so a
-  foreign error is **distinguishable from a legitimate `false` / `0` /
-  empty result**. This matters: a predicate `bool rules.allow(...)` that
-  *fails* must not masquerade as `allow → false`. On `status != 0` the
-  trampoline writes a CEL error; your expression then sees an error
+  component error is **distinguishable from a legitimate `false` / `0` /
+  empty result**. This matters: a predicate `bool @component.allow(...)`
+  that *fails* must not masquerade as `allow → false`. On `status != 0`
+  the trampoline writes a CEL error; your expression then sees an error
   (which propagates per CEL's error semantics), not a spurious `false`.
   *(This is an ABI addition over the bare value-return — `modules-and-ffi.md`
   §5.3; surfaced by the panic probe.)*
 
-- **Instance recovery policy.** On an *uncaught* foreign trap (one the
+- **Instance recovery policy.** On an *uncaught* component trap (one the
   shim's `recover()` didn't catch), the engine writes `kError` and
-  **re-instantiates the foreign module** before the next eval (a fresh
+  **re-instantiates the component** before the next eval (a fresh
   `_initialize` — cheap). Go's `fatalpanic` is nominally fatal, so the
-  engine does not trust reuse of a module that has aborted, even though
-  reuse *appeared* safe in the probe. The `recover()` shim makes uncaught
-  traps rare regardless.
+  engine does not trust reuse of a component that has aborted, even
+  though reuse *appeared* safe in the probe. The `recover()` shim makes
+  uncaught traps rare regardless.
 
 The takeaway for an embedder: **write your Go function as if a panic is
 caught and reported as a CEL error.** Don't swallow bad input to `false`
@@ -795,6 +800,16 @@ caught and reported as a CEL error.** Don't swallow bad input to `false`
 serialized proto in the §8.5 path), `panic` (or return the error path)
 and let it surface as a CEL error, rather than returning a plausible
 wrong answer.
+
+---
+
+### 8.7 What about `Engine::AddModule`?
+
+`Engine::AddModule(alias, wasm_bytes)` — a non-component, alias-keyed
+"register a core wasm module" API — is reserved for the `@native`
+CEL-defined backend's planned multi-module emission (§7) and is **not**
+the registration path for `@component` decls. Use `AddComponent` for
+every component-backed function; do not reach for `AddModule`.
 
 ---
 
@@ -864,19 +879,20 @@ backend of the functions it calls:
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
 | **`@native`** (CEL-defined) ⛔ | nothing — the body is *intended* to be compiled *into* the wasm (single-module); body lowering is unimplemented today (§7), so a `@native`-using program does not evaluate yet | **No** (by design — would be fully self-contained) |
-| **Foreign** (`<alias>`) | the foreign module's **bytes**, supplied under the alias (`Engine::AddModule` / a planned `--module alias=path.wasm`) | **No** — the call is already lowered to a trampoline keyed by alias + overload id; you supply *bytes*, not the IDL |
+| **`@component`** ⛔ | the component's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddComponent` / a planned `--component path.wasm`) | **Partially** — `AddComponent` takes the library so it can bind every `@component` decl to a matching export; you supply both the *bytes* and the parsed IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
 So for the common non-host cases the answer is clean: a `@native`-heavy
 expression compiles to a self-contained `.wasm` that `cel run` (when it
 lands) or `Engine::Plan` evaluates with **no IDL and no extra modules**;
-a foreign-using expression additionally needs the foreign module bytes,
-but still not the IDL. The variable schema needed to bind `--var` travels
-in the program's `cel.abi` section, so the run side is self-describing
-for variables too (§3.3).
+a `@component`-using expression additionally needs the component bytes
+**and the library** (so the engine knows which `@component` decls to bind
+to which exports). The variable schema needed to bind `--var` travels in
+the program's `cel.abi` section, so the run side is self-describing for
+variables too (§3.3).
 
 > **Target CLI design.** The planned surface — `run`, `inspect`,
-> `--celfn`, `--module`, `--activation`, and `celfn gen --lang <…>` — is
+> `--celfn`, `--component`, `--activation`, and `celfn gen --lang <…>` — is
 > specified in `doc/implementation-plan/rewrite/cel-cli-design.md`
 > (design-only). The high-value first slice is `run` + `inspect` (pure
 > run-time, no compiler changes), which closes the compile-once /
@@ -897,7 +913,7 @@ for variables too (§3.3).
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
 | **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ `CompileLibraryBodies` is an unimplemented header stub — no `.cc`, no BUILD target, no caller; never registered in `Plan`. Does not evaluate (§7) |
 | **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
-| **Foreign fns** (Rust/Go/C, fixed C ABI + shims, WASI/plain) | ⛔ designed (`modules-and-ffi.md` §5), not implemented |
+| **Component fns** (`@component`, Rust/Go/C, Component-Model ABI + shims, WASI/plain) | ⛔ designed (`modules-and-ffi.md` §5), not implemented |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |
@@ -916,6 +932,6 @@ for variables too (§3.3).
   `doc/implementation-plan/rewrite/m13-custom-fns.md` (§0.5 current
   state, §14 testing strategy).
 - **Memory model:** `doc/implementation-plan/rewrite/memory-layout-design.md`.
-- **Modules + FFI (foreign backend):**
+- **Modules + FFI (`@component` backend):**
   `doc/implementation-plan/rewrite/modules-and-ffi.md`.
 - **CLI:** `tools/cel/` (compile/eval from the command line).

@@ -5,12 +5,11 @@ to a tiny standalone WebAssembly module, and run it in any language that can
 load wasm — at native speed, in a sandbox, with no per-host interpreter to
 reimplement or keep in sync.**
 
-[Common Expression Language](https://github.com/google/cel-spec) is the small,
-safe expression language behind Kubernetes admission policy, Envoy/Istio
-authorization, IAM conditions, and Firebase rules. Today every host that wants
-to run CEL embeds a full language implementation — a parser, type-checker, and
-evaluator — in *its own* language, and those implementations drift. `celwasmc`
-takes a different path:
+Built on the [Common Expression Language](https://github.com/google/cel-spec) —
+see the spec for the language itself. Today every host that wants to run CEL
+embeds a full language implementation — a parser, type-checker, and evaluator —
+in *its own* language, and those implementations drift. `celwasmc` takes a
+different path:
 
 - **Compile, don't interpret.** A CEL expression is type-checked once and
   lowered ahead-of-time to a self-contained `.wasm` module (plus a small
@@ -26,34 +25,15 @@ takes a different path:
 - **Spec-faithful.** The parser and type-checker are reused from
   [cel-cpp](https://github.com/google/cel-cpp), and behavior is gated
   byte-for-byte against the upstream CEL conformance corpus.
-
-## What you can express
-
-CEL is the small, safe language teams already reach for to express policy and
-validation over structured data — and every one of these compiles to a wasm
-module you can ship anywhere:
-
-```python
-# Presence + macros over a proto/JSON object
-has(account.user_id) || has(account.gaia_id)        # either identifier is set
-size(account.emails) > 0                             # has at least one email
-matches(account.phone_number, "[0-9-]+")             # phone matches a pattern
-
-# Comprehensions — the workhorse of real policy
-account.emails.exists(e, e.endsWith("@corp.com"))    # any corp email?
-request.auth.claims.all(c, c in allowed_claims)      # every claim allowed?
-
-# Construct lists, maps, and messages; index and compare
-{'blue': 0x000080, 'red': 0xFF0000}['red'] == 0xFF0000
-Account{user_id: 'pokemon'}.user_id == 'pokemon'
-```
-
-CEL has no loops, no I/O, and no unbounded recursion — expressions are
-guaranteed to terminate — which is exactly why it's trusted for admission
-control, authorization, and rules engines. `celwasmc` keeps those guarantees and
-hands you a portable, sandboxed artifact. See
-[`doc/intro.md`](doc/intro.md) for the guided tour and
-[`doc/langdef.md`](doc/langdef.md) for the full language.
+- **Extend in any language via the WebAssembly Component Model.** Custom
+  CEL functions can be authored as Component-Model components — Rust,
+  Go, C, anything with a `wasm32-wasip2` toolchain — declared in the
+  `.celfn` IDL with the `@component.<fn>` prefix, and registered at
+  runtime via `Engine::AddComponent(component_bytes, lib)`. The
+  component runs in its own linear memory; types cross the boundary
+  through the canonical ABI (m24 §6 covers the full type matrix —
+  scalars, strings, bytes, lists, maps, records, even protos as
+  serialized bytes).
 
 ## Bindings — coming soon
 

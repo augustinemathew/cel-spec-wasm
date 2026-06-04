@@ -3,7 +3,7 @@
 > Part of the [CEL → WebAssembly user guide](index.md).  This is the
 > deep-dive page for **host functions** — CEL functions whose body is
 > your C++, called back at eval time.  For CEL-defined (`@native`) and
-> foreign functions, see the index's §7 / §8.
+> Component-Model (`@component`) functions, see the index's §7 / §8.
 
 A host function is declared in the `.celfn` IDL with the `@host.`
 prefix, type-checked at compile time, and backed by a C++ callback you
@@ -522,4 +522,5 @@ these cover what the WASM pipeline *cannot* express:
   behind the typed + context APIs (the authoritative spec).
 - `doc/implementation-plan/rewrite/m13-custom-fns.md` — the `.celfn` IDL
   grammar and the custom-function backends.
-- For CEL-defined (`@native`) and foreign functions, see the index §7 / §8.
+- For CEL-defined (`@native`) and Component-Model (`@component`)
+  functions, see the index §7 / §8.
