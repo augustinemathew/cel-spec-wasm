@@ -2,7 +2,7 @@
 
 Status: research / design — drafted 2026-06-03, not yet started.
 Absorbs the former separate "m25 DX" doc (backend + developer experience
-are one design). Validated end-to-end (`wit/stub-demo/`, 17/17 e2e
+are one design). Validated end-to-end (`e2e/foreign_component_fixtures/stub_demo/`, 17/17 e2e
 assertions on wasmtime 45). Builds on
 [`m23-foreign-fn-component-abi.md`](m23-foreign-fn-component-abi.md) (the
 ABI investigation, the complete CEL-value WIT model, the measured
@@ -35,7 +35,7 @@ its own memory) integrates with **two key moves**:
 
 The m23 `value`-resource (handles, ~500 ns/node) is reserved for the
 rare **dynamic/variadic** custom fn (§4). The author surface is one file
-of native-typed functions (`wit/stub-demo/user_fns.cc`).
+of native-typed functions (`e2e/foreign_component_fixtures/stub_demo/user_fns.cc`).
 
 ## 1. Two foreign regimes — reconciled with what shipped
 
@@ -151,7 +151,7 @@ Rule, by argument shape:
  ┌─ off-the-shelf ─ wit-bindgen / wasm-tools / wac ───────────┘
 ```
 
-The author edits **only the top box.** `wit/stub-demo/` is all three,
+The author edits **only the top box.** `e2e/foreign_component_fixtures/stub_demo/` is all three,
 running: `wasmtime run app.wasm` -> `17 passed, 0 failed` (incl.
 boundary cases: INT64_MIN, empty list/map/string, embedded NUL, ragged
 nesting, missing key).
@@ -182,7 +182,7 @@ The mapping is symmetric — it drives return types the same way.
 
 ## 7. The codec (generated, mechanical)
 
-`wit/stub-demo/codec.h` is the pattern `celfnc` emits — a structural
+`e2e/foreign_component_fixtures/stub_demo/codec.h` is the pattern `celfnc` emits — a structural
 walk of `{ptr,len}` (lists) and `{f0,f1}` (tuples):
 
 ```cpp
@@ -226,7 +226,7 @@ right when the fn needs the message, vs. pulling one field.
 
 ## 10. Boundary-condition matrix (the e2e suite MUST cover)
 
-`*` = covered by `wit/stub-demo/driver_main.cc` today (17 cases).
+`*` = covered by `e2e/foreign_component_fixtures/stub_demo/driver_main.cc` today (17 cases).
 
 | Type | Boundary inputs | Output boundaries |
 | --- | --- | --- |
@@ -250,7 +250,7 @@ right when the fn needs the message, vs. pulling one field.
   - **Harness:** `e2e/foreign_fn_*_test.cc` builds CEL-shaped args
     host-side, evaluates an expression that calls the custom fn through
     the full pipeline (compile -> plan -> `AddComponent` -> eval),
-    asserts the `Value`. `wit/stub-demo/driver_main.cc` is the
+    asserts the `Value`. `e2e/foreign_component_fixtures/stub_demo/driver_main.cc` is the
     component-level seed (17 cases); the suite drives via `Instance::Eval`.
   - **One fn per type, in and out** (§6) + the §10 boundary matrix.
   - **Negative coverage:** wrong-arity registration, missing export at
@@ -285,7 +285,7 @@ right when the fn needs the message, vs. pulling one field.
     eval dependency; verify the vendored build exposes it (the C API's
     component surface is thinner than Rust's — may force a shim).
   - **`celfnc` codec emission**: §7 is mechanical, but the generator
-    must handle every §6 row + arbitrary nesting; `wit/stub-demo`'s
+    must handle every §6 row + arbitrary nesting; `e2e/foreign_component_fixtures/stub_demo`'s
     codec is hand-written proof, not the generator.
   - **`-fno-exceptions` requirement**: wasm C++ leaf code must avoid the
     exception runtime (`__cxa_throw` unresolved); the generated build

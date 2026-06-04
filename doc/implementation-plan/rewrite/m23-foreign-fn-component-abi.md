@@ -2,9 +2,12 @@
 
 Status: research / design exploration — drafted 2026-06-03, not yet
 started. No code in `compiler/`, `eval/`, or `runtime/` changes here;
-this doc + the validated WIT under `wit/` + the throwaway benchmarks
-under `wit/bench/` capture the investigation so a future custom-fn
-milestone starts from measured ground, not a guess.
+this doc + the validated WIT contract under `abi/wit/` + the throwaway
+benchmarks under `bench/foreign_component/` capture the investigation
+so a future custom-fn milestone starts from measured ground, not a
+guess. (The WIT tree originally lived alongside this doc under
+`doc/implementation-plan/rewrite/wit/`; the split-by-role placement
+landed when m24 began wiring it in.)
 
 ## 0. TL;DR
 
@@ -16,7 +19,7 @@ boundary ABI we would otherwise hand-roll. This doc:
 
   - records why module-to-module CEL value passing reduces to "scalars
     cross function calls; everything else is copied by a broker" (§2);
-  - gives a **complete CEL value model in WIT** (`wit/cel.wit`) — every
+  - gives a **complete CEL value model in WIT** (`abi/wit/cel.wit`) — every
     CEL type, arbitrary nesting, proto as serialized bytes (§4);
   - measures the boundary cost empirically (§5): a cross-component call
     is **~410 ns fixed**, scalar args are free, and **every typed
@@ -99,7 +102,7 @@ So there are two distinct regimes, and they want different ABIs:
 This doc is about Regime B. Regime A is a separate (and cheaper)
 milestone.
 
-## 4. The complete CEL value model in WIT (`wit/cel.wit`)
+## 4. The complete CEL value model in WIT (`abi/wit/cel.wit`)
 
 Validated with `wasm-tools component wit` and exercised with
 `wit-bindgen c` (all `of-*` constructors and `as-*` accessors generate).
@@ -164,16 +167,16 @@ world custom-provider { import types; export custom-fn; }   // foreign module us
 The wiring is **bidirectional**: the runtime exports the `value`
 resource and imports `custom-fn`; the provider mirrors it. In a real
 deployment the host (native, acyclic) implements `types` and links the
-single provider; the benchmark in `wit/bench/typed-fn` flips ownership
+single provider; the benchmark in `bench/foreign_component/typed_fn` flips ownership
 (provider owns `value`) to keep the two-component composition acyclic.
 
-## 5. The cost — measured (`wit/bench/`, full numbers + repro in REPRODUCE.md)
+## 5. The cost — measured (`bench/foreign_component/`, full numbers + repro in REPRODUCE.md)
 
 Built for real: C++ components, separate memories, composed with `wac`,
 run on wasmtime 45. Absolute ns are noisy on the shared host; the ratios
 and the per-operation unit are the durable findings.
 
-**Per argument type** (`wit/bench/arg-cost`):
+**Per argument type** (`bench/foreign_component/arg_cost`):
 
   - **The cross-component CALL is the cost: ~410 ns, fixed**, independent
     of arguments (~100x a same-module wasm call).
@@ -182,7 +185,7 @@ and the per-operation unit are the durable findings.
     the length sweep is ~0.6 ns/byte, so 20 vs 50 bytes differs by
     ~20 ns. The bytes are not the cost; the per-arg ABI work is.
 
-**Typed value model** (`wit/bench/typed-fn`):
+**Typed value model** (`bench/foreign_component/typed_fn`):
 
   - `invoke-prim(3 ints, by value)`  — **~525 ns** (1 crossing).
   - `as-primitive` (pull one value)  — **~543 ns** (1 crossing).
@@ -218,9 +221,9 @@ for the isolation boundary.
 
 ## 7. Reproduce
 
-`wit/cel.wit` validates with `wasm-tools component wit wit/cel.wit`.
+`abi/wit/cel.wit` validates with `wasm-tools component wit abi/wit/cel.wit`.
 The benchmarks + the exact toolchain versions and build/compose/run
-commands are in `wit/bench/REPRODUCE.md`. The toolchain
+commands are in `bench/foreign_component/REPRODUCE.md`. The toolchain
 (`wasm-tools`, `wit-bindgen`, `wac`, `wasmtime`) is external to the
 bazel build — these are disposable probes, not regression tests.
 
