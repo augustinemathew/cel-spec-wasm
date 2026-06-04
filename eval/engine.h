@@ -40,10 +40,10 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/program.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
 #include "eval/typed_function.h"
-#include "compiler/program.h"
 
 namespace celwasm {
 struct WasmtimeEngineState;
