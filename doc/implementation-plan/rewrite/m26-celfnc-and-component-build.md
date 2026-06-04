@@ -497,6 +497,58 @@ the same `Compile → Plan → Eval` path the m24 e2e dispatch test pins.
 
 ## 8. Testing plan
 
+### 8.0 Generated-code compile gate — the user's per-build regression pin
+
+User direction (2026-06-04, during m26 §3.5 design): *"Make sure the
+codec generated has bazel cc_binary or cc_library to ensure that it
+compiles right. A test I mean. This way when the code changes we can
+validate it is compilable."*
+
+The pattern, per-emitter, is a **three-target bazel triplet**:
+
+  1. **`<lang>_<emitter>_dumper`** (`cc_binary`) — a tiny C++ `main`
+     that constructs a `FunctionLibrary` covering every type-row
+     the emitter handles today, calls the emitter, and writes the
+     result to stdout. Inputs are hard-coded; this is a code-gen
+     test, not a CLI integration test.
+  2. **`generated_<output>` `genrule`** — runs the dumper and
+     captures stdout into the output file
+     (`bazel-bin/.../generated_codec.h` or analogous).
+  3. **`<emitter>_compile_check` `cc_library`** — includes the
+     genrule-emitted file alongside `fixtures/author.h` (a
+     hand-curated mirror of the wit-bindgen 0.57 C output) and a
+     small `.cc` that *references every public symbol* the emitter
+     promises to produce. **If the codec emitter ever emits text
+     the C++ compiler rejects, `bazel build` fails here** —
+     surfacing the regression at the closest possible point
+     instead of allowing it to slip into a downstream consumer.
+
+Why a `cc_library` (not a `cc_test`): the failure mode we care about
+is *compile* failure, not runtime failure. A `cc_library` that
+fails to compile breaks every dependent target, which is exactly
+the gating behavior we want at build time.
+
+Concrete example as-shipped — `compiler/celfn/celfnc_emit/`:
+
+  - `codec_dumper.cc` → `cc_binary` (the dumper).
+  - `generated_codec_h` `genrule` → `generated_codec.h`.
+  - `codec_compile_check` `cc_library` includes `generated_codec.h`
+    + `fixtures/author.h` and references every lift/lower overload
+    via small `[[maybe_unused]]` helpers (`RefStringCodec`,
+    `RefListIntCodec`, …).
+
+When `H.1` lands (wit-bindgen in the bazel graph), `fixtures/author.h`
+goes away and the cc_library depends on a wit-bindgen-emitted
+`author.h` directly. Until then, the fixture file IS the contract
+the codec emitter promises to match — its struct shapes are
+byte-exact mirrors of what `wit-bindgen c --world author` produced
+during the m26 §3.5 probe.
+
+The same gate gets cloned for the stub emitter (H.2.c) and skeleton
+emitter (H.2.d). Each gets its own `_dumper` + `_genrule` +
+`_compile_check` triplet. Five lines of BUILD per emitter; pays for
+itself the first time a downstream silent break would have shipped.
+
 ### 8.1 Emitter unit tests (`celfnc_emit_test.cc`)
 
 Per CLAUDE.md "interface → tests → implementation":

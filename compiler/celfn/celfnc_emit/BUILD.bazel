@@ -6,8 +6,13 @@
 # target (C++ for now; Go arrives with H.4).  They are pure
 # functions: in → text, no I/O.  The cc_binary that ties them to a
 # CLI lives at `//tools/cel:cel`.
+#
+# The codec compile-check (codec_compile_check + genrule-emitted
+# generated_codec.h) is the per-build gate per user direction at
+# m26 §3.5 design time: when the codec generator changes, the
+# bazel build itself fails if the emitted text isn't valid C++.
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//:internal"])
 
@@ -22,6 +27,80 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "cpp_codec_emitter",
+    srcs = ["cpp_codec_emitter.cc"],
+    hdrs = ["cpp_codec_emitter.h"],
+    deps = [
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "cpp_codec_emitter_test",
+    srcs = ["cpp_codec_emitter_test.cc"],
+    deps = [
+        ":cpp_codec_emitter",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Tool that emits a sample codec.h driven by a fixed FunctionLibrary
+# covering every type-row the emitter currently handles.  Consumed by
+# the genrule below.
+cc_binary(
+    name = "codec_dumper",
+    srcs = ["codec_dumper.cc"],
+    deps = [
+        ":cpp_codec_emitter",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+# Genrule that captures the dumper output as a header file consumed
+# by codec_compile_check.  When the codec emitter regresses, the
+# header is malformed and the compile-check cc_library below fails
+# to build — surfacing the regression at bazel build time, not at
+# the next downstream consumer (real cel_wasm_component invocations
+# from end users).
+genrule(
+    name = "generated_codec_h",
+    outs = ["generated_codec.h"],
+    cmd = "$(location :codec_dumper) > $@",
+    tools = [":codec_dumper"],
+)
+
+# Per-build gate (user direction, m26 §3.5 design): the genrule-
+# emitted codec.h is compiled against the hand-curated author_stub.h
+# (which mirrors real wit-bindgen output, §3.5.1).  Failing to
+# compile == regression in the codec emitter.
+cc_library(
+    name = "codec_compile_check",
+    srcs = ["fixtures/codec_compile_check.cc"],
+    hdrs = [
+        "fixtures/author.h",
+        "generated_codec.h",
+    ],
+    # The generated codec.h `#include "author.h"` — strip the
+    # fixtures/ prefix so the short name resolves.  Lives alongside
+    # the genrule output, not in a separate include dir.
+    includes = ["fixtures"],
+    deps = [
+        "@com_google_absl//absl/time",
     ],
 )
 
