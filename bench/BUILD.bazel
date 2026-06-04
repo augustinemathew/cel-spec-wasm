@@ -80,6 +80,38 @@ cc_binary(
 )
 
 
+# Sibling of in_operator_bench: the SAME expressions/bindings, but
+# evaluated through cel-cpp's tree-walking interpreter so the two
+# numbers pair head-to-head.  Standalone TU — must NOT depend on any
+# //eval/..., //compiler:..., //shared:..., or //abi/... target (cel-cpp's
+# `cel::Value` / `cel::Attribute` clash with ours when linked together;
+# the bench is built without our pipeline on the link line).
+cc_binary(
+    name = "in_operator_cel_cpp_bench",
+    srcs = ["in_operator_cel_cpp_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "@cel-cpp//common:decl",
+        "@cel-cpp//common:type",
+        "@cel-cpp//common:value",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in the repo README.  Not a benchmark (no timing); just a
