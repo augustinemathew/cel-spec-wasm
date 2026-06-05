@@ -47,7 +47,8 @@ struct CompileOptions {
   // pages (128 KiB): the runtime `.wasm` is cross-compiled with
   // `min: 2` on its imported memory, so a single-page expr module can't
   // pair with it.  Raise this when the expression needs a larger arena.
-  uint32_t mem_size_bytes = 128u * 1024u;
+  uint32_t mem_size_bytes =
+      MemoryLayout::kInitialMemoryPages * MemoryLayout::kWasmPageSize;
 
   // Internal wasm name the function is registered under inside the module.
   // `Binaryen` uses this to resolve `BinaryenCall` targets and in exports.

@@ -759,35 +759,24 @@ TEST(KnownBugs, LongArith_1000Terms_Works) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// BUG (long-arith codegen): a long arithmetic expression of ≳ 2000
-// `+`-joined `int * int` terms compiles + plans cleanly, but Eval
-// traps with `wasm trap: unaligned atomic` from inside the
-// expression module's call into a runtime helper.  Verified
-// bisected: N = 1000 works (see preceding test), N = 2000 traps.
-//
-// Hypothesis: the slot allocator (compiler/codegen/slot_allocator.cc)
-// hands out i64 / CelValue slots without the alignment guarantee
-// the runtime helpers' atomic ops assume, and at large slot counts
-// some slot lands on a non-8-byte boundary.  The wasm32-wasi-threads
-// toolchain emits stricter alignment checks than vanilla wasm32-wasi.
-// Surfaced 2026-06-04 while writing the arithmetic head-to-head
-// against cel-cpp; until fixed, the bench caps at N = 1000 and the
-// README perf section says so.
-//
-// To fix: root-cause the slot allocator alignment, ensure every CelValue
-// slot is 16-byte aligned, then delete the GTEST_SKIP below.  The
-// assertion will then prove the polynomial evaluates correctly.
+// REGRESSION (long-arith codegen): kept around the same shape that
+// originally exposed the "unaligned atomic" trap at N >= 2000.
+// Original symptom — `wasm trap: unaligned atomic` from inside an
+// expression-module call into a runtime helper at N = 2000+ — was
+// not an alignment issue per se: `SlotAllocator::Release` was a no-op
+// (see compiler/codegen/slot_allocator.cc) so every intermediate of
+// `a*b + a*b + ... + a*b` got a fresh workspace cell — peak slots
+// = N-1.  Past N=2000 the workspace grew across a wasm-page boundary
+// and the runtime helpers' atomic ops landed on misaligned offsets.
+// Fixed by giving Release a LIFO free list so the same chain peaks
+// at one workspace slot.  Validated bottom-up by
+// compiler/codegen/slot_allocator_test::
+//   LeftAssocAdditionChainAfterReleaseFix/N2000 (no codegen, exact
+//   peak count) and top-down by this e2e (full pipeline through
+//   wasmtime).  Keep the e2e — it pins the cross-page-boundary case
+//   the unit test can't reach.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LongArith_2000Terms_UnalignedAtomicTrap) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns INTERNAL: Eval trapped, "
-         "`wasm trap: unaligned atomic`, want OK + ExpectedLongArithResult). "
-         "A 2000-term `int*int` `+`-chain compiles + plans cleanly but "
-         "traps at Eval inside a runtime-helper atomic op.  N=1000 works "
-         "(preceding test); N=2000 traps; cause is suspected slot-allocator "
-         "alignment regression at large slot counts.  Delete this line when "
-         "compiler/codegen/slot_allocator.cc guarantees 16-byte alignment "
-         "on every CelValue slot the runtime touches.";
+TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
   constexpr int kN = 2000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);

@@ -91,6 +91,17 @@ config_setting(
     values = {"compilation_mode": "opt"},
 )
 
+# Header-only target for the layout constants.  Exposed separately
+# from the full `cel_runtime` because the compile-time
+# `compiler/memory_layout.h` needs the same numbers via
+# `static_assert` parity checks, and pulling in all of the runtime's
+# .c files just for the macros would create an unwanted dep graph.
+cc_library(
+    name = "cel_layout",
+    hdrs = ["cel_layout.h"],
+    visibility = ["//:internal"],
+)
+
 # Native-host build of the runtime.  Used by unit tests and by host-side
 # code that needs the CelValue layout (codegen, cel_log, tests).
 cc_library(

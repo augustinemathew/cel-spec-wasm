@@ -13,6 +13,31 @@ cc_library(
     ],
 )
 
+# Single source of truth for compile-time memory-layout constants
+# the compiler reasons about (workspace ceiling, slot stride,
+# rodata base, guard band before wasi-libc, etc.).  Anything that
+# needs to bound a wasm linear-memory offset goes through this
+# header rather than re-typing the magic number.  Mirrors the
+# runtime-side C macros in `//runtime:cel_layout`; the
+# `static_assert`s in the header check parity on every build.
+cc_library(
+    name = "memory_layout",
+    hdrs = ["memory_layout.h"],
+    visibility = ["//:internal"],
+    deps = [
+        "//runtime:cel_layout",
+    ],
+)
+
+cc_test(
+    name = "memory_layout_test",
+    srcs = ["memory_layout_test.cc"],
+    deps = [
+        ":memory_layout",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "program_test",
     srcs = ["program_test.cc"],

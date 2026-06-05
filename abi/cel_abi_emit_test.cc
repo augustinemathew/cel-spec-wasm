@@ -87,17 +87,21 @@ TEST(CelAbiEmitTest, EveryScalarReprMaps) {
 }
 
 TEST(CelAbiEmitTest, VariableSlotOffsetsAreContiguous) {
-  // Three int variables — slots at workspace_base, +24, +48.  The
-  // emitter just copies from layout.variables without re-computing,
-  // so this locks both the layout pass contract AND the emitter's
-  // transparent pass-through.
+  // Three int variables — slots stride at `SlotAllocator::kSlotStride`
+  // (32B) so every slot stays 16-byte aligned for the runtime
+  // helpers' memory.atomic.* ops.  The emitter just copies from
+  // layout.variables without re-computing, so this locks both the
+  // layout pass contract AND the emitter's transparent pass-through.
   StaticLayout layout = LayoutWith("x + y + z", {"x:int", "y:int", "z:int"});
   auto abi = BuildCelAbi(layout, {});
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 3);
   EXPECT_EQ(abi->variables(0).slot_offset(), layout.workspace_base);
-  EXPECT_EQ(abi->variables(1).slot_offset(), layout.workspace_base + 24u);
-  EXPECT_EQ(abi->variables(2).slot_offset(), layout.workspace_base + 48u);
+  EXPECT_EQ(abi->variables(1).slot_offset(), layout.workspace_base + 32u);
+  EXPECT_EQ(abi->variables(2).slot_offset(), layout.workspace_base + 64u);
+  // 16-byte alignment is the load-bearing invariant.
+  EXPECT_EQ(abi->variables(1).slot_offset() % 16u, 0u);
+  EXPECT_EQ(abi->variables(2).slot_offset() % 16u, 0u);
 }
 
 // Serialize-round-trip — proves the emitted proto survives wire

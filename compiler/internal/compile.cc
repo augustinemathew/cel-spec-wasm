@@ -24,16 +24,16 @@
 #include "compiler/codegen/resolve_pass.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/typed_ast.h"
+#include "compiler/memory_layout.h"
 
 namespace celwasm {
 
 namespace {
 
-constexpr uint32_t kWasmPageBytes = 64u * 1024u;
-
 // Wasm page count large enough to hold `mem_size_bytes`.
 uint32_t PagesForBytes(uint32_t mem_size_bytes) {
-  return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
+  constexpr uint32_t kPageBytes = MemoryLayout::kWasmPageSize;
+  return (mem_size_bytes + kPageBytes - 1) / kPageBytes;
 }
 
 // `cel_host.cel_get_field` + `cel_host.cel_has_field` trampolines.
@@ -313,9 +313,11 @@ absl::Status InstallExprModuleImports(WasmModule& mod,
   // Phase C: the runtime (cel_runtime.wasm) is built on
   // wasm32-wasi-threads and exports its memory as shared.  The expr
   // module's `(import "cel" "memory")` must therefore declare a
-  // matching shared memory with a max page count.  Pick 1024 pages
-  // (64 MiB) to mirror the runtime's `-Wl,--max-memory=67108864`.
-  constexpr uint32_t kSharedMaxPages = 1024;
+  // matching shared memory with a max page count, derived from the
+  // runtime's `-Wl,--max-memory=` (mirrored as
+  // `MemoryLayout::kMaxMemoryBytes`).
+  constexpr uint32_t kSharedMaxPages =
+      MemoryLayout::kMaxMemoryBytes / MemoryLayout::kWasmPageSize;
   auto s = mod.AddMemoryImport("cel", "memory", PagesForBytes(mem_size_bytes),
                                /*max_pages=*/kSharedMaxPages,
                                absl::MakeConstSpan(&seg, 1),

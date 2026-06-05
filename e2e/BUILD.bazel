@@ -124,6 +124,25 @@ cc_test(
 # fields, dispatcher routing.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation).
 cc_test(
+    name = "slot_aliasing_test",
+    srcs = ["slot_aliasing_test.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "m4_test",
     srcs = ["m4_test.cc"],
     deps = [

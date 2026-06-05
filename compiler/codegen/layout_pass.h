@@ -7,9 +7,11 @@
 
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "compiler/codegen/resolve_pass.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
+#include "compiler/memory_layout.h"
 
 namespace celwasm {
 
@@ -62,6 +64,18 @@ struct LayoutOptions {
   // `wat/45b_foo_module.wat`).
   uint32_t rodata_base_override = 0;
 };
+
+// Compile-time message prefix returned by `LayoutPass` when the
+// chosen expression would need more workspace than the reserved
+// low region of `cel.memory` permits.  The actual byte cap is
+// computed dynamically from the rodata footprint via
+// `MemoryLayout::MaxWorkspaceBytes` — there is no single constant
+// limit, because rodata and workspace share the [16, 8192) window
+// below wasi-libc's static data.  An expression with no rodata
+// can use the full headroom; an expression with 3 KiB of string
+// constants gets ~4.6 KiB before the gate trips.
+inline constexpr absl::string_view kSlotExhaustedMessagePrefix =
+    "expression requires too many workspace slots";
 
 // Output of the second codegen pipeline pass.  Extends `annotations` from
 // ResolveOutput by writing `.storage` on every node whose result has a
@@ -118,7 +132,7 @@ struct StaticLayout {
   std::vector<MessageTypeRow> message_types;
 
   std::vector<uint8_t> rodata;
-  uint32_t rodata_base = 16;
+  uint32_t rodata_base = MemoryLayout::kRodataBaseMin;
   uint32_t workspace_base = 0;
   uint32_t workspace_bytes = 0;
   uint32_t arena_base = 0;

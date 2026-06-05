@@ -434,18 +434,19 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
   EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
 }
 
-TEST(CompileProtoMapTest, ProtoMapFieldLayoutGetsContiguousSelectAndCallSlots) {
+TEST(CompileProtoMapTest, ProtoMapFieldLayoutReusesSelectAndCallSlot) {
   // `c.metadata["env"]` lays out as: c slot (variable), kSelect
-  // result slot, kCallExpr(_[_]) result slot.  Pin the totals
-  // so an accidental slot fusion or duplication trips this test.
+  // result slot, kCallExpr(_[_]) result slot.  The kCallExpr
+  // releases the kSelect's slot before acquiring its own, so
+  // both share a single cell via the LIFO free list — peak = 1
+  // scratch cell.  Total = 1 var + 1 scratch = 2 × 32B = 64.
   auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
   ASSERT_THAT(art_or, IsOk());
   ASSERT_EQ(art_or->layout.variables.size(), 1u);
   EXPECT_EQ(art_or->layout.variables[0].name, "c");
   EXPECT_EQ(art_or->layout.variables[0].repr, Repr::kMessage);
-  // 1 variable + kSelect + kCallExpr = 3 cells = 72 B.
-  EXPECT_EQ(art_or->layout.workspace_bytes, 72u);
-  EXPECT_EQ(art_or->layout.peak_slots, 2u);
+  EXPECT_EQ(art_or->layout.workspace_bytes, 64u);
+  EXPECT_EQ(art_or->layout.peak_slots, 1u);
 }
 
 }  // namespace

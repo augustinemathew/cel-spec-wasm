@@ -178,7 +178,7 @@ struct LoweringOptions {
   // Vestigial knob retained for source compatibility — the arena
   // lives in the wasi-libc dlmalloc heap and is sized at runtime,
   // not from this field.  See `rewrite/wasi/DESIGN.md` §4.
-  uint32_t mem_size_bytes = 64u * 1024u;
+  uint32_t mem_size_bytes = MemoryLayout::kWasmPageSize;
 };
 
 struct LoweredFunction {
