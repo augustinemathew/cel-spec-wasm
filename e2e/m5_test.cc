@@ -720,6 +720,46 @@ TEST_F(ControlFlowE2ETest, TernaryErrorCondPropagates) {
   EXPECT_TRUE(v->IsError());
 }
 
+// Regression for the PBT-discovered ternary-with-kIdent-cond
+// storage-dispatch bug (2026-06-05).  Pre-fix,
+// `EmitConditional` read `cond_ann->storage.payload` as if it
+// were always a byte offset — correct for `kStaticRodata` /
+// `kWorkspaceSlot` but wrong for `kLocal` (a kIdent cond), where
+// payload is a wasm local INDEX.  The resulting `(i32.load
+// offset=0 (i32.const <local_index>))` read garbage from the
+// reserved low region; the kind probe failed, the outer if took
+// the else arm `cel_copy_slot(out, cond_slot=<local_index>)`,
+// and the result came out as kNull.  Fixed by routing the cond
+// through `EmitSlotBaseAddress`, which emits `(local.get
+// <index>)` for kLocal storage.  Mirrored regression in
+// `e2e/known_bugs_test::PbtTernaryInsideIntSubtract` (the full
+// PBT-discovered shape).
+TEST_F(ControlFlowE2ETest, TernaryWithBoundBoolCondReadsLocal) {
+  Compiler::Builder b;
+  b.DeclareVariable("b_a", CelType::Bool());
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+
+  Activation a;
+  a.Bind("b_a", Value::Bool(true));
+  Value v = EvalOk(CompilePlan(*compiler, "b_a ? 7 : 11"), a);
+  ASSERT_EQ(v.kind(), Value::Kind::kInt) << static_cast<int>(v.kind());
+  EXPECT_EQ(*v.AsInt(), 7);
+}
+
+TEST_F(ControlFlowE2ETest, TernaryWithBoundBoolCondFalseTakesElse) {
+  Compiler::Builder b;
+  b.DeclareVariable("b_a", CelType::Bool());
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+
+  Activation a;
+  a.Bind("b_a", Value::Bool(false));
+  Value v = EvalOk(CompilePlan(*compiler, "b_a ? 7 : 11"), a);
+  ASSERT_EQ(v.kind(), Value::Kind::kInt) << static_cast<int>(v.kind());
+  EXPECT_EQ(*v.AsInt(), 11);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  ControlFlowUnknownE2ETest — UNKNOWN propagation under
 //  PartialEval.  Each test mints an UNKNOWN by binding a Customer

@@ -1,6 +1,25 @@
-load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
+
+# Single-shot reproducer for the PBT-discovered divergence; not
+# part of any test target.  Run as
+# `bazel run //e2e:repro_pbt_bug -- '<source>'`.
+cc_binary(
+    name = "repro_pbt_bug",
+    srcs = ["repro_pbt_bug.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
 
 # Known-bugs registry: confirmed defects as runnable, GTEST_SKIP-gated
 # regressions (correctness + memory-model cliffs).  See the file header.

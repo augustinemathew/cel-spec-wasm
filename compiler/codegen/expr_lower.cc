@@ -971,10 +971,34 @@ absl::StatusOr<std::vector<BinaryenExpressionRef>> EmitCallOperands(
 // Builds `cel_copy_slot(dst_slot, src_slot)` as a Binaryen call.
 }  // namespace
 
-BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
-                                      uint32_t src_slot) {
-  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, dst_slot),
-                                   I32Const(ctx.mod, src_slot)};
+BinaryenExpressionRef EmitSlotBaseAddress(EmitCtx& ctx, Storage storage) {
+  switch (storage.kind) {
+    case StorageKind::kLocal:
+      // `payload` is the wasm local index.  Read its CelValue
+      // byte offset out of the local that `EmitVariablePrelude`
+      // initialised on entry to `$eval`.
+      return BinaryenLocalGet(ctx.mod.raw(), storage.payload,
+                              BinaryenTypeInt32());
+    case StorageKind::kStaticRodata:
+    case StorageKind::kWorkspaceSlot:
+      // `payload` is the byte offset inside cel.memory; emit it
+      // as a literal i32 const.
+      return I32Const(ctx.mod, storage.payload);
+    case StorageKind::kNone:
+      ABSL_CHECK(false)
+          << "EmitSlotBaseAddress: storage is kNone — the producing "
+             "visitor must have set storage before this call";
+      return nullptr;
+  }
+  ABSL_CHECK(false) << "EmitSlotBaseAddress: unhandled StorageKind "
+                    << static_cast<int>(storage.kind);
+  return nullptr;
+}
+
+BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, Storage dst,
+                                      Storage src) {
+  BinaryenExpressionRef args[2] = {EmitSlotBaseAddress(ctx, dst),
+                                   EmitSlotBaseAddress(ctx, src)};
   return BinaryenCall(ctx.mod.raw(), "cel_copy_slot", args, 2,
                       BinaryenTypeNone());
 }
@@ -989,31 +1013,36 @@ BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
 // `p ? accu+1 : accu` (else-arm is a bare `kIdent(@result)`).
 BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                                           BinaryenExpressionRef eval_expr,
-                                          uint32_t out_slot) {
-  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, out_slot), eval_expr};
+                                          Storage out) {
+  BinaryenExpressionRef args[2] = {EmitSlotBaseAddress(ctx, out), eval_expr};
   return BinaryenCall(ctx.mod.raw(), "cel_copy_slot", args, 2,
                       BinaryenTypeNone());
 }
 
-// `(i32.eq (i32.load offset=N <slot>) <expected>)` — the CelValue
-// kind / payload probe used by the ternary's nested-if shape and the
-// comprehension loop-cond peephole.
-BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
+// `(i32.eq (i32.load offset=N <slot_addr>) <expected>)`.  Both
+// load helpers route the slot base through `EmitSlotBaseAddress`
+// so `kLocal` storage materialises as `local.get` (the wasm local
+// holds the cell's byte offset), not as a literal `i32.const
+// <local_index>` (which would read garbage from the reserved
+// low region) — see the helper's doc.
+BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, Storage slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+                   BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot),
+                   "memory");
   return BinaryenBinary(mod, BinaryenEqInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
 
-BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
+BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, Storage slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
       BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+                   BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot),
+                   "memory");
   return BinaryenBinary(mod, BinaryenNeInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
@@ -1047,7 +1076,14 @@ absl::StatusOr<BinaryenExpressionRef> EmitConditional(
   const NodeAnnotation* cond_ann = ctx.layout.annotations.Find(cond.id());
   ABSL_CHECK(cond_ann != nullptr)
       << "expr_lower: ternary cond sub-expr missing NodeAnnotation";
-  const uint32_t cond_slot = cond_ann->storage.payload;
+  // Pass storage straight through.  Reading `storage.payload`
+  // directly here was the bug that surfaced
+  // `KnownBugs.PbtTernaryInsideIntSubtract` — for a kIdent cond
+  // the payload is the wasm local index, not a byte offset; the
+  // load helpers do the right `local.get` / `i32.const` dispatch
+  // when given a `Storage`.
+  const Storage cond_storage = cond_ann->storage;
+  const Storage out_storage = ann.storage;
 
   auto* mod = ctx.mod.raw();
 
@@ -1057,12 +1093,12 @@ absl::StatusOr<BinaryenExpressionRef> EmitConditional(
   // expression at runtime (correct across kLocal / kStaticRodata /
   // kWorkspaceSlot storage kinds — see BuildConditionalArm).
   BinaryenExpressionRef inner_if = BinaryenIf(
-      mod, LoadSlotI32Ne(ctx, cond_slot, /*offset=*/8, /*expected=*/0),
-      BuildConditionalArm(ctx, *then_or, out_slot),
-      BuildConditionalArm(ctx, *else_or, out_slot));
+      mod, LoadSlotI32Ne(ctx, cond_storage, /*offset=*/8, /*expected=*/0),
+      BuildConditionalArm(ctx, *then_or, out_storage),
+      BuildConditionalArm(ctx, *else_or, out_storage));
   BinaryenExpressionRef outer_if = BinaryenIf(
-      mod, LoadSlotI32Eq(ctx, cond_slot, /*offset=*/0, /*expected=*/1),
-      inner_if, EmitCelCopySlot(ctx, out_slot, cond_slot));
+      mod, LoadSlotI32Eq(ctx, cond_storage, /*offset=*/0, /*expected=*/1),
+      inner_if, EmitCelCopySlot(ctx, out_storage, cond_storage));
 
   BinaryenExpressionRef block_items[3] = {BinaryenDrop(mod, *cond_or), outer_if,
                                           I32Const(ctx.mod, out_slot)};

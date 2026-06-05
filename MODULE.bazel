@@ -315,6 +315,20 @@ bazel_dep(
     version = "1.9.1",
     repo_name = "com_google_benchmark",
 )
+
+# FuzzTest — Google's property-based / coverage-guided fuzzing
+# framework, built on top of googletest.  Test bodies are written as
+# `FUZZ_TEST(Suite, Name)` over typed properties; in unit-test mode
+# (`bazel test`) FuzzTest runs ~1000 randomised iterations of each
+# property and reports failures through gtest.  In fuzzing mode
+# (`bazel run --config=fuzztest`) the same binary turns into a
+# coverage-guided fuzzer.  Transitive deps (abseil-cpp, re2,
+# googletest, protobuf, antlr4-cpp-runtime, platforms) are already
+# declared above; bzlmod's resolver merges them.
+bazel_dep(
+    name = "fuzztest",
+    version = "20260219.0",
+)
 bazel_dep(
     name = "rules_java",
     version = "7.6.5",

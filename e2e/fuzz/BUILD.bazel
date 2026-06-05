@@ -1,0 +1,136 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Smoke test proving the FuzzTest bzlmod wiring builds and runs
+# end-to-end.  See fuzz_smoke_test.cc for the property body.
+#
+# Runs in unit-test mode under `bazel test`; turns into a coverage-
+# guided fuzzer under `bazel run --config=fuzztest -- --fuzz=...`.
+cc_test(
+    name = "fuzz_smoke_test",
+    srcs = ["fuzz_smoke_test.cc"],
+    deps = [
+        "@com_google_googletest//:gtest",
+        "@fuzztest//fuzztest",
+        "@fuzztest//fuzztest:fuzztest_gtest_main",
+    ],
+)
+
+# Typed attribute grammar — the data model for the CEL source
+# generator.  See `doc/implementation-plan/rewrite/m27-pbt-cel-
+# generator.md` §"The data model".  No fuzztest dep — the grammar
+# is plain data that grammar_test (L1) and the future generator
+# / property layers consume.
+cc_library(
+    name = "grammar",
+    srcs = ["grammar.cc"],
+    hdrs = ["grammar.h"],
+    deps = [
+        "//shared:type",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+# Slice B catalog — scalar-only typed-attribute grammar.  See
+# `grammar_slice_b.h` for the activation + production list.
+cc_library(
+    name = "grammar_slice_b",
+    srcs = ["grammar_slice_b.cc"],
+    hdrs = ["grammar_slice_b.h"],
+    deps = [
+        ":grammar",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+# Type-directed CEL source generator.  Walks a Grammar honouring
+# depth budget + leaf eligibility + per-production weights.
+cc_library(
+    name = "generator",
+    srcs = ["generator.cc"],
+    hdrs = ["generator.h"],
+    deps = [
+        ":grammar",
+        ":grammar_slice_b",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "generator_test",
+    srcs = ["generator_test.cc"],
+    deps = [
+        ":generator",
+        ":grammar",
+        ":grammar_slice_b",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:annotations",
+        "//compiler/ir:typed_ast",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Slice B oracle property — value-side differential test against
+# cel-cpp via the testdata oracle.  See file header for the
+# fuzz/unit-test mode interplay.
+cc_test(
+    name = "cel_oracle_property_test",
+    srcs = ["cel_oracle_property_test.cc"],
+    # `manual` tag: this property test mines for real bugs.  It
+    # WILL fail when it finds an oracle divergence on our side,
+    # which is the whole point.  Excluded from `bazel test
+    # //...` to keep the green-baseline CI clean; run explicitly
+    # via `bazel test //e2e/fuzz:cel_oracle_property_test` (unit-
+    # test mode, ~1000 iterations) or `bazel run --config=fuzztest
+    # //e2e/fuzz:cel_oracle_property_test -- --fuzz=...` (long-
+    # running coverage-guided mode).  Confirmed-discovery rows
+    # become known_bugs_test.cc entries; see file header in
+    # cel_oracle_property_test.cc.
+    tags = ["manual"],
+    deps = [
+        ":generator",
+        ":grammar",
+        ":grammar_slice_b",
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//testdata:cel_cpp_oracle",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest",
+        "@fuzztest//fuzztest",
+        "@fuzztest//fuzztest:fuzztest_gtest_main",
+    ],
+)
+
+cc_test(
+    name = "grammar_test",
+    srcs = ["grammar_test.cc"],
+    deps = [
+        ":grammar",
+        ":grammar_slice_b",
+        "//compiler/frontend:parse_and_check",
+        "//compiler/ir:typed_ast",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

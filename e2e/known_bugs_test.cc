@@ -785,5 +785,67 @@ TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
   EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
 }
 
+// ──────────────────────────────────────────────────────────────────
+// CLASS: PBT-discovered divergences.  Each row was first surfaced by
+// `e2e/fuzz/cel_oracle_property_test.cc`'s value-oracle property
+// (Slice B of M27 — see
+// `doc/implementation-plan/rewrite/m27-pbt-cel-generator.md`).
+//
+// The PBT property generates a CEL source string, evals it through
+// BOTH our pipeline and cel-cpp, and expects identical bool results.
+// When it finds a divergence, the shrunken source is pinned here as
+// a focused regression test against a SMALL set of bound activation
+// values.  The PBT tool stays as the discovery surface; these rows
+// pin specific bugs so the fix has a concrete target.
+//
+// Each row carries the fuzztest seed that originally surfaced it so
+// a future PBT run can re-find it deterministically.
+// ──────────────────────────────────────────────────────────────────
+
+namespace pbt_repro {
+
+void DeclareSliceBPbtVars(Compiler::Builder& b) {
+  b.DeclareVariable("i_a", CelType::Int());
+  b.DeclareVariable("i_b", CelType::Int());
+  b.DeclareVariable("b_a", CelType::Bool());
+}
+
+void BindSliceBPbtVars(Activation& a) {
+  a.Bind("i_a", Value::Int(7));
+  a.Bind("i_b", Value::Int(11));
+  a.Bind("b_a", Value::Bool(true));
+}
+
+}  // namespace pbt_repro
+
+// fuzztest seed=3696381601904611693 depth=4 — PBT slice B run on
+// 2026-06-05.  Our pipeline returns `kError` on a totally-defined
+// Bool expression that the cel-cpp oracle evaluates to `false`.
+// Reduced manually from the shrunk source; cel-cpp's reduction
+// indicates the ternary-inside-int-subtract path
+// `(i_a - (b_a ? 0 : i_b))` is the suspect.  Spec eval:
+//   b_a=true   → (b_a ? 0 : i_b) = 0
+//   i_a - 0    = 7
+//   size("")=0, (0 < 7) = true
+//   ("" == "x") = false
+//   true == false = false  → the expected eval result.
+// FIXED 2026-06-05 — `EmitConditional` now passes the cond's
+// `Storage` through `EmitSlotBaseAddress`, which dispatches
+// `kLocal` storage as `(local.get index)` instead of treating the
+// local index as a literal byte offset.  See
+// `compiler/codegen/expr_lower.cc::EmitSlotBaseAddress` +
+// `expr_lower_internal.h`'s helper doc.  The assertion below is
+// now a live regression guard.
+TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
+  constexpr absl::string_view source =
+      R"(((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x")))";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceBPbtVars,
+                            pbt_repro::BindSliceBPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_FALSE(*v->AsBool())
+      << "ternary inside int subtract evaluated wrong";
+}
+
 }  // namespace
 }  // namespace celwasm
