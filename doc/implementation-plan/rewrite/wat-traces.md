@@ -2520,6 +2520,50 @@ emits.  The trace proves: entry 1 (out-of-range) poisons the slot,
 entry 2 (in-range `7`) hits the early-out and cannot un-poison it, and
 `$eval` returns `CEL_ERROR{CEL_ERR_OVERFLOW}`.
 
+## 68. Host-fn trampoline OOB ReadSpan adversary — `WasmtimeMemoryView::ReadSpan` bounds-check defense
+
+File: `wat/68_ReadSpanOobInTrampoline.wat`.  Status: assembles (133 B
+under `wasm-as --enable-threads`); runs end-to-end through the
+production `Engine::Plan` + `Instance::Eval` via
+`eval/internal/host_trampoline_bounds_test.cc` (5 cases).
+
+Not a codegen trace — a defensive fixture.  Closes cleanup-backlog
+`#42`.  Codegen never emits this shape (the activation marshal +
+`WasmtimeArenaAllocator` only hand out in-bounds offsets); the trace
+exists because the bounds check it guards is only reachable from
+hand-authored wasm that stages an adversarial CelValue directly.
+
+**Invariant locked:** every host-fn trampoline that lifts a wasm-
+supplied (ptr, len) pair into an `absl::string_view` routes the read
+through `WasmtimeMemoryView::ReadSpan`
+(`eval/internal/cel_host_wasmtime.h:127`), which bounds-checks against
+`MemoryView::Size()`.  An OOB (ptr, len) yields an EMPTY view, not
+host bytes adjacent to the wasm reservation, not a SIGSEGV on the
+guard page.
+
+The fixture's expr-side shape:
+
+  - rodata at offset 16: a `CelValue{kind=CEL_STRING, payload.s.ptr=
+    0xFFFFFFFF, payload.s.len=64}` — the exact audit input from
+    cleanup-backlog `#36`.
+  - `$eval`: `arena_reset` → `cel_fn.probe_string(out=40, arg=16)` →
+    return 40.  The host callback bound to `cel_fn.probe_string`
+    captures the lifted `string_view` length + bytes into a
+    test-controlled struct, then writes
+    `CelValue{kind=CEL_INT, payload.i=lifted_len}` to out_slot 40.
+
+A passing test thus pins TWO facts at once: the trampoline reached
+the callback (proving `HostCallbackTrampoline` built a
+`WasmtimeMemoryView` over the live shared memory and handed it to
+`HostCallContext`), AND `HostCallContext::ArgString`'s underlying
+`ReadSpan` returned empty (proving the bounds-check fired).
+
+The test exercises three (ptr, len) shapes against this same expr
+module — the audit ptr (`0xFFFFFFFF, 64`), a u32-additive-overflow
+straddler (`0x100, 0xFFFFFFFE`), and a u32-wrap-to-zero
+(`0x80000000, 0x80000000`) — each catching a different way an
+unchecked or weakly-checked `ReadSpan` would regress.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

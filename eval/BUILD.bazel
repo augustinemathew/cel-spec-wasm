@@ -426,6 +426,36 @@ cc_test(
     ],
 )
 
+# Trampoline-level e2e for the `WasmtimeMemoryView::ReadSpan`
+# bounds check — closes cleanup-backlog #42.  Drives an adversarial
+# (ptr, len) pair from inside a hand-authored wasm module through
+# `HostCallbackTrampoline` → `WasmtimeMemoryView::ReadSpan` and
+# asserts the lifted `absl::string_view` is empty (NOT host bytes,
+# NOT a guard-page SIGSEGV).  See
+# `doc/implementation-plan/rewrite/wat/68_ReadSpanOobInTrampoline.wat`
+# for the canonical fixture + walkthrough.
+cc_test(
+    name = "host_trampoline_bounds_test",
+    srcs = ["internal/host_trampoline_bounds_test.cc"],
+    data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
+    tags = ["manual"],
+    deps = [
+        ":engine",
+        ":host_call_context",
+        ":host_callback",
+        ":instance",
+        ":value",
+        "//compiler:program",
+        "//runtime:cel_runtime",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "cel_host_test",
     srcs = ["internal/cel_host_test.cc"],

@@ -62,8 +62,8 @@ std::string ConsumeError(wasmtime_error_t* err) {
   return out;
 }
 
-bool BuildSharedMem(SharedMemHarness* h, uint32_t min_pages,
-                    uint32_t max_pages, std::string* err_out = nullptr) {
+bool BuildSharedMem(SharedMemHarness* h, uint32_t min_pages, uint32_t max_pages,
+                    std::string* err_out = nullptr) {
   wasm_config_t* config = wasm_config_new();
   wasmtime_config_wasm_threads_set(config, true);
   wasmtime_config_shared_memory_set(config, true);
@@ -182,7 +182,7 @@ TEST(WasmtimeMemoryViewE2E, WriteCelValuePastEndIsNoop) {
   // OOB writes must NOT change the sentinel.
   CelValue evil{};
   evil.kind = 0xBEEF;
-  view.WriteCelValue(kPageBytes - 8u, evil);       // straddles boundary
+  view.WriteCelValue(kPageBytes - 8u, evil);  // straddles boundary
   view.WriteCelValue(kPageBytes + 100u, evil);
   view.WriteCelValue(0xFFFFFFFFu, evil);
 

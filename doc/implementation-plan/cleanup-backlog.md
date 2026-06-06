@@ -34,13 +34,69 @@ struck through or removed.
       allocates `data` when `size > 0`, so a real component
       cannot return the malformed shape; the NULL guards are
       defense-in-depth against a buggy / future wasmtime build
-      or a vendored-patch-introduced regression.  Two viable
-      shapes for the future test: (a) a friend-class shim that
-      injects a malformed val into the cached return-val slot
-      between `wasmtime_component_func_call` and `LowerComponentToCel`
-      in `eval/engine.cc`'s component dispatch trampoline; (b) a
-      vendored-wasmtime test build that opts a debug knob to
-      produce the malformed shape on a designated test export.
+      or a vendored-patch-introduced regression.
+
+      2026-06-06 follow-up — burndown gap 3 e2e attempt
+      descoped after architecture review.  Findings:
+
+      * The Lower call site lives at `eval/engine.cc:706`
+        (`ComponentCallbackTrampoline`).  The val being lowered
+        is the `result_val` written by
+        `wasmtime_component_func_call` at engine.cc:693 — there
+        is NO public seam between those two statements for a
+        test to inject a malformed val.
+      * The host-callback path proposed as "Option A" in the
+        gap brief (a test-only host callback that hands wasmtime
+        a malformed val for a list-returning fn) does NOT apply
+        to our architecture: host-side callbacks here are
+        component IMPORTS (e.g. `RandomGetBytesStub` at
+        engine.cc:731 — wasi:random the component CONSUMES),
+        and the wasmtime canonical-ABI Lift on the host→component
+        edge owns shape validation on its side.  The Lower path
+        is exclusively driven by component-RETURNED vals from
+        `wasmtime_component_func_call`.  No CEL expression we
+        can author produces a Lower invocation against a val
+        we control.
+      * The "Option B" public AddComponent boundary does not
+        admit a `wasmtime_component_val_t` directly — it takes
+        `Span<const uint8_t>` component bytes plus a
+        `FunctionLibrary`.  No test seam exists today.
+      * `LowerComponentToCel` IS a public symbol on the
+        `:cel_component` cc_library (per
+        `eval/internal/cel_component.h:119`), so the existing
+        unit tests at `cel_component_test.cc:1461-1517` already
+        test through a public API surface — just not the
+        `Engine::AddComponent → Instance::Eval` surface.
+
+      Concrete unlock paths that remain (each requires production
+      or vendored-dep changes — out of scope for this gap closure):
+
+      (a) Add an `Engine::Builder::SetComponentReturnInterceptor`
+          test seam that hooks `result_val` mutation between
+          `wasmtime_component_func_call` and `LowerComponentToCel`
+          in `ComponentCallbackTrampoline`.  Build-config-gated
+          (`#ifndef NDEBUG` or an `--//eval:component_test_seam`
+          flag) so it cannot leak into prod.
+
+      (b) Vendor a debug knob into `third_party/wasmtime` that
+          opts a designated `cel:test/*` interface into producing
+          malformed canonical-ABI output, then write the e2e
+          against that.  Requires upstream-style patch + matching
+          test fixture component.
+
+      (c) When `wasmtime_component_val_t` is replaced by a host-
+          owned representation in a future wasmtime API revision,
+          revisit — the trust boundary moves and the e2e may
+          become wireable without (a) or (b).
+
+      Decision: leave open as P2.  Existing 4 unit tests
+      (`StringMalformedSizeWithNullData`, `BytesMalformedSizeWithNullData`,
+      `ListMalformedSizeWithNullData`, `DurationMalformedRecordWithNullData`)
+      pin the guard correctness; the timestamp guard shares
+      `DecodeSecondsNanosRecord` with duration so is covered
+      transitively.  `StringEmptyWithNullDataOk` pins the
+      benign-shape positive path.
+
       Surfaced: 2026-06-06 coverage-gap closeout for commit
       598c7f2b.
       Files (probable): `eval/internal/cel_component.cc`
@@ -55,7 +111,23 @@ struck through or removed.
       ↔ host trust boundary).  No known production input reaches
       the malformed shape today.
 
-- [ ] **#42** — trampoline-level e2e for `WasmtimeMemoryView`
+- [x] **#42** — CLOSED 2026-06-06.  Trampoline-level e2e for
+      `WasmtimeMemoryView` bounds check landed at
+      `eval/internal/host_trampoline_bounds_test.cc` (5 cases —
+      canonical .wat assembles, 3 OOB probes, 1 in-bounds positive
+      control).  Hand-authored fixture
+      `doc/implementation-plan/rewrite/wat/68_ReadSpanOobInTrampoline.wat`
+      + walkthrough in `wat-traces.md` §68.  Drives the full
+      `Engine::Plan` → `HostCallbackTrampoline` →
+      `WasmtimeMemoryView::ReadSpan` path with an adversarial
+      `payload.s.ptr=0xFFFFFFFF`; captures the lifted `string_view`
+      via the callback's closure and asserts it is empty.  Test has
+      teeth: verified by temporarily bypassing `IsInBounds` in
+      `ReadSpan` — produces SIGSEGV on the max-ptr case, restoring
+      the check returns it to green.
+
+      Original description (preserved for trail):
+      Trampoline-level e2e for `WasmtimeMemoryView`
       bounds check (closes out gap left when #36 shipped).
       Today's coverage: `eval/internal/wasmtime_memory_view_e2e_test.cc`
       runs `ReadSpan` / `ReadCelValue` / `WriteCelValue` / `WriteU32`
