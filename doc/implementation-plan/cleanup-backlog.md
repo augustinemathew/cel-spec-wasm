@@ -21,6 +21,346 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#41** — `optional.ofNonZeroValue(message)` overload causes
+      a wasm trap.  Conformance row
+      `optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`:
+      `optional.ofNonZeroValue(TestAllTypes{?single_double_wrapper:
+      optional.ofNonZeroValue(0.0)}).hasValue()` should evaluate to
+      `false` (the outer optional is empty because the inner
+      struct has no set fields after the `0.0` is pruned via
+      `?single_double_wrapper: optional.ofNonZeroValue(0.0)`).
+      Currently traps: `INTERNAL: Eval trapped: error while
+      executing at wasm backtrace`.  The likely root is the
+      message-typed `ofNonZeroValue` overload — scalar variants
+      ship, but the message arm hits an unwired codegen / runtime
+      path.
+      Surfaced: 2026-06-05 conformance burndown Group K-6 triage.
+      Files (probable): `compiler/codegen/expr_lower.cc`'s
+      optionals dispatch + `runtime/cel_optional.c`'s
+      `cel_optional_of_non_zero_value` variant matrix.
+      Why P2: 1 corpus row; needs a focused expr_lower + runtime
+      slice to add the message arm.
+
+- [ ] **#40** — proto2 extension field support — both checker-side
+      (resolve `msg.`fully.qualified.ext_name`` to an extension
+      reference) and runtime-side (look up the extension descriptor
+      and call `Reflection::HasExtension` / `Reflection::GetMessage`
+      etc).  Conformance rows blocked: 18 — all of
+      `proto2/extensions_has/*` (9) and `proto2/extensions_get/*` (9).
+      The whole `proto2_ext.textproto` file (18 rows) is also blocked
+      on the same surface but currently SKIPs as `ext_unimpl` because
+      its expressions use the `proto.hasExt(msg, ext)` /
+      `proto.getExt(msg, ext)` accessor syntax which we don't
+      register; bringing up the operator-form (`msg.`fqn``) first
+      would close the `extensions_*` rows under proto2.textproto and
+      the function-form rows would follow.
+      Surfaced: 2026-06-05 conformance burndown Group C.
+      Files (probable): `compiler/frontend/parse_and_check.cc`
+      (extension descriptor registration with the checker pool),
+      `eval/internal/cel_host.cc::ReadSingularMessageField` +
+      `HasField` (extension look-up via
+      `Reflection::FindKnownExtensionByName` and
+      `HasExtension(msg, ext_desc)`).
+      Why P2: spec compliance gap, but requires a sustained
+      slice with descriptor-pool plumbing and reflection-side
+      extension code; out of scope for a burndown session.
+
+- [ ] **#39** — strong-typed enum support
+      (cel-spec issues/119, "Future features for CEL 1.0").
+      cel-cpp's own conformance harness skips
+      `enums/strong_proto2` and `enums/strong_proto3` for the
+      same reason — neither implementation has shipped the
+      type-tracking + int→enum-constructor pieces.  Conformance
+      rows affected (now SKIP as `spec_unimpl` via
+      `IsSpecUnimplSection`): 18 across the two sections.
+      Surfaced: 2026-06-05 conformance burndown Group B.
+      Files (probable): `compiler/frontend/parse_and_check.cc`
+      (type-of operator must surface the fully-qualified enum
+      type name when the operand is enum-typed; enum names
+      must register as callable int→enum / string→enum
+      converters in the checker), plus runtime support for
+      the typed enum values.
+      Why P2: spec acknowledged it's unimplemented; the
+      reference impl doesn't pass these either.  Genuine
+      feature work, not a regression.
+
+- [ ] **#38** — `cel_double_to_string_at_v` (`runtime/cel_convert.c`)
+      uses a per-digit `frac *= 10` chain in `append_double_fraction`
+      that accumulates rounding error past ~6 fractional digits.
+      cel-cpp's `absl::StrCat(double)` uses a correctly-rounded
+      shortest-representation algorithm (Grisu / Ryu shape).  Symptom:
+      `string(123.456)` returns `"123.45600000000000306"` instead of
+      `"123.456"`.  Conformance row:
+      `conversions/string/double` (1 row — only the simplest case;
+      other `string/<num>` rows pass because integers/binary-exact
+      doubles round-trip cleanly).
+      Surfaced: 2026-06-05 conformance burndown Group E.
+      Files: `runtime/cel_convert.c::append_double_fraction`,
+      `double_to_string_mixed`, `double_to_string_scientific`.
+      Why P2: 1 corpus row; only embedders that read
+      `string(non-integer-double)` and string-diff the result see the
+      bug.  Correct fix is to vendor / write a Grisu (Steele) or Ryu
+      (Adams) printer — ~300 LOC of careful float math, deferred to a
+      runtime-quality pass.
+
+- [x] **#37** — FIXED 2026-06-05.  Added NULL-data guards
+      to `LowerString` (`cel_component.cc:~276`),
+      `LowerList` (`:~661`), `LowerBytes` (`:~681`), and
+      `DecodeSecondsNanosRecord` (`:~301`).  Each returns
+      `InvalidArgument` instead of dereferencing null when
+      `size > 0 && data == nullptr`.  Regression pin: 5
+      cases in `cel_component_test.cc::LowerComponentToCel`
+      (string/bytes/list/duration malformed +
+      string-empty-with-null-data benign).  Original entry
+      preserved below for the trail:
+      Component-model Lift/Lower paths
+      dereference `wasmtime_component_val_t.of.{record,list,
+      string}.data` without verifying the pointer is
+      non-null or the buffer has `size` elements.  A
+      malformed component value with `record.data = nullptr,
+      record.size = 2` crashes at
+      `eval/internal/cel_component.cc:302` (NULL deref in
+      `DecodeSecondsNanosRecord`'s for-loop).  Same shape
+      in `LowerList` (`eval/internal/cel_component.cc:661-
+      668`), `LowerBytes` (`eval/internal/cel_component.cc:
+      681-682`), and `Value::String(in.of.string.data,
+      in.of.string.size)` at line 276.
+      Severity: crash / OOB read.  Reachable from a buggy
+      or malicious wasm-component, NOT from a buggy wasm
+      module — wasmtime's component-model layer is the
+      one writing these structs.  Likely safe in practice
+      against bugs (wasmtime owns this struct lifetime),
+      but unaudited against a malicious/compromised
+      wasmtime build.
+      Files: `eval/internal/cel_component.cc:276`,
+      `:302`, `:661-668`, `:681-682`.  Mitigation: at
+      each `data`/`size` site, `ABSL_CHECK(in.of.X.data !=
+      nullptr || in.of.X.size == 0)` before the loop; the
+      size invariant is a wasmtime contract so the CHECK
+      is defensive, not a real validator.
+      Why P2: depends on wasmtime upholding its own
+      struct invariants — the practical reachable bug
+      surface is small.  Files a defensive CHECK,
+      doesn't change the contract.
+      Surfaced: 2026-06-05 audit triggered by the PBT
+      hunt; reported in detail by the Explore agent.
+
+- [x] **#36** — FIXED 2026-06-05.  `MemoryView` now
+      exposes `uint32_t Size() const` and a default
+      `IsInBounds(ptr, len)` helper that uses
+      overflow-safe arithmetic (`len <= Size() - ptr`,
+      not `ptr + len <= Size()`).  `WasmtimeMemoryView`
+      implements `Size()` via
+      `wasmtime_sharedmemory_data_size`; both production
+      (`eval/internal/cel_host_wasmtime.h`) and test
+      (`eval/internal/cel_host_test_fakes.h`) impls now
+      bounds-check `ReadCelValue` / `WriteCelValue` /
+      `WriteU32` / `ReadSpan` before touching memory.
+      On OOB: reads return zero / empty, writes are
+      no-ops, no memory disclosure, no process crash.
+      The interface comment documents the contract in
+      detail (cleanup-backlog #36 reference embedded).
+      Regression pin:
+      `//eval:memory_view_bounds_test` — 13 cases
+      covering empty range, exact boundary, off-by-one,
+      `ptr=0xFFFFFFFF`, u32 wrap (`ptr=0x80000000,
+      len=0x80000000`), and "OOB write does not corrupt
+      a known in-bounds sentinel."  97/97 full sweep
+      green post-change — no production caller relied on
+      the unchecked behaviour.
+      Original entry preserved below for the trail:
+      `WasmtimeMemoryView::ReadSpan` returns
+      `{Data() + ptr, len}` with NO bounds check against
+      the linear memory's size — see
+      `eval/internal/cel_host_wasmtime.h:120-122`.  The
+      class-level comment at line 103 acknowledges
+      "a possible future bounds-checked read" as deferred
+      work; this entry surfaces it so the deferral has a
+      tracking handle.  Same gap in `ReadCelValue` (line
+      109-113) and `WriteCelValue` / `WriteU32` (lines
+      114-119).
+      Trigger: a malicious or buggy wasm module passes a
+      CelValue arg with `payload.s.ptr = 0xFFFFFFFF,
+      payload.s.len = N` (or any ptr+len that exceeds
+      memory).  The host trampoline lifts the string via
+      `mem.ReadSpan(0xFFFFFFFF, N)` →
+      `Data() + 0xFFFFFFFF` → pointer arithmetic into
+      the wasmtime memory's virtual reservation or past
+      it (depending on wasmtime's memory model and the
+      module's max-pages config) → either SIGSEGV (the
+      benign case) or returns a `string_view` over host
+      memory adjacent to the wasm reservation (the
+      memory-disclosure case).
+      Severity: depends on wasmtime's memory layout.
+      Wasmtime typically reserves 4 GiB virtual + guard
+      pages, so most OOB ptrs hit the guard and SIGSEGV.
+      The narrow-but-real exploit window is when ptr+len
+      wraps to an in-reservation byte that contains
+      another module's state or host data — possible
+      under shared-memory / multi-module configs.
+      Files: `eval/internal/cel_host_wasmtime.h:102-122`.
+      Mitigation: `MemoryView::Size()` virtual member;
+      `ReadSpan` checks `if (ptr > Size() || len > Size()
+      - ptr) return ""` (or returns
+      `absl::StatusOr<string_view>` and the trampoline
+      poisons the call with kHostAdapterError on OOB).
+      Add `ReadSpanBoundedTest` covering ptr at the
+      memory boundary, ptr past memory, ptr+len wrap.
+      Why P2: hot path; adding a check costs one
+      comparison per host call.  Sketchy under
+      adversarial wasm but no concrete in-tree caller
+      ships a malicious module today.  This is the
+      class of bug user flagged 2026-06-05 ("we are
+      missing bounds checks ... in custom functions").
+      Surfaced: 2026-06-05 audit.
+
+- [x] **#35** — FIXED 2026-06-05 (as a side-effect of #34
+      landing).  The audit's original "lazy-copy" hypothesis
+      was wrong: proto field reads ARE eager-arena-copy at the
+      wire transition via `EncodeSpan`
+      (`cel_host.cc:737-744`).  Pre-#34, this meant any
+      proto field >64 KiB poisoned the Eval with arena OOM;
+      post-#34, the chained-grow arena absorbs the copy
+      transparently and the Eval succeeds.  Doc updated:
+      `eval/internal/cel_host.h::ProtoBacking` now documents
+      the actual eager-copy behaviour + DoS implications +
+      grow-on-demand mitigation.  Regression pin:
+      `//e2e:proto_arena_lazy_copy_test` — 3 cases
+      (`size()` over a 70 KiB field, `(field + "")`, normal-
+      sized sanity).  Original entry preserved below:
+      Proto field reads materialise
+      string/bytes into the per-Eval bump arena via
+      `alloc.Alloc(s.size())` at
+      `eval/internal/cel_host.cc:737-751` (`EncodeSpan`),
+      with NO upstream cap on the proto field's size.
+      `GetStringReference()` at line 515 can return an
+      arbitrarily large string (proto field is host-
+      bound, attacker-controlled in the threat model
+      where a host passes an untrusted proto to Eval).
+      The arena is fixed at 64 KiB (`runtime/cel_layout.
+      h`); a 100 MB string field triggers
+      `arena_alloc()` returning 0 (`runtime/cel_arena.c:
+      89`) → host caller in `EncodeSpan` (line 744-747)
+      returns a `ResourceExhaustedError` and the
+      enclosing Eval poisons to `kError`.  Reasonable
+      surface — but not all callers handle the 0-offset
+      return path cleanly, and the cleanup-backlog #17 /
+      #21 / #34 family covers what happens when proto-
+      reads OR the runtime's own list scans drain the
+      arena.
+      The deeper issue user flagged: the path that
+      copies proto BYTES into the arena (vs the path
+      that holds a host-side std::string and only
+      arena-allocates for the wire form) is
+      asymmetric — the host-side `ProtoBacking::
+      ReadField` (`eval/internal/cel_host.cc:513-519`)
+      returns a heap-backed `Value::String` whose
+      backing is owned by the proto's internal buffer;
+      no arena copy yet.  The arena copy happens only
+      when the value crosses back into the expr module
+      (via `EncodeSpan`).  So a wasm expression that
+      reads a 100 MB proto field via `msg.huge_field`
+      AND then lifts it into wasm memory triggers the
+      arena overflow at the wire transition, not at the
+      proto read.  This is the correct order of
+      operations but isn't documented or load-bearing —
+      a future refactor that arena-copies eagerly would
+      break this assumption silently.
+      Files: `eval/internal/cel_host.cc:513-519`,
+      `:737-751`; `runtime/cel_arena.c:75-89`.
+      Mitigation: document the "arena copy is lazy /
+      only at wire transition" invariant in
+      `eval/internal/cel_host.h`'s `ProtoBacking`
+      contract; add a regression test that reads a
+      proto field larger than the arena and verifies
+      the host receives a clean `ResourceExhausted`
+      error rather than a corrupted truncated value.
+      Why P2: 64 KiB arena limit is overdue for a
+      grow-on-demand redesign (#17); a clean fix for
+      that subsumes this entry.  Documentation gap is
+      the bigger smell — a future refactor could break
+      the lazy-copy invariant without anything in tree
+      to catch it.
+      Surfaced: 2026-06-05 audit triggered by user
+      flag ("bounds checks in copying stuff from
+      protos into the arena").
+
+- [x] **#34** — FIXED 2026-06-05.  Replaced the fixed-cap
+      arena in `runtime/cel_arena.c` with a chained-chunk
+      grow-on-demand arena.  When the current chunk
+      overflows, `arena_alloc` malloc's a fresh chunk
+      sized `pick_grow_size(prev_capacity, at_least_bytes)`
+      (doubles each grow, clamped to
+      `[CEL_ARENA_MIN_GROW_BYTES=4 KiB,
+      CEL_ARENA_MAX_GROW_BYTES=1 MiB]`, with a floor so a
+      single huge alloc gets a chunk sized to fit it).
+      `arena_reset` frees every chunk except the first to
+      avoid per-Eval malloc churn for embedders whose
+      initial sizing is sufficient.  Native build does NOT
+      chain — there's no shared memory to extend into, so
+      OOM is still terminal there (test-only path).
+      `arena_capacity()` now reports the running total
+      across the chain.  Closes the `#36` true-e2e
+      precondition (the proto-arena overflow was the
+      cleanest way to demonstrate the cap, and now it
+      doesn't fire).  Regression pin:
+      `//runtime:cel_runtime_wasm_test::
+      ArenaGrowsOnDemandWhenInitialCapacityExceeded` +
+      `//e2e:proto_arena_lazy_copy_test` (all 3 cases).
+      Full sweep 99/99 green post-change.  Original entry
+      preserved below:
+      Nested comprehension × `_in_` over a
+      multi-element haystack exhausts the per-Eval arena and
+      poisons the result with `code=10 msg="overflow"` (i.e.
+      `kError`).  Surfaced 2026-06-05 by the Slice C PBT at
+      depths 7-8 across the entire scalar matrix
+      (string/bool/int/double + list_int/list_string/
+      map_string_int divergences at seed=230 / seed=185 /
+      seed=246 / seed=57).  Reduced repro:
+
+      ```
+      ["a","b","c","d","e","f","g","h","i","j"].exists_one(v,
+        [1,2].exists(v,
+          [b"a",...,b"j"].exists_one(v,
+            [-3,-2,-1,0,1,2,3].exists(v, (1 in [10,20])))
+        ) ? false : true) ? "hello" : "x"
+      ```
+
+      4-deep nested comp × `_in_ [10,20]` at the innermost
+      predicate → `kError "overflow"`.  Replace the `(1 in
+      [10,20])` with literal `false` → returns `"x"`
+      correctly.  Replace the haystack with `[10]` (single
+      element) → also returns `"x"`.  The trigger is the
+      combination of comp-iteration count × per-iter
+      `cel_list_in` arena allocation: with outer 10 × inner 2
+      × inner 10 × inner 7 = 1400 deepest iterations, each
+      allocating ~24-48 B of arena state for the `_in_`
+      probe, total ~50-67 KB — over the 64 KB fixed arena
+      cap (`runtime/cel_layout.h`).
+      Files: `runtime/cel_runtime.c` (the `cel_list_in`
+      family — same surface flagged by cleanup-backlog #17
+      and #21).  This entry is the PBT-measured variant of
+      that family: the PBT shows it isn't only the 10K
+      "huge bound list" case #17 cites — it's reliably
+      reachable from depth-7 grammar-generated expressions
+      with humble haystack sizes (2-10 elements).
+      Manifestations also include partial corruption ("one
+      element survived a filter that should've returned
+      []") when the overflow happens mid-iteration rather
+      than poisoning the whole result; same root cause,
+      different surface symptom.
+      Why P2: only the runtime grow-on-demand arena
+      (cleanup-backlog #17 fix surface) closes this
+      cleanly; the depth-≤6 PBT runs at 12,000 programs
+      stay clean, so the bug is bounded to "deep nested
+      comprehension OR very wide haystack."  Pinning test:
+      `e2e/known_bugs_test::PbtNestedCompInArenaOverflow`
+      (assertion is `v.kind() == kBytes / "x"`, will be
+      live once arena grow ships).
+      Surfaced: 2026-06-05 Slice C PBT discovery at
+      depth 7-8 (post-#32 fix unblocked deep aggregate
+      composition).
+
 - [ ] **#1** — `third_party/wasi_sdk/BUILD.bazel` flat-aliases
       `//third_party/wasi_sdk:clang` → `@wasi_sdk_darwin_arm64//:clang`;
       Linux + macOS-x86_64 will fail at the bazel-analyzing stage.
@@ -86,7 +426,37 @@ struck through or removed.
       Why P2: not yet observable; lands when the host_string_arena
       cleanup goes in (M7).
 
-- [ ] **#9** — `{'k': 'v'}.k` (map-dot-field sugar) is broken
+- [x] **#9** — FIXED 2026-06-05.  `EmitKSelect`
+      (`compiler/codegen/expr_lower.cc`) gained a `kMap`-operand
+      branch that emits a `cel_map_lookup` (value form) or
+      `cel_map_in` (test_only / `has()` form) call with the field
+      name lifted to rodata as a CEL_STRING CelValue by
+      `SelectKeyRodataVisitor` (`layout_pass.cc`).  The dispatch
+      unconditionally uses the kDynamic dispatcher (not
+      `MapLookupCallTarget(map_origin)`) — ResolvePass's
+      `MapOriginVisitor` stamps `kHost` on every map-typed kSelect,
+      but a nested selector (`{'c': {...}}.c.d` or
+      `{'c': {...}}.c['k']`) produces a CEL_MAP_ARENA value at
+      runtime that the host trampoline rejects.  The kDynamic
+      path's runtime kind-branch routes correctly at any nesting
+      depth.  EmitKIndexCall's `_[_]` arm got the same fall-through
+      (operand is a kSelectExpr → force kDynamic).  Added
+      `cel_map_in_arena` / `cel_map_in` / `cel_host.cel_map_in`
+      imports in `compile.cc`; added `// cel:codegen-export`
+      marker on `cel_map_in_arena` in `runtime/cel_map.h` so the
+      catalogue genrule exposes it.  Regression pin:
+      `KnownBugs.MapFieldSelectSugar` + `MapDotFieldNestedMapValue`
+      + `MapDotFieldThenIndex` + `MapDotFieldBacktickQuotedSlash` +
+      `MapDotFieldBacktickQuotedDot`; un-skipped existing
+      `HasOnMapPresentKey` / `HasOnMapAbsentKey` /
+      `CelBindSelectorOnBoundVar` / `ComprehensionVarSelector` /
+      `ReservedWordMapSelector`.  Conformance: 29 rows flipped (17
+      `parse/selectors` reserved-word rows + 4 `quoted_map_fields`
+      / 2 `map_has` rows + 3 `optional_chaining` rows + 1
+      `bind/shadowing_namespace_resolution_selector` + 2
+      `namespace_shadowing` selector rows).
+      Original entry preserved below for the trail:
+      `{'k': 'v'}.k` (map-dot-field sugar) is broken
       pre-existing.  cel-cpp's checker accepts `.k` on a `map<string,
       V>` operand as sugar for `m["k"]` and stamps the kSelect's
       result type as `V`.  Our `EmitKSelect` does not branch on
@@ -308,7 +678,19 @@ struck through or removed.
       10 k-element permission set is a real workload (cel-policy
       / IAM authorisation) — this is on the production envelope.
 
-- [ ] **#18** — `Value::Message(StringValue{value: "x"})` bound
+- [x] **#18** — FIXED 2026-06-05.  `EncodeStringOrBytes` in
+      `eval/instance.cc` now calls a new `TryReadWktStringWrapperValue`
+      helper at the head; on hit it peels the wrapper's inner string /
+      bytes via `GetStringReference` and copies into the activation
+      arena via the same path the native-Value::String / Value::Bytes
+      paths already use.  Symmetric with the numeric
+      `TryEncodeWktWrapperMessage` peel for BoolValue / Int*Value /
+      UInt*Value / Float/DoubleValue.  `TotalHostStringBytes` pre-pass
+      extended to probe the wrapper-peel size so the activation buffer
+      gets sized correctly.  Regression pin: conformance rows
+      `dynamic/string/var`, `dynamic/bytes/var` (both flip to PASS).
+      Original entry preserved below for the trail:
+      `Value::Message(StringValue{value: "x"})` bound
       against a `string`-declared variable fails at Eval with
       `INVALID_ARGUMENT: Activation[s]: declared string, bound message`.
       The encoders for bool / int / uint / double scalars all call
@@ -655,6 +1037,143 @@ struck through or removed.
       Severity: P2 — meaningful only when #21 (per-kind
       specialization) doesn't apply (i.e. dyn lists).
 
+- [x] **#33** — Same root cause as #32; the apparent
+      "_in_ over workspace-resident list" failure was the
+      DOWNSTREAM symptom of the comprehension-result slot
+      being mis-stamped (cleanup-backlog #32).  Once #32 was
+      fixed, the four bool/uint cases originally classified
+      as #33 all pass under the 12,000-program PBT sweep.
+      Surfaced + closed 2026-06-05.  Kept as a closed entry
+      (rather than deleted) because the misdiagnosis is
+      itself a useful artifact — the next time the PBT
+      reports a "list membership wrong" shape, check whether
+      the comp upstream is the actual culprit before
+      diving into `cel_list_in`.  No code change attributable
+      to this entry; the regression pin lives under #32's
+      `KnownBugs.PbtExistsOneInTernaryCond*` tests.
+
+      Original (incorrect) hypothesis preserved for the trail:
+      `_in_` (membership) over a list whose elements
+      are not all rodata-resident returns the wrong result.
+      Cleanest PBT repro (`string` target, seed=49, depth=5,
+      Slice C grammar) — reduces to:
+
+      ```
+      0u in [7u, u_a, 0u*0u, 7u+1u, 7u]
+      ```
+
+      with `u_a = 5u` in the Slice B activation.  Oracle: `true`
+      (the third element is `0u`).  Ours: `false`.  The haystack
+      list is constructed at runtime from `kCall` arithmetic
+      results (`7u+0u`, `0u*0u`, `7u+1u`) and a `kIdent` load
+      (`u_a`), not literals — every list element lives in a
+      workspace slot, not in rodata.  The runtime's list-scan
+      path (`cel_list_in` family in `runtime/cel_runtime.c`)
+      almost certainly only walks rodata-resident or
+      arena-resident elements; the workspace-slot case isn't
+      wired in.
+      The bug also fires through `.exists(k, …)` and
+      `.exists_one(k, …)` over maps whose values are non-literal
+      (PBT discovered four cases: `bool` seed=1, `bool` seed=27,
+      `uint` seed=5 chain through the same map / list runtime
+      scan); the bug is the runtime walk, not the comprehension
+      lowering.
+      Files: `runtime/cel_runtime.c` (`cel_list_in` and sibling
+      `cel_list_in_arena` / `cel_map_lookup_*`), plus targeted
+      WAT walkthrough under `doc/implementation-plan/rewrite/wat/`
+      to lock the list-element addressing for workspace-resident
+      elements before patching runtime.  Pinning test:
+      `e2e/known_bugs_test::PbtUintInWorkspaceListMembership`.
+      Why P2: fires only when the haystack list is a runtime
+      construction of non-literal elements — hand-written tests
+      that built lists from literals or from arena-allocated
+      messages never hit it; the PBT generator's preference for
+      composing `kCall`/`kIdent` into list-literal slots is what
+      exposes the gap.
+      Surfaced: 2026-06-05 Slice C PBT discovery (after #31 fix).
+
+- [x] **#32** — FIXED 2026-06-05 by correcting the #31
+      stamp.  Root cause was NOT in `EmitConditional` /
+      `EmitGeneralCall` (the original hypothesis): the
+      kind-tag was being written correctly all along.  The
+      bug was that `ComprehensionLocalsVisitor::PostVisit
+      Comprehension` stamped the kComprehensionExpr's
+      storage with the `accu_var.slot_offset`, but for
+      `exists_one` the comp's result sub-expression is
+      `kCallExpr(_==_, @result, 1)` whose result lives in
+      its OWN workspace slot — not in the accu slot which
+      still held the Int loop counter.  Every "wrong-kind"
+      / "wrong value" symptom was the downstream consumer
+      reading the count Int instead of the comparison's
+      Bool from the accu slot.  Fix: stamp comp storage
+      from `comp.result()`'s annotation (post-visit, child
+      already laid out).  For `.exists` / `.all` / `.filter`
+      / `.map` the result IS `kIdent(@result)` so its
+      storage points at the accu slot — same answer as
+      before, by construction.  For `.exists_one` (and
+      future macros whose `result` sub-expression isn't a
+      bare ident) the storage now points at the correct
+      slot.  Verified with a 12,000-program PBT sweep
+      (depth 6, 2000 seeds × 6 target kinds): 0 value
+      divergences.  Regression pin:
+      `e2e/known_bugs_test::PbtExistsOneInTernaryCondBytes`
+      (+ companions `…TakesThen` and
+      `PbtSizeOfExistsOneTernaryBytes`).
+
+      Original (partially incorrect) hypothesis preserved
+      for the trail:
+      Composite expressions whose result kind comes
+      from a non-Const ternary branch or an arithmetic/`size()`
+      consumer of a comprehension produce a CelValue whose
+      *tag* byte is wrong (the parent reads `<wrong-kind>`),
+      even though the payload bytes are correct in isolation.
+      The PBT surfaced 10 of these across `int` / `uint` /
+      `double` / `string` / `bytes` targets after #31 unblocked
+      the comprehension storage path; the common shape is "the
+      result of a ternary or comprehension feeds a `+` / `*` /
+      `size()` / outer ternary, and the outer consumer reads
+      the slot's kind tag without that tag ever having been
+      written."  Cleanest repro (`int` target, seed=137):
+
+      ```
+      size(
+        <cond> ? <bytes-typed nested ternary>
+               : <bytes-typed nested ternary>
+      )
+      ```
+
+      Oracle: `2` (a `kInt`).  Ours: the result CelValue is
+      not even `kInt`.  Same family across `bytes` (seed=3:
+      `((cond ? y_a : (y_a + b"x")) + (true ? y_a : b"x")) +
+      b"x"`), `string` (seed=50, seed=56), `double` (seed=35,
+      seed=37, seed=107), `uint` (seed=19, seed=46).
+      Hypothesis: `EmitConditional` / `EmitGeneralCall` writes
+      the *payload* of the chosen branch into the parent's
+      workspace slot but does not stamp the slot's CelValue
+      header (kind tag); when the parent expression is a
+      consumer that reads `.kind()` to dispatch, it sees a
+      stale tag from whatever was in the slot before.  Same
+      seam as #58 (the Slice B kIdent / kLocal ternary fix) but
+      surfacing in more positions because Slice C aggregates
+      route more results through workspace slots.
+      Files: `compiler/codegen/expr_lower.cc`
+      (`EmitConditional`, `EmitGeneralCall`,
+      `EmitCelCopySlot`); add a regression test per repro
+      shape in `compiler/codegen/expr_lower_test.cc` + a
+      pinning row in `e2e/known_bugs_test.cc` per concrete
+      seed.
+      Why P2: hidden behind a kind-tag mismatch on the
+      consumer — the expression *appears* to evaluate but the
+      result is the wrong CEL kind; this would silently miscompile
+      a real workload but the hand-written test catalog never
+      composes ternary / comp results into outer arithmetic in
+      the unfortunate way the PBT does.  Pinning tests:
+      `e2e/known_bugs_test::PbtSizeOfBytesTernary` (int seed=137),
+      `e2e/known_bugs_test::PbtBytesTernaryPlusChain` (bytes seed=3).
+      Surfaced: 2026-06-05 Slice C PBT discovery (after #31 fix
+      unblocked these shapes — the 10 cases were previously masked
+      because the comprehension storage CHECK fired first).
+
 ## Runtime optimization review — 2026-06-03 summary
 
 Top three of the review (#27, #20, #26) shipped 2026-06-03 — see
@@ -670,6 +1189,23 @@ disassembly-confirmation-gated speculative wins.  #29 is
 follow-up cleanup, not a current regression.
 
 ## Closed
+
+- [x] **#31** — `kComprehensionExpr` annotation had no
+      `storage` stamped (`storage.kind == kNone`); any consumer
+      that needed the comp's result CelValue address via
+      `EmitSlotBaseAddress` CHECKed.  Fixed 2026-06-05 by
+      extending `ComprehensionLocalsVisitor` in
+      `compiler/codegen/layout_pass.cc` with a
+      `PostVisitComprehension` that finds the accu_var by name
+      in `layout.variables[]` and stamps the
+      `kComprehensionExpr`'s annotation with
+      `Storage{kWorkspaceSlot, accu_var.slot_offset}`.  Verified
+      with the original ternary-over-comp repro
+      (`[1,2,3].exists(v, v == 2) ? 7 : 11` returns `Int(7)`).
+      Updated `LayoutPassComprehensionChildrenTest`'s six
+      `EXPECT_EQ(h.none, 1)` assertions to `0` (the comp node
+      no longer has kNone storage).  Discovered #32 and #33
+      downstream — see Open entries.
 
 - [x] **#13** — the "`Instance::PartialEval` SEGFAULTs on a bound
       container-of-message" report was NOT a runtime bug — it was a

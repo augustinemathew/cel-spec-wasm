@@ -132,6 +132,22 @@ TEST(CelCppOracle, ProtoFieldSelectAgrees) {
   ExpectAgree("TestAllTypes{single_int32: 7}.single_int32", kP3);
 }
 
+// Conformance rows `lists/index/zero_based_double` and
+// `lists/index/zero_based_uint`: per the corpus, indexing a list with
+// `dyn(0.0)` or `dyn(0u)` returns the int element at offset 0.
+// Pins our runtime's heterogeneous list-index admission against the
+// reference implementation.
+TEST(CelCppOracle, ListIndexDoubleAgrees) {
+  ExpectAgree("[7, 8, 9][dyn(0.0)]", kP3);
+}
+TEST(CelCppOracle, ListIndexUintAgrees) {
+  ExpectAgree("[7, 8, 9][dyn(0u)]", kP3);
+}
+TEST(CelCppOracle, ListIndexNonIntegerDoubleAgrees) {
+  // The corpus row `zero_based_double_error` expects an error here.
+  ExpectAgree("[7, 8, 9][dyn(0.1)]", kP3);
+}
+
 // The oracle surfaces a CEL eval error as `is_error`, not as an
 // `absl::Status` failure (which is reserved for harness/setup failure).
 TEST(CelCppOracle, DivByZeroSurfacesAsCelError) {

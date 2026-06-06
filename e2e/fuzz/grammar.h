@@ -122,35 +122,41 @@ class GrammarBuilder {
  public:
   // Leaf with zero placeholders — `format` is the literal source.
   // Example: `Leaf(Int(), "int_const_zero", "0")`.
-  GrammarBuilder& Leaf(CelType target, std::string name,
-                       std::string format, int weight = 1);
+  GrammarBuilder& Leaf(CelType target, std::string name, std::string format,
+                       int weight = 1);
 
   // 1-arg recursive rule.  `format` must contain `%0`.
-  GrammarBuilder& Unary(CelType target, std::string name,
-                        std::string format, CelType arg0_type,
-                        int weight = 1);
+  GrammarBuilder& Unary(CelType target, std::string name, std::string format,
+                        CelType arg0_type, int weight = 1);
 
   // 2-arg recursive rule.  `format` must contain `%0` and `%1`.
-  GrammarBuilder& Binary(CelType target, std::string name,
-                         std::string format, CelType arg0_type,
-                         CelType arg1_type, int weight = 1);
+  GrammarBuilder& Binary(CelType target, std::string name, std::string format,
+                         CelType arg0_type, CelType arg1_type, int weight = 1);
 
   // 3-arg recursive rule (ternary).  `format` must contain
   // `%0`, `%1`, `%2`.
-  GrammarBuilder& Ternary(CelType target, std::string name,
-                          std::string format, CelType arg0_type,
-                          CelType arg1_type, CelType arg2_type,
-                          int weight = 1);
+  GrammarBuilder& Ternary(CelType target, std::string name, std::string format,
+                          CelType arg0_type, CelType arg1_type,
+                          CelType arg2_type, int weight = 1);
 
   // Comprehension shape — `range_type` for `%0`, `body_type` for
   // `%1` with `(iter.first : iter.second)` added to scope only
   // while `%1` is generated.  Format example:
   // `"(%0).exists(v, %1)"` for `exists`.
   GrammarBuilder& Comprehension(CelType target, std::string name,
-                                std::string format,
-                                CelType range_type,
+                                std::string format, CelType range_type,
                                 std::pair<std::string, CelType> iter,
                                 CelType body_type, int weight = 1);
+
+  // N-arg production with homogeneous arg type — e.g.
+  // `Repeated(list<int>, "list_int_lit_5", "[%0, %1, %2, %3, %4]",
+  //          int, 5)` registers a 5-arg production whose
+  // `%0..%4` slots are all `int`.  Used for list / map literal
+  // constructors past the Ternary cap so the catalog can emit
+  // larger aggregates without typing each variant by hand.  L1
+  // checks placeholder consistency.
+  GrammarBuilder& Repeated(CelType target, std::string name, std::string format,
+                           CelType arg_type, int arity, int weight = 1);
 
   // Finalises and returns the grammar.  Consumes `*this`.
   Grammar Build() &&;

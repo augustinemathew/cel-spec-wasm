@@ -26,6 +26,7 @@
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/wasmtime_engine_state.h"
 #include "eval/value.h"
+#include "google/protobuf/descriptor.h"
 #include "google/protobuf/message.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
@@ -197,6 +198,21 @@ absl::StatusOr<Value> DecodeHostMessageAt(const celwasm::ExternrefTable& refs,
     return absl::FailedPreconditionError(
         absl::StrCat("Eval: CEL_MESSAGE msg_slot=", ref_slot,
                      " backing has no proto message"));
+  }
+  // Auto-unpack a top-level `google.protobuf.Any` result.  cel-cpp's
+  // runtime returns the unpacked target message for an Any-typed
+  // result (the Any contract is "unpack on read" — langdef
+  // §"Message Field Selection" admits Any anywhere a message-typed
+  // value is wanted).  Conformance rows `dynamic/any/literal`,
+  // `any/var`, `any/literal_empty` pin this — `literal_empty`
+  // expects an error because an empty Any has no type_url to
+  // resolve.
+  const google::protobuf::Descriptor* desc = src->GetDescriptor();
+  if (desc != nullptr && desc->full_name() == "google.protobuf.Any") {
+    const google::protobuf::DescriptorPool* pool =
+        desc->file() != nullptr ? desc->file()->pool() : nullptr;
+    celwasm::Value unpacked = celwasm::UnpackAnyToValue(*src, pool);
+    return unpacked;
   }
   std::unique_ptr<google::protobuf::Message> copy(src->New());
   copy->CopyFrom(*src);
@@ -420,10 +436,10 @@ absl::Status EnsureActivationBuffer(wasmtime_context_t* ctx,
   return absl::OkStatus();
 }
 
-// Forward decl — defined further down with the other per-Repr
-// encoders.  EncodeStringOrBytes ships its own kind check via this.
+// Forward decls — defined further down.
 absl::Status KindMismatch(absl::string_view name, absl::string_view declared,
                           Value::Kind got);
+uint32_t WrapperFqnToCelKind(absl::string_view fqn);
 
 // Bundle of host arena state that the kString / kBytes encoder
 // reads + advances.  Kept here (not on `EncoderContext` below) so a
@@ -437,23 +453,65 @@ struct HostStringArena {
   uint32_t* absl_nonnull cursor;  // bytes used since `floor`.
 };
 
+// Extract the `value` field of a StringValue / BytesValue WKT wrapper
+// message into a `absl::string_view` view onto the message's internal
+// buffer.  Returns the view via `*out_sv` and true on hit; false on
+// "not a wrapper" or descriptor mismatch (caller falls through).  The
+// resulting view is live as long as the underlying message is — the
+// caller copies into the arena before doing anything that releases
+// the message reference.
+bool TryReadWktStringWrapperValue(const Value& v, celwasm::Repr repr,
+                                  absl::string_view* out_sv,
+                                  std::string* scratch) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (v.kind() != Value::Kind::kMessage) return false;
+  auto backing_or = v.SharedMessageBacking();
+  if (!backing_or.ok()) return false;
+  const google::protobuf::Message* msg = (*backing_or)->message();
+  if (msg == nullptr) return false;
+  const google::protobuf::Descriptor* d = msg->GetDescriptor();
+  if (d == nullptr) return false;
+  const uint32_t fqn_kind = WrapperFqnToCelKind(d->full_name());
+  const uint32_t want_kind =
+      repr == celwasm::Repr::kString ? CEL_STRING : CEL_BYTES;
+  if (fqn_kind == 0 || fqn_kind != want_kind) return false;
+  const google::protobuf::Reflection* refl = msg->GetReflection();
+  const google::protobuf::FieldDescriptor* vf = d->FindFieldByNumber(1);
+  if (refl == nullptr || vf == nullptr) return false;
+  if (vf->cpp_type() != FD::CPPTYPE_STRING) return false;
+  *out_sv = refl->GetStringReference(*msg, vf, scratch);
+  return true;
+}
+
 // Encode a kString / kBytes value: copy the payload bytes into the
 // host string arena and write the offset+len into the CelValue.
 // `arena.cursor` advances by `aligned_len` so the next encoder
 // starts at a clean 8-byte boundary.
+//
+// Per langdef §"Dynamic Values" and cleanup-backlog #18: a bound
+// `Value::Message(StringValue{...})` against a string-declared
+// variable should peel the wrapper into the inner string (symmetric
+// with the numeric `TryEncodeWktWrapperMessage` path).  Mirrors
+// cel-cpp's WKT wrapper-binding semantics.
 absl::Status EncodeStringOrBytes(const Value& v, absl::string_view name,
                                  celwasm::Repr repr, CelValue* dst,
                                  HostStringArena arena) {
   const Value::Kind expected = repr == celwasm::Repr::kString
                                    ? Value::Kind::kString
                                    : Value::Kind::kBytes;
-  if (v.kind() != expected) {
-    return KindMismatch(
-        name, repr == celwasm::Repr::kString ? "string" : "bytes", v.kind());
+  absl::string_view sv;
+  std::string scratch;
+  if (TryReadWktStringWrapperValue(v, repr, &sv, &scratch)) {
+    // Fall through with `sv` populated; skip the kind check + AsString.
+  } else {
+    if (v.kind() != expected) {
+      return KindMismatch(
+          name, repr == celwasm::Repr::kString ? "string" : "bytes", v.kind());
+    }
+    auto sv_or = repr == celwasm::Repr::kString ? v.AsString() : v.AsBytes();
+    if (!sv_or.ok()) return sv_or.status();
+    sv = *sv_or;
   }
-  auto sv_or = repr == celwasm::Repr::kString ? v.AsString() : v.AsBytes();
-  if (!sv_or.ok()) return sv_or.status();
-  const absl::string_view sv = *sv_or;
   const auto len = static_cast<uint32_t>(sv.size());
   const uint32_t aligned = (len + 7u) & ~uint32_t{7u};
 
@@ -912,6 +970,18 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
       // type-name strings live in the same host arena as
       // kString/kBytes payloads (see EncodeType above).
       total += static_cast<uint32_t>(bound->AsType()->size());
+    } else if ((repr == celwasm::Repr::kString ||
+                repr == celwasm::Repr::kBytes) &&
+               bound->kind() == Value::Kind::kMessage) {
+      // WKT wrapper peel (StringValue / BytesValue → inner string/bytes):
+      // EncodeStringOrBytes copies the wrapper's `value` field into the
+      // arena.  Probe the same path here so the pre-pass budgets the
+      // matching bytes.  Per cleanup-backlog #18.
+      absl::string_view sv;
+      std::string scratch;
+      if (TryReadWktStringWrapperValue(*bound, repr, &sv, &scratch)) {
+        total += static_cast<uint32_t>(sv.size());
+      }
     }
     total = (total + 7u) & ~uint32_t{7u};
   }

@@ -4,12 +4,12 @@
 #include <cstring>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 // M5.C string + bytes op coverage.  Exercises every helper at the
 // happy path, the empty-operand boundary (edge case for substring
@@ -598,16 +598,51 @@ INSTANTIATE_TEST_SUITE_P(
 
 // ── Spec-citation focused tests (TEST_F) ──────────────────────
 
-// langdef §"String / bytes": size() returns BYTE count, not
-// code-point count.  The 4-byte UTF-8 sequence for U+1F600
-// (😀) must report size 4, not 1.  Distinct-story citation —
-// stays out of the SizeIntCase table so the rationale is
-// explicit at the assertion.
-TEST_F(StringOpsTest, StringSizeIsByteCountNotCodepointCount) {
-  static const char kEmoji[] = "\xF0\x9F\x98\x80";  // U+1F600
+// langdef §"size": `size(string)` is the Unicode code-point count
+// (not the byte length).  `size(bytes)` is the byte length.
+// Conformance rows `size/one_unicode` (`size('ÿ')` → 1) and
+// `size/unicode` (`size('πέντε')` → 5) — pre-2026-06-05 we
+// returned the byte length and both failed; fixed in
+// `runtime/cel_string_ops.c::utf8_codepoint_count` (kernel walks
+// the UTF-8 byte stream and counts every byte whose top bits are
+// NOT 10 (continuation), which equals the codepoint count).
+
+TEST_F(StringOpsTest, StringSizeIsCodepointCountFor4ByteEmoji) {
+  static const char kEmoji[] = "\xF0\x9F\x98\x80";  // U+1F600 😀
   uint32_t v = cel_make_string(kEmoji, sizeof(kEmoji) - 1);
   uint32_t out = MakeOut();
   cel_string_size_at_v(out, v);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(At(out)->payload.i, 1);
+}
+
+TEST_F(StringOpsTest, StringSizeIsCodepointCountForLatin1Codepoint) {
+  // Conformance row `size/one_unicode `size('ÿ')` (U+00FF) — 2 bytes
+  // in UTF-8 (0xC3 0xBF) but 1 code point.
+  static const char kY[] = "\xC3\xBF";  // U+00FF ÿ
+  uint32_t v = cel_make_string(kY, sizeof(kY) - 1);
+  uint32_t out = MakeOut();
+  cel_string_size_at_v(out, v);
+  EXPECT_EQ(At(out)->payload.i, 1);
+}
+
+TEST_F(StringOpsTest, StringSizeIsCodepointCountForFiveMultiByteCodepoints) {
+  // Conformance row `size/unicode `size('πέντε')` — 5 code points,
+  // 10 UTF-8 bytes (each Greek letter is 2 bytes).
+  static const char kPente[] = "\xCF\x80\xCE\xAD\xCE\xBD\xCF\x84\xCE\xB5";
+  uint32_t v = cel_make_string(kPente, sizeof(kPente) - 1);
+  uint32_t out = MakeOut();
+  cel_string_size_at_v(out, v);
+  EXPECT_EQ(At(out)->payload.i, 5);
+}
+
+TEST_F(StringOpsTest, BytesSizeIsByteCountForMultiByteEmojiBytes) {
+  // `size(bytes)` is byte length — verify the emoji's bytes form
+  // reports 4 (not 1).
+  static const char kEmoji[] = "\xF0\x9F\x98\x80";
+  uint32_t v = cel_make_bytes(kEmoji, sizeof(kEmoji) - 1);
+  uint32_t out = MakeOut();
+  cel_bytes_size_at_v(out, v);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_INT));
   EXPECT_EQ(At(out)->payload.i, 4);
 }

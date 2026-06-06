@@ -49,8 +49,23 @@ static inline int payload_in_range(int64_t seconds, int32_t nanos, int64_t lo,
 }
 
 static inline int timestamp_in_range(int64_t seconds, int32_t nanos) {
-  return payload_in_range(seconds, nanos, TIMESTAMP_MIN_SECONDS,
-                          TIMESTAMP_MAX_SECONDS);
+  // Langdef inclusive range is `[0001-01-01T00:00:00Z,
+  // 9999-12-31T23:59:59.999999999Z]` — at MAX_SECONDS, nanos in
+  // [0, 999999999] are still in range (one full second of sub-second
+  // precision lives ON the boundary).  The shared payload_in_range
+  // helper's "MAX seconds + positive nanos always overflows" rule
+  // is right for durations (where MAX_SECONDS is the proto Duration
+  // bound, exclusive of any further fraction) but wrong here.  CEL
+  // conformance row `timestamps/conversions/toString_timestamp_nanos`
+  // (spec/tests/simple/testdata/timestamps.textproto) pins this.
+  if (seconds > TIMESTAMP_MAX_SECONDS || seconds < TIMESTAMP_MIN_SECONDS) {
+    return 0;
+  }
+  if (seconds == TIMESTAMP_MIN_SECONDS && nanos < 0) return 0;
+  // nanos are always in [0, 999999999] for parsed values; the
+  // canonical CelDurTs invariant is enforced upstream.  Accept any
+  // valid nanos at MAX_SECONDS.
+  return 1;
 }
 
 static inline int duration_in_range(int64_t seconds, int32_t nanos) {

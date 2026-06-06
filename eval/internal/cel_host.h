@@ -31,6 +31,7 @@
 
 namespace google::protobuf {
 class Descriptor;
+class DescriptorPool;
 class FieldDescriptor;
 class Message;
 }  // namespace google::protobuf
@@ -76,6 +77,38 @@ class HostMessageBacking {
 
 // Non-owning adapter over `google::protobuf::Message` — caller keeps the
 // message alive for the Eval that observes this backing.
+// `ReadField` returns a `celwasm::Value` whose string/bytes payload
+// is heap-backed by the proto's internal storage at the C++ layer
+// (via `GetStringReference`).  However — and this is the load-
+// bearing fact for DoS-budgeting an Eval — when the result crosses
+// back into the expr module through the `cel_get_field`
+// trampoline, `cel_host.cc::EncodeSpan` (line ~737) eagerly
+// memcpy's the proto-owned string into the per-Eval bump arena
+// before stamping `(ptr, len)` in the result CelValue.  So at the
+// wire transition the proto field IS arena-resident.
+//
+// Consequences for embedders:
+//
+//   - A proto field whose serialised size exceeds the per-Eval
+//     arena cap (`runtime/cel_layout.h`, 64 KiB by default)
+//     poisons the Eval with `kArenaOverflow` even for
+//     ostensibly-cheap probes like `size(c.huge_field)`,
+//     `has(c.huge_field)`, or `c.huge_field == ""` — every
+//     field read currently goes through the eager arena copy.
+//   - The failure mode is clean (well-typed `kError`, not
+//     truncation or memory corruption), but it is a DoS vector:
+//     an attacker who controls the proto binding can guarantee
+//     Eval failure for any expression referencing the huge
+//     field.  Embedders that accept untrusted protos MUST size
+//     the arena to bound the largest acceptable field, OR pre-
+//     validate field sizes before binding.
+//
+// Filed as **cleanup-backlog #35**.  The right fix is the same
+// surface as #17 / #21 / #34 — a runtime grow-on-demand arena.
+// Until that lands, this contract is the documentation of the
+// current eager-copy reality (originally documented as "lazy
+// copy" — that was wrong; `e2e/proto_arena_lazy_copy_test.cc`
+// is the empirical pin that corrected the contract).
 class ProtoBacking final : public HostMessageBacking {
  public:
   explicit ProtoBacking(const google::protobuf::Message* absl_nonnull msg)
@@ -303,6 +336,47 @@ class MemoryView {
   MemoryView(const MemoryView&) = delete;
   MemoryView& operator=(const MemoryView&) = delete;
 
+  // Total bytes of the underlying linear memory.  Used by the
+  // default `IsInBounds` helper below and by callers that need to
+  // bounds-check `ptr + len` against memory size before iterating
+  // (e.g. when walking an attacker-controlled length field from a
+  // CelValue payload).
+  virtual uint32_t Size() const = 0;
+
+  // True iff `[ptr, ptr+len)` lies entirely inside `[0, Size())`,
+  // i.e. the read/write of `len` bytes at `ptr` is safe.  Empty
+  // ranges (`len == 0`) are always in-bounds — they perform no
+  // memory access.  Subtraction is rearranged
+  // (`len <= Size() - ptr`) to avoid overflow when computing
+  // `ptr + len` on the u32s.
+  bool IsInBounds(uint32_t ptr, uint32_t len) const {
+    if (len == 0) return true;
+    const uint32_t size = Size();
+    return ptr <= size && len <= size - ptr;
+  }
+
+  // Read/write methods MUST bounds-check `offset + sizeof(...)` (or
+  // `ptr + len`) against `Size()` before touching memory.  On OOB:
+  //
+  //   - `ReadCelValue` returns a zeroed `CelValue` (kind == 0,
+  //     payload == 0) — observable as a kNull on the host side, so
+  //     the trampoline propagates a defined-but-empty value rather
+  //     than reading host memory adjacent to the wasm reservation.
+  //   - `ReadSpan` returns an empty `absl::string_view` — the
+  //     caller sees a zero-length string/bytes, never a span
+  //     pointing past the wasm sandbox.
+  //   - `WriteCelValue` / `WriteU32` are no-ops on OOB — the
+  //     write is silently dropped; subsequent reads observe the
+  //     prior memory state.  No partial writes.
+  //
+  // This is the security-relevant contract: a malicious or buggy
+  // wasm module that passes out-of-bounds `ptr`/`offset` values
+  // through a host trampoline CANNOT leak host memory or corrupt
+  // host state via these methods.  The eval that produced the
+  // bad value still proceeds — the value it ultimately yields is
+  // observably wrong (typically kNull or an empty container), so
+  // a downstream assertion in well-written CEL catches it.  See
+  // `cleanup-backlog #36` for the audit that closed this gap.
   virtual CelValue ReadCelValue(uint32_t offset) const = 0;
   virtual void WriteCelValue(uint32_t offset, const CelValue& v) = 0;
   virtual absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const = 0;
@@ -409,6 +483,17 @@ struct TrampolineContext {
   ExternrefTable& refs;
   ArenaAllocator& alloc;
 };
+
+// Auto-unpack a `google.protobuf.Any` proto message into the CEL
+// Value its payload encodes.  Chains Any-of-Any layers and applies
+// the WKT/wrapper unwrap to the innermost terminal.  Mirrors
+// cel-cpp's eval-time Any unpacking behaviour — the Any contract is
+// "unpack on read" (langdef §"Message Field Selection" admits Any
+// at any message-typed slot).  Returns `Value::OwnedMessage(...)`
+// wrapping a fresh clone of the innermost message when no WKT
+// peel applies; an Error value when the type_url is empty / unknown.
+celwasm::Value UnpackAnyToValue(const google::protobuf::Message& any,
+                                const google::protobuf::DescriptorPool* pool);
 
 // Trampoline entry points.  Both write their result CelValue to
 // `out_slot` in `ctx.mem`.  Absorbs UNKNOWN / ERROR on the input;

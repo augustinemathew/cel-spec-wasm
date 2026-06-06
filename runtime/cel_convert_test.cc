@@ -6,12 +6,12 @@
 #include <limits>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 // M10 — conversion-kernel coverage.  Four sections, one per
 // sub-milestone (B numeric inter-convert; C string parsing; D
@@ -435,6 +435,49 @@ TEST_F(ConvertParseTest, StringToDoubleEmptyRejected) {
   uint32_t out = MakeOut();
   cel_string_to_double_at_v(out, cel_make_string("", 0));
   ExpectError(out, CEL_ERR_OVERFLOW);
+}
+
+// Precision regressions surfaced by conformance/conversions corpus rows
+// `double/string_pos` / `_neg` / `_exp_pos_pos` / `_exp_neg_neg`.  The
+// pre-2026-06-05 `apply_decimal_scale` divided / multiplied
+// step-by-step, which lost a ULP on `123.456` (the chain
+// 123456 / 10 / 10 / 10 landed at 123.45599...) — fixed by building
+// the divisor once for |exp| ≤ 22 then dividing in a single step.
+// The step-by-step chain is kept for |exp| > 22 because 10^N stops
+// being exactly representable past N=22 and the single-pass form
+// drifts the other direction.  See `runtime/cel_convert.c`.
+
+TEST_F(ConvertParseTest, StringToDoublePreservesULPOnSmallExponent) {
+  // langdef §"double" — `double(string)` parses the IEEE-754 canonical
+  // double for any decimal source it admits.  Conformance row
+  // `double/string_pos `double('123.456')`.
+  uint32_t out = MakeOut();
+  cel_string_to_double_at_v(out, cel_make_string("123.456", 7));
+  EXPECT_EQ(cel_value_at(out)->payload.d, 123.456);
+}
+
+TEST_F(ConvertParseTest, StringToDoublePreservesULPOnSmallNegativeExponent) {
+  // Conformance row `double/string_neg `double('-987.654')`.
+  uint32_t out = MakeOut();
+  cel_string_to_double_at_v(out, cel_make_string("-987.654", 8));
+  EXPECT_EQ(cel_value_at(out)->payload.d, -987.654);
+}
+
+TEST_F(ConvertParseTest, StringToDoublePreservesULPOnLargeExponent) {
+  // Conformance row `double/string_exp_pos_pos `double('6.02214e23')`.
+  // `total_exp = 23 - 5 = 18` (within the single-pass ≤22 range).
+  uint32_t out = MakeOut();
+  cel_string_to_double_at_v(out, cel_make_string("6.02214e23", 10));
+  EXPECT_EQ(cel_value_at(out)->payload.d, 6.02214e23);
+}
+
+TEST_F(ConvertParseTest, StringToDoublePreservesULPOnExpNegBeyond22) {
+  // Conformance row `double/string_exp_neg_neg `double('-5.43e-21')`.
+  // `total_exp = -21 - 2 = -23` (outside the ≤22 range; routes to the
+  // step-by-step chain which matches strtod for this input).
+  uint32_t out = MakeOut();
+  cel_string_to_double_at_v(out, cel_make_string("-5.43e-21", 9));
+  EXPECT_EQ(cel_value_at(out)->payload.d, -5.43e-21);
 }
 
 TEST_F(ConvertParseTest, StringToDoubleTrailingGarbageRejected) {

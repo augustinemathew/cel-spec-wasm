@@ -196,6 +196,94 @@ BinaryenExpressionRef EmitKSelectOptionalBranch(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
+// Forward declarations — defined further down in this TU.  EmitKSelect's
+// kMap branch and EmitKIndexCall share the same map-origin → call-target
+// mapping.
+absl::string_view MapLookupCallTarget(Origin origin);
+absl::string_view MapInCallTarget(Origin origin);
+
+// kSelect on a map operand is CEL sugar for `m[field]` (langdef §"Field
+// selection"): the dot form binds the field name as a string key.  Routes
+// to `cel_map_lookup` (value form) or `cel_map_in` (test_only / `has()`
+// form), with the field name's rodata-resident CelValue as the key arg.
+//
+// Uses the kDynamic dispatcher unconditionally (not
+// `MapLookupCallTarget(origin)`) — ResolvePass's MapOriginVisitor stamps
+// `kHost` on every map-typed kSelect, but a nested selector
+// (`{'c': {...}}.c.d`) produces a CEL_MAP_ARENA value at runtime that
+// the host trampoline rejects.  The dispatcher's runtime kind-branch
+// routes correctly at any nesting depth and still tail-calls the
+// appropriate fast path.  See cleanup-backlog #9.
+BinaryenExpressionRef EmitKSelectMapBranch(
+    EmitCtx& ctx, BinaryenExpressionRef operand, uint32_t out_slot,
+    uint32_t key_rodata_offset, bool test_only, const cel::Expr& expr) {
+  ABSL_CHECK(key_rodata_offset != 0)
+      << "expr_lower: kSelect expr_id=" << expr.id()
+      << " has map operand but LayoutPass didn't allocate a "
+         "key_rodata_offset (SelectKeyRodataVisitor invariant)";
+  // `cel_map_in_*` arg order is `(out, key, map)`; `cel_map_lookup_*` is
+  // `(out, map, key)`.  The two ABIs differ for historical reasons (see
+  // `runtime/cel_map.h` — `cel_map_in` mirrors `key in m`).
+  const absl::string_view target =
+      test_only ? kCelMapInInternalName : kCelMapLookupInternalName;
+  BinaryenExpressionRef args[3];
+  args[0] = I32Const(ctx.mod, out_slot);
+  if (test_only) {
+    args[1] = I32Const(ctx.mod, key_rodata_offset);
+    args[2] = operand;
+  } else {
+    args[1] = operand;
+    args[2] = I32Const(ctx.mod, key_rodata_offset);
+  }
+  const std::string target_name(target);
+  BinaryenExpressionRef call = BinaryenCall(ctx.mod.raw(), target_name.c_str(),
+                                            args, 3, BinaryenTypeNone());
+  BinaryenExpressionRef block_items[2] = {call, I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
+// Proto-field kSelect path: emit a `cel_get_field` (or `cel_has_field`
+// for `test_only`) call with a freshly-appended FieldRefRow describing
+// the field name + owning message FQN.  The trampoline reads the field
+// off the proto backing at runtime and writes the value (or has-bool)
+// into `out_slot`.
+BinaryenExpressionRef EmitKSelectProtoBranch(EmitCtx& ctx,
+                                             BinaryenExpressionRef operand,
+                                             uint32_t out_slot,
+                                             const cel::SelectExpr& sel,
+                                             const NodeAnnotation& ann,
+                                             const NodeAnnotation* op_ann) {
+  // Append a new field-ref row.  `field_refs.size()` at this point is also
+  // the dense id for the new row (the sentinel at index 0 is pushed once
+  // in LowerToEvalFunction before the walk starts).
+  const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
+  ctx.field_refs.push_back(FieldRefRow{
+      /*field_number=*/ann.field_number,
+      /*name=*/sel.field(),
+      /*owner_fqn=*/MessageTypeFqn(ctx.ast, sel.operand()),
+  });
+  // attribute_id is the OPERAND's attribute id — the trampoline looks up
+  // that path and appends `sel.field()` at runtime.  0 when the operand
+  // isn't path-bearing (literal, kCall, …).
+  const uint32_t attribute_id = op_ann != nullptr ? op_ann->attribute_id : 0;
+  BinaryenExpressionRef args[4] = {
+      I32Const(ctx.mod, out_slot),
+      operand,
+      I32Const(ctx.mod, field_ref_id),
+      I32Const(ctx.mod, attribute_id),
+  };
+  const absl::string_view target_view = sel.test_only()
+                                            ? kCelHostHasFieldInternalName
+                                            : kCelHostGetFieldInternalName;
+  const std::string internal_name(target_view);
+  BinaryenExpressionRef call = BinaryenCall(
+      ctx.mod.raw(), internal_name.c_str(), args, 4, BinaryenTypeNone());
+  BinaryenExpressionRef block_items[2] = {call, I32Const(ctx.mod, out_slot)};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
+                       BinaryenTypeInt32());
+}
+
 absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
                                                   const cel::Expr& expr,
                                                   const cel::SelectExpr& sel,
@@ -223,41 +311,13 @@ absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
                                      sel.test_only());
   }
 
-  // Append a new field-ref row.  `field_refs.size()` at this point
-  // is also the dense id for the new row (the sentinel at index 0
-  // is pushed once in LowerToEvalFunction before the walk starts).
-  const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
-  ctx.field_refs.push_back(FieldRefRow{
-      /*field_number=*/ann.field_number,
-      /*name=*/sel.field(),
-      /*owner_fqn=*/MessageTypeFqn(ctx.ast, sel.operand()),
-  });
+  if (op_ann != nullptr && op_ann->repr == Repr::kMap) {
+    return EmitKSelectMapBranch(ctx, *operand_or, out_slot,
+                                ann.select_key_rodata_offset, sel.test_only(),
+                                expr);
+  }
 
-  // attribute_id is the OPERAND's attribute id — the trampoline
-  // looks up that path and appends `sel.field()` at runtime.  0
-  // when the operand isn't path-bearing (literal, kCall, …); the
-  // trampoline treats 0 as "no unknown-pattern match possible".
-  const uint32_t attribute_id = op_ann != nullptr ? op_ann->attribute_id : 0;
-  BinaryenExpressionRef args[4] = {
-      I32Const(ctx.mod, out_slot),
-      *operand_or,
-      I32Const(ctx.mod, field_ref_id),
-      I32Const(ctx.mod, attribute_id),
-  };
-  // test_only=true routes to cel_has_field (returns Bool);
-  // otherwise cel_get_field (returns the field's CelValue).
-  const absl::string_view target_view = sel.test_only()
-                                            ? kCelHostHasFieldInternalName
-                                            : kCelHostGetFieldInternalName;
-  const std::string internal_name(target_view);
-  BinaryenExpressionRef call = BinaryenCall(
-      ctx.mod.raw(), internal_name.c_str(), args, 4, BinaryenTypeNone());
-
-  // Wrap (call, i32.const out_slot) in a block whose value is the
-  // out_slot i32 — usable as msg_slot of a parent kSelect.
-  BinaryenExpressionRef block_items[2] = {call, I32Const(ctx.mod, out_slot)};
-  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
-                       BinaryenTypeInt32());
+  return EmitKSelectProtoBranch(ctx, *operand_or, out_slot, sel, ann, op_ann);
 }
 
 // Emits `(call $cel.cel_map_create (i32.const out_slot) (i32.const N))`.
@@ -354,6 +414,23 @@ absl::string_view MapLookupCallTarget(Origin origin) {
       return kCelHostMapLookupInternalName;
     case Origin::kDynamic:
       return kCelMapLookupInternalName;
+  }
+  ABSL_CHECK(false) << "expr_lower: unknown map Origin "
+                    << static_cast<int>(origin);
+}
+
+// Mirror of MapLookupCallTarget for the key-presence `_in_` family:
+//   kArena    → cel.cel_map_in_arena (pure wasm fast path)
+//   kHost     → cel_host.cel_map_in  (host trampoline)
+//   kDynamic  → cel.cel_map_in       (the runtime dispatcher)
+absl::string_view MapInCallTarget(Origin origin) {
+  switch (origin) {
+    case Origin::kArena:
+      return kCelMapInArenaInternalName;
+    case Origin::kHost:
+      return kCelHostMapInInternalName;
+    case Origin::kDynamic:
+      return kCelMapInInternalName;
   }
   ABSL_CHECK(false) << "expr_lower: unknown map Origin "
                     << static_cast<int>(origin);
@@ -661,6 +738,32 @@ BinaryenExpressionRef EmitIndexCallOptionalBranch(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
+// Picks the runtime entry-point name for `_[_]` based on the operand's
+// repr + origin.  Forces kDynamic when the operand is a kSelectExpr —
+// ResolvePass stamps `kHost` on every map/list-typed kSelect, but a
+// nested selector (`{'c': {...}}.c[k]`) returns an arena value at
+// runtime that the host trampoline rejects.  See cleanup-backlog #9.
+std::string PickIndexCallTarget(const NodeAnnotation& op_ann,
+                                const cel::Expr& operand_expr,
+                                const cel::Expr& call_expr) {
+  if (op_ann.repr != Repr::kMap && op_ann.repr != Repr::kList) {
+    ABSL_CHECK(false) << "expr_lower: kCallExpr(_[_]) expr_id="
+                      << call_expr.id() << " has unsupported operand repr="
+                      << ReprName(op_ann.repr)
+                      << " — closed set; `parse_and_check.cc::"
+                         "UnacceptableLabel` rejects every other shape "
+                         "before codegen";
+  }
+  Origin origin =
+      (op_ann.repr == Repr::kList) ? op_ann.list_origin : op_ann.map_origin;
+  if (operand_expr.kind_case() == cel::ExprKindCase::kSelectExpr) {
+    origin = Origin::kDynamic;
+  }
+  return std::string((op_ann.repr == Repr::kList)
+                         ? ListAtCallTarget(origin)
+                         : MapLookupCallTarget(origin));
+}
+
 absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
     EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
     const NodeAnnotation& ann) {
@@ -695,19 +798,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
   if (op_ann->repr == Repr::kOptional) {
     return EmitIndexCallOptionalBranch(ctx, *operand_or, *key_or, out_slot);
   }
-  if (op_ann->repr != Repr::kMap && op_ann->repr != Repr::kList) {
-    ABSL_CHECK(false) << "expr_lower: kCallExpr(_[_]) expr_id=" << expr.id()
-                      << " has unsupported operand repr="
-                      << ReprName(op_ann->repr)
-                      << " — closed set; `parse_and_check.cc::"
-                         "UnacceptableLabel` rejects every other shape "
-                         "before codegen";
-  }
-  const Origin origin =
-      (op_ann->repr == Repr::kList) ? op_ann->list_origin : op_ann->map_origin;
-  const std::string target((op_ann->repr == Repr::kList)
-                               ? ListAtCallTarget(origin)
-                               : MapLookupCallTarget(origin));
+  const std::string target = PickIndexCallTarget(*op_ann, operand_expr, expr);
 
   BinaryenExpressionRef args[3] = {I32Const(ctx.mod, out_slot), *operand_or,
                                    *key_or};
@@ -995,8 +1086,7 @@ BinaryenExpressionRef EmitSlotBaseAddress(EmitCtx& ctx, Storage storage) {
   return nullptr;
 }
 
-BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, Storage dst,
-                                      Storage src) {
+BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, Storage dst, Storage src) {
   BinaryenExpressionRef args[2] = {EmitSlotBaseAddress(ctx, dst),
                                    EmitSlotBaseAddress(ctx, src)};
   return BinaryenCall(ctx.mod.raw(), "cel_copy_slot", args, 2,
@@ -1025,24 +1115,22 @@ BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
 // holds the cell's byte offset), not as a literal `i32.const
 // <local_index>` (which would read garbage from the reserved
 // low region) — see the helper's doc.
-BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, Storage slot,
-                                    uint32_t offset, int32_t expected) {
+BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, Storage slot, uint32_t offset,
+                                    int32_t expected) {
   auto* mod = ctx.mod.raw();
-  BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot),
-                   "memory");
+  BinaryenExpressionRef load = BinaryenLoad(
+      mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
+      BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot), "memory");
   return BinaryenBinary(mod, BinaryenEqInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
 
-BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, Storage slot,
-                                    uint32_t offset, int32_t expected) {
+BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, Storage slot, uint32_t offset,
+                                    int32_t expected) {
   auto* mod = ctx.mod.raw();
-  BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot),
-                   "memory");
+  BinaryenExpressionRef load = BinaryenLoad(
+      mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
+      BinaryenTypeInt32(), EmitSlotBaseAddress(ctx, slot), "memory");
   return BinaryenBinary(mod, BinaryenNeInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }

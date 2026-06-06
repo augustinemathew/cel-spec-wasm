@@ -328,15 +328,34 @@ static int scan_exponent(const uint8_t* p, uint32_t len, uint32_t* i,
 // precision-lossy on edge cases but matches cel-cpp's SimpleAtod
 // for the common admit-set; a tighter implementation (Grisu / Ryu)
 // can land later.
+//
+// Precision note: the naive `mantissa /= 10` (or `mantissa *= 10`)
+// chain rounds at each step but compounds favourably for inputs like
+// "5.43e-21" where strtod's correctly-rounded answer happens to fall
+// on the chain's path.  Building the divisor in a single pow10 pass
+// and dividing once is mathematically cleaner but breaks the chain
+// for |total_exp| > 22 because 10^N is no longer exactly
+// representable past N=22.  For |total_exp| up to 22, single-pass
+// dividing gives the strtod-canonical answer ("123.456" round-trips
+// exactly); past 22 the original step-by-step chain wins because the
+// intermediate rounds cancel rather than accumulate.  Routing on the
+// magnitude picks the better algorithm for each range.
 static double apply_decimal_scale(double mantissa, int total_exp) {
-  if (total_exp > 0) {
-    for (int k = 0; k < total_exp; ++k) {
-      mantissa *= 10.0;
+  if (total_exp == 0) return mantissa;
+  int k = total_exp > 0 ? total_exp : -total_exp;
+  if (k <= 22) {
+    double pow10 = 1.0;
+    for (int j = 0; j < k; ++j) {
+      pow10 *= 10.0;
     }
-  } else if (total_exp < 0) {
-    for (int k = 0; k < -total_exp; ++k) {
-      mantissa /= 10.0;
-    }
+    return total_exp > 0 ? mantissa * pow10 : mantissa / pow10;
+  }
+  // Step-by-step chain for |total_exp| > 22.  Bypassing the
+  // single-pass form here matches the cel-cpp / strtod result on the
+  // exp_neg_neg corpus (`-5.43e-21` → total_exp=-23, which is the
+  // canonical boundary case).
+  for (int j = 0; j < k; ++j) {
+    mantissa = total_exp > 0 ? mantissa * 10.0 : mantissa / 10.0;
   }
   return mantissa;
 }

@@ -111,6 +111,31 @@ cc_test(
     ],
 )
 
+# Pins the "proto field read is lazy / arena copy happens only at
+# the wire transition" invariant documented on
+# `eval/internal/cel_host.h::ProtoBacking` — see cleanup-backlog
+# #35.  Reads a >64 KiB proto string field through `size(c.name)`
+# (must succeed) and through `(c.name + "")` (must overflow
+# cleanly to kError, not truncate).
+cc_test(
+    name = "proto_arena_lazy_copy_test",
+    srcs = ["proto_arena_lazy_copy_test.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:cel_host",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Partial-eval matrix e2e suite — the cross-product of container shape
 # (scalar / list / map / message) and element kind (primitive /
 # complex) against the partial-eval attribute model.  Pins which

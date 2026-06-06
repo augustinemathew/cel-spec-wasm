@@ -461,14 +461,46 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
     *out = *l;
     return;
   }
-  // Per langdef §"Indexing": list indices are int only; uint is a
-  // checker error and never reaches here, but defend in depth.
-  if (index->kind != CEL_INT) {
+  // Per langdef §"Indexing": list index type is int.  When the
+  // operand is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp's
+  // runtime admits a CEL_UINT or an integral CEL_DOUBLE as an
+  // index — the value must round-trip to an int64.  Non-integral
+  // doubles error.  Pinned by oracle tests `ListIndexDoubleAgrees`,
+  // `ListIndexUintAgrees`, `ListIndexNonIntegerDoubleAgrees`
+  // (testdata/cel_cpp_oracle_test.cc) and conformance rows
+  // `lists/index/zero_based_double`, `zero_based_uint`,
+  // `zero_based_double_error`.
+  int64_t i = 0;
+  if (index->kind == CEL_INT) {
+    i = index->payload.i;
+  } else if (index->kind == CEL_UINT) {
+    if (index->payload.u > (uint64_t)INT64_MAX) {
+      poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
+      return;
+    }
+    i = (int64_t)index->payload.u;
+  } else if (index->kind == CEL_DOUBLE) {
+    const double d = index->payload.d;
+    // Integral check: must be finite, within int64 range, and
+    // bit-equal to its int64 truncation.  cel-cpp's
+    // ConvertDoubleToInt does the same range/integrality check.
+    if (!(d == d) || d != d || d > 9.2233720368547758e18 ||
+        d < -9.2233720368547758e18) {  // NaN / inf / OOR
+      poison(out, CEL_ERR_INVALID_ARGUMENT);
+      return;
+    }
+    const int64_t trunc = (int64_t)d;
+    if ((double)trunc != d) {
+      // non-integral
+      poison(out, CEL_ERR_INVALID_ARGUMENT);
+      return;
+    }
+    i = trunc;
+  } else {
     poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
-  int64_t i = index->payload.i;
   if (i < 0 || (uint64_t)i >= (uint64_t)hdr->count) {
     poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
     return;

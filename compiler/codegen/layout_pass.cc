@@ -152,7 +152,15 @@ class SelectKeyRodataVisitor : public cel::AstVisitorBase {
   void PostVisitSelect(const cel::Expr& expr,
                        const cel::SelectExpr& sel) override {
     const NodeAnnotation* op = annotations_.Find(sel.operand().id());
-    if (op == nullptr || op->repr != Repr::kOptional) return;
+    if (op == nullptr) return;
+    // Two operand kinds need a rodata-resident field-name CelValue:
+    //   - `kOptional`: `cel_select_optional_field_at_vv` reads the key
+    //     from a CEL_STRING CelValue slot.
+    //   - `kMap`: `kSelect` on a map operand is sugar for `m[field]`
+    //     (CEL spec §"Field selection on maps") — `EmitKSelect` emits
+    //     a `cel_map_lookup_*` (or `cel_map_in_*` for `has()`) call
+    //     whose key arg is the rodata offset of the field-name string.
+    if (op->repr != Repr::kOptional && op->repr != Repr::kMap) return;
     annotations_[expr.id()].select_key_rodata_offset =
         builder_.AllocateString(sel.field());
   }
@@ -370,6 +378,45 @@ class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
                              const cel::ComprehensionExpr& /*comp*/) override {
     annotations_[expr.id()].comp_aux_local_base = next_local_;
     next_local_ += locals_per_comp_;
+  }
+
+  // Stamp the kComprehensionExpr's annotation with the storage of
+  // its `result` sub-expression — the sub-expression whose final
+  // value the comp block evaluates to.  `expr_lower_comprehension`'s
+  // `BuildCompBlock` ends the comp's emitted block with
+  // `Emit(comp.result())`, so the block's i32 return value is the
+  // slot offset where the result CelValue actually lives; mirroring
+  // that into the comp's annotation lets consumers reach the same
+  // address through the standard storage-dispatch path.
+  //
+  // The result sub-expression varies by macro: `.exists` / `.all` /
+  // `.filter` / `.map` use `kIdent(@result)` as the result (storage
+  // kLocal at the accu's wasm local — `local.get` returns the accu
+  // slot offset), so the comp ends up addressable through the accu
+  // slot.  `.exists_one` uses `kCallExpr(_==_, @result, 1)` whose
+  // result is a fresh workspace slot holding a Bool — distinct from
+  // the Int accu slot the count loop wrote — and stamping the accu
+  // slot here would give consumers the wrong address (they'd read
+  // the count Int and dispatch as if it were a Bool, surfacing as
+  // cleanup-backlog #32).
+  //
+  // This is a post-visit hook (children visited first), so
+  // `comp.result()`'s annotation is already populated.
+  void PostVisitComprehension(const cel::Expr& expr,
+                              const cel::ComprehensionExpr& comp) override {
+    const cel::Expr& result_expr = comp.result();
+    const NodeAnnotation* result_ann = annotations_.Find(result_expr.id());
+    ABSL_CHECK(result_ann != nullptr)
+        << "ComprehensionLocalsVisitor: kComprehensionExpr expr_id="
+        << expr.id() << " result-sub-expr id=" << result_expr.id()
+        << " has no annotation — LayoutPass child traversal didn't "
+        << "stamp it before PostVisitComprehension";
+    ABSL_CHECK(result_ann->storage.kind != StorageKind::kNone)
+        << "ComprehensionLocalsVisitor: kComprehensionExpr expr_id="
+        << expr.id() << " result-sub-expr id=" << result_expr.id()
+        << " has storage.kind == kNone — children visitor failed to "
+        << "stamp the result";
+    annotations_[expr.id()].storage = result_ann->storage;
   }
 
   uint32_t total_locals() const {

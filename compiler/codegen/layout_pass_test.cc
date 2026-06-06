@@ -891,8 +891,8 @@ TEST(LayoutPassComprehensionChildrenTest, ExistsMacro) {
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
   // Sanity: every node has its storage set.
-  EXPECT_EQ(h.none, 1)
-      << "only the kComprehensionExpr node itself should have kNone storage";
+  EXPECT_EQ(h.none, 0) << "with the comp storage fix (cleanup-backlog #31) no "
+                          "node has kNone storage";
   // Constants (1, 2, 3, 0) land in rodata; the comp's iter_range
   // kListExpr lands in a workspace slot; the v>0 kCall and the
   // loop_step kCall (synthesised by the macro) land in workspace
@@ -917,7 +917,7 @@ TEST(LayoutPassComprehensionChildrenTest, AllMacro) {
   EXPECT_NE(accu->slot_offset, 0u);
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
-  EXPECT_EQ(h.none, 1);
+  EXPECT_EQ(h.none, 0);
   EXPECT_GT(h.rodata, 0);
   EXPECT_GT(h.workspace_slot, 0);
 }
@@ -938,7 +938,7 @@ TEST(LayoutPassComprehensionChildrenTest, ExistsOneMacro) {
   EXPECT_NE(accu->slot_offset, 0u);
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
-  EXPECT_EQ(h.none, 1);
+  EXPECT_EQ(h.none, 0);
   EXPECT_GT(h.workspace_slot, 0);
 }
 
@@ -958,8 +958,8 @@ TEST(LayoutPassComprehensionChildrenTest, MapMacro) {
   EXPECT_NE(accu->slot_offset, 0u);
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
-  EXPECT_EQ(h.none, 1)
-      << "only the kComprehensionExpr node has kNone";
+  EXPECT_EQ(h.none, 0)
+      << "with the comp storage fix (cleanup-backlog #31) no node has kNone";
   // map emits accu_init = [] (kListExpr workspace), iter_range
   // [1,2,3] (kListExpr workspace), loop_step's `[v+1]` (kListExpr
   // workspace) and the `@result + [v+1]` kCall.  Many workspace
@@ -982,7 +982,7 @@ TEST(LayoutPassComprehensionChildrenTest, MapFilterMacro) {
   EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
-  EXPECT_EQ(h.none, 1);
+  EXPECT_EQ(h.none, 0);
   EXPECT_GT(h.workspace_slot, 2);
 }
 
@@ -1000,7 +1000,7 @@ TEST(LayoutPassComprehensionChildrenTest, FilterMacro) {
   EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
 
   const StorageHistogram h = CollectStorageHistogram(*layout);
-  EXPECT_EQ(h.none, 1);
+  EXPECT_EQ(h.none, 0);
   EXPECT_GT(h.workspace_slot, 1);
 }
 
@@ -1031,8 +1031,7 @@ TEST(LayoutPassComprehensionChildrenTest, SingleElementListIterRange) {
 // Two accu_vars in the layout (one per nesting level), each with
 // its own workspace cell.
 TEST(LayoutPassComprehensionChildrenTest, NestedAllAddsSecondAccuSlot) {
-  auto ta = ParseAndCheck(
-      "[[1, 2], [3, 4]].all(xs, xs.all(v, v > 0))", {});
+  auto ta = ParseAndCheck("[[1, 2], [3, 4]].all(xs, xs.all(v, v > 0))", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
@@ -1056,8 +1055,7 @@ TEST(LayoutPassComprehensionChildrenTest, NestedAllAddsSecondAccuSlot) {
       << "nested comp should produce two kComprehensionAccu entries";
   EXPECT_NE(off_a, 0u);
   EXPECT_NE(off_b, 0u);
-  EXPECT_NE(off_a, off_b)
-      << "nested accu slots must not collide";
+  EXPECT_NE(off_a, off_b) << "nested accu slots must not collide";
 }
 
 // Comprehension consumed by an ancestor kCall — confirms the
@@ -1065,8 +1063,7 @@ TEST(LayoutPassComprehensionChildrenTest, NestedAllAddsSecondAccuSlot) {
 // ancestor's PostVisitCall release loop (it just no-ops the
 // `ReleaseIfWorkspaceSlot(comp.id())`).
 TEST(LayoutPassComprehensionChildrenTest, AncestorKCallReleasesCorrectly) {
-  auto ta = ParseAndCheck(
-      "size([1, 2, 3].filter(v, v > 1)) == 2", {});
+  auto ta = ParseAndCheck("size([1, 2, 3].filter(v, v > 1)) == 2", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));

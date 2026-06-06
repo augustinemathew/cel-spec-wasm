@@ -54,8 +54,7 @@ using ::celwasm::testdata::HostMsg3;
 
 // Dummy — ProtoBacking reads via reflection, not the hint.
 const celwasm::CelType& IgnoredType() {
-  static const auto& kAny =
-      *new celwasm::CelType(celwasm::CelType::Int());
+  static const auto& kAny = *new celwasm::CelType(celwasm::CelType::Int());
   return kAny;
 }
 
@@ -249,8 +248,7 @@ class JsonLikeBacking : public HostMessageBacking {
       : fields_(std::move(fields)) {}
 
   absl::StatusOr<celwasm::Value> ReadField(
-      int, absl::string_view name,
-      const celwasm::CelType&) const override {
+      int, absl::string_view name, const celwasm::CelType&) const override {
     auto it = fields_.find(std::string(name));
     if (it == fields_.end()) {
       return celwasm::Value::Error(celwasm::ErrorPayload{
@@ -720,8 +718,7 @@ class PackHarness {
   // Stage a HostMap-backed src (vector of <key, value> celwasm::Value
   // pairs) and wire a CEL_MAP_HOST CelValue at kSrcSlot.
   void StageHostMapSrc(
-      std::vector<std::pair<celwasm::Value, celwasm::Value>>
-          entries) {
+      std::vector<std::pair<celwasm::Value, celwasm::Value>> entries) {
     auto map_backing = std::make_shared<HostMap>(std::move(entries));
     const uint32_t slot = f_.refs.InternMap(std::move(map_backing));
     CelValue cv{};
@@ -1394,16 +1391,35 @@ TEST(AnyOfAnyTest, StrictUrlPrefixRejectsNonStandardPrefix) {
       << static_cast<int>(got.kind());
 }
 
-TEST(AnyOfAnyTest, EmptyTypeUrlYieldsNull) {
-  // Per the long-standing contract: an Any with empty type_url
-  // signals "Any not populated" → null.  Verify the new loop
-  // still returns at the first layer.
+TEST(AnyOfAnyTest, ExplicitlySetButEmptyTypeUrlYieldsError) {
+  // Distinct from "unset Any field → null".  When the user
+  // EXPLICITLY constructs an Any with no type_url (HasField=true,
+  // type_url=""), cel-cpp's AdaptAny errors because there's no
+  // descriptor to unpack against
+  // (`third_party/cel-cpp/internal/well_known_types.cc:1960-1966`).
+  // Pinned by conformance row `dynamic/any/literal_empty`
+  // (`google.protobuf.Any{}` expects an `eval_error`).
   HostMsg3 outer;
   outer.mutable_single_any();  // Sets `has_single_any() == true`,
                                // type_url empty.
 
   celwasm::Value got = ReadSingleAny(outer);
-  EXPECT_TRUE(got.IsNull());
+  EXPECT_TRUE(got.IsError())
+      << "Explicitly-set empty Any should error (no descriptor), got kind="
+      << static_cast<int>(got.kind());
+}
+
+TEST(AnyOfAnyTest, UnsetAnyFieldYieldsNull) {
+  // The complementary contract: an UNSET Any field reads as null
+  // (the field-read path checks `HasField` before calling
+  // `UnpackAnyToValue`, so the empty-type_url error never
+  // surfaces).  Pinned by conformance row
+  // `dynamic/set_null/single_any`
+  // (`TestAllTypes{single_any: null}.single_any` expects null).
+  HostMsg3 outer;  // single_any unset.
+  celwasm::Value got = ReadSingleAny(outer);
+  EXPECT_TRUE(got.IsNull()) << "Unset Any field should read as null, got kind="
+                            << static_cast<int>(got.kind());
 }
 
 TEST(AnyOfAnyTest, GprodPrefixAccepted) {

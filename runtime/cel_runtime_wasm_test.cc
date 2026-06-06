@@ -568,14 +568,22 @@ TEST(CelRuntimeWasmTest, ArenaResetReturnsCursorToZero) {
   EXPECT_EQ(ArenaCursor(h), 0u);
 }
 
-TEST(CelRuntimeWasmTest, ArenaAllocReturnsZeroWhenCapacityExceeded) {
+TEST(CelRuntimeWasmTest, ArenaGrowsOnDemandWhenInitialCapacityExceeded) {
   RuntimeHarness h;
   ASSERT_TRUE(BuildHarness(&h));
-  // Tiny arena: 32 bytes total.  alloc(64) should fail (OOM).
+  // Tiny arena: 32 bytes total in the first chunk.  alloc(64)
+  // must succeed by malloc'ing a fresh chunk sized to fit — the
+  // chained-arena contract (cleanup-backlog #34).  The pre-#34
+  // fixed-cap arena returned 0 here.
   ArenaInit(h, 32);
-  EXPECT_EQ(ArenaAlloc(h, 64), 0u);
-  // Cursor unchanged on OOM.
-  EXPECT_EQ(ArenaCursor(h), 0u);
+  const uint32_t off = ArenaAlloc(h, 64);
+  EXPECT_NE(off, 0u) << "alloc(64) on a 32-byte first chunk must grow a "
+                        "new chunk and succeed (cleanup-backlog #34)";
+  // The first chunk's cursor is reported (back-compat semantic).
+  // The grown chunk's bytes don't show up here — embedders that
+  // need total-used should call into a per-chunk diagnostic
+  // surface that hasn't been wired yet (acceptable: this is a
+  // diagnostic accessor, not a correctness invariant).
 }
 
 }  // namespace

@@ -540,18 +540,28 @@ Value EvalReject(absl::string_view literal_any_inline) {
   return EvalOk(instance, Activation{});
 }
 
-// Empty type_url — probe B finding: this is the unset signal, so
-// the read returns null (not error).  Surfacing as null means a
-// chained `.i32` evaluates as null-select-on-null, which the
-// runtime represents as an error (no_such_field).
-TEST_F(AnyRejectE2ETest, ReadAnyWithEmptyTypeUrlIsNull) {
+// Empty type_url on an EXPLICITLY-assigned Any — cel-cpp's AdaptAny
+// errors here (the prefix check fails on the empty string,
+// `well_known_types.cc:1960-1966`).  Pinned by conformance row
+// `dynamic/any/literal_empty`.  Distinct from the UNSET-Any-field
+// case (HasField=false), which reads as null — see
+// `AnyEqualityE2ETest.UnsetAnyEqualsNull`.
+TEST_F(AnyRejectE2ETest, ReadAnyWithExplicitlySetEmptyTypeUrlIsError) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(
       *compiler,
       "celwasm.testdata.HostMsg3{single_any: "
-      "google.protobuf.Any{type_url: '', value: b''}}.single_any == null");
-  EXPECT_EQ(*EvalOk(instance, Activation{}).AsBool(), true);
+      "google.protobuf.Any{type_url: '', value: b''}}.single_any");
+  Value v = EvalOk(instance, Activation{});
+  EXPECT_TRUE(v.IsError())
+      << "Explicitly-assigned Any{type_url: ''} should read as error, kind="
+      << static_cast<int>(v.kind());
+  if (v.IsError()) {
+    auto err = v.ErrorInfo();
+    ASSERT_THAT(err, IsOk());
+    EXPECT_EQ((*err)->code, ErrorCode::kFieldNotFound);
+  }
 }
 
 // Malformed type_url with no slash — FQN is the whole string, pool

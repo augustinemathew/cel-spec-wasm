@@ -249,14 +249,54 @@ TEST_F(ListTest, IndexBoundariesHit) {
   }
 }
 
-TEST_F(ListTest, NonIntIndexErrorsAsTypeMismatch) {
+TEST_F(ListTest, UintIndexAdmitted) {
   uint32_t l = NewSlot();
   cel_list_create(l, /*capacity=*/1);
   cel_list_append_at(l, cel_make_int(7));
   uint32_t out = NewSlot();
-  // langdef: list indices are int only; uint here probes defence in
-  // depth (the checker would normally reject upstream).
+  // langdef + corpus row `lists/index/zero_based_uint`: cel-cpp admits
+  // a CEL_UINT index in the dyn-typed `list[dyn(0u)]` path.
   cel_list_at_arena(out, l, cel_make_uint(0u));
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(cel_value_at(out)->payload.i, 7);
+}
+
+TEST_F(ListTest, IntegralDoubleIndexAdmitted) {
+  uint32_t l = NewSlot();
+  cel_list_create(l, /*capacity=*/1);
+  cel_list_append_at(l, cel_make_int(7));
+  uint32_t out = NewSlot();
+  // Corpus row `lists/index/zero_based_double`: cel-cpp admits a
+  // whole-number CEL_DOUBLE as a list index.
+  cel_list_at_arena(out, l, cel_make_double(0.0));
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(cel_value_at(out)->payload.i, 7);
+}
+
+TEST_F(ListTest, NonIntegralDoubleIndexErrors) {
+  uint32_t l = NewSlot();
+  cel_list_create(l, /*capacity=*/1);
+  cel_list_append_at(l, cel_make_int(7));
+  uint32_t out = NewSlot();
+  // Corpus row `lists/index/zero_based_double_error`: a non-integral
+  // double indexes errors with invalid_argument.
+  cel_list_at_arena(out, l, cel_make_double(0.1));
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(out)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_INVALID_ARGUMENT));
+}
+
+TEST_F(ListTest, StringIndexErrorsAsTypeMismatch) {
+  uint32_t l = NewSlot();
+  cel_list_create(l, /*capacity=*/1);
+  cel_list_append_at(l, cel_make_int(7));
+  uint32_t out = NewSlot();
+  // Truly non-numeric kinds still reject as type mismatch.
+  uint32_t idx_slot = NewSlot();
+  cel_value_at(idx_slot)->kind = static_cast<uint32_t>(CEL_STRING);
+  cel_value_at(idx_slot)->payload.s.ptr = 0;
+  cel_value_at(idx_slot)->payload.s.len = 0;
+  cel_list_at_arena(out, l, idx_slot);
   EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_ERROR));
   EXPECT_EQ(cel_value_at(out)->payload.err,
             static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));

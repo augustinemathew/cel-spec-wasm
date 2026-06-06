@@ -194,14 +194,22 @@ TEST_F(ProtoLiteralEmptyE2ETest, EmptyProto3MessageHasZeroDefaultDouble) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-TEST_F(ProtoLiteralEmptyE2ETest, EmptyProto3MessageHasNullForUnsetSubmessage) {
-  // langdef §"Field Selection": proto3 unset singular message reads
-  // as null.  Construction of empty `Foo{}` produces a default
-  // message; reading the message-typed field returns null per spec.
+TEST_F(ProtoLiteralEmptyE2ETest,
+       EmptyProto3MessageReadsDefaultInstanceForUnsetSubmessage) {
+  // langdef §"Messages" + conformance row proto3/empty_field/nested_message:
+  // accessing an unset singular MESSAGE field returns the
+  // default-instance message of the field's type, NOT null.  Null is
+  // the unset behavior for WKT WRAPPER fields and for Any fields only
+  // — non-wrapper message fields propagate the default-instance.
+  // (Pre-2026-06-05 this test asserted `== null`, which was the
+  // pre-fix behavior; the conformance corpus and cel-cpp both say
+  // default-instance.)
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
-      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{}.inner == null");
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{}.inner == "
+                  "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -844,11 +852,19 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto3ZeroDefaultScalar) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-TEST_F(ProtoLiteralDefaultsE2ETest, Proto3UnsetMessageReadsAsNull) {
+TEST_F(ProtoLiteralDefaultsE2ETest, Proto3UnsetMessageReadsAsDefaultInstance) {
+  // langdef §"Messages" + conformance row proto3/empty_field/nested_message:
+  // accessing an unset proto3 singular MESSAGE field returns the
+  // default-instance message of the field's type, NOT null.  Was
+  // asserting `== null` pre-2026-06-05 (the buggy behavior, see
+  // m7_test::EmptyProto3MessageReadsDefaultInstanceForUnsetSubmessage
+  // for the longer rationale).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
-      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{}.inner == null");
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{}.inner == "
+                  "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }

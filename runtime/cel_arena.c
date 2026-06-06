@@ -1,11 +1,20 @@
-// Bump arena over a single malloc()-backed buffer.  See cel_arena.h
-// for the public ABI and lifecycle.  Replaces the pre-WASI bump arena
-// that lived at fixed memory bytes 8/12 with a malloc'd backing buffer
-// in the dlmalloc heap region.
+// Bump arena over a chained list of malloc()-backed buffers.  See
+// cel_arena.h for the public ABI and lifecycle.  Replaces the pre-
+// WASI bump arena that lived at fixed memory bytes 8/12 with a
+// malloc'd backing buffer in the dlmalloc heap region.
 //
 // The arena struct lives in BSS (zero-initialized at module
-// instantiation).  Per Instance, `arena_init` runs once via host
-// reentry and seeds it.
+// instantiation).  Per Instance, `arena_init` seeds the FIRST
+// chunk with the embedder-chosen `cap_bytes`; later allocs that
+// would overflow the current chunk malloc a NEW chunk (twice the
+// previous chunk's size, capped at 1 MiB per chunk) and continue
+// bumping there.  Each `arena_reset()` frees every extra chunk
+// and rewinds the first chunk's cursor — the first chunk is
+// kept across resets to avoid per-Eval malloc churn for the
+// common case where the embedder's initial sizing is sufficient.
+// Cleanup-backlog #34 was the PBT discovery that drove the move
+// to a chained model; prior fixed-cap arena reliably hit OOM at
+// depth-7 nested comp × `_in_` on humble-size grammar inputs.
 
 #include "runtime/cel_arena.h"
 
@@ -17,14 +26,56 @@
 #include "runtime/cel_layout.h"
 #include "runtime/cel_log.h"
 
+// One bump chunk in the chain.  `base` is the malloc'd buffer's
+// wasm-memory offset; `cursor` is the next free byte relative to
+// `base`; `capacity` is the chunk's size in bytes.  `next` is the
+// younger chunk in the chain (or NULL).
+typedef struct CelArenaChunk {
+  uint8_t* base;
+  uint32_t capacity;
+  uint32_t cursor;
+  struct CelArenaChunk* next;
+} CelArenaChunk;
+
 typedef struct {
-  uint8_t* base;         // malloc'd buffer base in linear memory
-  uint32_t capacity;     // total bytes
-  uint32_t cursor;       // next free byte (relative to base)
+  CelArenaChunk* head;   // first chunk; kept across resets
+  CelArenaChunk* tail;   // current chunk allocations go into
+  uint32_t total_used;   // sum of cursors across all chunks
+  uint32_t total_cap;    // sum of capacities across all chunks
   uint32_t initialized;  // 0 or 1
 } CelArena;
 
-static CelArena g_arena = {0, 0, 0, 0};
+static CelArena g_arena = {0, 0, 0, 0, 0};
+
+// Minimum follow-on chunk size — keeps malloc count bounded for
+// tiny embedders without over-allocating large chunks up front.
+#define CEL_ARENA_MIN_GROW_BYTES 4096u
+// Per-chunk cap — large enough to absorb the worst grammar-found
+// nested-comp × `_in_` patterns from cleanup-backlog #34 in a
+// handful of chunks; small enough that a runaway eval doesn't
+// silently consume megabytes per malloc.
+#define CEL_ARENA_MAX_GROW_BYTES (1u << 20)  // 1 MiB
+
+static CelArenaChunk* alloc_chunk(uint32_t want_bytes) {
+  CelArenaChunk* c = (CelArenaChunk*)malloc(sizeof(CelArenaChunk));
+  if (c == NULL) return NULL;
+  void* p = malloc((size_t)want_bytes);
+  if (p == NULL) {
+    free(c);
+    return NULL;
+  }
+  c->base = (uint8_t*)p;
+  c->capacity = want_bytes;
+  c->cursor = 0;
+  c->next = NULL;
+  return c;
+}
+
+static void free_chunk(CelArenaChunk* c) {
+  if (c == NULL) return;
+  free(c->base);
+  free(c);
+}
 
 // Round up to the next multiple of 8.  Allocations are 8-aligned so a
 // CelValue* derived from `base + arena_alloc(...)` always has
@@ -41,8 +92,8 @@ void arena_init(uint32_t cap_bytes) {
   // owns the lifecycle.  We trap rather than silently leak the prior
   // buffer or corrupt the cursor.
   if (g_arena.initialized) {
-    if (g_arena.capacity != cap_bytes) {
-      __builtin_trap();  // double-init with different size
+    if (g_arena.head != NULL && g_arena.head->capacity != cap_bytes) {
+      __builtin_trap();  // double-init with different first-chunk size
     }
     return;
   }
@@ -52,24 +103,49 @@ void arena_init(uint32_t cap_bytes) {
   // pointer is an offset in the same linear memory the host reads
   // via wasmtime_memory_data, so `cel_mem_base() + arena_alloc(n)`
   // resolves correctly on both sides of the wasm/host boundary.
-  void* p = malloc((size_t)cap_bytes);
-  if (p == NULL) return;
-  g_arena.base = (uint8_t*)p;
+  CelArenaChunk* c = alloc_chunk(cap_bytes);
+  if (c == NULL) return;
+  g_arena.head = c;
+  g_arena.tail = c;
+  g_arena.total_cap = cap_bytes;
 #else
   // native build: there is no shared linear memory.  Tests address
   // CelValues via `cel_mem_base() + offset`, so the arena MUST be
   // backed by the same buffer cel_mem_base() returns.  Use the
   // [16, cap_bytes+16) slice of g_memory[] (offset 16 leaves the
   // null sentinel + the legacy cursor slot bytes 8/12 untouched, in
-  // case anything still pokes there during the migration).
+  // case anything still pokes there during the migration).  The
+  // native build does NOT chain — there's no real linear memory to
+  // grow into, and tests use bounded fixtures.
   if (16u + cap_bytes > cel_memory_size_()) {
     return;  // can't fit; leave g_arena zero so alloc returns 0
   }
-  g_arena.base = cel_memory_base_() + 16u;
+  CelArenaChunk* c = (CelArenaChunk*)malloc(sizeof(CelArenaChunk));
+  if (c == NULL) return;
+  c->base = cel_memory_base_() + 16u;
+  c->capacity = cap_bytes;
+  c->cursor = 0;
+  c->next = NULL;
+  g_arena.head = c;
+  g_arena.tail = c;
+  g_arena.total_cap = cap_bytes;
 #endif
-  g_arena.capacity = cap_bytes;
-  g_arena.cursor = 0;
+  g_arena.total_used = 0;
   g_arena.initialized = 1;
+}
+
+// Pick the next chunk's size: 2 × previous, clamped to
+// [CEL_ARENA_MIN_GROW_BYTES, CEL_ARENA_MAX_GROW_BYTES], and at
+// least `at_least_bytes` (the immediate allocation that triggered
+// the grow — a single huge alloc gets a chunk sized to fit it,
+// up to the per-chunk cap).
+static uint32_t pick_grow_size(uint32_t prev_capacity,
+                               uint32_t at_least_bytes) {
+  uint32_t want = prev_capacity * 2u;
+  if (want < CEL_ARENA_MIN_GROW_BYTES) want = CEL_ARENA_MIN_GROW_BYTES;
+  if (want > CEL_ARENA_MAX_GROW_BYTES) want = CEL_ARENA_MAX_GROW_BYTES;
+  if (at_least_bytes > want) want = at_least_bytes;
+  return want;
 }
 
 uint32_t arena_alloc(uint32_t n) {
@@ -82,14 +158,30 @@ uint32_t arena_alloc(uint32_t n) {
   // backtrace names the call site (CLAUDE.md "Unimplemented features"
   // rule for any code path that shouldn't be reachable).
   if (!g_arena.initialized) __builtin_trap();
-  // A10: OOM → 0.  Subtraction-form bounds check (cursor <= capacity
-  // is invariant, so capacity - cursor never wraps) — the additive
-  // form `cursor + need > capacity` wraps when `need` is near
-  // UINT32_MAX and silently admits the alloc.
-  if (need > g_arena.capacity - g_arena.cursor) return 0;
-  uint32_t local_off = g_arena.cursor;
-  g_arena.cursor += need;
-  uint8_t* p = g_arena.base + local_off;
+
+  // Tail-bump fast path: if the current chunk has room, allocate
+  // there.  Subtraction-form bounds check (cursor <= capacity is
+  // invariant, so capacity - cursor never wraps).
+  CelArenaChunk* tail = g_arena.tail;
+  if (need > tail->capacity - tail->cursor) {
+    // Grow.  Native build does NOT chain — there's no shared
+    // memory to extend into — so OOM is terminal.
+#ifdef __wasm__
+    uint32_t grow_bytes = pick_grow_size(tail->capacity, need);
+    CelArenaChunk* nc = alloc_chunk(grow_bytes);
+    if (nc == NULL) return 0;  // malloc OOM bubbles up
+    tail->next = nc;
+    g_arena.tail = nc;
+    g_arena.total_cap += grow_bytes;
+    tail = nc;
+#else
+    return 0;
+#endif
+  }
+  uint32_t local_off = tail->cursor;
+  tail->cursor += need;
+  g_arena.total_used += need;
+  uint8_t* p = tail->base + local_off;
   memset(p, 0, need);
 
   // Return value contract: caller expects `cel_mem_base() + ret` to
@@ -109,17 +201,40 @@ uint32_t arena_alloc(uint32_t n) {
 
 void arena_reset(void) {
   CEL_LOG("enter");
-  // O(1) reset.  If arena_init hasn't been called yet, the arena is
-  // empty so reset is a no-op.
-  g_arena.cursor = 0;
+  // O(extra-chunks) reset: drop every chunk except the first to
+  // avoid per-Eval malloc churn for the common case where the
+  // first chunk's capacity is sufficient.  If a previous Eval
+  // grew the chain, those chunks get freed here so the next Eval
+  // doesn't carry their bytes forward.  If arena_init hasn't been
+  // called yet, the arena is empty so reset is a no-op.
+  if (g_arena.head == NULL) return;
+  CelArenaChunk* c = g_arena.head->next;
+  while (c != NULL) {
+    CelArenaChunk* nx = c->next;
+    free_chunk(c);
+    c = nx;
+  }
+  g_arena.head->cursor = 0;
+  g_arena.head->next = NULL;
+  g_arena.tail = g_arena.head;
+  g_arena.total_used = 0;
+  g_arena.total_cap = g_arena.head->capacity;
 }
 
 uint32_t arena_cursor(void) {
-  return g_arena.cursor;
+  // Backwards-compat: report the FIRST chunk's cursor for embedders
+  // that snapshot+restore the cursor for nested-alloc patterns.
+  // Chained chunks change this semantic — but the only in-tree
+  // caller is diagnostics, so cursor of the first chunk is what
+  // matters.  Total bytes allocated is `g_arena.total_used`.
+  return g_arena.head != NULL ? g_arena.head->cursor : 0u;
 }
 
 uint32_t arena_capacity(void) {
-  return g_arena.capacity;
+  // Returns total capacity across the chain (initial chunk + any
+  // grown chunks).  Embedders inspecting this for budgeting should
+  // re-read after every Eval since growth is dynamic.
+  return g_arena.total_cap;
 }
 
 CelValue* cel_value_at(uint32_t off) {

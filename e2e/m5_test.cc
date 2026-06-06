@@ -924,9 +924,12 @@ TEST_F(StringBytesActivationE2ETest, BindEmbeddedNul) {
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
 }
 
-// langdef §"size() over strings": `size(s)` returns the byte length
-// of the UTF-8 encoding, not the number of unicode codepoints.
-// "πέντε" encodes as 10 bytes (each Greek letter is 2 bytes).
+// langdef §"size": `size(string)` is the Unicode code-point count
+// (not the UTF-8 byte length).  "πέντε" is 5 code points / 10 bytes.
+// Pre-2026-06-05 the runtime returned the byte length; fixed in
+// `runtime/cel_string_ops.c::utf8_codepoint_count` and pinned by
+// `runtime/cel_string_ops_test::StringSize*` plus conformance rows
+// `size/one_unicode` / `size/unicode`.
 TEST_F(StringBytesActivationE2ETest, BindMultibyteUtf8) {
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("s", CelType::String());
@@ -935,7 +938,7 @@ TEST_F(StringBytesActivationE2ETest, BindMultibyteUtf8) {
   auto instance = CompilePlan(*compiler, "size(s)");
   Activation a;
   a.Bind("s", Value::String("πέντε"));
-  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 10);
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 5);
 }
 
 // Multi-variable activation — both kString slots get marshalled

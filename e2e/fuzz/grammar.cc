@@ -106,8 +106,7 @@ absl::Status Grammar::Validate() const {
         if (!absl::StrContains(p.format, absl::StrCat("%", i))) {
           return absl::InvalidArgumentError(absl::StrCat(
               "production `", p.name, "` (target `", target_key,
-              "`) declares arg #", i, " of type `",
-              TypeKey(p.arg_types[i]),
+              "`) declares arg #", i, " of type `", TypeKey(p.arg_types[i]),
               "` but format `", p.format, "` does not reference `%", i, "`"));
         }
       }
@@ -115,9 +114,9 @@ absl::Status Grammar::Validate() const {
       for (std::size_t i = p.arg_types.size(); i < 10; ++i) {
         if (absl::StrContains(p.format, absl::StrCat("%", i))) {
           return absl::InvalidArgumentError(absl::StrCat(
-              "production `", p.name, "` (target `", target_key,
-              "`) format `", p.format, "` references `%", i,
-              "` but declares only ", p.arg_types.size(), " args"));
+              "production `", p.name, "` (target `", target_key, "`) format `",
+              p.format, "` references `%", i, "` but declares only ",
+              p.arg_types.size(), " args"));
         }
       }
       // (c) Every arg type must itself be a registered target so
@@ -135,9 +134,9 @@ absl::Status Grammar::Validate() const {
           p.extra_scope_for_arg.size() != p.arg_types.size()) {
         return absl::InvalidArgumentError(absl::StrCat(
             "production `", p.name,
-            "` has extra_scope_for_arg.size() = ",
-            p.extra_scope_for_arg.size(), " but arg_types.size() = ",
-            p.arg_types.size(), "; must be 0 or equal to arg_types.size()"));
+            "` has extra_scope_for_arg.size() = ", p.extra_scope_for_arg.size(),
+            " but arg_types.size() = ", p.arg_types.size(),
+            "; must be 0 or equal to arg_types.size()"));
       }
       // (e) Weight non-negative.
       if (p.weight < 0) {
@@ -150,10 +149,10 @@ absl::Status Grammar::Validate() const {
     }
     // (f) Every type with productions has at least one leaf.
     if (!has_leaf) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "type `", target_key,
-          "` has no leaf production; depth-0 recursion would "
-          "have no eligible rule"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("type `", target_key,
+                       "` has no leaf production; depth-0 recursion would "
+                       "have no eligible rule"));
     }
   }
   return absl::OkStatus();
@@ -177,7 +176,7 @@ void GrammarBuilder::Register(const CelType& target, Production p) {
 }
 
 GrammarBuilder& GrammarBuilder::Leaf(CelType target, std::string name,
-                                      std::string format, int weight) {
+                                     std::string format, int weight) {
   Production p;
   p.name = std::move(name);
   p.format = std::move(format);
@@ -188,8 +187,8 @@ GrammarBuilder& GrammarBuilder::Leaf(CelType target, std::string name,
 }
 
 GrammarBuilder& GrammarBuilder::Unary(CelType target, std::string name,
-                                       std::string format, CelType arg0_type,
-                                       int weight) {
+                                      std::string format, CelType arg0_type,
+                                      int weight) {
   Production p;
   p.name = std::move(name);
   p.format = std::move(format);
@@ -200,9 +199,8 @@ GrammarBuilder& GrammarBuilder::Unary(CelType target, std::string name,
 }
 
 GrammarBuilder& GrammarBuilder::Binary(CelType target, std::string name,
-                                        std::string format,
-                                        CelType arg0_type, CelType arg1_type,
-                                        int weight) {
+                                       std::string format, CelType arg0_type,
+                                       CelType arg1_type, int weight) {
   Production p;
   p.name = std::move(name);
   p.format = std::move(format);
@@ -214,9 +212,9 @@ GrammarBuilder& GrammarBuilder::Binary(CelType target, std::string name,
 }
 
 GrammarBuilder& GrammarBuilder::Ternary(CelType target, std::string name,
-                                         std::string format,
-                                         CelType arg0_type, CelType arg1_type,
-                                         CelType arg2_type, int weight) {
+                                        std::string format, CelType arg0_type,
+                                        CelType arg1_type, CelType arg2_type,
+                                        int weight) {
   Production p;
   p.name = std::move(name);
   p.format = std::move(format);
@@ -228,10 +226,24 @@ GrammarBuilder& GrammarBuilder::Ternary(CelType target, std::string name,
   return *this;
 }
 
+GrammarBuilder& GrammarBuilder::Repeated(CelType target, std::string name,
+                                         std::string format, CelType arg_type,
+                                         int arity, int weight) {
+  Production p;
+  p.name = std::move(name);
+  p.format = std::move(format);
+  p.arg_types.reserve(static_cast<std::size_t>(arity));
+  for (int i = 0; i < arity; ++i) {
+    p.arg_types.push_back(arg_type);
+  }
+  p.weight = weight;
+  Register(target, std::move(p));
+  return *this;
+}
+
 GrammarBuilder& GrammarBuilder::Comprehension(
-    CelType target, std::string name, std::string format,
-    CelType range_type, std::pair<std::string, CelType> iter,
-    CelType body_type, int weight) {
+    CelType target, std::string name, std::string format, CelType range_type,
+    std::pair<std::string, CelType> iter, CelType body_type, int weight) {
   Production p;
   p.name = std::move(name);
   p.format = std::move(format);

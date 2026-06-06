@@ -191,10 +191,9 @@ TEST(KnownBugs, MapSizeArenaCliff) {
 // ══════════════════════════════════════════════════════════════════
 
 TEST(KnownBugs, SizeStringCountsBytesNotCodepoints) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // string.textproto: size('ÿ') == 1 code point (got 2 = byte length).
+  // string.textproto/size_one_unicode: size('ÿ') == 1 code point.
+  // Fixed 2026-06-05 by reworking `cel_string_size_at_v` to walk the
+  // UTF-8 byte stream and count codepoint-starting bytes.
   auto v = TryEval("size('ÿ')");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -202,10 +201,8 @@ TEST(KnownBugs, SizeStringCountsBytesNotCodepoints) {
 }
 
 TEST(KnownBugs, SizeStringMultibyte) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // string.textproto: size('πέντε') == 5 (got 10).
+  // string.textproto/size_unicode: size('πέντε') == 5 (got 10).
+  // Fixed 2026-06-05 — same kernel as SizeStringCountsBytesNotCodepoints.
   auto v = TryEval("size('πέντε')");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -213,10 +210,9 @@ TEST(KnownBugs, SizeStringMultibyte) {
 }
 
 TEST(KnownBugs, HasOnMapPresentKey) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // fields.textproto: has({'a':1,'b':2}.a) == true.
+  // fields.textproto: has({'a':1,'b':2}.a) == true.  Map-dot-field sugar
+  // (langdef §"Field selection on maps"); fixed by EmitKSelect's kMap
+  // branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("has({'a': 1, 'b': 2}.a)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -224,10 +220,8 @@ TEST(KnownBugs, HasOnMapPresentKey) {
 }
 
 TEST(KnownBugs, HasOnMapAbsentKey) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // fields.textproto: has({'a':1,'b':2}.c) == false.
+  // fields.textproto: has({'a':1,'b':2}.c) == false.  Map-dot-field sugar;
+  // fixed by EmitKSelect's kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("has({'a': 1, 'b': 2}.c)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -267,10 +261,9 @@ TEST(KnownBugs, IntFromDoubleOutOfRange) {
 }
 
 TEST(KnownBugs, CelBindSelectorOnBoundVar) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // bindings_ext.textproto: cel.bind(x, {'y': 0}, x.y == 0) == true.
+  // Map-dot-field sugar through a bound variable; fixed by EmitKSelect's
+  // kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("cel.bind(x, {'y': 0}, x.y == 0)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -278,10 +271,10 @@ TEST(KnownBugs, CelBindSelectorOnBoundVar) {
 }
 
 TEST(KnownBugs, ComprehensionVarSelector) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // namespace.textproto: [{'z': 0}].exists(y, y.z == 0) == true.
+  // Map-dot-field sugar on a comprehension iter var (langdef §"Field
+  // selection"); fixed by EmitKSelect's kMap branch (cleanup-backlog
+  // #9, 2026-06-05).
   auto v = TryEval("[{'z': 0}].exists(y, y.z == 0)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -289,10 +282,9 @@ TEST(KnownBugs, ComprehensionVarSelector) {
 }
 
 TEST(KnownBugs, ReservedWordMapSelector) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // parse.textproto: {'as': 1}.as == 1 (reserved-but-not-keyword selector).
+  // Per CEL grammar, reserved words are admitted in selector position;
+  // fixed by EmitKSelect's kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("{'as': 1}.as");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -317,23 +309,60 @@ TEST(KnownBugs, UintFromStringLeadingPlus) {
 }
 
 TEST(KnownBugs, MapFieldSelectSugar) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: CEL_ERR_TYPE_MISMATCH, want 1): EmitKSelect has "
-         "no map-operand path; m.k sugar hits the message field trampoline "
-         "(expr_lower.cc:199-261 / cel_host.cc:1394). One fix flips the whole "
-         "map-select cluster. Delete to fix.";
-  // ROOT CAUSE + minimal repro of the map-select cluster: HasOnMapPresentKey,
-  // HasOnMapAbsentKey, ReservedWordMapSelector, CelBindSelectorOnBoundVar,
-  // ComprehensionVarSelector (and backtick-quoted selectors) ALL share this.
-  // EmitKSelect (expr_lower.cc:199-261) has no map-operand branch, so `m.k`
-  // (≡ m['k'] sugar) lowers to the proto field-read trampoline, which
-  // rejects a non-message operand at cel_host.cc:1394 -> CEL_ERR_TYPE_MISMATCH.
-  // {'a': 1}.a should be 1.  One fix (map branch in EmitKSelect) flips the
-  // whole cluster.
+  // langdef §"Field selection on maps": `m.k` is sugar for `m['k']`.
+  // Regression pin for the cluster fixed via cleanup-backlog #9
+  // (2026-06-05): EmitKSelect gained a kMap branch that routes through
+  // `cel_map_lookup` (or `cel_map_in` for `has()`) with the field name
+  // lifted to rodata as a CEL_STRING CelValue.  Closes ~29 conformance
+  // rows: 17 reserved-word selectors (parse/selectors), 4 quoted-map
+  // and 2 map_has rows (fields), 3 optional-chaining rows (optionals),
+  // 1 bind-shadow row (bindings_ext), 2 comprehension-shadowing
+  // selector rows (namespace_shadowing).
   auto v = TryEval("{'a': 1}.a");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsInt(), 1);
+}
+
+// Map-dot-field sugar coverage matrix.  Per the testing rule in
+// CLAUDE.md "Cover the edge-case matrix": every shape that exercises
+// the kMap branch of EmitKSelect.
+TEST(KnownBugs, MapDotFieldNestedMapValue) {
+  // Outer .c routes the inner kSelect (map-of-map) to cel_map_lookup
+  // (kDynamic dispatcher) since the operand's static origin is kHost
+  // but the runtime value is CEL_MAP_ARENA.
+  auto v = TryEval("{'c': {'d': 1}}.c.d");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v->AsInt(), 1);
+}
+
+TEST(KnownBugs, MapDotFieldThenIndex) {
+  // `{'c': {...}}.c['dashed-index']`: same nested-origin issue but at the
+  // `_[_]` call (EmitKIndexCall) — operand is a kSelectExpr returning a
+  // map, so codegen falls through to the kDynamic dispatcher.
+  auto v = TryEval("{'c': {'k': 'v'}}.c['k']");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString);
+  EXPECT_EQ(*v->AsString(), "v");
+}
+
+TEST(KnownBugs, MapDotFieldBacktickQuotedSlash) {
+  // fields.textproto/quoted_map_fields/field_access_slash:
+  // `{'/api/v1': true, '/api/v2': false}.`/api/v1`` → true.
+  auto v = TryEval("{'/api/v1': true, '/api/v2': false}.`/api/v1`");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, MapDotFieldBacktickQuotedDot) {
+  // fields.textproto/quoted_map_fields/field_access_dot:
+  // `{'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`` → 32.
+  auto v = TryEval("{'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v->AsInt(), 32);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -539,8 +568,7 @@ TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
 // visible to the test rather than ASSERT-failing inside the helper.
 template <typename DeclareFn, typename BindFn>
 absl::StatusOr<Value> TryEvalActivated(absl::string_view source,
-                                       DeclareFn&& declare,
-                                       BindFn&& bind) {
+                                       DeclareFn&& declare, BindFn&& bind) {
   Compiler::Builder b;
   declare(b);
   auto compiler = std::move(b).Build();
@@ -615,21 +643,24 @@ TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
 // fix must come WITH the un-skip, not after it.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: wasmtime panic at "
-         "store.rs:2440:17 'fault.is_none()', host process aborts, "
-         "want OK + true).  Literal int list of 10 000 elements; "
-         "`in`-scan exhausts the 64 KiB per-Eval arena "
-         "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
-         "check before allocating.  Delete this line ONLY when both "
-         "the trap-vs-graceful issue and the size limit are fixed "
-         "(cleanup-backlog #16).";
+  GTEST_SKIP() << "KNOWN BUG (verified: wasmtime panic at "
+                  "store.rs:2440:17 'fault.is_none()', host process aborts, "
+                  "want OK + true).  Literal int list of 10 000 elements; "
+                  "`in`-scan exhausts the 64 KiB per-Eval arena "
+                  "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
+                  "check before allocating.  Delete this line ONLY when both "
+                  "the trap-vs-graceful issue and the size limit are fixed "
+                  "(cleanup-backlog #16).";
   constexpr int kN = 10'000;
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
-      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
-      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(kN - 2));
+      });
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   EXPECT_TRUE(*v->AsBool());
@@ -646,14 +677,13 @@ TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
 // large permission sets hit this.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
-         "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
-         "want OK + true).  10 k bound 50-byte strings exhaust the "
-         "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
-         "the linear scan.  Delete this line when cel_list_in "
-         "stops materialising O(N) arena state per scan, OR the "
-         "arena can grow on demand (cleanup-backlog #17).";
+  GTEST_SKIP() << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
+                  "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
+                  "want OK + true).  10 k bound 50-byte strings exhaust the "
+                  "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
+                  "the linear scan.  Delete this line when cel_list_in "
+                  "stops materialising O(N) arena state per scan, OR the "
+                  "arena can grow on demand (cleanup-backlog #17).";
   constexpr size_t kN = 10'000;
   // Build N unique 50-byte strings deterministically.
   std::vector<Value> elements;
@@ -816,6 +846,30 @@ void BindSliceBPbtVars(Activation& a) {
   a.Bind("b_a", Value::Bool(true));
 }
 
+// Slice C PBT activation — Slice B vars plus uint / double / string
+// / bytes leaves the Slice C grammar pulls from.  Mirrors
+// `e2e/fuzz/oracle_harness.cc::SliceBBoundActivation` so a repro
+// the miner shrunk runs unchanged here.
+void DeclareSliceCPbtVars(Compiler::Builder& b) {
+  b.DeclareVariable("i_a", CelType::Int());
+  b.DeclareVariable("i_b", CelType::Int());
+  b.DeclareVariable("u_a", CelType::Uint());
+  b.DeclareVariable("d_a", CelType::Double());
+  b.DeclareVariable("b_a", CelType::Bool());
+  b.DeclareVariable("s_a", CelType::String());
+  b.DeclareVariable("y_a", CelType::Bytes());
+}
+
+void BindSliceCPbtVars(Activation& a) {
+  a.Bind("i_a", Value::Int(7));
+  a.Bind("i_b", Value::Int(11));
+  a.Bind("u_a", Value::Uint(5));
+  a.Bind("d_a", Value::Double(3.14));
+  a.Bind("b_a", Value::Bool(true));
+  a.Bind("s_a", Value::String("hello"));
+  a.Bind("y_a", Value::Bytes("hi"));
+}
+
 }  // namespace pbt_repro
 
 // fuzztest seed=3696381601904611693 depth=4 — PBT slice B run on
@@ -843,8 +897,63 @@ TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
                             pbt_repro::BindSliceBPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
-  EXPECT_FALSE(*v->AsBool())
-      << "ternary inside int subtract evaluated wrong";
+  EXPECT_FALSE(*v->AsBool()) << "ternary inside int subtract evaluated wrong";
+}
+
+// PBT seed=1 (target=bool) and seed=3 (target=bytes) on the Slice C
+// grammar, 2026-06-05.  cleanup-backlog #32 + #33 — `exists_one`'s
+// comprehension result lives in the `comp.result()` sub-expression's
+// slot (a `kCallExpr(_==_, @result, 1)` writing a Bool to its own
+// workspace slot), NOT in the accu_var's slot which still holds the
+// loop counter Int.  Before the fix, `ComprehensionLocalsVisitor::
+// PostVisitComprehension` stamped the comp with accu_var's slot, so
+// the ternary cond-load read the count Int instead of the loop's
+// Bool result and the whole downstream expression poisoned to
+// kError.  Pinning shape: an `exists_one` feeding a ternary cond
+// whose then-arm is a bytes ident.
+//
+// Spec eval for the bytes case (b_a=true, d_a=3.14, y_a=b"hi"):
+//   {b_a: -1}.exists_one(k, d_a < 1.0)
+//     → pred false for the one key → false
+//   false ? y_a : b"x"  → b"x"
+//   b"x" + b"x"         → b"xx"
+TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
+  constexpr absl::string_view source =
+      R"((({b_a: (-1)}).exists_one(k, (d_a < 1.0)) ? y_a : b"x") + b"x")";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsBytes(), "xx") << "exists_one cond mis-routed";
+}
+
+// Companion: when `exists_one` returns true the SAME shape must
+// pick the then-arm, returning a bytes-typed value.  Catches a
+// regression in the opposite direction.
+TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
+  constexpr absl::string_view source =
+      R"((({"k": 1}).exists_one(k, true) ? y_a : b"x") + b"x")";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsBytes(), "hix");
+}
+
+// PBT int seed=137 (Slice C grammar, 2026-06-05) — reduced form
+// of the `size((cond ? <bytes-ternary> : <bytes-ternary>))` shape
+// that was producing kError because the inner bytes ternary's
+// result kind was being read from the wrong slot.  Spec eval: the
+// exists_one is true (one key, predicate true), inner ternary's
+// then-arm is `(y_a + y_a)` = b"hihi" (size 4).
+TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
+  constexpr absl::string_view source =
+      R"(size((({"k": 1}).exists_one(k, true) ? (y_a + y_a) : (y_a + b"x"))))";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 4);
 }
 
 }  // namespace

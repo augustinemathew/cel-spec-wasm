@@ -89,6 +89,28 @@ void InstallStructImports(WasmModule& mod) {
                         BinaryenTypeNone());
 }
 
+// `cel_map_lookup_*` / `cel_map_in_*` — the three-arm dispatch families
+// for value lookup and key-presence.  Each arm is `(out, map, key) ->
+// void` (lookup) / `(out, key, map) -> void` (in).  Always-imported per
+// CLAUDE.md "no lazy tracking of runtime imports".
+void InstallMapAccessImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType map3_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
+                        "cel_map_lookup_arena", map3_params,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapInArenaInternalName), "cel",
+                        "cel_map_in_arena", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapInInternalName), "cel", "cel_map_in",
+                        map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapInInternalName), "cel_host",
+                        "cel_map_in", map3_params, BinaryenTypeNone());
+}
+
 // Map literal + indexing runtime entry points.  `cel_map_*` come
 // from the runtime module; `cel_host.cel_map_lookup` is the host
 // trampoline arm of the kDynamic dispatcher (see
@@ -116,13 +138,7 @@ void InstallMapImports(WasmModule& mod) {
   mod.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName),
                         "cel", "cel_map_insert_at_if_present", map3_params,
                         BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
-                        "cel_map_lookup_arena", map3_params,
-                        BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  InstallMapAccessImports(mod);
   // Map-key iteration helpers used by comprehensions over a
   // `map(K, V)` source.  Always imported regardless of AST presence
   // — per CLAUDE.md "no lazy tracking of runtime imports".  Wire

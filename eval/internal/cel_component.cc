@@ -271,8 +271,16 @@ absl::Status LowerString(const CelfnType& type,
   }
   // Lower copies — the produced Value carries its own std::string and
   // is decoupled from any subsequent wasmtime_component_val_delete.
-  // Empty strings: size==0; data may be null after a none-style ctor
-  // but we read it through string(ptr,len) which tolerates len==0.
+  // Defensive: a malformed val with size>0 and data==null would
+  // dereference null in the std::string ctor.  Empty strings have
+  // size==0; data may be null after a none-style ctor but we read it
+  // through string(ptr,len) which tolerates len==0.  See
+  // cleanup-backlog #37.
+  if (in.of.string.size > 0 && in.of.string.data == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_component: Lower for `string` saw size=", in.of.string.size,
+        " with null data pointer (malformed wasmtime_component_val_t)"));
+  }
   *out = Value::String(std::string(in.of.string.data, in.of.string.size));
   return absl::OkStatus();
 }
@@ -295,6 +303,14 @@ absl::Status DecodeSecondsNanosRecord(const wasmtime_component_val_t& in,
         absl::StrCat("cel_component: Lower for `", ctx_kind,
                      "` expected record with 2 fields {seconds, nanos}, got ",
                      in.of.record.size));
+  }
+  // Defensive: size>0 with null data dereferences null in the loop
+  // below.  cleanup-backlog #37.
+  if (in.of.record.data == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_component: Lower for `", ctx_kind,
+        "` saw record size=", in.of.record.size,
+        " with null data pointer (malformed wasmtime_component_val_t)"));
   }
   bool got_seconds = false;
   bool got_nanos = false;
@@ -655,6 +671,13 @@ absl::Status LowerList(const CelfnType& type,
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list");
   }
+  // Defensive: size>0 with null data dereferences null below.
+  // cleanup-backlog #37.
+  if (in.of.list.size > 0 && in.of.list.data == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_component: Lower for `list` saw size=", in.of.list.size,
+        " with null data pointer (malformed wasmtime_component_val_t)"));
+  }
   const CelfnType& elem_type = type.list_element[0];
   std::vector<Value> elems;
   elems.reserve(in.of.list.size);
@@ -675,6 +698,13 @@ absl::Status LowerBytes(const CelfnType& type,
                         const wasmtime_component_val_t& in, Value* out) {
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list<u8>");
+  }
+  // Defensive: size>0 with null data dereferences null below.
+  // cleanup-backlog #37.
+  if (in.of.list.size > 0 && in.of.list.data == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_component: Lower for `bytes` saw size=", in.of.list.size,
+        " with null data pointer (malformed wasmtime_component_val_t)"));
   }
   std::string bytes;
   bytes.reserve(in.of.list.size);

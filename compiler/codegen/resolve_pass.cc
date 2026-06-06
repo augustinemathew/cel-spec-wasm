@@ -95,6 +95,62 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
 
+  // Try to bind `ident_name` against an enclosing comprehension /
+  // bind-let scope.  Returns true and populates `ann` if the
+  // innermost matching scope binding is found; returns false to
+  // let the caller fall through to free-variable resolution.
+  // Scope walk is innermost-first (inner shadows outer).
+  bool TryResolveScope(absl::string_view ident_name, Repr ann_repr,
+                       NodeAnnotation& ann) {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      auto found = it->frame.find(ident_name);
+      if (found == it->frame.end()) continue;
+      const uint32_t local_index = found->second;
+      ResolvedVariable& v = variables_[local_index];
+      if (v.repr == Repr::kUnknown) {
+        // First reference inside the comprehension body resolves
+        // the binding's Repr from the checker's annotation on
+        // this kIdent.  Subsequent references CHECK match.
+        v.repr = ann_repr;
+      } else {
+        ABSL_CHECK(v.repr == ann_repr)
+            << "ResolvePass: kIdent name=`" << ident_name
+            << "` (scope-bound) appears with mismatched Repr ("
+            << ReprName(v.repr) << " vs " << ReprName(ann_repr) << ")";
+      }
+      ann.local_index = local_index;
+      ann.scope_id = it->depth;
+      return true;
+    }
+    return false;
+  }
+
+  // Resolve `ident_name` as a free variable through the flat
+  // intern table.  Either reuses an existing intern entry
+  // (Repr-checking) or appends a new ResolvedVariable.  Always
+  // populates `ann` and never fails.
+  void ResolveFreeVariable(absl::string_view ident_name, Repr ann_repr,
+                           NodeAnnotation& ann) {
+    auto it = free_name_to_index_.find(ident_name);
+    uint32_t local_index;
+    if (it == free_name_to_index_.end()) {
+      local_index = static_cast<uint32_t>(variables_.size());
+      variables_.push_back(
+          ResolvedVariable{std::string(ident_name), local_index, ann_repr,
+                           ResolvedVariableKind::kFreeVariable});
+      free_name_to_index_.emplace(std::string(ident_name), local_index);
+    } else {
+      local_index = it->second;
+      ABSL_CHECK(variables_[local_index].repr == ann_repr)
+          << "ResolvePass: kIdent name=`" << ident_name
+          << "` appears with mismatched Repr ("
+          << ReprName(variables_[local_index].repr) << " vs "
+          << ReprName(ann_repr) << ")";
+    }
+    ann.local_index = local_index;
+    ann.scope_id = 0;
+  }
+
   void PostVisitIdent(const cel::Expr& expr,
                       const cel::IdentExpr& ident) override {
     NodeAnnotation& ann = annotations_[expr.id()];
@@ -107,47 +163,28 @@ class ScopedIdentResolver : public cel::AstVisitorBase {
         << ident.name() << "` has Repr::kUnknown "
         << "(checker left the type_map entry absent or non-mappable)";
 
-    // Walk scope stack innermost-first.  Inner binding wins (shadow).
-    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-      auto found = it->frame.find(ident.name());
-      if (found != it->frame.end()) {
-        const uint32_t local_index = found->second;
-        ResolvedVariable& v = variables_[local_index];
-        if (v.repr == Repr::kUnknown) {
-          // First reference inside the comprehension body resolves
-          // the binding's Repr from the checker's annotation on
-          // this kIdent.  Subsequent references CHECK match.
-          v.repr = ann.repr;
-        } else {
-          ABSL_CHECK(v.repr == ann.repr)
-              << "ResolvePass: kIdent name=`" << ident.name()
-              << "` (scope-bound) appears with mismatched Repr ("
-              << ReprName(v.repr) << " vs " << ReprName(ann.repr) << ")";
-        }
-        ann.local_index = local_index;
-        ann.scope_id = it->depth;
-        return;
-      }
-    }
-    // Free-variable fall-through — flat intern table.
-    auto it = free_name_to_index_.find(ident.name());
-    uint32_t local_index;
-    if (it == free_name_to_index_.end()) {
-      local_index = static_cast<uint32_t>(variables_.size());
-      variables_.push_back(
-          ResolvedVariable{ident.name(), local_index, ann.repr,
-                           ResolvedVariableKind::kFreeVariable});
-      free_name_to_index_.emplace(ident.name(), local_index);
-    } else {
-      local_index = it->second;
-      ABSL_CHECK(variables_[local_index].repr == ann.repr)
-          << "ResolvePass: kIdent name=`" << ident.name()
-          << "` appears with mismatched Repr ("
-          << ReprName(variables_[local_index].repr) << " vs "
-          << ReprName(ann.repr) << ")";
-    }
-    ann.local_index = local_index;
-    ann.scope_id = 0;
+    // Leading-dot namespace-disambiguation: the user wrote `.y`
+    // (forcing global-scope resolution past any shadowing local /
+    // container).  The Activation declares the global variable as
+    // `y`; the kIdent's name field carries `.y` verbatim from the
+    // source.  Strip the leading dot for scope + intern lookup so
+    // both scope-bound matches and the free-variable intern key on
+    // the canonical global name.  Per cel-cpp
+    // `checker/internal/type_checker_impl.cc:931`'s
+    // `LookupLocalIdentifier`, the leading dot is invisible to
+    // local-variable lookup; we mirror that here.  Pinned by
+    // corpus rows
+    // `namespace/namespace_shadowing/comprehension_shadowing_disambiguation`
+    // and `..._namespaced_selector_disambiguation`.
+    const absl::string_view raw_name = ident.name();
+    const bool had_leading_dot = !raw_name.empty() && raw_name.front() == '.';
+    const absl::string_view name =
+        had_leading_dot ? raw_name.substr(1) : raw_name;
+
+    // The leading-dot case skips the scope lookup: the dot's whole
+    // point is to bypass any shadowing local.
+    if (!had_leading_dot && TryResolveScope(name, ann.repr, ann)) return;
+    ResolveFreeVariable(name, ann.repr, ann);
   }
 
   // Pick the per-iter-var allocation lifecycle for the current

@@ -532,3 +532,93 @@ grammar is validated end-to-end before the property body exists.
 this doc.  Original chat-thread questions resolved 2026-06-05.
 Slice A shipped same day; Slice B steps 1-3 are next, with
 explicit grammar-validation green commit before steps 4-5.)
+
+## Slice C1 shipped (2026-06-05) — what got measured
+
+  - **Grammar:** Slice C1 catalog landed (lists + maps of all
+    scalar types, comprehension macros `.exists` / `.all` /
+    `.exists_one` / `.filter` / `.map` over lists, plus
+    `.exists` / `.all` / `.exists_one` over maps).  Slice C2
+    (kStructExpr + kSelectExpr + has() + Customer activation)
+    deferred.
+  - **Property targets at Slice C1:** 6 scalar (Bool / Int /
+    Uint / Double / String / Bytes) + 4 list (`list<int>`,
+    `list<bool>`, `list<double>`, `list<string>`) + 1 map
+    (`map<string, int>`) — 11 properties total.  Each
+    compares element-wise vs the cel-cpp oracle's
+    `cel::expr::Value`.
+  - **Mining tooling:** `e2e/fuzz/mine_divergences` — a
+    loop-driven miner that runs the same `oracle_harness`
+    plumbing as the fuzztest property but prints every
+    divergence's source + ours-vs-oracle inline.  Used to
+    triage what the property catches when fuzztest's
+    unit-test mode buffers the EXPECT_EQ message past
+    abort.
+  - **Bugs found + fixed:** cleanup-backlog #32 / #33 — the
+    `kComprehensionExpr` storage stamp used `accu_var.
+    slot_offset`, but for `exists_one` the result lives in
+    `comp.result()`'s own slot (a `kCallExpr(_==_, @result,
+    1)` writing a Bool, not the accu's Int counter).  Fixed
+    in `compiler/codegen/layout_pass.cc` —
+    `ComprehensionLocalsVisitor::PostVisitComprehension`
+    now stamps from `comp.result()`'s annotation.  3
+    regression pins in `e2e/known_bugs_test.cc`.  Verified
+    with a 12,000-program PBT sweep (depth 6, 2000 seeds ×
+    6 scalar targets), then 5,500-program list/map sweep
+    (depth 6, 500–1000 seeds × 5 container targets): 0
+    value divergences.
+  - **Bugs found + filed but not fixed:** cleanup-backlog
+    #34 — depth-7/8 PBT reliably triggers the per-Eval
+    arena overflow (`code=10 msg="overflow"`) through
+    nested-comprehension × `_in_` × multi-element haystack.
+    Same root surface as #17 / #21; PBT is the measuring
+    instrument that confirms the cliff is reachable from
+    grammar-generated depth-7 expressions, not just the
+    pathological 10K-bound-list case.  Fix is the runtime
+    grow-on-demand arena.
+
+## Future work — type-polymorphic grammar for recursive nesting
+
+The current Slice C1 grammar registers productions for each
+concrete element type in `ScalarVocab()` (6 scalars) and
+each `MapKV` in `MapVocab()` (5 K×V combos).  The
+production machinery (`GrammarBuilder::Leaf` / `Unary` /
+`Binary` / `Ternary` / `Repeated` / `Comprehension`) is
+already `CelType`-parameterised — what's _not_ recursive
+yet is the **set of types the registration loops iterate
+over**.  Today the loops iterate scalars only, so the
+grammar admits `list<bool>`, `list<int>`, etc. but never
+`list<list<int>>` or `map<int, list<double>>`.
+
+The natural extension — when there's a reason to chase
+nested-type bugs — is:
+
+  1. Compute a `TypeVocab` closed under one level of
+     nesting: `scalars ∪ {list<T> | T ∈ scalars} ∪
+     {map<K, V> | (K, V) ∈ MapVocab}`.  Cap at one level
+     so the production count stays bounded (12 list
+     productions + 5 map productions = 17 outer
+     containers, vs 6 in Slice C1).
+  2. Re-author the registration loops in `grammar_slice_c.
+     cc` to iterate `TypeVocab` instead of `ScalarVocab`.
+  3. Hand-author leaf sources for the new nested types
+     (e.g. `[[1, 2, 3]]` for `list<list<int>>`,
+     `[{"k": 0}]` for `list<map<string, int>>`).
+  4. Extend the miner's comparison
+     (`mine_divergences::CompareList` /
+     `CompareMap`) to dispatch recursively on `CelType` —
+     a list-typed element gets compared via `CompareList`
+     recursively, a map-typed element via `CompareMap`,
+     a scalar via `ScalarsEqual`.
+  5. Add list/map list/map oracle properties to
+     `cel_oracle_property_test.cc` keyed off the same
+     `oracle_harness::GenAndEvalSliceC`.
+
+This was scoped out of Slice C1 because the existing flat
+grammar already exposed and fixed the #32 / #33 family at
+depth 6, and surfaced #34 at depth 7-8 — i.e., it earned
+its keep without needing nested types yet.  Pick it up
+when there's a hypothesis about a nested-aggregate-specific
+codegen path (`HostMapBacking::Get` returning a list,
+proto field reads producing nested containers, etc.) worth
+PBT-targeting.

@@ -97,6 +97,7 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 // =====================================================================
 
 void cel_map_size_arena(uint32_t out_slot, uint32_t map_slot);
+// cel:codegen-export
 void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot);
 void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 

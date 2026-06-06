@@ -55,6 +55,14 @@ std::vector<ActivationBinding> SliceBActivation();
 // error in the catalog file itself.
 Grammar BuildSliceBGrammar();
 
+// Registers the Slice B production catalog onto `b` WITHOUT
+// finalising / validating.  Used by `grammar_slice_c.cc` to
+// layer aggregate + comprehension rules on top of Slice B's
+// scalar core in a single coherent grammar.  Callers are
+// expected to validate (via `Grammar::Validate`) once they're
+// done adding productions.
+void RegisterSliceBProductions(GrammarBuilder& b);
+
 }  // namespace celwasm::fuzz
 
 #endif  // CELWASM_E2E_FUZZ_GRAMMAR_SLICE_B_H_

@@ -119,9 +119,8 @@ TEST(CelListAtImplTest, IntElementHits) {
 
 TEST(CelListAtImplTest, StringElementMarshalledViaArena) {
   Fixture f;
-  auto backing = std::make_shared<HostList>(
-      std::vector<celwasm::Value>{celwasm::Value::String("alpha"),
-                                       celwasm::Value::String("beta")});
+  auto backing = std::make_shared<HostList>(std::vector<celwasm::Value>{
+      celwasm::Value::String("alpha"), celwasm::Value::String("beta")});
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(backing)));
   f.mem.WriteCelValue(f.idx_slot, MakeIntIdx(1));
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
@@ -155,13 +154,59 @@ TEST(CelListAtImplTest, IndexEqualToCountEncodesOutOfBounds) {
             static_cast<uint32_t>(CEL_ERR_INDEX_OUT_OF_BOUNDS));
 }
 
-TEST(CelListAtImplTest, NonIntIndexEncodesTypeMismatch) {
+TEST(CelListAtImplTest, UintIndexAdmitted) {
+  // Corpus row `lists/index/zero_based_uint`: cel-cpp admits a
+  // CEL_UINT as a list index (whole-number coercion through dyn).
+  // The kHost path should match.
   Fixture f;
   f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(ThreeInts())));
   CelValue u{};
   u.kind = CEL_UINT;
   u.payload.u = 0u;
   f.mem.WriteCelValue(f.idx_slot, u);
+  ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
+  CelValue out = f.mem.ReadCelValue(f.out_slot);
+  EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(out.payload.i, 10);
+}
+
+TEST(CelListAtImplTest, IntegralDoubleIndexAdmitted) {
+  // Corpus row `lists/index/zero_based_double`.
+  Fixture f;
+  f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(ThreeInts())));
+  CelValue d{};
+  d.kind = CEL_DOUBLE;
+  d.payload.d = 0.0;
+  f.mem.WriteCelValue(f.idx_slot, d);
+  ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
+  CelValue out = f.mem.ReadCelValue(f.out_slot);
+  EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(out.payload.i, 10);
+}
+
+TEST(CelListAtImplTest, NonIntegralDoubleIndexErrors) {
+  // Corpus row `lists/index/zero_based_double_error`.
+  Fixture f;
+  f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(ThreeInts())));
+  CelValue d{};
+  d.kind = CEL_DOUBLE;
+  d.payload.d = 0.1;
+  f.mem.WriteCelValue(f.idx_slot, d);
+  ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
+  CelValue out = f.mem.ReadCelValue(f.out_slot);
+  EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(out.payload.err, static_cast<uint32_t>(CEL_ERR_INVALID_ARGUMENT));
+}
+
+TEST(CelListAtImplTest, StringIndexEncodesTypeMismatch) {
+  // Truly non-numeric indices still reject as type mismatch.
+  Fixture f;
+  f.mem.Place(f.list_slot, MakeListValue(f.refs.InternList(ThreeInts())));
+  CelValue str{};
+  str.kind = CEL_STRING;
+  str.payload.s.ptr = 0;
+  str.payload.s.len = 0;
+  f.mem.WriteCelValue(f.idx_slot, str);
   ASSERT_TRUE(CelListAtImpl(f.out_slot, f.list_slot, f.idx_slot, f.ctx).ok());
   CelValue out = f.mem.ReadCelValue(f.out_slot);
   EXPECT_EQ(out.kind, static_cast<uint32_t>(CEL_ERROR));

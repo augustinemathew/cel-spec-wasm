@@ -393,6 +393,39 @@ cc_library(
     ],
 )
 
+# Bounds-check regression for MemoryView's Read/Write family —
+# pins cleanup-backlog #36 against future re-introduction of the
+# unchecked Data()+ptr return.
+cc_test(
+    name = "memory_view_bounds_test",
+    srcs = ["internal/memory_view_bounds_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# True e2e for the bounds-check fix — exercises the production
+# `WasmtimeMemoryView` against a real `wasmtime_sharedmemory_t`,
+# not the FakeMemoryView covered by `memory_view_bounds_test`.
+# Closes the "needs a true e2e" follow-up under cleanup-backlog
+# #36.
+cc_test(
+    name = "wasmtime_memory_view_e2e_test",
+    srcs = ["internal/wasmtime_memory_view_e2e_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_wasmtime",
+        "//runtime:cel_runtime",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "cel_host_test",
     srcs = ["internal/cel_host_test.cc"],

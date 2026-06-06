@@ -99,7 +99,7 @@ const std::vector<std::string>& DefaultCorpus() {
 // All known `SkipCategory` values, in display order.  Keeping the
 // list in one place lets the per-fixture summary table iterate it
 // deterministically (rather than depending on map ordering).
-constexpr std::array<celwasm::conformance::SkipCategory, 9> kCategories{
+constexpr std::array<celwasm::conformance::SkipCategory, 10> kCategories{
     celwasm::conformance::SkipCategory::kDisableCheck,
     celwasm::conformance::SkipCategory::kCheckOnly,
     celwasm::conformance::SkipCategory::kEnvelope,
@@ -109,6 +109,7 @@ constexpr std::array<celwasm::conformance::SkipCategory, 9> kCategories{
     celwasm::conformance::SkipCategory::kExtensionUnimpl,
     celwasm::conformance::SkipCategory::kTypeEnvUnsupported,
     celwasm::conformance::SkipCategory::kBindingUnsupported,
+    celwasm::conformance::SkipCategory::kSpecUnimpl,
 };
 
 struct FileTally {
@@ -134,6 +135,48 @@ void RecordSkip(FileTally& out, celwasm::conformance::SkipCategory c) {
   ABSL_CHECK(false) << "unhandled SkipCategory in run_conformance";
 }
 
+// Extract the textproto file stem (basename minus `.textproto`)
+// from a workspace-relative path.  Used by `IsSpecUnimplSection`.
+absl::string_view FileStemOf(absl::string_view path) {
+  absl::string_view stem = path;
+  const size_t slash = stem.rfind('/');
+  if (slash != absl::string_view::npos) stem.remove_prefix(slash + 1);
+  constexpr absl::string_view kExt = ".textproto";
+  if (stem.size() > kExt.size() &&
+      stem.substr(stem.size() - kExt.size()) == kExt) {
+    stem.remove_suffix(kExt.size());
+  }
+  return stem;
+}
+
+// Tally a single Result into `out`, capturing the per-category
+// SKIP detail / FAIL detail caps.  Pure side-effect on `out`;
+// keeps RunFile's body under the lint size gate.
+void TallyResult(FileTally& out, const celwasm::conformance::Result& r,
+                 absl::string_view label, std::uint32_t max_fail_examples,
+                 std::uint32_t max_skip_examples) {
+  switch (r.outcome) {
+    case celwasm::conformance::Outcome::kPass:
+      ++out.pass;
+      break;
+    case celwasm::conformance::Outcome::kUnsupported:
+      ++out.skip;
+      RecordSkip(out, r.category);
+      if (out.skip_details.size() < max_skip_examples) {
+        out.skip_details.push_back(absl::StrCat(
+            label, " — ", celwasm::conformance::SkipCategoryName(r.category),
+            ": ", r.detail));
+      }
+      break;
+    case celwasm::conformance::Outcome::kFail:
+      ++out.fail;
+      if (out.fail_details.size() < max_fail_examples) {
+        out.fail_details.push_back(absl::StrCat(label, " — ", r.detail));
+      }
+      break;
+  }
+}
+
 FileTally RunFile(absl::string_view path, const celwasm::Engine& engine,
                   std::uint32_t max_fail_examples,
                   std::uint32_t max_skip_examples) {
@@ -143,33 +186,26 @@ FileTally RunFile(absl::string_view path, const celwasm::Engine& engine,
     out.fail_details.push_back(absl::StrCat("load: ", s.ToString()));
     return out;
   }
+  const absl::string_view file_stem = FileStemOf(path);
   for (const auto& section : file.section()) {
     for (const auto& t : section.test()) {
       ++out.total;
-      auto r = celwasm::conformance::RunOne(t, engine);
+      celwasm::conformance::Result r;
+      if (celwasm::conformance::IsSpecUnimplSection(file_stem, section.name(),
+                                                    t.name())) {
+        r.outcome = celwasm::conformance::Outcome::kUnsupported;
+        r.category = celwasm::conformance::SkipCategory::kSpecUnimpl;
+        r.detail =
+            absl::StrCat("section `", section.name(),
+                         "` is spec-acknowledged unimplemented "
+                         "(cel-cpp's own conformance harness skips it; see "
+                         "third_party/cel-cpp/conformance/BUILD)");
+      } else {
+        r = celwasm::conformance::RunOne(t, engine);
+      }
       const std::string label =
           absl::StrCat(section.name(), "/", t.name(), " `", t.expr(), "`");
-      switch (r.outcome) {
-        case celwasm::conformance::Outcome::kPass:
-          ++out.pass;
-          break;
-        case celwasm::conformance::Outcome::kUnsupported:
-          ++out.skip;
-          RecordSkip(out, r.category);
-          if (out.skip_details.size() < max_skip_examples) {
-            out.skip_details.push_back(
-                absl::StrCat(label, " — ",
-                             celwasm::conformance::SkipCategoryName(r.category),
-                             ": ", r.detail));
-          }
-          break;
-        case celwasm::conformance::Outcome::kFail:
-          ++out.fail;
-          if (out.fail_details.size() < max_fail_examples) {
-            out.fail_details.push_back(absl::StrCat(label, " — ", r.detail));
-          }
-          break;
-      }
+      TallyResult(out, r, label, max_fail_examples, max_skip_examples);
     }
   }
   return out;

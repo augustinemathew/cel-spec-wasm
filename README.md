@@ -8,14 +8,8 @@
 > left* before it's something you'd hand-on-heart deploy to a
 > production policy engine:
 >
-> - **Arithmetic is currently 2.4× slower than cel-cpp** because every
->   `+`/`*` routes through a cross-module wasm call instead of an
->   inlined `i64.add` (the planned codegen fix — see
->   [Performance](#performance--vs-cel-cpp-tree-walking-interpreter)).
 > - **Language bindings beyond C++ are designed, not built** — see
 >   [Language bindings](#language-bindings).
-> - **`@native` CEL-defined helper bodies** parse + type-check today
->   but the codegen for the bodies hasn't shipped.
 > - **General-purpose hardening** — error-path coverage, fuzz
 >   testing, allocator caps, AOT module cache, the whole production
 >   hardening checklist.
