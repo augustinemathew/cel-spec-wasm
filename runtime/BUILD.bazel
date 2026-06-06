@@ -169,6 +169,32 @@ cc_library(
     ],
 )
 
+# `cel_convert_double_format`: `cel_double_to_string_at_v`, carved out
+# of the umbrella C runtime into a sibling C++ TU so it can use
+# `std::to_chars(double, chars_format::general)` from libc++ — the
+# shortest-round-trip formatter cel-cpp uses
+# (`runtime/standard/type_conversion_functions.cc:56`).  The hand-
+# rolled C path that lived in `cel_convert.c` accumulated rounding
+# error past ~6 fractional digits and produced
+# `"123.45600000000000306"` for `string(123.456)`; the to_chars rewrite
+# fixes that corpus row.
+#
+# `alwayslink = True` because this TU only defines `extern "C"` symbols
+# (no headers, no static-init); without it the linker can drop the
+# object when its symbols look "unused" at link time but are actually
+# referenced via the wasm runtime catalogue.
+cc_library(
+    name = "cel_convert_double_format",
+    srcs = ["cel_convert_double_format.cc"],
+    copts = [
+        "-Wno-unused-parameter",
+    ],
+    alwayslink = True,
+    deps = [
+        ":cel_runtime",
+    ],
+)
+
 # Each test includes only the narrow header under test — this verifies
 # the tiny headers are self-sufficient and don't secretly depend on the
 # umbrella re-exporting something they forgot to include.
@@ -311,6 +337,7 @@ cc_test(
     name = "cel_convert_test",
     srcs = ["cel_convert_test.cc"],
     deps = [
+        ":cel_convert_double_format",
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
     ],
@@ -591,6 +618,7 @@ cc_binary(
         "cel_compare.h",
         "cel_convert.c",
         "cel_convert.h",
+        "cel_convert_double_format.cc",
         "cel_data.h",
         "cel_internal.h",
         "cel_layout.h",

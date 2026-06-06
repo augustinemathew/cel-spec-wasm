@@ -235,7 +235,29 @@ struck through or removed.
       reference impl doesn't pass these either.  Genuine
       feature work, not a regression.
 
-- [ ] **#38** — `cel_double_to_string_at_v` (`runtime/cel_convert.c`)
+- [x] **#38** — FIXED 2026-06-06.  Replaced the hand-rolled
+      `frac *= 10` formatter in `cel_convert.c` with
+      `std::to_chars(buf, end, v, std::chars_format::general)`
+      from libc++ in a sibling C++ TU
+      (`runtime/cel_convert_double_format.cc`), mirroring
+      cel-cpp's `FormatDouble`
+      (`third_party/cel-cpp/runtime/standard/type_conversion_functions.cc:56-75`).
+      Confirmed empirically against the wasi-sdk libc++:
+      `123.456` → `"123.456"`, `-987.654` → `"-987.654"`,
+      `6.02214e23` → `"6.02214e+23"`, `0.1` → `"0.1"`,
+      `1.0/3.0` → `"0.3333333333333333"`, `1e10` → `"1e+10"`.
+      Conformance: 1965 → 1966 (`conversions/string/double` flips
+      green); other `string/<num>` rows stay green.  Two e2e
+      regression pins in `e2e/known_bugs_test.cc`
+      (`DoubleToStringShortestRoundTrip`, `DoubleToStringExponentForm`)
+      are un-skipped.  New unit test matrix in
+      `runtime/cel_convert_test.cc` covers the corpus rows + the
+      `0.1` / `1/3` non-representable cases + `min()` / `max()` /
+      `denorm_min()` boundary doubles, asserting both literal
+      shortest-form pin and `strtod(s) == input` round-trip
+      safety (the durability invariant).
+      Original entry preserved below for the trail:
+      `cel_double_to_string_at_v` (`runtime/cel_convert.c`)
       uses a per-digit `frac *= 10` chain in `append_double_fraction`
       that accumulates rounding error past ~6 fractional digits.
       cel-cpp's `absl::StrCat(double)` uses a correctly-rounded

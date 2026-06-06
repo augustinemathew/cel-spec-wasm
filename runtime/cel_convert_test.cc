@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -670,6 +671,140 @@ TEST_F(ConvertFormatTest, DoubleScientificLarge) {
   cel_double_to_string_at_v(out, cel_make_double(1e20));
   const std::string s = StringAt(out);
   EXPECT_TRUE(s.find('e') != std::string::npos) << s;
+}
+
+// ─────────────────────────────────────────────────────────────
+// `cel_double_to_string_at_v` — shortest-round-trip invariant.
+//
+// INVARIANT — `cel_double_to_string_at_v` MUST produce the **shortest
+// decimal representation that round-trips to the exact double**, per
+// CEL `string(double)` semantics.  This matches cel-cpp's
+// `FormatDouble` (`runtime/standard/type_conversion_functions.cc:56`),
+// which delegates to `std::to_chars(buf, end, v, chars_format::general)`.
+//
+// A future change that swaps `std::to_chars` for a different
+// formatter — `%.17g`, hand-rolled per-digit `frac *= 10`, `printf
+// "%g"`, `absl::StrCat` — will break these tests by producing a
+// non-shortest form (e.g. `"123.45600000000000306"` instead of
+// `"123.456"`, the failure mode that motivated cleanup-backlog #38).
+//
+// Each row asserts both the literal expected byte sequence (pinning
+// the canonical form) AND `std::stod(result) == input` (the
+// round-trip safety invariant: a non-shortest-but-correct result
+// would still round-trip, so the literal check is what enforces
+// "shortest").
+//
+// Conformance row: `conversions/string/double` in
+// `spec/tests/simple/testdata/conversions.textproto:264-266`.
+// Surfaced 2026-06-05 conformance burndown Group E.
+// ─────────────────────────────────────────────────────────────
+
+struct DoubleFormatCase {
+  double input;
+  const char* expected;
+  const char* label;
+};
+
+class DoubleFormatRoundTripTest
+    : public ConvertFixture,
+      public ::testing::WithParamInterface<DoubleFormatCase> {};
+
+TEST_P(DoubleFormatRoundTripTest, ShortestRoundTrip) {
+  const DoubleFormatCase& tc = GetParam();
+  uint32_t out = MakeOut();
+  cel_double_to_string_at_v(out, cel_make_double(tc.input));
+  const std::string actual = StringAt(out);
+  // Canonical-form pin: the literal string MUST be the shortest-
+  // round-trip form `std::to_chars(general)` produces.
+  EXPECT_EQ(actual, tc.expected) << tc.label;
+  // Round-trip safety: parsing the result MUST recover the exact
+  // input double bit-for-bit (modulo the NaN-self-inequality, which
+  // is handled in the separate NaN test).
+  EXPECT_EQ(std::stod(actual), tc.input) << tc.label << " : " << actual;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Corpus, DoubleFormatRoundTripTest,
+    ::testing::Values(
+        // The corpus row that motivated the fix.  Pre-fix produced
+        // `"123.45600000000000306"`; cel-cpp produces `"123.456"`.
+        DoubleFormatCase{123.456, "123.456",
+                         "conversions/string/double (corpus)"},
+        // Negative sibling — exercises the `-` sign + mantissa path.
+        DoubleFormatCase{-987.654, "-987.654", "negative mid-magnitude"},
+        // Large-magnitude scientific case from the same corpus
+        // family (`conversions.textproto:120-121` parses this value).
+        DoubleFormatCase{6.02214e23, "6.02214e+23", "large scientific"},
+        // `0.1` is the canonical IEEE-754 round-trip-trap: the value
+        // is non-representable, and any naive `%.6g` formatter
+        // produces a truncated string that doesn't round-trip.
+        DoubleFormatCase{0.1, "0.1", "non-representable 0.1"},
+        // `-4.5e-3` — `conversions.textproto:269-271` (`double_hard`).
+        // Mixed-path mid-magnitude.
+        DoubleFormatCase{-4.5e-3, "-0.0045", "conversions/string/double_hard"},
+        // Simple integer-valued and half cases (regression pins for
+        // the existing surface).
+        DoubleFormatCase{1.0, "1", "1.0"}, DoubleFormatCase{-1.0, "-1", "-1.0"},
+        DoubleFormatCase{0.5, "0.5", "0.5"}));
+
+// `1.0 / 3.0` does not round-trip to an exact decimal — but the
+// shortest-form string MUST round-trip back to the same double bits.
+// std::to_chars produces "0.3333333333333333" (16 digits).  Kept as
+// an individual test so the failure message names the case.
+TEST_F(ConvertFormatTest, DoubleOneThirdRoundTrips) {
+  const double v = 1.0 / 3.0;
+  uint32_t out = MakeOut();
+  cel_double_to_string_at_v(out, cel_make_double(v));
+  const std::string s = StringAt(out);
+  // Literal pin (the shortest-round-trip form for 1/3 in IEEE-754
+  // double).  cel-cpp's to_chars-based path produces the same.
+  EXPECT_EQ(s, "0.3333333333333333");
+  EXPECT_EQ(std::stod(s), v);
+}
+
+// Boundary doubles — the limits of representable double.  These are
+// the rows that trip non-Ryu/Grisu formatters: `min()` and
+// `denorm_min()` need to emit a denormal-friendly scientific form;
+// `max()` needs the full 17 significant digits.  Each MUST round-
+// trip exactly under `std::to_chars(general)`.
+
+TEST_F(ConvertFormatTest, DoubleMinNormalRoundTrips) {
+  // 2.2250738585072014e-308 (the smallest positive normal double).
+  const double v = std::numeric_limits<double>::min();
+  uint32_t out = MakeOut();
+  cel_double_to_string_at_v(out, cel_make_double(v));
+  const std::string s = StringAt(out);
+  EXPECT_EQ(std::stod(s), v) << s;
+  // Shape: scientific (magnitude < 1e-4 forces scientific in
+  // chars_format::general).
+  EXPECT_TRUE(s.find('e') != std::string::npos) << s;
+}
+
+TEST_F(ConvertFormatTest, DoubleMaxRoundTrips) {
+  // 1.7976931348623157e+308 (the largest finite double).
+  const double v = std::numeric_limits<double>::max();
+  uint32_t out = MakeOut();
+  cel_double_to_string_at_v(out, cel_make_double(v));
+  const std::string s = StringAt(out);
+  EXPECT_EQ(std::stod(s), v) << s;
+  EXPECT_TRUE(s.find('e') != std::string::npos) << s;
+}
+
+TEST_F(ConvertFormatTest, DoubleDenormMinRoundTrips) {
+  // 5e-324 (smallest positive subnormal).  A hand-rolled per-digit
+  // formatter loses every digit here; `std::to_chars` preserves it.
+  // We use `strtod` (not `std::stod`) because libc++'s `std::stod`
+  // throws `out_of_range` on subnormals even though `strtod` itself
+  // returns the correct value with `errno = ERANGE` — and round-trip
+  // safety is what we're asserting.
+  const double v = std::numeric_limits<double>::denorm_min();
+  uint32_t out = MakeOut();
+  cel_double_to_string_at_v(out, cel_make_double(v));
+  const std::string s = StringAt(out);
+  char* end = nullptr;
+  const double parsed = std::strtod(s.c_str(), &end);
+  EXPECT_EQ(parsed, v) << s;
+  EXPECT_EQ(*end, '\0') << s;
 }
 
 TEST_F(ConvertFormatTest, FormatKindMismatch) {

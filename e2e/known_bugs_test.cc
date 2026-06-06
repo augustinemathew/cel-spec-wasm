@@ -486,27 +486,33 @@ TEST(KnownBugs, MaxRangeTimestampConstruction) {
   EXPECT_EQ(*v->AsString(), "9999-12-31T23:59:59.999999999Z");
 }
 
+// INVARIANT — `string(double)` MUST round-trip to the exact double via
+// the shortest decimal representation.  E2E regression pin for the
+// `conversions/string/double` corpus row
+// (`spec/tests/simple/testdata/conversions.textproto:264-266`).  Fix
+// landed 2026-06-06 by routing the kernel through `std::to_chars(buf,
+// end, v, chars_format::general)` in `cel_convert_double_format.cc`,
+// mirroring cel-cpp's `FormatDouble`
+// (`runtime/standard/type_conversion_functions.cc:56`).  A future
+// change that swaps to a non-shortest formatter (`%.17g`, hand-rolled
+// per-digit `frac*10`, …) will break this assertion by producing
+// `"123.45600000000000306"` again — same failure mode as cleanup-
+// backlog #38.
 TEST(KnownBugs, DoubleToStringShortestRoundTrip) {
-  GTEST_SKIP() << "KNOWN BUG (verified: '123.45600000000000306', want "
-                  "'123.456'): double->string is not shortest-round-trip, "
-                  "cel_convert.c:579-724. Delete to fix.";
-  // conversions.textproto: string(123.456) == "123.456". cel2's iterative
-  // frac*10 formatter (cel_convert.c:579-724) is not shortest-round-trip
-  // and emits trailing garbage ("123.45600000000000306").
   auto v = TryEval("string(123.456)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsString(), "123.456");
 }
 
+// INVARIANT — `string(1e10)` MUST emit the scientific form `"1e+10"`,
+// not the fixed form `"10000000000"`.  `std::to_chars(general)` picks
+// fixed vs. scientific by minimising output length; for `1e10` the
+// scientific form (5 chars) wins over fixed (11 chars).  cel-cpp's
+// `FormatDouble` produces the same.  A future formatter swap that
+// reintroduces a hard-coded magnitude threshold (the old C path used
+// `< 1e18` for fixed) will break this case.
 TEST(KnownBugs, DoubleToStringExponentForm) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: '10000000000', want '1e+10'): double->string "
-         "exponent threshold differs from std::to_chars(general), "
-         "cel_convert.c:665-699. Delete to fix.";
-  // cel-cpp uses std::to_chars(general): string(1e10) == "1e+10".
-  // cel2 emits "10000000000" (wrong exponent threshold,
-  // cel_convert.c:665-699).
   auto v = TryEval("string(1e10)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
