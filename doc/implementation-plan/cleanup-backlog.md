@@ -21,6 +21,79 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
+      malformed-`wasmtime_component_val_t` NULL guards (closes
+      out gap left when #37 shipped).  Today's coverage:
+      `eval/internal/cel_component_test.cc` exercises
+      `LowerString` / `LowerList` / `LowerBytes` /
+      `DecodeSecondsNanosRecord` directly with hand-built
+      `{size > 0, data == nullptr}` vals.  Missing: an e2e that
+      drives the malformed val THROUGH the public
+      `Engine::AddComponent` → `Eval` path.  No clean public-API
+      shape produces it — the wasmtime canonical-ABI always
+      allocates `data` when `size > 0`, so a real component
+      cannot return the malformed shape; the NULL guards are
+      defense-in-depth against a buggy / future wasmtime build
+      or a vendored-patch-introduced regression.  Two viable
+      shapes for the future test: (a) a friend-class shim that
+      injects a malformed val into the cached return-val slot
+      between `wasmtime_component_func_call` and `LowerComponentToCel`
+      in `eval/engine.cc`'s component dispatch trampoline; (b) a
+      vendored-wasmtime test build that opts a debug knob to
+      produce the malformed shape on a designated test export.
+      Surfaced: 2026-06-06 coverage-gap closeout for commit
+      598c7f2b.
+      Files (probable): `eval/internal/cel_component.cc`
+      (LowerString/LowerList/LowerBytes/DecodeSecondsNanosRecord),
+      `eval/engine.cc` (component dispatch trampoline that owns
+      the val between `wasmtime_component_func_call` and `Lower…`),
+      `e2e/foreign_component_dispatch_test.cc` (probable home for
+      the new e2e).
+      Why P2: the unit-level coverage in `cel_component_test.cc`
+      already pins the guard correctness; the e2e gap is
+      hardening against an attack-surface shift (buggy wasmtime
+      ↔ host trust boundary).  No known production input reaches
+      the malformed shape today.
+
+- [ ] **#42** — trampoline-level e2e for `WasmtimeMemoryView`
+      bounds check (closes out gap left when #36 shipped).
+      Today's coverage: `eval/internal/wasmtime_memory_view_e2e_test.cc`
+      runs `ReadSpan` / `ReadCelValue` / `WriteCelValue` / `WriteU32`
+      directly against a real `wasmtime_sharedmemory_t` (6 cases),
+      plus the fake-primitive matrix in
+      `eval/internal/memory_view_bounds_test.cc`.  Missing: a test
+      that exercises the bounds check through the FULL host-fn
+      trampoline path — a wasm module imports a `@host` function,
+      that function receives a CelValue arg whose
+      `payload.s.ptr = 0xFFFFFFFF`, and the trampoline returns
+      cleanly (the host-side string is empty, the kernel sees
+      `kError` or a clean propagation) instead of crashing or
+      reading host memory.  The shape needs a hand-authored
+      `.wat` module that stages a corrupted CelValue slot in
+      linear memory, then calls a host-imported fn with that
+      slot — naturally-compiled wasm won't emit a bad ptr, so the
+      `Compiler::Compile()` → `Engine::AddTypedFunction()` →
+      `Engine::Plan()` → `Instance::Eval()` test surface used by
+      `e2e/host_fn_test.cc` can't reach the attack surface.
+      Plausible shape: a sibling to
+      `runtime/cel_runtime_wasm_test.cc`'s direct-wasmtime
+      harness that loads a small hand-authored `.wat`
+      registering a host fn whose trampoline body asserts
+      `ReadSpan` returned empty.  Estimate >2 hours per the
+      coverage-gap close instructions.
+      Surfaced: 2026-06-06 coverage-gap closeout for commit
+      598c7f2b.
+      Files (probable): a new `e2e/` test (or extension of
+      `eval/internal/wasmtime_memory_view_e2e_test.cc` with a
+      hand-authored .wat fixture), and the host-fn trampoline
+      glue in `eval/engine.cc` / `eval/internal/cel_host_wasmtime.cc`.
+      Why P2: the unit-level + raw-shared-memory tests already
+      pin the bounds-check correctness against the production
+      `WasmtimeMemoryView`; the trampoline-level test is
+      defense-in-depth proving the same view is used (not a
+      bypass) by the trampoline code path.  No known production
+      input produces the attack ptr today.
+
 - [ ] **#41** — `optional.ofNonZeroValue(message)` overload causes
       a wasm trap.  Conformance row
       `optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`:
