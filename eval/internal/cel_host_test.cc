@@ -17,6 +17,8 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "cel/expr/conformance/proto2/test_all_types.pb.h"
+#include "cel/expr/conformance/proto2/test_all_types_extensions.pb.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
 #include "eval/value.h"
@@ -184,6 +186,56 @@ TEST(ProtoBackingReadFieldTest, FieldNumberZeroUnknownNameIsFieldNotFound) {
   HostMsg3 m;
   ProtoBacking pb(&m);
   auto v = pb.ReadField(0, "nope", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  auto err = v->ErrorInfo();
+  ASSERT_THAT(err, IsOk());
+  EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
+}
+
+// Regression for the proto2-extension look-up gap closed in the
+// 2026-06-05 conformance burndown: extension fields are addressed
+// by their fully-qualified name (e.g.
+// `cel.expr.conformance.proto2.int32_ext`) and aren't direct
+// fields of the containing message — `FindFieldByName` /
+// `FindFieldByNumber` won't find them.  Mirrors cel-cpp's
+// `proto_message_type_adapter.cc::HasFieldImpl` /
+// `GetFieldImpl` (lines 122-188): when by-name misses, fall
+// through to `Reflection::FindKnownExtensionByName`.  Pins
+// conformance rows `proto2/extensions_get/package_scoped_int32`
+// and the parallel `extensions_has` row.
+TEST(ProtoBackingExtensionTest, ReadKnownExtensionByFullName) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  m.SetExtension(::cel::expr::conformance::proto2::int32_ext, 42);
+  ProtoBacking pb(&m);
+  auto v = pb.ReadField(/*field_number=*/0,
+                        "cel.expr.conformance.proto2.int32_ext", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  auto as_int = v->AsInt();
+  ASSERT_THAT(as_int, IsOk());
+  EXPECT_EQ(*as_int, 42);
+}
+
+TEST(ProtoBackingExtensionTest, HasKnownExtensionByFullNameTrueWhenSet) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  m.SetExtension(::cel::expr::conformance::proto2::int32_ext, 42);
+  ProtoBacking pb(&m);
+  EXPECT_TRUE(
+      pb.HasField(/*field_number=*/0, "cel.expr.conformance.proto2.int32_ext"));
+}
+
+TEST(ProtoBackingExtensionTest, HasKnownExtensionByFullNameFalseWhenUnset) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  ProtoBacking pb(&m);
+  EXPECT_FALSE(
+      pb.HasField(/*field_number=*/0, "cel.expr.conformance.proto2.int32_ext"));
+}
+
+TEST(ProtoBackingExtensionTest, UnknownExtensionByFullNameIsFieldNotFound) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  ProtoBacking pb(&m);
+  auto v =
+      pb.ReadField(/*field_number=*/0,
+                   "cel.expr.conformance.proto2.no_such_ext", IgnoredType());
   ASSERT_THAT(v, IsOk());
   auto err = v->ErrorInfo();
   ASSERT_THAT(err, IsOk());

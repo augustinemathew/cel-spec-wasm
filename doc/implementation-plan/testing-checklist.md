@@ -2697,6 +2697,18 @@ because the contract is pinned today by the wasmtime component
 runtime (language-agnostic by construction) and the dispatch path
 is proven byte-exact against `INT64_MIN` and MiB-scale payloads.
 
+### Conformance burndown — Round 3 (2026-06-05)
+
+  - [x] **proto2 extension field look-up** at
+        `eval/internal/cel_host.cc::ResolveFieldDescriptor` +
+        `eval/internal/cel_host_test.cc::ProtoBackingExtensionTest`
+        (4 cases: read by full name, has-true, has-false,
+        unknown-ext-name).  Closes 16 of 18 rows in
+        `proto2/extensions_has` + `proto2/extensions_get` (the two
+        remaining `*_repeated_test_all_types` `extensions_get`
+        rows are a separate list-equality surface — tracked under
+        cleanup-backlog #40 follow-up note).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

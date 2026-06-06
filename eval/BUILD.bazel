@@ -438,6 +438,9 @@ cc_test(
         "//testdata:e2e_fixture_cc_proto",
         "//testdata:host_fixture_proto2_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
+        # proto2 extension fixture for the
+        # `ProtoBackingExtensionTest` regression cases.
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",

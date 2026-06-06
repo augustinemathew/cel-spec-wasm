@@ -41,29 +41,35 @@ struck through or removed.
       Why P2: 1 corpus row; needs a focused expr_lower + runtime
       slice to add the message arm.
 
-- [ ] **#40** — proto2 extension field support — both checker-side
-      (resolve `msg.`fully.qualified.ext_name`` to an extension
-      reference) and runtime-side (look up the extension descriptor
-      and call `Reflection::HasExtension` / `Reflection::GetMessage`
-      etc).  Conformance rows blocked: 18 — all of
-      `proto2/extensions_has/*` (9) and `proto2/extensions_get/*` (9).
-      The whole `proto2_ext.textproto` file (18 rows) is also blocked
-      on the same surface but currently SKIPs as `ext_unimpl` because
-      its expressions use the `proto.hasExt(msg, ext)` /
-      `proto.getExt(msg, ext)` accessor syntax which we don't
-      register; bringing up the operator-form (`msg.`fqn``) first
-      would close the `extensions_*` rows under proto2.textproto and
-      the function-form rows would follow.
+- [ ] **#40** — proto2 extension field support — PARTIAL FIX
+      2026-06-05.  The operator-form (`msg.`fqn``) extension
+      reads + has now work for scalar / message / enum / repeated
+      extensions via `Reflection::FindKnownExtensionByName`
+      fallback in `ResolveFieldDescriptor`.  Closes 16 of 18
+      rows under `proto2/extensions_has/*` + `proto2/extensions_get/*`.
+      Remaining 2 fails (`extensions_get/package_scoped_repeated_test_all_types`
+      + `extensions_get/message_scoped_repeated_test_all_types`)
+      compare an extension repeated-message list (HostList from
+      ProtoList) for equality with a literal-constructed list
+      `[Msg{...}, Msg{...}]` and return `false` — a list-equality
+      surface separate from the descriptor look-up.  The
+      `proto2_ext.textproto` file (18 rows) still SKIPs as
+      `ext_unimpl` because its expressions use the
+      `proto.hasExt(msg, ext)` / `proto.getExt(msg, ext)`
+      function form, which we don't register.
       Surfaced: 2026-06-05 conformance burndown Group C.
-      Files (probable): `compiler/frontend/parse_and_check.cc`
-      (extension descriptor registration with the checker pool),
-      `eval/internal/cel_host.cc::ReadSingularMessageField` +
-      `HasField` (extension look-up via
-      `Reflection::FindKnownExtensionByName` and
-      `HasExtension(msg, ext_desc)`).
-      Why P2: spec compliance gap, but requires a sustained
-      slice with descriptor-pool plumbing and reflection-side
-      extension code; out of scope for a burndown session.
+      Files touched (partial fix):
+      `eval/internal/cel_host.cc::ResolveFieldDescriptor` +
+      `eval/internal/cel_host_test.cc` (4 new
+      `ProtoBackingExtensionTest` cases).
+      Remaining files: a list-equality surface between
+      HostList-from-extension and arena/constructed lists of
+      messages (see `CelListEqImpl` if/when it exists, parallel
+      to the documented `CelMapEqImpl` materialisation strategy);
+      plus the proto.hasExt / proto.getExt function-form registration.
+      Why P2: spec compliance gap, but the remaining 2 rows need a
+      list-eq materialisation pass shared with the mixed-origin
+      map-eq gap.
 
 - [ ] **#39** — strong-typed enum support
       (cel-spec issues/119, "Future features for CEL 1.0").

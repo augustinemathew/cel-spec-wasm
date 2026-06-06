@@ -562,8 +562,30 @@ const google::protobuf::FieldDescriptor* absl_nullable ResolveFieldDescriptor(
     absl::string_view field_name) {
   const google::protobuf::Descriptor* d = msg.GetDescriptor();
   if (d == nullptr) return nullptr;
-  if (field_number != 0) return d->FindFieldByNumber(field_number);
-  return d->FindFieldByName(std::string(field_name));
+  if (field_number != 0) {
+    const google::protobuf::FieldDescriptor* f =
+        d->FindFieldByNumber(field_number);
+    if (f != nullptr) return f;
+    // proto2 extension fields aren't direct fields of the containing
+    // message — `FindFieldByNumber` won't find them, so fall through
+    // to the by-name extension lookup below.
+  }
+  const std::string name_str(field_name);
+  if (const google::protobuf::FieldDescriptor* f = d->FindFieldByName(name_str);
+      f != nullptr) {
+    return f;
+  }
+  // Extension fields are addressed by their fully-qualified name
+  // (e.g. `cel.expr.conformance.proto2.int32_ext`) in CEL.  Mirrors
+  // cel-cpp's `proto_message_type_adapter.cc::GetFieldImpl` (lines
+  // 176-180): when the by-name lookup misses, try reflection's
+  // known-extension table.  Requires the extension descriptor to be
+  // linked in (the conformance harness pulls in
+  // `test_all_types_extensions.pb.h` for the side-effect of
+  // registering it on the generated pool).
+  const google::protobuf::Reflection* refl = msg.GetReflection();
+  if (refl == nullptr) return nullptr;
+  return refl->FindKnownExtensionByName(name_str);
 }
 
 }  // namespace
