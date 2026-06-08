@@ -87,6 +87,19 @@ struct CompileOptions {
   // Cross-library overload-id uniqueness is the public Compiler
   // API's responsibility; this layer trusts the upstream filter.
   std::vector<FunctionLibrary> function_libraries;
+
+  // m28 configurable linking — chooses whether the emitted Program
+  // imports the runtime helpers from the `"cel"` module (kDynamic;
+  // today's behaviour) or statically links a wrapper-stripped runtime
+  // into the Program wasm (kStatic).  Mirrors `Compiler::CompilerOptions::
+  // LinkMode` one-to-one; see that struct's docblock for the embedder-
+  // facing tradeoffs.  See `doc/implementation-plan/rewrite/
+  // m28-configurable-linking.md` for the design.
+  enum class LinkMode : std::uint8_t {
+    kDynamic = 0,
+    kStatic = 1,
+  };
+  LinkMode link_mode = LinkMode::kDynamic;
 };
 
 // One bundled CEL-defined-fn library wasm module — produced by

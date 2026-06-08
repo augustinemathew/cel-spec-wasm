@@ -177,6 +177,10 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
   inner.mem_size_bytes = opts.mem_size_bytes;
   inner.check.container = opts.container;
   inner.optimize_level = opts.optimize_level;
+  // m28 plumbing.  Public `LinkMode` value forwards 1:1 to the internal
+  // enum (same underlying type, same values).
+  inner.link_mode = static_cast<celwasm::CompileOptions::LinkMode>(
+      static_cast<std::uint8_t>(opts.link_mode));
   inner.check.variable_specs.reserve(declared_variables_.size());
   for (const auto& decl : declared_variables_) {
     inner.check.variable_specs.push_back(

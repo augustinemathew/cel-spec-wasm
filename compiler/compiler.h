@@ -105,6 +105,43 @@ struct CompilerOptions {
   // Use 0 for hot-reload paths where Compile latency dominates.
   // Levels outside [0, 3] are rejected with `InvalidArgument`.
   int optimize_level = 0;
+
+  // How the runtime helpers (`cel_int_add_at_vv`, slot accessors,
+  // arena ops, …) are linked into the emitted `Program.wasm`.
+  //
+  //   kDynamic — default; the Program.wasm imports each helper from
+  //              the `"cel"` module.  Engine::Plan instantiates
+  //              cel_runtime.wasm as a separate wasm instance in the
+  //              same store and binds its exports on the linker so the
+  //              import resolution succeeds.  Program.wasm is small
+  //              (a few KB — just the codegen'd `$eval`); many cached
+  //              Programs share one runtime instance.  Embedder use
+  //              case: lots of distinct one-shot expressions, memory-
+  //              constrained host.
+  //
+  //   kStatic  — the runtime helpers are STATICALLY LINKED into the
+  //              Program.wasm at Compile() time.  The Program is
+  //              self-contained (~800 KB — runtime body + the
+  //              codegen'd `$eval`).  Engine::Plan instantiates the
+  //              Program directly; no separate runtime instance, no
+  //              import resolution against `"cel"`.  The wasi-libc
+  //              command-mode wrapper chain (~78 ns/op of fixed
+  //              overhead in the dynamic path) is gone because the
+  //              embedded runtime variant has had its wrappers
+  //              stripped at our build time.  Production-bench numbers
+  //              (cf. `wasm_compilation_experiments/wrapper_overhead/
+  //              FINDINGS.md` §11.4): intAdd1000Terms 78 µs → 1 µs
+  //              (~80× faster than dynamic, ~30× faster than cel-cpp).
+  //              Embedder use case: hot eval loop, latency-critical
+  //              path, expression compiled once and evaluated millions
+  //              of times.
+  //
+  // Per `doc/implementation-plan/rewrite/m28-configurable-linking.md`.
+  enum class LinkMode : std::uint8_t {
+    kDynamic = 0,
+    kStatic = 1,
+  };
+  LinkMode link_mode = LinkMode::kDynamic;
 };
 
 class Compiler {

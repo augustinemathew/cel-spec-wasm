@@ -438,6 +438,17 @@ absl::StatusOr<OverloadTable> BuildOverloadTable(
 
 absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
                                          const CompileOptions& opts) {
+  // m28 — Static linking lands across two commits: this one (field
+  // plumbing + Unimplemented stub) and the next (in-Compile merge step
+  // using `cel_runtime_stripped_wasm_bytes`).  Until then, `kStatic`
+  // surfaces as a clear UnimplementedError rather than silently
+  // miscompiling to dynamic shape.
+  if (opts.link_mode == CompileOptions::LinkMode::kStatic) {
+    return absl::UnimplementedError(
+        "Compile() with link_mode=kStatic is not yet wired — m28 "
+        "follow-up commit lands the in-Compile merge against "
+        "cel_runtime_stripped_wasm_bytes");
+  }
   auto out_or = RunFrontAndLayout(expression, opts);
   if (!out_or.ok()) return out_or.status();
   CompiledArtifact out = *std::move(out_or);

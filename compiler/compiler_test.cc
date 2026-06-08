@@ -60,6 +60,44 @@ TEST(CompilerCompileTest, CompileBadSourceReturnsInvalidArgument) {
   EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+// m28 — link_mode field on CompilerOptions.
+//
+// Phase 1 wires the field through to the internal pipeline; the static-
+// link merge step is unwired until the next commit, so kStatic returns
+// Unimplemented (not a silent miscompile to dynamic shape).
+
+TEST(CompilerLinkModeTest, DefaultIsDynamic) {
+  EXPECT_EQ(CompilerOptions{}.link_mode,
+            CompilerOptions::LinkMode::kDynamic);
+}
+
+TEST(CompilerLinkModeTest, ExplicitDynamicMatchesDefault) {
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  Compiler compiler = *std::move(compiler_or);
+
+  CompilerOptions opts;
+  opts.link_mode = CompilerOptions::LinkMode::kDynamic;
+  auto prog_or = compiler.Compile("42", opts);
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+  // Today's dynamic-shape Program still imports from "cel" — the wasm
+  // bytes carry the import section against which Engine will link.
+  auto default_or = compiler.Compile("42");
+  ASSERT_TRUE(default_or.ok()) << default_or.status();
+  EXPECT_EQ(prog_or->wasm_bytes().size(), default_or->wasm_bytes().size());
+}
+
+TEST(CompilerLinkModeTest, StaticReturnsUnimplementedUntilFollowupCommit) {
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  Compiler compiler = *std::move(compiler_or);
+
+  CompilerOptions opts;
+  opts.link_mode = CompilerOptions::LinkMode::kStatic;
+  auto prog_or = compiler.Compile("42", opts);
+  EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kUnimplemented);
+}
+
 TEST(CompilerCompileTest, OneCompilerProducesManyPrograms) {
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
