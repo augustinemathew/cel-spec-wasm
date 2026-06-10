@@ -6,6 +6,31 @@ implementations (cel-cpp tree-walker).  Adoption depends on
 these numbers — without them, "we're faster than interpretation" is
 unverifiable.
 
+## Running it
+
+```bash
+# Full three-way comparison (celwasm dynamic + static, cel-cpp) with
+# the joined report.  ALWAYS -c opt — debug numbers are ~10x off.
+benchmark/eval/run.sh             # full run (min_time=0.5s per cell)
+benchmark/eval/run.sh smoke       # faster turnaround (min_time=0.1s)
+
+# Or drive a binary directly:
+bazel build -c opt //benchmark/eval:celwasm_bench //benchmark/eval:celcpp_bench
+bazel-bin/benchmark/eval/celwasm_bench \
+    --link_mode=static \               # or dynamic (default)
+    --benchmark_filter='BM_arith_intAdd' \
+    --benchmark_min_time=1s
+bazel-bin/benchmark/eval/celcpp_bench --benchmark_filter='BM_arith_intAdd'
+
+# Profiling: CELWASM_BENCH_PERFMAP=1 makes wasmtime write a
+# /tmp/perf-<pid>.map so samply / perf can symbolicate the JIT.
+```
+
+Cells are paired by benchmark name across binaries — the same YAML
+corpus drives both, so any filter gives an apples-to-apples slice.
+The most recent full-corpus results live in
+`doc/implementation-plan/rewrite/m28-bench-results.md`.
+
 This is **NOT** the existing `bench/` directory.  That tree holds
 ad-hoc microbenches that grew organically (kernel µbenches, pipeline
 shape probes, the `in`-operator headline numbers).  It stays.

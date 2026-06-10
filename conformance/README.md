@@ -6,6 +6,29 @@ pipeline (`celwasm::Compiler::Compile` → `celwasm::Engine::Plan` →
 `celwasm::Instance::Eval`) and compares the decoded `celwasm::Value`
 against each test's `cel.expr.Value` matcher.
 
+## Running it
+
+```bash
+# Full corpus, dynamic link mode (the default):
+bazel run //conformance:run_conformance
+
+# Static link mode (m28 merged-runtime Programs; ~25 min — every row
+# pays the in-Compile Binaryen merge):
+bazel run //conformance:run_conformance -- --link_mode=static
+
+# Show every failure / skip in detail:
+bazel run //conformance:run_conformance -- \
+    --max_fail_examples=100000 --max_skip_examples=100000
+
+# The pre-push gate — runs BOTH modes and enforces the monotonic
+# pass-count baselines (conformance/.baseline, .baseline_static):
+scripts/check_conformance_monotonic.sh
+scripts/check_conformance_monotonic.sh --update   # bump baselines after a verified gain
+```
+
+Run from a warm fastbuild tree (see CLAUDE.md "Dev-loop performance");
+pass counts are identical between fastbuild and -c opt.
+
 <!-- BEGIN AUTOGEN headline -->
 ```
 total=2454  pass=1899 (77.4%)  skip=463 (18.9%)  fail=92 (3.7%)
