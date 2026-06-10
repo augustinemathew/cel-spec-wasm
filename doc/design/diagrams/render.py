@@ -182,7 +182,7 @@ def memory_map():
     region(0.52, 2.5, INDIGO, '.rodata',
            'const CelValue headers\n+ string/bytes payloads')
     region(3.02, 2.9, VIOLET, 'workspace slots',
-           '24-byte CelValue cells — vars + scratch')
+           '32-byte slot cells (24 B CelValue + pad)\nLIFO free-list reuse')
     region(5.92, 3.1, '#94A3B8', 'wasi-libc statics\n+ 64 KiB shadow stack',
            'cel_runtime.wasm internals\noff-limits to codegen', fs=8)
     region(9.02, 6.6, '#FDE68A', '', '', tc='#451A03')
@@ -190,7 +190,7 @@ def memory_map():
             weight='bold', color='#451A03')
     for (x, w, fc, l1, l2) in [
             (9.25, 1.9, RED, 'per-Eval bump arena',
-             '64 KiB, malloc once/Instance\narena_reset between Evals'),
+             'chained chunks, grows on demand\n(first 64 KiB; reset frees extras)'),
             (11.35, 1.9, SKY, 'activation buffer',
              'per-Instance, realloc-grown\nbound string/bytes payloads'),
             (13.45, 1.9, TEAL, 'Plan-lifetime objects',

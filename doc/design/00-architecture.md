@@ -210,7 +210,7 @@ Compile-time consequences of the fork that embedders see:
 ![Trust boundaries](diagrams/trust-boundary.svg)
 
 Four contracts connect the roles. Each gets one paragraph here; the
-byte-level telling is `03-abi-and-memory.md` (in preparation).
+byte-level telling is `03-abi-and-memory.md`.
 
 **Program bytes.** A complete wasm module exporting `eval` (export
 name configurable at compile time). Validation is deferred: the
@@ -318,12 +318,12 @@ The design-doc set under `doc/design/` (reader path: 00 → 01/02 →
 | Doc | Subject | Status |
 |---|---|---|
 | `00-architecture.md` | This doc — roles, lifecycle, link modes, contracts, threading. | current |
-| `01-compiler.md` | The pass pipeline: parse/check → resolve → layout → lower → finalize, each pass as a contract. | in preparation |
+| `01-compiler.md` | The pass pipeline: parse/check → resolve → layout → lower → finalize, each pass as a contract. | current |
 | `02-evaluator.md` | Plan/instantiate/eval lifecycle; registration surfaces; host-call dispatch; marshal and decode. | current |
-| `03-abi-and-memory.md` | The wire contracts: CelValue layout, the memory map, `cel.abi`, the error/unknown contract. | in preparation |
+| `03-abi-and-memory.md` | The wire contracts: CelValue layout, the memory map, `cel.abi`, the error/unknown contract. | current |
 | `04-runtime.md` | The runtime kernel: build topology, kernel conventions, aggregates, arena. | current |
-| `05-custom-functions.md` | The `.celfn` subsystem across compiler/eval/tools; the `@native` fork decision. | in preparation |
-| `06-testing-strategy.md` | The layer pyramid, gates, disciplines, coverage ledger. | in preparation |
+| `05-custom-functions.md` | The `.celfn` subsystem across compiler/eval/tools; the `@native` fork decision. | current |
+| `06-testing-strategy.md` | The layer pyramid, gates, disciplines, coverage ledger. | current |
 | `07-benchmarking.md` | Measurement boundaries, production-config rules, the comparative harness. | current |
 
 Repo layout, organised by lifecycle role (the cel-cpp convention):
