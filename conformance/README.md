@@ -31,7 +31,7 @@ pass counts are identical between fastbuild and -c opt.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1899 (77.4%)  skip=463 (18.9%)  fail=92 (3.7%)
+total=2454  pass=1966 (80.1%)  skip=481 (19.6%)  fail=7 (0.3%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -125,33 +125,33 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 <!-- BEGIN AUTOGEN per-fixture -->
 | Fixture | Total | Pass | Skip | Fail | Pass% | Skip categories |
 |---|---:|---:|---:|---:|---:|---|
+| `bindings_ext.textproto`     |   8 |   8 |   0 |   0 | 100% | — |
 | `encoders_ext.textproto`     |   4 |   4 |   0 |   0 | 100% | — |
 | `network_ext.textproto`      |  69 |  69 |   0 |   0 | 100% | — |
-| `timestamps.textproto`       |  76 |  75 |   0 |   1 | 98% | — |
+| `string.textproto`           |  51 |  51 |   0 |   0 | 100% | — |
+| `timestamps.textproto`       |  76 |  76 |   0 |   0 | 100% | — |
+| `conversions.textproto`      | 109 | 107 |   2 |   0 | 98% | disable_check=1 static_subset=1 |
 | `math_ext.textproto`         | 199 | 194 |   5 |   0 | 97% | static_subset=5 |
 | `fp_math.textproto`          |  30 |  29 |   1 |   0 | 96% | disable_check=1 |
-| `string.textproto`           |  51 |  49 |   0 |   2 | 96% | — |
 | `integer_math.textproto`     |  64 |  61 |   3 |   0 | 95% | disable_check=3 |
-| `conversions.textproto`      | 109 | 103 |   2 |   4 | 94% | disable_check=1 static_subset=1 |
-| `bindings_ext.textproto`     |   8 |   7 |   0 |   1 | 87% | — |
+| `lists.textproto`            |  39 |  36 |   3 |   0 | 92% | static_subset=3 |
+| `parse.textproto`            | 219 | 201 |  18 |   0 | 91% | disable_check=17 type_env=1 |
 | `comparisons.textproto`      | 406 | 354 |  52 |   0 | 87% | disable_check=21 static_subset=28 type_env=3 |
-| `lists.textproto`            |  39 |  34 |   3 |   2 | 87% | static_subset=3 |
 | `basic.textproto`            |  43 |  37 |   6 |   0 | 86% | disable_check=4 static_subset=2 |
 | `macros.textproto`           |  44 |  38 |   6 |   0 | 86% | static_subset=6 |
 | `macros2.textproto`          |  46 |  39 |   7 |   0 | 84% | static_subset=7 |
-| `parse.textproto`            | 219 | 182 |  18 |  19 | 83% | disable_check=17 type_env=1 |
+| `proto3.textproto`           |  85 |  70 |  13 |   2 | 82% | disable_check=6 static_subset=7 |
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
-| `proto3.textproto`           |  85 |  68 |  13 |   4 | 80% | disable_check=6 static_subset=7 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
-| `enums.textproto`            |  85 |  65 |   2 |  18 | 76% | disable_check=2 |
+| `enums.textproto`            |  85 |  65 |  20 |   0 | 76% | disable_check=2 spec_unimpl=18 |
+| `proto2.textproto`           | 118 |  89 |  25 |   4 | 75% | disable_check=6 static_subset=19 |
+| `namespace.textproto`        |  14 |  10 |   4 |   0 | 71% | disable_check=4 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
-| `proto2.textproto`           | 118 |  73 |  25 |  20 | 61% | disable_check=6 static_subset=19 |
-| `dynamic.textproto`          | 226 | 129 |  92 |   5 | 57% | disable_check=20 static_subset=72 |
+| `dynamic.textproto`          | 226 | 134 |  92 |   0 | 59% | disable_check=20 static_subset=72 |
+| `fields.textproto`           |  60 |  32 |  28 |   0 | 53% | disable_check=5 static_subset=15 type_env=8 |
 | `wrappers.textproto`         |  36 |  18 |  18 |   0 | 50% | static_subset=18 |
-| `fields.textproto`           |  60 |  26 |  28 |   6 | 43% | disable_check=5 static_subset=15 type_env=8 |
-| `namespace.textproto`        |  14 |   6 |   4 |   4 | 42% | disable_check=4 |
-| `type_deduction.textproto`   |  47 |  20 |  25 |   2 | 42% | check_only=25 |
-| `optionals.textproto`        |  70 |  22 |  44 |   4 | 31% | static_subset=44 |
+| `type_deduction.textproto`   |  47 |  22 |  25 |   0 | 46% | check_only=25 |
+| `optionals.textproto`        |  70 |  25 |  44 |   1 | 35% | static_subset=44 |
 | `block_ext.textproto`        |  37 |   0 |  37 |   0 |  0% | ext_unimpl=37 |
 | `proto2_ext.textproto`       |  18 |   0 |  18 |   0 |  0% | ext_unimpl=18 |
 | `unknowns.textproto`         |   0 |   0 |   0 |   0 |  —  | (empty fixture) |
@@ -167,8 +167,9 @@ is hand-maintained):
 | `disable_check`  | 144 | Out-of-scope by design (parse-only eval). |
 | `ext_unimpl`     |  55 | Scope-not-shipped — extensions pass (the largest single bucket; covers all of `math_ext` / `string_ext` / `optionals` / `network_ext` / `block_ext` / `encoders_ext` plus a handful of ext-shaped rows scattered through proto2/proto3/wrappers). |
 | `check_only`     |  25 | Scope-not-shipped — `typed_result` `check_only:true` rows in `type_deduction.textproto`. |
+| `spec_unimpl`    |  18 | _New category — fill in disposition prose._ |
 | `type_env`       |  12 | Scope-not-shipped — `binding_marshal` doesn't yet decode aggregate `type_env` decls. |
-| **Total**          | **463** | |
+| **Total**          | **481** | |
 <!-- END AUTOGEN skip-totals -->
 
 > Note: only the `Count` column of the SKIP-totals table is
@@ -176,11 +177,11 @@ is hand-maintained):
 > hand-maintained and preserved across regenerations.
 
 <!-- BEGIN AUTOGEN addressable-prose -->
-Of the 463 SKIPs: ~371 are out-of-scope by design
-(`disable_check` + `static_subset`); the rest (92) are
+Of the 481 SKIPs: ~371 are out-of-scope by design
+(`disable_check` + `static_subset`); the rest (110) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2454 - 371 = 2083) is **91%**.
+(2454 - 371 = 2083) is **94%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets

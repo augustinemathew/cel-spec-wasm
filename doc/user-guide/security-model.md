@@ -96,10 +96,14 @@ tracked backlog entry; none is silent.
   string concatenation or large aggregate construction inside a single
   Eval hits it. `CompilerOptions::mem_size_bytes` raises the linear
   memory, but the arena cap is separate and not yet configurable.
-- **No fuzzing yet.** Neither the compiler frontend nor the runtime
-  kernel nor the ABI decoder has a fuzz target (README "Production
-  readiness"). The conformance corpus (1899 passing rows) is broad but
-  it is not adversarial input.
+- **Fuzzing is early.** The m27 property-based-testing machinery
+  (FuzzTest) has landed — the compiler pipeline and grammar have
+  property/generator suites that run randomised iterations under
+  `bazel test` and turn into coverage-guided fuzzers under
+  `--config=fuzztest`. Coverage is not yet comprehensive (the ABI
+  decoder and runtime kernel have no dedicated targets), and the
+  conformance corpus (1966 passing rows) is broad but not adversarial
+  input — so treat fuzz coverage as in-progress, not a guarantee.
 - **Incidental guardrail, not a defense:** the vendored parser caps
   source at 100,000 codepoints
   (`KnownBugs.ParserSourceCodepointLimitNotConfigurable`, backlog
