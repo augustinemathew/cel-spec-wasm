@@ -1,6 +1,6 @@
 # Examples
 
-Seven small programs, in reading order. Each one is a complete,
+Nine small programs, in reading order. Each one is a complete,
 buildable embed you can copy as a starting point — and each is run by
 `:examples_smoke_test` on every test sweep, so what you read here is
 what actually executes.

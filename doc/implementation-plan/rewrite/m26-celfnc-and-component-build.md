@@ -1,6 +1,15 @@
 # M26 — `celfnc` + cel_wasm_component: hermetic component build from a single `.idl`
 
-Status: plan — drafted 2026-06-04, not yet started.
+Status: **shipped 2026-06-04** (same-day arc, 10 commits f03ff991..486fa48f).
+What landed: the `cel generate` CLI (WIT + codec.h + stub/skeleton
+emitters, raw-string templates, per-build compile-check gate), the
+hermetic `cel_wasm_component` bazel macro (`bazel/cel_wasm_component.bzl`)
+building a Component-Model component from one `.idl`, the
+wasi-preview2 linker + two-level export lookup + e2e gate, the
+foreign_component_bench rewire to the macro-built demo (stub_demo
+retired), and the IDL simplification (kForeign + `@component.<fn>`
+syntax deleted; kForeignComponent-only).  Header updated in the
+2026-06-10 review sweep — the doc shipped without its closeout edit.
 
 ## 0. TL;DR
 

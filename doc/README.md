@@ -25,7 +25,7 @@ functions:
 | [`user-guide/security-model.md`](user-guide/security-model.md) | What the sandbox guarantees, who you trust, the known limits — read before deploying untrusted input. |
 | [`user-guide/writing-host-functions.md`](user-guide/writing-host-functions.md) | Deep dive: `@host` functions (typed + context APIs), your C++ lambdas. |
 | [`user-guide/writing-component-functions.md`](user-guide/writing-component-functions.md) | Deep dive: `@component` functions (sandboxed Component-Model backend). |
-| [`../examples/`](../examples/) | Runnable `cc_binary` examples, hello-world through component functions — CI-gated, so the code runs. |
+| [`../examples/`](../examples/) | Runnable `cc_binary` examples, hello-world through component functions — gated by `//examples:examples_smoke_test`, so the code runs. |
 | [`../tools/cel/README.md`](../tools/cel/README.md) | The `cel` CLI (eval / check / compile / generate). |
 | [`langdef.md`](langdef.md) | The CEL language definition (mirrors upstream cel-spec — fix upstream, not here). |
 | [`intro.md`](intro.md), [`extensions/`](extensions/) | CEL introduction + extension specs (also upstream mirrors). |

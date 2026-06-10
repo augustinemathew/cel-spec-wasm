@@ -146,12 +146,11 @@ Every kernel follows the same shape, uniform across the ~40 TUs:
 2. **3VL absorption first.** `absorb_3vl_binary` / `absorb_3vl_unary`
    (`runtime/cel_internal.h`): if any operand is `CEL_ERROR` or
    `CEL_UNKNOWN`, copy it to `out` and return before touching the
-   payload. Within the kernel the precedence is error-dominates across
-   operands (both ERROR checks precede both UNKNOWN checks), left-bias
-   within each class. The cross-layer precedence fork — the cel_host
-   trampolines apply a first-operand-wins rule — is adjudicated in
-   03-abi-and-memory.md §8; this doc records only what the kernel
-   does.
+   payload. The precedence is error-dominates across operands (both
+   ERROR checks precede both UNKNOWN checks), left-bias within each
+   class — the oracle-confirmed cel-cpp rule, uniform across the
+   kernel and the cel_host trampolines since the §8.3 fork was
+   resolved (03-abi-and-memory.md §8.3, 2026-06-10).
 3. **Kind checks next.** `require_kinds` poisons `out` with
    `CEL_ERR_TYPE_MISMATCH` on a wrong-kind operand and skips the
    operation.

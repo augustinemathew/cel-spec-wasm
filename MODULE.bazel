@@ -3,6 +3,7 @@
 # plus a `cel.abi` contract, then evaluates it against a host activation.
 module(
     name = "cel-wasm",
+    version = "0.1.0",
 )
 
 # CEL protos (cel.expr.*) and the conformance corpus come from upstream cel-spec.

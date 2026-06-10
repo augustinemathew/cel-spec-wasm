@@ -15,7 +15,10 @@ This repo is a CEL → WebAssembly AOT compiler.  Its source is organised by
   - `shared/` — `CelType`, the type vocabulary both compile and eval speak.
     (Named `shared/`, NOT `common/`: a `common/` here collided with vendored
     cel-cpp's own `common/` top-level include dir.)
-  - `abi/` — the `cel.abi` wire contract (emit *and* parse; shared).
+  - `abi/` — the `cel.abi` wire contract (the emit side; the parse
+    side lives at `eval/internal/abi_decode.{h,cc}` because decoding
+    round-trips `ir::Repr` — moving it here rides on relocating `Repr`
+    to `shared/`).
   - `runtime/` — `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel).
   - `tools/` (cel CLI, wat_runner), `conformance/`, `e2e/`, `bench/`,
     `testdata/` — leaf binaries/tests.
@@ -23,9 +26,13 @@ This repo is a CEL → WebAssembly AOT compiler.  Its source is organised by
     `spec/tests/`).  `proto/` STAYS at repo root for now (the move is deferred
     to a module-rename workstream).
 
-`compiler/` and `eval/` both depend on `shared/`; **neither depends on the
-other.**  `compiler/` stays wasm-targetable — no `eval/`-side or wasmtime
-dependency — so `compiler.wasm` stays reachable as a future build target.
+The layering rule is **one-directional**: `compiler/` depends only on
+`shared/` (and vendored cel-cpp / Binaryen) — never on `eval/` or
+wasmtime — so `compiler.wasm` stays reachable as a future build target.
+`eval/` may consume compiler-side *data* vocabulary (`//compiler:program`,
+`//compiler/ir:annotations` for `Repr`, `//compiler/celfn:function_library`
+for `Engine` registration) but never the compilation pipeline itself;
+only eval *test* targets link `//compiler:compiler`.
 
 Existing cel-spec artefacts (`doc/langdef.md`, the conformance corpus) are
 upstream contract; we vendor `third_party/cel-cpp/` for parser + type-checker
@@ -658,9 +665,10 @@ fails the build.  The model is **two-tier**:
 
   - **Public API** — a curated, small set of targets carrying explicit
     `//visibility:public`.  Exactly: `//compiler:{compiler,program}`;
-    `//eval:{engine,instance,activation,value,error,attribute}`;
-    `//shared:type`; `//abi:*`; `//runtime:*`.  This is what a future
-    `bindings/` or any external consumer may depend on.
+    `//eval:{engine,instance,activation,value,error,attribute,
+    host_call_context,typed_function}`; `//shared:type`; `//abi:*`;
+    `//runtime:*`.  This is what a future `bindings/` or any external
+    consumer may depend on.
   - **First-party internal** — everything else, scoped to the root
     `//:internal` `package_group` (defined in the root `BUILD.bazel`,
     listing every first-party package).  The compiler pipeline components

@@ -1,6 +1,10 @@
 # Foreign functions — calling an independent Go/Rust wasm module from CEL
 
-Status: plan — drafted 2026-05-27, not yet started.
+Status: **superseded, never started** — the foreign-module approach
+drafted here was replaced by the Component-Model backend: m23
+(component spike) → m24 (`@component` fns + `Engine::AddComponent`)
+→ m26 (`celfnc` + `cel_wasm_component` hermetic build).  Kept for the
+design rationale; do not implement from this doc.
 
 > **One-line scope.** A CEL expression calls a function whose body lives
 > in a *separate* wasm module the embedder compiled from **Go** or **Rust**

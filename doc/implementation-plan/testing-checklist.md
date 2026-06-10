@@ -2900,6 +2900,90 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         rows are a separate list-equality surface — tracked under
         cleanup-backlog #40 follow-up note).
 
+## Rewrite M27 — property-based testing machinery (Slices A+B shipped 2026-06-05; Slice C harness 2026-06-09)
+
+Coverage that shipped with the PBT milestone (design in
+`doc/implementation-plan/rewrite/m27-pbt-cel-generator.md`; section
+added in the 2026-06-10 review sweep — the milestone landed without
+flipping any checklist rows):
+
+  - [x] fuzztest framework wired and smoke-tested
+        (`e2e/fuzz/fuzz_smoke_test.cc`).
+  - [x] grammar structural validation (L1), per-production checker
+        round-trip (L2), generated-expression type agreement with
+        cel-cpp (L3) — `e2e/fuzz/grammar_test.cc` over
+        `grammar.{h,cc}` + `grammar_slice_b.{h,cc}`.
+  - [x] type-driven generator unit coverage
+        (`e2e/fuzz/generator_test.cc`).
+  - [x] oracle property — generated expressions evaluate equal under
+        cel-wasm and the real cel-cpp pipeline
+        (`e2e/fuzz/cel_oracle_property_test.cc` via
+        `oracle_harness.{h,cc}`; divergence mining in
+        `mine_divergences.cc`, sample dumper in `dump_samples.cc`).
+  - [ ] remaining Slice C/D scope (additional productions,
+        depth-8 budget) — tracked in the milestone doc's slice
+        sections.
+
+## Expression-depth gate (cleanup-backlog #45 interim fix, 2026-06-10)
+
+Compile-time bound on AST nesting depth (`kMaxExpressionNestingDepth`
+= 2048, `compiler/frontend/parse_and_check.{h,cc}`); over-deep
+expressions reject with ResourceExhausted instead of overflowing the
+native stack at lowering / wasmtime Plan time:
+
+  - [x] shallow expression admitted
+        (`parse_and_check_test.cc::DepthGateAdmitsShallowExpression`).
+  - [x] chain at exactly the limit admitted (boundary positive)
+        (`DepthGateAdmitsChainExactlyAtLimit`).
+  - [x] chain at limit+1 rejected, message names measured depth +
+        limit (`DepthGateRejectsChainOneOverLimit`).
+  - [x] nested-aggregate shape (`[[[…]]]`) at limit+1 rejected
+        (`DepthGateRejectsNestedListOneOverLimit`).
+  - [x] parser-recursion-limit backstop normalised to the same
+        ResourceExhausted (`DepthGateParserBackstopIsResourceExhausted`).
+  - [x] e2e: pre-fix SIGSEGV boundary N=4654 now rejects gracefully;
+        1000-term headline bench chain still compiles + evals — both
+        link modes (`e2e/known_bugs_test.cc::
+        DeepArithChainFormerSegvBoundaryRejectedAtCompile` /
+        `LongArith1000TermsStillEvalsUnderDepthGate`).
+
+## Error/unknown wire-contract fork resolution (V3 + V4, 2026-06-10)
+
+Settled the two error-side forks of `doc/design/03-abi-and-memory.md`
+§8 oracle-first; the §8.2 unknown fork (V2) stays open.
+
+  - [x] oracle pin: strict binary op over (unknown, error), BOTH
+        orders → ERROR wins (`testdata/cel_cpp_oracle_test.cc::
+        PartialEvalOracle.{UnknownPlusErrorIsError,
+        ErrorPlusUnknownIsError}`; cel-cpp `NoOverloadResult`,
+        eval/eval/function_step.cc:202-223).
+  - [x] host `AbsorbBinary` aligned to error-dominant; both orderings
+        pinned (`eval/internal/cel_host_error_test.cc::
+        AbsorbBinaryTest.{SecondOperandErrorBeatsFirstOperandUnknown,
+        FirstOperandErrorBeatsSecondOperandUnknown}`).
+  - [x] kernel `absorb_3vl_binary` orderings pinned through
+        `cel_int_add_at_vv` (`runtime/cel_arith_test.cc::
+        {UnknownLeftErrorRightPropagatesError,
+        ErrorLeftUnknownRightPropagatesError}`).
+  - [x] `DecodeCelError` gains the missing `kInvalidArgument` arm;
+        exhaustive wire round-trip — all 14 named `ErrorCode`s + an
+        out-of-enum byte — through a host fn returning each code
+        (`eval/instance_test.cc::ErrorCodeRoundTripTest`, both link
+        modes).
+  - [x] encode-side `WireErrorCode` maps every named code (was
+        collapsing kDuplicateKey/kUnknownType/kCustomFnFailed/
+        kTimeout to TYPE_MISMATCH) and passes out-of-enum numerics
+        through (`eval/internal/cel_host_error_test.cc::
+        WireErrorCodeTest.EveryHostCodeMapsToWireConstant`; the
+        out-of-enum pass-through is pinned e2e in
+        `instance_test.cc::UnrecognizedWireCodeDegradesGracefully`).
+  - [x] `%v` error formatter reads the production bare-code wire
+        (`eval/host/cel_log_test.cc::ValueErrorKindBareCode`; dead
+        descriptor-shape fixture removed).
+  - [x] example 08 + `examples_smoke_test.sh` updated to the fixed
+        decode (`error value: invalid_argument`).
+  - [x] conformance gate held at 1966/1966 (static + dynamic).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

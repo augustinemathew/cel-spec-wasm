@@ -355,7 +355,8 @@ cannot ship.
 The other trampolines follow the same shape. Highlights: the seven
 aggregate-op trampolines (size/in/eq/concat/lookup/at) absorb 3VL
 first via `AbsorbUnary`/`AbsorbBinary` (`cel_host_error.cc` —
-first-operand-wins; see §8), guard operand kinds with
+error dominates unknown, matching the kernel; see §8), guard
+operand kinds with
 `CEL_ERR_TYPE_MISMATCH` poisons, and treat a missing externref slot
 as a trap; `in`/`eq` element equality is scalar-only on host arms;
 `CelListConcatImpl` poisons every host-involved pair `TYPE_MISMATCH`
@@ -478,27 +479,28 @@ Verified behavior:
   `expr_id` are discarded (cleanup-backlog #31). Read-back
   synthesizes a generic message from the code (`DecodeCelError` →
   `ErrorCodeName`).
-- **One decoder has a known gap:** `instance.cc`'s `DecodeCelError`
-  switch omits `kInvalidArgument` (its sibling in
-  `host_call_context.cc` has it), so wire code 18 — e.g. a bad TZ
-  name from the timestamp accessor — surfaces from `Instance::Eval`
-  as `kHostAdapterError` / "runtime error code 18". Example 08 and
-  the examples smoke test currently *enshrine* this output; the fix
-  must update both.
+- **The two decoders agree** (`instance.cc::DecodeCelError` and
+  `host_call_context.cc::DecodeWireError` carry the same arm set,
+  incl. `kInvalidArgument` — wire 18, e.g. a bad TZ name from the
+  timestamp accessor, decodes as `kInvalidArgument` /
+  "invalid_argument"). The Instance decoder historically omitted
+  that arm; the full code matrix is pinned by
+  `instance_test.cc::ErrorCodeRoundTripTest`.
 
-The open forks — each is a contract decision `03-abi-and-memory.md`
-must crown, with the evaluator then fixed to match:
+Fork status (details in `03-abi-and-memory.md` §8): V3 and V4 are
+resolved; V2 remains a contract decision that doc must crown, with
+the evaluator then fixed to match:
 
-> **Open question (V3):** three 3VL absorption implementations carry
-> two precedence rules for an (unknown, error) operand pair: the
-> runtime kernel's `absorb_3vl_binary` (error dominates across
-> operands), the cel_host trampolines' `AbsorbBinary`
-> (first-operand-wins — UNKNOWN(a) beats ERROR(b), test-pinned), and
-> the host-call trampoline's `AbsorbUnknownOrErrorArg` (error
-> dominates). Operand origin routing decides which rule fires, so
-> `unknown OP error` propagates differently depending on routing.
-> Settle via an oracle case (strict binary op over one error + one
-> unknown arg, both orders) and fix the two losers.
+> **RESOLVED (V3, 2026-06-10):** 3VL absorption precedence for an
+> (unknown, error) operand pair is **error dominates unknown,
+> regardless of operand order** — oracle-confirmed
+> (`PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}`,
+> testdata/cel_cpp_oracle_test.cc) against cel-cpp's
+> `NoOverloadResult` (eval/eval/function_step.cc), which scans args
+> for an ErrorValue before merging unknowns. The cel_host
+> trampolines' `AbsorbBinary` (previously first-operand-wins) was
+> aligned; the kernel and `AbsorbUnknownOrErrorArg` already
+> implemented the rule. See 03-abi-and-memory.md §8.3.
 
 > **Open question (V2):** `payload.unk` has two live, conflicting
 > contracts — the runtime treats non-zero values as offsets to a
@@ -510,14 +512,13 @@ must crown, with the evaluator then fixed to match:
 > Settle with the e2e probe (`unknown_a && unknown_b`); if
 > unreachable, document why codegen routes around the merge.
 
-> **Open question (V4):** the error wire contract end-to-end —
-> `cel_log`'s `%v` formatter still implements the never-shipped
-> descriptor-struct shape, so a real `%v` on a production bare-code
-> error renders garbage read from offsets 10..41 (its tests pin
-> fixture memory shaped to the old design); the code-18 decode gap
-> above needs the oracle's message text before choosing the fix
-> shape (bare-code wire + decoder fixes, vs upgrading the wire to a
-> message-carrying shape — also the #31 decision).
+> **RESOLVED (V4, 2026-06-10):** the bare-code wire was crowned and
+> the readers fixed: `cel_log`'s `%v` formatter reads `payload.err`
+> as the bare code (`error(code=N)`; the never-shipped
+> descriptor-struct reader and its fixture-pinning test are gone),
+> and the code-18 decode gap above was closed. The message-carrying
+> wire upgrade was NOT taken — message loss remains the documented
+> contract (backlog #31). See 03-abi-and-memory.md §8.1.
 
 ## 9. Components
 

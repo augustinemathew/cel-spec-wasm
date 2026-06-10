@@ -21,6 +21,103 @@ struck through or removed.
 
 ## Open
 
+- [x] **#45** — Deep left-associative expression chains
+      (`a+b+c+...`, N terms) SIGSEGV when N is large, because codegen
+      emits the chain as an **N-deep nested wasm expression tree** —
+      each `+` is `(call $cel_int_add (block (result i32) …
+      <previous-add>))`, the prior result nested *inside* the next
+      call's operand (verified by `wasm-dis` of a depth-12 chain,
+      2026-06-10).  Both the host compiler and wasmtime walk that tree
+      recursively, one native stack frame per nesting level, so it
+      overflows the ~8 MiB native stack at depth ≈4.6k.
+
+      History: pre-`perf/ssp-fix` the crash was at **compile** time
+      (~N=4670, our `expr_lower` recursion).  The slot-allocator merge
+      (Sethi-Ullman + free-list `Release`) fixed *workspace* pressure
+      (live locals are now bounded ~20 regardless of N — the #16
+      corruption class is gone) but did NOT flatten the *expression
+      nesting*, so the crash **relocated to eval/Plan** time
+      (~N=4654: 4653 compiles+evals fine, 4654 segfaults in wasmtime's
+      validation/Cranelift JIT walking the deep tree).
+
+      Two fixes, cheap→real:
+        (a) interim: a COMPILE-TIME AST-depth gate returning
+            `ResourceExhausted` (graceful), limit ~2000 — covers the
+            1000-term bench + any realistic policy with margin, rejects
+            the absurd-depth input before deep wasm is emitted. Depth
+            measurement must be ITERATIVE (a recursive measure would
+            itself crash). Align `parse_and_check.cc`'s
+            `max_recursion_depth` (currently 16384) down to match.
+        (b) real fix: FLATTEN codegen — emit each op as a top-level
+            statement writing to a slot and load the slot for the next
+            operand, so expression-tree depth is O(1) for any N and the
+            depth limit can be dropped entirely. Localised to the
+            operand-nesting in `compiler/codegen/expr_lower.cc`.
+
+      Far beyond realistic input (nobody hand-writes a 4.6k-deep
+      expression), so it did not block the ssp-fix merge — but it is a
+      crash on valid CEL and pairs naturally with the m27 PBT machinery
+      (a property test over expression depth finds exactly this class).
+      Surfaced: 2026-06-10 hardening session.  Add an executable
+      `e2e/known_bugs_test.cc` GTEST_SKIP regression pinning the
+      verified N=4653/4654 boundary when the fix lands.
+      (Renumbered from #37 and moved out of the Closed section in the
+      2026-06-10 review — the original ID collided with the closed
+      malformed-component-val #37.)
+      Files: `compiler/codegen/expr_lower.cc`,
+      `compiler/frontend/parse_and_check.cc`.
+
+      **Resolved (interim, 2026-06-10):** option (a) shipped — the
+      expression-depth gate in
+      `compiler/frontend/parse_and_check.{h,cc}`
+      (`kMaxExpressionNestingDepth` = 2048, picked so the existing
+      2000-term LongArith e2e regression at depth 2001 keeps passing;
+      "~2000" per the plan above).  `ValidateExpressionDepth` runs in
+      `ParseAndCheck` right after the type check — before the
+      frontend's own recursive walks (InlineConstantReferences /
+      RejectDyn / PopulateAnnotations), so every Compile path in both
+      link modes flows through it — and measures depth with an
+      explicit work-list (iterative, per the plan).  The parser's
+      `max_recursion_depth` is aligned down 16384 →
+      `kMaxExpressionNestingDepth + 32` (the slack covers the
+      parse-tree visitor's grammar-wrapper frames so every AST the
+      gate admits still parses); parser-side depth rejections are
+      normalised to the gate's ResourceExhausted by
+      `MapParserRecursionLimitError` so the embedder sees one error
+      for the class.  Boundary tests: chain at 2048 OK / 2049
+      ResourceExhausted (`parse_and_check_test.cc` DepthGate*);
+      e2e pins N=4654 (the pre-fix SIGSEGV boundary) → graceful
+      ResourceExhausted and the 1000-term headline bench chain still
+      evaluating, both link modes (`e2e/known_bugs_test.cc`
+      DeepArithChainFormerSegvBoundaryRejectedAtCompile /
+      LongArith1000TermsStillEvalsUnderDepthGate).
+      - [ ] **#45(b)** — real fix still open: FLATTEN codegen (emit
+            each op as a top-level statement writing to a slot) so
+            expression-tree depth is O(1) for any N; then drop
+            `kMaxExpressionNestingDepth`, the parser-limit alignment
+            and `MapParserRecursionLimitError`, and flip the e2e
+            rejection assertion back to a value check.  Localised to
+            the operand-nesting in `compiler/codegen/expr_lower.cc`.
+
+- [ ] **#44** — unimplemented-but-declared surfaces swept in the
+      2026-06-10 review: `Activation::BindLazy` and
+      `Activation::OverrideFunction` (cel-host-surface.md §2.6
+      signatures; bodies `ABSL_CHECK(false)`, no milestone owns
+      them); `CelfnTypeToCelType` has no `cel::Type` mapping for
+      `CelfnType::Kind` kType / kOptional although
+      `AddForeignComponent` admits such decls; `cel_component`'s
+      Lower rejects type-of-types return shapes with Unimplemented.
+      Either implement, or remove the surfaces from the public
+      headers (`BindLazy` / `OverrideFunction` are API promises the
+      engine never honours).
+      Surfaced: 2026-06-10 portfolio review (stub-message sweep —
+      every production stub named an already-shipped milestone).
+      Files: `eval/activation.{h,cc}`,
+      `compiler/frontend/parse_and_check.cc`,
+      `eval/internal/cel_component.cc`.
+      Why P2: all paths fail loudly (CHECK / Unimplemented), so
+      nothing miscompiles; the gap is API honesty, not correctness.
+
 - [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
       malformed-`wasmtime_component_val_t` NULL guards (closes
       out gap left when #37 shipped).  Today's coverage:
@@ -187,34 +284,49 @@ struck through or removed.
       slice to add the message arm.
 
 - [ ] **#40** — proto2 extension field support — PARTIAL FIX
-      2026-06-05.  The operator-form (`msg.`fqn``) extension
+      2026-06-05, list-equality remainder FIXED 2026-06-10.
+      The operator-form (`msg.`fqn``) extension
       reads + has now work for scalar / message / enum / repeated
       extensions via `Reflection::FindKnownExtensionByName`
       fallback in `ResolveFieldDescriptor`.  Closes 16 of 18
       rows under `proto2/extensions_has/*` + `proto2/extensions_get/*`.
-      Remaining 2 fails (`extensions_get/package_scoped_repeated_test_all_types`
+      The remaining 2 fails (`extensions_get/package_scoped_repeated_test_all_types`
       + `extensions_get/message_scoped_repeated_test_all_types`)
-      compare an extension repeated-message list (HostList from
-      ProtoList) for equality with a literal-constructed list
-      `[Msg{...}, Msg{...}]` and return `false` — a list-equality
-      surface separate from the descriptor look-up.  The
-      `proto2_ext.textproto` file (18 rows) still SKIPs as
-      `ext_unimpl` because its expressions use the
+      — an extension repeated-message list (HostList from
+      ProtoList) compared for equality with a literal-constructed
+      list `[Msg{...}, Msg{...}]` returning `false` — are FIXED
+      (2026-06-10): `CelListEqImpl`'s walk now normalizes each
+      element across origins (`ListEqElement` in
+      `eval/internal/cel_host.cc`) and routes message-element
+      pairs through `CompareProtoMessages`, the Any-peel +
+      MessageDifferencer core extracted from (and shared with)
+      `CelMessageEqImpl`.  Unit matrix in
+      `eval/internal/cel_list_eq_impl_test.cc`; e2e pins in
+      `e2e/proto2_extension_list_eq_test.cc`.  Conformance
+      1970→1972 per mode (FAIL 3→1; the remaining FAIL is
+      #10's optionals `ofNonZeroValue` trap).
+      STILL OPEN: the `proto2_ext.textproto` file (18 rows)
+      SKIPs as `ext_unimpl` because its expressions use the
       `proto.hasExt(msg, ext)` / `proto.getExt(msg, ext)`
-      function form, which we don't register.
+      function form, which we don't register — that
+      registration is the remaining scope of this entry.
       Surfaced: 2026-06-05 conformance burndown Group C.
       Files touched (partial fix):
       `eval/internal/cel_host.cc::ResolveFieldDescriptor` +
       `eval/internal/cel_host_test.cc` (4 new
       `ProtoBackingExtensionTest` cases).
-      Remaining files: a list-equality surface between
-      HostList-from-extension and arena/constructed lists of
-      messages (see `CelListEqImpl` if/when it exists, parallel
-      to the documented `CelMapEqImpl` materialisation strategy);
-      plus the proto.hasExt / proto.getExt function-form registration.
-      Why P2: spec compliance gap, but the remaining 2 rows need a
-      list-eq materialisation pass shared with the mixed-origin
-      map-eq gap.
+      Note (latent, out of this entry's scope): arena+arena lists
+      of messages still take the runtime's scalar-only
+      `cel_list_eq_arena` fast path (`cel_value_eq` returns 0 for
+      CEL_MESSAGE elements) — verified 2026-06-10 via a throwaway
+      e2e probe: literal `[Msg{x:1}] == [Msg{x:1}]` evaluates
+      false.  Same latent gap the map-eq fix left for arena+arena
+      maps with message values; no conformance row exercises it
+      today.  The host trampoline already compares such pairs
+      correctly if routing ever changes (pinned by
+      `CelListEqImplTest.ArenaArenaMessageListsCompare`).
+      Why P2 (remaining): the function-form registration is a
+      checker/celfn surface, not an eval gap.
 
 - [ ] **#39** — strong-typed enum support
       (cel-spec issues/119, "Future features for CEL 1.0").
@@ -718,7 +830,7 @@ struck through or removed.
       `wkt_field_set_test.cc` `*_range` cases un-skipped, differential
       coverage in `testdata/cel_cpp_oracle_test.cc`.
 
-- [ ] **#12** — mixed-origin map equality: `CelMapEqImpl` only handles
+- [x] **#12** — mixed-origin map equality: `CelMapEqImpl` only handles
       the case where BOTH operands are host-backed maps (or both arena
       maps).  A host-map-field operand compared against an arena map
       literal returns `CEL_ERR_TYPE_MISMATCH` instead of a structural
@@ -737,6 +849,29 @@ struck through or removed.
       accessors in `eval/internal/cel_host.cc`.
       Why P2: 2 corpus rows; cross-origin map `==` is a self-contained
       runtime-kernel follow-up.
+      **Resolved 2026-06-10** — exactly the planned fix shape:
+      `CelMapEqImpl` (`eval/internal/cel_host.cc`) now snapshots BOTH
+      operands into normalized (key, value) `CelValue` pairs
+      (`SnapshotMapEntries`: arena entries read straight from linear
+      memory via the `ArenaMapHeader`; host entries via `ForEach` +
+      `EncodeBackingScalar`) and runs one set-equality walk
+      (`NormalizedMapEq`) over them — same bridge architecture as
+      list equality's `ReadListElementAt`.  No new host import: the
+      runtime's `cel_map_eq` dispatcher already routed arena↔host
+      pairs to the `cel_host.cel_map_eq` trampoline.  Side benefit:
+      host+host maps now match numeric keys cross-type
+      (int/uint ladder), consistent with the arena kernel's
+      `map_keys_equal`.  Tests: new
+      `eval/internal/cel_map_eq_impl_test.cc` (//eval:cel_map_eq_impl_test
+      — 4 key kinds × both directions × {equal, value-mismatch,
+      missing-key, size-mismatch}, plus empty / timestamp / duration /
+      string values / cross-numeric keys / host+host / arena+arena /
+      3VL / poison / bad-ref-slot); the 2 GTEST_SKIPs in
+      `e2e/wkt_field_set_test.cc` deleted and expanded to 4
+      conformance-row-named cases
+      (`Map{Timestamp,Duration}NullPrunedEqProto{2,3}`).  Conformance
+      1966→1970 per mode (the 4 `set_null/map_*_null_pruned` rows in
+      proto2/proto3), FAIL 7→3.
 
 - [ ] **#14** — a comprehension whose `iter_range` is UNKNOWN (or
       ERROR) returns the empty-range IDENTITY instead of propagating —
@@ -800,7 +935,7 @@ struck through or removed.
       rarely exceed even 10 k codepoints; embedders who need 1 M
       elements bind a list variable, which has no parser involvement.
 
-- [ ] **#16** — Compiling + planning a literal int list of 10 000
+- [x] **#16** — Compiling + planning a literal int list of 10 000
       elements succeeds, but the resulting wasm module **panics
       wasmtime on Eval** (`crates/wasmtime/src/runtime/store.rs:2440:17:
       assertion failed: fault.is_none()` — a Rust panic, not a
@@ -827,6 +962,13 @@ struck through or removed.
       a fix leaves the panic but raises N, the test still crashes
       the process when un-skipped, which is correct — a panic-on-
       large-list is not "fixed").
+      Resolved: 2026-06-09 commit 8041dc97 ("bound expression static
+      region; close #16 crash class") — `ValidateExprStaticRegion`
+      rejects over-budget regions at Compile with ResourceExhausted
+      in both link modes; `ValidateAbiSlotExtents` rejects tampered
+      Programs at Plan; known-bugs skips converted to active
+      regressions with boundary pins.  Checkbox ticked in the
+      2026-06-10 review follow-up.
 
 - [ ] **#17** — A bound `list<string>` of ≥ 10 000 50-byte strings
       Eval'd through `perm in perms` returns
@@ -1544,45 +1686,3 @@ follow-up cleanup, not a current regression.
       Files: `runtime/cel_internal.h`, `runtime/cel_string_ops.c`,
       `runtime/cel_runtime.c`.
 
-- [ ] **#37** — Deep left-associative expression chains
-      (`a+b+c+...`, N terms) SIGSEGV when N is large, because codegen
-      emits the chain as an **N-deep nested wasm expression tree** —
-      each `+` is `(call $cel_int_add (block (result i32) …
-      <previous-add>))`, the prior result nested *inside* the next
-      call's operand (verified by `wasm-dis` of a depth-12 chain,
-      2026-06-10).  Both the host compiler and wasmtime walk that tree
-      recursively, one native stack frame per nesting level, so it
-      overflows the ~8 MiB native stack at depth ≈4.6k.
-
-      History: pre-`perf/ssp-fix` the crash was at **compile** time
-      (~N=4670, our `expr_lower` recursion).  The slot-allocator merge
-      (Sethi-Ullman + free-list `Release`) fixed *workspace* pressure
-      (live locals are now bounded ~20 regardless of N — the #16
-      corruption class is gone) but did NOT flatten the *expression
-      nesting*, so the crash **relocated to eval/Plan** time
-      (~N=4654: 4653 compiles+evals fine, 4654 segfaults in wasmtime's
-      validation/Cranelift JIT walking the deep tree).
-
-      Two fixes, cheap→real:
-        (a) interim: a COMPILE-TIME AST-depth gate returning
-            `ResourceExhausted` (graceful), limit ~2000 — covers the
-            1000-term bench + any realistic policy with margin, rejects
-            the absurd-depth input before deep wasm is emitted. Depth
-            measurement must be ITERATIVE (a recursive measure would
-            itself crash). Align `parse_and_check.cc`'s
-            `max_recursion_depth` (currently 16384) down to match.
-        (b) real fix: FLATTEN codegen — emit each op as a top-level
-            statement writing to a slot and load the slot for the next
-            operand, so expression-tree depth is O(1) for any N and the
-            depth limit can be dropped entirely. Localised to the
-            operand-nesting in `compiler/codegen/expr_lower.cc`.
-
-      Far beyond realistic input (nobody hand-writes a 4.6k-deep
-      expression), so it did not block the ssp-fix merge — but it is a
-      crash on valid CEL and pairs naturally with the m27 PBT machinery
-      (a property test over expression depth finds exactly this class).
-      Surfaced: 2026-06-10 hardening session.  Add an executable
-      `e2e/known_bugs_test.cc` GTEST_SKIP regression pinning the
-      verified N=4653/4654 boundary when the fix lands.
-      Files: `compiler/codegen/expr_lower.cc`,
-      `compiler/frontend/parse_and_check.cc`.

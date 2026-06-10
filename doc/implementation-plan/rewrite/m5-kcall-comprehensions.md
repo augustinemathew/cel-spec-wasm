@@ -1069,6 +1069,16 @@ to scalars in M5; aggregate-element materialisation (lists of
 lists, maps of messages) lands at M6 alongside the broader
 nested-aggregate equality story.
 
+> Plan-vs-execution delta (2026-06-10, cleanup-backlog #12): map
+> equality shipped the OTHER direction — instead of lifting the host
+> operand into the arena, `CelMapEqImpl` snapshots BOTH operands into
+> host-side (key, value) CelValue pairs (`SnapshotMapEntries`) and
+> runs one normalized set-equality walk, mirroring how
+> `CelListEqImpl` bridges origins via `ReadListElementAt`.  A
+> read-only comparison doesn't need the arena materialisation; the
+> lift strategy above remains the plan for concat (which must
+> *produce* an arena value).
+
 **M5.D step 2 ship state.**  The `_arena` fast paths handle the
 common same-origin cases.  The kHost trampolines implement
 host-only operations via the externref backings.  Cross-origin

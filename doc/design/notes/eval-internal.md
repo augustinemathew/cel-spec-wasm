@@ -149,9 +149,15 @@ and treat a missing ref_slot as FailedPrecondition (trap):
   in-line as follow-up (cel_host.cc:1962-2002).
 - `CelMapInImpl`: DecodeKey (bool/int/uint/string only) +
   ContainsKey (cel_host.cc:2022-2044).
-- `CelMapEqImpl`: both-host only (mixed → TYPE_MISMATCH); size check
-  then set-equality walk with scalar-only value compare
-  (cel_host.cc:2046-2120).
+- `CelMapEqImpl`: any origin pair (host+host/mixed/arena+arena —
+  arena+arena normally short-circuits in the runtime fast path).
+  Both operands are normalized into (key, value) CelValue snapshots
+  (`SnapshotMapEntries`: arena entries read from linear memory via
+  `ArenaMapHeader`, host entries via ForEach + `EncodeBackingScalar`)
+  then size check + set-equality walk (`NormalizedMapEq`) with
+  `HostScalarValueEq` on keys (cross-numeric ladder, matching the
+  arena kernel's `map_keys_equal`) and values (scalar-only; aggregate
+  values never match).
 - `CelMessageEqImpl` (standalone, for the polymorphic equals ladder):
   both CEL_MESSAGE; non-proto backing (message()==nullptr) →
   TYPE_MISMATCH; peels google.protobuf.Any operands

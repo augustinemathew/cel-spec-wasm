@@ -2,16 +2,17 @@
 
 Status: current — authored 2026-06-10 from the design-rebuild notes
 plus the post-merge code (chained arena, static-region gates). The §8
-error/unknown contract is documented-as-is with open forks (V2–V4);
-one telling will be crowned when the probes land. Supersedes: wire
-sections of doc/implementation-plan/rewrite/cel-host-surface.md;
+error contract (V4) and 3VL precedence (V3) were settled 2026-06-10
+(probe evidence inline in §8.1/§8.3); the §8.2 unknown contract (V2)
+remains an open fork. Supersedes: wire sections of
+doc/implementation-plan/rewrite/cel-host-surface.md;
 memory-layout-design.md; abi-refactor.md.
 
 One telling for every byte-level fact the compiler, the runtime
 kernel, and the evaluator must agree on. `00-architecture.md` names
 the contracts; docs 01/02/04 describe the machinery on each side and
 defer every byte here. Where the codebase still carries two live
-tellings of one fact (§8), this doc records both, per layer, and
+tellings of one fact (§8.2), this doc records both, per layer, and
 does not pick a winner.
 
 ## 1. CelValue & kinds
@@ -477,12 +478,17 @@ extend the cross-check to the env namespace.
 
 ## 8. Errors & unknowns on the wire — THE FORK SECTION
 
-This contract is **not settled**. Three clusters each have two live
-tellings, differing per layer; the probes that would crown one
-telling (V2, V3, V4) have not run. This section documents the
-verified per-layer behavior and does not pick winners (docs 02 §8
-and 04 §3 defer here). Any prose that states "`payload.unk` is X" or
-"unknown-vs-error precedence is Y" without naming the fork is wrong.
+> **Status update (2026-06-10):** two of the three forks are
+> RESOLVED. §8.1 (errors) — the bare-code wire was crowned and the
+> divergent readers fixed (V4). §8.3 (3VL precedence) — the
+> error-dominates rule was oracle-confirmed and the losing host
+> implementation aligned (V3). §8.2 (unknown `payload.unk` contract,
+> V2) **remains forked and change-frozen**. Resolution details are
+> inline in each subsection.
+
+This section documents the per-layer behavior (docs 02 §8 and 04 §3
+defer here). Any prose that states "`payload.unk` is X" without
+naming the §8.2 fork is wrong.
 
 ### 8.1 Errors: the bare-code wire, per layer
 
@@ -492,21 +498,24 @@ kernel (`poison`) and host writer (`WriteWireError`) emits it.
 
 | layer | behavior on the error path | citation |
 |---|---|---|
-| host → wasm encode | `EncodeValue`'s kError arm writes ONLY `WireErrorCode(code)`; **`ErrorPayload.message` and `expr_id` are discarded** (cleanup-backlog #31). Every Layer-1 message (`FieldNotFound(name)`, the out-of-bounds range text, …) dies here | `eval/internal/cel_host.cc`, kError arm of `EncodeValue` |
-| wasm → host decode (Instance) | `DecodeCelError` synthesizes a generic message from the code (`ErrorCodeName`); its switch **omits `kInvalidArgument`**, so wire code 18 (e.g. a bad TZ name) surfaces as `kHostAdapterError` / "runtime error code 18". Example 08 + the examples smoke test currently enshrine this output | `eval/instance.cc::DecodeCelError` |
-| wasm → host decode (host-call ctx) | `DecodeWireError` has the `kInvalidArgument` arm its sibling lacks — the two decoders disagree | `eval/host_call_context.cc` |
-| in-guest formatting | `cel_log`'s `%v` error formatter implements a never-shipped descriptor-struct shape — it reads `payload.err` as an *offset* to a 16-byte `(code, msg_ptr, msg_len, pad)` struct, so `%v` on a production bare-code error renders garbage read from linear-memory offsets 10..41. Its tests pin fixture memory shaped to the old design, hiding the divergence | `eval/host/cel_log.cc::FormatError` |
+| host → wasm encode | `EncodeValue`'s kError arm writes ONLY `WireErrorCode(code)`; **`ErrorPayload.message` and `expr_id` are discarded** (cleanup-backlog #31). Every Layer-1 message (`FieldNotFound(name)`, the out-of-bounds range text, …) dies here. `WireErrorCode` maps all 14 named `ErrorCode` values (it used to collapse kDuplicateKey/kUnknownType/kCustomFnFailed/kTimeout to TYPE_MISMATCH) and passes an out-of-enum numeric through unchanged | `eval/internal/cel_host.cc`, kError arm of `EncodeValue`; `cel_host_error.cc::WireErrorCode` |
+| wasm → host decode (Instance) | `DecodeCelError` synthesizes a generic message from the code (`ErrorCodeName`); its switch covers every named `ErrorCode` **including `kInvalidArgument`** (the arm it historically omitted, so wire 18 used to surface as `kHostAdapterError` / "runtime error code 18"); an unrecognized wire byte degrades to `kHostAdapterError` / "runtime error code N". The full code matrix is pinned by `instance_test.cc::ErrorCodeRoundTripTest` (one case per named code + the out-of-enum byte) | `eval/instance.cc::DecodeCelError` |
+| wasm → host decode (host-call ctx) | `DecodeWireError` — same arm set as its Instance sibling; the two decoders agree | `eval/host_call_context.cc` |
+| in-guest formatting | `cel_log`'s `%v` error formatter reads the production bare-code wire: `payload.err` IS the `CEL_ERR_*` code, rendered as `error(code=N)`. (It previously implemented a never-shipped descriptor-struct shape — `payload.err` as an offset to a 16-byte `(code, msg_ptr, msg_len, pad)` struct — rendering garbage on real errors, with tests pinning fixture memory in the dead shape) | `eval/host/cel_log.cc::FormatError`; `cel_log_test.cc::ValueErrorKindBareCode` |
 | host-callback trap path | a non-OK Status from an embedder callback becomes a wasm trap; the message survives, the status CODE is lost | `eval/engine.cc`, `TrapFromStatus`; V19 |
 
-> **Open question (V4):** one fork to decide: keep the bare-code
-> wire and fix the readers (`%v` rewritten to bare-code,
-> `DecodeCelError` gains the missing arm, message loss documented as
-> contract) — or upgrade the wire to the message-carrying
-> `{code, expr_id, msg_off, msg_len}` shape, which retires the loss
-> and makes `%v`'s current reader correct. Needs the wat_runner
-> `%v`-on-poison probe, the `timestamp(0).getHours('NotATz')` e2e
-> decode assertion, and the oracle's message text. The #31 fix
-> decides; example 08 and its smoke assertion change with it.
+> **RESOLVED (V4, 2026-06-10):** the bare-code wire was crowned and
+> the readers were fixed: `%v` rewritten to the bare-code shape,
+> `DecodeCelError` gained the missing `kInvalidArgument` arm (wire 18
+> now decodes as `kInvalidArgument` / "invalid_argument" — example 08
+> and the examples smoke assertion updated with it), and the
+> encode-side `WireErrorCode` gap the exhaustive round-trip test
+> exposed (4 named codes collapsing to TYPE_MISMATCH) was closed,
+> with `CEL_ERR_UNKNOWN_TYPE/CUSTOM_FN_FAILED/TIMEOUT` appended to
+> `cel_data.h` in lockstep per §10. The message-carrying
+> `{code, expr_id, msg_off, msg_len}` wire upgrade was NOT taken;
+> message loss remains the documented contract (cleanup-backlog #31
+> stays open for that decision).
 
 ### 8.2 Unknowns: two live `payload.unk` contracts
 
@@ -536,25 +545,33 @@ reads.
 > host writers change) or attribute id (shipped host behavior; the
 > merge and `%v` change).
 
-### 8.3 3VL precedence: three implementations, two rules
+### 8.3 3VL precedence: ONE rule — error dominates unknown
 
-For a strict operation over an (unknown, error) operand pair, three
-absorption implementations carry two precedence rules — and operand
-origin routing decides which fires, so `unknown OP error` propagates
-differently depending on routing:
+For a strict operation over an (unknown, error) operand pair, all
+three absorption implementations now carry the same precedence rule:
+**ERROR dominates UNKNOWN across operands**, left-bias within each
+class. The rule is cel-cpp's: `NoOverloadResult`
+(cel-cpp `eval/eval/function_step.cc:202-223`) scans the args for an
+`ErrorValue` and returns the first one found BEFORE merging unknowns;
+langdef §"Evaluation" leaves multi-error propagation order
+unspecified, so the reference implementation's behavior is the
+contract.
 
 | layer | rule | citation |
 |---|---|---|
-| runtime kernel `absorb_3vl_binary` | **error dominates** across operands (both ERROR checks precede both UNKNOWN checks), left-bias within each class | `runtime/cel_internal.h:83-102` |
-| cel_host trampolines `AbsorbBinary` | **first-operand-wins**: UNKNOWN(a) beats ERROR(b) — test-pinned (`AbsorbBinaryTest.FirstOperandUnknownBeatsSecondOperandError`) | `eval/internal/cel_host_error.cc:134-145` |
-| host-call trampoline `AbsorbUnknownOrErrorArg` | **error dominates** (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
+| runtime kernel `absorb_3vl_binary` | error dominates (both ERROR checks precede both UNKNOWN checks), left-bias within each class | `runtime/cel_internal.h`; pinned both orders in `cel_arith_test.cc::{UnknownLeftErrorRightPropagatesError, ErrorLeftUnknownRightPropagatesError}` |
+| cel_host trampolines `AbsorbBinary` | error dominates — aligned to the kernel (it was first-operand-wins: UNKNOWN(a) beat ERROR(b)) | `eval/internal/cel_host_error.cc`; pinned both orders in `cel_host_error_test.cc::AbsorbBinaryTest` |
+| host-call trampoline `AbsorbUnknownOrErrorArg` | error dominates (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
 
-> **Open question (V3):** the spec-correct precedence comes from the
-> oracle, not from any implementation (`cel_host_error.h`'s own
-> comment contradicts itself clause-to-clause). Probe: extend
-> `testdata/cel_cpp_oracle_test.cc` (`PartialEvalWithCelCpp`) with a
-> strict binary op over one error + one unknown arg, both orders.
-> One rule gets crowned here; the two losers get fixed to match.
+> **RESOLVED (V3, 2026-06-10):** the probe ran exactly as specified —
+> `testdata/cel_cpp_oracle_test.cc` gained
+> `PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}`
+> (`x + (1/0)` and `(1/0) + x` with `x` attribute-unknown through
+> `PartialEvalWithCelCpp`): cel-cpp returns the ERROR in **both**
+> orders. The losing host-side `AbsorbBinary` was aligned;
+> `cel_host_error.h`'s self-contradicting comment was rewritten. The
+> kernel and `eval/engine.cc` were already correct and are unchanged.
+> Conformance held at 1966 in both modes.
 
 ## 9. The component boundary (WIT vocabulary)
 
@@ -619,10 +636,12 @@ DYNAMIC; unknown `LinkMode` values parse and survive
 re-serialization (`cel_abi_emit_test.cc`); the empty-surface
 carve-out keeps versionless synthetic fixtures loading.
 
-**The §8 forks are change-frozen** until V2–V4 crown a telling: do
-not "fix" one layer's error/unknown behavior to match another's
-without the oracle verdict — that is how a second generation of the
-fork ships.
+**The §8.2 unknown fork is change-frozen** until V2 crowns a
+telling: do not "fix" one layer's `payload.unk` behavior to match
+another's without the probe verdict — that is how a second
+generation of the fork ships. (§8.1 and §8.3 were resolved
+2026-06-10 with the V3/V4 evidence recorded inline; the error wire
+and 3VL precedence are now settled contract.)
 
 ## History
 

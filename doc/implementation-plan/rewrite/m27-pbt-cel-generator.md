@@ -1,7 +1,14 @@
 # M27 — Property-based testing via a type-driven CEL generator
 
-Status: design 2026-06-04 (revised 2026-06-05 — model + scope
-decisions locked); Slice A starting next.
+Status: **in flight — Slices A+B shipped 2026-06-05** (commit
+b70676f7 "PBT machinery (Slice A+B)"); Slice C grammar + the
+divergence-mining/oracle harness (`e2e/fuzz/grammar_slice_c.{h,cc}`,
+`mine_divergences.cc`, `oracle_harness.{h,cc}`,
+`cel_oracle_property_test.cc`) landed with the perf/ssp-fix merge
+(598c7f2b → 3079b37b, 2026-06-09).  Remaining Slice C/D scope: see
+the slice sections below (unticked items).  Header updated in the
+2026-06-10 review sweep — the doc's status had not tracked the
+landed slices.
 
 ## Locked design decisions (as of 2026-06-05)
 

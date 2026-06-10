@@ -23,12 +23,14 @@
 #
 # Usage:
 #   scripts/check_conformance_monotonic.sh           # run + check both modes
-#   scripts/check_conformance_monotonic.sh --update  # bump both baselines
-#                                                    # to current
+#   scripts/check_conformance_monotonic.sh --update  # bump both modes'
+#                                                    # pass baselines AND
+#                                                    # FAIL ceilings to current
 #   scripts/check_conformance_monotonic.sh --baseline N  # set explicit
 #                                                        # dynamic baseline
 #
-# Exit 0 = pass count >= baseline in both modes; exit 1 = regression.
+# Exit 0 = pass count >= its baseline AND fail count <= its ceiling
+# (conformance/.max_fail{,_static}) in both modes; exit 1 = regression.
 
 set -euo pipefail
 
@@ -41,6 +43,13 @@ cd "$(git rev-parse --show-toplevel)"
 # same failure-detail text across the full 2454-row corpus).
 BASELINE_FILE_dynamic="conformance/.baseline"
 BASELINE_FILE_static="conformance/.baseline_static"
+
+# FAIL ceilings — the second half of the gate.  The pass-count floor
+# alone lets a SKIP→FAIL conversion (or a FAIL reclassified into a
+# new SKIP category) slip through at flat pass count; the ceiling
+# catches it.  FAIL count must fall monotonically on master.
+MAX_FAIL_FILE_dynamic="conformance/.max_fail"
+MAX_FAIL_FILE_static="conformance/.max_fail_static"
 
 mode="check"
 explicit_baseline=""
@@ -91,29 +100,51 @@ run_conformance() {
   bazel run //conformance:run_conformance -- --link_mode="$link_mode" 2>&1 \
     | tee "$(log_path_for_mode "$link_mode")" \
     | grep -aE '^summary:' \
-    | head -n1 \
-    | sed -E 's/.*pass=([0-9]+).*/\1/'
+    | head -n1
 }
 
-# check_mode <link_mode> <baseline_file> <explicit_baseline_or_empty>
-# Runs the corpus in the given mode and gates the PASS count
-# against the baseline.  Returns 0 on >= baseline, 1 on regression.
+# check_mode <link_mode> <baseline_file> <max_fail_file> <explicit_baseline_or_empty>
+# Runs the corpus in the given mode and gates the PASS count against
+# its floor AND the FAIL count against its ceiling.  Returns 0 when
+# both hold, 1 on either regression.
 check_mode() {
-  local link_mode="$1" baseline_file="$2" explicit="$3"
-  local current baseline delta
+  local link_mode="$1" baseline_file="$2" max_fail_file="$3" explicit="$4"
+  local summary current current_fail baseline max_fail delta
 
-  current=$(run_conformance "$link_mode")
-  if [[ -z "$current" ]]; then
-    echo "error: could not extract pass count from conformance output ($link_mode)" >&2
+  summary=$(run_conformance "$link_mode")
+  current=$(sed -nE 's/.*pass=([0-9]+).*/\1/p' <<<"$summary")
+  current_fail=$(sed -nE 's/.*fail=([0-9]+).*/\1/p' <<<"$summary")
+  if [[ -z "$current" || -z "$current_fail" ]]; then
+    echo "error: could not extract pass/fail counts from conformance output ($link_mode)" >&2
     echo "  full log at $(log_path_for_mode "$link_mode")" >&2
     exit 2
   fi
-  echo "conformance[$link_mode]: current PASS = $current"
+  echo "conformance[$link_mode]: current PASS = $current  FAIL = $current_fail"
 
   if [[ "$mode" == "update" ]]; then
     echo "$current" > "$baseline_file"
+    echo "$current_fail" > "$max_fail_file"
     echo "baseline[$link_mode] updated to $current at $baseline_file"
+    echo "max-fail[$link_mode] updated to $current_fail at $max_fail_file"
     return 0
+  fi
+
+  # FAIL ceiling.
+  if [[ -f "$max_fail_file" ]]; then
+    max_fail=$(cat "$max_fail_file")
+    echo "conformance[$link_mode]: max FAIL    = $max_fail"
+    if [[ "$current_fail" -gt "$max_fail" ]]; then
+      echo "REGRESSION[$link_mode]: FAIL count rose $max_fail → $current_fail" >&2
+      echo "  diff log: see $(log_path_for_mode "$link_mode") for new failures" >&2
+      return 1
+    fi
+    if [[ "$current_fail" -lt "$max_fail" ]]; then
+      echo "ok[$link_mode]: FAIL count fell $max_fail → $current_fail.  Consider:"
+      echo "  scripts/check_conformance_monotonic.sh --update"
+    fi
+  else
+    echo "warn: no FAIL ceiling at $max_fail_file — creating with current count"
+    echo "$current_fail" > "$max_fail_file"
   fi
 
   if [[ -n "$explicit" ]]; then
@@ -145,13 +176,13 @@ status=0
 # Dynamic first — the original gate, identical behaviour to the
 # single-mode script (same baseline file, `--baseline N` still
 # applies to this mode only).
-check_mode dynamic "$BASELINE_FILE_dynamic" "$explicit_baseline" || status=1
+check_mode dynamic "$BASELINE_FILE_dynamic" "$MAX_FAIL_FILE_dynamic" "$explicit_baseline" || status=1
 
 # Static second — m28 configurable linking.  Static-mode Compile is
 # slower (Binaryen runtime merge per expression), so this leg
 # dominates the gate's wall time.  Its baseline is the measured m28
 # initial static count (conformance/.baseline_static = 1899 as of
 # 2026-06-09, equal to dynamic).
-check_mode static "$BASELINE_FILE_static" "" || status=1
+check_mode static "$BASELINE_FILE_static" "$MAX_FAIL_FILE_static" "" || status=1
 
 exit "$status"

@@ -55,17 +55,19 @@ implementation's behavior.
    implementation, no BUILD target, and no caller. Two competing
    designs exist on different branches; the new custom-fn doc must
    *decide* the fork, not just record it.
-3. **The error/unknown wire contract has live forks.** Errors travel as
-   a bare code (messages dropped at `cel_host.cc:802-807`, backlog
-   #31), but `cel_log`'s `%v` still implements the never-shipped
-   descriptor shape (renders garbage on real errors); `payload.unk`
-   has two conflicting contracts (runtime: descriptor offset; host:
-   attribute id) and `cel_unknown_merge` dereferences host-minted ids
-   as offsets — reachable via `&&` under PartialEval, a possible OOB
-   read; 3VL absorption has three implementations with two different
-   precedence rules, so `unknown OP error` propagates differently
-   depending on operand routing. The new ABI doc must crown one telling
-   for each (V2–V4).
+3. **The error/unknown wire contract had live forks — two of three
+   resolved 2026-06-10 (V3 ✅, V4 ✅; see those rows).** Errors travel
+   as a bare code (messages dropped at `cel_host.cc`, backlog #31 —
+   still the contract), and the divergent readers were fixed to that
+   wire: `%v` no longer implements the never-shipped descriptor
+   shape, and the two host decoders agree (incl. wire 18 →
+   kInvalidArgument). 3VL absorption now carries ONE oracle-confirmed
+   precedence rule (error dominates unknown) across all three
+   implementations. **Still open (V2):** `payload.unk` has two
+   conflicting contracts (runtime: descriptor offset; host: attribute
+   id) and `cel_unknown_merge` dereferences host-minted ids as
+   offsets — reachable via `&&` under PartialEval, a possible OOB
+   read; the ABI doc must still crown that telling.
 4. **The benchmarking publication pipeline is partly fictional.**
    `report.sh` covers 4 of 232 corpus cells and stamps a hardcoded
    "parity verified (eyeballed)" line; the published m28 full-corpus
@@ -250,8 +252,8 @@ specific doc section from being written honestly.
 |---|----------|---------|-----|
 | V1 ⚑ | Are the working-tree static-region gates the real, committed story (and is `rodata_base_override` now live as the kStatic relocation seam)? | R1, R29, R3-partial; memory-model sections of the compiler + ABI docs; re-anchors all citations into compile.cc/engine.cc/known_bugs_test.cc | Commit the tree (user-authorized), then `bazel test //compiler/internal:compile_test //e2e:known_bugs_test_dynamic //e2e:known_bugs_test_static --test_filter='*LongArith*:*Rejected*'`; confirm `LongArith_166Terms_RejectedAtCompile` + `LiteralIntListInScanRejectedAtCompileAt10K` green; `grep -rn rodata_base_override compiler/` for the gate's consumer claim |
 | V2 ⚑ | Can `cel_unknown_merge` receive two host-minted unknowns (attribute ids dereferenced as descriptor offsets — OOB)? | R43; the ABI doc's unknown wire contract must crown one `payload.unk` shape | e2e PartialEval case `a.x && b.y` with both attributes FULL-matched (ids ≥ 1); inspect result for garbage/trap; if unreachable, document why codegen routes around the merge |
-| V3 ⚑ | What is the spec-correct precedence for (unknown, error) operand pairs? | R45; the eval doc states ONE rule and the two losing implementations get fixed | Extend `testdata/cel_cpp_oracle_test.cc` (PartialEvalWithCelCpp) with a strict binary op over one error + one unknown arg, both orders; compare against all three layers |
-| V4 ⚑ | Error wire contract end-to-end: does `%v` on a production error render garbage, and does wire code 18 decode as kHostAdapterError? | R41/R42/R44; the ABI doc's error section + the #31 fix shape (bare-code vs message-carrying wire) | (a) wat_runner fixture calling `CEL_LOG("%v", <poison slot>)` with CapturingCelLogSink; (b) e2e `timestamp(0).getHours('NotATz')` asserting `ErrorInfo()->code`; (c) oracle for the same expr's message text |
+| V3 ✅ RESOLVED 2026-06-10 | What is the spec-correct precedence for (unknown, error) operand pairs? | R45; ABI doc §8.3 now states ONE rule | Probe ran as written: `PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}` in `testdata/cel_cpp_oracle_test.cc` — cel-cpp returns the ERROR in **both** orders (its `NoOverloadResult`, cel-cpp `eval/eval/function_step.cc:202-223`, scans args for ErrorValue before merging unknowns). The losing `AbsorbBinary` (`eval/internal/cel_host_error.cc`) was aligned to error-dominant; kernel + `engine.cc` were already correct. Both orderings pinned at kernel (`cel_arith_test.cc`) and host (`cel_host_error_test.cc`) layers. Conformance held at 1966 |
+| V4 ✅ RESOLVED 2026-06-10 | Error wire contract end-to-end: does `%v` on a production error render garbage, and does wire code 18 decode as kHostAdapterError? | R41/R42/R44; ABI doc §8.1 | Both confirmed and fixed: the bare-code wire is the crowned contract. `%v` (`eval/host/cel_log.cc::FormatError`) rewritten to read `payload.err` as the bare code (`error(code=N)`), dead descriptor shape + its fixture-pinning test removed; `DecodeCelError` (`eval/instance.cc`) gained the missing `kInvalidArgument` arm — wire 18 now decodes as kInvalidArgument/"invalid_argument" (example 08 + smoke assertion updated). The exhaustive round-trip test (`instance_test.cc::ErrorCodeRoundTripTest`, all 14 named codes + out-of-enum byte) also exposed and closed an encode-side gap: `WireErrorCode` collapsed kDuplicateKey/kUnknownType/kCustomFnFailed/kTimeout to TYPE_MISMATCH; now maps all named codes (CEL_ERR_UNKNOWN_TYPE/CUSTOM_FN_FAILED/TIMEOUT appended to `cel_data.h`) and passes unnamed numerics through. Message loss on the wire remains contract (backlog #31 open) |
 | V5 ⚑ | What does a `@native` (kCelDefined) library do end-to-end today? | R2/R3; the custom-fn doc's architectural fork decision (reject-at-Compile vs build the library-module producer vs port master-local's inlining) | cc_test: `SetModuleName("foo").AddCelDefined("is_num", bool, {string}, "s == '1'")` → Compile `is_num('1')` → Plan; assert the failure shape (expected: unresolved import at instantiate) |
 | V6 ⚑ | Pin `ir::Repr` numeric values | R35; ABI doc wire-stability claim | Add explicit `= N` initializers (or static_asserts) + a test `EXPECT_EQ(static_cast<uint32_t>(Repr::kOptional), 15u)` per member |
 | V7 | Is the `variables[]` positional invariant false under comprehensions? | R30; cel_abi.proto comment vs emitter | Compile `xs.map(i, i + y)` with `{"xs:list<int>","y:int"}`, decode, assert `variables(1).local_index()` (predicted 3, not 1); fix proto comment or re-densify |

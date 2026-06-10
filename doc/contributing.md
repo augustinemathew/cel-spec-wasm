@@ -1,8 +1,22 @@
-# Contributing to celwasmc
+# Contributing to cel-wasm
 
 This document is the code-change workflow for the CEL → WASM compiler.
 The rules in [CLAUDE.md](../CLAUDE.md) take precedence over anything
 here; this file is the concrete "how to".
+
+## First build on a fresh clone
+
+Vendored cel-cpp is fetched on demand (only `third_party/cel-cpp.sha`
+is committed).  Before the first build:
+
+```bash
+third_party/fetch_cel_cpp.sh   # clones cel-cpp at the pinned SHA
+bazel build //...              # first build compiles cel-cpp: ~10 min cold
+```
+
+Skipping the fetch fails module resolution (`cel-cpp` is a
+`local_path_override` in `MODULE.bazel`).  Subsequent builds are
+incremental and fast.
 
 ## Tool install (one-off)
 

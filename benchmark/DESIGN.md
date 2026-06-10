@@ -1,7 +1,11 @@
 # `benchmark/` — design
 
-**Status:** design, drafted 2026-06-06.  Prototype landed 2026-06-06
-(see §1.4).  Iteration in progress.
+**Status:** shipped — the system this doc designs is built and was
+used for the production m28 three-way run.  **Current numbers live in
+`doc/implementation-plan/rewrite/m28-bench-results.md`** (232-cell
+corpus, geomean 0.95×, honest win/loss tables); the §1.4 prototype
+table below is the 2026-06-06 first-light snapshot and is superseded —
+do not quote it.
 
 Canonical spec for the comparative benchmarking system layered on top
 of the existing `bench/` tree.  Implementation proceeds against this

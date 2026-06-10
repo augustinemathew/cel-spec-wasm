@@ -31,7 +31,7 @@ pass counts are identical between fastbuild and -c opt.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1966 (80.1%)  skip=481 (19.6%)  fail=7 (0.3%)
+total=2454  pass=1972 (80.4%)  skip=481 (19.6%)  fail=1 (0.0%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -140,11 +140,11 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `basic.textproto`            |  43 |  37 |   6 |   0 | 86% | disable_check=4 static_subset=2 |
 | `macros.textproto`           |  44 |  38 |   6 |   0 | 86% | static_subset=6 |
 | `macros2.textproto`          |  46 |  39 |   7 |   0 | 84% | static_subset=7 |
-| `proto3.textproto`           |  85 |  70 |  13 |   2 | 82% | disable_check=6 static_subset=7 |
+| `proto3.textproto`           |  85 |  72 |  13 |   0 | 84% | disable_check=6 static_subset=7 |
 | `plumbing.textproto`         |   5 |   4 |   1 |   0 | 80% | disable_check=1 |
 | `string_ext.textproto`       | 216 | 172 |  44 |   0 | 79% | disable_check=44 |
+| `proto2.textproto`           | 118 |  93 |  25 |   0 | 78% | disable_check=6 static_subset=19 |
 | `enums.textproto`            |  85 |  65 |  20 |   0 | 76% | disable_check=2 spec_unimpl=18 |
-| `proto2.textproto`           | 118 |  89 |  25 |   4 | 75% | disable_check=6 static_subset=19 |
 | `namespace.textproto`        |  14 |  10 |   4 |   0 | 71% | disable_check=4 |
 | `logic.textproto`            |  30 |  21 |   9 |   0 | 70% | disable_check=9 |
 | `dynamic.textproto`          | 226 | 134 |  92 |   0 | 59% | disable_check=20 static_subset=72 |
@@ -167,7 +167,7 @@ is hand-maintained):
 | `disable_check`  | 144 | Out-of-scope by design (parse-only eval). |
 | `ext_unimpl`     |  55 | Scope-not-shipped — extensions pass (the largest single bucket; covers all of `math_ext` / `string_ext` / `optionals` / `network_ext` / `block_ext` / `encoders_ext` plus a handful of ext-shaped rows scattered through proto2/proto3/wrappers). |
 | `check_only`     |  25 | Scope-not-shipped — `typed_result` `check_only:true` rows in `type_deduction.textproto`. |
-| `spec_unimpl`    |  18 | _New category — fill in disposition prose._ |
+| `spec_unimpl`    |  18 | Spec surface the reference implementation itself doesn't honour — strong-typed enums (`enums.textproto`); cel-cpp decays enums to plain `int`, so these rows fail against cel-cpp too.  Reclassified FAIL→SKIP with the parity citation in cleanup-backlog #39. |
 | `type_env`       |  12 | Scope-not-shipped — `binding_marshal` doesn't yet decode aggregate `type_env` decls. |
 | **Total**          | **481** | |
 <!-- END AUTOGEN skip-totals -->
@@ -181,39 +181,33 @@ Of the 481 SKIPs: ~371 are out-of-scope by design
 (`disable_check` + `static_subset`); the rest (110) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2454 - 371 = 2083) is **94%**.
+(2454 - 371 = 2083) is **95%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets
 
-93 FAILs across 14 fixtures — every one is a real gap, not a
-classifier miss.  Buckets sorted by FAIL count; cleanup-backlog
-references point at the tracked follow-up slice.
+1 FAIL in the whole corpus — a real gap, tracked by an open
+cleanup-backlog entry.  (Exact row + expression:
+`bazel run //conformance:run_conformance -- --max_fail_examples=20`.)
+(The 2026-06-10 burndown flipped 6 rows to PASS: the 4 mixed-origin
+map-equality rows — `proto{2,3} set_null/map_{timestamp,duration}_null_pruned`,
+cleanup-backlog #12 — and the 2 repeated-extension list-equality rows —
+`proto2 extensions_get/*_repeated_test_all_types`, the #40 remainder.)
 
 | Fixture | FAIL | Root cause |
 |---|---:|---|
-| `proto2.textproto`        | 20 | proto2 **extension fields** — backtick-qualified extension selectors `msg.​`pkg.ext`` are unsupported: `has()` returns the wrong bool, the read errors out (18; same feature the standalone `proto2_ext.textproto` SKIPs as `ext_unimpl`).  Plus mixed-origin map equality on a null-pruned WKT map (2, cleanup-backlog #12). |
-| `parse.textproto`         | 19 | TextFormat-roundtrip rows, quoted-key map rows, and parse-error matcher cases the harness doesn't yet diff. |
-| `enums.textproto`         | 18 | Enums decay to plain `int`: `type(GlobalEnum.GOO)` yields `int` not the enum type (6); the `EnumType(i)` / `EnumType('NAME')` constructor and strong-enum field assignment are rejected by the checker (12).  One feature — real enum types in checker + runtime; descoped deliberately (cel-cpp itself decays enums to int, see `rewrite/m20-enum-field-range.md` §6).  The out-of-int32-range enum-field assignment rows were fixed in M20. |
-| `fields.textproto`        |  6 | `has({...}.k)` map-dispatch gap — `kSelect` on a literal map operand (cleanup-backlog #9). |
-| `conversions.textproto`   |  5 | `double('123.456')` precision — string→double parse and embedded-literal double differ by 1 ULP; `CompareDouble` uses `==`. |
-| `dynamic.textproto`       |  5 | `dyn(...)` constructions that escape `RejectDyn` (heterogeneous aggregates reaching codegen).  The int32/uint32 `field_assign_*_range` rows were fixed in M20. |
-| `proto3.textproto`        |  4 | Unset singular message field returns `null` instead of the default message instance, so the subfield read errors (2); mixed-origin map equality (2, cleanup-backlog #12). |
-| `namespace.textproto`     |  4 | Namespace-shadowing resolution (`cel.bind(x, ..., x.y)` resolves the wrong `x` against a container-qualified shape). |
-| `optionals.textproto`     |  4 | Map-index / optional-index select on a map operand — `.c['k']` / `.c[?'k']` errors (3, cleanup-backlog #9); `optional.ofNonZeroValue(<message>)` traps at eval (1, cleanup-backlog #10). |
-| `type_deduction.textproto`|  2 | `null`-assignable-to-wrapper-field rows that produce `null` but the matcher expects `message`. |
-| `string.textproto`        |  2 | `size('multibyte')` — we count code points but the matcher expects byte length (or vice versa). |
-| `lists.textproto`         |  2 | `[7,8,9][dyn(0.0)]` / `[dyn(0u)]` — dyn-typed index reaches past the static-subset gate. |
-| `timestamps.textproto`    |  1 | `string(timestamp('9999-12-31T23:59:59.999999999Z'))` — nanosecond precision in the conversion. |
-| `bindings_ext.textproto`  |  1 | `kSelect` on a map operand (`{...}.x` inside a `cel.bind`) — cleanup-backlog #9. |
+| `optionals.textproto`| 1 | `optional.ofNonZeroValue(<message-with-optional-field>)` traps at eval inside `cel_optional_of_non_zero_at_v` (cleanup-backlog #10). |
 
 ## Future work
 
-  - **CI gate.**  `run_conformance` exits 0 unconditionally.  Two
-    viable shapes: a corpus-wide `kFail == 0` cc_test (now within
-    reach — 93 FAILs left, all real gaps that a few targeted
-    fixes would close), or a pinned-`(pass, fail)`-per-fixture
-    tuple test (catches both regressions and silent graduations).
+  - **CI gate.**  `run_conformance` itself exits 0 unconditionally,
+    but `scripts/check_conformance_monotonic.sh` (the pre-push +
+    CI gate) now enforces BOTH directions per link mode: pass-count
+    floor (`conformance/.baseline{,_static}`) and FAIL-count ceiling
+    (`conformance/.max_fail{,_static}`, currently 1) — a SKIP→FAIL
+    conversion at flat pass count no longer slips through.  Possible
+    later refinement: a pinned-`(pass, fail)`-per-fixture tuple test
+    (catches silent graduations too).
   - **Single corpus list.**  `SIMPLE_TESTDATA` (BUILD), `DefaultCorpus()`
     (run_conformance.cc), and `ForceLinkFixtureDescriptors`
     (runner.cc) must currently be edited together when a fixture
