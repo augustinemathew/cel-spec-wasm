@@ -31,7 +31,7 @@ pass counts are identical between fastbuild and -c opt.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2454  pass=1972 (80.4%)  skip=481 (19.6%)  fail=1 (0.0%)
+total=2454  pass=1973 (80.4%)  skip=481 (19.6%)  fail=0 (0.0%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -151,7 +151,7 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | `fields.textproto`           |  60 |  32 |  28 |   0 | 53% | disable_check=5 static_subset=15 type_env=8 |
 | `wrappers.textproto`         |  36 |  18 |  18 |   0 | 50% | static_subset=18 |
 | `type_deduction.textproto`   |  47 |  22 |  25 |   0 | 46% | check_only=25 |
-| `optionals.textproto`        |  70 |  25 |  44 |   1 | 35% | static_subset=44 |
+| `optionals.textproto`        |  70 |  26 |  44 |   0 | 37% | static_subset=44 |
 | `block_ext.textproto`        |  37 |   0 |  37 |   0 |  0% | ext_unimpl=37 |
 | `proto2_ext.textproto`       |  18 |   0 |  18 |   0 |  0% | ext_unimpl=18 |
 | `unknowns.textproto`         |   0 |   0 |   0 |   0 |  —  | (empty fixture) |
@@ -186,17 +186,16 @@ graduate.  Effective pass rate against the addressable corpus
 
 ## Top remaining FAIL buckets
 
-1 FAIL in the whole corpus — a real gap, tracked by an open
-cleanup-backlog entry.  (Exact row + expression:
-`bazel run //conformance:run_conformance -- --max_fail_examples=20`.)
-(The 2026-06-10 burndown flipped 6 rows to PASS: the 4 mixed-origin
-map-equality rows — `proto{2,3} set_null/map_{timestamp,duration}_null_pruned`,
-cleanup-backlog #12 — and the 2 repeated-extension list-equality rows —
-`proto2 extensions_get/*_repeated_test_all_types`, the #40 remainder.)
-
-| Fixture | FAIL | Root cause |
-|---|---:|---|
-| `optionals.textproto`| 1 | `optional.ofNonZeroValue(<message-with-optional-field>)` traps at eval inside `cel_optional_of_non_zero_at_v` (cleanup-backlog #10). |
+**0 FAIL in the whole corpus** (both link modes).  The last FAIL —
+`optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`,
+the `optional.ofNonZeroValue(<message>)` zero-predicate trap — was
+fixed 2026-06-10 by the `cel_host.cel_message_is_zero` probe
+(cleanup-backlog #10, now closed; 1972 → 1973 PASS per mode).
+(The same day's earlier burndown flipped 6 rows to PASS: the 4
+mixed-origin map-equality rows — `proto{2,3}
+set_null/map_{timestamp,duration}_null_pruned`, cleanup-backlog #12 —
+and the 2 repeated-extension list-equality rows — `proto2
+extensions_get/*_repeated_test_all_types`, the #40 remainder.)
 
 ## Future work
 
@@ -204,7 +203,7 @@ cleanup-backlog #12 — and the 2 repeated-extension list-equality rows —
     but `scripts/check_conformance_monotonic.sh` (the pre-push +
     CI gate) now enforces BOTH directions per link mode: pass-count
     floor (`conformance/.baseline{,_static}`) and FAIL-count ceiling
-    (`conformance/.max_fail{,_static}`, currently 1) — a SKIP→FAIL
+    (`conformance/.max_fail{,_static}`, currently 0) — a SKIP→FAIL
     conversion at flat pass count no longer slips through.  Possible
     later refinement: a pinned-`(pass, fail)`-per-fixture tuple test
     (catches silent graduations too).

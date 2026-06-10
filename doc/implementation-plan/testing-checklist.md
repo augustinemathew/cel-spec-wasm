@@ -2984,6 +2984,54 @@ Settled the two error-side forks of `doc/design/03-abi-and-memory.md`
         decode (`error value: invalid_argument`).
   - [x] conformance gate held at 1966/1966 (static + dynamic).
 
+## Host-backed `ofNonZeroValue` zero predicate (cleanup-backlog #10, 2026-06-10)
+
+Replaced the three `__builtin_trap()` arms of
+`runtime/cel_optional.c::is_zero_value` (CEL_MESSAGE / CEL_LIST_HOST
+/ CEL_MAP_HOST) with host probes; new host import
+`cel_host.cel_message_is_zero(out_slot, msg_slot)` (cel-cpp parity:
+`ParsedMessageValue::IsZeroValue()`, parsed_message_value.cc:78).
+Conformance: 1972 → 1973 PASS, 1 → 0 FAIL, both link modes — the
+corpus' last FAIL row
+(`optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`)
+now passes.
+
+  - [x] oracle pins added BEFORE the fix (the oracle gained
+        optional-type support: `OptionalCompilerLibrary` +
+        `extensions::EnableOptionalTypes` in
+        `testdata/cel_cpp_oracle.cc`):
+        `cel_cpp_oracle_test.cc::OptionalOfNonZeroValueMessage.
+        {ConformanceRowOracleIsFalse,ZeroMessageOracleIsFalse,
+        NonZeroMessageOracleIsTrue}` + the three `*Agrees`
+        differentials.
+  - [x] WAT-first: `rewrite/wat/69_optional_of_non_zero_message.wat`
+        (`wat-traces.md` §69) run end-to-end through `wat_runner`
+        with a scripted 2-arg stub, both verdicts
+        (`wat_runner_test.cc::WatRunnerM14Test.
+        OptionalOfNonZeroOn{Zero,NonZero}MessageProduces{None,Some}`);
+        wat_runner grew the generic `CelHostTwoArgStub` surface.
+  - [x] kernel matrix: `runtime/cel_optional_test.cc` — every
+        CelKind arm now covered (scalars zero+non-zero incl. -0.0,
+        string/bytes empty+non-empty, arena list/map empty+non-empty,
+        duration/timestamp zero+non-zero, type, IP/CIDR never-zero,
+        ERROR/UNKNOWN propagation, host list/map/message via
+        strong-override probes incl. poison-result → Some and the
+        inner-cell-offset recursion pin).
+  - [x] trampoline matrix: `eval/internal/cel_host_test.cc::
+        CelMessageIsZeroTest` (11 cases: proto3/proto2 zero, set
+        field, field-set-to-default stays zero, only-unknown-fields
+        non-zero, OwnedProtoBacking, UNKNOWN/ERROR propagation,
+        non-message kTypeMismatch, unmapped slot + non-proto backing
+        kHostAdapterError).
+  - [x] catalogue row in `abi/runtime_host_env.textproto` +
+        trampoline in `cel_host_wasmtime.cc` (bijection CHECKs keep
+        them locked); runtime-wasm instantiation stub in
+        `cel_runtime_wasm_test.cc`.
+  - [x] e2e, both link modes: `e2e/m14_test.cc::
+        ProtoOptionalFieldE2ETest.{OfNonZeroValueOnNonZeroMessageHasValue
+        (un-skipped known-bug case),OfNonZeroValueOnZeroMessageIsNone,
+        OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

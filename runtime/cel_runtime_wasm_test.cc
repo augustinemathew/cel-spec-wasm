@@ -354,6 +354,9 @@ struct RuntimeHarness {
       {"cel_map_in", 10, 3},
       {"cel_map_eq", 10, 3},
       {"cel_message_eq", 14, 3},
+      // `is_zero_value`'s CEL_MESSAGE arm (optional.ofNonZeroValue)
+      // imports the proto zero-value probe unconditionally.
+      {"cel_message_is_zero", 19, 2},
       // M9.B: `type(message)` descriptor-FQN resolver.  M7B.E:
       // timestamp-with-TZ accessor trampoline.  Both unconditional
       // imports.

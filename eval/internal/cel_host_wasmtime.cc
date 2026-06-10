@@ -327,6 +327,16 @@ extern "C" wasm_trap_t* CelMessageEqTrampoline(
   return HostThreeArgTrampoline<CelMessageEqImpl>(env_ptr, caller, args);
 }
 
+// cel_host.cel_message_is_zero — `(out_slot, msg_slot)` → ().  The
+// proto zero-value probe behind `optional.ofNonZeroValue(<message>)`;
+// Layer-2 body lives in `cel_host.cc`.
+extern "C" wasm_trap_t* CelMessageIsZeroTrampoline(
+    void* absl_nonnull env_ptr, wasmtime_caller_t* absl_nonnull caller,
+    const wasmtime_val_t* args, size_t /*nargs*/, wasmtime_val_t* /*results*/,
+    size_t /*nresults*/) {
+  return HostTwoArgTrampoline<CelMessageIsZeroImpl>(env_ptr, caller, args);
+}
+
 // cel_host.cel_make_message — `(type_id, out_slot)` → ().
 // Same shape as `HostTwoArgTrampoline` but the impl arity matches
 // `(uint32_t type_id, uint32_t out_slot, const TrampolineContext&)`.
@@ -507,6 +517,7 @@ constexpr HostTrampoline kHostTrampolines[] = {
     {"cel_map_in", &CelMapInTrampoline},
     {"cel_map_eq", &CelMapEqTrampoline},
     {"cel_message_eq", &CelMessageEqTrampoline},
+    {"cel_message_is_zero", &CelMessageIsZeroTrampoline},
     {"cel_make_message", &CelMakeMessageTrampoline},
     {"cel_set_field", &CelSetFieldTrampoline},
     {"resolve_message_type_name", &CelResolveMessageTypeNameTrampoline},

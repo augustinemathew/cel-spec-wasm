@@ -394,6 +394,65 @@ absl::Status RegisterCelHostThreeArgStub(wasmtime_linker_t* linker,
   return absl::OkStatus();
 }
 
+// 2-arg stub trampoline state — mirrors ThreeArgStubEnv.
+struct TwoArgStubEnv {
+  CelHostTwoArgStub stub;
+};
+
+void DeleteTwoArgStubEnv(void* p) {
+  delete static_cast<TwoArgStubEnv*>(p);
+}
+
+wasm_trap_t* TwoArgStubTrampoline(void* env, wasmtime_caller_t* caller,
+                                  const wasmtime_val_t* args, size_t nargs,
+                                  wasmtime_val_t* /*results*/,
+                                  size_t /*nresults*/) {
+  if (nargs != 2 || args[0].kind != WASMTIME_I32 ||
+      args[1].kind != WASMTIME_I32) {
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner 2-arg stub: expected 2 × i32 args";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  const auto out_slot = static_cast<uint32_t>(args[0].of.i32);
+  const auto operand_slot = static_cast<uint32_t>(args[1].of.i32);
+
+  wasmtime_extern_t ext;
+  const char kName[] = "memory";
+  if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
+    wasm_byte_vec_t msg;
+    const char kMsg[] = "wat_runner 2-arg stub: caller has no memory export";
+    wasm_byte_vec_new(&msg, sizeof(kMsg) - 1, kMsg);
+    wasm_trap_t* t = wasm_trap_new(nullptr, &msg);
+    wasm_byte_vec_delete(&msg);
+    return t;
+  }
+  uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
+  size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
+
+  static_cast<TwoArgStubEnv*>(env)->stub(out_slot, operand_slot, base, size);
+  return nullptr;
+}
+
+absl::Status RegisterCelHostTwoArgStub(wasmtime_linker_t* linker,
+                                       absl::string_view name,
+                                       CelHostTwoArgStub stub) {
+  auto* env = new TwoArgStubEnv{std::move(stub)};
+  wasm_functype_t* type = HostTwoArgTrampolineType();
+  const char kModule[] = "cel_host";
+  wasmtime_error_t* err = wasmtime_linker_define_func(
+      linker, kModule, sizeof(kModule) - 1, name.data(), name.size(), type,
+      TwoArgStubTrampoline, env, DeleteTwoArgStubEnv);
+  wasm_functype_delete(type);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(
+        absl::StrCat("linker.define(cel_host.", name, ")"), err);
+  }
+  return absl::OkStatus();
+}
+
 // ── WAT → wasm bytes ─────────────────────────────────────
 
 absl::StatusOr<std::vector<uint8_t>> Wat2Wasm(absl::string_view wat) {
@@ -612,6 +671,21 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
   if (auto st = RegisterOptionalThreeArg(linker, "cel_set_field",
                                          input.cel_host_cel_set_field_stub);
       !st.ok()) {
+    return st;
+  }
+  // `cel_host.cel_message_is_zero(out_slot, msg_slot)` — the proto
+  // zero-value probe behind `optional.ofNonZeroValue(<message>)`.
+  // Overridable so the of-non-zero-message WAT can script the host
+  // verdict (true → None, false → Some); no-op otherwise.
+  if (input.cel_host_cel_message_is_zero_stub) {
+    if (auto st =
+            RegisterCelHostTwoArgStub(linker, "cel_message_is_zero",
+                                      input.cel_host_cel_message_is_zero_stub);
+        !st.ok()) {
+      return st;
+    }
+  } else if (auto st = RegisterCelHostTwoArgNoop(linker, "cel_message_is_zero");
+             !st.ok()) {
     return st;
   }
   return RegisterCelHostBulkNoopImports(linker);

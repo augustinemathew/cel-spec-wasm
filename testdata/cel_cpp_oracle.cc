@@ -22,6 +22,7 @@
 #include "common/value.h"
 #include "compiler/compiler.h"
 #include "compiler/compiler_factory.h"
+#include "compiler/optional.h"
 #include "compiler/standard_library.h"
 #include "extensions/protobuf/enum_adapter.h"
 #include "extensions/protobuf/runtime_adapter.h"
@@ -29,6 +30,7 @@
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/generated_message_reflection.h"
 #include "runtime/activation.h"
+#include "runtime/optional_types.h"
 #include "runtime/reference_resolver.h"
 #include "runtime/runtime.h"
 #include "runtime/runtime_options.h"
@@ -40,13 +42,14 @@ namespace {
 // Force the proto2/proto3 conformance descriptors (incl. GlobalEnum /
 // TestAllTypes.NestedEnum) into the generated descriptor pool, so the
 // container-qualified names resolve.
-const bool kLinked = [] {
-  google::protobuf::LinkMessageReflection<
-      ::cel::expr::conformance::proto2::TestAllTypes>();
-  google::protobuf::LinkMessageReflection<
-      ::cel::expr::conformance::proto3::TestAllTypes>();
-  return true;
-}();
+const bool kLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<
+          ::cel::expr::conformance::proto2::TestAllTypes>();
+      google::protobuf::LinkMessageReflection<
+          ::cel::expr::conformance::proto3::TestAllTypes>();
+      return true;
+    }();
 
 // Parse a dotted unknown-pattern string into a cel::AttributePattern.
 // A bare name (`"xs"`) is a whole-variable pattern; dotted segments
@@ -59,7 +62,7 @@ cel::AttributePattern ParseAttributePattern(absl::string_view dotted) {
     quals.push_back(
         cel::AttributeQualifierPattern::OfString(std::string(parts[i])));
   }
-  return cel::AttributePattern(std::move(variable), std::move(quals));
+  return {std::move(variable), std::move(quals)};
 }
 
 // Build a cel-cpp runtime configured like the modern conformance
@@ -88,6 +91,13 @@ absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
   if (auto s = cel::EnableReferenceResolver(
           *builder, cel::ReferenceResolverEnabled::kAlways);
       !s.ok()) {
+    return s;
+  }
+  // Optional-type support (`optional.of` / `optional.ofNonZeroValue` /
+  // `.hasValue()` / `Msg{?field: ...}`), mirroring the conformance
+  // service's runtime configuration.  Paired with the
+  // `OptionalCompilerLibrary` registration in `CompileSource`.
+  if (auto s = cel::extensions::EnableOptionalTypes(*builder); !s.ok()) {
     return s;
   }
   auto& registry = builder->type_registry();
@@ -123,6 +133,14 @@ absl::StatusOr<cel::expr::CheckedExpr> CompileSource(
   auto compiler_builder = cel::NewCompilerBuilder(pool);
   if (!compiler_builder.ok()) return compiler_builder.status();
   if (auto s = (*compiler_builder)->AddLibrary(cel::StandardCompilerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  // Optional syntax + decls (`?field:`, the optional macros, the
+  // `optional_type` decls).  Keeps the oracle able to answer
+  // optional-typed questions, e.g. the `optional.ofNonZeroValue`
+  // zero-value pins.
+  if (auto s = (*compiler_builder)->AddLibrary(cel::OptionalCompilerLibrary());
       !s.ok()) {
     return s;
   }

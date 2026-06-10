@@ -643,6 +643,23 @@ ABSL_MUST_USE_RESULT absl::Status CelMessageEqImpl(
     uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
     const TrampolineContext& ctx);
 
+// cel_host.cel_message_is_zero — proto-message zero-value probe for
+// `optional.ofNonZeroValue`.  Reads the CEL_MESSAGE CelValue at
+// `msg_slot`, dereferences `payload.msg_slot` via `ctx.refs`, and
+// writes a CEL_BOOL at `out_slot`: true iff the backing proto has no
+// set fields (`Reflection::ListFields` is empty) AND an empty
+// unknown-field set — cel-cpp parity with
+// `ParsedMessageValue::IsZeroValue()`
+// (third_party/cel-cpp/common/values/parsed_message_value.cc:78).
+// UNKNOWN / ERROR operands propagate 3VL; a non-CEL_MESSAGE operand
+// poisons kTypeMismatch; an unmapped msg_slot or a non-proto custom
+// backing (`message() == nullptr` — no reflection to walk, and
+// `HostMessageBacking` has no zero-value hook) poisons
+// kHostAdapterError.  The wasm caller treats any non-BOOL result as
+// "non-zero" so the operand propagates as Some instead of vanishing.
+ABSL_MUST_USE_RESULT absl::Status CelMessageIsZeroImpl(
+    uint32_t out_slot, uint32_t msg_slot, const TrampolineContext& ctx);
+
 // cel_host.cel_make_message — proto literal construction.
 //   1. Resolve `type_id` against `bindings.message_types` →
 //      `Descriptor*` (kTypeMismatch CEL_ERROR if id is the sentinel

@@ -12,23 +12,25 @@
 //   - cel_equals_at_vv arm: None==None, present mismatch, Some(==),
 //     Some(!=) with inner recursion.
 //
-// The corpus row `optional.ofNonZeroValue(<HOST_MESSAGE>)` is out of
-// scope for Slice A — `is_zero_value` traps on CEL_LIST_HOST /
-// CEL_MAP_HOST / CEL_MESSAGE until the host trampoline lands in
-// Slice B.  Negative coverage for those kinds is the trap itself
-// (CLAUDE.md "Unimplemented features" — crash at the call site).
+// The host-backed arms of the zero predicate (CEL_LIST_HOST /
+// CEL_MAP_HOST via the `cel_host.cel_*_size` probes, CEL_MESSAGE via
+// `cel_host.cel_message_is_zero`) are exercised against strong-symbol
+// test overrides of the weak host stubs — the overrides record the
+// invocation slot and write a caller-scripted result CelValue, so the
+// tests pin both the wire contract (which slot the kernel passes) and
+// the result interpretation (BOOL/INT vs poison).
 
 #include "runtime/cel_optional.h"
 
 #include <cstdint>
 #include <cstring>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_memory.h"
 #include "runtime/cel_runtime.h"
-#include "gtest/gtest.h"
 
 extern "C" {
 // `cel_equals_at_vv` is wasm-exported by `cel_runtime.c` but not
@@ -55,12 +57,42 @@ struct HostSetFieldCall {
 namespace {
 HostSetFieldCall g_host_set_field_last;
 int g_host_set_field_calls = 0;
+
+// Scripted result + invocation recording for the zero-predicate host
+// probes (`cel_host_cel_message_is_zero`, `cel_host_cel_list_size`,
+// `cel_host_cel_map_size`).  Each strong override below copies the
+// matching `g_*_result` CelValue into the kernel-supplied out_slot
+// and records which operand slot the kernel passed — the recorded
+// slot is the wire-contract assertion (the kernel must hand the host
+// the operand's own slot, or the inner-cell offset on recursion).
+CelValue g_message_is_zero_result;
+uint32_t g_message_is_zero_last_msg_slot = 0;
+int g_message_is_zero_calls = 0;
+CelValue g_list_size_result;
+uint32_t g_list_size_last_slot = 0;
+CelValue g_map_size_result;
+uint32_t g_map_size_last_slot = 0;
 }  // namespace
 extern "C" {
 void cel_host_cel_set_field(uint32_t msg_slot, uint32_t field_ref_id,
                             uint32_t value_slot) {
   g_host_set_field_last = {msg_slot, field_ref_id, value_slot};
   ++g_host_set_field_calls;
+}
+// Strong overrides of the weak host-build stubs (declared in
+// cel_optional.c / cel_runtime.c).
+void cel_host_cel_message_is_zero(uint32_t out_slot, uint32_t msg_slot) {
+  g_message_is_zero_last_msg_slot = msg_slot;
+  ++g_message_is_zero_calls;
+  *cel_value_at(out_slot) = g_message_is_zero_result;
+}
+void cel_host_cel_list_size(uint32_t out_slot, uint32_t list_slot) {
+  g_list_size_last_slot = list_slot;
+  *cel_value_at(out_slot) = g_list_size_result;
+}
+void cel_host_cel_map_size(uint32_t out_slot, uint32_t map_slot) {
+  g_map_size_last_slot = map_slot;
+  *cel_value_at(out_slot) = g_map_size_result;
 }
 }
 
@@ -74,6 +106,30 @@ class OptionalTest : public ::testing::Test {
     arena_reset();
     g_host_set_field_calls = 0;
     g_host_set_field_last = {};
+    g_message_is_zero_result = {};
+    g_message_is_zero_last_msg_slot = 0;
+    g_message_is_zero_calls = 0;
+    g_list_size_result = {};
+    g_list_size_last_slot = 0;
+    g_map_size_result = {};
+    g_map_size_last_slot = 0;
+  }
+
+  // Script the host probes' next answers.
+  static void ScriptMessageIsZero(bool is_zero) {
+    g_message_is_zero_result = {};
+    g_message_is_zero_result.kind = CEL_BOOL;
+    g_message_is_zero_result.payload.b = is_zero ? 1 : 0;
+  }
+  static void ScriptListSize(int64_t n) {
+    g_list_size_result = {};
+    g_list_size_result.kind = CEL_INT;
+    g_list_size_result.payload.i = n;
+  }
+  static void ScriptMapSize(int64_t n) {
+    g_map_size_result = {};
+    g_map_size_result.kind = CEL_INT;
+    g_map_size_result.payload.i = n;
   }
 
   // Allocates a fresh 24-byte CelValue slot in the arena and writes
@@ -112,6 +168,39 @@ class OptionalTest : public ::testing::Test {
     CelValue* v = cel_value_at(s);
     v->kind = CEL_UNKNOWN;
     v->payload.unk = attr;
+    return s;
+  }
+  // Generic kind+u32-payload slot — covers the host-handle kinds
+  // (CEL_MESSAGE / CEL_LIST_HOST / CEL_MAP_HOST via msg_slot/ref_slot,
+  // CEL_IP / CEL_CIDR via net_ref): every one of those payload arms
+  // is the u32 at payload offset 0.
+  uint32_t MakeSlotKindRef(CelKind kind, uint32_t ref) {
+    uint32_t s = MakeSlot();
+    CelValue* v = cel_value_at(s);
+    v->kind = kind;
+    v->payload.msg_slot = ref;
+    return s;
+  }
+  uint32_t MakeSlotUint(uint64_t u) {
+    uint32_t s = MakeSlot();
+    CelValue* v = cel_value_at(s);
+    v->kind = CEL_UINT;
+    v->payload.u = u;
+    return s;
+  }
+  uint32_t MakeSlotDouble(double d) {
+    uint32_t s = MakeSlot();
+    CelValue* v = cel_value_at(s);
+    v->kind = CEL_DOUBLE;
+    v->payload.d = d;
+    return s;
+  }
+  uint32_t MakeSlotDurTs(CelKind kind, int64_t seconds, int32_t nanos) {
+    uint32_t s = MakeSlot();
+    CelValue* v = cel_value_at(s);
+    v->kind = kind;
+    v->payload.dur.seconds = seconds;
+    v->payload.dur.nanos = nanos;
     return s;
   }
   uint32_t MakeSlotString(const char* bytes, uint32_t len) {
@@ -245,6 +334,263 @@ TEST_F(OptionalTest, OfNonZeroValueNestedSomeNonZeroProducesSome) {
   cel_optional_of_at_v(inner_opt, inner_v);
   cel_optional_of_non_zero_at_v(out, inner_opt);
   EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+// ── ofNonZeroValue: remaining scalar / span / arena kinds ──
+// One zero + one non-zero case per kind, completing the per-kind
+// matrix the WAT trace locks (wat/m14_optional_of_non_zero.wat).
+
+TEST_F(OptionalTest, OfNonZeroValueZeroUintProducesNone) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotUint(0));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonZeroUintProducesSome) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotUint(7));
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueZeroDoubleProducesNone) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDouble(0.0));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNegativeZeroDoubleProducesNone) {
+  // -0.0 == 0.0 — matches cel-cpp `DoubleValue::IsZeroValue`.
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDouble(-0.0));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonZeroDoubleProducesSome) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDouble(0.5));
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEmptyBytesProducesNone) {
+  uint32_t out = MakeSlot();
+  uint32_t v = MakeSlotString("", 0);
+  cel_value_at(v)->kind = CEL_BYTES;  // same CelSpan payload arm
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEmptyBytesProducesSome) {
+  uint32_t out = MakeSlot();
+  uint32_t v = MakeSlotString("\x00\x01", 2);
+  cel_value_at(v)->kind = CEL_BYTES;
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEmptyArenaListProducesNone) {
+  uint32_t list = MakeSlot();
+  cel_list_create(list, 0);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, list);
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEmptyArenaListProducesSome) {
+  uint32_t list = MakeSlot();
+  cel_list_create(list, 1);
+  cel_list_append_at(list, MakeSlotInt(1));
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, list);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEmptyArenaMapProducesNone) {
+  uint32_t map = MakeSlot();
+  cel_map_create(map, 0);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, map);
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEmptyArenaMapProducesSome) {
+  uint32_t map = MakeSlot();
+  cel_map_create(map, 1);
+  cel_map_insert(map, MakeSlotString("k", 1), MakeSlotInt(1));
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, map);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueZeroDurationProducesNone) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDurTs(CEL_DURATION, 0, 0));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNanosOnlyDurationProducesSome) {
+  // seconds==0 but nanos!=0 is NOT zero — both fields must be 0.
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDurTs(CEL_DURATION, 0, 1));
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEpochTimestampProducesNone) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDurTs(CEL_TIMESTAMP, 0, 0));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEpochTimestampProducesSome) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotDurTs(CEL_TIMESTAMP, 1234, 0));
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueTypeProducesSome) {
+  // A type carries identity; never zero — even with an empty name
+  // span (cel-cpp `TypeValue::IsZeroValue() == false`).
+  uint32_t out = MakeSlot();
+  uint32_t v = MakeSlotString("int", 3);
+  cel_value_at(v)->kind = CEL_TYPE;
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueIpAndCidrProduceSome) {
+  // Opaque net-extension values carry identity; never zero.
+  uint32_t out_ip = MakeSlot();
+  cel_optional_of_non_zero_at_v(out_ip, MakeSlotKindRef(CEL_IP, 128));
+  EXPECT_EQ(CellOf(out_ip)->present, 1u);
+  uint32_t out_cidr = MakeSlot();
+  cel_optional_of_non_zero_at_v(out_cidr, MakeSlotKindRef(CEL_CIDR, 128));
+  EXPECT_EQ(CellOf(out_cidr)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueErrorPropagates) {
+  // 3VL absorption happens BEFORE the zero predicate — an ERROR
+  // operand propagates; it neither becomes None nor Some.
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotError(CEL_ERR_DIVIDE_BY_ZERO));
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(OptionalTest, OfNonZeroValueUnknownPropagates) {
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, MakeSlotUnknown(9u));
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(At(out)->payload.unk, 9u);
+}
+
+// ── ofNonZeroValue: host-backed kinds (cleanup-backlog #10) ──
+// The kernel consults the host probes; the strong stub overrides
+// above script the answers and record the operand slot the kernel
+// passed (the wire contract).
+
+TEST_F(OptionalTest, OfNonZeroValueZeroMessageProducesNone) {
+  ScriptMessageIsZero(true);
+  uint32_t v = MakeSlotKindRef(CEL_MESSAGE, /*ref=*/1);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(g_message_is_zero_calls, 1);
+  EXPECT_EQ(g_message_is_zero_last_msg_slot, v)
+      << "kernel must pass the operand's own slot to the host probe";
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonZeroMessageProducesSome) {
+  ScriptMessageIsZero(false);
+  uint32_t v = MakeSlotKindRef(CEL_MESSAGE, /*ref=*/1);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(g_message_is_zero_calls, 1);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+  EXPECT_EQ(CellOf(out)->inner.kind, static_cast<uint32_t>(CEL_MESSAGE));
+  EXPECT_EQ(CellOf(out)->inner.payload.msg_slot, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueMessagePoisonProbeProducesSome) {
+  // A non-BOOL probe result (e.g. the weak stub's TYPE_MISMATCH
+  // poison for a non-proto backing) is treated as non-zero: the
+  // operand propagates as Some instead of vanishing into None —
+  // mirrors the predicate's default-arm posture.
+  g_message_is_zero_result = {};
+  g_message_is_zero_result.kind = CEL_ERROR;
+  g_message_is_zero_result.payload.err = CEL_ERR_TYPE_MISMATCH;
+  uint32_t v = MakeSlotKindRef(CEL_MESSAGE, /*ref=*/1);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_OPTIONAL));
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEmptyHostListProducesNone) {
+  ScriptListSize(0);
+  uint32_t v = MakeSlotKindRef(CEL_LIST_HOST, /*ref=*/3);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(g_list_size_last_slot, v);
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEmptyHostListProducesSome) {
+  ScriptListSize(2);
+  uint32_t v = MakeSlotKindRef(CEL_LIST_HOST, /*ref=*/3);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+  EXPECT_EQ(CellOf(out)->inner.kind, static_cast<uint32_t>(CEL_LIST_HOST));
+}
+
+TEST_F(OptionalTest, OfNonZeroValueEmptyHostMapProducesNone) {
+  ScriptMapSize(0);
+  uint32_t v = MakeSlotKindRef(CEL_MAP_HOST, /*ref=*/4);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(g_map_size_last_slot, v);
+  EXPECT_EQ(CellOf(out)->present, 0u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNonEmptyHostMapProducesSome) {
+  ScriptMapSize(5);
+  uint32_t v = MakeSlotKindRef(CEL_MAP_HOST, /*ref=*/4);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+  EXPECT_EQ(CellOf(out)->inner.kind, static_cast<uint32_t>(CEL_MAP_HOST));
+}
+
+TEST_F(OptionalTest, OfNonZeroValueHostListPoisonProbeProducesSome) {
+  // Non-INT size probe result (host-build weak stub poison) →
+  // non-zero → Some; the operand propagates instead of vanishing.
+  g_list_size_result = {};
+  g_list_size_result.kind = CEL_ERROR;
+  g_list_size_result.payload.err = CEL_ERR_TYPE_MISMATCH;
+  uint32_t v = MakeSlotKindRef(CEL_LIST_HOST, /*ref=*/3);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, v);
+  EXPECT_EQ(CellOf(out)->present, 1u);
+}
+
+TEST_F(OptionalTest, OfNonZeroValueNestedSomeZeroMessageProducesNone) {
+  // Recursive descent into optional.of(<zero message>): the recursion
+  // must hand the host probe the INNER cell's slot (cell base + 8),
+  // not the outer optional's slot.
+  ScriptMessageIsZero(true);
+  uint32_t msg = MakeSlotKindRef(CEL_MESSAGE, /*ref=*/1);
+  uint32_t opt = MakeSlot();
+  cel_optional_of_at_v(opt, msg);
+  uint32_t out = MakeSlot();
+  cel_optional_of_non_zero_at_v(out, opt);
+  EXPECT_EQ(g_message_is_zero_calls, 1);
+  const uint32_t expected_inner_off =
+      At(opt)->payload.opt +
+      static_cast<uint32_t>(offsetof(OptionalCell, inner));
+  EXPECT_EQ(g_message_is_zero_last_msg_slot, expected_inner_off)
+      << "recursion must pass the inner CelValue's own arena offset";
+  EXPECT_EQ(CellOf(out)->present, 0u);
 }
 
 // ── hasValue / value ──────────────────────────────────────

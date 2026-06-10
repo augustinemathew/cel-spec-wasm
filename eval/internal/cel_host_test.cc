@@ -480,6 +480,164 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
             static_cast<uint32_t>(celwasm::ErrorCode::kHostAdapterError));
 }
 
+// ═══════════ CelMessageIsZeroImpl — proto zero-value probe ═══════════
+//
+// cel-cpp parity: `ParsedMessageValue::IsZeroValue()`
+// (third_party/cel-cpp/common/values/parsed_message_value.cc:78) — a
+// message is zero iff its unknown-field set is empty AND
+// `Reflection::ListFields` returns no set fields.  Expected verdicts
+// pinned empirically by `testdata/cel_cpp_oracle_test.cc`
+// (OptionalOfNonZeroValueMessage.*).
+
+// Helper: intern `backing`, stage a CEL_MESSAGE at kMsgSlot, run the
+// probe, return the out CelValue.
+CelValue RunMessageIsZero(Layer2Fixture& f,
+                          std::shared_ptr<const HostMessageBacking> backing) {
+  const uint32_t slot = f.refs.Intern(std::move(backing));
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = slot;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  auto status = CelMessageIsZeroImpl(Layer2Fixture::kOutSlot,
+                                     Layer2Fixture::kMsgSlot, f.Ctx());
+  EXPECT_THAT(status, IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+TEST(CelMessageIsZeroTest, DefaultConstructedMessageIsZero) {
+  HostMsg3 m;
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(f, std::make_shared<ProtoBacking>(&m));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 1);
+}
+
+TEST(CelMessageIsZeroTest, ProtoTwoDefaultConstructedMessageIsZero) {
+  // Proto2 explicit-presence semantics: unset fields with non-zero
+  // defaults still leave ListFields empty → zero.
+  HostMsg2 m;
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(f, std::make_shared<ProtoBacking>(&m));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 1);
+}
+
+TEST(CelMessageIsZeroTest, SetFieldMakesNonZero) {
+  HostMsg3 m;
+  m.set_i64(1);
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(f, std::make_shared<ProtoBacking>(&m));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 0);
+}
+
+TEST(CelMessageIsZeroTest, FieldSetToProto3DefaultStaysZero) {
+  // Proto3 implicit presence: setting a scalar to its default leaves
+  // ListFields empty — the message is STILL zero.  This pins the
+  // ListFields semantics (vs. a naive per-field value comparison).
+  HostMsg3 m;
+  m.set_i64(0);
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(f, std::make_shared<ProtoBacking>(&m));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 1);
+}
+
+TEST(CelMessageIsZeroTest, OnlyUnknownFieldsMakesNonZero) {
+  // cel-cpp checks the unknown-field set FIRST: a message whose only
+  // content is an unknown field is non-zero even though ListFields is
+  // empty (parsed_message_value.cc:79-81).
+  HostMsg3 m;
+  HostMsg3::GetReflection()->MutableUnknownFields(&m)->AddVarint(
+      /*number=*/9999, 1);
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(f, std::make_shared<ProtoBacking>(&m));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 0);
+}
+
+TEST(CelMessageIsZeroTest, OwnedProtoBackingParticipates) {
+  // The proto-literal construction path (`TestAllTypes{...}`) interns
+  // an OwnedProtoBacking — the probe must reach its message() too.
+  auto owned = std::make_unique<HostMsg3>();
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(
+      f, std::make_shared<OwnedProtoBacking>(std::move(owned)));
+  ASSERT_EQ(out.kind, CEL_BOOL);
+  EXPECT_EQ(out.payload.b, 1);
+}
+
+TEST(CelMessageIsZeroTest, UnknownOperandPropagates) {
+  Layer2Fixture f;
+  CelValue in{};
+  in.kind = CEL_UNKNOWN;
+  in.payload.unk = 5;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
+  ASSERT_THAT(CelMessageIsZeroImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_UNKNOWN);
+  EXPECT_EQ(out.payload.unk, 5u);
+}
+
+TEST(CelMessageIsZeroTest, ErrorOperandPropagates) {
+  Layer2Fixture f;
+  CelValue in{};
+  in.kind = CEL_ERROR;
+  in.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
+  ASSERT_THAT(CelMessageIsZeroImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_ERROR);
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kOverflow));
+}
+
+TEST(CelMessageIsZeroTest, NonMessageOperandIsTypeMismatch) {
+  Layer2Fixture f;
+  CelValue in{};
+  in.kind = CEL_INT;
+  in.payload.i = 7;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
+  ASSERT_THAT(CelMessageIsZeroImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_ERROR);
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kTypeMismatch));
+}
+
+TEST(CelMessageIsZeroTest, UnmappedSlotIsHostAdapterError) {
+  Layer2Fixture f;
+  CelValue in{};
+  in.kind = CEL_MESSAGE;
+  in.payload.msg_slot = 9999;  // never interned
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
+  ASSERT_THAT(CelMessageIsZeroImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_ERROR);
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kHostAdapterError));
+}
+
+TEST(CelMessageIsZeroTest, NonProtoBackingIsHostAdapterError) {
+  // A custom backing has no reflection to walk and no zero-value
+  // hook — clean poison, never a wrong "zero" verdict.
+  Layer2Fixture f;
+  const CelValue out = RunMessageIsZero(
+      f, std::make_shared<JsonLikeBacking>(
+             absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_EQ(out.kind, CEL_ERROR);
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kHostAdapterError));
+}
+
 // ═══════════ Layer 2 — happy paths ═══════════
 
 TEST(Layer2DispatchTest, ScalarIntField) {

@@ -7,6 +7,7 @@
 
 #include "runtime/cel_optional.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "runtime/cel_arena.h"
@@ -34,6 +35,44 @@ cel_host_cel_set_field(  // NOLINT(misc-use-internal-linkage)
   (void)field_ref_id;
   (void)value_slot;
 }
+#endif
+
+// `cel_host.cel_message_is_zero` — proto-message zero-value probe for
+// the CEL_MESSAGE arm of `is_zero_value` below.  Writes a CEL_BOOL at
+// `out_slot`: true iff the backing proto has no set fields AND an
+// empty unknown-field set (cel-cpp parity:
+// `ParsedMessageValue::IsZeroValue()`,
+// third_party/cel-cpp/common/values/parsed_message_value.cc:78).
+// Wire shape locked by `doc/.../wat/69_optional_of_non_zero_message.wat`.
+// The host-build weak stub poisons with TYPE_MISMATCH (same posture as
+// the `cel_host_cel_*_size` stubs in cel_runtime.c); tests override it
+// with a strong symbol.
+#ifdef __wasm__
+extern void cel_host_cel_message_is_zero(uint32_t out_slot, uint32_t msg_slot)
+    __attribute__((import_module("cel_host"),
+                   import_name("cel_message_is_zero")));
+#else
+__attribute__((weak)) void
+cel_host_cel_message_is_zero(  // NOLINT(misc-use-internal-linkage)
+    uint32_t out_slot, uint32_t msg_slot) {
+  (void)msg_slot;
+  poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+}
+#endif
+
+// `cel_host.cel_list_size` / `cel_host.cel_map_size` — host-backed
+// container sizes for the CEL_LIST_HOST / CEL_MAP_HOST arms of
+// `is_zero_value`.  Declared (wasm) / weak-defined (host) in
+// cel_runtime.c for the aggregate-op dispatchers; redeclared here so
+// this TU can call them.
+#ifdef __wasm__
+extern void cel_host_cel_list_size(uint32_t out_slot, uint32_t list_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_list_size")));
+extern void cel_host_cel_map_size(uint32_t out_slot, uint32_t map_slot)
+    __attribute__((import_module("cel_host"), import_name("cel_map_size")));
+#else
+extern void cel_host_cel_list_size(uint32_t out_slot, uint32_t list_slot);
+extern void cel_host_cel_map_size(uint32_t out_slot, uint32_t map_slot);
 #endif
 
 // ── Cell helpers ───────────────────────────────────────────
@@ -64,11 +103,57 @@ static void write_optional(CelValue* out, uint32_t cell_off) {
 
 // ── Zero-value predicate matrix (m14-optionals.md §3.4) ────
 
-// Forward declarations of the per-kind helpers used by ofNonZeroValue.
-// CEL_LIST_HOST / CEL_MAP_HOST / CEL_MESSAGE traps until Slice B
-// (host trampoline for the host zero-predicate); CEL_OPTIONAL recurses
-// into the inner cell.
-static int is_zero_value(const CelValue* v) {
+// Read a host-written probe result out of a fresh arena scratch slot.
+// `is_zero_value`'s host-backed arms allocate the slot, let the
+// trampoline write a CelValue into it, and interpret the result here.
+// On arena OOM (`scratch == 0` from the caller) or an unexpected
+// result kind (a poison from a host stub / non-proto backing) the
+// answer is "non-zero": the operand then propagates through
+// `cel_optional_of_at_v` instead of vanishing into None — the same
+// posture as the predicate's default arm.
+static int host_probe_says_zero(uint32_t scratch, uint32_t expected_kind) {
+  if (scratch == 0) return 0;
+  const CelValue* r = cel_value_at(scratch);
+  if (r->kind != expected_kind) return 0;
+  if (expected_kind == CEL_BOOL) return r->payload.b != 0;
+  return r->payload.i == 0;  // CEL_INT size probe: zero iff empty.
+}
+
+// Host-consulting arms of the zero predicate.  Allocates the scratch
+// slot, routes to the matching `cel_host.*` probe by kind, and
+// interprets the written result.  `kind` is one of the three
+// host-backed kinds — anything else is an invariant violation in the
+// caller's dispatch.
+static int host_value_is_zero(uint32_t kind, uint32_t v_slot) {
+  uint32_t scratch = arena_alloc((uint32_t)sizeof(CelValue));
+  if (scratch == 0) return 0;  // OOM: non-zero, operand propagates.
+  switch (kind) {
+    case CEL_LIST_HOST:
+      // Zero iff the host-backed list is empty (CEL_INT size probe).
+      cel_host_cel_list_size(scratch, v_slot);
+      return host_probe_says_zero(scratch, CEL_INT);
+    case CEL_MAP_HOST:
+      cel_host_cel_map_size(scratch, v_slot);
+      return host_probe_says_zero(scratch, CEL_INT);
+    case CEL_MESSAGE:
+      // Zero iff the backing proto has no set fields and an empty
+      // unknown-field set (cel-cpp `ParsedMessageValue::IsZeroValue()`,
+      // parsed_message_value.cc:78).  The probe writes a CEL_BOOL.
+      cel_host_cel_message_is_zero(scratch, v_slot);
+      return host_probe_says_zero(scratch, CEL_BOOL);
+    default:
+      // Closed dispatch — the caller only routes the three host-backed
+      // kinds here.
+      __builtin_trap();
+  }
+}
+
+// Per-kind zero predicate used by ofNonZeroValue.  `v_slot` is the
+// byte offset of `*v` in linear memory — the host-backed arms
+// (CEL_LIST_HOST / CEL_MAP_HOST / CEL_MESSAGE) forward it to the
+// `cel_host.*` probes, which read the operand CelValue themselves.
+// CEL_OPTIONAL recurses into the inner cell.
+static int is_zero_value(const CelValue* v, uint32_t v_slot) {
   switch (v->kind) {
     case CEL_NULL:
       // Any null is the zero null.
@@ -106,23 +191,22 @@ static int is_zero_value(const CelValue* v) {
       // `TypeValue::IsZeroValue() = false` (no override).
       return 0;
     case CEL_OPTIONAL: {
-      // Recursive descent: outer None is zero; outer Some(inner) is
-      // zero iff inner is zero.  Matches cel-cpp
-      // `OptionalValue::IsZeroValue()`.
+      // Recursive descent: None is zero; Some(inner) is zero iff inner
+      // is (cel-cpp `OptionalValue::IsZeroValue()`).  The inner lives
+      // at a stable arena offset, so the recursion has a real slot.
       OptionalCell* cell = cell_at(v->payload.opt);
       if (cell->present == 0) return 1;
-      return is_zero_value(&cell->inner);
+      return is_zero_value(
+          &cell->inner,
+          v->payload.opt + (uint32_t)offsetof(OptionalCell, inner));
     }
     case CEL_LIST_HOST:
     case CEL_MAP_HOST:
     case CEL_MESSAGE:
-      // Host-backed zero predicate needs a host trampoline (Slice B):
-      // an empty proto repeated/map field or a default-constructed
-      // proto message is zero per cel-cpp parsed_message_value.cc:78.
-      // Trap until the trampoline lands so the call site shows up in
-      // a backtrace rather than miscompiling.
-      __builtin_trap();
+      return host_value_is_zero(v->kind, v_slot);
     default:
+      // CEL_IP / CEL_CIDR: opaque extension values carry identity —
+      // never zero (cel-cpp opaque values have no zero notion).
       // CEL_UNKNOWN / CEL_ERROR should never reach here — callers
       // absorb via `absorb_3vl_unary` upstream.  Treat as non-zero
       // to be safe (so the operand propagates instead of vanishing).
@@ -166,7 +250,7 @@ void cel_optional_of_non_zero_at_v(uint32_t out_slot, uint32_t v_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* v = cel_value_at(v_slot);
   if (absorb_3vl_unary(out, v)) return;
-  if (is_zero_value(v)) {
+  if (is_zero_value(v, v_slot)) {
     cel_optional_none_at(out_slot);
     return;
   }

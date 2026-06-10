@@ -2453,6 +2453,42 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
   return absl::InternalError("unreachable");
 }
 
+absl::Status CelMessageIsZeroImpl(uint32_t out_slot, uint32_t msg_slot,
+                                  const TrampolineContext& ctx) {
+  const CelValue msg_cv = ctx.mem.ReadCelValue(msg_slot);
+  if (AbsorbUnary(msg_cv, out_slot, ctx.mem)) return absl::OkStatus();
+  if (msg_cv.kind != CEL_MESSAGE) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.msg_slot);
+  const google::protobuf::Message* msg_ptr =
+      backing == nullptr ? nullptr : backing->message();
+  if (msg_ptr == nullptr) {
+    // Unmapped slot is an adapter bug; a non-proto custom backing has
+    // no reflection to walk (cel-cpp requires custom struct values to
+    // implement IsZeroValue themselves — `HostMessageBacking` has no
+    // such hook).  Either way: clean poison, not a trap.  The wasm
+    // caller treats any non-BOOL result as "non-zero" so the operand
+    // propagates instead of vanishing.
+    WriteWireError(CEL_ERR_HOST_ADAPTER_ERROR, out_slot, ctx.mem);
+    return absl::OkStatus();
+  }
+  const google::protobuf::Message& msg = *msg_ptr;
+  const google::protobuf::Reflection* reflection = msg.GetReflection();
+  // cel-cpp parity — `ParsedMessageValue::IsZeroValue()`
+  // (third_party/cel-cpp/common/values/parsed_message_value.cc:78):
+  // zero iff the unknown-field set is empty AND no fields are set.
+  bool is_zero = reflection->GetUnknownFields(msg).empty();
+  if (is_zero) {
+    std::vector<const google::protobuf::FieldDescriptor*> fields;
+    reflection->ListFields(msg, &fields);
+    is_zero = fields.empty();
+  }
+  WriteWireBool(is_zero, out_slot, ctx.mem);
+  return absl::OkStatus();
+}
+
 // ══════════════════════════════════════════════════════════════════
 // `cel_host.cel_make_message(type_id, out_slot)`.
 //

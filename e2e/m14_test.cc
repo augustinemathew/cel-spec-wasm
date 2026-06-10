@@ -764,26 +764,14 @@ TEST(ProtoOptionalFieldE2ETest, HasOnSetOptionalFieldIsTrueForWrapper) {
   EXPECT_TRUE(*v.AsBool());
 }
 
-// KNOWN BUG (eval-stage): `optional.ofNonZeroValue(<message>)` traps.
-// The expression compiles and plans (the proto-`?field:` gate was lifted,
-// so the static subset admits a message operand), then traps at EVAL:
-// `is_zero_value` (runtime/cel_optional.c) has no CEL_MESSAGE
-// arm — proto zero-ness needs reflection (cel-cpp parity:
-// ParsedMessageValue::IsZeroValue), so it `__builtin_trap()`s.  Verified
-// reproducing at the M14 Slice E closeout conformance run, where
-// `optional_ofNonZeroValue_struct_…` flipped SKIP→FAIL.  Tracked as
-// cleanup-backlog #10 (fix: a `cel_host.cel_message_is_zero` trampoline).
-//
-// Running unskipped TRAPS the process (non-OK Eval status that
-// TryEvalSource would surface, but the wasm trap aborts first), so this
-// stays GTEST_SKIP'd until the trampoline lands — delete the skip then,
-// and the assertion below becomes the live regression guard.
+// `optional.ofNonZeroValue(<message>)` — the CEL_MESSAGE arm of the
+// zero predicate, served by the `cel_host.cel_message_is_zero` probe
+// (cleanup-backlog #10; cel-cpp parity:
+// `ParsedMessageValue::IsZeroValue`, parsed_message_value.cc:78).
+// Expected verdicts pinned against the real cel-cpp runtime by
+// `testdata/cel_cpp_oracle_test.cc` (OptionalOfNonZeroValueMessage.*).
+
 TEST(ProtoOptionalFieldE2ETest, OfNonZeroValueOnNonZeroMessageHasValue) {
-  GTEST_SKIP() << "KNOWN BUG (verified at M14 Slice E closeout: eval traps "
-                  "__builtin_trap, want hasValue()==true): is_zero_value has "
-                  "no CEL_MESSAGE arm (cel_optional.c) — needs a proto-"
-                  "reflection host trampoline. cleanup-backlog #10. Running "
-                  "unskipped TRAPS the process — fix first, then unskip.";
   auto v = TryEvalSource(
       "optional.ofNonZeroValue("
       "cel.expr.conformance.proto3.TestAllTypes{single_int32: 1})"
@@ -794,6 +782,31 @@ TEST(ProtoOptionalFieldE2ETest, OfNonZeroValueOnNonZeroMessageHasValue) {
   // optional -> hasValue() is true.
   EXPECT_TRUE(*v->AsBool())
       << "ofNonZeroValue on a non-zero message should be a present optional";
+}
+
+TEST(ProtoOptionalFieldE2ETest, OfNonZeroValueOnZeroMessageIsNone) {
+  // A default-constructed message has no set fields and no unknown
+  // fields — it IS the zero message, so ofNonZeroValue yields None.
+  Value v = EvalSource(
+      "optional.ofNonZeroValue("
+      "cel.expr.conformance.proto3.TestAllTypes{}).hasValue()");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool) << static_cast<int>(v.kind());
+  EXPECT_FALSE(*v.AsBool());
+}
+
+// The conformance row `optionals/optional_ofNonZeroValue_struct_
+// optional_ofNonZeroValue_map_optindex_field`, adapted from its
+// proto2 container to the fully-qualified proto3 TestAllTypes this
+// suite links (the verdict is container-independent: the inner
+// ofNonZeroValue(0.0) is None, so the struct is zero, so the outer
+// ofNonZeroValue is None).  The corpus runs the verbatim proto2 row.
+TEST(ProtoOptionalFieldE2ETest,
+     OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField) {
+  Value v = EvalSource(
+      "optional.ofNonZeroValue(cel.expr.conformance.proto3.TestAllTypes{"
+      "?single_double_wrapper: optional.ofNonZeroValue(0.0)}).hasValue()");
+  ASSERT_EQ(v.kind(), Value::Kind::kBool) << static_cast<int>(v.kind());
+  EXPECT_FALSE(*v.AsBool());
 }
 
 }  // namespace

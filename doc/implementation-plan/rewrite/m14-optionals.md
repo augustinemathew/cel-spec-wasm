@@ -22,13 +22,16 @@ summary.  Slice 0 (WAT traces) was non-negotiable per CLAUDE.md
 > **Known remaining limitations**, surfaced during execution and
 > filed for follow-up:
 >
->   - `optional.ofNonZeroValue(<message>)` traps at
->     `is_zero_value`'s CEL_MESSAGE arm (§3.4) — needs a host
->     trampoline that walks `Reflection::ListFields` to compute
->     proto-zero-ness.  One corpus row (`optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`)
->     newly FAILs as a result of Slice E lifting the
->     proto-`?field:` gate; previously SKIP'd on static_subset.
->     Filed as cleanup-backlog item.
+>   - ~~`optional.ofNonZeroValue(<message>)` traps at
+>     `is_zero_value`'s CEL_MESSAGE arm (§3.4)~~ — **resolved
+>     2026-06-10** (cleanup-backlog #10): the
+>     `cel_host.cel_message_is_zero` probe walks
+>     `Reflection::ListFields` + the unknown-field set
+>     (cel-cpp `ParsedMessageValue::IsZeroValue` parity), and the
+>     CEL_LIST_HOST / CEL_MAP_HOST arms consult the existing
+>     `cel_host.cel_{list,map}_size` probes.  The affected corpus
+>     row (`optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`)
+>     now PASSes in both link modes; see `wat-traces.md` §69.
 >   - 3 chained-index FAIL rows (`optional_chaining_1`/`_2`/`_3`)
 >     remain blocked on the pre-existing `map.field` sugar gap
 >     (cleanup-backlog #9), unrelated to optionals.

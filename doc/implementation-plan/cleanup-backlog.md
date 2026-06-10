@@ -775,7 +775,7 @@ struck through or removed.
       follow-up slice — likely 2–4 hours of work, mostly mirroring
       Slice B's structure.
 
-- [ ] **#10** — `is_zero_value` in `runtime/cel_optional.c`
+- [x] **#10** — `is_zero_value` in `runtime/cel_optional.c`
       traps with `__builtin_trap()` on `CEL_MESSAGE` (and
       `CEL_LIST_HOST` / `CEL_MAP_HOST`) because the proto-zero
       predicate needs proto reflection (cel-cpp parity:
@@ -811,6 +811,40 @@ struck through or removed.
       ships cleanly.  Self-contained follow-up slice, mostly
       mirroring the existing `cel_host.cel_list_size` /
       `cel_host.cel_map_size` shape — likely 2–4 hours.
+      **Resolved 2026-06-10.**  All three trap arms replaced.
+      CEL_MESSAGE consults the new
+      `cel_host.cel_message_is_zero(out_slot, msg_slot)` trampoline
+      (cel-cpp parity: `ParsedMessageValue::IsZeroValue()`,
+      `third_party/cel-cpp/common/values/parsed_message_value.cc:78`
+      — unknown-field set empty AND `ListFields` empty);
+      CEL_LIST_HOST / CEL_MAP_HOST consult the existing
+      `cel_host.cel_{list,map}_size` probes (the backlog's
+      "wasm can read host sizes directly" sketch was wrong — host
+      containers carry only a `ref_slot`; the size lives host-side).
+      Any non-BOOL/non-INT probe result is treated as non-zero so
+      the operand propagates instead of vanishing.
+      WAT trace: `rewrite/wat/69_optional_of_non_zero_message.wat`
+      (+ `wat-traces.md` §69), run end-to-end through `wat_runner`
+      with a scripted stub.  Oracle pins (added BEFORE the fix):
+      `testdata/cel_cpp_oracle_test.cc`
+      `OptionalOfNonZeroValueMessage.{ConformanceRowOracleIsFalse,
+      ZeroMessageOracleIsFalse,NonZeroMessageOracleIsTrue}` plus the
+      three `*Agrees` differentials (the oracle gained optional-type
+      support — `OptionalCompilerLibrary` + `EnableOptionalTypes` —
+      in the same change).  Tests: per-kind `is_zero_value` matrix +
+      host-probe wire-contract cases in
+      `runtime/cel_optional_test.cc` (`OfNonZeroValue*`, incl. the
+      inner-cell-offset recursion pin); trampoline matrix in
+      `eval/internal/cel_host_test.cc` (`CelMessageIsZeroTest`, 11
+      cases incl. only-unknown-fields and non-proto-backing poison);
+      e2e in `e2e/m14_test.cc`
+      (`ProtoOptionalFieldE2ETest.{OfNonZeroValueOnNonZeroMessageHasValue,
+      OfNonZeroValueOnZeroMessageIsNone,
+      OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`,
+      both link modes — the prior GTEST_SKIP'd known-bug case was
+      un-skipped);
+      `wat_runner_test.cc::WatRunnerM14Test.OptionalOfNonZeroOn*Message*`.
+      Conformance: 1972→1973 PASS, 1→0 FAIL, both link modes.
 
 - [x] **#11** — `cel_set_field` (the proto field-write trampoline) was a
       void ABI: it signalled an out-of-range scalar (e.g. an int32 field

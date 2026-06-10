@@ -251,6 +251,63 @@ TEST(Tier1Conversions, IntFromDoubleMinIsRangeError) {
   ExpectAgree("int(-9223372036854775808.0)", kP3);
 }
 
+// ── `optional.ofNonZeroValue(<message>)` zero-value pins
+//    (cleanup-backlog #10).  cel-cpp's message zero-predicate is
+//    `ParsedMessageValue::IsZeroValue()` (third_party/cel-cpp/common/
+//    values/parsed_message_value.cc:78): a message is zero iff its
+//    unknown-field set is empty AND `Reflection::ListFields` returns
+//    no set fields.  The direct EvalWithCelCpp pins lock the expected
+//    verdicts empirically; the ExpectAgree variants additionally run
+//    OUR pipeline (which used to `__builtin_trap()` in
+//    `runtime/cel_optional.c::is_zero_value` on CEL_MESSAGE). ──
+
+// The exact conformance row `optionals/optional_ofNonZeroValue_struct_
+// optional_ofNonZeroValue_map_optindex_field`: the inner
+// ofNonZeroValue(0.0) is None, so the struct is a zero TestAllTypes,
+// so the outer ofNonZeroValue is None → hasValue() is false.
+constexpr absl::string_view kOfNonZeroValueConformanceRowExpr =
+    "optional.ofNonZeroValue(TestAllTypes{?single_double_wrapper: "
+    "optional.ofNonZeroValue(0.0)}).hasValue()";
+
+TEST(OptionalOfNonZeroValueMessage, ConformanceRowOracleIsFalse) {
+  auto oracle =
+      testdata::EvalWithCelCpp(kOfNonZeroValueConformanceRowExpr, kP2);
+  ASSERT_THAT(oracle.status(), IsOk());
+  ASSERT_FALSE(oracle->is_error) << oracle->error_message;
+  ASSERT_TRUE(oracle->value.has_bool_value());
+  EXPECT_FALSE(oracle->value.bool_value());
+}
+
+TEST(OptionalOfNonZeroValueMessage, ZeroMessageOracleIsFalse) {
+  auto oracle = testdata::EvalWithCelCpp(
+      "optional.ofNonZeroValue(TestAllTypes{}).hasValue()", kP2);
+  ASSERT_THAT(oracle.status(), IsOk());
+  ASSERT_FALSE(oracle->is_error) << oracle->error_message;
+  ASSERT_TRUE(oracle->value.has_bool_value());
+  EXPECT_FALSE(oracle->value.bool_value());
+}
+
+TEST(OptionalOfNonZeroValueMessage, NonZeroMessageOracleIsTrue) {
+  auto oracle = testdata::EvalWithCelCpp(
+      "optional.ofNonZeroValue(TestAllTypes{single_int32: 1}).hasValue()", kP2);
+  ASSERT_THAT(oracle.status(), IsOk());
+  ASSERT_FALSE(oracle->is_error) << oracle->error_message;
+  ASSERT_TRUE(oracle->value.has_bool_value());
+  EXPECT_TRUE(oracle->value.bool_value());
+}
+
+// Differential: cel-cpp and OUR pipeline must agree on all three.
+TEST(OptionalOfNonZeroValueMessage, ConformanceRowAgrees) {
+  ExpectAgree(kOfNonZeroValueConformanceRowExpr, kP2);
+}
+TEST(OptionalOfNonZeroValueMessage, ZeroMessageAgrees) {
+  ExpectAgree("optional.ofNonZeroValue(TestAllTypes{}).hasValue()", kP2);
+}
+TEST(OptionalOfNonZeroValueMessage, NonZeroMessageAgrees) {
+  ExpectAgree(
+      "optional.ofNonZeroValue(TestAllTypes{single_int32: 1}).hasValue()", kP2);
+}
+
 // ── Partial-eval oracle: pins cel-cpp's unknown-attribute semantics,
 //    the empirical reference that e2e/m2_partial_eval_test.cc asserts
 //    OUR pipeline against.  (Reading cel-cpp source is not enough —

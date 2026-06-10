@@ -1099,6 +1099,62 @@ TEST(WatRunnerM14Test, OptionalOfNonZeroOnZeroIntProducesNone) {
          "matrix (CEL_INT zero ⇒ true).";
 }
 
+// 69_optional_of_non_zero_message.wat — the host-backed CEL_MESSAGE
+// arm of the zero predicate (cleanup-backlog #10).  The runtime's
+// `is_zero_value` consults `cel_host.cel_message_is_zero`; the stub
+// scripts the host verdict.  Zero message (stub says true) → None →
+// hasValue() false.
+TEST(WatRunnerM14Test, OptionalOfNonZeroOnZeroMessageProducesNone) {
+  auto wat = LoadWat("69_optional_of_non_zero_message.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  std::vector<std::pair<uint32_t, uint32_t>> calls;  // (out, msg) slots
+  in.cel_host_cel_message_is_zero_stub =
+      [&calls](uint32_t out_slot, uint32_t msg_slot, uint8_t* memory,
+               size_t mem_size) {
+        calls.emplace_back(out_slot, msg_slot);
+        CelValue verdict{};
+        verdict.kind = CEL_BOOL;
+        verdict.payload.b = 1;  // zero message
+        ASSERT_LE(out_slot + sizeof(CelValue), mem_size);
+        std::memcpy(memory + out_slot, &verdict, sizeof(verdict));
+      };
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 64u);
+  ASSERT_EQ(calls.size(), 1u) << "kernel must consult the host probe once";
+  EXPECT_EQ(calls[0].second, 16u)
+      << "kernel must pass the operand CelValue's own slot";
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cv.payload.b, 0)
+      << "ofNonZeroValue(<zero message>) is None ⇒ hasValue() false";
+}
+
+// Same WAT, host verdict flipped: non-zero message → Some → true.
+TEST(WatRunnerM14Test, OptionalOfNonZeroOnNonZeroMessageProducesSome) {
+  auto wat = LoadWat("69_optional_of_non_zero_message.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  in.cel_host_cel_message_is_zero_stub = [](uint32_t out_slot,
+                                            uint32_t /*msg_slot*/,
+                                            uint8_t* memory, size_t mem_size) {
+    CelValue verdict{};
+    verdict.kind = CEL_BOOL;
+    verdict.payload.b = 0;  // non-zero message
+    ASSERT_LE(out_slot + sizeof(CelValue), mem_size);
+    std::memcpy(memory + out_slot, &verdict, sizeof(verdict));
+  };
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cv.payload.b, 1)
+      << "ofNonZeroValue(<non-zero message>) is Some ⇒ hasValue() true";
+}
+
 TEST(WatRunnerM14Test, ListAppendIfPresentMixedSomeNoneProducesCountOne) {
   auto wat = LoadWat("m14_list_append_if_present.wat");
   ASSERT_THAT(wat, IsOk());

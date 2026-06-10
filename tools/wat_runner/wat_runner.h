@@ -77,6 +77,14 @@ using CelHostThreeArgStub = std::function<void(
     uint32_t out_slot, uint32_t operand_slot, uint32_t key_or_index_slot,
     uint8_t* memory, size_t mem_size)>;
 
+// 2-arg stub for `cel_host.cel_message_is_zero` (and any future
+// `(out_slot, operand_slot)` trampoline a WAT wants scripted).
+// Signature: `(out_slot, operand_slot)`.  Same memory-buffer access
+// contract as the 3-arg stub.
+using CelHostTwoArgStub =
+    std::function<void(uint32_t out_slot, uint32_t operand_slot,
+                       uint8_t* memory, size_t mem_size)>;
+
 struct WatRunInput {
   absl::string_view wat;
 
@@ -132,6 +140,15 @@ struct WatRunInput {
   // semantic role of the second arg (matches the existing
   // wkt_unwrap_wrapper repurposing of the third arg).
   CelHostThreeArgStub cel_host_cel_set_field_stub;
+
+  // Optional stub for `cel_host.cel_message_is_zero(out_slot,
+  // msg_slot)` — the proto zero-value probe behind
+  // `optional.ofNonZeroValue(<message>)`.  The stub writes a CEL_BOOL
+  // CelValue at out_slot (true → zero message → None; false →
+  // non-zero → Some).  When unset, a no-op binds so WATs that link
+  // the runtime but never construct optionals over messages still
+  // instantiate.
+  CelHostTwoArgStub cel_host_cel_message_is_zero_stub;
 };
 
 struct WatRunOutput {

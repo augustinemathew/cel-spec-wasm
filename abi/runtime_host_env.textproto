@@ -123,6 +123,16 @@ functions {
   num_args: 3
   returns_i32: false
 }
+# optional.ofNonZeroValue(msg): proto-message zero-value probe.
+# Writes CEL_BOOL true iff the backing proto has no set fields and an
+# empty unknown-field set (cel-cpp ParsedMessageValue::IsZeroValue,
+# parsed_message_value.cc:78). args: out, msg_slot.
+functions {
+  name: "cel_message_is_zero"
+  module: CEL_HOST
+  num_args: 2
+  returns_i32: false
+}
 # Foo{...}: construct a message literal. args: out, type_id.
 functions {
   name: "cel_make_message"

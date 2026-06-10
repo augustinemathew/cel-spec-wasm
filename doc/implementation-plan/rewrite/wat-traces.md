@@ -2217,10 +2217,9 @@ Slice A target — expected post-eval CelValue at offset 40:
 Slice A implements `cel_optional_of_non_zero_at_v` as a switch
 on `v.kind` dispatching the matrix predicates, then tail-calling
 either `cel_optional_none_at` (zero) or `cel_optional_of_at_v`
-(non-zero).  Host trampolines for CEL_MAP_HOST / CEL_LIST_HOST /
-CEL_MESSAGE need separate kernel additions (host_map_size,
-host_list_size — already exported; host message zero-predicate is
-new) — design deferred to Slice A pre-flight.
+(non-zero).  The host-backed arms (CEL_MAP_HOST / CEL_LIST_HOST /
+CEL_MESSAGE) shipped later with the `cel_host.cel_message_is_zero`
+probe — see §69 below for their trace.
 
 ---
 
@@ -2563,6 +2562,67 @@ module — the audit ptr (`0xFFFFFFFF, 64`), a u32-additive-overflow
 straddler (`0x100, 0xFFFFFFFE`), and a u32-wrap-to-zero
 (`0x80000000, 0x80000000`) — each catching a different way an
 unchecked or weakly-checked `ReadSpan` would regress.
+
+## 69. `optional.ofNonZeroValue(<message>).hasValue()` — host-backed zero predicate (cleanup-backlog #10)
+
+File: `wat/69_optional_of_non_zero_message.wat`.  Status: assembles
+under `wasm-as --enable-threads`; runs end-to-end through
+`tools/wat_runner` against the real `cel_runtime.wasm` with a
+scripted `cel_host.cel_message_is_zero` stub
+(`wat_runner_test.cc::WatRunnerM14Test.OptionalOfNonZeroOn{Zero,NonZero}MessageProduces{None,Some}`).
+
+Completes the §M14.6 zero-predicate matrix: the three host-backed
+kinds the original Slice A left trapping (`__builtin_trap()` in
+`runtime/cel_optional.c::is_zero_value`) now consult the host:
+
+| v.kind        | host surface consulted                            |
+|---------------|----------------------------------------------------|
+| CEL_LIST_HOST | `cel_host.cel_list_size(scratch, v_slot)` → INT==0 |
+| CEL_MAP_HOST  | `cel_host.cel_map_size(scratch, v_slot)`  → INT==0 |
+| CEL_MESSAGE   | `cel_host.cel_message_is_zero(scratch, v_slot)` → BOOL |
+
+**New host import locked:**
+
+```
+cel_host.cel_message_is_zero(out_slot, msg_slot) → ()
+```
+
+Semantics (cel-cpp parity — `ParsedMessageValue::IsZeroValue()`,
+`third_party/cel-cpp/common/values/parsed_message_value.cc:78`,
+empirically pinned by `testdata/cel_cpp_oracle_test.cc`
+`OptionalOfNonZeroValueMessage.*`): writes CEL_BOOL true iff the
+backing proto's unknown-field set is empty AND
+`Reflection::ListFields` returns no set fields.  UNKNOWN / ERROR
+operands propagate; non-CEL_MESSAGE poisons kTypeMismatch; unmapped
+slot / non-proto backing poisons kHostAdapterError.
+
+**Caller-side contract (the invariant the WAT locks):** the kernel
+arena-allocs a 24-byte scratch CelValue, passes its offset as
+`out_slot` and the operand's own slot as `msg_slot` (on recursive
+descent into `optional.of(msg)`, the INNER cell's offset —
+`cell_base + 8`), and treats any non-BOOL scratch result as
+"non-zero" so the operand propagates as Some instead of vanishing.
+
+The import is declared by `cel_runtime.wasm` (the kernel calls it),
+NOT by the expr module — same shape as `cel_host.cel_set_field` in
+§M14.9.  It therefore survives the static (merged) link mode
+unchanged: the adopted runtime carries the `cel_host.*` import
+through the merge, and `RegisterCelHostImports` (driven by the
+`abi/runtime_host_env.textproto` catalogue row) binds it in both
+modes.
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   rodata: CelValue{CEL_MESSAGE, payload.msg_slot=1}
+[40, 64)   workspace: ofNonZeroValue out_slot (CEL_OPTIONAL)
+[64, 88)   workspace: hasValue out_slot (CEL_BOOL — the result)
+[88, ...)  bump arena: 24-byte scratch slot, then the 32-byte cell
+```
+
+Expected results: stub writes BOOL true (zero message) → None →
+`hasValue()` false; stub writes BOOL false → Some → true.
 
 ## Future entries (stubs)
 
