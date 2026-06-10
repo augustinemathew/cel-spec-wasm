@@ -109,19 +109,17 @@ TEST(CelfnParserProbe, ParsesHostDecl) {
   EXPECT_EQ(host->Identifier()->getText(), "upper");
 }
 
-TEST(CelfnParserProbe, ParsesForeignDecl) {
-  auto r = ParseCelfn("bool rules.allow(this string user, string r);");
+TEST(CelfnParserProbe, ParsesComponentDecl) {
+  auto r = ParseCelfn("bool @component.allow(this string user, string r);");
   EXPECT_TRUE(r.errors.empty())
       << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
   ASSERT_EQ(r.file->fileItem().size(), 1u);
-  auto* fgn = r.file->fileItem(0)->foreignFnDecl();
-  ASSERT_NE(fgn, nullptr);
-  // `bool rules.allow(this string user, string r);`
-  // Grammar shape: type Identifier '.' Identifier '(' params ')' ';'
-  // Two identifiers: "rules" (alias) and "allow" (fn name).
-  ASSERT_EQ(fgn->Identifier().size(), 2u);
-  EXPECT_EQ(fgn->Identifier(0)->getText(), "rules");
-  EXPECT_EQ(fgn->Identifier(1)->getText(), "allow");
+  auto* comp = r.file->fileItem(0)->componentFnDecl();
+  ASSERT_NE(comp, nullptr);
+  // `bool @component.allow(this string user, string r);`
+  // Grammar shape: type '@' 'component' '.' Identifier '(' params ')' ';'
+  // One Identifier: "allow" (fn name).  No alias.
+  EXPECT_EQ(comp->Identifier()->getText(), "allow");
 }
 
 TEST(CelfnParserProbe, ParsesCelDefinedFn) {
@@ -149,8 +147,8 @@ bool @native.is_number(this string s) = s.matches("^[0-9]+$");
 // Host-backed.
 string @host.upper(this string s);
 
-// Foreign.
-bool rules.allow(this string user, string r);
+// Component-backed.
+bool @component.allow(this string user, string r);
 )";
   auto r = ParseCelfn(source);
   EXPECT_TRUE(r.errors.empty())
@@ -160,7 +158,7 @@ bool rules.allow(this string user, string r);
   ASSERT_EQ(r.file->fileItem().size(), 3u);
   EXPECT_NE(r.file->fileItem(0)->nativeFnDecl(), nullptr);
   EXPECT_NE(r.file->fileItem(1)->hostFnDecl(), nullptr);
-  EXPECT_NE(r.file->fileItem(2)->foreignFnDecl(), nullptr);
+  EXPECT_NE(r.file->fileItem(2)->componentFnDecl(), nullptr);
 }
 
 TEST(CelfnParserProbe, ParsesProtoTypeArgument) {
@@ -189,7 +187,7 @@ TEST(CelfnParserProbe, ParsesAggregateTypes) {
 
 TEST(CelfnParserProbe, RejectsBareDecl) {
   // `bool plain_name(int x);` — no backend prefix: not `@host.`, not
-  // `@native.`, not a `<alias>.`.  Every declaration must name its
+  // `@native.`, not `@component.`.  Every declaration must name its
   // backend, so a bare `<type> <name>(...)` matches no production and
   // fails to parse.
   auto r = ParseCelfn("bool plain_name(int x);");

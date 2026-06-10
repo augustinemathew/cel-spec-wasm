@@ -431,7 +431,7 @@ construction, "bad" = at instantiate / eval time with an opaque trap.
 | 23 | Module compiled by a third-party toolchain (no `cel.abi` section)     | Reject at `Plan`.  Already today: `InvalidArgument("missing cel.abi section")`.                                            | engine Plan time      |
 | 24 | `runtime_abi_version == 0` (old module from pre-Slice-E build)        | Treat as "unversioned" — reject with `FailedPrecondition("module predates ABI versioning; recompile")`                     | engine Plan time      |
 | 25 | Engine with newer runtime, module with older runtime_abi_version      | Reject (today).  When forward compat is added (post-Slice-E followup), accept if within `MinSupportedAbiVersion` window.   | engine Plan time      |
-| 26 | Helper used only by checker / static layout, never imported into wasm | Catalogue is the import surface; static helpers stay in `compiler_v2/`, not catalogued.                                    | n/a                   |
+| 26 | Helper used only by checker / static layout, never imported into wasm | Catalogue is the import surface; static helpers stay in `compiler/`, not catalogued.                                    | n/a                   |
 | 27 | Catalogue entry with `num_args == 0`                                  | Allowed (`arena_reset()`).  Distinct from pre-refactor "arity 0 means silently skip import" gate — that gate is gone.      | n/a                   |
 | 28 | Two helpers sharing the same name in the same namespace               | `runtime_catalogue_test::NoDuplicateNamesWithinNamespace` catches at unit-test time                                        | PR time               |
 
@@ -442,7 +442,7 @@ construction, "bad" = at instantiate / eval time with an opaque trap.
     are rejected by `Engine::Plan` with a clear "predates ABI
     versioning" diagnostic.  The intersection with users in practice
     is empty — there are no published artifacts produced by
-    `compiler_v2/` predating this refactor — but the message is
+    `compiler/` predating this refactor — but the message is
     explicit anyway.
   - **Catalogue additions are additive.**  Until Slice E lands, no
     versioning enforcement; until Slice F lands, no `cel_fn`

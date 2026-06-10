@@ -2,7 +2,7 @@
 
 Status: design — drafted 2026-05-24, not yet implemented. Design-only: no
 code lands from this doc directly. Captures the *target* surface for the
-`cel` CLI (`compiler_v2/tools/cel/`) and the gap between it and what ships
+`cel` CLI (`tools/cel/`) and the gap between it and what ships
 today (`eval` / `check` / `compile` only). Companion to the user guide §9
 (`doc/user-guide.md`), which documents the as-shipped CLI and points here
 for the target.

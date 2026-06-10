@@ -82,7 +82,7 @@ scripts/lint.sh compiler/codegen/expr_lower.cc  # just these
 ### 3. Build + test
 
 ```bash
-bazel test //compiler/...
+bazel test //...
 ```
 
 All tests must pass. For codegen work, also confirm:
@@ -137,6 +137,6 @@ clear them before they rot.
 - Don't add `// NOLINT` drive-by; the linter is there to find real
   smells.
 - Don't land code that hasn't gone through `scripts/lint.sh`.
-- Don't skip `bazel test //compiler/...` — a formatter pass can still
+- Don't skip `bazel test //...` — a formatter pass can still
   introduce semantics-affecting edits in the rare case the config is
   wrong; tests are the safety net.

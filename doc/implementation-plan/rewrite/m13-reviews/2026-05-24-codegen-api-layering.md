@@ -3,8 +3,8 @@
 Date: 2026-05-24
 Reviewer: codegen/api layering pass (report-only; no code changed).
 Scope: `compiler/codegen/{expr_lower*,layout_pass,resolve_pass,overload_table,module}`,
-`compiler_v2/api/{engine,instance,compiler,activation,function?,host_callback,internal/cel_host*}`,
-`compiler_v2/compile.{h,cc}`, `compiler/celfn/library_module.h`, against
+`eval/{engine,instance,compiler,activation,function?,host_callback,internal/cel_host*}`,
+`compiler/internal/compile.{h,cc}`, `compiler/celfn/library_module.h`, against
 `modules-and-ffi.md` §4, `m13-custom-fns.md` §4/§7/§12,
 `per-component-test-coverage.md`, and `CLAUDE.md`.
 
@@ -37,7 +37,7 @@ test coverage**. The top three items:
    (Slice C.3). The whole "Storage only until Slice C.3" block is now
    false. (§B)
 
-`bazel test //compiler_v2/...` being green here is exactly the trap
+`bazel test //...` being green here is exactly the trap
 `CLAUDE.md` warns about: the green suite does not exercise
 `LowerToCustomFn` at all.
 
@@ -116,7 +116,7 @@ requires an orchestrator that: lays out each body
 `LowerToCustomFn` into the **same** `WasmModule` the expr is in,
 skipping the import for CEL-defined overload-ids.
 
-`library_module.h` currently puts this in `compiler_v2/celfn/` and
+`library_module.h` currently puts this in `compiler/celfn/` and
 has it **return separate module bytes** — the wrong shape twice over:
 it is the wrong *layer* (band-partitioning + calling-convention
 orchestration over a single `WasmModule` is codegen, not IDL/celfn
@@ -125,7 +125,7 @@ functions appended to the expr module). For the single-module model
 the orchestration should live in **`codegen/`** (e.g.
 `codegen/custom_fn_emit.{h,cc}` or folded into `compile.cc`'s
 extracted helper, see §C), operating on the live `WasmModule&`, and
-`compiler_v2/celfn/` should retain only the parse/IDL rep
+`compiler/celfn/` should retain only the parse/IDL rep
 (`function_library.*`) — no wasm production.
 
 **Finding A.3.** Band-partitioning + body emission orchestration

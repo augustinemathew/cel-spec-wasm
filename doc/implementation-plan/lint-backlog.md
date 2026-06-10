@@ -48,7 +48,7 @@ ctors of `std::string` / `std::vector` / `std::shared_ptr` and
 `cppcoreguidelines-pro-type-member-init` false-fires on every
 class-data-member of those types.  Fixed by splitting the flag into
 two separate `--extra-arg-before` entries (`-include-pch` + the
-path).  Side effect: the lint pass on the `compiler_v2/` rewrite
+path).  Side effect: the lint pass on the `compiler/` rewrite
 went from ~46 surfaced "errors" (many false positives) to a
 smaller, true set of warnings to triage — see the M9 closeout
 cleanup detail below.
@@ -56,7 +56,7 @@ cleanup detail below.
 See CLAUDE.md §"Running lint correctly — and the PCH gotcha" for
 the user-facing rule.
 
-## compiler_v2/ cleanup — 2026-05-14
+## compiler/ cleanup — 2026-05-14
 
 Cleared as part of the M9 closeout lint pass:
 
@@ -196,8 +196,12 @@ signal in this codebase.  Preferred safer patterns going forward:
 - Accessors that "may not be present" should return a pointer
   (`const T* Find(...)`) or `absl::StatusOr<const T&>`, not throw.
 
-The repo `.clang-tidy` `HeaderFilterRegex` was also widened to
-`^(compiler|compiler_v2|include)/.*` so analysis covers the v2 tree.
+The repo `.clang-tidy` `HeaderFilterRegex` enumerates every
+first-party top-level role dir:
+`^(abi|bench|compiler|conformance|e2e|eval|runtime|shared|spec|testdata|tools|include)/.*`
+so analysis covers headers in every role dir and skips `third_party/`,
+bazel symlinks, and the experiments tree.  When a new top-level
+first-party dir is introduced, add it to this list.
 
 ## Notes for triage
 

@@ -1,11 +1,11 @@
 # M18 `network_ext` — Slice-0 AST-shape probe findings
 
 Status: **probe complete 2026-05-24.**  Probe:
-`compiler_v2/probes/network/ast_shape_probe_test.cc` (manual-tagged,
+`compiler/probes/network/ast_shape_probe_test.cc` (manual-tagged,
 9 tests, all green).  Run:
 
 ```
-bazel test //compiler_v2/probes/network:ast_shape_probe_test --test_output=all
+bazel test //compiler/probes/network:ast_shape_probe_test --test_output=all
 ```
 
 ## VERDICT

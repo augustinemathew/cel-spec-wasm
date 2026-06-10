@@ -1,4 +1,4 @@
-# `compiler_v2/` — CEL → WebAssembly AOT compiler
+# `compiler/` — CEL → WebAssembly AOT compiler
 
 The compiler that turns a CEL source expression into a self-contained
 wasm module the host instantiates and runs through wasmtime.  This
@@ -28,7 +28,7 @@ the compile-db / PCH details, see `doc/contributing.md`.
 ## Layout
 
 ```
-compiler_v2/
+compiler/
   api/         — public C++ surface: Compiler, Engine, Instance,
                   Activation, Value, CelType.  This is what hosts
                   link against.
@@ -105,21 +105,21 @@ specific layer.
 ## Quickstart
 
 End-to-end: compile a CEL expression, plan it, evaluate it.  Every
-snippet below is real code lifted from `compiler_v2/e2e/`; copy-paste
-into a `cc_binary` whose deps include `//compiler_v2/api:compiler`,
-`//compiler_v2/api:engine`, `//compiler_v2/api:activation`,
-`//compiler_v2/api:value`, `//compiler_v2/api:type`, and
+snippet below is real code lifted from `e2e/`; copy-paste
+into a `cc_binary` whose deps include `//eval:compiler`,
+`//eval:engine`, `//eval:activation`,
+`//eval:value`, `//eval:type`, and
 `@com_google_absl//absl/log:absl_check`.
 
 ### 1. Scalar literal — the simplest "hello, world"
 
 ```cpp
 #include "absl/log/absl_check.h"
-#include "compiler_v2/api/activation.h"
-#include "compiler_v2/api/compiler.h"
-#include "compiler_v2/api/engine.h"
-#include "compiler_v2/api/instance.h"
-#include "compiler_v2/api/value.h"
+#include "eval/activation.h"
+#include "eval/compiler.h"
+#include "eval/engine.h"
+#include "eval/instance.h"
+#include "eval/value.h"
 
 int main() {
   // Build a Compiler with no declared variables.
@@ -236,7 +236,7 @@ bind a real `google::protobuf::Message` (or a host-side backing
 without copying) at Eval time.
 
 ```cpp
-#include "compiler_v2/testdata/e2e_fixture.pb.h"  // your .proto
+#include "testdata/e2e_fixture.pb.h"  // your .proto
 
 cel::Compiler::Builder cb;
 cb.DeclareVariable("c",
@@ -309,7 +309,7 @@ around two existing API surfaces:
 
 ```cpp
 #include <fstream>
-#include "compiler_v2/api/program.h"
+#include "eval/program.h"
 // … other includes from snippet 1 …
 
 // Compile once, save to disk.
@@ -353,7 +353,7 @@ ABSL_CHECK(*v->AsBool());
 ```
 
 What the round-trip preserves (the load-bearing assertion lives at
-`compiler_v2/e2e/program_roundtrip_test.cc`):
+`e2e/program_roundtrip_test.cc`):
 
   - The complete compiled module — codegen output + cel.abi section.
   - The declared-variable schema (it's encoded in cel.abi).
@@ -387,7 +387,7 @@ milestone slice.
 ### 7. How big are the artifacts?
 
 Measured numbers as of 2026-05-15, darwin-arm64, `-c opt` build.
-Reproduce via `bazel run -c opt //compiler_v2/bench:program_size_main`.
+Reproduce via `bazel run -c opt //bench:program_size_main`.
 
 #### Compiled program (per-expression wasm bytes) vs. CEL AST proto
 
@@ -504,22 +504,22 @@ request and let it drop at end-of-request.
 
 For a one-off "does this even compile / what does it evaluate to"
 check without writing C++, use the `cel` driver under
-`compiler_v2/tools/cel/`.  It wraps the full v2 pipeline (compile →
+`tools/cel/`.  It wraps the full v2 pipeline (compile →
 plan → eval) and has three subcommands — `eval`, `check`, `compile`:
 
 ```bash
 # Evaluate.
-bazel run //compiler_v2/tools/cel:cel -- eval '1 + 2 + 3'        # → 6
-bazel run //compiler_v2/tools/cel:cel -- eval 'a * b' \
+bazel run //tools/cel:cel -- eval '1 + 2 + 3'        # → 6
+bazel run //tools/cel:cel -- eval 'a * b' \
   --var 'a:int=6' --var 'b:int=7'                                # → 42
 
 # Parse + type-check only.
-bazel run //compiler_v2/tools/cel:cel -- check 'size("héllo")'   # → OK
-bazel run //compiler_v2/tools/cel:cel -- check 'user_age >= 18' \
+bazel run //tools/cel:cel -- check 'size("héllo")'   # → OK
+bazel run //tools/cel:cel -- check 'user_age >= 18' \
   --var 'user_age:int'                                           # → OK
 
 # Emit wasm bytes to a file (or stdout with no --output).
-bazel run //compiler_v2/tools/cel:cel -- compile '1 + 2' \
+bazel run //tools/cel:cel -- compile '1 + 2' \
   --output /tmp/expr.wasm
 ```
 
@@ -527,7 +527,7 @@ bazel run //compiler_v2/tools/cel:cel -- compile '1 + 2' \
 `--proto` / `--descriptor_set` load message schemas; `--container`
 sets the ident-resolution prefix; `--O 0..3` is the Binaryen optimizer
 level; `--format textproto|json|cel` picks message output rendering.
-See `compiler_v2/tools/cel/README.md` for the full flag surface,
+See `tools/cel/README.md` for the full flag surface,
 `--var` grammar, and the proto-schema loading rules.
 
 (The pre-rewrite v1 `compiler/cli/celwasmc` driver has been deleted;
@@ -577,7 +577,7 @@ User-tunable via `cel::CompilerOptions` (api/compiler.h).  Three knobs:
     Recommended production setting is 2 on the request path;
     Compile cost amortises across many Eval calls.
 
-`compiler_v2/compile.h` has the internal `celwasm::CompileOptions`
+`compiler/internal/compile.h` has the internal `celwasm::CompileOptions`
 with four additional pipeline-only knobs (`eval_internal_name`,
 `eval_export_name`, `validate`, `serialize`) that public callers
 can't set — they're plumbing for tests and the CLI.
@@ -586,7 +586,7 @@ can't set — they're plumbing for tests and the CLI.
 
 ```bash
 # Default fast suite — every gtest binary not tagged `manual`.
-bazel test //compiler_v2/...
+bazel test //...
 
 # Full closeout gate — adds the manual e2e tests
 # (wasmtime-driven, optimize_test, wat_runner, cel_runtime_wasm_test)
@@ -597,7 +597,7 @@ scripts/run_full_suite.sh
 scripts/run_full_suite.sh --quick
 ```
 
-Per CLAUDE.md, **`bazel test //compiler_v2/...` being green does NOT
+Per CLAUDE.md, **`bazel test //...` being green does NOT
 mean a milestone is done** — the manual-tagged e2e tests carry the
 load-bearing assertions and must be run explicitly via
 `scripts/run_full_suite.sh`.  See

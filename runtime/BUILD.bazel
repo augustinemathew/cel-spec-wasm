@@ -616,6 +616,12 @@ cc_binary(
         # Per-target warnings beyond toolchain's `-Wall`.
         "-Wextra",
         "-Wno-unused-parameter",
+        # LTO so the linker can inline kind-check helpers (e.g.
+        # `cel_int_eq_at_vv`) into hot loops like `cel_list_in`'s
+        # scan — the asymmetry to the native `cc_library` above
+        # (which already sets -O3 -flto) was a measured perf
+        # ceiling for the `in`-list bench.  Matches the native side.
+        "-flto",
     ] + select({
         ":opt_mode": ["-DCEL_LOG_DISABLED"],
         "//conditions:default": [],
@@ -624,6 +630,9 @@ cc_binary(
         # No standard startup files; runtime is library code, no main.
         "-nostartfiles",
         "-Wl,--no-entry",
+        # Match the -flto in copts; without this the linker can't
+        # see the LTO bitcode and falls back to per-TU object code.
+        "-flto",
         # Reserve [0, 8192) for the expr module's active data segments.
         # Per DESIGN.md §3 / experiments/exp_a_rodata.c.
         "-Wl,--global-base=8192",

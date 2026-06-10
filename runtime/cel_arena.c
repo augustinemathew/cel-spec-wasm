@@ -82,7 +82,11 @@ uint32_t arena_alloc(uint32_t n) {
   // backtrace names the call site (CLAUDE.md "Unimplemented features"
   // rule for any code path that shouldn't be reachable).
   if (!g_arena.initialized) __builtin_trap();
-  if (g_arena.cursor + need > g_arena.capacity) return 0;  // A10: OOM → 0
+  // A10: OOM → 0.  Subtraction-form bounds check (cursor <= capacity
+  // is invariant, so capacity - cursor never wraps) — the additive
+  // form `cursor + need > capacity` wraps when `need` is near
+  // UINT32_MAX and silently admits the alloc.
+  if (need > g_arena.capacity - g_arena.cursor) return 0;
   uint32_t local_off = g_arena.cursor;
   g_arena.cursor += need;
   uint8_t* p = g_arena.base + local_off;

@@ -1,0 +1,16 @@
+package cel:fn@0.1.0;
+
+interface types {
+  variant primitive { int(s64), %string(string) }
+  resource value {
+    as-primitive: func() -> primitive;
+    of-primitive: static func(p: primitive) -> value;
+  }
+}
+interface custom-fn {
+  use types.{value, primitive};
+  invoke:      func(name: string, args: list<value>) -> primitive;      // handle args
+  invoke-prim: func(name: string, args: list<primitive>) -> primitive;  // by-value args
+}
+world provider-world { export types; export custom-fn; }   // owns value store + fns
+world driver-world   { import types; import custom-fn; }   // command, drives

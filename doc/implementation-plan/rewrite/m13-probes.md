@@ -50,7 +50,7 @@ claim and CAN be deleted once production code subsumes it
   - `doc/implementation-plan/rewrite/wat/m13_p1_rules_stub.wat` —
     stand-in for TinyGo / Rust / AS output; hand-rolled stub that
     always writes `true`.
-  - `compiler_v2/probes/m13_custom_fns/m13_p1_test.cc` — the host
+  - `compiler/probes/m13_custom_fns/m13_p1_test.cc` — the host
     harness that allocates `cel.memory`, instantiates both
     modules, wires the link, calls `eval`, and decodes the
     returned bool.
@@ -58,7 +58,7 @@ claim and CAN be deleted once production code subsumes it
 **Run**
 
 ```
-bazel test //compiler_v2/probes/m13_custom_fns:m13_p1_test --test_output=all
+bazel test //compiler/probes/m13_custom_fns:m13_p1_test --test_output=all
 ```
 
 Passed in 6ms on 2026-05-21 (apple silicon, wasmtime via the
@@ -96,25 +96,25 @@ darwin_arm64 vendor repo).
 
 **Artifacts**
 
-  - `compiler_v2/probes/m13_custom_fns/rules/rules.go` — typed
+  - `compiler/probes/m13_custom_fns/rules/rules.go` — typed
     Go body authoring the foreign export.  Uses `//go:wasmexport`
     to land the canonical export name verbatim.
-  - `compiler_v2/probes/m13_custom_fns/rules/go.mod` — minimal
+  - `compiler/probes/m13_custom_fns/rules/go.mod` — minimal
     module file (TinyGo requires it).
-  - `compiler_v2/probes/m13_custom_fns/rules/build_rules.sh` —
+  - `compiler/probes/m13_custom_fns/rules/build_rules.sh` —
     rebuild script; runs `tinygo build` + sanity-checks the
     export name.
-  - `compiler_v2/probes/m13_custom_fns/rules/rules.wasm` — the
+  - `compiler/probes/m13_custom_fns/rules/rules.wasm` — the
     built artifact, **checked in** so the probe can run without
     TinyGo on CI.
-  - `compiler_v2/probes/m13_custom_fns/m13_p2_test.cc` — same
+  - `compiler/probes/m13_custom_fns/m13_p2_test.cc` — same
     harness shape as Probe 1 with the stub WAT swapped for the
     Go-built `rules.wasm`.
 
 **Run**
 
 ```
-bazel test //compiler_v2/probes/m13_custom_fns:m13_p2_test --test_output=all
+bazel test //compiler/probes/m13_custom_fns:m13_p2_test --test_output=all
 ```
 
 Passed in 8ms on 2026-05-21.
@@ -314,12 +314,12 @@ Six tests:
   6. `Plan` fails when a registered module is missing the helper
      the caller WAT expects (`allow_string_string`).
 
-**Artifact**: `compiler_v2/probes/m13_custom_fns/m13_p4_engine_test.cc`
+**Artifact**: `compiler/probes/m13_custom_fns/m13_p4_engine_test.cc`
 — a `ProbeEngine` helper class wraps the engine-owned semantics;
 the same model will land inside `cel::Engine` (production) in
 Slice C.
 
-**Run**: `bazel test //compiler_v2/probes/m13_custom_fns:m13_p4_engine_test`
+**Run**: `bazel test //compiler/probes/m13_custom_fns:m13_p4_engine_test`
 
 **Architectural realizations**:
 
@@ -365,10 +365,10 @@ Single test (`HostCallbackReadsStringWritesIntLength`):
 
   - `doc/implementation-plan/rewrite/wat/m13_p5_caller.wat` — the
     caller; imports `cel_fn.length_string` (host-backend namespace).
-  - `compiler_v2/probes/m13_custom_fns/m13_p5_host_test.cc` — the
+  - `compiler/probes/m13_custom_fns/m13_p5_host_test.cc` — the
     host harness + callback impl.
 
-**Run**: `bazel test //compiler_v2/probes/m13_custom_fns:m13_p5_host_test`
+**Run**: `bazel test //compiler/probes/m13_custom_fns:m13_p5_host_test`
 
 **Architectural realizations**
 
@@ -427,9 +427,9 @@ artifacts.
 
 **Artifacts**
 
-  - `compiler_v2/probes/m13_custom_fns/fns.celfn` — a real `.celfn`
+  - `compiler/probes/m13_custom_fns/fns.celfn` — a real `.celfn`
     file driving the codegen path.
-  - `compiler_v2/probes/m13_custom_fns/m13_p3_test.cc` — invokes
+  - `compiler/probes/m13_custom_fns/m13_p3_test.cc` — invokes
     the Slice-A-extended celwasmc, asserts the emitted wasm
     bytes match the m13_p1_caller WAT disassembly.
 
@@ -466,7 +466,7 @@ ships.
 The Go side, when TinyGo's available, looks like:
 
 ```go
-// compiler_v2/probes/m13_custom_fns/rules/rules.go
+// compiler/probes/m13_custom_fns/rules/rules.go
 //
 // Foreign-wasm-backed CEL custom function `rules.allow`.  The Go
 // side of the M13 cross-language ABI contract from §4.5 of
@@ -475,7 +475,7 @@ The Go side, when TinyGo's available, looks like:
 // Built with TinyGo:
 //
 //   tinygo build -target=wasm-unknown -no-debug \
-//     -o rules.wasm ./compiler_v2/probes/m13_custom_fns/rules/
+//     -o rules.wasm ./compiler/probes/m13_custom_fns/rules/
 //
 // In Probe 2, this replaces m13_p1_rules_stub.wat.  Probe 2 is
 // otherwise byte-identical to Probe 1 — the win condition is

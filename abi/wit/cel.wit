@@ -1,0 +1,78 @@
+package cel:value@0.2.0;
+
+// The COMPLETE CEL value model.
+//
+// WIT forbids recursive value types (`variant value { list(list<value>) }`
+// => "type depends on itself"), so the nestable CEL value is a RESOURCE.
+// Aggregates nest by returning more `value` handles, which makes
+// list<list>, map<string, list<map>>, arbitrarily-deep trees expressible.
+// Proto messages cross as serialized bytes + a type name.
+interface types {
+  record duration  { seconds: s64, nanos: s32 }
+  record timestamp { seconds: s64, nanos: s32 }
+  record message   { type-name: string, wire: list<u8> }   // serialized proto
+
+  enum kind {
+    null, %bool, int, uint, double, %string, bytes,
+    %list, %map, %type, duration, timestamp, message,
+    optional, error, unknown,
+  }
+
+  // CEL restricts map keys to these scalar kinds.
+  variant map-key { %bool(bool), int(s64), uint(u64), %string(string) }
+
+  resource value {
+    kind: func() -> kind;
+
+    // scalar / leaf reads (none if the kind doesn't match)
+    as-bool:      func() -> option<bool>;
+    as-int:       func() -> option<s64>;
+    as-uint:      func() -> option<u64>;
+    as-double:    func() -> option<f64>;
+    as-string:    func() -> option<string>;
+    as-bytes:     func() -> option<list<u8>>;
+    as-duration:  func() -> option<duration>;
+    as-timestamp: func() -> option<timestamp>;
+    as-type:      func() -> option<string>;
+    as-message:   func() -> option<message>;
+    as-error:     func() -> option<string>;
+    as-unknown:   func() -> option<list<string>>;          // unknown attr trail
+    as-optional:  func() -> option<option<value>>;         // outer:isopt inner:present
+
+    // aggregate navigation — returns handles => arbitrary nesting
+    list-len:  func() -> u32;
+    list-get:  func(index: u32) -> option<value>;
+    map-size:  func() -> u32;
+    map-get:   func(key: map-key) -> option<value>;
+    map-keys:  func() -> list<map-key>;
+
+    // constructors
+    null-value:   static func() -> value;
+    of-bool:      static func(v: bool) -> value;
+    of-int:       static func(v: s64) -> value;
+    of-uint:      static func(v: u64) -> value;
+    of-double:    static func(v: f64) -> value;
+    of-string:    static func(v: string) -> value;
+    of-bytes:     static func(v: list<u8>) -> value;
+    of-duration:  static func(v: duration) -> value;
+    of-timestamp: static func(v: timestamp) -> value;
+    of-type:      static func(name: string) -> value;
+    of-message:   static func(v: message) -> value;
+    of-error:     static func(msg: string) -> value;
+    of-optional:  static func(v: option<value>) -> value;
+    of-list:      static func(items: list<value>) -> value;
+    of-map:       static func(entries: list<tuple<map-key, value>>) -> value;
+  }
+}
+
+interface custom-fn {
+  use types.{value};
+  variant eval-error {
+    no-such-overload(string), invalid-argument(string),
+    divide-by-zero, no-such-field(string), no-such-key(string), range,
+  }
+  invoke: func(name: string, args: list<value>) -> result<value, eval-error>;
+}
+
+world cel-runtime     { export types; import custom-fn; }
+world custom-provider { import types; export custom-fn; }

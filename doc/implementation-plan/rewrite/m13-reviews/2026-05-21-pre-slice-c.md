@@ -7,14 +7,14 @@
 shell, and probes 1–5 cleanly retired the architectural risk before
 Slice C touches production code.  But the design doc
 `m13-custom-fns.md` was written ahead of the rename + ahead of the
-probes and never re-flowed: it still names `compiler_v2/functions/`,
+probes and never re-flowed: it still names `compiler/celfn/`,
 still types `FunctionLibrary` against `cel::FunctionDecl` (the
 shipped class uses its own `CelfnDecl`), and still describes the
 P5/host-callback shape with no entry in `wat-traces.md`.  Two
 small but real build/code hygiene issues round out the list.  Top
 three to look at first:
 
-  1. **Doc-rename drift** — every `compiler_v2/functions/` reference
+  1. **Doc-rename drift** — every `compiler/celfn/` reference
      in `m13-custom-fns.md` (§2 architecture overview, §3.7 parser
      surface, §11 testing obligations, §12 slice plan) must become
      `compiler/celfn/`.  Reader will trip on this on every
@@ -109,22 +109,22 @@ cc_binary(
 
 …but `tools/celwasmc/celwasmc_v2.cc` does not exist
 (directory contains only `BUILD.bazel`).  The target is marked
-`tags = ["manual"]` so `bazel test //compiler_v2/...` won't catch
+`tags = ["manual"]` so `bazel test //...` won't catch
 it, but any `bazel build //tools/celwasmc:...` fails.
 Either land the placeholder source in Slice C (likely intent) or
 remove the target until then.  Effort: 1 commit either way.
 
-### T2. `compiler_v2/cli/BUILD.bazel` deleted but referenced in 9+ design docs — P2
+### T2. `tools/cel/BUILD.bazel` deleted but referenced in 9+ design docs — P2
 
-`git status` shows `D compiler_v2/cli/BUILD.bazel`; the new home is
+`git status` shows `D tools/cel/BUILD.bazel`; the new home is
 `tools/celwasmc/`.  But docs still name the old path:
 `design.md`, `m1-scalar-pipeline.md`, `m5-comprehensions-followon.md`,
 `two-phase-runtime-isolation.md`, `feature-pipeline-checklist.md`,
 `per-component-test-coverage.md`, `m2-ident-select-unknowns.md`,
-`m13-custom-fns.md` (§6 line ~1335), and `compiler_v2/README.md`.
+`m13-custom-fns.md` (§6 line ~1335), and `compiler/README.md`.
 Most are historic; flag-only-stale-bash-examples in the M-numbered
 plans are low-priority, but the per-component-test-coverage row
-"`//compiler_v2/cli:celwasmc_eval` (smoke)" is load-bearing.
+"`//tools/cel:celwasmc_eval` (smoke)" is load-bearing.
 Effort: one `sed` pass + spot-check, ~30 min.
 
 ### T3. `overload_table.h` NSDMI `= {}` everywhere with NOLINTs — P2
@@ -183,7 +183,7 @@ for Slice C: the first real `cel_fn.*` import will exercise this.
 
 Despite the superseded banner, the body still has bullet items
 like `[ ] compiler/functions/function_set.proto` (not even
-`compiler_v2/`).  Most readers will stop at the banner.  Effort:
+`compiler/`).  Most readers will stop at the banner.  Effort:
 delete the body or shrink it to the breadcrumb-only header.
 
 ## Coverage gaps
@@ -246,8 +246,8 @@ prologue).  Effort: 30 min either way.
 
 ### C5. Tests are all `tags = ["manual"]` — expected, not a gap, but flag for Slice C
 
-Every `compiler/celfn/...` and `compiler_v2/probes/m13_custom_fns/...`
-target is `tags = ["manual"]`, so `bazel test //compiler_v2/...`
+Every `compiler/celfn/...` and `compiler/probes/m13_custom_fns/...`
+target is `tags = ["manual"]`, so `bazel test //...`
 will not catch regressions.  This is correct for probes (per the
 BUILD.bazel comment) but UNTAGGING `function_library_test` and
 `celfn_parser_probe_test` before Slice C ships is critical — those
@@ -260,15 +260,15 @@ recurs.  Tracking item for Slice C closeout.
 
 ### D1. `m13-custom-fns.md` — directory rename not propagated
 
-Stale path `compiler_v2/functions/` appears at:
+Stale path `compiler/celfn/` appears at:
 
-  - line 170 — `compiler_v2/functions/` in architecture-overview bullet 1
-  - line 604 — "`compiler_v2/functions/celfn_parser.{h,cc}`" in §3.7
+  - line 170 — `compiler/celfn/` in architecture-overview bullet 1
+  - line 604 — "`compiler/celfn/celfn_parser.{h,cc}`" in §3.7
     parser implementation
-  - line 1679 — `compiler_v2/functions/celfn_parser_test.cc` in §11.1
-  - line 1773 — `compiler_v2/functions/cel_body_compiler_test.cc`
+  - line 1679 — `compiler/celfn/celfn_parser_test.cc` in §11.1
+  - line 1773 — `compiler/celfn/cel_body_compiler_test.cc`
     in §11.4
-  - line 1853 — `compiler_v2/functions/` in Slice B description
+  - line 1853 — `compiler/celfn/` in Slice B description
 
 Real path is `compiler/celfn/`.  Effort: `sed` + spot-check, ~5 min.
 
@@ -285,7 +285,7 @@ Effort: 30 min.
 
 `m13-probes.md:432` says:
 
-> `compiler_v2/probes/m13_custom_fns/m13_p3_test.cc` — invokes the
+> `compiler/probes/m13_custom_fns/m13_p3_test.cc` — invokes the
 > Slice-A-extended celwasmc…
 
 …but `m13_p3_*_test.cc` slots are already occupied by the Probe 3
@@ -341,7 +341,7 @@ P1 (must-fix-before-Slice-C):
   - C1 (`InferHelperArity` test)
   - C2 (kUserModule round-trip test)
   - D3 (Probe 7 name collision in m13-probes.md)
-  - D1 (`compiler_v2/functions/` rename in m13-custom-fns.md)
+  - D1 (`compiler/celfn/` rename in m13-custom-fns.md)
 
 P2 (cleanup-when-touched):
   - T2 (cli/ path in old docs), T3 (PCH NOLINTs), T4 (compile.cc

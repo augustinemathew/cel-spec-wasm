@@ -42,7 +42,7 @@ explicit update here.
 
 ## 1 Goal
 
-Replace `compiler_v2/`'s freestanding wasm32 + bump-arena-at-
+Replace `compiler/`'s freestanding wasm32 + bump-arena-at-
 fixed-offsets architecture with **wasi-sdk's `wasm32-wasi` +
 a hand-rolled bump arena over `malloc()`**.
 
@@ -232,7 +232,7 @@ Five questions, all answered with experimental evidence in
 
 | # | Question | Decision | Evidence |
 |---|---|---|---|
-| 1 | Tree strategy | **In-place migration in `compiler_v2/`** | User direction 2026-05-17. |
+| 1 | Tree strategy | **In-place migration in `compiler/`** | User direction 2026-05-17. |
 | 2 | Allocator strategy | **Hand-rolled bump arena over a single `malloc()`** | `experiments/exp_b_mspace.c` (mspace_* not in wasi-libc); `experiments/exp_d_arena_in_malloc.c` (47-LoC arena works, end-to-end). |
 | 3 | Memory layout | **`--global-base=8192` on the runtime build.  Expr rodata in `[0, 8192)`.** | `experiments/exp_a_rodata.c` (linker flag honored; bytes `[0, N)` left free). |
 | 4 | Threading target | ~~**`wasm32-wasi` vanilla, no `-threads`**~~ → **SUPERSEDED in Phase C: `wasm32-wasi-threads` + shared memory** (cctz needs `<mutex>`; see the Phase C delta at the top of this doc). | `experiments/exp_c_malloc.c` (the original "zero WASI imports for pure malloc" finding held only until absl::time/cctz were vendored). |
@@ -506,7 +506,7 @@ the architectural payoff.
 
 The migration **ships** when ALL of:
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] `bazel run //conformance:run_conformance` → **1,144 PASS** (matches baseline).
   - [ ] Per-Eval cost ≤ **5× baseline**:
     - Scalar Eval: ≤ 705 ns (today 141 ns).

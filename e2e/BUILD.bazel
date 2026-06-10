@@ -34,6 +34,7 @@ link_mode_e2e_cc_test(
         "//eval:instance",
         "//compiler:program",
         "//eval:value",
+        "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -630,6 +631,84 @@ link_mode_e2e_cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# Companion to host_fn_test: exhaustive CEL-type matrix coverage of
+# the @host custom-fn surface (`AddFunction` + `AddTypedFunction`).
+# Audits gaps in host_fn_test.cc and adds the missing
+# (kind, tier, direction) cells across the 12 IDL-expressible types
+# plus boundaries and 3VL absorption per kind.  See the file's top
+# docblock for the tier mapping and the legitimate type exclusions
+# (type, optional, WKT wrappers as separate types, WKT struct types).
+cc_test(
+    name = "foreign_component_dispatch_test",
+    srcs = ["foreign_component_dispatch_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "foreign_fn_type_matrix_test",
+    srcs = ["foreign_fn_type_matrix_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:cel_host",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "host_fn_type_matrix_test",
+    srcs = ["host_fn_type_matrix_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//eval:activation",
+        "//eval:attribute",
+        "//eval:cel_host",  # for Value::Message(proto) + HostListBacking nav
+        "//eval:engine",
+        "//eval:host_call_context",
+        "//eval:instance",
+        "//eval:value",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
         "//third_party/wasmtime:wasmtime",

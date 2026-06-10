@@ -1377,7 +1377,7 @@ compiler can still evaluate.
 ## 8. File layout
 
 ```
-compiler_v2/
+compiler/
 ├── api/                            # user-facing public headers
 │   ├── BUILD.bazel
 │   ├── compiler.{h,cc,_test.cc}    # Cel::Compiler + Builder +

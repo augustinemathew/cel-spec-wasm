@@ -1,271 +1,336 @@
-# celwasmc — compile CEL to WebAssembly, run it anywhere
+# cel-wasm (Common Expression)
 
-**Write a [CEL](https://github.com/google/cel-spec) expression once, compile it
-to a tiny standalone WebAssembly module, and run it in any language that can
-load wasm — at native speed, in a sandbox, with no per-host interpreter to
-reimplement or keep in sync.**
+> ⚠️ **This repo is not production ready, yet!**
+>
+> The pipeline runs end-to-end, the conformance + perf numbers below
+> are real, and the architectural pieces (compiler, runtime, JIT,
+> sandbox, custom-fn macros) all work. But there is *lots of cleanup
+> left* before it's something you'd hand-on-heart deploy to a
+> production policy engine:
+>
+> - **Constant list/map literals are rebuilt every Eval** (cel-cpp
+>   folds them at plan time), so `x in [<100 elems>]` and map
+>   construction still lose 2–44× — the const-aggregate codegen
+>   milestone is the planned fix (see
+>   [Performance](#performance--vs-cel-cpp-tree-walking-interpreter)).
+>   (The old "arithmetic 2.4× slower" gap is **fixed**: configurable
+>   static linking shipped, and arithmetic now wins 17–22× at length.)
+> - **Language bindings beyond C++ are designed, not built** — see
+>   [Language bindings](#language-bindings).
+> - **`@native` CEL-defined helper bodies** parse + type-check today
+>   but the codegen for the bodies hasn't shipped.
+> - **General-purpose hardening** — error-path coverage, fuzz
+>   testing, allocator caps, AOT module cache, the whole production
+>   hardening checklist.
+>
+> Watch the [implementation plan](doc/implementation-plan/) for the
+> active milestones. **Pick this if you want to help close those
+> gaps** — issues, PRs, and benches all welcome.
 
-[Common Expression Language](https://github.com/google/cel-spec) is the small,
-safe expression language behind Kubernetes admission policy, Envoy/Istio
-authorization, IAM conditions, and Firebase rules. Today every host that wants
-to run CEL embeds a full language implementation — a parser, type-checker, and
-evaluator — in *its own* language, and those implementations drift. `celwasmc`
-takes a different path:
+> **CEL → Ahead-of-time WASM → Sandboxed JIT → Native.**
+>
+> Take a [CEL](https://github.com/google/cel-spec) expression, compile
+> it ahead-of-time to a tiny self-contained `.wasm` module, then have
+> [wasmtime](https://wasmtime.dev/)'s
+> [Cranelift](https://cranelift.dev/) JIT it to native machine code
+> inside a sandbox. A compiled, sandboxed sibling of
+> [`cel-cpp`](https://github.com/google/cel-cpp) /
+> [`cel-go`](https://github.com/google/cel-go) — same semantics, the
+> same artifact runs from any language.
 
-- **Compile, don't interpret.** A CEL expression is type-checked once and
-  lowered ahead-of-time to a self-contained `.wasm` module (plus a small
-  `cel.abi` describing its inputs). There is no AST walk at evaluation time —
-  the logic *is* compiled wasm.
-- **One artifact, every language.** The same compiled module runs unchanged
-  wherever wasm runs. Hosts don't reimplement CEL; they embed a thin runtime
-  shim and call in. No semantic drift between languages, because there is only
-  one implementation of the semantics — the compiler.
-- **Fast and sandboxed.** Compiled wasm evaluates far faster than a tree-walk
-  interpreter, inside wasm's memory-safe sandbox, with bounded, predictable
-  resource use — ideal for hot paths and untrusted policy.
-- **Spec-faithful.** The parser and type-checker are reused from
-  [cel-cpp](https://github.com/google/cel-cpp), and behavior is gated
-  byte-for-byte against the upstream CEL conformance corpus.
+> *Internal C++ namespace is `celwasm::` and Bazel labels live
+> under `cel-wasm` for historical reasons; project name is
+> `cel-wasm`, matching `cel-cpp` / `cel-go`.*
 
-## What you can express
-
-CEL is the small, safe language teams already reach for to express policy and
-validation over structured data — and every one of these compiles to a wasm
-module you can ship anywhere:
-
-```python
-# Presence + macros over a proto/JSON object
-has(account.user_id) || has(account.gaia_id)        # either identifier is set
-size(account.emails) > 0                             # has at least one email
-matches(account.phone_number, "[0-9-]+")             # phone matches a pattern
-
-# Comprehensions — the workhorse of real policy
-account.emails.exists(e, e.endsWith("@corp.com"))    # any corp email?
-request.auth.claims.all(c, c in allowed_claims)      # every claim allowed?
-
-# Construct lists, maps, and messages; index and compare
-{'blue': 0x000080, 'red': 0xFF0000}['red'] == 0xFF0000
-Account{user_id: 'pokemon'}.user_id == 'pokemon'
+```
+                ┌─ wasmtime sandbox ────────────────────────┐
+                │                                           │
+  CEL expr ───► │   Cranelift-emitted native code           │ ──► Value
+                │     + cel_runtime kernel                  │
+                │                                           │
+                │     ┌────────────────────────────────┐    │
+                │     │ @component custom fn           │    │ ◄── sandboxed
+                │     │ (own linear memory, no I/O)    │    │     custom code:
+                │     │  • Rust / TinyGo / C author    │    │     can't escape,
+                │     │  • hot-swap at runtime         │    │     no syscalls
+                │     └────────────────────────────────┘    │
+                │                                           │
+                └────────────────────────────┬──────────────┘
+                                             │ host import
+                                             ▼
+                ┌───────────────────────────────────────────┐
+                │ @host custom fn — your C++ lambda         │ ◄── trusted but
+                │ runs in the EMBEDDER's process / memory   │     RISKY for
+                │ (this is what stock CEL gives you)        │     untrusted code
+                └───────────────────────────────────────────┘
 ```
 
-CEL has no loops, no I/O, and no unbounded recursion — expressions are
-guaranteed to terminate — which is exactly why it's trusted for admission
-control, authorization, and rules engines. `celwasmc` keeps those guarantees and
-hands you a portable, sandboxed artifact. See
-[`doc/intro.md`](doc/intro.md) for the guided tour and
-[`doc/langdef.md`](doc/langdef.md) for the full language.
+CEL today is an *interpreter, re-shipped per host language*: Kubernetes,
+Envoy / Istio, IAM, Firebase — each one links its own
+`cel-cpp` / `cel-go` / `cel-rust`, and they drift in behaviour and
+performance. **cel-wasm compiles once and runs that artifact verbatim
+on every host.**
 
-## Performance — honest numbers, both directions
+## Why this is awesome (per Claude)
 
-Measured 2026-06-09 over a 232-cell corpus (every CEL operator family ×
-data type), head-to-head against cel-cpp's evaluator on the same
-expressions and inputs, `-c opt`, Apple Silicon.  Statically-linked
-mode (`CompilerOptions::LinkMode::kStatic`, the default — the runtime
-helpers are merged into the compiled module at compile time):
+- **AOT, not interpreted — and the wasm itself gets JIT'd to native
+  code.** Two compile steps stack: the CEL compiler lowers the
+  expression ahead-of-time to a `.wasm` module (via Binaryen, with
+  `-O0..3`), and then [wasmtime](https://wasmtime.dev/)'s
+  [**Cranelift**](https://cranelift.dev/) JIT translates that wasm to
+  native machine code at `Engine::Plan` time (~240-300 µs per Plan).
+  By the time `Instance::Eval()` runs, every branch of `$eval` and
+  every `cel_runtime` helper is native code — no wasm interpreter,
+  no AST walk, no tree dispatch in the hot path. Plan is amortised
+  across calls (one Plan → many Evals).
+- **Faster than the tree-walking baseline** on realistic policy
+  workloads — see the head-to-head below.
+- **Sandboxed by construction.** Bounded linear memory, no syscalls,
+  no I/O, no recursion. Safe for untrusted policy.
+- **One semantic implementation.** The compiler is the only thing that
+  knows CEL. Every host runs the same `.wasm`; semantic drift between
+  language runtimes goes away.
+- **Extend in any language, with a sandbox boundary.** Custom CEL fns
+  can be authored as WebAssembly **Component-Model components** —
+  declared in a `.celfn` IDL, registered at runtime via
+  `Engine::AddComponent`. The component runs in its own linear memory,
+  can't reach the embedder's address space, can't syscall, and can be
+  hot-swapped at runtime. (You can also write fns as trusted C++
+  callbacks when you don't need the sandbox — see below.)
 
-| where compilation wins | celwasmc | cel-cpp | |
-|---|---:|---:|---|
-| 100-elem comprehension (`.all(x, …)`) | 713 ns | 6.6 µs | **9× faster** |
-| 1000-term arithmetic chain | 2.0 µs | 33.4 µs | **17× faster** |
-| 20-elem `.map()` | 219 ns | 5.4 µs | **25× faster** |
-| regex `matches` (complex) | 186 ns | 8.9 µs | **48× faster** |
+## Performance — vs `cel-cpp` tree-walking interpreter
 
-| where the interpreter still wins | celwasmc | cel-cpp | |
-|---|---:|---:|---|
-| single op (`a == b`, `a && b`, …) | ~60–140 ns | ~45–95 ns | 1.2–1.9× slower |
-| `x in [100-elem list]` | 2.7 µs | 1.4 µs | 2× slower |
-| 1000-char string equality | 604 ns | 75 ns | 8× slower |
-| 100-entry map construction | 122 µs | 2.8 µs | 44× slower |
+Measured 2026-06-09 over a 232-cell corpus (every CEL operator family
+× data type; `benchmark/eval/corpus/`), same expressions and inputs on
+both engines, `-c opt`, Apple Silicon.  cel-wasm in statically-linked
+mode (`LinkMode::kStatic`, the default — runtime helpers merged into
+the compiled module, so every helper call is intra-module).  Honest
+picture, both directions; **corpus-wide geomean is parity (0.95×)**
+with a sharply two-sided distribution.
 
-The pattern: **compilation wins wherever there's repetition to
-amortize** — loops, chains, length (the crossover is ~10 operations);
-the mature native interpreter wins on single-op floor cost, constant
-aggregates it folds at plan time (we rebuild list/map literals per
-eval — a planned codegen milestone closes most of that column), and
-SIMD string scans.  Corpus-wide geomean: parity (0.95×).  Full
-methodology, per-family tables, and the architectural cause of every
-loss row:
+### Workloads cel-wasm wins ✅
+
+Anything with repetition to amortize — loops, chains, length.  The
+crossover is ~10 operations:
+
+| Workload | cel-wasm | cel-cpp | speedup |
+| --- | ---: | ---: | :---: |
+| 100-elem comprehension `.all(x, …)` | 713 ns | 6.6 µs | **9×** |
+| 20-elem `.map(x, x * 2)` | 219 ns | 5.4 µs | **25×** |
+| 1000-term arithmetic chain | 2.0 µs | 33.4 µs | **17×** |
+| 100-term string concat chain | 2.8 µs | 6.1 µs | **2.2×** |
+| `x in <1 M ints>` (activation-bound list) | 3.27 ms | 5.68 ms | **1.7×** |
+| regex `.matches()` (complex, hot loop) | 186 ns | 8.9 µs | 48× † |
+
+† The `.matches()` row is a runtime-configuration difference, not
+codegen: our runtime caches the compiled RE2 pattern per Instance
+(`runtime/cel_matches.cc`), so a hot loop pays the regex compile once;
+cel-cpp's default runtime rebuilds it per evaluation (its optional
+regex-precompilation extension would close most of this).  Quoted
+with that caveat, deliberately.
+
+### Workloads cel-wasm currently loses ⛔
+
+| Workload | cel-wasm | cel-cpp | gap | why |
+| --- | ---: | ---: | :---: | --- |
+| 100-entry map literal construction | 122 µs | 2.8 µs | **44×** | we rebuild constant aggregates every Eval; cel-cpp folds them at plan time (SwissTable) |
+| `x in [<100-elem list literal>]` | 2.7 µs | 1.4 µs | 2× | same — per-eval list construction |
+| 1000-char string equality | 604 ns | 75 ns | 8× | byte-loop compare in wasm vs native SIMD memcmp |
+| single op (`a == b`, `a && b`, …) | 60–140 ns | 45–95 ns | 1.2–1.9× | per-Eval floor: one wasm boundary crossing + arena reset + decode = 62 ns minimum |
+
+The three loss mechanisms, in order of leverage: **(1)
+constant-aggregate folding** — the planned const-list/map codegen
+milestone converts most of those rows (the `size(list)` cells, where
+construction is cheap arena appends, already win up to 3.7×); **(2)
+SIMD string scans** in the wasm runtime; **(3) the 62 ns boundary
+floor**, irreducible without bypassing wasmtime's call path and only
+visible on expressions too small to amortize it.
+
+Full methodology, per-family geomeans, and the cause of every loss
+row:
 [`doc/implementation-plan/rewrite/m28-bench-results.md`](doc/implementation-plan/rewrite/m28-bench-results.md).
+Reproduce with `benchmark/eval/run.sh` (three-way: dynamic / static /
+cel-cpp).
 
-## Bindings — coming soon
+> **Known codegen bug.** The 1000-term polynomial above is the
+> working ceiling — at ≳ 2000 terms the emitted wasm traps
+> with `wasm trap: unaligned atomic` at Eval. The slot allocator
+> appears to misalign at the large slot-count regime; tracked as a
+> follow-up, not yet root-caused.
 
-The compiler emits a portable artifact, and host bindings *embed* it rather
-than reimplement CEL — so the roadmap is thin runtime shims, one per ecosystem:
+## Conformance
 
-| Language | Status |
-|---|---|
-| **C++** | first-class today (the reference host: `eval/`, wasmtime) |
-| **Go** | planned — embed the compiled module via a wazero/wasmtime shim |
-| **TypeScript** | planned — run in the browser or Node on the native wasm engine |
+| | |
+| --- | --- |
+| **Passing** | **1899 / 2454** of the upstream CEL conformance corpus (77.4%) |
+| Intentional skips | 463 (227 require DYN/dynamic typing — out of scope by design; 144 disable type-checker; 55 unimplemented extensions; 25 check-only; 12 type-env) |
+| **Failing** | **92** (string `size()` returning bytes vs code points on multi-byte UTF-8; timestamp Y9999 max-nanos stringification; a handful of map-null-pruning + null-coerce-to-Duration edges) |
 
-Each binding loads the *same* `.wasm` + `cel.abi`, binds inputs, and reads back
-a result. Adding a language is writing a small marshalling shim — never another
-CEL implementation. (The compiler stays wasm-targetable with no evaluator
-dependency precisely so the pipeline itself can also ship as `compiler.wasm`.)
+Of expressions we *attempt* (excluding intentional skips), the pass
+rate is **1899 / 1991 = 95.4%**. Reproduce with
+`bazel run //conformance:run_conformance`.
 
-### Embedding from C++ (the reference host, today)
+## Extensions
 
-The whole lifecycle is **compile once → plan once → evaluate many**:
+The big CEL extensions ship today — no caveats on these:
+
+| Extension | Conformance |
+| --- | --- |
+| `string_ext` (incl. **`strings.format`**, `strings.replace`, `charAt`, `indexOf`, …) | 172 / 216 pass, **0 fails** (44 skips are check-disabled, not unimplemented) |
+| `math_ext` (`math.greatest`, `math.least`, `math.abs`, bit ops, …) | 194 / 199, 0 fails |
+| `network_ext` (`isIPv4`, `isIPv6`, `isURI`, …) | 69 / 69 |
+| `optionals` (`optional.of`, `?` chaining, `orValue`, …) | 22 / 70 (most of the rest need DYN) |
+
+## What's not implemented
+
+cel-wasm targets the **static subset** of CEL by design. If you need
+any of these, use [`cel-cpp`](https://github.com/google/cel-cpp):
+
+- **Dynamic typing (`dyn`).** Variables and intermediates have static
+  types declared up front. `RejectDyn` is the gate; this is the
+  load-bearing 227-row skip block.
+- **CEL-defined helper functions (`@native.fn = expr`).** The
+  type-check side lands today; codegen for the body is unshipped.
+- **`cel.@block(...)` AST sub-expression sharing** (`block_ext`,
+  37 conformance rows) — a checker-level optimization shape we
+  haven't lowered.
+- **proto2 extension-field syntax** (`msg.[pkg.ext_name]`,
+  `proto2_ext` — 18 conformance rows). Plain proto2 messages work;
+  only the extension-field accessor is missing.
+- A handful of specific edges (~10 rows): `size('multi-byte string')`
+  returning bytes vs Unicode code points, Y9999 timestamp nanos
+  stringification, map null-value pruning, null → `Duration` coerce.
+- **TinyGo authoring of component functions.** The Go arm of
+  `cel generate` is in design (m26 H.4); the C++ author surface ships.
+
+(Language bindings — Go, TypeScript — are not "missing features", just
+unwritten thin shims; see [the bindings section](#language-bindings).)
+
+If your workload needs the full CEL surface area — every extension,
+every `dyn` case, the macro evaluator, every language binding —
+**reach for [`cel-cpp`](https://github.com/google/cel-cpp) or
+[`cel-go`](https://github.com/google/cel-go) instead.** cel-wasm trades
+that surface for AOT speed, portability, and the sandbox; it's not a
+drop-in replacement.
+
+## Quick start
+
+```bash
+# One-time: fetch the vendored parser/type-checker.
+third_party/fetch_cel_cpp.sh
+
+# Evaluate a CEL expression end-to-end (compile → wasm → wasmtime).
+bazel run //tools/cel:cel -- eval '1 + 2 + 3'                          # => 6
+bazel run //tools/cel:cel -- eval 'a * b' --var a:int=6 --var b:int=7  # => 42
+
+# Compile to a portable wasm artifact you can ship and re-run.
+bazel run //tools/cel:cel -- compile 'a * b + 1' \
+    --var a:int --var b:int --output expr.wasm
+```
+
+### Embedding from C++
 
 ```cpp
 #include "compiler/compiler.h"
-#include "compiler/program.h"
 #include "eval/engine.h"
-#include "eval/instance.h"
-#include "eval/activation.h"
-#include "eval/value.h"
-#include "shared/type.h"
-
 using namespace celwasm;
 
-// 1. Declare the expression's free variables, then compile to a Program
-//    (wasm bytes + the cel.abi describing its inputs). Compile-time.
-Compiler::Builder b;
-b.DeclareVariable("a", CelType::Int())
- .DeclareVariable("b", CelType::Int());
-Compiler compiler = std::move(b).Build().value();
-Program program = compiler.Compile("a * b + 1").value();
+auto compiler = Compiler::NewBuilder()
+                    .DeclareVariable("a", CelType::Int())
+                    .DeclareVariable("b", CelType::Int())
+                    .Build().value();
+auto program  = compiler.Compile("a * b + 1").value();
+auto engine   = Engine::NewBuilder().Build().value();      // once per process
+auto instance = engine.Plan(program).value();              // once per program
 
-// 2. Plan once — instantiates the wasm module under wasmtime. Reuse the
-//    Instance across many evaluations.
-Engine engine = Engine::NewBuilder().Build().value();
-Instance instance = engine.Plan(program).value();
-
-// 3. Bind inputs and evaluate.
 Activation act;
 act.Bind("a", Value::Int(6));
 act.Bind("b", Value::Int(7));
-Value result = instance.Eval(act).value();   // result.AsInt() => 43
+auto result = instance.Eval(act).value();                  // => 43
 ```
 
-Every fallible step returns `absl::StatusOr<…>` (the `.value()`s above are for
-brevity — check the status in real code). Public headers live at the role-dir
-roots: `compiler:{compiler,program}`, `eval:{engine,instance,activation,value}`,
-`shared:type`. The Go and TypeScript bindings will mirror this same
-declare → compile → plan → bind → eval shape over the wasm artifact.
+The `Program` is portable bytes — compile in one process, evaluate in
+another.
 
-## Getting started
+## Language bindings
 
-```bash
-# 1. Fetch the vendored cel-cpp parser/type-checker (only its pinned SHA is
-#    committed) — required once before the first build.
-third_party/fetch_cel_cpp.sh
+The compiled `.wasm` is portable — every binding embeds the *same*
+artifact and only marshals `Activation` ↔ `Value` on its native side.
+Adding a host language is writing a small shim, never another CEL
+implementation.
 
-# 2. Evaluate a CEL expression through the full compile → wasm → run pipeline.
-bazel run //tools/cel:cel -- eval '1 + 2 + 3'                          # => 6
-bazel run //tools/cel:cel -- eval 'a * b' --var a:int=6 --var b:int=7  # => 42
+| Language | Status | Runtime under the hood |
+| --- | --- | --- |
+| **C++** | ✅ **first-class today** — the reference host. Headers at `compiler/{compiler,program}.h`, `eval/{engine,instance,activation,value}.h`. | wasmtime C API (`@wasmtime`) |
+| **Go** | ⛔ planned. The bindings target is a small Go package mirroring `declare → compile → plan → bind → eval`; loads the same `.wasm` via [`wazero`](https://github.com/tetratelabs/wazero) (pure-Go, no CGO) for portability and [`wasmtime-go`](https://github.com/bytecodealliance/wasmtime-go) for top-end speed. | wazero or wasmtime-go |
+| **TypeScript** | ⛔ planned. A small `npm` package that runs the compiled module on the browser's or Node's native wasm engine (V8 / SpiderMonkey / JSC). Useful for client-side policy. | platform-native wasm |
+| **Rust** | ⛔ planned. A `cel-wasm` crate over `wasmtime` (Rust is wasmtime's native API, so this is the thinnest binding). Natural for embedders already in the bytecodealliance ecosystem. | `wasmtime` crate |
+
+Why the wait: each binding is its own surface (idiomatic API, error
+mapping, type bindings to platform-native types) — work, but no
+compiler changes. The wasm artifact + `cel.abi` schema already carry
+everything a binding needs; once a binding is written, the same
+expression evaluates identically across all of them.
+
+## Custom functions — two paths
+
+The diagram at the top shows the two backends; the choice between them
+is **one decision: do you want the custom-function logic sandboxed
+from the embedder's process?**
+
+| | **`@host.` — trusted C++ in-process** | **`@component.` — sandboxed WebAssembly component** |
+| --- | --- | --- |
+| Where the body runs | In the embedder's address space, as a C++ lambda | In an isolated wasm component instance with its own linear memory |
+| Author language | C++ only (typed `AddTypedFunction` callback) | Any language with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
+| Memory access | Full access to the embedder's process memory | Cannot read or write the embedder's memory |
+| Syscalls / I/O | Whatever the C++ does | Cannot syscall; cannot do I/O; cannot DoS the host |
+| Hot-swap at runtime | Re-link / re-deploy your binary | Drop in new component bytes; call `AddComponent` again |
+| Per-call cost | ~3 µs | ~4 µs (the canonical-ABI hop) |
+| When to pick it | You wrote the fn, you trust it, you want speed | You don't fully trust the code (third-party plugin), or you want polyglot authoring, or you want runtime updates without re-linking |
+
+Both paths declare the function the same way in the `.celfn` IDL — the
+backend is the `@<prefix>` token:
+
+```celfn
+int @host.length(string s);                            // trusted C++ path
+bool @component.allow(string subject, string action);  // sandboxed wasm path
 ```
 
-That's the whole loop: the `cel` CLI parses + type-checks the expression,
-compiles it to a wasm module, instantiates it under wasmtime, and prints the
-result.
+**Why we bothered with the sandbox path.** Embedders running policy
+typically have *some* functions they trust completely (their own code)
+and *some* they want isolated — third-party policy plugins, customer-
+authored predicates, code the security team hasn't reviewed yet. The
+component path makes the second category safe to load: a malicious or
+buggy function can only return `error` or a wrong value, it can't
+escape, can't peek at other tenants' data, can't exhaust the host's
+file descriptors. It's the same isolation property wasmtime gives the
+whole CEL expression — extended to the embedder's own extensions.
 
-### Prerequisites
-
-`celwasmc` builds on **macOS (Apple Silicon)** and **Linux (arm64 / x86_64)**
-with the same `bazel` invocations. The wasm cross-compile toolchain (wasi-sdk)
-and the wasmtime runtime are fetched by Bazel automatically.
-
-| | Install |
-|---|---|
-| **Bazel** (all platforms) | Pinned via `.bazelversion`; install [`bazelisk`](https://github.com/bazelbuild/bazelisk) and call it as `bazel`. |
-| **macOS** | `brew install llvm` (provides `clang` + `lld`). |
-| **Linux** | `clang`, `lld`, `tzdata-legacy`, `build-essential`, `python3`, `zip`, `unzip` — or use the [Docker image](#docker-linux). |
-
-## Build, test, compile
-
-```bash
-# Build everything (host tools + the wasm runtime).
-bazel build //...
-
-# Run the whole test suite.
-bazel test //...
-```
-
-`//...` works directly — `.bazelignore` excludes the vendored cel-cpp module so
-the main repo's target expansion doesn't trip on it. (`$PROJ`, the explicit
-role-package set listed in [`CLAUDE.md`](CLAUDE.md), is still available when you
-want only the first-party packages without the `doc/**` probe targets.)
-
-### Compile an expression to wasm
-
-```bash
-# Emit the wasm module (+ embedded cel.abi) for an expression.
-bazel run //tools/cel:cel -- compile 'a * b + 1' \
-    --var a:int --var b:int --output /tmp/out.wasm
-
-# Type-check only (no codegen).
-bazel run //tools/cel:cel -- check 'a * b + 1' --var a:int --var b:int   # => OK
-```
-
-The `cel` CLI has three subcommands — `eval`, `check`, `compile` — sharing these
-flags:
-
-| Flag | Meaning |
-|---|---|
-| `--var name:Type[=value]` | declare (and optionally bind) a free variable; repeatable |
-| `--proto PATH` / `--descriptor_set PATH` | message types from a `.proto` source or a `FileDescriptorSet` |
-| `--container PKG` | name-resolution container |
-| `--format textproto\|json\|cel` | (`eval`) result rendering; repeatable |
-| `--O 0..3` | Binaryen optimize level |
-| `--output PATH` | (`compile`) wasm output path |
-
-Run `bazel run //tools/cel:cel -- --help` for the full list.
-
-### Conformance
-
-The CEL conformance suite is the canonical "does this behave per spec" gate; the
-corpus lives at `spec/tests/`.
-
-```bash
-bazel run //conformance:run_conformance     # prints `summary: total=… pass=… …`
-scripts/check_conformance_monotonic.sh        # asserts pass count >= baseline
-```
-
-### Docker (Linux)
-
-```bash
-docker build -t celwasmc-linux -f docker/Dockerfile .
-docker run --rm -v "$PWD":/src -w /src celwasmc-linux \
-  bash -c 'third_party/fetch_cel_cpp.sh && bazel test //...'
-```
+Full guides:
+[host functions](doc/user-guide/writing-host-functions.md) ·
+[component functions](doc/user-guide/writing-component-functions.md).
 
 ## Documentation
 
-**Start with the [documentation index](doc/README.md)** — the navigable map of
-the docs tree. The most useful entry points:
+- **[User guide](doc/user-guide/index.md)** — embedder API in depth.
+- **[Writing host functions](doc/user-guide/writing-host-functions.md)** —
+  typed C++ callbacks, proto / list / map args.
+- **[Writing component functions](doc/user-guide/writing-component-functions.md)** —
+  Component-Model custom fns via `cel_wasm_component`.
+- **[CEL language reference](doc/langdef.md)** — semantics we honour.
 
-  - **[`doc/intro.md`](doc/intro.md)** — CEL usage by example (the user guide).
-  - **[`doc/langdef.md`](doc/langdef.md)** — the CEL language reference (the
-    semantics this compiler honours).
-  - **[`doc/compiler-overview.md`](doc/compiler-overview.md)** — how the
-    compiler pipeline fits together.
-  - **[`doc/implementation-plan/`](doc/implementation-plan/)** — architecture,
-    milestone plans, and the testing-coverage grid.
-  - **Contributing** (lint, formatting, the per-feature checklist, the
-    visibility regime): [`CLAUDE.md`](CLAUDE.md) and
-    [`doc/contributing.md`](doc/contributing.md).
+## Build
 
-## Layout
+```bash
+bazel build //...
+bazel test //...
+```
 
-Source is organised by **lifecycle role** at the top level (the layout cel-cpp
-itself uses — public/private split by `internal/` + Bazel `visibility`):
+macOS (Apple Silicon) and Linux (arm64 / x86_64). Toolchain (wasi-sdk,
+wasmtime, binaryen) fetched by Bazel.
+[`bazelisk`](https://github.com/bazelbuild/bazelisk) + `clang` /
+`lld` is all you need (`brew install llvm` on macOS;
+`apt install clang lld build-essential` on Linux). Docker image at
+[`docker/Dockerfile`](docker/Dockerfile).
 
-| Dir | Role |
-|---|---|
-| `compiler/` | **Compile-time.** CEL source → `Program` (wasm bytes + `cel.abi`): `frontend/` (parse + check), `ir/` (typed AST), `codegen/` (Binaryen lowering), `celfn/` (function library). Stays wasm-targetable (no eval/wasmtime dep). |
-| `eval/` | **Eval-time.** `Program` + `Activation` → `Value` (the C++/wasmtime evaluator — the reference host). |
-| `shared/` | `CelType` — the type vocabulary both compile and eval speak. |
-| `abi/` | The `cel.abi` wire contract (emit *and* parse) — the seam a binding marshals against. |
-| `runtime/` | `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel). |
-| `tools/` | The `cel` CLI (`eval`/`check`/`compile`) and `wat_runner`. |
-| `conformance/` `e2e/` `bench/` `testdata/` | Conformance harness, integration tests, microbenches, shared fixtures. |
-| `spec/` | cel-spec heritage — the `.textproto` conformance corpus under `spec/tests/`. |
-| `doc/` | Design docs, language definition, the implementation plan. |
-| `third_party/` | External-dependency integration (cel-cpp fetch, Binaryen + wasmtime glue, wasi-sdk toolchain, patches). |
-
-`compiler/` and `eval/` both depend on `shared/`; neither depends on the other.
-A future `bindings/` (Go, C++, TypeScript) embeds the wasm artifacts rather than
-reimplementing the pipeline.
-
-Released under the [Apache License](LICENSE).
+Released under the [Apache License 2.0](LICENSE).

@@ -437,31 +437,42 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
   return absl::OkStatus();
 }
 
-// M13 Slice C.3 — build the OverloadTable from the built-in seeds
-// plus the embedder's `function_libraries`.  Each library decl maps
-// to one `RegisterCustom` row:
+// Build the OverloadTable from the built-in seeds plus the
+// embedder's `function_libraries`.  Each library decl maps to one
+// `RegisterCustom` row:
 //   - `overload_id`         = decl's synthesised id (the cel-cpp
 //     checker stamps this on resolved call nodes; ResolvePass uses
 //     it as the OverloadTable lookup key).
-//   - `module`              = `kCelFn` for `@host.`-prefixed decls,
-//     `kUserModule` for `<alias>.`-prefixed (foreign-wasm) decls.
-//   - `module_name`         = the user alias (empty for kCelFn —
-//     OverloadTable hardcodes the import-module string for kCelFn).
+//   - `module`              = the wasm import-module routing:
+//                             host-callback path (`cel_fn`) for
+//                             `kHost` and `kForeignComponent`
+//                             (Component-Model backend dispatched
+//                             via a host callback — m24 §2-§3
+//                             "a component fn is a host fn at the
+//                             call site"); per-module `kUserModule`
+//                             for `kCelDefined`.
+//   - `module_name`         = the per-decl module string for kUserModule
+//                             (empty for kCelFn — OverloadTable hardcodes
+//                             the import-module string for kCelFn).
 //   - `helper_name`         = same as `overload_id` (one wasm
 //     import per decl; the IDL guarantees uniqueness).
 //   - `num_args`            = wasm function arity (1 out_slot + N
 //     CEL args, as recorded on `CelfnDecl::num_args`).
+bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
+  return backend == CelfnDecl::Backend::kHost ||
+         backend == CelfnDecl::Backend::kForeignComponent;
+}
+
 absl::StatusOr<OverloadTable> BuildOverloadTable(
     const std::vector<FunctionLibrary>& libraries) {
   OverloadTableBuilder builder;
   for (const auto& lib : libraries) {
     for (const auto& decl : lib.decls()) {
+      const bool via_cel_fn = DispatchesViaCelFn(decl.backend);
       const ImportModule import_module =
-          decl.backend == CelfnDecl::Backend::kHost ? ImportModule::kCelFn
-                                                    : ImportModule::kUserModule;
+          via_cel_fn ? ImportModule::kCelFn : ImportModule::kUserModule;
       const absl::string_view module_name =
-          decl.backend == CelfnDecl::Backend::kHost ? absl::string_view("")
-                                                    : decl.module_name;
+          via_cel_fn ? absl::string_view("") : decl.module_name;
       if (auto s = builder.RegisterCustom(decl.overload_id, import_module,
                                           module_name, decl.overload_id,
                                           decl.num_args);

@@ -505,7 +505,7 @@ follow-up slice that adds them.  M5 doesn't widen here.
 ## 3. Source layout (M5 deliverables)
 
 ```
-compiler_v2/
+compiler/
 ├── runtime/
 │   ├── cel_runtime.h                   + every helper from §2.1
 │   ├── cel_runtime.c                   + bodies (cel-cpp parity)
@@ -917,7 +917,7 @@ M5 closeout
 [ ] All per-component _test.cc files written (per §3)
 [ ] No fixture-level GTEST_SKIPs added to e2e/m5_test.cc
 [ ] M4-era ListRejectionE2ETest TODO tests flipped (M5.A)
-[ ] bazel test //compiler_v2/... passes
+[ ] bazel test //... passes
 [ ] scripts/run_full_suite.sh passes (default + manual targets
     + m5_test.cc registered)
 [ ] m5_test runs green (no fixture skips)

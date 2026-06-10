@@ -7,7 +7,7 @@ into two worlds:
    `extensions/`. These mirror the public cel-spec and describe the
    language we must honour. Do not rewrite them here; fix upstream.
 2. **Project planning docs** — everything under `implementation-plan/`.
-   The source of truth for the state of the `compiler_v2/` CEL → WASM
+   The source of truth for the state of the `compiler/` CEL → WASM
    AOT compiler.
 
 Status vocabulary used below: **shipped \<date\>** · **in-flight** ·
@@ -15,7 +15,7 @@ Status vocabulary used below: **shipped \<date\>** · **in-flight** ·
 · **superseded** (kept for history, replaced by a newer doc).
 
 > **Live numbers live in code, not here.** The authoritative
-> conformance pass-count is in `compiler_v2/conformance/README.md`
+> conformance pass-count is in `conformance/README.md`
 > (currently `pass=1774 (72.3%)`, `total=2454`). Pass-counts quoted in
 > milestone docs are point-in-time snapshots from when that milestone
 > shipped — treat them as historical, not current.
@@ -31,14 +31,14 @@ Status vocabulary used below: **shipped \<date\>** · **in-flight** ·
 | `extensions/strings.md` | `strings` extension spec (mirrors cel-spec). |
 | `contributing.md` | Code-change workflow for the compiler. |
 
-## Compiler orientation (in `compiler_v2/`, not `doc/`)
+## Compiler orientation (in `compiler/`, not `doc/`)
 
 | Doc | What it is |
 | --- | --- |
-| `../compiler_v2/README.md` | Orientation page: layout, lifecycle, quickstart, CLI, knobs, perf. **Start here for the code.** |
-| `../compiler_v2/conformance/README.md` | Conformance harness + the **live** pass/skip/fail headline. |
-| `../compiler_v2/tools/cel/README.md` | The `cel` CLI (eval / check / compile). |
-| `../compiler_v2/bench/README.md` | Microbench + pipeline perf tables. |
+| `../compiler/README.md` | Orientation page: layout, lifecycle, quickstart, CLI, knobs, perf. **Start here for the code.** |
+| `../conformance/README.md` | Conformance harness + the **live** pass/skip/fail headline. |
+| `../tools/cel/README.md` | The `cel` CLI (eval / check / compile). |
+| `../bench/README.md` | Microbench + pipeline perf tables. |
 
 ---
 
@@ -177,7 +177,7 @@ index.
 - **"min ~4 pages" in `design.md` (line ~17).** The narrative says the
   observed runtime memory is `(memory 4 1024 shared)` "min ~4 pages",
   while the *enforced* host floor is `CELWASM_INITIAL_MEMORY_PAGES = 2`
-  (`compiler_v2/runtime/cel_layout.h:29`). design.md already reconciles
+  (`runtime/cel_layout.h:29`). design.md already reconciles
   this inline ("the host's A13 invariant only enforces a `>= … = 2`
   floor", and `cel_layout.h:18-28` explains the auto-sized 2→3-4 page
   drift by build mode). No code or doc change needed — the "4" is an
@@ -189,4 +189,4 @@ index.
   `m10-conversions.md:60` `pass=975`, `m5-comprehensions-followon.md`
   `1373`). These are legitimate historical snapshots, not errors —
   left in place. The single live number is in
-  `compiler_v2/conformance/README.md`.
+  `conformance/README.md`.

@@ -276,7 +276,7 @@ for an estimated +350.
 
   - WAT-first per CLAUDE.md: every new helper gets a WAT trace
     under `doc/implementation-plan/rewrite/wat/` before codegen.
-  - `bazel test //compiler_v2/...` and `scripts/run_full_suite.sh`
+  - `bazel test //...` and `scripts/run_full_suite.sh`
     must remain green at every slice boundary.
   - Conformance README + per-fixture table updated in the same
     commit as each slice.

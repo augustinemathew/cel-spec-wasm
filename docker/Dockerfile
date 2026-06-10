@@ -30,7 +30,7 @@
 #
 #   docker build -t celwasmc-linux -f docker/Dockerfile .
 #   docker run --rm -v "$PWD":/src -w /src celwasmc-linux \
-#     bash -c 'third_party/fetch_cel_cpp.sh && bazel test //compiler_v2/...'
+#     bash -c 'third_party/fetch_cel_cpp.sh && bazel test //...'
 #
 # Builds and runs on both linux/arm64 and linux/amd64.
 FROM ubuntu:24.04

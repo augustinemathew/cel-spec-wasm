@@ -14,7 +14,7 @@ graduating).
 > `SelectE2ETest` (12), `HasE2ETest` (6), and `UnknownE2ETest`
 > (7) test in `e2e/m2_test.cc` had a fixture-level
 > `GTEST_SKIP` ("pending M2.C" / "pending M2.E") that hid the
-> gap from `bazel test //compiler_v2/...` (the e2e target is
+> gap from `bazel test //...` (the e2e target is
 > tagged `manual`).  Today's commit closes the gap by:
 >
 >   1. Implementing `CelGetFieldImpl` / `CelHasFieldImpl` (M2.C.0b
@@ -342,24 +342,24 @@ tests, plus whatever fraction of the corpus uses `unknown:` /
 ### 1.1 What works end-to-end after M2
 
 ```
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "x" \
+$ bazel run //tools/cel:celwasmc_v2 -- -e "x" \
     -V x:int -bind x=42
 42
 
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "c.name" \
+$ bazel run //tools/cel:celwasmc_v2 -- -e "c.name" \
     --schema e2e/testdata/customer.proto \
     -V c:celwasm.testdata.Customer -bind c=<serialised customer>
 "Alice"
 
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "has(c.order)" \
+$ bazel run //tools/cel:celwasmc_v2 -- -e "has(c.order)" \
     ... -bind c=<customer with no order>
 false
 
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "c.billing_address.city" \
+$ bazel run //tools/cel:celwasmc_v2 -- -e "c.billing_address.city" \
     ... -bind c=<customer>
 "Seattle"
 
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "c.name" \
+$ bazel run //tools/cel:celwasmc_v2 -- -e "c.name" \
     ... --unknown_attrs "c.name"
 UNKNOWN(c.name)
 ```
@@ -892,10 +892,10 @@ alongside M5/M6 planning.
 
 ## 3. Source layout (M2 deliverables)
 
-New / extended files under `compiler_v2/`:
+New / extended files under `compiler/`:
 
 ```
-compiler_v2/
+compiler/
 ├── api/
 │   ├── value.{h,cc}                            # +Value::HostMessage (§2.1.1) — functional
 │   │                                           # +Value::HostMap / HostList stubs (§2.1.1) — M6 bodies
@@ -1244,7 +1244,7 @@ Flip these rows on `doc/implementation-plan/testing-checklist.md`
 
 ## 7. Exit criteria
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] `bazel run //conformance:run_conformance` shows
         no `kFail` regressions vs the M1 snapshot.  New PASSes
         appear for `fields.textproto`, `namespace.textproto`, the

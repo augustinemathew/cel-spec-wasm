@@ -55,6 +55,104 @@ cc_binary(
 )
 
 
+# Large-list `in`-operator benches.  Two shapes:
+#   - `x in [0..N-1]` for N up to 1M with x at worst-case position.
+#   - `perm in [<1K GCP IAM permissions, 50 bytes each>]`.
+# Times Compile / Plan / Eval at each shape so the wall-clock split
+# (parse + codegen vs link vs steady-state scan) is visible.
+cc_binary(
+    name = "in_operator_bench",
+    srcs = ["in_operator_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+
+# Sibling of in_operator_bench: the SAME expressions/bindings, but
+# evaluated through cel-cpp's tree-walking interpreter so the two
+# numbers pair head-to-head.  Standalone TU — must NOT depend on any
+# //eval/..., //compiler:..., //shared:..., or //abi/... target (cel-cpp's
+# `cel::Value` / `cel::Attribute` clash with ours when linked together;
+# the bench is built without our pipeline on the link line).
+cc_binary(
+    name = "in_operator_cel_cpp_bench",
+    srcs = ["in_operator_cel_cpp_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "@cel-cpp//common:decl",
+        "@cel-cpp//common:type",
+        "@cel-cpp//common:value",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+
+# Foreign-component dispatch cost vs native host-fn dispatch cost
+# (m24 D.3 → m26 D.3 rewrite).  Two shapes: scalar add (per-call
+# overhead) and 256 KiB string len (per-call + canonical-ABI copy
+# throughput).  Each shape runs through both backends so the delta
+# isolates the component-call overhead.
+#
+# The component fixture is the macro-produced
+# //e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component
+# (a real wasm32-wasip2 Component-Model component, built via the
+# cel_wasm_component Starlark macro from fns.idl + user_fns.cc).
+# Loaded at bench-setup time via the bazel runfiles library; the
+# previous inline-WAT setup has been retired in favour of measuring
+# the production component shape an embedder would actually ship.
+cc_binary(
+    name = "foreign_component_bench",
+    srcs = ["foreign_component_bench.cc"],
+    copts = ["-std=c++17"],
+    data = [
+        "//e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+
 # Reports the wasm byte size of representative compiled programs at
 # optimize_level 0 vs 2.  Used to populate the "Program size" table
 # in the repo README.  Not a benchmark (no timing); just a

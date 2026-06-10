@@ -251,12 +251,12 @@ the old `host_loader.{h,cc}` is deleted.
 > | Plan SHA | Subject |
 > |---|---|
 > | A | `runtime: fix null-pointer-elision in cel_memory_base_` |
-> | B (revised) | `compiler_v2/api: cel::Engine + cel::Program + cel::Compiler` |
-> | C (revised) | `compiler_v2/api: cel::Engine::Plan + cel::Instance` (+ amended for memory_size_bytes accessor and 8-thread × 4-Plan concurrent test) |
+> | B (revised) | `eval: cel::Engine + cel::Program + cel::Compiler` |
+> | C (revised) | `eval: cel::Engine::Plan + cel::Instance` (+ amended for memory_size_bytes accessor and 8-thread × 4-Plan concurrent test) |
 > | F+G | `compiler_v2: codegen flips memory ownership + delete host_loader` (merged because the codegen flip breaks `host_loader_test`) |
-> | E | `compiler_v2/api: cel::Instance::Eval — full Compile→Plan→Eval` |
-> | §6 | `compiler_v2/api: cel_pipeline_bench against new API surface` |
-> | (lifetime) | `compiler_v2/api: strengthen InstanceOutlivesEngine to call Eval` |
+> | E | `eval: cel::Instance::Eval — full Compile→Plan→Eval` |
+> | §6 | `eval: cel_pipeline_bench against new API surface` |
+> | (lifetime) | `eval: strengthen InstanceOutlivesEngine to call Eval` |
 > | H | `doc: reconcile m1-scalar-pipeline / cel-host-surface / design / two-phase-runtime-isolation` (this commit) |
 >
 > Plan vs. as-shipped deltas:
@@ -503,7 +503,7 @@ After Commits A-F land and `Cel::Compiler::Compile` →
     `eval/host/host_loader_test.cc`.
   - Remove the two `host_loader` targets from
     `eval/host/BUILD.bazel`.
-  - Update `compiler_v2/cli/BUILD.bazel`:
+  - Update `tools/cel/BUILD.bazel`:
     `//eval/host:host_loader` → `//compiler:program`
     + `//eval:instance`.
   - Update `e2e/BUILD.bazel` similarly.
@@ -512,7 +512,7 @@ After Commits A-F land and `Cel::Compiler::Compile` →
     the host_loader trampolines called them). Drop the matching
     declarations in `cel_arena.h`.
 
-Acceptance: `bazel test //compiler_v2/...` all green.
+Acceptance: `bazel test //...` all green.
 
 ### 5.8 Commit H — doc reconciliation
 
@@ -775,7 +775,7 @@ Total: ~21h focused work. Realistic calendar: 3–4 days.
 
 This plan is "done" when:
 
-  1. `bazel test //compiler_v2/...` green.
+  1. `bazel test //...` green.
   2. `bazel run -c opt //bench:cel_pipeline_bench` runs
      to completion; numbers in §6.5 invariants hold.
   3. `host_loader.{h,cc,_test.cc}` no longer exists.
@@ -785,7 +785,7 @@ This plan is "done" when:
   5. The runtime wasm is on the eval path; the only host-side
      runtime helpers are `cel_env.cel_log` plus the explicit
      proto-reflection imports declared in
-     `compiler_v2/host_abi/cel_env.h` (existing).
+     `abi/cel_env.h` (existing).
   6. `m1-scalar-pipeline.md §2.9` matches the implementation.
   7. `testing-checklist.md` has no M1 row that was ticked before
      this slice and is unticked after.

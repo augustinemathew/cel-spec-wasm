@@ -19,7 +19,7 @@ estimated.  Priorities, per the team's direction:
 
 | Activity | Measured | Reality |
 |---|---|---|
-| Full `bazel test //compiler_v2/...` | **618 s wall, 608 s critical path** | |
+| Full `bazel test //...` | **618 s wall, 608 s critical path** | |
 | └ sum of all 80 tests' *execution* | **44.8 s** | tests are NOT the cost |
 | └ everything else (~573 s, 93%) | **compiling** test binaries | **cel-cpp from source dominates** |
 | Pre-push gate (`-c opt` conformance), cold | **~10 min** | a *second* full cel-cpp build in a separate config tree |
@@ -128,7 +128,7 @@ machine.
 
 The 618 s number is "test everything from a cold tree."  Day to day:
 build/test only the touched package (`bazel test
-//runtime:cel_base64_ext_test`), not `//compiler_v2/...`.
+//runtime:cel_base64_ext_test`), not `//compiler/...`.
 Bazel's local cache already makes re-runs of unchanged targets
 instant within a checkout.
 
@@ -142,7 +142,7 @@ It was **not** clang-tidy or the PCH compile.  `lint.sh` →
 `build_lint_pch.sh` ran, **unconditionally on every lint**:
 
 ```
-bazel build //compiler_v2/...   # line 36, "keep external symlinks live"
+bazel build //...   # line 36, "keep external symlinks live"
 ```
 
 On a warm tree that's ~2 s; on a cold/evicted/contended tree it is a
@@ -168,14 +168,14 @@ more often*:
 | `lint.sh <file>` | named file(s) | **4.6 s** | inner loop |
 | `lint.sh --dirty` | explicit synonym for the default | ~5-9 s | inner loop |
 | `lint.sh --branch` | whole branch diff vs `origin/master` + worktree (~20 files) | **73 s** | once, pre-commit / PR |
-| `lint.sh --all` | every `compiler_v2/` source file | — | rare |
+| `lint.sh --all` | every `compiler/` source file | — | rare |
 
 **LANDED:** the default was **flipped** — bare `lint.sh` now lints only
 your working-tree edits (the inner-loop common case), and the
 exhaustive full-branch sweep is the explicit `--branch` gate.  This
 follows the general principle: *the cheap, working-set-scoped
 operation is the default; the exhaustive sweep is opt-in* (mirrors
-package-scoped `bazel test` in the loop vs `//compiler_v2/...` at the
+package-scoped `bazel test` in the loop vs `//compiler/...` at the
 gate).
 
 ### The rest of lint
@@ -260,7 +260,7 @@ brew llvm.
 - [x] Gate runs in fastbuild, not `-c opt` (§3.1) — `check_conformance_monotonic.sh`.
 - [x] `try-import user.bazelrc` + gitignore (§3.2).
 - [x] disk_cache documented as opt-in with caveats (§5), not enabled by default.
-- [x] **Lint no longer runs a full build on a warm tree** (§4) — `build_lint_pch.sh` guards the `bazel build //compiler_v2/...` behind a "symlinks missing?" check.  Cold/contended lint was 609 s for 2 files; warm is now seconds.
+- [x] **Lint no longer runs a full build on a warm tree** (§4) — `build_lint_pch.sh` guards the `bazel build //...` behind a "symlinks missing?" check.  Cold/contended lint was 609 s for 2 files; warm is now seconds.
 - [ ] Conformance as a cacheable `bazel test` (§3.3).
 - [ ] Move conformance gate to CI; slim the pre-push hook (§3.4).
 - [ ] Compile-db / PCH wasm32 filter; pin clang-format version; lint backlog baseline (rest of §4).
@@ -270,7 +270,7 @@ brew llvm.
 
 ## Appendix — experiments (2026-05-24)
 
-**A. Build-vs-test split.**  `bazel test //compiler_v2/...`: 618 s
+**A. Build-vs-test split.**  `bazel test //...`: 618 s
 wall, 608 s critical path; sum of 80 tests' execution = 44.8 s ⇒ ~93%
 is compilation.  Test-time histogram: 3 tests ≥5 s (cel_smoke 11 s,
 engine 5.1 s, instance 5.1 s), 9 in 1–5 s, the remaining 68 ≤1 s

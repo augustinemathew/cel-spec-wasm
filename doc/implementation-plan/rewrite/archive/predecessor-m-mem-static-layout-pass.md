@@ -4,7 +4,7 @@ Status: **superseded 2026-04-21 by
 [`rewrite-memory-layout-codegen.md`](rewrite-memory-layout-codegen.md).**
 The rewrite doc folds this pass (as `LayoutPass`), the ownership flip,
 and the full ResolvePass/emit redesign into a single 12-slice plan
-against a parallel `compiler_v2/` tree. Kept here for historical
+against a parallel `compiler/` tree. Kept here for historical
 context only — do not treat this as the active plan.
 
 ---

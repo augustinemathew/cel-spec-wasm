@@ -2,11 +2,11 @@
 
 Status: research — probed 2026-05-24 against vendored cel-cpp.
 
-Probe: `compiler_v2/probes/math/ast_shape_probe_test.cc` (+ `BUILD.bazel`),
+Probe: `compiler/probes/math/ast_shape_probe_test.cc` (+ `BUILD.bazel`),
 tagged `manual`. Run with:
 
 ```
-bazel test //compiler_v2/probes/math:ast_shape_probe_test --test_output=all
+bazel test //compiler/probes/math:ast_shape_probe_test --test_output=all
 ```
 
 8 tests, all green. The probe registers the standard parser macros +

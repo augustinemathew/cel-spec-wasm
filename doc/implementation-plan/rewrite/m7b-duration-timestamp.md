@@ -32,7 +32,7 @@ What's left as future work (§9):
   - ~~**`*_range/*` fails**~~ — **shipped in polish-2**.  Tightened
     `arith_duration_in_range` to the int64-nanos bound cel-cpp
     enforces (verified empirically; see
-    `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
+    `former compiler/throwaway/cel_cpp_corner_probe.cc`).
     `timestamps.textproto` now 76/76 = 100%.
   - **`now()`**, extension-library time ops, leap-second
     modelling — pre-existing future work.
@@ -112,7 +112,7 @@ What's left as future work (§9):
 >     `(seconds, nanos)` via reflection and overwrites the slot
 >     with `CEL_TIMESTAMP` / `CEL_DURATION`.  All three e2e
 >     tests pass.  cel-cpp parity verified empirically (see
->     `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
+>     `former compiler/throwaway/cel_cpp_corner_probe.cc`).
 >   - **`getYear` vs `getFullYear` overload-name pinning.**
 >     cel-cpp ships only `getFullYear`; `getYear` is not a
 >     standard member.  Tests use `getFullYear` consistently.
@@ -126,7 +126,7 @@ What's left as future work (§9):
 >     `Y9999LangdefMax` (Fri=5).
 >
 > **Polish-round-2 discoveries (verified empirically against
-> cel-cpp via `compiler_v2/throwaway/cel_cpp_corner_probe.cc`):**
+> cel-cpp via `former compiler/throwaway/cel_cpp_corner_probe.cc`):**
 >
 >   - **Arithmetic-result range is int64-nanos, NOT proto-Duration
 >     ±10000-year.**  cel-cpp's `CheckedSub(Time, Time)` represents
@@ -1429,7 +1429,7 @@ this slice.
     cross-form e2e tests (`DurationVsProtoLiteral`,
     `TimestampVsProtoLiteral`, `OrderingAcrossForms`) pass.
     cel-cpp parity verified empirically before implementing
-    (see `compiler_v2/throwaway/cel_cpp_corner_probe.cc`).
+    (see `former compiler/throwaway/cel_cpp_corner_probe.cc`).
 
   - **`now()` standard function**.  Requires per-evaluation
     clock injection on `Activation`; today neither

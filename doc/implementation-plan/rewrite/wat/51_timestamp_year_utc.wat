@@ -41,7 +41,7 @@
 ;;   cel.cel_ts_year_utc(out_slot, ts_slot) — i32×2 → ()
 ;;
 ;; cel_ts_year_utc contract (helper body in
-;; `compiler_v2/runtime/cel_time.c`):
+;; `runtime/cel_time.c`):
 ;;   - reads ts_slot as CEL_TIMESTAMP.  Any other kind → out_slot =
 ;;     {CEL_ERROR, CEL_ERR_TYPE_MISMATCH}.
 ;;   - 3VL absorption — CEL_UNKNOWN/CEL_ERROR pass through.

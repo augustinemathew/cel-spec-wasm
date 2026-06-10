@@ -54,12 +54,17 @@ which engine is faster for them.
 | `str_matchesCheap` | 101 ns | 1 499 ns | 15× |
 | `compr_all100` | 713 ns | 6 610 ns | 9× |
 
-† The `matches` margin needs a cause investigation before being
-quoted: the likely explanation is that celwasm compiles the regex once
-at Compile() time while cel-cpp's stack builds it per-eval — a genuine
-AOT advantage if confirmed, an unfair harness artifact if cel-cpp can
-be configured to cache it.  Conformance results agree between engines,
-so it is not a correctness shortcut.
+† Cause confirmed (2026-06-09): `runtime/cel_matches.cc` keeps a
+per-Instance single-slot compiled-pattern cache — the hot loop pays
+RE2 compilation once, then only matches (~186 ns).  cel-cpp's default
+runtime (as celcpp_bench configures it) rebuilds the RE2 every
+evaluation; the 8.9 µs is mostly regex *compilation*.  cel-cpp ships
+an optional regex-precompilation extension that would close most of
+this row.  So: real for the compile-once-eval-many workload the bench
+models, but it is a cache-vs-no-cache comparison — quote only with
+this caveat.  Conformance agrees between engines (including the
+empty-pattern cache-poisoning edge rows), so it is not a correctness
+shortcut.
 
 The comprehension sweep is the strongest architectural result: a
 100-element `all()` is 47× faster than our own dynamic mode and 9×

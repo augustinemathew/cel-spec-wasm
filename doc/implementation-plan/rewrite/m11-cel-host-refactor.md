@@ -527,7 +527,7 @@ AI-assisted pace, ~3-4 calendar days of focused work.
     two independently reviewable diffs.
   - **Mixed-origin `ABSL_CHECK` conversion might break e2e
     paths.**  Today the silent `TYPE_MISMATCH` masks any callers.
-    Mitigation: run `bazel test //compiler_v2/...` after the
+    Mitigation: run `bazel test //...` after the
     conversion; if previously-green tests now crash, that's a
     real bug being unmasked — investigate, don't paper over.
   - **Slice B + Slice C together change the wasm import surface.**
@@ -565,7 +565,7 @@ AI-assisted pace, ~3-4 calendar days of focused work.
     `cel_wkt_wire_test.cc` lives in `runtime/` and
     also needs `BuildNestedAny`/`BuildWrapperMessage`.  Either
     (a) duplicate the helpers, (b) put them in a shared
-    `compiler_v2/test_helpers/` package, or (c) put runtime-
+    `former compiler/test_helpers/` package, or (c) put runtime-
     specific helpers in `runtime/cel_wkt_wire_test_helpers.cc`.
     Recommend (b) — one shared helpers package.
 
@@ -574,7 +574,7 @@ AI-assisted pace, ~3-4 calendar days of focused work.
 Per `conformance/README.md` and CLAUDE.md closeout
 discipline:
 
-  - [ ] `bazel test //compiler_v2/...` green.
+  - [ ] `bazel test //...` green.
   - [ ] `bazel test //runtime/cel_wkt_wire_test` green
         (~50 new tests including the death tests).
   - [ ] `bazel test //eval/internal/...` green (all 8

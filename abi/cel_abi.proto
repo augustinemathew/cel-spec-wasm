@@ -1,5 +1,5 @@
 // Schema of the `cel.abi` WASM custom section emitted by
-// compiler_v2/.  The compiler writes one `CelAbi` message into the
+// compiler/.  The compiler writes one `CelAbi` message into the
 // section, the host (Engine::Plan) decodes it at load time to build
 // its runtime dispatch tables.
 //
@@ -22,8 +22,8 @@
 //     checked AST for host-side re-analysis; v2's host doesn't run
 //     a second pass, so the AST stays compile-time-only.
 //
-// Consumed by compiler_v2/api/internal/abi_decode.{h,cc}.
-// Produced by compiler_v2/compile.cc.
+// Consumed by eval/internal/abi_decode.{h,cc}.
+// Produced by compiler/internal/compile.cc.
 
 syntax = "proto3";
 
@@ -241,7 +241,7 @@ message CelAbi {
 
   // Version of the runtime helper catalogue the program was
   // compiled against.  Mirror of `abi::kRuntimeAbiVersion` in
-  // `compiler_v2/abi/runtime_catalogue.h`.  The engine compares
+  // `abi/runtime_catalogue.h`.  The engine compares
   // this against its own `kRuntimeAbiVersion` at `Plan` time and
   // rejects mismatches with a clear FailedPrecondition that names
   // both versions — far better than wasmtime's opaque "type

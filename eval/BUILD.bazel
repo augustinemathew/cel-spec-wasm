@@ -219,6 +219,52 @@ cc_test(
     ],
 )
 
+# Typed Component-Model marshaling bridge — host CelValue ↔ wasmtime
+# canonical-ABI val.  See eval/internal/cel_component.h for the type
+# matrix.  The vendored wasmtime build gates all component-API
+# typedefs behind WASMTIME_FEATURE_COMPONENT_MODEL; the macro must be
+# force-defined on every consumer TU.
+cc_library(
+    name = "cel_component",
+    srcs = ["internal/cel_component.cc"],
+    hdrs = ["internal/cel_component.h"],
+    copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
+    defines = ["WASMTIME_FEATURE_COMPONENT_MODEL"],
+    deps = [
+        ":cel_host_hdrs",  # HostListBacking / HostMapBacking abstract bases
+        ":value",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "cel_component_test",
+    srcs = ["internal/cel_component_test.cc"],
+    copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
+    deps = [
+        ":cel_component",
+        ":cel_host",  # Value::List / HostList symbol bodies
+        ":cel_host_hdrs",
+        ":value",
+        "//compiler/celfn:function_library",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",  # Customer for the proto rows
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
 # Internal — decode the `cel.abi` custom section from raw wasm
 # bytes.  Consumed by Engine::Plan at load time.
 cc_library(
@@ -509,9 +555,12 @@ cc_library(
     name = "wasmtime_engine_state",
     srcs = ["internal/wasmtime_engine_state.cc"],
     hdrs = ["internal/wasmtime_engine_state.h"],
+    copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
+    defines = ["WASMTIME_FEATURE_COMPONENT_MODEL"],
     tags = ["manual"],
     deps = [
         ":host_callback",
+        "//compiler/celfn:function_library",
         "//third_party/wasmtime:wasmtime",
     ],
 )
@@ -592,10 +641,12 @@ cc_library(
     name = "engine",
     srcs = ["engine.cc"],
     hdrs = ["engine.h"],
+    copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
         ":abi_decode",
+        ":cel_component",
         ":cel_host_wasmtime",
         ":host_call_context",
         ":host_callback",
@@ -603,8 +654,10 @@ cc_library(
         ":instance_impl",
         ":module_imports",
         ":typed_function",
+        ":value",
         ":wasmtime_engine_state",
         "//abi:runtime_catalogue",
+        "//compiler/celfn:function_library",
         "//runtime:cel_runtime",
         "//compiler:program",
         "//eval/host:cel_log",
@@ -626,11 +679,14 @@ link_mode_cc_test(
     tags = ["manual"],
     deps = [
         ":engine",
+        ":host_call_context",
+        ":host_callback",
         ":instance",
         ":value",
         "//bazel:link_mode_test_helpers",
         "//compiler:compiler",
         "//compiler:program",
+        "//compiler/celfn:function_library",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",

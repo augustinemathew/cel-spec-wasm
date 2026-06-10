@@ -46,7 +46,7 @@
 ;;   cel.cel_ts_ts_sub_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
 ;;
 ;; cel_dur_add_at_vv contract (helper body in
-;; `compiler_v2/runtime/cel_time.c`):
+;; `runtime/cel_time.c`):
 ;;   - reads a / b as CEL_DURATION.  Any other kind on either operand
 ;;     → out_slot = {CEL_ERROR, CEL_ERR_TYPE_MISMATCH}.
 ;;   - 3VL absorption — CEL_UNKNOWN/CEL_ERROR pass through (mirrors

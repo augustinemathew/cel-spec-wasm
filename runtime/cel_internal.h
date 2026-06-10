@@ -23,6 +23,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "runtime/cel_data.h"
 
@@ -61,31 +62,6 @@ int cel_value_eq(const CelValue* a, const CelValue* b);
 // Defined in cel_map.c; referenced by cel_compare.c's
 // cel_value_eq_polymorphic for cross-kind non-numeric fallthrough.
 int map_keys_equal(const CelValue* a, const CelValue* b);
-
-// Freestanding wasm32 cross-compile has no libc; the host build has
-// <string.h>.  Use byte-loop fallbacks on wasm so each TU is
-// self-contained without pulling compiler-rt.  These are
-// `static inline` so each TU gets its own copy and clang dead-strips
-// unused ones.
-#ifdef __wasm__
-static inline void* cel_memcpy_internal_(void* dst, const void* src, size_t n) {
-  unsigned char* d = (unsigned char*)dst;
-  const unsigned char* s = (const unsigned char*)src;
-  for (size_t i = 0; i < n; ++i)
-    d[i] = s[i];
-  return dst;
-}
-static inline void* cel_memset_internal_(void* dst, int v, size_t n) {
-  unsigned char* d = (unsigned char*)dst;
-  for (size_t i = 0; i < n; ++i)
-    d[i] = (unsigned char)v;
-  return dst;
-}
-#define memcpy cel_memcpy_internal_
-#define memset cel_memset_internal_
-#else
-#include <string.h>
-#endif
 
 // CelValue* at byte-offset `off`.  Caller must have verified
 // `off != 0` for the absent-sentinel contract; for that, use the
@@ -161,6 +137,27 @@ static inline void write_bool(CelValue* out, int b) {
   out->payload.b = b ? 1 : 0;
 }
 
+// Raw byte-pointer equality.  Processes 8 bytes per iteration via an
+// unaligned u64 load (the wasm spec guarantees misaligned i64.load is
+// legal and traps-free; engines lower it as a single i64.load).
+// Falls back to a byte loop for the 0–7 byte tail so we never read
+// past the caller's range.  __builtin_memcmp on a constant length of
+// 8 lowers under wasi-sdk's libc + LTO to a load+load+xor+i64.eqz on
+// wasm32 and to the platform memcmp's fast path on the native build.
+static inline int cel_byteptr_equal_(const uint8_t* pa, const uint8_t* pb,
+                                     uint32_t n) {
+  while (n >= 8) {
+    if (__builtin_memcmp(pa, pb, 8) != 0) return 0;
+    pa += 8;
+    pb += 8;
+    n -= 8;
+  }
+  while (n--) {
+    if (*pa++ != *pb++) return 0;
+  }
+  return 1;
+}
+
 // Byte-span equality over the shared linear memory.  Unified version
 // of the legacy `spans_equal` / `span_eq` helpers (split-plan Open
 // Question #3).
@@ -168,10 +165,7 @@ static inline int spans_equal(CelSpan a, CelSpan b) {
   if (a.len != b.len) return 0;
   if (a.len == 0) return 1;
   const uint8_t* base = cel_memory_base_();
-  for (uint32_t i = 0; i < a.len; ++i) {
-    if (base[a.ptr + i] != base[b.ptr + i]) return 0;
-  }
-  return 1;
+  return cel_byteptr_equal_(base + a.ptr, base + b.ptr, a.len);
 }
 
 #ifdef __cplusplus

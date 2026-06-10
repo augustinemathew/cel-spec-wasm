@@ -1,0 +1,81 @@
+# End-to-end demo fixture for the cel_wasm_component Starlark macro
+# (m26 §6 + bazel/cel_wasm_component.bzl).
+#
+# Two targets:
+#
+#   - `demo_component` (default)
+#       Scalar + string round-trip.  Cross-compiles to wasm32-wasi
+#       via the existing wasi-sdk toolchain; the codec.h's absl::
+#       Time / Duration deps come in via absl/time, which the macro
+#       adds automatically (absl is already patched for wasm-sysinfo
+#       in MODULE.bazel).
+#
+#   - `demo_component_proto` (manual)
+#       Same macro, but the `.idl` declares `proto(acme.User)`
+#       args / returns.  This drags `cc_proto_library` into the
+#       wasm cross-compile, which means libprotobuf-cpp gets
+#       compiled from source under the WASI sysroot — a cold-cache
+#       multi-minute build.  Tagged `manual` so default `bazel
+#       build //...` doesn't pay the cost; explicit `bazel build
+#       //...:demo_component_proto` exercises the proto path.
+
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
+
+package(default_visibility = ["//visibility:public"])
+
+# Non-proto demo — the fast hermetic gate.
+cel_wasm_component(
+    name = "demo_component",
+    idl = "fns.idl",
+    user_fns = ["user_fns.cc"],
+)
+
+# End-to-end gate: loads the macro-produced demo_component.wasm and
+# exercises both decls through Compile → Plan → Eval.  Closes the
+# loop on m26 H.3 — proves the bytes the macro emits are a working
+# Component-Model component, not just syntactically valid.
+cc_test(
+    name = "demo_component_e2e_test",
+    srcs = ["demo_component_e2e_test.cc"],
+    data = [":demo_component"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Proto demo — exercises the m24 §8 proto-as-bytes path.
+proto_library(
+    name = "user_proto",
+    srcs = ["user.proto"],
+)
+
+cc_proto_library(
+    name = "user_cc_proto",
+    deps = [":user_proto"],
+)
+
+cel_wasm_component(
+    name = "demo_component_proto",
+    idl = "fns_proto.idl",
+    user_fns = ["user_fns_proto.cc"],
+    deps = [":user_cc_proto"],
+    extra_includes = [
+        "e2e/foreign_component_fixtures/cel_wasm_component_demo/user.pb.h",
+    ],
+    tags = ["manual"],
+)

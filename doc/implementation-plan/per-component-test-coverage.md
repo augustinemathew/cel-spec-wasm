@@ -21,7 +21,7 @@ must be green before declaring a slice or milestone done."
 
 On 2026-04-24, a routine validation of M2 found:
 
-  - `bazel test //compiler_v2/...` was 100% green (27 / 27 tests).
+  - `bazel test //...` was 100% green (27 / 27 tests).
   - `m2-ident-select-unknowns.md` and `testing-checklist.md` both
     described M2 as substantially shipped; subsequent work (M3
     map literals, conformance harness) had been built on top of
@@ -80,7 +80,7 @@ A slice that ships with **any** of these unmet either:
 
 ## 2. Manual-tagged targets — must all run before milestone close
 
-These targets are excluded from `bazel test //compiler_v2/...`
+These targets are excluded from `bazel test //...`
 because they require external toolchains (wasmtime, brew clang
 for wasm32 cross-compile) or pull large fixtures.  They are
 **not optional** — a milestone is not done until each one that
@@ -406,7 +406,7 @@ M<N>.<slice> closeout
 
 [ ] All component _test.cc files written (per §3 above)
 [ ] No fixture-level GTEST_SKIPs added to e2e/m<N>_test.cc
-[ ] bazel test //compiler_v2/... passes
+[ ] bazel test //... passes
 [ ] bazel test //eval:instance_test passes
 [ ] bazel test //eval:engine_test passes
 [ ] bazel test //eval:cel_host_test passes

@@ -681,6 +681,41 @@ Rules for contributors:
   - `internal/` subdirs are the readability signal that pairs with the
     visibility scope — keep private code under `internal/`.
 
+## Benchmark configuration
+
+Benchmarks measure production-shape numbers, so every layer they touch
+runs at the **highest available optimization level** — anything less is
+a noisy / pessimised baseline that doesn't represent what an embedder
+ships.  The three layers and their flags:
+
+  - **Bazel config.**  Always `bazel run -c opt //bench:<target>`; the
+    fastbuild inner-loop config is for dev cycles, not measurement.
+  - **wasm32-wasi cross-compile (`cel_runtime.wasm`).**  `-O3 -flto`
+    via the wasi-sdk toolchain (`opt_feature`,
+    `third_party/wasi_sdk/cc_toolchain_config.bzl:199`) and explicit
+    `-flto` in `runtime/BUILD.bazel`'s wasm `cc_binary` (both copts
+    and linkopts).  LTO is load-bearing — it lets the linker inline
+    helpers like `cel_int_eq_at_vv` into `cel_list_in`'s scan loop
+    across TU boundaries; without it, the hot loop pays a non-inlined
+    call per element.  The native `cc_library` for `cel_runtime` has
+    had `-O3 -flto` since 2026-05-15; **the wasm side gained `-flto`
+    when this rule was added.**
+  - **Expr-module wasm (Binaryen-generated from CEL source).**  Every
+    bench passes `CompilerOptions::optimize_level = 2` (the highest
+    Binaryen level we wire up today — the field accepts `[0, 3]`;
+    when level 3 is validated, raise the constant).  Default-config
+    `Compile()` is `optimize_level = 0`, which means an
+    unoptimized expr module — fine for tests, **never for benches**.
+    The canonical seam is the `kBenchOptimizeLevel` constant + a
+    `CompileOrDie` that always sets `opts.optimize_level =
+    kBenchOptimizeLevel`; see `bench/in_operator_bench.cc` for the
+    pattern.
+
+When a bench reports a number, it's the production-config number.
+Comparison benches (e.g. `BM_*_Opt2` paired with the unoptimized
+variant in `pipeline_bench.cc`) are an explicit deviation — they
+exist so a reviewer can read the optimization delta in one table.
+
 ## Dev-loop performance (read before you wonder why it's slow)
 
 Full analysis + numbers: `doc/implementation-plan/dev-loop-performance.md`.

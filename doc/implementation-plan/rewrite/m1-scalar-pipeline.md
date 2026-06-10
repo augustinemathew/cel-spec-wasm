@@ -40,19 +40,19 @@ filling in the skeleton — not restructuring it.
 ### 1.1 What works end-to-end after M1
 
 ```
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42"
+$ bazel run //tools/cel:celwasmc_v2 -- -e "42"
 42
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "true"
+$ bazel run //tools/cel:celwasmc_v2 -- -e "true"
 true
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e '"hello"'
+$ bazel run //tools/cel:celwasmc_v2 -- -e '"hello"'
 "hello"
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e 'b"bytes"'
+$ bazel run //tools/cel:celwasmc_v2 -- -e 'b"bytes"'
 b"bytes"
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "3.14"
+$ bazel run //tools/cel:celwasmc_v2 -- -e "3.14"
 3.14
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "42u"
+$ bazel run //tools/cel:celwasmc_v2 -- -e "42u"
 42u
-$ bazel run //compiler_v2/cli:celwasmc_v2 -- -e "null"
+$ bazel run //tools/cel:celwasmc_v2 -- -e "null"
 null
 ```
 
@@ -337,7 +337,7 @@ for growth; extensions append tagged blocks.
 ## 3. Source layout (M1 deliverables)
 
 ```
-compiler_v2/
+compiler/
 ├── BUILD.bazel                              # root filegroup
 ├── ir/
 │   ├── BUILD.bazel
@@ -431,7 +431,7 @@ target names adjust (`//compiler/ir:typed_ast` →
 | `compiler/frontend/parse_and_check.{h,cc,_test.cc}` + `compiler/ir/static_subset.{h,cc,_test.cc}` | `compiler/frontend/parse_and_check.{h,cc,_test.cc}` (merged) | Cel-cpp parser/checker wrapper **with `RejectDyn` folded in**. Static-subset enforcement is a frontend concern — it runs on checker output before the IR is built — so v2 collapses the two files into one translation unit: `ParseAndCheck` returns a `TypedAst` only if the static-subset gate passes. v1's `static_subset` header stops existing as a separate surface. |
 | `compiler/host/cel_log.{h,cc,_test.cc}` | `eval/host/` | Already-new log surface |
 
-Everything else under `compiler_v2/` is **written from scratch**.
+Everything else under `compiler/` is **written from scratch**.
 Specifically:
 
   - `compiler/ir/annotations.{h,cc}` is **not** ported. v1's
@@ -454,11 +454,11 @@ Specifically:
 
 Author the files roughly in this order — each step compiles and
 tests in isolation. Parent §11.3 invariants hold: every commit
-passes `bazel test //compiler_v2/...` and does not touch `compiler/`.
+passes `bazel test //...` and does not touch `compiler/`.
 
 1. **Directory + BUILD skeleton** — root `BUILD.bazel` + per-dir
    `BUILD.bazel`, empty filegroups. Smoke test: `bazel build
-   //compiler_v2/...` green (nothing to build yet).
+   //compiler/...` green (nothing to build yet).
 2. **Port v1 verbatims** — `typed_ast` (→ `ir/`),
    `cel_log` (→ `host/`), and `parse_and_check` (→ `frontend/`)
    **with `static_subset` folded in**: copy `parse_and_check.*`,
@@ -611,12 +611,12 @@ These get added to `testing-checklist.md` under a new
 
 M1 is done when all of these hold simultaneously:
 
-  - [ ] `bazel test //compiler_v2/...` green.
-  - [ ] `bazel test //compiler/...` green (v1 untouched).
+  - [ ] `bazel test //...` green.
+  - [ ] `bazel test //...` green (v1 untouched).
   - [ ] All seven E2E scalar tests (§6.2) pass.
-  - [ ] `scripts/lint.sh` clean for every `compiler_v2/` file
+  - [ ] `scripts/lint.sh` clean for every `compiler/` file
         (zero clang-tidy warnings).
-  - [ ] Every `compiler_v2/` non-trivial source file has a
+  - [ ] Every `compiler/` non-trivial source file has a
         companion `*_test.cc`.
   - [ ] `testing-checklist.md` rows in §6.3 are ticked.
   - [ ] This doc is updated with a `Status: shipped <date>` stanza.
@@ -760,7 +760,7 @@ readers see what M1 left behind without grepping git history.
     (e.g. read the bump cursor before/after Eval).  Not a
     blocker; the existing tests already verify literal eval
     works without allocation churn.
-  - **Stale CLI / e2e BUILD targets.** `compiler_v2/cli/celwasmc_v2`
+  - **Stale CLI / e2e BUILD targets.** `tools/cel/celwasmc_v2`
     and `e2e/eval_test` reference `srcs` files that
     don't exist yet.  The runtime-isolation slice updated their
     deps to point at the new api/ trio but didn't write the

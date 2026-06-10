@@ -1,6 +1,63 @@
 # Modules and FFI
 
-Status: design — drafted 2026-05-24.  Consolidates and revises the
+Status: **shipped** — design drafted 2026-05-24; execution landed
+**2026-06-03 (m24)** + **2026-06-04 (m26)**.
+
+**What landed.**  The foreign-module / cross-memory FFI design captured
+in §5 of this doc shipped as **two milestones**, not the single one
+this draft originally framed:
+
+  - **[m24-foreign-fn-component-backend.md](m24-foreign-fn-component-backend.md)**
+    — `Engine::AddComponent`, the typed canonical-ABI marshaling layer
+    (`eval/internal/cel_component.{h,cc}`), the full type matrix
+    (§5.4 here), and the e2e dispatch tests.
+  - **[m26-celfnc-and-component-build.md](m26-celfnc-and-component-build.md)**
+    — the IDL → wasm-component build pipeline: the four-emitter
+    `cel generate` (WIT + codec.h + generated_stub.cc + user_fns.h),
+    the `cel_wasm_component` Starlark macro, the wasm-tools +
+    wit-bindgen toolchain integration, and the `wasm32-wasip2`
+    cc_toolchain that emits Component-Model components directly.
+
+**As-shipped deltas** (read the design text below with these in mind):
+
+  - **Backend split.**  The original plan kept `kForeign`
+    (shared-memory FFI) alongside `kForeignComponent`.  `kForeign` was
+    **deleted in m26** — no production caller, superseded by the
+    component-isolated path.  The `<alias>.<fn>` IDL syntax went with
+    it; `@component.<fn>` is now the only foreign-fn prefix.
+  - **wit-bindgen.**  §5.6 ("Generated shims — mini-wit-bindgen") was
+    superseded by *real*
+    [wit-bindgen](https://github.com/bytecodealliance/wit-bindgen)
+    (pinned `v0.57.1`); we don't roll a mini variant.
+  - **Proto type surface.**  §5.4's blanket "may not cross" rule for
+    proto was relaxed: `kForeignComponent` admits `proto(...)` by
+    serialising bytes through the Component-Model boundary
+    (m24 §8).  `type` and `optional<T>` remain rejected.
+  - **C++ container types.**  Duration / Timestamp on the C++ author
+    side use `::google::protobuf::Duration` /
+    `::google::protobuf::Timestamp` (not `absl::Duration` /
+    `absl::Time`); drops the `absl/time` dep from the wasm-cross build.
+  - **§5.7 `_initialize` / WASI / reactor coexistence.**  We moved to
+    wasm32-wasip2 directly instead of wasm32-wasi + adapter; the
+    engine wires `wasmtime_component_linker_add_wasip2` for imports
+    and stubs `wasi:random/random.get-random-bytes` so libc++ static
+    init succeeds without a per-store wasi-preview2 context (which
+    the wasmtime v43 C API doesn't yet expose).
+
+**User-facing reference.**  The embedder guide for this surface is
+[`doc/user-guide/writing-component-functions.md`](../../user-guide/writing-component-functions.md).
+Read this doc for *how the FFI works*; read the user guide for *how
+to ship a function*.
+
+**Future work** (surfaced during execution, not yet scheduled): Go
+authoring via TinyGo wasip2 (m26 H.4); wasmtime C-API binding for
+`wasi-preview2` ctx (m26 #44 / M26.V); perf follow-ups (AOT-cache,
+component-side allocator pool, pure-fn arg-cache) listed in the user
+guide.
+
+---
+
+**Original design text follows verbatim.**  Consolidates and revises the
 module/ABI material previously scattered across
 [`m13-custom-fns.md`](m13-custom-fns.md) §4.3–§4.6 / §10.5 and
 [`wasi/DESIGN.md`](wasi/DESIGN.md) §4, reflecting two decisions taken

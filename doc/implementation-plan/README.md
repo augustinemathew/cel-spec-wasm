@@ -11,7 +11,7 @@ lists used across every milestone.
 
 Companion documents (do not duplicate — link):
   - `rewrite/design.md` — the active "why / what" design for the
-    `compiler_v2/` rewrite.  Supersedes the original
+    `compiler/` rewrite.  Supersedes the original
     `doc/wasm-compiler-design.md`, which has been removed.
   - `../langdef.md` — the CEL language spec we must honour.
   - `CLAUDE.md` at the repo root — rules that apply to every turn.
@@ -76,7 +76,7 @@ Companion documents (do not duplicate — link):
     passes, tagged with the review date so the trail back to context is
     preserved.
   - `repo-restructure.md` — **repo reorganization design**: dissolve
-    `compiler_v2/` into role-based top-level dirs (`compiler/`, `eval/`,
+    `compiler/` into role-based top-level dirs (`compiler/`, `eval/`,
     `runtime/`, `abi/`, `common/`), shed the cel-spec Go heritage into
     `spec/`, drop the `api/` umbrella (Abseil/cel-cpp convention:
     `internal/` + `visibility`), and reserve `bindings/` for TS/Go.

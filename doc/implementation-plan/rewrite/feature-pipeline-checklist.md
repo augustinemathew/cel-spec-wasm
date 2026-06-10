@@ -52,7 +52,7 @@ each file as you go.
 │                             eval/instance              │
 │                             eval/internal/instance_impl│
 │                             eval/internal/wasmtime_*   │
-│  CLI + e2e + conformance    compiler_v2/cli                       │
+│  CLI + e2e + conformance    tools/cel                       │
 │                             e2e                       │
 │                             conformance               │
 │  WAT prototyping            doc/.../wat/                           │

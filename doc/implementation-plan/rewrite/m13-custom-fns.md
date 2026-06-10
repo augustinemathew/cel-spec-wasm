@@ -365,7 +365,7 @@ In scope:
     of the 24-byte CelValue, the `arena_alloc` import contract, and
     the shared-memory binding.  This is the cross-language
     interop surface.
-  - `bazel test //compiler_v2/...` green + per-component coverage doc
+  - `bazel test //...` green + per-component coverage doc
     updated (positive + negative + boundary for each declared kind).
 
 Out of scope (deferred to follow-up slices):
@@ -603,7 +603,7 @@ headers; that's polish, not architecture.
 > (`@host`/`@native`/`<alias>`); doc-comments are captured to
 > `CelfnDecl::description`; `CelfnDecl::Backend::kCelDefined` was renamed
 > `kNative`. Parser + visitor + builder + tests all updated; full
-> `//compiler_v2/...` build + e2e green.
+> `//...` build + e2e green.
 >
 > > **One piece deferred:** carrying `description` into the Program's
 > > `cel.abi.custom_functions[]` for cross-process introspection is NOT
@@ -1845,7 +1845,7 @@ RETURN_IF_ERROR(builder.AddFunction(std::move(decl)));
 The CLI wiring:
 
 ```cpp
-// compiler_v2/cli/celwasmc.cc additions
+// tools/cel/celwasmc.cc additions
 absl::StatusOr<Compiler> BuildCompiler(...) {
   Compiler::Builder cb;
   cb.AddStandardDeclarations();
@@ -2367,7 +2367,7 @@ Tentative order — adjust at slice-start time when reality intervenes:
   - **Slice A** — refactor: `ImportModule` becomes a tagged
     `(kind, module_name)` value (§5.3); arity moves out of
     helper-name-suffix inference into `OverloadImpl`.  No new
-    features.  Lands behind `bazel test //compiler_v2/...` green;
+    features.  Lands behind `bazel test //...` green;
     no behaviour change for built-ins.  WAT prototypes 42–46
     written and assembled (no codegen yet).
   - **Slice B** — `.celfn` parser + `FunctionLibrary` rep (without
@@ -2584,7 +2584,7 @@ reference the constant symbolically so the test tracks changes.
 
 E2E tests that spin up the real runtime carry the load-bearing
 assertions and MUST run before M13 closes (not just `bazel test
-//compiler_v2/...`).
+//compiler/...`).
 
 ### 14.5 Close-out gate
 

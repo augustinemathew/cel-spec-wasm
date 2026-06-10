@@ -49,7 +49,7 @@ summary.  Slice 0 (WAT traces) was non-negotiable per CLAUDE.md
 > pair from Slice C: wasm-side `absorb_optional_predicate` then
 > delegate to a single host import.
 
-Probe-confirmed: `compiler_v2/probes/optionals/ast_shape_probe_test.cc`
+Probe-confirmed: `compiler/probes/optionals/ast_shape_probe_test.cc`
 (commit `5b9f0bb`, 16 tests, all green).  Citations in this doc of
 the form *(probe Qn)* point at the matching test there.
 
@@ -742,9 +742,9 @@ Depends: Slices A-E shipped.
 
 In order of importance:
 
-  1. `compiler_v2/probes/optionals/ast_shape_probe_test.cc` —
+  1. `compiler/probes/optionals/ast_shape_probe_test.cc` —
      the 16 probes establishing every AST-shape fact in §1.
-     Run via `bazel test //compiler_v2/probes/optionals:ast_shape_probe_test`.
+     Run via `bazel test //compiler/probes/optionals:ast_shape_probe_test`.
   2. `third_party/cel-cpp/checker/optional.cc` — overload + type
      declarations, source of truth for §1.8.
   3. `third_party/cel-cpp/parser/macro.cc` lines 296-326 —
@@ -763,7 +763,7 @@ In order of importance:
 
 ## 7. Probe and code inventory (already on master)
 
-  - **`compiler_v2/probes/optionals/`** (commit `5b9f0bb`,
+  - **`compiler/probes/optionals/`** (commit `5b9f0bb`,
     pushed to origin/master).  16 tests, all green.  Tagged
     `manual`.
   - **No production code yet** — every assertion in this doc is

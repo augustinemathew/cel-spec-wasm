@@ -337,6 +337,118 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   EXPECT_EQ(bytes[3], 0x6d);
 }
 
+// kForeignComponent decls are dispatched via the host-callback path
+// (cel_fn) per m24 §2-§3 — a Component-Model-backed fn is invisible
+// to the compiler / checker / overload table at the call site (the
+// emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
+// to a kHost decl).  These tests pin that contract.
+TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kBool;
+  celwasm::CelfnType arg;
+  arg.kind = celwasm::CelfnType::Kind::kString;
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddForeignComponent(
+                        "allow", ret,
+                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("u", CelType::String());
+  b.AddLibrary(*std::move(lib_or));
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  auto prog_or = c->Compile("allow(u)");
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  const auto bytes = prog_or->wasm_bytes();
+  // The emitted module must carry an import of the form
+  // `(import "cel_fn" "allow_string" …)`.  Search for the byte
+  // sequence — the wasm import section encodes module + name as
+  // length-prefixed strings, so the two adjacent literals appear
+  // verbatim in the module bytes.
+  const std::string blob(reinterpret_cast<const char*>(bytes.data()),
+                         bytes.size());
+  EXPECT_NE(blob.find("cel_fn"), std::string::npos)
+      << "kForeignComponent decl did not produce a `cel_fn` import — "
+         "routing regressed";
+  EXPECT_NE(blob.find("allow_string"), std::string::npos)
+      << "helper name not present in emitted imports";
+}
+
+TEST(CompilerBuilderAddLibraryTest,
+     ForeignComponentDeclAdmitsProtoAndRoutesViaCelFn) {
+  // m24 §8 admits proto(...) on kForeignComponent (cross as bytes).
+  celwasm::CelfnType ret;
+  ret.kind = celwasm::CelfnType::Kind::kBool;
+  celwasm::CelfnType arg;
+  arg.kind = celwasm::CelfnType::Kind::kProto;
+  arg.proto_fqn = "celwasm.testdata.Customer";
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddForeignComponent(
+                        "is_premium", ret,
+                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
+  b.AddLibrary(*std::move(lib_or));
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  auto prog_or = c->Compile("is_premium(c)");
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  const std::string blob(
+      reinterpret_cast<const char*>(prog_or->wasm_bytes().data()),
+      prog_or->wasm_bytes().size());
+  EXPECT_NE(blob.find("cel_fn"), std::string::npos);
+  EXPECT_NE(blob.find("is_premium_message_celwasm_testdata_Customer"),
+            std::string::npos);
+}
+
+TEST(CompilerBuilderAddLibraryTest,
+     ForeignComponentAndHostCoexistAndShareCelFnNamespace) {
+  // Two decls with distinct overload-ids, one kHost + one kForeignComponent,
+  // both routing via cel_fn — must coexist in one library.
+  celwasm::CelfnType b_t;
+  b_t.kind = celwasm::CelfnType::Kind::kBool;
+  celwasm::CelfnType s_t;
+  s_t.kind = celwasm::CelfnType::Kind::kString;
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
+                    .AddForeignComponent(
+                        "allow", b_t,
+                        {celwasm::CelfnParam{false, s_t, "u"}})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  ASSERT_EQ(lib_or->decls().size(), 2u);
+  EXPECT_EQ(lib_or->decls()[0].backend,
+            celwasm::CelfnDecl::Backend::kHost);
+  EXPECT_EQ(lib_or->decls()[1].backend,
+            celwasm::CelfnDecl::Backend::kForeignComponent);
+  // Both decls should claim module_name=="cel_fn" (the call-site
+  // import-module is the same for kHost and kForeignComponent).
+  EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
+  EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
+}
+
+TEST(CompilerBuilderAddLibraryTest,
+     ForeignComponentDuplicateOverloadIdRejected) {
+  // Same overload-id collision detection as @host — registering the
+  // same helper twice (one @host + one kForeignComponent) must fail.
+  celwasm::CelfnType b_t;
+  b_t.kind = celwasm::CelfnType::Kind::kBool;
+  celwasm::CelfnType s_t;
+  s_t.kind = celwasm::CelfnType::Kind::kString;
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
+                    .AddForeignComponent(
+                        "clash", b_t,
+                        {celwasm::CelfnParam{false, s_t, "x"}})
+                    .Build();
+  EXPECT_THAT(lib_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(lib_or.status().message()),
+              testing::HasSubstr("duplicate"));
+}
+
 TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kString;

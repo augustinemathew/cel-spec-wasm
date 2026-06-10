@@ -76,11 +76,28 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "run_generate",
+    srcs = ["run_generate.cc"],
+    hdrs = ["run_generate.h"],
+    deps = [
+        "//compiler/celfn:function_library",
+        "//compiler/celfn/celfnc_emit:cpp_codec_emitter",
+        "//compiler/celfn/celfnc_emit:cpp_skeleton_emitter",
+        "//compiler/celfn/celfnc_emit:cpp_stub_emitter",
+        "//compiler/celfn/celfnc_emit:wit_emitter",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 cc_binary(
     name = "cel",
     srcs = ["cel.cc"],
     visibility = ["//visibility:public"],
     deps = [
+        ":run_generate",
         ":value_format",
         ":var_parser",
         "//compiler/internal:compile",

@@ -1,0 +1,11 @@
+// celfn IDL fixture exercising the proto path through the
+// cel_wasm_component macro (m24 §8: proto crosses the
+// Component-Model boundary as serialized bytes).
+//
+// Pairs with user_fns_proto.cc + user.proto and the
+// `demo_component_proto` target (BUILD.bazel).
+
+Module customfn;
+
+bool             @component.is_adult(proto(acme.User) u);
+proto(acme.User) @component.capitalize(proto(acme.User) u);

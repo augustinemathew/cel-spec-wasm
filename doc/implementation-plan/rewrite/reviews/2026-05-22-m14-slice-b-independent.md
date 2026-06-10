@@ -302,7 +302,7 @@ The new rule landed in CLAUDE.md (§"No milestone / slice
 references in code comments") in the same working-tree diff.
 It explicitly says: "The rule applies to NEW comments."  Yet the
 new Slice B code (added lines in this diff) contains many
-violations.  Grepping `git diff master -- compiler_v2/` for added
+violations.  Grepping `git diff master -- compiler/` for added
 lines (`^+`) referencing `M14`, `M5.`, `Slice [A-Z]`, `M7-` and
 excluding the carved-out `stub until` form:
 

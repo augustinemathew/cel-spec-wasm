@@ -1,10 +1,10 @@
-# `compiler_v2/conformance/`
+# `conformance/`
 
 Harness that runs the upstream CEL conformance fixtures
-(`tests/simple/testdata/*.textproto`) through the `compiler_v2`
-pipeline (`cel::Compiler::Compile` → `cel::Engine::Plan` →
-`cel::Instance::Eval`) and compares the decoded `cel::Value` against
-each test's `cel.expr.Value` matcher.
+(`spec/tests/simple/testdata/*.textproto`) through the celwasm
+pipeline (`celwasm::Compiler::Compile` → `celwasm::Engine::Plan` →
+`celwasm::Instance::Eval`) and compares the decoded `celwasm::Value`
+against each test's `cel.expr.Value` matcher.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
@@ -12,7 +12,7 @@ total=2454  pass=1899 (77.4%)  skip=463 (18.9%)  fail=92 (3.7%)
 ```
 <!-- END AUTOGEN headline -->
 
-`bazel test //compiler_v2/...` does NOT exercise this — `run_conformance`
+`bazel test //conformance/...` does NOT exercise this — `run_conformance`
 carries `tags = ["manual"]`.  Invoke it explicitly.
 
 ## Running
@@ -20,19 +20,19 @@ carries `tags = ["manual"]`.  Invoke it explicitly.
 ```sh
 # Whole corpus, summary + per-fixture inventory + corpus-wide
 # skip-by-category breakdown:
-bazel run //compiler_v2/conformance:run_conformance
+bazel run //conformance:run_conformance
 
 # One fixture:
-bazel run //compiler_v2/conformance:run_conformance -- \
+bazel run //conformance:run_conformance -- \
     --file=tests/simple/testdata/comparisons.textproto
 
 # Dump every FAIL detail (default cap is 5 per file):
-bazel run //compiler_v2/conformance:run_conformance -- \
+bazel run //conformance:run_conformance -- \
     --max_fail_examples=2000
 
 # Dump every SKIP detail (default 0 — only the per-category
 # counts are emitted unless you raise the cap):
-bazel run //compiler_v2/conformance:run_conformance -- \
+bazel run //conformance:run_conformance -- \
     --max_skip_examples=2000
 ```
 
@@ -75,7 +75,7 @@ don't accidentally re-introduce substring-matching fragility:
   - **Status payloads, not message text.**  `parse_and_check.cc`
     attaches `absl::Status::SetPayload(URL, ...)` tags
     (`kStaticSubsetViolationUrl`, `kUndeclaredReferencesUrl` —
-    declared in `compiler_v2/frontend/status_tags.h`) so the
+    declared in `compiler/frontend/status_tags.h`) so the
     harness classifies by tag, not by `absl::StrContains(msg,
     "static subset")` etc.  Adding a new structural distinction
     (e.g. an extension parse-syntax tag, or an enum-out-of-range
@@ -209,7 +209,7 @@ references point at the tracked follow-up slice.
     > (`instance.cc::EncodeMap`) shipped, so the bottleneck is
     > now purely `binding_marshal::ValueFromProto`'s aggregate
     > decoder.  Indexing / size / `in` operator on bound maps
-    > works end-to-end (see `compiler_v2/tools/cel/
+    > works end-to-end (see `tools/cel/
     > activation_matrix_test.cc::BoundMap*`).  Comprehension
     > iteration over a bound list/map and over proto
     > repeated/map fields also ships in the same commit

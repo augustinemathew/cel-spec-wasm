@@ -443,7 +443,7 @@ directory level as this phase-c-research.md.  Cap at 600 lines.
 > Then write a short summary to stdout (under 500 words) covering
 > verdict, surprises, and recommended path.
 >
-> Do NOT change any source under `compiler_v2/`.  Do NOT commit pre-built
+> Do NOT change any source under `compiler/`.  Do NOT commit pre-built
 > binary artifacts.  Probes are sketches; the implementation happens
 > in a separate session.
 >
