@@ -685,6 +685,7 @@ link_mode_cc_test(
         ":instance",
         ":value",
         "//abi:cel_abi_cc_proto",
+        "//abi:runtime_catalogue",
         "//bazel:link_mode_test_helpers",
         "//compiler:compiler",
         "//compiler:program",

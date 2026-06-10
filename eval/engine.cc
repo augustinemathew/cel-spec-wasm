@@ -1,6 +1,7 @@
 #include "eval/engine.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -432,6 +433,32 @@ absl::Status BindStaticModeHelpers(celwasm::InstanceImpl* impl) {
   return BindHelpersInstance(impl, ctx);
 }
 
+// Reject a Program whose cel.abi declares a variable slot extending
+// past the reserved low-memory window.  The compiler never emits such
+// a slot (Compile validates the whole rodata+workspace region against
+// `CELWASM_RESERVED_LOW_MEMORY_BYTES` before serializing); a Program
+// claiming one is corrupt, stale, or hand-crafted, and honoring it
+// would have the host marshal (`Instance::Eval(Activation)`) write
+// CelValue bytes over the runtime's static data / heap in the shared
+// memory.  Validated at Plan time — the earliest stage that sees the
+// decoded ABI — so a bad Program fails loudly once, not per Eval.
+absl::Status ValidateAbiSlotExtents(const celwasm::abi::CelAbi& abi) {
+  for (const auto& variable : abi.variables()) {
+    const uint64_t slot_end =
+        static_cast<uint64_t>(variable.slot_offset()) + sizeof(CelValue);
+    if (slot_end > CELWASM_RESERVED_LOW_MEMORY_BYTES) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Plan: cel.abi variable `", variable.name(), "` slot [",
+          variable.slot_offset(), ", ", slot_end, ") extends past the ",
+          CELWASM_RESERVED_LOW_MEMORY_BYTES,
+          "-byte low-memory window reserved for the expression's static "
+          "region — the Program is corrupt or was not produced by this "
+          "compiler"));
+    }
+  }
+  return absl::OkStatus();
+}
+
 // Decode the `cel.abi` custom section and park it on the Instance,
 // then populate host_env.bindings from it.  Runs FIRST in
 // `Engine::Plan` — the decode walks the Program's raw bytes only and
@@ -460,6 +487,9 @@ absl::StatusOr<bool> DecodeAbiAndBindHostEnv(celwasm::InstanceImpl* impl,
   auto abi_or = celwasm::DecodeCelAbiFromWasm(program.wasm_bytes());
   if (abi_or.ok()) {
     if (auto s = celwasm::abi::CheckRuntimeAbiVersion(*abi_or); !s.ok()) {
+      return s;
+    }
+    if (auto s = ValidateAbiSlotExtents(*abi_or); !s.ok()) {
       return s;
     }
     impl->abi = *std::move(abi_or);

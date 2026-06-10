@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/runtime_catalogue.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -143,6 +144,88 @@ TEST(EnginePlanTest, PlanFailsOnMalformedBytes) {
   auto inst_or = engine.Plan(garbage);
   EXPECT_FALSE(inst_or.ok());
   EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+// ── Plan-time ABI slot-extent validation ───────────────────────────
+//
+// `Instance::Eval(Activation)` writes a 24-byte CelValue at every
+// cel.abi variable `slot_offset` in the SHARED linear memory the
+// runtime's static data / heap also live in (above the
+// `CELWASM_RESERVED_LOW_MEMORY_BYTES` = 8192 boundary).  The compiler
+// validates its layout fits under the boundary before serializing, so
+// a Program declaring a slot past it is corrupt / hand-crafted; Plan
+// must reject it rather than let the marshal stomp runtime state.
+
+// Appends a `cel.abi` custom section carrying `abi` to `wasm`.
+std::vector<uint8_t> AppendCelAbiSection(std::vector<uint8_t> wasm,
+                                         const celwasm::abi::CelAbi& abi) {
+  std::string payload;
+  ABSL_CHECK(abi.SerializeToString(&payload));
+  constexpr absl::string_view kName = "cel.abi";
+  const auto push_leb = [](std::vector<uint8_t>& out, uint64_t v) {
+    do {
+      uint8_t byte = v & 0x7f;
+      v >>= 7;
+      if (v != 0) byte |= 0x80;
+      out.push_back(byte);
+    } while (v != 0);
+  };
+  std::vector<uint8_t> body;
+  push_leb(body, kName.size());
+  body.insert(body.end(), kName.begin(), kName.end());
+  body.insert(body.end(), payload.begin(), payload.end());
+  wasm.push_back(0x00);  // custom-section id
+  push_leb(wasm, body.size());
+  wasm.insert(wasm.end(), body.begin(), body.end());
+  return wasm;
+}
+
+// Synthetic Program (dynamic shape — imports `cel.*`) with a cel.abi
+// section declaring one int variable at `slot_offset`.
+Program SyntheticProgramWithVariableSlot(uint32_t slot_offset) {
+  celwasm::abi::CelAbi abi;
+  abi.set_runtime_abi_version(celwasm::abi::kRuntimeAbiVersion);
+  abi.set_link_mode(celwasm::abi::LINK_MODE_DYNAMIC);
+  auto* variable = abi.add_variables();
+  variable->set_name("x");
+  variable->set_local_index(0);
+  variable->set_slot_offset(slot_offset);
+  return Program(AppendCelAbiSection(Wat2Wasm(kSyntheticExprWat), abi));
+}
+
+TEST(EnginePlanTest, PlanAcceptsVariableSlotAtWindowBoundary) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  // Slot [8168, 8192) — ends exactly AT the 8192-byte reserved
+  // window: the largest offset the compiler could legally emit.
+  Program program = SyntheticProgramWithVariableSlot(8192 - 24);
+  auto inst_or = engine_or->Plan(program);
+  EXPECT_TRUE(inst_or.ok()) << inst_or.status();
+}
+
+TEST(EnginePlanTest, PlanRejectsVariableSlotPastReservedWindow) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  // Slot [8176, 8200) — crosses the boundary by 8 bytes; honoring it
+  // would write over the runtime's static data.
+  Program program = SyntheticProgramWithVariableSlot(8192 - 16);
+  auto inst_or = engine_or->Plan(program);
+  EXPECT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument)
+      << inst_or.status();
+}
+
+TEST(EnginePlanTest, PlanRejectsVariableSlotFarPastMemory) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  // A slot way past any plausible memory size — the raw-write-past-
+  // shared-memory shape that SIGSEGVs the host inside wasmtime's
+  // registered region if it ever reaches the marshal.
+  Program program = SyntheticProgramWithVariableSlot(0x7fffffff);
+  auto inst_or = engine_or->Plan(program);
+  EXPECT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument)
+      << inst_or.status();
 }
 
 TEST(EnginePlanThreadingTest, ConcurrentPlanCallsAllSucceed) {

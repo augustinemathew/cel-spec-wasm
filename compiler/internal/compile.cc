@@ -38,6 +38,42 @@ uint32_t PagesForBytes(uint32_t mem_size_bytes) {
   return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
 }
 
+// Reject an expression whose static region — rodata plus the
+// workspace slots the host marshal and `$eval` write — ends past the
+// reserved low-memory window.  BOTH link modes share one linear
+// memory with the runtime: the runtime is linked with
+// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (so its own
+// static data, heap and stack start at that offset), and in kDynamic
+// the expr module's `cel.memory` import resolves to the runtime
+// instance's exported memory.  A region ending past the boundary
+// silently overwrites runtime state — instantiate-time for the rodata
+// data segment, marshal/eval-time for workspace slot writes —
+// surfacing far downstream as corruption traps (`wasm trap:
+// unaligned atomic` from clobbered dlmalloc state).  Overflow is a
+// status error, not a CHECK: region size is embedder-input-dependent
+// (a big literal list is a legitimate input), and embedder input must
+// not crash the process.  See
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
+absl::Status ValidateExprStaticRegion(const StaticLayout& layout) {
+  const uint64_t rodata_end =
+      static_cast<uint64_t>(layout.rodata_base) + layout.rodata.size();
+  // `workspace_base >= rodata_end` by LayoutPass construction, so the
+  // region end is the workspace end.
+  const uint64_t region_end =
+      static_cast<uint64_t>(layout.workspace_base) + layout.workspace_bytes;
+  if (region_end > CELWASM_RESERVED_LOW_MEMORY_BYTES) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        "compile: expression static region ends at byte ", region_end,
+        " (rodata ends at ", rodata_end, ", workspace adds ",
+        layout.workspace_bytes, "), past the ",
+        CELWASM_RESERVED_LOW_MEMORY_BYTES,
+        "-byte low-memory window reserved for it below the runtime's "
+        "static data; see doc/implementation-plan/rewrite/"
+        "m28-configurable-linking.md §5.3.1"));
+  }
+  return absl::OkStatus();
+}
+
 // All `cel_host.*` host-trampoline imports.  Factored out so both
 // dynamic-mode (`InstallExprModuleImports`) and static-mode
 // (`CompileStatic`) install them on the same code path with the same
@@ -406,6 +442,14 @@ absl::StatusOr<CompiledArtifact> RunFrontAndLayout(
   if (!resolved_or.ok()) return resolved_or.status();
   auto layout_or = LayoutPass(*ast_or, *std::move(resolved_or), layout_opts);
   if (!layout_or.ok()) return layout_or.status();
+  // The default layout places the static region at the bottom of
+  // linear memory, inside the reserved low-memory window; validate it
+  // fits.  A caller passing `rodata_base_override` is deliberately
+  // relocating the region (e.g. above the runtime's static-data
+  // range) and owns its own budget.
+  if (layout_opts.rodata_base_override == 0) {
+    if (auto s = ValidateExprStaticRegion(*layout_or); !s.ok()) return s;
+  }
   return CompiledArtifact{
       /*ast=*/*std::move(ast_or),
       /*layout=*/*std::move(layout_or),
@@ -508,33 +552,25 @@ absl::StatusOr<WasmModule> AdoptStrippedRuntime() {
 // runtime's memory.  The runtime is linked with
 // `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB), so
 // the bottom 8 KiB of linear memory is reserved by design for the
-// expr module's active data segments; the runtime's own wasi-libc
-// static data + stack + heap live above that.  The segment must
-// therefore end at or below that boundary — a larger one would
-// silently overwrite the runtime's static data at instantiate time.
-// Overflow is a status error, not a CHECK: the rodata size is
-// embedder-input-dependent (a big string literal is a legitimate
-// input), and embedder input must not crash the process.  See
-// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
+// expr module's static region; the runtime's own wasi-libc static
+// data + stack + heap live above that.  `ValidateExprStaticRegion`
+// (run by `RunFrontAndLayout` in both link modes) already rejected
+// any layout ending past the boundary; the CHECK here is the
+// tripwire against that gate regressing — a segment installed past
+// the window would silently overwrite the runtime's static data at
+// instantiate time.
 //
 // The runtime declares its memory with the clang/wasi-libc-emitted
 // internal name `"0"` (single-char index name); our own freshly-built
 // modules use `"memory"`.
-absl::Status InstallExprRodataSegment(WasmModule& mod,
-                                      const StaticLayout& layout) {
+void InstallExprRodataSegment(WasmModule& mod, const StaticLayout& layout) {
   const uint64_t rodata_end =
       static_cast<uint64_t>(layout.rodata_base) + layout.rodata.size();
-  if (rodata_end > CELWASM_RESERVED_LOW_MEMORY_BYTES) {
-    return absl::ResourceExhaustedError(absl::StrCat(
-        "CompileStatic: expression rodata ends at byte ", rodata_end,
-        ", past the ", CELWASM_RESERVED_LOW_MEMORY_BYTES,
-        "-byte low-memory window reserved for it below the bundled "
-        "runtime's static data; see doc/implementation-plan/rewrite/"
-        "m28-configurable-linking.md §5.3.1"));
-  }
+  ABSL_CHECK_LE(rodata_end, CELWASM_RESERVED_LOW_MEMORY_BYTES)
+      << "expression rodata past the reserved low-memory window reached "
+         "segment install — ValidateExprStaticRegion gate regressed";
   mod.AddActiveDataSegment(layout.rodata_base, layout.rodata,
                            /*memory_name=*/"0");
-  return absl::OkStatus();
 }
 
 // Shared back half of both link-mode arms, run after the arm's
@@ -594,9 +630,7 @@ absl::StatusOr<CompiledArtifact> CompileStatic(absl::string_view expression,
   if (!adopted_or.ok()) return adopted_or.status();
   out.module = *std::move(adopted_or);
 
-  if (auto s = InstallExprRodataSegment(out.module, out.layout); !s.ok()) {
-    return s;
-  }
+  InstallExprRodataSegment(out.module, out.layout);
 
   // Install `cel_host.*` trampoline imports under the internal names
   // `expr_lower` references via `BinaryenCall(kCelHost*InternalName)`.

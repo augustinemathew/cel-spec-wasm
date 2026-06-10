@@ -42,6 +42,30 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# Adversarial matrix for the host→wasm activation-marshal boundary:
+# every variable-length Value kind × sizes sweeping the activation
+# buffer / 64 KiB eval-arena / initial-memory capacity boundaries.
+# See the file header for the copy-vs-handle classification.
+link_mode_e2e_cc_test(
+    name = "activation_boundary_test",
+    srcs = ["activation_boundary_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 link_mode_e2e_cc_test(

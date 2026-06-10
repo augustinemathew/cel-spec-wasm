@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
@@ -155,10 +156,13 @@ std::string MapLiteral(int n) {
 
 TEST(KnownBugs, ExpressionIntermediatesArenaCliff) {
   GTEST_SKIP()
-      << "KNOWN LIMITATION (verified: returns CEL_ERR_OVERFLOW, want "
-         "4000): peak list intermediate exceeds the fixed 64 KiB "
-         "arena, cel_layout.h:41 / cel_arena.c:85. Delete this line "
-         "when the arena can grow/spill (see Sethi-Ullman note above).";
+      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
+         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
+         "static-region gate in compiler/internal/compile.cc before the "
+         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
+         "reached; want 4000.  Delete this line when BOTH the static "
+         "region can relocate/grow AND the arena can grow/spill (see "
+         "Sethi-Ullman note above).";
   // `size([0..4000])` — the RESULT is one int (8 B), but the intermediate
   // list needs ~96 KB, over the 64 KB arena.  Small result, huge peak:
   // the canonical "intermediates dominate" cliff.
@@ -171,10 +175,13 @@ TEST(KnownBugs, ExpressionIntermediatesArenaCliff) {
 
 TEST(KnownBugs, MapSizeArenaCliff) {
   GTEST_SKIP()
-      << "KNOWN LIMITATION (verified: returns CEL_ERR_OVERFLOW, want "
-         "2000): peak map intermediate exceeds the fixed 64 KiB "
-         "arena, cel_layout.h:41 / cel_arena.c:85. Delete this line "
-         "when the arena can grow/spill (see Sethi-Ullman note above).";
+      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
+         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
+         "static-region gate in compiler/internal/compile.cc before the "
+         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
+         "reached; want 2000.  Delete this line when BOTH the static "
+         "region can relocate/grow AND the arena can grow/spill (see "
+         "Sethi-Ullman note above).";
   // A 2000-entry map needs ~96 KB (48 B/entry) and overflows, though
   // `size()` returns a single int.
   auto v = TryEval("size(" + MapLiteral(2000) + ")");
@@ -542,7 +549,7 @@ template <typename DeclareFn, typename BindFn>
 absl::StatusOr<Value> TryEvalActivated(absl::string_view source,
                                        DeclareFn&& declare, BindFn&& bind) {
   Compiler::Builder b;
-  declare(b);
+  std::forward<DeclareFn>(declare)(b);
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
   auto program = compiler->Compile(source, e2e::DefaultOpts());
@@ -550,7 +557,7 @@ absl::StatusOr<Value> TryEvalActivated(absl::string_view source,
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();
   Activation a;
-  bind(a);
+  std::forward<BindFn>(bind)(a);
   return instance->Eval(a);
 }
 
@@ -598,32 +605,56 @@ TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// BUG (cleanup-backlog #16, **P0**): literal `x in [0..9999]`
-// compiles and plans cleanly, but the resulting wasm module
-// PANICS wasmtime on Eval:
-//   thread '<unnamed>' panicked at
-//   crates/wasmtime/src/runtime/store.rs:2440:17:
-//   assertion failed: fault.is_none()
-// The host process aborts — Eval doesn't return a graceful Status.
-// Same arena-cliff family as `ExpressionIntermediatesArenaCliff`
-// above, but the `in`-scan path traps instead of returning
-// `CEL_ERR_OVERFLOW`.
+// REGRESSION (cleanup-backlog #16, formerly **P0**): literal
+// `x in [0..9999]` used to compile + plan cleanly and then PANIC
+// wasmtime at Eval (`store.rs:2440 assertion failed:
+// fault.is_none()`, Rust abort, host process dies).  Root cause:
+// neither Compile arm validated the expression's static region
+// (rodata + workspace) against the 8192-byte low-memory window the
+// runtime reserves for it (`-Wl,--global-base=8192`,
+// runtime/cel_layout.h `CELWASM_RESERVED_LOW_MEMORY_BYTES`) — the
+// 240 KB rodata segment was applied over the runtime's static data
+// / heap in the SHARED memory at instantiate time.  After the
+// memory-ownership flip the same corruption surfaced as
+// `wasm trap: unaligned atomic` (clobbered dlmalloc state) instead
+// of the panic; both shapes are closed by the compile-time gate
+// (`ValidateExprStaticRegion`, compiler/internal/compile.cc): the
+// expression is now REJECTED AT COMPILE with ResourceExhausted in
+// BOTH link modes.
 //
-// CAUTION: when this SKIP is removed and the bug is NOT yet fixed,
-// running the test will crash the test binary (wasmtime panic =
-// Rust abort).  That's the correct failure mode — a graceful-error
-// fix must come WITH the un-skip, not after it.
+// ASPIRATION (future arena/region work): the original want was
+// OK + true — a 10 K-element literal list is a legitimate
+// expression.  Supporting it needs a relocatable / growable static
+// region (and the arena grow/spill noted at the top of this file),
+// at which point these assertions flip back to value checks.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
-  GTEST_SKIP() << "KNOWN BUG (verified: wasmtime panic at "
-                  "store.rs:2440:17 'fault.is_none()', host process aborts, "
-                  "want OK + true).  Literal int list of 10 000 elements; "
-                  "`in`-scan exhausts the 64 KiB per-Eval arena "
-                  "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
-                  "check before allocating.  Delete this line ONLY when both "
-                  "the trap-vs-graceful issue and the size limit are fixed "
-                  "(cleanup-backlog #16).";
+TEST(KnownBugs, LiteralIntListInScanRejectedAtCompileAt10K) {
   constexpr int kN = 10'000;
+  const std::string source = MakeIntListInSource(kN);
+  auto v = TryEvalActivated(
+      source,
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(kN - 2));
+      });
+  // Graceful compile-time rejection — NOT a wasmtime panic, NOT a
+  // mid-eval corruption trap.
+  ASSERT_FALSE(v.ok()) << "10K-element literal list unexpectedly evaluated — "
+                          "if the static-region budget grew, update the "
+                          "boundary tests below too";
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
+      << v.status();
+}
+
+// Boundary pin for the static-region gate, both modes.  Layout
+// arithmetic for `x in [0..N-1]`: rodata = 16 (base) + 24·N (one
+// packed CelValue per int const), workspace = 72 (three 24-byte
+// slots: variable `x`, the list literal, the `in` result), region
+// end = RoundUp8(16 + 24·N) + 72 ≤ 8192 ⇔ N ≤ 337.
+TEST(KnownBugs, LiteralIntListInScanLargestFittingEvals) {
+  constexpr int kN = 337;  // largest N whose region fits the window
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
@@ -636,6 +667,22 @@ TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, LiteralIntListInScanJustOverWindowRejectedAtCompile) {
+  constexpr int kN = 338;  // smallest N whose region overflows (8200 > 8192)
+  const std::string source = MakeIntListInSource(kN);
+  auto v = TryEvalActivated(
+      source,
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(kN - 2));
+      });
+  ASSERT_FALSE(v.ok());
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
+      << v.status();
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -714,7 +761,7 @@ std::string MakeLongArithSource(int n_terms) {
     if (i > 0) s.append(" + ");
     s.push_back(kVars[i % 10]);
     s.push_back('*');
-    s.push_back(kVars[(i * 7 + 3) % 10]);
+    s.push_back(kVars[((i * 7) + 3) % 10]);
   }
   return s;
 }
@@ -739,7 +786,7 @@ int64_t ExpectedLongArithResult(int n_terms) {
   static constexpr int64_t kVals[10] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
   int64_t sum = 0;
   for (int i = 0; i < n_terms; ++i) {
-    sum += kVals[i % 10] * kVals[(i * 7 + 3) % 10];
+    sum += kVals[i % 10] * kVals[((i * 7) + 3) % 10];
   }
   return sum;
 }
@@ -749,10 +796,14 @@ int64_t ExpectedLongArithResult(int n_terms) {
 // Positive baseline — confirms the parser-depth bump
 // (`parse_and_check.cc::DefaultParserOptions`: 32 → 16 384) plus the
 // codegen / Eval path actually work for a long-but-not-pathological
-// `+`-chain.  Pins the largest expression size that's confirmed to
-// run today and forces a regression if it ever stops.
-TEST(KnownBugs, LongArith_1000Terms_Works) {
-  constexpr int kN = 1000;
+// `+`-chain, at the largest size the static-region budget admits.
+//
+// Slot arithmetic: `SlotAllocator::Release` is a no-op
+// (compiler/codegen/slot_allocator.cc — free-list reuse never
+// landed), so an n-term chain consumes 2n-1 call slots + 10 variable
+// slots; workspace_base 16 + (2n+9)·24 ≤ 8192 ⇔ n ≤ 165.
+TEST(KnownBugs, LongArith165TermsWorks) {
+  constexpr int kN = 165;  // largest n whose slot region fits the window
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -761,41 +812,44 @@ TEST(KnownBugs, LongArith_1000Terms_Works) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// BUG (long-arith codegen): a long arithmetic expression of ≳ 2000
-// `+`-joined `int * int` terms compiles + plans cleanly, but Eval
-// traps with `wasm trap: unaligned atomic` from inside the
-// expression module's call into a runtime helper.  Verified
-// bisected: N = 1000 works (see preceding test), N = 2000 traps.
+// REGRESSION (long-arith workspace overflow — root cause found):
+// the old `LongArith_1000Terms_Works` test passed and its 2000-term
+// sibling trapped `wasm trap: unaligned atomic`, attributed at the
+// time to a suspected slot-allocator ALIGNMENT bug.  The actual
+// cause: `SlotAllocator::Release` is a no-op, so a 1000-term chain
+// allocates 2009 workspace slots = 48 216 bytes of CelValue cells —
+// written by the runtime helpers straight over the runtime's own
+// static data above the 8192-byte reserved window in the SHARED
+// linear memory.  N=1000 "worked" only because the int-arith path
+// never read the clobbered statics; N=2000's deeper overrun reached
+// live dlmalloc state and trapped.  Both are now REJECTED AT COMPILE
+// (ResourceExhausted) by the static-region gate
+// (`ValidateExprStaticRegion`, compiler/internal/compile.cc).
 //
-// Hypothesis: the slot allocator (compiler/codegen/slot_allocator.cc)
-// hands out i64 / CelValue slots without the alignment guarantee
-// the runtime helpers' atomic ops assume, and at large slot counts
-// some slot lands on a non-8-byte boundary.  The wasm32-wasi-threads
-// toolchain emits stricter alignment checks than vanilla wasm32-wasi.
-// Surfaced 2026-06-04 while writing the arithmetic head-to-head
-// against cel-cpp; until fixed, the bench caps at N = 1000 and the
-// README perf section says so.
-//
-// To fix: root-cause the slot allocator alignment, ensure every CelValue
-// slot is 16-byte aligned, then delete the GTEST_SKIP below.  The
-// assertion will then prove the polynomial evaluates correctly.
+// ASPIRATION: implementing slot Release/reuse (the free-list noted
+// in slot_allocator.cc, plus the Sethi-Ullman ordering note at the
+// top of this file) collapses a `+`-chain's live slot count to a
+// handful, restoring 1000+-term expressions WITHOUT enlarging the
+// window.  When that lands, flip these back to value assertions.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LongArith_2000Terms_UnalignedAtomicTrap) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns INTERNAL: Eval trapped, "
-         "`wasm trap: unaligned atomic`, want OK + ExpectedLongArithResult). "
-         "A 2000-term `int*int` `+`-chain compiles + plans cleanly but "
-         "traps at Eval inside a runtime-helper atomic op.  N=1000 works "
-         "(preceding test); N=2000 traps; cause is suspected slot-allocator "
-         "alignment regression at large slot counts.  Delete this line when "
-         "compiler/codegen/slot_allocator.cc guarantees 16-byte alignment "
-         "on every CelValue slot the runtime touches.";
+TEST(KnownBugs, LongArith166TermsRejectedAtCompile) {
+  constexpr int kN = 166;  // smallest n whose slot region overflows
+  const std::string source = MakeLongArithSource(kN);
+  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
+  ASSERT_FALSE(v.ok());
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
+      << v.status();
+}
+
+TEST(KnownBugs, LongArith2000TermsRejectedAtCompileNotCorruptionTrap) {
+  // The former `unaligned atomic` shape — must be a graceful
+  // compile-time Status, never a mid-eval corruption trap.
   constexpr int kN = 2000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
-  ASSERT_TRUE(v.ok()) << v.status();
-  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
-  EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
+  ASSERT_FALSE(v.ok());
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
+      << v.status();
 }
 
 }  // namespace

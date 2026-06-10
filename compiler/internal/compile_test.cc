@@ -345,12 +345,17 @@ TEST(CompileStaticTest, StaticModeStampsLinkModeStaticInCelAbi) {
   EXPECT_EQ(abi_or->link_mode(), celwasm::abi::LINK_MODE_STATIC);
 }
 
-// ── Rodata-budget gate (static mode only) ──────────────────────────
+// ── Static-region budget gate (BOTH link modes) ────────────────────
 //
-// The static-mode runtime is linked with
-// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB), so
-// the expression's rodata segment must end at or below that boundary
-// or it would overwrite the bundled runtime's own static data.  See
+// The runtime — bundled into the Program (kStatic) or instantiated
+// alongside it (kDynamic, where the expr module's `cel.memory` import
+// resolves to the runtime instance's exported memory) — is linked
+// with `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB).
+// The expression's static region (rodata + workspace slots) must end
+// at or below that boundary in EITHER mode, or its instantiate-time
+// data segment / marshal-time slot writes silently overwrite the
+// runtime's own static data in the shared memory (observed downstream
+// as dlmalloc corruption: `wasm trap: unaligned atomic`).  See
 // doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
 
 TEST(CompileStaticTest, RodataNearBudgetButUnderCompiles) {
@@ -373,15 +378,66 @@ TEST(CompileStaticTest, RodataOverBudgetReturnsResourceExhausted) {
               StatusIs(absl::StatusCode::kResourceExhausted));
 }
 
-TEST(CompileTest, RodataOverStaticBudgetCompilesInDynamicMode) {
-  // Same oversized literal in kDynamic: rodata lands in the expr
-  // module's own imported `cel.memory` (whole pages, no runtime
-  // static data below it), so the static-mode reserved-window gate
-  // must not apply.
+TEST(CompileTest, RodataNearBudgetButUnderCompilesInDynamicMode) {
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
+  const std::string expr = "\"" + std::string(4096, 'x') + "\"";
+  EXPECT_THAT(Compile(expr, opts).status(), IsOk());
+}
+
+TEST(CompileTest, RodataOverBudgetReturnsResourceExhaustedInDynamicMode) {
+  // kDynamic shares the SAME memory with the runtime instance
+  // (`cel.memory` resolves to the runtime's exported memory), so the
+  // reserved-window gate applies identically.  Before this gate, the
+  // oversized rodata segment was applied over the runtime's static
+  // data at instantiate time — silent corruption surfacing as a
+  // `wasm trap: unaligned atomic` from clobbered dlmalloc state.
   CompileOptions opts;
   opts.link_mode = CompileOptions::LinkMode::kDynamic;
   const std::string expr = "\"" + std::string(9000, 'x') + "\"";
-  EXPECT_THAT(Compile(expr, opts).status(), IsOk());
+  EXPECT_THAT(Compile(expr, opts),
+              StatusIs(absl::StatusCode::kResourceExhausted));
+}
+
+// Workspace half of the gate: rodata alone can sit under the window
+// while workspace slots (24 B per variable / list / map / select
+// node) push the region past it.  A deep nest of single-element list
+// literals allocates one workspace slot per list node with only one
+// 24-byte rodata const.
+std::string NestedListExpr(int depth) {
+  std::string expr;
+  expr.reserve((static_cast<size_t>(depth) * 2) + 8);
+  expr.append(depth, '[');
+  expr.push_back('0');
+  expr.append(depth, ']');
+  return expr;
+}
+
+TEST(CompileTest, WorkspaceNearBudgetButUnderCompilesBothModes) {
+  // 300 list nodes ≈ 7200 B workspace + ~40 B rodata < 8192.
+  const std::string expr = NestedListExpr(300);
+  for (auto mode : {CompileOptions::LinkMode::kStatic,
+                    CompileOptions::LinkMode::kDynamic}) {
+    CompileOptions opts;
+    opts.link_mode = mode;
+    EXPECT_THAT(Compile(expr, opts).status(), IsOk())
+        << "mode=" << static_cast<int>(mode);
+  }
+}
+
+TEST(CompileTest, WorkspaceOverBudgetReturnsResourceExhaustedBothModes) {
+  // 400 list nodes ≈ 9600 B workspace > 8192 with tiny rodata — the
+  // rodata-only check would wrongly accept this; the region check
+  // must reject it in both modes.
+  const std::string expr = NestedListExpr(400);
+  for (auto mode : {CompileOptions::LinkMode::kStatic,
+                    CompileOptions::LinkMode::kDynamic}) {
+    CompileOptions opts;
+    opts.link_mode = mode;
+    EXPECT_THAT(Compile(expr, opts),
+                StatusIs(absl::StatusCode::kResourceExhausted))
+        << "mode=" << static_cast<int>(mode);
+  }
 }
 
 TEST(CompileTest, MemSizeBytesLargerThanOnePageGrowsPageCount) {
