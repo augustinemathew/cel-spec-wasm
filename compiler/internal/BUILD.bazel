@@ -20,6 +20,7 @@ cc_library(
         "//compiler/codegen:module",
         "//compiler/codegen:overload_table",
         "//compiler/codegen:resolve_pass",
+        "//compiler:memory_layout",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
         "//runtime:cel_runtime",

@@ -63,6 +63,7 @@ cc_library(
     srcs = ["slot_allocator.cc"],
     hdrs = ["slot_allocator.h"],
     deps = [
+        "//compiler:memory_layout",
         "@com_google_absl//absl/log:absl_check",
     ],
 )
@@ -126,6 +127,7 @@ cc_library(
         ":resolve_pass",
         ":slot_allocator",
         ":static_memory_builder",
+        "//compiler:memory_layout",
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",
         "//runtime:cel_runtime",
@@ -135,7 +137,10 @@ cc_library(
         "@cel-cpp//common:expr",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 

@@ -595,8 +595,17 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
     EmitPresizeAccu(ctx, c, /*is_map=*/init_ann->repr == Repr::kMap,
                     /*per_iter=*/PerIterEntryCount(shape), instrs);
   } else {
-    instrs->push_back(
-        EmitCelCopySlot(ctx, c.accu_slot(), init_ann->storage.payload));
+    // The accu var owns a fixed workspace cell; the init expr's
+    // storage can be any kind (rodata for literals, kLocal for a
+    // bare ident accu_init like `cel.bind`'s pass-through).  The
+    // `EmitCelCopySlot` overload taking `Storage` dispatches the
+    // src-side address through `EmitSlotBaseAddress`, so a
+    // kIdent init is read via `local.get` (not by treating the
+    // local index as a byte offset — the bug that surfaced as
+    // `KnownBugs.PbtTernaryInsideIntSubtract`).
+    instrs->push_back(EmitCelCopySlot(
+        ctx, Storage{StorageKind::kWorkspaceSlot, c.accu_slot()},
+        init_ann->storage));
   }
   instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
                                      I32Const(ctx.mod, c.accu_slot())));
@@ -868,9 +877,20 @@ absl::Status EmitGenericStep(EmitCtx& ctx, const cel::Expr& step,
   const auto* step_ann = ctx.layout.annotations.Find(step.id());
   ABSL_CHECK(step_ann != nullptr);
   body->push_back(BinaryenDrop(ctx.mod.raw(), *step_or));
-  if (step_ann->storage.kind == StorageKind::kWorkspaceSlot) {
-    body->push_back(
-        EmitCelCopySlot(ctx, c.accu_slot(), step_ann->storage.payload));
+  // loop_step's result can land in any storage kind — a fresh
+  // workspace slot for a normal `_+_` expression, but kLocal for
+  // a bare `kIdent(@result)` step (the cel.bind pass-through
+  // case the function header notes).  Either is correct as long
+  // as we route through the type-aware EmitCelCopySlot/
+  // EmitSlotBaseAddress pair — passing `step_ann->storage` here
+  // is the fix that closed `KnownBugs.PbtTernaryInsideIntSubtract`
+  // for the comprehension loop-step path.  Skip the copy only
+  // when the step has no storage (kNone — never happens today,
+  // but kept defensive).
+  if (step_ann->storage.kind != StorageKind::kNone) {
+    body->push_back(EmitCelCopySlot(
+        ctx, Storage{StorageKind::kWorkspaceSlot, c.accu_slot()},
+        step_ann->storage));
   }
   return absl::OkStatus();
 }

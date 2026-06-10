@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 load(":link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -18,6 +18,25 @@ cc_library(
         "//eval:value",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+# Single-shot reproducer for the PBT-discovered divergence; not
+# part of any test target.  Run as
+# `bazel run //e2e:repro_pbt_bug -- '<source>'`.
+cc_binary(
+    name = "repro_pbt_bug",
+    srcs = ["repro_pbt_bug.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -139,6 +158,31 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# Pins the "proto field read is lazy / arena copy happens only at
+# the wire transition" invariant documented on
+# `eval/internal/cel_host.h::ProtoBacking` — see cleanup-backlog
+# #35.  Reads a >64 KiB proto string field through `size(c.name)`
+# (must succeed) and through `(c.name + "")` (must overflow
+# cleanly to kError, not truncate).
+cc_test(
+    name = "proto_arena_lazy_copy_test",
+    srcs = ["proto_arena_lazy_copy_test.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:cel_host",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Partial-eval matrix e2e suite — the cross-product of container shape
 # (scalar / list / map / message) and element kind (primitive /
 # complex) against the partial-eval attribute model.  Pins which
@@ -171,6 +215,25 @@ link_mode_e2e_cc_test(
 # M4 e2e test suite — list literals, indexing, proto repeated
 # fields, dispatcher routing.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation).
+cc_test(
+    name = "slot_aliasing_test",
+    srcs = ["slot_aliasing_test.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 link_mode_e2e_cc_test(
     name = "m4_test",
     srcs = ["m4_test.cc"],

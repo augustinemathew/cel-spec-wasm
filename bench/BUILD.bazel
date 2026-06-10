@@ -22,6 +22,7 @@ cc_binary(
     copts = ["-std=c++17"],
     tags = ["manual"],
     deps = [
+        "//runtime:cel_convert_double_format",
         "//runtime:cel_runtime",
         "@com_google_absl//absl/strings",
         "@com_google_benchmark//:benchmark_main",

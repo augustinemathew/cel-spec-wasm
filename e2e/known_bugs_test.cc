@@ -199,10 +199,9 @@ TEST(KnownBugs, MapSizeArenaCliff) {
 // ══════════════════════════════════════════════════════════════════
 
 TEST(KnownBugs, SizeStringCountsBytesNotCodepoints) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // string.textproto: size('ÿ') == 1 code point (got 2 = byte length).
+  // string.textproto/size_one_unicode: size('ÿ') == 1 code point.
+  // Fixed 2026-06-05 by reworking `cel_string_size_at_v` to walk the
+  // UTF-8 byte stream and count codepoint-starting bytes.
   auto v = TryEval("size('ÿ')");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -210,10 +209,8 @@ TEST(KnownBugs, SizeStringCountsBytesNotCodepoints) {
 }
 
 TEST(KnownBugs, SizeStringMultibyte) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // string.textproto: size('πέντε') == 5 (got 10).
+  // string.textproto/size_unicode: size('πέντε') == 5 (got 10).
+  // Fixed 2026-06-05 — same kernel as SizeStringCountsBytesNotCodepoints.
   auto v = TryEval("size('πέντε')");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -221,10 +218,9 @@ TEST(KnownBugs, SizeStringMultibyte) {
 }
 
 TEST(KnownBugs, HasOnMapPresentKey) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // fields.textproto: has({'a':1,'b':2}.a) == true.
+  // fields.textproto: has({'a':1,'b':2}.a) == true.  Map-dot-field sugar
+  // (langdef §"Field selection on maps"); fixed by EmitKSelect's kMap
+  // branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("has({'a': 1, 'b': 2}.a)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -232,10 +228,8 @@ TEST(KnownBugs, HasOnMapPresentKey) {
 }
 
 TEST(KnownBugs, HasOnMapAbsentKey) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
-  // fields.textproto: has({'a':1,'b':2}.c) == false.
+  // fields.textproto: has({'a':1,'b':2}.c) == false.  Map-dot-field sugar;
+  // fixed by EmitKSelect's kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("has({'a': 1, 'b': 2}.c)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -275,10 +269,9 @@ TEST(KnownBugs, IntFromDoubleOutOfRange) {
 }
 
 TEST(KnownBugs, CelBindSelectorOnBoundVar) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // bindings_ext.textproto: cel.bind(x, {'y': 0}, x.y == 0) == true.
+  // Map-dot-field sugar through a bound variable; fixed by EmitKSelect's
+  // kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("cel.bind(x, {'y': 0}, x.y == 0)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -286,10 +279,10 @@ TEST(KnownBugs, CelBindSelectorOnBoundVar) {
 }
 
 TEST(KnownBugs, ComprehensionVarSelector) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // namespace.textproto: [{'z': 0}].exists(y, y.z == 0) == true.
+  // Map-dot-field sugar on a comprehension iter var (langdef §"Field
+  // selection"); fixed by EmitKSelect's kMap branch (cleanup-backlog
+  // #9, 2026-06-05).
   auto v = TryEval("[{'z': 0}].exists(y, y.z == 0)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -297,10 +290,9 @@ TEST(KnownBugs, ComprehensionVarSelector) {
 }
 
 TEST(KnownBugs, ReservedWordMapSelector) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
   // parse.textproto: {'as': 1}.as == 1 (reserved-but-not-keyword selector).
+  // Per CEL grammar, reserved words are admitted in selector position;
+  // fixed by EmitKSelect's kMap branch (cleanup-backlog #9, 2026-06-05).
   auto v = TryEval("{'as': 1}.as");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -325,23 +317,60 @@ TEST(KnownBugs, UintFromStringLeadingPlus) {
 }
 
 TEST(KnownBugs, MapFieldSelectSugar) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: CEL_ERR_TYPE_MISMATCH, want 1): EmitKSelect has "
-         "no map-operand path; m.k sugar hits the message field trampoline "
-         "(expr_lower.cc:199-261 / cel_host.cc:1394). One fix flips the whole "
-         "map-select cluster. Delete to fix.";
-  // ROOT CAUSE + minimal repro of the map-select cluster: HasOnMapPresentKey,
-  // HasOnMapAbsentKey, ReservedWordMapSelector, CelBindSelectorOnBoundVar,
-  // ComprehensionVarSelector (and backtick-quoted selectors) ALL share this.
-  // EmitKSelect (expr_lower.cc:199-261) has no map-operand branch, so `m.k`
-  // (≡ m['k'] sugar) lowers to the proto field-read trampoline, which
-  // rejects a non-message operand at cel_host.cc:1394 -> CEL_ERR_TYPE_MISMATCH.
-  // {'a': 1}.a should be 1.  One fix (map branch in EmitKSelect) flips the
-  // whole cluster.
+  // langdef §"Field selection on maps": `m.k` is sugar for `m['k']`.
+  // Regression pin for the cluster fixed via cleanup-backlog #9
+  // (2026-06-05): EmitKSelect gained a kMap branch that routes through
+  // `cel_map_lookup` (or `cel_map_in` for `has()`) with the field name
+  // lifted to rodata as a CEL_STRING CelValue.  Closes ~29 conformance
+  // rows: 17 reserved-word selectors (parse/selectors), 4 quoted-map
+  // and 2 map_has rows (fields), 3 optional-chaining rows (optionals),
+  // 1 bind-shadow row (bindings_ext), 2 comprehension-shadowing
+  // selector rows (namespace_shadowing).
   auto v = TryEval("{'a': 1}.a");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsInt(), 1);
+}
+
+// Map-dot-field sugar coverage matrix.  Per the testing rule in
+// CLAUDE.md "Cover the edge-case matrix": every shape that exercises
+// the kMap branch of EmitKSelect.
+TEST(KnownBugs, MapDotFieldNestedMapValue) {
+  // Outer .c routes the inner kSelect (map-of-map) to cel_map_lookup
+  // (kDynamic dispatcher) since the operand's static origin is kHost
+  // but the runtime value is CEL_MAP_ARENA.
+  auto v = TryEval("{'c': {'d': 1}}.c.d");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v->AsInt(), 1);
+}
+
+TEST(KnownBugs, MapDotFieldThenIndex) {
+  // `{'c': {...}}.c['dashed-index']`: same nested-origin issue but at the
+  // `_[_]` call (EmitKIndexCall) — operand is a kSelectExpr returning a
+  // map, so codegen falls through to the kDynamic dispatcher.
+  auto v = TryEval("{'c': {'k': 'v'}}.c['k']");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString);
+  EXPECT_EQ(*v->AsString(), "v");
+}
+
+TEST(KnownBugs, MapDotFieldBacktickQuotedSlash) {
+  // fields.textproto/quoted_map_fields/field_access_slash:
+  // `{'/api/v1': true, '/api/v2': false}.`/api/v1`` → true.
+  auto v = TryEval("{'/api/v1': true, '/api/v2': false}.`/api/v1`");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool);
+  EXPECT_TRUE(*v->AsBool());
+}
+
+TEST(KnownBugs, MapDotFieldBacktickQuotedDot) {
+  // fields.textproto/quoted_map_fields/field_access_dot:
+  // `{'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`` → 32.
+  auto v = TryEval("{'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt);
+  EXPECT_EQ(*v->AsInt(), 32);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -465,27 +494,33 @@ TEST(KnownBugs, MaxRangeTimestampConstruction) {
   EXPECT_EQ(*v->AsString(), "9999-12-31T23:59:59.999999999Z");
 }
 
+// INVARIANT — `string(double)` MUST round-trip to the exact double via
+// the shortest decimal representation.  E2E regression pin for the
+// `conversions/string/double` corpus row
+// (`spec/tests/simple/testdata/conversions.textproto:264-266`).  Fix
+// landed 2026-06-06 by routing the kernel through `std::to_chars(buf,
+// end, v, chars_format::general)` in `cel_convert_double_format.cc`,
+// mirroring cel-cpp's `FormatDouble`
+// (`runtime/standard/type_conversion_functions.cc:56`).  A future
+// change that swaps to a non-shortest formatter (`%.17g`, hand-rolled
+// per-digit `frac*10`, …) will break this assertion by producing
+// `"123.45600000000000306"` again — same failure mode as cleanup-
+// backlog #38.
 TEST(KnownBugs, DoubleToStringShortestRoundTrip) {
-  GTEST_SKIP() << "KNOWN BUG (verified: '123.45600000000000306', want "
-                  "'123.456'): double->string is not shortest-round-trip, "
-                  "cel_convert.c:579-724. Delete to fix.";
-  // conversions.textproto: string(123.456) == "123.456". cel2's iterative
-  // frac*10 formatter (cel_convert.c:579-724) is not shortest-round-trip
-  // and emits trailing garbage ("123.45600000000000306").
   auto v = TryEval("string(123.456)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsString(), "123.456");
 }
 
+// INVARIANT — `string(1e10)` MUST emit the scientific form `"1e+10"`,
+// not the fixed form `"10000000000"`.  `std::to_chars(general)` picks
+// fixed vs. scientific by minimising output length; for `1e10` the
+// scientific form (5 chars) wins over fixed (11 chars).  cel-cpp's
+// `FormatDouble` produces the same.  A future formatter swap that
+// reintroduces a hard-coded magnitude threshold (the old C path used
+// `< 1e18` for fixed) will break this case.
 TEST(KnownBugs, DoubleToStringExponentForm) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: '10000000000', want '1e+10'): double->string "
-         "exponent threshold differs from std::to_chars(general), "
-         "cel_convert.c:665-699. Delete to fix.";
-  // cel-cpp uses std::to_chars(general): string(1e10) == "1e+10".
-  // cel2 emits "10000000000" (wrong exponent threshold,
-  // cel_convert.c:665-699).
   auto v = TryEval("string(1e10)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
@@ -648,13 +683,19 @@ TEST(KnownBugs, LiteralIntListInScanRejectedAtCompileAt10K) {
       << v.status();
 }
 
-// Boundary pin for the static-region gate, both modes.  Layout
-// arithmetic for `x in [0..N-1]`: rodata = 16 (base) + 24·N (one
-// packed CelValue per int const), workspace = 72 (three 24-byte
-// slots: variable `x`, the list literal, the `in` result), region
-// end = RoundUp8(16 + 24·N) + 72 ≤ 8192 ⇔ N ≤ 337.
+// Boundary pin for the static-region gate, both modes.  For a literal
+// `x in [0..N-1]` the rodata grows ~24 bytes per int constant, and the
+// slot-exhaustion gate (LayoutPass::MaxWorkspaceBytes) reserves a
+// `kGuardBytes`=256-byte guard band below wasi-libc's static data at
+// `kReservedLowMemoryBytes`=8192 — so the workspace the `in`-scan needs
+// must fit in `8192 - 256 - rodata_end`.  Empirically (re-probed
+// 2026-06-10 via tools/cel after the slot-reuse merge) N=327 is the
+// largest list whose rodata still leaves room for the scan workspace;
+// N=328 is the smallest that overflows.  Unlike the deep `+`-chain,
+// this ceiling is rodata-bound, so slot reuse does NOT raise it — the
+// constants themselves consume the window.
 TEST(KnownBugs, LiteralIntListInScanLargestFittingEvals) {
-  constexpr int kN = 337;  // largest N whose region fits the window
+  constexpr int kN = 327;  // largest N whose region fits the window
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
@@ -670,7 +711,7 @@ TEST(KnownBugs, LiteralIntListInScanLargestFittingEvals) {
 }
 
 TEST(KnownBugs, LiteralIntListInScanJustOverWindowRejectedAtCompile) {
-  constexpr int kN = 338;  // smallest N whose region overflows (8200 > 8192)
+  constexpr int kN = 328;  // smallest N whose region overflows the window
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
@@ -796,14 +837,13 @@ int64_t ExpectedLongArithResult(int n_terms) {
 // Positive baseline — confirms the parser-depth bump
 // (`parse_and_check.cc::DefaultParserOptions`: 32 → 16 384) plus the
 // codegen / Eval path actually work for a long-but-not-pathological
-// `+`-chain, at the largest size the static-region budget admits.
-//
-// Slot arithmetic: `SlotAllocator::Release` is a no-op
-// (compiler/codegen/slot_allocator.cc — free-list reuse never
-// landed), so an n-term chain consumes 2n-1 call slots + 10 variable
-// slots; workspace_base 16 + (2n+9)·24 ≤ 8192 ⇔ n ≤ 165.
+// `+`-chain.  With the LIFO free-list slot reuse in
+// `SlotAllocator::Release`, a left-associative `+`-chain reuses a
+// handful of workspace cells regardless of length, so this size — and
+// the 2000-term sibling below — both fit comfortably inside the
+// 8192-byte reserved window.
 TEST(KnownBugs, LongArith165TermsWorks) {
-  constexpr int kN = 165;  // largest n whose slot region fits the window
+  constexpr int kN = 165;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -812,44 +852,173 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// REGRESSION (long-arith workspace overflow — root cause found):
-// the old `LongArith_1000Terms_Works` test passed and its 2000-term
-// sibling trapped `wasm trap: unaligned atomic`, attributed at the
-// time to a suspected slot-allocator ALIGNMENT bug.  The actual
-// cause: `SlotAllocator::Release` is a no-op, so a 1000-term chain
-// allocates 2009 workspace slots = 48 216 bytes of CelValue cells —
-// written by the runtime helpers straight over the runtime's own
-// static data above the 8192-byte reserved window in the SHARED
-// linear memory.  N=1000 "worked" only because the int-arith path
-// never read the clobbered statics; N=2000's deeper overrun reached
-// live dlmalloc state and trapped.  Both are now REJECTED AT COMPILE
-// (ResourceExhausted) by the static-region gate
-// (`ValidateExprStaticRegion`, compiler/internal/compile.cc).
-//
-// ASPIRATION: implementing slot Release/reuse (the free-list noted
-// in slot_allocator.cc, plus the Sethi-Ullman ordering note at the
-// top of this file) collapses a `+`-chain's live slot count to a
-// handful, restoring 1000+-term expressions WITHOUT enlarging the
-// window.  When that lands, flip these back to value assertions.
+// REGRESSION (long-arith codegen): kept around the same shape that
+// originally exposed the "unaligned atomic" trap at N >= 2000.
+// Original symptom — `wasm trap: unaligned atomic` from inside an
+// expression-module call into a runtime helper at N = 2000+ — was
+// not an alignment issue per se: `SlotAllocator::Release` was a no-op
+// (see compiler/codegen/slot_allocator.cc) so every intermediate of
+// `a*b + a*b + ... + a*b` got a fresh workspace cell — peak slots
+// = N-1.  Past N=2000 the workspace grew across a wasm-page boundary
+// and the runtime helpers' atomic ops landed on misaligned offsets.
+// Fixed by giving Release a LIFO free list so the same chain peaks
+// at one workspace slot — the whole `+`-chain reuses a handful of
+// cells, so the static region stays well inside the 8192-byte window
+// and a 2000-term chain now compiles AND evaluates to its value.
+// Validated bottom-up by compiler/codegen/slot_allocator_test::
+//   LeftAssocAdditionChainAfterReleaseFix/N2000 (no codegen, exact
+//   peak count) and top-down by this e2e (full pipeline through
+//   wasmtime).  Keep the e2e — it pins the cross-page-boundary case
+//   the unit test can't reach.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LongArith166TermsRejectedAtCompile) {
-  constexpr int kN = 166;  // smallest n whose slot region overflows
-  const std::string source = MakeLongArithSource(kN);
-  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
-  ASSERT_FALSE(v.ok());
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
-}
-
-TEST(KnownBugs, LongArith2000TermsRejectedAtCompileNotCorruptionTrap) {
-  // The former `unaligned atomic` shape — must be a graceful
-  // compile-time Status, never a mid-eval corruption trap.
+TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
   constexpr int kN = 2000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
-  ASSERT_FALSE(v.ok());
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
+}
+
+// ──────────────────────────────────────────────────────────────────
+// CLASS: PBT-discovered divergences.  Each row was first surfaced by
+// `e2e/fuzz/cel_oracle_property_test.cc`'s value-oracle property
+// (Slice B of M27 — see
+// `doc/implementation-plan/rewrite/m27-pbt-cel-generator.md`).
+//
+// The PBT property generates a CEL source string, evals it through
+// BOTH our pipeline and cel-cpp, and expects identical bool results.
+// When it finds a divergence, the shrunken source is pinned here as
+// a focused regression test against a SMALL set of bound activation
+// values.  The PBT tool stays as the discovery surface; these rows
+// pin specific bugs so the fix has a concrete target.
+//
+// Each row carries the fuzztest seed that originally surfaced it so
+// a future PBT run can re-find it deterministically.
+// ──────────────────────────────────────────────────────────────────
+
+namespace pbt_repro {
+
+void DeclareSliceBPbtVars(Compiler::Builder& b) {
+  b.DeclareVariable("i_a", CelType::Int());
+  b.DeclareVariable("i_b", CelType::Int());
+  b.DeclareVariable("b_a", CelType::Bool());
+}
+
+void BindSliceBPbtVars(Activation& a) {
+  a.Bind("i_a", Value::Int(7));
+  a.Bind("i_b", Value::Int(11));
+  a.Bind("b_a", Value::Bool(true));
+}
+
+// Slice C PBT activation — Slice B vars plus uint / double / string
+// / bytes leaves the Slice C grammar pulls from.  Mirrors
+// `e2e/fuzz/oracle_harness.cc::SliceBBoundActivation` so a repro
+// the miner shrunk runs unchanged here.
+void DeclareSliceCPbtVars(Compiler::Builder& b) {
+  b.DeclareVariable("i_a", CelType::Int());
+  b.DeclareVariable("i_b", CelType::Int());
+  b.DeclareVariable("u_a", CelType::Uint());
+  b.DeclareVariable("d_a", CelType::Double());
+  b.DeclareVariable("b_a", CelType::Bool());
+  b.DeclareVariable("s_a", CelType::String());
+  b.DeclareVariable("y_a", CelType::Bytes());
+}
+
+void BindSliceCPbtVars(Activation& a) {
+  a.Bind("i_a", Value::Int(7));
+  a.Bind("i_b", Value::Int(11));
+  a.Bind("u_a", Value::Uint(5));
+  a.Bind("d_a", Value::Double(3.14));
+  a.Bind("b_a", Value::Bool(true));
+  a.Bind("s_a", Value::String("hello"));
+  a.Bind("y_a", Value::Bytes("hi"));
+}
+
+}  // namespace pbt_repro
+
+// fuzztest seed=3696381601904611693 depth=4 — PBT slice B run on
+// 2026-06-05.  Our pipeline returns `kError` on a totally-defined
+// Bool expression that the cel-cpp oracle evaluates to `false`.
+// Reduced manually from the shrunk source; cel-cpp's reduction
+// indicates the ternary-inside-int-subtract path
+// `(i_a - (b_a ? 0 : i_b))` is the suspect.  Spec eval:
+//   b_a=true   → (b_a ? 0 : i_b) = 0
+//   i_a - 0    = 7
+//   size("")=0, (0 < 7) = true
+//   ("" == "x") = false
+//   true == false = false  → the expected eval result.
+// FIXED 2026-06-05 — `EmitConditional` now passes the cond's
+// `Storage` through `EmitSlotBaseAddress`, which dispatches
+// `kLocal` storage as `(local.get index)` instead of treating the
+// local index as a literal byte offset.  See
+// `compiler/codegen/expr_lower.cc::EmitSlotBaseAddress` +
+// `expr_lower_internal.h`'s helper doc.  The assertion below is
+// now a live regression guard.
+TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
+  constexpr absl::string_view source =
+      R"(((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x")))";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceBPbtVars,
+                            pbt_repro::BindSliceBPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
+  EXPECT_FALSE(*v->AsBool()) << "ternary inside int subtract evaluated wrong";
+}
+
+// PBT seed=1 (target=bool) and seed=3 (target=bytes) on the Slice C
+// grammar, 2026-06-05.  cleanup-backlog #32 + #33 — `exists_one`'s
+// comprehension result lives in the `comp.result()` sub-expression's
+// slot (a `kCallExpr(_==_, @result, 1)` writing a Bool to its own
+// workspace slot), NOT in the accu_var's slot which still holds the
+// loop counter Int.  Before the fix, `ComprehensionLocalsVisitor::
+// PostVisitComprehension` stamped the comp with accu_var's slot, so
+// the ternary cond-load read the count Int instead of the loop's
+// Bool result and the whole downstream expression poisoned to
+// kError.  Pinning shape: an `exists_one` feeding a ternary cond
+// whose then-arm is a bytes ident.
+//
+// Spec eval for the bytes case (b_a=true, d_a=3.14, y_a=b"hi"):
+//   {b_a: -1}.exists_one(k, d_a < 1.0)
+//     → pred false for the one key → false
+//   false ? y_a : b"x"  → b"x"
+//   b"x" + b"x"         → b"xx"
+TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
+  constexpr absl::string_view source =
+      R"((({b_a: (-1)}).exists_one(k, (d_a < 1.0)) ? y_a : b"x") + b"x")";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsBytes(), "xx") << "exists_one cond mis-routed";
+}
+
+// Companion: when `exists_one` returns true the SAME shape must
+// pick the then-arm, returning a bytes-typed value.  Catches a
+// regression in the opposite direction.
+TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
+  constexpr absl::string_view source =
+      R"((({"k": 1}).exists_one(k, true) ? y_a : b"x") + b"x")";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsBytes(), "hix");
+}
+
+// PBT int seed=137 (Slice C grammar, 2026-06-05) — reduced form
+// of the `size((cond ? <bytes-ternary> : <bytes-ternary>))` shape
+// that was producing kError because the inner bytes ternary's
+// result kind was being read from the wrong slot.  Spec eval: the
+// exists_one is true (one key, predicate true), inner ternary's
+// then-arm is `(y_a + y_a)` = b"hihi" (size 4).
+TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
+  constexpr absl::string_view source =
+      R"(size((({"k": 1}).exists_one(k, true) ? (y_a + y_a) : (y_a + b"x"))))";
+  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
+                            pbt_repro::BindSliceCPbtVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), 4);
 }
 
 }  // namespace

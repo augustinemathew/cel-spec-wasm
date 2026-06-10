@@ -72,9 +72,11 @@ ABSL_FLAG(
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 // `test_all_types.pb.h` is included for the side-effect of
 // registering `cel.expr.conformance.proto{2,3}.TestAllTypes` (and
 // the proto2 extension-scoped descriptor) into the generated pool.
@@ -97,8 +99,10 @@ ABSL_FLAG(
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
 #include "eval/value.h"
+#include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
+#include "google/protobuf/timestamp.pb.h"
 #include "google/protobuf/util/message_differencer.h"
 
 namespace celwasm::conformance {
@@ -217,6 +221,8 @@ absl::string_view SkipCategoryName(SkipCategory c) {
       return "ext_unimpl";
     case SkipCategory::kTypeEnvUnsupported:
       return "type_env";
+    case SkipCategory::kSpecUnimpl:
+      return "spec_unimpl";
     case SkipCategory::kBindingUnsupported:
       return "bindings";
   }
@@ -342,6 +348,63 @@ absl::Status CompareScalar(const celwasm::Value& got, const ProtoValue& want) {
 
 }  // namespace
 
+namespace {
+
+// Heterogeneous-list typing fallback for the `CompareMessage` path:
+// when a row's expected value is an empty `google.protobuf.Duration{}`
+// or `Timestamp{}` Any and our runtime produced a CEL_DURATION /
+// CEL_TIMESTAMP (because WKTs are exposed as the CEL primitive per
+// langdef §"Messages"), bridge the two by comparing the wire-equivalent
+// `(seconds, nanos)` pair.  Returns `nullopt` when the fallback
+// doesn't apply; callers fall through to the standard "got-kind"
+// mismatch error.  Pinned by corpus rows
+// `type_deduction/legacy_nullable_types/null_assignable_to_duration_parameter_candidate`
+// and the timestamp sibling.
+std::optional<absl::Status> MaybeCompareWktPrimitive(
+    const celwasm::Value& got, const google::protobuf::Any& want) {
+  const absl::string_view want_type = want.type_url();
+  if (got.kind() == celwasm::Value::Kind::kDuration &&
+      absl::EndsWith(want_type, "/google.protobuf.Duration")) {
+    auto got_dur_or = got.AsDuration();
+    if (!got_dur_or.ok()) return got_dur_or.status();
+    google::protobuf::Duration want_dur;
+    if (!want_dur.ParseFromString(want.value())) {
+      return absl::FailedPreconditionError(
+          "want=google.protobuf.Duration: failed to parse Any payload");
+    }
+    const absl::Duration want_abs =
+        absl::Seconds(want_dur.seconds()) + absl::Nanoseconds(want_dur.nanos());
+    if (*got_dur_or != want_abs) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          "duration mismatch: want=", absl::FormatDuration(want_abs),
+          " got=", absl::FormatDuration(*got_dur_or)));
+    }
+    return absl::OkStatus();
+  }
+  if (got.kind() == celwasm::Value::Kind::kTimestamp &&
+      absl::EndsWith(want_type, "/google.protobuf.Timestamp")) {
+    auto got_ts_or = got.AsTimestamp();
+    if (!got_ts_or.ok()) return got_ts_or.status();
+    google::protobuf::Timestamp want_ts;
+    if (!want_ts.ParseFromString(want.value())) {
+      return absl::FailedPreconditionError(
+          "want=google.protobuf.Timestamp: failed to parse Any payload");
+    }
+    const absl::Time want_abs = absl::UnixEpoch() +
+                                absl::Seconds(want_ts.seconds()) +
+                                absl::Nanoseconds(want_ts.nanos());
+    if (*got_ts_or != want_abs) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("timestamp mismatch: want=", absl::FormatTime(want_abs),
+                       " got=", absl::FormatTime(*got_ts_or)));
+    }
+    return absl::OkStatus();
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
 // `object_value` matcher: an Any wrapping the expected proto.
 // Unpacks via `binding_marshal::UnpackAny` (generated pool +
 // `ForceLinkFixtureDescriptors`) and runs `MessageDifferencer::Equals`.
@@ -350,6 +413,9 @@ absl::Status CompareMessage(const celwasm::Value& got,
                             const google::protobuf::Any& want) {
   auto got_backing_or = got.MessageBacking();
   if (!got_backing_or.ok()) {
+    if (auto s = MaybeCompareWktPrimitive(got, want); s.has_value()) {
+      return *std::move(s);
+    }
     return absl::FailedPreconditionError(
         absl::StrCat("want-kind=message got-kind=", ValueKindName(got.kind())));
   }
@@ -446,6 +512,56 @@ absl::Status CompareEvalError(const celwasm::Value& got,
         absl::StrCat("want-kind=error got-kind=", ValueKindName(got.kind())));
   }
   return absl::OkStatus();
+}
+// Spec-acknowledged unimplemented sections.  Some conformance
+// sections test features the CEL spec explicitly flags as
+// "specified but not implemented".  cel-cpp's own conformance
+// harness skips them via `_TESTS_TO_SKIP` in
+// `third_party/cel-cpp/conformance/BUILD` (e.g. issues/119:
+// strong-typed enum support).  We mirror that set here: a row in
+// one of these sections is NOT a regression — the reference
+// implementation doesn't pass it either.  Adding a section:
+// add a `(file_stem, section_name)` pair and cite cel-cpp's BUILD
+// comment that justifies it.
+//
+// NOTE: cel-cpp skips at the section level (its harness only
+// supports section-granularity skips).  We could too, but
+// strong_proto2/3 contain many rows that DO pass today (literal
+// resolution, equality, int conversion) and we don't want to lose
+// them from the PASS count.  So this list is per-(section, test
+// name) pair — only the rows that fail because of the missing
+// feature.
+bool IsSpecUnimplSection(absl::string_view file_stem,
+                         absl::string_view section_name,
+                         absl::string_view test_name) {
+  // enums.textproto / strong_proto2,strong_proto3 — cel-cpp BUILD
+  // §`_TESTS_TO_SKIP`: "Future features for CEL 1.0.
+  // TODO(issues/119): Strong typing support for enums, specified
+  // but not implemented."  The failing rows are the
+  // `type(EnumValue)` checks (which require strong enum types
+  // tracked through the type-of operator) and the
+  // `EnumType(int)` / `TestAllTypes{enum_field: EnumType(int)}`
+  // checks (which require the enum name to resolve as a callable
+  // int→enum conversion in the checker).
+  if (file_stem == "enums" &&
+      (section_name == "strong_proto2" || section_name == "strong_proto3")) {
+    static constexpr absl::string_view kFailing[] = {
+        "type_global",
+        "type_nested",
+        "field_type",
+        "assign_standalone_int",
+        "assign_standalone_int_big",
+        "assign_standalone_int_neg",
+        "convert_int_inrange",
+        "convert_int_big",
+        "convert_int_neg",
+        "convert_string",
+    };
+    for (absl::string_view r : kFailing) {
+      if (r == test_name) return true;
+    }
+  }
+  return false;
 }
 // NOLINTEND(misc-use-internal-linkage)
 

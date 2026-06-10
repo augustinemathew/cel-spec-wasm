@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -108,7 +109,18 @@ UnpackOneAnyResult UnpackOneAnyLayer(
   std::string val_scratch;
   const std::string& type_url =
       any_refl->GetStringReference(any, type_url_fd, &url_scratch);
-  if (type_url.empty()) return {celwasm::Value::Null(), nullptr};
+  if (type_url.empty()) {
+    // cel-cpp returns InvalidArgument here (see
+    // `third_party/cel-cpp/internal/well_known_types.cc::AdaptAny`
+    // — the prefix check fails on an empty string and yields
+    // "unable to find descriptor for type URL: ").  Pinned by
+    // conformance row `dynamic/any/literal_empty`.  The
+    // unset-Any-field path skips this — it short-circuits on
+    // `HasField` in `ReadSingularMessageField`.
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
+                      "Any type_url is empty (no descriptor to unpack)"),
+            nullptr};
+  }
   const auto fqn_opt = ExtractAnyFqn(type_url);
   if (!fqn_opt.has_value()) {
     return {MakeError(celwasm::ErrorCode::kFieldNotFound,
@@ -158,8 +170,9 @@ UnpackOneAnyResult UnpackOneAnyLayer(
 // implicitly bounds depth in practice, but a malformed Any chain
 // shouldn't blow the host stack, and the M7-A design doc explicitly
 // recommended this constant.
-celwasm::Value UnpackAnyToValue(const google::protobuf::Message& any,
-                                const google::protobuf::DescriptorPool* pool) {
+celwasm::Value UnpackAnyToValueAnonImpl(
+    const google::protobuf::Message& any,
+    const google::protobuf::DescriptorPool* pool) {
   std::unique_ptr<google::protobuf::Message> owned;
   const google::protobuf::Message* current = &any;
   for (int depth = 0;; ++depth) {
@@ -471,21 +484,35 @@ absl::StatusOr<celwasm::Value> ReadSingularMessageField(
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field) {
   const google::protobuf::Descriptor* mt = field.message_type();
+  // WKT wrappers: an unset wrapper field reads as null (langdef
+  // §"Dynamic Values" line 484-486; cel-cpp parity).
   if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
       !refl.HasField(msg, &field)) {
     return celwasm::Value::Null();
   }
-  const google::protobuf::FileDescriptor* file =
-      field.containing_type()->file();
-  const bool is_proto3 =
-      file != nullptr &&
-      google::protobuf::FileDescriptorLegacy(file).edition() ==
-          google::protobuf::EDITION_PROTO3;
-  if (is_proto3 && !refl.HasField(msg, &field)) {
-    return celwasm::Value::Null();
-  }
+  // Non-wrapper singular message fields: per langdef §"Messages",
+  // accessing a singular message field returns a value of the field's
+  // type — for an unset field, the default-instance message.  This
+  // applies to BOTH proto2 and proto3 — there's no implicit-presence
+  // null shortcut for message-typed fields, only for scalars.  Pre-
+  // 2026-06-05 we returned null for unset proto3 message fields,
+  // failing conformance row `proto3/empty_field/nested_message`
+  // (`TestAllTypes{}.single_nested_message` → expected default
+  // NestedMessage, got null).  `GetMessage` itself returns the
+  // default-instance reference for an unset field, so we fall through
+  // unconditionally.
   const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
   if (mt != nullptr && mt->full_name() == "google.protobuf.Any") {
+    // Unset Any field → null (langdef + cel-cpp parity).  An Any
+    // whose `type_url` is empty has no descriptor to unpack
+    // against, but the SET-but-empty case (`Any{}` literal) and
+    // the UNSET case must distinguish: corpus row
+    // `set_null/single_any` expects null for the unset path,
+    // while `dynamic/any/literal_empty` expects an error for the
+    // explicit literal.  We rely on HasField (only set when the
+    // user explicitly assigned the field) to disambiguate at the
+    // read-side.
+    if (!refl.HasField(msg, &field)) return celwasm::Value::Null();
     return UnpackAnyToValue(sub, mt->file()->pool());
   }
   if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
@@ -535,11 +562,45 @@ const google::protobuf::FieldDescriptor* absl_nullable ResolveFieldDescriptor(
     absl::string_view field_name) {
   const google::protobuf::Descriptor* d = msg.GetDescriptor();
   if (d == nullptr) return nullptr;
-  if (field_number != 0) return d->FindFieldByNumber(field_number);
-  return d->FindFieldByName(std::string(field_name));
+  if (field_number != 0) {
+    const google::protobuf::FieldDescriptor* f =
+        d->FindFieldByNumber(field_number);
+    if (f != nullptr) return f;
+    // proto2 extension fields aren't direct fields of the containing
+    // message — `FindFieldByNumber` won't find them, so fall through
+    // to the by-name extension lookup below.
+  }
+  const std::string name_str(field_name);
+  if (const google::protobuf::FieldDescriptor* f = d->FindFieldByName(name_str);
+      f != nullptr) {
+    return f;
+  }
+  // Extension fields are addressed by their fully-qualified name
+  // (e.g. `cel.expr.conformance.proto2.int32_ext`) in CEL.  Mirrors
+  // cel-cpp's `proto_message_type_adapter.cc::GetFieldImpl` (lines
+  // 176-180): when the by-name lookup misses, try reflection's
+  // known-extension table.  Requires the extension descriptor to be
+  // linked in (the conformance harness pulls in
+  // `test_all_types_extensions.pb.h` for the side-effect of
+  // registering it on the generated pool).
+  const google::protobuf::Reflection* refl = msg.GetReflection();
+  if (refl == nullptr) return nullptr;
+  return refl->FindKnownExtensionByName(name_str);
 }
 
 }  // namespace
+
+// Public re-export of the anonymous-namespace Any unpacker so
+// `Instance::Eval` (instance.cc) can auto-unpack a top-level
+// `google.protobuf.Any` result.  The body lives inside the
+// anonymous namespace because it threads through
+// `UnpackOneAnyLayer` and `MaybeUnpackWktMessage`, both of which
+// are file-private helpers; this two-line wrapper is the
+// dependency injection.  Header: `cel_host.h`.
+celwasm::Value UnpackAnyToValue(const google::protobuf::Message& any,
+                                const google::protobuf::DescriptorPool* pool) {
+  return UnpackAnyToValueAnonImpl(any, pool);
+}
 
 // ══════════════════════════════════════════════════════════════════
 // OwnedProtoBacking — Layer 1 over an owned `unique_ptr<Message>`.
@@ -920,9 +981,37 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  // langdef §"Indexing": list indices are int only; checker rejects
-  // uint upstream.  Defend in depth.
-  if (idx_cv.kind != CEL_INT) {
+  // langdef §"Indexing": list index type is int.  When the operand
+  // is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp admits a
+  // CEL_UINT or an integral CEL_DOUBLE — mirror that here so the
+  // host-backed list path matches the arena path
+  // (`cel_list_at_arena` in `runtime/cel_runtime.c`).  Pinned by
+  // oracle `ListIndexDoubleAgrees` / `ListIndexUintAgrees` and
+  // conformance rows `lists/index/zero_based_double` /
+  // `zero_based_uint`.
+  int64_t i = 0;
+  if (idx_cv.kind == CEL_INT) {
+    i = idx_cv.payload.i;
+  } else if (idx_cv.kind == CEL_UINT) {
+    if (idx_cv.payload.u > static_cast<uint64_t>(INT64_MAX)) {
+      WriteWireError(CEL_ERR_INDEX_OUT_OF_BOUNDS, out_slot, ctx.mem);
+      return absl::OkStatus();
+    }
+    i = static_cast<int64_t>(idx_cv.payload.u);
+  } else if (idx_cv.kind == CEL_DOUBLE) {
+    const double d = idx_cv.payload.d;
+    if (!std::isfinite(d) || d > 9.2233720368547758e18 ||
+        d < -9.2233720368547758e18) {
+      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
+      return absl::OkStatus();
+    }
+    const int64_t trunc = static_cast<int64_t>(d);
+    if (static_cast<double>(trunc) != d) {  // non-integral
+      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
+      return absl::OkStatus();
+    }
+    i = trunc;
+  } else {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
@@ -935,7 +1024,6 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
                      " not found in ExternrefTable"));
   }
 
-  const int64_t i = idx_cv.payload.i;
   if (i < 0) {
     WriteWireError(CEL_ERR_INDEX_OUT_OF_BOUNDS, out_slot, ctx.mem);
     return absl::OkStatus();

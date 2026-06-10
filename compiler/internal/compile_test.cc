@@ -414,8 +414,12 @@ std::string NestedListExpr(int depth) {
 }
 
 TEST(CompileTest, WorkspaceNearBudgetButUnderCompilesBothModes) {
-  // 300 list nodes ≈ 7200 B workspace + ~40 B rodata < 8192.
-  const std::string expr = NestedListExpr(300);
+  // 240 list nodes of workspace + ~40 B rodata sit under the
+  // `8192 - kGuardBytes(256)` slot-exhaustion budget.  Re-probed
+  // 2026-06-10 against the slot-allocator + guard-band gate: depth 246
+  // is the largest that compiles, 247 the first that overflows; 240 is
+  // a comfortable under-the-line case.
+  const std::string expr = NestedListExpr(240);
   for (auto mode : {CompileOptions::LinkMode::kStatic,
                     CompileOptions::LinkMode::kDynamic}) {
     CompileOptions opts;
@@ -426,9 +430,10 @@ TEST(CompileTest, WorkspaceNearBudgetButUnderCompilesBothModes) {
 }
 
 TEST(CompileTest, WorkspaceOverBudgetReturnsResourceExhaustedBothModes) {
-  // 400 list nodes ≈ 9600 B workspace > 8192 with tiny rodata — the
-  // rodata-only check would wrongly accept this; the region check
-  // must reject it in both modes.
+  // 400 list nodes push the workspace well past the
+  // `8192 - kGuardBytes` budget with tiny rodata — the rodata-only
+  // check would wrongly accept this; the slot-exhaustion gate must
+  // reject it in both modes.
   const std::string expr = NestedListExpr(400);
   for (auto mode : {CompileOptions::LinkMode::kStatic,
                     CompileOptions::LinkMode::kDynamic}) {
@@ -707,18 +712,19 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
   EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
 }
 
-TEST(CompileProtoMapTest, ProtoMapFieldLayoutGetsContiguousSelectAndCallSlots) {
+TEST(CompileProtoMapTest, ProtoMapFieldLayoutReusesSelectAndCallSlot) {
   // `c.metadata["env"]` lays out as: c slot (variable), kSelect
-  // result slot, kCallExpr(_[_]) result slot.  Pin the totals
-  // so an accidental slot fusion or duplication trips this test.
+  // result slot, kCallExpr(_[_]) result slot.  The kCallExpr
+  // releases the kSelect's slot before acquiring its own, so
+  // both share a single cell via the LIFO free list — peak = 1
+  // scratch cell.  Total = 1 var + 1 scratch = 2 × 32B = 64.
   auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
   ASSERT_THAT(art_or, IsOk());
   ASSERT_EQ(art_or->layout.variables.size(), 1u);
   EXPECT_EQ(art_or->layout.variables[0].name, "c");
   EXPECT_EQ(art_or->layout.variables[0].repr, Repr::kMessage);
-  // 1 variable + kSelect + kCallExpr = 3 cells = 72 B.
-  EXPECT_EQ(art_or->layout.workspace_bytes, 72u);
-  EXPECT_EQ(art_or->layout.peak_slots, 2u);
+  EXPECT_EQ(art_or->layout.workspace_bytes, 64u);
+  EXPECT_EQ(art_or->layout.peak_slots, 1u);
 }
 
 }  // namespace

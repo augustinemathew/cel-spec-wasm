@@ -704,6 +704,46 @@ TEST_F(ControlFlowE2ETest, TernaryErrorCondPropagates) {
   EXPECT_TRUE(v->IsError());
 }
 
+// Regression for the PBT-discovered ternary-with-kIdent-cond
+// storage-dispatch bug (2026-06-05).  Pre-fix,
+// `EmitConditional` read `cond_ann->storage.payload` as if it
+// were always a byte offset — correct for `kStaticRodata` /
+// `kWorkspaceSlot` but wrong for `kLocal` (a kIdent cond), where
+// payload is a wasm local INDEX.  The resulting `(i32.load
+// offset=0 (i32.const <local_index>))` read garbage from the
+// reserved low region; the kind probe failed, the outer if took
+// the else arm `cel_copy_slot(out, cond_slot=<local_index>)`,
+// and the result came out as kNull.  Fixed by routing the cond
+// through `EmitSlotBaseAddress`, which emits `(local.get
+// <index>)` for kLocal storage.  Mirrored regression in
+// `e2e/known_bugs_test::PbtTernaryInsideIntSubtract` (the full
+// PBT-discovered shape).
+TEST_F(ControlFlowE2ETest, TernaryWithBoundBoolCondReadsLocal) {
+  Compiler::Builder b;
+  b.DeclareVariable("b_a", CelType::Bool());
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+
+  Activation a;
+  a.Bind("b_a", Value::Bool(true));
+  Value v = EvalOk(CompilePlan(*compiler, "b_a ? 7 : 11"), a);
+  ASSERT_EQ(v.kind(), Value::Kind::kInt) << static_cast<int>(v.kind());
+  EXPECT_EQ(*v.AsInt(), 7);
+}
+
+TEST_F(ControlFlowE2ETest, TernaryWithBoundBoolCondFalseTakesElse) {
+  Compiler::Builder b;
+  b.DeclareVariable("b_a", CelType::Bool());
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+
+  Activation a;
+  a.Bind("b_a", Value::Bool(false));
+  Value v = EvalOk(CompilePlan(*compiler, "b_a ? 7 : 11"), a);
+  ASSERT_EQ(v.kind(), Value::Kind::kInt) << static_cast<int>(v.kind());
+  EXPECT_EQ(*v.AsInt(), 11);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  ControlFlowUnknownE2ETest — UNKNOWN propagation under
 //  PartialEval.  Each test mints an UNKNOWN by binding a Customer
@@ -868,9 +908,12 @@ TEST_F(StringBytesActivationE2ETest, BindEmbeddedNul) {
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 3);
 }
 
-// langdef §"size() over strings": `size(s)` returns the byte length
-// of the UTF-8 encoding, not the number of unicode codepoints.
-// "πέντε" encodes as 10 bytes (each Greek letter is 2 bytes).
+// langdef §"size": `size(string)` is the Unicode code-point count
+// (not the UTF-8 byte length).  "πέντε" is 5 code points / 10 bytes.
+// Pre-2026-06-05 the runtime returned the byte length; fixed in
+// `runtime/cel_string_ops.c::utf8_codepoint_count` and pinned by
+// `runtime/cel_string_ops_test::StringSize*` plus conformance rows
+// `size/one_unicode` / `size/unicode`.
 TEST_F(StringBytesActivationE2ETest, BindMultibyteUtf8) {
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("s", CelType::String());
@@ -879,7 +922,7 @@ TEST_F(StringBytesActivationE2ETest, BindMultibyteUtf8) {
   auto instance = CompilePlan(*compiler, "size(s)");
   Activation a;
   a.Bind("s", Value::String("πέντε"));
-  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 10);
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 5);
 }
 
 // Multi-variable activation — both kString slots get marshalled

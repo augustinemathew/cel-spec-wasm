@@ -5,7 +5,9 @@
 #include <vector>
 
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "common/ast_traverse.h"
 #include "common/ast_visitor_base.h"
 #include "common/constant.h"
@@ -15,17 +17,25 @@
 #include "compiler/codegen/static_memory_builder.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
+#include "compiler/memory_layout.h"
 #include "runtime/cel_data.h"
 
 namespace celwasm {
 
 namespace {
 
-// Round `x` up to the next multiple of 8.  The workspace region and the
-// arena base must both be 8-aligned so every CelValue frame (24 bytes,
-// 8-byte aligned) lands on a clean boundary.
+// Round `x` up to the next multiple of 8.  Used for the arena base
+// — the runtime arena hands out 8-aligned bumps.
 uint32_t RoundUp8(uint32_t x) {
   return (x + 7u) & ~uint32_t{7u};
+}
+
+// Round `x` up to the next multiple of 16.  Used for the workspace
+// base — every workspace slot strides at `SlotAllocator::kSlotStride`
+// (32 bytes) and must start 16-aligned so the runtime helpers'
+// `memory.atomic.*` ops don't fault.
+uint32_t RoundUp16(uint32_t x) {
+  return (x + 15u) & ~uint32_t{15u};
 }
 
 // Walks every kConst node, packs its CelValue into rodata via the
@@ -142,7 +152,15 @@ class SelectKeyRodataVisitor : public cel::AstVisitorBase {
   void PostVisitSelect(const cel::Expr& expr,
                        const cel::SelectExpr& sel) override {
     const NodeAnnotation* op = annotations_.Find(sel.operand().id());
-    if (op == nullptr || op->repr != Repr::kOptional) return;
+    if (op == nullptr) return;
+    // Two operand kinds need a rodata-resident field-name CelValue:
+    //   - `kOptional`: `cel_select_optional_field_at_vv` reads the key
+    //     from a CEL_STRING CelValue slot.
+    //   - `kMap`: `kSelect` on a map operand is sugar for `m[field]`
+    //     (CEL spec §"Field selection on maps") — `EmitKSelect` emits
+    //     a `cel_map_lookup_*` (or `cel_map_in_*` for `has()`) call
+    //     whose key arg is the rodata offset of the field-name string.
+    if (op->repr != Repr::kOptional && op->repr != Repr::kMap) return;
     annotations_[expr.id()].select_key_rodata_offset =
         builder_.AllocateString(sel.field());
   }
@@ -153,10 +171,13 @@ class SelectKeyRodataVisitor : public cel::AstVisitorBase {
 };
 
 // Walks every `kSelect` node post-order and writes
-// `{kWorkspaceSlot, offset}` onto its annotation.  Operand slots
-// (nested selects) are released before acquiring the parent's slot,
-// matching the post-order rule in slot_allocator.h — once the parent
-// emits its load of the operand, the operand's cell is dead.
+// `{kWorkspaceSlot, offset}` onto its annotation.  kSelect's
+// runtime helper (`cel_host.cel_get_field` or the optional-select
+// kernel) reads its operand slot before writing its result, so
+// aliasing parent↔operand is safe — Release operand first, then
+// Acquire the parent.  The LIFO free list hands back the
+// operand's just-vacated cell so chains like
+// `c.a.b.c.d` peak at one workspace slot.
 class SelectStorageVisitor : public cel::AstVisitorBase {
  public:
   SelectStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
@@ -188,65 +209,101 @@ bool IsIndexCall(const cel::CallExpr& call) {
   return call.function() == "_[_]";
 }
 
-// Allocates one workspace slot per kMapExpr / kListExpr (the
-// aggregate's result) AND one per kCallExpr(_[_]) (the lookup
-// result).  Operand slots are released after the parent acquires
-// per the kSelect convention.
+// Allocates one workspace slot per kMapExpr / kListExpr / kStructExpr
+// (the aggregate's result) AND one per kCallExpr (control flow,
+// `_[_]`, arithmetic, …).  Two visit-time rules apply, picked by
+// the codegen pattern each kind emits:
+//
+// **Aggregate kinds (kListExpr / kMapExpr / kStructExpr).  Acquire
+// at PreVisit, NOT PostVisit.**  Codegen for these emits
+// `cel_list_create(parent)` / `cel_map_create(parent)` /
+// `cel_make_message(type, parent)` BEFORE descending into each
+// operand's emit, then comes back to read every operand and
+// append/insert/set onto parent.  If parent's slot ever aliased a
+// descendant operand's slot, the descendant's later init would
+// clobber parent's already-written handle before the parent's read
+// — surfaced as the m4 / m7 cross-aggregate aliasing bug.  Holding
+// the parent's slot in `Acquire`d state across the entire subtree
+// (PreVisit Acquire → PostVisit's children have all finished without
+// ever seeing parent's slot in the free list) guarantees no
+// descendant can pick parent's cell.  PostVisit releases each
+// operand slot so SIBLING subtrees of the aggregate's PARENT can
+// reuse them; the aggregate's OWN slot is released by its ancestor
+// consumer (a kSelect / kCall that reads it as operand).
+//
+// **kCallExpr (all of arithmetic, control flow, indexing, generic
+// calls).  Acquire at PostVisit, Release operand slots first.**
+// Every runtime helper that backs a kCall reads its operands
+// BEFORE writing its result slot, so aliasing parent↔operand is
+// safe — the helper produces an in-place op.  Releasing operands
+// first lets the LIFO free list hand back the just-vacated cell
+// for the parent's result, which is what caps long-arithmetic
+// chains at peak ≈ tree depth.
+//
+// Together: aggregate parents never alias any descendant, and
+// kCall chains stay tight.  The aggregate's `PreVisit` is dispatched
+// from `PreVisitExpr` because cel-cpp's visitor base exposes only
+// `PostVisitList/Map/Struct` — not Pre-variants.
 //
 // Per-entry key/value scratch slots for kMapExpr (and per-element
 // scratch slots for kListExpr) are NOT pre-reserved by the layout:
-// each sub-expression already gets its own slot via the existing
-// kSelect / future kCall visitors, or resolves to a kStaticRodata
-// offset if it's a kConst.  expr_lower reads those operand slots
-// and feeds them straight into `cel_map_insert` / `cel_list_set`;
-// no extra layout work needed.
+// each sub-expression already gets its own slot via the kSelect /
+// kCall visitors, or resolves to a kStaticRodata offset if it's a
+// kConst.  expr_lower reads those operand slots and feeds them
+// straight into `cel_map_insert` / `cel_list_set`; no extra layout
+// work needed.
 class AggregateStorageVisitor : public cel::AstVisitorBase {
  public:
   AggregateStorageVisitor(WasmAnnotations& annotations, SlotAllocator& slots)
       : annotations_(annotations), slots_(slots) {}
 
-  void PreVisitExpr(const cel::Expr&) override {}
+  // PreVisit dispatcher: for kListExpr / kMapExpr / kStructExpr,
+  // Acquire the parent's slot BEFORE descending into operands.
+  // See class preamble for why aggregates need their slot pinned
+  // across the whole subtree.  Other kinds (kCall, kSelect, leaves)
+  // are no-ops here and get their slot in PostVisit.
+  void PreVisitExpr(const cel::Expr& expr) override {
+    switch (expr.kind_case()) {
+      case cel::ExprKindCase::kListExpr:
+      case cel::ExprKindCase::kMapExpr:
+      case cel::ExprKindCase::kStructExpr:
+        annotations_[expr.id()].storage =
+            Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
+        break;
+      default:
+        break;
+    }
+  }
+
   void PostVisitExpr(const cel::Expr&) override {}
 
-  void PostVisitMap(const cel::Expr& expr, const cel::MapExpr& m) override {
-    // Each entry's key + value exprs were laid out in their own
-    // post-visit; those slots are released as their values stop
-    // being live (after `cel_map_insert` consumes them at codegen
-    // time).  Release them here — the map's result slot supersedes.
+  void PostVisitMap(const cel::Expr&, const cel::MapExpr& m) override {
+    // Slot was acquired in PreVisit.  Release each operand cell
+    // (key + value sub-expressions) so SIBLING subtrees of this
+    // aggregate's PARENT can reuse them.  The parent aggregate's
+    // own slot is released by its consumer (the kSelect / kCall
+    // that reads it) — not here.
     for (const cel::MapExprEntry& e : m.entries()) {
       ReleaseIfWorkspaceSlot(e.key().id());
       ReleaseIfWorkspaceSlot(e.value().id());
     }
-    annotations_[expr.id()].storage =
-        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
-  void PostVisitList(const cel::Expr& expr, const cel::ListExpr& l) override {
-    // Each element expression's slot is consumed by `cel_list_set`
-    // at codegen; release here so the list's result slot can
-    // supersede in the same arena region.
+  void PostVisitList(const cel::Expr&, const cel::ListExpr& l) override {
     for (const cel::ListExprElement& e : l.elements()) {
       ReleaseIfWorkspaceSlot(e.expr().id());
     }
-    annotations_[expr.id()].storage =
-        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
   // kStructExpr — `Foo{...}` lowers to one
-  // `cel_host.cel_make_message(type_id, out_slot)` call followed by
-  // per-entry `cel_host.cel_set_field(...)` calls.  The result slot
-  // stays live through every entry-set call, then is returned to
-  // the parent.  Each entry's value-slot is consumed by
-  // `cel_set_field` and released here so the kStructExpr's result
-  // slot can supersede in the same arena region — same discipline
-  // as kMapExpr / kListExpr.  See `rewrite/m7-proto-literals.md`.
-  void PostVisitStruct(const cel::Expr& expr,
-                       const cel::StructExpr& s) override {
+  // `cel_host.cel_make_message(type_id, out_slot)` call followed
+  // by per-entry `cel_host.cel_set_field(...)` calls.  Same
+  // PreVisit-Acquire / PostVisit-Release-operands discipline as
+  // kListExpr / kMapExpr.  See `rewrite/m7-proto-literals.md`.
+  void PostVisitStruct(const cel::Expr&, const cel::StructExpr& s) override {
     for (const cel::StructExprField& f : s.fields()) {
       ReleaseIfWorkspaceSlot(f.value().id());
     }
-    annotations_[expr.id()].storage =
-        Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};
   }
 
   void PostVisitCall(const cel::Expr& expr,
@@ -266,20 +323,15 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
         return;
       }
     }
-    // Control-flow operators (`_&&_` / `_||_` / `_?_:_` / `!_`),
-    // indexing (`_[_]`), and the general arm all follow the same
-    // slot-out shape: every arg sub-expression hands its slot up;
-    // release before acquiring this call's result slot so the
-    // arena region is reused.  The ternary's two branch-arm slots
-    // are allocated inside expr_lower (BinaryenIf wraps fresh
-    // per-arm slots that don't escape the call's scope), so
-    // LayoutPass only owns the call's result.  Receiver-form
-    // `s.f(args)` also hands `target`'s slot up — release it too.
-    if (!IsIndexCall(call)) {
-      // General arm.  Receiver (target) participates in slot reuse.
-      if (call.has_target()) {
-        ReleaseIfWorkspaceSlot(call.target().id());
-      }
+    // kCallExpr arms are read-before-write at the runtime helper
+    // (`cel_int_add_at_vv(out, lhs, rhs)`, `cel_map_lookup`,
+    // BinaryenIf for control flow, …) — so aliasing parent↔
+    // operand is safe.  Release operand slots first so the LIFO
+    // free list hands the just-vacated cell back as this call's
+    // result.  Receiver-form `s.f(args)` participates in the
+    // same scheme.
+    if (!IsIndexCall(call) && call.has_target()) {
+      ReleaseIfWorkspaceSlot(call.target().id());
     }
     for (const auto& arg : call.args()) {
       ReleaseIfWorkspaceSlot(arg.id());
@@ -328,6 +380,45 @@ class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
     next_local_ += locals_per_comp_;
   }
 
+  // Stamp the kComprehensionExpr's annotation with the storage of
+  // its `result` sub-expression — the sub-expression whose final
+  // value the comp block evaluates to.  `expr_lower_comprehension`'s
+  // `BuildCompBlock` ends the comp's emitted block with
+  // `Emit(comp.result())`, so the block's i32 return value is the
+  // slot offset where the result CelValue actually lives; mirroring
+  // that into the comp's annotation lets consumers reach the same
+  // address through the standard storage-dispatch path.
+  //
+  // The result sub-expression varies by macro: `.exists` / `.all` /
+  // `.filter` / `.map` use `kIdent(@result)` as the result (storage
+  // kLocal at the accu's wasm local — `local.get` returns the accu
+  // slot offset), so the comp ends up addressable through the accu
+  // slot.  `.exists_one` uses `kCallExpr(_==_, @result, 1)` whose
+  // result is a fresh workspace slot holding a Bool — distinct from
+  // the Int accu slot the count loop wrote — and stamping the accu
+  // slot here would give consumers the wrong address (they'd read
+  // the count Int and dispatch as if it were a Bool, surfacing as
+  // cleanup-backlog #32).
+  //
+  // This is a post-visit hook (children visited first), so
+  // `comp.result()`'s annotation is already populated.
+  void PostVisitComprehension(const cel::Expr& expr,
+                              const cel::ComprehensionExpr& comp) override {
+    const cel::Expr& result_expr = comp.result();
+    const NodeAnnotation* result_ann = annotations_.Find(result_expr.id());
+    ABSL_CHECK(result_ann != nullptr)
+        << "ComprehensionLocalsVisitor: kComprehensionExpr expr_id="
+        << expr.id() << " result-sub-expr id=" << result_expr.id()
+        << " has no annotation — LayoutPass child traversal didn't "
+        << "stamp it before PostVisitComprehension";
+    ABSL_CHECK(result_ann->storage.kind != StorageKind::kNone)
+        << "ComprehensionLocalsVisitor: kComprehensionExpr expr_id="
+        << expr.id() << " result-sub-expr id=" << result_expr.id()
+        << " has storage.kind == kNone — children visitor failed to "
+        << "stamp the result";
+    annotations_[expr.id()].storage = result_ann->storage;
+  }
+
   uint32_t total_locals() const {
     return next_local_;
   }
@@ -340,12 +431,14 @@ class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
 
 void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
                           StaticLayout& layout) {
-  constexpr auto kSlotBytes = static_cast<uint32_t>(sizeof(CelValue));
-  static_assert(kSlotBytes == 24, "CelValue must remain 24 bytes");
-  static_assert(kSlotBytes % 8u == 0u, "CelValue must stay 8-aligned");
+  constexpr uint32_t kSlotStride = SlotAllocator::kSlotStride;
+  static_assert(kSlotStride >= sizeof(CelValue),
+                "slot stride must hold a CelValue");
+  static_assert(kSlotStride % 16u == 0u,
+                "slot stride must be 16-aligned for memory.atomic ops");
 
-  layout.workspace_base = RoundUp8(layout.rodata_base +
-                                   static_cast<uint32_t>(layout.rodata.size()));
+  layout.workspace_base = RoundUp16(
+      layout.rodata_base + static_cast<uint32_t>(layout.rodata.size()));
   layout.variables.reserve(variables.size());
   // Comprehension iter vars don't get a workspace slot (their wasm
   // local holds a moving pointer, not a slot address).  Allocate
@@ -355,13 +448,13 @@ void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
   for (const ResolvedVariable& rv : variables) {
     uint32_t slot_offset = 0;
     if (rv.kind != ResolvedVariableKind::kComprehensionIter) {
-      slot_offset = layout.workspace_base + (slot_count * kSlotBytes);
+      slot_offset = layout.workspace_base + (slot_count * kSlotStride);
       ++slot_count;
     }
     layout.variables.push_back(LaidOutVariable{rv.name, rv.local_index, rv.repr,
                                                slot_offset, rv.kind});
   }
-  layout.workspace_bytes = slot_count * kSlotBytes;
+  layout.workspace_bytes = slot_count * kSlotStride;
 }
 
 }  // namespace
@@ -432,6 +525,33 @@ absl::StatusOr<StaticLayout> LayoutPass(
   cel::AstTraverse(ast.ast().root_expr(), comp_locals_visitor,
                    cel::TraversalOptions{.use_comprehension_callbacks = true});
   layout.total_wasm_locals = comp_locals_visitor.total_locals();
+
+  // Slot-exhaustion gate.  rodata + workspace share the
+  // `[kRodataBaseMin, kReservedLowMemoryBytes)` window below
+  // wasi-libc's static data; anything we write past that line
+  // silently corrupts libc's bookkeeping (no wasm trap, just a
+  // delayed-death failure inside an unrelated helper).  The cap
+  // is dynamic in rodata: an expression with no constants gets
+  // ~7.9 KiB of workspace headroom, an expression with 3 KiB of
+  // string constants gets ~4.9 KiB.  The `kGuardBytes` band
+  // shaved off the top catches the next slot-allocator
+  // off-by-one before it spills.
+  const auto rodata_size = static_cast<uint32_t>(layout.rodata.size());
+  const uint32_t max_workspace =
+      MemoryLayout::MaxWorkspaceBytes(layout.rodata_base, rodata_size);
+  if (layout.workspace_bytes > max_workspace) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        kSlotExhaustedMessagePrefix, ": needs ", layout.workspace_bytes,
+        " bytes of workspace, but rodata at [", layout.rodata_base, ", ",
+        layout.rodata_base + rodata_size, ") plus a ",
+        MemoryLayout::kGuardBytes, "-byte guard band leaves only ",
+        max_workspace,
+        " bytes free below wasi-libc's static data (which starts at ",
+        MemoryLayout::kReservedLowMemoryBytes,
+        ").  Writing past that line would silently corrupt libc state.  "
+        "Split the expression across multiple Compile() calls, or move "
+        "literal strings/bytes out of the source into bound variables."));
+  }
 
   return layout;
 }

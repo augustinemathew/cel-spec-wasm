@@ -129,7 +129,7 @@ crossover is ~10 operations):
 | --- | ---: | ---: | :---: |
 | 100-elem comprehension `.all(x, …)` | 713 ns | 6.6 µs | **9×** |
 | 20-elem `.map(x, x * 2)` | 219 ns | 5.4 µs | **25×** |
-| 1000-term arithmetic chain | 2.0 µs | 33.4 µs | **17×** |
+| 1000-term arithmetic chain | 2.0 µs | 33.4 µs | _pending re-measure_ ‡ |
 | 100-term string concat chain | 2.8 µs | 6.1 µs | **2.2×** |
 | `x in <1 M ints>` (activation-bound list) | 3.27 ms | 5.68 ms | **1.7×** |
 | regex `.matches()` (complex, hot loop) | 186 ns | 8.9 µs | 48× † |
@@ -138,6 +138,13 @@ crossover is ~10 operations):
 compiled RE2 pattern per Instance; cel-cpp's default runtime recompiles
 per evaluation (its optional precompilation extension would close most
 of this). Quoted with that caveat, deliberately.
+
+‡ The deep-arithmetic-chain numbers predate the Sethi-Ullman
+slot-ordering + free-list slot-reuse work, which both raises the term
+ceiling (large chains that previously failed to compile now do) and
+changes the workspace footprint these benchmarks exercise. The speedup
+here needs re-measuring against the post-slot-reuse codegen before it
+is quoted as settled.
 
 **Where cel-wasm currently loses:**
 

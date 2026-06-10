@@ -84,6 +84,13 @@ enum class Outcome : std::uint8_t {
 //   kBindingUnsupported — binding_marshal refused a `bindings`
 //                         entry (aggregate value, error / unknown
 //                         ExprValue shapes).
+//   kSpecUnimpl         — a row in a section the CEL spec itself
+//                         marks as not-yet-implemented (cel-cpp's
+//                         own conformance harness skips the same
+//                         sections — see
+//                         `third_party/cel-cpp/conformance/BUILD`).
+//                         Matched by `(file-stem, section.name)`
+//                         pair in `IsSpecUnimplSection`.
 enum class SkipCategory : std::uint8_t {
   kDisableCheck,
   kCheckOnly,
@@ -94,7 +101,19 @@ enum class SkipCategory : std::uint8_t {
   kExtensionUnimpl,
   kTypeEnvUnsupported,
   kBindingUnsupported,
+  kSpecUnimpl,
 };
+
+// Returns true iff (file-stem, section_name, test_name) triple is
+// in the per-row spec-unimplemented skip set (mirrors cel-cpp's
+// own `_TESTS_TO_SKIP` in `third_party/cel-cpp/conformance/BUILD`).
+// `file_stem` is the textproto's basename without `.textproto`
+// (e.g. `enums`, `proto2`).  cel-cpp skips at section granularity;
+// we skip at row granularity so the PASSING rows within an
+// otherwise-unimplemented section still count.
+bool IsSpecUnimplSection(absl::string_view file_stem,
+                         absl::string_view section_name,
+                         absl::string_view test_name);
 
 absl::string_view OutcomeName(Outcome o);
 absl::string_view SkipCategoryName(SkipCategory c);

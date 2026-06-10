@@ -1727,13 +1727,21 @@ conformance `975 → 1058 PASS` (+83).
         decomposition + trailing-zero trim), `stamp_string`
         (common arena-alloc + memcpy + CelValue stamp).
   - [x] `cel_double_to_string_at_v` per §4.4: NaN → "nan";
-        ±Inf → "+Inf" / "-Inf"; ±0 → "0"; integer-valued doubles
-        in safe-cast range → exact via int path; mid-magnitude
-        → integer + "." + fractional digits; very large / very
-        small magnitudes → scientific with normalized mantissa.
-        Byte-exact match against cel-cpp's `to_chars` is NOT a
-        contract — round-trip safety is.  Grisu/Ryu body swap
-        deferred to §9 if a conformance row demands it.
+        ±Inf → "+Inf" / "-Inf"; ±0 → "0"; for finite non-zero
+        values the kernel delegates to `std::to_chars(buf, end, v,
+        chars_format::general)` in `cel_convert_double_format.cc`
+        (sibling C++ TU, fixed 2026-06-06 per cleanup-backlog #38) —
+        shortest-round-trip representation, mirroring cel-cpp's
+        `FormatDouble`
+        (`runtime/standard/type_conversion_functions.cc:56`).
+        Coverage matrix in `runtime/cel_convert_test.cc`:
+        `DoubleFormatRoundTripTest` (corpus rows + edge cases,
+        parameterised) asserts literal shortest-form pin AND
+        `strtod(result) == input` round-trip safety; per-case
+        `TEST_F`s for `1.0/3.0`, `min()`, `max()`, `denorm_min()`.
+        E2E regression pins in `e2e/known_bugs_test.cc`:
+        `DoubleToStringShortestRoundTrip` (`string(123.456)`) and
+        `DoubleToStringExponentForm` (`string(1e10)`).
   - [x] BUILD exports (4) + engine.cc binds (4) + OverloadTable
         seeds (4).
   - [x] `m10_test.cc::NumberFormatE2ETest` 10/10 PASS.
@@ -2879,6 +2887,18 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         between modes.  Helper remains useful as a tripwire for
         future surfaces, e.g. RE2-driven regex or a new absl
         format-spec.)*
+
+### Conformance burndown — Round 3 (2026-06-05)
+
+  - [x] **proto2 extension field look-up** at
+        `eval/internal/cel_host.cc::ResolveFieldDescriptor` +
+        `eval/internal/cel_host_test.cc::ProtoBackingExtensionTest`
+        (4 cases: read by full name, has-true, has-false,
+        unknown-ext-name).  Closes 16 of 18 rows in
+        `proto2/extensions_has` + `proto2/extensions_get` (the two
+        remaining `*_repeated_test_all_types` `extensions_get`
+        rows are a separate list-equality surface — tracked under
+        cleanup-backlog #40 follow-up note).
 
 ## How to update
 

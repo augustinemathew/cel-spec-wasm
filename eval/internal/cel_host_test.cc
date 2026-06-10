@@ -17,6 +17,8 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "cel/expr/conformance/proto2/test_all_types.pb.h"
+#include "cel/expr/conformance/proto2/test_all_types_extensions.pb.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_test_fakes.h"
 #include "eval/value.h"
@@ -54,8 +56,7 @@ using ::celwasm::testdata::HostMsg3;
 
 // Dummy — ProtoBacking reads via reflection, not the hint.
 const celwasm::CelType& IgnoredType() {
-  static const auto& kAny =
-      *new celwasm::CelType(celwasm::CelType::Int());
+  static const auto& kAny = *new celwasm::CelType(celwasm::CelType::Int());
   return kAny;
 }
 
@@ -191,6 +192,56 @@ TEST(ProtoBackingReadFieldTest, FieldNumberZeroUnknownNameIsFieldNotFound) {
   EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
 }
 
+// Regression for the proto2-extension look-up gap closed in the
+// 2026-06-05 conformance burndown: extension fields are addressed
+// by their fully-qualified name (e.g.
+// `cel.expr.conformance.proto2.int32_ext`) and aren't direct
+// fields of the containing message — `FindFieldByName` /
+// `FindFieldByNumber` won't find them.  Mirrors cel-cpp's
+// `proto_message_type_adapter.cc::HasFieldImpl` /
+// `GetFieldImpl` (lines 122-188): when by-name misses, fall
+// through to `Reflection::FindKnownExtensionByName`.  Pins
+// conformance rows `proto2/extensions_get/package_scoped_int32`
+// and the parallel `extensions_has` row.
+TEST(ProtoBackingExtensionTest, ReadKnownExtensionByFullName) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  m.SetExtension(::cel::expr::conformance::proto2::int32_ext, 42);
+  ProtoBacking pb(&m);
+  auto v = pb.ReadField(/*field_number=*/0,
+                        "cel.expr.conformance.proto2.int32_ext", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  auto as_int = v->AsInt();
+  ASSERT_THAT(as_int, IsOk());
+  EXPECT_EQ(*as_int, 42);
+}
+
+TEST(ProtoBackingExtensionTest, HasKnownExtensionByFullNameTrueWhenSet) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  m.SetExtension(::cel::expr::conformance::proto2::int32_ext, 42);
+  ProtoBacking pb(&m);
+  EXPECT_TRUE(
+      pb.HasField(/*field_number=*/0, "cel.expr.conformance.proto2.int32_ext"));
+}
+
+TEST(ProtoBackingExtensionTest, HasKnownExtensionByFullNameFalseWhenUnset) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  ProtoBacking pb(&m);
+  EXPECT_FALSE(
+      pb.HasField(/*field_number=*/0, "cel.expr.conformance.proto2.int32_ext"));
+}
+
+TEST(ProtoBackingExtensionTest, UnknownExtensionByFullNameIsFieldNotFound) {
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  ProtoBacking pb(&m);
+  auto v =
+      pb.ReadField(/*field_number=*/0,
+                   "cel.expr.conformance.proto2.no_such_ext", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  auto err = v->ErrorInfo();
+  ASSERT_THAT(err, IsOk());
+  EXPECT_EQ((*err)->code, celwasm::ErrorCode::kFieldNotFound);
+}
+
 TEST(ProtoBackingHasFieldTest, Proto3Presence) {
   HostMsg3 m;
   ProtoBacking pb_unset(&m);
@@ -249,8 +300,7 @@ class JsonLikeBacking : public HostMessageBacking {
       : fields_(std::move(fields)) {}
 
   absl::StatusOr<celwasm::Value> ReadField(
-      int, absl::string_view name,
-      const celwasm::CelType&) const override {
+      int, absl::string_view name, const celwasm::CelType&) const override {
     auto it = fields_.find(std::string(name));
     if (it == fields_.end()) {
       return celwasm::Value::Error(celwasm::ErrorPayload{
@@ -720,8 +770,7 @@ class PackHarness {
   // Stage a HostMap-backed src (vector of <key, value> celwasm::Value
   // pairs) and wire a CEL_MAP_HOST CelValue at kSrcSlot.
   void StageHostMapSrc(
-      std::vector<std::pair<celwasm::Value, celwasm::Value>>
-          entries) {
+      std::vector<std::pair<celwasm::Value, celwasm::Value>> entries) {
     auto map_backing = std::make_shared<HostMap>(std::move(entries));
     const uint32_t slot = f_.refs.InternMap(std::move(map_backing));
     CelValue cv{};
@@ -1394,16 +1443,35 @@ TEST(AnyOfAnyTest, StrictUrlPrefixRejectsNonStandardPrefix) {
       << static_cast<int>(got.kind());
 }
 
-TEST(AnyOfAnyTest, EmptyTypeUrlYieldsNull) {
-  // Per the long-standing contract: an Any with empty type_url
-  // signals "Any not populated" → null.  Verify the new loop
-  // still returns at the first layer.
+TEST(AnyOfAnyTest, ExplicitlySetButEmptyTypeUrlYieldsError) {
+  // Distinct from "unset Any field → null".  When the user
+  // EXPLICITLY constructs an Any with no type_url (HasField=true,
+  // type_url=""), cel-cpp's AdaptAny errors because there's no
+  // descriptor to unpack against
+  // (`third_party/cel-cpp/internal/well_known_types.cc:1960-1966`).
+  // Pinned by conformance row `dynamic/any/literal_empty`
+  // (`google.protobuf.Any{}` expects an `eval_error`).
   HostMsg3 outer;
   outer.mutable_single_any();  // Sets `has_single_any() == true`,
                                // type_url empty.
 
   celwasm::Value got = ReadSingleAny(outer);
-  EXPECT_TRUE(got.IsNull());
+  EXPECT_TRUE(got.IsError())
+      << "Explicitly-set empty Any should error (no descriptor), got kind="
+      << static_cast<int>(got.kind());
+}
+
+TEST(AnyOfAnyTest, UnsetAnyFieldYieldsNull) {
+  // The complementary contract: an UNSET Any field reads as null
+  // (the field-read path checks `HasField` before calling
+  // `UnpackAnyToValue`, so the empty-type_url error never
+  // surfaces).  Pinned by conformance row
+  // `dynamic/set_null/single_any`
+  // (`TestAllTypes{single_any: null}.single_any` expects null).
+  HostMsg3 outer;  // single_any unset.
+  celwasm::Value got = ReadSingleAny(outer);
+  EXPECT_TRUE(got.IsNull()) << "Unset Any field should read as null, got kind="
+                            << static_cast<int>(got.kind());
 }
 
 TEST(AnyOfAnyTest, GprodPrefixAccepted) {

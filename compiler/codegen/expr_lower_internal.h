@@ -80,27 +80,54 @@ BinaryenExpressionRef CodegenStore(BinaryenModuleRef module, uint32_t bytes,
                                    BinaryenExpressionRef value,
                                    BinaryenType type);
 
-// `(call $cel.cel_copy_slot (i32.const dst) (i32.const src))`.
-BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
-                                      uint32_t src_slot);
+// Materialise the runtime base address of a slot whose origin
+// depends on its `StorageKind`:
+//
+//   - `kLocal`         → `(local.get payload)` — the wasm local
+//                         that `EmitVariablePrelude` initialised
+//                         to the variable's CelValue byte offset.
+//   - `kStaticRodata`  → `(i32.const payload)` — the rodata frame
+//                         offset directly.
+//   - `kWorkspaceSlot` → `(i32.const payload)` — the scratch cell
+//                         offset directly.
+//
+// **Use this anywhere codegen needs to load from or store to a
+// slot whose origin could be any of the three.**  `storage.payload`
+// alone is NOT a byte offset for `kLocal` (it's a local index
+// there); bypassing this helper and treating the payload as a
+// literal address is the bug that surfaced as the PBT-discovered
+// `KnownBugs.PbtTernaryInsideIntSubtract` regression — the
+// ternary's cond-slot loads emitted `(i32.const <local_index>)`
+// instead of `(local.get <index>)` and read garbage from the
+// reserved low region.
+BinaryenExpressionRef EmitSlotBaseAddress(EmitCtx& ctx, Storage storage);
 
-// Variant of EmitCelCopySlot taking the source as an arbitrary
-// i32-returning expression instead of a slot constant.  Used by
-// the ternary arm where the source is the rodata / local /
-// workspace slot offset returned by Emit-ing the arm expression.
+// `(call $cel.cel_copy_slot <dst_addr> <src_addr>)`.  Both
+// addresses are materialised via `EmitSlotBaseAddress`, so the
+// helper is correct regardless of whether either side is
+// `kLocal` / `kStaticRodata` / `kWorkspaceSlot`.
+BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, Storage dst, Storage src);
+
+// Variant of `EmitCelCopySlot` taking the source as an arbitrary
+// i32-returning expression instead of a `Storage`.  Used by the
+// ternary's then/else arms where the arm's source is the slot
+// offset returned by `Emit(arm)` directly (a value already
+// produced by the inner-expression dispatcher, which itself
+// goes through the type-correct address-materialisation).
 BinaryenExpressionRef BuildConditionalArm(EmitCtx& ctx,
                                           BinaryenExpressionRef eval_expr,
-                                          uint32_t out_slot);
+                                          Storage out);
 
-// `(i32.eq (i32.load offset=N <slot>) <expected>)` — the CelValue
-// kind / payload probe used by the ternary's nested-if shape and
-// the comprehension loop-cond peephole.
-BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
-                                    uint32_t offset, int32_t expected);
+// `(i32.eq (i32.load offset=N <slot_addr>) <expected>)` — the
+// CelValue kind / payload probe used by the ternary's nested-if
+// shape and the comprehension loop-cond peephole.  Takes
+// `Storage` so the `kLocal` case is materialised correctly.
+BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, Storage slot, uint32_t offset,
+                                    int32_t expected);
 
-// `(i32.ne (i32.load offset=N <slot>) <expected>)`.
-BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
-                                    uint32_t offset, int32_t expected);
+// `(i32.ne (i32.load offset=N <slot_addr>) <expected>)`.
+BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, Storage slot, uint32_t offset,
+                                    int32_t expected);
 
 // `(call $cel.cel_list_append_at <list_slot> <elem_eval>)`.
 // `elem_eval` is an i32-valued sub-expression whose runtime value

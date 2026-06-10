@@ -106,18 +106,26 @@ class WasmtimeMemoryView final : public MemoryView {
                      wasmtime_sharedmemory_t* absl_nonnull mem)
       : mem_(mem) {}
 
+  uint32_t Size() const override {
+    return static_cast<uint32_t>(wasmtime_sharedmemory_data_size(mem_));
+  }
+
   CelValue ReadCelValue(uint32_t offset) const override {
+    if (!IsInBounds(offset, sizeof(CelValue))) return CelValue{};
     CelValue cv{};
     std::memcpy(&cv, Data() + offset, sizeof(cv));
     return cv;
   }
   void WriteCelValue(uint32_t offset, const CelValue& v) override {
+    if (!IsInBounds(offset, sizeof(CelValue))) return;
     std::memcpy(Data() + offset, &v, sizeof(v));
   }
   void WriteU32(uint32_t offset, uint32_t value) override {
+    if (!IsInBounds(offset, sizeof(value))) return;
     std::memcpy(Data() + offset, &value, sizeof(value));
   }
   absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
+    if (!IsInBounds(ptr, len)) return {};
     return {reinterpret_cast<const char*>(Data() + ptr), len};
   }
 

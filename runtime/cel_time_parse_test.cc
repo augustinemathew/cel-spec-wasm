@@ -255,7 +255,14 @@ INSTANTIATE_TEST_SUITE_P(
                    0},
         // Langdef boundary: year 9999 upper edge.
         TsParseRow{"9999-12-31T23:59:59Z", TsParseRow::kAccept, kTsMaxSeconds,
-                   0}));
+                   0},
+        // Langdef §"Timestamps and Durations" inclusive max:
+        // `9999-12-31T23:59:59.999999999Z`.  Conformance row
+        // `timestamps/conversions/toString_timestamp_nanos` pins
+        // this — see fix in `cel_time_parse.cc`'s post-parse range
+        // gate and `timestamp_in_range` in `cel_time.c`.
+        TsParseRow{"9999-12-31T23:59:59.999999999Z", TsParseRow::kAccept,
+                   kTsMaxSeconds, 999999999}));
 
 INSTANTIATE_TEST_SUITE_P(
     RejectSyntax, TimestampParseTable,

@@ -262,35 +262,38 @@ absl::StatusOr<StaticLayout> LayoutWithVars(
   return LayoutPass(*ta, *std::move(resolved));
 }
 
-TEST(LayoutPassVariableTest,
-     SingleScalarVariableReservesOneTwentyFourByteSlot) {
+TEST(LayoutPassVariableTest, SingleScalarVariableReservesOneSlot) {
   auto layout = LayoutWithVars("x", {"x:int"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].name, "x");
   EXPECT_EQ(layout->variables[0].local_index, 0u);
   EXPECT_EQ(layout->variables[0].slot_offset, layout->workspace_base);
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  // One slot at kSlotStride (32B) — the variable's CelValue takes
+  // 24 of those, the trailing 8 are alignment padding.
+  EXPECT_EQ(layout->workspace_bytes, 32u);
 }
 
-TEST(LayoutPassVariableTest, SlotOffsetsAreContiguousAndEightAligned) {
-  // `x + y + z` type-checks; M5.F lights up the kCall arms, so two
-  // call slots (one per `_+_`) sit past the variable slots.  This
-  // test only asserts the variable region's contiguity / alignment;
-  // workspace_bytes covers variables + call slots together.
+TEST(LayoutPassVariableTest, SlotOffsetsAreContiguousAndSixteenAligned) {
+  // `x + y + z` type-checks; two `_+_` calls add scratch slots past
+  // the variable region.  This test asserts the variable region's
+  // contiguity / 16-byte alignment (what wasm32-wasi-threads atomic
+  // ops require) — workspace_bytes covers variables + call slots
+  // together; not pinned because slot reuse can collapse N kCall
+  // results down to a single live cell.
   auto layout = LayoutWithVars("x + y + z", {"x:int", "y:int", "z:int"});
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 3u);
   EXPECT_EQ(layout->variables[0].slot_offset, layout->workspace_base);
-  EXPECT_EQ(layout->variables[1].slot_offset, layout->workspace_base + 24u);
-  EXPECT_EQ(layout->variables[2].slot_offset, layout->workspace_base + 48u);
-  // Variables alone occupy 72 bytes (3 × 24); kCall result slots add
-  // more.  Stop short of pinning a specific total — that's the
-  // SlotAllocator's job and changes when Sethi–Ullman lands at M8.
-  EXPECT_GE(layout->workspace_bytes, 72u);
-  EXPECT_EQ(layout->workspace_base % 8u, 0u);
-  EXPECT_EQ(layout->variables[1].slot_offset % 8u, 0u);
-  EXPECT_EQ(layout->variables[2].slot_offset % 8u, 0u);
+  EXPECT_EQ(layout->variables[1].slot_offset, layout->workspace_base + 32u);
+  EXPECT_EQ(layout->variables[2].slot_offset, layout->workspace_base + 64u);
+  // Variables alone occupy 3 × kSlotStride = 96 bytes.
+  EXPECT_GE(layout->workspace_bytes, 96u);
+  // 16-byte alignment is the load-bearing invariant — slot N starting
+  // 16-misaligned is what triggered the `unaligned atomic` trap.
+  EXPECT_EQ(layout->workspace_base % 16u, 0u);
+  EXPECT_EQ(layout->variables[1].slot_offset % 16u, 0u);
+  EXPECT_EQ(layout->variables[2].slot_offset % 16u, 0u);
 }
 
 TEST(LayoutPassVariableTest, ArenaBaseStillFollowsWorkspaceWithVariables) {
@@ -347,26 +350,30 @@ TEST(LayoutPassVariableTest, UnreferencedDeclaredVariableReservesNoSlot) {
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].name, "x");
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
 }
 
 TEST(LayoutPassVariableTest,
      RodataAndWorkspaceCoexistWithoutCollisionOnLiteralPlusIdent) {
   // `x + 1` — one literal + one ident.  The kConst `1` lands in
-  // rodata; the kIdent `x` points at a workspace slot past rodata.
+  // rodata; the kIdent `x` points at a workspace slot past rodata,
+  // 16-aligned.
   auto layout = LayoutWithVars("x + 1", {"x:int"});
   ASSERT_THAT(layout, IsOk());
   EXPECT_EQ(layout->rodata.size(), 24u);  // one kConst frame
-  EXPECT_EQ(layout->workspace_base,
-            layout->rodata_base + 24u);  // 24 is already 8-aligned
+  // rodata_base (16) + 24 = 40 → rounded up to 16-multiple = 48.
+  EXPECT_EQ(layout->workspace_base % 16u, 0u);
+  EXPECT_GE(layout->workspace_base,
+            layout->rodata_base + layout->rodata.size());
   EXPECT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].slot_offset, layout->workspace_base);
 }
 
-// Message variable carried through layout: one 24-byte slot reserved
-// (regardless of the wrapped message's shape — the slot holds only
-// the CelValue wire form, which for messages is `{CEL_MESSAGE,
-// msg_slot}` pointing into the host's extern-ref table at eval time).
+// Message variable carried through layout: one slot (32B stride;
+// CelValue + 8B padding) reserved regardless of the wrapped
+// message's shape — the slot holds only the CelValue wire form,
+// which for messages is `{CEL_MESSAGE, msg_slot}` pointing into
+// the host's extern-ref table at eval time.
 TEST(LayoutPassVariableTest, MessageVariableGetsOneSlot) {
   // Touch the descriptor so the generated Customer proto gets
   // registered in the process-wide generated DescriptorPool that
@@ -375,7 +382,7 @@ TEST(LayoutPassVariableTest, MessageVariableGetsOneSlot) {
   ASSERT_THAT(layout, IsOk());
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].repr, Repr::kMessage);
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
 }
 
 // LaidOutVariable preserves Repr from ResolvePass so the ABI
@@ -392,11 +399,13 @@ TEST(LayoutPassVariableTest, VariableReprForwardedFromResolvePass) {
   EXPECT_EQ(layout->variables[3].repr, Repr::kDouble);
 }
 
-// --- kSelect nodes reserve workspace cells (M2.C.2) ----------------------
+// --- kSelect nodes reserve workspace cells ----------------------
 //
-// Every kSelect result lands in a 24B workspace slot allocated
-// after the variable-slot region.  Naive SlotAllocator at M2 —
-// peak_slots == kSelect node count.
+// Every kSelect result lands in a 32B workspace cell allocated
+// after the variable-slot region.  The production allocator
+// recycles cells via a LIFO free list, so a sequential chain of
+// kSelects collapses to a single live cell — peak slots = 1, not
+// the number of kSelect nodes.
 
 TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
   CheckOptions opts;
@@ -408,9 +417,10 @@ TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  // 1 variable (c) + 2 selects = 72B workspace; peak = 2 slots.
-  EXPECT_EQ(layout->workspace_bytes, 72u);
-  EXPECT_EQ(layout->peak_slots, 2u);
+  // 1 variable (c, 32B) + select region (1 reused cell, 32B) =
+  // 64B workspace; peak = 1 slot (free-list reuse).
+  EXPECT_EQ(layout->workspace_bytes, 64u);
+  EXPECT_EQ(layout->peak_slots, 1u);
   EXPECT_EQ(layout->arena_base,
             layout->workspace_base + layout->workspace_bytes);
 
@@ -421,12 +431,15 @@ TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
   const NodeAnnotation* city_ann = layout->annotations.Find(city_sel.id());
   ASSERT_NE(billing_ann, nullptr);
   ASSERT_NE(city_ann, nullptr);
-  // Selects sit right after the variable slot, 24B-aligned.
-  const uint32_t select_base = layout->workspace_base + 24u;
+  // Both selects share the same cell: inner select Acquires the
+  // first scratch cell (workspace_base + 32), outer select
+  // releases the inner's cell and immediately re-Acquires it
+  // through the LIFO free list.
+  const uint32_t select_cell = layout->workspace_base + 32u;
   EXPECT_EQ(billing_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(billing_ann->storage.payload, select_base);
+  EXPECT_EQ(billing_ann->storage.payload, select_cell);
   EXPECT_EQ(city_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(city_ann->storage.payload, select_base + 24u);
+  EXPECT_EQ(city_ann->storage.payload, select_cell);
 }
 
 // --- M3.F: kCreateMap + kCallExpr(`_[_]`) reserve workspace cells ---------
@@ -447,41 +460,44 @@ TEST(LayoutPassSelectTest, SelectsGetContiguousWorkspaceSlotsAfterVariables) {
 
 TEST(LayoutPassMapTest, ScalarMapLiteralGetsOneSlotRegardlessOfEntryCount) {
   // Per dispatch-doc §4: the kCreateMap result slot is a single
-  // 24B CelValue (the wire shape).  Entry storage lives in the
-  // arena (allocated by `cel_map_insert`), not the workspace.
+  // CelValue (the wire shape) in one 32B workspace cell.  Entry
+  // storage lives in the arena (allocated by `cel_map_insert`),
+  // not the workspace.
   auto ta = ParseAndCheck(R"({"a": 1, "b": 2, "c": 3})", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
-TEST(LayoutPassMapTest, MapLiteralIndexingGetsTwoContiguousSlots) {
+TEST(LayoutPassMapTest, MapLiteralIndexingReusesSingleSlot) {
   // `{"a":1}["a"]` — kCreateMap result slot followed by the
-  // kCallExpr(`_[_]`) lookup-result slot.
+  // kCallExpr(`_[_]`) lookup-result slot.  AggregateStorageVisitor
+  // releases the map's slot before acquiring the call's, so both
+  // share one cell via the LIFO free list — peak = 1.
   auto ta = ParseAndCheck(R"({"a": 1}["a"])", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  EXPECT_EQ(layout->workspace_bytes, 48u);
-  EXPECT_EQ(layout->peak_slots, 2u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
+  EXPECT_EQ(layout->peak_slots, 1u);
 
-  // Root is the kCallExpr; its slot lands second.
+  // Root is the kCallExpr; reuses the released map slot.
   const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
 }
 
 TEST(LayoutPassMapTest, BoundMapIndexingNeedsOnlyTheCallSlot) {
   // `m[k]` on a bound `map<K,V>` ident — only the kCallExpr result
   // needs a workspace cell; the operand reaches the call as a
   // local_get (variable's own slot) rather than another scratch
-  // cell.  So workspace = 1 variable slot + 1 call slot = 48B.
+  // cell.  Workspace = 1 variable slot + 1 call slot = 2 × 32B.
   CheckOptions opts;
   opts.variable_specs = {"m:map<string,int>"};
   auto ta = ParseAndCheck("m[\"k\"]", opts);
@@ -490,18 +506,19 @@ TEST(LayoutPassMapTest, BoundMapIndexingNeedsOnlyTheCallSlot) {
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->workspace_bytes, 64u);
   EXPECT_EQ(layout->peak_slots, 1u);
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].name, "m");
   EXPECT_EQ(layout->variables[0].repr, Repr::kMap);
 }
 
-TEST(LayoutPassMapTest, MultipleMapLiteralsGetDistinctSlots) {
-  // `{"a":1}["a"] + {"b":2}["b"]` would parse but not type-check
-  // until the kCall arm lands; use sibling map literals via a
-  // different shape — the underlying invariant we care about is
-  // that distinct kCreateMap nodes don't share slots.
+TEST(LayoutPassMapTest, MultipleMapNodesShareSlotsViaReuse) {
+  // `{"a":1, "b":2}[k]` — 1 variable `k` + kCreateMap result slot
+  // + kCallExpr(`_[_]`) lookup slot.  The kCallExpr releases the
+  // map's slot before acquiring its own, so the two share one
+  // workspace cell via the LIFO free list — peak = 1 scratch
+  // cell, total = 1 var + 1 scratch = 2 × 32B.
   CheckOptions opts;
   opts.variable_specs = {"k:string"};
   auto ta = ParseAndCheck(R"({"a": 1, "b": 2}[k])", opts);
@@ -510,13 +527,9 @@ TEST(LayoutPassMapTest, MultipleMapLiteralsGetDistinctSlots) {
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  // 1 variable + kCreateMap + kCallExpr(`_[_]`) = 3 cells.  But
-  // `k` is a string repr — its slot still counts.  Pin the totals
-  // so a layout regression that fuses or duplicates a slot trips
-  // here.
   EXPECT_EQ(layout->variables.size(), 1u);
-  EXPECT_EQ(layout->workspace_bytes, 72u);
-  EXPECT_EQ(layout->peak_slots, 2u);
+  EXPECT_EQ(layout->workspace_bytes, 64u);
+  EXPECT_EQ(layout->peak_slots, 1u);
 }
 
 TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
@@ -556,9 +569,9 @@ TEST(LayoutPassListTest, EmptyListLiteralGetsOneWorkspaceSlot) {
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  // No variables; one kCreateList → one slot (the literal is the
-  // root).  Element kConsts live in rodata.
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  // No variables; one kCreateList → one 32B slot (the literal is
+  // the root).  Element kConsts live in rodata.
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 
   const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
@@ -569,42 +582,43 @@ TEST(LayoutPassListTest, EmptyListLiteralGetsOneWorkspaceSlot) {
 
 TEST(LayoutPassListTest, ScalarListLiteralGetsOneSlotRegardlessOfElementCount) {
   // Per dispatch-doc §4.2: the kCreateList result slot is a single
-  // 24B CelValue.  Element storage lives in the arena
-  // (cel_list_create reserves count × 24B); the workspace cell
-  // count stays at 1 regardless of N.
+  // CelValue in one 32B workspace cell.  Element storage lives in
+  // the arena (cel_list_create reserves count × sizeof(CelValue));
+  // the workspace cell count stays at 1 regardless of N.
   auto ta = ParseAndCheck("[1, 2, 3, 4, 5]", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
-TEST(LayoutPassListTest, ListLiteralIndexingGetsTwoContiguousSlots) {
-  // `[1,2,3][1]` — kCreateList result slot followed by the
-  // kCallExpr(`_[_]`) at-result slot.
+TEST(LayoutPassListTest, ListLiteralIndexingReusesSingleSlot) {
+  // `[1,2,3][1]` — kCreateList result slot, then kCallExpr(`_[_]`)
+  // releases it before acquiring its own.  Both share a single
+  // workspace cell via the LIFO free list.
   auto ta = ParseAndCheck("[1, 2, 3][1]", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  EXPECT_EQ(layout->workspace_bytes, 48u);
-  EXPECT_EQ(layout->peak_slots, 2u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
+  EXPECT_EQ(layout->peak_slots, 1u);
 
-  // Root is the kCallExpr; its slot lands second.
+  // Root is the kCallExpr; reuses the released list slot.
   const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 24u);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
 }
 
 TEST(LayoutPassListTest, BoundListIndexingNeedsOnlyTheCallSlot) {
   // `xs[0]` on a bound `list<int>` ident — only the kCallExpr
   // result needs a workspace cell; the operand reaches the call
-  // as a local_get of the variable's own slot.  So workspace =
-  // 1 variable slot + 1 call slot = 48B.
+  // as a local_get of the variable's own slot.  Workspace =
+  // 1 variable slot + 1 call slot = 2 × 32B.
   CheckOptions opts;
   opts.variable_specs = {"xs:list<int>"};
   auto ta = ParseAndCheck("xs[0]", opts);
@@ -613,7 +627,7 @@ TEST(LayoutPassListTest, BoundListIndexingNeedsOnlyTheCallSlot) {
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  EXPECT_EQ(layout->workspace_bytes, 48u);
+  EXPECT_EQ(layout->workspace_bytes, 64u);
   EXPECT_EQ(layout->peak_slots, 1u);
   ASSERT_EQ(layout->variables.size(), 1u);
   EXPECT_EQ(layout->variables[0].name, "xs");
@@ -642,13 +656,13 @@ TEST(LayoutPassListTest, ArenaBaseFollowsListWorkspace) {
 
 TEST(LayoutPassControlFlowTest, LogicalAndGetsOneCallSlot) {
   // `true && false` is two literal kConsts (rodata) plus the
-  // kCallExpr result slot.
+  // kCallExpr result slot — one 32B workspace cell.
   auto ta = ParseAndCheck("true && false", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
@@ -658,7 +672,7 @@ TEST(LayoutPassControlFlowTest, LogicalNotGetsOneCallSlot) {
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
@@ -671,7 +685,7 @@ TEST(LayoutPassControlFlowTest, ConditionalGetsOneCallSlot) {
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 24u);
+  EXPECT_EQ(layout->workspace_bytes, 32u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
@@ -797,6 +811,272 @@ TEST(LayoutPassComprehensionTest, TwoIterListIndexUsesAccuKind) {
   EXPECT_EQ(v->kind, ResolvedVariableKind::kComprehensionIter);
   EXPECT_EQ(v->slot_offset, 0u)
       << "v2 two-iter list value is a moving pointer — no fixed slot";
+}
+
+// ============================================================
+// LayoutPassComprehensionChildrenTest — per-macro coverage of
+// the five Expr children of `kComprehensionExpr`
+//
+//   iter_range, accu_init, loop_condition, loop_step, result
+//
+// AST shape per `cel.expr.Expr.Comprehension` (the proto in
+// `cel/expr/syntax.proto`).  Each child is visited by the default
+// AstTraverse and participates in the normal SelectStorageVisitor
+// / AggregateStorageVisitor protocol, so its `storage.kind` ends
+// up being kStaticRodata, kLocal, or kWorkspaceSlot depending on
+// the AST shape that the macro expansion produced.  These tests
+// pin the per-macro shape so a future macro change has to break
+// a row before the e2e suite trips.
+//
+// Macros covered: exists, exists_one, all, map, map(filter),
+// filter, has (kSelect with test_only — included for shape
+// completeness even though it doesn't expand to a comprehension).
+// ============================================================
+
+// Walks the macro-expanded annotation table and returns the
+// StorageKind histogram, broken out by AST kind of the node that
+// owns each annotation.  Lets the per-macro tests assert "the
+// comprehension's children have these storages" without having to
+// re-walk the tree by hand.
+struct StorageHistogram {
+  int rodata = 0;
+  int local = 0;
+  int workspace_slot = 0;
+  int none = 0;
+};
+StorageHistogram CollectStorageHistogram(const StaticLayout& layout) {
+  StorageHistogram h;
+  for (const auto& [id, ann] : layout.annotations.nodes()) {
+    switch (ann.storage.kind) {
+      case StorageKind::kStaticRodata:
+        ++h.rodata;
+        break;
+      case StorageKind::kLocal:
+        ++h.local;
+        break;
+      case StorageKind::kWorkspaceSlot:
+        ++h.workspace_slot;
+        break;
+      case StorageKind::kNone:
+        ++h.none;
+        break;
+    }
+  }
+  return h;
+}
+
+// `xs.exists(v, v > 0)` — accu_var `@result` is bool (kAccu),
+// iter_var `v` is moving pointer (kIter), iter_range `xs` (here
+// `[1, 2, 3]`) is a kListExpr aggregate.  loop_step writes
+// `@result || v > 0` which is a kCall over the accu and the
+// per-iter comparison.
+TEST(LayoutPassComprehensionChildrenTest, ExistsMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].exists(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // accu_var lives in `variables[]` and has a slot; iter_var is
+  // sentinel.
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  const LaidOutVariable* v = FindLaidOutByName(*layout, "v");
+  ASSERT_NE(accu, nullptr);
+  ASSERT_NE(v, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(accu->slot_offset, 0u);
+  EXPECT_EQ(v->kind, ResolvedVariableKind::kComprehensionIter);
+  EXPECT_EQ(v->slot_offset, 0u);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  // Sanity: every node has its storage set.
+  EXPECT_EQ(h.none, 0) << "with the comp storage fix (cleanup-backlog #31) no "
+                          "node has kNone storage";
+  // Constants (1, 2, 3, 0) land in rodata; the comp's iter_range
+  // kListExpr lands in a workspace slot; the v>0 kCall and the
+  // loop_step kCall (synthesised by the macro) land in workspace
+  // slots.
+  EXPECT_GT(h.rodata, 0);
+  EXPECT_GT(h.workspace_slot, 0);
+}
+
+// `xs.all(v, v > 0)` — accu_init is `true` (kConstant), loop_step
+// is `@result && v > 0`.  Same per-child shape as exists, modulo
+// the loop_step's operator.
+TEST(LayoutPassComprehensionChildrenTest, AllMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].all(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(accu->slot_offset, 0u);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_EQ(h.none, 0);
+  EXPECT_GT(h.rodata, 0);
+  EXPECT_GT(h.workspace_slot, 0);
+}
+
+// `xs.exists_one(v, v > 0)` — accu is int (count of matches),
+// result is `accu == 1`.  The result Expr child is a kCall that
+// gets its own workspace slot.
+TEST(LayoutPassComprehensionChildrenTest, ExistsOneMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].exists_one(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(accu->slot_offset, 0u);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_EQ(h.none, 0);
+  EXPECT_GT(h.workspace_slot, 0);
+}
+
+// `xs.map(v, v + 1)` — accu_init is `[]` (kListExpr), loop_step
+// is `@result + [v + 1]` (kCall over kListExpr).  accu is a list
+// whose CelValue lives in the accu_var's workspace cell.
+TEST(LayoutPassComprehensionChildrenTest, MapMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].map(v, v + 1)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+  EXPECT_NE(accu->slot_offset, 0u);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_EQ(h.none, 0)
+      << "with the comp storage fix (cleanup-backlog #31) no node has kNone";
+  // map emits accu_init = [] (kListExpr workspace), iter_range
+  // [1,2,3] (kListExpr workspace), loop_step's `[v+1]` (kListExpr
+  // workspace) and the `@result + [v+1]` kCall.  Many workspace
+  // slots.
+  EXPECT_GT(h.workspace_slot, 2);
+}
+
+// `xs.map(v, v > 0, v + 1)` — filtering form.  Same children as
+// the pure map but with a loop_condition that gates the
+// loop_step.
+TEST(LayoutPassComprehensionChildrenTest, MapFilterMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].map(v, v > 0, v + 1)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_EQ(h.none, 0);
+  EXPECT_GT(h.workspace_slot, 2);
+}
+
+// `xs.filter(v, v > 0)` — filter macro.  accu_init is `[]`,
+// loop_step is a conditional append based on the predicate.
+TEST(LayoutPassComprehensionChildrenTest, FilterMacro) {
+  auto ta = ParseAndCheck("[1, 2, 3].filter(v, v > 0)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_EQ(h.none, 0);
+  EXPECT_GT(h.workspace_slot, 1);
+}
+
+// `[].exists(v, …)` — empty iter_range pinned at the AST shape
+// of the macro expansion; useful as a structural minimum that
+// the per-child accounting still fires.  Compiled through a
+// typed-context literal `[1].exists(...)` because bare `[]` is
+// rejected by the static subset gate.
+TEST(LayoutPassComprehensionChildrenTest, SingleElementListIterRange) {
+  auto ta = ParseAndCheck("[1].exists(v, v == 1)", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const LaidOutVariable* accu = FindLaidOutByName(*layout, "@result");
+  ASSERT_NE(accu, nullptr);
+  EXPECT_EQ(accu->kind, ResolvedVariableKind::kComprehensionAccu);
+
+  // Single-element iter_range still gets a kListExpr aggregate
+  // node and its workspace slot.
+  const StorageHistogram h = CollectStorageHistogram(*layout);
+  EXPECT_GT(h.workspace_slot, 0);
+}
+
+// Nested `xs.all(xs, xs.all(v, v > 0))` — outer iter_var shares
+// the name `xs` with a free var, but the comp scope shadows.
+// Two accu_vars in the layout (one per nesting level), each with
+// its own workspace cell.
+TEST(LayoutPassComprehensionChildrenTest, NestedAllAddsSecondAccuSlot) {
+  auto ta = ParseAndCheck("[[1, 2], [3, 4]].all(xs, xs.all(v, v > 0))", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // Two distinct accu_vars, two distinct slot_offsets.
+  int accu_count = 0;
+  uint32_t off_a = 0;
+  uint32_t off_b = 0;
+  for (const LaidOutVariable& v : layout->variables) {
+    if (v.kind == ResolvedVariableKind::kComprehensionAccu) {
+      if (accu_count == 0) {
+        off_a = v.slot_offset;
+      } else {
+        off_b = v.slot_offset;
+      }
+      ++accu_count;
+    }
+  }
+  EXPECT_EQ(accu_count, 2)
+      << "nested comp should produce two kComprehensionAccu entries";
+  EXPECT_NE(off_a, 0u);
+  EXPECT_NE(off_b, 0u);
+  EXPECT_NE(off_a, off_b) << "nested accu slots must not collide";
+}
+
+// Comprehension consumed by an ancestor kCall — confirms the
+// kComprehensionExpr's `storage.kind == kNone` doesn't break the
+// ancestor's PostVisitCall release loop (it just no-ops the
+// `ReleaseIfWorkspaceSlot(comp.id())`).
+TEST(LayoutPassComprehensionChildrenTest, AncestorKCallReleasesCorrectly) {
+  auto ta = ParseAndCheck("size([1, 2, 3].filter(v, v > 1)) == 2", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // Root is the `==` kCall — its storage IS a workspace slot
+  // even though its LHS operand `size(comprehension)` chain
+  // includes a kComprehensionExpr with kNone storage in the
+  // middle.  No CHECK fires; layout completes cleanly.
+  const cel::Expr& root = ta->ast().root_expr();
+  const NodeAnnotation* root_ann = layout->annotations.Find(root.id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
 }
 
 // --- SelectKeyRodataVisitor: kSelect-on-optional rodata lifting ----------

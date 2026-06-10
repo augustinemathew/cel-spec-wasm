@@ -420,6 +420,69 @@ cc_library(
     ],
 )
 
+# Bounds-check regression for MemoryView's Read/Write family —
+# pins cleanup-backlog #36 against future re-introduction of the
+# unchecked Data()+ptr return.
+cc_test(
+    name = "memory_view_bounds_test",
+    srcs = ["internal/memory_view_bounds_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# True e2e for the bounds-check fix — exercises the production
+# `WasmtimeMemoryView` against a real `wasmtime_sharedmemory_t`,
+# not the FakeMemoryView covered by `memory_view_bounds_test`.
+# Closes the "needs a true e2e" follow-up under cleanup-backlog
+# #36.
+cc_test(
+    name = "wasmtime_memory_view_e2e_test",
+    srcs = ["internal/wasmtime_memory_view_e2e_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_wasmtime",
+        "//runtime:cel_runtime",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Trampoline-level e2e for the `WasmtimeMemoryView::ReadSpan`
+# bounds check — closes cleanup-backlog #42.  Drives an adversarial
+# (ptr, len) pair from inside a hand-authored wasm module through
+# `HostCallbackTrampoline` → `WasmtimeMemoryView::ReadSpan` and
+# asserts the lifted `absl::string_view` is empty (NOT host bytes,
+# NOT a guard-page SIGSEGV).  See
+# `doc/implementation-plan/rewrite/wat/68_ReadSpanOobInTrampoline.wat`
+# for the canonical fixture + walkthrough.
+cc_test(
+    name = "host_trampoline_bounds_test",
+    srcs = ["internal/host_trampoline_bounds_test.cc"],
+    data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
+    tags = ["manual"],
+    deps = [
+        ":engine",
+        ":host_call_context",
+        ":host_callback",
+        ":instance",
+        ":value",
+        "//compiler:program",
+        "//runtime:cel_runtime",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "cel_host_test",
     srcs = ["internal/cel_host_test.cc"],
@@ -432,6 +495,9 @@ cc_test(
         "//testdata:e2e_fixture_cc_proto",
         "//testdata:host_fixture_proto2_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
+        # proto2 extension fixture for the
+        # `ProtoBackingExtensionTest` regression cases.
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",

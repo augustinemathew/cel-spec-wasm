@@ -24,6 +24,7 @@
 #include "compiler/codegen/resolve_pass.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/typed_ast.h"
+#include "compiler/memory_layout.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_runtime_stripped_wasm_bytes.h"
 
@@ -31,11 +32,10 @@ namespace celwasm {
 
 namespace {
 
-constexpr uint32_t kWasmPageBytes = 64u * 1024u;
-
 // Wasm page count large enough to hold `mem_size_bytes`.
 uint32_t PagesForBytes(uint32_t mem_size_bytes) {
-  return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
+  constexpr uint32_t kPageBytes = MemoryLayout::kWasmPageSize;
+  return (mem_size_bytes + kPageBytes - 1) / kPageBytes;
 }
 
 // Reject an expression whose static region — rodata plus the
@@ -113,13 +113,10 @@ void InstallCelHostImports(WasmModule& mod) {
   mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
                         "cel_host", "cel_wkt_unwrap_wrapper", host3,
                         BinaryenTypeNone());
-
-  // Aggregate-dispatch arms — kCallExpr `_[_]` on map / list (host
-  // representation; arena representation goes through cel.* helpers).
-  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
-                        "cel_map_lookup", host3, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
-                        "cel_list_at", host3, BinaryenTypeNone());
+  // The aggregate-dispatch host arms — `cel_host.cel_map_lookup` /
+  // `cel_host.cel_map_in` / `cel_host.cel_list_at` — are installed
+  // alongside their arena siblings by `InstallMapAccessImports` and
+  // `InstallListImports`.
 }
 
 // Map-key iteration helpers used by comprehensions over a
@@ -157,6 +154,28 @@ void InstallMapIterImports(WasmModule& mod) {
                         iter_one_param, i32);
 }
 
+// `cel_map_lookup_*` / `cel_map_in_*` — the three-arm dispatch families
+// for value lookup and key-presence.  Each arm is `(out, map, key) ->
+// void` (lookup) / `(out, key, map) -> void` (in).  Always-imported per
+// CLAUDE.md "no lazy tracking of runtime imports".
+void InstallMapAccessImports(WasmModule& mod) {
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType map3_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
+                        "cel_map_lookup_arena", map3_params,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                        "cel_map_lookup", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapInArenaInternalName), "cel",
+                        "cel_map_in_arena", map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelMapInInternalName), "cel", "cel_map_in",
+                        map3_params, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostMapInInternalName), "cel_host",
+                        "cel_map_in", map3_params, BinaryenTypeNone());
+}
+
 // Map literal + indexing runtime entry points.  `cel_map_*` come
 // from the runtime module; `cel_host.cel_map_lookup` is the host
 // trampoline arm of the kDynamic dispatcher (see
@@ -184,13 +203,12 @@ void InstallMapImports(WasmModule& mod) {
   mod.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName),
                         "cel", "cel_map_insert_at_if_present", map3_params,
                         BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
-                        "cel_map_lookup_arena", map3_params,
-                        BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
-  // `cel_host.cel_map_lookup` (host-rep dispatch arm) is installed by
-  // `InstallCelHostImports` for both link modes.
+  // Map value-lookup / key-presence dispatch arms (`cel_map_lookup*`
+  // / `cel_map_in*`, including the `cel_host.cel_map_lookup` host-rep
+  // arm) and the comprehension map/list iteration helpers.  Both
+  // installed for both link modes, per CLAUDE.md "no lazy tracking of
+  // runtime imports".
+  InstallMapAccessImports(mod);
   InstallMapIterImports(mod);
 }
 
@@ -208,8 +226,10 @@ void InstallListImports(WasmModule& mod) {
                         "cel_list_at_arena", list3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelListAtInternalName), "cel",
                         "cel_list_at", list3_params, BinaryenTypeNone());
-  // `cel_host.cel_list_at` (host-rep dispatch arm) is installed by
-  // `InstallCelHostImports` for both link modes.
+  // `cel_host.cel_list_at` — the host-representation dispatch arm,
+  // installed alongside its arena sibling for both link modes.
+  mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
+                        "cel_list_at", list3_params, BinaryenTypeNone());
   // Universal append for arena lists — used by both literal codegen
   // (N appends per literal, in index order) and comprehension accu
   // codegen (per-iter for map / filter / transformList).
@@ -380,9 +400,11 @@ absl::Status InstallExprModuleImports(WasmModule& mod,
   // Phase C: the runtime (cel_runtime.wasm) is built on
   // wasm32-wasi-threads and exports its memory as shared.  The expr
   // module's `(import "cel" "memory")` must therefore declare a
-  // matching shared memory with a max page count.  Pick 1024 pages
-  // (64 MiB) to mirror the runtime's `-Wl,--max-memory=67108864`.
-  constexpr uint32_t kSharedMaxPages = 1024;
+  // matching shared memory with a max page count, derived from the
+  // runtime's `-Wl,--max-memory=` (mirrored as
+  // `MemoryLayout::kMaxMemoryBytes`).
+  constexpr uint32_t kSharedMaxPages =
+      MemoryLayout::kMaxMemoryBytes / MemoryLayout::kWasmPageSize;
   auto s = mod.AddMemoryImport("cel", "memory", PagesForBytes(mem_size_bytes),
                                /*max_pages=*/kSharedMaxPages,
                                absl::MakeConstSpan(&seg, 1),

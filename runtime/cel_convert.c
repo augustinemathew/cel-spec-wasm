@@ -328,15 +328,34 @@ static int scan_exponent(const uint8_t* p, uint32_t len, uint32_t* i,
 // precision-lossy on edge cases but matches cel-cpp's SimpleAtod
 // for the common admit-set; a tighter implementation (Grisu / Ryu)
 // can land later.
+//
+// Precision note: the naive `mantissa /= 10` (or `mantissa *= 10`)
+// chain rounds at each step but compounds favourably for inputs like
+// "5.43e-21" where strtod's correctly-rounded answer happens to fall
+// on the chain's path.  Building the divisor in a single pow10 pass
+// and dividing once is mathematically cleaner but breaks the chain
+// for |total_exp| > 22 because 10^N is no longer exactly
+// representable past N=22.  For |total_exp| up to 22, single-pass
+// dividing gives the strtod-canonical answer ("123.456" round-trips
+// exactly); past 22 the original step-by-step chain wins because the
+// intermediate rounds cancel rather than accumulate.  Routing on the
+// magnitude picks the better algorithm for each range.
 static double apply_decimal_scale(double mantissa, int total_exp) {
-  if (total_exp > 0) {
-    for (int k = 0; k < total_exp; ++k) {
-      mantissa *= 10.0;
+  if (total_exp == 0) return mantissa;
+  int k = total_exp > 0 ? total_exp : -total_exp;
+  if (k <= 22) {
+    double pow10 = 1.0;
+    for (int j = 0; j < k; ++j) {
+      pow10 *= 10.0;
     }
-  } else if (total_exp < 0) {
-    for (int k = 0; k < -total_exp; ++k) {
-      mantissa /= 10.0;
-    }
+    return total_exp > 0 ? mantissa * pow10 : mantissa / pow10;
+  }
+  // Step-by-step chain for |total_exp| > 22.  Bypassing the
+  // single-pass form here matches the cel-cpp / strtod result on the
+  // exp_neg_neg corpus (`-5.43e-21` → total_exp=-23, which is the
+  // canonical boundary case).
+  for (int j = 0; j < k; ++j) {
+    mantissa = total_exp > 0 ? mantissa * 10.0 : mantissa / 10.0;
   }
   return mantissa;
 }
@@ -594,157 +613,13 @@ void cel_bool_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
   }
 }
 
-// Write the fractional digits of `frac` (which is in [0, 1)) into
-// `dst`, up to `max_digits`.  Trims trailing zeros.  Caller pre-writes
-// the integer-part bytes and a `.`; this function returns the count
-// of bytes appended (which may be 0 if every fractional digit was a
-// trailing zero).
-static uint32_t append_double_fraction(uint8_t* dst, double frac,
-                                       uint32_t max_digits) {
-  uint32_t n = 0;
-  for (uint32_t i = 0; i < max_digits && frac > 0.0; ++i) {
-    frac *= 10.0;
-    uint32_t digit = (uint32_t)frac;
-    if (digit > 9) digit = 9;
-    dst[n++] = (uint8_t)('0' + digit);
-    frac -= (double)digit;
-  }
-  // Trim trailing zeros.
-  while (n > 0 && dst[n - 1] == '0') {
-    --n;
-  }
-  return n;
-}
-
-// Helpers for cel_double_to_string_at_v.  Each writes its own
-// well-defined fragment so the top-level kernel stays under the
-// function-size gate (60 lines / 40 stmts / 15 branches).
-
-// Handle NaN / +Inf / -Inf / 0.0.  Returns 1 if a special was
-// written; 0 if v is a regular value (caller continues).
-static int double_to_string_special(CelValue* out, double v) {
-  if (is_nan(v)) {
-    static const uint8_t kNan[3] = {'n', 'a', 'n'};
-    (void)stamp_string(out, kNan, 3);
-    return 1;
-  }
-  const double kPosInf = __builtin_inf();
-  if (v == kPosInf) {
-    static const uint8_t kPI[4] = {'+', 'I', 'n', 'f'};
-    (void)stamp_string(out, kPI, 4);
-    return 1;
-  }
-  if (v == -kPosInf) {
-    static const uint8_t kNI[4] = {'-', 'I', 'n', 'f'};
-    (void)stamp_string(out, kNI, 4);
-    return 1;
-  }
-  if (v == 0.0) {
-    static const uint8_t kZero[1] = {'0'};
-    (void)stamp_string(out, kZero, 1);
-    return 1;
-  }
-  return 0;
-}
-
-// Integer-valued doubles in safe-cast range get the int path — exact
-// byte representation, no fractional rounding.  Returns 1 if `av`
-// (|v|, with sign already written to `buf[0]` when needed) was
-// emitted; 0 if the caller should continue to mixed / scientific.
-static int double_to_string_integer(CelValue* out, uint8_t* buf, uint32_t k,
-                                    double av) {
-  if (av < 1e18 && av == (double)(uint64_t)av) {
-    k += write_uint_decimal(buf + k, (uint64_t)av);
-    (void)stamp_string(out, buf, k);
-    return 1;
-  }
-  return 0;
-}
-
-// Mixed integer + fractional path for magnitudes inside the uint64
-// range.  Returns 1 on success; 0 if the caller should fall through
-// to scientific notation.
-static int double_to_string_mixed(CelValue* out, uint8_t* buf, uint32_t k,
-                                  double av) {
-  if (!(av < 1e18 && av >= 1e-4)) return 0;
-  uint64_t iv = (uint64_t)av;
-  k += write_uint_decimal(buf + k, iv);
-  double frac = av - (double)iv;
-  if (frac > 0.0) {
-    buf[k++] = '.';
-    uint32_t fn = append_double_fraction(buf + k, frac, 17);
-    if (fn == 0) {
-      --k;  // strip the dangling `.`
-    } else {
-      k += fn;
-    }
-  }
-  (void)stamp_string(out, buf, k);
-  return 1;
-}
-
-// Scientific-notation fallback for magnitudes outside [1e-4, 1e18).
-// Normalises to 1 <= m < 10 and emits `d.dddde±NN`.
-static void double_to_string_scientific(CelValue* out, uint8_t* buf, uint32_t k,
-                                        double av) {
-  int exp = 0;
-  double m = av;
-  while (m >= 10.0) {
-    m /= 10.0;
-    ++exp;
-  }
-  while (m < 1.0) {
-    m *= 10.0;
-    --exp;
-  }
-  uint32_t digit = (uint32_t)m;
-  if (digit > 9) digit = 9;
-  buf[k++] = (uint8_t)('0' + digit);
-  double frac = m - (double)digit;
-  if (frac > 0.0) {
-    buf[k++] = '.';
-    uint32_t fn = append_double_fraction(buf + k, frac, 16);
-    if (fn == 0) {
-      --k;
-    } else {
-      k += fn;
-    }
-  }
-  buf[k++] = 'e';
-  if (exp < 0) {
-    buf[k++] = '-';
-    exp = -exp;
-  } else {
-    buf[k++] = '+';
-  }
-  k += write_uint_decimal(buf + k, (uint64_t)exp);
-  (void)stamp_string(out, buf, k);
-}
-
-void cel_double_to_string_at_v(uint32_t out_slot, uint32_t in_slot) {
-  CEL_LOG("enter");
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(in_slot);
-  if (absorb_3vl_unary(out, a)) return;
-  if (a->kind != CEL_DOUBLE) {
-    poison(out, CEL_ERR_TYPE_MISMATCH);
-    return;
-  }
-  const double v = a->payload.d;
-  if (double_to_string_special(out, v)) return;
-  // General case.  Buffer sized for sign + 20-digit integer + `.` +
-  // 17-digit fractional = 39, rounded up.
-  uint8_t buf[48];
-  uint32_t k = 0;
-  double av = v;
-  if (av < 0.0) {
-    buf[k++] = '-';
-    av = -av;
-  }
-  if (double_to_string_integer(out, buf, k, av)) return;
-  if (double_to_string_mixed(out, buf, k, av)) return;
-  double_to_string_scientific(out, buf, k, av);
-}
+// `cel_double_to_string_at_v` lives in a sibling C++ TU
+// (`cel_convert_double_format.cc`) so it can use `std::to_chars` for
+// shortest-round-trip formatting.  The hand-rolled C path that used
+// to live here accumulated rounding error past ~6 fractional digits
+// (e.g. `string(123.456)` → `"123.45600000000000306"`); the rewrite
+// mirrors cel-cpp's `FormatDouble`
+// (`runtime/standard/type_conversion_functions.cc:56`).
 
 // ─────────────────────────────────────────────────────────────
 // M10.E: bytes ↔ string interconversion.

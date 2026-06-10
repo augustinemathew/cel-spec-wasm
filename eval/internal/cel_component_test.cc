@@ -1450,5 +1450,72 @@ TEST(LiftCelToComponent, LargeProtoRepeatedStringLiftsAt10kEntries) {
             absl::StrCat("tag_", kLargeProtoRepeats - 1));
 }
 
+// ── Malformed wasmtime_component_val_t rejection — cleanup-backlog #37 ──
+//
+// A buggy or compromised wasmtime build (or a future API revision
+// that breaks the size/data invariant) could hand us a record/list/
+// string val with `size > 0` and `data == nullptr`.  Before the
+// guards, this dereferenced null in the for-loops; post-guard, we
+// return a clean InvalidArgument.
+
+TEST(LowerComponentToCel, StringMalformedSizeWithNullData) {
+  wasmtime_component_val_t in{};
+  in.kind = WASMTIME_COMPONENT_STRING;
+  in.of.string.size = 5;
+  in.of.string.data = nullptr;
+  Value out;
+  EXPECT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kString), in, EmptyCtx(), &out),
+      StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(LowerComponentToCel, StringEmptyWithNullDataOk) {
+  // size==0 + data==nullptr is the "none-style ctor" benign shape
+  // documented above LowerString — guard must NOT reject it.
+  wasmtime_component_val_t in{};
+  in.kind = WASMTIME_COMPONENT_STRING;
+  in.of.string.size = 0;
+  in.of.string.data = nullptr;
+  Value out;
+  ASSERT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kString), in, EmptyCtx(), &out),
+      IsOk());
+  ASSERT_EQ(out.kind(), Value::Kind::kString);
+  EXPECT_EQ(*out.AsString(), "");
+}
+
+TEST(LowerComponentToCel, BytesMalformedSizeWithNullData) {
+  wasmtime_component_val_t in{};
+  in.kind = WASMTIME_COMPONENT_LIST;
+  in.of.list.size = 3;
+  in.of.list.data = nullptr;
+  Value out;
+  EXPECT_THAT(
+      LowerComponentToCel(Prim(CelfnType::Kind::kBytes), in, EmptyCtx(), &out),
+      StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(LowerComponentToCel, ListMalformedSizeWithNullData) {
+  wasmtime_component_val_t in{};
+  in.kind = WASMTIME_COMPONENT_LIST;
+  in.of.list.size = 2;
+  in.of.list.data = nullptr;
+  Value out;
+  EXPECT_THAT(LowerComponentToCel(ListOf(Prim(CelfnType::Kind::kInt)), in,
+                                  EmptyCtx(), &out),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(LowerComponentToCel, DurationMalformedRecordWithNullData) {
+  wasmtime_component_val_t in{};
+  in.kind = WASMTIME_COMPONENT_RECORD;
+  in.of.record.size = 2;
+  in.of.record.data = nullptr;
+  Value out;
+  EXPECT_THAT(LowerComponentToCel(Prim(CelfnType::Kind::kDuration), in,
+                                  EmptyCtx(), &out),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
 }  // namespace
 }  // namespace celwasm

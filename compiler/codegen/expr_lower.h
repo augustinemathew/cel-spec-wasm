@@ -110,6 +110,17 @@ inline constexpr absl::string_view kCelMapLookupInternalName =
 inline constexpr absl::string_view kCelHostMapLookupInternalName =
     "cel_host_cel_map_lookup";  // kHost arm import
 
+// `cel_map_in*` — `key in m` and the map-dot-field-sugar `has(m.field)`
+// boolean key-presence check.  Signature `(out_slot, key_slot, map_slot)
+// -> ()`; writes a CEL_BOOL into `out_slot`.  Three dispatch arms mirror
+// `cel_map_lookup*`.
+inline constexpr absl::string_view kCelMapInArenaInternalName =
+    "cel_map_in_arena";
+inline constexpr absl::string_view kCelMapInInternalName =
+    "cel_map_in";  // kDynamic dispatcher
+inline constexpr absl::string_view kCelHostMapInInternalName =
+    "cel_host_cel_map_in";  // kHost arm import
+
 // Runtime entry points for list literal construction + indexing.  `cel_list_create` is
 // `(i32 out_slot, i32 capacity) -> ()`; the universal append
 // `cel_list_append_at` is `(i32 list_slot, i32 elem_slot) -> ()`
@@ -178,7 +189,7 @@ struct LoweringOptions {
   // Vestigial knob retained for source compatibility — the arena
   // lives in the wasi-libc dlmalloc heap and is sized at runtime,
   // not from this field.  See `rewrite/wasi/DESIGN.md` §4.
-  uint32_t mem_size_bytes = 64u * 1024u;
+  uint32_t mem_size_bytes = MemoryLayout::kWasmPageSize;
 };
 
 struct LoweredFunction {

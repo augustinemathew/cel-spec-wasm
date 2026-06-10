@@ -170,12 +170,15 @@ extern "C" void cel_timestamp_parse_at_v(uint32_t out_slot, uint32_t in_slot) {
   }
   CelDurTs payload{};
   DecomposeAbslDuration(t - absl::UnixEpoch(), &payload);
-  // Langdef range check + boundary refinement (sign-correlated):
-  // at MIN with negative nanos and at MAX with positive nanos
-  // overflow.  Mirrors `payload_in_range` in cel_time.c.
+  // Langdef inclusive range: `[0001-01-01T00:00:00Z,
+  // 9999-12-31T23:59:59.999999999Z]`.  At MAX_SECONDS, nanos in
+  // [0, 999999999] are valid (the upper bound's full second of
+  // sub-second precision); at MIN_SECONDS, negative nanos
+  // (same-sign decomposition) overflow.  Mirrors
+  // `timestamp_in_range` in cel_time.c.  Pinned by conformance row
+  // `timestamps/conversions/toString_timestamp_nanos`.
   if (payload.seconds < kTimestampMinSeconds ||
       payload.seconds > kTimestampMaxSeconds ||
-      (payload.seconds == kTimestampMaxSeconds && payload.nanos > 0) ||
       (payload.seconds == kTimestampMinSeconds && payload.nanos < 0)) {
     Poison(out, CEL_ERR_OVERFLOW);
     return;

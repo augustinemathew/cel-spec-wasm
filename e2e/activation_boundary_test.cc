@@ -8,17 +8,27 @@
 //     `EnsureActivationBuffer`); the buffer grows on demand, so the
 //     graceful-failure shape is `ResourceExhausted` when dlmalloc
 //     can't grow linear memory.
-//   - the fixed 64 KiB EVAL ARENA (runtime/cel_layout.h
-//     `CELWASM_ARENA_CAPACITY_BYTES`) — list / map / message values
-//     are HANDLE-PASSED at Bind time (interned into the per-Instance
-//     `ExternrefTable` as CEL_LIST_HOST / CEL_MAP_HOST /
-//     CEL_MESSAGE; no payload bytes cross), but trampolines that
-//     materialize an ELEMENT wasm-side (`cel_list_at`,
-//     `cel_map_lookup` via `EncodeSpan` in eval/internal/cel_host.cc)
-//     copy string payloads into the arena, whose graceful-failure
-//     shape is an `arena OOM` trap surfacing as a non-OK Status
-//     from Eval (observed: FailedPrecondition, "Caused by: arena
-//     OOM in CelMapLookupImpl").
+//   - the CHAINED, GROW-ON-DEMAND EVAL ARENA (runtime/cel_arena.c) —
+//     list / map / message values are HANDLE-PASSED at Bind time
+//     (interned into the per-Instance `ExternrefTable` as
+//     CEL_LIST_HOST / CEL_MAP_HOST / CEL_MESSAGE; no payload bytes
+//     cross), but trampolines that materialize an ELEMENT wasm-side
+//     (`cel_list_at`, `cel_map_lookup` via `EncodeSpan` in
+//     eval/internal/cel_host.cc) copy string payloads into the arena.
+//     The arena seeds a 64 KiB first chunk
+//     (`CELWASM_ARENA_CAPACITY_BYTES`) and, when an allocation
+//     overflows the current chunk, mallocs a NEW chunk sized to fit
+//     it (chained, post-ssp-fix) — so an element far larger than the
+//     seed chunk now copies in soundly and yields the correct value.
+//     Growth is NOT unbounded: each grow goes through malloc inside
+//     the wasm linear memory, so a single element large enough to
+//     exhaust dlmalloc / the linear-memory ceiling returns a GRACEFUL
+//     non-OK Status — `arena_alloc` returns 0 → EncodeSpan emits
+//     `ResourceExhausted("arena OOM in CelMapLookupImpl")`, surfacing
+//     as a non-OK Status from Eval, never a process abort.  The
+//     empirically-measured boundary (both link modes) is ~64 MiB for
+//     a single element: ≤60 MiB succeeds, ≥64 MiB fails gracefully
+//     (the `*Graceful*` cells below pin it).
 //
 // Copy-marshaled at Bind:  string, bytes (and type names).
 // Handle-passed at Bind:   list<*>, map<*,*>, proto message.
@@ -65,7 +75,10 @@ using ::absl_testing::IsOk;
 // ───────────────────────── size constants ─────────────────────────
 // Region boundaries under test (see file header):
 //   activation buffer — grows on demand (4 KiB-rounded dlmalloc)
-//   eval arena        — fixed 64 KiB (cel_layout.h)
+//   eval arena        — chained, grow-on-demand (runtime/cel_arena.c);
+//                       64 KiB seed chunk, mallocs follow-on chunks to
+//                       fit larger allocations up to the wasm
+//                       linear-memory ceiling (~64 MiB single element)
 //   initial memory    — 2 pages = 128 KiB (cel_layout.h), dlmalloc
 //                       grows past it on demand
 constexpr size_t kOneByte = 1;
@@ -146,11 +159,14 @@ void ExpectBoolCell(absl::string_view source,
 
 // Assert the cell failed GRACEFULLY: a non-OK Status (NOT a process
 // abort, NOT a silent wrong value).  The copy region is exhausted
-// and the failure is reported through the Status channel.  Observed
-// signature for the arena-exhaustion cells below (both link modes):
-//   FAILED_PRECONDITION: Eval (func_call): error while executing at
-//   wasm backtrace: ...  Caused by: arena OOM in CelMapLookupImpl
-// (EncodeSpan's ResourceExhausted trap surfacing through
+// and the failure is reported through the Status channel.  With the
+// chained grow-on-demand arena (post-ssp-fix) this only fires when an
+// allocation exceeds the wasm linear-memory ceiling (the arena's
+// malloc fails → arena_alloc returns 0).  Observed signature for the
+// over-ceiling cells below (both link modes):
+//   Eval (func_call): error while executing at wasm backtrace:
+//   ...  arena OOM in CelMapLookupImpl
+// (EncodeSpan's ResourceExhausted surfacing through
 // wasmtime_func_call's error channel).
 void ExpectGracefulCell(
     absl::string_view source,
@@ -211,20 +227,16 @@ TEST_F(StringBindBoundary, EqualsSelfGross10MiB) {
   ExpectBoolCell("s == s", Decl(), {{"s", Value::String(payload)}}, true);
 }
 
-TEST_F(StringBindBoundary, ConcatOfBoundOverflowsArenaGracefully) {
-  // `s + s` materializes the 66 KiB concat RESULT in the fixed
-  // 64 KiB eval arena (cel_string_ops.c) — the bind itself is fine
-  // (activation buffer), the arena allocation is what exhausts.
-  // Graceful shape: arena_alloc returns 0 and the runtime poisons
-  // to a CEL error; Eval must NOT abort the process.
-  const std::string payload = AsciiPayload(size_t{33} * 1024);
-  auto v = EvalBound("size(s + s)", Decl(), {{"s", Value::String(payload)}});
-  if (v.ok()) {
-    EXPECT_EQ(v->kind(), Value::Kind::kError)
-        << "66 KiB concat result cannot fit the 64 KiB arena; kind="
-        << static_cast<int>(v->kind());
-  }
-  // non-OK Status is the other acceptable graceful shape.
+TEST_F(StringBindBoundary, ConcatOfBoundFitsGrownArena) {
+  // `s + s` materializes the 66 KiB concat RESULT in the eval arena
+  // (cel_string_ops.c).  66 KiB overflows the 64 KiB SEED chunk, but
+  // the arena grows to fit (chained arena, post-ssp-fix): arena_alloc
+  // mallocs a follow-on chunk sized for the 66 KiB result, so the
+  // concat succeeds and `size(s + s)` == 2 × 33 KiB.
+  const size_t half = size_t{33} * 1024;
+  const std::string payload = AsciiPayload(half);
+  ExpectIntCell("size(s + s)", Decl(), {{"s", Value::String(payload)}},
+                static_cast<int64_t>(half) * 2);
 }
 
 TEST_F(StringBindBoundary, EmbeddedNulRoundTrip) {
@@ -358,9 +370,12 @@ TEST_F(ListIntBindBoundary, IndexSingleElement) {
 
 // ══════════════════════════════════════════════════════════════════
 // list<string> — HANDLE-PASSED at Bind; the ELEMENT copy happens at
-// `xs[0]` (cel_list_at → EncodeSpan → arena_alloc), bounded by the
-// fixed 64 KiB eval arena.  Element sizes over the arena must fail
-// GRACEFULLY (arena OOM → trap → InternalError), never abort.
+// `xs[0]` (cel_list_at → EncodeSpan → arena_alloc).  The arena grows
+// on demand (chained, post-ssp-fix), so element sizes far over the
+// 64 KiB seed chunk now copy in soundly and yield the correct value.
+// Only an element large enough to exhaust the wasm linear memory
+// (empirically ~64 MiB) fails — and that failure is GRACEFUL
+// (arena_alloc returns 0 → non-OK Status), never a process abort.
 // ══════════════════════════════════════════════════════════════════
 
 class ListStringBindBoundary : public ::testing::Test {
@@ -405,17 +420,35 @@ TEST_F(ListStringBindBoundary, ElementJustUnderArena60KiB) {
   ExpectElementSize(kJustUnderArena);
 }
 TEST_F(ListStringBindBoundary, ElementJustOverArena70KiB) {
-  // 70 KiB element CANNOT fit the 64 KiB arena: EncodeSpan's
-  // arena_alloc returns 0 → ResourceExhausted trap → non-OK Status.
-  ExpectGracefulCell("size(xs[0])", Decl(),
-                     {{"xs", OneElementList(kJustOverArena)}});
+  // 70 KiB element overflows the 64 KiB seed chunk; the arena grows
+  // to fit (chained arena, post-ssp-fix), so the element copies in
+  // soundly and `size(xs[0])` == 70 KiB.
+  ExpectElementSize(kJustOverArena);
 }
 TEST_F(ListStringBindBoundary, ElementJustOverMemory150KiB) {
-  ExpectGracefulCell("size(xs[0])", Decl(),
-                     {{"xs", OneElementList(kJustOverMemory)}});
+  // 150 KiB element: arena grows to fit (chained arena, post-ssp-fix).
+  ExpectElementSize(kJustOverMemory);
 }
 TEST_F(ListStringBindBoundary, ElementGross10MiB) {
-  ExpectGracefulCell("size(xs[0])", Decl(), {{"xs", OneElementList(kGross)}});
+  // 10 MiB element: arena grows to fit (chained arena, post-ssp-fix);
+  // a single follow-on chunk is sized for the whole 10 MiB element.
+  ExpectElementSize(kGross);
+}
+TEST_F(ListStringBindBoundary, Element60MiBStillFits) {
+  // 60 MiB single element still fits below the wasm linear-memory
+  // ceiling (chained arena, post-ssp-fix) — correct value.
+  ExpectElementSize(size_t{60} * 1024 * 1024);
+}
+TEST_F(ListStringBindBoundary, ElementOverLinearMemoryGraceful) {
+  // NEW arena failure boundary (post-ssp-fix).  A 64 MiB single
+  // element exceeds what dlmalloc can carve out of the wasm linear
+  // memory, so the growable arena's malloc fails: arena_alloc returns
+  // 0 → EncodeSpan emits ResourceExhausted("arena OOM ...") → non-OK
+  // Status.  This is the graceful ceiling — NOT a crash/hang/abort.
+  // Empirically (both link modes): ≤60 MiB succeeds, ≥64 MiB fails
+  // gracefully here.
+  ExpectGracefulCell("size(xs[0])", Decl(),
+                     {{"xs", OneElementList(size_t{64} * 1024 * 1024)}});
 }
 
 TEST_F(ListStringBindBoundary, MembershipOfBoundNeedle) {
@@ -543,8 +576,11 @@ TEST_F(MapStringIntBindBoundary, MembershipOfGrossBoundKey) {
 
 // ══════════════════════════════════════════════════════════════════
 // map<int,string> — HANDLE-PASSED at Bind; the VALUE copy happens at
-// `m[0]` (cel_map_lookup → EncodeSpan → arena_alloc), bounded by the
-// fixed 64 KiB eval arena, mirroring the list<string> element cells.
+// `m[0]` (cel_map_lookup → EncodeSpan → arena_alloc), through the
+// chained grow-on-demand eval arena, mirroring the list<string>
+// element cells: values far over the 64 KiB seed chunk copy in
+// soundly; only a value past the wasm linear-memory ceiling
+// (~64 MiB) fails, and gracefully.
 // ══════════════════════════════════════════════════════════════════
 
 class MapIntStringBindBoundary : public ::testing::Test {
@@ -588,17 +624,32 @@ TEST_F(MapIntStringBindBoundary, ValueJustUnderArena60KiB) {
   ExpectValueSize(kJustUnderArena);
 }
 TEST_F(MapIntStringBindBoundary, ValueJustOverArena70KiB) {
-  // 70 KiB value cannot fit the 64 KiB arena: EncodeSpan's
-  // arena_alloc returns 0 → ResourceExhausted trap → non-OK Status.
-  ExpectGracefulCell("size(m[0])", Decl(),
-                     {{"m", OneEntryMap(kJustOverArena)}});
+  // 70 KiB value overflows the 64 KiB seed chunk; the arena grows to
+  // fit (chained arena, post-ssp-fix) — correct value.
+  ExpectValueSize(kJustOverArena);
 }
 TEST_F(MapIntStringBindBoundary, ValueJustOverMemory150KiB) {
-  ExpectGracefulCell("size(m[0])", Decl(),
-                     {{"m", OneEntryMap(kJustOverMemory)}});
+  // 150 KiB value: arena grows to fit (chained arena, post-ssp-fix).
+  ExpectValueSize(kJustOverMemory);
 }
 TEST_F(MapIntStringBindBoundary, ValueGross10MiB) {
-  ExpectGracefulCell("size(m[0])", Decl(), {{"m", OneEntryMap(kGross)}});
+  // 10 MiB value: arena grows to fit (chained arena, post-ssp-fix).
+  ExpectValueSize(kGross);
+}
+TEST_F(MapIntStringBindBoundary, Value60MiBStillFits) {
+  // 60 MiB value still fits below the wasm linear-memory ceiling
+  // (chained arena, post-ssp-fix) — correct value.
+  ExpectValueSize(size_t{60} * 1024 * 1024);
+}
+TEST_F(MapIntStringBindBoundary, ValueOverLinearMemoryGraceful) {
+  // NEW arena failure boundary (post-ssp-fix), mirroring the
+  // list<string> ElementOverLinearMemoryGraceful cell.  A 64 MiB
+  // value exceeds the wasm linear memory: arena_alloc returns 0 →
+  // EncodeSpan emits ResourceExhausted → non-OK Status.  Graceful
+  // ceiling, not a crash.  Empirically (both link modes): ≤60 MiB
+  // succeeds, ≥64 MiB fails gracefully here.
+  ExpectGracefulCell("size(m[0])", Decl(),
+                     {{"m", OneEntryMap(size_t{64} * 1024 * 1024)}});
 }
 
 }  // namespace

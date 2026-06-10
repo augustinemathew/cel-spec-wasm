@@ -35,18 +35,26 @@ class FakeMemoryView final : public MemoryView {
  public:
   explicit FakeMemoryView(size_t size = size_t{64u} * 1024u) : mem_(size, 0) {}
 
+  uint32_t Size() const override {
+    return static_cast<uint32_t>(mem_.size());
+  }
+
   CelValue ReadCelValue(uint32_t offset) const override {
+    if (!IsInBounds(offset, sizeof(CelValue))) return CelValue{};
     CelValue cv{};
     std::memcpy(&cv, mem_.data() + offset, sizeof(cv));
     return cv;
   }
   void WriteCelValue(uint32_t offset, const CelValue& v) override {
+    if (!IsInBounds(offset, sizeof(CelValue))) return;
     std::memcpy(mem_.data() + offset, &v, sizeof(v));
   }
   void WriteU32(uint32_t offset, uint32_t value) override {
+    if (!IsInBounds(offset, sizeof(value))) return;
     std::memcpy(mem_.data() + offset, &value, sizeof(value));
   }
   absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
+    if (!IsInBounds(ptr, len)) return {};
     return {reinterpret_cast<const char*>(mem_.data() + ptr), len};
   }
 

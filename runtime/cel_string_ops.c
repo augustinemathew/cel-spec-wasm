@@ -115,22 +115,46 @@ void cel_bytes_concat_at_vv(uint32_t out_slot, uint32_t a_slot,
   concat_into_out(out, &a->payload.s, &b->payload.s, CEL_BYTES);
 }
 
-static void size_at(CelValue* out, uint32_t v_slot, uint32_t kind) {
+// UTF-8 code-point count.  Each byte either:
+//   - 0xxxxxxx                                 → 1-byte codepoint (ASCII)
+//   - 110xxxxx, 1110xxxx, 11110xxx             → leading byte of a 2/3/4-byte
+//                                                codepoint (count once)
+//   - 10xxxxxx                                 → continuation byte (skip)
+// langdef §"size": `size(string)` is the number of Unicode code points,
+// NOT the byte length.  Pre-2026-06-05 we returned the byte length,
+// failing conformance rows `size/one_unicode` (`size('ÿ')` → 1 not 2)
+// and `size/unicode` (`size('πέντε')` → 5 not 10).  Validation of the
+// UTF-8 encoding itself is NOT this kernel's job — CelString invariants
+// guarantee well-formed UTF-8.  See `runtime/cel_string_ops.c`.
+static int64_t utf8_codepoint_count(const uint8_t* p, uint32_t len) {
+  int64_t n = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    if ((p[i] & 0xC0u) != 0x80u) ++n;
+  }
+  return n;
+}
+
+void cel_string_size_at_v(uint32_t out_slot, uint32_t v_slot) {
+  CelValue* out = cel_value_at(out_slot);
   const CelValue* v = cel_value_at(v_slot);
   if (absorb_3vl_unary(out, v)) return;
-  if (v->kind != kind) {
+  if (v->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const uint8_t* p = cel_memory_base_() + v->payload.s.ptr;
+  write_int(out, utf8_codepoint_count(p, v->payload.s.len));
+}
+
+void cel_bytes_size_at_v(uint32_t out_slot, uint32_t v_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* v = cel_value_at(v_slot);
+  if (absorb_3vl_unary(out, v)) return;
+  if (v->kind != CEL_BYTES) {
     poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
   write_int(out, (int64_t)v->payload.s.len);
-}
-
-void cel_string_size_at_v(uint32_t out_slot, uint32_t v_slot) {
-  size_at(cel_value_at(out_slot), v_slot, CEL_STRING);
-}
-
-void cel_bytes_size_at_v(uint32_t out_slot, uint32_t v_slot) {
-  size_at(cel_value_at(out_slot), v_slot, CEL_BYTES);
 }
 
 void cel_string_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
