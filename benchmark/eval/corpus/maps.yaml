@@ -1,0 +1,71 @@
+# Map surface — bench-shape cells.
+#
+# Covers key-membership (`k in {…}`) for every spec-admitted map key
+# kind (string, int, uint, bool) plus the map.field selection sugar
+# and `has(map.field)`.
+#
+# Surface `maps` maps to BM prefix `map` (cell id `inString` →
+# `BM_map_inString`).
+#
+# Maps are literals (the corpus loader's activation values are
+# scalar-only), so the cells pay map literal materialization plus the
+# membership probe; the const/var key pair isolates the key-marshal
+# delta.
+#
+# KNOWN CELWASM GAPS pinned here (both run celcpp-only until fixed):
+#   - `dotField` — `{"k":1}.k` map-dot-field sugar returns a
+#     type_mismatch error value in celwasm (cleanup-backlog #9:
+#     EmitKSelect routes every Select through the message-field
+#     trampoline).  Tagged `celwasm-skip-map-dot-field`.
+#   - `hasKey` — `has({"a":1}.a)` rides the same Select path
+#     (e2e/known_bugs_test.cc::HasOnMapPresentKey).  Same tag.
+
+schema_version: 1
+surface: maps
+
+cells:
+
+  # ── key in map, per key kind ──
+  - id: inString
+    source: 'k in {"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10}'
+    activation:
+      k: { type: string, value: "j" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: inStringConst
+    source: '"j" in {"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10}'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: inInt
+    source: 'k in {1:1,2:2,3:3,4:4,5:5,6:6,7:7,8:8,9:9,10:10}'
+    activation:
+      k: { type: int, value: 10 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: inUint
+    source: 'k in {1u:1,2u:2,3u:3,4u:4,5u:5,6u:6,7u:7,8u:8,9u:9,10u:10}'
+    activation:
+      k: { type: uint, value: 10 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: inBool
+    source: 'k in {true:1,false:0}'
+    activation:
+      k: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # ── map.field selection sugar (KNOWN celwasm gap, see header) ──
+  - id: dotField
+    source: '{"k":1}.k'
+    expected: { type: int, value: 1 }
+    tags: [phase2, bench-shape, const-only, skip-source-check, celwasm-skip-map-dot-field]
+
+  - id: hasKey
+    source: 'has({"a":1}.a)'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check, celwasm-skip-map-dot-field]

@@ -2567,7 +2567,9 @@ Plan" half.
 
 > **Phase C delta (shipped) — the host no longer allocates memory.**
 > The runtime instance owns + exports the (shared) memory; the host
-> pulls it off `runtime_instance`, clones the shared-memory handle,
+> pulls it off `helpers_instance` (renamed from `runtime_instance` in
+> m28, 2026-06-08, to cover both dynamic and static link modes), clones
+> the shared-memory handle,
 > and binds it on the linker as `cel.memory` BEFORE the expr module
 > instantiates (`engine.cc::BindRuntimeMemory`).  It then seeds the
 > per-Instance arena via `arena_init`.  This reverses the

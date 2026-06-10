@@ -8,7 +8,8 @@
 //     <export>.command_export → __wasm_call_ctors; <body>; __wasm_call_dtors
 // so each cross-module call into the runtime pays the full ctor/dtor
 // chain — measured at ~83 ns/call on the host-side microbench
-// (`wasm_compilation_experiments/wrapper_overhead/FINDINGS.md` §4.1).
+// (`doc/implementation-plan/rewrite/m28-wrapper-overhead-findings.md`
+// §4.1).
 // Configurable-linking's static mode wants the bare bodies as exports
 // so a single `_initialize` (called once at instantiate) handles the
 // init, and the per-call wrapper chain disappears.
@@ -53,7 +54,7 @@ std::vector<char> ReadFile(const char* path) {
   std::ostringstream ss;
   ss << f.rdbuf();
   std::string s = ss.str();
-  return std::vector<char>(s.begin(), s.end());
+  return {s.begin(), s.end()};
 }
 
 void WriteFile(const char* path, const char* data, size_t size) {
@@ -65,8 +66,83 @@ void WriteFile(const char* path, const char* data, size_t size) {
   f.write(data, static_cast<std::streamsize>(size));
 }
 
+// Walk exports.  For each function export whose target is named
+// `X.command_export` and where the bare `X` exists, collect the
+// (external_name, bare_internal_name) pair for retarget.
+std::vector<std::pair<std::string, std::string>> CollectRetargets(
+    BinaryenModuleRef m) {
+  std::vector<std::pair<std::string, std::string>> retargets;
+  BinaryenIndex n = BinaryenGetNumExports(m);
+  for (BinaryenIndex i = 0; i < n; ++i) {
+    BinaryenExportRef e = BinaryenGetExportByIndex(m, i);
+    if (BinaryenExportGetKind(e) != BinaryenExternalFunction()) continue;
+    const char* exp_name = BinaryenExportGetName(e);
+    const char* target = BinaryenExportGetValue(e);
+    std::string fname(target);
+    if (fname.size() <= kSuffix.size()) continue;
+    if (fname.compare(fname.size() - kSuffix.size(), kSuffix.size(), kSuffix) !=
+        0) {
+      continue;
+    }
+    std::string bare = fname.substr(0, fname.size() - kSuffix.size());
+    if (BinaryenGetFunction(m, bare.c_str()) == nullptr) continue;
+    retargets.emplace_back(std::string(exp_name), std::move(bare));
+  }
+  return retargets;
+}
+
+// Apply the retargets, then drop the orphaned wrappers.
+void RetargetExportsAndStripWrappers(
+    BinaryenModuleRef m,
+    const std::vector<std::pair<std::string, std::string>>& retargets) {
+  // Remove the old export, add a replacement pointing at the bare
+  // body.  Order of two-step matters: Binaryen disallows duplicate
+  // exports.
+  for (const auto& [exp_name, bare_internal] : retargets) {
+    BinaryenRemoveExport(m, exp_name.c_str());
+    BinaryenAddFunctionExport(m, bare_internal.c_str(), exp_name.c_str());
+  }
+
+  // Preserve `__wasm_call_ctors` across DCE.  After stripping the
+  // `.command_export` wrappers, nothing in the module calls
+  // `__wasm_call_ctors` — every wrapper used to invoke it on entry,
+  // and DCE would now remove it.  We want it to survive: the host
+  // (static-mode `Engine::Plan`) invokes it once at instantiate as
+  // defense-in-depth for any future C++ static-init dependency the
+  // tested-today surface doesn't reach.  Adding an explicit export
+  // keeps the function reachable through DCE.  Idempotent: if a
+  // previous strip already added this export, the second
+  // `BinaryenAddFunctionExport` would fail; check first via
+  // `BinaryenGetFunction` (defined?) and skip the export if absent.
+  if (BinaryenGetFunction(m, "__wasm_call_ctors") != nullptr) {
+    BinaryenAddFunctionExport(m, "__wasm_call_ctors", "__wasm_call_ctors");
+  }
+
+  // Run ONLY the passes needed to drop the now-unreachable
+  // `.command_export` wrappers + `__wasm_call_ctors` / `__wasm_call_dtors`
+  // chain.  `BinaryenModuleOptimize` (the catch-all) ALSO runs
+  // `merge-similar-functions` and inliners that rewrite the export
+  // graph: two functions with identical bodies (e.g. `cel_dur_to_int_at_v`
+  // and `cel_dur_seconds_at_v` — both `(local.get 0) (i64.load) -> i32`)
+  // get collapsed to a single body, and the dead-twin export
+  // retargets to the survivor.  Static-link mode then can't resolve
+  // intra-module `BinaryenCall("cel_dur_to_int_at_v")` because the
+  // function with that internal name no longer exists.  We want the
+  // export graph unchanged from the as-built runtime; only DCE the
+  // wrappers.  `dce` alone removes unreachable functions; `vacuum`
+  // cleans up the resulting empty blocks.  No merging, no inlining.
+  const char* kPasses[] = {"remove-unused-module-elements"};
+  BinaryenModuleRunPasses(m, kPasses, /*numPasses=*/1);
+}
+
 }  // namespace
 
+// The std::vector / std::string buffers could in theory throw
+// length_error / bad_alloc; an uncaught exception aborting via the
+// default terminate handler is the right behaviour for a build-time
+// tool — we don't want to mask an impossible-input condition with a
+// cryptic recovery path.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char** argv) {
   if (argc != 3) {
     std::fprintf(stderr, "usage: %s <in.wasm> <out.wasm>\n", argv[0]);
@@ -79,49 +155,41 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Walk exports.  For each function export whose target is named
-  // `X.command_export` and where the bare `X` exists, queue the
-  // (external_name, bare_internal_name) pair for retarget.
-  std::vector<std::pair<std::string, std::string>> retargets;
-  BinaryenIndex n = BinaryenGetNumExports(m);
-  for (BinaryenIndex i = 0; i < n; ++i) {
-    BinaryenExportRef e = BinaryenGetExportByIndex(m, i);
-    if (BinaryenExportGetKind(e) != BinaryenExternalFunction()) continue;
-    const char* exp_name = BinaryenExportGetName(e);
-    const char* target = BinaryenExportGetValue(e);
-    std::string fname(target);
-    if (fname.size() <= kSuffix.size()) continue;
-    if (fname.compare(fname.size() - kSuffix.size(), kSuffix.size(),
-                      kSuffix) != 0) {
-      continue;
-    }
-    std::string bare = fname.substr(0, fname.size() - kSuffix.size());
-    if (BinaryenGetFunction(m, bare.c_str()) == nullptr) continue;
-    retargets.emplace_back(std::string(exp_name), std::move(bare));
-  }
+  // Preserve the wasm "name" custom section across the optimize +
+  // write cycle.  Without this, Binaryen drops user-meaningful
+  // function names and emits anonymous `$<index>` names — which makes
+  // the stripped module unusable as a static-link base, because the
+  // compiler's intra-module `BinaryenCall("arena_reset", ...)` etc.
+  // would not resolve.
+  //
+  // Binaryen's C API exposes debug-info emission only as process-
+  // global state (`globalPassOptions.debugInfo` in binaryen-c.cpp,
+  // read by `BinaryenModuleAllocateAndWrite`); there is no per-module
+  // or per-write variant.  Save + restore around our pass + write so
+  // the global flip stays scoped, even though this single-purpose
+  // tool exits right after — cheap insurance if this body is ever
+  // lifted into a library.
+  const bool saved_debug_info = BinaryenGetDebugInfo();
+  BinaryenSetDebugInfo(true);
 
-  // Apply the retargets.  Remove the old export, add a replacement
-  // pointing at the bare body.  Order of two-step matters: Binaryen
-  // disallows duplicate exports.
-  for (auto& [exp_name, bare_internal] : retargets) {
-    BinaryenRemoveExport(m, exp_name.c_str());
-    BinaryenAddFunctionExport(m, bare_internal.c_str(), exp_name.c_str());
-  }
-
-  // Optimize: triggers DCE which strips the now-unreachable
-  // `.command_export` wrapper functions and the `__wasm_call_ctors` /
-  // `__wasm_call_dtors` chain (no live callers after the retarget).
-  BinaryenModuleOptimize(m);
+  const std::vector<std::pair<std::string, std::string>> retargets =
+      CollectRetargets(m);
+  RetargetExportsAndStripWrappers(m, retargets);
 
   BinaryenModuleAllocateAndWriteResult res =
       BinaryenModuleAllocateAndWrite(m, /*sourceMapUrl=*/nullptr);
+  BinaryenSetDebugInfo(saved_debug_info);
   if (res.binary == nullptr) {
     std::fprintf(stderr, "BinaryenModuleAllocateAndWrite failed\n");
     BinaryenModuleDispose(m);
     return 1;
   }
   WriteFile(argv[2], static_cast<const char*>(res.binary), res.binaryBytes);
+  // Binaryen's AllocateAndWrite contract hands back malloc'd buffers
+  // the caller must free; no RAII wrapper exists in the C API.
+  // NOLINTNEXTLINE(cppcoreguidelines-no-malloc)
   std::free(res.binary);
+  // NOLINTNEXTLINE(cppcoreguidelines-no-malloc)
   if (res.sourceMap != nullptr) std::free(res.sourceMap);
   BinaryenModuleDispose(m);
 

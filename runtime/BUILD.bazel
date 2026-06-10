@@ -773,6 +773,7 @@ cc_test(
     deps = [
         ":cel_runtime_stripped_wasm_bytes",
         ":cel_runtime_wasm_bytes",
+        "//abi:runtime_catalogue",
         "@binaryen//:binaryen",
         "@com_google_googletest//:gtest_main",
     ],

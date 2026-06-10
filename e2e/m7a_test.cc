@@ -73,6 +73,7 @@
 #include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -91,14 +92,7 @@ using ::celwasm::testdata::HostMsg3;
       return 0;
     }();
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -116,19 +110,9 @@ absl::StatusOr<Compiler> CompilerEmpty() {
 constexpr absl::string_view kM7aEqPending =
     "M7-A.C cel_message_eq Any-peel arm not yet shipped (m7a-any.md §5).";
 
-Instance CompilePlan(const Compiler& compiler, absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
-Value EvalOk(Instance& instance, const Activation& activation) {
-  auto v = instance.Eval(activation);
-  ABSL_CHECK_OK(v);
-  return *std::move(v);
-}
+using ::celwasm::e2e::EvalOk;
 
 // ──────────────────────────────────────────────────────────────
 // 1. AnyPackE2ETest  (M7-A.A — typed-message RHS into Any field)

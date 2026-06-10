@@ -99,7 +99,7 @@ struct CompileOptions {
     kDynamic = 0,
     kStatic = 1,
   };
-  LinkMode link_mode = LinkMode::kDynamic;
+  LinkMode link_mode = LinkMode::kStatic;
 };
 
 // One bundled CEL-defined-fn library wasm module — produced by

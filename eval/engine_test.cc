@@ -17,9 +17,10 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
+#include "bazel/link_mode_test_helpers.h"
 #include "compiler/compiler.h"
-#include "eval/instance.h"
 #include "compiler/program.h"
+#include "eval/instance.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
@@ -27,6 +28,14 @@
 
 namespace celwasm {
 namespace {
+
+// Returns `CompilerOptions` with `link_mode` set to the per-binary
+// `kTestLinkMode` — picked at build time by `link_mode_cc_test`.
+inline CompilerOptions LinkModeOpts() {
+  CompilerOptions opts;
+  opts.link_mode = kTestLinkMode;
+  return opts;
+}
 
 // Mirror of the smoke test's expr WAT (see the experiment branch's
 // two_phase_shared_memory_smoke_test.cc) — imports cel.memory +
@@ -184,7 +193,7 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
   // wasmtime_func_call against the cached eval_fn, which in turn
   // dispatches into the runtime instance (which holds an internal
   // ref to the runtime module via the shared_ptr).  If any of
-  // {engine, runtime module, store, linker, runtime_instance,
+  // {engine, runtime module, store, linker, helpers_instance,
   // expr_instance, eval_fn} were freed during Engine's destruction
   // this would either trap or UB.  A clean Int(42) is the only
   // way to pass.
@@ -193,7 +202,7 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
     ABSL_CHECK_OK(compiler_or);
     auto engine_or = Engine::NewBuilder().Build();
     ABSL_CHECK_OK(engine_or);
-    auto prog_or = compiler_or->Compile("42");
+    auto prog_or = compiler_or->Compile("42", LinkModeOpts());
     ABSL_CHECK_OK(prog_or);
     auto inst_or = engine_or->Plan(*prog_or);
     ABSL_CHECK_OK(inst_or);
@@ -211,6 +220,34 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
   auto v2_or = inst.Eval();
   ASSERT_TRUE(v2_or.ok()) << v2_or.status();
   EXPECT_EQ(*v2_or->AsInt(), 42);
+}
+
+TEST(EngineBuilderJitPerfMapTest, EnabledEngineBuildsPlansAndEvals) {
+  // The perfmap strategy only changes wasmtime's JIT bookkeeping (it
+  // writes a /tmp/perf-<pid>.map symbol file); the observable contract
+  // here is that an Engine built with it on still compiles the runtime
+  // module and evaluates correctly.  Exercises the chained-rvalue
+  // builder form `benchmark/eval/celwasm_bench` uses.
+  auto engine_or = Engine::NewBuilder().EnableJitPerfMap(true).Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok());
+  auto prog_or = compiler_or->Compile("40 + 2", LinkModeOpts());
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
+TEST(EngineBuilderJitPerfMapTest, DisabledExplicitlyMatchesDefault) {
+  // `EnableJitPerfMap(false)` is the default; both spellings build a
+  // working Engine (lvalue-builder form covers the `&` overload).
+  Engine::Builder b;
+  b.EnableJitPerfMap(false);
+  auto engine_or = std::move(b).Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
 }
 
 // ─── M13 Slice C.1 — Engine::AddModule + Engine::AddFunction ───
@@ -338,7 +375,7 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
 
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_TRUE(compiler_or.ok());
-  auto prog_or = compiler_or->Compile("42");
+  auto prog_or = compiler_or->Compile("42", LinkModeOpts());
   ASSERT_TRUE(prog_or.ok());
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_TRUE(inst_or.ok()) << inst_or.status();

@@ -181,7 +181,9 @@ now calls `abi::FindBuiltinHelper(kCelRuntime, "cel_copy_slot")
 ```cpp
 for (const auto& h : celwasm::abi::CelRuntimeHelpers()) {
   ABSL_RETURN_IF_ERROR(BindRuntimeExport(
-      impl->linker, ctx, impl->runtime_instance,
+      impl->linker, ctx, impl->helpers_instance,  // renamed from
+                                                   // runtime_instance
+                                                   // in m28 (2026-06-08)
       std::string(h.name).c_str()));
 }
 ```

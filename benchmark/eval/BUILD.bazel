@@ -1,0 +1,136 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Corpus loader — reads benchmark/eval/corpus/*.yaml, validates per
+# DESIGN.md §6.3, and returns Cells the bench mains iterate over.
+cc_library(
+    name = "corpus_loader",
+    srcs = ["corpus_loader.cc"],
+    hdrs = ["corpus_loader.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@yaml-cpp//:yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "corpus_loader_test",
+    srcs = ["corpus_loader_test.cc"],
+    data = [
+        "corpus/arithmetic.yaml",
+        "corpus/comparisons.yaml",
+        "corpus/comprehensions.yaml",
+        "corpus/conversions.yaml",
+        "corpus/index.yaml",
+        "corpus/lists.yaml",
+        "corpus/logic.yaml",
+        "corpus/long_strings.yaml",
+        "corpus/maps.yaml",
+        "corpus/size.yaml",
+        "corpus/strings.yaml",
+        "corpus/ternary.yaml",
+        "corpus/time.yaml",
+    ],
+    deps = [
+        ":corpus_loader",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Prototype-grade comparison benches: five hand-coded arithmetic cells
+# evaluated through celwasm (this side) and through cel-cpp's
+# tree-walking interpreter (sibling).  Both register the same BM names
+# (`BM_arith_<id>`) so the joined report in `report.sh` compares
+# apples-to-apples.
+#
+# Always `bazel run -c opt …` — the inner harness `run.sh` does this
+# for you.  Debug builds blow numbers up 10x and aren't usable as a
+# baseline.
+
+cc_binary(
+    name = "celwasm_bench",
+    srcs = ["celwasm_bench.cc"],
+    copts = ["-std=c++17"],
+    data = [
+        "corpus/arithmetic.yaml",
+        "corpus/comparisons.yaml",
+        "corpus/comprehensions.yaml",
+        "corpus/conversions.yaml",
+        "corpus/index.yaml",
+        "corpus/lists.yaml",
+        "corpus/logic.yaml",
+        "corpus/long_strings.yaml",
+        "corpus/maps.yaml",
+        "corpus/size.yaml",
+        "corpus/strings.yaml",
+        "corpus/ternary.yaml",
+        "corpus/time.yaml",
+    ],
+    tags = ["manual"],
+    deps = [
+        ":corpus_loader",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark",
+    ],
+)
+
+# Sibling: SAME expressions/bindings, evaluated through cel-cpp's
+# tree-walking interpreter so the two numbers pair head-to-head.
+# Standalone TU — must NOT depend on any `//eval/...`, `//compiler:...`,
+# `//shared:...`, or `//abi/...` target (cel-cpp's `cel::Value` /
+# `cel::Activation` clash with ours when linked together; this bench
+# is built without our pipeline on the link line).
+cc_binary(
+    name = "celcpp_bench",
+    srcs = ["celcpp_bench.cc"],
+    copts = ["-std=c++17"],
+    data = [
+        "corpus/arithmetic.yaml",
+        "corpus/comparisons.yaml",
+        "corpus/comprehensions.yaml",
+        "corpus/conversions.yaml",
+        "corpus/index.yaml",
+        "corpus/lists.yaml",
+        "corpus/logic.yaml",
+        "corpus/long_strings.yaml",
+        "corpus/maps.yaml",
+        "corpus/size.yaml",
+        "corpus/strings.yaml",
+        "corpus/ternary.yaml",
+        "corpus/time.yaml",
+    ],
+    linkstatic = True,
+    tags = ["manual"],
+    deps = [
+        ":corpus_loader",
+        "@cel-cpp//common:decl",
+        "@cel-cpp//common:type",
+        "@cel-cpp//common:value",
+        "@cel-cpp//compiler",
+        "@cel-cpp//compiler:compiler_factory",
+        "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//runtime",
+        "@cel-cpp//runtime:activation",
+        "@cel-cpp//runtime:runtime_options",
+        "@cel-cpp//runtime:standard_runtime_builder_factory",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

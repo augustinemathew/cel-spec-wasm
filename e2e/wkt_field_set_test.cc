@@ -38,6 +38,7 @@
 #include "google/protobuf/message.h"
 #include "google/protobuf/struct.pb.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -58,14 +59,7 @@ using ::absl_testing::IsOk;
       return 0;
     }();
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 const Compiler& SharedCompiler() {
   static const auto* kCompiler = [] {

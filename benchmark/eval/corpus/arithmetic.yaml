@@ -1,0 +1,556 @@
+# Arithmetic surface — bench-shape cells.
+#
+# Each cell here corresponds to a Google Benchmark cell registered by
+# both `celwasm_bench` and `celcpp_bench`.  The bench main maps the
+# cell id 1:1 onto a BM name via the (surface → bm_prefix) table —
+# for `arithmetic`, the prefix is `arith`, so cell id `intAdd10Terms`
+# becomes `BM_arith_intAdd10Terms`.
+#
+# Length-sweep design (mirrors DESIGN.md §6.4): every binary operator
+# is measured at N ∈ {2, 10, 50, 250, 1000} so the reporter can
+# decompose T(N) = setup + N · per_op via linear regression.  Four
+# operators — intAdd / intMul / intSub / doubleAdd — span int + double
+# arithmetic surfaces.
+#
+# Variable bindings: every var is `1` (or `1.0` for double).  This
+# was the deliberate choice in the original C++ hand-coded form: a
+# 1000-term `intMul` chain cycled through distinct primes (2,3,5,…,29)
+# would overflow int64 in two cycles and cel-cpp would return an eval
+# error per spec, killing the bench.  Eval cost of int64 add/mul/sub is
+# independent of magnitude, so the timing signal is preserved.
+#
+# Const variants (`*Const`) strip variables entirely — the source is
+# pure literals (`1 + 1 + ... + 1`).  The compiler is built with no
+# variables, the activation is empty.  Lets us isolate
+# variable-resolution + activation-marshaling cost from pure
+# arithmetic-helper cost: any per-term-slope gap between var and const
+# cells attributes to the variable path.
+#
+# `*1000TermsConst` cells are tagged `celwasm-skip-rodata`: celwasm's
+# current codegen stores each literal as its own 24-byte CelValue in
+# rodata, so 1000 literals = 24 KB which blows the wasi-libc
+# static-data line (8 KB).  cel-cpp has no equivalent cap so
+# celcpp_bench runs these cells; celwasm_bench skips them.  Constant
+# interning would lift the cap; out of scope.
+
+schema_version: 1
+surface: arithmetic
+
+cells:
+
+  # ─── intAdd length sweep ──
+  - id: intAdd2
+    source: "a + b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+    expected: { type: int, value: 2 }
+    tags: [phase1, bench-shape]
+
+  - id: intAdd2Const
+    source: "1 + 1"
+    expected: { type: int, value: 2 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intAdd10Terms
+    source: "a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 10 }
+    tags: [phase1, bench-shape]
+
+  - id: intAdd10TermsConst
+    source: "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    expected: { type: int, value: 10 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intAdd50Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 50 }
+    tags: [phase1, bench-shape]
+
+  - id: intAdd50TermsConst
+    source: "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    expected: { type: int, value: 50 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intAdd250Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 250 }
+    tags: [phase1, bench-shape]
+
+  - id: intAdd250TermsConst
+    source: "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    expected: { type: int, value: 250 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intAdd1000Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 1000 }
+    tags: [phase1, bench-shape]
+
+  - id: intAdd1000TermsConst
+    source: "1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1"
+    expected: { type: int, value: 1000 }
+    tags: [phase1, bench-shape, const-only, celwasm-skip-rodata]
+
+  # ─── intMul length sweep ──
+  - id: intMul2
+    source: "a * b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape]
+
+  - id: intMul2Const
+    source: "1 * 1"
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intMul10Terms
+    source: "a * b * c * d * e * f * g * h * i * j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape]
+
+  - id: intMul10TermsConst
+    source: "1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1"
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intMul50Terms
+    source: "a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape]
+
+  - id: intMul50TermsConst
+    source: "1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1"
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intMul250Terms
+    source: "a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape]
+
+  - id: intMul250TermsConst
+    source: "1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1"
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intMul1000Terms
+    source: "a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j * a * b * c * d * e * f * g * h * i * j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape]
+
+  - id: intMul1000TermsConst
+    source: "1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1"
+    expected: { type: int, value: 1 }
+    tags: [phase1, bench-shape, const-only, celwasm-skip-rodata]
+
+  # ─── intSub length sweep ──
+  - id: intSub2
+    source: "a - b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+    expected: { type: int, value: 0 }
+    tags: [phase1, bench-shape]
+
+  - id: intSub2Const
+    source: "1 - 1"
+    expected: { type: int, value: 0 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intSub10Terms
+    source: "a - b - c - d - e - f - g - h - i - j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: -8 }
+    tags: [phase1, bench-shape]
+
+  - id: intSub10TermsConst
+    source: "1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1"
+    expected: { type: int, value: -8 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intSub50Terms
+    source: "a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: -48 }
+    tags: [phase1, bench-shape]
+
+  - id: intSub50TermsConst
+    source: "1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1"
+    expected: { type: int, value: -48 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intSub250Terms
+    source: "a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: -248 }
+    tags: [phase1, bench-shape]
+
+  - id: intSub250TermsConst
+    source: "1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1"
+    expected: { type: int, value: -248 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: intSub1000Terms
+    source: "a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j - a - b - c - d - e - f - g - h - i - j"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 1 }
+      c: { type: int, value: 1 }
+      d: { type: int, value: 1 }
+      e: { type: int, value: 1 }
+      f: { type: int, value: 1 }
+      g: { type: int, value: 1 }
+      h: { type: int, value: 1 }
+      i: { type: int, value: 1 }
+      j: { type: int, value: 1 }
+    expected: { type: int, value: -998 }
+    tags: [phase1, bench-shape]
+
+  - id: intSub1000TermsConst
+    source: "1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1 - 1"
+    expected: { type: int, value: -998 }
+    tags: [phase1, bench-shape, const-only, celwasm-skip-rodata]
+
+  # ─── doubleAdd length sweep ──
+  - id: doubleAdd2
+    source: "a + b"
+    activation:
+      a: { type: double, value: 1.0 }
+      b: { type: double, value: 1.0 }
+    expected: { type: double, value: 2.0 }
+    tags: [phase1, bench-shape]
+
+  - id: doubleAdd2Const
+    source: "1.0 + 1.0"
+    expected: { type: double, value: 2.0 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: doubleAdd10Terms
+    source: "a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: double, value: 1.0 }
+      b: { type: double, value: 1.0 }
+      c: { type: double, value: 1.0 }
+      d: { type: double, value: 1.0 }
+      e: { type: double, value: 1.0 }
+      f: { type: double, value: 1.0 }
+      g: { type: double, value: 1.0 }
+      h: { type: double, value: 1.0 }
+      i: { type: double, value: 1.0 }
+      j: { type: double, value: 1.0 }
+    expected: { type: double, value: 10.0 }
+    tags: [phase1, bench-shape]
+
+  - id: doubleAdd10TermsConst
+    source: "1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0"
+    expected: { type: double, value: 10.0 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: doubleAdd50Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: double, value: 1.0 }
+      b: { type: double, value: 1.0 }
+      c: { type: double, value: 1.0 }
+      d: { type: double, value: 1.0 }
+      e: { type: double, value: 1.0 }
+      f: { type: double, value: 1.0 }
+      g: { type: double, value: 1.0 }
+      h: { type: double, value: 1.0 }
+      i: { type: double, value: 1.0 }
+      j: { type: double, value: 1.0 }
+    expected: { type: double, value: 50.0 }
+    tags: [phase1, bench-shape]
+
+  - id: doubleAdd50TermsConst
+    source: "1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0"
+    expected: { type: double, value: 50.0 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: doubleAdd250Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: double, value: 1.0 }
+      b: { type: double, value: 1.0 }
+      c: { type: double, value: 1.0 }
+      d: { type: double, value: 1.0 }
+      e: { type: double, value: 1.0 }
+      f: { type: double, value: 1.0 }
+      g: { type: double, value: 1.0 }
+      h: { type: double, value: 1.0 }
+      i: { type: double, value: 1.0 }
+      j: { type: double, value: 1.0 }
+    expected: { type: double, value: 250.0 }
+    tags: [phase1, bench-shape]
+
+  - id: doubleAdd250TermsConst
+    source: "1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0"
+    expected: { type: double, value: 250.0 }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: doubleAdd1000Terms
+    source: "a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j"
+    activation:
+      a: { type: double, value: 1.0 }
+      b: { type: double, value: 1.0 }
+      c: { type: double, value: 1.0 }
+      d: { type: double, value: 1.0 }
+      e: { type: double, value: 1.0 }
+      f: { type: double, value: 1.0 }
+      g: { type: double, value: 1.0 }
+      h: { type: double, value: 1.0 }
+      i: { type: double, value: 1.0 }
+      j: { type: double, value: 1.0 }
+    expected: { type: double, value: 1000.0 }
+    tags: [phase1, bench-shape]
+
+  - id: doubleAdd1000TermsConst
+    source: "1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0 + 1.0"
+    expected: { type: double, value: 1000.0 }
+    tags: [phase1, bench-shape, const-only, celwasm-skip-rodata]
+
+  # ── Auxiliary operator-coverage cells (not in the bench length
+  # sweep — they exist to cover additional arithmetic ops for
+  # OPERATORS.md).  These run as benches too (any cell becomes a
+  # BM); names: BM_arith_<id>.
+  - id: intDiv_simple
+    source: "a / b"
+    activation:
+      a: { type: int, value: 100 }
+      b: { type: int, value: 7 }
+    expected: { type: int, value: 14 }
+    tags: [phase1, op-coverage]
+
+  - id: intMod_simple
+    source: "a % b"
+    activation:
+      a: { type: int, value: 100 }
+      b: { type: int, value: 7 }
+    expected: { type: int, value: 2 }
+    tags: [phase1, op-coverage]
+
+  - id: intNeg
+    source: "-a"
+    activation:
+      a: { type: int, value: 42 }
+    expected: { type: int, value: -42 }
+    tags: [phase1, op-coverage]
+
+  - id: uintAdd_simple
+    source: "a + b"
+    activation:
+      a: { type: uint, value: 1 }
+      b: { type: uint, value: 2 }
+    expected: { type: uint, value: 3 }
+    tags: [phase1, op-coverage]
+
+  - id: uintMul_simple
+    source: "a * b"
+    activation:
+      a: { type: uint, value: 6 }
+      b: { type: uint, value: 7 }
+    expected: { type: uint, value: 42 }
+    tags: [phase1, op-coverage]
+
+  - id: doubleMul_simple
+    source: "a * b"
+    activation:
+      a: { type: double, value: 3.14 }
+      b: { type: double, value: 2.0 }
+    expected: { type: double, value: 6.28 }
+    tags: [phase1, op-coverage]
+
+  - id: doubleNeg
+    source: "-a"
+    activation:
+      a: { type: double, value: 3.14 }
+    expected: { type: double, value: -3.14 }
+    tags: [phase1, op-coverage]
+
+  - id: intAddDeepTree
+    source: "((a + b) + (c + d)) + ((e + f) + (g + h))"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 2 }
+      c: { type: int, value: 3 }
+      d: { type: int, value: 4 }
+      e: { type: int, value: 5 }
+      f: { type: int, value: 6 }
+      g: { type: int, value: 7 }
+      h: { type: int, value: 8 }
+    expected: { type: int, value: 36 }
+    tags: [phase1, op-coverage]
+
+  - id: intMixedOps3
+    source: "(a + b) * c - d"
+    activation:
+      a: { type: int, value: 2 }
+      b: { type: int, value: 3 }
+      c: { type: int, value: 4 }
+      d: { type: int, value: 5 }
+    expected: { type: int, value: 15 }
+    tags: [phase1, op-coverage]
+
+
+  # ── uint - / / / % (fills the OPERATORS.md grid rows) ──
+  - id: uintSub_simple
+    source: 'a - b'
+    activation:
+      a: { type: uint, value: 3 }
+      b: { type: uint, value: 1 }
+    expected: { type: uint, value: 2 }
+    tags: [phase2, bench-shape]
+
+  - id: uintDiv_simple
+    source: 'a / b'
+    activation:
+      a: { type: uint, value: 6 }
+      b: { type: uint, value: 2 }
+    expected: { type: uint, value: 3 }
+    tags: [phase2, bench-shape]
+
+  - id: uintMod_simple
+    source: 'a % b'
+    activation:
+      a: { type: uint, value: 7 }
+      b: { type: uint, value: 3 }
+    expected: { type: uint, value: 1 }
+    tags: [phase2, bench-shape]
+
+  # ── double - / / ──
+  - id: doubleSub_simple
+    source: 'a - b'
+    activation:
+      a: { type: double, value: 3.5 }
+      b: { type: double, value: 1.25 }
+    expected: { type: double, value: 2.25 }
+    tags: [phase2, bench-shape]
+
+  - id: doubleDiv_simple
+    source: 'a / b'
+    activation:
+      a: { type: double, value: 3.0 }
+      b: { type: double, value: 2.0 }
+    expected: { type: double, value: 1.5 }
+    tags: [phase2, bench-shape]

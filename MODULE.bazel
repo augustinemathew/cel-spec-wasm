@@ -221,6 +221,17 @@ bazel_dep(
     version = "1.9.1",
     repo_name = "com_google_benchmark",
 )
+
+# yaml-cpp — YAML parser for the benchmark corpus loader
+# (//benchmark/eval:corpus_loader).  The corpus YAMLs under
+# benchmark/eval/corpus/ describe each cell (id, source expression,
+# activation, expected value, tags); the loader parses + validates
+# them at bench-binary startup.
+bazel_dep(
+    name = "yaml-cpp",
+    version = "0.8.0.bcr.1",
+)
+
 bazel_dep(
     name = "rules_java",
     version = "7.6.5",

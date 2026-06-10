@@ -1,0 +1,419 @@
+# Phase 1 seed — comparison surface.
+
+schema_version: 1
+surface: comparisons
+
+cells:
+  # ── int ==, !=, <, <=, >, >= ──
+  - id: intEq
+    source: "a == b"
+    activation:
+      a: { type: int, value: 42 }
+      b: { type: int, value: 42 }
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
+  - id: intNe
+    source: "a != b"
+    activation:
+      a: { type: int, value: 42 }
+      b: { type: int, value: 43 }
+    expected: { type: bool, value: true }
+    tags: [phase1]
+
+  - id: intLt
+    source: "a < b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
+  - id: intLe
+    source: "a <= b"
+    activation:
+      a: { type: int, value: 2 }
+      b: { type: int, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase1]
+
+  - id: intGt
+    source: "a > b"
+    activation:
+      a: { type: int, value: 3 }
+      b: { type: int, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase1]
+
+  - id: intGe
+    source: "a >= b"
+    activation:
+      a: { type: int, value: 3 }
+      b: { type: int, value: 3 }
+    expected: { type: bool, value: true }
+    tags: [phase1]
+
+  # ── string comparisons ──
+  - id: stringEq
+    source: "a == b"
+    activation:
+      a: { type: string, value: "hello" }
+      b: { type: string, value: "hello" }
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
+  - id: stringLt
+    source: "a < b"
+    activation:
+      a: { type: string, value: "apple" }
+      b: { type: string, value: "banana" }
+    expected: { type: bool, value: true }
+    tags: [phase1]
+
+  # ── cross-numeric (per spec, admitted) ──
+  # celwasm-skip-het-eq: celwasm's checker rejects mixed-numeric
+  # `int == double` / `int < double` ("found no matching overload",
+  # verified via the cel CLI 2026-06-09) — the heterogeneous-
+  # comparison gap recorded in m28-configurable-linking.md §10.
+  # cel-cpp accepts `int < double` once the checker's
+  # enable_cross_numeric_comparisons flag is on (celcpp_bench sets
+  # it), but its checker still rejects heterogeneous `==`
+  # (`int == double`, `1 == null`) — equality stays homogeneous at
+  # check time; heterogeneity is runtime-only via dyn.  Cells no
+  # comparator can run carry BOTH skip tags and are tracked as
+  # exclusions in OPERATORS.md.
+  - id: intEqDouble
+    source: "a == b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: double, value: 1.0 }
+    expected: { type: bool, value: true }
+    tags: [phase1, celwasm-skip-het-eq, celcpp-skip-het-eq-check]
+
+  - id: intLtDouble
+    source: "a < b"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: double, value: 1.5 }
+    expected: { type: bool, value: true }
+    tags: [phase1, celwasm-skip-het-eq]
+
+  # ── chained (AOT shine) ──
+  - id: intLtChain20
+    source: "a<b && b<c && c<d && d<e && e<f && f<g && g<h && h<i && i<j && j<k && k<l && l<m && m<n && n<o && o<p && p<q && q<r && r<s && s<t && t<u"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 2 }
+      c: { type: int, value: 3 }
+      d: { type: int, value: 4 }
+      e: { type: int, value: 5 }
+      f: { type: int, value: 6 }
+      g: { type: int, value: 7 }
+      h: { type: int, value: 8 }
+      i: { type: int, value: 9 }
+      j: { type: int, value: 10 }
+      k: { type: int, value: 11 }
+      l: { type: int, value: 12 }
+      m: { type: int, value: 13 }
+      n: { type: int, value: 14 }
+      o: { type: int, value: 15 }
+      p: { type: int, value: 16 }
+      q: { type: int, value: 17 }
+      r: { type: int, value: 18 }
+      s: { type: int, value: 19 }
+      t: { type: int, value: 20 }
+      u: { type: int, value: 21 }
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
+  # ── == / != across every comparable type ──
+  # (int and string ==/!= are covered above; these fill the grid.)
+  - id: boolEq
+    source: 'a == b'
+    activation:
+      a: { type: bool, value: true }
+      b: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: boolNe
+    source: 'a != b'
+    activation:
+      a: { type: bool, value: true }
+      b: { type: bool, value: false }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: uintEq
+    source: 'a == b'
+    activation:
+      a: { type: uint, value: 42 }
+      b: { type: uint, value: 42 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: uintNe
+    source: 'a != b'
+    activation:
+      a: { type: uint, value: 42 }
+      b: { type: uint, value: 43 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleEq
+    source: 'a == b'
+    activation:
+      a: { type: double, value: 1.5 }
+      b: { type: double, value: 1.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleNe
+    source: 'a != b'
+    activation:
+      a: { type: double, value: 1.5 }
+      b: { type: double, value: 2.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: stringNe
+    source: 'a != b'
+    activation:
+      a: { type: string, value: "hello" }
+      b: { type: string, value: "world" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesEq
+    source: 'a == b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "ab" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesNe
+    source: 'a != b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "ac" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # timestamp / duration / list / map / null operands can't be bound
+  # through the scalar-only activation schema — const cells.
+  - id: tsEq
+    source: 'timestamp("2024-01-01T00:00:00Z") == timestamp("2024-01-01T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsNe
+    source: 'timestamp("2024-01-01T00:00:00Z") != timestamp("2024-01-02T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durEq
+    source: 'duration("60s") == duration("1m")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durNe
+    source: 'duration("60s") != duration("2m")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: listEq
+    source: '[1,2,3] == [1,2,3]'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: listNe
+    source: '[1,2,3] != [1,2,4]'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: mapEq
+    source: '{"a":1,"b":2} == {"b":2,"a":1}'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: mapNe
+    source: '{"a":1} != {"a":2}'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: nullEq
+    source: 'null == null'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # Heterogeneous `1 == null`: BOTH checkers reject as configured
+  # (celwasm: no heterogeneous equality; cel-cpp: checker-time
+  # equality is homogeneous, heterogeneity is runtime-only).  Kept as
+  # the grid's documented exclusion; spec answer would be false.
+  - id: nullEqInt
+    source: '1 == null'
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape, const-only, celwasm-skip-het-eq, celcpp-skip-het-eq-check]
+
+  # ── ordering across the ordered types ──
+  # (int has the full set above; string has lt; these fill the grid.)
+  - id: uintLt
+    source: 'a < b'
+    activation:
+      a: { type: uint, value: 1 }
+      b: { type: uint, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: uintLe
+    source: 'a <= b'
+    activation:
+      a: { type: uint, value: 2 }
+      b: { type: uint, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: uintGt
+    source: 'a > b'
+    activation:
+      a: { type: uint, value: 3 }
+      b: { type: uint, value: 2 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: uintGe
+    source: 'a >= b'
+    activation:
+      a: { type: uint, value: 3 }
+      b: { type: uint, value: 3 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleLt
+    source: 'a < b'
+    activation:
+      a: { type: double, value: 1.5 }
+      b: { type: double, value: 2.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleLe
+    source: 'a <= b'
+    activation:
+      a: { type: double, value: 2.5 }
+      b: { type: double, value: 2.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleGt
+    source: 'a > b'
+    activation:
+      a: { type: double, value: 3.5 }
+      b: { type: double, value: 2.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: doubleGe
+    source: 'a >= b'
+    activation:
+      a: { type: double, value: 3.5 }
+      b: { type: double, value: 3.5 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: stringLe
+    source: 'a <= b'
+    activation:
+      a: { type: string, value: "apple" }
+      b: { type: string, value: "apple" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: stringGt
+    source: 'a > b'
+    activation:
+      a: { type: string, value: "banana" }
+      b: { type: string, value: "apple" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: stringGe
+    source: 'a >= b'
+    activation:
+      a: { type: string, value: "banana" }
+      b: { type: string, value: "banana" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesLt
+    source: 'a < b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "b" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesLe
+    source: 'a <= b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "ab" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesGt
+    source: 'a > b'
+    activation:
+      a: { type: bytes, value: "b" }
+      b: { type: bytes, value: "ab" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bytesGe
+    source: 'a >= b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "ab" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: tsLt
+    source: 'timestamp("2024-01-01T00:00:00Z") < timestamp("2024-01-02T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsLe
+    source: 'timestamp("2024-01-01T00:00:00Z") <= timestamp("2024-01-01T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGt
+    source: 'timestamp("2024-01-02T00:00:00Z") > timestamp("2024-01-01T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGe
+    source: 'timestamp("2024-01-01T00:00:00Z") >= timestamp("2024-01-01T00:00:00Z")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durLt
+    source: 'duration("1m") < duration("2m")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durLe
+    source: 'duration("1m") <= duration("60s")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durGt
+    source: 'duration("2m") > duration("1m")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durGe
+    source: 'duration("1m") >= duration("60s")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]

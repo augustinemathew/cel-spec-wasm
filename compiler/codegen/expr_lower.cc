@@ -73,6 +73,32 @@ BinaryenExpressionRef I32Const(WasmModule& mod, uint32_t value) {
                        BinaryenLiteralInt32(static_cast<int32_t>(value)));
 }
 
+// See the invariant comment on the declarations in
+// expr_lower_internal.h: the memory-name parameter is always
+// `nullptr` so the emitted access binds to whatever memory the
+// module has (named "0" in static mode, "memory" in dynamic mode).
+// The parameter lists mirror Binaryen's C API verbatim (minus
+// memoryName), so the 7-parameter count is dictated by upstream —
+// not splittable.
+// NOLINTNEXTLINE(readability-function-size)
+BinaryenExpressionRef CodegenLoad(BinaryenModuleRef module, uint32_t bytes,
+                                  bool signed_, uint32_t offset, uint32_t align,
+                                  BinaryenType type,
+                                  BinaryenExpressionRef ptr) {
+  return BinaryenLoad(module, bytes, signed_, offset, align, type, ptr,
+                      /*memoryName=*/nullptr);
+}
+
+// NOLINTNEXTLINE(readability-function-size) — see CodegenLoad above.
+BinaryenExpressionRef CodegenStore(BinaryenModuleRef module, uint32_t bytes,
+                                   uint32_t offset, uint32_t align,
+                                   BinaryenExpressionRef ptr,
+                                   BinaryenExpressionRef value,
+                                   BinaryenType type) {
+  return BinaryenStore(module, bytes, offset, align, ptr, value, type,
+                       /*memoryName=*/nullptr);
+}
+
 namespace {
 
 // Emits a rodata-offset `(i32.const <off>)`.  The only storage kind
@@ -1002,8 +1028,8 @@ BinaryenExpressionRef LoadSlotI32Eq(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
+                  BinaryenTypeInt32(), I32Const(ctx.mod, slot));
   return BinaryenBinary(mod, BinaryenEqInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
@@ -1012,8 +1038,8 @@ BinaryenExpressionRef LoadSlotI32Ne(EmitCtx& ctx, uint32_t slot,
                                     uint32_t offset, int32_t expected) {
   auto* mod = ctx.mod.raw();
   BinaryenExpressionRef load =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
-                   BinaryenTypeInt32(), I32Const(ctx.mod, slot), "memory");
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, offset, /*align=*/4,
+                  BinaryenTypeInt32(), I32Const(ctx.mod, slot));
   return BinaryenBinary(mod, BinaryenNeInt32(), load,
                         BinaryenConst(mod, BinaryenLiteralInt32(expected)));
 }
@@ -1184,7 +1210,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
-    const OverloadTable& overload_table, const LoweringOptions& opts) {
+    const OverloadTable& overload_table, const LoweringOptions& /*opts*/) {
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
@@ -1287,8 +1313,7 @@ std::vector<BinaryenExpressionRef> EmitCustomFnParamPrelude(
 absl::StatusOr<LoweredFunction> LowerToCustomFn(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view export_name, absl::Span<const CustomFnParam> params,
-    WasmModule& mod, const OverloadTable& overload_table,
-    const LoweringOptions& /*opts*/) {
+    WasmModule& mod, const OverloadTable& overload_table) {
   ABSL_CHECK(ast.has_ast())
       << "LowerToCustomFn: TypedAst has no checked cel::Ast";
 

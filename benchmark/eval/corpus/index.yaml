@@ -1,0 +1,63 @@
+# Indexing (`_[_]`) surface — bench-shape cells.
+#
+# Covers list[int] and map[K] for every spec-admitted map key kind
+# (string, int, uint, bool), each with a var-bound key plus one
+# const sibling to isolate the activation-marshal cost.
+#
+# Surface `index` maps to BM prefix `idx` (cell id `listInt` →
+# `BM_idx_listInt`).
+#
+# Containers are literals (the corpus loader's activation values are
+# scalar-only — see corpus_loader.h), so each cell pays list/map
+# literal materialization plus the lookup; the const/var key pair
+# still isolates the key-marshal delta on an identical shape.
+
+schema_version: 1
+surface: index
+
+cells:
+
+  - id: listInt
+    source: '[10,20,30,40,50][i]'
+    activation:
+      i: { type: int, value: 4 }
+    expected: { type: int, value: 50 }
+    tags: [phase2, bench-shape]
+
+  - id: listIntConst
+    source: '[10,20,30,40,50][4]'
+    expected: { type: int, value: 50 }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: mapString
+    source: '{"a":1,"b":2,"c":3}[k]'
+    activation:
+      k: { type: string, value: "c" }
+    expected: { type: int, value: 3 }
+    tags: [phase2, bench-shape]
+
+  - id: mapStringConst
+    source: '{"a":1,"b":2,"c":3}["c"]'
+    expected: { type: int, value: 3 }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: mapInt
+    source: '{1:10,2:20,3:30}[k]'
+    activation:
+      k: { type: int, value: 3 }
+    expected: { type: int, value: 30 }
+    tags: [phase2, bench-shape]
+
+  - id: mapUint
+    source: '{1u:10,2u:20,3u:30}[k]'
+    activation:
+      k: { type: uint, value: 3 }
+    expected: { type: int, value: 30 }
+    tags: [phase2, bench-shape]
+
+  - id: mapBool
+    source: '{true:1,false:0}[k]'
+    activation:
+      k: { type: bool, value: true }
+    expected: { type: int, value: 1 }
+    tags: [phase2, bench-shape]

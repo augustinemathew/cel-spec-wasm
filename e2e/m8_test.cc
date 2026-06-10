@@ -72,6 +72,7 @@
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/wrappers.pb.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -108,14 +109,7 @@ using ::absl_testing::IsOk;
       return 0;
     }();
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -133,21 +127,9 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 // is dropped.  This file is the spec-of-done; the helpers stand
 // ready for slice-by-slice migration (mirrors m7b_test.cc).
 
-[[maybe_unused]] Instance CompilePlan(const Compiler& compiler,
-                                      absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
-[[maybe_unused]] Value EvalOk(Instance& instance,
-                              const Activation& activation) {
-  auto v = instance.Eval(activation);
-  ABSL_CHECK_OK(v);
-  return *std::move(v);
-}
+using ::celwasm::e2e::EvalOk;
 
 [[maybe_unused]] void ExpectCompileFails(const Compiler& compiler,
                                          absl::string_view source,

@@ -1,0 +1,141 @@
+# String surface — bench-shape cells.
+#
+# Mirrors the BM_str_* cells the hand-coded `celwasm_bench.cc`
+# registered before this corpus existed.  The bench main maps
+# surface=strings → BM prefix `str`, so cell id `eqVar` becomes
+# `BM_str_eqVar`.
+#
+# Patterns covered:
+#   - eqConst        : two literal strings compared (no var path).
+#   - eqVar          : `a == "augustine"` with `a` bound.
+#   - contains       : substring check on a short string.
+#   - startsWith     : prefix check on a short string.
+
+schema_version: 1
+surface: strings
+
+cells:
+  - id: eqConst
+    source: '"hello" == "world"'
+    expected: { type: bool, value: false }
+    tags: [phase1, bench-shape, const-only]
+
+  - id: eqVar
+    source: 'a == "augustine"'
+    activation:
+      a: { type: string, value: "augustine" }
+    expected: { type: bool, value: true }
+    tags: [phase1, bench-shape]
+
+  - id: contains
+    source: 'a.contains("aug")'
+    activation:
+      a: { type: string, value: "augustine" }
+    expected: { type: bool, value: true }
+    tags: [phase1, bench-shape, skip-source-check]
+
+  - id: startsWith
+    source: 'a.startsWith("aug")'
+    activation:
+      a: { type: string, value: "augustine" }
+    expected: { type: bool, value: true }
+    tags: [phase1, bench-shape, skip-source-check]
+
+
+  # ── endsWith / matches ──
+  - id: endsWith
+    source: 'a.endsWith("ine")'
+    activation:
+      a: { type: string, value: "augustine" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: matchesCheap
+    source: 'a.matches("^aug")'
+    activation:
+      a: { type: string, value: "augustine" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: matchesComplex
+    source: 'a.matches("^[a-z]+-[0-9]{2,4}@[a-z]+\\.(com|org)$")'
+    activation:
+      a: { type: string, value: "user-1234@example.com" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── string + string concat, length sweep {2, 10, 100, 1000} ──
+  # Vars a..j each bound to a 2-char string; the N-term chain cycles
+  # through them, so the result length grows 2N and the chain
+  # exercises N-1 cel_string_concat calls.
+  #
+  # concatChain1000Terms is tagged `celwasm-skip-arena-overflow`:
+  # the 999 intermediate concat results overflow celwasm's eval
+  # arena (verified via the cel CLI: eval returns a CEL overflow
+  # error value at N=1000; N=100 is fine).  celcpp_bench still runs
+  # it.  Same family as e2e/known_bugs_test.cc::
+  # ExpressionIntermediatesArenaCliff.
+  - id: concat2
+    source: 'a + b'
+    activation:
+      a: { type: string, value: "hello " }
+      b: { type: string, value: "world" }
+    expected: { type: string, value: "hello world" }
+    tags: [phase2, bench-shape]
+
+  - id: concatChain10Terms
+    source: 'a + b + c + d + e + f + g + h + i + j'
+    activation:
+      a: { type: string, value: "aa" }
+      b: { type: string, value: "bb" }
+      c: { type: string, value: "cc" }
+      d: { type: string, value: "dd" }
+      e: { type: string, value: "ee" }
+      f: { type: string, value: "ff" }
+      g: { type: string, value: "gg" }
+      h: { type: string, value: "hh" }
+      i: { type: string, value: "ii" }
+      j: { type: string, value: "jj" }
+    expected: { type: string, value: "aabbccddeeffgghhiijj" }
+    tags: [phase2, bench-shape]
+
+  - id: concatChain100Terms
+    source: 'a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j'
+    activation:
+      a: { type: string, value: "aa" }
+      b: { type: string, value: "bb" }
+      c: { type: string, value: "cc" }
+      d: { type: string, value: "dd" }
+      e: { type: string, value: "ee" }
+      f: { type: string, value: "ff" }
+      g: { type: string, value: "gg" }
+      h: { type: string, value: "hh" }
+      i: { type: string, value: "ii" }
+      j: { type: string, value: "jj" }
+    expected: { type: string, value: "aabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijj" }
+    tags: [phase2, bench-shape]
+
+  - id: concatChain1000Terms
+    source: 'a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j + a + b + c + d + e + f + g + h + i + j'
+    activation:
+      a: { type: string, value: "aa" }
+      b: { type: string, value: "bb" }
+      c: { type: string, value: "cc" }
+      d: { type: string, value: "dd" }
+      e: { type: string, value: "ee" }
+      f: { type: string, value: "ff" }
+      g: { type: string, value: "gg" }
+      h: { type: string, value: "hh" }
+      i: { type: string, value: "ii" }
+      j: { type: string, value: "jj" }
+    expected: { type: string, value: "aabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijj" }
+    tags: [phase2, bench-shape, celwasm-skip-arena-overflow]
+
+  # ── bytes + bytes concat ──
+  - id: bytesConcat2
+    source: 'a + b'
+    activation:
+      a: { type: bytes, value: "ab" }
+      b: { type: bytes, value: "cd" }
+    expected: { type: bytes, value: "abcd" }
+    tags: [phase2, bench-shape]

@@ -269,6 +269,16 @@ offset ~0x12000 ─────  DLMALLOC HEAP
 
 ### 4.2 Module + Instance relationships
 
+> **Naming note (m28, 2026-06-08):** the field below referred to as
+> `runtime_instance` was renamed to `helpers_instance` when m28 landed
+> configurable linking — in static-link mode the helpers source is the
+> expression instance itself rather than a separately-instantiated
+> runtime, so the field carries the more general "wherever the runtime
+> helpers live" meaning.  The dynamic-mode topology this diagram shows
+> is unchanged; only the field name differs.  The same rename applies
+> to the `runtime_instance` references below at §A13, §4.4 timing
+> trace, and the M6 milestone row in §6.
+
 ```
 Engine (process-global):
   ├─ wasmtime_engine_t

@@ -1,11 +1,15 @@
 #include "compiler/internal/compile.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "binaryen-c.h"
 #include "gtest/gtest.h"
@@ -85,7 +89,11 @@ TEST(CompileTest, ModuleImportsCelMemoryAndExportsEvalByDefault) {
   // longer defines its own memory — it imports `cel.memory` from the
   // host (the same memory the cel_runtime.wasm instance imports), so
   // both modules see the same bytes when wired up by `Engine::Plan`.
-  auto art_or = Compile("42");
+  // m28 — assertion is kDynamic-specific (static mode bundles the
+  // runtime and therefore defines + exports memory).
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
+  auto art_or = Compile("42", opts);
   ASSERT_THAT(art_or, IsOk());
   BinaryenModuleRef raw = art_or->module.raw();
   EXPECT_TRUE(BinaryenHasMemory(raw));
@@ -177,6 +185,205 @@ TEST(CompileTest, EvalExportNameIsHonoured) {
   EXPECT_TRUE(saw);
 }
 
+// ────────────────────────────────────────────────────────────────────
+// m28 — link_mode=kStatic byte-shape invariants.
+// ────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Counts function imports whose `module` field equals `module_name`.
+int CountFunctionImportsFromModule(BinaryenModuleRef raw,
+                                   absl::string_view module_name) {
+  int count = 0;
+  const auto n = BinaryenGetNumFunctions(raw);
+  for (BinaryenIndex i = 0; i < n; ++i) {
+    BinaryenFunctionRef f = BinaryenGetFunctionByIndex(raw, i);
+    const char* m = BinaryenFunctionImportGetModule(f);
+    if (m != nullptr && module_name == m) ++count;
+  }
+  return count;
+}
+
+}  // namespace
+
+TEST(CompileStaticTest, EmitsValidModule) {
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  EXPECT_THAT(art_or->module.Validate(), IsOk());
+  EXPECT_GE(art_or->wasm_bytes.size(), 100u * 1024u);
+}
+
+TEST(CompileStaticTest, NoCelNamespaceImports) {
+  // The load-bearing invariant of kStatic: the Program carries the
+  // runtime helpers as defined functions, not as imports — so it has
+  // ZERO imports from the `"cel"` module.  Dynamic mode (sibling test
+  // `ModuleImportsCelMemoryAndExportsEvalByDefault`) has many; this
+  // count must be exactly 0 for static.
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  BinaryenModuleRef raw = art_or->module.raw();
+  EXPECT_EQ(CountFunctionImportsFromModule(raw, "cel"), 0);
+}
+
+TEST(CompileStaticTest, KeepsCelHostImportsTheRuntimeAlreadyDeclared) {
+  // `cel_host.*` trampolines are the host's responsibility regardless
+  // of link mode — the wrapper-stripped runtime declares them as its
+  // own imports, and those survive the merge.  Sanity-check: at least
+  // one `cel_host.*` import is still present.
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  BinaryenModuleRef raw = art_or->module.raw();
+  EXPECT_GT(CountFunctionImportsFromModule(raw, "cel_host"), 0);
+}
+
+TEST(CompileStaticTest, ExportsEval) {
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  BinaryenModuleRef raw = art_or->module.raw();
+  bool saw_eval = false;
+  const auto n = BinaryenGetNumExports(raw);
+  for (BinaryenIndex i = 0; i < n; ++i) {
+    BinaryenExportRef e = BinaryenGetExportByIndex(raw, i);
+    if (std::strcmp(BinaryenExportGetName(e), "eval") == 0) saw_eval = true;
+  }
+  EXPECT_TRUE(saw_eval);
+}
+
+// ── Link-mode marker in the `cel.abi` custom section ───────────────
+//
+// Compile() stamps the link mode it emitted the module under into
+// the `cel.abi` section so embedder tooling (cache validators,
+// signature systems, cross-process Program shipping) has an in-band
+// signal.  Metadata only — engine routing stays import-introspection
+// based.  See
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
+
+namespace {
+
+// Reads a LEB128-encoded u32 at `pos`, advancing it past the
+// encoding.  Returns false on truncated / overlong input.
+bool ReadLebU32(const std::vector<uint8_t>& bytes, size_t& pos, uint32_t& out) {
+  out = 0;
+  for (int shift = 0; shift < 35; shift += 7) {
+    if (pos >= bytes.size()) return false;
+    const uint8_t byte = bytes[pos++];
+    out |= static_cast<uint32_t>(byte & 0x7f) << shift;
+    if ((byte & 0x80) == 0) return true;
+  }
+  return false;
+}
+
+// Returns true iff the custom-section body starting at `pos` (with
+// the section ending at `section_end`) is named "cel.abi"; advances
+// `pos` past the name field either way.
+bool IsCelAbiSection(const std::vector<uint8_t>& bytes, size_t& pos,
+                     size_t section_end) {
+  uint32_t name_len = 0;
+  if (!ReadLebU32(bytes, pos, name_len)) return false;
+  if (pos + name_len > section_end) return false;
+  const absl::string_view name(reinterpret_cast<const char*>(&bytes[pos]),
+                               name_len);
+  pos += name_len;
+  return name == "cel.abi";
+}
+
+// Minimal wasm-section walk: find the custom section named "cel.abi"
+// in `wasm_bytes` and proto-parse its payload as CelAbi.  Local to
+// the test on purpose — the production decoder lives on the eval
+// side (eval/internal/abi_decode), which the compiler tree must not
+// depend on.
+absl::StatusOr<celwasm::abi::CelAbi> ParseCelAbiSection(
+    const std::vector<uint8_t>& wasm_bytes) {
+  size_t pos = 8;  // skip the 4-byte magic + 4-byte version header
+  while (pos < wasm_bytes.size()) {
+    const uint8_t section_id = wasm_bytes[pos++];
+    uint32_t section_size = 0;
+    if (!ReadLebU32(wasm_bytes, pos, section_size)) break;
+    const size_t section_end = pos + section_size;
+    if (section_end > wasm_bytes.size()) break;
+    if (section_id == 0 && IsCelAbiSection(wasm_bytes, pos, section_end)) {
+      celwasm::abi::CelAbi abi;
+      if (!abi.ParseFromArray(&wasm_bytes[pos],
+                              static_cast<int>(section_end - pos))) {
+        return absl::InvalidArgumentError(
+            "cel.abi payload failed CelAbi::ParseFromArray");
+      }
+      return abi;
+    }
+    pos = section_end;
+  }
+  return absl::NotFoundError("no cel.abi custom section");
+}
+
+}  // namespace
+
+TEST(CompileTest, DynamicModeStampsLinkModeDynamicInCelAbi) {
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  EXPECT_EQ(abi_or->link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
+}
+
+TEST(CompileStaticTest, StaticModeStampsLinkModeStaticInCelAbi) {
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  auto art_or = Compile("42", opts);
+  ASSERT_THAT(art_or, IsOk());
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  EXPECT_EQ(abi_or->link_mode(), celwasm::abi::LINK_MODE_STATIC);
+}
+
+// ── Rodata-budget gate (static mode only) ──────────────────────────
+//
+// The static-mode runtime is linked with
+// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB), so
+// the expression's rodata segment must end at or below that boundary
+// or it would overwrite the bundled runtime's own static data.  See
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
+
+TEST(CompileStaticTest, RodataNearBudgetButUnderCompiles) {
+  // ~4 KiB string literal: rodata_base (16) + CelValue slot + 4096
+  // payload bytes lands well under the 8192-byte reserved window.
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  const std::string expr = "\"" + std::string(4096, 'x') + "\"";
+  EXPECT_THAT(Compile(expr, opts).status(), IsOk());
+}
+
+TEST(CompileStaticTest, RodataOverBudgetReturnsResourceExhausted) {
+  // 9000 payload bytes pushes rodata past the 8192-byte reserved
+  // window — must be a status error (embedder input may legitimately
+  // be this large; it must not crash the process).
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kStatic;
+  const std::string expr = "\"" + std::string(9000, 'x') + "\"";
+  EXPECT_THAT(Compile(expr, opts),
+              StatusIs(absl::StatusCode::kResourceExhausted));
+}
+
+TEST(CompileTest, RodataOverStaticBudgetCompilesInDynamicMode) {
+  // Same oversized literal in kDynamic: rodata lands in the expr
+  // module's own imported `cel.memory` (whole pages, no runtime
+  // static data below it), so the static-mode reserved-window gate
+  // must not apply.
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
+  const std::string expr = "\"" + std::string(9000, 'x') + "\"";
+  EXPECT_THAT(Compile(expr, opts).status(), IsOk());
+}
+
 TEST(CompileTest, MemSizeBytesLargerThanOnePageGrowsPageCount) {
   // Ask for 3 * 64 KiB; memory should be declared with at least 3 pages.
   CompileOptions opts;
@@ -229,11 +436,11 @@ TEST(CompileMapTest, EmptyMapLiteralRejected) {
 }
 
 TEST(CompileMapTest, ScalarMapLiteralCompiles) {
-  EXPECT_THAT(Compile("{\"a\": 1, \"b\": 2}").status(), IsOk());
+  EXPECT_THAT(Compile(R"({"a": 1, "b": 2})").status(), IsOk());
 }
 
 TEST(CompileMapTest, MapLiteralIndexingCompiles) {
-  EXPECT_THAT(Compile("{\"a\": 1}[\"a\"]").status(), IsOk());
+  EXPECT_THAT(Compile(R"({"a": 1}["a"])").status(), IsOk());
 }
 
 TEST(CompileMapTest, BoundMapIdentIndexingCompiles) {
@@ -270,8 +477,12 @@ TEST(CompileMapTest, ModuleImportsRuntimeMapEntryPoints) {
   // A map-bearing program must drag in every runtime map symbol the
   // codegen may emit calls to: cel_map_create, cel_map_insert,
   // cel_map_lookup_arena, cel_map_lookup.  No lazy import gating
-  // (CLAUDE.md "always link the runtime fully").
-  auto art_or = Compile("{\"a\": 1}[\"a\"]");
+  // (CLAUDE.md "always link the runtime fully").  m28 — kDynamic-
+  // specific assertion (kStatic merges the runtime in, so these
+  // helpers are defined functions, not imports).
+  CompileOptions opts;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
+  auto art_or = Compile(R"({"a": 1}["a"])", opts);
   ASSERT_THAT(art_or, IsOk());
   BinaryenModuleRef raw = art_or->module.raw();
   for (const char* fn : {"cel_map_create", "cel_map_insert",
@@ -286,7 +497,7 @@ TEST(CompileMapTest, ModuleImportsHostMapLookup) {
   // unconditionally; verify it's wired even on a literal-only
   // expression so the `BindRuntimeExport` loop in `Engine::Plan`
   // can rely on it.
-  auto art_or = Compile("{\"a\": 1}[\"a\"]");
+  auto art_or = Compile(R"({"a": 1}["a"])");
   ASSERT_THAT(art_or, IsOk());
   EXPECT_TRUE(
       ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));
@@ -365,9 +576,12 @@ namespace {
 // fixture has `map<string,string> metadata` + `map<int32,int32>
 // tier_quotas`).  Uses the generated descriptor pool so no
 // SchemaProtoSource path is needed at test time.
-absl::StatusOr<CompiledArtifact> CompileWithCustomer(absl::string_view expr) {
+absl::StatusOr<CompiledArtifact> CompileWithCustomer(
+    absl::string_view expr,
+    CompileOptions::LinkMode link_mode = CompileOptions::LinkMode::kDynamic) {
   CompileOptions opts;
   opts.check.variable_specs = {"c:celwasm.testdata.Customer"};
+  opts.link_mode = link_mode;
   return Compile(expr, opts);
 }
 
@@ -393,8 +607,11 @@ TEST(CompileProtoMapTest, MapFieldIndexImportsHostMapLookup) {
   // `c.metadata["env"]` reaches `cel_host.cel_map_lookup` because
   // ResolvePass stamps the kSelect with map_origin == kHost.
   // The compiled artifact must declare that import on the module
-  // so wasmtime instantiation succeeds at Plan time.
-  auto art_or = CompileWithCustomer("c.metadata[\"env\"]");
+  // so wasmtime instantiation succeeds at Plan time.  m28 — kDynamic-
+  // specific: in kStatic mode the runtime helpers are defined
+  // functions in the merged module, not imports.
+  auto art_or = CompileWithCustomer("c.metadata[\"env\"]",
+                                    CompileOptions::LinkMode::kDynamic);
   ASSERT_THAT(art_or, IsOk());
   EXPECT_TRUE(
       ModuleImports(art_or->module.raw(), "cel_host", "cel_map_lookup"));

@@ -49,6 +49,7 @@
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "google/protobuf/message.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -79,14 +80,7 @@ using ::celwasm::testdata::HostMsg3;
 
 // Shared Engine — wasm_engine_t + parsed runtime module are
 // documented thread-safe; one instance per test binary is plenty.
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 // Build a Compiler pre-seeded with a single `c` variable of
 // message type, resolving the descriptor through the process
@@ -127,22 +121,12 @@ absl::StatusOr<Compiler> CompilerWithVar(const std::string& name,
 // Program held alive via a leak (test-only; the Engine owns the
 // wasm engine).  Asserts each stage is ok() so the caller can
 // pattern-match on Eval behaviour alone.
-Instance CompilePlan(const Compiler& compiler, absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
 // Convenience for Eval(activation).  ABSL_CHECKs the status — use
 // the raw `instance.Eval(activation)` form when inspecting an
 // expected failure.
-Value EvalOk(Instance& instance, const Activation& activation) {
-  auto v = instance.Eval(activation);
-  ABSL_CHECK_OK(v);
-  return *std::move(v);
-}
+using ::celwasm::e2e::EvalOk;
 
 // Convenience for PartialEval — same contract.
 Value PartialEvalOk(Instance& instance, const Activation& activation,

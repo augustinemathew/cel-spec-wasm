@@ -10,8 +10,12 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <string>
 #include <string_view>
+#include <vector>
 
+#include "abi/runtime_catalogue.h"
 #include "binaryen-c.h"
 #include "gtest/gtest.h"
 #include "runtime/cel_runtime_wasm_bytes.h"
@@ -20,6 +24,17 @@ namespace celwasm {
 namespace {
 
 constexpr std::string_view kSuffix = ".command_export";
+
+// Parses the embedded stripped bytes into a Binaryen module.  Copies
+// into a mutable buffer because `BinaryenModuleRead` takes `char*`
+// (it does not retain the input).  Caller disposes the module.
+BinaryenModuleRef ReadStrippedModule() {
+  std::vector<char> buf(
+      reinterpret_cast<const char*>(kCelRuntimeStrippedWasmBytes),
+      reinterpret_cast<const char*>(kCelRuntimeStrippedWasmBytes) +
+          kCelRuntimeStrippedWasmBytesSize);
+  return BinaryenModuleRead(buf.data(), buf.size());
+}
 
 TEST(CelRuntimeStrippedWasmBytes, SymbolLinks) {
   EXPECT_GT(kCelRuntimeStrippedWasmBytesSize, 0u);
@@ -36,10 +51,7 @@ TEST(CelRuntimeStrippedWasmBytes, NoCommandExportFunctions) {
   // Parse the embedded bytes via Binaryen and walk the function table;
   // the strip tool's invariant is that NO function has the
   // ".command_export" suffix.
-  BinaryenModuleRef m = BinaryenModuleRead(
-      const_cast<char*>(
-          reinterpret_cast<const char*>(kCelRuntimeStrippedWasmBytes)),
-      kCelRuntimeStrippedWasmBytesSize);
+  BinaryenModuleRef m = ReadStrippedModule();
   ASSERT_NE(m, nullptr) << "BinaryenModuleRead failed on stripped bytes";
 
   BinaryenIndex num_functions = BinaryenGetNumFunctions(m);
@@ -50,6 +62,45 @@ TEST(CelRuntimeStrippedWasmBytes, NoCommandExportFunctions) {
     ASSERT_FALSE(name.size() > kSuffix.size() &&
                  name.substr(name.size() - kSuffix.size()) == kSuffix)
         << "Stripped runtime still contains wrapper function: " << name;
+  }
+  BinaryenModuleDispose(m);
+}
+
+TEST(CelRuntimeStrippedWasmBytes, CatalogueExportsTargetDistinctFunctions) {
+  // Pins the strip tool's no-merge invariant: the tool deliberately runs
+  // ONLY `remove-unused-module-elements` because a full
+  // `BinaryenModuleOptimize` would run `merge-similar-functions`, which
+  // collapses semantically-identical helpers (e.g. `cel_dur_to_int_at_v`
+  // and `cel_dur_seconds_at_v`) into one body and silently retargets the
+  // dead twin's export.  Every helper in the runtime catalogue must
+  // (a) still be exported, and (b) resolve to a DISTINCT internal
+  // function — no two catalogue exports may share a target.
+  BinaryenModuleRef m = ReadStrippedModule();
+  ASSERT_NE(m, nullptr) << "BinaryenModuleRead failed on stripped bytes";
+
+  // Export name -> internal target function name, function exports only.
+  std::map<std::string, std::string> export_to_target;
+  BinaryenIndex num_exports = BinaryenGetNumExports(m);
+  for (BinaryenIndex i = 0; i < num_exports; ++i) {
+    BinaryenExportRef e = BinaryenGetExportByIndex(m, i);
+    if (BinaryenExportGetKind(e) != BinaryenExternalFunction()) continue;
+    export_to_target[BinaryenExportGetName(e)] = BinaryenExportGetValue(e);
+  }
+
+  ASSERT_FALSE(abi::CelRuntimeHelpers().empty());
+  // Internal target name -> first catalogue export seen targeting it.
+  std::map<std::string, std::string> target_to_export;
+  for (const auto& helper : abi::CelRuntimeHelpers()) {
+    auto it = export_to_target.find(helper.name());
+    ASSERT_NE(it, export_to_target.end())
+        << "catalogue helper missing from stripped runtime exports: "
+        << helper.name();
+    auto [pos, inserted] = target_to_export.emplace(it->second, helper.name());
+    EXPECT_TRUE(inserted)
+        << "exports `" << helper.name() << "` and `" << pos->second
+        << "` both target internal function `" << it->second
+        << "` — a function-merging pass (merge-similar-functions) "
+           "collapsed two catalogue helpers";
   }
   BinaryenModuleDispose(m);
 }

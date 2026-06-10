@@ -1,0 +1,182 @@
+# Type-conversion surface — bench-shape cells.
+#
+# One cell per spec-admitted cross-type conversion (langdef
+# "Standard Definitions" → conversions), var-bound where the source
+# type is bindable through the scalar-only activation schema;
+# timestamp/duration sources are constructed in-source from string
+# literals (the loader cannot bind timestamp/duration activation
+# values), so those cells measure parse + convert and say so in the
+# id (`RoundTrip`).
+#
+# `type(_)` cells compare against a type literal (`type(i) == int`)
+# so the result lands in a label-diffable bool rather than an opaque
+# type value.
+#
+# Conversion double→string uses an exactly-representable value
+# (42.5): celwasm's double formatter has a known
+# non-shortest-round-trip bug on values like 123.456
+# (e2e/known_bugs_test.cc::DoubleToStringShortestRoundTrip); this
+# corpus benches conversion cost, it does not re-pin that bug.
+#
+# Surface `conversions` maps to BM prefix `conv` (cell id
+# `intFromUint` → `BM_conv_intFromUint`).
+
+schema_version: 1
+surface: conversions
+
+cells:
+
+  # ── int(_) ──
+  - id: intFromUint
+    source: 'int(u)'
+    activation:
+      u: { type: uint, value: 42 }
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: intFromDouble
+    source: 'int(d)'
+    activation:
+      d: { type: double, value: 42.9 }
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: intFromString
+    source: 'int(s)'
+    activation:
+      s: { type: string, value: "42" }
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: intFromTimestamp
+    source: 'int(timestamp("2024-01-01T00:00:00Z"))'
+    expected: { type: int, value: 1704067200 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── uint(_) ──
+  - id: uintFromInt
+    source: 'uint(i)'
+    activation:
+      i: { type: int, value: 42 }
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: uintFromDouble
+    source: 'uint(d)'
+    activation:
+      d: { type: double, value: 42.9 }
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: uintFromString
+    source: 'uint(s)'
+    activation:
+      s: { type: string, value: "42" }
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── double(_) ──
+  - id: doubleFromInt
+    source: 'double(i)'
+    activation:
+      i: { type: int, value: 42 }
+    expected: { type: double, value: 42.0 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: doubleFromUint
+    source: 'double(u)'
+    activation:
+      u: { type: uint, value: 42 }
+    expected: { type: double, value: 42.0 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: doubleFromString
+    source: 'double(s)'
+    activation:
+      s: { type: string, value: "42.5" }
+    expected: { type: double, value: 42.5 }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── string(_) ──
+  - id: stringFromInt
+    source: 'string(i)'
+    activation:
+      i: { type: int, value: 42 }
+    expected: { type: string, value: "42" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromUint
+    source: 'string(u)'
+    activation:
+      u: { type: uint, value: 42 }
+    expected: { type: string, value: "42" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromDouble
+    source: 'string(d)'
+    activation:
+      d: { type: double, value: 42.5 }
+    expected: { type: string, value: "42.5" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromBool
+    source: 'string(x)'
+    activation:
+      x: { type: bool, value: true }
+    expected: { type: string, value: "true" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromBytes
+    source: 'string(x)'
+    activation:
+      x: { type: bytes, value: "abc" }
+    expected: { type: string, value: "abc" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromTimestamp
+    source: 'string(timestamp("2024-01-01T00:00:00Z"))'
+    expected: { type: string, value: "2024-01-01T00:00:00Z" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: stringFromDuration
+    source: 'string(duration("90s"))'
+    expected: { type: string, value: "90s" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── bytes(_) ──
+  - id: bytesFromString
+    source: 'bytes(s)'
+    activation:
+      s: { type: string, value: "abc" }
+    expected: { type: bytes, value: "abc" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── timestamp(_) / duration(_) from string (parse + format) ──
+  - id: timestampRoundTrip
+    source: 'string(timestamp(s))'
+    activation:
+      s: { type: string, value: "2024-06-15T10:30:45Z" }
+    expected: { type: string, value: "2024-06-15T10:30:45Z" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: durationRoundTrip
+    source: 'string(duration(s))'
+    activation:
+      s: { type: string, value: "90s" }
+    expected: { type: string, value: "90s" }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── type(_) ──
+  - id: typeOfInt
+    source: 'type(i) == int'
+    activation:
+      i: { type: int, value: 1 }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: typeOfString
+    source: 'type(s) == string'
+    activation:
+      s: { type: string, value: "x" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]

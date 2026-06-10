@@ -55,6 +55,38 @@ hands you a portable, sandboxed artifact. See
 [`doc/intro.md`](doc/intro.md) for the guided tour and
 [`doc/langdef.md`](doc/langdef.md) for the full language.
 
+## Performance — honest numbers, both directions
+
+Measured 2026-06-09 over a 232-cell corpus (every CEL operator family ×
+data type), head-to-head against cel-cpp's evaluator on the same
+expressions and inputs, `-c opt`, Apple Silicon.  Statically-linked
+mode (`CompilerOptions::LinkMode::kStatic`, the default — the runtime
+helpers are merged into the compiled module at compile time):
+
+| where compilation wins | celwasmc | cel-cpp | |
+|---|---:|---:|---|
+| 100-elem comprehension (`.all(x, …)`) | 713 ns | 6.6 µs | **9× faster** |
+| 1000-term arithmetic chain | 2.0 µs | 33.4 µs | **17× faster** |
+| 20-elem `.map()` | 219 ns | 5.4 µs | **25× faster** |
+| regex `matches` (complex) | 186 ns | 8.9 µs | **48× faster** |
+
+| where the interpreter still wins | celwasmc | cel-cpp | |
+|---|---:|---:|---|
+| single op (`a == b`, `a && b`, …) | ~60–140 ns | ~45–95 ns | 1.2–1.9× slower |
+| `x in [100-elem list]` | 2.7 µs | 1.4 µs | 2× slower |
+| 1000-char string equality | 604 ns | 75 ns | 8× slower |
+| 100-entry map construction | 122 µs | 2.8 µs | 44× slower |
+
+The pattern: **compilation wins wherever there's repetition to
+amortize** — loops, chains, length (the crossover is ~10 operations);
+the mature native interpreter wins on single-op floor cost, constant
+aggregates it folds at plan time (we rebuild list/map literals per
+eval — a planned codegen milestone closes most of that column), and
+SIMD string scans.  Corpus-wide geomean: parity (0.95×).  Full
+methodology, per-family tables, and the architectural cause of every
+loss row:
+[`doc/implementation-plan/rewrite/m28-bench-results.md`](doc/implementation-plan/rewrite/m28-bench-results.md).
+
 ## Bindings — coming soon
 
 The compiler emits a portable artifact, and host bindings *embed* it rather

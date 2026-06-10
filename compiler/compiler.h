@@ -25,9 +25,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/celfn/function_library.h"
 #include "compiler/program.h"
 #include "shared/type.h"
-#include "compiler/celfn/function_library.h"
 
 namespace celwasm {
 
@@ -129,8 +129,9 @@ struct CompilerOptions {
   //              overhead in the dynamic path) is gone because the
   //              embedded runtime variant has had its wrappers
   //              stripped at our build time.  Production-bench numbers
-  //              (cf. `wasm_compilation_experiments/wrapper_overhead/
-  //              FINDINGS.md` §11.4): intAdd1000Terms 78 µs → 1 µs
+  //              (cf. `doc/implementation-plan/rewrite/
+  //              m28-wrapper-overhead-findings.md` §11.4):
+  //              intAdd1000Terms 78 µs → 1 µs
   //              (~80× faster than dynamic, ~30× faster than cel-cpp).
   //              Embedder use case: hot eval loop, latency-critical
   //              path, expression compiled once and evaluated millions
@@ -141,7 +142,7 @@ struct CompilerOptions {
     kDynamic = 0,
     kStatic = 1,
   };
-  LinkMode link_mode = LinkMode::kDynamic;
+  LinkMode link_mode = LinkMode::kStatic;
 };
 
 class Compiler {

@@ -3,9 +3,22 @@
 # build assets live here, never scattered into package dirs and never in
 # `third_party/`).
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_python//python:defs.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
+
+# Tiny header that surfaces `kTestLinkMode` (selected by the
+# `CELWASM_TEST_USE_STATIC_LINK_MODE` compile-time macro that
+# `link_mode_test.bzl::link_mode_cc_test` injects on its `_static`
+# emission).  Used by unit tests under `//compiler/...` and
+# `//eval/...` that exercise `Compile()` and want their bodies to
+# run under both link modes.
+cc_library(
+    name = "link_mode_test_helpers",
+    hdrs = ["link_mode_test_helpers.h"],
+    deps = ["//compiler:compiler"],
+)
 
 # Derives the runtime-helper catalogue from the `cel_runtime` C source:
 # every codegen-imported helper is marked `// cel:codegen-export` at its

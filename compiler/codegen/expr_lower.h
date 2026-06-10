@@ -246,8 +246,7 @@ struct CustomFnParam {
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToCustomFn(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view export_name, absl::Span<const CustomFnParam> params,
-    WasmModule& mod, const OverloadTable& overload_table,
-    const LoweringOptions& opts = {});
+    WasmModule& mod, const OverloadTable& overload_table);
 
 }  // namespace celwasm
 

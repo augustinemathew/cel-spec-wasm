@@ -24,6 +24,8 @@
 #include "compiler/codegen/resolve_pass.h"
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/typed_ast.h"
+#include "runtime/cel_layout.h"
+#include "runtime/cel_runtime_stripped_wasm_bytes.h"
 
 namespace celwasm {
 
@@ -36,57 +38,87 @@ uint32_t PagesForBytes(uint32_t mem_size_bytes) {
   return (mem_size_bytes + kWasmPageBytes - 1) / kWasmPageBytes;
 }
 
-// `cel_host.cel_get_field` + `cel_host.cel_has_field` trampolines.
-// Always imported — the runtime links the cel_host module
-// unconditionally (see CLAUDE.md "no lazy tracking of runtime
-// imports").
-void InstallSelectImports(WasmModule& mod) {
+// All `cel_host.*` host-trampoline imports.  Factored out so both
+// dynamic-mode (`InstallExprModuleImports`) and static-mode
+// (`CompileStatic`) install them on the same code path with the same
+// internal names — `expr_lower`'s `BinaryenCall(kCelHost*InternalName)`
+// resolves to the import declared here in either mode.
+//
+// The runtime-side build (`runtime/cel_runtime.wasm`) also declares
+// these as imports, but wasm-ld auto-names them `$<module>_<base>`
+// (e.g. `$cel_host_cel_get_field`), which does NOT match the
+// expected internal names expr_lower uses.  In static mode the
+// adopted runtime carries its own `$cel_host_*`-named imports; we
+// install a parallel set under the expected names so codegen calls
+// resolve.  Wasm allows multiple imports with the same `(module,
+// base, type)` triple, and wasmtime resolves them identically at
+// instantiate time.
+void InstallCelHostImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType host_params[4] = {i32, i32, i32, i32};
+  const BinaryenType host4[4] = {i32, i32, i32, i32};
+  const BinaryenType host3[3] = {i32, i32, i32};
+  const BinaryenType host2[2] = {i32, i32};
+
+  // Select arm — kSelectExpr.
   mod.AddFunctionImport(std::string(kCelHostGetFieldInternalName), "cel_host",
-                        "cel_get_field", host_params, BinaryenTypeNone());
+                        "cel_get_field", host4, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
-                        "cel_has_field", host_params, BinaryenTypeNone());
+                        "cel_has_field", host4, BinaryenTypeNone());
+
+  // Struct arm — kStructExpr (proto / WKT message literals).
+  mod.AddFunctionImport(std::string(kCelHostMakeMessageInternalName),
+                        "cel_host", "cel_make_message", host2,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostSetFieldInternalName), "cel_host",
+                        "cel_set_field", host3, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostWktUnwrapTimeInternalName),
+                        "cel_host", "cel_wkt_unwrap_time", host2,
+                        BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
+                        "cel_host", "cel_wkt_unwrap_wrapper", host3,
+                        BinaryenTypeNone());
+
+  // Aggregate-dispatch arms — kCallExpr `_[_]` on map / list (host
+  // representation; arena representation goes through cel.* helpers).
+  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
+                        "cel_map_lookup", host3, BinaryenTypeNone());
+  mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
+                        "cel_list_at", host3, BinaryenTypeNone());
 }
 
-// `cel_host.cel_make_message` — `(type_id, out_slot)` → ().
-// `cel_host.cel_set_field` — `(msg_slot, field_ref_id, value_slot)`
-// → ().  Both always imported (no lazy tracking — CLAUDE.md);
-// codegen emits direct calls in the kStructExpr arm.
-// `cel_host.cel_wkt_unwrap_time` — `(out_slot, msg_slot)` → ().
-// Conditional emit at the kStructExpr tail for WKT
-// Timestamp/Duration literals.
-// `cel_host.cel_wkt_unwrap_wrapper` —
-// `(out_slot, msg_slot, wrapper_kind)` → ().  Conditional emit at
-// the kStructExpr tail for the 9 wrapper FQNs.  Uninstalled
-// imports validate fine — keep them always installed per
-// CLAUDE.md "no lazy tracking" rule.  See
-// `rewrite/m7-proto-literals.md` and `rewrite/m8-wrapper-types.md`.
-void InstallStructImports(WasmModule& mod) {
+// Map-key iteration helpers used by comprehensions over a
+// `map(K, V)` source.  Always imported regardless of AST presence
+// — per CLAUDE.md "no lazy tracking of runtime imports".  Wire
+// shapes pinned by `rewrite/wat/64_comprehension_exists_map.wat`:
+//   cel_map_iter_init       (map_slot)              -> i32 handle
+//   cel_map_iter_next       (handle)                -> i32 (0|1)
+//   cel_map_iter_key_at     (out_slot, handle)      -> void
+//   cel_map_iter_value_at   (out_slot, handle)      -> void
+void InstallMapIterImports(WasmModule& mod) {
   const BinaryenType i32 = BinaryenTypeInt32();
-  const BinaryenType make_params[2] = {i32, i32};
-  mod.AddFunctionImport(std::string(kCelHostMakeMessageInternalName),
-                        "cel_host", "cel_make_message", make_params,
-                        BinaryenTypeNone());
-  const BinaryenType set_params[3] = {i32, i32, i32};
-  mod.AddFunctionImport(std::string(kCelHostSetFieldInternalName), "cel_host",
-                        "cel_set_field", set_params, BinaryenTypeNone());
-  // 2-arg `(out_slot, msg_slot)` — `make_params` happens to match.
-  mod.AddFunctionImport(std::string(kCelHostWktUnwrapTimeInternalName),
-                        "cel_host", "cel_wkt_unwrap_time", make_params,
-                        BinaryenTypeNone());
-  // 3-arg `(out_slot, msg_slot, wrapper_kind)` — `set_params` happens
-  // to match (same i32, i32, i32 shape).
-  mod.AddFunctionImport(std::string(kCelHostWktUnwrapWrapperInternalName),
-                        "cel_host", "cel_wkt_unwrap_wrapper", set_params,
-                        BinaryenTypeNone());
-  // Optional-payload predicate-gated proto-field set for
-  // `Foo{?field: opt_value}` entries.  Wasm-side unwrap → delegate
-  // to `cel_host.cel_set_field` on Some; no-op on None.
-  // `(msg_slot, field_ref_id, opt_value_slot) -> void`.
-  mod.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
-                        "cel_set_field_at_if_present", set_params,
-                        BinaryenTypeNone());
+  const BinaryenType iter_one_param[1] = {i32};
+  const BinaryenType iter_two_params[2] = {i32, i32};
+  mod.AddFunctionImport("cel_map_iter_init", "cel", "cel_map_iter_init",
+                        iter_one_param, i32);
+  mod.AddFunctionImport("cel_map_iter_next", "cel", "cel_map_iter_next",
+                        iter_one_param, i32);
+  mod.AddFunctionImport("cel_map_iter_key_at", "cel", "cel_map_iter_key_at",
+                        iter_two_params, BinaryenTypeNone());
+  mod.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
+                        iter_two_params, BinaryenTypeNone());
+  // `cel_map_count(map_slot) -> i32` — kind-dispatching count helper
+  // for comprehension pre-sizing.  Arena: header.count inline; Host:
+  // calls `cel_host.cel_map_size` and unboxes.  See m5b §CCF-8.
+  mod.AddFunctionImport("cel_map_count", "cel", "cel_map_count", iter_one_param,
+                        i32);
+  // `cel_list_arena_view(list_slot) -> i32` — kind-dispatching list
+  // iter snapshot.  Arena: returns input slot (identity).  Host:
+  // allocates a synthetic CEL_LIST_ARENA CelValue + arena snapshot
+  // of elements, returns the new slot offset.  Lets the inline
+  // arena prologue walk host lists unchanged.  See m5b §CCF-8
+  // Slice 2.
+  mod.AddFunctionImport("cel_list_arena_view", "cel", "cel_list_arena_view",
+                        iter_one_param, i32);
 }
 
 // Map literal + indexing runtime entry points.  `cel_map_*` come
@@ -121,39 +153,9 @@ void InstallMapImports(WasmModule& mod) {
                         BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
                         "cel_map_lookup", map3_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostMapLookupInternalName), "cel_host",
-                        "cel_map_lookup", map3_params, BinaryenTypeNone());
-  // Map-key iteration helpers used by comprehensions over a
-  // `map(K, V)` source.  Always imported regardless of AST presence
-  // — per CLAUDE.md "no lazy tracking of runtime imports".  Wire
-  // shapes pinned by `rewrite/wat/64_comprehension_exists_map.wat`:
-  //   cel_map_iter_init       (map_slot)              -> i32 handle
-  //   cel_map_iter_next       (handle)                -> i32 (0|1)
-  //   cel_map_iter_key_at     (out_slot, handle)      -> void
-  //   cel_map_iter_value_at   (out_slot, handle)      -> void
-  const BinaryenType iter_one_param[1] = {i32};
-  const BinaryenType iter_two_params[2] = {i32, i32};
-  mod.AddFunctionImport("cel_map_iter_init", "cel", "cel_map_iter_init",
-                        iter_one_param, i32);
-  mod.AddFunctionImport("cel_map_iter_next", "cel", "cel_map_iter_next",
-                        iter_one_param, i32);
-  mod.AddFunctionImport("cel_map_iter_key_at", "cel", "cel_map_iter_key_at",
-                        iter_two_params, BinaryenTypeNone());
-  mod.AddFunctionImport("cel_map_iter_value_at", "cel", "cel_map_iter_value_at",
-                        iter_two_params, BinaryenTypeNone());
-  // `cel_map_count(map_slot) -> i32` — kind-dispatching count helper
-  // for comprehension pre-sizing.  Arena: header.count inline; Host:
-  // calls `cel_host.cel_map_size` and unboxes.  See m5b §CCF-8.
-  mod.AddFunctionImport("cel_map_count", "cel", "cel_map_count", iter_one_param,
-                        i32);
-  // `cel_list_arena_view(list_slot) -> i32` — kind-dispatching list
-  // iter snapshot.  Arena: returns input slot (identity).  Host:
-  // allocates a synthetic CEL_LIST_ARENA CelValue + arena snapshot
-  // of elements, returns the new slot offset.  Lets the inline
-  // arena prologue walk host lists unchanged.  See m5b §CCF-8
-  // Slice 2.
-  mod.AddFunctionImport("cel_list_arena_view", "cel", "cel_list_arena_view",
-                        iter_one_param, i32);
+  // `cel_host.cel_map_lookup` (host-rep dispatch arm) is installed by
+  // `InstallCelHostImports` for both link modes.
+  InstallMapIterImports(mod);
 }
 
 // List literal + indexing runtime entry points.  Same shape as
@@ -170,8 +172,8 @@ void InstallListImports(WasmModule& mod) {
                         "cel_list_at_arena", list3_params, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelListAtInternalName), "cel",
                         "cel_list_at", list3_params, BinaryenTypeNone());
-  mod.AddFunctionImport(std::string(kCelHostListAtInternalName), "cel_host",
-                        "cel_list_at", list3_params, BinaryenTypeNone());
+  // `cel_host.cel_list_at` (host-rep dispatch arm) is installed by
+  // `InstallCelHostImports` for both link modes.
   // Universal append for arena lists — used by both literal codegen
   // (N appends per literal, in index order) and comprehension accu
   // codegen (per-iter for map / filter / transformList).
@@ -188,6 +190,16 @@ void InstallListImports(WasmModule& mod) {
   // entries.  `(list_slot, opt_value_slot) -> void`.
   mod.AddFunctionImport(std::string(kCelListAppendAtIfPresentInternalName),
                         "cel", "cel_list_append_at_if_present", append_params,
+                        BinaryenTypeNone());
+  // Optional-payload predicate-gated proto-field set for
+  // `Foo{?field: opt_value}` entries.  Wasm-side unwrap → delegate to
+  // `cel_host.cel_set_field` on Some; no-op on None.
+  // `(msg_slot, field_ref_id, opt_value_slot) -> void`.  Kept with
+  // the list / map sibling at-if-present helpers — same arity, same
+  // wasm-side dispatch pattern.
+  const BinaryenType set_params[3] = {i32, i32, i32};
+  mod.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
+                        "cel_set_field_at_if_present", set_params,
                         BinaryenTypeNone());
 }
 
@@ -257,6 +269,20 @@ void InstallOverloadImportsExport(WasmModule& mod,
   // different aliases (`rules.allow` vs `policy.allow`), and we
   // want both imports installed; only same-module same-helper
   // duplicates should be folded.
+  //
+  // Also skip if the module already has a function under the
+  // expected internal name.  Under `LinkMode::kStatic` the adopted
+  // runtime module carries every cel.* helper as a defined function;
+  // installing a same-named import would conflict.  Custom (cel_fn)
+  // imports aren't present in the adopted module, so they still get
+  // installed.
+  //
+  // Cost of the per-entry probe: `BinaryenGetFunction` is a single
+  // `std::unordered_map<Name, Function*>` lookup (Binaryen
+  // `Module::getFunctionOrNull`), and the table is a fixed few
+  // hundred entries (built-in seeds + embedder customs) walked once
+  // per Compile — microseconds total, noise next to parse/check and
+  // Binaryen IR construction.  Not worth gating on link mode.
   absl::flat_hash_set<std::pair<std::string, std::string>> installed;
   for (uint32_t id = 1; id <= overload_table.size(); ++id) {
     const OverloadImpl& impl = overload_table.LookupById(id);
@@ -264,6 +290,10 @@ void InstallOverloadImportsExport(WasmModule& mod,
     const std::string helper_name(impl.name);
     auto key = std::make_pair(std::string(module_name), helper_name);
     if (installed.contains(key)) continue;
+    if (BinaryenGetFunction(mod.raw(), helper_name.c_str()) != nullptr) {
+      installed.insert(std::move(key));
+      continue;
+    }
     InstallOverloadImport(mod, helper_name, module_name, impl.num_args);
     installed.insert(std::move(key));
   }
@@ -278,7 +308,8 @@ void InstallOverloadImportsExport(WasmModule& mod,
   // to gate on AST inspection.  Arity from the ABI catalogue.
   auto copy_key =
       std::make_pair(std::string("cel"), std::string("cel_copy_slot"));
-  if (!installed.contains(copy_key)) {
+  if (!installed.contains(copy_key) &&
+      BinaryenGetFunction(mod.raw(), "cel_copy_slot") == nullptr) {
     const auto* helper =
         abi::FindBuiltinHelper(abi::AbiModule::kCelRuntime, "cel_copy_slot");
     ABSL_CHECK(helper != nullptr)
@@ -327,10 +358,9 @@ absl::Status InstallExprModuleImports(WasmModule& mod,
                         absl::Span<const BinaryenType>{}, BinaryenTypeNone());
   const BinaryenType alloc_params[1] = {i32};
   mod.AddFunctionImport("arena_alloc", "cel", "arena_alloc", alloc_params, i32);
-  InstallSelectImports(mod);
+  InstallCelHostImports(mod);
   InstallMapImports(mod);
   InstallListImports(mod);
-  InstallStructImports(mod);
   return absl::OkStatus();
 }
 
@@ -340,9 +370,14 @@ namespace {
 // serialised `celwasm.abi.CelAbi` proto populated from the
 // compile-time layout.  Engine::Plan reads it at load time to build
 // the runtime lookup tables Instance::Eval(Activation) needs.
+// `link_mode` is the wire-format marker for the mode this module was
+// emitted under — embedder-tooling metadata, not an engine routing
+// input (see doc/implementation-plan/rewrite/m28-configurable-linking.md
+// §6).
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
-                                 absl::Span<const FieldRefRow> field_refs) {
-  auto abi_or = BuildCelAbi(layout, field_refs);
+                                 absl::Span<const FieldRefRow> field_refs,
+                                 celwasm::abi::LinkMode link_mode) {
+  auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
   if (!abi_or.ok()) return abi_or.status();
   std::string abi_bytes;
   if (!abi_or->SerializeToString(&abi_bytes)) {
@@ -358,14 +393,18 @@ absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
 // Parse + check + resolve + layout.  The expensive half of the
 // pipeline; returns the populated front-half of a CompiledArtifact
 // (ast + layout).  Extracted from Compile() to keep the top-level
-// function under the function-size lint threshold.
-absl::StatusOr<CompiledArtifact> RunFrontAndLayout(absl::string_view expression,
-                                                   const CompileOptions& opts) {
+// function under the function-size lint threshold.  `layout_opts`
+// flows to LayoutPass — the kStatic merge path uses it to shift
+// rodata above the runtime's own static-data range (see
+// `CompileStatic`).
+absl::StatusOr<CompiledArtifact> RunFrontAndLayout(
+    absl::string_view expression, const CompileOptions& opts,
+    const LayoutOptions& layout_opts = {}) {
   auto ast_or = ParseAndCheck(expression, opts.check);
   if (!ast_or.ok()) return ast_or.status();
   auto resolved_or = ResolvePass(*ast_or);
   if (!resolved_or.ok()) return resolved_or.status();
-  auto layout_or = LayoutPass(*ast_or, *std::move(resolved_or));
+  auto layout_or = LayoutPass(*ast_or, *std::move(resolved_or), layout_opts);
   if (!layout_or.ok()) return layout_or.status();
   return CompiledArtifact{
       /*ast=*/*std::move(ast_or),
@@ -434,34 +473,74 @@ absl::StatusOr<OverloadTable> BuildOverloadTable(
   return std::move(builder).Build();
 }
 
-}  // namespace
-
-absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
-                                         const CompileOptions& opts) {
-  // m28 — Static linking lands across two commits: this one (field
-  // plumbing + Unimplemented stub) and the next (in-Compile merge step
-  // using `cel_runtime_stripped_wasm_bytes`).  Until then, `kStatic`
-  // surfaces as a clear UnimplementedError rather than silently
-  // miscompiling to dynamic shape.
-  if (opts.link_mode == CompileOptions::LinkMode::kStatic) {
-    return absl::UnimplementedError(
-        "Compile() with link_mode=kStatic is not yet wired — m28 "
-        "follow-up commit lands the in-Compile merge against "
-        "cel_runtime_stripped_wasm_bytes");
+// Adopt the wrapper-stripped runtime wasm as the base Binaryen
+// module for static-mode emission.
+absl::StatusOr<WasmModule> AdoptStrippedRuntime() {
+  // Cast away the `const` on the byte pointer — Binaryen's API
+  // spelling takes a mutable `char*` but does not mutate the input on
+  // the deserialize path (it copies into its own arena before any
+  // in-place rewriting).
+  auto* raw_bytes = reinterpret_cast<char*>(
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      const_cast<unsigned char*>(kCelRuntimeStrippedWasmBytes));
+  BinaryenModuleRef adopted =
+      BinaryenModuleRead(raw_bytes, kCelRuntimeStrippedWasmBytesSize);
+  if (adopted == nullptr) {
+    return absl::InternalError(
+        "CompileStatic: BinaryenModuleRead failed on embedded "
+        "cel_runtime_stripped_wasm bytes");
   }
-  auto out_or = RunFrontAndLayout(expression, opts);
-  if (!out_or.ok()) return out_or.status();
-  CompiledArtifact out = *std::move(out_or);
+  return WasmModule::Adopt(adopted);
+}
 
-  if (auto s =
-          InstallExprModuleImports(out.module, out.layout, opts.mem_size_bytes);
-      !s.ok()) {
-    return s;
+// Install expr's rodata as an active data segment on the adopted
+// runtime's memory.  The runtime is linked with
+// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB), so
+// the bottom 8 KiB of linear memory is reserved by design for the
+// expr module's active data segments; the runtime's own wasi-libc
+// static data + stack + heap live above that.  The segment must
+// therefore end at or below that boundary — a larger one would
+// silently overwrite the runtime's static data at instantiate time.
+// Overflow is a status error, not a CHECK: the rodata size is
+// embedder-input-dependent (a big string literal is a legitimate
+// input), and embedder input must not crash the process.  See
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
+//
+// The runtime declares its memory with the clang/wasi-libc-emitted
+// internal name `"0"` (single-char index name); our own freshly-built
+// modules use `"memory"`.
+absl::Status InstallExprRodataSegment(WasmModule& mod,
+                                      const StaticLayout& layout) {
+  const uint64_t rodata_end =
+      static_cast<uint64_t>(layout.rodata_base) + layout.rodata.size();
+  if (rodata_end > CELWASM_RESERVED_LOW_MEMORY_BYTES) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        "CompileStatic: expression rodata ends at byte ", rodata_end,
+        ", past the ", CELWASM_RESERVED_LOW_MEMORY_BYTES,
+        "-byte low-memory window reserved for it below the bundled "
+        "runtime's static data; see doc/implementation-plan/rewrite/"
+        "m28-configurable-linking.md §5.3.1"));
   }
+  mod.AddActiveDataSegment(layout.rodata_base, layout.rodata,
+                           /*memory_name=*/"0");
+  return absl::OkStatus();
+}
 
-  // Build the OverloadTable (built-ins + embedder customs from
-  // `opts.function_libraries`).  See `BuildOverloadTable` for the
-  // per-decl mapping rules.
+// Shared back half of both link-mode arms, run after the arm's
+// mode-specific module bootstrap (fresh module + full import surface
+// for kDynamic; adopted stripped runtime + rodata segment + cel_host
+// imports for kStatic).  Builds the OverloadTable (built-ins +
+// embedder customs — `LowerToEvalFunction` needs it to map cel-cpp
+// overload-ids to wasm helper names), installs any overload imports
+// the module doesn't already define (`InstallOverloadImportsExport`
+// self-skips helpers that are defined functions in the adopted
+// runtime, so under kStatic only custom `cel_fn.*` imports land),
+// lowers `$eval`, exports it, attaches the `cel.abi` section stamped
+// with `link_mode`, and finalises (validate / optimize / serialize).
+// Factored into one helper so the two arms can't silently diverge.
+absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
+    CompiledArtifact out, const CompileOptions& opts,
+    celwasm::abi::LinkMode link_mode) {
   auto overload_table_or = BuildOverloadTable(opts.function_libraries);
   if (!overload_table_or.ok()) return overload_table_or.status();
   OverloadTable overload_table = *std::move(overload_table_or);
@@ -478,12 +557,69 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
   out.module.ExportFunction(opts.eval_internal_name, opts.eval_export_name);
 
   if (auto s = AttachCelAbiSection(out.module, out.layout,
-                                   absl::MakeConstSpan(out.eval_fn.field_refs));
+                                   absl::MakeConstSpan(out.eval_fn.field_refs),
+                                   link_mode);
       !s.ok()) {
     return s;
   }
   if (auto s = FinaliseModule(out, opts); !s.ok()) return s;
   return out;
+}
+
+// kStatic link mode.  Loads the wrapper-stripped runtime wasm as the
+// base Binaryen module, then emits `$eval` against that module so the
+// expression's calls to runtime helpers (`arena_reset`, `cel_int_add_at_vv`,
+// `cel_list_at_arena`, …) bind intra-module rather than via imports.
+// Skips `InstallExprModuleImports` entirely — every name it installs
+// is already a defined function in the adopted module, and adding
+// duplicate imports would conflict.
+absl::StatusOr<CompiledArtifact> CompileStatic(absl::string_view expression,
+                                               const CompileOptions& opts) {
+  auto out_or = RunFrontAndLayout(expression, opts);
+  if (!out_or.ok()) return out_or.status();
+  CompiledArtifact out = *std::move(out_or);
+
+  auto adopted_or = AdoptStrippedRuntime();
+  if (!adopted_or.ok()) return adopted_or.status();
+  out.module = *std::move(adopted_or);
+
+  if (auto s = InstallExprRodataSegment(out.module, out.layout); !s.ok()) {
+    return s;
+  }
+
+  // Install `cel_host.*` trampoline imports under the internal names
+  // `expr_lower` references via `BinaryenCall(kCelHost*InternalName)`.
+  // The adopted runtime already imports the same `(cel_host, X)`
+  // pairs — but under wasm-ld-assigned internal names like
+  // `$cel_host_cel_get_field` that codegen never targets.  Wasm allows
+  // multiple imports under the same `(module, base, type)` triple;
+  // wasmtime resolves both to the same host trampoline at instantiate
+  // time, so the parallel set is harmless to the runtime side.
+  InstallCelHostImports(out.module);
+
+  return LowerExportAndFinalise(std::move(out), opts,
+                                celwasm::abi::LINK_MODE_STATIC);
+}
+
+}  // namespace
+
+absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
+                                         const CompileOptions& opts) {
+  if (opts.link_mode == CompileOptions::LinkMode::kStatic) {
+    return CompileStatic(expression, opts);
+  }
+  auto out_or = RunFrontAndLayout(expression, opts);
+  if (!out_or.ok()) return out_or.status();
+  CompiledArtifact out = *std::move(out_or);
+
+  if (auto s =
+          InstallExprModuleImports(out.module, out.layout, opts.mem_size_bytes);
+      !s.ok()) {
+    return s;
+  }
+
+  return LowerExportAndFinalise(std::move(out), opts,
+                                celwasm::abi::LINK_MODE_DYNAMIC);
 }
 
 }  // namespace celwasm

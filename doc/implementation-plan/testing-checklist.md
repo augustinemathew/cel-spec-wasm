@@ -2612,6 +2612,163 @@ aggregate returns work for user host fns.  No wire-format / runtime
         (`FunctionOriginUnknownSurvivesOperatorMerge`).  Error args
         propagate (error precedence over unknown).
 
+## Rewrite M28 — Configurable linking (prototype shipped 2026-06-08)
+
+The prototype lands `LinkMode::kStatic` end-to-end through Compile →
+Plan → Eval with 51/51 e2e green in both modes.  Full design in
+`doc/implementation-plan/rewrite/m28-configurable-linking.md`; review
+in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
+
+**Shipped:**
+
+  - [x] `CompilerOptions::link_mode = kStatic` compiles for scalar /
+        arith / concat / ternary expression cells
+        (`compiler/compiler_test.cc::CompilerLinkModeTest` +
+        `compiler/internal/compile_test.cc`).
+  - [x] `kStatic` Program plans + evaluates through `Engine::Plan` —
+        unified Plan body with two `if (is_static)` branches, no
+        separate `PlanStatic` (`eval/engine.cc:751-779`).
+  - [x] Parity (kDynamic vs kStatic) verified on the
+        `e2e/m28_static_link_test.cc` matrix (const int / string /
+        bool, 1+2 int, "a"+"b", ternary).
+  - [x] `InstanceImpl::runtime_instance` → `helpers_instance` rename
+        complete across `eval/engine.cc` + `eval/internal/instance_impl.h`
+        (6 reader sites; doc references in
+        `doc/implementation-plan/rewrite/{design,abi-refactor,wasi/DESIGN,wasi/README,wasi/milestones/M6-M8}.md`
+        reconciled 2026-06-08).
+  - [x] Strip tool + `cel_runtime_stripped_wasm_bytes` build target
+        with three byte-shape invariants pinned
+        (`runtime/cel_runtime_stripped_wasm_bytes_test.cc`).
+  - [x] Default `CompilerOptions::link_mode` is `kStatic` — flipped
+        in the 2026-06-08 simplification pass
+        (`compiler/compiler.h:144`, `compiler/internal/compile.h:102`);
+        51/51 e2e green under either default.
+  - [x] `Engine::Plan` routes via wasmtime's own import-introspection
+        API — `ModuleImportsCelNamespace(wasmtime_module_t*)` in
+        `eval/engine.cc:378`, ~15 lines using `wasmtime_module_imports`.
+        Replaces the original ~85-line hand-rolled ULEB128 + section
+        walker `HasCelImports(bytes)`.
+  - [x] `InstallStructImports` folded into `InstallListImports` —
+        the helper's single remaining import
+        (`cel.cel_set_field_at_if_present`) now ships alongside the
+        sibling `*_at_if_present` predicates
+        (`compiler/internal/compile.cc:159`).
+  - [x] Dual-mode e2e infrastructure landed (2026-06-09) —
+        `e2e/link_mode_e2e_helpers.h` selects `kE2ELinkMode` from a
+        compile-time macro; `e2e/link_mode_e2e_test.bzl` defines
+        `link_mode_e2e_cc_test` which emits `<name>_dynamic` +
+        `<name>_static` cc_test pairs per source.  Replaces 14
+        per-file `CompilePlan` duplicates.  See
+        `doc/implementation-plan/rewrite/m28-configurable-linking.md` §5.5.
+  - [x] 22 e2e source files run in both kDynamic and kStatic
+        (2026-06-09) — `mvp_concat_test`, `known_bugs_test`,
+        `host_fn_test`, `optimize_test`, `program_roundtrip_test`,
+        `wkt_field_set_test`, `m2_test`, `m2_partial_eval_test`,
+        `m4_test`, `m5_test`, `m5b_test`, `m7_test`, `m7a_test`,
+        `m7b_test`, `m8_test`, `m9_test`, `m10_test`, `m12_test`,
+        `m14_test`, `m16_test`, `m17_test`, `m18_test`.  **45/45
+        targets pass** with bit-identical results between modes.
+        Covers variable-bearing cells, comprehensions, `has(msg.field)`,
+        list / map literals, host-fn calls, and program-roundtrip.
+        The bespoke `m28_static_link_test` remains explicitly
+        mode-scoped.
+  - [x] cctz + absl format-spec paths verified identical in both
+        modes (2026-06-09) — `e2e/cctz_doubles_test.cc`, 14 cells
+        covering `timestamp(RFC3339)` parse, timezone-aware
+        accessor (`cel_host.cel_timestamp_tz_accessor`),
+        `duration(string)` parse, `timestamp + duration` and
+        `timestamp - timestamp` arithmetic, `string(<double>)`
+        (full IEEE 754 precision via absl `str_format`),
+        `double(<string>)` parse, and cross-type double
+        arithmetic.  Settles the previously-feared silent-corruption
+        gap empirically — see m28 §10.1 invariant 9 for the
+        framing correction this enabled.
+  - [x] Dual-mode bench harness backported (2026-06-09) —
+        `benchmark/eval/celwasm_bench` takes `--link_mode=dynamic|static`
+        (default dynamic, consumed before Google Benchmark arg
+        parsing); `run.sh` runs the celwasm side once per mode and
+        emits two `report.sh` tables against the single `celcpp_bench`
+        run.  The prototype's hardcoded merged-wasm cells (which
+        loaded artifacts from the deleted
+        `wasm_compilation_experiments/` dir) were removed — the same
+        measurement is now `--link_mode=static` over the regular
+        corpus.  Loader coverage: `benchmark/eval/corpus_loader_test.cc`.
+  - [x] `Engine::Builder::EnableJitPerfMap` (2026-06-09) — opt-in
+        wasmtime perfmap profiling strategy for JIT symbolication
+        under `samply` / `perf`; positive (enabled engine builds,
+        plans, evals `40 + 2` → 42, chained-rvalue builder form) +
+        explicit-false cases in
+        `eval/engine_test.cc::EngineBuilderJitPerfMapTest`, both
+        link modes.
+
+**P1 follow-ups — ALL CLOSED 2026-06-09 (evening pass):**
+
+  - [x] Strip-tool no-merge invariant pinned (P1-2; invariant 1) —
+        `runtime/cel_runtime_stripped_wasm_bytes_test.cc::
+        CatalogueExportsTargetDistinctFunctions`: catalogue membership
+        + pairwise-distinct internal targets.
+  - [x] Rodata budget enforced (P1-3; invariant 6) —
+        `InstallExprRodataSegment` returns ResourceExhausted past
+        `CELWASM_RESERVED_LOW_MEMORY_BYTES`; red-first negative test
+        (9000-char literal previously compiled silently), 4 KiB
+        boundary positive, dynamic-mode control
+        (`compiler/internal/compile_test.cc`).
+  - [x] Conformance parameterized over `LinkMode`; both modes green
+        (P1-4) — full corpus 1899/463/92 each, byte-identical down to
+        FAIL detail text; gate script runs both modes with per-mode
+        baselines (`conformance/.baseline_static` = 1899).
+  - [x] Matrix coverage in static mode — variable-bearing cells,
+        comprehension, `has(msg.field)`, list / map literals
+        (P1-5, originally tracked against `m28_static_link_test.cc`).
+        Satisfied 2026-06-09 via the dual-mode e2e sweep over 22
+        source files; bit-identical results between modes.
+        *(Remaining: a 1000-term arith chain cell — defer with the
+        bench gate.)*
+  - [x] `ModuleImportsCelNamespace` unit test (P1-6; invariant 8) —
+        helper extracted to `eval/internal/module_imports.{h,cc}`
+        with `module_imports_test.cc`: synthetic-WAT matrix (no
+        imports / wasi-only / cel_host-only / cel.* / mixed /
+        multiple) plus the module-name boundary cases ("celx", "ce")
+        pinning the size==3 + memcmp comparison.  2026-06-09.
+  - [x] `WasmModule::Adopt` + `AddActiveDataSegment` unit tests in
+        `compiler/codegen/module_test.cc` (P1-7) — adopt round-trip,
+        feature-set UNION (MVP-featured module gains DefaultFeatures;
+        invariant 5), ownership/destruction, segments on `"memory"`
+        and `"0"`-named memories, empty-span boundary.  2026-06-09.
+  - [x] Codegen-side guard against future `BinaryenLoad(..., "memory")`
+        (P1-8; invariant 2) — structural: `CodegenLoad`/`CodegenStore`
+        wrappers with no memory-name parameter replaced all 11 direct
+        sites; emitted wasm byte-identical (golden + dual-mode e2e).
+        2026-06-09.
+  - [x] Bench cells run under both modes; production three-way data
+        in `rewrite/m28-bench-results.md`.  The §11.4 ±10%
+        reproduction FAILED (17–22× measured vs ~31× claimed) — the
+        results doc records the corrected headline and causes.
+        2026-06-09.
+  - [x] `cel.abi` `LinkMode` proto field added (field 7); legacy
+        bytes decode as `LINK_MODE_DYNAMIC` (hand-rolled legacy-wire
+        test), dynamic sections stay byte-identical to pre-field
+        Programs (structural pin), unknown future values pass through
+        (`abi/cel_abi_emit_test.cc`); both compile arms stamp their
+        mode (`compiler/internal/compile_test.cc`).  2026-06-09.
+
+**P2 follow-ups (reframed from P1; defense-in-depth, not gate items):**
+
+  - [ ] Defense-in-depth `CallInit` helper at `Engine::Plan` time —
+        look up `__wasm_call_ctors` on `helpers_instance`, invoke
+        once if present, skip silently if absent.  (Originally
+        tracked as P1 against the design's promised
+        `CallInit(_initialize | __wasm_call_ctors)` and a cctz-
+        touching e2e.)  *(Reframed 2026-06-09; see
+        `m28-configurable-linking.md` §10.1 invariant 9 and
+        §13 P2.  The strip tool DCEs `__wasm_call_ctors`
+        entirely from the stripped runtime, and the dual-mode
+        e2e sweep — including `e2e/cctz_doubles_test.cc` —
+        showed every tested cctz / absl path is bit-identical
+        between modes.  Helper remains useful as a tripwire for
+        future surfaces, e.g. RE2-driven regex or a new absl
+        format-spec.)*
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

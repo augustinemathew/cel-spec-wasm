@@ -295,5 +295,168 @@ TEST(WasmModuleOptimizeTest, LevelOutOfRangeIsInvalidArgument) {
   EXPECT_THAT(m.Optimize(4), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ── WasmModule::Adopt ────────────────────────────────────────────
+
+// Mirrors the `DefaultFeatures()` set module.cc installs on every
+// WasmModule (it lives in an anonymous namespace, so it can't be
+// referenced here).  Duplicated deliberately: the default feature set
+// is part of the module contract, and this constant is the tripwire
+// that makes changing it a reviewable event.
+BinaryenFeatures ExpectedDefaultFeatures() {
+  return BinaryenFeatureReferenceTypes() | BinaryenFeatureMultivalue() |
+         BinaryenFeatureBulkMemory() | BinaryenFeatureSignExt() |
+         BinaryenFeatureMutableGlobals() | BinaryenFeatureGC() |
+         BinaryenFeatureAtomics();
+}
+
+TEST(WasmModuleAdoptTest, RoundTripThroughSerializeAndReadValidates) {
+  // Serialize a small module, read it back with BinaryenModuleRead,
+  // and Adopt the result — the kStatic link-mode shape, where the
+  // pre-built runtime wasm is loaded as the base module.
+  WasmModule src;
+  ASSERT_THAT(src.SetMemory(1, std::nullopt, "memory"), IsOk());
+  BinaryenExpressionRef body = BinaryenNop(src.raw());
+  src.AddFunction("f", {}, BinaryenTypeNone(), {}, body);
+  ASSERT_THAT(src.Validate(), IsOk());
+  auto bytes_or = src.Serialize();
+  ASSERT_THAT(bytes_or, IsOk());
+
+  // BinaryenModuleRead takes a mutable `char*`; copy into a scratch
+  // buffer rather than const_cast'ing the serialised bytes.
+  std::vector<char> buf(bytes_or->begin(), bytes_or->end());
+  BinaryenModuleRef read = BinaryenModuleRead(buf.data(), buf.size());
+  ASSERT_NE(read, nullptr);
+
+  WasmModule adopted = WasmModule::Adopt(read);
+  EXPECT_TRUE(BinaryenHasMemory(adopted.raw()));
+  EXPECT_THAT(adopted.Validate(), IsOk());
+  const BinaryenFeatures feats = BinaryenModuleGetFeatures(adopted.raw());
+  EXPECT_EQ(feats & ExpectedDefaultFeatures(), ExpectedDefaultFeatures())
+      << "adopted module is missing default feature bits; got 0x" << std::hex
+      << feats;
+}
+
+TEST(WasmModuleAdoptTest, BareMvpModuleGainsDefaultFeatures) {
+  // A freshly-created Binaryen module declares MVP-only features.
+  // Adopt must widen it to (MVP ∪ DefaultFeatures) — a still-MVP
+  // adopted module would reject the multi-value / reference-types
+  // shapes codegen emits.
+  BinaryenModuleRef bare = BinaryenModuleCreate();
+  ASSERT_EQ(BinaryenModuleGetFeatures(bare), BinaryenFeatureMVP());
+
+  WasmModule adopted = WasmModule::Adopt(bare);
+  const BinaryenFeatures feats = BinaryenModuleGetFeatures(adopted.raw());
+  EXPECT_NE(feats & BinaryenFeatureAtomics(), 0u);
+  EXPECT_NE(feats & BinaryenFeatureReferenceTypes(), 0u);
+  EXPECT_EQ(feats & ExpectedDefaultFeatures(), ExpectedDefaultFeatures());
+}
+
+TEST(WasmModuleAdoptTest, UnionPreservesAdoptedExtraFeatures) {
+  // NontrappingFPToInt is deliberately OUTSIDE the default set: the
+  // runtime wasm is built with clang flags that enable more than our
+  // defaults, and Adopt must take the UNION, not overwrite.  Narrowing
+  // an adopted module's features trips Binaryen's feature-dependency
+  // assertions (e.g. BulkMemoryOpt implies BulkMemory).
+  BinaryenModuleRef bare = BinaryenModuleCreate();
+  BinaryenModuleSetFeatures(bare, BinaryenFeatureNontrappingFPToInt());
+
+  WasmModule adopted = WasmModule::Adopt(bare);
+  const BinaryenFeatures feats = BinaryenModuleGetFeatures(adopted.raw());
+  EXPECT_NE(feats & BinaryenFeatureNontrappingFPToInt(), 0u)
+      << "Adopt dropped a feature the adopted module declared; the "
+         "feature-set union is load-bearing.";
+  EXPECT_EQ(feats & ExpectedDefaultFeatures(), ExpectedDefaultFeatures());
+}
+
+TEST(WasmModuleAdoptTest, DestructorDisposesAdoptedModule) {
+  // Ownership contract: Adopt takes the BinaryenModuleRef; destruction
+  // disposes it exactly once.  Passing under the normal test run (and
+  // under ASAN/LSAN when enabled) is the assertion — a double-dispose
+  // crashes here, a missed dispose leaks the module's arena.
+  {
+    WasmModule adopted = WasmModule::Adopt(BinaryenModuleCreate());
+    EXPECT_THAT(adopted.Validate(), IsOk());
+  }  // `adopted` destructs; the adopted ref must be disposed exactly once.
+}
+
+// ── WasmModule::AddActiveDataSegment ─────────────────────────────
+
+TEST(WasmModuleDataSegmentTest, LandsOnDefaultMemoryAndRoundTrips) {
+  WasmModule m;
+  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
+  const std::vector<uint8_t> payload = {0xCA, 0xFE, 0xF0, 0x0D};
+  m.AddActiveDataSegment(/*offset=*/32, payload);
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  ASSERT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
+  BinaryenDataSegmentRef seg = BinaryenGetDataSegmentByIndex(m.raw(), 0);
+  ASSERT_NE(seg, nullptr);
+  EXPECT_FALSE(BinaryenGetMemorySegmentPassive(seg));
+  EXPECT_EQ(BinaryenGetMemorySegmentByteOffset(m.raw(), seg), 32u);
+  ASSERT_EQ(BinaryenGetMemorySegmentByteLength(seg), payload.size());
+  std::vector<char> out(payload.size());
+  BinaryenCopyMemorySegmentData(seg, out.data());
+  EXPECT_EQ(std::memcmp(out.data(), payload.data(), payload.size()), 0);
+}
+
+TEST(WasmModuleDataSegmentTest, AppendsAlongsideExistingSegments) {
+  // The kStatic-path shape: the memory's init data was already
+  // committed through SetMemory's segments array; AddActiveDataSegment
+  // appends alongside it rather than replacing it.
+  WasmModule m;
+  const std::vector<uint8_t> committed = {0x01, 0x02};
+  WasmModule::DataSegment seg{/*offset=*/16, committed};
+  ASSERT_THAT(
+      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
+      IsOk());
+  ASSERT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
+
+  const std::vector<uint8_t> appended = {0x03, 0x04, 0x05};
+  m.AddActiveDataSegment(/*offset=*/64, appended);
+  EXPECT_EQ(BinaryenGetNumMemorySegments(m.raw()), 2u);
+  EXPECT_THAT(m.Validate(), IsOk());
+}
+
+TEST(WasmModuleDataSegmentTest, LandsOnAdoptedMemoryNamedZero) {
+  // The adopted wasi-libc runtime's memory is named "0" (Binaryen's
+  // default name for memories read from a binary), not "memory".  Pin
+  // that the `memory_name` parameter reaches the emitted segment.
+  BinaryenModuleRef raw = BinaryenModuleCreate();
+  BinaryenSetMemory(raw, /*initial=*/1, /*maximum=*/1, /*exportName=*/nullptr,
+                    /*segmentNames=*/nullptr, /*segmentDatas=*/nullptr,
+                    /*segmentPassives=*/nullptr, /*segmentOffsets=*/nullptr,
+                    /*segmentSizes=*/nullptr, /*numSegments=*/0,
+                    /*shared=*/false, /*memory64=*/false, /*name=*/"0");
+  WasmModule adopted = WasmModule::Adopt(raw);
+  ASSERT_TRUE(BinaryenHasMemory(adopted.raw()));
+
+  const std::vector<uint8_t> payload = {0xAB, 0xCD};
+  adopted.AddActiveDataSegment(/*offset=*/8, payload, /*memory_name=*/"0");
+  EXPECT_THAT(adopted.Validate(), IsOk());
+
+  ASSERT_EQ(BinaryenGetNumMemorySegments(adopted.raw()), 1u);
+  BinaryenDataSegmentRef seg = BinaryenGetDataSegmentByIndex(adopted.raw(), 0);
+  ASSERT_NE(seg, nullptr);
+  EXPECT_EQ(BinaryenGetMemorySegmentByteOffset(adopted.raw(), seg), 8u);
+  ASSERT_EQ(BinaryenGetMemorySegmentByteLength(seg), payload.size());
+  std::vector<char> out(payload.size());
+  BinaryenCopyMemorySegmentData(seg, out.data());
+  EXPECT_EQ(std::memcmp(out.data(), payload.data(), payload.size()), 0);
+}
+
+TEST(WasmModuleDataSegmentTest, EmptyBytesSpanProducesEmptyValidSegment) {
+  // Pins current behaviour: an empty payload yields a zero-length
+  // active segment that Binaryen accepts (the wasm spec permits
+  // size-0 active segments; the instantiator writes nothing).
+  WasmModule m;
+  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
+  m.AddActiveDataSegment(/*offset=*/16, {});
+  ASSERT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
+  BinaryenDataSegmentRef seg = BinaryenGetDataSegmentByIndex(m.raw(), 0);
+  ASSERT_NE(seg, nullptr);
+  EXPECT_EQ(BinaryenGetMemorySegmentByteLength(seg), 0u);
+  EXPECT_THAT(m.Validate(), IsOk());
+}
+
 }  // namespace
 }  // namespace celwasm

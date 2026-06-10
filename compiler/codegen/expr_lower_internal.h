@@ -62,6 +62,24 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx, const cel::Expr& expr);
 // `(i32.const value)`.
 BinaryenExpressionRef I32Const(WasmModule& mod, uint32_t value);
 
+// Wrappers around `BinaryenLoad` / `BinaryenStore` that omit the
+// trailing memory-name parameter and always pass `nullptr` for it,
+// so the emitted access targets whatever memory the module has.
+// This is load-bearing: in static mode the adopted runtime's memory
+// is named "0", not "memory", so a call site that hard-codes a name
+// like "memory" works in dynamic mode and silently breaks static
+// mode (see `doc/implementation-plan/rewrite/m28-configurable-linking.md`
+// §5.3).  All codegen loads/stores MUST go through these wrappers —
+// do not call `BinaryenLoad` / `BinaryenStore` directly.
+BinaryenExpressionRef CodegenLoad(BinaryenModuleRef module, uint32_t bytes,
+                                  bool signed_, uint32_t offset, uint32_t align,
+                                  BinaryenType type, BinaryenExpressionRef ptr);
+BinaryenExpressionRef CodegenStore(BinaryenModuleRef module, uint32_t bytes,
+                                   uint32_t offset, uint32_t align,
+                                   BinaryenExpressionRef ptr,
+                                   BinaryenExpressionRef value,
+                                   BinaryenType type);
+
 // `(call $cel.cel_copy_slot (i32.const dst) (i32.const src))`.
 BinaryenExpressionRef EmitCelCopySlot(EmitCtx& ctx, uint32_t dst_slot,
                                       uint32_t src_slot);

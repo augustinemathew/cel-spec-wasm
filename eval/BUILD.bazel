@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("//bazel:link_mode_test.bzl", "link_mode_cc_test")
 
 package(default_visibility = ["//:internal"])
 
@@ -250,6 +251,32 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Internal — `ModuleImportsCelNamespace`, the predicate Engine::Plan
+# uses to route a Program between static and dynamic linking.  Tagged
+# manual; wasmtime dep.
+cc_library(
+    name = "module_imports",
+    srcs = ["internal/module_imports.cc"],
+    hdrs = ["internal/module_imports.h"],
+    tags = ["manual"],
+    deps = [
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "module_imports_test",
+    srcs = ["internal/module_imports_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":module_imports",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
     ],
 )
 
@@ -534,7 +561,8 @@ cc_library(
     ],
 )
 
-cc_test(
+# m28 — dual-mode coverage.
+link_mode_cc_test(
     name = "instance_test",
     srcs = ["instance_test.cc"],
     tags = ["manual"],
@@ -546,6 +574,7 @@ cc_test(
         ":host_call_context",
         ":instance",
         ":value",
+        "//bazel:link_mode_test_helpers",
         "//shared:type",
         "//compiler:compiler",
         "//compiler:program",
@@ -572,6 +601,7 @@ cc_library(
         ":host_callback",
         ":instance",
         ":instance_impl",
+        ":module_imports",
         ":typed_function",
         ":wasmtime_engine_state",
         "//abi:runtime_catalogue",
@@ -589,7 +619,8 @@ cc_library(
     ],
 )
 
-cc_test(
+# m28 — dual-mode coverage.
+link_mode_cc_test(
     name = "engine_test",
     srcs = ["engine_test.cc"],
     tags = ["manual"],
@@ -597,6 +628,7 @@ cc_test(
         ":engine",
         ":instance",
         ":value",
+        "//bazel:link_mode_test_helpers",
         "//compiler:compiler",
         "//compiler:program",
         "@com_google_absl//absl/log:absl_check",

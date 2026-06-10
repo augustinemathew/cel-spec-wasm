@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("//bazel:link_mode_test.bzl", "link_mode_cc_test")
 
 package(default_visibility = ["//compiler:__subpackages__"])
 
@@ -45,12 +46,15 @@ cc_library(
     ],
 )
 
-cc_test(
+# m28 — dual-mode coverage: emits compiler_test_dynamic AND
+# compiler_test_static so the same body runs against both link modes.
+link_mode_cc_test(
     name = "compiler_test",
     srcs = ["compiler_test.cc"],
     deps = [
         ":compiler",
         ":program",
+        "//bazel:link_mode_test_helpers",
         "//shared:type",
         "//testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/status",

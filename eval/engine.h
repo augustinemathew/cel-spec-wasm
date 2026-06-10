@@ -40,10 +40,10 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "compiler/program.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
 #include "eval/typed_function.h"
-#include "compiler/program.h"
 
 namespace celwasm {
 struct WasmtimeEngineState;
@@ -75,6 +75,25 @@ class Engine {
   // re-parses the program's wasm bytes via wasmtime_module_new on
   // every Plan; future commits add an Engine-side cache keyed by
   // program identity if profiles demand it.
+  //
+  // Link-mode transparency: Plan accepts BOTH Program shapes that
+  // `Compiler::Compile` can produce (see `CompilerOptions::LinkMode`
+  // in compiler/compiler.h for the tradeoff table) and routes
+  // automatically by inspecting the compiled module's import list
+  // (`eval/internal/module_imports.h`):
+  //
+  //   - dynamic Programs (import from `"cel"`): a standalone
+  //     cel_runtime.wasm instance is created in the same store and
+  //     its exports bound on the linker before the expr module
+  //     instantiates.
+  //   - static Programs (no `"cel"` imports — runtime merged in at
+  //     Compile time): no separate runtime instance; the Program
+  //     instance itself is the helpers source, and its
+  //     `__wasm_call_ctors` runs once at instantiate.
+  //
+  // The same Instance API (Eval / PartialEval) results either way;
+  // callers never branch on link mode.  Per
+  // `doc/implementation-plan/rewrite/m28-configurable-linking.md`.
   //
   // Wiring (per Plan §5.4): host-allocates a 2-page wasmtime_memory_t
   // in a fresh store; binds it as cel.memory on a fresh linker;
@@ -168,19 +187,36 @@ class Engine::Builder {
  public:
   Builder() = default;
 
-  // Special members defaulted while M1 has no per-Builder state.
-  // When future commits add tunables (e.g. wasmtime config flags)
-  // the .cc will need definitions.
   ~Builder() = default;
   Builder(const Builder&) = delete;
   Builder& operator=(const Builder&) = delete;
   Builder(Builder&&) noexcept = default;
   Builder& operator=(Builder&&) noexcept = default;
 
+  // Enable wasmtime's "perfmap" JIT profiling strategy: the engine
+  // writes a `/tmp/perf-<pid>.map` symbol file describing JIT'd code
+  // (the runtime + every Planned expr module) so sampling profilers
+  // (`samply`, Linux `perf`) can symbolicate otherwise-anonymous JIT
+  // addresses.  Off by default — the map file is pure overhead
+  // outside a profiling session.  Used by `benchmark/eval/
+  // celwasm_bench` behind its `CELWASM_BENCH_PERFMAP=1` env knob.
+  Builder& EnableJitPerfMap(bool enable) & {
+    jit_perf_map_ = enable;
+    return *this;
+  }
+  Builder&& EnableJitPerfMap(bool enable) && {
+    jit_perf_map_ = enable;
+    return std::move(*this);
+  }
+
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
-  // Single-use: && enforces consumption at the call site.
-  ABSL_MUST_USE_RESULT absl::StatusOr<Engine> Build() &&;
+  // Single-use: && enforces consumption at the call site (const so
+  // the build reads, never mutates, the configured tunables).
+  ABSL_MUST_USE_RESULT absl::StatusOr<Engine> Build() const&&;
+
+ private:
+  bool jit_perf_map_ = false;
 };
 
 }  // namespace celwasm

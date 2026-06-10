@@ -42,15 +42,15 @@
 
 #include "absl/log/absl_check.h"
 #include "benchmark/benchmark.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {

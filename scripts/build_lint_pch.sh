@@ -15,7 +15,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Project-package set (exec-doc §1.0) — space-joined for build command lines.
 # `//...` is unusable (vendored third_party/cel-cpp loads an undeclared repo).
-PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/..."
+PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //benchmark/... //testdata/... //spec/..."
 
 PCH_HEADER="scripts/lint_pch.h"
 PCH_OUT=".lint-cache/lint_pch.h.pch"

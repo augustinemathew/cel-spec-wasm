@@ -53,7 +53,13 @@ struct InstanceImpl {
   // pointer and does not take a `wasmtime_context_t*`.  The pointer is
   // owned by this struct and deleted in the destructor.
   wasmtime_sharedmemory_t* memory = nullptr;
-  wasmtime_instance_t runtime_instance{};
+  // m28 — "wherever the runtime helpers live".  In kDynamic mode this
+  // is the separately-instantiated cel_runtime.wasm; in kStatic mode
+  // (m28) it aliases `expr_instance` because the Program already
+  // bundles the runtime.  Every host-side read of arena_alloc /
+  // malloc / arena_init / __heap_base / cel_*_at_vv exports goes
+  // through this handle.  See `m28-configurable-linking.md` §5.4.
+  wasmtime_instance_t helpers_instance{};
   wasmtime_instance_t expr_instance{};
   wasmtime_func_t eval_fn{};
 

@@ -191,6 +191,27 @@ message TypeEntry {
   string fully_qualified_name = 2;
 }
 
+// Link mode a Program was compiled with.  See
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
+//
+// An enum (not a bool) so future modes — e.g. a hybrid mode that
+// statically links a helper subset — land as additive values.
+//
+//   LINK_MODE_DYNAMIC  the Program imports the runtime helpers from
+//                      the `cel` module; the engine instantiates a
+//                      separate cel_runtime.wasm and links the two.
+//                      Value 0 by design: Programs emitted before
+//                      this field existed carry no value, and they
+//                      are all dynamically linked — the proto3
+//                      default decodes them to the shape they
+//                      actually have.
+//   LINK_MODE_STATIC   self-contained; the runtime is statically
+//                      linked into the Program's wasm bytes.
+enum LinkMode {
+  LINK_MODE_DYNAMIC = 0;
+  LINK_MODE_STATIC = 1;
+}
+
 // Top-level payload of the `cel.abi` custom section.
 message CelAbi {
   // Schema version of *this proto message*.  Bumped on any field
@@ -239,4 +260,13 @@ message CelAbi {
   //                                       still load; they don't
   //                                       reference the new helper)
   uint32 runtime_abi_version = 6;
+
+  // Link mode the Program was compiled with.  Metadata for embedder
+  // tooling (cache validators, signature systems, cross-process
+  // Program shipping) — NOT a routing input: the engine routes on
+  // import introspection of the wasm bytes themselves, so a Program
+  // whose marker disagrees with its actual import shape still loads
+  // by its real shape.  See
+  // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
+  LinkMode link_mode = 7;
 }

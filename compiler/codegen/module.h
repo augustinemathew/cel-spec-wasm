@@ -39,6 +39,16 @@ class WasmModule {
   WasmModule();
   ~WasmModule();
 
+  // Adopts an existing `BinaryenModuleRef` (e.g. one returned by
+  // `BinaryenModuleRead`).  The adopted module's features are reset to
+  // the same set our default constructor installs, so downstream
+  // codegen sees a uniform feature surface regardless of how the host
+  // module was assembled.  Used by `Compile()`'s `kStatic` link mode
+  // to load the pre-built, wrapper-stripped cel_runtime wasm as the
+  // base module that `$eval` is emitted into.  Takes ownership: on
+  // destruction, the adopted module is `BinaryenModuleDispose`'d.
+  static WasmModule Adopt(BinaryenModuleRef absl_nonnull existing);
+
   WasmModule(const WasmModule&) = delete;
   WasmModule& operator=(const WasmModule&) = delete;
   WasmModule(WasmModule&& other) noexcept;
@@ -114,6 +124,18 @@ class WasmModule {
   // and the `$eval` return convention.
   void AddCustomSection(absl::string_view name,
                         absl::Span<const uint8_t> bytes);
+
+  // Appends an active data segment to an EXISTING memory.  Unlike the
+  // `segments` arrays threaded through `SetMemory` / `AddMemoryImport`,
+  // this lands on a memory whose other init data has already been
+  // committed — useful for `Compile()`'s `kStatic` path, where the
+  // memory comes from an adopted runtime module and the expr-side
+  // rodata needs to land alongside the runtime's own .data segments.
+  // `memory_name` is the internal name (Binaryen defaults memories to
+  // `"memory"`).  The caller must keep `bytes` live across the call
+  // (Binaryen copies into its own arena).
+  void AddActiveDataSegment(uint32_t offset, absl::Span<const uint8_t> bytes,
+                            absl::string_view memory_name = "memory");
 
   // Runs Binaryen's own validator.  Returns OK iff valid.  Binaryen
   // writes human-readable diagnostics to stderr on failure before this

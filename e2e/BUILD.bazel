@@ -1,13 +1,33 @@
-load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load(":link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# Shared e2e helpers + the per-binary `LinkMode` selection consumed by
+# every e2e test.  Built twice via `link_mode_e2e_cc_test` to cover
+# both kDynamic and kStatic.  See the file header.
+cc_library(
+    name = "link_mode_e2e_helpers",
+    hdrs = ["link_mode_e2e_helpers.h"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
 # Known-bugs registry: confirmed defects as runnable, GTEST_SKIP-gated
 # regressions (correctness + memory-model cliffs).  See the file header.
-cc_test(
+link_mode_e2e_cc_test(
     name = "known_bugs_test",
     srcs = ["known_bugs_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -23,10 +43,11 @@ cc_test(
 
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m17_test",
     srcs = ["m17_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -42,10 +63,11 @@ cc_test(
 # Optional types e2e: compile + plan + eval expressions involving
 # `optional.of` / `.c.x` chains / `has(opt.x)`.  Tracks the FAIL
 # rows in `tests/simple/testdata/optionals.textproto`.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m14_test",
     srcs = ["m14_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -67,10 +89,11 @@ cc_test(
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation) /
 # Instance::PartialEval(activation, patterns).  Depends on the
 # shared proto fixtures at //testdata.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m2_test",
     srcs = ["m2_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
         "//eval:activation",
@@ -96,10 +119,11 @@ cc_test(
 # complex) against the partial-eval attribute model.  Pins which
 # unknown granularities propagate (whole-var, message field path,
 # wildcard) and which are by-design impossible (per-element / per-key).
-cc_test(
+link_mode_e2e_cc_test(
     name = "m2_partial_eval_test",
     srcs = ["m2_partial_eval_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//eval:activation",
         "//eval:attribute",
@@ -122,10 +146,11 @@ cc_test(
 # M4 e2e test suite — list literals, indexing, proto repeated
 # fields, dispatcher routing.  Full-pipeline tests go through
 # Compiler::Compile → Engine::Plan → Instance::Eval(activation).
-cc_test(
+link_mode_e2e_cc_test(
     name = "m4_test",
     srcs = ["m4_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
         "//eval:activation",
@@ -148,10 +173,11 @@ cc_test(
 # break anything?" vertical-slice test.  Compiles `"foo" +
 # "bar"` and asserts the eval result is the string `"foobar"`.
 # See doc/implementation-plan/rewrite/wasi/DESIGN.md §2.
-cc_test(
+link_mode_e2e_cc_test(
     name = "mvp_concat_test",
     srcs = ["mvp_concat_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//compiler:compiler",
         "//eval:engine",
         "//eval:instance",
@@ -162,12 +188,32 @@ cc_test(
     ],
 )
 
+# m28 — Configurable linking, static-link mode.  Asserts
+# `LinkMode::kStatic` Programs compile, plan, evaluate, and produce
+# the same Value as the dynamic-mode default for a representative
+# scalar slice.  See `doc/implementation-plan/rewrite/m28-
+# configurable-linking.md` §7.
+cc_test(
+    name = "m28_static_link_test",
+    srcs = ["m28_static_link_test.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # General kCall arm e2e suite.  Locks the arithmetic / comparison
 # / string-op surface plus the control-flow lowering edge.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m5_test",
     srcs = ["m5_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//eval:activation",
         "//eval:attribute",
@@ -193,10 +239,11 @@ cc_test(
 # `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
 # No proto fixture deps — every test is literal-driven (list / map
 # source from CEL source text or Value::List / Value::Map bindings).
-cc_test(
+link_mode_e2e_cc_test(
     name = "m5b_test",
     srcs = ["m5b_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//eval:attribute",
         "//compiler:compiler",
@@ -216,10 +263,11 @@ cc_test(
 # Proto message literal construction (`kStructExpr`) e2e suite.
 # See `doc/implementation-plan/rewrite/m7-proto-literals.md`.
 # Wrapper-types are covered separately in m8_test.cc.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m7_test",
     srcs = ["m7_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//testdata:host_fixture_proto2_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
@@ -246,10 +294,11 @@ cc_test(
 # shipped); the regression-cohort (`AnyLiteralRoundTripE2ETest`) is
 # active and pins M7-shipped Any-as-2-field-proto behaviour.  See
 # `m7a-any.md` for slice plan and matrix.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m7a_test",
     srcs = ["m7a_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:host_fixture_proto2_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
         "//eval:activation",
@@ -276,10 +325,11 @@ cc_test(
 # by-row as M7B.A → M7B.E slices ship per
 # `doc/implementation-plan/rewrite/m7b-duration-timestamp.md` §5.
 # Conformance unlock target: +78..+94 PASS per the m7b plan §1.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m7b_test",
     srcs = ["m7b_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//eval:activation",
         "//compiler:compiler",
@@ -303,10 +353,11 @@ cc_test(
 # `doc/implementation-plan/rewrite/m8-wrapper-types.md`.  Test
 # matrix covers all 9 wrappers × the three architecture arms
 # (write-side, read-side+Any-chain, kStruct tail-unwrap).
-cc_test(
+link_mode_e2e_cc_test(
     name = "m8_test",
     srcs = ["m8_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//eval:cel_host",  # for Value::Message(proto)
         "//compiler:compiler",
@@ -332,10 +383,11 @@ cc_test(
 # `doc/implementation-plan/rewrite/m9-type-subsystem.md`.
 # Harness-side `typed_result:` matcher work lives in
 # `conformance/runner_test.cc`, not here.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m9_test",
     srcs = ["m9_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:host_fixture_proto2_cc_proto",
         "//testdata:host_fixture_proto3_cc_proto",
         "//eval:activation",
@@ -361,10 +413,11 @@ cc_test(
 # the matching runtime helpers; greens slice-by-slice through
 # M10.A → M10.E per `m10-conversions.md` §5.  Timestamp / duration
 # conversions are out of scope per §2.2 (separate timestamps slice).
-cc_test(
+link_mode_e2e_cc_test(
     name = "m10_test",
     srcs = ["m10_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -385,10 +438,36 @@ cc_test(
 # `tests/simple/testdata/string_ext.textproto` so a regression in
 # any of the 13 functions (× 19 overloads + format) surfaces
 # before the conformance run.
-cc_test(
+# m28 — cctz + double-formatting paths exercised under BOTH link
+# modes.  These tests are the forcing function for the missing
+# `__wasm_call_ctors` invocation in kStatic; under kDynamic the
+# wasi-libc command-mode wrappers run ctors per call, under kStatic
+# they must be triggered explicitly at Plan time or these tests trap
+# / silently corrupt.
+link_mode_e2e_cc_test(
+    name = "cctz_doubles_test",
+    srcs = ["cctz_doubles_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+link_mode_e2e_cc_test(
     name = "m12_test",
     srcs = ["m12_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -409,10 +488,11 @@ cc_test(
 # pipeline is wired (kernels in `cel_math_ext.c`, `MathCheckerLibrary()`
 # registration, overload-table seeds, wasm exports), so this is a live
 # acceptance gate.
-cc_test(
+link_mode_e2e_cc_test(
     name = "m16_test",
     srcs = ["m16_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -426,10 +506,11 @@ cc_test(
     ],
 )
 
-cc_test(
+link_mode_e2e_cc_test(
     name = "m18_test",
     srcs = ["m18_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -450,10 +531,11 @@ cc_test(
 # against the real conformance TestAllTypes descriptors.  Rows blocked
 # on a gap outside the field-set pack work GTEST_SKIP with a verified
 # reason.
-cc_test(
+link_mode_e2e_cc_test(
     name = "wkt_field_set_test",
     srcs = ["wkt_field_set_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//eval:cel_host",  # MessageBacking() on constructed msgs
         "//compiler:compiler",
@@ -478,10 +560,11 @@ cc_test(
 # cross-process / cache-eviction deployment shape (a Program written
 # to disk, shipped to another host, or pulled from a cache must still
 # evaluate identically).  Runs the full wasmtime pipeline.
-cc_test(
+link_mode_e2e_cc_test(
     name = "program_roundtrip_test",
     srcs = ["program_roundtrip_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -499,10 +582,11 @@ cc_test(
 # expression through Compile + Plan + Eval at both optimize_level=0
 # and optimize_level=2 and asserts the resulting Values are
 # identical.
-cc_test(
+link_mode_e2e_cc_test(
     name = "optimize_test",
     srcs = ["optimize_test.cc"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
         "//eval:activation",
         "//eval:cel_host",  # for Value::Message(proto)
@@ -525,11 +609,12 @@ cc_test(
 # callbacks → Instance::Eval / PartialEval → decode.  Covers the typed
 # (AddTypedFunction) and context (AddFunction / HostCallContext)
 # registration paths over the full type matrix.  wasmtime-backed.
-cc_test(
+link_mode_e2e_cc_test(
     name = "host_fn_test",
     srcs = ["host_fn_test.cc"],
     tags = ["manual"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//eval:attribute",
         "//eval:cel_host",  # for Value::Message(proto) + HostListBacking nav

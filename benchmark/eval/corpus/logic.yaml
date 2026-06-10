@@ -1,0 +1,136 @@
+# Logical-operator surface — bench-shape cells.
+#
+# Covers `&&`, `||`, `!` per the OPERATORS.md grid, including the
+# short-circuit shapes (`false && <expensive>`, `true || <expensive>`)
+# the spec's commutative 3VL semantics make interesting: the
+# short-circuit / no-short-circuit pair isolates how much of the
+# right operand's cost the engine actually pays when the left operand
+# already decides the result.
+#
+# Surface `logic` maps to BM prefix `logic` (cell id `and2` →
+# `BM_logic_and2`).
+#
+# The `<expensive>` arm in the short-circuit pairs is a
+# `.contains()` scan over a 64-char haystack — cheap enough to keep
+# the cell fast, expensive enough that skipping it is visible.
+
+schema_version: 1
+surface: logic
+
+cells:
+
+  # ── && ──
+  - id: and2
+    source: 'a && b'
+    activation:
+      a: { type: bool, value: true }
+      b: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: and2Const
+    source: 'true && true'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: and10Terms
+    source: 'a && b && c && d && e && f && g && h && i && j'
+    activation:
+      a: { type: bool, value: true }
+      b: { type: bool, value: true }
+      c: { type: bool, value: true }
+      d: { type: bool, value: true }
+      e: { type: bool, value: true }
+      f: { type: bool, value: true }
+      g: { type: bool, value: true }
+      h: { type: bool, value: true }
+      i: { type: bool, value: true }
+      j: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # Short-circuit pair: `a` decides the `&&` when false, so the
+  # contains() scan over the 64-char haystack is skippable.  The
+  # sibling binds a=true, forcing the scan.  Delta = the scan cost
+  # the engine actually avoids.
+  - id: andShortCircuit
+    source: 'a && s.contains("yyy")'
+    activation:
+      a: { type: bool, value: false }
+      s: { type: string, value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: andNoShortCircuit
+    source: 'a && s.contains("yyy")'
+    activation:
+      a: { type: bool, value: true }
+      s: { type: string, value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── || ──
+  - id: or2
+    source: 'a || b'
+    activation:
+      a: { type: bool, value: false }
+      b: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: or2Const
+    source: 'false || true'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: or10Terms
+    source: 'a || b || c || d || e || f || g || h || i || j'
+    activation:
+      a: { type: bool, value: false }
+      b: { type: bool, value: false }
+      c: { type: bool, value: false }
+      d: { type: bool, value: false }
+      e: { type: bool, value: false }
+      f: { type: bool, value: false }
+      g: { type: bool, value: false }
+      h: { type: bool, value: false }
+      i: { type: bool, value: false }
+      j: { type: bool, value: true }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: orShortCircuit
+    source: 'a || s.contains("yyy")'
+    activation:
+      a: { type: bool, value: true }
+      s: { type: string, value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  - id: orNoShortCircuit
+    source: 'a || s.contains("yyy")'
+    activation:
+      a: { type: bool, value: false }
+      s: { type: string, value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape, skip-source-check]
+
+  # ── ! ──
+  - id: not1
+    source: '!a'
+    activation:
+      a: { type: bool, value: false }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: not1Const
+    source: '!false'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: not3
+    source: '!!!a'
+    activation:
+      a: { type: bool, value: false }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]

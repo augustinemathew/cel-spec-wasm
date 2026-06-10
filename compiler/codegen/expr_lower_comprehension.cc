@@ -166,9 +166,9 @@ bool IsNotStrictlyFalseOfNotIdent(const cel::Expr& expr,
 // byte (CelValue.payload.b is at byte offset 8 from slot base).
 BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
   auto* mod = ctx.mod.raw();
-  return BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                      /*align=*/4, BinaryenTypeInt32(),
-                      I32Const(ctx.mod, accu_slot), "memory");
+  return CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                     /*align=*/4, BinaryenTypeInt32(),
+                     I32Const(ctx.mod, accu_slot));
 }
 
 // Per-comprehension binding context.  Slots and locals come from
@@ -287,6 +287,43 @@ bool IsPresizableCollectionAccu(const cel::ComprehensionExpr& comp,
   return false;
 }
 
+// Resolve the comprehension source address into `c`.  Two storage
+// shapes are accepted (each only on certain reprs — list/map
+// asymmetry handled by the caller):
+//   kWorkspaceSlot: literal byte offset of the CelValue.
+//   kLocal:         wasm local holds the byte offset at runtime.
+// See CompContext field doc for the runtime mapping.
+absl::Status ResolveCompSourceAddress(const NodeAnnotation& range_ann,
+                                      const cel::Expr& expr, CompContext* c) {
+  switch (range_ann.storage.kind) {
+    case StorageKind::kWorkspaceSlot:
+      c->source_slot = range_ann.storage.payload;
+      c->source_via_local = false;
+      return absl::OkStatus();
+    case StorageKind::kLocal:
+      // kLocal sources are kIdent — the local holds the runtime
+      // byte offset of the variable's CelValue cell, populated by
+      // the `$eval` variable prelude (or an enclosing comp's loop
+      // header for nested comp).  Maps: `cel_map_iter_init` is
+      // kind-dispatching internally.  Lists: routed through
+      // `cel_list_arena_view` in the prologue, which dispatches on
+      // kind and snapshots host lists into arena shape so the
+      // inline arena walk works uniformly.  See m5b §CCF-8.
+      c->source_local = range_ann.storage.payload;
+      c->source_via_local = true;
+      return absl::OkStatus();
+    case StorageKind::kStaticRodata:
+    case StorageKind::kNone:
+      return absl::UnimplementedError(
+          absl::StrCat("expr_lower: comprehension iter_range storage kind ",
+                       static_cast<int>(range_ann.storage.kind),
+                       " not yet supported (expr_id=", expr.id(),
+                       "); accepted: kWorkspaceSlot, kLocal."));
+  }
+  ABSL_CHECK(false) << "ResolveCompSourceAddress: unknown StorageKind "
+                    << static_cast<int>(range_ann.storage.kind);
+}
+
 absl::StatusOr<CompContext> ResolveCompContext(
     EmitCtx& ctx, const cel::Expr& expr, const cel::ComprehensionExpr& comp,
     const NodeAnnotation& ann) {
@@ -304,35 +341,8 @@ absl::StatusOr<CompContext> ResolveCompContext(
         ReprName(range_ann->repr), " is not supported (expr_id=", expr.id(),
         "); only list and map sources are handled"));
   }
-  // Resolve the source address.  Two storage shapes are accepted
-  // (each only on certain reprs — list/map asymmetry below):
-  //   kWorkspaceSlot: literal byte offset of the CelValue.
-  //   kLocal:         wasm local holds the byte offset at runtime.
-  // See CompContext field doc for the runtime mapping.
-  switch (range_ann->storage.kind) {
-    case StorageKind::kWorkspaceSlot:
-      c.source_slot = range_ann->storage.payload;
-      c.source_via_local = false;
-      break;
-    case StorageKind::kLocal:
-      // kLocal sources are kIdent — the local holds the runtime
-      // byte offset of the variable's CelValue cell, populated by
-      // the `$eval` variable prelude (or an enclosing comp's loop
-      // header for nested comp).  Maps: `cel_map_iter_init` is
-      // kind-dispatching internally.  Lists: routed through
-      // `cel_list_arena_view` in the prologue, which dispatches on
-      // kind and snapshots host lists into arena shape so the
-      // inline arena walk works uniformly.  See m5b §CCF-8.
-      c.source_local = range_ann->storage.payload;
-      c.source_via_local = true;
-      break;
-    case StorageKind::kStaticRodata:
-    case StorageKind::kNone:
-      return absl::UnimplementedError(
-          absl::StrCat("expr_lower: comprehension iter_range storage kind ",
-                       static_cast<int>(range_ann->storage.kind),
-                       " not yet supported (expr_id=", expr.id(),
-                       "); accepted: kWorkspaceSlot, kLocal."));
+  if (auto s = ResolveCompSourceAddress(*range_ann, expr, &c); !s.ok()) {
+    return s;
   }
   // All origins (arena / host / dynamic) for both list and map
   // sources land here.  Slice 1 (maps) ships via
@@ -426,18 +436,17 @@ void EmitListPrologue(EmitCtx& ctx, const CompContext& c,
   const uint32_t ptr_local = ListIterPointerLocal(c);
   instrs->push_back(BinaryenLocalSet(
       mod, c.aux0_local,
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                   /*align=*/4, BinaryenTypeInt32(), src_addr(), "memory")));
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                  /*align=*/4, BinaryenTypeInt32(), src_addr())));
   instrs->push_back(BinaryenLocalSet(
       mod, ptr_local,
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                   /*align=*/4, BinaryenTypeInt32(),
-                   BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32()),
-                   "memory")));
-  BinaryenExpressionRef count = BinaryenLoad(
-      mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0, /*align=*/4,
-      BinaryenTypeInt32(),
-      BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32()), "memory");
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                  /*align=*/4, BinaryenTypeInt32(),
+                  BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32()))));
+  BinaryenExpressionRef count =
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
+                  /*align=*/4, BinaryenTypeInt32(),
+                  BinaryenLocalGet(mod, c.aux0_local, BinaryenTypeInt32()));
   instrs->push_back(BinaryenLocalSet(
       mod, c.aux0_local,
       BinaryenBinary(
@@ -476,10 +485,10 @@ BinaryenExpressionRef EmitLoadSourceCount(EmitCtx& ctx, const CompContext& c) {
   BinaryenExpressionRef src_addr =
       BinaryenLocalGet(mod, c.list_source_addr_local(), BinaryenTypeInt32());
   BinaryenExpressionRef hdr_ptr =
-      BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
-                   /*align=*/4, BinaryenTypeInt32(), src_addr, "memory");
-  return BinaryenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
-                      /*align=*/4, BinaryenTypeInt32(), hdr_ptr, "memory");
+      CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
+                  /*align=*/4, BinaryenTypeInt32(), src_addr);
+  return CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/0,
+                     /*align=*/4, BinaryenTypeInt32(), hdr_ptr);
 }
 
 // ── loop_step classification ────────────────────────────────
@@ -606,22 +615,20 @@ void EmitWriteIntCelValueToSlot(EmitCtx& ctx, uint32_t slot,
                                 std::vector<BinaryenExpressionRef>* out) {
   auto* mod = ctx.mod.raw();
   // kind = CEL_INT
-  out->push_back(BinaryenStore(mod, /*bytes=*/4, /*offset=*/0, /*align=*/4,
-                               I32Const(ctx.mod, slot),
-                               BinaryenConst(mod, BinaryenLiteralInt32(2)),
-                               BinaryenTypeInt32(), "memory"));
+  out->push_back(CodegenStore(
+      mod, /*bytes=*/4, /*offset=*/0, /*align=*/4, I32Const(ctx.mod, slot),
+      BinaryenConst(mod, BinaryenLiteralInt32(2)), BinaryenTypeInt32()));
   // _pad: workspace slot's prior contents are unknown, zero
   // defensively even though rodata starts zeroed.
-  out->push_back(BinaryenStore(mod, /*bytes=*/4, /*offset=*/4, /*align=*/4,
-                               I32Const(ctx.mod, slot),
-                               BinaryenConst(mod, BinaryenLiteralInt32(0)),
-                               BinaryenTypeInt32(), "memory"));
+  out->push_back(CodegenStore(
+      mod, /*bytes=*/4, /*offset=*/4, /*align=*/4, I32Const(ctx.mod, slot),
+      BinaryenConst(mod, BinaryenLiteralInt32(0)), BinaryenTypeInt32()));
   // payload.i — sign-extend the i32 local into the int64 slot.
-  out->push_back(BinaryenStore(
+  out->push_back(CodegenStore(
       mod, /*bytes=*/8, /*offset=*/8, /*align=*/8, I32Const(ctx.mod, slot),
       BinaryenUnary(mod, BinaryenExtendSInt32(),
                     BinaryenLocalGet(mod, value_local, BinaryenTypeInt32())),
-      BinaryenTypeInt64(), "memory"));
+      BinaryenTypeInt64()));
 }
 
 // Returns the br_if-exit expression for the recognised loop_cond

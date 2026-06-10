@@ -22,33 +22,17 @@
 #include "eval/instance.h"
 #include "compiler/program.h"
 #include "eval/value.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
-Instance CompilePlan(const Compiler& compiler, absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
-Value EvalOk(Instance& instance, const Activation& activation) {
-  auto v = instance.Eval(activation);
-  ABSL_CHECK_OK(v);
-  return *std::move(v);
-}
+using ::celwasm::e2e::EvalOk;
 
 // base64.encode(...) yields a STRING.
 std::string EvalString(absl::string_view source) {

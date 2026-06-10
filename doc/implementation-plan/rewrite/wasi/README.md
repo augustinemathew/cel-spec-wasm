@@ -164,7 +164,9 @@ consummation of the M9 stake) is the only remaining WASI item.
 | **B1 shipped** | Kernels + host migrated off `cel_alloc` compat shim; shim deleted | `fcb1289` |
 | **B2 shipped** | All test SetUp() migrated off `cel_reset` shim | `a104ea8` |
 | **M5 + B3 shipped** | Codegen emits `(call $arena_reset)` zero-arg; `cel_reset` shim deleted; ~50 codegen fixtures rebaselined | `dfc366c` |
-| **M6 shipped** | Runtime owns + exports memory; host pulls from `runtime_instance`; `--import-memory` dropped | `208ddba` |
+| **M6 shipped** | Runtime owns + exports memory; host pulls from `runtime_instance`[^m28-rename]; `--import-memory` dropped | `208ddba` |
+
+[^m28-rename]: Field renamed to `helpers_instance` in m28 (2026-06-08) to cover both dynamic and static link modes.
 | **M7 shipped** | `host_string_arena` deleted; replaced with malloc'd activation buffer via wasm reentry | `5d8156a` |
 | **B5 + B6 shipped** | POST_MIGRATION_BENCH.md numbers; DESIGN status flipped to shipped; sibling docs reconciled | `a43ee8b` |
 | **C1 + C2 + C4 + C6 shipped** | abseil + RE2 vendored via bzlmod; wasi-sdk cc_toolchain wired with cross-platform aliases; 4 timestamp/duration parse + format kernels self-hosted in `cel_runtime.wasm`; 4 cel_host trampolines deleted; CEL_LOG gated off in opt builds (1.4×–5.7× Eval speedup); bench/README + POST_MIGRATION_BENCH updated; cleanup-backlog #7 closed | `3d882f2` |

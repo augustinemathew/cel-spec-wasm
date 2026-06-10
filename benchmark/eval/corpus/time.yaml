@@ -1,0 +1,95 @@
+# Timestamp / duration operator surface — bench-shape cells.
+#
+# Covers the time arithmetic overloads (`timestamp ± duration`,
+# `timestamp - timestamp`, `duration ± duration`) and the accessor
+# family (`getFullYear`, `getHours`, `getSeconds`) with and without a
+# time-zone argument.
+#
+# The corpus loader's literal schema is scalar-only, so every cell
+# constructs its operands in-source from string literals
+# (`timestamp("…")`, `duration("…")`) and reduces the result to an
+# int via `int(…)` / `.getSeconds()` — each cell therefore measures
+# parse + op + reduce, which is identical work on both comparators.
+# Timestamp-valued results can't be expressed as `expected:` either,
+# so the reduce doubles as the parity hook.
+#
+# Surface `time` maps to BM prefix `time` (cell id `tsAddDur` →
+# `BM_time_tsAddDur`).
+
+schema_version: 1
+surface: time
+
+cells:
+
+  # ── timestamp/duration arithmetic ──
+  - id: tsAddDur
+    source: 'int(timestamp("2024-01-01T00:00:00Z") + duration("1h"))'
+    expected: { type: int, value: 1704070800 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durAddTs
+    source: 'int(duration("1h") + timestamp("2024-01-01T00:00:00Z"))'
+    expected: { type: int, value: 1704070800 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsSubDur
+    source: 'int(timestamp("2024-01-01T01:00:00Z") - duration("1h"))'
+    expected: { type: int, value: 1704067200 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsSubTs
+    source: '(timestamp("2024-01-01T01:00:00Z") - timestamp("2024-01-01T00:00:00Z")).getSeconds()'
+    expected: { type: int, value: 3600 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durAddDur
+    source: '(duration("90s") + duration("30s")).getSeconds()'
+    expected: { type: int, value: 120 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durSubDur
+    source: '(duration("90s") - duration("30s")).getSeconds()'
+    expected: { type: int, value: 60 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── timestamp accessors, UTC + named tz ──
+  - id: tsGetFullYearUtc
+    source: 'timestamp("2024-06-15T10:30:45Z").getFullYear()'
+    expected: { type: int, value: 2024 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGetFullYearTz
+    source: 'timestamp("2024-06-15T10:30:45Z").getFullYear("America/New_York")'
+    expected: { type: int, value: 2024 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGetHoursUtc
+    source: 'timestamp("2024-06-15T10:30:45Z").getHours()'
+    expected: { type: int, value: 10 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGetHoursTz
+    source: 'timestamp("2024-06-15T10:30:45Z").getHours("America/New_York")'
+    expected: { type: int, value: 6 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGetSecondsUtc
+    source: 'timestamp("2024-06-15T10:30:45Z").getSeconds()'
+    expected: { type: int, value: 45 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: tsGetSecondsTz
+    source: 'timestamp("2024-06-15T10:30:45Z").getSeconds("America/New_York")'
+    expected: { type: int, value: 45 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── duration accessors ──
+  - id: durGetHours
+    source: 'duration("3723s").getHours()'
+    expected: { type: int, value: 1 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: durGetSeconds
+    source: 'duration("3723s").getSeconds()'
+    expected: { type: int, value: 3723 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]

@@ -2,9 +2,9 @@
 
 #include <cstdint>
 
-#include "absl/status/statusor.h"
 #include "abi/cel_abi.pb.h"
 #include "abi/runtime_catalogue.h"
+#include "absl/status/statusor.h"
 #include "compiler/codegen/layout_pass.h"
 
 namespace celwasm {
@@ -40,9 +40,14 @@ void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
 // mistakes this for a static candidate.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
-    const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs) {
+    const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
+    celwasm::abi::LinkMode link_mode) {
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
+  // Link-mode marker for embedder tooling; the engine routes on
+  // import introspection, not this field.  See
+  // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
+  abi.set_link_mode(link_mode);
   // Runtime catalogue version the program is being compiled
   // against.  Engine::Plan compares this against its own
   // kRuntimeAbiVersion and rejects mismatches.  See

@@ -41,18 +41,45 @@ BinaryenType TupleType(absl::Span<const BinaryenType> parts) {
   return BinaryenTypeCreate(buf.data(), static_cast<BinaryenIndex>(buf.size()));
 }
 
+namespace {
+
+// The feature set every WasmModule installs on its underlying
+// BinaryenModuleRef — both fresh modules (`WasmModule()`) and adopted
+// ones (`WasmModule::Adopt`).  Binaryen's validator defaults to
+// MVP-only.  The design requires multi-value (tuple returns for host
+// trampolines) and reference-types (externref table for message
+// handles, M3+).  Phase C adds Atomics (threads): the runtime imports
+// a shared memory; importing a shared memory requires the threads
+// feature to be on, even if the expr module itself emits no atomic
+// ops.
+BinaryenFeatures DefaultFeatures() {
+  return BinaryenFeatureReferenceTypes() | BinaryenFeatureMultivalue() |
+         BinaryenFeatureBulkMemory() | BinaryenFeatureSignExt() |
+         BinaryenFeatureMutableGlobals() | BinaryenFeatureGC() |
+         BinaryenFeatureAtomics();
+}
+
+}  // namespace
+
 WasmModule::WasmModule() : module_(BinaryenModuleCreate()) {
-  // Binaryen's validator defaults to MVP-only.  The design requires
-  // multi-value (tuple returns for host trampolines) and
-  // reference-types (externref table for message handles, M3+).
-  // Phase C adds Atomics (threads): the runtime imports a shared
-  // memory; importing a shared memory requires the threads feature
-  // to be on, even if the expr module itself emits no atomic ops.
+  BinaryenModuleSetFeatures(module_, DefaultFeatures());
+}
+
+WasmModule WasmModule::Adopt(BinaryenModuleRef existing) {
+  WasmModule out;
+  // Replace the fresh ref the default ctor allocated with the caller's.
+  BinaryenModuleDispose(out.module_);
+  out.module_ = existing;
+  // Feature set = (whatever the adopted module declared) ∪ DefaultFeatures.
+  // Taking the union (not assigning DefaultFeatures outright) is load-
+  // bearing: Binaryen tracks feature dependencies via assertions (e.g.
+  // `BulkMemoryOpt` implies `BulkMemory`), so narrowing an adopted
+  // module's feature set can trip an internal invariant.  The runtime
+  // wasm is built with clang flags that turn on more than our default
+  // set (BulkMemoryOpt, NontrappingFPToInt, …); preserve them.
   BinaryenModuleSetFeatures(
-      module_, BinaryenFeatureReferenceTypes() | BinaryenFeatureMultivalue() |
-                   BinaryenFeatureBulkMemory() | BinaryenFeatureSignExt() |
-                   BinaryenFeatureMutableGlobals() | BinaryenFeatureGC() |
-                   BinaryenFeatureAtomics());
+      out.module_, BinaryenModuleGetFeatures(out.module_) | DefaultFeatures());
+  return out;
 }
 
 WasmModule::~WasmModule() {
@@ -236,6 +263,23 @@ void WasmModule::AddCustomSection(absl::string_view name,
   BinaryenAddCustomSection(module_, name_c.c_str(),
                            reinterpret_cast<const char*>(bytes.data()),
                            static_cast<BinaryenIndex>(bytes.size()));
+}
+
+void WasmModule::AddActiveDataSegment(uint32_t offset,
+                                      absl::Span<const uint8_t> bytes,
+                                      absl::string_view memory_name) {
+  // Binaryen requires every data segment to carry a stable name (used
+  // when round-tripping through text format).  Generate a deterministic
+  // one from the offset so two segments at distinct offsets get
+  // distinct names without us having to thread a counter.
+  const std::string seg_name = absl::StrCat("seg.0x", absl::Hex(offset));
+  const std::string mem_name(memory_name);
+  BinaryenExpressionRef seg_offset = BinaryenConst(
+      module_, BinaryenLiteralInt32(static_cast<int32_t>(offset)));
+  BinaryenAddDataSegment(module_, seg_name.c_str(), mem_name.c_str(),
+                         /*segmentPassive=*/false, seg_offset,
+                         reinterpret_cast<const char*>(bytes.data()),
+                         static_cast<BinaryenIndex>(bytes.size()));
 }
 
 absl::Status WasmModule::Validate() const {

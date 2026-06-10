@@ -1,0 +1,65 @@
+# Ternary (`_?_:_`) surface — bench-shape cells.
+#
+# Covers the conditional operator with int and string result types,
+# computed and constant conditions, and a nested chain.
+#
+# Surface `ternary` maps to BM prefix `ternary` (cell id
+# `intComputedCond` → `BM_ternary_intComputedCond`).
+#
+# KNOWN CELWASM BUG (surfaced by this corpus, 2026-06-09): a ternary
+# whose condition is a BARE bool variable (`c ? x : y` with `c` bound
+# in the activation) evaluates to null in celwasm; computed conditions
+# (`a > b ? x : y`, `(c || false) ? x : y`, `!c ? x : y`) are correct.
+# Verified via the cel CLI: `cel eval 'c ? a : b' --var c:bool=true
+# --var a:int=10 --var b:int=20` → null (want 10).  The `intVarCond`
+# cell pins the shape and is tagged `celwasm-skip-ternary-ident-cond`
+# so only celcpp_bench runs it until the bug is fixed.
+
+schema_version: 1
+surface: ternary
+
+cells:
+
+  - id: intComputedCond
+    source: 'a > b ? x : y'
+    activation:
+      a: { type: int, value: 3 }
+      b: { type: int, value: 2 }
+      x: { type: int, value: 10 }
+      y: { type: int, value: 20 }
+    expected: { type: int, value: 10 }
+    tags: [phase2, bench-shape]
+
+  - id: intConst
+    source: '1 > 2 ? 10 : 20'
+    expected: { type: int, value: 20 }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringComputedCond
+    source: 'a > b ? s : t'
+    activation:
+      a: { type: int, value: 3 }
+      b: { type: int, value: 2 }
+      s: { type: string, value: "yes" }
+      t: { type: string, value: "no" }
+    expected: { type: string, value: "yes" }
+    tags: [phase2, bench-shape]
+
+  - id: nested3
+    source: 'a > b ? "gt" : (a == b ? "eq" : "lt")'
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 2 }
+    expected: { type: string, value: "lt" }
+    tags: [phase2, bench-shape]
+
+  # KNOWN BUG cell — see file header.  celwasm returns null for a
+  # bare bool-variable condition; celcpp returns 1.
+  - id: intVarCond
+    source: 'c ? x : y'
+    activation:
+      c: { type: bool, value: true }
+      x: { type: int, value: 1 }
+      y: { type: int, value: 2 }
+    expected: { type: int, value: 1 }
+    tags: [phase2, bench-shape, celwasm-skip-ternary-ident-cond]

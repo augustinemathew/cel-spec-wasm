@@ -13,12 +13,22 @@
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
+#include "bazel/link_mode_test_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
+
+// Returns `CompilerOptions` with `link_mode` set to the per-binary
+// `kTestLinkMode` — picked at build time by `link_mode_cc_test`.
+inline CompilerOptions LinkModeOpts() {
+  CompilerOptions opts;
+  opts.link_mode = kTestLinkMode;
+  return opts;
+}
+
 using ::absl_testing::StatusIs;
 
 // Force generated-pool registration of descriptors referenced by
@@ -40,7 +50,7 @@ TEST(CompilerCompileTest, CompileScalarLiteralReturnsProgramWithBytes) {
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
   Compiler compiler = *std::move(compiler_or);
 
-  auto prog_or = compiler.Compile("42");
+  auto prog_or = compiler.Compile("42", LinkModeOpts());
   ASSERT_TRUE(prog_or.ok()) << prog_or.status();
   auto bytes = prog_or->wasm_bytes();
   // Wasm magic = 00 61 73 6d.
@@ -56,46 +66,68 @@ TEST(CompilerCompileTest, CompileBadSourceReturnsInvalidArgument) {
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
   Compiler compiler = *std::move(compiler_or);
 
-  auto prog_or = compiler.Compile("this is not a CEL expression !!");
+  auto prog_or = compiler.Compile("this is not a CEL expression !!", LinkModeOpts());
   EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 // m28 — link_mode field on CompilerOptions.
 //
-// Phase 1 wires the field through to the internal pipeline; the static-
-// link merge step is unwired until the next commit, so kStatic returns
-// Unimplemented (not a silent miscompile to dynamic shape).
+// kDynamic (default) emits a Program that imports the runtime helpers
+// from the `"cel"` module.  kStatic merges the wrapper-stripped runtime
+// into the Program so it carries the helpers internally.  The byte-shape
+// invariant (no `cel.*` imports in kStatic mode) is asserted at the
+// pipeline-internal layer (`compiler/internal/compile_test.cc`) where
+// the Binaryen handle is reachable; this layer asserts both modes
+// produce a valid Program with wasm-magic bytes.
 
-TEST(CompilerLinkModeTest, DefaultIsDynamic) {
-  EXPECT_EQ(CompilerOptions{}.link_mode,
-            CompilerOptions::LinkMode::kDynamic);
-}
-
-TEST(CompilerLinkModeTest, ExplicitDynamicMatchesDefault) {
+// m28 — both link modes produce a valid Program with wasm-magic
+// preamble.  No assertion about which mode is the default — the
+// default is a release-engineering choice, not a contract.
+TEST(CompilerLinkModeTest, DynamicProducesValidWasmProgram) {
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
-  Compiler compiler = *std::move(compiler_or);
-
   CompilerOptions opts;
   opts.link_mode = CompilerOptions::LinkMode::kDynamic;
-  auto prog_or = compiler.Compile("42", opts);
+  auto prog_or = compiler_or->Compile("42", opts);
   ASSERT_TRUE(prog_or.ok()) << prog_or.status();
-  // Today's dynamic-shape Program still imports from "cel" — the wasm
-  // bytes carry the import section against which Engine will link.
-  auto default_or = compiler.Compile("42");
-  ASSERT_TRUE(default_or.ok()) << default_or.status();
-  EXPECT_EQ(prog_or->wasm_bytes().size(), default_or->wasm_bytes().size());
+  auto bytes = prog_or->wasm_bytes();
+  ASSERT_GE(bytes.size(), 4u);
+  EXPECT_EQ(bytes[0], 0x00);
+  EXPECT_EQ(bytes[1], 0x61);
+  EXPECT_EQ(bytes[2], 0x73);
+  EXPECT_EQ(bytes[3], 0x6d);
 }
 
-TEST(CompilerLinkModeTest, StaticReturnsUnimplementedUntilFollowupCommit) {
+TEST(CompilerLinkModeTest, StaticProducesValidWasmProgram) {
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
-  Compiler compiler = *std::move(compiler_or);
-
   CompilerOptions opts;
   opts.link_mode = CompilerOptions::LinkMode::kStatic;
-  auto prog_or = compiler.Compile("42", opts);
-  EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kUnimplemented);
+  auto prog_or = compiler_or->Compile("42", opts);
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+  auto bytes = prog_or->wasm_bytes();
+  ASSERT_GE(bytes.size(), 4u);
+  EXPECT_EQ(bytes[0], 0x00);
+  EXPECT_EQ(bytes[1], 0x61);
+  EXPECT_EQ(bytes[2], 0x73);
+  EXPECT_EQ(bytes[3], 0x6d);
+}
+
+// The two modes produce materially different artifact sizes.  kStatic
+// bundles ~800 KB of runtime; kDynamic is ~10 KB.  Order-of-magnitude
+// assertion, not byte-equal.
+TEST(CompilerLinkModeTest, StaticIsMaterallyLargerThanDynamic) {
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  CompilerOptions dyn;
+  dyn.link_mode = CompilerOptions::LinkMode::kDynamic;
+  CompilerOptions stc;
+  stc.link_mode = CompilerOptions::LinkMode::kStatic;
+  auto d = compiler_or->Compile("42", dyn);
+  auto s = compiler_or->Compile("42", stc);
+  ASSERT_TRUE(d.ok()) << d.status();
+  ASSERT_TRUE(s.ok()) << s.status();
+  EXPECT_GT(s->wasm_bytes().size(), d->wasm_bytes().size() * 10);
 }
 
 TEST(CompilerCompileTest, OneCompilerProducesManyPrograms) {
@@ -103,8 +135,8 @@ TEST(CompilerCompileTest, OneCompilerProducesManyPrograms) {
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
   Compiler compiler = *std::move(compiler_or);
 
-  auto a = compiler.Compile("42");
-  auto b = compiler.Compile("true");
+  auto a = compiler.Compile("42", LinkModeOpts());
+  auto b = compiler.Compile("true", LinkModeOpts());
   auto c = compiler.Compile("\"hello\"");
   ASSERT_TRUE(a.ok()) << a.status();
   ASSERT_TRUE(b.ok()) << b.status();
@@ -162,7 +194,7 @@ TEST(CompilerCompileDeclaredVariableTest, DeclaredIdentCompilesToValidModule) {
   b.DeclareVariable("x", CelType::Int());
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
-  auto prog_or = c->Compile("x");
+  auto prog_or = c->Compile("x", LinkModeOpts());
   ASSERT_THAT(prog_or, IsOk());
   auto bytes = prog_or->wasm_bytes();
   // Wasm magic = 00 61 73 6d.
@@ -186,7 +218,7 @@ TEST(CompilerCompileDeclaredVariableTest,
   b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
   auto compiler = std::move(b).Build();
   ASSERT_THAT(compiler, IsOk());
-  EXPECT_THAT(compiler->Compile("c.name"), IsOk());
+  EXPECT_THAT(compiler->Compile("c.name", LinkModeOpts()), IsOk());
 }
 
 // Undeclared variable in the source → InvalidArgument at the
@@ -194,7 +226,7 @@ TEST(CompilerCompileDeclaredVariableTest,
 TEST(CompilerCompileDeclaredVariableTest, UndeclaredVariableFailsAtChecker) {
   auto c = Compiler::NewBuilder().Build();
   ASSERT_THAT(c, IsOk());
-  auto prog_or = c->Compile("x");
+  auto prog_or = c->Compile("x", LinkModeOpts());
   EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -294,7 +326,7 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   ASSERT_EQ(c->function_libraries().size(), 1u);
-  auto prog_or = c->Compile("name.is_number()");
+  auto prog_or = c->Compile("name.is_number()", LinkModeOpts());
   ASSERT_THAT(prog_or, IsOk());
   // Sanity: emitted bytes start with the wasm magic.
   auto bytes = prog_or->wasm_bytes();

@@ -61,6 +61,7 @@
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "google/protobuf/message.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -83,14 +84,7 @@ using ::celwasm::testdata::Customer;
 //  Harness — mirrors e2e/m2_test.cc.
 // ──────────────────────────────────────────────────────────────
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -106,13 +100,7 @@ absl::StatusOr<Compiler> CompilerWithVar(const std::string& name,
   });
 }
 
-Instance CompilePlan(const Compiler& compiler, absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
 Value PartialEvalOk(Instance& instance, const Activation& activation,
                     absl::Span<const AttributePattern> unknowns) {

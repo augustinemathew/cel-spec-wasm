@@ -31,6 +31,31 @@
 
 #include "conformance/runner.h"
 
+#include "absl/flags/flag.h"
+
+// m28 — dual-mode conformance: same corpus, two link modes.  The
+// flag default is `"dynamic"` (no behavioural change for the
+// existing pre-push gate).  Set to `"static"` to exercise the
+// merged-runtime path:
+//
+//   bazel run //conformance:run_conformance -- --link_mode=static
+//
+// `scripts/check_conformance_monotonic.sh` runs the binary twice —
+// once per mode — and gates each mode's pass count against its own
+// baseline file (`conformance/.baseline` for dynamic,
+// `conformance/.baseline_static` for static).  See
+// `doc/implementation-plan/rewrite/m28-configurable-linking.md` §7.3.
+//
+// Same suppressions as run_conformance.cc / celwasmc_eval_main.cc:
+//   - misc-use-internal-linkage: ABSL_FLAG generates extern helpers.
+//   - bugprone-throwing-static-initialization: std::string flag default.
+// NOLINTBEGIN(misc-use-internal-linkage,bugprone-throwing-static-initialization)
+ABSL_FLAG(
+    std::string, link_mode, "dynamic",
+    "Compiler link mode for the conformance corpus: "
+    "\"dynamic\" (today's behaviour) or \"static\" (m28 merged-runtime).");
+// NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -63,15 +88,15 @@
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
 #include "cel/expr/conformance/test/simple.pb.h"
 #include "cel/expr/value.pb.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/frontend/status_tags.h"
+#include "compiler/program.h"
+#include "conformance/binding_marshal.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "conformance/binding_marshal.h"
-#include "compiler/frontend/status_tags.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/util/message_differencer.h"
@@ -275,8 +300,7 @@ std::string EnvelopeRejectReason(const cel::expr::Value::KindCase kind) {
 
 namespace {
 
-absl::Status CompareScalar(const celwasm::Value& got,
-                           const ProtoValue& want) {
+absl::Status CompareScalar(const celwasm::Value& got, const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kNullValue:
       return got.IsNull() ? absl::OkStatus() : Mismatch(got, want);
@@ -369,8 +393,7 @@ absl::Status CompareEnum(const celwasm::Value& got,
 
 // Type matcher: byte-equal on the spec type-name string per langdef
 // §"Type Values".
-absl::Status CompareType(const celwasm::Value& got,
-                         absl::string_view want) {
+absl::Status CompareType(const celwasm::Value& got, absl::string_view want) {
   auto name_or = got.AsType();
   if (!name_or.ok()) {
     return absl::FailedPreconditionError(
@@ -383,8 +406,7 @@ absl::Status CompareType(const celwasm::Value& got,
   return absl::OkStatus();
 }
 
-absl::Status CompareValue(const celwasm::Value& got,
-                          const ProtoValue& want) {
+absl::Status CompareValue(const celwasm::Value& got, const ProtoValue& want) {
   switch (want.kind_case()) {
     case ProtoValue::kMapValue:
       return CompareMap(got, want.map_value());
@@ -448,10 +470,9 @@ absl::Status CompareMap(const celwasm::Value& got,
 
   std::vector<std::pair<celwasm::Value, celwasm::Value>> got_entries;
   got_entries.reserve(backing->Size());
-  backing->ForEach(
-      [&](const celwasm::Value& k, const celwasm::Value& v) {
-        got_entries.emplace_back(k, v);
-      });
+  backing->ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
+    got_entries.emplace_back(k, v);
+  });
 
   for (const auto& want_entry : want.entries()) {
     auto want_key_or = ValueFromProto(want_entry.key());
@@ -639,8 +660,7 @@ const celwasm::Compiler& SharedDefaultCompiler() {
   return *kShared;
 }
 
-absl::StatusOr<celwasm::Compiler> BuildPerTestCompiler(
-    const SimpleTest& t) {
+absl::StatusOr<celwasm::Compiler> BuildPerTestCompiler(const SimpleTest& t) {
   auto b = celwasm::Compiler::NewBuilder();
   if (auto s = DeclareVariablesOnBuilder(t, b); !s.ok()) return s;
   return std::move(b).Build();
@@ -650,6 +670,16 @@ absl::StatusOr<celwasm::Program> CompileForTest(
     const celwasm::Compiler& compiler, const SimpleTest& t) {
   celwasm::CompilerOptions opts;
   opts.container = t.container();
+  // m28 — dual-mode conformance.  Mode is a runtime flag rather than
+  // a compile-time macro because `run_conformance` is shipped as a
+  // single binary and the gate script invokes it twice (once per
+  // mode), gating each mode's pass count against its own baseline.
+  const std::string mode = absl::GetFlag(FLAGS_link_mode);
+  if (mode == "static") {
+    opts.link_mode = celwasm::CompilerOptions::LinkMode::kStatic;
+  } else {
+    opts.link_mode = celwasm::CompilerOptions::LinkMode::kDynamic;
+  }
   return compiler.Compile(t.expr(), opts);
 }
 
@@ -716,8 +746,7 @@ Result RunUnknownBranch(celwasm::Instance& inst,
   return {Outcome::kPass, SkipCategory::kEnvelope, ""};
 }
 
-Result RunValueBranch(celwasm::Instance& inst,
-                      const celwasm::Activation& act,
+Result RunValueBranch(celwasm::Instance& inst, const celwasm::Activation& act,
                       const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
@@ -747,8 +776,7 @@ Result RunImplicitBoolTrueBranch(celwasm::Instance& inst,
 // matches (kind-only semantics make all entries equivalent, so we
 // can just compare against the first or an empty set).
 Result RunEvalErrorBranch(celwasm::Instance& inst,
-                          const celwasm::Activation& act,
-                          const SimpleTest& t) {
+                          const celwasm::Activation& act, const SimpleTest& t) {
   auto val_or = inst.Eval(act);
   if (!val_or.ok()) return ClassifyEvalFailure("eval", val_or.status());
   cel::expr::ErrorSet empty;
@@ -825,8 +853,7 @@ ResolveCompiler(const SimpleTest& t) {
 // Dispatches the matcher-kind eval branch.  `RunOne`'s tail is just
 // "plan + dispatch"; lifting it keeps `RunOne` under the lint gate.
 Result DispatchEvalBranch(celwasm::Instance& inst,
-                          const celwasm::Activation& act,
-                          const SimpleTest& t) {
+                          const celwasm::Activation& act, const SimpleTest& t) {
   if (IsUnknownMatcher(t)) return RunUnknownBranch(inst, act);
   if (IsEvalErrorMatcher(t)) return RunEvalErrorBranch(inst, act, t);
   if (t.result_matcher_case() == SimpleTest::RESULT_MATCHER_NOT_SET) {

@@ -54,6 +54,7 @@
 #include "eval/instance.h"
 #include "compiler/program.h"
 #include "eval/value.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -61,14 +62,7 @@ namespace {
 
 using ::absl_testing::IsOk;
 
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
+using ::celwasm::e2e::GlobalEngine;
 
 Compiler MathCompiler() {
   Compiler::Builder b;
@@ -77,13 +71,7 @@ Compiler MathCompiler() {
   return *std::move(compiler);
 }
 
-Instance CompilePlan(const Compiler& compiler, absl::string_view source) {
-  auto program = compiler.Compile(source);
-  ABSL_CHECK_OK(program) << source;
-  auto instance = GlobalEngine().Plan(*program);
-  ABSL_CHECK_OK(instance) << source;
-  return *std::move(instance);
-}
+using ::celwasm::e2e::CompilePlan;
 
 Value EvalOk(absl::string_view source) {
   auto compiler = MathCompiler();

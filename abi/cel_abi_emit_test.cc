@@ -9,9 +9,9 @@
 #include <utility>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/status/status_matchers.h"
 #include "absl/types/span.h"
-#include "abi/cel_abi.pb.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/layout_pass.h"
 #include "compiler/codegen/resolve_pass.h"
@@ -40,7 +40,7 @@ StaticLayout LayoutWith(absl::string_view expression,
 
 TEST(CelAbiEmitTest, EmptyWhenNoVariablesReferenced) {
   StaticLayout layout = LayoutWith("42", {});
-  auto abi = BuildCelAbi(layout, {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   EXPECT_EQ(abi->version(), 1u);
   EXPECT_EQ(abi->variables_size(), 0);
@@ -55,7 +55,7 @@ TEST(CelAbiEmitTest, EmptyWhenNoVariablesReferenced) {
 
 TEST(CelAbiEmitTest, SingleIntVariableRoundTrips) {
   StaticLayout layout = LayoutWith("x", {"x:int"});
-  auto abi = BuildCelAbi(layout, {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 1);
   const auto& v = abi->variables(0);
@@ -71,7 +71,7 @@ TEST(CelAbiEmitTest, EveryScalarReprMaps) {
   // layout.variables with four distinct repr kinds.
   StaticLayout layout = LayoutWith("b || s == \"x\" || i > 0 || d > 0.0",
                                    {"b:bool", "s:string", "i:int", "d:double"});
-  auto abi = BuildCelAbi(layout, {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 4);
 
@@ -92,7 +92,7 @@ TEST(CelAbiEmitTest, VariableSlotOffsetsAreContiguous) {
   // so this locks both the layout pass contract AND the emitter's
   // transparent pass-through.
   StaticLayout layout = LayoutWith("x + y + z", {"x:int", "y:int", "z:int"});
-  auto abi = BuildCelAbi(layout, {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 3);
   EXPECT_EQ(abi->variables(0).slot_offset(), layout.workspace_base);
@@ -106,7 +106,7 @@ TEST(CelAbiEmitTest, VariableSlotOffsetsAreContiguous) {
 // path; this one stays within proto serialization.
 TEST(CelAbiEmitTest, EmittedProtoSerializesAndRoundTripsThroughProtoParse) {
   StaticLayout layout = LayoutWith("x", {"x:int"});
-  auto abi = BuildCelAbi(layout, {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   std::string bytes;
   ASSERT_TRUE(abi->SerializeToString(&bytes));
@@ -131,7 +131,8 @@ TEST(CelAbiEmitTest, FieldRefsEmittedDenselyWithSentinelAtZero) {
       {/*field_number=*/9, /*name=*/"billing_address",
        /*owner_fqn=*/"celwasm.testdata.Customer"},
   };
-  auto abi = BuildCelAbi(layout, absl::MakeConstSpan(field_refs));
+  auto abi = BuildCelAbi(layout, absl::MakeConstSpan(field_refs),
+                         celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
 
   ASSERT_EQ(abi->fields_size(), 3);
@@ -146,6 +147,95 @@ TEST(CelAbiEmitTest, FieldRefsEmittedDenselyWithSentinelAtZero) {
   EXPECT_EQ(abi->fields(1).owner_fqn(), "celwasm.testdata.Customer");
   EXPECT_EQ(abi->fields(2).id(), 2u);
   EXPECT_EQ(abi->fields(2).name(), "billing_address");
+}
+
+// --- link_mode ------------------------------------------------------------
+//
+// The link-mode marker is embedder-tooling metadata, not an engine
+// routing input — see
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
+
+TEST(CelAbiEmitTest, LinkModeDynamicRoundTripsThroughProtoParse) {
+  StaticLayout layout = LayoutWith("42", {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  ASSERT_THAT(abi, IsOk());
+  EXPECT_EQ(abi->link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
+
+  std::string bytes;
+  ASSERT_TRUE(abi->SerializeToString(&bytes));
+  celwasm::abi::CelAbi parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_EQ(parsed.link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
+}
+
+TEST(CelAbiEmitTest, LinkModeStaticRoundTripsThroughProtoParse) {
+  StaticLayout layout = LayoutWith("42", {});
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_STATIC);
+  ASSERT_THAT(abi, IsOk());
+  EXPECT_EQ(abi->link_mode(), celwasm::abi::LINK_MODE_STATIC);
+
+  std::string bytes;
+  ASSERT_TRUE(abi->SerializeToString(&bytes));
+  celwasm::abi::CelAbi parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_EQ(parsed.link_mode(), celwasm::abi::LINK_MODE_STATIC);
+}
+
+// Backward compatibility — the load-bearing property of the field.
+// A Program emitted by the pre-link-mode schema carries no field-7
+// bytes at all; decoding it must yield LINK_MODE_DYNAMIC, which
+// matches the actual shape of every such Program.  Legacy bytes are
+// hand-rolled from the proto wire format (field 1 `version`, varint
+// tag 0x08, value 1) rather than serialized through the current
+// schema, so the test stays honest if the current schema ever starts
+// emitting field 7 unconditionally.
+TEST(CelAbiEmitTest, LegacyBytesWithoutLinkModeFieldDecodeAsDynamic) {
+  const std::string legacy_bytes = {0x08, 0x01};  // version = 1, nothing else
+  celwasm::abi::CelAbi parsed;
+  ASSERT_TRUE(parsed.ParseFromString(legacy_bytes));
+  EXPECT_EQ(parsed.version(), 1u);
+  EXPECT_EQ(parsed.link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
+}
+
+// Dynamic mode serializes to bytes WITHOUT a field-7 tag (proto3
+// omits default-valued scalar fields), i.e. a dynamic-mode Program's
+// section is byte-identical to one from the pre-link-mode schema.
+// Pins that adding the field did not change the wire bytes of
+// existing-shape Programs.  Asserted structurally: fields serialize
+// in field-number order, so the STATIC bytes are exactly the DYNAMIC
+// bytes plus the trailing field-7 varint pair (tag (7 << 3) | 0 =
+// 0x38, value 1).
+TEST(CelAbiEmitTest, LinkModeDynamicSerializesWithoutFieldSevenTag) {
+  StaticLayout layout = LayoutWith("42", {});
+  auto dynamic_abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto static_abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_STATIC);
+  ASSERT_THAT(dynamic_abi, IsOk());
+  ASSERT_THAT(static_abi, IsOk());
+  std::string dynamic_bytes;
+  std::string static_bytes;
+  ASSERT_TRUE(dynamic_abi->SerializeToString(&dynamic_bytes));
+  ASSERT_TRUE(static_abi->SerializeToString(&static_bytes));
+  EXPECT_EQ(static_bytes, dynamic_bytes + std::string("\x38\x01"));
+}
+
+// Forward compatibility — wire bytes are an open set, so an unknown
+// future enum value (a mode a newer compiler stamps) must pass
+// through gracefully: parse succeeds, the numeric value is preserved
+// (proto3 open-enum semantics), and re-serialization keeps it.  No
+// CHECK / hard failure on the decode path.
+TEST(CelAbiEmitTest, UnknownFutureLinkModeValueParsesAndIsPreserved) {
+  // Hand-rolled wire bytes: field 7 varint tag 0x38, value 2 — an
+  // enum value this schema does not define.
+  const std::string future_bytes = {0x38, 0x02};
+  celwasm::abi::CelAbi parsed;
+  ASSERT_TRUE(parsed.ParseFromString(future_bytes));
+  EXPECT_EQ(static_cast<int>(parsed.link_mode()), 2);
+
+  std::string reserialized;
+  ASSERT_TRUE(parsed.SerializeToString(&reserialized));
+  celwasm::abi::CelAbi reparsed;
+  ASSERT_TRUE(reparsed.ParseFromString(reserialized));
+  EXPECT_EQ(static_cast<int>(reparsed.link_mode()), 2);
 }
 
 }  // namespace

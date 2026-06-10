@@ -33,10 +33,20 @@
 #include "testdata/e2e_fixture.pb.h"
 #include "gmock/gmock.h"
 #include "google/protobuf/message.h"
+#include "bazel/link_mode_test_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
+
+// Returns `CompilerOptions` with `link_mode` set to the per-binary
+// `kTestLinkMode` — picked at build time by `link_mode_cc_test`.
+inline CompilerOptions LinkModeOpts() {
+  CompilerOptions opts;
+  opts.link_mode = kTestLinkMode;
+  return opts;
+}
+
 using ::celwasm::AttributePattern;
 
 // Force generated-pool registration of descriptors referenced by
@@ -168,7 +178,7 @@ TEST_F(InstanceEvalTest, EvalIsDeterministicAcrossManyCalls) {
   // Re-evaluating the same Instance many times must produce the
   // same Value — $eval's first instruction is a baked-in arena_reset
   // call so the arena is fresh every time.
-  auto prog_or = compiler_->Compile(R"("hello")");
+  auto prog_or = compiler_->Compile(R"("hello")", LinkModeOpts());
   ASSERT_TRUE(prog_or.ok());
   auto inst_or = engine_->Plan(*prog_or);
   ASSERT_TRUE(inst_or.ok());
@@ -188,8 +198,8 @@ TEST_F(InstanceEvalTest, TwoInstancesEvaluateIndependently) {
   // each have their own host-allocated memory; eval'ing one
   // doesn't perturb the other.  This is the smoke-test invariant
   // re-verified at the api/ level.
-  auto p_a = compiler_->Compile("42");
-  auto p_b = compiler_->Compile(R"("world")");
+  auto p_a = compiler_->Compile("42", LinkModeOpts());
+  auto p_b = compiler_->Compile(R"("world")", LinkModeOpts());
   ASSERT_TRUE(p_a.ok());
   ASSERT_TRUE(p_b.ok());
   auto a_or = engine_->Plan(*p_a);
@@ -710,7 +720,7 @@ absl::StatusOr<Engine> MakeEngineWithIsNumber() {
 TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnFiresAndReturnsTrue) {
   auto compiler_or = MakeCompiler();
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
-  auto prog_or = compiler_or->Compile("name.is_number()");
+  auto prog_or = compiler_or->Compile("name.is_number()", LinkModeOpts());
   ASSERT_TRUE(prog_or.ok()) << prog_or.status();
 
   auto engine_or = MakeEngineWithIsNumber();
@@ -729,7 +739,7 @@ TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnFiresAndReturnsTrue) {
 TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnReturnsFalseForNonDigits) {
   auto compiler_or = MakeCompiler();
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
-  auto prog_or = compiler_or->Compile("name.is_number()");
+  auto prog_or = compiler_or->Compile("name.is_number()", LinkModeOpts());
   ASSERT_TRUE(prog_or.ok()) << prog_or.status();
 
   auto engine_or = MakeEngineWithIsNumber();
