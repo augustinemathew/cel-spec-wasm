@@ -498,11 +498,16 @@ TEST(HostFnTest, TypedMapViewArg) {
   EXPECT_EQ(*v->AsInt(), 20);
 }
 
-// The deepest composite through the typed API: a
-// map<string, list<proto>> param arrives as a `HostMapView`; the nested
-// list<proto> is reached via the Value that Get yields, then each proto
-// element is reflected on.
-TEST(HostFnTest, TypedNestedMapStringListProtoArg) {
+// ── shared pieces for the deepest-composite tests ─────────────────
+//
+// Typed (TypedNestedMapStringListProtoArg) and context
+// (ContextNestedMapStringListProtoArg) registration both exercise the
+// same map<string, list<proto>> program shape and the same counting
+// walk; the pieces live here so each TEST stays within the
+// function-size lint thresholds.
+
+// Compiles `count_premium(teams, k)` against the nested-composite decl.
+absl::StatusOr<Program> CompileCountPremiumProgram() {
   const CelType team_map = CelType::Map(
       CelType::String(),
       CelType::List(CelType::Message("celwasm.testdata.Customer")));
@@ -513,9 +518,63 @@ TEST(HostFnTest, TypedNestedMapStringListProtoArg) {
       "int @host.count_premium("
       "map<string, list<proto(celwasm.testdata.Customer)>> teams, string k);");
   auto compiler = std::move(b).Build();
-  ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program =
-      compiler->Compile("count_premium(teams, k)", e2e::DefaultOpts());
+  if (!compiler.ok()) return compiler.status();
+  return compiler->Compile("count_premium(teams, k)", e2e::DefaultOpts());
+}
+
+// teams = { "eng": [premium, not premium], "sales": [premium] }; k =
+// "eng".  `Value::Message` is non-owning, so the fixture owns the
+// Customers alongside the Activation that borrows them; it is
+// heap-allocated so the bound message addresses stay stable.
+struct TeamsFixture {
+  Customer premium_eng;
+  Customer regular_eng;
+  Customer premium_sales;
+  Activation act;
+};
+
+std::unique_ptr<TeamsFixture> MakeTeamsActivation() {
+  auto f = std::make_unique<TeamsFixture>();
+  f->premium_eng.set_is_premium(true);
+  f->regular_eng.set_is_premium(false);
+  f->premium_sales.set_is_premium(true);
+  f->act.Bind("teams",
+              Value::Map({{Value::String("eng"),
+                           Value::List({Value::Message(f->premium_eng),
+                                        Value::Message(f->regular_eng)})},
+                          {Value::String("sales"),
+                           Value::List({Value::Message(f->premium_sales)})}}));
+  f->act.Bind("k", Value::String("eng"));
+  return f;
+}
+
+// Looks up `k` in `teams` and counts premium Customers in the nested
+// list<proto>: the list is reached via the Value that Get yields, then
+// each proto element is reflected on.  -1 signals a missing key (the
+// map Get yielded a CEL error value).
+absl::StatusOr<int64_t> CountPremiumInTeam(const HostMapView& teams,
+                                           absl::string_view k) {
+  auto list_v = teams.Get(Value::String(std::string(k)));
+  if (!list_v.ok()) return list_v.status();
+  if (list_v->IsError()) return int64_t{-1};
+  auto lb = list_v->ListBacking();
+  if (!lb.ok()) return lb.status();
+  int64_t n = 0;
+  for (size_t i = 0; i < (*lb)->Size(); ++i) {
+    auto e = (*lb)->At(i, CelType{});
+    if (!e.ok()) return e.status();
+    auto mb = e->MessageBacking();
+    if (!mb.ok()) return mb.status();
+    const auto* cust = dynamic_cast<const Customer*>((*mb)->message());
+    if (cust != nullptr && cust->is_premium()) ++n;
+  }
+  return n;
+}
+
+// The deepest composite through the typed API: a
+// map<string, list<proto>> param arrives as a `HostMapView`.
+TEST(HostFnTest, TypedNestedMapStringListProtoArg) {
+  auto program = CompileCountPremiumProgram();
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -527,45 +586,16 @@ TEST(HostFnTest, TypedNestedMapStringListProtoArg) {
               "string",
               [](HostMapView teams,
                  absl::string_view k) -> absl::StatusOr<int64_t> {
-                auto list_v = teams.Get(Value::String(std::string(k)));
-                if (!list_v.ok()) return list_v.status();
-                if (list_v->IsError()) return int64_t{-1};
-                auto lb = list_v->ListBacking();
-                if (!lb.ok()) return lb.status();
-                int64_t n = 0;
-                for (size_t i = 0; i < (*lb)->Size(); ++i) {
-                  auto e = (*lb)->At(i, CelType{});
-                  if (!e.ok()) return e.status();
-                  auto mb = e->MessageBacking();
-                  if (!mb.ok()) return mb.status();
-                  const auto* cust =
-                      dynamic_cast<const Customer*>((*mb)->message());
-                  if (cust != nullptr && cust->is_premium()) ++n;
-                }
-                return n;
+                return CountPremiumInTeam(teams, k);
               })
           .ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
 
-  // teams = { "eng": [premium, not], "sales": [premium] }; query "eng".
-  Customer a;
-  a.set_is_premium(true);
-  Customer not_premium;
-  not_premium.set_is_premium(false);
-  Customer sales;
-  sales.set_is_premium(true);
-  Activation act;
-  act.Bind(
-      "teams",
-      Value::Map(
-          {{Value::String("eng"),
-            Value::List({Value::Message(a), Value::Message(not_premium)})},
-           {Value::String("sales"), Value::List({Value::Message(sales)})}}));
-  act.Bind("k", Value::String("eng"));
-  auto v = instance->Eval(act);
+  auto teams = MakeTeamsActivation();
+  auto v = instance->Eval(teams->act);
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_EQ(*v->AsInt(), 1);  // "eng" has one premium customer (a)
+  EXPECT_EQ(*v->AsInt(), 1);  // "eng" has one premium customer
 }
 
 // Typed receiver (`this`) dispatch: the receiver becomes arg 0.
@@ -633,6 +663,38 @@ TEST(HostFnTest, TypedFunctionsCompose) {
   auto v = instance->Eval(act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), 41);  // (20*2)+1
+}
+
+// Layer 3 sugar (Engine::BindFunction) — declaration-first form: the
+// SAME `.celfn` string drives both the compiler and engine sides, so
+// the overload-id and wasm arity are never hand-spelled.  The
+// registration-level validation matrix lives in eval/engine_test.cc
+// (EngineBindFunctionTest); this is the single end-to-end dispatch
+// proof through wasmtime.
+TEST(HostFnTest, BindFunctionDeclFirstRoundTrip) {
+  constexpr absl::string_view kDecl = "int @host.discount_pct(string tier);";
+  auto b = Compiler::NewBuilder();
+  b.AddFunction(kDecl);
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("discount_pct('gold')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(
+      engine
+          ->BindFunction(kDecl,
+                         [](absl::string_view tier) -> absl::StatusOr<int64_t> {
+                           return tier == "gold" ? 20 : 5;
+                         })
+          .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+
+  auto v = instance->Eval();
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 20);
 }
 
 // A typed closure returning StatusOr<Value> can emit a function-origin
@@ -1278,23 +1340,10 @@ TEST(HostFnTest, ContextMapLiteralArgLooksUpKey) {
 }
 
 // The deepest composite through the context API: map<string, list<proto>>
-// — the callback indexes the map, walks the list value, and reflects on
-// each proto element (recursive aggregate decode over the externref
-// table).
+// — the callback decodes the map + key args itself, then runs the same
+// counting walk as the typed variant (CountPremiumInTeam above).
 TEST(HostFnTest, ContextNestedMapStringListProtoArg) {
-  const CelType team_map = CelType::Map(
-      CelType::String(),
-      CelType::List(CelType::Message("celwasm.testdata.Customer")));
-  auto b = Compiler::NewBuilder();
-  b.DeclareVariable("teams", team_map);
-  b.DeclareVariable("k", CelType::String());
-  b.AddFunction(
-      "int @host.count_premium("
-      "map<string, list<proto(celwasm.testdata.Customer)>> teams, string k);");
-  auto compiler = std::move(b).Build();
-  ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program =
-      compiler->Compile("count_premium(teams, k)", e2e::DefaultOpts());
+  auto program = CompileCountPremiumProgram();
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1310,44 +1359,18 @@ TEST(HostFnTest, ContextNestedMapStringListProtoArg) {
                 if (!m.ok()) return m.status();
                 auto k = ctx.ArgString(1);
                 if (!k.ok()) return k.status();
-                auto list_v = m->Get(Value::String(std::string(*k)));
-                if (!list_v.ok()) return list_v.status();
-                if (list_v->IsError()) return ctx.ReturnInt(-1);
-                auto lb = list_v->ListBacking();
-                if (!lb.ok()) return lb.status();
-                int64_t n = 0;
-                for (size_t i = 0; i < (*lb)->Size(); ++i) {
-                  auto e = (*lb)->At(i, CelType{});
-                  if (!e.ok()) return e.status();
-                  auto mb = e->MessageBacking();
-                  if (!mb.ok()) return mb.status();
-                  const auto* c =
-                      dynamic_cast<const Customer*>((*mb)->message());
-                  if (c != nullptr && c->is_premium()) ++n;
-                }
-                return ctx.ReturnInt(n);
+                auto n = CountPremiumInTeam(*m, *k);
+                if (!n.ok()) return n.status();
+                return ctx.ReturnInt(*n);
               })
           .ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
 
-  Customer a;
-  a.set_is_premium(true);
-  Customer not_premium;
-  not_premium.set_is_premium(false);
-  Customer sales;
-  sales.set_is_premium(true);
-  Activation act;
-  act.Bind(
-      "teams",
-      Value::Map(
-          {{Value::String("eng"),
-            Value::List({Value::Message(a), Value::Message(not_premium)})},
-           {Value::String("sales"), Value::List({Value::Message(sales)})}}));
-  act.Bind("k", Value::String("eng"));
-  auto v = instance->Eval(act);
+  auto teams = MakeTeamsActivation();
+  auto v = instance->Eval(teams->act);
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_EQ(*v->AsInt(), 1);  // "eng" has one premium customer (a)
+  EXPECT_EQ(*v->AsInt(), 1);  // "eng" has one premium customer
 }
 
 // Argument ORDER is asserted with a non-commutative op: a - b.

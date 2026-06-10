@@ -1,14 +1,13 @@
-# CEL Language Council
+# Maintainers
 
-| Name            | Company      | Area of Expertise  |
-|-----------------|--------------|--------------------|
-| Augustine Mathew| Google       | cel-wasm, cel-spec |
-| Alfred Fuller   | Facebook     | cel-cpp, cel-spec  |
-| Jim Larson      | Google       | cel-go, cel-spec   |
-| Matthais Blume  | Google       | cel-spec           |
-| Tristan Swadell | Google       | cel-go, cel-spec   |
+This repository (cel-wasm, a CEL → WebAssembly AOT compiler) is
+maintained by:
 
-## Emeritus
+| Name             | Contact                    |
+|------------------|----------------------------|
+| Augustine Mathew | augustine.mathew@gmail.com |
 
-* Sanjay Ghemawat (Google)
-* Wolfgang Grieskamp (Facebook)
+The repo began as a fork of [cel-spec](https://github.com/google/cel-spec);
+the language definition and conformance corpus (`doc/langdef.md`,
+`spec/`) mirror that upstream project, which is governed by the CEL
+Language Council.

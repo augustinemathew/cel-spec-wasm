@@ -530,3 +530,16 @@ exceeds the 60 line / 40 stmt / 15 branch thresholds.
 - L154: possibly unsafe 'operator[]', consider bounds-safe alternatives
 - L170: possibly unsafe 'operator[]', consider bounds-safe alternatives
 
+
+### `tools/cel/cel.cc` — 2 warnings
+
+**`readability-function-size`** (2)
+
+- L327 `RunEval`: 72 lines / 71 statements (thresholds 60 / 40).
+- L534 `main`: 51 statements (threshold 40).
+
+Pre-existing exceedances surfaced by the 2026-06-09 docs pass (which
+touched only usage-text strings in this file).  Both want the standard
+split treatment — `RunEval` into parse-flags / compile / eval-and-print
+helpers, `main` into a subcommand dispatch table — next time the CLI
+gains a feature (e.g. `cel run`).

@@ -17,8 +17,7 @@ implementation source, runs the whole compile pipeline (`cel generate` →
 > fixture exercises in CI. String returns from the component side
 > currently route through a libc++ code path that we'd like to skip
 > rather than fully support — see [Performance follow-ups](#9-performance-follow-ups).
-> The Go path (TinyGo) is designed; the `--language=go` arm lands with
-> H.4.
+> The Go path (TinyGo) is designed; the `--language=go` arm is planned.
 
 ---
 
@@ -111,51 +110,73 @@ bazel run //third_party/wasm_tools:wasm-tools -- \
 
 ### 2.4 Loading it from C++
 
+This mirrors the working fixture test
+(`e2e/foreign_component_fixtures/cel_wasm_component_demo/demo_component_e2e_test.cc`):
+
 ```cpp
+#include <fstream>
+#include <utility>
+
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "tools/cpp/runfiles/runfiles.h"
+#include "eval/value.h"
+#include "shared/type.h"
 
-// Load the .wasm bytes via runfiles (or wherever you ship them):
-auto runfiles = absl::WrapUnique(
-    bazel::tools::cpp::runfiles::Runfiles::CreateForTest(&error));
-std::ifstream f(runfiles->Rlocation(
-    "_main/path/to/demo_component.wasm"), std::ios::binary);
+// CelfnType is a plain struct; a tiny helper keeps scalar decls terse.
+celwasm::CelfnType Prim(celwasm::CelfnType::Kind k) {
+  celwasm::CelfnType t;
+  t.kind = k;
+  return t;
+}
+
+// Load the .wasm bytes (via bazel runfiles in a test, or wherever you
+// ship them):
+std::ifstream f("path/to/demo_component.wasm", std::ios::binary);
 std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
 
 // Mirror the IDL's decls on the C++ side so the engine knows what to
 // bind to which export.  SetWitInterface tells the engine where to
 // look — the macro's default world is `cel:<module>/fns@0.1.0`.
-auto lib =
+auto lib_or =
     celwasm::FunctionLibrary::Builder()
         .SetWitInterface("cel:customfn/fns@0.1.0")
         .AddForeignComponent(
-            "add", celwasm::CelfnType::Int(),
-            {{false, celwasm::CelfnType::Int(), "a"},
-             {false, celwasm::CelfnType::Int(), "b"}})
-        .Build()
-        .value();
+            "add", Prim(celwasm::CelfnType::Kind::kInt),
+            {celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "a"},
+             celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "b"}})
+        .Build();
+ABSL_CHECK_OK(lib_or);
+const celwasm::FunctionLibrary lib = *std::move(lib_or);
 
-auto engine = celwasm::Engine::NewBuilder().Build().value();
-engine->AddComponent(bytes, lib);
+auto engine = celwasm::Engine::NewBuilder().Build();
+ABSL_CHECK_OK(engine);
+ABSL_CHECK_OK(engine->AddComponent(bytes, lib));
 
 // Compile and evaluate as usual — `add(...)` is now a callable export.
-auto compiler = celwasm::Compiler::NewBuilder()
-                    .DeclareVariable("a", celwasm::CelType::Int())
-                    .DeclareVariable("b", celwasm::CelType::Int())
-                    .AddLibrary(lib)
-                    .Build()
-                    .value();
-auto program  = compiler.Compile("add(a, b)").value();
-auto instance = engine->Plan(program).value();
+// Note `Compiler::Builder::Build()` is rvalue-qualified: chain setters
+// on a named builder, then `std::move(b).Build()`.
+auto b = celwasm::Compiler::NewBuilder();
+b.DeclareVariable("a", celwasm::CelType::Int())
+    .DeclareVariable("b", celwasm::CelType::Int())
+    .AddLibrary(lib);
+auto compiler = std::move(b).Build();
+ABSL_CHECK_OK(compiler);
+
+auto program = compiler->Compile("add(a, b)");
+ABSL_CHECK_OK(program);
+auto instance = engine->Plan(*program);
+ABSL_CHECK_OK(instance);
 
 celwasm::Activation act;
 act.Bind("a", celwasm::Value::Int(40));
 act.Bind("b", celwasm::Value::Int(2));
-auto v = instance.Eval(act).value();  // → 42
+auto v = instance->Eval(act);
+ABSL_CHECK_OK(v);
+// *v->AsInt() == 42
 ```
 
 Working e2e test fixture:
@@ -216,7 +237,7 @@ cel_wasm_component(
 
 ---
 
-## 4. Go via TinyGo ⛔ (designed, H.4 pending)
+## 4. Go via TinyGo ⛔ (designed, not implemented)
 
 The intended Go authoring shape — for parity with C++:
 
@@ -240,7 +261,7 @@ The planned macro extension would emit Go bindings instead of C++:
 cel_wasm_component(
     name = "demo_component",
     idl = "fns.idl",
-    language = "go",                  # planned (H.4)
+    language = "go",                  # planned
     user_fns = ["user_fns.go"],
 )
 ```
@@ -257,8 +278,8 @@ fns.idl  ─► cel generate --language=go  ─► fns.wit + customfn_bindings.g
              same as the C++ path)
 ```
 
-**Why it's gated on H.4:** today only `--language=cpp` is wired through
-`cel generate`. The Go emitter (mirror of `cpp_codec_emitter` /
+**Why it's not available yet:** today only `--language=cpp` is wired
+through `cel generate`. The Go emitter (mirror of `cpp_codec_emitter` /
 `cpp_stub_emitter`) hasn't been written, and the macro doesn't yet
 accept `language = "go"`.
 

@@ -2,7 +2,7 @@
 
 Branch: `phase-c-libraries` (forked from `wasi-malloc-migration` @ `a43ee8b`).
 
-**Status: in flight, started 2026-05-18.**
+**Status: shipped** (RE2 + absl::time/cctz vendored into the runtime; in-runtime parsers + `matches()` live).  The as-shipped memory model lives in [`memory-layout-design.md`](memory-layout-design.md) and [`wasi/DESIGN.md`](wasi/DESIGN.md); this doc is the historical build plan.
 
 > **Memory consequence consolidated into
 > [`memory-layout-design.md`](memory-layout-design.md).** Phase C's

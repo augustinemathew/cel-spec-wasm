@@ -1,7 +1,10 @@
 # Phase C — implementation plan
 
-**Status:** drafted 2026-05-18 from probe results E1-E10 (see
-`phase-c-probes/E*/RESULT.md`).  Branch: `phase-c-libraries`.
+**Status: shipped.**  Drafted 2026-05-18 from probe results E1-E10 (see
+`phase-c-probes/E*/RESULT.md`); the work landed — see
+[`wasi/DESIGN.md`](wasi/DESIGN.md) and
+[`memory-layout-design.md`](memory-layout-design.md) for the as-shipped
+model.  This doc is the historical implementation plan.
 
 ## 1 Chosen path
 

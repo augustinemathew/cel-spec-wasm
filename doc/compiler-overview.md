@@ -1,9 +1,9 @@
-# `compiler/` — CEL → WebAssembly AOT compiler
+# cel-wasm compiler overview
 
-The compiler that turns a CEL source expression into a self-contained
-wasm module the host instantiates and runs through wasmtime.  This
-README is the orientation page — start here if you're new to the
-codebase or you need to know which knob controls what.
+The compiler turns a CEL source expression into a self-contained wasm
+module the host instantiates and runs through wasmtime.  This page is
+the orientation guide — start here if you're new to the codebase or you
+need to know which knob controls what.
 
 For the full design, see `doc/implementation-plan/rewrite/design.md`
 and `doc/implementation-plan/rewrite/cel-host-surface.md`.  For per-
@@ -15,7 +15,7 @@ component test coverage and the milestone closeout discipline, see
 Prerequisites, the macOS / Linux setup steps, the `bazel build` / `bazel
 test` commands, the CLI, the conformance runner, and the Docker Linux
 image all live in the repository-root
-[`README.md`](../README.md#getting-started).  `celwasmc` builds on
+[`README.md`](../README.md).  cel-wasm builds on
 **macOS (Apple Silicon)** and **Linux (arm64 / x86_64)** with the same
 `bazel` invocations — Bazel fetches the wasi-sdk cross-compile toolchain,
 binaryen, and wasmtime for the build host automatically.
@@ -27,45 +27,57 @@ the compile-db / PCH details, see `doc/contributing.md`.
 
 ## Layout
 
+The repo is organised by **lifecycle role** at the top level:
+
 ```
-compiler/
-  api/         — public C++ surface: Compiler, Engine, Instance,
-                  Activation, Value, CelType.  This is what hosts
-                  link against.
-  frontend/    — parse_and_check.  Wraps cel-cpp's parser + checker;
-                  runs RejectDyn; emits TypedAst.
-  ir/          — typed_ast + annotations.  Stable mid-layer between
+compiler/       — compile-time: CEL source → Program (wasm bytes + cel.abi).
+                  Public surface: compiler.h (Compiler + CompilerOptions)
+                  and program.h.
+  frontend/     — parse_and_check.  Wraps cel-cpp's parser + checker;
+                  runs RejectDyn; emits the typed AST.
+  ir/           — typed_ast + annotations.  Stable mid-layer between
                   the checker and codegen.
-  codegen/     — resolve_pass, layout_pass, expr_lower, module,
-                  overload_table, static_memory_builder, slot_alloc.
-                  Lowers TypedAst → Binaryen IR → wasm bytes.
-  abi/         — cel.abi custom-section emitter / parser; pinned wire
-                  format the host loader reads to discover rodata /
+  codegen/      — resolve_pass, layout_pass, expr_lower, module,
+                  overload_table, static_memory_builder, slot_allocator.
+                  Lowers the typed AST → Binaryen IR → wasm bytes.
+  celfn/        — the `.celfn` custom-function IDL (parser + library).
+  internal/     — compile.{h,cc}, the private pipeline facade
+                  (frontend → codegen).  Public callers go through
+                  compiler/compiler.h instead.
+eval/           — eval-time: Program + Activation → Value (the
+                  C++/wasmtime evaluator).  Public surface: engine.h,
+                  instance.h, activation.h, value.h, error.h,
+                  attribute.h.  host/ (cel_log trampolines) and
+                  internal/ (wasmtime glue, abi_decode, cel_host) are
+                  private.
+shared/         — CelType, the type vocabulary both halves speak.
+abi/            — cel.abi custom-section emitter / parser; the pinned
+                  wire format the host loader reads to discover rodata /
                   workspace / arena offsets.
-  runtime/     — cel_runtime.c (split into cel_arith.c, cel_compare.c,
-                  cel_3vl.c, cel_convert.c, cel_string_ops.c, … per
-                  doc/implementation-plan/rewrite/cel-runtime-c-split-
-                  plan.md).  Cross-compiled to cel_runtime.wasm; also
-                  linked natively for unit tests and host trampoline
-                  callers.
-  host/        — host-side trampolines that bridge cel_host imports
-                  to user code (cel_log, …).
-  conformance/ — harness that runs the cel-spec conformance corpus
+runtime/        — the language-agnostic C kernel (cel_arith.c,
+                  cel_compare.c, cel_3vl.c, cel_convert.c,
+                  cel_string_ops.c, …).  Cross-compiled to
+                  cel_runtime.wasm; also linked natively for unit tests
+                  and host trampoline callers.
+tools/          — CLI utilities.  tools/cel/ is the `cel` command-line
+                  driver (eval / check / compile / generate; see
+                  tools/cel/README.md).  tools/wat_runner/ assembles +
+                  runs WAT traces.
+conformance/    — harness that runs the cel-spec conformance corpus
                   against the pipeline.  See conformance/README.md.
-  e2e/         — full-pipeline integration tests, one per milestone
-                  (m2_test, m4_test, m5_test, m7_test, m9_test,
-                  m10_test) plus optimize_test (manual-tagged opt-
-                  level validation gate).
-  bench/       — Google Benchmark microbenches (kernel + pipeline).
+e2e/            — full-pipeline integration tests (wasmtime-driven),
+                  plus manual-tagged gates like optimize_test.
+bench/          — Google Benchmark microbenches (kernel + pipeline).
                   See bench/README.md.
-  tools/       — CLI utilities.  `tools/cel/` is the `cel` command-
-                  line driver (subcommands eval / check / compile,
-                  --var / --proto / --descriptor_set / --format; see
-                  tools/cel/README.md).  `tools/wat_runner/` assembles
-                  + runs WAT traces.
-  compile.{h,cc} — internal pipeline facade (frontend → codegen).
-                  Public callers go through api/compiler.h instead.
+benchmark/      — cross-implementation comparison harness (vs cel-cpp).
+testdata/       — shared proto fixtures.
+spec/           — cel-spec heritage: the .textproto conformance corpus
+                  under spec/tests/.
+examples/       — runnable embedding examples (see examples/README.md).
 ```
+
+`compiler/` and `eval/` both depend on `shared/`; neither depends on
+the other — `compiler/` stays wasm-targetable (no wasmtime dependency).
 
 ## Lifecycle
 
@@ -106,24 +118,24 @@ specific layer.
 
 End-to-end: compile a CEL expression, plan it, evaluate it.  Every
 snippet below is real code lifted from `e2e/`; copy-paste
-into a `cc_binary` whose deps include `//eval:compiler`,
-`//eval:engine`, `//eval:activation`,
-`//eval:value`, `//eval:type`, and
+into a `cc_binary` whose deps include `//compiler:compiler`,
+`//eval:engine`, `//eval:instance`, `//eval:activation`,
+`//eval:value`, `//shared:type`, and
 `@com_google_absl//absl/log:absl_check`.
 
 ### 1. Scalar literal — the simplest "hello, world"
 
 ```cpp
 #include "absl/log/absl_check.h"
+#include "compiler/compiler.h"
 #include "eval/activation.h"
-#include "eval/compiler.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
 
 int main() {
   // Build a Compiler with no declared variables.
-  cel::Compiler::Builder cb;
+  celwasm::Compiler::Builder cb;
   auto compiler = std::move(cb).Build();
   ABSL_CHECK_OK(compiler);
 
@@ -133,7 +145,7 @@ int main() {
 
   // Stand up a process-wide Engine (owns wasm_engine_t + the parsed
   // cel_runtime.wasm module).
-  auto engine = cel::Engine::NewBuilder().Build();
+  auto engine = celwasm::Engine::NewBuilder().Build();
   ABSL_CHECK_OK(engine);
 
   // Plan the program — produces a fresh Instance ready to Eval.
@@ -141,7 +153,7 @@ int main() {
   ABSL_CHECK_OK(instance);
 
   // Evaluate with an empty Activation (no bound variables).
-  auto value = instance->Eval(cel::Activation{});
+  auto value = instance->Eval(celwasm::Activation{});
   ABSL_CHECK_OK(value);
   ABSL_CHECK_EQ(*value->AsInt(), 6);
 }
@@ -151,25 +163,25 @@ int main() {
 
 ```cpp
 // Declare two int variables at Compiler build time.
-cel::Compiler::Builder cb;
-cb.DeclareVariable("a", cel::CelType::Int());
-cb.DeclareVariable("b", cel::CelType::Int());
+celwasm::Compiler::Builder cb;
+cb.DeclareVariable("a", celwasm::CelType::Int());
+cb.DeclareVariable("b", celwasm::CelType::Int());
 auto compiler = std::move(cb).Build();
 ABSL_CHECK_OK(compiler);
 
 auto program = compiler->Compile("a * b + 1");
 ABSL_CHECK_OK(program);
 
-auto engine = cel::Engine::NewBuilder().Build();
+auto engine = celwasm::Engine::NewBuilder().Build();
 ABSL_CHECK_OK(engine);
 auto instance = engine->Plan(*program);
 ABSL_CHECK_OK(instance);
 
 // Bind values for this Eval.  Activation is per-call; reuse the
 // same Instance for many Activations.
-cel::Activation a;
-a.Bind("a", cel::Value::Int(6));
-a.Bind("b", cel::Value::Int(7));
+celwasm::Activation a;
+a.Bind("a", celwasm::Value::Int(6));
+a.Bind("b", celwasm::Value::Int(7));
 
 auto value = instance->Eval(a);
 ABSL_CHECK_OK(value);
@@ -183,30 +195,30 @@ Plan per-request, Eval many times per Plan:
 
 ```cpp
 // Process-wide singletons.  Build once.
-static const cel::Engine& kEngine = []() -> const cel::Engine& {
-  auto e = cel::Engine::NewBuilder().Build();
+static const celwasm::Engine& kEngine = []() -> const celwasm::Engine& {
+  auto e = celwasm::Engine::NewBuilder().Build();
   ABSL_CHECK_OK(e);
-  return *(new cel::Engine(*std::move(e)));
+  return *(new celwasm::Engine(*std::move(e)));
 }();
 
-static const cel::Compiler& kCompiler = []() -> const cel::Compiler& {
-  cel::Compiler::Builder b;
-  b.DeclareVariable("user_age", cel::CelType::Int());
-  b.DeclareVariable("country", cel::CelType::String());
+static const celwasm::Compiler& kCompiler = []() -> const celwasm::Compiler& {
+  celwasm::Compiler::Builder b;
+  b.DeclareVariable("user_age", celwasm::CelType::Int());
+  b.DeclareVariable("country", celwasm::CelType::String());
   auto c = std::move(b).Build();
   ABSL_CHECK_OK(c);
-  return *(new cel::Compiler(*std::move(c)));
+  return *(new celwasm::Compiler(*std::move(c)));
 }();
 
 // Compile once per CEL rule.  Programs are copyable / serializable —
 // cache them keyed on the source string.
-static const cel::Program& kRule = []() -> const cel::Program& {
-  cel::CompilerOptions opts;
+static const celwasm::Program& kRule = []() -> const celwasm::Program& {
+  celwasm::CompilerOptions opts;
   opts.optimize_level = 2;  // Recommended for request-path queries.
   auto p = kCompiler.Compile(
       "user_age >= 18 && country in ['US', 'CA', 'MX']", opts);
   ABSL_CHECK_OK(p);
-  return *(new cel::Program(*std::move(p)));
+  return *(new celwasm::Program(*std::move(p)));
 }();
 
 // Per-request: Plan + Eval.
@@ -214,9 +226,9 @@ bool EvaluateRule(int64_t age, std::string country) {
   auto instance = kEngine.Plan(kRule);
   ABSL_CHECK_OK(instance);
 
-  cel::Activation a;
-  a.Bind("user_age", cel::Value::Int(age));
-  a.Bind("country", cel::Value::String(std::move(country)));
+  celwasm::Activation a;
+  a.Bind("user_age", celwasm::Value::Int(age));
+  a.Bind("country", celwasm::Value::String(std::move(country)));
 
   auto v = instance->Eval(a);
   ABSL_CHECK_OK(v);
@@ -238,16 +250,16 @@ without copying) at Eval time.
 ```cpp
 #include "testdata/e2e_fixture.pb.h"  // your .proto
 
-cel::Compiler::Builder cb;
+celwasm::Compiler::Builder cb;
 cb.DeclareVariable("c",
-                   cel::CelType::Message("celwasm.testdata.Customer"));
+                   celwasm::CelType::Message("celwasm.testdata.Customer"));
 auto compiler = std::move(cb).Build();
 ABSL_CHECK_OK(compiler);
 
 auto program = compiler->Compile("c.name + ' (' + string(c.age) + ')'");
 ABSL_CHECK_OK(program);
 
-auto engine = cel::Engine::NewBuilder().Build();
+auto engine = celwasm::Engine::NewBuilder().Build();
 ABSL_CHECK_OK(engine);
 auto instance = engine->Plan(*program);
 ABSL_CHECK_OK(instance);
@@ -256,17 +268,17 @@ celwasm::testdata::Customer msg;
 msg.set_name("Ada");
 msg.set_age(36);
 
-cel::Activation a;
-a.Bind("c", cel::Value::Message(msg));
+celwasm::Activation a;
+a.Bind("c", celwasm::Value::Message(msg));
 
 auto v = instance->Eval(a);
 ABSL_CHECK_OK(v);
 ABSL_CHECK_EQ(*v->AsString(), "Ada (36)");
 ```
 
-`cel::Value::Message(msg)` snapshots a const reference to the
+`celwasm::Value::Message(msg)` snapshots a const reference to the
 message; the caller must keep `msg` alive across the Eval call.
-For ownership-transfer use `cel::Value::OwnedMessage(std::unique_ptr<…>)`.
+For ownership-transfer use `celwasm::Value::OwnedMessage(std::unique_ptr<…>)`.
 
 ### 5. Inspecting results
 
@@ -278,20 +290,20 @@ doesn't match.
 auto v = instance->Eval(a);
 ABSL_CHECK_OK(v);
 switch (v->kind()) {
-  case cel::Value::Kind::kBool:    use(*v->AsBool());   break;
-  case cel::Value::Kind::kInt:     use(*v->AsInt());    break;
-  case cel::Value::Kind::kUint:    use(*v->AsUint());   break;
-  case cel::Value::Kind::kDouble:  use(*v->AsDouble()); break;
-  case cel::Value::Kind::kString:  use(*v->AsString()); break;
-  case cel::Value::Kind::kError:   /* read v->AsError() — CEL error */ break;
-  case cel::Value::Kind::kUnknown: /* partial-eval surfaced */ break;
-  default: /* … list / map / message — see api/value.h */ break;
+  case celwasm::Value::Kind::kBool:    use(*v->AsBool());   break;
+  case celwasm::Value::Kind::kInt:     use(*v->AsInt());    break;
+  case celwasm::Value::Kind::kUint:    use(*v->AsUint());   break;
+  case celwasm::Value::Kind::kDouble:  use(*v->AsDouble()); break;
+  case celwasm::Value::Kind::kString:  use(*v->AsString()); break;
+  case celwasm::Value::Kind::kError:   /* read v->AsError() — CEL error */ break;
+  case celwasm::Value::Kind::kUnknown: /* partial-eval surfaced */ break;
+  default: /* … list / map / message — see eval/value.h */ break;
 }
 ```
 
 ### 6. Saving and reloading a Program
 
-A `cel::Program` is **pure data**: the compiled wasm bytes plus the
+A `celwasm::Program` is **pure data**: the compiled wasm bytes plus the
 embedded `cel.abi` custom section.  No wasmtime state, no descriptor
 pool, no engine handles — everything needed to evaluate the program
 lives in the byte buffer.  That makes save/reload a thin wrapper
@@ -301,7 +313,7 @@ around two existing API surfaces:
     Copy into your storage of choice — disk, an in-memory cache, a
     remote object store, a database BLOB column, the wire to another
     process.
-  - **Reload**: `cel::Program(std::vector<uint8_t> bytes)` reconstructs
+  - **Reload**: `celwasm::Program(std::vector<uint8_t> bytes)` reconstructs
     a Program from the saved bytes.  The constructor is intentionally
     non-validating; the wasmtime parse happens later in
     `Engine::Plan`, which surfaces malformed bytes as a
@@ -309,16 +321,16 @@ around two existing API surfaces:
 
 ```cpp
 #include <fstream>
-#include "eval/program.h"
+#include "compiler/program.h"
 // … other includes from snippet 1 …
 
 // Compile once, save to disk.
-cel::Compiler::Builder cb;
-cb.DeclareVariable("user_age", cel::CelType::Int());
+celwasm::Compiler::Builder cb;
+cb.DeclareVariable("user_age", celwasm::CelType::Int());
 auto compiler = std::move(cb).Build();
 ABSL_CHECK_OK(compiler);
 
-cel::CompilerOptions opts;
+celwasm::CompilerOptions opts;
 opts.optimize_level = 2;  // Optimized bytes round-trip cleanly too.
 auto program = compiler->Compile("user_age >= 18", opts);
 ABSL_CHECK_OK(program);
@@ -337,16 +349,16 @@ std::vector<uint8_t> bytes;
   bytes.assign(std::istreambuf_iterator<char>(in),
                std::istreambuf_iterator<char>());
 }
-cel::Program reloaded(std::move(bytes));
+celwasm::Program reloaded(std::move(bytes));
 
 // Plan + Eval as usual — no Compile needed.
-auto engine = cel::Engine::NewBuilder().Build();
+auto engine = celwasm::Engine::NewBuilder().Build();
 ABSL_CHECK_OK(engine);
 auto instance = engine->Plan(reloaded);
 ABSL_CHECK_OK(instance);
 
-cel::Activation a;
-a.Bind("user_age", cel::Value::Int(20));
+celwasm::Activation a;
+a.Bind("user_age", celwasm::Value::Int(20));
 auto v = instance->Eval(a);
 ABSL_CHECK_OK(v);
 ABSL_CHECK(*v->AsBool());
@@ -363,9 +375,9 @@ What the round-trip preserves (the load-bearing assertion lives at
 What the round-trip does NOT preserve (these are host-state, never
 in the bytes):
 
-  - The `cel::Engine` (wasm engine + parsed runtime module) — build
+  - The `celwasm::Engine` (wasm engine + parsed runtime module) — build
     one per process / tenant, shared across reloads.
-  - The `cel::Activation` (per-eval variable bindings) — built fresh
+  - The `celwasm::Activation` (per-eval variable bindings) — built fresh
     per Eval call.
   - The protobuf descriptor pool — message types referenced by the
     program must be linked into the reload-side process (the same
@@ -375,19 +387,26 @@ in the bytes):
 
 **Versioning caveat.**  The wasm bytes encode the runtime ABI version
 implicitly via the symbols they import from `cel.cel_*`.  If a future
-runtime bump renames or removes an import (e.g. a later milestone
+runtime bump renames or removes an import (e.g. a future release
 reshapes `cel_unknown_merge`), reloading a Program compiled against
 the old ABI will fail at `Engine::Plan` time with a missing-import
 error.  In practice this means: keep saved bytes paired with a
 runtime-version marker (e.g. a sidecar file or a key prefix), and
 recompile on runtime upgrade.  The `cel.abi` custom section carries
-enough metadata to plumb a version field through; that's a future-
-milestone slice.
+enough metadata to plumb a version field through; that work has not
+been done yet.
 
 ### 7. How big are the artifacts?
 
 Measured numbers as of 2026-05-15, darwin-arm64, `-c opt` build.
 Reproduce via `bazel run -c opt //bench:program_size_main`.
+
+> **These are `LinkMode::kDynamic` numbers** — the small expr module
+> that imports the shared runtime.  Under the default
+> `LinkMode::kStatic`, the runtime is merged into every Program
+> (~800 KB self-contained artifact) and there is no separate
+> `cel_runtime.wasm` to amortise; see "Static vs. dynamic linking"
+> below for the tradeoff.
 
 #### Compiled program (per-expression wasm bytes) vs. CEL AST proto
 
@@ -460,16 +479,16 @@ matters.  All sizes are `sizeof()`:
 
 | Type                | sizeof | What it owns / points to |
 | ------------------- | -----: | ------------------------ |
-| `cel::Program`      |  24 B  | + `std::vector<uint8_t>` data (~140 B - 1 KB per expr at opt2; see table above). |
-| `cel::Compiler`     |  24 B  | + `std::vector<VariableDeclaration>` (one per `DeclareVariable` call). |
-| `cel::CompilerOptions` | 40 B | Plain-old-data, copy freely. |
-| `cel::Value`        |  40 B  | Discriminated union; aggregates (List/Map/Message) own a shared_ptr to a backing. |
-| `cel::Activation`   |  32 B  | + a `flat_hash_map<string, Value>` for bound variables. |
+| `celwasm::Program`      |  24 B  | + `std::vector<uint8_t>` data (~140 B - 1 KB per expr at opt2; see table above). |
+| `celwasm::Compiler`     |  24 B  | + `std::vector<VariableDeclaration>` (one per `DeclareVariable` call). |
+| `celwasm::CompilerOptions` | 40 B | Plain-old-data, copy freely. |
+| `celwasm::Value`        |  40 B  | Discriminated union; aggregates (List/Map/Message) own a shared_ptr to a backing. |
+| `celwasm::Activation`   |  32 B  | + a `flat_hash_map<string, Value>` for bound variables. |
 | `CelValue` (wire)   |  24 B  | Arena-resident; size pinned by `static_assert`.  This is the 24-byte slot every codegen-emitted load/store reads & writes. |
 
 #### Eval-time memory footprint (per Instance)
 
-Each `cel::Instance` owns a wasmtime store + linear memory.  The
+Each `celwasm::Instance` owns a wasmtime store + linear memory.  The
 linear memory's size is set by `CompilerOptions::mem_size_bytes`,
 rounded up to the next wasm page:
 
@@ -504,8 +523,9 @@ request and let it drop at end-of-request.
 
 For a one-off "does this even compile / what does it evaluate to"
 check without writing C++, use the `cel` driver under
-`tools/cel/`.  It wraps the full v2 pipeline (compile →
-plan → eval) and has three subcommands — `eval`, `check`, `compile`:
+`tools/cel/`.  It wraps the full pipeline (compile →
+plan → eval) and has four subcommands — `eval`, `check`, `compile`,
+and `generate` (emit custom-function bindings from a `.idl` file):
 
 ```bash
 # Evaluate.
@@ -529,10 +549,6 @@ sets the ident-resolution prefix; `--O 0..3` is the Binaryen optimizer
 level; `--format textproto|json|cel` picks message output rendering.
 See `tools/cel/README.md` for the full flag surface,
 `--var` grammar, and the proto-schema loading rules.
-
-(The pre-rewrite v1 `compiler/cli/celwasmc` driver has been deleted;
-`compiler_v2` has no `cli/` directory — the CLI lives under
-`tools/cel/`.)
 
 ## Build-time vs. compile-time knobs
 
@@ -561,7 +577,8 @@ the static is small, and CelValue access traps without it.
 
 ### Compile-time (per-expression EXPR module)
 
-User-tunable via `cel::CompilerOptions` (api/compiler.h).  Three knobs:
+User-tunable via `celwasm::CompilerOptions` (`compiler/compiler.h`).
+The main knobs:
 
   - **`mem_size_bytes`** (default 128 KiB / two wasm pages) — total
     linear-memory size.  Raise when a single Eval needs a larger
@@ -576,11 +593,63 @@ User-tunable via `cel::CompilerOptions` (api/compiler.h).  Three knobs:
     half on chain-heavy bodies (see `bench/README.md` for the table).
     Recommended production setting is 2 on the request path;
     Compile cost amortises across many Eval calls.
+  - **`link_mode`** (default `kStatic`) — whether the runtime helpers
+    are statically linked into the Program or imported from a shared
+    runtime instance at Plan time.  See "Static vs. dynamic linking"
+    below.
 
 `compiler/internal/compile.h` has the internal `celwasm::CompileOptions`
 with four additional pipeline-only knobs (`eval_internal_name`,
 `eval_export_name`, `validate`, `serialize`) that public callers
 can't set — they're plumbing for tests and the CLI.
+
+### Static vs. dynamic linking (`link_mode`)
+
+`CompilerOptions::link_mode` picks how the runtime helpers
+(`cel_int_add_at_vv`, slot accessors, arena ops, …) reach the emitted
+Program:
+
+  - **`LinkMode::kStatic` (default)** — the runtime is **merged into
+    the Program at Compile time**.  The Program is self-contained
+    (~800 KB: runtime body + the codegen'd `$eval`); `Engine::Plan`
+    instantiates it directly — no separate runtime instance, no
+    import resolution against `"cel"`.  Statically-linked Programs
+    also skip the wasi-libc command-mode wrapper chain that the
+    dynamic path pays per call — on long arithmetic chains that is
+    the difference between 78 µs and ~1 µs per Eval
+    (`intAdd1000Terms`; see
+    `doc/implementation-plan/rewrite/m28-bench-results.md`).  Use it
+    when an expression is compiled once and evaluated many times on a
+    latency-critical path.
+  - **`LinkMode::kDynamic`** — the Program **imports** each helper
+    from the `"cel"` module.  `Engine::Plan` instantiates
+    `cel_runtime.wasm` as a separate instance in the same store and
+    binds its exports so the imports resolve.  The Program stays
+    small (a few KB — just the codegen'd `$eval`), and many cached
+    Programs share one ~48 KB runtime.  Use it when you cache lots of
+    distinct expressions or ship Program bytes over the wire and the
+    artifact size matters more than per-call overhead.
+
+```cpp
+celwasm::CompilerOptions opts;
+opts.optimize_level = 2;
+
+// Self-contained Program (the default): runtime statically linked in.
+opts.link_mode = celwasm::CompilerOptions::LinkMode::kStatic;
+auto hot = compiler->Compile("a + b * 2", opts);
+
+// Small Program: helpers imported from a shared runtime instance.
+opts.link_mode = celwasm::CompilerOptions::LinkMode::kDynamic;
+auto small = compiler->Compile("a + b * 2", opts);
+```
+
+The choice is invisible at run time: `Engine::Plan` detects which
+shape it was handed by inspecting the module's import list and routes
+accordingly — the Instance API (`Eval` / `PartialEval`) and the
+results are identical either way (conformance runs byte-identical
+under both modes).  Full design + tradeoff table:
+`doc/implementation-plan/rewrite/m28-configurable-linking.md`;
+production numbers: `m28-bench-results.md`.
 
 ## Running the suite
 

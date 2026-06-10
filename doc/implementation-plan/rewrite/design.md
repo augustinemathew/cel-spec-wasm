@@ -1,6 +1,13 @@
 # Rewrite: memory layout, symbol table, codegen simplification
 
-Status: **in flight — slices S1–S6 + S8 shipped 2026-04-22 → 2026-04-25; S7 / S9 / S10 / S11 / S12 pending.**
+Status: **historical design baseline.**  Slices S1–S6 + S8 shipped
+2026-04-22 → 2026-04-25; the remaining slice numbers were absorbed by
+later milestone docs (S9 proto literals → m7, S7 custom functions →
+m13/m21, S12 the compiler_v2 → top-level swap, landed 2026-05-25) or
+not pursued (S10 Sethi–Ullman — the naive slot allocator stayed).
+The as-shipped memory model is the §"Phase C delta" callouts below
+plus [`wasi/DESIGN.md`](wasi/DESIGN.md) §4–§5 and
+[`memory-layout-design.md`](memory-layout-design.md).
 Drafted 2026-04-21.  This doc describes the end-state design; each
 sub-section is annotated with shipping status where it has shipped
 and a plan-vs-execution callout where the as-shipped shape diverged.

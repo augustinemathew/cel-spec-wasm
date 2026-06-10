@@ -35,14 +35,14 @@ The system splits cleanly into a **compile-time** half and a
 **runtime** half, joined by a `Program` (portable wasm bytes):
 
 ```
-        compile time                    │            run time
-  ┌─────────────────────────┐           │     ┌──────────────────────────┐
-  │ celwasm::Compiler            │           │     │ celwasm::Engine              │
-  │   .Compile("source")     │ ── Program ──►  │   .Plan(program)         │
-  │   → celwasm::Program         │  (wasm bytes +  │   → celwasm::Instance        │
-  │   (no wasmtime dep)      │   cel.abi)      │     .Eval(activation)    │
-  └─────────────────────────┘           │     │     → celwasm::Value          │
-                                          │     └──────────────────────────┘
+        compile time                                 run time
+  ┌────────────────────────────┐             ┌────────────────────────────┐
+  │ celwasm::Compiler          │             │ celwasm::Engine            │
+  │   .Compile("source")       │ ──Program──►│   .Plan(program)           │
+  │   → celwasm::Program       │ (wasm bytes │   → celwasm::Instance      │
+  │   (no wasmtime dep)        │  + cel.abi) │     .Eval(activation)      │
+  └────────────────────────────┘             │     → celwasm::Value       │
+                                             └────────────────────────────┘
 ```
 
 - **`celwasm::Compiler`** — pure compile-time. Holds variable + custom-fn
@@ -568,11 +568,16 @@ exported `cabi_realloc`), calls the export, then copies (lifts) the
 result back out. Supported types: scalars, `string`, `bytes`, `list<T>`,
 `map<K,V>`, nested aggregates, `Duration`, `Timestamp`, and **proto
 messages serialized to bytes** (§8.5). `type` and `optional` are
-rejected at the component boundary. The wire also carries a **status
-channel** so a guest failure becomes a CEL error rather than a wrong
-value — see §8.6.
+rejected at the component boundary. A guest failure (trap) fails the
+Eval cleanly rather than producing a wrong value — see §8.6.
 
 ### 8.3 WASI vs plain — which toolchain target?
+
+> **What ships today:** the C++ authoring path — `cel_wasm_component`
+> compiles your `user_fns.cc` under **wasm32-wasip2**, which emits a
+> Component-Model component directly.  The rest of this section (and
+> the stock-Go / TinyGo material in §8.4) is **probe-validated design
+> background for the unshipped Go authoring path**.
 
 Components differ in whether they pull in WASI and whether they
 own/initialize their memory:
@@ -604,7 +609,15 @@ needs libc or stdlib facilities.
 > modules sharing the runtime's memory via `__memory_base` relocation —
 > is prototyped (`modules-and-ffi.md` §4.5) but not the v1 path.
 
-### 8.4 Worked example: a component function in Go (`GOOS=wasip1`)
+### 8.4 Worked example: a component function in Go (`GOOS=wasip1`) ⛔ design notes
+
+> **Go authoring is not shipped.**  The shipped path is C++ via the
+> `cel_wasm_component` macro — see
+> [Writing component functions](writing-component-functions.md) for the
+> working end-to-end example.  Everything below is the probe-validated
+> *target* shape for the Go path (`cel generate --language=go` is
+> pending; the in-tree plan favours TinyGo for size, with stock Go as
+> the proto-capable fallback — see writing-component-functions §4).
 
 Say you want an authorization predicate `allow(subject, action)`
 implemented in Go and reused across many CEL expressions.
@@ -716,7 +729,9 @@ message type. The wire is plain protobuf binary — language-agnostic —
 so it works for any language with a protobuf runtime:
 
 ```celfn
-/// ⛔ today; ✅ once component-proto serialization lands.
+/// ✅ shipped on the C++ path (the `demo_component_proto` fixture,
+/// manual-tagged — libprotobuf under wasm32-wasip2 is a slow build);
+/// the Go snippet below is design notes (§8.4).
 bool @component.is_admin(proto(acme.User) u);
 ```
 
@@ -744,13 +759,28 @@ same `.proto`.
 > module is stock-Go, multi-MB, opt-in. See
 > `foreign-go-bindgen-findings.md`.
 
-> **Status of §8.4/§8.5:** the entire component backend (trampoline,
-> `celfnc` shim generator, `AddComponent` wiring, and this serialization
-> path) is **designed, not implemented** (`modules-and-ffi.md` §5). The
-> shapes above are now **probe-validated** (Go 1.24, wasmtime) — see
-> `foreign-go-bindgen-findings.md` for the working experiment.
+> **Status of §8.4/§8.5:** the component backend is **shipped for C++
+> authoring** — the host trampoline, the `celfnc` C++ emitters, the
+> `cel_wasm_component` macro, `Engine::AddComponent` (implemented in
+> `eval/engine.cc`), and the proto-as-serialized-bytes path all run
+> end-to-end (`e2e/foreign_component_fixtures/cel_wasm_component_demo/`;
+> proto via the manual-tagged `demo_component_proto` target).  The **Go
+> authoring path is designed, not implemented** — the §8.4 shapes are
+> probe-validated (Go 1.24, wasmtime; see
+> `foreign-go-bindgen-findings.md`) but `cel generate --language=go`
+> does not exist yet.
 
 ### 8.6 When a component function fails — panics, traps, and the error channel
+
+> **What ships today:** a component function that traps mid-call
+> surfaces as a **failed Eval** (a non-OK `absl::Status`) — the
+> embedding process does not crash, and the failure cannot masquerade
+> as a legitimate value (pinned by
+> `e2e/foreign_component_dispatch_test.cc`,
+> `TrappingComponentFnFailsEvalCleanly`).  The `recover()` shim, the
+> ABI `status` slot, and the re-instantiate policy below are **design
+> notes for the unshipped Go authoring path** (§8.4) — none of that
+> machinery exists in the shipped C++ pipeline.
 
 A component function can fail in ways a `@host`/`@native` function can't:
 it runs untrusted guest code in its own memory, and a Go `panic` (or a
@@ -825,13 +855,14 @@ every component-backed function; do not reach for `AddModule`.
 
 For one-shot compile / check / eval without writing C++, use the `cel`
 CLI (`tools/cel/`, built via
-`bazel build //tools/cel:cel`). Three subcommands ship today:
+`bazel build //tools/cel:cel`). Four subcommands ship today:
 
 | Subcommand | What it does | Phase |
 |---|---|---|
 | `cel check <expr>` | parse + type-check; print `OK` or the error | compile only |
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
+| `cel generate` | emit component-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_component` macro (§8) | codegen only |
 
 ```bash
 cel eval    "1 + 2 + 3"                              # → 6   (compile + evaluate)
@@ -839,7 +870,14 @@ cel eval    "a * b" --var "a:int=6" --var "b:int=7"  # → 42
 cel eval    'd > duration("1s")' --var 'd:duration="2s"'
 cel check   "u.name" --proto user.proto --var "u:acme.User"   # parse + type-check → OK
 cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm  # emit wasm bytes
+cel generate --idl fns.idl --out_dir gen/            # emit component-fn bindings
 ```
+
+`generate` takes no positional `<expr>` — its input is `--idl`; flags:
+`--out_dir` (required), `--language` (`cpp` today; `go` planned),
+`--package` (WIT package-name override), `--include` (extra `#include`s
+for the generated sources). Normally you don't run it by hand — the
+`cel_wasm_component` Bazel macro drives it.
 
 Note the split: `eval` is the *whole* pipeline (it compiles the
 expression in-process, then runs it — `cel.cc:RunEval`), while `compile`
@@ -921,12 +959,12 @@ variables too (§3.3).
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
 | **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ `CompileLibraryBodies` is an unimplemented header stub — no `.cc`, no BUILD target, no caller; never registered in `Plan`. Does not evaluate (§7) |
 | **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
-| **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent` (m26) |
-| **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending (m26 H.4) |
+| **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
+| **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |
-| `.celfn` grammar v2 (`@native`, prefix-module, drop `Module`) + doc-comment capture | ✅ shipped (`m13-custom-fns.md` §3.0) |
+| `.celfn` grammar v2 (`@native`, prefix-module) + doc-comment capture; the `Module foo;` directive remains current (it names `@native` wasm modules and seeds the WIT package name for `@component` builds) | ✅ shipped (`m13-custom-fns.md` §3.0) |
 | Doc-comment → `cel.abi` (cross-process introspection) / `--celfn` CLI flag | 🟡 description on `CelfnDecl` only; ABI carriage + CLI flag pending |
 
 ---

@@ -19,13 +19,19 @@
 
 #include "abi/cel_abi.pb.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "bazel/link_mode_test_helpers.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "eval/host_call_context.h"
 #include "eval/instance.h"
 #include "eval/internal/abi_decode.h"
 #include "eval/value.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
 #include "wasmtime.h"
@@ -361,6 +367,381 @@ TEST(EngineAddFunctionTest, AddFunctionRejectsDuplicateOverloadId) {
   ASSERT_TRUE(engine_or->AddFunction("upper_string", 2, impl).ok());
   auto s = engine_or->AddFunction("upper_string", 2, impl);
   EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+}
+
+// ─── Engine::BindFunction — declaration-first registration ─────────
+//
+// Layer 3 sugar over AddTypedFunction: the `.celfn` declaration
+// string drives parsing, overload-id synthesis, and registration-time
+// signature validation.  The matrix here is registration-level; the
+// end-to-end dispatch proof through wasmtime lives in
+// e2e/host_fn_test.cc (HostFnTest.BindFunctionDeclFirstRoundTrip).
+
+// Registers `fn` against `celfn_decl` on a fresh engine and returns
+// the status — most cases need nothing else from the engine.
+template <typename Fn>
+absl::Status BindOnFreshEngine(absl::string_view celfn_decl, Fn fn) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ABSL_CHECK(engine_or.ok()) << engine_or.status();
+  return engine_or->BindFunction(celfn_decl, std::move(fn));
+}
+
+// Asserts the registration fails InvalidArgument with `expect_substr`
+// somewhere in the message (the declared-CEL-type / provided-C++-type
+// naming contract).
+template <typename Fn>
+void ExpectBindMismatch(absl::string_view celfn_decl, Fn fn,
+                        absl::string_view expect_substr) {
+  auto s = BindOnFreshEngine(celfn_decl, std::move(fn));
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_substr))
+      << "expected `" << expect_substr << "` in: " << s.message();
+}
+
+// — happy path: every canonical param pairing registers —
+
+TEST(EngineBindFunctionTest, BindsBoolIntUintDoubleParams) {
+  auto s = BindOnFreshEngine(
+      "bool @host.f(bool b, int i, uint u, double d);",
+      [](bool b, int64_t, uint64_t, double) -> absl::StatusOr<bool> {
+        return b;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, StringViewParamAcceptsStringDecl) {
+  auto s = BindOnFreshEngine("int @host.f(string s);",
+                             [](absl::string_view) -> absl::StatusOr<int64_t> {
+                               return 0;
+                             });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, StringViewParamAcceptsBytesDecl) {
+  auto s = BindOnFreshEngine("int @host.f(bytes b);",
+                             [](absl::string_view) -> absl::StatusOr<int64_t> {
+                               return 0;
+                             });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, BindsDurationAndTimestampParams) {
+  auto s = BindOnFreshEngine(
+      "int @host.f(Duration d, Timestamp t);",
+      [](absl::Duration, absl::Time) -> absl::StatusOr<int64_t> {
+        return 0;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, BindsListAndMapParams) {
+  auto s = BindOnFreshEngine(
+      "int @host.f(list<int> xs, map<string, int> m);",
+      [](HostListView, HostMapView) -> absl::StatusOr<int64_t> {
+        return 0;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, BindsConcreteProtoParam) {
+  auto s = BindOnFreshEngine(
+      "bool @host.f(proto(celwasm.abi.CelAbi) a);",
+      [](const celwasm::abi::CelAbi&) -> absl::StatusOr<bool> {
+        return true;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, BindsPolymorphicProtoParam) {
+  auto s = BindOnFreshEngine(
+      "bool @host.f(proto(celwasm.abi.CelAbi) a);",
+      [](const google::protobuf::Message*) -> absl::StatusOr<bool> {
+        return true;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+TEST(EngineBindFunctionTest, ValueParamMatchesAnyDeclaredType) {
+  // typed_function.h's ArgTrait specializations are keyed on the EXACT
+  // parameter type; `const Value&` has no specialization (only `Value`),
+  // so a Value param at the typed surface must be by-value — the
+  // performance warning is a structural constraint of the typed API.
+  auto scalar =
+      BindOnFreshEngine("int @host.f(int x);",
+                        // NOLINTNEXTLINE(performance-unnecessary-value-param)
+                        [](Value) -> absl::StatusOr<int64_t> {
+                          return 0;
+                        });
+  EXPECT_TRUE(scalar.ok()) << scalar;
+  auto aggregate =
+      BindOnFreshEngine("int @host.f(list<int> xs);",
+                        // NOLINTNEXTLINE(performance-unnecessary-value-param)
+                        [](Value) -> absl::StatusOr<int64_t> {
+                          return 0;
+                        });
+  EXPECT_TRUE(aggregate.ok()) << aggregate;
+  // `null` has no canonical C++ spelling; Value is the only match.
+  auto null_decl =
+      BindOnFreshEngine("int @host.f(null n);",
+                        // NOLINTNEXTLINE(performance-unnecessary-value-param)
+                        [](Value) -> absl::StatusOr<int64_t> {
+                          return 0;
+                        });
+  EXPECT_TRUE(null_decl.ok()) << null_decl;
+}
+
+TEST(EngineBindFunctionTest, BindsNullaryDecl) {
+  auto s =
+      BindOnFreshEngine("int @host.now_ms();", []() -> absl::StatusOr<int64_t> {
+        return 0;
+      });
+  EXPECT_TRUE(s.ok()) << s;
+}
+
+// — overload-id synthesis matches the hand-spelled forms —
+
+TEST(EngineBindFunctionTest, OverloadIdMatchesHandSpelledForms) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  ASSERT_TRUE(
+      engine_or
+          ->BindFunction("int @host.discount_pct(string tier);",
+                         [](absl::string_view) -> absl::StatusOr<int64_t> {
+                           return 20;
+                         })
+          .ok());
+  // The Layer-2 hand-spelled overload-id now collides — proof the
+  // synthesised id is exactly `discount_pct_string`.
+  auto typed = engine_or->AddTypedFunction(
+      "discount_pct_string", [](absl::string_view) -> absl::StatusOr<int64_t> {
+        return 20;
+      });
+  EXPECT_EQ(typed.code(), absl::StatusCode::kAlreadyExists);
+  // ... and so does the raw Layer-0 form (num_args = params + out_slot).
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
+    return absl::OkStatus();
+  };
+  auto raw = engine_or->AddFunction("discount_pct_string", 2, impl);
+  EXPECT_EQ(raw.code(), absl::StatusCode::kAlreadyExists);
+}
+
+TEST(EngineBindFunctionTest, ReceiverDeclSynthesisesSameIdAsPlainParam) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  ASSERT_TRUE(engine_or
+                  ->BindFunction(
+                      "string @host.upper(this string s);",
+                      [](absl::string_view s) -> absl::StatusOr<std::string> {
+                        return std::string(s);
+                      })
+                  .ok());
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
+    return absl::OkStatus();
+  };
+  auto raw = engine_or->AddFunction("upper_string", 2, impl);
+  EXPECT_EQ(raw.code(), absl::StatusCode::kAlreadyExists);
+}
+
+TEST(EngineBindFunctionTest, DuplicateRegistrationAlreadyExists) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  constexpr absl::string_view kDecl = "int @host.f(int x);";
+  ASSERT_TRUE(engine_or
+                  ->BindFunction(kDecl,
+                                 [](int64_t x) -> absl::StatusOr<int64_t> {
+                                   return x;
+                                 })
+                  .ok());
+  auto s =
+      engine_or->BindFunction(kDecl, [](int64_t x) -> absl::StatusOr<int64_t> {
+        return x;
+      });
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+}
+
+// — declaration-shape rejections —
+
+TEST(EngineBindFunctionTest, ParseErrorRejected) {
+  auto s = BindOnFreshEngine("this is not a celfn decl",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "Engine::BindFunction"))
+      << s.message();
+}
+
+TEST(EngineBindFunctionTest, MultiDeclStringRejected) {
+  auto s = BindOnFreshEngine("int @host.a(int x); int @host.b(int x);",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(
+      absl::StrContains(s.message(), "exactly one declaration, found 2"))
+      << s.message();
+}
+
+TEST(EngineBindFunctionTest, ComponentBackendRejected) {
+  auto s = BindOnFreshEngine("int @component.f(int x);",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "@component")) << s.message();
+}
+
+TEST(EngineBindFunctionTest, NativeBackendRejected) {
+  auto s = BindOnFreshEngine("Module m;\nint @native.f(int x) = x + 1;",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "@native")) << s.message();
+}
+
+// — signature-vs-declaration rejections —
+
+TEST(EngineBindFunctionTest, ArityMismatchFewerCppParams) {
+  auto s = BindOnFreshEngine("int @host.f(int x, int y);",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "declares 2 parameter(s)"))
+      << s.message();
+}
+
+TEST(EngineBindFunctionTest, ArityMismatchMoreCppParams) {
+  auto s = BindOnFreshEngine("int @host.f();",
+                             [](int64_t x) -> absl::StatusOr<int64_t> {
+                               return x;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "callable takes 1"))
+      << s.message();
+}
+
+TEST(EngineBindFunctionTest, MismatchNamesIndexDeclTypeAndCppType) {
+  // Param 0 matches; param 1 is declared `string` but provided
+  // int64_t — the message names all three facts.
+  auto s = BindOnFreshEngine("int @host.f(int a, string b);",
+                             [](int64_t, int64_t) -> absl::StatusOr<int64_t> {
+                               return 0;
+                             });
+  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "parameter 1")) << s.message();
+  EXPECT_TRUE(absl::StrContains(s.message(), "`string`")) << s.message();
+  EXPECT_TRUE(absl::StrContains(s.message(), "`int64_t`")) << s.message();
+}
+
+TEST(EngineBindFunctionTest, IntDeclRejectsUintParam) {
+  ExpectBindMismatch(
+      "int @host.f(int x);",
+      [](uint64_t) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "uint64_t");
+}
+
+TEST(EngineBindFunctionTest, UintDeclRejectsIntParam) {
+  ExpectBindMismatch(
+      "int @host.f(uint x);",
+      [](int64_t) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "int64_t");
+}
+
+TEST(EngineBindFunctionTest, DoubleDeclRejectsIntParam) {
+  ExpectBindMismatch(
+      "int @host.f(double x);",
+      [](int64_t) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "int64_t");
+}
+
+TEST(EngineBindFunctionTest, BoolDeclRejectsDoubleParam) {
+  ExpectBindMismatch(
+      "int @host.f(bool x);",
+      [](double) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "double");
+}
+
+TEST(EngineBindFunctionTest, StringDeclRejectsIntParam) {
+  ExpectBindMismatch(
+      "int @host.f(string x);",
+      [](int64_t) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "int64_t");
+}
+
+TEST(EngineBindFunctionTest, BytesDeclRejectsBoolParam) {
+  ExpectBindMismatch(
+      "int @host.f(bytes x);",
+      [](bool) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "bool");
+}
+
+TEST(EngineBindFunctionTest, DurationDeclRejectsTimestampParam) {
+  ExpectBindMismatch(
+      "int @host.f(Duration x);",
+      [](absl::Time) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "absl::Time");
+}
+
+TEST(EngineBindFunctionTest, TimestampDeclRejectsDurationParam) {
+  ExpectBindMismatch(
+      "int @host.f(Timestamp x);",
+      [](absl::Duration) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "absl::Duration");
+}
+
+TEST(EngineBindFunctionTest, ListDeclRejectsMapParam) {
+  ExpectBindMismatch(
+      "int @host.f(list<int> x);",
+      [](HostMapView) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "HostMapView");
+}
+
+TEST(EngineBindFunctionTest, MapDeclRejectsListParam) {
+  ExpectBindMismatch(
+      "int @host.f(map<string, int> x);",
+      [](HostListView) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "HostListView");
+}
+
+TEST(EngineBindFunctionTest, ProtoDeclRejectsIntParam) {
+  ExpectBindMismatch(
+      "int @host.f(proto(celwasm.abi.CelAbi) x);",
+      [](int64_t) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "int64_t");
+}
+
+TEST(EngineBindFunctionTest, NullDeclRejectsBoolParam) {
+  // `null` has no canonical C++ spelling — only `Value` matches.
+  ExpectBindMismatch(
+      "int @host.f(null x);",
+      [](bool) -> absl::StatusOr<int64_t> {
+        return 0;
+      },
+      "`null`");
 }
 
 TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {

@@ -1,0 +1,17 @@
+// Declaration for //examples:09_component_functions — one sandboxed
+// custom function, compiled to a WebAssembly Component-Model
+// component by the cel_wasm_component macro.  The same declaration is
+// mirrored by the embedder (FunctionLibrary in
+// 09_component_functions.cc) so Engine::AddComponent can validate the
+// component's exports against it.
+//
+// Scalar-only on purpose: string-RETURNING component fns currently
+// trap inside libc++ under the wasi-preview2 stubs (see the skipped
+// GreetRoundTripsString case in e2e/foreign_component_fixtures/
+// cel_wasm_component_demo/demo_component_e2e_test.cc).  String
+// *arguments* into scalar-returning fns work — see `len` in that
+// fixture.
+
+Module greeter;
+
+int @component.add(int a, int b);

@@ -46,6 +46,7 @@ using ::celwasm::test::FakeMemoryView;
 using ::celwasm::testdata::Customer;
 using ::celwasm::typed_internal::kIsCanonicalHostArg;
 using ::celwasm::typed_internal::kIsCanonicalHostReturn;
+using ::celwasm::typed_internal::ParamKindOf;
 
 // ───────────── compile-time: canonical-type detection ──────────────
 
@@ -112,6 +113,94 @@ TEST(TypedFunctionArityTest, ArityIsParamCountPlusOutSlot) {
         return a + b;
       }).num_args,
       3);
+}
+
+// ───────────── per-param kind metadata ──────────────
+//
+// `TypedFunction::param_kinds` mirrors the lambda's parameter list as
+// `HostParamKind` values — the registration-time validation surface
+// `Engine::BindFunction` compares against a parsed `.celfn` decl.
+
+// Compile-time: every canonical spelling maps to its kind.
+static_assert(ParamKindOf<bool>::kKind == HostParamKind::kBool);
+static_assert(ParamKindOf<int64_t>::kKind == HostParamKind::kInt);
+static_assert(ParamKindOf<uint64_t>::kKind == HostParamKind::kUint);
+static_assert(ParamKindOf<double>::kKind == HostParamKind::kDouble);
+static_assert(ParamKindOf<absl::string_view>::kKind ==
+              HostParamKind::kStringOrBytes);
+static_assert(ParamKindOf<absl::Duration>::kKind == HostParamKind::kDuration);
+static_assert(ParamKindOf<absl::Time>::kKind == HostParamKind::kTimestamp);
+static_assert(ParamKindOf<HostListView>::kKind == HostParamKind::kList);
+static_assert(ParamKindOf<HostMapView>::kKind == HostParamKind::kMap);
+static_assert(ParamKindOf<Value>::kKind == HostParamKind::kValue);
+static_assert(ParamKindOf<const Customer&>::kKind == HostParamKind::kProto);
+static_assert(ParamKindOf<const google::protobuf::Message*>::kKind ==
+              HostParamKind::kProtoMessagePtr);
+
+TEST(TypedFunctionParamKindsTest, NullaryLambdaHasEmptyKinds) {
+  auto tf = BindTypedFunction([]() -> absl::StatusOr<int64_t> {
+    return 0;
+  });
+  EXPECT_TRUE(tf.param_kinds.empty());
+  EXPECT_EQ(tf.num_args, 1);
+}
+
+TEST(TypedFunctionParamKindsTest, ScalarKindsFollowDeclarationOrder) {
+  auto tf =
+      BindTypedFunction([](bool a, int64_t /*b*/, uint64_t /*c*/, double /*d*/,
+                           absl::string_view /*e*/) -> absl::StatusOr<bool> {
+        return a;
+      });
+  EXPECT_EQ(tf.param_kinds,
+            (std::vector<HostParamKind>{
+                HostParamKind::kBool, HostParamKind::kInt, HostParamKind::kUint,
+                HostParamKind::kDouble, HostParamKind::kStringOrBytes}));
+  EXPECT_EQ(tf.num_args, tf.param_kinds.size() + 1);
+}
+
+TEST(TypedFunctionParamKindsTest, TimeAggregateAndValueKinds) {
+  // The by-value `Value` param is a structural constraint of the typed
+  // API (ArgTrait is keyed on the exact type; `const Value&` has no
+  // specialization).
+  auto tf = BindTypedFunction(
+      [](absl::Duration /*a*/, absl::Time /*b*/, HostListView /*c*/,
+         // NOLINTNEXTLINE(performance-unnecessary-value-param)
+         HostMapView /*d*/, Value /*e*/) -> absl::StatusOr<bool> {
+        return true;
+      });
+  EXPECT_EQ(tf.param_kinds, (std::vector<HostParamKind>{
+                                HostParamKind::kDuration,
+                                HostParamKind::kTimestamp, HostParamKind::kList,
+                                HostParamKind::kMap, HostParamKind::kValue}));
+}
+
+TEST(TypedFunctionParamKindsTest, ProtoSpellingsMapToDistinctKinds) {
+  auto tf = BindTypedFunction(
+      [](const Customer& /*a*/,
+         const google::protobuf::Message* /*b*/) -> absl::StatusOr<bool> {
+        return true;
+      });
+  EXPECT_EQ(tf.param_kinds,
+            (std::vector<HostParamKind>{HostParamKind::kProto,
+                                        HostParamKind::kProtoMessagePtr}));
+}
+
+TEST(TypedFunctionParamKindsTest, KindNamesCoverEveryEnumerator) {
+  EXPECT_EQ(HostParamKindName(HostParamKind::kBool), "bool");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kInt), "int64_t");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kUint), "uint64_t");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kDouble), "double");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kStringOrBytes),
+            "absl::string_view");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kDuration), "absl::Duration");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kTimestamp), "absl::Time");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kList), "HostListView");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kMap), "HostMapView");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kProto),
+            "const M& (M : google::protobuf::Message)");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kProtoMessagePtr),
+            "const google::protobuf::Message*");
+  EXPECT_EQ(HostParamKindName(HostParamKind::kValue), "Value");
 }
 
 // ───────────── runtime round-trips over the fake context ───────────

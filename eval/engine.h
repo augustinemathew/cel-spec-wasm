@@ -194,8 +194,54 @@ class Engine {
     return AddFunction(overload_id, tf.num_args, std::move(tf.callback));
   }
 
+  // Declaration-first registration (host-call adapter Layer 3, sugar
+  // over `AddTypedFunction`): takes the SAME `.celfn` declaration
+  // string the compiler side takes via `Compiler::Builder::
+  // AddFunction`, parses it with the same parser, and registers `fn`
+  // under the overload-id the parse synthesises — so the embedder
+  // never hand-spells the overload-id mangling or the wasm arity:
+  //
+  //   builder.AddFunction("int @host.discount_pct(string tier);");
+  //   engine.BindFunction("int @host.discount_pct(string tier);",
+  //       [](absl::string_view tier) -> absl::StatusOr<int64_t> {
+  //         return tier == "gold" ? 20 : 5;
+  //       });
+  //
+  // The callable's signature is validated against the declaration at
+  // registration time.  InvalidArgument when:
+  //   - `celfn_decl` fails to parse as `.celfn` source;
+  //   - it holds anything other than exactly ONE declaration;
+  //   - the declaration's backend is not `@host.`;
+  //   - the callable's parameter count differs from the declared one;
+  //   - a parameter's canonical C++ type is incompatible with the CEL
+  //     type declared at the same position (the message names the
+  //     param index, the declared CEL type, and the provided C++
+  //     type).  Compatibility: bool↔bool, int64_t↔int, uint64_t↔uint,
+  //     double↔double, absl::string_view↔string or bytes,
+  //     absl::Duration↔Duration, absl::Time↔Timestamp,
+  //     HostListView↔list<...>, HostMapView↔map<...>, `const M&` /
+  //     `const google::protobuf::Message*`↔proto(...), and Value↔any
+  //     declared type.
+  //
+  // Conflict + threading contract is `AddFunction`'s verbatim: an
+  // already-registered overload-id → AlreadyExists, and the call is
+  // **NOT thread-safe** with concurrent calls to itself or the other
+  // setup methods — configure once at startup, then `Plan` from many
+  // threads.
+  template <typename Fn>
+  ABSL_MUST_USE_RESULT absl::Status BindFunction(absl::string_view celfn_decl,
+                                                 Fn fn) {
+    return BindParsedFunction(celfn_decl, BindTypedFunction(std::move(fn)));
+  }
+
  private:
   friend class Builder;
+
+  // Non-template back half of `BindFunction`: `.celfn` parsing +
+  // signature validation + registration through `AddFunction`.
+  // Defined in engine.cc.
+  ABSL_MUST_USE_RESULT absl::Status BindParsedFunction(
+      absl::string_view celfn_decl, TypedFunction fn);
 
   // Built only by Builder::Build(); the shared_ptr's control
   // block is set up there so destruction here works without

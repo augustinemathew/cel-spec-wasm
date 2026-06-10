@@ -98,6 +98,7 @@ exercises the slice's surface runs green.
 | `//tools/wat_runner:wat_runner_test` | WAT trace re-assemble + re-run regression | Any codegen arm change (WAT-first rule) |
 | `//conformance:run_conformance` | Upstream CEL conformance corpus | Every milestone close |
 | `//tools/cel:cel_smoke_test` (smoke) | `cel` CLI binary, end-to-end eval/check/compile from source string | Any public-API change |
+| `//examples:examples_smoke_test` (always-on, not manual) | Every `examples/` binary runs and produces its documented output — the rot gate for all doc/README sample code | Any public-API change; any doc-snippet change |
 
 **`scripts/run_full_suite.sh`** (or equivalent ergonomic wrapper)
 should bundle these into one invocation; the milestone doc cites

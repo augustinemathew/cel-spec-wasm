@@ -109,7 +109,7 @@ struct CompilerOptions {
   // How the runtime helpers (`cel_int_add_at_vv`, slot accessors,
   // arena ops, …) are linked into the emitted `Program.wasm`.
   //
-  //   kDynamic — default; the Program.wasm imports each helper from
+  //   kDynamic — the Program.wasm imports each helper from
   //              the `"cel"` module.  Engine::Plan instantiates
   //              cel_runtime.wasm as a separate wasm instance in the
   //              same store and binds its exports on the linker so the
@@ -119,10 +119,10 @@ struct CompilerOptions {
   //              case: lots of distinct one-shot expressions, memory-
   //              constrained host.
   //
-  //   kStatic  — the runtime helpers are STATICALLY LINKED into the
-  //              Program.wasm at Compile() time.  The Program is
-  //              self-contained (~800 KB — runtime body + the
-  //              codegen'd `$eval`).  Engine::Plan instantiates the
+  //   kStatic  — the default.  The runtime helpers are STATICALLY
+  //              LINKED into the Program.wasm at Compile() time.  The
+  //              Program is self-contained (~1.1 MB measured — runtime
+  //              body + the codegen'd `$eval`).  Engine::Plan instantiates the
   //              Program directly; no separate runtime instance, no
   //              import resolution against `"cel"`.  The wasi-libc
   //              command-mode wrapper chain (~78 ns/op of fixed

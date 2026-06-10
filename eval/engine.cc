@@ -23,6 +23,7 @@
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
 #include "eval/internal/wasmtime_engine_state.h"
+#include "eval/typed_function.h"
 #include "google/protobuf/descriptor.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
@@ -1226,6 +1227,87 @@ absl::Status InstantiateExpr(celwasm::InstanceImpl* impl) {
   return absl::OkStatus();
 }
 
+// ——— Engine::BindFunction helpers ———
+
+// Decl-side backend spelling for diagnostics.
+absl::string_view BackendName(celwasm::CelfnDecl::Backend backend) {
+  switch (backend) {
+    case celwasm::CelfnDecl::Backend::kHost:
+      return "@host";
+    case celwasm::CelfnDecl::Backend::kCelDefined:
+      return "@native";
+    case celwasm::CelfnDecl::Backend::kForeignComponent:
+      return "@component";
+  }
+  return "unknown";
+}
+
+// Compatibility between a callable's canonical C++ parameter kind and
+// the CEL type declared at the same position.  `Value` matches any
+// declared type; `absl::string_view` serves both string and bytes;
+// both proto spellings serve proto(...).  `null` / `type` /
+// `optional<T>` have no canonical C++ spelling, so only `Value` (the
+// early return) can receive them.
+bool CppParamMatchesDeclType(celwasm::HostParamKind cpp_kind,
+                             celwasm::CelfnType::Kind decl_kind) {
+  using HK = celwasm::HostParamKind;
+  if (cpp_kind == HK::kValue) return true;
+  switch (decl_kind) {
+    case celwasm::CelfnType::Kind::kBool:
+      return cpp_kind == HK::kBool;
+    case celwasm::CelfnType::Kind::kInt:
+      return cpp_kind == HK::kInt;
+    case celwasm::CelfnType::Kind::kUint:
+      return cpp_kind == HK::kUint;
+    case celwasm::CelfnType::Kind::kDouble:
+      return cpp_kind == HK::kDouble;
+    case celwasm::CelfnType::Kind::kString:
+    case celwasm::CelfnType::Kind::kBytes:
+      return cpp_kind == HK::kStringOrBytes;
+    case celwasm::CelfnType::Kind::kDuration:
+      return cpp_kind == HK::kDuration;
+    case celwasm::CelfnType::Kind::kTimestamp:
+      return cpp_kind == HK::kTimestamp;
+    case celwasm::CelfnType::Kind::kList:
+      return cpp_kind == HK::kList;
+    case celwasm::CelfnType::Kind::kMap:
+      return cpp_kind == HK::kMap;
+    case celwasm::CelfnType::Kind::kProto:
+      return cpp_kind == HK::kProto || cpp_kind == HK::kProtoMessagePtr;
+    case celwasm::CelfnType::Kind::kNull:
+    case celwasm::CelfnType::Kind::kType:
+    case celwasm::CelfnType::Kind::kOptional:
+      return false;
+  }
+  return false;
+}
+
+// Front half of `Engine::BindFunction`'s validation: parse + require
+// exactly one declaration with the `@host.` backend.
+absl::StatusOr<celwasm::CelfnDecl> ParseSingleHostDecl(
+    absl::string_view celfn_decl) {
+  auto lib_or = celwasm::ParseCelfnSource(celfn_decl);
+  if (!lib_or.ok()) {
+    return absl::Status(
+        lib_or.status().code(),
+        absl::StrCat("Engine::BindFunction: ", lib_or.status().message()));
+  }
+  const std::vector<celwasm::CelfnDecl>& decls = lib_or->decls();
+  if (decls.size() != 1) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Engine::BindFunction: expected exactly one declaration, found ",
+        decls.size()));
+  }
+  const celwasm::CelfnDecl& decl = decls.front();
+  if (decl.backend != celwasm::CelfnDecl::Backend::kHost) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Engine::BindFunction: declaration `", decl.fn_name, "` uses the `",
+        BackendName(decl.backend),
+        ".` backend; only `@host.` declarations can bind a C++ callable"));
+  }
+  return decl;
+}
+
 }  // namespace
 
 // ——— Engine ———
@@ -1359,6 +1441,31 @@ absl::Status Engine::AddFunction(absl::string_view overload_id,
   celwasm::RegisteredHostCallback entry{num_args, std::move(impl)};
   wasmtime_->host_callbacks.emplace(id_str, std::move(entry));
   return absl::OkStatus();
+}
+
+// ——— Engine::BindFunction (declaration-first registration) ———
+
+absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
+                                        TypedFunction fn) {
+  auto decl_or = ParseSingleHostDecl(celfn_decl);
+  if (!decl_or.ok()) return decl_or.status();
+  const CelfnDecl& decl = *decl_or;
+  if (fn.param_kinds.size() != decl.params.size()) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Engine::BindFunction: `", decl.fn_name, "` declares ",
+        decl.params.size(), " parameter(s) but the callable takes ",
+        fn.param_kinds.size()));
+  }
+  for (size_t i = 0; i < decl.params.size(); ++i) {
+    if (!CppParamMatchesDeclType(fn.param_kinds[i], decl.params[i].type.kind)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Engine::BindFunction: `", decl.fn_name, "` parameter ", i,
+          " is declared as CEL `", decl.params[i].type.Argkind(),
+          "` but the callable's parameter is `",
+          HostParamKindName(fn.param_kinds[i]), "`"));
+    }
+  }
+  return AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
 }
 
 // ——— Engine::AddComponent (m24 §3.5 — forward-declared, not yet wired) ———

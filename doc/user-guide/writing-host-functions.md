@@ -7,12 +7,13 @@
 
 A host function is declared in the `.celfn` IDL with the `@host.`
 prefix, type-checked at compile time, and backed by a C++ callback you
-register on the `Engine`.  There are **three ways** to write the
+register on the `Engine`.  There are **three ways** to register the
 callback, from highest-level to lowest:
 
 | API | You work in | Use when | Status |
 |---|---|---|---|
-| **Typed** — `AddTypedFunction` | plain C++ types (`int64_t`, `const acme::User&`, …) | almost always — zero marshalling, compile-time-checked | ✅ shipped (m21) |
+| **Declaration-first** — `BindFunction` | the `.celfn` decl string + a plain typed lambda | **start here** — same decl string both sides, no overload-id spelling, signature validated at registration | ✅ shipped |
+| **Typed** — `AddTypedFunction` | plain C++ types + a hand-spelled overload id | you already have the synthesized overload id | ✅ shipped (m21) |
 | **Context** — `HostCallContext&` | typed accessors (`ctx.ArgInt(0)`, `ctx.ReturnProto(...)`) | you need per-arg control or dynamic arity | ✅ shipped (m21) |
 | **Raw** — `HostCallback` | n/a — there is no raw callback anymore | — | removed (m21) |
 
@@ -26,29 +27,53 @@ callback, from highest-level to lowest:
 
 ---
 
-## 1. The typed API — `AddTypedFunction` (recommended)
+## 1. The typed API — `BindFunction` / `AddTypedFunction` (recommended)
 
 You write a normal C++ lambda over **canonical CEL types**; the binding
 template decodes each argument, calls you, and encodes the result.  No
 slots, no `memcpy`, no kind-checking by hand.
 
+**Declaration-first (`BindFunction`)** is the recommended shape: the
+same `.celfn` string drives both sides, and the lambda's signature is
+validated against the declaration at registration time — an arity or
+type mismatch fails right there with the parameter index and both
+types named, never at eval:
+
 ```cpp
+constexpr absl::string_view kDecl = "int @host.double_it(int x);";
+
 // Declare it (compile side) so call sites type-check:
 auto b = celwasm::Compiler::NewBuilder();
 b.DeclareVariable("x", celwasm::CelType::Int());
-b.AddFunction("int @host.double_it(int x);");      // overload-id: double_it_int
+b.AddFunction(kDecl);
 auto compiler = std::move(b).Build();
 auto program  = compiler->Compile("double_it(x)");
 
-// Register the impl (engine side) — a plain typed lambda:
+// Register the impl (engine side) with the SAME declaration:
 auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddTypedFunction("double_it_int",
+engine->BindFunction(kDecl,
     [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });
 
 auto instance = engine->Plan(*program);
 celwasm::Activation act;  act.Bind("x", celwasm::Value::Int(21));
 auto v = instance->Eval(act);                       // → 42
 ```
+
+Runnable version:
+[`examples/04_host_functions.cc`](../../examples/04_host_functions.cc).
+
+`AddTypedFunction` is the same machinery one level down — you pass the
+synthesized overload id (`<name>_<arg types>`, e.g. `double_it_int`)
+yourself instead of the declaration:
+
+```cpp
+engine->AddTypedFunction("double_it_int",
+    [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });
+```
+
+The examples below use `AddTypedFunction` with explicit overload ids
+(useful to learn the id scheme); each works identically via
+`BindFunction(decl, lambda)`.
 
 The lambda **must** return `absl::StatusOr<R>` — CEL host functions are
 fallible by contract.  Return an error status to surface a CEL error:
@@ -202,8 +227,10 @@ engine->AddTypedFunction("sum_list_int",
     });
 ```
 
-**`list<customer>`** — a list of protos.  The container view yields each
-element as a message `Value`; recover the concrete type per element:
+**`list<customer>`** — a list of protos.  (A *single* proto argument is
+simpler — take `const acme::Customer&` directly, §1.4.)  The container
+view yields each element as a message `Value`; reach the concrete type
+through the message backing:
 
 ```cpp
 // Declared:  int @host.count_active(list<proto(acme.Customer)> custs);
@@ -211,9 +238,12 @@ engine->AddTypedFunction("count_active_list_message_acme_Customer",
     [](celwasm::HostListView custs) -> absl::StatusOr<int64_t> {
       int64_t n = 0;
       for (size_t i = 0; i < custs.Size(); ++i) {
-        auto e = custs.At(i);
+        auto e = custs.At(i);                  // StatusOr<Value>
         if (!e.ok()) return e.status();
-        const auto* c = e->AsProto<acme::Customer>();   // typed accessor
+        auto mb = e->MessageBacking();         // StatusOr<const HostMessageBacking*>
+        if (!mb.ok()) return mb.status();
+        const auto* c =
+            dynamic_cast<const acme::Customer*>((*mb)->message());
         if (c != nullptr && c->active()) ++n;
       }
       return n;
@@ -221,22 +251,31 @@ engine->AddTypedFunction("count_active_list_message_acme_Customer",
 ```
 
 **`map<string, list<customer>>`** — composes the same way, no special
-casing: the map view yields each value as a `list` `Value`, which yields
-each element as a message `Value`:
+casing: `Get(key)` on the map view yields a `list` `Value`, whose
+backing yields each element as a message `Value` (this is the exact
+shape `e2e/host_fn_test.cc`'s `TypedNestedMapStringListProtoArg` pins):
 
 ```cpp
-// Declared: int @host.total(map<string, list<proto(acme.Customer)>> m);
-engine->AddTypedFunction("total_map_string_list_message_acme_Customer",
-    [](celwasm::HostMapView m) -> absl::StatusOr<int64_t> {
-      int64_t n = 0;
-      m.ForEach([&](const celwasm::Value& /*region*/, const celwasm::Value& custs) {
-        // custs is a list Value → iterate its elements (each a Customer)
-        const auto* lst = *custs.ListBacking();
-        n += static_cast<int64_t>(lst->Size());
-      });
-      return n;
+// Declared: int @host.team_size(
+//     map<string, list<proto(acme.Customer)>> teams, string k);
+engine->AddTypedFunction(
+    "team_size_map_string_list_message_acme_Customer_string",
+    [](celwasm::HostMapView teams,
+       absl::string_view k) -> absl::StatusOr<int64_t> {
+      auto custs = teams.Get(celwasm::Value::String(std::string(k)));
+      if (!custs.ok()) return custs.status();
+      if (custs->IsError()) return int64_t{0};   // missing key → spec error Value
+      auto lb = custs->ListBacking();
+      if (!lb.ok()) return lb.status();
+      return static_cast<int64_t>((*lb)->Size());
     });
 ```
+
+One genuine gap to know about: `HostMapView` exposes only `Size()`,
+`Get(key)`, and `ContainsKey(key)` — there is **no key-enumeration**
+(no iteration over a map argument's keys), so a callback must already
+know which keys it wants (pass them as arguments, or restructure the
+data as a list).
 
 Returning aggregates is symmetric — build a `std::vector<Value>` /
 `std::vector<pair<Value,Value>>` (or `Value::List(...)` /

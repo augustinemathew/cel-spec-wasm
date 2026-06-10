@@ -1,0 +1,12 @@
+// Fixture for //examples:06_proto_messages — a realistic request
+// shape an authorization policy would inspect.
+
+syntax = "proto3";
+
+package celwasm.examples;
+
+message Request {
+  string user = 1;
+  string action = 2;
+  int64 quantity = 3;
+}

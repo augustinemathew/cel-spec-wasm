@@ -3,7 +3,8 @@
 // Usage:
 //   cel eval    <expr> [--var ...] [--proto ... | --descriptor_set ...] ...
 //   cel check   <expr> [--var name:Type] [--proto ... | --descriptor_set ...]
-//   cel compile <expr> -o <out.wasm> [--O 0..3] ...
+//   cel compile <expr> --output <out.wasm> [--O 0..3] ...
+//   cel generate --idl <fns.idl> --out_dir <dir> [--language cpp] ...
 //
 // See tools/cel/var_parser.h for the `--var` literal
 // grammar and tools/cel/value_format.h for `--format`.
@@ -84,13 +85,13 @@ ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
           "If empty, bytes go to stdout.");
 
-// `cel generate` flags (m26 §3 / §7).  Drive the emitter set from a
-// single `.idl` file; outputs go to --out_dir.
+// `cel generate` flags.  Drive the emitter set from a single `.idl`
+// file; outputs go to --out_dir.
 ABSL_FLAG(std::string, idl, "",
           "`cel generate` only: path to the .idl input file.");
 ABSL_FLAG(std::string, language, "cpp",
-          "`cel generate` only: target language.  v1 supports `cpp` "
-          "only; `go` arrives with H.4 (m26 §4.2).");
+          "`cel generate` only: target language.  `cpp` (default); "
+          "`go` is planned.");
 ABSL_FLAG(std::string, out_dir, "",
           "`cel generate` only: directory to write generated files into "
           "(fns.wit, codec.h, generated_stub.cc, user_fns.h).");
@@ -108,7 +109,6 @@ namespace {
 
 using ::celwasm::Activation;
 using ::celwasm::Engine;
-using ::celwasm::Instance;
 using ::celwasm::Program;
 using ::celwasm::Value;
 
@@ -498,8 +498,8 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  eval     compile + evaluate <expr>; print the result\n"
      << "  check    parse + type-check <expr>; print OK / errors\n"
      << "  compile  compile <expr> to wasm bytes (--output PATH)\n"
-     << "  generate emit fns.wit + codec.h + generated_stub.cc +\n"
-     << "           user_fns.h from a .idl  (m26)\n"
+     << "  generate emit custom-function bindings (fns.wit, codec.h,\n"
+     << "           generated_stub.cc, user_fns.h) from a .idl file\n"
      << "common flags:\n"
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
@@ -508,11 +508,13 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --container PKG          name-resolution container\n"
      << "  --format FMT             (eval, repeatable) textproto|json|cel\n"
      << "  --O LEVEL                Binaryen optimize level (0..3)\n"
+     << "  --mem_size_bytes N       linear-memory size in bytes\n"
+     << "                           (rounded up to a 64KiB wasm page)\n"
      << "  --output PATH            (compile) wasm output path\n"
      << "generate flags:\n"
      << "  --idl PATH               required: .idl input\n"
      << "  --out_dir PATH           required: output dir\n"
-     << "  --language LANG          cpp (default); go w/ H.4\n"
+     << "  --language LANG          cpp (default); go (planned)\n"
      << "  --package PKG            WIT package name override\n";
 }
 
@@ -551,8 +553,9 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::vector<char*> rest;
   rest.reserve(argc - 1);
   rest.push_back(argv[0]);
-  for (int i = 2; i < argc; ++i)
+  for (int i = 2; i < argc; ++i) {
     rest.push_back(argv[i]);
+  }
   // Extract repeatable flags BEFORE absl parses, so their values
   // (which may contain commas or `=`) aren't mangled.
   rest = celwasm::tools::cel::ExtractRepeated(rest, "var",

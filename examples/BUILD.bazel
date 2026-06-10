@@ -1,0 +1,200 @@
+# Runnable examples for the public cel-wasm API, in reading order.
+# Each is a self-contained binary an embedder can copy as a starting
+# point:
+#
+#   bazel run //examples:01_hello_world
+#
+# Examples depend ONLY on the sanctioned public targets
+# (//compiler:{compiler,program}, //eval:*, //shared:type) — they
+# double as a compile-time check that the public surface is sufficient
+# for real embedders.  `:examples_smoke_test` runs every binary and
+# asserts on its output, so the examples (and the doc snippets built
+# from them) cannot silently rot.
+
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
+
+package(default_visibility = ["//visibility:private"])
+
+cc_binary(
+    name = "01_hello_world",
+    srcs = ["01_hello_world.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+    ],
+)
+
+cc_binary(
+    name = "02_variables",
+    srcs = ["02_variables.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+cc_binary(
+    name = "03_compile_once_run_anywhere",
+    srcs = ["03_compile_once_run_anywhere.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+cc_binary(
+    name = "04_host_functions",
+    srcs = ["04_host_functions.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_binary(
+    name = "05_partial_eval",
+    srcs = ["05_partial_eval.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:attribute",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+proto_library(
+    name = "example_request_proto",
+    srcs = ["example_request.proto"],
+)
+
+cc_proto_library(
+    name = "example_request_cc_proto",
+    deps = [":example_request_proto"],
+)
+
+cc_binary(
+    name = "06_proto_messages",
+    srcs = ["06_proto_messages.cc"],
+    deps = [
+        ":example_request_cc_proto",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+cc_binary(
+    name = "07_error_handling",
+    srcs = ["07_error_handling.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+cc_binary(
+    name = "08_function_errors_and_unknowns",
+    srcs = ["08_function_errors_and_unknowns.cc"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:attribute",
+        "//eval:engine",
+        "//eval:error",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# The sandboxed custom function for example 09: adder.idl +
+# adder_fns.cc → adder_component.wasm (a Component-Model component
+# with its own linear memory).
+cel_wasm_component(
+    name = "adder_component",
+    idl = "adder.idl",
+    user_fns = ["adder_fns.cc"],
+)
+
+cc_binary(
+    name = "09_component_functions",
+    srcs = ["09_component_functions.cc"],
+    data = [":adder_component"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+# Runs every example and asserts on key output lines — the rot gate
+# for the examples and for every doc snippet derived from them.
+sh_test(
+    name = "examples_smoke_test",
+    srcs = ["examples_smoke_test.sh"],
+    data = [
+        ":01_hello_world",
+        ":02_variables",
+        ":03_compile_once_run_anywhere",
+        ":04_host_functions",
+        ":05_partial_eval",
+        ":06_proto_messages",
+        ":07_error_handling",
+        ":08_function_errors_and_unknowns",
+        ":09_component_functions",
+    ],
+)

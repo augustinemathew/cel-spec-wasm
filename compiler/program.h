@@ -3,8 +3,9 @@
 //
 // Pure data: wasm bytes + (future) parsed ABI metadata.  No
 // wasmtime dependency; safe to copy across process boundaries
-// (serialize the bytes, reconstruct on the other end via
-// `Program::FromWasm(bytes)`).  An `Engine` is required to Plan a
+// (serialize the bytes, reconstruct on the other end via the
+// `Program(std::vector<uint8_t>)` constructor).  An `Engine` is
+// required to Plan a
 // Program into an Instance — see eval/engine.h — but
 // the Program itself never holds engine state.
 //

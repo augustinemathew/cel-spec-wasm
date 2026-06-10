@@ -39,6 +39,7 @@
 #ifndef CELWASM_EVAL_TYPED_FUNCTION_H_
 #define CELWASM_EVAL_TYPED_FUNCTION_H_
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -58,6 +59,61 @@
 #include "google/protobuf/message.h"
 
 namespace celwasm {
+
+// Canonical-parameter kind metadata — one enumerator per ArgTrait
+// specialization (see typed_internal below).  `TypedFunction::
+// param_kinds` carries the bound callable's per-parameter kinds so a
+// registration-time validator (e.g. `Engine::BindFunction`) can
+// compare a lambda's signature against a parsed `.celfn` declaration
+// without re-deriving the C++ types.
+enum class HostParamKind : uint8_t {
+  kBool,             // bool
+  kInt,              // int64_t
+  kUint,             // uint64_t
+  kDouble,           // double
+  kStringOrBytes,    // absl::string_view — CEL string and bytes share it
+  kDuration,         // absl::Duration
+  kTimestamp,        // absl::Time
+  kList,             // HostListView
+  kMap,              // HostMapView
+  kProto,            // const M& (M : google::protobuf::Message)
+  kProtoMessagePtr,  // const google::protobuf::Message* (polymorphic)
+  kValue,            // Value — accepts any declared CEL type
+};
+
+// The C++ spelling for diagnostics ("… but the callable's parameter
+// is `absl::Duration`").  The switch is closed; the trailing return
+// mirrors `CelfnType::Argkind`'s fall-off guard.
+inline absl::string_view HostParamKindName(HostParamKind kind) {
+  switch (kind) {
+    case HostParamKind::kBool:
+      return "bool";
+    case HostParamKind::kInt:
+      return "int64_t";
+    case HostParamKind::kUint:
+      return "uint64_t";
+    case HostParamKind::kDouble:
+      return "double";
+    case HostParamKind::kStringOrBytes:
+      return "absl::string_view";
+    case HostParamKind::kDuration:
+      return "absl::Duration";
+    case HostParamKind::kTimestamp:
+      return "absl::Time";
+    case HostParamKind::kList:
+      return "HostListView";
+    case HostParamKind::kMap:
+      return "HostMapView";
+    case HostParamKind::kProto:
+      return "const M& (M : google::protobuf::Message)";
+    case HostParamKind::kProtoMessagePtr:
+      return "const google::protobuf::Message*";
+    case HostParamKind::kValue:
+      return "Value";
+  }
+  return "unknown";
+}
+
 namespace typed_internal {
 
 // ─────────────────────── argument traits ───────────────────────────
@@ -378,6 +434,85 @@ inline constexpr bool kIsCanonicalHostArg = IsCanonicalArg<T>::value;
 template <typename R>
 inline constexpr bool kIsCanonicalHostReturn = IsCanonicalReturn<R>::value;
 
+// ─────────────────────── per-param kind metadata ────────────────────
+//
+// Mirrors the ArgTrait specialization set as runtime-readable
+// `HostParamKind` values.  Kept in sync with ArgTrait by construction:
+// a parameter type with an ArgTrait but no ParamKindOf (or vice versa)
+// is a compile error at the BindTypedFunction call site.
+
+template <typename T, typename Enable = void>
+struct ParamKindOf {
+  static_assert(sizeof(T) == 0,
+                "host-fn parameter has no HostParamKind mapping — the "
+                "canonical type list lives on ArgTrait above; add the "
+                "matching ParamKindOf specialization alongside any new "
+                "ArgTrait.");
+};
+template <>
+struct ParamKindOf<bool> {
+  static constexpr HostParamKind kKind = HostParamKind::kBool;
+};
+template <>
+struct ParamKindOf<int64_t> {
+  static constexpr HostParamKind kKind = HostParamKind::kInt;
+};
+template <>
+struct ParamKindOf<uint64_t> {
+  static constexpr HostParamKind kKind = HostParamKind::kUint;
+};
+template <>
+struct ParamKindOf<double> {
+  static constexpr HostParamKind kKind = HostParamKind::kDouble;
+};
+template <>
+struct ParamKindOf<absl::string_view> {
+  static constexpr HostParamKind kKind = HostParamKind::kStringOrBytes;
+};
+template <>
+struct ParamKindOf<absl::Duration> {
+  static constexpr HostParamKind kKind = HostParamKind::kDuration;
+};
+template <>
+struct ParamKindOf<absl::Time> {
+  static constexpr HostParamKind kKind = HostParamKind::kTimestamp;
+};
+template <>
+struct ParamKindOf<HostListView> {
+  static constexpr HostParamKind kKind = HostParamKind::kList;
+};
+template <>
+struct ParamKindOf<HostMapView> {
+  static constexpr HostParamKind kKind = HostParamKind::kMap;
+};
+template <>
+struct ParamKindOf<Value> {
+  static constexpr HostParamKind kKind = HostParamKind::kValue;
+};
+template <typename M>
+struct ParamKindOf<
+    const M&,
+    std::enable_if_t<std::is_base_of_v<google::protobuf::Message, M>>> {
+  static constexpr HostParamKind kKind = HostParamKind::kProto;
+};
+template <typename M>
+struct ParamKindOf<
+    const M*,
+    std::enable_if_t<std::is_base_of_v<google::protobuf::Message, M>>> {
+  static constexpr HostParamKind kKind = HostParamKind::kProtoMessagePtr;
+};
+
+// The callable's parameter kinds as a compile-time array, one entry
+// per lambda parameter in declaration order (the out_slot is not a
+// lambda parameter and has no entry).
+template <typename ArgsTuple>
+struct ParamKindArray;
+template <typename... A>
+struct ParamKindArray<std::tuple<A...>> {
+  static constexpr std::array<HostParamKind, sizeof...(A)> kKinds = {
+      ParamKindOf<A>::kKind...};
+};
+
 // ─────────────────────── signature decomposition ───────────────────
 //
 // Extract the return type R and the parameter pack from a callable.
@@ -468,11 +603,18 @@ HostCallback MakeCallback(Fn fn) {
 struct TypedFunction {
   HostCallback callback;
   uint8_t num_args = 0;
+  // Per-parameter kind metadata in lambda declaration order (the
+  // out_slot has no entry, so `param_kinds.size() == num_args - 1`).
+  // Lets registration-time validators compare the callable's signature
+  // against a declared one — see `Engine::BindFunction`.
+  std::vector<HostParamKind> param_kinds;
 };
 
 template <typename Fn>
 TypedFunction BindTypedFunction(Fn fn) {
   using Sig = typed_internal::CallableSignature<std::decay_t<Fn>>;
+  const auto& kinds =
+      typed_internal::ParamKindArray<typename Sig::ArgsTuple>::kKinds;
   // `MakeCallback` returns a `HostCallback` (a `std::function`) that owns a
   // copy of the move-captured closure — the callable outlives this frame and
   // refers to no stack object.  clang-analyzer-core.StackAddressEscape does
@@ -481,6 +623,7 @@ TypedFunction BindTypedFunction(Fn fn) {
   return TypedFunction{
       typed_internal::MakeCallback(std::move(fn)),
       static_cast<uint8_t>(Sig::kArity + 1),
+      std::vector<HostParamKind>(kinds.begin(), kinds.end()),
   };
 }
 

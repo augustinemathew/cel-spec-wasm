@@ -655,6 +655,46 @@ struck through or removed.
       Severity: P2 — meaningful only when #21 (per-kind
       specialization) doesn't apply (i.e. dyn lists).
 
+- [ ] **#31** — Host-fn `ErrorPayload.message` text does not
+      survive the wasm round-trip: a callback returning
+      `Value::Error({code, message})` (or a context callback
+      using `ReturnError`) reaches the final decoded Value as
+      a synthesized `"runtime error code N"` string — only the
+      code crosses the boundary; the free-text message is
+      dropped at encode time.  Pinned by the documented output
+      of `examples/08_function_errors_and_unknowns.cc` (the
+      smoke test asserts the current lossy behavior so the fix
+      will flip an assertion).  The existing e2e cases
+      (`HostFnTest.TypedLambdaReturnsErrorValue`,
+      `ContextReturnErrorPropagates`) assert only the kind,
+      which is why this went unnoticed.
+      Why a win: error UX is policy-engine table stakes; the
+      author's message is the actionable part.
+      Fix shape: carry the message bytes through the error
+      payload encode (arena string, like unknown attrs) and
+      surface them in `abi_decode` / Value decode.
+      Files: `eval/host_call_context.cc` (encode side),
+      `eval/instance.cc` / decode path, `runtime/cel_data.h`
+      wire shape.
+      Surfaced: 2026-06-09 production-readiness review.
+      Severity: P1 — fix before promoting the repo.
+
+- [ ] **#32** — `Engine::AddComponent` (public API, eval/engine.h)
+      takes `const FunctionLibrary&`, but
+      `//compiler/celfn:function_library` is `//:internal` —
+      a public method whose parameter type an external consumer
+      cannot legally depend on.  Surfaced when
+      `//examples:09_component_functions` (public-API-only by
+      design) needed `//examples/...` added to the `//:internal`
+      package_group to compile.  Either promote a curated
+      function-library surface to public or give Engine an
+      overload taking the `.celfn` decl source directly
+      (mirroring the new `BindFunction` shape).
+      Surfaced: 2026-06-09 production-readiness review.
+      Severity: P1 — public-surface coherence; blocks a real
+      external embedder from using components.
+
+
 ## Runtime optimization review — 2026-06-03 summary
 
 Top three of the review (#27, #20, #26) shipped 2026-06-03 — see

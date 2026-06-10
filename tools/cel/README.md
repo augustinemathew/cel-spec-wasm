@@ -8,20 +8,27 @@ cel eval "a * b" --var "a:int=6" --var "b:int=7"      # → 42
 cel eval 'd > duration("1s")' --var 'd:duration="2s"' # → true
 cel eval "[1, 3, 5, 7].exists(x, x > 5)"              # → true
 cel check "u.name" --proto user.proto --var "u:acme.User"   # → OK
-cel compile "a * b + 1" --var "a:int" --var "b:int" -o expr.wasm
+cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
 ```
 
 ```
-cel eval    <expr> [flags...]   compile + evaluate; print the result
-cel check   <expr> [flags...]   parse + type-check; print OK / errors
-cel compile <expr> [flags...]   emit wasm bytes (--output PATH or stdout)
+cel eval     <expr> [flags...]  compile + evaluate; print the result
+cel check    <expr> [flags...]  parse + type-check; print OK / errors
+cel compile  <expr> [flags...]  emit wasm bytes (--output PATH or stdout)
+cel generate --idl PATH --out_dir DIR
+                                emit custom-function bindings (fns.wit,
+                                codec.h, generated_stub.cc, user_fns.h)
+                                from a .idl file
 ```
 
 Exit codes: `0` success, `1` compile/eval failure, `2` usage error.
 Diagnostics go to stderr; `eval` writes the result body to stdout.
 
 Binary: `bazel-bin/tools/cel/cel` (built via
-`bazel build //tools/cel:cel`).
+`bazel build //tools/cel:cel`).  Note: under `bazel run //tools/cel:cel`,
+a relative `--output` path is resolved inside the runfiles tree, not your
+shell's working directory — pass an absolute path (e.g.
+`--output /tmp/expr.wasm`).
 
 ## Scalar arithmetic
 
