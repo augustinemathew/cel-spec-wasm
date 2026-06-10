@@ -35,23 +35,23 @@ echo "==> Default test suite"
 bazel test $PROJ
 
 echo "==> Manual-tagged targets"
-MANUAL_TARGETS=(
-  //eval:instance_test
-  //eval:engine_test
-  //eval:cel_host_test
-  //e2e:m2_test
-  //e2e:m4_test
-  //e2e:m5_test
-  //e2e:optimize_test
-  //e2e:program_roundtrip_test
-  //runtime:cel_runtime_wasm_test
-  //tools/wat_runner:wat_runner_test
-)
-bazel test "${MANUAL_TARGETS[@]}"
+# Query-driven: a hardcoded list rotted the first time targets were
+# renamed (the dual-link-mode macro split every e2e test into
+# <name>_dynamic + <name>_static).  Enumerate every manual-tagged
+# test in the project instead, so renames and additions are picked
+# up automatically.
+MANUAL_TARGETS=$(bazel query 'attr(tags, "manual", tests(//...))' 2>/dev/null)
+if [[ -z "$MANUAL_TARGETS" ]]; then
+  echo "run_full_suite.sh: manual-target query returned nothing" >&2
+  exit 1
+fi
+echo "$MANUAL_TARGETS" | wc -l | xargs echo "    manual targets:"
+# shellcheck disable=SC2086
+bazel test $MANUAL_TARGETS
 
 if [[ $QUICK -eq 0 ]]; then
-  echo "==> Conformance harness"
-  bazel run //conformance:run_conformance
+  echo "==> Conformance gate (both link modes, monotonic baselines)"
+  scripts/check_conformance_monotonic.sh
 fi
 
 echo "==> Full suite green"
