@@ -9,10 +9,9 @@
 // `m10-conversions.md` §6.
 //
 // Timestamp / duration conversions (`int(timestamp)`,
-// `string(duration)`, `timestamp(string)`, ...) are explicitly
-// out of scope — see `m10-conversions.md` §2.2.  Test rows that
-// exercise those paths are GTEST_SKIP'd with a pointer to the
-// timestamps slice plan (separate, future).
+// `string(duration)`, `timestamp(string)`, ...) were out of M10's
+// scope (`m10-conversions.md` §2.2) and shipped with the later
+// timestamps slice; DeferredTimestampE2ETest pins them below.
 //
 // Fixtures grouped by capability (one section per slice):
 //
@@ -821,33 +820,49 @@ TEST_F(RejectE2ETest, BoolOfIntIsCheckerRejected) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// 9. DeferredTimestampE2ETest  (§2.2 — out of M10 scope; placeholder
-//    rows for the timestamps slice)
-//
-//    These tests exercise the timestamp / duration conversion arms
-//    that M10 explicitly carves out.  They're SKIP'd today; flip
-//    on when the timestamps slice lands.
+// 9. DeferredTimestampE2ETest  (timestamp / duration conversion
+//    arms — pinned here once the timestamps slice shipped them)
 // ──────────────────────────────────────────────────────────────
 
 class DeferredTimestampE2ETest : public ::testing::Test {};
 
 TEST_F(DeferredTimestampE2ETest, IntFromTimestamp) {
-  GTEST_SKIP()
-      << "int(timestamp(...)) is the timestamps slice — out of M10 scope";
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler, R"(int(timestamp("2009-02-13T23:31:30Z")) == 1234567890)");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(DeferredTimestampE2ETest, StringFromDuration) {
-  GTEST_SKIP()
-      << "string(duration(...)) is the timestamps slice — out of M10 scope";
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(string(duration("3600s")) == "3600s")");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(DeferredTimestampE2ETest, TimestampFromString) {
-  GTEST_SKIP()
-      << "timestamp(string) is the timestamps slice — out of M10 scope";
+  // Two spellings of the same instant parse to equal timestamps.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(timestamp("2009-02-13T23:31:30Z") == )"
+                             R"(timestamp("2009-02-13T23:31:30.000Z"))");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(DeferredTimestampE2ETest, DurationFromString) {
-  GTEST_SKIP() << "duration(string) is the timestamps slice — out of M10 scope";
+  // Unit normalization: "1m" parses to the same duration as "60s".
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(duration("60s") == duration("1m"))");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 }  // namespace

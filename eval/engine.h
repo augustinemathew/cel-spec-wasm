@@ -171,9 +171,7 @@ class Engine {
   //
   // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
   //
-  // **Status: not yet implemented** — m24 is at design stage as of
-  // 2026-06-03; this returns `Unimplemented` and exists as the
-  // forward-declared surface the e2e test matrix is written against.
+  // See `examples/09_component_functions.cc` for an end-to-end embed.
   ABSL_MUST_USE_RESULT absl::Status AddComponent(
       absl::Span<const uint8_t> component_bytes, const FunctionLibrary& lib);
 

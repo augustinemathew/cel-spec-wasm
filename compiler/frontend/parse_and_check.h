@@ -12,6 +12,21 @@
 
 namespace celwasm {
 
+// Maximum expression nesting depth (AST levels; a leaf is depth 1)
+// the compile pipeline admits.  Codegen emits an expression as a
+// nested wasm expression tree of the same depth, and both the host
+// toolchain (lowering, Binaryen) and wasmtime's Plan-time validation
+// / Cranelift JIT walk that tree recursively — one native stack
+// frame per nesting level — so unbounded depth lets a deep
+// left-associative chain (`a+b+c+...`) overflow the ~8 MiB native
+// stack at depth ≈4.6k: a SIGSEGV on valid CEL.  `ParseAndCheck`
+// rejects deeper expressions with `ResourceExhausted`.  The limit
+// clears the 1000-term arithmetic benchmark and realistic policies
+// with wide margin; it is an interim bound until codegen flattens
+// operand nesting, at which point it can be dropped
+// (doc/implementation-plan/cleanup-backlog.md #45).
+inline constexpr int kMaxExpressionNestingDepth = 2048;
+
 // Path to a textual `.proto` source file describing protobuf message types
 // referenced by variables.  Parsed in-process with
 // `google::protobuf::compiler::Parser`; imports other than CEL well-known

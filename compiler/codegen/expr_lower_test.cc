@@ -581,23 +581,37 @@ TEST(ExprLowerIdentTest, EmittedModuleSerializesAndValidates) {
 }
 
 TEST(ExprLowerIdentTest, MultipleVariablesGetSeparateLocalsAndPrelude) {
-  // With the kCall arm still Unimplemented, we can't root-test an
-  // expression with two kIdents.  But two declared variables is
-  // enough: ResolvePass only keeps referenced ones, so we need the
-  // expression to mention both.  `x + y` fails at kCall-root, but
-  // LayoutPass / ResolvePass already ran and populated
-  // layout.variables.  Feed the layout directly, forging a root
-  // that references one of them (`x`), proving both slots are
-  // populated by the prelude regardless of which ident the body
-  // reads.
-  //
-  // Simpler: just use `x` but DECLARE both x and y.  Unreferenced
-  // declarations don't reserve slots (ResolvePass filter), so this
-  // ends up a single-variable test — exactly what we want to avoid.
-  //
-  // Skipped until M3 (kCall arm) lands.  Documented here so the
-  // intent is recorded.
-  GTEST_SKIP() << "two-variable ident lowering requires M3 kCall to root";
+  // `x + y` — two referenced variables.  The prelude must populate
+  // one local per variable, each holding that variable's own slot
+  // offset; the slots must be distinct.
+  Pipeline p = RunPipelineWithVars("x + y", {"x:int", "y:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  ASSERT_EQ(p.layout.variables.size(), 2u);
+  ASSERT_GE(BinaryenFunctionGetNumVars(lowered->func), 2u)
+      << "one wasm local per referenced variable";
+  EXPECT_EQ(BinaryenFunctionGetVar(lowered->func, 0), BinaryenTypeInt32());
+  EXPECT_EQ(BinaryenFunctionGetVar(lowered->func, 1), BinaryenTypeInt32());
+
+  // Prelude: children 0 and 1 are local.set of each variable's own
+  // slot offset.
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  ASSERT_EQ(BinaryenExpressionGetId(body), BinaryenBlockId());
+  for (uint32_t i = 0; i < 2; ++i) {
+    BinaryenExpressionRef set = BinaryenBlockGetChildAt(body, i);
+    ASSERT_EQ(BinaryenExpressionGetId(set), BinaryenLocalSetId());
+    EXPECT_EQ(BinaryenLocalSetGetIndex(set), i);
+    BinaryenExpressionRef slot_const = BinaryenLocalSetGetValue(set);
+    ASSERT_EQ(BinaryenExpressionGetId(slot_const), BinaryenConstId());
+    EXPECT_EQ(BinaryenConstGetValueI32(slot_const),
+              static_cast<int32_t>(p.layout.variables[i].slot_offset));
+  }
+  EXPECT_NE(p.layout.variables[0].slot_offset,
+            p.layout.variables[1].slot_offset);
 }
 
 // --- M2.C.3 kSelect arm -------------------------------------------------

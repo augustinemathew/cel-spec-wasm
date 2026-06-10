@@ -38,7 +38,7 @@ expect_contains "proto deny"       "user=mallory action=delete quantity=10  =>  
 expect_contains "compile error"    "compile error:"              07_error_handling
 expect_contains "eval error value" "error value:"                07_error_handling
 expect_contains "fn plain value"   "quota(\"alice\")  =>  int: 100"     08_function_errors_and_unknowns
-expect_contains "fn error value"   "error value: runtime error code 18" 08_function_errors_and_unknowns
+expect_contains "fn error value"   "error value: invalid_argument" 08_function_errors_and_unknowns
 expect_contains "fn unknown"       "(the unknown was absorbed)"  08_function_errors_and_unknowns
 expect_contains "fn status trap"   "Eval failed with status:"    08_function_errors_and_unknowns
 expect_contains "component add"    "add(a, b) * 2  =>  84"       09_component_functions

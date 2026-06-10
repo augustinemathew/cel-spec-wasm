@@ -916,23 +916,26 @@ TEST(EngineAddComponentTest,
 
 TEST(EngineAddComponentTest,
      ConflictWithEarlierAddComponentReportedAtRegistration) {
-  // Two AddComponent calls naming the same overload-id.  The second
-  // is rejected.  We need the first call to actually land (i.e.
-  // parse), so we use bytes that wasmtime accepts.  Real components
-  // are non-trivial to inline here — use a 1-byte sentinel that the
-  // conflict check would catch BEFORE the wasmtime_component_new
-  // call on the second attempt.  To exercise the "earlier component
-  // already registered" arm without needing a real component, we
-  // construct an `Engine` whose state holds one already; this is
-  // covered indirectly by the e2e foreign-fn matrix (C.5).  Here
-  // we pin the AddFunction-first variant above and the
-  // pre-parse-conflict-detection contract: the conflict check
-  // executes for the SAME-overload-id case before any wasmtime
-  // parse, so a garbage second component still surfaces
-  // AlreadyExists rather than InvalidArgument.
-  GTEST_SKIP() << "blocked on a real Component-Model component fixture "
-                  "(needed to land the first AddComponent in this test) — "
-                  "lands with C.5 / D.1";
+  // Two AddComponent calls naming the same overload-id; the second
+  // is rejected.  The first registration needs bytes that
+  // wasmtime_component_new accepts — an empty `(component)` is
+  // enough, because the export ↔ decl lookup happens at per-Plan
+  // component instantiation, not at registration.  The second call
+  // reuses the overload-id with garbage bytes: the conflict check
+  // executes BEFORE any wasmtime parse, so it must surface
+  // AlreadyExists (naming the prior component), not the
+  // InvalidArgument a parse attempt would produce.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok());
+  const std::vector<uint8_t> component_bytes = Wat2Wasm("(component)");
+  ASSERT_TRUE(
+      engine_or->AddComponent(component_bytes, OneBoolFnLibrary("dup")).ok());
+  const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
+  auto s = engine_or->AddComponent(garbage, OneBoolFnLibrary("dup"));
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
+  EXPECT_NE(std::string(s.message()).find("dup"), std::string::npos);
+  EXPECT_NE(std::string(s.message()).find("previously-registered component"),
+            std::string::npos);
 }
 
 TEST(EngineAddComponentTest, EmptyLibraryNoDeclsParsesOnly) {

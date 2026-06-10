@@ -47,7 +47,7 @@ TEST(ActivationTest, BindReturnsReferenceForFluency) {
   EXPECT_NE(act.Find("z"), nullptr);
 }
 
-TEST(ActivationDeathTest, BindLazyFiresCheckUntilM2) {
+TEST(ActivationDeathTest, BindLazyIsUnimplementedAndLoud) {
   Activation act;
   EXPECT_DEATH(
       {
@@ -55,10 +55,10 @@ TEST(ActivationDeathTest, BindLazyFiresCheckUntilM2) {
           return Value::Int(1);
         });
       },
-      "stub until M2");
+      "BindLazy is unimplemented");
 }
 
-TEST(ActivationDeathTest, OverrideFunctionFiresCheckUntilM5) {
+TEST(ActivationDeathTest, OverrideFunctionIsUnimplementedAndLoud) {
   Activation act;
   EXPECT_DEATH(
       {
@@ -66,7 +66,7 @@ TEST(ActivationDeathTest, OverrideFunctionFiresCheckUntilM5) {
           return Value::Null();
         });
       },
-      "stub until M5");
+      "OverrideFunction is unimplemented");
 }
 
 }  // namespace

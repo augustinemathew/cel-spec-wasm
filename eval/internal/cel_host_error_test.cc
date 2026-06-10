@@ -113,24 +113,34 @@ TEST(WireErrorCodeTest, EveryHostCodeMapsToWireConstant) {
             CEL_ERR_TYPE_UNSUPPORTED);
   EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kKeyNotFound),
             CEL_ERR_NO_SUCH_KEY);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kDuplicateKey),
+            CEL_ERR_DUPLICATE_KEY);
   EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kFieldNotFound),
             CEL_ERR_FIELD_NOT_FOUND);
   EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kIndexOutOfBounds),
             CEL_ERR_INDEX_OUT_OF_BOUNDS);
   EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kInvalidArgument),
             CEL_ERR_INVALID_ARGUMENT);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kUnknownType),
+            CEL_ERR_UNKNOWN_TYPE);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kCustomFnFailed),
+            CEL_ERR_CUSTOM_FN_FAILED);
   EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kHostAdapterError),
             CEL_ERR_HOST_ADAPTER_ERROR);
+  EXPECT_EQ(WireErrorCode(celwasm::ErrorCode::kTimeout), CEL_ERR_TIMEOUT);
 }
 
-// The default-arm fallback ("unknown ErrorCode → CEL_ERR_TYPE_MISMATCH")
-// is defensive scaffolding for future enum additions; deliberately
-// not unit-tested because forcing a static_cast<ErrorCode>(N) for N
-// outside the declared range is undefined behaviour at the language
-// level and the compiler-folded switch behaviour isn't portable.
-// The real guard against drift is the exhaustive positive test above
-// (one EXPECT per enum value) — if a new code lands without updating
-// WireErrorCode, that test won't compile.
+// The default arm passes an out-of-enum numeric through unchanged:
+// `ErrorCode` has a fixed underlying type (uint8_t), so an
+// embedder-supplied payload can legally carry an unnamed value, and
+// the decoders degrade an unrecognized wire byte to kHostAdapterError
+// ("runtime error code N").  Not unit-tested here — a compile-time
+// `static_cast<ErrorCode>(99)` trips the
+// clang-analyzer-optin EnumCastOutOfRange lint gate; the end-to-end
+// pin (encode pass-through + decode degrade for wire byte 99) lives
+// in instance_test.cc
+// (ErrorCodeRoundTripTest.UnrecognizedWireCodeDegradesGracefully,
+// where the value arrives at the cast as runtime data).
 
 // ──── Wire-format slot writers ───────────────────────────────────
 
@@ -248,23 +258,26 @@ TEST(AbsorbBinaryTest, SecondOperandErrorPropagates) {
   EXPECT_EQ(mem.ReadCelValue(0).payload.err, CEL_ERR_TYPE_MISMATCH);
 }
 
-TEST(AbsorbBinaryTest, FirstOperandUnknownBeatsSecondOperandError) {
-  // Per the propagation rule: the FIRST non-normal operand wins
-  // (not error-beats-unknown).  Documented behaviour in
-  // cel_host_error.h.
+TEST(AbsorbBinaryTest, SecondOperandErrorBeatsFirstOperandUnknown) {
+  // ERROR dominates UNKNOWN regardless of operand order — the rule
+  // cel-cpp's NoOverloadResult (eval/eval/function_step.cc) applies
+  // (errors scanned before unknowns merge) and the oracle pins
+  // (PartialEvalOracle.UnknownPlusErrorIsError,
+  // testdata/cel_cpp_oracle_test.cc).  Langdef §"Evaluation" leaves
+  // the order unspecified; cel-cpp is the conformance reference.
   test::FakeMemoryView mem;
   CelValue unk{};
   unk.kind = CEL_UNKNOWN;
   unk.payload.unk = 3;
   CelValue err = PoisonCelValue(CEL_ERR_OVERFLOW);
   EXPECT_TRUE(AbsorbBinary(unk, err, 0, mem));
-  EXPECT_EQ(mem.ReadCelValue(0).kind, CEL_UNKNOWN);
-  EXPECT_EQ(mem.ReadCelValue(0).payload.unk, 3u);
+  EXPECT_EQ(mem.ReadCelValue(0).kind, CEL_ERROR);
+  EXPECT_EQ(mem.ReadCelValue(0).payload.err, CEL_ERR_OVERFLOW);
 }
 
 TEST(AbsorbBinaryTest, FirstOperandErrorBeatsSecondOperandUnknown) {
-  // Symmetric: first-wins also when first is error and second is
-  // unknown.
+  // The mirror ordering: error first, unknown second — error still
+  // wins (oracle: PartialEvalOracle.ErrorPlusUnknownIsError).
   test::FakeMemoryView mem;
   CelValue err = PoisonCelValue(CEL_ERR_DIVIDE_BY_ZERO);
   CelValue unk{};

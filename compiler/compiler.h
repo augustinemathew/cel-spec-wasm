@@ -199,21 +199,13 @@ class Compiler {
   Compiler() = default;  // Builder constructs.
 
   std::vector<VariableDeclaration> declared_variables_;
-  // M13 Slice C.2 — custom-fn libraries accumulated by the Builder.
-  // Each library is the typed parsed form of a `.celfn` file (or a
-  // programmatic `Builder` construction).  Held by value; Compiler
-  // owns them.
-  //
-  // **Storage only until Slice C.3.**  `Compiler::Compile` does not
-  // yet consume this field — the wiring into the cel-cpp
-  // `TypeCheckerBuilder` (call-site resolution) and the codegen
-  // `OverloadTableBuilder::RegisterCustom` (per decl, so the
-  // `cel_fn.<overload_id>` imports are emitted) lands in Slice C.3.
-  // Until C.3 lands, a CEL source that references a registered
-  // custom fn fails at the checker with "undeclared reference to
-  // 'fn_name'" — the same failure mode as if the library had never
-  // been registered.  See
-  // `doc/implementation-plan/rewrite/m13-custom-fns.md` §12.
+  // Custom-fn libraries accumulated by the Builder.  Each library is
+  // the typed parsed form of a `.celfn` file (or a programmatic
+  // `Builder` construction).  Held by value; Compiler owns them.
+  // `Compile` feeds them to both pipeline halves: the cel-cpp
+  // `TypeCheckerBuilder` (so call sites resolve) and the codegen
+  // overload registration (so the `cel_fn.<overload_id>` imports are
+  // emitted).
   std::vector<celwasm::FunctionLibrary> function_libraries_;
 };
 

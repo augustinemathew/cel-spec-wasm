@@ -73,16 +73,30 @@ uint32_t WireErrorCode(celwasm::ErrorCode c) {
       return CEL_ERR_TYPE_UNSUPPORTED;
     case celwasm::ErrorCode::kKeyNotFound:
       return CEL_ERR_NO_SUCH_KEY;
+    case celwasm::ErrorCode::kDuplicateKey:
+      return CEL_ERR_DUPLICATE_KEY;
     case celwasm::ErrorCode::kFieldNotFound:
       return CEL_ERR_FIELD_NOT_FOUND;
     case celwasm::ErrorCode::kIndexOutOfBounds:
       return CEL_ERR_INDEX_OUT_OF_BOUNDS;
     case celwasm::ErrorCode::kInvalidArgument:
       return CEL_ERR_INVALID_ARGUMENT;
+    case celwasm::ErrorCode::kUnknownType:
+      return CEL_ERR_UNKNOWN_TYPE;
+    case celwasm::ErrorCode::kCustomFnFailed:
+      return CEL_ERR_CUSTOM_FN_FAILED;
     case celwasm::ErrorCode::kHostAdapterError:
       return CEL_ERR_HOST_ADAPTER_ERROR;
+    case celwasm::ErrorCode::kTimeout:
+      return CEL_ERR_TIMEOUT;
     default:
-      return CEL_ERR_TYPE_MISMATCH;
+      // Open switch: `ErrorCode` has a fixed underlying type, so an
+      // embedder-supplied payload can legally carry a value outside
+      // the named set.  Pass the numeric through unchanged — the
+      // decoders degrade an unrecognized wire byte to
+      // kHostAdapterError ("runtime error code N") rather than
+      // silently relabeling it as a type mismatch.
+      return static_cast<uint32_t>(c);
   }
 }
 
@@ -133,11 +147,25 @@ bool AbsorbUnary(const CelValue& a, uint32_t out_slot, MemoryView& mem) {
 
 bool AbsorbBinary(const CelValue& a, const CelValue& b, uint32_t out_slot,
                   MemoryView& mem) {
-  if (a.kind == CEL_UNKNOWN || a.kind == CEL_ERROR) {
+  // ERROR dominates UNKNOWN across operands (left-bias within each
+  // class), matching the kernel's absorb_3vl_binary and cel-cpp's
+  // NoOverloadResult (eval/eval/function_step.cc), which propagates
+  // the first ErrorValue arg before merging unknowns.  Pinned by
+  // the PartialEvalOracle UnknownPlusErrorIsError /
+  // ErrorPlusUnknownIsError cases in testdata/cel_cpp_oracle_test.cc.
+  if (a.kind == CEL_ERROR) {
     mem.WriteCelValue(out_slot, a);
     return true;
   }
-  if (b.kind == CEL_UNKNOWN || b.kind == CEL_ERROR) {
+  if (b.kind == CEL_ERROR) {
+    mem.WriteCelValue(out_slot, b);
+    return true;
+  }
+  if (a.kind == CEL_UNKNOWN) {
+    mem.WriteCelValue(out_slot, a);
+    return true;
+  }
+  if (b.kind == CEL_UNKNOWN) {
     mem.WriteCelValue(out_slot, b);
     return true;
   }

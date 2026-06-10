@@ -1269,7 +1269,9 @@ absl::string_view BackendName(celwasm::CelfnDecl::Backend backend) {
     case celwasm::CelfnDecl::Backend::kForeignComponent:
       return "@component";
   }
-  return "unknown";
+  ABSL_CHECK(false) << "BackendName: unhandled CelfnDecl::Backend = "
+                    << static_cast<int>(backend);
+  return "unreachable";
 }
 
 // Compatibility between a callable's canonical C++ parameter kind and

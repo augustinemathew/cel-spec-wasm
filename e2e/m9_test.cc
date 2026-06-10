@@ -262,11 +262,12 @@ TEST_F(TypeOfPrimitiveE2ETest, TypeOfBoundHostMapIsMap) {
 TEST_F(TypeOfPrimitiveE2ETest, TypeOfInsideComprehension) {
   // Gap 2 from review: type(x) inside a comprehension iterating
   // a homogeneous list.  Asserts the slot-allocation pattern is
-  // sound for a per-iteration CEL_TYPE write.  Comprehension
-  // shape lives in the M5 follow-on; this test is GTEST_SKIP'd
-  // until that lands.
-  GTEST_SKIP() << "comprehensions are M5 follow-on; enable once "
-                  "the comprehension lower lands";
+  // sound for a per-iteration CEL_TYPE write.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "[1, 2, 3].all(v, type(v) == int)");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(TypeOfPrimitiveE2ETest, TypeOfUnknownPropagates) {
@@ -465,14 +466,16 @@ TEST_F(TypeOfNullAndAggregateE2ETest, TypeOfMapIsBareMap) {
 }
 
 TEST_F(TypeOfNullAndAggregateE2ETest, TypeOfTimestampIsAbstractFqn) {
-  // Per `m9-type-subsystem.md` §2.2: timestamp construction is a
-  // separate slice (post-M7).  Until that lands, `timestamp(...)`
-  // can't be reached from CEL source.  The expected behaviour
-  // post-timestamps: `type(timestamp(...))` →
-  // `google.protobuf.Timestamp`.  Skipped today; flip when
-  // timestamps construction lights up.
-  GTEST_SKIP() << "timestamp() construction is a separate slice "
-                  "(post-M7); enable when it lands";
+  // `type(timestamp(...))` → `google.protobuf.Timestamp` (the
+  // well-known-type FQN, per langdef §"Type Values").
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, R"(type(timestamp("2009-02-13T23:31:30Z")))");
+  Activation a;
+  Value v = EvalOk(instance, a);
+  ASSERT_EQ(v.kind(), Value::Kind::kType);
+  EXPECT_EQ(*v.AsType(), "google.protobuf.Timestamp");
 }
 
 // ──────────────────────────────────────────────────────────────

@@ -255,6 +255,7 @@ Value DecodeCelError(const CelValue& cv) {
     case ErrorCode::kKeyNotFound:
     case ErrorCode::kDuplicateKey:
     case ErrorCode::kIndexOutOfBounds:
+    case ErrorCode::kInvalidArgument:
     case ErrorCode::kFieldNotFound:
     case ErrorCode::kUnknownType:
     case ErrorCode::kCustomFnFailed:

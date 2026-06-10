@@ -155,13 +155,14 @@ class WasmModule {
   // **Thread-safety caveat.**  Binaryen's optimization knobs are
   // process-global state — `BinaryenSetOptimizeLevel` and
   // `BinaryenSetShrinkLevel` mutate static variables in the library.
-  // Concurrent calls from multiple threads to `Optimize` with
-  // different levels would race.  Today every caller is on the
-  // Compile thread and serialised by `celwasm::Compiler` ownership;
-  // surface this here so a future async-compile slice doesn't miss
-  // it.  A future-cleaner shape would be `BinaryenModuleRunPasses`
-  // with an explicit pass list (no global state); deferred until a
-  // caller actually needs it.
+  // `Compiler` is copyable pure data and does NOT serialise anything:
+  // two Compilers (or two copies of one) calling `Compile` with
+  // `optimize_level > 0` on different threads race on these globals.
+  // Embedders must serialise `Compile` process-wide when
+  // `optimize_level > 0` (see doc/design/00-architecture.md).  A
+  // future-cleaner shape would be `BinaryenModuleRunPasses` with an
+  // explicit pass list (no global state); deferred until a caller
+  // actually needs it.
   ABSL_MUST_USE_RESULT absl::Status Optimize(int level);
 
   // Serialises the module to its canonical `.wasm` byte encoding.

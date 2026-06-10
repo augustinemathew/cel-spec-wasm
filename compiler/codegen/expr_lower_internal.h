@@ -48,7 +48,7 @@ struct EmitCtx {
   // the local space (`out_slot, arg0, ...`), so their referenced
   // variables — which `ResolvePass` assigned 0-based `local_index`
   // values to — live at wasm locals `[num_args, num_args + K)`.
-  // See `library_module.cc::LowerCelDefinedFn`.
+  // See `expr_lower.cc::EmitCustomFnParamPrelude`.
   uint32_t wasm_local_offset = 0;
 };
 

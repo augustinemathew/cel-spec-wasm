@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "absl/strings/string_view.h"
-#include "absl/types/span.h"
 #include "gtest/gtest.h"
 #include "runtime/cel_runtime.h"
 
@@ -221,23 +220,6 @@ TEST(StaticMemoryBuilderTest, BaseOffsetIsAppliedToReturnedOffsetAndSpanPtr) {
   EXPECT_EQ(hoff, 128u);
   // CelSpan.ptr = base_offset + header_size = 128 + 24 = 152.
   EXPECT_EQ(ReadU32LE(buf, 8), 152u);
-}
-
-TEST(StaticMemoryBuilderDeathTest, AllocateListStubCrashes) {
-  StaticMemoryBuilder builder(0);
-  const uint32_t offs[] = {24u, 48u};
-  EXPECT_DEATH(
-      { builder.AllocateList(absl::MakeSpan(offs)); },
-      "AllocateList is a stub until M5");
-}
-
-TEST(StaticMemoryBuilderDeathTest, AllocateMapStubCrashes) {
-  StaticMemoryBuilder builder(0);
-  const uint32_t keys[] = {24u};
-  const uint32_t vals[] = {48u};
-  EXPECT_DEATH(
-      { builder.AllocateMap(absl::MakeSpan(keys), absl::MakeSpan(vals)); },
-      "AllocateMap is a stub until M6");
 }
 
 }  // namespace

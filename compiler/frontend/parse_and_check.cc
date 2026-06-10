@@ -2,6 +2,7 @@
 
 #include "compiler/celfn/function_library.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -14,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
@@ -21,6 +23,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/cord.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -670,6 +673,122 @@ absl::Status RejectDyn(const cel::Ast& ast) {
   return s;
 }
 
+// --- Expression-depth gate ---------------------------------------------------
+//
+// Bounds the checked AST's nesting depth at
+// `kMaxExpressionNestingDepth` (see parse_and_check.h for the full
+// rationale).  Everything downstream of this gate walks the
+// expression recursively — the rewrite passes below
+// (InlineConstantReferences / RejectDyn / PopulateAnnotations),
+// codegen's expr_lower, Binaryen, and wasmtime's Plan-time
+// validation / Cranelift JIT walking the emitted N-deep nested wasm
+// expression tree — one native stack frame per nesting level, so the
+// gate is what stands between a deep-but-valid expression and a
+// native stack overflow.  The measurement itself is ITERATIVE (an
+// explicit work-list) because a recursive measure would crash on
+// exactly the inputs the gate exists to reject.
+
+struct DepthFrame {
+  const cel::Expr* absl_nonnull node;
+  int depth;
+};
+
+void PushCallChildren(const cel::CallExpr& call, int depth,
+                      std::vector<DepthFrame>& work) {
+  if (call.has_target()) work.push_back({&call.target(), depth});
+  for (const auto& arg : call.args()) {
+    work.push_back({&arg, depth});
+  }
+}
+
+void PushComprehensionChildren(const cel::ComprehensionExpr& c, int depth,
+                               std::vector<DepthFrame>& work) {
+  if (c.has_iter_range()) work.push_back({&c.iter_range(), depth});
+  if (c.has_accu_init()) work.push_back({&c.accu_init(), depth});
+  if (c.has_loop_condition()) work.push_back({&c.loop_condition(), depth});
+  if (c.has_loop_step()) work.push_back({&c.loop_step(), depth});
+  if (c.has_result()) work.push_back({&c.result(), depth});
+}
+
+void PushAggregateChildren(const cel::Expr& node, int depth,
+                           std::vector<DepthFrame>& work) {
+  if (node.has_list_expr()) {
+    for (const auto& elem : node.list_expr().elements()) {
+      if (elem.has_expr()) work.push_back({&elem.expr(), depth});
+    }
+    return;
+  }
+  if (node.has_struct_expr()) {
+    for (const auto& field : node.struct_expr().fields()) {
+      if (field.has_value()) work.push_back({&field.value(), depth});
+    }
+    return;
+  }
+  ABSL_CHECK(node.has_map_expr())
+      << "PushAggregateChildren: non-aggregate kind = "
+      << static_cast<int>(node.kind_case());
+  for (const auto& entry : node.map_expr().entries()) {
+    if (entry.has_key()) work.push_back({&entry.key(), depth});
+    if (entry.has_value()) work.push_back({&entry.value(), depth});
+  }
+}
+
+// Pushes the immediate children of `node` onto `work`, each tagged
+// with the child depth `depth`.
+void PushExprChildren(const cel::Expr& node, int depth,
+                      std::vector<DepthFrame>& work) {
+  switch (node.kind_case()) {
+    case cel::ExprKindCase::kUnspecifiedExpr:
+    case cel::ExprKindCase::kConstant:
+    case cel::ExprKindCase::kIdentExpr:
+      return;
+    case cel::ExprKindCase::kSelectExpr:
+      if (node.select_expr().has_operand()) {
+        work.push_back({&node.select_expr().operand(), depth});
+      }
+      return;
+    case cel::ExprKindCase::kCallExpr:
+      PushCallChildren(node.call_expr(), depth, work);
+      return;
+    case cel::ExprKindCase::kListExpr:
+    case cel::ExprKindCase::kStructExpr:
+    case cel::ExprKindCase::kMapExpr:
+      PushAggregateChildren(node, depth, work);
+      return;
+    case cel::ExprKindCase::kComprehensionExpr:
+      PushComprehensionChildren(node.comprehension_expr(), depth, work);
+      return;
+  }
+  ABSL_CHECK(false) << "PushExprChildren: unhandled ExprKindCase = "
+                    << static_cast<int>(node.kind_case());
+}
+
+// Iterative (work-list) measurement of `root`'s nesting depth.  A
+// leaf is depth 1; each enclosing node adds one level.
+int MeasureExprDepth(const cel::Expr& root) {
+  std::vector<DepthFrame> work;
+  work.push_back({&root, 1});
+  int max_depth = 1;
+  while (!work.empty()) {
+    const DepthFrame frame = work.back();
+    work.pop_back();
+    max_depth = std::max(max_depth, frame.depth);
+    PushExprChildren(*frame.node, frame.depth + 1, work);
+  }
+  return max_depth;
+}
+
+absl::Status ValidateExpressionDepth(const cel::Expr& root) {
+  const int depth = MeasureExprDepth(root);
+  if (depth <= kMaxExpressionNestingDepth) return absl::OkStatus();
+  return absl::ResourceExhaustedError(absl::StrCat(
+      "expression nesting depth ", depth, " exceeds the supported maximum ",
+      kMaxExpressionNestingDepth,
+      " — restructure or split the expression; deep operator chains and "
+      "deeply nested aggregates compile to a wasm expression tree of the "
+      "same depth (doc/implementation-plan/cleanup-backlog.md #45)"));
+}
+
 // M13 Slice C.3 — scalar arms of `CelfnTypeToCelType`.  Returns
 // `nullopt` for non-scalar kinds (list / map / proto); the caller
 // handles those structurally.  Split out from the parent to keep
@@ -765,13 +884,15 @@ absl::StatusOr<cel::Type> CelfnTypeToCelType(
   if (t.kind == CelfnType::Kind::kMap) return CelfnMapToCelType(t, arena, pool);
   if (t.kind == CelfnType::Kind::kProto) return CelfnProtoToCelType(t, pool);
   // kType / kOptional are admitted on CelfnDecl by AddForeignComponent
-  // (m24 §6) but the type-checker mapping to cel::TypeType /
-  // cel::OptionalType is a stub until m24's component-backend lands.
-  ABSL_CHECK(false) << "CelfnTypeToCelType is a stub for CelfnType::Kind = "
-                    << static_cast<int>(t.kind) << " until m24";
+  // but have no type-checker mapping to cel::TypeType /
+  // cel::OptionalType here (cleanup-backlog #44) — a decl using them
+  // fails loudly rather than miscompiling.
+  ABSL_CHECK(false) << "CelfnTypeToCelType is unimplemented for "
+                       "CelfnType::Kind = "
+                    << static_cast<int>(t.kind) << " (cleanup-backlog #44)";
 }
 
-// M13 Slice C.3 — build a single `OverloadDecl` from one `CelfnDecl`.
+// Build a single `OverloadDecl` from one `CelfnDecl`.
 absl::StatusOr<cel::OverloadDecl> BuildOverloadFromCelfn(
     const CelfnDecl& decl, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
@@ -1101,12 +1222,19 @@ cel::ParserOptions DefaultParserOptions() {
   opts.enable_optional_syntax = true;
   // cel-cpp's default parser recursion depth (32) is tight enough
   // that a fairly modest `+` / `&&` chain (e.g. a 30-term polynomial
-  // benchmark) blows past it.  Raise to 16 384 — accommodates the
-  // 10 000-term arithmetic benchmark and any realistic embedder
-  // expression while still bounding pathological inputs.  This is
-  // the depth of the resulting AST, not source bytes; deep nesting
-  // in field paths or comprehension bodies counts too.
-  opts.max_recursion_depth = 16384;
+  // benchmark) blows past it.  Align the parser limit with the
+  // post-check expression-depth gate (`kMaxExpressionNestingDepth`)
+  // instead: the parse-tree visitor's recursion depth for an
+  // admissible expression is its AST nesting depth plus a handful of
+  // grammar-wrapper frames (start → expr → conditionalOr → … →
+  // primary; cel-cpp parser.cc's `UnnestContext` collapses most of
+  // the wrapper chain), so a small slack above the gate guarantees
+  // every AST the gate ADMITS also parses, while inputs too deep for
+  // the gate to ever accept are stopped here before parse-time
+  // recursion itself grows the native stack.  Parser-side depth
+  // rejections are normalised to the gate's ResourceExhausted by
+  // `MapParserRecursionLimitError` below.
+  opts.max_recursion_depth = kMaxExpressionNestingDepth + 32;
   return opts;
 }
 
@@ -1156,6 +1284,27 @@ absl::string_view UndeclaredSymbolRoot(absl::string_view msg) {
   return dot == absl::string_view::npos ? sym : sym.substr(0, dot);
 }
 
+// cel-cpp's parser bounds its own recursion two ways — the
+// parse-tree visitor ("Exceeded max recursion depth of N when
+// parsing.", surfaced as kInvalidArgument) and an ANTLR rule
+// listener ("Expression recursion limit exceeded. limit: N",
+// surfaced as kCancelled); see
+// `third_party/cel-cpp/parser/parser.cc` (`ParserVisitor::visit` /
+// `ExprRecursionListener`).  Both reject the same over-deep
+// expression class the post-check depth gate
+// (`ValidateExpressionDepth`) guards, so normalise them to the
+// gate's ResourceExhausted shape — an embedder sees ONE error for
+// the class regardless of which stage caught it.
+absl::Status MapParserRecursionLimitError(absl::Status s) {
+  if (!absl::StrContains(s.message(), "Exceeded max recursion depth of") &&
+      !absl::StrContains(s.message(), "Expression recursion limit exceeded")) {
+    return s;
+  }
+  return absl::ResourceExhaustedError(absl::StrCat(
+      "expression nesting depth exceeds the supported maximum ",
+      kMaxExpressionNestingDepth, " (rejected at parse: ", s.message(), ")"));
+}
+
 absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
     cel::TypeChecker& checker, absl::string_view expression,
     absl::string_view description) {
@@ -1165,7 +1314,7 @@ absl::StatusOr<std::unique_ptr<cel::Ast>> RunTypeCheck(
   if (!source.ok()) return source.status();
   auto parsed = google::api::expr::parser::Parse(**source, registry,
                                                  DefaultParserOptions());
-  if (!parsed.ok()) return parsed.status();
+  if (!parsed.ok()) return MapParserRecursionLimitError(parsed.status());
   auto ast = cel::CreateAstFromParsedExpr(*parsed);
   if (!ast.ok()) return ast.status();
   auto result = checker.Check(std::move(*ast));
@@ -1481,6 +1630,15 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
 
   auto checked_ast = RunTypeCheck(**checker, expression, opts.description);
   if (!checked_ast.ok()) return checked_ast.status();
+
+  // Expression-depth gate — MUST run before the walks below:
+  // InlineConstantReferences / InlineTypeIdentifierReferences /
+  // RejectDyn / PopulateAnnotations all recurse over the AST and
+  // would themselves overflow the native stack on the inputs this
+  // rejects.
+  if (auto s = ValidateExpressionDepth((*checked_ast)->root_expr()); !s.ok()) {
+    return s;
+  }
 
   // Inline `VariableReference::value()` constants (enum-name
   // references) into the AST as kConstant nodes — must run before

@@ -103,16 +103,6 @@ struct CompileOptions {
   LinkMode link_mode = LinkMode::kStatic;
 };
 
-// One bundled CEL-defined-fn library wasm module — produced by
-// `celwasm::CompileLibraryBodies` for each `FunctionLibrary` that
-// carries at least one `kCelDefined` decl.  `name` is the library's
-// `Module foo;` directive; `bytes` is the serialised wasm.  Empty
-// when no library carries CEL-defined decls.
-struct LibraryModuleBytes {
-  std::string name;
-  std::vector<uint8_t> bytes;
-};
-
 struct CompiledArtifact {
   TypedAst ast;
   StaticLayout layout;
@@ -120,11 +110,6 @@ struct CompiledArtifact {
   LoweredFunction eval_fn;
   // Populated iff `CompileOptions.serialize == true`.
   std::vector<uint8_t> wasm_bytes;
-  // M13 Slice D — bundled CEL-defined-fn libraries, one entry per
-  // `opts.function_libraries[i]` that carries `kCelDefined` decls.
-  // `Engine::Plan` walks this vector before instantiating the expr
-  // module and registers each entry under its `name`.
-  std::vector<LibraryModuleBytes> library_modules;
 };
 
 // Runs the full compile pipeline on `expression`.  Returns the bundled
@@ -134,9 +119,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<CompiledArtifact> Compile(
 
 // Installs the standard expr-module imports (`cel.memory`,
 // `cel.arena_reset`, `cel.arena_alloc`, `cel_host.*` trampolines,
-// `cel.cel_map_*` / `cel.cel_list_*`) onto `mod`.  Shared with
-// `compiler/celfn/library_module.cc` so a CEL-defined-fn library
-// module's wasm imports the same surface the expr module does.
+// `cel.cel_map_*` / `cel.cel_list_*`) onto `mod`.
 //
 // `layout.rodata` is installed as an active data segment on the
 // shared memory at `layout.rodata_base`; multiple modules using the
@@ -146,11 +129,8 @@ ABSL_MUST_USE_RESULT absl::Status InstallExprModuleImports(
     WasmModule& mod, const StaticLayout& layout, uint32_t mem_size_bytes);
 
 // Installs one wasm function import per `OverloadTable` row whose
-// runtime export is shipped today (built-ins) plus the M13 custom
-// rows.  Shared with `library_module.cc` so CEL-defined-fn bodies
-// can call built-ins + sibling helpers via the same import shape
-// the expr module uses.  Idempotent against the dedup set the
-// caller passes in.
+// runtime export is shipped today (built-ins) plus the custom-fn
+// rows.  Idempotent against the dedup set the caller passes in.
 void InstallOverloadImportsExport(WasmModule& mod,
                                   const OverloadTable& overload_table);
 

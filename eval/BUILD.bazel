@@ -576,6 +576,42 @@ cc_test(
     ],
 )
 
+# Layer 2 trampoline body for cel_host.cel_map_eq — cross-origin
+# (host vs arena) map equality through the normalizing snapshot walk.
+cc_test(
+    name = "cel_map_eq_impl_test",
+    srcs = ["internal/cel_map_eq_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":value",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Layer 2 trampoline body for cel_host.cel_list_eq — cross-origin
+# (host vs arena) list equality, including lists of proto messages
+# (repeated-extension reads vs literal-constructed message lists).
+cc_test(
+    name = "cel_list_eq_impl_test",
+    srcs = ["internal/cel_list_eq_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":value",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # Layer 2 trampoline body for cel_host.cel_list_at.
 cc_test(
     name = "cel_list_at_impl_test",

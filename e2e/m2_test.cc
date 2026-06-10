@@ -43,13 +43,13 @@
 #include "absl/types/span.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "google/protobuf/message.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -191,23 +191,26 @@ TEST_F(IdentE2ETest, Double) {
 }
 
 TEST_F(IdentE2ETest, String) {
-  // Host-side string marshal needs a persistent arena region for
-  // span payloads.  $eval's first instruction is arena_reset, which
-  // rewinds the arena cursor — so any bytes the host arena_alloc'd
-  // pre-Eval get overwritten the moment $eval runs.  Unblocking
-  // needs one of:
-  //   (a) host-tail memory region reserved at Plan time (reduce
-  //       arena_limit, write span bytes past limit),
-  //   (b) split $eval into "$reset" + "$body" so the host can
-  //       call arena_reset first, then arena_alloc, then $body,
-  //   (c) externref-style host backing per string variable.
-  // Designing that is M2.C-era work — deferred until then.  Scalar
-  // idents (the core M2.B win) already round-trip.
-  GTEST_SKIP() << "string ident needs host arena plumbing; deferred to M2.C";
+  auto compiler = CompilerWithVar("x", CelType::String());
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "x");
+  Activation a;
+  a.Bind("x", Value::String("hello"));
+  auto v = EvalOk(instance, a);
+  ASSERT_EQ(v.kind(), Value::Kind::kString);
+  EXPECT_EQ(*v.AsString(), "hello");
 }
 
 TEST_F(IdentE2ETest, Bytes) {
-  GTEST_SKIP() << "bytes ident needs host arena plumbing; deferred to M2.C";
+  auto compiler = CompilerWithVar("x", CelType::Bytes());
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "x");
+  Activation a;
+  // Embedded NUL: the bound payload is {'a', 'b', '\0', 'c'}.
+  a.Bind("x", Value::Bytes(std::string("ab\0c", 4)));
+  auto v = EvalOk(instance, a);
+  ASSERT_EQ(v.kind(), Value::Kind::kBytes);
+  EXPECT_EQ(*v.AsBytes(), absl::string_view("ab\0c", 4));
 }
 
 // Unbound variable should surface as FailedPrecondition, not a

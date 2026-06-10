@@ -2,10 +2,9 @@
 // (`google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
 // String,Bytes}Value`).  Mirrors the m7b_test shape: every test
 // asserts a capability `m8-wrapper-types.md` says M8 must light up.
-// Running this binary today should SKIP every case below (each
-// `TEST_F` opens with `GTEST_SKIP() << "M8.<arm> ships here ..."`);
-// the skips drop slice-by-slice as M8.B → M8.C → M8.A → M8.D close
-// per the as-shipped sequencing in `m8-wrapper-types.md` §5.
+// All M8 arms (M8.B → M8.C → M8.A → M8.D, per the as-shipped
+// sequencing in `m8-wrapper-types.md` §5) have shipped, so every
+// case below runs unskipped.
 //
 // Wrapper-types are the M7 follow-on slice: M7 admits the explicit
 // recursive `kStructExpr` form (`Foo{w: Int32Value{value: 5}}`);
@@ -1106,7 +1105,6 @@ TEST_F(WrapperActivationBindE2ETest, NullBindAgainstInt32WrapperVarReadsNull) {
 //   typed binding) → encoder rejects at Eval time. —
 
 TEST_F(WrapperActivationBindE2ETest, WrongKindBindFailsAtEval) {
-  GTEST_SKIP() << "M8.A ships the kind-mismatch reject at the encoder";
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
     b.DeclareVariable("w", CelType::Message(std::string(kFqnInt32Value)));
   });
@@ -1241,7 +1239,6 @@ TEST_F(WrapperRoundTripE2ETest, ConstructAndReadBackSetToZeroIsScalar) {
 //   syntactic form authored the wrapper). —
 
 TEST_F(WrapperRoundTripE2ETest, ExplicitWrapperConstructionReadsScalar) {
-  GTEST_SKIP() << "M8.B ships the read-half; explicit construction is M7.E";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1264,7 +1261,6 @@ TEST_F(WrapperRoundTripE2ETest, ExplicitWrapperConstructionReadsScalar) {
 class WrapperRejectE2ETest : public ::testing::Test {};
 
 TEST_F(WrapperRejectE2ETest, CrossKindEqRejectedByChecker) {
-  GTEST_SKIP() << "M8 leaves the cross-kind == checker-reject untouched";
   // `Int32Value{value:1} == "1"` is a type error in the static
   // subset: mixed-kind equality is rejected at compile.  This is
   // unrelated to M8 specifically — checker behaviour is independent
@@ -1277,7 +1273,6 @@ TEST_F(WrapperRejectE2ETest, CrossKindEqRejectedByChecker) {
 }
 
 TEST_F(WrapperRejectE2ETest, WrongScalarKindIntoStringWrapperRejected) {
-  GTEST_SKIP() << "M8.A ships the wrong-kind reject at the checker";
   // `TestAllTypes{single_string_wrapper: 5}` must reject at compile:
   // wrong scalar kind for a string-wrapper field.  Checker should
   // catch this before codegen.
@@ -1290,7 +1285,6 @@ TEST_F(WrapperRejectE2ETest, WrongScalarKindIntoStringWrapperRejected) {
 }
 
 TEST_F(WrapperRejectE2ETest, WrongScalarKindIntoInt32WrapperRejected) {
-  GTEST_SKIP() << "M8.A ships the wrong-kind reject at the checker";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   ExpectCompileFails(
@@ -1300,8 +1294,6 @@ TEST_F(WrapperRejectE2ETest, WrongScalarKindIntoInt32WrapperRejected) {
 }
 
 TEST_F(WrapperRejectE2ETest, DynOfWrapperVarRejectedByStaticSubset) {
-  GTEST_SKIP()
-      << "static-subset rejects dyn(<wrapper-typed>); M8 keeps this guard";
   // `dyn(w)` against a wrapper-typed var should reject at frontend
   // per the M1.5 static-subset gate.  Confirms M8 doesn't broaden
   // admissibility of dyn-erased wrappers (§4.R4).

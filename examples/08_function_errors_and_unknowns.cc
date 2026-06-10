@@ -18,14 +18,14 @@
 //
 // Expected output:
 //   quota("alice")  =>  int: 100
-//   quota("")       =>  error value: runtime error code 18
+//   quota("")       =>  error value: invalid_argument
 //   quota("bob") || is_admin  =>  bool: true (the unknown was absorbed)
 //   quota("carol")  =>  Eval failed with status: FAILED_PRECONDITION: ...
 //                       Caused by: quota backend down
 //
 // (Note the second line: the ErrorPayload's *code* survives the wasm
 // round-trip; the free-text `message` currently does not — the decoded
-// error carries a synthesized "runtime error code N" string.)
+// error carries the code's canonical name, e.g. "invalid_argument".)
 
 #include <iostream>
 #include <string>
@@ -97,8 +97,9 @@ void EvalQuota(celwasm::Instance& instance, absl::string_view user) {
     return;
   }
   if (result->IsError()) {
-    std::cout << "quota(\"" << user << "\")  =>  error value: "
-              << (*result->ErrorInfo())->message << "\n";
+    std::cout << "quota(\"" << user
+              << "\")  =>  error value: " << (*result->ErrorInfo())->message
+              << "\n";
     return;
   }
   std::cout << "quota(\"" << user << "\")  =>  int: " << result->AsInt().value()

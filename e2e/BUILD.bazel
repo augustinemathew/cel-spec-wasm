@@ -612,6 +612,30 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# Proto2 repeated-extension list-equality e2e — pins the conformance
+# rows proto2/extensions_get/{package,message}_scoped_repeated_test_all_types:
+# a HostList-backed repeated-extension read compared against a
+# literal-constructed list of messages (cross-origin LIST-of-MESSAGES
+# equality through CelListEqImpl).
+link_mode_e2e_cc_test(
+    name = "proto2_extension_list_eq_test",
+    srcs = ["proto2_extension_list_eq_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//eval:activation",
+        "//eval:cel_host",  # Value::Message(proto)
+        "//compiler:compiler",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # WKT-field-set e2e suite — one TEST_F per conformance corpus row in
 # the well-known-type field-construction cluster (literal_wellknown,
 # dynamic value_*/struct/int32/uint32, set_null null-pruning, Any).
@@ -763,12 +787,15 @@ cc_test(
         "//compiler:program",
         "//compiler/celfn:function_library",
         "//eval:activation",
+        "//eval:attribute",
         "//eval:cel_host",
         "//eval:engine",
         "//eval:instance",
         "//eval:value",
         "//shared:type",
         "//testdata:e2e_fixture_cc_proto",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

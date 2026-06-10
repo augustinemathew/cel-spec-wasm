@@ -1965,6 +1965,17 @@ absl::Status CelListInImpl(uint32_t out_slot, uint32_t value_slot,
 
 namespace {
 
+// Tri-state outcome of proto-message equality (Any peel + descriptor
+// check + MessageDifferencer).  kNotComparable covers operands
+// without an underlying proto (custom non-proto backings) and Any
+// payloads that fail to unpack.  Defined with the message-equality
+// trampoline below; shared with the list-equality walk so message
+// elements compare with full proto semantics.
+enum class ProtoMessageEqOutcome : uint8_t { kEqual, kUnequal, kNotComparable };
+ProtoMessageEqOutcome CompareProtoMessages(
+    const google::protobuf::Message* absl_nullable a,
+    const google::protobuf::Message* absl_nullable b);
+
 // Returns the count of `cv` whether arena or host.  Caller has
 // already verified kind ∈ {CEL_LIST_ARENA, CEL_LIST_HOST}.
 absl::StatusOr<size_t> ListLength(const CelValue& cv,
@@ -1980,11 +1991,48 @@ absl::StatusOr<size_t> ListLength(const CelValue& cv,
   return backing->Size();
 }
 
-absl::StatusOr<CelValue> ReadListElementAt(const CelValue& cv, size_t i,
-                                           const TrampolineContext& ctx) {
-  if (cv.kind == CEL_LIST_ARENA) {
-    return ReadArenaListElement(cv, static_cast<uint32_t>(i), ctx.mem);
+// One list element normalized across origins for the equality walk —
+// the same normalizing-accessor bridge as SnapshotMapEntries below
+// uses for maps.  Scalar elements carry a wire CelValue (nested
+// lists/maps encode to a CEL_ERROR placeholder that compares
+// unequal — nested-aggregate equality stays out of scope per the
+// trampoline block header above); message elements resolve to the
+// underlying proto so the compare goes through the same Any-peel +
+// MessageDifferencer core as `cel_host.cel_message_eq`.
+// `keepalive` pins the host-side backing (ProtoList::At returns a
+// fresh ProtoBacking per call) so `msg` stays valid for the compare.
+struct ListEqElement {
+  CelValue wire{};
+  bool is_message = false;
+  const google::protobuf::Message* absl_nullable msg = nullptr;
+  std::shared_ptr<const HostMessageBacking> keepalive;
+};
+
+// Reads the i-th element of an arena-origin list into the normalized
+// form.  CEL_MESSAGE wire values must reference an interned
+// msg_slot; a dangling slot is interner/codegen drift → non-OK.
+absl::StatusOr<ListEqElement> ReadArenaListEqElement(
+    const CelValue& cv, size_t i, const TrampolineContext& ctx) {
+  ListEqElement e;
+  e.wire = ReadArenaListElement(cv, static_cast<uint32_t>(i), ctx.mem);
+  if (e.wire.kind == CEL_MESSAGE) {
+    const HostMessageBacking* backing =
+        ctx.refs.Lookup(e.wire.payload.msg_slot);
+    if (backing == nullptr) {
+      return absl::FailedPreconditionError(
+          absl::StrCat("list element msg_slot ", e.wire.payload.msg_slot,
+                       " not found in ExternrefTable"));
+    }
+    e.is_message = true;
+    e.msg = backing->message();  // null for non-proto custom backings
   }
+  return e;
+}
+
+// Reads the i-th element of a host-origin list into the normalized
+// form.  Caller has verified `cv.kind == CEL_LIST_HOST`.
+absl::StatusOr<ListEqElement> ReadHostListEqElement(
+    const CelValue& cv, size_t i, const TrampolineContext& ctx) {
   const HostListBacking* backing = ctx.refs.LookupList(cv.payload.ref_slot);
   if (backing == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
@@ -1992,12 +2040,42 @@ absl::StatusOr<CelValue> ReadListElementAt(const CelValue& cv, size_t i,
   }
   auto got = backing->At(i, celwasm::CelType::Int());
   if (!got.ok()) return got.status();
-  return EncodeBackingScalar(*got, ctx.alloc);
+  ListEqElement e;
+  if (got->kind() == celwasm::Value::Kind::kMessage) {
+    auto shared_or = got->SharedMessageBacking();
+    if (!shared_or.ok()) return shared_or.status();
+    e.is_message = true;
+    e.keepalive = *std::move(shared_or);
+    e.msg = e.keepalive->message();  // null for non-proto custom backings
+    return e;
+  }
+  auto enc_or = EncodeBackingScalar(*got, ctx.alloc);
+  if (!enc_or.ok()) return enc_or.status();
+  e.wire = *enc_or;
+  return e;
 }
 
-}  // namespace
+absl::StatusOr<ListEqElement> ReadListEqElementAt(
+    const CelValue& cv, size_t i, const TrampolineContext& ctx) {
+  if (cv.kind == CEL_LIST_ARENA) {
+    return ReadArenaListEqElement(cv, i, ctx);
+  }
+  return ReadHostListEqElement(cv, i, ctx);
+}
 
-namespace {
+// Equality of two normalized elements.  Message pairs route through
+// CompareProtoMessages — kNotComparable (non-proto backing,
+// Any-unpack failure) compares UNEQUAL, matching the walk's
+// established nested-aggregate contract; message-vs-scalar is the
+// langdef cross-kind `false`, not an error.
+bool ListEqElementEquals(const ListEqElement& a, const ListEqElement& b,
+                         const MemoryView& mem) {
+  if (a.is_message != b.is_message) return false;
+  if (a.is_message) {
+    return CompareProtoMessages(a.msg, b.msg) == ProtoMessageEqOutcome::kEqual;
+  }
+  return HostScalarValueEq(a.wire, b.wire, mem);
+}
 
 // Element-wise equality walk for two list operands of any origin
 // pair (arena+arena, arena+host, host+host).  Caller has already
@@ -2007,11 +2085,11 @@ namespace {
 absl::Status WalkListEq(const CelValue& a_cv, const CelValue& b_cv, size_t n,
                         const TrampolineContext& ctx, bool* equal) {
   for (size_t i = 0; i < n; ++i) {
-    auto ea_or = ReadListElementAt(a_cv, i, ctx);
+    auto ea_or = ReadListEqElementAt(a_cv, i, ctx);
     if (!ea_or.ok()) return ea_or.status();
-    auto eb_or = ReadListElementAt(b_cv, i, ctx);
+    auto eb_or = ReadListEqElementAt(b_cv, i, ctx);
     if (!eb_or.ok()) return eb_or.status();
-    if (!HostScalarValueEq(*ea_or, *eb_or, ctx.mem)) {
+    if (!ListEqElementEquals(*ea_or, *eb_or, ctx.mem)) {
       *equal = false;
       return absl::OkStatus();
     }
@@ -2073,10 +2151,12 @@ absl::Status CelListConcatImpl(uint32_t out_slot, uint32_t a_slot,
   //      into `out_slot`.  The result is observably an arena list,
   //      which keeps downstream codegen on the fast path.
   //
-  // This same strategy applies to mixed-origin map equality (see
-  // CelMapEqImpl) and to any future operator that needs to walk
-  // both operands as one origin: lift host into arena, then run
-  // the arena fast path.  Documented in
+  // This same strategy applies to any future operator that needs to
+  // walk both operands as one origin: lift host into arena, then run
+  // the arena fast path.  (Map equality instead normalizes both
+  // operands into host-side snapshots — see CelMapEqImpl — since a
+  // read-only walk doesn't need the arena materialisation.)
+  // Documented in
   // `doc/implementation-plan/rewrite/m5-kcall-comprehensions.md`
   // §"Cross-origin materialisation" and
   // `doc/implementation-plan/rewrite/map-list-dispatch.md` §6.
@@ -2133,41 +2213,119 @@ absl::Status CelMapInImpl(uint32_t out_slot, uint32_t key_slot,
 
 namespace {
 
-// Set-equality walk (langdef §"Equality" — map order is irrelevant).
-// For each entry in `a`, look up the same key in `b` and compare
-// values; any miss → unequal.  Both backings already verified
-// non-null and same Size().  `*equal` ends up false on any miss
-// or value mismatch; non-OK Status only on infrastructure failure.
-absl::Status WalkMapEq(const HostMapBacking& a, const HostMapBacking& b,
-                       const TrampolineContext& ctx, bool* equal) {
-  *equal = true;
-  absl::Status work_status = absl::OkStatus();
-  a.ForEach([&](const celwasm::Value& k, const celwasm::Value& va) {
-    if (!*equal || !work_status.ok()) return;
-    if (!b.ContainsKey(k)) {
-      *equal = false;
+// Read the ArenaMapHeader of a CEL_MAP_ARENA operand via the
+// MemoryView (mirrors ReadArenaListCount above).  `cv` must be
+// CEL_MAP_ARENA; caller has verified.
+ArenaMapHeader ReadArenaMapHeader(const CelValue& cv, const MemoryView& mem) {
+  ArenaMapHeader hdr{};
+  absl::string_view hdr_bytes =
+      mem.ReadSpan(cv.payload.arena_map.header_ptr, sizeof(hdr));
+  std::memcpy(&hdr, hdr_bytes.data(), sizeof(hdr));
+  return hdr;
+}
+
+// Returns the entry count of `cv` whether arena or host.  Caller has
+// already verified kind ∈ {CEL_MAP_ARENA, CEL_MAP_HOST}.
+absl::StatusOr<size_t> MapEntryCount(const CelValue& cv,
+                                     const TrampolineContext& ctx) {
+  if (cv.kind == CEL_MAP_ARENA) {
+    return static_cast<size_t>(ReadArenaMapHeader(cv, ctx.mem).count);
+  }
+  const HostMapBacking* backing = ctx.refs.LookupMap(cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "map ref_slot ", cv.payload.ref_slot, " not found in ExternrefTable"));
+  }
+  return backing->Size();
+}
+
+// Snapshot every entry of `cv` as wire-format (key, value) CelValue
+// pairs, regardless of origin — the normalizing accessor that lets
+// the equality walk below treat arena and host operands uniformly
+// (same bridge shape as ReadListEqElementAt for lists).  Arena entries
+// are read straight out of linear memory; host entries are encoded
+// via EncodeBackingScalar (aggregate values encode to a CEL_ERROR
+// placeholder, which compares unequal — nested-aggregate equality is
+// out of scope here, matching the scalar-only contract documented at
+// the trampoline block header above).
+absl::Status SnapshotMapEntries(
+    const CelValue& cv, const TrampolineContext& ctx,
+    std::vector<std::pair<CelValue, CelValue>>* out) {
+  if (cv.kind == CEL_MAP_ARENA) {
+    const ArenaMapHeader hdr = ReadArenaMapHeader(cv, ctx.mem);
+    out->reserve(hdr.count);
+    for (uint32_t i = 0; i < hdr.count; ++i) {
+      const uint32_t entry_off =
+          hdr.entries_offset + (i * static_cast<uint32_t>(kCelMapEntryStride));
+      out->emplace_back(
+          ctx.mem.ReadCelValue(entry_off),
+          ctx.mem.ReadCelValue(entry_off +
+                               static_cast<uint32_t>(sizeof(CelValue))));
+    }
+    return absl::OkStatus();
+  }
+  const HostMapBacking* backing = ctx.refs.LookupMap(cv.payload.ref_slot);
+  if (backing == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "map ref_slot ", cv.payload.ref_slot, " not found in ExternrefTable"));
+  }
+  absl::Status status = absl::OkStatus();
+  out->reserve(backing->Size());
+  backing->ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
+    if (!status.ok()) return;
+    auto ek_or = EncodeBackingScalar(k, ctx.alloc);
+    if (!ek_or.ok()) {
+      status = ek_or.status();
       return;
     }
-    auto vb_or = b.Get(k, celwasm::CelType::Int());
-    if (!vb_or.ok()) {
-      work_status = vb_or.status();
+    auto ev_or = EncodeBackingScalar(v, ctx.alloc);
+    if (!ev_or.ok()) {
+      status = ev_or.status();
       return;
     }
-    auto enc_va_or = EncodeBackingScalar(va, ctx.alloc);
-    if (!enc_va_or.ok()) {
-      work_status = enc_va_or.status();
-      return;
-    }
-    auto enc_vb_or = EncodeBackingScalar(*vb_or, ctx.alloc);
-    if (!enc_vb_or.ok()) {
-      work_status = enc_vb_or.status();
-      return;
-    }
-    if (!HostScalarValueEq(*enc_va_or, *enc_vb_or, ctx.mem)) {
-      *equal = false;
-    }
+    out->emplace_back(*ek_or, *ev_or);
   });
-  return work_status;
+  return status;
+}
+
+// Returns true iff some entry of `b` has a key equal to `entry`'s
+// key AND a value equal to `entry`'s value.  Key equality goes
+// through HostScalarValueEq, so numeric keys match across the
+// int/uint/double ladder (langdef §"Equality") — same polymorphic
+// rule as the arena kernel's `map_keys_equal`.  Mirrors
+// `cel_runtime.c::arena_map_entry_matches`.
+bool NormalizedMapEntryMatches(
+    const std::pair<CelValue, CelValue>& entry,
+    const std::vector<std::pair<CelValue, CelValue>>& b,
+    const MemoryView& mem) {
+  for (const auto& [kb, vb] : b) {
+    if (HostScalarValueEq(entry.first, kb, mem)) {
+      return HostScalarValueEq(entry.second, vb, mem);
+    }
+  }
+  return false;
+}
+
+// Set-equality of two map operands of any origin pair, via the
+// normalized snapshots above (langdef §"Equality" — map order is
+// irrelevant).  Caller has verified both kinds are map-shaped.
+// Returns the boolean answer; non-OK Status only on infrastructure
+// failure (bad ref_slot, backing error).
+absl::StatusOr<bool> NormalizedMapEq(const CelValue& a_cv, const CelValue& b_cv,
+                                     const TrampolineContext& ctx) {
+  auto na_or = MapEntryCount(a_cv, ctx);
+  if (!na_or.ok()) return na_or.status();
+  auto nb_or = MapEntryCount(b_cv, ctx);
+  if (!nb_or.ok()) return nb_or.status();
+  if (*na_or != *nb_or) return false;
+  std::vector<std::pair<CelValue, CelValue>> a_entries;
+  std::vector<std::pair<CelValue, CelValue>> b_entries;
+  if (auto s = SnapshotMapEntries(a_cv, ctx, &a_entries); !s.ok()) return s;
+  if (auto s = SnapshotMapEntries(b_cv, ctx, &b_entries); !s.ok()) return s;
+  for (const auto& ea : a_entries) {
+    if (!NormalizedMapEntryMatches(ea, b_entries, ctx.mem)) return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -2177,33 +2335,20 @@ absl::Status CelMapEqImpl(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
   CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
   CelValue b_cv = ctx.mem.ReadCelValue(b_slot);
   if (AbsorbBinary(a_cv, b_cv, out_slot, ctx.mem)) return absl::OkStatus();
-  // Current ship state: only both-host map equality is supported
-  // (mixed origins → TYPE_MISMATCH).  Same-arena routes through the
-  // dispatcher's arena fast path.  The shipping strategy for
-  // arena↔host pairs is to MATERIALISE the host operand into the
-  // arena (lift via ForEach + EncodeBackingScalar + arena_alloc) and
-  // then run the arena+arena equality walk — same lift-then-walk
-  // pattern documented in CelListConcatImpl and described in
-  // `rewrite/m5-kcall-comprehensions.md` §"Cross-origin materialisation".
-  if (a_cv.kind != CEL_MAP_HOST || b_cv.kind != CEL_MAP_HOST) {
+  // Any origin pair is admitted (host+host, host+arena, arena+host;
+  // arena+arena normally short-circuits in the runtime's arena fast
+  // path but compares correctly here too).  Both operands are
+  // snapshotted through the same normalizing accessor, then compared
+  // with a set-equality walk.
+  const bool a_ok = (a_cv.kind == CEL_MAP_ARENA || a_cv.kind == CEL_MAP_HOST);
+  const bool b_ok = (b_cv.kind == CEL_MAP_ARENA || b_cv.kind == CEL_MAP_HOST);
+  if (!a_ok || !b_ok) {
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  const HostMapBacking* a_backing = ctx.refs.LookupMap(a_cv.payload.ref_slot);
-  const HostMapBacking* b_backing = ctx.refs.LookupMap(b_cv.payload.ref_slot);
-  if (a_backing == nullptr || b_backing == nullptr) {
-    return absl::FailedPreconditionError(
-        "CelMapEqImpl: map ref_slot not found in ExternrefTable");
-  }
-  if (a_backing->Size() != b_backing->Size()) {
-    WriteWireBool(false, out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  bool equal = true;
-  if (auto s = WalkMapEq(*a_backing, *b_backing, ctx, &equal); !s.ok()) {
-    return s;
-  }
-  WriteWireBool(equal, out_slot, ctx.mem);
+  auto eq_or = NormalizedMapEq(a_cv, b_cv, ctx);
+  if (!eq_or.ok()) return eq_or.status();
+  WriteWireBool(*eq_or, out_slot, ctx.mem);
   return absl::OkStatus();
 }
 
@@ -2232,6 +2377,45 @@ static const google::protobuf::Message* absl_nullable PeelAnyForEq(
   return owner.get();
 }
 
+namespace {
+
+// Proto-message equality core, shared by `cel_host.cel_message_eq`
+// and the list-equality element walk (declared above ListLength).
+// Peels google.protobuf.Any operands, then compares by descriptor +
+// MessageDifferencer.  Null inputs (non-proto custom backings) and
+// Any-unpack failures are kNotComparable — the caller decides
+// whether that surfaces as a type error (direct `msg == msg`) or as
+// unequal (list element walk).
+ProtoMessageEqOutcome CompareProtoMessages(
+    const google::protobuf::Message* absl_nullable a,
+    const google::protobuf::Message* absl_nullable b) {
+  if (a == nullptr || b == nullptr) {
+    return ProtoMessageEqOutcome::kNotComparable;
+  }
+  // Peel either operand if it's a google.protobuf.Any (typical
+  // shape: a direct `Any{...}` literal that didn't pass through
+  // ProtoBacking::ReadField's unwrap arm).  The peeled owners live
+  // for the duration of this call.
+  std::unique_ptr<google::protobuf::Message> a_owner;
+  std::unique_ptr<google::protobuf::Message> b_owner;
+  const google::protobuf::Message* a_cmp = PeelAnyForEq(a, a_owner);
+  const google::protobuf::Message* b_cmp = PeelAnyForEq(b, b_owner);
+  if (a_cmp == nullptr || b_cmp == nullptr) {
+    // Any with malformed type_url / unknown FQN / corrupt bytes —
+    // equality is undefined.
+    return ProtoMessageEqOutcome::kNotComparable;
+  }
+  if (a_cmp->GetDescriptor() != b_cmp->GetDescriptor()) {
+    // Cross-descriptor mismatch after peel → unequal, not error.
+    return ProtoMessageEqOutcome::kUnequal;
+  }
+  return google::protobuf::util::MessageDifferencer::Equals(*a_cmp, *b_cmp)
+             ? ProtoMessageEqOutcome::kEqual
+             : ProtoMessageEqOutcome::kUnequal;
+}
+
+}  // namespace
+
 absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
                               uint32_t b_slot, const TrampolineContext& ctx) {
   CelValue a_cv = ctx.mem.ReadCelValue(a_slot);
@@ -2250,38 +2434,23 @@ absl::Status CelMessageEqImpl(uint32_t out_slot, uint32_t a_slot,
   // HostMessageBacking exposes its underlying Message* via the
   // virtual `message()` so both `ProtoBacking` (host-bound) and
   // `OwnedProtoBacking` (proto-literal-built) participate uniformly.
-  // Custom non-proto backings return nullptr from `message()` and
-  // surface kTypeMismatch (proto-vs-non-proto eq is a spec error per
-  // langdef §"Equality").
-  const google::protobuf::Message* a_msg = a_backing->message();
-  const google::protobuf::Message* b_msg = b_backing->message();
-  if (a_msg == nullptr || b_msg == nullptr) {
-    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
-    return absl::OkStatus();
+  // Custom non-proto backings return nullptr from `message()`,
+  // making the pair kNotComparable, which surfaces here as
+  // kTypeMismatch (proto-vs-non-proto eq is a spec error per
+  // langdef §"Equality") — same for Any-unpack failures.
+  switch (CompareProtoMessages(a_backing->message(), b_backing->message())) {
+    case ProtoMessageEqOutcome::kEqual:
+      WriteWireBool(true, out_slot, ctx.mem);
+      return absl::OkStatus();
+    case ProtoMessageEqOutcome::kUnequal:
+      WriteWireBool(false, out_slot, ctx.mem);
+      return absl::OkStatus();
+    case ProtoMessageEqOutcome::kNotComparable:
+      WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+      return absl::OkStatus();
   }
-  // Peel either operand if it's a google.protobuf.Any (typical
-  // shape: a direct `Any{...}` literal that didn't pass through
-  // ProtoBacking::ReadField's unwrap arm).  The peeled owners live
-  // for the duration of this call.
-  std::unique_ptr<google::protobuf::Message> a_owner;
-  std::unique_ptr<google::protobuf::Message> b_owner;
-  const google::protobuf::Message* a_cmp = PeelAnyForEq(a_msg, a_owner);
-  const google::protobuf::Message* b_cmp = PeelAnyForEq(b_msg, b_owner);
-  if (a_cmp == nullptr || b_cmp == nullptr) {
-    // Any with malformed type_url / unknown FQN / corrupt bytes —
-    // equality is undefined; surface as Error.
-    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  if (a_cmp->GetDescriptor() != b_cmp->GetDescriptor()) {
-    // Cross-descriptor mismatch after peel → unequal, not error.
-    WriteWireBool(false, out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
-  const bool eq =
-      google::protobuf::util::MessageDifferencer::Equals(*a_cmp, *b_cmp);
-  WriteWireBool(eq, out_slot, ctx.mem);
-  return absl::OkStatus();
+  ABSL_CHECK(false) << "CompareProtoMessages returned an out-of-enum value";
+  return absl::InternalError("unreachable");
 }
 
 // ══════════════════════════════════════════════════════════════════

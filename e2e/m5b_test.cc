@@ -4,13 +4,10 @@
 // two-iter-var / `transformMap` / `transformMapEntry` cohort).
 //
 // Mirrors the m7_test / m8_test shape: every test asserts a
-// capability the comprehension plan says M5.B must light up.
-// Running this binary today should SKIP every case below — each
-// `TEST_F` opens with
-// `GTEST_SKIP() << "M5.B.<slice> ships here ...";`.  As each slice
-// closes per `m5-comprehensions-followon.md` §5, the matching
-// fixture's skips drop and the test bodies (already written
-// `compile → eval → assert` style) start passing.
+// capability the comprehension plan says M5.B must light up.  The
+// M5.B slices have shipped per `m5-comprehensions-followon.md` §5;
+// the few remaining GTEST_SKIPs each cite their concrete blocker
+// (empty-literal `map(dyn, dyn)` typing).
 //
 // Base M5 ships kCall + control flow; this file is the M5.B
 // suffix because M5.B is the comprehension follow-on per
@@ -993,8 +990,6 @@ class ComprehensionConsumerE2ETest : public ::testing::Test {};
 TEST_F(ComprehensionConsumerE2ETest, MapResultEqualsLiteralList) {
   // design §3.9 canonical row: `{'John':'smart'}.map(key, key) ==
   // ['John']` → true.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1004,8 +999,6 @@ TEST_F(ComprehensionConsumerE2ETest, MapResultEqualsLiteralList) {
 }
 
 TEST_F(ComprehensionConsumerE2ETest, FilterResultSizeGreaterThanZero) {
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1016,8 +1009,6 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultSizeGreaterThanZero) {
 
 TEST_F(ComprehensionConsumerE2ETest, FilterResultIndexedReturnsElement) {
   // `[1,2,3].filter(v, v > 1)[0]` → 2.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 1)[0]");
@@ -1027,8 +1018,6 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultIndexedReturnsElement) {
 
 TEST_F(ComprehensionConsumerE2ETest, MapResultAsSourceForFurtherComp) {
   // Chain: outer `exists` over the result of an inner `map`.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
@@ -1039,8 +1028,6 @@ TEST_F(ComprehensionConsumerE2ETest, MapResultAsSourceForFurtherComp) {
 
 TEST_F(ComprehensionConsumerE2ETest, FilterResultEqualsEmptyList) {
   // Empty-filter-result vs `[]` round-trip.
-  GTEST_SKIP() << "M5.B.D ships here — see "
-                  "m5-comprehensions-followon.md §Slice D (consumer).";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 100) == []");

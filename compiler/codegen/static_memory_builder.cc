@@ -8,7 +8,6 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/span.h"
 #include "runtime/cel_runtime.h"
 
 namespace celwasm {
@@ -134,22 +133,6 @@ uint32_t StaticMemoryBuilder::AllocateBytes(absl::string_view b) {
 uint32_t StaticMemoryBuilder::AllocateType(absl::string_view name) {
   // Identical payload to AllocateString — only the kind tag differs.
   return AllocateSpan(CEL_TYPE, name);
-}
-
-uint32_t StaticMemoryBuilder::AllocateList(
-    absl::Span<const uint32_t> element_offsets) {
-  (void)element_offsets;
-  ABSL_CHECK(false) << "StaticMemoryBuilder::AllocateList is a stub until M5";
-  return 0u;  // unreachable; keeps some compilers' flow analysis happy
-}
-
-uint32_t StaticMemoryBuilder::AllocateMap(
-    absl::Span<const uint32_t> key_offsets,
-    absl::Span<const uint32_t> value_offsets) {
-  (void)key_offsets;
-  (void)value_offsets;
-  ABSL_CHECK(false) << "StaticMemoryBuilder::AllocateMap is a stub until M6";
-  return 0u;  // unreachable
 }
 
 std::vector<uint8_t> StaticMemoryBuilder::Finalize() && {

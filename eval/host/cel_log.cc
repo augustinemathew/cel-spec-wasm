@@ -165,22 +165,13 @@ void FormatUnknown(absl::Span<const uint8_t> mem, uint32_t set_off,
   absl::StrAppend(out, "])");
 }
 
-// Formats a CEL_ERROR descriptor.  Payload points at a 16-byte struct
-// `(code, msg_ptr, msg_len, _pad)`.
-void FormatError(absl::Span<const uint8_t> mem, uint32_t err_off,
-                 std::string* out) {
-  if (err_off == 0 || static_cast<uint64_t>(err_off) + 12 > mem.size()) {
-    absl::StrAppend(out, "error(code=0)");
-    return;
-  }
-  uint32_t code = 0;
-  uint32_t msg_ptr = 0;
-  uint32_t msg_len = 0;
-  std::memcpy(&code, mem.data() + err_off, sizeof(uint32_t));
-  std::memcpy(&msg_ptr, mem.data() + err_off + 4, sizeof(uint32_t));
-  std::memcpy(&msg_len, mem.data() + err_off + 8, sizeof(uint32_t));
-  absl::string_view msg = SafeSpan(mem, msg_ptr, msg_len);
-  absl::StrAppendFormat(out, "error(code=%u,\"%s\")", code, absl::CEscape(msg));
+// Formats a CEL_ERROR value.  The production wire carries a bare
+// `CEL_ERR_*` code in `payload.err` (`cel_internal.h::poison`,
+// `cel_host_error.cc::WriteWireError`) — there is no message-carrying
+// error descriptor in linear memory (doc/design/03-abi-and-memory.md
+// §8.1).
+void FormatError(uint32_t err_code, std::string* out) {
+  absl::StrAppendFormat(out, "error(code=%u)", err_code);
 }
 
 // Dispatch on kind for `%v`.  Each branch is trivial; factored for
@@ -232,7 +223,7 @@ void FormatValueKind(absl::Span<const uint8_t> mem, const CelValue& cv,
       FormatUnknown(mem, cv.payload.unk, out);
       return;
     case CEL_ERROR:
-      FormatError(mem, cv.payload.err, out);
+      FormatError(cv.payload.err, out);
       return;
     default:
       absl::StrAppendFormat(out, "<bad-kind=%u>", cv.kind);

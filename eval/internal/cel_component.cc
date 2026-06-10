@@ -839,13 +839,13 @@ absl::Status LowerComponentToCel(const CelfnType& type,
     case CelfnType::Kind::kOptional:
       return absl::InvalidArgumentError(
           "cel_component: optional<T> is not a supported return shape "
-          "for foreign-component fns (m24 v1)");
+          "for foreign-component fns");
     case CelfnType::Kind::kProto:
       return LowerProto(type, in, ctx, out);
     case CelfnType::Kind::kType:
       return absl::UnimplementedError(
-          "cel_component: Lower for type-of-types is a stub until "
-          "m24 B.4 (rides on string Lower)");
+          "cel_component: type-of-types is not a supported return shape "
+          "for foreign-component fns (cleanup-backlog #44)");
   }
   return absl::InternalError(
       absl::StrCat("cel_component: unhandled CelfnType::Kind = ",

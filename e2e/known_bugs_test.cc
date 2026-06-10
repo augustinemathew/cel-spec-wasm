@@ -835,9 +835,10 @@ int64_t ExpectedLongArithResult(int n_terms) {
 }  // namespace
 
 // Positive baseline — confirms the parser-depth bump
-// (`parse_and_check.cc::DefaultParserOptions`: 32 → 16 384) plus the
-// codegen / Eval path actually work for a long-but-not-pathological
-// `+`-chain.  With the LIFO free-list slot reuse in
+// (`parse_and_check.cc::DefaultParserOptions`: 32 → the
+// expression-depth-gate-aligned limit) plus the codegen / Eval path
+// actually work for a long-but-not-pathological `+`-chain.  With the
+// LIFO free-list slot reuse in
 // `SlotAllocator::Release`, a left-associative `+`-chain reuses a
 // handful of workspace cells regardless of length, so this size — and
 // the 2000-term sibling below — both fit comfortably inside the
@@ -873,6 +874,49 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
   constexpr int kN = 2000;
+  const std::string source = MakeLongArithSource(kN);
+  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsInt(), ExpectedLongArithResult(kN));
+}
+
+// ──────────────────────────────────────────────────────────────────
+// REGRESSION (cleanup-backlog #45): deep left-associative chains.
+// Codegen emits an N-term chain as an N-deep nested wasm expression
+// tree, and both the host compiler and wasmtime walk that tree
+// recursively — one native stack frame per nesting level — so past
+// depth ≈4.6k the walk overflowed the ~8 MiB native stack: a SIGSEGV
+// on valid CEL.  Verified boundary pre-fix (2026-06-10): N=4653
+// compiled + evaled fine, N=4654 segfaulted at Plan time (wasmtime
+// validation / Cranelift JIT walking the deep tree).
+//
+// Interim fix: the expression-depth gate in
+// `compiler/frontend/parse_and_check.cc`
+// (`kMaxExpressionNestingDepth` + the parser-limit alignment) rejects
+// over-deep expressions at Compile with ResourceExhausted, in both
+// link modes.  The real fix — flattening codegen so expression-tree
+// depth is O(1) for any N — remains open under #45(b); when it
+// lands, the rejection assertion below flips back to a value check.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, DeepArithChainFormerSegvBoundaryRejectedAtCompile) {
+  constexpr int kN = 4654;  // smallest N that SIGSEGV'd pre-fix
+  const std::string source = MakeLongArithSource(kN);
+  auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
+  // Graceful compile-time rejection — NOT a SIGSEGV, NOT a pass.
+  ASSERT_FALSE(v.ok()) << "4654-term chain unexpectedly evaluated — only "
+                          "remove the depth gate once codegen flattening "
+                          "(cleanup-backlog #45(b)) has landed";
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
+      << v.status();
+}
+
+// Headline bench case (`bench/in_operator_bench.cc`'s
+// `BM_Eval_LongArith_10kTerms`, kTerms=1000): a 1000-term chain must
+// stay comfortably inside the depth gate, compiling AND evaluating
+// to its value in both link modes.
+TEST(KnownBugs, LongArith1000TermsStillEvalsUnderDepthGate) {
+  constexpr int kN = 1000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
   ASSERT_TRUE(v.ok()) << v.status();

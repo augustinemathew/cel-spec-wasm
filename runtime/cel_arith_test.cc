@@ -3,12 +3,12 @@
 #include <cmath>
 #include <cstdint>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 // M5.B arithmetic helper coverage.  Three parameterized tables
 // cover the bulk:
@@ -399,6 +399,45 @@ TEST_F(ArithTest, UnknownOperandPropagates) {
   cel_int_add_at_vv(out, cel_make_int(1), unk_off);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
   EXPECT_EQ(At(out)->payload.unk, 17u);
+}
+
+TEST_F(ArithTest, UnknownLeftErrorRightPropagatesError) {
+  // ERROR dominates UNKNOWN regardless of operand order for strict
+  // ops: cel-cpp's NoOverloadResult (eval/eval/function_step.cc)
+  // scans args for an ErrorValue before merging unknowns, confirmed
+  // empirically by PartialEvalOracle.UnknownPlusErrorIsError
+  // (testdata/cel_cpp_oracle_test.cc).  Langdef §"Evaluation" leaves
+  // multi-error order unspecified; cel-cpp is the conformance
+  // reference.
+  uint32_t unk_off = arena_alloc(sizeof(CelValue));
+  CelValue* unk = cel_value_at(unk_off);
+  unk->kind = CEL_UNKNOWN;
+  unk->payload.unk = 17;
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
+  CelValue* err = cel_value_at(err_off);
+  err->kind = CEL_ERROR;
+  err->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  uint32_t out = MakeOut();
+  cel_int_add_at_vv(out, unk_off, err_off);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(ArithTest, ErrorLeftUnknownRightPropagatesError) {
+  // Mirror ordering (oracle: PartialEvalOracle.ErrorPlusUnknownIsError).
+  uint32_t err_off = arena_alloc(sizeof(CelValue));
+  CelValue* err = cel_value_at(err_off);
+  err->kind = CEL_ERROR;
+  err->payload.err = CEL_ERR_OVERFLOW;
+  uint32_t unk_off = arena_alloc(sizeof(CelValue));
+  CelValue* unk = cel_value_at(unk_off);
+  unk->kind = CEL_UNKNOWN;
+  unk->payload.unk = 17;
+  uint32_t out = MakeOut();
+  cel_int_add_at_vv(out, err_off, unk_off);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
 }
 
 TEST_F(ArithTest, UnaryAbsorbsError) {

@@ -20,21 +20,22 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "bazel/link_mode_test_helpers.h"
+#include "compiler/compiler.h"
+#include "compiler/program.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
-#include "compiler/compiler.h"
 #include "eval/engine.h"
+#include "eval/error.h"
 #include "eval/host_call_context.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "gmock/gmock.h"
 #include "google/protobuf/message.h"
-#include "bazel/link_mode_test_helpers.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {
@@ -756,6 +757,112 @@ TEST(InstanceCustomFnEvalTest, HostBackedReceiverFnReturnsFalseForNonDigits) {
 }
 
 }  // namespace m13_c3
+
+// ─── Error-code wire round-trip ───────────────────────────────────
+//
+// Every named `ErrorCode` value must survive the host→wasm→host
+// round-trip: a host fn returns `Value::Error({code})`, the encode
+// side writes the bare u32 wire code (`cel_host_error.cc::
+// WriteWireError` — the free-text message is discarded on the wire,
+// doc/design/03-abi-and-memory.md §8.1), and `Instance::Eval`'s
+// decoder must map the wire byte back to the SAME `ErrorCode`, with
+// `ErrorCodeName(code)` as the synthesized message.  kInvalidArgument
+// (wire 18) regressed here once: instance.cc's decoder omitted the
+// arm its sibling host_call_context.cc had, so wire 18 decoded as
+// kHostAdapterError / "runtime error code 18".
+namespace error_wire {
+
+class ErrorCodeRoundTripTest : public ::testing::TestWithParam<ErrorCode> {};
+
+TEST_P(ErrorCodeRoundTripTest, CodeSurvivesWireRoundTrip) {
+  const ErrorCode code = GetParam();
+
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int());
+  b.AddFunction("int @host.fail(int code);");
+  auto compiler_or = std::move(b).Build();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  auto prog_or = compiler_or->Compile("fail(x)", LinkModeOpts());
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  ASSERT_TRUE(engine_or
+                  ->BindFunction("int @host.fail(int code);",
+                                 [](int64_t c) -> absl::StatusOr<Value> {
+                                   ErrorPayload p;
+                                   p.code = static_cast<ErrorCode>(c);
+                                   p.message =
+                                       "host message (discarded on the wire)";
+                                   return Value::Error(std::move(p));
+                                 })
+                  .ok());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+
+  Activation act;
+  act.Bind("x", Value::Int(static_cast<int64_t>(code)));
+  auto val_or = inst_or->Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  ASSERT_TRUE(val_or->IsError());
+  auto info_or = val_or->ErrorInfo();
+  ASSERT_TRUE(info_or.ok()) << info_or.status();
+  EXPECT_EQ((*info_or)->code, code);
+  EXPECT_EQ((*info_or)->message, std::string(ErrorCodeName(code)));
+}
+
+// The complete `ErrorCode` enumeration (error.h) — append here in
+// lockstep when a code is added.
+INSTANTIATE_TEST_SUITE_P(
+    AllErrorCodes, ErrorCodeRoundTripTest,
+    ::testing::Values(ErrorCode::kOverflow, ErrorCode::kDivideByZero,
+                      ErrorCode::kModulusByZero, ErrorCode::kTypeMismatch,
+                      ErrorCode::kTypeUnsupported, ErrorCode::kKeyNotFound,
+                      ErrorCode::kDuplicateKey, ErrorCode::kIndexOutOfBounds,
+                      ErrorCode::kInvalidArgument, ErrorCode::kFieldNotFound,
+                      ErrorCode::kUnknownType, ErrorCode::kCustomFnFailed,
+                      ErrorCode::kHostAdapterError, ErrorCode::kTimeout),
+    [](const ::testing::TestParamInfo<ErrorCode>& info) {
+      return std::string(ErrorCodeName(info.param));
+    });
+
+// A wire byte outside the enumeration degrades to kHostAdapterError
+// with a "runtime error code N" message instead of crashing the
+// decoder (the open-switch fallback for untrusted wire bytes).
+TEST(ErrorCodeRoundTripTest, UnrecognizedWireCodeDegradesGracefully) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int());
+  b.AddFunction("int @host.fail(int code);");
+  auto compiler_or = std::move(b).Build();
+  ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
+  auto prog_or = compiler_or->Compile("fail(x)", LinkModeOpts());
+  ASSERT_TRUE(prog_or.ok()) << prog_or.status();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  ASSERT_TRUE(engine_or
+                  ->BindFunction("int @host.fail(int code);",
+                                 [](int64_t c) -> absl::StatusOr<Value> {
+                                   ErrorPayload p;
+                                   p.code = static_cast<ErrorCode>(c);
+                                   return Value::Error(std::move(p));
+                                 })
+                  .ok());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+
+  Activation act;
+  act.Bind("x", Value::Int(99));
+  auto val_or = inst_or->Eval(act);
+  ASSERT_TRUE(val_or.ok()) << val_or.status();
+  ASSERT_TRUE(val_or->IsError());
+  auto info_or = val_or->ErrorInfo();
+  ASSERT_TRUE(info_or.ok()) << info_or.status();
+  EXPECT_EQ((*info_or)->code, ErrorCode::kHostAdapterError);
+  EXPECT_EQ((*info_or)->message, "runtime error code 99");
+}
+
+}  // namespace error_wire
 
 }  // namespace
 }  // namespace celwasm

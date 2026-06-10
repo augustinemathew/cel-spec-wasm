@@ -322,11 +322,12 @@ TEST_F(DynamicStructFieldTest, FieldAssignEmptyProto3) {
 
 class SetNullPruneTest : public ::testing::Test {};
 
-// Verify a map-prune row WITHOUT the in-CEL whole-map `==` (which is
-// blocked by the mixed-origin map-equality gap — host map field vs
-// arena literal map → CEL_ERR_TYPE_MISMATCH).  Instead assert the
-// null-valued entry was pruned: size shrinks to 1 and the surviving
-// entry reads back equal to its constructed value.
+// Verify a map-prune row WITHOUT the in-CEL whole-map `==`: assert
+// the null-valued entry was pruned — size shrinks to 1 and the
+// surviving entry reads back equal to its constructed value.  The
+// corpus rows' whole-map `==` form is asserted separately by the
+// *EqProto{2,3} cases below; keeping both keeps the prune assertion
+// independent of the cross-origin equality path.
 void ExpectMapEntryPruned(absl::string_view ctor_expr,
                           absl::string_view present_lookup,
                           absl::string_view container) {
@@ -368,9 +369,9 @@ TEST_F(SetNullPruneTest, RepeatedDurationNullPrunedProto3) {
 TEST_F(SetNullPruneTest, MapTimestampNullPrunedProto2) {
   // proto2 set_null/map_timestamp_null_pruned:
   //   {map_bool_timestamp: {true: null, false: timestamp(1)}} prunes
-  //   the null-valued entry.  The pack/prune itself works (asserted
-  //   below via size+lookup); the corpus row's whole-map `==` form is
-  //   covered separately by MapTimestampNullPrunedEqProto2 (SKIP).
+  //   the null-valued entry.  Asserted here via size+lookup; the
+  //   corpus row's whole-map `==` form is covered separately by
+  //   MapTimestampNullPrunedEqProto2.
   ExpectMapEntryPruned(
       "TestAllTypes{map_bool_timestamp: {true: null, false: "
       "timestamp(1)}}.map_bool_timestamp",
@@ -407,24 +408,41 @@ TEST_F(SetNullPruneTest, MapDurationNullPrunedProto3) {
       kP3);
 }
 
-// The corpus rows assert the prune via a whole-map `==`.  That exact
-// form is blocked by the mixed-origin map-equality gap (the prune is
-// proven above by size+lookup; only the `==` surface is blocked).
+// The corpus rows assert the prune via a whole-map `==` — a proto
+// map FIELD (host origin) compared against a literal map (arena
+// origin).  CelMapEqImpl normalizes both operands into the same
+// snapshot shape before the set-equality walk, so the cross-origin
+// form works directly.
+TEST_F(SetNullPruneTest, MapTimestampNullPrunedEqProto2) {
+  // proto2 set_null/map_timestamp_null_pruned (the exact corpus expr).
+  ExpectBoolTrue(
+      "TestAllTypes{map_bool_timestamp: {true: null, false: "
+      "timestamp(1)}}.map_bool_timestamp == {false: timestamp(1)}",
+      kP2);
+}
+
 TEST_F(SetNullPruneTest, MapTimestampNullPrunedEqProto3) {
-  GTEST_SKIP()
-      << "Blocked on mixed-origin map equality: CelMapEqImpl supports only "
-         "both-host operands; a proto map field (host origin) compared to a "
-         "literal map (arena origin) returns CEL_ERR_TYPE_MISMATCH (verified: "
-         "eval yields a CEL error value, kind=15). The host operand needs to "
-         "be materialised into the arena before the equality walk (the "
-         "lift-then-walk pattern already used by CelListConcatImpl). The "
-         "prune itself works — see MapTimestampNullPrunedProto3.";
+  // proto3 set_null/map_timestamp_null_pruned (the exact corpus expr).
+  ExpectBoolTrue(
+      "TestAllTypes{map_bool_timestamp: {true: null, false: "
+      "timestamp(1)}}.map_bool_timestamp == {false: timestamp(1)}",
+      kP3);
+}
+
+TEST_F(SetNullPruneTest, MapDurationNullPrunedEqProto2) {
+  // proto2 set_null/map_duration_null_pruned (the exact corpus expr).
+  ExpectBoolTrue(
+      "TestAllTypes{map_bool_duration: {true: null, false: "
+      "duration('1s')}}.map_bool_duration == {false: duration('1s')}",
+      kP2);
 }
 
 TEST_F(SetNullPruneTest, MapDurationNullPrunedEqProto3) {
-  GTEST_SKIP() << "Same mixed-origin map-equality blocker as "
-                  "MapTimestampNullPrunedEqProto3 (set_null/"
-                  "map_duration_null_pruned).";
+  // proto3 set_null/map_duration_null_pruned (the exact corpus expr).
+  ExpectBoolTrue(
+      "TestAllTypes{map_bool_duration: {true: null, false: "
+      "duration('1s')}}.map_bool_duration == {false: duration('1s')}",
+      kP3);
 }
 
 // ── int32 / uint32 wrapper range errors ─────────────────────────

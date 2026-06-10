@@ -304,6 +304,25 @@ TEST(PartialEvalOracle, ComprehensionOverUnknownRangeIsUnknown) {
       << "exists over an unknown range must be unknown (backlog #14)";
 }
 
+// Error-vs-unknown precedence for a strict binary op
+// (doc/design/03-abi-and-memory.md §8.3): cel-cpp's NoOverloadResult
+// (eval/eval/function_step.cc:202-223) scans the args for an
+// ErrorValue BEFORE merging unknowns, so ERROR dominates UNKNOWN
+// regardless of operand order.  Both orders pinned here.
+TEST(PartialEvalOracle, UnknownPlusErrorIsError) {
+  auto r = PartialOracleOk("x + (1 / 0)", {{"x", std::nullopt}}, {"x"});
+  EXPECT_FALSE(r.is_unknown)
+      << "unknown(a) + error(b) must propagate the ERROR, not the unknown";
+  EXPECT_TRUE(r.is_error);
+}
+
+TEST(PartialEvalOracle, ErrorPlusUnknownIsError) {
+  auto r = PartialOracleOk("(1 / 0) + x", {{"x", std::nullopt}}, {"x"});
+  EXPECT_FALSE(r.is_unknown)
+      << "error(a) + unknown(b) must propagate the ERROR";
+  EXPECT_TRUE(r.is_error);
+}
+
 // A pattern targeting the LOOP variable name is a no-op: the iteration
 // variable is not an activation attribute root, so the pattern matches
 // nothing and the comprehension runs concretely.

@@ -56,12 +56,10 @@ struct LayoutOptions {
   // reserved low slots.  Non-zero values shift every rodata-,
   // workspace-, and arena-derived offset by the same amount.
   //
-  // Used by `compiler/celfn/library_module.cc` to give each
-  // bundled CEL-defined-fn body a non-overlapping rodata range in
-  // the shared `cel.memory` — without this, two modules instantiated
-  // against the same memory would write their data segments on top
-  // of each other (see m13-custom-fns §4.4 + the WAT trace at
-  // `wat/45b_foo_module.wat`).
+  // Exists so multiple modules instantiated against the same shared
+  // `cel.memory` can be given non-overlapping rodata ranges — without
+  // this, two such modules would write their data segments on top of
+  // each other (see the WAT trace at `wat/45b_foo_module.wat`).
   uint32_t rodata_base_override = 0;
 };
 

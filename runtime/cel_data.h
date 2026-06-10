@@ -252,6 +252,13 @@ enum {
   // because field_ref_id is out-of-range against `cel.abi.fields[]`.
   // Mirrors `celwasm::ErrorCode::kFieldNotFound` (api/error.h).
   CEL_ERR_FIELD_NOT_FOUND = 20,
+  // Mirrors `celwasm::ErrorCode::kUnknownType` — the host decoder
+  // already speaks wire value 30; named here so the encode side
+  // (`WireErrorCode`) can map it without a magic number.
+  CEL_ERR_UNKNOWN_TYPE = 30,
+  // Mirrors `celwasm::ErrorCode::kCustomFnFailed` — a host-registered
+  // custom function reported failure as a CEL error value.
+  CEL_ERR_CUSTOM_FN_FAILED = 40,
   // Layer-2 trampoline returns this when the externref slot
   // pointed at by a CEL_MESSAGE CelValue has not been interned (or
   // was interned in a different generation that has since been
@@ -259,6 +266,8 @@ enum {
   // valid, the host-side dereference failed.  Mirrors
   // `celwasm::ErrorCode::kHostAdapterError`.
   CEL_ERR_HOST_ADAPTER_ERROR = 41,
+  // Mirrors `celwasm::ErrorCode::kTimeout`.
+  CEL_ERR_TIMEOUT = 50,
 };
 
 #ifdef __cplusplus

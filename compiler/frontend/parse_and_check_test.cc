@@ -1,13 +1,16 @@
 #include "compiler/frontend/parse_and_check.h"
 
+#include <cstddef>
 #include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/str_cat.h"
 #include "common/ast.h"
 #include "common/expr.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -15,6 +18,8 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+using ::testing::AllOf;
+using ::testing::HasSubstr;
 
 // Look up the annotation for whichever node the checker assigned to the
 // *root* expression. Tests assert against this without needing to know the
@@ -535,6 +540,76 @@ TEST(ParseAndCheckTest, RejectsTypeMismatch) {
   // The checker must reject string + int.
   EXPECT_THAT(ParseAndCheck("s + i", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+// ---- Expression-depth gate --------------------------------------------------
+//
+// `ParseAndCheck` bounds the checked AST's nesting depth at
+// `kMaxExpressionNestingDepth` and rejects deeper expressions with
+// ResourceExhausted — everything downstream (the frontend's own
+// rewrite walks, expr_lower, Binaryen, wasmtime's Plan-time tree
+// walk) recurses one native stack frame per nesting level, so an
+// unbounded depth is a SIGSEGV on valid CEL
+// (doc/implementation-plan/cleanup-backlog.md #45).
+
+// "1+1+...+1" with `terms` terms.  `+` is left-associative, so the
+// checked AST nests exactly `terms` levels deep (a lone literal is
+// depth 1; each further `+1` adds one call level).  Built with a
+// loop — the generator must not itself recurse, since it produces
+// exactly the inputs a recursive walk would crash on.
+std::string IntAdditionChain(int terms) {
+  std::string s = "1";
+  s.reserve(static_cast<size_t>(terms) * 2);
+  for (int i = 1; i < terms; ++i) {
+    s.append("+1");
+  }
+  return s;
+}
+
+TEST(ParseAndCheckTest, DepthGateAdmitsShallowExpression) {
+  EXPECT_THAT(ParseAndCheck("1 + 2 * 3", {}), IsOk());
+}
+
+TEST(ParseAndCheckTest, DepthGateAdmitsChainExactlyAtLimit) {
+  auto r = ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth), {});
+  ASSERT_THAT(r, IsOk());
+  EXPECT_EQ(RootRepr(*r), Repr::kInt);
+}
+
+TEST(ParseAndCheckTest, DepthGateRejectsChainOneOverLimit) {
+  // Boundary: limit+1 must reject, naming both the measured depth and
+  // the limit so an embedder can act on the message.
+  EXPECT_THAT(
+      ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 1), {}),
+      StatusIs(absl::StatusCode::kResourceExhausted,
+               AllOf(HasSubstr(absl::StrCat("depth ",
+                                            kMaxExpressionNestingDepth + 1)),
+                     HasSubstr(absl::StrCat(kMaxExpressionNestingDepth)))));
+}
+
+TEST(ParseAndCheckTest, DepthGateRejectsNestedListOneOverLimit) {
+  // Second shape: nesting via aggregate literals, `[[[...1...]]]`.
+  // Each bracket adds one AST level around the depth-1 literal, so
+  // `kMaxExpressionNestingDepth` brackets land at limit+1.
+  const int brackets = kMaxExpressionNestingDepth;
+  std::string source(static_cast<size_t>(brackets), '[');
+  source.push_back('1');
+  source.append(static_cast<size_t>(brackets), ']');
+  EXPECT_THAT(ParseAndCheck(source, {}),
+              StatusIs(absl::StatusCode::kResourceExhausted,
+                       HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
+}
+
+TEST(ParseAndCheckTest, DepthGateParserBackstopIsResourceExhausted) {
+  // A chain too deep even for the parser's aligned recursion limit
+  // (kMaxExpressionNestingDepth plus a small grammar-wrapper slack)
+  // is rejected at PARSE — and that rejection is normalised to the
+  // same ResourceExhausted shape the post-check gate produces, so an
+  // embedder sees one error for the whole over-deep class.
+  EXPECT_THAT(
+      ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 200), {}),
+      StatusIs(absl::StatusCode::kResourceExhausted,
+               HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
 }
 
 // ---- Slice 1.5: dyn(scalar) passthrough ------------------------------------

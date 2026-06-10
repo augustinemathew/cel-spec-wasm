@@ -94,11 +94,16 @@ CelValue PoisonCelValue(uint32_t err_code);
 // `cel_runtime.c::absorb_3vl_unary` on the host side.
 bool AbsorbUnary(const CelValue& a, uint32_t out_slot, MemoryView& mem);
 
-// Binary: same shape over two operands.  Per langdef §"3VL"
-// propagation rules: error beats unknown beats normal; the FIRST
-// non-normal operand is propagated (matches the runtime-side
-// behaviour for byte-identical answers across host and runtime
-// paths).
+// Binary: same shape over two operands.  Precedence: ERROR beats
+// UNKNOWN beats normal, across BOTH operands (left-bias within each
+// class) — i.e. UNKNOWN(a) does NOT beat ERROR(b).  This matches the
+// runtime kernel's `absorb_3vl_binary` and cel-cpp's
+// `NoOverloadResult` (eval/eval/function_step.cc), which propagates
+// the first ErrorValue argument before merging unknowns; confirmed
+// empirically by the PartialEvalOracle UnknownPlusErrorIsError /
+// ErrorPlusUnknownIsError cases in testdata/cel_cpp_oracle_test.cc.
+// (Langdef §"Evaluation" leaves multi-error propagation order
+// unspecified; the order here is the cel-cpp reference behavior.)
 bool AbsorbBinary(const CelValue& a, const CelValue& b, uint32_t out_slot,
                   MemoryView& mem);
 

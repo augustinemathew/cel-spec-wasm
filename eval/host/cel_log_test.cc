@@ -55,17 +55,6 @@ class Scratch {
     return off;
   }
 
-  // Writes four u32s at `off`: CEL_ERROR's (code, msg_ptr, msg_len, 0).
-  uint32_t WriteErrorDesc(uint32_t off, uint32_t code, uint32_t msg_ptr,
-                          uint32_t msg_len) {
-    auto* p = reinterpret_cast<uint32_t*>(bytes_.data() + off);
-    p[0] = code;
-    p[1] = msg_ptr;
-    p[2] = msg_len;
-    p[3] = 0;
-    return off;
-  }
-
   // Writes an UnknownSet descriptor + id array, returns the descriptor
   // offset for pointing a CelValue's `payload.unk` at.
   uint32_t WriteUnknownSet(uint32_t desc_off, uint32_t ids_off,
@@ -412,21 +401,21 @@ TEST(CelLogTest, ValueUnknownKindWithIdSet) {
             "[test.cc:17 TestFn] unknown([1,7,42])");
 }
 
-TEST(CelLogTest, ValueErrorKindWithMessage) {
+TEST(CelLogTest, ValueErrorKindBareCode) {
+  // Production wire shape: `payload.err` IS the bare `CEL_ERR_*` code
+  // (`cel_internal.h::poison`, `cel_host_error.cc::WriteWireError`);
+  // no message descriptor exists in linear memory
+  // (doc/design/03-abi-and-memory.md §8.1).
   Scratch mem;
-  const uint32_t msg_off = 700;
-  mem.WriteStr(msg_off, "bad");
-  const uint32_t err_off = 740;
-  mem.WriteErrorDesc(err_off, /*code=*/5, msg_off, 3);
   const uint32_t cv_off = 512;
   CelValue cv{};
   cv.kind = CEL_ERROR;
-  cv.payload.err = err_off;
+  cv.payload.err = CEL_ERR_DIVIDE_BY_ZERO;
   mem.WriteCelValue(cv_off, cv);
   const uint32_t argv_off = 256;
   mem.WriteSlot(argv_off, CEL_LOG_TAG_VALUE, cv_off);
   EXPECT_EQ(DecodeOne(mem, "%v", argv_off, 1),
-            "[test.cc:17 TestFn] error(code=5,\"bad\")");
+            "[test.cc:17 TestFn] error(code=11)");
 }
 
 TEST(CelLogTest, ValueBadKindEmitsDiagnostic) {

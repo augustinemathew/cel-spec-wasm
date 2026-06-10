@@ -77,9 +77,13 @@ static inline void poison(CelValue* v, uint32_t err_code) {
 }
 
 // 3VL absorption.  Returns 1 (and overwrites *out) if either operand
-// is ERROR / UNKNOWN.  Left-bias for both; the full UNKNOWN+UNKNOWN
-// merge lives in `cel_unknown_merge`.  Mirrors cel-cpp's
-// `EquivalentTypeOrError` envelope.
+// is ERROR / UNKNOWN.  ERROR dominates UNKNOWN across operands, with
+// left-bias within each class; the full UNKNOWN+UNKNOWN merge lives
+// in `cel_unknown_merge`.  Matches cel-cpp's `NoOverloadResult`
+// (eval/eval/function_step.cc), which propagates the first ErrorValue
+// argument before merging unknowns; oracle-pinned by
+// PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}
+// in testdata/cel_cpp_oracle_test.cc.
 static inline int absorb_3vl_binary(CelValue* out, const CelValue* a,
                                     const CelValue* b) {
   if (a->kind == CEL_ERROR) {

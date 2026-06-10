@@ -602,6 +602,12 @@ ABSL_MUST_USE_RESULT absl::Status CelMapInImpl(uint32_t out_slot,
                                                uint32_t map_slot,
                                                const TrampolineContext& ctx);
 
+// Map equality accepts ANY origin pair (host+host, host+arena,
+// arena+host) — both operands are normalized into host-side
+// (key, value) CelValue snapshots before the set-equality walk, so a
+// proto map field compares structurally against a map literal.  The
+// runtime dispatcher short-circuits arena+arena in its own fast path
+// before reaching here.
 ABSL_MUST_USE_RESULT absl::Status CelMapEqImpl(uint32_t out_slot,
                                                uint32_t a_slot, uint32_t b_slot,
                                                const TrampolineContext& ctx);
