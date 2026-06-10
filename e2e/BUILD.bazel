@@ -644,11 +644,12 @@ link_mode_e2e_cc_test(
 # plus boundaries and 3VL absorption per kind.  See the file's top
 # docblock for the tier mapping and the legitimate type exclusions
 # (type, optional, WKT wrappers as separate types, WKT struct types).
-cc_test(
+link_mode_e2e_cc_test(
     name = "foreign_component_dispatch_test",
     srcs = ["foreign_component_dispatch_test.cc"],
     tags = ["manual"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//compiler:compiler",
         "//compiler/celfn:function_library",
         "//eval:activation",
@@ -690,11 +691,12 @@ cc_test(
     ],
 )
 
-cc_test(
+link_mode_e2e_cc_test(
     name = "host_fn_type_matrix_test",
     srcs = ["host_fn_type_matrix_test.cc"],
     tags = ["manual"],
     deps = [
+        ":link_mode_e2e_helpers",
         "//eval:activation",
         "//eval:attribute",
         "//eval:cel_host",  # for Value::Message(proto) + HostListBacking nav

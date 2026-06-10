@@ -24,14 +24,15 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
 
 namespace celwasm {
 namespace {
@@ -55,7 +56,7 @@ void RoundTripIdentical(absl::string_view source,
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
 
-  auto program = compiler->Compile(source);
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   // Capture the wasm bytes into an owned vector (simulating a write
@@ -168,7 +169,7 @@ TEST(ProgramRoundTripE2E, MultipleReloadsAreIndependent) {
   b.DeclareVariable("x", CelType::Int());
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("x + 1");
+  auto program = compiler->Compile("x + 1", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   std::vector<uint8_t> saved(program->wasm_bytes().begin(),

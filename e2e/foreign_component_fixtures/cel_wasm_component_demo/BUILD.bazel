@@ -21,8 +21,8 @@
 
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
-load("@rules_cc//cc:defs.bzl", "cc_test")
 load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
+load("//e2e:link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -36,13 +36,16 @@ cel_wasm_component(
 # End-to-end gate: loads the macro-produced demo_component.wasm and
 # exercises both decls through Compile → Plan → Eval.  Closes the
 # loop on m26 H.3 — proves the bytes the macro emits are a working
-# Component-Model component, not just syntactically valid.
-cc_test(
+# Component-Model component, not just syntactically valid.  Dual
+# link-mode (`_dynamic` / `_static`) per
+# doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5.
+link_mode_e2e_cc_test(
     name = "demo_component_e2e_test",
     srcs = ["demo_component_e2e_test.cc"],
     data = [":demo_component"],
     deps = [
         "//compiler:compiler",
+        "//e2e:link_mode_e2e_helpers",
         "//compiler/celfn:function_library",
         "//eval:activation",
         "//eval:engine",

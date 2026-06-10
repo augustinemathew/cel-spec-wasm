@@ -19,6 +19,7 @@
 
 #include "absl/status/statusor.h"
 #include "compiler/compiler.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
@@ -32,7 +33,7 @@ TEST(MvpConcatE2ETest, FooBar) {
   ASSERT_TRUE(compiler.ok()) << compiler.status();
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
-  auto program = compiler->Compile(R"("foo" + "bar")");
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
@@ -61,7 +62,7 @@ TEST(MvpConcatE2ETest, FooBarRepeatedAcrossManyEvals) {
   ASSERT_TRUE(compiler.ok()) << compiler.status();
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
-  auto program = compiler->Compile(R"("foo" + "bar")");
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();

@@ -87,16 +87,16 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
-#include "compiler/compiler.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
 
 namespace celwasm {
 namespace {
@@ -150,7 +150,7 @@ using ::celwasm::e2e::EvalOk;
 [[maybe_unused]] void ExpectCompileFails(const Compiler& compiler,
                                          absl::string_view source,
                                          absl::string_view why) {
-  auto program_or = compiler.Compile(source);
+  auto program_or = compiler.Compile(source, ::celwasm::e2e::DefaultOpts());
   EXPECT_FALSE(program_or.ok())
       << "expected `" << source << "` to fail at compile (" << why << ")";
 }

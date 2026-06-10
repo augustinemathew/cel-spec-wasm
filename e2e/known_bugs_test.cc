@@ -29,6 +29,7 @@
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
@@ -55,7 +56,7 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
   Compiler::Builder b;
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
-  auto program = compiler->Compile(source);
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
   if (!program.ok()) return program.status();
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();
@@ -539,13 +540,12 @@ TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
 // visible to the test rather than ASSERT-failing inside the helper.
 template <typename DeclareFn, typename BindFn>
 absl::StatusOr<Value> TryEvalActivated(absl::string_view source,
-                                       DeclareFn&& declare,
-                                       BindFn&& bind) {
+                                       DeclareFn&& declare, BindFn&& bind) {
   Compiler::Builder b;
   declare(b);
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
-  auto program = compiler->Compile(source);
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
   if (!program.ok()) return program.status();
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();
@@ -615,21 +615,24 @@ TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
 // fix must come WITH the un-skip, not after it.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: wasmtime panic at "
-         "store.rs:2440:17 'fault.is_none()', host process aborts, "
-         "want OK + true).  Literal int list of 10 000 elements; "
-         "`in`-scan exhausts the 64 KiB per-Eval arena "
-         "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
-         "check before allocating.  Delete this line ONLY when both "
-         "the trap-vs-graceful issue and the size limit are fixed "
-         "(cleanup-backlog #16).";
+  GTEST_SKIP() << "KNOWN BUG (verified: wasmtime panic at "
+                  "store.rs:2440:17 'fault.is_none()', host process aborts, "
+                  "want OK + true).  Literal int list of 10 000 elements; "
+                  "`in`-scan exhausts the 64 KiB per-Eval arena "
+                  "(runtime/cel_layout.h:16) but the runtime doesn't bounds-"
+                  "check before allocating.  Delete this line ONLY when both "
+                  "the trap-vs-graceful issue and the size limit are fixed "
+                  "(cleanup-backlog #16).";
   constexpr int kN = 10'000;
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
-      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
-      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(kN - 2));
+      });
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   EXPECT_TRUE(*v->AsBool());
@@ -646,14 +649,13 @@ TEST(KnownBugs, LiteralIntListInScanTrapsAt10K) {
 // large permission sets hit this.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
-         "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
-         "want OK + true).  10 k bound 50-byte strings exhaust the "
-         "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
-         "the linear scan.  Delete this line when cel_list_in "
-         "stops materialising O(N) arena state per scan, OR the "
-         "arena can grow on demand (cleanup-backlog #17).";
+  GTEST_SKIP() << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
+                  "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
+                  "want OK + true).  10 k bound 50-byte strings exhaust the "
+                  "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
+                  "the linear scan.  Delete this line when cel_list_in "
+                  "stops materialising O(N) arena state per scan, OR the "
+                  "arena can grow on demand (cleanup-backlog #17).";
   constexpr size_t kN = 10'000;
   // Build N unique 50-byte strings deterministically.
   std::vector<Value> elements;

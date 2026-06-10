@@ -9,11 +9,12 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto3/test_all_types.pb.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
 #include "google/protobuf/generated_message_reflection.h"
 #include "gtest/gtest.h"
@@ -46,7 +47,7 @@ Value EvalSource(absl::string_view source) {
   Compiler::Builder b;
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler) << source;
-  auto program = compiler->Compile(source);
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
   ABSL_CHECK_OK(program) << source;
   auto instance = GlobalEngine().Plan(*program);
   ABSL_CHECK_OK(instance) << source;
@@ -64,7 +65,7 @@ absl::StatusOr<Value> TryEvalSource(absl::string_view source) {
   Compiler::Builder b;
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
-  auto program = compiler->Compile(source);
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
   if (!program.ok()) return program.status();
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();

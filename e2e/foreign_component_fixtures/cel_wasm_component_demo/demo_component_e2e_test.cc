@@ -22,6 +22,12 @@
 //   - Proto args/returns — covered by `demo_component_proto`, which is
 //     a manual-tagged target because libprotobuf-cpp under wasm32-wasip2
 //     is a multi-minute cold-cache build.
+//
+// Link-mode coverage: built twice via `link_mode_e2e_cc_test`
+// (`_dynamic` / `_static` — see
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5);
+// link mode is routed through `e2e::DefaultOpts()` because each test
+// owns its Engine (AddComponent registrations are per-Engine state).
 
 #include <cstdint>
 #include <fstream>
@@ -35,6 +41,7 @@
 #include "absl/strings/string_view.h"
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
@@ -70,8 +77,8 @@ std::vector<uint8_t> LoadDemoComponentBytes() {
 
   std::ifstream f(path, std::ios::binary);
   ABSL_CHECK(f.is_open()) << "failed to open " << path;
-  return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
-                              std::istreambuf_iterator<char>());
+  return {(std::istreambuf_iterator<char>(f)),
+          std::istreambuf_iterator<char>()};
 }
 
 // Build a FunctionLibrary that mirrors fns.idl's two decls.  The
@@ -112,7 +119,7 @@ TEST(CelWasmComponentDemo, AddRoundTrips) {
       .AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("add(a, b)");
+  auto prog_or = compiler_or->Compile("add(a, b)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
@@ -126,18 +133,18 @@ TEST(CelWasmComponentDemo, AddRoundTrips) {
 }
 
 TEST(CelWasmComponentDemo, GreetRoundTripsString) {
-  GTEST_SKIP() <<
-      "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
-      "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
-      "AddRoundTrips path passes — but std::to_string + std::string "
-      "concat still trips a `wasm trap: cannot leave component instance` "
-      "INSIDE libc++ AFTER random_get returns (the trap is at the wasm "
-      "function-92 level, post-adapter, somewhere in libc++'s "
-      "post-RNG-init machinery — possibly thread-local destructor "
-      "registration or canonical-ABI re-entrancy guard).  Un-skip once "
-      "the wasmtime C API exposes a real wasi-preview2 store context, "
-      "OR once we rebuild the demo against wasm32-wasi + the preview1 "
-      "adapter so the existing wasi.hh WasiConfig satisfies libc++.";
+  GTEST_SKIP()
+      << "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
+         "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
+         "AddRoundTrips path passes — but std::to_string + std::string "
+         "concat still trips a `wasm trap: cannot leave component instance` "
+         "INSIDE libc++ AFTER random_get returns (the trap is at the wasm "
+         "function-92 level, post-adapter, somewhere in libc++'s "
+         "post-RNG-init machinery — possibly thread-local destructor "
+         "registration or canonical-ABI re-entrancy guard).  Un-skip once "
+         "the wasmtime C API exposes a real wasi-preview2 store context, "
+         "OR once we rebuild the demo against wasm32-wasi + the preview1 "
+         "adapter so the existing wasi.hh WasiConfig satisfies libc++.";
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();
@@ -149,7 +156,7 @@ TEST(CelWasmComponentDemo, GreetRoundTripsString) {
       .AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("greet(name, age)");
+  auto prog_or = compiler_or->Compile("greet(name, age)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_THAT(inst_or, IsOk()) << inst_or.status();

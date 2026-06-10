@@ -97,6 +97,7 @@
 #include "absl/time/time.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
 #include "eval/engine.h"
@@ -145,7 +146,7 @@ absl::StatusOr<CompiledExpr> CompileWithDecl(absl::string_view decl,
   b.AddFunction(decl);
   auto compiler = std::move(b).Build();
   if (!compiler.ok()) return compiler.status();
-  auto program = compiler->Compile(expr);
+  auto program = compiler->Compile(expr, ::celwasm::e2e::DefaultOpts());
   if (!program.ok()) return program.status();
   CompiledExpr out;
   out.compiler = std::make_unique<Compiler>(*std::move(compiler));
@@ -708,7 +709,8 @@ TEST(HostFnTypeMatrix, WktWrapperAsProtoIdlSpellingRejected) {
   // bind path).  This SUCCEEDs either way — the matrix point is
   // *the wrapper is not a separate host-fn arg type*, regardless of
   // which layer enforces it.
-  auto program = compiler->Compile("use_wrapper(w)");
+  auto program =
+      compiler->Compile("use_wrapper(w)", ::celwasm::e2e::DefaultOpts());
   SUCCEED() << "compile outcome for wrapper-as-proto: " << program.status();
 }
 

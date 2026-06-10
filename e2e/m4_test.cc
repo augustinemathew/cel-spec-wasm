@@ -31,19 +31,19 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"  // HostListBacking definition
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
+#include "google/protobuf/message.h"
+#include "gtest/gtest.h"
+#include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "testdata/host_fixture_proto3.pb.h"
-#include "google/protobuf/message.h"
-#include "e2e/link_mode_e2e_helpers.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -347,7 +347,8 @@ TEST_F(ListRejectionE2ETest, BoolIndexRejectedAtCompile) {
 TEST_F(ListRejectionE2ETest, StringIndexOnIntListRejectedAtCompile) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto program_or = compiler->Compile(R"([1, 2, 3]["x"])");
+  auto program_or =
+      compiler->Compile(R"([1, 2, 3]["x"])", ::celwasm::e2e::DefaultOpts());
   EXPECT_FALSE(program_or.ok());
 }
 
@@ -359,7 +360,7 @@ TEST_F(ListRejectionE2ETest, StringIndexOnIntListRejectedAtCompile) {
 TEST_F(ListRejectionE2ETest, BareEmptyListLiteralRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto program_or = compiler->Compile("[]");
+  auto program_or = compiler->Compile("[]", ::celwasm::e2e::DefaultOpts());
   EXPECT_FALSE(program_or.ok())
       << "bare `[]` types as list<dyn>; RejectDyn must catch the "
          "implicit dyn (M5.A — m5-kcall-comprehensions.md §5)";
@@ -373,7 +374,8 @@ TEST_F(ListRejectionE2ETest, BareEmptyListLiteralRejected) {
 TEST_F(ListRejectionE2ETest, HeterogeneousListRejected) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto program_or = compiler->Compile(R"([1, "two"])");
+  auto program_or =
+      compiler->Compile(R"([1, "two"])", ::celwasm::e2e::DefaultOpts());
   EXPECT_FALSE(program_or.ok())
       << "heterogeneous list literal types as list<dyn>; RejectDyn "
          "must catch the implicit dyn (M5.A — "
@@ -471,7 +473,7 @@ TEST_F(ListBindingE2ETest, BoundListOfMessageIndexedField) {
         "xs", CelType::List(CelType::Message("celwasm.testdata.Customer")));
   });
   ASSERT_THAT(compiler, IsOk());
-  auto program = compiler->Compile("xs[1].age");
+  auto program = compiler->Compile("xs[1].age", ::celwasm::e2e::DefaultOpts());
   ASSERT_THAT(program, IsOk())
       << "list<Customer> arg + index + scalar-field select should compile";
   auto instance = GlobalEngine().Plan(*program);
@@ -499,18 +501,18 @@ TEST_F(ListBindingE2ETest, BoundMapOfStringToListIndexed) {
         "m", CelType::Map(CelType::String(), CelType::List(CelType::Int())));
   });
   ASSERT_THAT(compiler, IsOk());
-  auto program = compiler->Compile("m['b'][1]");
+  auto program = compiler->Compile("m['b'][1]", ::celwasm::e2e::DefaultOpts());
   ASSERT_THAT(program, IsOk())
       << "map<string, list<int>> arg + map-index + list-index should compile";
   auto instance = GlobalEngine().Plan(*program);
   ASSERT_THAT(instance, IsOk());
   Activation a;
-  a.Bind("m",
-         Value::Map({
-             {Value::String("a"), Value::List({Value::Int(10)})},
-             {Value::String("b"),
-              Value::List({Value::Int(20), Value::Int(21)})},
-         }));
+  a.Bind(
+      "m",
+      Value::Map({
+          {Value::String("a"), Value::List({Value::Int(10)})},
+          {Value::String("b"), Value::List({Value::Int(20), Value::Int(21)})},
+      }));
   auto v = instance->Eval(a);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
@@ -543,7 +545,8 @@ TEST_F(DispatcherE2ETest, ConditionalListOperandLowersGreen) {
   // routes through `cel_list_at`.  Rewritten from
   // `ConditionalListOperandUnimplementedAtM4` at the M5.G enabling
   // commit.
-  auto program_or = compiler->Compile("(cond ? [1, 2] : xs)[0]");
+  auto program_or = compiler->Compile("(cond ? [1, 2] : xs)[0]",
+                                      ::celwasm::e2e::DefaultOpts());
   ASSERT_THAT(program_or, IsOk());
 }
 

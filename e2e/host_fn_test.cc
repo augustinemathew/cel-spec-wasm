@@ -4,7 +4,9 @@
 //
 //   Compiler::NewBuilder().DeclareVariable(...).AddFunction("<celfn IDL>")
 //     .Build()                       // declare the host fn on the compiler
-//   compiler->Compile("<expr>")      // compile a CEL expr that CALLS it
+//   compiler->Compile("<expr>", e2e::DefaultOpts())  // compile a CEL
+//     expr that CALLS it (link mode from the dual-mode build macro —
+//     see e2e/link_mode_e2e_helpers.h)
 //   Engine::NewBuilder().Build()
 //   engine->AddTypedFunction(id, lambda)   // typed registration (Layer 2)
 //     -- or --
@@ -40,6 +42,7 @@
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
 #include "eval/engine.h"
@@ -68,7 +71,7 @@ TEST(HostFnTest, TypedIntLambdaDoubles) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x)");
+  auto program = compiler->Compile("double_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -95,7 +98,7 @@ TEST(HostFnTest, TypedUintLambdaIncrements) {
   b.AddFunction("uint @host.inc(uint x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("inc(x)");
+  auto program = compiler->Compile("inc(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -123,7 +126,7 @@ TEST(HostFnTest, TypedDoubleLambdaHalves) {
   b.AddFunction("double @host.half(double x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("half(x)");
+  auto program = compiler->Compile("half(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -150,7 +153,7 @@ TEST(HostFnTest, TypedBoolLambdaNegates) {
   b.AddFunction("bool @host.negate(bool b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("negate(b)");
+  auto program = compiler->Compile("negate(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -181,7 +184,7 @@ TEST(HostFnTest, TypedStringLambdaAllocatesReturn) {
   b.AddFunction("string @host.upper(this string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("s.upper()");
+  auto program = compiler->Compile("s.upper()", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -212,7 +215,7 @@ TEST(HostFnTest, TypedBytesLambdaComputesLength) {
   b.AddFunction("int @host.blen(bytes b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("blen(b)");
+  auto program = compiler->Compile("blen(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -244,18 +247,18 @@ TEST(HostFnTest, TypedLambdaReturnsBytesViaValue) {
   b.AddFunction("bytes @host.echo_bytes(bytes b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_bytes(b)");
+  auto program = compiler->Compile("echo_bytes(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
-  ASSERT_TRUE(engine
-                  ->AddTypedFunction(
-                      "echo_bytes_bytes",
-                      [](absl::string_view b) -> absl::StatusOr<Value> {
-                        return Value::Bytes(std::string(b));
-                      })
-                  .ok());
+  ASSERT_TRUE(
+      engine
+          ->AddTypedFunction("echo_bytes_bytes",
+                             [](absl::string_view b) -> absl::StatusOr<Value> {
+                               return Value::Bytes(std::string(b));
+                             })
+          .ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
 
@@ -279,7 +282,7 @@ TEST(HostFnTest, TypedDurationLambdaDoubles) {
   b.AddFunction("Duration @host.twice(Duration d);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("twice(d)");
+  auto program = compiler->Compile("twice(d)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -307,7 +310,7 @@ TEST(HostFnTest, TypedTimestampLambdaRoundTrips) {
   b.AddFunction("Timestamp @host.echo_ts(Timestamp t);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_ts(t)");
+  auto program = compiler->Compile("echo_ts(t)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -337,7 +340,7 @@ TEST(HostFnTest, TypedConcreteProtoArg) {
   b.AddFunction("bool @host.is_premium(proto(celwasm.testdata.Customer) c);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("is_premium(c)");
+  auto program = compiler->Compile("is_premium(c)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -368,7 +371,7 @@ TEST(HostFnTest, TypedPolymorphicProtoArg) {
   b.AddFunction("string @host.tname(proto(celwasm.testdata.Customer) c);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("tname(c)");
+  auto program = compiler->Compile("tname(c)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -400,7 +403,7 @@ TEST(HostFnTest, TypedProtoReturn) {
       "proto(celwasm.testdata.Customer) @host.make_customer(string name);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("make_customer(n).name");
+  auto program = compiler->Compile("make_customer(n).name", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -432,7 +435,7 @@ TEST(HostFnTest, TypedListViewArg) {
   b.AddFunction("int @host.sum(list<int> xs);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("sum([4, 5, 6])");
+  auto program = compiler->Compile("sum([4, 5, 6])", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -467,7 +470,7 @@ TEST(HostFnTest, TypedMapViewArg) {
   b.AddFunction("int @host.lookup(map<string, int> m, string k);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("lookup(m, k)");
+  auto program = compiler->Compile("lookup(m, k)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -511,7 +514,8 @@ TEST(HostFnTest, TypedNestedMapStringListProtoArg) {
       "map<string, list<proto(celwasm.testdata.Customer)>> teams, string k);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("count_premium(teams, k)");
+  auto program =
+      compiler->Compile("count_premium(teams, k)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -571,7 +575,7 @@ TEST(HostFnTest, TypedReceiverIsFirstArg) {
   b.AddFunction("bool @host.is_number(this string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("s.is_number()");
+  auto program = compiler->Compile("s.is_number()", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -604,7 +608,7 @@ TEST(HostFnTest, TypedFunctionsCompose) {
   b.AddFunction("int @host.inc(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("inc(double_it(x))");
+  auto program = compiler->Compile("inc(double_it(x))", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -639,7 +643,7 @@ TEST(HostFnTest, TypedLambdaReturnsUnknown) {
   b.AddFunction("int @host.make_unknown(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("make_unknown(x)");
+  auto program = compiler->Compile("make_unknown(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -670,7 +674,7 @@ TEST(HostFnTest, TypedLambdaReturnsErrorValue) {
   b.AddFunction("int @host.always_err(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("always_err(x)");
+  auto program = compiler->Compile("always_err(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -703,7 +707,7 @@ TEST(HostFnTest, TypedLambdaNonOkStatusTraps) {
   b.AddFunction("int @host.boom(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("boom(x)");
+  auto program = compiler->Compile("boom(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -733,7 +737,7 @@ TEST(HostFnTest, TypedPartialEvalKnownDispatchesUnknownPropagates) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x)");
+  auto program = compiler->Compile("double_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto invoked = std::make_shared<bool>(false);
@@ -783,7 +787,7 @@ TEST(HostFnTest, ContextIntArgIntReturn) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x)");
+  auto program = compiler->Compile("double_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -812,7 +816,7 @@ TEST(HostFnTest, ContextStringArgIntReturnComputesLength) {
   b.AddFunction("int @host.length(string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("length(s)");
+  auto program = compiler->Compile("length(s)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -842,7 +846,7 @@ TEST(HostFnTest, ContextBytesArgSumsBytes) {
   b.AddFunction("int @host.byte_sum(bytes b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("byte_sum(b)");
+  auto program = compiler->Compile("byte_sum(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -875,7 +879,7 @@ TEST(HostFnTest, ContextBoolArgBoolReturn) {
   b.AddFunction("bool @host.negate(bool b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("negate(b)");
+  auto program = compiler->Compile("negate(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -904,7 +908,7 @@ TEST(HostFnTest, ContextUintArgUintReturn) {
   b.AddFunction("uint @host.inc(uint x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("inc(x)");
+  auto program = compiler->Compile("inc(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -933,7 +937,7 @@ TEST(HostFnTest, ContextDoubleArgDoubleReturn) {
   b.AddFunction("double @host.half(double x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("half(x)");
+  auto program = compiler->Compile("half(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -964,7 +968,7 @@ TEST(HostFnTest, ContextStringArgStringReturnAllocates) {
   b.AddFunction("string @host.upper(this string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("s.upper()");
+  auto program = compiler->Compile("s.upper()", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -994,7 +998,7 @@ TEST(HostFnTest, ContextDurationArgDurationReturn) {
   b.AddFunction("Duration @host.twice(Duration d);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("twice(d)");
+  auto program = compiler->Compile("twice(d)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1023,7 +1027,7 @@ TEST(HostFnTest, ContextTimestampArgTimestampReturn) {
   b.AddFunction("Timestamp @host.echo_ts(Timestamp t);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_ts(t)");
+  auto program = compiler->Compile("echo_ts(t)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1055,7 +1059,7 @@ TEST(HostFnTest, ContextProtoArgReadsField) {
   b.AddFunction("bool @host.is_premium(proto(celwasm.testdata.Customer) c);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("is_premium(c)");
+  auto program = compiler->Compile("is_premium(c)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1094,7 +1098,7 @@ TEST(HostFnTest, ContextProtoReturnBuildsMessage) {
       "proto(celwasm.testdata.Customer) @host.make_customer(string name);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("make_customer(n).name");
+  auto program = compiler->Compile("make_customer(n).name", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1127,7 +1131,7 @@ TEST(HostFnTest, ContextListArgSumsElements) {
   b.AddFunction("int @host.sum(list<int> xs);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("sum(xs)");
+  auto program = compiler->Compile("sum(xs)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1166,7 +1170,7 @@ TEST(HostFnTest, ContextListLiteralArgSumsElements) {
   b.AddFunction("int @host.sum(list<int> xs);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("sum([10, 20, 30])");
+  auto program = compiler->Compile("sum([10, 20, 30])", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1205,25 +1209,25 @@ TEST(HostFnTest, ContextMapArgLooksUpKey) {
   b.AddFunction("int @host.lookup(map<string, int> m, string k);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("lookup(m, k)");
+  auto program = compiler->Compile("lookup(m, k)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
-  ASSERT_TRUE(
-      engine
-          ->AddFunction("lookup_map_string_int_string", 3,
-                        [](HostCallContext& ctx) -> absl::Status {
-                          auto mv = ctx.ArgMap(0);
-                          if (!mv.ok()) return mv.status();
-                          auto k = ctx.ArgString(1);
-                          if (!k.ok()) return k.status();
-                          auto got = mv->Get(Value::String(std::string(*k)));
-                          if (!got.ok()) return got.status();
-                          if (got->IsError()) return ctx.ReturnInt(-1);
-                          return ctx.ReturnValue(*got);
-                        })
-          .ok());
+  ASSERT_TRUE(engine
+                  ->AddFunction("lookup_map_string_int_string", 3,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto mv = ctx.ArgMap(0);
+                                  if (!mv.ok()) return mv.status();
+                                  auto k = ctx.ArgString(1);
+                                  if (!k.ok()) return k.status();
+                                  auto got =
+                                      mv->Get(Value::String(std::string(*k)));
+                                  if (!got.ok()) return got.status();
+                                  if (got->IsError()) return ctx.ReturnInt(-1);
+                                  return ctx.ReturnValue(*got);
+                                })
+                  .ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
 
@@ -1243,7 +1247,8 @@ TEST(HostFnTest, ContextMapLiteralArgLooksUpKey) {
   b.AddFunction("int @host.lookup(map<string, int> m, string k);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("lookup({'a': 10, 'b': 20}, k)");
+  auto program =
+      compiler->Compile("lookup({'a': 10, 'b': 20}, k)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1288,7 +1293,8 @@ TEST(HostFnTest, ContextNestedMapStringListProtoArg) {
       "map<string, list<proto(celwasm.testdata.Customer)>> teams, string k);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("count_premium(teams, k)");
+  auto program =
+      compiler->Compile("count_premium(teams, k)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1352,7 +1358,7 @@ TEST(HostFnTest, ContextGlobalTwoArgPreservesOrder) {
   b.AddFunction("int @host.sub(int a, int b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("sub(a, b)");
+  auto program = compiler->Compile("sub(a, b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1385,7 +1391,7 @@ TEST(HostFnTest, ContextResultFeedsComparisonOperator) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x) > 40");
+  auto program = compiler->Compile("double_it(x) > 40", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1415,7 +1421,7 @@ TEST(HostFnTest, ContextReceiverIsFirstArg) {
   b.AddFunction("bool @host.is_number(this string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("s.is_number()");
+  auto program = compiler->Compile("s.is_number()", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1453,7 +1459,7 @@ TEST(HostFnTest, ContextResultFeedsAnotherHostFn) {
   b.AddFunction("int @host.inc(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("inc(double_it(x))");
+  auto program = compiler->Compile("inc(double_it(x))", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1499,7 +1505,8 @@ TEST(HostFnTest, MultiDeclLibraryBothFire) {
   b.AddLibrary(*std::move(lib));
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x) + triple_it(x)");
+  auto program =
+      compiler->Compile("double_it(x) + triple_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto mul = [](int64_t k) {
@@ -1531,7 +1538,7 @@ TEST(HostFnTest, ContextReturnUnknownStampsFunctionOriginSentinel) {
   b.AddFunction("int @host.make_unknown(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("make_unknown(x)");
+  auto program = compiler->Compile("make_unknown(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1564,7 +1571,7 @@ TEST(HostFnTest, FunctionOriginUnknownSurvivesOperatorMerge) {
   b.AddFunction("int @host.make_unknown(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("make_unknown(x) + 1");
+  auto program = compiler->Compile("make_unknown(x) + 1", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1595,7 +1602,7 @@ TEST(HostFnTest, ContextReturnErrorPropagates) {
   b.AddFunction("int @host.always_err(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("always_err(x)");
+  auto program = compiler->Compile("always_err(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1629,7 +1636,7 @@ TEST(HostFnTest, ContextNonOkStatusTraps) {
   b.AddFunction("int @host.boom(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("boom(x)");
+  auto program = compiler->Compile("boom(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1659,7 +1666,7 @@ TEST(HostFnTest, PartialEvalKnownArgInvokesHostFn) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x)");
+  auto program = compiler->Compile("double_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto invoked = std::make_shared<bool>(false);
@@ -1719,7 +1726,7 @@ TEST_P(PartialEvalUnknownArgTest, UnknownArgPropagatesAndSkipsCallback) {
   b.AddFunction(c.decl);
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile(c.expr);
+  auto program = compiler->Compile(c.expr, e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto invoked = std::make_shared<bool>(false);
@@ -1791,7 +1798,7 @@ TEST(HostFnTest, MissingCallbackFailsAtPlanNoCrash) {
   b.AddFunction("int @host.double_it(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("double_it(x)");
+  auto program = compiler->Compile("double_it(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1814,7 +1821,7 @@ TEST_P(IntBoundaryTest, RoundTripsThroughCallback) {
   b.AddFunction("int @host.echo_int(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_int(x)");
+  auto program = compiler->Compile("echo_int(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1847,7 +1854,7 @@ TEST_P(UintBoundaryTest, RoundTripsThroughCallback) {
   b.AddFunction("uint @host.echo_uint(uint x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_uint(x)");
+  auto program = compiler->Compile("echo_uint(x)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1882,7 +1889,7 @@ TEST_P(StringBoundaryTest, RoundTripsThroughCallback) {
   b.AddFunction("string @host.echo_string(string s);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_string(s)");
+  auto program = compiler->Compile("echo_string(s)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();
@@ -1921,7 +1928,7 @@ TEST(HostFnTest, BytesArgWithEmbeddedNulRoundTrips) {
   b.AddFunction("bytes @host.echo_bytes(bytes b);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
-  auto program = compiler->Compile("echo_bytes(b)");
+  auto program = compiler->Compile("echo_bytes(b)", e2e::DefaultOpts());
   ASSERT_TRUE(program.ok()) << program.status();
 
   auto engine = Engine::NewBuilder().Build();

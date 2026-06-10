@@ -2786,6 +2786,32 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         `eval/engine_test.cc::EngineBuilderJitPerfMapTest`, both
         link modes.
 
+**Post-merge closeout additions (2026-06-09, late pass):**
+
+  - [x] Component-Model custom fns × link mode —
+        `e2e/foreign_component_dispatch_test` converted to
+        `link_mode_e2e_cc_test` + 3 new cases (string arg+return via
+        the canonical-ABI return-pointer arm, missing-export →
+        FailedPrecondition at Plan naming the kebab-case export,
+        trapping component fn → clean Eval error); 7/7 in BOTH modes.
+        `demo_component_e2e_test` likewise dual-mode.
+  - [x] Hollow dual-mode targets fixed — `host_fn_test` plus 13 more
+        e2e sources emitted `_dynamic`/`_static` pairs whose sources
+        never selected the mode (both emissions silently ran the
+        kStatic default).  All bare `Compile` sites now route through
+        `e2e::DefaultOpts()` / `kE2ELinkMode`;
+        `host_fn_type_matrix_test` converted to the dual macro.
+        Post-fix fleet: 47/47 e2e targets green, genuinely dual.
+  - [x] Plan link-mode label tripwire —
+        `eval/engine_test.cc::EnginePlanLinkModeTripwireTest`:
+        correctly-labeled both modes, mislabeled-static (byte-patched
+        section) and mislabeled-dynamic (hand-framed section on
+        synthetic WAT) → FailedPrecondition naming both signals,
+        unknown future enum value → no validation, abi-less module →
+        no validation.  Plan flow rework verified by 29/29 dual-mode
+        eval+e2e targets; static mode no longer installs dead cel.*
+        linker bindings.
+
 **P1 follow-ups — ALL CLOSED 2026-06-09 (evening pass):**
 
   - [x] Strip-tool no-merge invariant pinned (P1-2; invariant 1) —

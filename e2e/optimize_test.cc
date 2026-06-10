@@ -31,16 +31,17 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {
@@ -81,6 +82,7 @@ Value CompileAndEval(const Compiler& compiler, absl::string_view source,
                      int optimize_level, const Activation& activation) {
   CompilerOptions opts;
   opts.optimize_level = optimize_level;
+  opts.link_mode = e2e::kE2ELinkMode;
   auto program = compiler.Compile(source, opts);
   ABSL_CHECK_OK(program) << "source=" << source
                          << " optimize_level=" << optimize_level;
@@ -189,8 +191,10 @@ TEST(OptimizeE2E, OverflowCheck) {
   // assertion instead.
   CompilerOptions opt0;
   opt0.optimize_level = 0;
+  opt0.link_mode = e2e::kE2ELinkMode;
   CompilerOptions opt2;
   opt2.optimize_level = 2;
+  opt2.link_mode = e2e::kE2ELinkMode;
   auto p0 = c.Compile("x + 1", opt0);
   ASSERT_THAT(p0, IsOk());
   auto p2 = c.Compile("x + 1", opt2);

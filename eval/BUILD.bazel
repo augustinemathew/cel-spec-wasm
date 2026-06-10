@@ -678,11 +678,13 @@ link_mode_cc_test(
     srcs = ["engine_test.cc"],
     tags = ["manual"],
     deps = [
+        ":abi_decode",
         ":engine",
         ":host_call_context",
         ":host_callback",
         ":instance",
         ":value",
+        "//abi:cel_abi_cc_proto",
         "//bazel:link_mode_test_helpers",
         "//compiler:compiler",
         "//compiler:program",

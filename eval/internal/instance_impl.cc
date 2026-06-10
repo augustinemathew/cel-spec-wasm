@@ -8,7 +8,7 @@ InstanceImpl::~InstanceImpl() {
   // store).  Then linker.  Then store (which owns both instance
   // handles).  Phase C: also dispose the shared-memory clone held
   // here; the underlying memory is owned by the store, but
-  // `wasmtime_sharedmemory_clone` (used by `BindRuntimeMemory`)
+  // `wasmtime_sharedmemory_clone` (used by `CacheRuntimeMemory`)
   // bumps a refcount that must be balanced.  The wasm_engine_t is
   // owned externally via shared_ptr<WasmtimeEngineState> on the
   // public Instance and outlives this struct.

@@ -264,9 +264,12 @@ message CelAbi {
   // Link mode the Program was compiled with.  Metadata for embedder
   // tooling (cache validators, signature systems, cross-process
   // Program shipping) — NOT a routing input: the engine routes on
-  // import introspection of the wasm bytes themselves, so a Program
-  // whose marker disagrees with its actual import shape still loads
-  // by its real shape.  See
+  // import introspection of the wasm bytes themselves.  It IS,
+  // however, a validation input: when the section is present and the
+  // label contradicts the import-derived shape, `Engine::Plan`
+  // rejects the Program with FailedPrecondition (a tripwire for
+  // mislabeled/corrupted artifacts from caches).  Unknown future
+  // enum values skip validation (open-set wire data).  See
   // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
   LinkMode link_mode = 7;
 }

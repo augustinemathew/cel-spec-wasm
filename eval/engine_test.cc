@@ -10,17 +10,21 @@
 
 #include "eval/engine.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
 #include "bazel/link_mode_test_helpers.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
 #include "eval/instance.h"
+#include "eval/internal/abi_decode.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
 #include "wasm.h"
@@ -124,15 +128,15 @@ TEST(EnginePlanTest, PlanFailsOnMalformedBytes) {
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
   Engine engine = *std::move(engine_or);
 
-  // Wasm magic + garbage past the version word.  As shipped, the
-  // expr module is parsed via `wasmtime_module_new` before the
-  // cel.abi custom section is decoded, so malformed bytes fail at
-  // module-parse and surface as `FailedPrecondition` (the
-  // wasmtime-error wrapper status code).
+  // Wasm magic + garbage past the version word.  Plan decodes the
+  // cel.abi custom section from the raw bytes FIRST (before the
+  // wasmtime module compile), so malformed framing fails in the
+  // decoder and surfaces as `InvalidArgument` (the abi_decode
+  // contract for a bad wasm header / section framing).
   Program garbage(std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d, 0xff, 0xff});
   auto inst_or = engine.Plan(garbage);
   EXPECT_FALSE(inst_or.ok());
-  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(EnginePlanThreadingTest, ConcurrentPlanCallsAllSucceed) {
@@ -498,6 +502,213 @@ TEST(EngineAddComponentTest, PlanSucceedsWhenNoComponentsRegistered) {
   auto v_or = inst_or->Eval();
   ASSERT_TRUE(v_or.ok()) << v_or.status();
   EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
+// ─── m28 — link-mode label tripwire (`ValidateLinkModeLabel`) ──────
+//
+// `Engine::Plan` decodes the cel.abi section up front and, when the
+// section is present, cross-checks its `link_mode` label against the
+// import-derived routing (`ModuleImportsCelNamespace`).  A label that
+// contradicts the module's actual shape — a mislabeled / corrupted
+// artifact from a Program cache — fails Plan with FailedPrecondition
+// naming both signals.  Absent section → no validation (synthetic WAT
+// fixtures, legacy Programs).  Unknown future enum values → no
+// validation (open-set wire data).
+
+// Reads an unsigned LEB128 u32 at `*pos`, advancing it.  Test-local
+// minimal reader — fixture wasm is well-formed by construction.
+uint32_t ReadLebU32(const std::vector<uint8_t>& bytes, size_t* pos) {
+  uint32_t result = 0;
+  uint32_t shift = 0;
+  while (true) {
+    ABSL_CHECK_LT(*pos, bytes.size());
+    const uint8_t b = bytes[(*pos)++];
+    result |= static_cast<uint32_t>(b & 0x7f) << shift;
+    if ((b & 0x80) == 0) return result;
+    shift += 7;
+  }
+}
+
+// Appends `v` as unsigned LEB128.
+void AppendLebU32(std::vector<uint8_t>& out, uint32_t v) {
+  do {
+    uint8_t b = v & 0x7f;
+    v >>= 7;
+    if (v != 0) b |= 0x80;
+    out.push_back(b);
+  } while (v != 0);
+}
+
+// Locates the `cel.abi` custom section's proto payload (the bytes
+// AFTER the section name) within a wasm byte stream.  Returns
+// [begin, end) indices into `bytes`.  CHECK-fails if absent — the
+// fixtures that call this always carry the section.
+struct PayloadRange {
+  size_t begin;
+  size_t end;
+};
+PayloadRange FindCelAbiPayload(const std::vector<uint8_t>& bytes) {
+  size_t pos = 8;  // skip magic + version
+  while (pos < bytes.size()) {
+    const uint8_t section_id = bytes[pos++];
+    const uint32_t section_size = ReadLebU32(bytes, &pos);
+    const size_t section_end = pos + section_size;
+    if (section_id == 0) {
+      size_t p = pos;
+      const uint32_t name_len = ReadLebU32(bytes, &p);
+      const absl::string_view name(
+          reinterpret_cast<const char*>(bytes.data() + p), name_len);
+      if (name == "cel.abi") return {p + name_len, section_end};
+    }
+    pos = section_end;
+  }
+  ABSL_CHECK(false) << "no cel.abi custom section in fixture wasm";
+  return {0, 0};
+}
+
+// Compiles `42` in the given mode and returns a mutable copy of the
+// Program's wasm bytes.
+std::vector<uint8_t> CompileToBytes(CompilerOptions::LinkMode mode) {
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ABSL_CHECK_OK(compiler_or);
+  CompilerOptions opts;
+  opts.link_mode = mode;
+  auto prog_or = compiler_or->Compile("42", opts);
+  ABSL_CHECK_OK(prog_or);
+  return {prog_or->wasm_bytes().begin(), prog_or->wasm_bytes().end()};
+}
+
+// Rewrites the wire value of the trailing `link_mode` field in a
+// STATIC Program's cel.abi payload.  The emitter serializes fields
+// in number order and `link_mode` (field 7, the highest) is the only
+// non-default trailing field a static compile adds, so the payload
+// ends with the 2-byte record `0x38 0x01` (tag fld7/varint, value 1).
+// Patching the value byte in place flips the label without resizing
+// any section, keeping all wasm framing intact.
+std::vector<uint8_t> PatchStaticLinkModeByte(std::vector<uint8_t> bytes,
+                                             uint8_t new_value) {
+  const PayloadRange r = FindCelAbiPayload(bytes);
+  ABSL_CHECK_GE(r.end - r.begin, 2u);
+  ABSL_CHECK_EQ(bytes[r.end - 2], 0x38) << "payload does not end with the "
+                                           "link_mode field tag";
+  ABSL_CHECK_EQ(bytes[r.end - 1], 0x01) << "link_mode wire value is not "
+                                           "LINK_MODE_STATIC";
+  bytes[r.end - 1] = new_value;
+  return bytes;
+}
+
+TEST(EnginePlanLinkModeTripwireTest, CorrectlyLabeledProgramsPlanInBothModes) {
+  // Both routing paths with truthful labels: the tripwire must stay
+  // silent and Plan + Eval succeed.  (The rest of this file's
+  // Compile()-based tests cover the per-binary kTestLinkMode variant;
+  // this one pins BOTH modes inside a single binary.)
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  for (auto mode : {CompilerOptions::LinkMode::kDynamic,
+                    CompilerOptions::LinkMode::kStatic}) {
+    Program program(CompileToBytes(mode));
+    auto inst_or = engine_or->Plan(program);
+    ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+    auto v_or = inst_or->Eval();
+    ASSERT_TRUE(v_or.ok()) << v_or.status();
+    EXPECT_EQ(*v_or->AsInt(), 42);
+  }
+}
+
+TEST(EnginePlanLinkModeTripwireTest, MislabeledStaticProgramRejectedAtPlan) {
+  // A static-shaped Program (no cel.* imports) whose cel.abi claims
+  // LINK_MODE_DYNAMIC — the cache-corruption shape the tripwire
+  // exists for.  0x00 is the explicit LINK_MODE_DYNAMIC wire value.
+  auto bytes = PatchStaticLinkModeByte(
+      CompileToBytes(CompilerOptions::LinkMode::kStatic),
+      /*new_value=*/0x00);
+  // Sanity: the patch decodes as intended.
+  auto abi_or = DecodeCelAbiFromWasm(bytes);
+  ASSERT_TRUE(abi_or.ok()) << abi_or.status();
+  ASSERT_EQ(abi_or->link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(Program(std::move(bytes)));
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition);
+  // The diagnostic names both signals: the label and the import shape.
+  EXPECT_NE(std::string(inst_or.status().message()).find("LINK_MODE_DYNAMIC"),
+            std::string::npos)
+      << inst_or.status();
+  EXPECT_NE(std::string(inst_or.status().message()).find("cel"),
+            std::string::npos)
+      << inst_or.status();
+}
+
+TEST(EnginePlanLinkModeTripwireTest,
+     MislabeledDynamicShapedModuleRejectedAtPlan) {
+  // The opposite arm: a module that DOES import cel.* (the synthetic
+  // WAT fixture) carrying a cel.abi section that claims
+  // LINK_MODE_STATIC.  Built by appending a hand-framed cel.abi
+  // custom section — custom sections may appear anywhere, and the
+  // fixture has none of its own.  `runtime_abi_version` stays 0 with
+  // an otherwise-empty abi, which `CheckRuntimeAbiVersion` admits.
+  celwasm::abi::CelAbi abi;
+  abi.set_link_mode(celwasm::abi::LINK_MODE_STATIC);
+  const std::string payload = abi.SerializeAsString();
+
+  std::vector<uint8_t> body;
+  constexpr absl::string_view kName = "cel.abi";
+  AppendLebU32(body, static_cast<uint32_t>(kName.size()));
+  body.insert(body.end(), kName.begin(), kName.end());
+  body.insert(body.end(), payload.begin(), payload.end());
+
+  std::vector<uint8_t> bytes = Wat2Wasm(kSyntheticExprWat);
+  bytes.push_back(0x00);  // custom section id
+  AppendLebU32(bytes, static_cast<uint32_t>(body.size()));
+  bytes.insert(bytes.end(), body.begin(), body.end());
+
+  // Sanity: the appended section decodes as intended.
+  auto abi_or = DecodeCelAbiFromWasm(bytes);
+  ASSERT_TRUE(abi_or.ok()) << abi_or.status();
+  ASSERT_EQ(abi_or->link_mode(), celwasm::abi::LINK_MODE_STATIC);
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(Program(std::move(bytes)));
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_NE(std::string(inst_or.status().message()).find("LINK_MODE_STATIC"),
+            std::string::npos)
+      << inst_or.status();
+}
+
+TEST(EnginePlanLinkModeTripwireTest, UnknownFutureLinkModeValueNotValidated) {
+  // Open-set wire data: a link_mode value this engine doesn't know
+  // (e.g. 2, a future hybrid mode) must NOT fail validation — the
+  // engine routes on the import shape alone.  Plan + Eval succeed.
+  auto bytes = PatchStaticLinkModeByte(
+      CompileToBytes(CompilerOptions::LinkMode::kStatic),
+      /*new_value=*/0x02);
+  auto abi_or = DecodeCelAbiFromWasm(bytes);
+  ASSERT_TRUE(abi_or.ok()) << abi_or.status();
+  ASSERT_EQ(static_cast<int>(abi_or->link_mode()), 2);
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(Program(std::move(bytes)));
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
+TEST(EnginePlanLinkModeTripwireTest, AbiLessModulePlansWithoutValidation) {
+  // No cel.abi section at all (synthetic WAT fixture / legacy
+  // Program) → decode is NotFound → no label to validate → Plan
+  // succeeds on the import-derived routing alone.  Same fixture as
+  // PlanSucceedsOnSyntheticProgram; restated here so the tripwire's
+  // absent-section contract is pinned by name.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto inst_or = engine_or->Plan(SyntheticProgram());
+  EXPECT_TRUE(inst_or.ok()) << inst_or.status();
 }
 
 }  // namespace

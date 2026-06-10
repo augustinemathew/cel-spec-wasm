@@ -12,6 +12,15 @@
 // remains SKIP'd against per-decl fixtures (lands with the celfnc
 // generator).  This file proves the C.1-C.3 path is wired correctly;
 // the matrix file is the exhaustive type sweep.
+//
+// Link-mode coverage: built twice via `link_mode_e2e_cc_test`
+// (`_dynamic` / `_static` — see
+// doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5),
+// so component dispatch is exercised against both dynamically-linked
+// and merged-runtime Programs.  Each test keeps its own Engine
+// (component registrations are per-Engine state), so link mode is
+// routed through `e2e::DefaultOpts()` on each Compile call rather
+// than through `e2e::CompilePlan` (which would share GlobalEngine).
 
 #include <cstdint>
 #include <limits>
@@ -26,6 +35,7 @@
 #include "absl/types/span.h"
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
@@ -119,7 +129,7 @@ TEST(ForeignComponentDispatch, IntAddRoundTripsBoundaryValues) {
       .AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("add(a, b)");
+  auto prog_or = compiler_or->Compile("add(a, b)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
 
   auto inst_or = engine_or->Plan(*prog_or);
@@ -127,13 +137,16 @@ TEST(ForeignComponentDispatch, IntAddRoundTripsBoundaryValues) {
 
   // Boundary inputs covered: 0 + 0, INT64_MIN + 0 (no overflow), and
   // a small positive sum.
-  struct Case { int64_t a; int64_t b; int64_t expected; };
-  for (auto c : std::vector<Case>{
-           {0, 0, 0},
-           {1, 2, 3},
-           {-7, 7, 0},
-           {std::numeric_limits<int64_t>::min(), 0,
-            std::numeric_limits<int64_t>::min()}}) {
+  struct Case {
+    int64_t a;
+    int64_t b;
+    int64_t expected;
+  };
+  for (auto c : std::vector<Case>{{0, 0, 0},
+                                  {1, 2, 3},
+                                  {-7, 7, 0},
+                                  {std::numeric_limits<int64_t>::min(), 0,
+                                   std::numeric_limits<int64_t>::min()}}) {
     Activation act;
     act.Bind("a", Value::Int(c.a));
     act.Bind("b", Value::Int(c.b));
@@ -157,15 +170,15 @@ TEST(ForeignComponentDispatch, BoolPassthroughRoundTrips) {
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("ident", Prim(CelfnType::Kind::kBool),
                       {CelfnParam{false, Prim(CelfnType::Kind::kBool), "x"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kPassthroughBoolBoolComponentWat),
-                                      lib),
-              IsOk());
+  ASSERT_THAT(
+      engine_or->AddComponent(WatToWasm(kPassthroughBoolBoolComponentWat), lib),
+      IsOk());
 
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("x", CelType::Bool()).AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("ident(x)");
+  auto prog_or = compiler_or->Compile("ident(x)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
@@ -242,12 +255,12 @@ TEST(ForeignComponentDispatch, LargeStringTransportsAtMiBScale) {
   builder.DeclareVariable("s", CelType::String()).AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("len(s)");
+  auto prog_or = compiler_or->Compile("len(s)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
 
-  for (size_t n : {size_t{0}, size_t{1}, size_t{1 << 10}, size_t{256 * 1024}}) {
+  for (size_t n : {size_t{0}, size_t{1}, size_t{1 << 10}, size_t{256} * 1024}) {
     // ASCII-only payload: the canonical ABI validates strings as UTF-8.
     std::string payload(n, 'x');
     Activation act;
@@ -318,9 +331,9 @@ TEST(ForeignComponentDispatch, LargeListIntTransportsAt100kElements) {
   // and returns one s64.  Boundary-style payload: sum_{0..N-1} = N(N-1)/2.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib =
+      OneFnLib("sum", Prim(CelfnType::Kind::kInt),
+               {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
   ASSERT_THAT(engine_or->AddComponent(WatToWasm(kListSumComponentWat), lib),
               IsOk());
 
@@ -328,7 +341,7 @@ TEST(ForeignComponentDispatch, LargeListIntTransportsAt100kElements) {
   builder.DeclareVariable("xs", CelType::List(CelType::Int())).AddLibrary(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto prog_or = compiler_or->Compile("sum(xs)");
+  auto prog_or = compiler_or->Compile("sum(xs)", e2e::DefaultOpts());
   ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
@@ -347,6 +360,147 @@ TEST(ForeignComponentDispatch, LargeListIntTransportsAt100kElements) {
     ASSERT_THAT(v_or, IsOk()) << "n=" << n;
     EXPECT_EQ(*v_or->AsInt(), expected) << "n=" << n;
   }
+}
+
+// ── String return path ─────────────────────────────────────────────
+//
+// `echo-string : string -> string`.  A string RESULT exercises the
+// canonical-ABI return-pointer arm (a lifted result that flattens to
+// more than one core value crosses via an i32 pointer to a {ptr,len}
+// pair in component memory) plus the eval-side string Lower — neither
+// of which the arg-only `len-string` case touches.  The core fn
+// writes the realloc'd arg's {ptr,len} to a scratch slot at address 8
+// (realloc starts handing out memory at 1024, so 8 is free) and
+// returns that slot's address.
+constexpr absl::string_view kStringEchoComponentWat = R"WAT(
+(component
+  (core module $m
+    (memory (export "memory") 16)
+    (global $next (mut i32) (i32.const 1024))
+    (func (export "realloc")
+        (param $orig i32) (param $orig_sz i32) (param $align i32)
+        (param $new_sz i32) (result i32)
+      (local $ret i32)
+      global.get $next
+      local.set $ret
+      global.get $next
+      local.get $new_sz
+      i32.add
+      global.set $next
+      local.get $ret)
+    (func (export "echo") (param $ptr i32) (param $len i32) (result i32)
+      i32.const 8
+      local.get $ptr
+      i32.store
+      i32.const 12
+      local.get $len
+      i32.store
+      i32.const 8))
+  (core instance $i (instantiate $m))
+  (alias core export $i "memory" (core memory $mem))
+  (alias core export $i "realloc" (core func $realloc))
+  (alias core export $i "echo" (core func $echo))
+  (func (export "echo-string") (param "s" string) (result string)
+    (canon lift (core func $echo) (memory $mem) (realloc $realloc))))
+)WAT";
+
+TEST(ForeignComponentDispatch, StringEchoReturnsStringResult) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  auto lib = OneFnLib("echo", Prim(CelfnType::Kind::kString),
+                      {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
+  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kStringEchoComponentWat), lib),
+              IsOk());
+
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable("s", CelType::String()).AddLibrary(lib);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("echo(s)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+
+  // Empty, ASCII, and multi-byte UTF-8 payloads (the canonical ABI
+  // validates strings as UTF-8; "héllo→😀" covers 1- to 4-byte
+  // encodings).
+  for (const std::string& payload :
+       {std::string(), std::string("hello"), std::string("héllo→😀")}) {
+    Activation act;
+    act.Bind("s", Value::String(payload));
+    auto v_or = inst_or->Eval(act);
+    ASSERT_THAT(v_or, IsOk()) << "payload=" << payload;
+    EXPECT_EQ(std::string(*v_or->AsString()), payload);
+  }
+}
+
+// ── Error paths ─────────────────────────────────────────────────────
+
+TEST(ForeignComponentDispatch, MissingExportFailsAtPlanNotAddComponent) {
+  // The embedder declares `frob` but registers a component that only
+  // exports `add-int-int`.  Pins WHERE the mismatch surfaces:
+  // `AddComponent` only conflict-checks overload-ids and parses the
+  // bytes; the export ↔ decl lookup happens at per-Plan component
+  // instantiation, so the failure is a FailedPrecondition from
+  // `Engine::Plan`, naming the kebab-case export it looked for.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  auto lib = OneFnLib("frob", Prim(CelfnType::Kind::kInt),
+                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kAddIntIntComponentWat), lib),
+              IsOk())
+      << "AddComponent validates bytes + overload-id conflicts only; "
+         "the export lookup is deferred to Plan";
+
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable("x", CelType::Int()).AddLibrary(lib);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("frob(x)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+      << inst_or.status();
+  EXPECT_THAT(std::string(inst_or.status().message()),
+              ::testing::HasSubstr("frob-int"));
+}
+
+// `boom-int : s64 -> s64` whose core body traps (`unreachable`).
+constexpr absl::string_view kTrappingComponentWat = R"WAT(
+(component
+  (core module $m
+    (func (export "boom") (param i64) (result i64) unreachable))
+  (core instance $i (instantiate $m))
+  (func (export "boom-int") (param "x" s64) (result s64)
+    (canon lift (core func $i "boom"))))
+)WAT";
+
+TEST(ForeignComponentDispatch, TrappingComponentFnFailsEvalCleanly) {
+  // A component fn that traps mid-call must surface as a clean
+  // non-OK status from `Instance::Eval` — not a crash, not a
+  // plausible-looking value.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  auto lib = OneFnLib("boom", Prim(CelfnType::Kind::kInt),
+                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kTrappingComponentWat), lib),
+              IsOk());
+
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable("x", CelType::Int()).AddLibrary(lib);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("boom(x)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+
+  Activation act;
+  act.Bind("x", Value::Int(1));
+  auto v_or = inst_or->Eval(act);
+  ASSERT_FALSE(v_or.ok()) << "trapping component fn produced a value";
 }
 
 }  // namespace
