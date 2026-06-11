@@ -1,14 +1,17 @@
 # M27 — Property-based testing via a type-driven CEL generator
 
-Status: **in flight — Slices A+B shipped 2026-06-05** (commit
+Status: **closed 2026-06-11 — shipped through Slice C1; remaining
+scope superseded by m30.**  Slices A+B shipped 2026-06-05 (commit
 b70676f7 "PBT machinery (Slice A+B)"); Slice C grammar + the
 divergence-mining/oracle harness (`e2e/fuzz/grammar_slice_c.{h,cc}`,
 `mine_divergences.cc`, `oracle_harness.{h,cc}`,
 `cel_oracle_property_test.cc`) landed with the perf/ssp-fix merge
-(598c7f2b → 3079b37b, 2026-06-09).  Remaining Slice C/D scope: see
-the slice sections below (unticked items).  Header updated in the
-2026-06-10 review sweep — the doc's status had not tracked the
-landed slices.
+(598c7f2b → 3079b37b, 2026-06-09).  The unshipped remainder (Slice
+C2 proto targets, Slice D corpus persistence + CI) moved to
+`m30-fuzz-full-dialect.md`, which also plans the full-dialect
+grammar, adversarial leaf domains, error/unknown properties, and
+tooling ergonomics on top of this doc's machinery.  Operational
+state lives in `e2e/fuzz/README.md` (notes log + gap list).
 
 ## Locked design decisions (as of 2026-06-05)
 

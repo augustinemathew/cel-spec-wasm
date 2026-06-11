@@ -77,6 +77,12 @@ suspicious, the grammar admits only total productions).
 
 ## Gap list — what the grammar CANNOT find today (the work queue)
 
+> **Now milestone-planned**: the gaps below are scheduled as
+> [`m30-fuzz-full-dialect.md`](../../doc/implementation-plan/rewrite/m30-fuzz-full-dialect.md)
+> — #3/#4 → M30.A, #2 → M30.B, #6/#7/#8 → M30.C, #5 → M30.D,
+> #0/#1 → M30.E, tooling/ergonomics → M30.F/G.  This list stays the
+> live evidence record; the m30 doc is the execution order.
+
 Ordered by expected bug yield. Evidence: every entry names a bug class
 that was found **manually** (conformance mining / code reading) in
 territory the grammar doesn't reach — meaning PBT would have found it
