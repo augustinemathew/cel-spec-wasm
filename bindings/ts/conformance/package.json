@@ -7,11 +7,16 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc --build tsconfig.build.json"
+    "build": "tsc --build tsconfig.build.json",
+    "conformance": "vite-node src/run.ts",
+    "conformance:update": "vite-node src/run.ts -- --update"
   },
   "dependencies": {
     "@cel-wasm/compiler": "0.1.0",
     "@cel-wasm/eval": "0.1.0",
     "protobufjs": "7.6.3"
+  },
+  "devDependencies": {
+    "vite-node": "3.2.4"
   }
 }

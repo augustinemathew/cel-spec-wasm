@@ -1,15 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ConformanceOutcome, ConformanceReport } from './index.js';
+import {
+  parseTextproto,
+  summaryLine,
+  type ConformanceReport,
+  type ConformanceOutcome,
+} from './index.js';
 
-// Smoke test for the conformance package scaffold.  The corpus runner +
-// ratchet land in WI-3.1; here we only assert the result-shape types are
-// usable from a downstream consumer.
-describe('@cel-wasm/conformance scaffold', () => {
-  it('exposes the report shape', () => {
+// Smoke test for the conformance package's public surface — the deep
+// behaviour lives in the colocated module tests (textproto / corpus /
+// classify / compare / baseline) and the pinned-fixture e2e
+// (run.test.ts).
+describe('@cel-wasm/conformance public surface', () => {
+  it('exposes the report + outcome types', () => {
     const outcome: ConformanceOutcome = 'pass';
-    const report: ConformanceReport = { pass: 1, skip: 0, fail: 0 };
+    const report: ConformanceReport = {
+      total: 1,
+      pass: 1,
+      skip: 0,
+      fail: 0,
+      skipByCategory: new Map(),
+      failures: [],
+    };
     expect(outcome).toBe('pass');
-    expect(report.pass).toBe(1);
+    expect(summaryLine(report)).toContain('pass=1');
+  });
+
+  it('re-exports the textproto reader', () => {
+    expect(parseTextproto('name: "x"').fields.has('name')).toBe(true);
   });
 });

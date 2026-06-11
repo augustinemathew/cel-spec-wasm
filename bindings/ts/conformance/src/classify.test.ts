@@ -1,0 +1,164 @@
+// Tests for the pre-compile scope classifier + type renderer + ext-lib
+// detection.  Mirrors the C++ `ScopeReject` decisions; the matrix pins
+// every skip category the pre-compile gate can produce.
+
+import { describe, expect, it } from 'vitest';
+
+import { classifyScope, looksLikeExtension, renderType } from './classify.js';
+import type { DeclaredType, SimpleTest } from './corpus.js';
+
+function row(overrides: Partial<SimpleTest>): SimpleTest {
+  return {
+    file: 't',
+    section: 's',
+    name: 'n',
+    expr: '1',
+    container: '',
+    disableCheck: false,
+    checkOnly: false,
+    typeEnv: [],
+    bindings: new Map(),
+    unsupportedBindingReason: undefined,
+    matcher: { kind: 'value', value: { kind: 'int', value: 1n } },
+    ...overrides,
+  };
+}
+
+describe('renderType', () => {
+  it('renders primitives', () => {
+    const cases: [string, string][] = [
+      ['BOOL', 'bool'],
+      ['INT64', 'int'],
+      ['UINT64', 'uint'],
+      ['DOUBLE', 'double'],
+      ['STRING', 'string'],
+      ['BYTES', 'bytes'],
+    ];
+    for (const [enumName, rendered] of cases) {
+      expect(renderType({ kind: 'primitive', name: enumName })).toBe(rendered);
+    }
+  });
+
+  it('renders the time well-known types', () => {
+    expect(
+      renderType({ kind: 'wellKnown', name: 'google.protobuf.Duration' }),
+    ).toBe('duration');
+    expect(
+      renderType({ kind: 'wellKnown', name: 'google.protobuf.Timestamp' }),
+    ).toBe('timestamp');
+  });
+
+  it('renders nested list / map', () => {
+    const t: DeclaredType = {
+      kind: 'map',
+      key: { kind: 'primitive', name: 'STRING' },
+      value: { kind: 'list', elem: { kind: 'primitive', name: 'INT64' } },
+    };
+    expect(renderType(t)).toBe('map<string, list<int>>');
+  });
+
+  it('returns undefined for a non-WKT message type', () => {
+    expect(renderType({ kind: 'message', fqn: 'cel.expr.X' })).toBeUndefined();
+  });
+
+  it('returns undefined for an unsupported decl', () => {
+    expect(
+      renderType({ kind: 'unsupported', reason: 'function decl' }),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for a JSON-value well-known type', () => {
+    expect(
+      renderType({ kind: 'wellKnown', name: 'google.protobuf.Value' }),
+    ).toBeUndefined();
+  });
+});
+
+describe('classifyScope', () => {
+  it('skips a disable_check row', () => {
+    const d = classifyScope(row({ disableCheck: true }));
+    expect(d.kind === 'skip' && d.category).toBe('disable_check');
+  });
+
+  it('skips a check_only row', () => {
+    const d = classifyScope(row({ checkOnly: true }));
+    expect(d.kind === 'skip' && d.category).toBe('check_only');
+  });
+
+  it('skips an unknown matcher as envelope', () => {
+    const d = classifyScope(
+      row({ matcher: { kind: 'unsupported', reason: 'unknown matcher' } }),
+    );
+    expect(d.kind === 'skip' && d.category).toBe('envelope');
+  });
+
+  it('skips an object_value matcher', () => {
+    const d = classifyScope(
+      row({ matcher: { kind: 'value', value: { kind: 'object' } } }),
+    );
+    expect(d.kind === 'skip' && d.category).toBe('object_value');
+  });
+
+  it('skips a row whose type_env has a non-WKT message decl', () => {
+    const d = classifyScope(
+      row({
+        typeEnv: [{ name: 'm', type: { kind: 'message', fqn: 'cel.expr.X' } }],
+      }),
+    );
+    expect(d.kind === 'skip' && d.category).toBe('type_env');
+  });
+
+  it('skips a row with an unsupported binding value', () => {
+    const d = classifyScope(
+      row({
+        unsupportedBindingReason: "binding 'm': cannot bind a object value",
+      }),
+    );
+    expect(d.kind === 'skip' && d.category).toBe('bindings');
+  });
+
+  it('proceeds with rendered vars for an in-scope row', () => {
+    const d = classifyScope(
+      row({
+        typeEnv: [{ name: 'x', type: { kind: 'primitive', name: 'INT64' } }],
+      }),
+    );
+    expect(d.kind).toBe('proceed');
+    if (d.kind === 'proceed') {
+      expect(d.compileVars).toEqual([{ name: 'x', type: 'int' }]);
+    }
+  });
+
+  it('proceeds for an evalError matcher', () => {
+    const d = classifyScope(row({ matcher: { kind: 'evalError' } }));
+    expect(d.kind).toBe('proceed');
+  });
+
+  it('proceeds for a boolTrue matcher', () => {
+    const d = classifyScope(row({ matcher: { kind: 'boolTrue' } }));
+    expect(d.kind).toBe('proceed');
+  });
+});
+
+describe('looksLikeExtension', () => {
+  it('detects a namespace call', () => {
+    expect(looksLikeExtension('math.greatest(1, 2)')).toBe(true);
+    expect(looksLikeExtension('cel.bind(x, 1, x)')).toBe(true);
+  });
+
+  it('detects a receiver-method call', () => {
+    expect(looksLikeExtension("'tacocat'.charAt(3)")).toBe(true);
+    expect(looksLikeExtension("'a'.upperAscii()")).toBe(true);
+  });
+
+  it('detects optionals syntax', () => {
+    expect(looksLikeExtension('{}.?c')).toBe(true);
+    expect(looksLikeExtension('m[?0]')).toBe(true);
+  });
+
+  it('does not flag plain expressions', () => {
+    expect(looksLikeExtension('1 + 2')).toBe(false);
+    expect(looksLikeExtension("size('abc')")).toBe(false);
+    expect(looksLikeExtension('[1, 2, 3].exists(e, e > 1)')).toBe(false);
+  });
+});
