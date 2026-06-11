@@ -151,24 +151,25 @@ function makeHarness(): Harness {
       return;
     }
     if (value.kind === 'error') {
+      // CelValue's message member ({[k]:CelValue}) defeats discriminant
+      // narrowing, so bind the tagged member explicitly.
+      const e = value as Extract<CelValue, { kind: 'error' }>;
       view.setUint32(off + CEL_VALUE_KIND_OFFSET, CelKind.ERROR, true);
-      view.setUint32(off + CEL_VALUE_PAYLOAD_OFFSET, value.code, true);
+      view.setUint32(off + CEL_VALUE_PAYLOAD_OFFSET, e.code, true);
       return;
     }
     if (value.kind === 'timestamp') {
+      const ts = value as Extract<CelValue, { kind: 'timestamp' }>;
       view.setUint32(off + CEL_VALUE_KIND_OFFSET, CelKind.TIMESTAMP, true);
-      view.setBigInt64(
-        off + CEL_VALUE_PAYLOAD_OFFSET,
-        value.epochSeconds,
-        true,
-      );
-      view.setInt32(off + CEL_VALUE_PAYLOAD_OFFSET + 8, value.nanos, true);
+      view.setBigInt64(off + CEL_VALUE_PAYLOAD_OFFSET, ts.epochSeconds, true);
+      view.setInt32(off + CEL_VALUE_PAYLOAD_OFFSET + 8, ts.nanos, true);
       return;
     }
     if (value.kind === 'duration') {
+      const d = value as Extract<CelValue, { kind: 'duration' }>;
       view.setUint32(off + CEL_VALUE_KIND_OFFSET, CelKind.DURATION, true);
-      view.setBigInt64(off + CEL_VALUE_PAYLOAD_OFFSET, value.seconds, true);
-      view.setInt32(off + CEL_VALUE_PAYLOAD_OFFSET + 8, value.nanos, true);
+      view.setBigInt64(off + CEL_VALUE_PAYLOAD_OFFSET, d.seconds, true);
+      view.setInt32(off + CEL_VALUE_PAYLOAD_OFFSET + 8, d.nanos, true);
       return;
     }
     throw new Error('test codec: unsupported CelValue shape');

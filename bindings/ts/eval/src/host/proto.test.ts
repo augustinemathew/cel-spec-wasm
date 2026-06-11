@@ -206,16 +206,21 @@ function encodeValue(
     writeRefKind(mem, slot, CelKind.MAP_HOST, mapSlot);
     return;
   }
+  // CelValue's message member ({[k]:CelValue}) defeats discriminant
+  // narrowing, so bind each tagged member explicitly.
   if ('kind' in value && value.kind === 'timestamp') {
-    writeDurTs(mem, slot, CelKind.TIMESTAMP, value.epochSeconds, value.nanos);
+    const ts = value as Extract<CelValue, { kind: 'timestamp' }>;
+    writeDurTs(mem, slot, CelKind.TIMESTAMP, ts.epochSeconds, ts.nanos);
     return;
   }
   if ('kind' in value && value.kind === 'duration') {
-    writeDurTs(mem, slot, CelKind.DURATION, value.seconds, value.nanos);
+    const d = value as Extract<CelValue, { kind: 'duration' }>;
+    writeDurTs(mem, slot, CelKind.DURATION, d.seconds, d.nanos);
     return;
   }
   if ('kind' in value && value.kind === 'error') {
-    writeError(mem, slot, value.code);
+    const e = value as Extract<CelValue, { kind: 'error' }>;
+    writeError(mem, slot, e.code);
     return;
   }
   // A decoded message object — not produced by these trampolines' tests
@@ -316,7 +321,7 @@ interface Harness {
   refs: ExternrefTable;
   ctx: ProtoContext;
   set: DescriptorSet;
-  tramps: Record<string, (...args: number[]) => void>;
+  tramps: ReturnType<typeof makeProtoTrampolines>;
 }
 
 function makeHarness(): Harness {

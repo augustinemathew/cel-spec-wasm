@@ -694,9 +694,21 @@ function isLongLike(value: unknown): value is LongLike {
  * keys are the empirically-confirmed `cel_host` import names
  * (`cel_host.h:520-790`).
  */
+/** The proto/WKT/message `cel_host` import names this group provides. */
+export type ProtoTrampolineName =
+  | 'cel_get_field'
+  | 'cel_has_field'
+  | 'cel_make_message'
+  | 'cel_set_field'
+  | 'cel_wkt_unwrap_time'
+  | 'cel_wkt_unwrap_wrapper'
+  | 'cel_message_eq'
+  | 'cel_message_is_zero'
+  | 'resolve_message_type_name';
+
 export function makeProtoTrampolines(
   ctx: ProtoContext,
-): Record<string, (...args: number[]) => void> {
+): Record<ProtoTrampolineName, (...args: number[]) => void> {
   return {
     cel_get_field: (out, msg, fieldRefId, attr): void => {
       celGetField(ctx, out, msg, fieldRefId, attr);

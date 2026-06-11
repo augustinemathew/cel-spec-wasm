@@ -433,9 +433,23 @@ function coerceIndex(idx: CelValue): IndexResult {
  * orders are the empirically-confirmed wire contract (the C++
  * `import_name` strings in `runtime/cel_*.c` / `cel_host.h`).
  */
+/** The list/map `cel_host` import names this group provides. */
+export type AggregateTrampolineName =
+  | 'cel_map_lookup'
+  | 'cel_map_in'
+  | 'cel_map_size'
+  | 'cel_map_eq'
+  | 'cel_map_iter_open'
+  | 'cel_list_at'
+  | 'cel_list_in'
+  | 'cel_list_size'
+  | 'cel_list_eq'
+  | 'cel_list_concat'
+  | 'cel_list_iter_open';
+
 export function makeAggregateTrampolines(
   ctx: AggregateContext,
-): Record<string, (...args: number[]) => void> {
+): Record<AggregateTrampolineName, (...args: number[]) => void> {
   return {
     cel_map_lookup: (out: number, map: number, key: number): void => {
       mapLookup(ctx, out, map, key);
