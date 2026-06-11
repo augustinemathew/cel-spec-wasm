@@ -30,6 +30,7 @@ cc_library(
 # before contaminating e2e tests.
 cc_test(
     name = "wat_runner_test",
+    size = "large",
     srcs = ["wat_runner_test.cc"],
     data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
     tags = ["manual"],

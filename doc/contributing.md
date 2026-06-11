@@ -106,6 +106,14 @@ All tests must pass. For codegen work, also confirm:
   [`CLAUDE.md`](../CLAUDE.md) and
   [`doc/implementation-plan/testing-checklist.md`](implementation-plan/testing-checklist.md).
 
+New test targets carry an explicit `size`: `size = "small"` if it runs
+`< 20 s`, else `size = "large"` — never `medium`, and never leave
+`size` unset (an unset size is an implicit `medium`). For a
+dual-emission macro call (`link_mode_e2e_cc_test` /
+`link_mode_cc_test`), use `large` if *either* mode is slow. See
+[`doc/design/06-testing-strategy.md`](design/06-testing-strategy.md)
+§3.1 for the rationale.
+
 ### 4. Update plan + checklist
 
 Every merged feature:

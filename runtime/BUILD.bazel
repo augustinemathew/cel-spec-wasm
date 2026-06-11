@@ -200,6 +200,7 @@ cc_library(
 # umbrella re-exporting something they forgot to include.
 cc_test(
     name = "cel_arena_test",
+    size = "small",
     srcs = ["cel_arena_test.cc"],
     deps = [
         ":cel_runtime",
@@ -209,6 +210,7 @@ cc_test(
 
 cc_test(
     name = "cel_make_test",
+    size = "small",
     srcs = ["cel_make_test.cc"],
     deps = [
         ":cel_runtime",
@@ -218,6 +220,7 @@ cc_test(
 
 cc_test(
     name = "cel_optional_test",
+    size = "small",
     srcs = ["cel_optional_test.cc"],
     deps = [
         ":cel_runtime",
@@ -227,6 +230,7 @@ cc_test(
 
 cc_test(
     name = "cel_memory_test",
+    size = "small",
     srcs = ["cel_memory_test.cc"],
     deps = [
         ":cel_runtime",
@@ -236,6 +240,7 @@ cc_test(
 
 cc_test(
     name = "cel_data_test",
+    size = "small",
     srcs = ["cel_data_test.cc"],
     deps = [
         ":cel_runtime",
@@ -245,6 +250,7 @@ cc_test(
 
 cc_test(
     name = "cel_map_test",
+    size = "small",
     srcs = ["cel_map_test.cc"],
     deps = [
         ":cel_runtime",
@@ -254,6 +260,7 @@ cc_test(
 
 cc_test(
     name = "cel_list_test",
+    size = "small",
     srcs = ["cel_list_test.cc"],
     deps = [
         ":cel_runtime",
@@ -263,6 +270,7 @@ cc_test(
 
 cc_test(
     name = "cel_deep_eq_test",
+    size = "small",
     srcs = ["cel_deep_eq_test.cc"],
     deps = [
         ":cel_runtime",
@@ -272,6 +280,7 @@ cc_test(
 
 cc_test(
     name = "cel_oom_poison_test",
+    size = "small",
     srcs = ["cel_oom_poison_test.cc"],
     deps = [
         ":cel_runtime",
@@ -281,6 +290,7 @@ cc_test(
 
 cc_test(
     name = "cel_arith_test",
+    size = "small",
     srcs = ["cel_arith_test.cc"],
     deps = [
         ":cel_runtime",
@@ -290,6 +300,7 @@ cc_test(
 
 cc_test(
     name = "cel_math_ext_test",
+    size = "small",
     srcs = ["cel_math_ext_test.cc"],
     deps = [
         ":cel_runtime",
@@ -299,6 +310,7 @@ cc_test(
 
 cc_test(
     name = "cel_net_ext_test",
+    size = "small",
     srcs = ["cel_net_ext_test.cc"],
     deps = [
         ":cel_runtime",
@@ -308,6 +320,7 @@ cc_test(
 
 cc_test(
     name = "cel_compare_test",
+    size = "small",
     srcs = ["cel_compare_test.cc"],
     deps = [
         ":cel_runtime",
@@ -317,6 +330,7 @@ cc_test(
 
 cc_test(
     name = "cel_string_ops_test",
+    size = "small",
     srcs = ["cel_string_ops_test.cc"],
     deps = [
         ":cel_runtime",
@@ -326,6 +340,7 @@ cc_test(
 
 cc_test(
     name = "cel_aggregate_arena_test",
+    size = "small",
     srcs = ["cel_aggregate_arena_test.cc"],
     deps = [
         ":cel_runtime",
@@ -335,6 +350,7 @@ cc_test(
 
 cc_test(
     name = "cel_3vl_test",
+    size = "small",
     srcs = ["cel_3vl_test.cc"],
     deps = [
         ":cel_runtime",
@@ -344,6 +360,7 @@ cc_test(
 
 cc_test(
     name = "cel_type_test",
+    size = "small",
     srcs = ["cel_type_test.cc"],
     deps = [
         ":cel_runtime",
@@ -353,6 +370,7 @@ cc_test(
 
 cc_test(
     name = "cel_convert_test",
+    size = "small",
     srcs = ["cel_convert_test.cc"],
     deps = [
         ":cel_convert_double_format",
@@ -363,6 +381,7 @@ cc_test(
 
 cc_test(
     name = "cel_time_test",
+    size = "small",
     srcs = ["cel_time_test.cc"],
     deps = [
         ":cel_runtime",
@@ -380,6 +399,7 @@ cc_test(
 # the default `bazel test` run.
 cc_test(
     name = "cel_runtime_wasm_test",
+    size = "small",
     srcs = ["cel_runtime_wasm_test.cc"],
     deps = [
         ":cel_runtime_wasm_bytes",
@@ -401,6 +421,7 @@ cc_test(
 # slice C1/C2 per `phase-c-design.md`).
 cc_test(
     name = "cel_time_parse_test",
+    size = "small",
     srcs = ["cel_time_parse_test.cc"],
     deps = [
         ":cel_runtime",
@@ -441,6 +462,7 @@ cc_library(
 
 cc_test(
     name = "cel_matches_test",
+    size = "small",
     srcs = ["cel_matches_test.cc"],
     deps = [
         ":cel_matches",
@@ -534,6 +556,7 @@ cc_library(
 
 cc_test(
     name = "cel_string_ext_codepoint_test",
+    size = "small",
     srcs = ["cel_string_ext_codepoint_test.cc"],
     deps = [
         ":cel_runtime",
@@ -545,6 +568,7 @@ cc_test(
 
 cc_test(
     name = "cel_base64_ext_test",
+    size = "small",
     srcs = ["cel_base64_ext_test.cc"],
     deps = [
         ":cel_base64_ext",
@@ -556,6 +580,7 @@ cc_test(
 
 cc_test(
     name = "cel_string_ext_search_test",
+    size = "small",
     srcs = ["cel_string_ext_search_test.cc"],
     deps = [
         ":cel_runtime",
@@ -567,6 +592,7 @@ cc_test(
 
 cc_test(
     name = "cel_string_ext_list_test",
+    size = "small",
     srcs = ["cel_string_ext_list_test.cc"],
     deps = [
         ":cel_runtime",
@@ -578,6 +604,7 @@ cc_test(
 
 cc_test(
     name = "cel_string_ext_quote_test",
+    size = "small",
     srcs = ["cel_string_ext_quote_test.cc"],
     deps = [
         ":cel_runtime",
@@ -589,6 +616,7 @@ cc_test(
 
 cc_test(
     name = "cel_string_format_test",
+    size = "small",
     srcs = [
         "cel_string_format_internal.h",
         "cel_string_format_test.cc",
@@ -834,6 +862,7 @@ cc_library(
 # ensure the strip actually shrunk the artifact.
 cc_test(
     name = "cel_runtime_stripped_wasm_bytes_test",
+    size = "small",
     srcs = ["cel_runtime_stripped_wasm_bytes_test.cc"],
     tags = ["manual"],
     deps = [

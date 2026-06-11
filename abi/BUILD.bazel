@@ -114,6 +114,7 @@ cc_library(
 
 cc_test(
     name = "runtime_catalogue_test",
+    size = "small",
     srcs = ["runtime_catalogue_test.cc"],
     deps = [
         ":cel_abi_cc_proto",
@@ -146,6 +147,7 @@ cc_library(
 
 cc_test(
     name = "cel_abi_emit_test",
+    size = "small",
     srcs = ["cel_abi_emit_test.cc"],
     deps = [
         ":cel_abi_cc_proto",

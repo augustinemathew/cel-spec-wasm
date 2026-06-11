@@ -47,6 +47,7 @@ cc_library(
 
 cc_test(
     name = "cpp_skeleton_emitter_test",
+    size = "small",
     srcs = ["cpp_skeleton_emitter_test.cc"],
     deps = [
         ":cpp_skeleton_emitter",
@@ -75,6 +76,7 @@ cc_library(
 
 cc_test(
     name = "cpp_stub_emitter_test",
+    size = "small",
     srcs = ["cpp_stub_emitter_test.cc"],
     deps = [
         ":cpp_stub_emitter",
@@ -103,6 +105,7 @@ cc_library(
 
 cc_test(
     name = "cpp_codec_emitter_test",
+    size = "small",
     srcs = ["cpp_codec_emitter_test.cc"],
     deps = [
         ":cpp_codec_emitter",
@@ -164,6 +167,7 @@ cc_library(
 
 cc_test(
     name = "wit_emitter_test",
+    size = "small",
     srcs = ["wit_emitter_test.cc"],
     deps = [
         ":wit_emitter",

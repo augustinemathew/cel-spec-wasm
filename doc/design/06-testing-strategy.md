@@ -333,6 +333,61 @@ regressions and silent graduations.
 > `bazel query 'tests(//e2e/...) except attr(tags, "manual",
 > tests(//e2e/...))'`, then `bazel test //e2e/...`.
 
+### 3.1 Test classification — Fast vs Slow
+
+Every test target carries an **explicit** Bazel `size`, and the scheme
+is exactly **two buckets** — `medium` is banned:
+
+  - **Fast → `size = "small"`** (60 s timeout): runs `< 20 s` locally.
+  - **Slow → `size = "large"`** (900 s timeout): runs `>= 20 s` locally.
+
+There is no `medium`. The default `size` (when the attribute is
+omitted) *is* `medium` with a 300 s timeout, and that default is the
+trap this scheme closes: a target that drifts up to 240–299 s sits
+silently 0.3 s from a CI timeout (the live example was
+`//e2e:host_fn_test_static` at 299.1 s under a `medium` 300 s
+ceiling). Collapsing to small/large does two things at once — it lifts
+every slow target to a 900 s ceiling it cannot realistically hit
+(the slowest large target runs ~127 s, 14 % of the timeout), and it
+gives a clean Fast/Slow split with no ambiguous middle. **Never leave
+`size` unset** — an unset size is an implicit `medium`, which this
+scheme forbids; the gate below proves zero remain.
+
+**Macro emissions over-provision deliberately.** The dual-emission
+macros (`link_mode_e2e_cc_test`, `link_mode_cc_test`; §4.3) each emit a
+`<name>_dynamic` and a `<name>_static` cc_test from one call, and the
+`size` kwarg forwards through `**kwargs` to **both**. The `_static`
+variant pays a per-compile Binaryen runtime-merge and is routinely the
+slow one while its `_dynamic` sibling is fast. The rule: **if either
+emission is Slow, set `size = "large"` on the macro call.** This
+over-provisions the fast `_dynamic` emission's timeout (it gets 900 s
+when it only needs 60 s), which is harmless — a timeout is a ceiling,
+not a target — and keeps one `size` per source. 22 fast `_dynamic`
+emissions are over-provisioned this way, which is why the bucket counts
+(small / large) do not equal the raw per-emission Fast / Slow split.
+
+Mis-bucketing rule: a `small` (Fast) target whose **actual** runtime
+exceeds ~40 s — most often because it only times out under full-suite
+parallel load, not when run solo — is mis-classified and moves to
+`large`. Two targets hit this on the first full run
+(`//compiler/frontend:parse_and_check_test`,
+`//compiler/internal:compile_test`: each has 2–3 s individual cases
+that aggregate past 60 s under load) and were reclassified to `large`.
+
+**Current census (2026-06-10):** Fast = 93 `small`, Slow = 66 `large`,
+`medium` = 0, over 159 test targets; all passing. Verify the
+invariant with:
+
+```
+bazel query 'attr(size, "medium", tests(//...))'   # MUST be empty
+bazel query 'attr(size, "small",  tests(//...))' | wc -l
+bazel query 'attr(size, "large",  tests(//...))' | wc -l
+```
+
+When adding a test: `size = "small"` if it runs `< 20 s`, else
+`size = "large"`. For a dual-emission macro call, use `large` if
+*either* mode is slow.
+
 ## 4. Disciplines
 
 ### 4.1 Skip discipline

@@ -26,6 +26,7 @@ package(default_visibility = ["//visibility:public"])
 # guided fuzzer under `bazel run --config=fuzztest -- --fuzz=...`.
 cc_test(
     name = "fuzz_smoke_test",
+    size = "small",
     srcs = ["fuzz_smoke_test.cc"],
     deps = [
         "@com_google_googletest//:gtest",
@@ -99,6 +100,7 @@ cc_library(
 
 cc_test(
     name = "generator_test",
+    size = "small",
     srcs = ["generator_test.cc"],
     deps = [
         ":generator",
@@ -170,6 +172,7 @@ cc_binary(
 
 cc_test(
     name = "cel_oracle_property_test",
+    size = "large",
     srcs = ["cel_oracle_property_test.cc"],
     # `manual` tag: this property test mines for real bugs.  It
     # WILL fail when it finds an oracle divergence on our side,
@@ -206,6 +209,7 @@ cc_test(
 
 cc_test(
     name = "grammar_test",
+    size = "large",
     srcs = ["grammar_test.cc"],
     deps = [
         ":grammar",

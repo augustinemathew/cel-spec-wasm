@@ -73,6 +73,7 @@ cc_library(
 
 cc_test(
     name = "runner_test",
+    size = "small",
     srcs = ["runner_test.cc"],
     deps = [
         ":runner",
@@ -90,6 +91,7 @@ cc_test(
 
 cc_test(
     name = "binding_marshal_test",
+    size = "small",
     srcs = ["binding_marshal_test.cc"],
     deps = [
         ":binding_marshal",

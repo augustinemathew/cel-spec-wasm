@@ -21,6 +21,7 @@ cc_library(
 
 cc_test(
     name = "cel_log_test",
+    size = "small",
     srcs = ["cel_log_test.cc"],
     deps = [
         ":cel_log",

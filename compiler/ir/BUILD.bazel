@@ -19,6 +19,7 @@ cc_library(
 
 cc_test(
     name = "annotations_test",
+    size = "small",
     srcs = ["annotations_test.cc"],
     deps = [
         ":annotations",
@@ -47,6 +48,7 @@ cc_library(
 
 cc_test(
     name = "typed_ast_test",
+    size = "small",
     srcs = ["typed_ast_test.cc"],
     deps = [
         ":annotations",

@@ -185,6 +185,7 @@ cc_binary(
 # for the examples and for every doc snippet derived from them.
 sh_test(
     name = "examples_smoke_test",
+    size = "large",
     srcs = ["examples_smoke_test.sh"],
     data = [
         ":01_hello_world",

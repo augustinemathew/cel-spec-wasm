@@ -61,6 +61,7 @@ cc_library(
 
 cc_test(
     name = "parse_and_check_test",
+    size = "large",
     srcs = ["parse_and_check_test.cc"],
     data = [
         "parse_and_check.h",

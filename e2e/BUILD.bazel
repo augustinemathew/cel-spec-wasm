@@ -44,6 +44,7 @@ cc_binary(
 # regressions (correctness + memory-model cliffs).  See the file header.
 link_mode_e2e_cc_test(
     name = "known_bugs_test",
+    size = "large",
     srcs = ["known_bugs_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -67,6 +68,7 @@ link_mode_e2e_cc_test(
 # See the file header for the copy-vs-handle classification.
 link_mode_e2e_cc_test(
     name = "activation_boundary_test",
+    size = "large",
     srcs = ["activation_boundary_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -89,6 +91,7 @@ link_mode_e2e_cc_test(
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 link_mode_e2e_cc_test(
     name = "m17_test",
+    size = "small",
     srcs = ["m17_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -109,6 +112,7 @@ link_mode_e2e_cc_test(
 # rows in `tests/simple/testdata/optionals.textproto`.
 link_mode_e2e_cc_test(
     name = "m14_test",
+    size = "large",
     srcs = ["m14_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -135,6 +139,7 @@ link_mode_e2e_cc_test(
 # shared proto fixtures at //testdata.
 link_mode_e2e_cc_test(
     name = "m2_test",
+    size = "large",
     srcs = ["m2_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -166,6 +171,7 @@ link_mode_e2e_cc_test(
 # cleanly to kError, not truncate).
 cc_test(
     name = "proto_arena_lazy_copy_test",
+    size = "small",
     srcs = ["proto_arena_lazy_copy_test.cc"],
     deps = [
         "//compiler:compiler",
@@ -190,6 +196,7 @@ cc_test(
 # wildcard) and which are by-design impossible (per-element / per-key).
 link_mode_e2e_cc_test(
     name = "m2_partial_eval_test",
+    size = "large",
     srcs = ["m2_partial_eval_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -239,6 +246,7 @@ cc_test(
 
 link_mode_e2e_cc_test(
     name = "m4_test",
+    size = "large",
     srcs = ["m4_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -266,6 +274,7 @@ link_mode_e2e_cc_test(
 # See doc/implementation-plan/rewrite/wasi/DESIGN.md §2.
 link_mode_e2e_cc_test(
     name = "mvp_concat_test",
+    size = "small",
     srcs = ["mvp_concat_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -286,6 +295,7 @@ link_mode_e2e_cc_test(
 # configurable-linking.md` §7.
 cc_test(
     name = "m28_static_link_test",
+    size = "large",
     srcs = ["m28_static_link_test.cc"],
     deps = [
         "//compiler:compiler",
@@ -336,6 +346,7 @@ link_mode_e2e_cc_test(
 # source from CEL source text or Value::List / Value::Map bindings).
 link_mode_e2e_cc_test(
     name = "m5b_test",
+    size = "large",
     srcs = ["m5b_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -360,6 +371,7 @@ link_mode_e2e_cc_test(
 # Wrapper-types are covered separately in m8_test.cc.
 link_mode_e2e_cc_test(
     name = "m7_test",
+    size = "large",
     srcs = ["m7_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -391,6 +403,7 @@ link_mode_e2e_cc_test(
 # `m7a-any.md` for slice plan and matrix.
 link_mode_e2e_cc_test(
     name = "m7a_test",
+    size = "large",
     srcs = ["m7a_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -454,6 +467,7 @@ link_mode_e2e_cc_test(
 # (write-side, read-side+Any-chain, kStruct tail-unwrap).
 link_mode_e2e_cc_test(
     name = "m8_test",
+    size = "large",
     srcs = ["m8_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -484,6 +498,7 @@ link_mode_e2e_cc_test(
 # `conformance/runner_test.cc`, not here.
 link_mode_e2e_cc_test(
     name = "m9_test",
+    size = "large",
     srcs = ["m9_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -514,6 +529,7 @@ link_mode_e2e_cc_test(
 # conversions are out of scope per §2.2 (separate timestamps slice).
 link_mode_e2e_cc_test(
     name = "m10_test",
+    size = "large",
     srcs = ["m10_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -545,6 +561,7 @@ link_mode_e2e_cc_test(
 # / silently corrupt.
 link_mode_e2e_cc_test(
     name = "cctz_doubles_test",
+    size = "large",
     srcs = ["cctz_doubles_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -564,6 +581,7 @@ link_mode_e2e_cc_test(
 
 link_mode_e2e_cc_test(
     name = "m12_test",
+    size = "large",
     srcs = ["m12_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -589,6 +607,7 @@ link_mode_e2e_cc_test(
 # acceptance gate.
 link_mode_e2e_cc_test(
     name = "m16_test",
+    size = "large",
     srcs = ["m16_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -607,6 +626,7 @@ link_mode_e2e_cc_test(
 
 link_mode_e2e_cc_test(
     name = "m18_test",
+    size = "large",
     srcs = ["m18_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -630,6 +650,7 @@ link_mode_e2e_cc_test(
 # equality through CelListEqImpl).
 link_mode_e2e_cc_test(
     name = "proto2_extension_list_eq_test",
+    size = "small",
     srcs = ["proto2_extension_list_eq_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -656,6 +677,7 @@ link_mode_e2e_cc_test(
 # reason.
 link_mode_e2e_cc_test(
     name = "wkt_field_set_test",
+    size = "large",
     srcs = ["wkt_field_set_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -685,6 +707,7 @@ link_mode_e2e_cc_test(
 # evaluate identically).  Runs the full wasmtime pipeline.
 link_mode_e2e_cc_test(
     name = "program_roundtrip_test",
+    size = "large",
     srcs = ["program_roundtrip_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -707,6 +730,7 @@ link_mode_e2e_cc_test(
 # identical.
 link_mode_e2e_cc_test(
     name = "optimize_test",
+    size = "large",
     srcs = ["optimize_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
@@ -734,6 +758,7 @@ link_mode_e2e_cc_test(
 # registration paths over the full type matrix.  wasmtime-backed.
 link_mode_e2e_cc_test(
     name = "host_fn_test",
+    size = "large",
     srcs = ["host_fn_test.cc"],
     tags = ["manual"],
     deps = [
@@ -768,6 +793,7 @@ link_mode_e2e_cc_test(
 # (type, optional, WKT wrappers as separate types, WKT struct types).
 link_mode_e2e_cc_test(
     name = "foreign_component_dispatch_test",
+    size = "large",
     srcs = ["foreign_component_dispatch_test.cc"],
     tags = ["manual"],
     deps = [
@@ -791,6 +817,7 @@ link_mode_e2e_cc_test(
 
 cc_test(
     name = "foreign_fn_type_matrix_test",
+    size = "large",
     srcs = ["foreign_fn_type_matrix_test.cc"],
     tags = ["manual"],
     deps = [
@@ -818,6 +845,7 @@ cc_test(
 
 link_mode_e2e_cc_test(
     name = "host_fn_type_matrix_test",
+    size = "large",
     srcs = ["host_fn_type_matrix_test.cc"],
     tags = ["manual"],
     deps = [
@@ -851,6 +879,7 @@ link_mode_e2e_cc_test(
 # expressions through the full pipeline in both link modes.
 link_mode_e2e_cc_test(
     name = "arena_message_aggregate_eq_test",
+    size = "large",
     srcs = ["arena_message_aggregate_eq_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",

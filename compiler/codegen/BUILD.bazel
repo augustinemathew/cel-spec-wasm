@@ -21,6 +21,7 @@ cc_library(
 
 cc_test(
     name = "overload_table_test",
+    size = "small",
     srcs = ["overload_table_test.cc"],
     deps = [
         ":overload_table",
@@ -46,6 +47,7 @@ cc_library(
 
 cc_test(
     name = "static_memory_builder_test",
+    size = "small",
     srcs = ["static_memory_builder_test.cc"],
     deps = [
         ":static_memory_builder",
@@ -70,6 +72,7 @@ cc_library(
 
 cc_test(
     name = "slot_allocator_test",
+    size = "small",
     srcs = ["slot_allocator_test.cc"],
     deps = [
         ":slot_allocator",
@@ -100,6 +103,7 @@ cc_library(
 
 cc_test(
     name = "resolve_pass_test",
+    size = "small",
     srcs = ["resolve_pass_test.cc"],
     deps = [
         ":resolve_pass",
@@ -146,6 +150,7 @@ cc_library(
 
 cc_test(
     name = "layout_pass_test",
+    size = "small",
     srcs = ["layout_pass_test.cc"],
     deps = [
         ":layout_pass",
@@ -182,6 +187,7 @@ cc_library(
 
 cc_test(
     name = "module_test",
+    size = "small",
     srcs = ["module_test.cc"],
     deps = [
         ":module",
@@ -222,6 +228,7 @@ cc_library(
 
 cc_test(
     name = "expr_lower_test",
+    size = "small",
     srcs = ["expr_lower_test.cc"],
     deps = [
         ":expr_lower",

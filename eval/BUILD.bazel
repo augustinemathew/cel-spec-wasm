@@ -21,6 +21,7 @@ cc_library(
 
 cc_test(
     name = "attribute_test",
+    size = "small",
     srcs = ["attribute_test.cc"],
     deps = [
         ":attribute",
@@ -46,6 +47,7 @@ cc_library(
 
 cc_test(
     name = "error_test",
+    size = "small",
     srcs = ["error_test.cc"],
     deps = [
         ":error",
@@ -77,6 +79,7 @@ cc_library(
 
 cc_test(
     name = "value_test",
+    size = "small",
     srcs = ["value_test.cc"],
     deps = [
         ":attribute",
@@ -109,6 +112,7 @@ cc_library(
 
 cc_test(
     name = "activation_test",
+    size = "small",
     srcs = ["activation_test.cc"],
     deps = [
         ":activation",
@@ -161,6 +165,7 @@ cc_library(
 
 cc_test(
     name = "host_call_context_test",
+    size = "small",
     srcs = ["host_call_context_test.cc"],
     deps = [
         ":cel_host",
@@ -201,6 +206,7 @@ cc_library(
 
 cc_test(
     name = "typed_function_test",
+    size = "small",
     srcs = ["typed_function_test.cc"],
     deps = [
         ":cel_host",
@@ -247,6 +253,7 @@ cc_library(
 
 cc_test(
     name = "cel_component_test",
+    size = "small",
     srcs = ["internal/cel_component_test.cc"],
     copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
     deps = [
@@ -286,6 +293,7 @@ cc_library(
 
 cc_test(
     name = "abi_decode_test",
+    size = "small",
     srcs = ["internal/abi_decode_test.cc"],
     deps = [
         ":abi_decode",
@@ -316,6 +324,7 @@ cc_library(
 
 cc_test(
     name = "module_imports_test",
+    size = "small",
     srcs = ["internal/module_imports_test.cc"],
     tags = ["manual"],
     deps = [
@@ -367,6 +376,7 @@ cc_library(
 
 cc_test(
     name = "cel_host_error_test",
+    size = "small",
     srcs = ["internal/cel_host_error_test.cc"],
     deps = [
         ":cel_host_error",
@@ -426,6 +436,7 @@ cc_library(
 # unchecked Data()+ptr return.
 cc_test(
     name = "memory_view_bounds_test",
+    size = "small",
     srcs = ["internal/memory_view_bounds_test.cc"],
     deps = [
         ":cel_host",
@@ -443,6 +454,7 @@ cc_test(
 # #36.
 cc_test(
     name = "wasmtime_memory_view_e2e_test",
+    size = "small",
     srcs = ["internal/wasmtime_memory_view_e2e_test.cc"],
     deps = [
         ":cel_host",
@@ -464,6 +476,7 @@ cc_test(
 # for the canonical fixture + walkthrough.
 cc_test(
     name = "host_trampoline_bounds_test",
+    size = "small",
     srcs = ["internal/host_trampoline_bounds_test.cc"],
     data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
     tags = ["manual"],
@@ -486,6 +499,7 @@ cc_test(
 
 cc_test(
     name = "cel_host_test",
+    size = "small",
     srcs = ["internal/cel_host_test.cc"],
     deps = [
         ":cel_host",
@@ -509,6 +523,7 @@ cc_test(
 # HostMap (vector-backed Layer 1) coverage.
 cc_test(
     name = "host_map_test",
+    size = "small",
     srcs = ["internal/host_map_test.cc"],
     deps = [
         ":cel_host",
@@ -522,6 +537,7 @@ cc_test(
 # ProtoMap (proto-reflection over a single map field).
 cc_test(
     name = "proto_map_test",
+    size = "small",
     srcs = ["internal/proto_map_test.cc"],
     deps = [
         ":cel_host",
@@ -537,6 +553,7 @@ cc_test(
 # HostList (vector-backed Layer 1) coverage.
 cc_test(
     name = "host_list_test",
+    size = "small",
     srcs = ["internal/host_list_test.cc"],
     deps = [
         ":cel_host",
@@ -550,6 +567,7 @@ cc_test(
 # ProtoList (proto-reflection over a single REPEATED field).
 cc_test(
     name = "proto_list_test",
+    size = "small",
     srcs = ["internal/proto_list_test.cc"],
     deps = [
         ":cel_host",
@@ -565,6 +583,7 @@ cc_test(
 # Layer 2 trampoline body for cel_host.cel_map_lookup.
 cc_test(
     name = "cel_map_lookup_impl_test",
+    size = "small",
     srcs = ["internal/cel_map_lookup_impl_test.cc"],
     deps = [
         ":cel_host",
@@ -581,6 +600,7 @@ cc_test(
 # (host vs arena) map equality through the normalizing snapshot walk.
 cc_test(
     name = "cel_map_eq_impl_test",
+    size = "small",
     srcs = ["internal/cel_map_eq_impl_test.cc"],
     deps = [
         ":cel_host",
@@ -598,6 +618,7 @@ cc_test(
 # (repeated-extension reads vs literal-constructed message lists).
 cc_test(
     name = "cel_list_eq_impl_test",
+    size = "small",
     srcs = ["internal/cel_list_eq_impl_test.cc"],
     deps = [
         ":cel_host",
@@ -616,6 +637,7 @@ cc_test(
 # Layer 2 trampoline body for cel_host.cel_list_at.
 cc_test(
     name = "cel_list_at_impl_test",
+    size = "small",
     srcs = ["internal/cel_list_at_impl_test.cc"],
     deps = [
         ":cel_host",
@@ -636,6 +658,7 @@ cc_test(
 # (the codegen range-absorption guard must propagate those first).
 cc_test(
     name = "cel_iter_open_impl_test",
+    size = "small",
     srcs = ["internal/cel_iter_open_impl_test.cc"],
     deps = [
         ":cel_host",
@@ -734,6 +757,7 @@ cc_library(
 # m28 — dual-mode coverage.
 link_mode_cc_test(
     name = "instance_test",
+    size = "large",
     srcs = ["instance_test.cc"],
     tags = ["manual"],
     deps = [
@@ -796,6 +820,7 @@ cc_library(
 # m28 — dual-mode coverage.
 link_mode_cc_test(
     name = "engine_test",
+    size = "large",
     srcs = ["engine_test.cc"],
     tags = ["manual"],
     deps = [

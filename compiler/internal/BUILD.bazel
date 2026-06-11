@@ -38,6 +38,7 @@ cc_library(
 
 cc_test(
     name = "compile_test",
+    size = "large",
     srcs = ["compile_test.cc"],
     deps = [
         ":compile",

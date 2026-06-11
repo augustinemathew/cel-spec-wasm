@@ -19,6 +19,7 @@ cc_library(
 
 cc_test(
     name = "corpus_loader_test",
+    size = "small",
     srcs = ["corpus_loader_test.cc"],
     data = [
         "corpus/arithmetic.yaml",

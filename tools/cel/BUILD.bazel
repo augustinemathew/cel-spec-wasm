@@ -26,6 +26,7 @@ cc_library(
 
 cc_test(
     name = "var_parser_test",
+    size = "small",
     srcs = ["var_parser_test.cc"],
     deps = [
         ":var_parser",
@@ -62,6 +63,7 @@ cc_library(
 
 cc_test(
     name = "value_format_test",
+    size = "small",
     srcs = ["value_format_test.cc"],
     deps = [
         ":value_format",
@@ -125,6 +127,7 @@ cc_binary(
 # argv + dispatches subcommands correctly.
 sh_test(
     name = "cel_smoke_test",
+    size = "large",
     srcs = ["cel_smoke_test.sh"],
     data = [":cel"],
 )
@@ -136,6 +139,7 @@ sh_test(
 # for the coverage axes.
 cc_test(
     name = "activation_matrix_test",
+    size = "large",
     srcs = ["activation_matrix_test.cc"],
     tags = ["manual"],
     deps = [

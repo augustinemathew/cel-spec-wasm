@@ -105,7 +105,7 @@ cc_library(
 # sensitive, so it is kept to this one TU that links cleanly.
 cc_test(
     name = "cel_cpp_oracle_test",
-    size = "medium",
+    size = "large",
     srcs = ["cel_cpp_oracle_test.cc"],
     deps = [
         ":cel_cpp_oracle",
@@ -134,7 +134,7 @@ cc_test(
 # does NOT link our pipeline (see the symbol-clash note above).
 cc_test(
     name = "cel_cpp_oracle_unknown_payload_test",
-    size = "medium",
+    size = "small",
     srcs = ["cel_cpp_oracle_unknown_payload_test.cc"],
     deps = [
         ":cel_cpp_oracle",
@@ -152,7 +152,7 @@ cc_test(
 # (see the symbol-clash note above).
 cc_test(
     name = "cel_cpp_oracle_comprehension_test",
-    size = "medium",
+    size = "small",
     srcs = ["cel_cpp_oracle_comprehension_test.cc"],
     deps = [
         ":cel_cpp_oracle",
