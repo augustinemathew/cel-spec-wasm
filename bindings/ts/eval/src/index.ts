@@ -17,6 +17,7 @@ export { decodeAbi, CelAbiError } from './abi.js';
 // run `$eval`, decode the result.
 export { Engine } from './engine.js';
 export type { EngineOptions } from './engine.js';
+export { CelRuntimeLoadError } from './runtime-loader.js';
 export { Instance, CelEvalError } from './instance.js';
 export type { Activation } from './activation.js';
 export { CelMarshalError } from './marshal.js';

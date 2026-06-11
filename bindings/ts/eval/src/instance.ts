@@ -53,6 +53,7 @@ import {
   CEL_VALUE_PAYLOAD_OFFSET,
   CEL_VALUE_SIZE,
   CelKind,
+  LinkMode,
 } from './types.js';
 import type {
   CelAbi,
@@ -66,15 +67,25 @@ import type {
 const CEL_FN_MODULE = 'cel_fn';
 
 /**
+ * The `cel.*` import module name a DYNAMIC Program imports the runtime
+ * helpers (incl. the shared `cel.memory`) from.  A STATIC Program imports
+ * nothing from this namespace — its presence is the routing signal.
+ */
+const CEL_RUNTIME_MODULE = 'cel';
+
+/**
  * Thrown when `$eval` traps or the Program's exports are malformed — a
  * host / Program failure, not a CEL spec error (those are CEL_ERROR
  * values, returned).  Carries a `.code` distinguishing the failure mode.
  */
 export class CelEvalError extends Error {
   override readonly name = 'CelEvalError';
-  readonly code: 'TRAP' | 'BAD_EXPORTS' | 'MARSHAL';
+  readonly code: 'TRAP' | 'BAD_EXPORTS' | 'MARSHAL' | 'LINK_MODE';
 
-  constructor(code: 'TRAP' | 'BAD_EXPORTS' | 'MARSHAL', message: string) {
+  constructor(
+    code: 'TRAP' | 'BAD_EXPORTS' | 'MARSHAL' | 'LINK_MODE',
+    message: string,
+  ) {
     super(message);
     this.code = code;
   }
@@ -254,16 +265,31 @@ export class Instance {
  * Instantiate `program`, assemble the host import object, and return a
  * ready-to-eval {@link Instance}.  Called by {@link Engine.plan}.
  *
- * Builds a fresh per-Instance externref table + codec + host-trampoline
- * context, then merges the four host import groups the static Program
- * declares (§A.4.4): the `cel_host` trampolines (aggregate + proto + the
- * timestamp-tz accessor), the registered `cel_fn` functions, `cel_env`,
- * and the WASI stubs.
+ * Routes by import introspection, mirroring the C++ engine's `Plan`
+ * (`eval/engine.cc`):
+ *
+ *   - STATIC (no `cel.*` imports): the Program bundles the runtime.  Build
+ *     the four host import groups (§A.4.4) — `cel_host` trampolines,
+ *     `cel_fn` functions, `cel_env`, WASI — instantiate the Program, and
+ *     its own exports back the Instance's memory + arena.
+ *   - DYNAMIC (`cel.*` imported): the Program is a thin expr module.
+ *     Instantiate the standalone `cel_runtime.wasm` (supplying it the same
+ *     `cel_host` + `cel_env` + WASI groups), expose its exports as the
+ *     expr module's `cel.*` imports (incl. the shared `cel.memory`), then
+ *     instantiate the expr module against `{ cel, cel_host, cel_fn }`.
+ *     The Instance's memory is the runtime's; its `eval` is the expr
+ *     module's.
+ *
+ * Both paths build a fresh per-Instance externref table + codec +
+ * host-trampoline context, and `runtimeModule` is fetched lazily — only
+ * the dynamic branch calls it, so a static workload never compiles the
+ * runtime.
  */
 export async function instantiateProgram(
   program: Program,
   descriptors: DescriptorSet | undefined,
   functions: ReadonlyMap<string, HostFunction>,
+  runtimeModule: () => Promise<WebAssembly.Module>,
 ): Promise<Instance> {
   const refs = new ExternrefTable();
   const abi = program.abi;
@@ -271,7 +297,10 @@ export async function instantiateProgram(
   // The instance handle is populated after instantiation; the host
   // imports close over getters that read this holder, so they see the
   // live exports once instantiation completes.  A mutable holder (not a
-  // reassigned `let`) keeps the closures' view of it explicit.
+  // reassigned `let`) keeps the closures' view of it explicit.  In
+  // dynamic mode the handle is set to the runtime's exports — the
+  // trampolines + codec + marshal then operate on the runtime's shared
+  // memory.
   const handle: { exports: ProgramExports | undefined } = {
     exports: undefined,
   };
@@ -291,7 +320,7 @@ export async function instantiateProgram(
   const arenaAlloc = (n: number): number => requireExports().arenaAlloc(n);
 
   const codecEnv: CodecEnv = { view, bytes, refs, arenaAlloc };
-  const importObject = buildImports(
+  const hostImports = buildImports(
     { view, bytes, refs, arenaAlloc, memoryOf },
     codecEnv,
     abi,
@@ -299,20 +328,24 @@ export async function instantiateProgram(
     functions,
   );
 
-  const { instance } = await WebAssembly.instantiate(
-    program.wasm.buffer.slice(
-      program.wasm.byteOffset,
-      program.wasm.byteOffset + program.wasm.byteLength,
-    ),
-    importObject,
-  );
-  handle.exports = readExports(instance);
-  handle.exports.callCtors?.();
+  // Compile the expr module once so we can introspect its imports before
+  // deciding how to link it.
+  const exprModule = await WebAssembly.compile(programBytes(program));
+  const isDynamic = importsCelNamespace(exprModule);
+  crossCheckLinkMode(abi, isDynamic);
+
+  if (isDynamic) {
+    await linkDynamic(exprModule, hostImports, handle, await runtimeModule());
+  } else {
+    await linkStatic(exprModule, hostImports, handle);
+  }
+
   // Seed the runtime's bump arena once per Instance (mirrors the C++
   // engine's `arena_init(CELWASM_ARENA_CAPACITY_BYTES)` Plan step,
-  // `eval/engine.cc:343`).  Without it, the first `$eval` allocation traps
-  // `unreachable`.
-  handle.exports.arenaInit(ARENA_CAPACITY_BYTES);
+  // `eval/engine.cc`).  Without it, the first `$eval` allocation traps
+  // `unreachable`.  In dynamic mode this seeds the runtime's arena, which
+  // the expr module shares.
+  requireExports().arenaInit(ARENA_CAPACITY_BYTES);
 
   // Re-decode the ABI from the wasm bytes so the Instance owns its own
   // copy (the caller's Program.abi is the same data; decode defensively
@@ -322,7 +355,158 @@ export async function instantiateProgram(
       ? abi
       : decodeAbi(program.wasm);
 
-  return new Instance(handle.exports, resolvedAbi, refs, descriptors);
+  return new Instance(requireExports(), resolvedAbi, refs, descriptors);
+}
+
+/** The Program's wasm as a non-shared ArrayBuffer for compilation. */
+function programBytes(program: Program): ArrayBuffer {
+  return program.wasm.buffer.slice(
+    program.wasm.byteOffset,
+    program.wasm.byteOffset + program.wasm.byteLength,
+  );
+}
+
+/**
+ * True iff `module` imports anything from the `cel` namespace — the
+ * import-shape routing signal a DYNAMIC Program carries (it imports the
+ * runtime helpers, incl. `cel.memory`, from `cel`).  A STATIC Program
+ * bundles the runtime and imports nothing from `cel`.  This is the
+ * authoritative router (the `cel.abi` link_mode label is only a
+ * cross-check); mirrors `ModuleImportsCelNamespace` in `eval/engine.cc`.
+ */
+function importsCelNamespace(module: WebAssembly.Module): boolean {
+  return WebAssembly.Module.imports(module).some(
+    (i) => i.module === CEL_RUNTIME_MODULE,
+  );
+}
+
+/**
+ * Cross-check the `cel.abi` link_mode label against the import-derived
+ * routing — a tripwire for mislabeled / corrupted artifacts (cache
+ * validators, cross-process shipping).  Routing stays driven by the
+ * import shape; only a label that contradicts that shape fails here.
+ * Mirrors `ValidateLinkModeLabel` in `eval/engine.cc`.
+ */
+function crossCheckLinkMode(abi: CelAbi, isDynamic: boolean): void {
+  if (abi.linkMode === LinkMode.STATIC && isDynamic) {
+    throw new CelEvalError(
+      'LINK_MODE',
+      'cel.abi link_mode says STATIC but the module imports from the `cel` ' +
+        'namespace (dynamic-link shape) — the Program is mislabeled or corrupted',
+    );
+  }
+  if (abi.linkMode === LinkMode.DYNAMIC && !isDynamic) {
+    throw new CelEvalError(
+      'LINK_MODE',
+      'cel.abi link_mode says DYNAMIC but the module has no `cel` namespace ' +
+        'imports (static-link shape) — the Program is mislabeled or corrupted',
+    );
+  }
+}
+
+/**
+ * STATIC link: instantiate the self-contained Program; its own exports
+ * (memory + arena + eval) back the Instance.  Mirrors the static tail of
+ * `Engine::Plan` (`BindStaticModeHelpers`).
+ */
+async function linkStatic(
+  exprModule: WebAssembly.Module,
+  hostImports: HostImports,
+  handle: { exports: ProgramExports | undefined },
+): Promise<void> {
+  const instance = await WebAssembly.instantiate(exprModule, {
+    cel_host: hostImports.celHost,
+    [CEL_FN_MODULE]: hostImports.celFn,
+    [CEL_ENV_MODULE]: hostImports.celEnv,
+    [WASI_MODULE]: hostImports.wasi,
+  });
+  handle.exports = readExports(instance);
+  // Defense-in-depth: a static Program exports `__wasm_call_ctors`
+  // explicitly (the strip tool keeps it through DCE) so a future surface
+  // that needs C++ static-ctor init is covered.  Today's surface is
+  // empirically zero-init-safe; absent the export we skip.
+  handle.exports.callCtors?.();
+}
+
+/**
+ * DYNAMIC link: instantiate the standalone `cel_runtime.wasm`, expose its
+ * exports as the expr module's `cel.*` imports, then instantiate the expr
+ * module.  The runtime's exported (shared) memory + arena back the
+ * Instance; the expr module contributes `eval`.  Mirrors the C++ engine's
+ * `InstantiateRuntime` → `DefineCelLinkerBindings` → `InstantiateExpr`.
+ */
+async function linkDynamic(
+  exprModule: WebAssembly.Module,
+  hostImports: HostImports,
+  handle: { exports: ProgramExports | undefined },
+  runtimeModule: WebAssembly.Module,
+): Promise<void> {
+  // 1. Instantiate the runtime.  It imports the SAME cel_host trampolines
+  //    + cel_env + WASI groups (its aggregate dispatchers call back into
+  //    cel_host; its libc references cel_env/WASI).  The trampolines close
+  //    over `handle.exports`, so set the handle to the runtime's exports
+  //    immediately — before any expr eval drives a trampoline.
+  const runtimeInstance = await WebAssembly.instantiate(runtimeModule, {
+    cel_host: hostImports.celHost,
+    [CEL_ENV_MODULE]: hostImports.celEnv,
+    [WASI_MODULE]: hostImports.wasi,
+  });
+  const runtimeExports = readRuntimeExports(runtimeInstance);
+  handle.exports = runtimeExports;
+
+  // 2. Build the `cel` import object from the runtime's exports:
+  //    `cel.memory` = the runtime's shared memory, `cel.arena_alloc` =
+  //    the runtime's bump allocator, and every other `cel.<name>` =
+  //    `runtime.exports.<name>` (the helper functions the expr module
+  //    calls).  No lazy tracking — every `cel.*` import the expr declares
+  //    is bound from the runtime export of the same name (a missing one
+  //    surfaces as an instantiate LinkError naming `cel.<name>`).
+  const celImports = buildCelImports(exprModule, runtimeInstance.exports);
+
+  // 3. Instantiate the expr module against the runtime-backed `cel` group
+  //    plus the host trampolines + registered functions.
+  const exprInstance = await WebAssembly.instantiate(exprModule, {
+    [CEL_RUNTIME_MODULE]: celImports,
+    cel_host: hostImports.celHost,
+    [CEL_FN_MODULE]: hostImports.celFn,
+  });
+
+  // 4. Run the expr module's ctors if present (defense-in-depth; the
+  //    stripped runtime's command wrappers no longer run them per call).
+  const exprCtors = exprInstance.exports.__wasm_call_ctors;
+  if (typeof exprCtors === 'function') {
+    (exprCtors as () => void)();
+  }
+
+  // 5. The Instance's `eval` is the expr module's; everything else
+  //    (memory + arena) stays the runtime's.
+  handle.exports = { ...runtimeExports, eval: readEvalExport(exprInstance) };
+}
+
+/**
+ * Build the expr module's `cel.*` import object from the runtime's
+ * exports: bind every name the expr module imports from `cel` to the
+ * runtime export of the same name (`cel.memory` → the shared memory,
+ * `cel.arena_alloc` → the allocator, the helpers → their functions).
+ */
+function buildCelImports(
+  exprModule: WebAssembly.Module,
+  runtimeExports: WebAssembly.Exports,
+): WebAssembly.ModuleImports {
+  const cel: Record<string, WebAssembly.ImportValue> = {};
+  for (const imp of WebAssembly.Module.imports(exprModule)) {
+    if (imp.module !== CEL_RUNTIME_MODULE) continue;
+    const exported = runtimeExports[imp.name];
+    if (exported === undefined) {
+      throw new CelEvalError(
+        'BAD_EXPORTS',
+        `dynamic Program imports cel.${imp.name} but cel_runtime.wasm has ` +
+          `no export of that name`,
+      );
+    }
+    cel[imp.name] = exported as WebAssembly.ImportValue;
+  }
+  return cel;
 }
 
 // ── Import assembly ───────────────────────────────────────────────────
@@ -335,13 +519,29 @@ interface HostEnv {
   memoryOf(): WebAssembly.Memory | undefined;
 }
 
+/**
+ * The four host import groups, kept SEPARATE rather than pre-merged so the
+ * static and dynamic linkers can each wire the subset they need: the
+ * static Program takes all four on itself; in dynamic mode `cel_host` +
+ * `cel_env` + WASI go to the runtime and `cel_host` + `cel_fn` go to the
+ * expr module.  `cel_host` is shared by both runtime and expr (it satisfies
+ * both the runtime's aggregate dispatchers and the expr's proto/field
+ * trampolines).
+ */
+interface HostImports {
+  readonly celHost: Record<string, (...args: number[]) => void>;
+  readonly celFn: Record<string, (...args: number[]) => void>;
+  readonly celEnv: WebAssembly.ModuleImports;
+  readonly wasi: WebAssembly.ModuleImports;
+}
+
 function buildImports(
   host: HostEnv,
   codecEnv: CodecEnv,
   abi: CelAbi,
   descriptors: DescriptorSet | undefined,
   functions: ReadonlyMap<string, HostFunction>,
-): WebAssembly.Imports {
+): HostImports {
   const aggregateCtx: AggregateContext = {
     view: () => host.view(),
     bytes: () => host.bytes(),
@@ -378,10 +578,10 @@ function buildImports(
   const celFn = buildCelFnImports(codecEnv, functions);
 
   return {
-    cel_host: celHost,
-    [CEL_FN_MODULE]: celFn,
-    [CEL_ENV_MODULE]: stubs[CEL_ENV_MODULE] ?? {},
-    [WASI_MODULE]: stubs[WASI_MODULE] ?? {},
+    celHost,
+    celFn,
+    celEnv: stubs[CEL_ENV_MODULE] ?? {},
+    wasi: stubs[WASI_MODULE] ?? {},
   };
 }
 
@@ -501,40 +701,84 @@ function readExports(instance: WebAssembly.Instance): ProgramExports {
   const e = instance.exports;
   const memory = e.memory;
   const evalFn = e.eval;
-  const arenaInit = e.arena_init;
-  const arenaAlloc = e.arena_alloc;
-  const malloc = e.malloc;
   if (!(memory instanceof WebAssembly.Memory)) {
     throw new CelEvalError('BAD_EXPORTS', "Program does not export 'memory'");
   }
   if (typeof evalFn !== 'function') {
     throw new CelEvalError('BAD_EXPORTS', "Program does not export 'eval'");
   }
-  if (typeof arenaInit !== 'function') {
-    throw new CelEvalError(
-      'BAD_EXPORTS',
-      "Program does not export 'arena_init'",
-    );
-  }
-  if (typeof arenaAlloc !== 'function') {
-    throw new CelEvalError(
-      'BAD_EXPORTS',
-      "Program does not export 'arena_alloc'",
-    );
-  }
-  if (typeof malloc !== 'function') {
-    throw new CelEvalError('BAD_EXPORTS', "Program does not export 'malloc'");
-  }
   const callCtors = e.__wasm_call_ctors;
   return {
     memory,
     eval: evalFn as () => number,
-    arenaInit: arenaInit as (capBytes: number) => void,
-    arenaAlloc: arenaAlloc as (n: number) => number,
-    malloc: malloc as (n: number) => number,
+    arenaInit: requireFn(e, 'arena_init') as (capBytes: number) => void,
+    arenaAlloc: requireFn(e, 'arena_alloc') as (n: number) => number,
+    malloc: requireFn(e, 'malloc') as (n: number) => number,
     callCtors:
       typeof callCtors === 'function' ? (callCtors as () => void) : undefined,
   };
+}
+
+/**
+ * Pull the runtime-supplied exports (memory + arena + malloc) off the
+ * standalone `cel_runtime.wasm` instance in dynamic mode.  The runtime
+ * does NOT export `eval` (the expr module does — see {@link
+ * readEvalExport}) and does NOT export `__wasm_call_ctors` (the strip tool
+ * exports it on the static Program, not the standalone runtime), so this
+ * variant requires only the memory + arena surface.
+ */
+function readRuntimeExports(instance: WebAssembly.Instance): ProgramExports {
+  const e = instance.exports;
+  const memory = e.memory;
+  if (!(memory instanceof WebAssembly.Memory)) {
+    throw new CelEvalError(
+      'BAD_EXPORTS',
+      "cel_runtime.wasm does not export 'memory'",
+    );
+  }
+  return {
+    memory,
+    // Filled in by linkDynamic from the expr instance; never called on the
+    // runtime instance itself (the runtime has no `eval`).
+    eval: () => {
+      throw new CelEvalError(
+        'BAD_EXPORTS',
+        'cel_runtime.wasm has no eval export (the expr module supplies it)',
+      );
+    },
+    arenaInit: requireFn(e, 'arena_init') as (capBytes: number) => void,
+    arenaAlloc: requireFn(e, 'arena_alloc') as (n: number) => number,
+    malloc: requireFn(e, 'malloc') as (n: number) => number,
+    callCtors: undefined,
+  };
+}
+
+/** Pull the `eval` export off the dynamic expr instance. */
+function readEvalExport(instance: WebAssembly.Instance): () => number {
+  const evalFn = instance.exports.eval;
+  if (typeof evalFn !== 'function') {
+    throw new CelEvalError(
+      'BAD_EXPORTS',
+      "dynamic expr module does not export 'eval'",
+    );
+  }
+  return evalFn as () => number;
+}
+
+/**
+ * Require a function export by name, throwing BAD_EXPORTS if absent.  The
+ * caller casts the result to the concrete arity/return it expects (the
+ * arena/malloc exports are `(i32) -> i32`, arena_init is `(i32) -> ()`).
+ */
+function requireFn(
+  exports: WebAssembly.Exports,
+  name: string,
+): (...args: number[]) => unknown {
+  const fn = exports[name];
+  if (typeof fn !== 'function') {
+    throw new CelEvalError('BAD_EXPORTS', `instance does not export '${name}'`);
+  }
+  return fn as (...args: number[]) => unknown;
 }
 
 /**

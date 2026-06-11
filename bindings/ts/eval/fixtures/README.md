@@ -39,3 +39,19 @@ comprehensions, list & map indexing and membership, `size`, string
 methods, unicode `size`, a divide-by-zero error value, and several
 variable-bound expressions (the marshal path) including a realistic
 age/country policy in both its true and false cases.
+
+## `dynamic/` — DYNAMIC-link twins
+
+`dynamic/<name>.wasm` is the **DYNAMIC-link** compilation of the static
+fixture with the same `<name>` (and the same `manifest.json` `expr` +
+`compileVars`): a thin (~6 KB) expression module that imports the runtime
+helpers from the `cel` namespace (incl. the shared `cel.memory`) instead
+of bundling them. It is linked at plan time against the standalone
+`../runtime/cel_runtime.wasm`.
+
+The subset (`int_add`, `var_int_add`, `list_map_double`, `map_index`,
+`string_concat` — one per value shape) is what `eval/src/dynamic.test.ts`
+uses to prove (a) import-introspection routing and (b) that a dynamic
+Program evaluates to the **same** `CelValue` as its static twin. Regenerate
+with `bindings/ts/scripts/gen-dynamic-fixtures.mjs` (needs
+`bazel build //bindings/c:compiler_wasm` first).
