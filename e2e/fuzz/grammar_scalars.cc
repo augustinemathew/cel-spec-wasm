@@ -221,6 +221,23 @@ void RegisterStringFunctions(GrammarBuilder& b) {
            CelType::String(), CelType::Int());
   b.Ternary(CelType::String(), "string_substring_2", "(%0).substring(%1, %2)",
             CelType::String(), CelType::Int(), CelType::Int());
+  // String → String transforms.  `reverse`/`charAt` are
+  // codepoint-handling — the exact territory of the byte-vs-codepoint
+  // bug family — and (like `split`) a COMPUTED receiver exercises a
+  // different arena path than a literal, so mining over concatenated
+  // receivers is the load-bearing case.  `charAt(int)` is fallible
+  // (range error via the boundary int leaves; error-compared).
+  b.Binary(CelType::String(), "string_char_at", "(%0).charAt(%1)",
+           CelType::String(), CelType::Int());
+  b.Unary(CelType::String(), "string_lower_ascii", "(%0).lowerAscii()",
+          CelType::String());
+  b.Unary(CelType::String(), "string_upper_ascii", "(%0).upperAscii()",
+          CelType::String());
+  b.Unary(CelType::String(), "string_trim", "(%0).trim()", CelType::String());
+  b.Unary(CelType::String(), "string_reverse", "(%0).reverse()",
+          CelType::String());
+  b.Unary(CelType::String(), "strings_quote", "strings.quote(%0)",
+          CelType::String());
 }
 
 // math extension (`math.*`).  Namespace-qualified functions; the
@@ -407,10 +424,18 @@ void RegisterConversions(GrammarBuilder& b) {
   b.Unary(u, "uint_from_string", "uint(%0)", s);
   // → Double.
   b.Unary(d, "double_from_string", "double(%0)", s);
-  // → String.
+  // → String.  NB: `string(double)` is deliberately ABSENT — the
+  // oracle cannot validate double→string (its cel-cpp build lacks
+  // <charconv> double-to-chars, so it falls back to `%.17g`
+  // full-precision, e.g. `string(3.14)` → "3.1400000000000001"
+  // instead of the conformant shortest "3.14").  Worse, our own
+  // wasm libc++ `to_chars(general)` emits scientific where
+  // conformant `to_chars` gives fixed (`string(4294967295.0)` →
+  // "4.294967295e+09" vs "4294967295") — a real bug pinned as
+  // PbtStringDoubleScientificForm.  Double formatting is pinned
+  // directly in known_bugs (DoubleToString*), not fuzzed.
   b.Unary(s, "string_from_int", "string(%0)", i);
   b.Unary(s, "string_from_uint", "string(%0)", u);
-  b.Unary(s, "string_from_double", "string(%0)", d);
   b.Unary(s, "string_from_bool", "string(%0)", CelType::Bool());
   b.Unary(s, "string_from_bytes", "string(%0)", CelType::Bytes());
   // → Bytes.

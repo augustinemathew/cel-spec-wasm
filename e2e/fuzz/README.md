@@ -189,6 +189,25 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — string-ext remainder + a double-format finding
+
+- Added `charAt` / `lowerAscii` / `upperAscii` / `trim` / `reverse` /
+  `strings.quote` (`grammar_scalars.cc`) and `join` / `join(sep)`
+  (`grammar_aggregates.cc`). Strings ext — no oracle change. The new
+  functions themselves mine clean.
+- **Found**: mining surfaced `string(double)` divergences — e.g.
+  `string(4294967295.0)` → ours scientific "4.294967295e+09",
+  conformant "4294967295". TWO layers: (a) the oracle's cel-cpp
+  build lacks <charconv> double-to-chars and falls back to %.17g
+  ("3.14" → "3.1400000000000001"), so it **cannot validate
+  double→string**; (b) our wasm libc++ `to_chars(general)` emits
+  scientific where conformant `to_chars` gives the shorter fixed
+  form — a real toolchain bug. Pinned directly as
+  `KnownBugs.PbtStringDoubleScientificForm` (asserted against the
+  known-correct value, not the unreliable oracle). Removed
+  `string(double)` from the grammar — the oracle can't answer it and
+  double formatting is already pinned by the DoubleToString* tests.
+
 ### 2026-06-11 — conversion family
 
 - `RegisterConversions`: cross-numeric (`int(uint)` / `uint(int)` /

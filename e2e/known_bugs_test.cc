@@ -527,6 +527,32 @@ TEST(KnownBugs, DoubleToStringExponentForm) {
   EXPECT_EQ(*v->AsString(), "1e+10");
 }
 
+// e2e/fuzz found (string seed=113, M30 string-functions grammar):
+// `string(4294967295.0)` renders the SCIENTIFIC form
+// "4.294967295e+09" where the conformant shortest-round-trip is the
+// FIXED form "4294967295".  `std::chars_format::general` must choose
+// fixed vs scientific by output length (fixed preferred): fixed is
+// 10 chars, scientific 15, so fixed wins — cel-cpp's FormatDouble
+// (same to_chars call) produces "4294967295".  Our wasm libc++
+// `to_chars(double, general)` (cel_convert_double_format.cc) emits
+// scientific here instead — a toolchain-level non-conformance.
+// (Asserted directly, not via the differential oracle: the oracle's
+// cel-cpp build lacks <charconv> double-to-chars and falls back to
+// %.17g, so it cannot answer double-format questions — which is why
+// `string(double)` is excluded from the fuzz grammar.)  Sits beside
+// DoubleToStringShortestRoundTrip / DoubleToStringExponentForm,
+// which pin the cases that already work.
+TEST(KnownBugs, PbtStringDoubleScientificForm) {
+  GTEST_SKIP() << "KNOWN BUG (verified: renders '4.294967295e+09', want "
+                  "'4294967295'): wasm to_chars(general) picks scientific "
+                  "where fixed is shorter, cel_convert_double_format.cc. "
+                  "Delete to fix.";
+  auto v = TryEval("string(4294967295.0)");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
+  EXPECT_EQ(*v->AsString(), "4294967295");
+}
+
 TEST(KnownBugs, OptionalSelectOnMapRejected) {
   GTEST_SKIP()
       << "KNOWN BUG (verified: checker-rejected, want 1): static subset "

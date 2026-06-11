@@ -159,14 +159,19 @@ void RegisterMapConstructors(GrammarBuilder& b) {
   }
 }
 
-// String functions that PRODUCE an aggregate — `split` yields a
-// list<string>.  Total over its typed inputs (an empty separator
-// splits into characters; cel-cpp and we agree).  The scalar-
-// returning string functions (contains/indexOf/matches/…) live in
-// the scalar catalog.
+// String functions that bridge string ↔ list<string>: `split`
+// (string → list<string>) and `join` (list<string> → string).
+// Total over their typed inputs (an empty separator splits into
+// characters; join concatenates).  The scalar-returning string
+// functions (contains/indexOf/matches/…) live in the scalar
+// catalog.
 void RegisterStringAggregateFunctions(GrammarBuilder& b) {
-  b.Binary(CelType::List(CelType::String()), "string_split", "(%0).split(%1)",
-           CelType::String(), CelType::String());
+  const CelType ls = CelType::List(CelType::String());
+  b.Binary(ls, "string_split", "(%0).split(%1)", CelType::String(),
+           CelType::String());
+  b.Unary(CelType::String(), "list_join", "(%0).join()", ls);
+  b.Binary(CelType::String(), "list_join_sep", "(%0).join(%1)", ls,
+           CelType::String());
 }
 
 void RegisterSizeProductions(GrammarBuilder& b) {

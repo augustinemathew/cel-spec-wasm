@@ -37,7 +37,7 @@ note) · ⬜ none generated yet.
 | Ternary `?:` | (macro) | ✅ |
 | Comprehensions (`exists`/`all`/`exists_one`/`filter`/`map`) | (macros) | ✅ over lists; maps predicate-only |
 | Aggregates (list/map literals, nested) | — | ✅ |
-| String functions | ~27 | 🟡 see breakdown |
+| String functions | ~27 | 🟡 all but `format` + the two-arg pos/limit forms |
 | Type conversions | ~30 | 🟡 cross-numeric + string(x) + bytes/bool done; numeric-string-leaf + duration/timestamp parse open |
 | **math_ext** | 28 | ✅ |
 | **net_ext** | 20 | ⬜ |
@@ -106,11 +106,12 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
       (two-arg pos forms — resurface `IndexOfPosBoundIsByteNotCodepoint`)
 - [ ] `string_replace_string_string_int` (`replace` with limit)
 - [ ] `string_split_string_int` (`split` with limit)
-- [ ] `string_char_at` `string_lower_ascii` `string_upper_ascii`
-      `string_trim` `string_reverse`
-- [ ] `string_format` (the `%`-format mini-language — its own bug surface)
-- [ ] `strings_quote`
-- [ ] `list_join` `list_join_string`
+- [x] `string_char_at` `string_lower_ascii` `string_upper_ascii`
+      `string_trim` `string_reverse` (`grammar_scalars.cc`)
+- [x] `strings_quote`
+- [x] `list_join` `list_join_string` (`grammar_aggregates.cc`)
+- [ ] `string_format` (the `%`-format mini-language — its own bug
+      surface; needs format-string + typed-arg-list co-generation)
 
 ## Type conversions — 🟡 (`grammar_scalars.cc`: RegisterMixedTotalOps + RegisterConversions)
 
@@ -120,8 +121,13 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `string_to_int64` `string_to_uint64` `string_to_double`
       `string_to_bool` (parse family — fallible; current string
       leaves are non-numeric, so mostly both-error)
-- [x] `int64_to_string` `uint64_to_string` `double_to_string`
-      `bool_to_string` `bytes_to_string` (the `string(x)` family)
+- [x] `int64_to_string` `uint64_to_string` `bool_to_string`
+      `bytes_to_string` (the `string(x)` family)
+- [ ] `double_to_string` — EXCLUDED from the grammar: the oracle's
+      cel-cpp lacks <charconv> double-to-chars (falls back to %.17g)
+      so it can't validate double→string, and our wasm `to_chars`
+      has a scientific-vs-fixed bug (`PbtStringDoubleScientificForm`).
+      Pinned directly by the DoubleToString* known_bugs instead.
 - [x] `string_to_bytes` (`bytes(string)`)
 - [x] `int64_to_timestamp`-via-`int(timestamp)` reverse +
       `string(timestamp|duration)` shipped with RegisterTemporal
