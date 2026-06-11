@@ -2,11 +2,15 @@
 //
 // The demo proves the architecture's thesis: type a CEL expression →
 // compile it to a portable `.wasm` Program → download that artifact →
-// run it right there in the browser.  The Monaco integration and the
-// compile/download/run loop land in WI-4.1; this stub fixes the public
-// bootstrap entry point.
+// run it right there in the browser.  Compile goes through the dev-server
+// `/api/compile` endpoint (the browser can't subprocess the native CLI);
+// eval is pure client-side TypeScript via `@cel-wasm/eval`.
 
-/** Bootstrap the demo into the given root element.  Implemented in WI-4.1. */
-export function mountDemo(_root: HTMLElement): void {
-  throw new Error('mountDemo() is a stub until WI-4.1 (browser demo)');
+import { attachController } from './internal/controller.js';
+import { buildView } from './internal/view.js';
+
+/** Bootstrap the demo into the given root element. */
+export function mountDemo(root: HTMLElement): void {
+  const view = buildView(root);
+  attachController(view);
 }

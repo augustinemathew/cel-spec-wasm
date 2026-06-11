@@ -610,6 +610,21 @@ so they run **fully in parallel**.
 - *Done-when:* `npm run dev` serves it; compile→download→run works
   end-to-end for the example expressions; compile errors render in Monaco.
 - *Spec:* §A.1, §A.5.
+- *Status: shipped.* `bindings/ts/web/` is a Vite + Monaco app.
+  **Compile** posts to a Vite-plugin `POST /api/compile` endpoint
+  (`dev-server/compile-handler.ts`, drives the native `cel` CLI, returns
+  base64 wasm or parsed diagnostics); the `cel.abi` is decoded
+  client-side so the Node endpoint needs no protobufjs. **Run** is pure
+  client-side (`src/internal/run.ts` → `@cel-wasm/eval` Engine/Instance,
+  no network hop). **Download** saves `program.wasm`. Diagnostics render
+  inline via `setModelMarkers` plus an error panel. Seeded examples:
+  the access check (bound `age`/`country`), `[1,2,3].map(x, x*2)`,
+  `"hello".size()`, and `1 / 0` (error-value path). Headless verification:
+  `npm run build` clean, the endpoint serves wasm + diagnostics (live
+  curl), and `src/run.test.ts` proves the compile→eval wiring for every
+  example. The Monaco glue (`controller.ts`/`monaco-cel.ts`) is
+  browser-only (Monaco's entry can't load under node/jsdom) — verified by
+  `vite build` + the manual steps in `web/README.md`.
 
 ### Dependency graph (what can start when)
 

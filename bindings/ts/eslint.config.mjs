@@ -68,7 +68,7 @@ export default tseslint.config(
   },
   {
     // Config and test files may relax a few project-only rules.
-    files: ['**/*.test.ts', '*.config.{ts,mts,mjs}', '**/vitest.config.ts'],
+    files: ['**/*.test.ts', '**/*.config.{ts,mts,mjs}', '**/vitest.config.ts'],
     rules: {
       'import/no-default-export': 'off',
       'no-restricted-syntax': 'off',
