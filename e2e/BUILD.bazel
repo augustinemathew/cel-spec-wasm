@@ -300,6 +300,10 @@ cc_test(
 link_mode_e2e_cc_test(
     name = "m5_test",
     srcs = ["m5_test.cc"],
+    # "large" (900s): the static emission pays the per-compile Binaryen
+    # runtime merge and exceeds the 300s default on slower CI runners
+    # (GitHub macos-14 timed out at 300.1s; passes locally in ~140s).
+    size = "large",
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
