@@ -82,12 +82,27 @@ that was found **manually** (conformance mining / code reading) in
 territory the grammar doesn't reach — meaning PBT would have found it
 first if the productions existed.
 
-1. **Depth > 6 (deep nesting)** — the property test caps at depth 6
+0. **Large / wide expressions and bound aggregates** (steer,
+   2026-06-11): the grammar grows expressions by *depth* only; width
+   is capped at arity-10 list literals, and the activation binds
+   **scalars only** (`oracle_harness.cc::SliceBBoundActivation`) — so
+   PBT can never emit an activation-bound `list<T>` / `map<K,V>`,
+   leaving the whole host-origin aggregate path (`cel_list_in` over
+   bound data, host map lookup — the #17 family) invisible. Needed:
+   (a) bound `xs: list<int>` / `ms: map<string,int>` activation
+   entries + ident leaves (the m27 vocabulary table already specifies
+   them — never wired); (b) wide productions — arity-20/50 literals,
+   long `+`/`&&` chains via a width knob; (c) comprehensions over
+   bound ranges, not just literals; (d) revisit
+   `kMaxSourceBytes = 4 KiB` which silently caps exactly these shapes.
+1. **Depth > 6 (deep nesting)** — *opened 2026-06-11, first results
+   below.* The property test caps at depth 6
    (`cel_oracle_property_test.cc:338`), and historical deep mining was
    blocked by the #34 arena cliff. The growable arena landed with the
-   ssp-fix merge (3079b37) — **nobody has re-mined depth 7–10 since**.
-   Slot-reuse + Sethi-Ullman ordering also reshaped workspace layout
-   at exactly these depths. Cheapest unexplored territory in the repo.
+   ssp-fix merge (3079b37). First re-mining session: **0 value
+   divergences at depths 7–8**, but a systematic compile-capacity
+   ceiling (see notes log) — the static window, not the arena, is now
+   the deep/large-expression limiter.
 2. **Error-producing productions (3VL / absorption semantics)** — the
    grammar admits only total operations (no `/`, `%`, no unbounded
    indexing), so divergences like `ExistsAbsorbsErrorAccumulator`
@@ -120,6 +135,37 @@ first if the productions existed.
    unexercised by PBT.
 
 ## Notes log (newest first; add an entry per session)
+
+### 2026-06-11 — first deep-depth mining session (gap #1 opened)
+
+Miner runs (fastbuild, Apple Silicon), all on the Slice C grammar:
+
+| target | depth | seeds evaluated | agreed | DIVERGE | OUR-REJECT |
+| --- | --- | --- | --- | --- | --- |
+| `bool` | 7 | 889 | 881 | 0 | 8 (~0.9%) |
+| `bool` | 8 | 37 (stopped at 3 rejects) | 34 | 0 | 3 (~8%) |
+| `list_int` | 8 | 113 | 110 | 0 | 3 (~2.7%) |
+| `int` | 8 | 230 | 227 | 0 | 3 (~1.3%) |
+
+Findings:
+
+- **Zero value divergences at depths 7–8** (1252 agreeing samples).
+  The slot-reuse + growable-arena codegen holds up at depths never
+  mined before. The #34 arena cliff did not reappear.
+- **The new ceiling is compile capacity, not eval correctness.**
+  Every reject is `RESOURCE_EXHAUSTED: expression requires too many
+  workspace slots` — rodata + workspace exceeding the 8192-byte
+  static window (`ValidateExprStaticRegion`). Rejection rate grows
+  steeply with depth (~1% at 7 → ~8% at 8 for `bool`). This is the
+  same window pinned by `LiteralIntListInScan*` in
+  `known_bugs_test.cc`, but the PBT evidence is new: it bites
+  *ordinary nested expressions* at depth 8, not just pathological
+  literals. Production impact: a large policy expression fails to
+  compile with no recourse but hand-splitting. Feeds the m29
+  readiness plan (the static-region grow/relocate aspiration).
+- Steer received this session: prioritize **large** expressions —
+  width, many variables, bound lists/maps, comprehension-heavy
+  shapes. Filed as gap #0 above; it's the next surface to implement.
 
 ### 2026-06-11 — baseline analysis (loop session start)
 
