@@ -189,6 +189,20 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — encoders (base64) + cross-type comparison triage
+
+- Added `base64.encode(bytes)` / `base64.decode(string)`
+  (`grammar_scalars.cc`). Oracle gained the encoders extension
+  (`EncodersCompilerLibrary` + `RegisterEncodersFunctions`, same
+  pattern as strings/math). Mining string + bytes at d4 = 0
+  divergences (base64.decode on non-base64 leaves both-errors).
+  COVERAGE encoders block ✅.
+- **Cross-type comparisons triaged OUT** of the fuzz scope: verified
+  `1 < 2u` / `1.0 < 2` / `2u > 1` all fail type-check in our
+  compiler (RejectDyn) — the heterogeneous-numeric ordering
+  overloads (`greater_double_int64` etc.) are `dyn`-only, outside
+  the static subset by design. Marked ⊘ in COVERAGE, not a target.
+
 ### 2026-06-11 — string-ext remainder + a double-format finding
 
 - Added `charAt` / `lowerAscii` / `upperAscii` / `trim` / `reverse` /

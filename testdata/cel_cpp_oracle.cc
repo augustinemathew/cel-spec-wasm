@@ -24,6 +24,7 @@
 #include "compiler/compiler_factory.h"
 #include "compiler/optional.h"
 #include "compiler/standard_library.h"
+#include "extensions/encoders.h"
 #include "extensions/math_ext.h"
 #include "extensions/math_ext_decls.h"
 #include "extensions/protobuf/enum_adapter.h"
@@ -93,8 +94,13 @@ absl::Status RegisterRuntimeExtensions(cel::RuntimeBuilder& builder,
       !s.ok()) {
     return s;
   }
-  return cel::extensions::RegisterMathExtensionFunctions(
-      builder.function_registry(), opts);
+  if (auto s = cel::extensions::RegisterMathExtensionFunctions(
+          builder.function_registry(), opts);
+      !s.ok()) {
+    return s;
+  }
+  return cel::extensions::RegisterEncodersFunctions(builder.function_registry(),
+                                                    opts);
 }
 
 absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
@@ -170,7 +176,11 @@ absl::Status AddCompilerLibraries(cel::CompilerBuilder& builder) {
       !s.ok()) {
     return s;
   }
-  return builder.AddLibrary(cel::extensions::MathCompilerLibrary());
+  if (auto s = builder.AddLibrary(cel::extensions::MathCompilerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  return builder.AddLibrary(cel::extensions::EncodersCompilerLibrary());
 }
 
 // name as an unbound activation variable).

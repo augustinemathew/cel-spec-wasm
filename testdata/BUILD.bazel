@@ -79,6 +79,7 @@ cc_library(
         "@cel-cpp//compiler:compiler_factory",
         "@cel-cpp//compiler:optional",
         "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//extensions:encoders",
         "@cel-cpp//extensions:math_ext",
         "@cel-cpp//extensions:math_ext_decls",
         "@cel-cpp//extensions:strings",

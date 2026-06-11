@@ -238,6 +238,13 @@ void RegisterStringFunctions(GrammarBuilder& b) {
           CelType::String());
   b.Unary(CelType::String(), "strings_quote", "strings.quote(%0)",
           CelType::String());
+  // encoders extension — base64.  `encode(bytes)` → String (total);
+  // `decode(string)` → Bytes (fallible: non-base64 input errors, so
+  // the non-base64 string leaves both-error against cel-cpp).
+  b.Unary(CelType::String(), "base64_encode", "base64.encode(%0)",
+          CelType::Bytes());
+  b.Unary(CelType::Bytes(), "base64_decode", "base64.decode(%0)",
+          CelType::String());
 }
 
 // math extension (`math.*`).  Namespace-qualified functions; the

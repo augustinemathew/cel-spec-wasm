@@ -30,7 +30,7 @@ note) · ⬜ none generated yet.
 | Category | Overloads | Status |
 | --- | ---: | --- |
 | Arithmetic (numeric) | 17 | 🟡 numeric core; temporal/list `+` open |
-| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq + temporal; string/bytes ordering & cross-type open |
+| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq + temporal done; string/bytes ordering open; cross-type ⊘ (dyn-only, out of subset) |
 | Logical (`&&` `\|\|` `!`) | 3 | ✅ |
 | `size` | 4 | ✅ |
 | `in` | 2 | ✅ |
@@ -43,7 +43,7 @@ note) · ⬜ none generated yet.
 | **net_ext** | 20 | ⬜ |
 | **timestamp accessors** | 23 | 🟡 no-tz forms done; `_with_tz` open |
 | **duration accessors** | 7 | ✅ |
-| **encoders (base64)** | 2 | ⬜ |
+| **encoders (base64)** | 2 | ✅ |
 | **optionals** | ~14 | ⬜ |
 | `type()` | 1 | ⬜ |
 
@@ -76,10 +76,12 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `equals` / `not_equals` (heterogeneous top-level), bool/string/bytes eq
 - [ ] string/bytes **ordering**: `less_string` `less_bytes`
       `greater_string` `greater_bytes` `less_equals_*` `greater_equals_*`
-- [ ] **cross-type numeric** (24): `less_double_int64`
-      `greater_int64_uint64` `less_equals_uint64_double` … (the
-      heterogeneous-comparison matrix — high bug-yield, needs the
-      generator to mix numeric types in one comparison)
+- ⊘ **cross-type numeric** (24): `less_double_int64`
+      `greater_int64_uint64` `less_equals_uint64_double` … — OUT OF
+      the static subset by design.  Verified 2026-06-11: `1 < 2u`,
+      `1.0 < 2` etc. fail type-check in our compiler (RejectDyn);
+      these overloads are reachable only through `dyn`, which the
+      fuzzer (and the compiler) excludes.  Not a fuzz target.
 - [x] `{less,less_equals,greater,greater_equals,equals,not_equals}_duration`
       and `_timestamp` (temporal eq + ordering — `RegisterTemporal`)
 
@@ -172,9 +174,11 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `duration_to_{hours,minutes,seconds,milliseconds}`
 - [x] `duration_to_int64` `duration_to_string` (int()/string())
 
-## encoders (base64) — ⬜
+## encoders (base64) — ✅ (`grammar_scalars.cc`: RegisterStringFunctions; oracle gained EncodersCompilerLibrary + RegisterEncodersFunctions)
 
-- [ ] `base64_encode_bytes` `base64_decode_string`
+- [x] `base64_encode_bytes` (`base64.encode(bytes)` → String, total)
+- [x] `base64_decode_string` (`base64.decode(string)` → Bytes,
+      fallible — non-base64 leaves both-error)
 
 ## optionals — ⬜ (needs `optional<T>` leaves; `.?` blocked by `OptionalSelectOnMapRejected`)
 
