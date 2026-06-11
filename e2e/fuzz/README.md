@@ -204,6 +204,18 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — nightly CI fuzz job (M30.F complete)
+
+- `.github/workflows/fuzz.yml`: a scheduled (nightly) +
+  workflow_dispatch job that runs `scripts/fuzz.sh validate` then
+  `scripts/fuzz.sh sweep` over all 13 targets and **fails on any
+  divergence**. Its own workflow (not per-PR ci.yml) so the
+  minutes-long sweep doesn't gate every PR. The fuzzer is now
+  protective, not just on-demand: a regression (miscompile or
+  over-permissive overload) landing on master fails the nightly.
+- Validated: YAML well-formed; `fuzz.sh sweep 8 3` exits 0 across
+  all 13 targets; the per-target loop+exit-code logic confirmed.
+
 ### 2026-06-11 — string/bytes ordering + net_ext/optionals triage
 
 - Added string/bytes `<` `<=` `>` `>=` (the grammar had deferred

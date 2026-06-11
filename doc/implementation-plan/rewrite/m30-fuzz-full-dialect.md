@@ -153,7 +153,14 @@ claim, not a vibe — the same discipline as the conformance badge.
   surfacing interaction bugs uniform sampling dilutes); weight
   tuning from divergence-rich runs.
 
-### M30.F — Ergonomics + CI (the "kick off a test in a minute" bar)
+### M30.F — Ergonomics + CI (the "kick off a test in a minute" bar) — SHIPPED 2026-06-11
+
+> `scripts/fuzz.sh` (validate / mine / sweep / repro / samples /
+> kill) is the one entry point; `mine_divergences` prints a
+> machine-readable `RESULT` line and exits non-zero (= divergence
+> count) so it gates CI.  `.github/workflows/fuzz.yml` runs a
+> nightly sweep over all 13 targets and fails on any divergence.
+> Corpus persistence (committed repro seeds) remains future work.
 
 - `scripts/fuzz.sh` — the one entry point: `fuzz.sh mine [target|all]
   [--depth N] [--seeds N]`, `fuzz.sh sweep` (all targets × depth

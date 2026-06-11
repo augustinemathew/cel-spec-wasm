@@ -1,0 +1,69 @@
+# Nightly differential-fuzz sweep for the CEL compiler.
+#
+# Runs `scripts/fuzz.sh` over the e2e/fuzz typed-attribute grammar:
+# generate type-checked CEL, evaluate through both our pipeline and
+# the cel-cpp oracle, and fail if any target DIVERGES.  This is the
+# protective half of the fuzzer — the grammar is comprehensive and
+# clean today, so a divergence here means a regression (a real
+# miscompile or an over-permissive overload) landed on master.
+#
+# Kept in its own workflow (not the per-PR ci.yml) so the cadence is
+# independent: the sweep is minutes-long and shouldn't gate every PR.
+# `workflow_dispatch` lets you run it on demand with custom
+# seeds/depth; the nightly schedule runs the defaults.
+#
+# Setup mirrors ci.yml's macOS job (fetch the pinned cel-cpp, restore
+# the bazel disk cache).  A divergence fails the job; the summary +
+# the per-seed DIVERGE lines are in the step log, and the offending
+# source can be re-run locally with `scripts/fuzz.sh repro`.
+name: fuzz
+
+on:
+  schedule:
+    # 07:00 UTC daily (~midnight US Pacific).
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seeds per target"
+        default: "300"
+      depth:
+        description: "Generation depth"
+        default: "6"
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Validate grammar (L1/L2/L3)
+        # A malformed grammar makes every mined divergence a false
+        # positive, so the structural/checker/composition checks gate
+        # the sweep.
+        run: scripts/fuzz.sh validate
+
+      - name: Sweep every target
+        # Exit code = number of diverging targets; non-zero fails the
+        # step.  Defaults for the nightly schedule; overridable via
+        # workflow_dispatch inputs.
+        run: scripts/fuzz.sh sweep "${{ github.event.inputs.seeds || '300' }}" "${{ github.event.inputs.depth || '6' }}"
