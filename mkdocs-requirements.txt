@@ -1,0 +1,6 @@
+# Pinned toolchain for the hosted docs site (mkdocs.yml).
+# Used by .github/workflows/pages.yml and for local `mkdocs serve`.
+#   python3 -m venv .venv && .venv/bin/pip install -r mkdocs-requirements.txt
+# Pinned to the last cleanly-MIT release (9.5.x); 9.6+/2.0 added a
+# licensing nag. Bump deliberately if that model becomes acceptable.
+mkdocs-material==9.5.50

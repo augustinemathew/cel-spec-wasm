@@ -1,0 +1,107 @@
+# Hosted documentation site for cel-wasm — mkdocs-material on GitHub Pages.
+# Build:  mkdocs build       (output in site/)
+# Serve:  mkdocs serve        (live preview at http://127.0.0.1:8000)
+# Deploy: handled by .github/workflows/pages.yml on push to master.
+#
+# The site source is the existing `doc/` tree (docs_dir below); this file
+# only adds a theme, a curated nav, and a home page.  Internal working
+# docs (implementation-plan/, design/notes/) are kept out of the build.
+
+site_name: cel-wasm
+site_description: >-
+  An AOT compiler for CEL: lower an expression to a portable .wasm module,
+  then JIT it to native code inside a sandbox. Up to 25× faster than the
+  cel-cpp interpreter on repeated evaluation.
+site_url: https://augustinemathew.github.io/cel-spec-wasm/
+repo_url: https://github.com/augustinemathew/cel-spec-wasm
+repo_name: augustinemathew/cel-spec-wasm
+edit_uri: edit/master/doc/
+copyright: Apache-2.0
+
+docs_dir: doc
+
+# Keep the internal working docs out of the published site — they are
+# milestone history and per-component checklists, not user-facing.
+exclude_docs: |
+  implementation-plan/
+  design/notes/
+  extensions/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# Out-of-tree links (e.g. `../README.md`, `../conformance/README.md`) in
+# the existing prose resolve on GitHub but not inside the site; warn
+# rather than fail the build while they are migrated to site-internal or
+# absolute links.
+validation:
+  unrecognized_links: warn
+  absolute_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Getting started: user-guide/getting-started.md
+  - User guide:
+      - Overview: user-guide/index.md
+      - FAQ: user-guide/faq.md
+      - Security model: user-guide/security-model.md
+      - Writing host functions: user-guide/writing-host-functions.md
+      - Writing component functions: user-guide/writing-component-functions.md
+  - Architecture:
+      - Overview: design/00-architecture.md
+      - Compiler: design/01-compiler.md
+      - Evaluator: design/02-evaluator.md
+      - ABI & memory: design/03-abi-and-memory.md
+      - Runtime: design/04-runtime.md
+      - Custom functions: design/05-custom-functions.md
+      - Testing strategy: design/06-testing-strategy.md
+      - Benchmarking: design/07-benchmarking.md
+  - Reference:
+      - Compiler overview: compiler-overview.md
+      - CEL language definition: langdef.md
+      - Contributing: contributing.md
+  - Conformance: https://github.com/augustinemathew/cel-spec-wasm/blob/master/conformance/README.md
+  - Benchmarks: https://github.com/augustinemathew/cel-spec-wasm/blob/master/benchmark/README.md

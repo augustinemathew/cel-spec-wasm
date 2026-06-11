@@ -1,0 +1,54 @@
+# Builds the mkdocs-material site (mkdocs.yml) and publishes it to GitHub
+# Pages. One-time setup by the repo owner: Settings → Pages → Source =
+# "GitHub Actions". After that this deploys on every push to master that
+# touches the docs.
+name: docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - doc/**
+      - mkdocs.yml
+      - mkdocs-requirements.txt
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+# Least-privilege token scoped to a Pages deploy.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight Pages deploy at a time; don't cancel a running publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r mkdocs-requirements.txt
+      # Non-strict: some prose still links to out-of-tree repo files
+      # (../conformance/README.md, …) that resolve on GitHub but warn
+      # here; those are migrated incrementally, not build-breaking.
+      - run: mkdocs build --verbose
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

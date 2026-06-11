@@ -1,809 +1,584 @@
 # Compiler design — the pass pipeline
 
-Status: current — authored 2026-06-10 from the design-rebuild notes
-plus the post-merge code (slot-allocator free list, static-region
-gates). Supersedes: compiler sections of
-doc/implementation-plan/rewrite/design.md; memory-layout-design.md
-(jointly with 03-abi-and-memory.md); map-list-dispatch.md;
-m5-kcall-comprehensions.md and follow-on;
-cross-numeric-ordering-plan.md; slice2-control-flow-plan.md;
-dyn-passthrough-plan.md.
+Status: current — authored 2026-06-10, rewritten for clarity 2026-06-11.
+System context (the four roles, the link-mode fork, threading) is
+[`00-architecture.md`](00-architecture.md); the byte-level wire format
+is [`03-abi-and-memory.md`](03-abi-and-memory.md). This doc is the
+compiler itself: how a CEL string becomes wasm.
 
-The compiler is presented as a chain of pass contracts — consumes /
-produces / invariant established / breaks-if-reordered — with every
-mechanism explained at its spot in the chain. System context (role
-split, link-mode fork, threading) is `00-architecture.md`;
-byte-level wire facts are `03-abi-and-memory.md`.
+## 1. The shape of the thing
 
-## 1. Pipeline overview
+The compiler takes a CEL string and produces a `.wasm` module plus a
+`cel.abi` descriptor. That's it — one function, `Compiler::Compile`,
+in and bytes out.
+
+Two ideas make the whole pipeline easy to hold in your head:
+
+**The cel-cpp AST *is* our IR.** We don't lower CEL into some custom
+intermediate form. We parse and type-check with cel-cpp, get back its
+`cel::Ast`, and walk *that* tree the rest of the way. There is no
+optimizer, no SSA, no basic blocks — just a typed tree.
+
+**Everything we learn lives in a side-table, not the tree.** The AST
+belongs to cel-cpp; we can't bolt fields onto its nodes. So every fact
+a later pass needs — "this node's value is a string," "this variable
+is wasm local 3," "this result lives at byte offset 240" — gets written
+into one `flat_hash_map<node_id, NodeAnnotation>`. A pass is therefore
+always the same move: *read the AST plus what earlier passes annotated,
+write more annotations.* The tree is mutated exactly twice, and only to
+fold two kinds of constant (§3); otherwise it is read-only from parse
+to codegen.
+
+Hold those two ideas and the pipeline is just a sequence of annotators
+followed by an emitter:
 
 ![The compile→eval pipeline](diagrams/pipeline.svg)
 
-`Compiler::Compile(source, CompilerOptions)` (`compiler/compiler.h`)
-maps the public options onto the internal `CompileOptions` and calls
-the facade `celwasm::Compile` (`compiler/internal/compile.cc`),
-which dispatches on `link_mode` and runs the chain below.
+| Stage | What it adds | In one sentence |
+|---|---|---|
+| **Frontend** (§3) | a typed `cel::Ast` | parse + type-check with cel-cpp, then reject anything we can't compile |
+| **Annotations** (§4) | `repr`, `field_number` | stamp each node with its wire kind |
+| **ResolvePass** (§5) | names, scopes, overloads | turn identifiers into indices and pick the runtime helper for each call |
+| **LayoutPass** (§6) | a memory home per value | give every CelValue a byte offset in linear memory |
+| **Lowering** (§7) | the wasm | walk the annotated tree, emit Binaryen IR for `$eval` |
+| **Finalize** (§8) | bytes + `cel.abi` | bootstrap the module for the chosen link mode, validate, serialize |
 
-| Pass | Consumes | Produces | Invariant established | Breaks if reordered |
-|---|---|---|---|---|
-| Parse + check (cel-cpp wrap) | source, `CheckOptions` | checked `cel::Ast` (`type_map`, `reference_map`) | every node typed; calls carry resolved overload ids | everything downstream reads `type_map` |
-| AST rewrites (×2) | checked AST | enum-constant / type-literal idents become `kConstant` | later passes never see a kIdent for a resolved constant | rewrite 2 keys off "Reference has no value" — must follow rewrite 1 (`parse_and_check.cc:1416-1418`) |
-| RejectDyn | rewritten AST | pass/fail | surviving nodes are in the static subset (5 carve-outs, §2.3) | must precede `PopulateAnnotations` so no dyn repr survives except via carve-outs |
-| PopulateAnnotations | AST + pool | `WasmAnnotations` seeded (`repr`, `field_number`) → `TypedAst` | every node id has a repr | ResolvePass CHECKs `repr != kUnknown` on idents |
-| ResolvePass | `TypedAst` | `ResolveOutput` (annotations, dense variables, intern tables) | locals/scopes/attributes/types/origins/overload ids populated | LayoutPass dereferences `local_index`; lowering dereferences `overload_id` |
-| LayoutPass | `TypedAst` + `ResolveOutput` | `StatusOr<StaticLayout>` (rodata, `.storage`, exhaustion gate) | every storage-bearing node has a memory location; rodata+workspace fit the window minus guard | lowering CHECKs `storage.kind` on the paths that need it |
-| `ValidateExprStaticRegion` | `StaticLayout` | pass/fail | region end ≤ 8192 in BOTH link modes | kStatic's segment-install CHECK assumes it ran |
-| Module bootstrap | link mode | `WasmModule` (fresh+imports, or adopted runtime+rodata) | every call target lowering emits will resolve | `LowerToEvalFunction` requires imports installed first (`expr_lower.h`) |
-| `LowerExportAndFinalise` | all of the above | bytes + `cel.abi` | one shared tail for both modes; validate→optimize→serialize | optimizing an unvalidated module mutates unproven IR |
+`Compiler::Compile` (`compiler/compiler.h`) maps the public options onto
+an internal `CompileOptions` and calls the facade `celwasm::Compile`
+(`compiler/internal/compile.cc`), which dispatches on `link_mode` (§8)
+and runs the chain. The deep contract — exactly what each pass consumes,
+produces, and would break if reordered — is the reference table in
+[Appendix A](#appendix-a--pass-contracts); the prose below is the way in.
 
-Neither ResolvePass nor LayoutPass mutates the AST; both write only
-into the side-table `WasmAnnotations` keyed by expr id. The AST is
-mutated exactly twice, by the two frontend rewrites.
+## 2. The one invariant that explains the order
 
-## 2. Frontend
+Most of the pass ordering follows from a single rule:
 
-Component: `compiler/frontend/parse_and_check.{h,cc}` +
-`status_tags.h`; entry point `ParseAndCheck(expression,
-CheckOptions) -> absl::StatusOr<TypedAst>`.
+> A pass may only read facts that an earlier pass has already written.
 
-### 2.1 Parse + check (cel-cpp wrap)
+ResolvePass needs every node typed, so it runs after the checker.
+LayoutPass needs to know which nodes hold values, so it runs after
+ResolvePass interns the variables. Lowering needs a memory address for
+every value, so it runs last. The "breaks if reordered" column in
+Appendix A is just this rule applied case by case — you rarely need to
+memorize it; you can re-derive it from "what does this pass read?"
 
-The checker builder registers unconditionally: standard library,
-ComprehensionsV2, strings / encoders / math extensions,
-`OptionalCheckerLibrary`, hand-built network decls (`net.IP` /
-`net.CIDR` opaque types). Per-call: `container`, variable specs,
-custom-fn decls from `CheckOptions::function_libraries`
-(cross-library overload-id collision filtering is
-`Compiler::Builder::Build`'s contract). One shared `ParserOptions`
-(`enable_optional_syntax = true`, `max_recursion_depth = 16384`)
-feeds both macro registration and the parse call. Message types
-resolve against the process-wide `generated_pool()`; a user schema
-merges OVER it via `MergedDescriptorDatabase` — overlay, not
-replacement. Check failure is InvalidArgument carrying the
-`kUndeclaredReferencesUrl` payload; consumers classify on payloads,
-never message substrings (`status_tags.h`).
+The other ordering constraint is the two AST rewrites (§3.2): they must
+run *before* anything that reads the tree's final shape, because they
+are the only steps that change it.
 
-### 2.2 The two AST rewrites
+## 3. Frontend — parse, check, and the static-subset gate
 
-Both idempotent, both before RejectDyn. (1)
-`InlineConstantReferences`: every kIdent whose `reference_map` entry
-carries a value (enum constants) becomes a kConstant
-(`parse_and_check.cc:1266-1286`). (2)
-`InlineTypeIdentifierReferences`: every kIdent whose Reference is
-value-less AND whose `type_map` entry is `TypeType(inner)` becomes a
-kConstant carrying the spec type name (`SpecTypeName`); MUST follow
-rewrite 1 — it keys off "Reference has no value". The rewritten
-node's type stays `TypeType(inner)`, so `ReprOf` stamps `Repr::kType`
-— the hook the rodata packer dispatches on (§5.2).
+`compiler/frontend/parse_and_check.{h,cc}`. Entry point:
+`ParseAndCheck(expression, CheckOptions) -> absl::StatusOr<TypedAst>`.
 
-### 2.3 RejectDyn — the static-subset gate
+We don't reimplement CEL. cel-cpp parses and type-checks; our job is to
+drive it, fold two constant cases, and then **refuse anything outside
+the static subset** — the slice of CEL we can compile to wasm.
 
-A node violates if its `type_map` entry is missing or
-`UnacceptableLabel` (`parse_and_check.cc:352-379`) fires: `dyn`,
-`error`, function, type-param, and unset specs reject, RECURSIVELY
-through list element types, map key/value types, and abstract
-parameters — so implicit dyn (bare `[]`, heterogeneous `[1, "two"]`,
-`optional<dyn>`) rejects, not just explicit `dyn(...)` (pinned by
-`e2e/m4_test.cc`). Five carve-outs ADMIT otherwise-dyn shapes
-(`CheckSubsetNode`, cc:611-630), each a narrow shape-matched
-predicate:
+### 3.1 Driving cel-cpp
 
-1. **`dyn(x)` passthrough** — global 1-arg `dyn` admits iff the arg
-   is itself a 1-arg `dyn` call or its checker type
-   `has_primitive() || has_null() || has_type()`. `dyn` is the
-   identity function — no CEL_DYN runtime kind exists; annotations
-   and storage forward from the arg, codegen emits the argument
-   (§6.1).
-2. **Select-through-Any** — a kSelect typed `dyn` admits if its
-   operand types as `google.protobuf.Any`, transitively.
-3. **`math.@min` / `math.@max`** — the macro expansions admit their
-   dyn result; the macro-built mixed-numeric list arg is skipped.
-4. **`<target>.format([list-literal])`** — a single kListExpr arg
-   admits the args subtree (the renderer dispatches per element
-   kind); `list<dyn>` *variables* reject.
-5. **`cel.bind` shape** — empty-list-literal iter_range +
-   `kConst(false)` loop_condition skips checking the dyn-typed
-   iter_range and unreachable loop_step; accu_init / loop_condition
-   / result are still checked.
+The checker is built once with the standard library plus the extensions
+we support: ComprehensionsV2, strings, encoders, math, optionals, and
+hand-built `net.IP` / `net.CIDR` decls. Per call we add the embedder's
+`container`, variable declarations, and any custom-function decls.
+Message types resolve against the process-wide descriptor pool; an
+embedder schema *overlays* it (merges over, never replaces).
 
-Violations are accumulated, not first-fail: InvalidArgument tagged
-`kStaticSubsetViolationUrl`, offending expr ids in the payload. The
-public header's gate summary omits the carve-outs (row R11); this
-section is authoritative.
+When the check fails, the error is an `InvalidArgument` carrying a
+machine-readable payload (`status_tags.h`). Consumers branch on the
+payload, never on the message text — error strings are not a stable API.
 
-> **Open question (V17):** pending frontend probes — reachability
-> of the "no type_map entry" arm; non-`cel.bind` expansions vs
-> `IsCelBindShape`; a frontend unit test for select-through-Any
-> (today e2e-only); `"%s".format([msg_var])`'s clean-runtime-error
-> claim; the repr of a wrapper-FQN variable spec.
+### 3.2 Two constant folds (the only tree mutations)
 
-## 3. IR & annotations
+cel-cpp hands us two shapes as *identifiers* that are really
+*constants*, and carrying them as idents would force every downstream
+pass to special-case them. So we fold them up front, idempotently:
 
-Component: `compiler/ir/typed_ast.{h,cc}` + `annotations.h`.
-`TypedAst` is deliberately NOT a heavier IR: a move-only bundle of
-`unique_ptr<cel::Ast>` + `WasmAnnotations` + `vector<Variable>`;
-downstream passes read `type_map`, `reference_map`, and annotations
-simultaneously. `WasmAnnotations` is a `flat_hash_map<int64_t,
-NodeAnnotation>` — ONE per-node fact table, zero sentinels for "not
-applicable", no parallel tables. The schema (`annotations.h:80-139`):
+1. **Enum constants** — an ident whose reference resolves to a value
+   (e.g. an enum member) becomes a `kConstant`.
+2. **Type literals** — an ident that names a *type* (its checker type
+   is `type(T)`) becomes a `kConstant` carrying the type name. This must
+   run *after* (1), because it keys off "the reference has no value."
+
+After this, codegen never sees an identifier that's secretly a
+constant. These are the only two places the AST changes.
+
+### 3.3 RejectDyn — the gate
+
+cel-wasm compiles a *static* subset of CEL. There is no `dyn` runtime
+kind in our value representation, no heterogeneous container, no
+runtime type errors-as-values. So we reject, at compile time, anything
+that would need them.
+
+A node is rejected if it's untyped or its type is `dyn`, `error`, a
+function, a type parameter, or unset — and this recurses through list
+element types and map key/value types. That's the important part:
+implicit dyn is caught too. A bare `[]`, a heterogeneous `[1, "two"]`,
+an `optional<dyn>` — all rejected, not just an explicit `dyn(...)`.
+
+There are **five carve-outs** — narrow, shape-matched exceptions where
+an otherwise-dyn node is admitted because we know exactly how to lower
+it:
+
+1. **`dyn(x)` passthrough.** `dyn` is the identity function — there's
+   no runtime conversion. If its argument is a primitive/null/type (or
+   another `dyn`), we admit it and lower the argument directly (§7.1).
+2. **Select-through-Any.** A `dyn`-typed select whose operand is a
+   `google.protobuf.Any` is admitted (the Any unpacks at runtime).
+3. **`math.@min` / `math.@max`.** The macro expansions produce a
+   dyn-typed result over a mixed-numeric list; we admit the result and
+   skip the macro-built list arg.
+4. **`x.format([...])`.** A list *literal* argument to `format` is
+   admitted (the renderer dispatches per element); a `list<dyn>`
+   *variable* still rejects.
+5. **`cel.bind` shape.** The macro's degenerate empty-range loop is
+   admitted without checking its unreachable dyn-typed parts.
+
+Rejections accumulate — you get every violation at once, tagged and
+with the offending node ids, not just the first. (The public header's
+one-line gate summary omits the carve-outs; this section is the
+authoritative list.)
+
+## 4. Annotations — the side-table
+
+`compiler/ir/typed_ast.{h,cc}` + `annotations.h`.
+
+`TypedAst` is deliberately thin: a `unique_ptr<cel::Ast>`, the
+annotations map, and the variable list. There's no heavier IR because
+there doesn't need to be — downstream passes read cel-cpp's `type_map`
+and `reference_map` *alongside* our annotations.
+
+The annotations map is **one fact table, one entry per node**. No
+parallel tables, no sentinels for "not applicable" — a field is either
+meaningful for that node or ignored. Here's the schema and, crucially,
+*who fills each field in*:
 
 | Field | Written by | Meaning |
 |---|---|---|
-| `repr` | frontend | wire-representation kind from the checker type (`Repr`, 16 enumerators incl. `kType`, `kOptional`, `kEnum`) |
-| `field_number` | frontend | kSelect proto field number; 0 = resolve-by-name / not a message field |
-| `overload_id` | ResolvePass | cel-cpp resolved overload string; a `string_view` into cel-cpp-owned storage — lifetime tied to the TypedAst |
-| `local_index` | ResolvePass | kIdent's dense wasm-local index |
-| `scope_id` | ResolvePass | 1-based comprehension depth on scope-bound idents; 0 = free |
-| `attribute_id` | ResolvePass | interned attribute path for partial eval; 0 = none |
-| `message_type_id` | ResolvePass | kStructExpr's index into `cel.abi.types[]`; 0 = none |
-| `storage` | LayoutPass | `{kind, payload}`: kStaticRodata (rodata offset), kLocal (local index), kWorkspaceSlot (slot offset), kNone |
-| `map_origin` / `list_origin` | ResolvePass | three-path dispatch origin (kDynamic default / kArena / kHost) |
-| `comp_aux_local_base` | LayoutPass | first of 3 per-comprehension auxiliary wasm locals |
-| `comp_iter_local_index` / `comp_accu_local_index` / `comp_iter2_local_index` | ResolvePass | per-comp variable bindings by id, never by name (cel-cpp reuses `@result` at every depth) |
-| `select_key_rodata_offset` | LayoutPass | rodata offset of a kSelect field name packed as a CEL_STRING CelValue (optional-select + map-field sugar) |
+| `repr` | frontend | the node's wire kind, derived from its checker type (`bool`, `int`, `string`, `message`, `optional`, …) |
+| `field_number` | frontend | proto field number for a select; 0 = resolve by name |
+| `overload_id` | ResolvePass | cel-cpp's resolved overload string for a call (e.g. `add_int64`) |
+| `local_index` | ResolvePass | which wasm local an identifier maps to |
+| `scope_id` | ResolvePass | comprehension nesting depth for a scope-bound ident; 0 = free |
+| `attribute_id` | ResolvePass | interned attribute path, for partial evaluation |
+| `message_type_id` | ResolvePass | index of a struct literal's type in `cel.abi` |
+| `storage` | LayoutPass | the value's home: `{kind, payload}` — rodata offset, local index, or scratch slot |
+| `map_origin` / `list_origin` | ResolvePass | where an aggregate came from — drives the three-path dispatch (§7.3) |
+| comprehension locals | Resolve/Layout | per-comprehension iter/accu bindings, by node id (cel-cpp reuses the name `@result` at every depth, so names are useless here) |
 
-The frontend stamps exactly two fields; the rest are codegen-side.
-Wrappers reuse the wrapped primitive's repr; `kAny → kMessage`; only
-the abstract named exactly `"optional_type"` maps to `kOptional`;
-dyn/error/function/param/unset → `kUnknown`. `field_number` is
-re-resolved while the pool is live (cel-cpp's `reference_map` cannot
-supply it). `Variable{name, repr}` entries are captured in
-`variable_specs` order with repr stamped at spec-parse time —
-unreferenced variables never appear in `type_map` but still shape
-the eval signature.
+The frontend stamps only the first two fields; everything else is
+filled by the codegen-side passes. The single most useful thing to
+notice: **`repr` is the spine.** It's how the frontend's knowledge of a
+node's *type* reaches codegen's decision about how to *lower* it, and
+almost every dispatch downstream (§7) is a switch on `repr`.
 
-> **Open question (V14/V15):** is an optional-typed free variable
-> reachable on the wire (expected: frontend-rejected), and is
-> `Repr::kEnum` producible by the compiler or wire-format-only?
+## 5. ResolvePass — names, scopes, overloads
 
-## 4. ResolvePass
+`compiler/codegen/resolve_pass.{h,cc}`.
 
-Component: `compiler/codegen/resolve_pass.{h,cc}`. Eight visitors in
-a fixed order; only the last is order-sensitive.
+The checker gave us types; ResolvePass gives us everything else codegen
+needs that *isn't* a memory address: it turns identifiers into dense
+indices, works out comprehension scoping, interns the tables the ABI
+will carry, and records which runtime helper each call resolves to.
 
-1. **KConstReprAudit** — CHECKs every kConst has a non-kUnknown
-   repr.
-2. **ScopedIdentResolver** — interns idents into the dense
-   `variables` table (first-seen `local_index`). Scope stack:
-   `iter_range`/`accu_init` resolve OUTER; `loop_condition` +
-   `loop_step` in an inner frame binding iter (+iter2) + accu;
-   `result` accu-only. Iter-var lifecycle (`IterKindsFor`):
-   single-iter list → iter is `kComprehensionIter` (moving pointer,
-   no workspace slot); map source → all iter vars accu-lifecycle;
-   two-iter list → index var accu-lifecycle, value var
-   iter-lifecycle. Per-comp binding indices are stamped on the comp
-   node — by expr id, never by name. Leading-dot idents (`.y`) skip
-   the scope lookup and intern under the dot-stripped name,
-   mirroring cel-cpp's `LookupLocalIdentifier` (pinned by the
-   `namespace_shadowing` conformance rows).
-3. **AttributePathResolver** — interns `(root, qualifiers)` paths
-   from kIdent + kSelect post-order; entry 0 sentinel; scope-bound
-   idents get `attribute_id = 0`; the host trampoline appends a
-   select's own field from the OPERAND's id at runtime.
-4. **MessageTypeIdVisitor** — interns kStructExpr FQNs (sentinel at
-   0); CHECKs non-empty names.
-5. /6. **MapOriginVisitor / ListOriginVisitor** — exactly three
-   implemented rows per aggregate kind: literal kMapExpr/kListExpr →
-   `kArena`; map/list-typed kIdent and kSelect with `scope_id == 0`
-   → `kHost`; everything else stays `kDynamic`. The historical
-   design table's wider rows (kCall→kHost, comp-fold→kArena,
-   same-origin coalescing) were never implemented — kDynamic is the
-   correct-but-slower default, so a missing row degrades to a
-   runtime kind-branch, never a miscompile (row R18). Comp-scope
-   idents deliberately stay kDynamic.
-7. **OverloadIdResolver** — copies the first overload id from
-   cel-cpp's `reference_map` onto each kCall; empty is legitimate
-   for the special-cased operators.
-8. **DynPassthroughVisitor** — copies `dyn(x)`'s arg's non-storage
-   annotation fields onto the call node; runs last (storage
-   forwarding waits for LayoutPass).
+It's eight visitors in a fixed order. Only the last one is
+order-sensitive; the rest are independent. The two worth understanding
+in depth:
 
-Output (`ResolveOutput`): annotations; the dense `variables` table
-(`variables.size()` = the i32 locals `$eval` declares); the
-`attributes` / `message_types` intern tables; `max_scope_id`.
-Unreferenced declared variables get no entry, no slot, no ABI row.
+**Identifier resolution and comprehension scope.** Every identifier is
+interned into a dense `variables` table (first occurrence wins its
+`local_index`). The subtlety is comprehensions: `iter_range` and
+`accu_init` resolve in the *outer* scope, while `loop_condition` and
+`loop_step` run in an inner frame that binds the iteration variable(s)
+and the accumulator, and `result` sees only the accumulator. Because
+cel-cpp names every accumulator `@result` regardless of nesting depth,
+these bindings are stamped *by node id, never by name* — that's the
+only way nested comprehensions stay distinct.
 
-> **Open question (V7):** `cel_abi.proto` claims `variables[]` is
-> positional by `local_index`, but the emitter skips comp-scope
-> entries while ResolvePass interleaves them in the same dense index
-> space. Consumers iterate by name, so no runtime bug; the
-> wire-comment fix (or re-densification) is pending.
+**Origin inference.** `MapOriginVisitor` / `ListOriginVisitor` tag each
+aggregate with where it came from: a literal `[...]` / `{...}` is
+`kArena` (built in our arena), a map/list-typed free variable or select
+is `kHost` (lives in the embedder's memory), and everything else stays
+`kDynamic`. This tag is what lets lowering pick a fast path later (§7.3).
+The key safety property: **a missing or conservative tag is never a
+miscompile.** `kDynamic` is the correct-but-slower default — it routes
+through a runtime kind-check — so the worst a too-cautious origin does
+is cost a branch.
 
-## 5. LayoutPass and the memory map
+The remaining visitors audit constant reprs, intern attribute paths for
+partial eval, intern struct-literal type names, copy overload ids off
+cel-cpp's reference map, and forward `dyn(x)`'s annotations onto the
+call node. The output is `ResolveOutput`: the annotations, the dense
+variable table (whose size is the number of i32 locals `$eval`
+declares), the intern tables, and the max comprehension depth.
 
-Component: `compiler/codegen/layout_pass.{h,cc}`,
-`static_memory_builder.{h,cc}`, `slot_allocator.{h,cc}`,
-`compiler/memory_layout.h`. Signature: `LayoutPass(TypedAst,
-ResolveOutput, LayoutOptions) -> absl::StatusOr<StaticLayout>` — the
-StatusOr is load-bearing: layout can now FAIL (§5.4).
+## 6. LayoutPass — a home in memory for every value
+
+`compiler/codegen/layout_pass.{h,cc}` and friends.
+`LayoutPass(TypedAst, ResolveOutput, …) -> absl::StatusOr<StaticLayout>`
+— note the `StatusOr`: **layout can fail**, and that's a feature (§6.4).
+
+wasm has one flat array of bytes. Every CelValue the expression touches
+— constants, variables, intermediate results — needs a byte offset in
+it. LayoutPass assigns those offsets. To understand it you first need
+the map of the memory it's assigning into.
+
+### 6.1 The memory map, and the line you must not cross
 
 ![Linear memory](diagrams/memory-map.svg)
 
-### 5.1 The memory map
-
-`compiler/memory_layout.h` is the compiler-side single source of
-truth for layout constants, cross-checked against
-`runtime/cel_layout.h`'s macros by in-header `static_assert`s — a
-drifted constant fails the build, not the eval. Regions, low to
-high: `[0,8)` null sentinel (offset 0 == "absent"); `[8,16)` dead
-legacy arena-cursor slot (kept so rodata_base stays 16); rodata from
-`kRodataBaseMin = 16` (kConst CelValue frames + payload bytes);
-workspace at `RoundUp16(rodata_base + rodata.size())` in 32-byte
-cells (variable slots, then SlotAllocator scratch); the
-`kGuardBytes = 256` guard band ending at
-`kReservedLowMemoryBytes = 8192`; wasi-libc statics + stack above
-(`--global-base=8192`); the dlmalloc heap (per-Instance 64 KiB bump
-arena, activation buffer) beyond.
-
-The first 8 KiB is the ONLY region the expr module may write:
-wasi-libc's data/heap/stack are pinned above `--global-base=8192`,
-so a byte written past that line corrupts libc state with no wasm
-trap — the process traps minutes later inside an unrelated helper
-(`memory_layout.h:10-20`). §5.4's gates make that unreachable.
-`arena_base` is computed and tested but legacy: the arena lives in
-the dlmalloc heap; the emitted `arena_reset` is zero-arg. Canonical
-region/page tables: `03-abi-and-memory.md`.
-
-### 5.2 The five sub-passes
-
-`LayoutPass` (`layout_pass.cc:468-557`) runs:
-
-- **Pass A — rodata.** `ConstLayoutVisitor` packs every kConst into
-  one `StaticMemoryBuilder`, stamping `{kStaticRodata, offset}`;
-  dispatch is on the Constant oneof EXCEPT `Repr::kType` constants
-  (§2.2 rewrite targets), which pack as CEL_TYPE via `AllocateType`;
-  an unrecognised variant is `ABSL_CHECK(false)`. Then
-  `SelectKeyRodataVisitor` lifts the field name of every kSelect
-  whose operand is `Repr::kOptional` **or `Repr::kMap`** into rodata
-  as a CEL_STRING CelValue, stamping `select_key_rodata_offset`
-  (map-dot sugar, §6.2); both visitors share one builder so rodata
-  is contiguous. **StaticMemoryBuilder** packs 24-byte CelValue
-  frames (u32 kind @+0, pad @+4, 16-byte payload @+8) returning
-  ABSOLUTE offsets — no relocation arithmetic in emitted wasm;
-  infallible by design (no cap, no StatusOr — the budget gate lives
-  downstream); no dedup; `AllocateList`/`AllocateMap` are CHECK
-  stubs — aggregates are built at eval time in the arena, never
-  rodata.
-- **Pass B — variable slots**: `workspace_base =
-  RoundUp16(rodata_base + rodata.size())`; one 32-byte cell
-  (`SlotAllocator::kSlotStride`) per referenced variable EXCEPT
-  `kComprehensionIter` vars (`slot_offset` 0). Dense packing.
-- **Pass C — kIdent storage**: stamps `{kLocal, local_index}` with a
-  range CHECK. The slot offset is NOT in the annotation — the
-  `$eval` prelude `local.set`s each free-variable local to its
-  `slot_offset`; comp-scope entries are skipped there and in the ABI
-  emitter (set by loop prologues).
-- **Pass D — scratch slots.** One `SlotAllocator` based at
-  `workspace_base + workspace_bytes`, shared by two sequential
-  traversals: `SelectStorageVisitor` then `AggregateStorageVisitor`
-  (discipline in §5.3); then `workspace_bytes +=
-  slots.total_bytes()`, `peak_slots` recorded.
-- **Pass E — comprehension aux locals**: stamps
-  `comp_aux_local_base` = `variables.size() + 3 × (comp pre-order
-  index)`; `total_wasm_locals = variables.size() + 3 ×
-  #comprehensions`. Its post-visit hook ALSO stamps the
-  kComprehensionExpr's `storage` with its `result` sub-expression's
-  storage — for `exists_one` that is a fresh Bool slot distinct from
-  the Int accu; mirroring the accu slot here was the cleanup-backlog
-  #32/#33 bug pinned by `KnownBugs.PbtExistsOneInTernaryCondBytes`.
-
-`LayoutOptions`: `debug_layout` (bump-only allocator, §5.3) and
-`rodata_base_override` (relocates the whole region; non-zero also
-skips the facade's static-region gate — the caller owns its own
-budget). The override's documented consumer,
-`compiler/celfn/library_module.cc`, does not exist; the knob has no
-production caller (row R3; the `@native` fork is
-`05-custom-functions.md`'s decision).
-
-### 5.3 SlotAllocator — free-list reuse (as merged)
-
-`compiler/codegen/slot_allocator.{h,cc}`: callers `Acquire` a
-CelValue cell per computed result and `Release` it once every read
-is done.
-
-**Cell stride is 32 bytes, not 24.** Every slot must be 16-byte
-aligned from a 16-aligned base: the wasm32-wasi-threads runtime's
-helpers emit `memory.atomic.*` ops against the workspace, and a
-24-byte stride from an 8-aligned base puts every other slot at
-`% 16 == 8` — the first atomic there traps (`wasm trap: unaligned
-atomic`, pinned by `e2e/known_bugs_test::
-LongArith_2000Terms_NoUnalignedAtomicTrap`). CelValue stays 24
-bytes; the trailing 8 are pad. The stride mirrors
-`MemoryLayout::kSlotStride` under a `static_assert`
-(`slot_allocator.h:207`).
-
-**Two modes.** Production: `Release` pushes the cell onto a LIFO
-free list; `Acquire` pops the most-recently-released cell
-(cache-hot), bumping fresh only when the list is empty;
-`peak_slots()` is the true high-water mark of simultaneously-live
-cells — the workspace size the module needs; over-releasing is an
-`ABSL_CHECK`. Debug (`debug_mode`): bump-only — Release is a no-op,
-`peak_slots` = total acquires; per-expr slot distinctness for
-layout dumps.
-
-**Release discipline, by node kind** (`slot_allocator.h` preamble +
-`AggregateStorageVisitor`'s class comment):
-
-- **kSelect / kCall: release operands, then acquire (PostVisit).**
-  Every backing helper reads operand slots BEFORE writing its result
-  slot, so parent↔operand aliasing is safe; the LIFO list hands the
-  just-vacated operand cell back as the parent's result — a
-  left-associative `+`-chain or a `c.a.b.c.d` select chain peaks at
-  ~1 slot regardless of length
-  (`slot_allocator_test::LeftAssocAdditionChainAfterReleaseFix` pins
-  peak == 1 at N = 2000; a balanced tree peaks at its depth).
-  Receiver-form calls release the target's slot too; `dyn(x)`
-  forwards the arg's storage instead of acquiring.
-- **kListExpr / kMapExpr / kStructExpr: acquire at PreVisit, pin
-  across the subtree, never alias descendants.** Aggregate codegen
-  writes the parent FIRST (`cel_list_create(parent)`), then lowers
-  each element and appends — so the parent's slot must not alias ANY
-  descendant's. PreVisit-Acquire guarantees that; PostVisit releases
-  operand cells so SIBLING subtrees of the aggregate's parent can
-  reuse them; the aggregate's own slot is released by its consumer.
-  Pinned by the `e2e/slot_aliasing_test.cc` battery (nested
-  aggregates of every kind pair, chains of every associativity,
-  mixed kCall+aggregate, comprehensions over all of it).
-
-This resolved the former P0: with the old no-op `Release`, ~340
-slot-acquiring nodes pushed workspace writes past 8192 into runtime
-statics — the actual root cause of both the long-arith "unaligned
-atomic" trap and the 10K-literal-list wasmtime panic
-(cleanup-backlog #16 had blamed the runtime layer). With reuse, a
-2000-term chain compiles AND evaluates; the remaining ceilings are
-rodata-bound (§5.4). The two Pass-D traversals run sequentially
-over one allocator, so cross-walk interactions exist by
-construction; the discipline above makes none of them unsafe.
-
-> **Open question (V46, residual):** the two-traversal structure
-> over-holds some cells; whether one post-order walk would tighten
-> `peak_slots` — without re-opening the aggregate aliasing class —
-> is unmeasured.
-
-### 5.4 The static-region gates (new)
-
-Three compile-side gates, all derived from `MemoryLayout`:
-
-1. **LayoutPass slot-exhaustion gate** (`layout_pass.cc:529-554`):
-   `workspace_bytes` ≤ `MemoryLayout::MaxWorkspaceBytes(rodata_base,
-   rodata_size)` = `kReservedLowMemoryBytes − rodata_end −
-   kGuardBytes` (clamped at 0); the cap is dynamic in rodata (no
-   constants → ~7.9 KiB headroom; 3 KiB of strings → ~4.9 KiB).
-   Overflow returns ResourceExhausted prefixed
-   `kSlotExhaustedMessagePrefix` with a remediation hint. The
-   guard band (≥ one slot stride by `static_assert`) trips the gate
-   on the NEXT allocator off-by-one before it spills into libc.
-2. **`ValidateExprStaticRegion`** (`compile.cc:57-75`, called from
-   `RunFrontAndLayout` in BOTH link modes, skipped only when
-   `rodata_base_override != 0`): rejects any layout whose region end
-   exceeds `CELWASM_RESERVED_LOW_MEMORY_BYTES` with
-   ResourceExhausted — a status, never a CHECK (region size is
-   embedder input). It covers kDynamic too: the dynamic module's
-   `cel.memory` import resolves to the runtime's exported memory, so
-   oversized rodata would overwrite runtime state at instantiate
-   exactly as in kStatic. Pinned both modes by the
-   `RodataOverBudget*` / `WorkspaceOverBudget*` cases in
-   `compile_test.cc`; end-to-end by
-   `KnownBugs.LiteralIntListInScanRejectedAtCompileAt10K` plus the
-   boundary pair.
-3. **kStatic segment-install tripwire**
-   (`InstallExprRodataSegment`): `ABSL_CHECK_LE(rodata_end, 8192)` —
-   reaching it means the gate regressed.
-
-The eval side adds a Plan-time gate
-(`eval/engine.cc::ValidateAbiSlotExtents`): a Program whose `cel.abi`
-declares a variable slot past the window is rejected as corrupt
-before the marshal writes through it. The test boundary numbers
-(literal `x in [0..N-1]` fits at N = 327, overflows at 328;
-nested-list depth 246/247) were re-probed 2026-06-10 per the test
-comments; they shift if `kGuardBytes`, the stride, or rodata framing
-changes — the tests are the pin.
-
-## 6. Lowering
-
-Component: `compiler/codegen/expr_lower.{h,cc}`,
-`expr_lower_internal.h`, `expr_lower_comprehension.cc`,
-`overload_table.{h,cc}`, `module.{h,cc}`. Per the repo's WAT-first
-rule, every arm was designed as an executable `.wat` under
-`doc/implementation-plan/rewrite/wat/` first; this section cites
-those files and never inlines listings.
-
-`LowerToEvalFunction` adds a nullary `() -> i32` `$eval` to a
-caller-prepared module (memory + every function import already
-installed); the returned i32 is the root's CelValue offset. Body:
-`(block i32: <local.set per free variable> (call $arena_reset)
-<root>)`; comp-scope variables are skipped in the prelude.
-`LoweringOptions` is vestigial — the parameter is entirely unread
-(`const LoweringOptions& /*opts*/`). `Emit(EmitCtx&, Expr&)` is the
-single dispatcher (`expr_lower.cc:1271`); every arm returns an
-i32-valued Binaryen expression for the node's CelValue offset.
-**`EmitSlotBaseAddress(ctx, Storage)`** is the one place a `Storage`
-becomes an address: kLocal → `local.get` (the local holds the
-cell's byte offset), kStaticRodata / kWorkspaceSlot → literal
-`i32.const`, kNone → CHECK. Every slot probe and `cel_copy_slot`
-routes through it; reading `storage.payload` directly treated a
-kIdent's local INDEX as a byte offset
-(`KnownBugs.PbtTernaryInsideIntSubtract`, fixed 2026-06-05).
-
-### 6.1 The kCall dispatch ladder
-
-In order (`Emit`'s kCallExpr arm): (1) **`dyn(x)`** — identity, emit
-the argument. (2) **`_[_]`** — `EmitKIndexCall`, origin-aware
-three-path dispatch (§6.3); `Repr::kOptional` operands route to the
-optional-index kernel (`wat/m14_optional_select_field.wat`). (3)
-**`_?_:_`** — `EmitConditional` (§6.4), the ONLY operator where
-laziness is load-bearing. (4) **Everything else** —
-`EmitGeneralCall`: look up `ann.overload_id` in the OverloadTable
-(Unimplemented naming the id if unstamped/unregistered), flatten a
-receiver target to args[0], emit one uniform slot-out call
-`(out_slot, arg_slot…) -> void`. `_&&_` / `_||_` / `!_` take THIS
-arm — eager evaluation of both operands, non-strict 3VL absorption
-inside `cel_and` / `cel_or` / `cel_not` (`wat/30`–`32`);
-spec-equivalent because CEL is side-effect-free. The historical
-plan's "explicit branching is the only correct lowering" was wrong
-as-shipped, and the eager shape is a perf fact.
-
-Per-arm WAT references: kConst `wat/01`; kIdent `02`/`03`; kSelect
-`04`, `10`; aggregates `06`, `11`; indexing `07`–`09`, `12`–`14`
-(the `*_arena`/`*_host`/`*_dynamic` triples); arith/compare/concat
-`16`–`18`; `size`/`in` `21`–`22`; proto literals `40`–`41` +
-`m20_set_field_poison.wat`; time `50`–`55`; wrapper unwrap `56`;
-optionals `m14_*`; extensions `m16_*`/`m17_*`/`m18_*`.
-
-### 6.2 kSelect — three branches
-
-`EmitKSelect` dispatches on the OPERAND's repr:
-
-- **`Repr::kOptional`** → `cel_select_optional_field_at_vv`, key
-  from `select_key_rodata_offset` (§5.2).
-- **`Repr::kMap`** → `EmitKSelectMapBranch`: map field-selection
-  sugar (`m.field` ≡ `m['field']`, langdef §"Field selection")
-  lowers to `cel_map_lookup` (value form) or `cel_map_in` (the
-  `has()` form; note its `(out, key, map)` arg order) with the
-  rodata key — and uses the kDynamic DISPATCHER unconditionally:
-  ResolvePass stamps `kHost` on every map-typed kSelect, but a
-  nested selector (`{'c': {...}}.c.d`) yields a CEL_MAP_ARENA value
-  the host trampoline rejects; the dispatcher's runtime kind-branch
-  routes correctly at any depth (closes the cleanup-backlog #9
-  selection gap).
-- **otherwise (proto)** → `EmitKSelectProtoBranch`: appends a
-  `FieldRefRow{field_number, name, owner_fqn}` (row 0 is a reserved
-  sentinel; `field_number = 0` = host resolves by name) and emits
-  `cel_host.cel_get_field(out, msg, field_ref_id, attribute_id)` —
-  `cel_has_field` for test_only. `attribute_id` is the OPERAND's id;
-  the trampoline appends the field at runtime for unknown-pattern
-  matching.
-
-`PickIndexCallTarget` (the `_[_]` arm) forces the kDynamic
-dispatcher whenever the operand is a kSelectExpr, for the same #9
-reason; literal-origin operands still take the `kArena` fast path
-(tests assert both directions).
-
-### 6.3 Three-path aggregate dispatch
-
-Map/list ops pick their call target from the operand's origin:
-`kArena` → `cel.*_arena` pure-wasm fast path; `kHost` → `cel_host.*`
-trampoline; `kDynamic` → the runtime dispatcher, which kind-branches
-once and `musttail`-calls the right arm. OverloadTable seeds for
-aggregate ops point at the kDynamic dispatcher names so the table
-stays a flat id→name map; only the bespoke `_[_]` and kSelect arms
-exploit compile-time origin.
-
-### 6.4 Ternary
-
-`EmitConditional` (`wat/33_conditional.wat`): outer probe `kind ==
-CEL_BOOL` on the cond slot — any non-bool cond (UNKNOWN / ERROR, and
-under dyn potentially other kinds) is copied verbatim to out_slot;
-inner probe `payload != 0` selects the arm. Each arm's eval
-expression is nested INSIDE its if-arm, so only the chosen arm
-executes; `BuildConditionalArm` copies from the arm's emitted value
-expression — not from `storage.payload` — via the Storage-aware
-`cel_copy_slot`, which makes kLocal-resident conds and arms correct.
-
-> **Open question (V10):** for a dyn-typed non-bool cond
-> (`dyn(1) ? 2 : 3`) the copy-cond-verbatim probe returns the cond
-> value where cel-cpp presumably errors; oracle + e2e comparison
-> pending (statically-typed non-bool conds are checker-rejected).
-
-### 6.5 Cross-numeric comparison re-pick (documented Option B)
-
-`MaybeRepickCrossNumericOverload`, called from `EmitGeneralCall`:
-when the function is one of `_<_ _<=_ _>_ _>=_` and the operand
-Reprs span a numeric cross-pair (int/uint/double), codegen OVERRIDES
-the ResolvePass-stamped overload id with the cross-numeric id
-(`cel_numeric_<op>_at_vv` family) from four hand-written switch
-tables.
-
-This is the documented Option B of `cross-numeric-ordering-plan.md`,
-not an accident: an executed probe (2026-04-25, that doc's
-"Failure-mode probe" section) found cel-cpp's reference map carries
-**exactly one** candidate per call — the same-kind overload of the
-non-dyn operand (`dyn(1) < 2u` → `[less_uint64]`) — and rejects
-non-dyn cross-numeric forms at the checker entirely. There is no
-candidate list for a resolve-time pick (the doc's original Option
-A); the id must be synthesized from operand Reprs, accurate only
-after annotation forwarding. Any "move it to ResolvePass" proposal
-must re-confirm that probe. Residual debt: the 24 id strings
-duplicate `kBuiltinSeeds` rows (incl. cel-cpp's typo
-`greater_equals_uint_double`, mirrored verbatim — "fixing" it would
-regress the byte-equal lookup) with no tripwire tying the tables;
-a drifted string fails LOUDLY (Unimplemented naming the id).
-
-> **Open question (V13/V47):** only 2 of 24 cross-pair cells are
-> unit-tested at the codegen layer (the behavioral load rides the
-> 72-row matrix in `e2e/m5_test.cc::CrossNumericOrderingE2ETest`);
-> and whether `EmitGeneralCall` can see a pre-stamped cross-numeric
-> id with same-kind Reprs (re-pick returns empty → id kept; helper
-> polymorphic, likely benign) is unprobed.
-
-### 6.6 Comprehension lowering
-
-One TU (`expr_lower_comprehension.cc`); `LowerComprehension` emits
-prologue + `(block exit (loop continue …))` + result. Authoritative
-shapes: `wat/60`–`67` (incl. `65_celbind_degenerate.wat`,
-`66_nested_comprehension.wat`).
-
-- `CompContext` binds iter/iter2/accu by the stamped per-comp
-  indices, never by name; exit/continue labels are expr_id-suffixed
-  so nested same-name comps pass Binaryen's label validator.
-- List sources normalise through `cel_list_arena_view` (arena
-  passthrough / host snapshot) so the inline 24-byte-stride pointer
-  walk is origin-uniform; map sources use the `cel_map_iter_*`
-  helpers, which kind-dispatch internally.
-- The loop step is classified ONCE into a closed shape set by AST
-  structure (macro names are erased by the expander):
-  kListAppend(If) / kMapInsert(If) / kMapMerge(If) / kGeneric.
-  Collection accumulators are PRE-SIZED (capacity = iter-range count
-  × per-iter) and the runtime append/insert traps on overflow — the
-  pre-size + trap pair is the sizing-regression tripwire. Accu
-  copies route through the Storage-aware `EmitCelCopySlot`, so a
-  bare-ident accu_init or bare `kIdent(@result)` loop step (the
-  cel.bind pass-through) is read via `local.get`.
-- The loop-cond peephole admits a closed set of four shapes (kConst
-  true/false, `@not_strictly_false(@result)`,
-  `@not_strictly_false(!@result)`); anything else fails compile with
-  Unimplemented rather than emitting a wrong loop.
-- Unsupported sub-shapes crash loudly per repo rule — one is a live,
-  pinned crash: a `transformMapEntry` whose entry expr is not a
-  literal kMapExpr hits `ABSL_CHECK(false)` and aborts the compiler
-  (`KnownBugs.TransformMapEntryComputedEntryCrash`, kept skipped
-  because running it aborts the binary).
-
-**Known bug (pinned, open).** The loop-cond peephole reads the
-accu's bool-payload bits at offset 8 WITHOUT checking `accu.kind ==
-CEL_BOOL`, so an ERROR accumulator trips `exists`'s early exit:
-`[0, 2].exists(x, 2/x == 1)` returns the division error where the
-spec says `true` (error absorbed by a later matching element).
-Pinned as `KnownBugs.ExistsAbsorbsErrorAccumulator`
-(`e2e/known_bugs_test.cc:426`); the fix is a kind check ahead of the
-payload probe.
-
-> **Open question (V18):** the optional `or`/`orValue` overloads are
-> seeded as eager slot-out helpers (`cel_optional_or_at_vv`,
-> `cel_optional_or_value_at_vv`), so the RHS always evaluates — the
-> wat-traces M14.4 short-circuit requirement
-> (`optional.of(1).orValue(1/0)` must not error spuriously) is
-> unverified against this lowering.
-
-### 6.7 OverloadTable
-
-`kBuiltinSeeds`: 271 rows (pinned by
-`overload_table_test.cc::kBuiltinSeedCount`) mapping cel-cpp
-overload-id strings — copied verbatim, typos included — to
-`(ImportModule, helper_name)`. `kExplicitlyUnimplementedIds` is 6
-ids, all special-cased in the emitter. The coverage tripwire
-partitions every `cel::StandardOverloadIds::k*` between the two sets
-and rejects overlap. Built-in arity comes from the generated ABI
-catalogue (`abi::FindBuiltinHelper`); a seed missing from the
-catalogue CHECK-fails at Build(). `RegisterCustom` copies caller
-strings into deque-stable storage and rejects builtin shadowing and
-duplicates; interned ids are 1-based, 0 = unresolved.
-
-> **Open question (V48):** which seed satisfies the tripwire for
-> `kTimestampToDate` / `WithTz` (presumably the
-> `timestamp_to_day_of_month_1_based*` family)?
-
-### 6.8 WasmModule rules and the ABI-constant gap
-
-`WasmModule` is RAII over `BinaryenModuleRef`. Test-pinned rules:
-`Adopt(existing)` takes the feature-set UNION (narrowing trips
-Binaryen's feature-dependency asserts); `CodegenLoad`/`CodegenStore`
-always pass `memoryName = nullptr` (static mode's adopted memory is
-named `"0"`, dynamic mode's `"memory"` — hard-coding either silently
-breaks the other mode); `BinaryenSetMemory` must precede
-`BinaryenAddMemoryImport` (reversed order silently emits a
-non-imported memory); `Optimize(level)` level 0 is a guaranteed
-byte-identical no-op (golden-test contract), ShrinkLevel pinned 0
-(the wasm is Cranelift input), and the optimize knobs are
-process-global (`00-architecture.md` §5).
-
-> **Open question (V11):** codegen hand-copies CelValue wire
-> constants (CEL_BOOL=1, CEL_INT=2, offsets 0/8, the 24-byte list
-> stride in the comprehension pointer walk) with no compile-time tie
-> to `runtime/cel_data.h` — `:expr_lower` does not dep
-> `//runtime:cel_runtime`. A CelValue layout change would compile
-> green through all of `//compiler/codegen` and fail only at e2e.
-
-## 7. Module finalization and link modes
-
-The facade `celwasm::Compile` (`compile.cc:673-690`) dispatches on
-`link_mode`; both arms share `RunFrontAndLayout` at the front and
-`LowerExportAndFinalise` at the back — one codegen path, two
-bootstraps, so the arms cannot silently diverge.
-
-**kDynamic bootstrap.** Fresh `WasmModule`;
-`InstallExprModuleImports` installs the shared `cel.memory` import
-(initial pages = `PagesForBytes(mem_size_bytes)`, max from
-`MemoryLayout::kMaxMemoryBytes`) with the rodata segment attached,
-plus the FULL runtime import surface regardless of AST shape —
-zero-arg `arena_reset`, `arena_alloc`, every `cel_host.*`
-trampoline, the map and list families incl. iteration and
-`*_if_present` kernels. Per the standing no-lazy-imports rule:
-unused imports are harmless; AST-gated imports are a
-silent-breakage vector.
-
-**kStatic bootstrap (the default).** `AdoptStrippedRuntime`
-(`BinaryenModuleRead` over the embedded wrapper-stripped runtime
-bytes) becomes the base module; `InstallExprRodataSegment` adds the
-rodata segment on the adopted memory (named `"0"`) behind the §5.4
-CHECK tripwire; `InstallCelHostImports` installs the `cel_host.*`
-imports under codegen's canonical internal names — the adopted
-runtime imports the same `(cel_host, X)` pairs but under
-wasm-ld-assigned names codegen never targets; wasm allows duplicate
-imports of one `(module, base, type)` triple, and wasmtime resolves
-both to one trampoline. `InstallExprModuleImports` is skipped —
-every `cel.*` name is a defined function in the adopted module.
-
-**`LowerExportAndFinalise`** (the shared tail), in order: (1) build
-the OverloadTable — built-in seeds + each `function_libraries` decl
-as a `RegisterCustom` row (`kHost`/`kForeignComponent` route via the
-`cel_fn` import module, `kCelDefined` via per-module `kUserModule`);
-(2) `InstallOverloadImportsExport` — probes `BinaryenGetFunction`
-per entry, self-skipping names already defined in the adopted
-runtime (under kStatic only custom `cel_fn.*` imports land; the
-probe is a hash lookup, microseconds, deliberately not gated on
-link mode), and unconditionally installs `cel_copy_slot` (emitted
-directly by ternary lowering, not table-seeded; arity from the ABI
-catalogue); (3) `LowerToEvalFunction` + export under
-`eval_export_name`; (4) `AttachCelAbiSection` — the serialized
-`celwasm.abi.CelAbi` proto, stamped `LINK_MODE_STATIC`/`_DYNAMIC`:
-embedder-tooling metadata and a Plan-time tripwire only, never a
-routing input (`00-architecture.md` §3); (5) `FinaliseModule` —
-validate FIRST, optimize only when `optimize_level > 0`, serialize.
-
-Shape invariants pinned by `compile_test.cc`: a kStatic Program has
-ZERO `"cel"`-module function imports, retains `cel_host.*` imports,
-exports `eval`, and is >10× the size of its dynamic twin.
-
-Dead surface: `CompiledArtifact.library_modules` /
-`CompileLibraryBodies` (the `@native` library-module producer) is
-declared in `compile.h` / `celfn/library_module.h` with no
-implementation, no BUILD target, no caller — a compiled `@native`
-call emits an unresolvable import (rows R2/R3). The fork decision
-belongs to `05-custom-functions.md`; `rodata_base_override` (§5.2)
-is the layout seam reserved for the bundled-module option.
-
-## 8. Public surface and options
-
-`Compiler` is built via `Compiler::Builder` (rvalue-consuming
-`Build() &&`): `DeclareVariable` (validation deferred to Build —
-empty name, `kUnknown` kind, empty Message FQN, duplicate names each
-InvalidArgument), `AddLibrary`, `AddFunction(celfn_source)` (eager
-parse, deferred error, FIRST failure wins). Cross-library
-overload-id collisions are caught at Build. Declarations cross into
-the frontend as `"name:Type"` spec strings. `Program` is pure bytes;
-one Compiler mints many Programs (`00-architecture.md` §2).
-
-`CompilerOptions`, knob by knob, with each knob's REAL effect:
-
-| Knob | Header claims | Real effect |
-|---|---|---|
-| `mem_size_bytes` (default 128 KiB) | "raise for a larger arena" | kDynamic: initial page count of the `cel.memory` import only — the arena is dlmalloc-sized at runtime and the `LoweringOptions` copy is unread. kStatic (default): **no effect at all** (the adopted runtime defines its own memory). The arena advice is wrong (rows R6/R8). |
-| `container` | checker name-resolution container | Forwarded verbatim to `CheckOptions::container` → cel-cpp `set_container`. Checker-only; no codegen/layout effect. |
-| `optimize_level` (default 0) | "outside [0,3] rejected" | `FinaliseModule` gates on `> 0`, so **negative levels silently compile as level 0**; only > 3 reaches the range check and rejects (row R7). Level 0 is byte-identical. Process-global Binaryen state: serialize Compile calls when > 0. |
-| `link_mode` (default kStatic) | selects the compile arm | §7. Forwarded by blind `static_cast` between the public and internal enums. |
-
-Internal-only knobs stay on `CompileOptions` (`eval_internal_name`,
-`eval_export_name`, `validate`, `serialize`) — the public struct
-carries only what tunes an expression's lowering.
-
-> **Open question (V8):** `mem_size_bytes` under kDynamic above
-> 256 KiB stamps an import minimum larger than the runtime's
-> exported memory and plausibly fails instantiation at Plan; a
-> triple probe decides fix-or-delete for the option and the CLI
-> flag. The existing `MemSizeBytesLargerThanOnePageGrowsPageCount`
-> test asserts only validity, not the page count its name claims.
-
-> **Open question (V23/V24):** `container` is the only public knob
-> with no test through `Compiler::Compile` or the facade; and the
-> `optimize_level` contract (reject negatives vs document
-> clamp-to-0) needs a facade test — neither path is pinned.
-
-> **Open question (V25/V26):** nothing locks the three LinkMode
-> enums' values together (see `00-architecture.md` §3), and
-> double-`Build()` on a moved-from Builder silently succeeds with
-> empty state — accept-empty vs reject is undecided.
-
-## 9. Rejected alternatives
-
-Recorded (from the design-heritage notes and closed-out plan docs)
-so they are not re-proposed without new evidence:
-
-- **Sethi–Ullman / Strahler slot pre-assignment** — never pursued;
-  LIFO release reuse (§5.3) gets the same peak-≈-depth more simply.
-- **`MessagePattern` table for proto literals** — shipped shape is
-  `message_type_id` interning + empty-then-populate calls.
-- **Always-host vtable dispatch** and **always-materialise** — both
-  lost to the three-path origin split (§6.3).
-- **Explicit branching for `&&`/`||`** — eager slot-out + kernel
-  3VL absorption is spec-equivalent and simpler (§6.1).
-- **Resolve-time cross-numeric pick (Option A)** — non-viable; no
-  candidate list exists (§6.5).
-- **Interned-uint32 overload ids** — replaced by borrowed
-  `string_view`s; a future TypedAst serialization must re-own them.
-- **Skipping `InstallCelHostImports` in static mode** — the
-  runtime's wasm-ld import names don't match codegen's (§7).
-- **"Don't inline the runtime"** — lost to measurement; static is
-  the default; the old reasoning still governs kDynamic
-  (`00-architecture.md` §3).
-- **Rodata caps / dedup / runtime-initialised literals** —
-  deliberate non-features; the budget lives at the gates (§5.4).
-- **AST-gated ("lazy") imports** — the full runtime surface
-  installs regardless of AST shape (§7).
-
-## 10. Future work
-
-- Loop-cond peephole kind check (`ExistsAbsorbsErrorAccumulator`,
-  §6.6); `transformMapEntry` aborts → status errors.
-- `@native` fork — `CompileLibraryBodies` / `library_modules` /
-  `rodata_base_override` get their producer or get deleted
-  (`05-custom-functions.md`).
-- ABI-constant tie — dep `//runtime:cel_runtime` from
-  `:expr_lower`, replace the hand-copied literals (V11).
-- Cross-numeric table tripwire + full cell coverage (V13).
-- Origin-inference growth (kCall→kHost, comp-fold→kArena,
-  same-origin coalescing); measure before building.
-- Single-walk Pass D, if the peak-slot win justifies re-auditing
-  the aliasing classes (V46 residual).
-- Per-module Binaryen optimization (`BinaryenModuleRunPasses`),
-  removing the §8 serialize-Compile-calls caveat.
-- Relocatable / growable static region — lifts the rodata-bound
-  ceilings (literal `in`-list at ~327 ints); the boundary tests
-  flip back to value checks when it lands.
-- Option-contract pins — V8, V23, V24, V25, V26 (§8).
-- Header-comment rot riding the next code commits — stale
-  `compile.h` docblock (M1 module shape, two-arg `arena_reset`);
-  `compiler.h` `function_libraries_` "storage-only" claim;
-  `expr_lower.h` kConst-only contract; `overload_table.h` stale
-  reasons-list; `slot_allocator.h` "M1 ships the no-op form"
-  sentence (the free list shipped);
-  `annotations.h::select_key_rodata_offset` kOptional-only claim
-  (kMap operands also lift keys now).
-
-<!-- diagram-wanted: pass-contract chain — one box per pass with
-     consumes/produces edge labels and the three gate diamonds
-     (RejectDyn, slot-exhaustion, ValidateExprStaticRegion) -->
-<!-- diagram-wanted: three-path dispatch decision tree — operand
-     repr → origin annotation → forced-dynamic overrides (select
-     operand, map-dot sugar) → call target -->
+The expression module and the runtime kernel **share one linear
+memory**. The runtime's own world — wasi-libc's static data, its stack,
+the dlmalloc heap (which holds the per-Instance arena) — is pinned
+*above* byte 8192, because the runtime is linked with
+`--global-base=8192`. Below that line is a small window the expression
+owns: a null sentinel, then read-only constant data (rodata), then
+workspace scratch slots, then a guard band.
+
+The thing to internalize: **the first 8 KiB is the only memory the
+expression may write.** There is no hardware fence at byte 8192 — a
+stray write just past it silently corrupts libc state, and the process
+doesn't trap *there*; it traps minutes later inside some unrelated
+helper with an inscrutable message. That failure mode is exactly why
+LayoutPass can fail and why the gates in §6.4 exist. (`memory_layout.h`
+is the single source of truth for these constants, cross-checked
+against the runtime's header by `static_assert` — a drifted constant
+fails the build, not the eval.)
+
+### 6.2 What it assigns, in five sub-passes
+
+Conceptually there are two kinds of home: **rodata** (constants, packed
+once at compile time) and **workspace** (scratch cells for results,
+reused at runtime). The five sub-passes fill them in order:
+
+- **A — rodata.** Pack every constant into a contiguous block as
+  24-byte CelValue frames, returning absolute offsets (no relocation
+  math in the emitted wasm). Aggregates are *not* packed here — they're
+  built at eval time in the arena.
+- **B — variable slots.** One 32-byte cell per referenced variable.
+- **C — variable storage.** Stamp each identifier with `{kLocal,
+  index}`; the `$eval` prelude loads each local with its slot's offset.
+- **D — scratch slots.** Walk the tree and hand out a workspace cell to
+  each node that produces a result, via the `SlotAllocator` (§6.3).
+- **E — comprehension locals.** Reserve the auxiliary wasm locals each
+  comprehension needs (iteration cursor, end pointer, index counter).
+
+### 6.3 The SlotAllocator — why a chain doesn't blow the budget
+
+The scratch slots are where the cleverness is. Naïvely, every
+intermediate result needs its own cell, so `a + b + c + … ` (N terms)
+would need N cells, and a long chain would march workspace writes
+straight past the 8 KiB line.
+
+The fix is a **free list**. A node `Acquire`s a cell for its result and
+`Release`s it once every reader is done. Because backing helpers read
+their operand slots *before* writing their result slot, a parent can
+safely reuse a just-released operand cell as its own result. So a
+left-associative chain peaks at ~**one** live cell no matter how long it
+is; a balanced tree peaks at its depth. (Pinned: a 2000-term chain
+peaks at one slot and both compiles and evaluates.)
+
+Two details that are load-bearing, not incidental:
+
+- **Cells are 32 bytes even though a CelValue is 24.** The runtime's
+  helpers use atomic memory ops, which trap on a misaligned address; a
+  24-byte stride from a 16-aligned base lands every other cell on an
+  8-aligned address and traps. The extra 8 bytes are alignment padding.
+- **Aggregates pin their slot across their whole subtree.** A list/map
+  literal writes its parent cell *first* (`cel_list_create`) and then
+  fills it element by element, so the parent's cell must not alias any
+  descendant's. They acquire on the way down and release on the way up;
+  scalar ops do the opposite. This split is the entire "release
+  discipline," and the `slot_aliasing_test` battery is what keeps it
+  honest.
+
+This free-list reuse is also what fixed the original P0: the old no-op
+`Release` let a few hundred result-producing nodes push workspace past
+8192 into libc, which is what *actually* caused both the "unaligned
+atomic" trap and the 10K-literal-list panic — bugs that had been
+misfiled against the runtime.
+
+### 6.4 The gates — fail at compile, not at eval
+
+Because crossing byte 8192 is silent and catastrophic, LayoutPass
+refuses to emit a layout that would. Three gates, all derived from the
+memory map:
+
+1. **Slot-exhaustion gate.** If workspace would push past the window
+   (minus rodata, minus the guard band), return `ResourceExhausted`
+   with a remediation hint. The guard band is sized so the gate trips on
+   the *next* allocation before anything spills.
+2. **`ValidateExprStaticRegion`.** A whole-region check, run in *both*
+   link modes: if rodata + workspace ends past 8192, reject. It covers
+   dynamic mode too, because there the expression imports the runtime's
+   memory — oversized rodata corrupts it at instantiate time exactly as
+   in static mode. This is a *status*, never a `CHECK`: region size
+   depends on embedder input, and embedder input must never crash the
+   process.
+3. **A static-mode install tripwire.** `CHECK(rodata_end ≤ 8192)` at the
+   point we attach the rodata segment — reaching it means a gate
+   upstream regressed.
+
+The eval side adds a matching Plan-time check, so a Program whose ABI
+*claims* an out-of-window slot is rejected before any write happens.
+The exact cliffs (`x in [0..N]` fits at N=327, overflows at 328) move if
+the stride or framing changes — the tests are the pin, not these
+numbers.
+
+## 7. Lowering — emit the wasm
+
+`compiler/codegen/expr_lower.{h,cc}` + the comprehension TU.
+
+Now every node is typed, resolved, and has a memory home, so lowering is
+a straight tree-walk that emits Binaryen IR. `LowerToEvalFunction` adds
+one nullary function `$eval` whose body is *load each free variable's
+local, reset the arena, evaluate the root* and whose return value is the
+root result's byte offset. Every node lowers to an i32-valued wasm
+expression: the offset of its CelValue.
+
+> **House rule: WAT first.** Every lowering arm was designed as an
+> executable `.wat` file under `rewrite/wat/` *before* any C++ was
+> written, and is re-run on every build. This doc cites those files
+> rather than pasting wasm listings; they are the maintained reference
+> for the emitted shape.
+
+The one address primitive everything routes through is
+`EmitSlotBaseAddress(Storage)`: a rodata or scratch slot is a literal
+`i32.const offset`, but a *local* holds the offset, so it needs a
+`local.get`. Reading `storage.payload` directly — treating a local's
+*index* as an *offset* — was a real, since-fixed bug; the primitive
+exists so no arm makes that mistake.
+
+### 7.1 The kCall dispatch ladder
+
+`Emit`'s call arm tries four things in order:
+
+1. **`dyn(x)`** — identity; emit the argument.
+2. **`_[_]`** (indexing) — origin-aware dispatch (§7.3); optional
+   operands route to the optional-index kernel.
+3. **`_?_:_`** (ternary) — the one operator where laziness matters (§7.4).
+4. **Everything else** — look up the overload id in the OverloadTable,
+   flatten a receiver into `args[0]`, and emit one uniform call shape:
+   `(out_slot, arg_slot…) -> void`.
+
+`&&`, `||`, and `!` take that last arm — they evaluate *both* operands
+eagerly and let the kernel do non-strict 3VL absorption. That's
+spec-equivalent because CEL is side-effect-free, and it's simpler and
+faster than branching. (The original plan called for explicit branching
+here; it was wrong, and the eager shape is the as-shipped fact.)
+
+### 7.2 kSelect — three branches on the operand's repr
+
+A `select` (`x.field`) means three different things depending on what
+`x` is, so `EmitKSelect` switches on the operand's `repr`:
+
+- **optional** → the optional-field-select kernel.
+- **map** → map field-selection sugar (`m.field` ≡ `m['field']`),
+  lowered to a map lookup with the field name from rodata. This always
+  uses the *dynamic* dispatcher, even though ResolvePass tags map
+  selects `kHost`: a nested select like `{'c':{...}}.c.d` yields an
+  arena map the host trampoline can't read, and the dynamic dispatcher's
+  runtime kind-branch routes correctly at any depth.
+- **otherwise (proto message)** → emit a host `cel_get_field` call,
+  recording the field name and number in a side row for the ABI.
+
+### 7.3 Three-path aggregate dispatch
+
+This is the payoff of the origin tags from §5. A map/list operation
+picks its call target from its operand's origin: `kArena` → a pure-wasm
+fast path, `kHost` → a host trampoline, `kDynamic` → a runtime
+dispatcher that kind-branches once and tail-calls the right arm. The
+OverloadTable points aggregate ops at the dynamic dispatcher by default,
+so it stays a flat id→name map; only the hand-tuned `_[_]` and select
+arms exploit compile-time origin.
+
+### 7.4 Ternary
+
+`EmitConditional` is the only place we nest evaluation: each arm's code
+lives *inside* its `if`-branch, so only the chosen arm runs. The outer
+check is "is the cond a `CEL_BOOL`?" — anything else (an UNKNOWN or
+ERROR cond) is copied through verbatim — and the inner check selects on
+the bool payload. Arms copy from their emitted value through the
+storage-aware copy helper, so a cond or arm that lives in a local works
+correctly.
+
+### 7.5 Comprehensions
+
+`expr_lower_comprehension.cc`. `LowerComprehension` emits a prologue, a
+`(block (loop …))`, and a result expression. The shape that makes it
+tractable: **the loop step is classified once, by AST structure, into a
+closed set** — list-append, map-insert, map-merge (each with an
+optional filter), or a generic fold — because the macro names are gone
+by the time we see the tree. Collection accumulators are *pre-sized*
+(capacity = range count × per-iteration count) and the runtime traps on
+overflow, so a sizing bug is a loud trap, not a silent corruption.
+Similarly, the loop-condition is matched against a closed set of four
+peephole shapes; anything else fails compile loudly rather than emitting
+a wrong loop.
+
+### 7.6 The OverloadTable
+
+A flat map from cel-cpp overload-id strings (copied *verbatim*, typos
+included, so the lookup stays byte-equal with the checker) to
+`(import module, helper name)`. 271 built-in seeds, plus a row per
+custom-function decl. A coverage tripwire partitions every standard
+overload id between "seeded" and "explicitly unimplemented" and rejects
+any overlap or gap, so a new cel-cpp overload can't slip through
+unhandled — it fails at `Build()` naming the id.
+
+## 8. Finalization and link modes
+
+`celwasm::Compile` dispatches on `link_mode`. Both arms share
+`RunFrontAndLayout` at the front and `LowerExportAndFinalise` at the
+back — **one codegen path, two bootstraps** — so the modes can't
+silently diverge. The difference is only *how the module is assembled
+around the same `$eval`*:
+
+- **Dynamic** — a fresh module that *imports* `cel.memory` and the full
+  runtime surface (`arena_reset`, every host trampoline, the map/list
+  kernels). The runtime is a separate `.wasm` linked at Plan time.
+- **Static (the default)** — adopt the wrapper-stripped runtime bytes as
+  the base module, attach rodata on its memory, and install the host
+  imports under codegen's canonical names. Every `cel.*` call is now a
+  *defined* function in the adopted module, so no `cel.*` imports remain.
+
+Why static is the default, and the full link-mode reasoning, is
+[`00-architecture.md` §3](00-architecture.md). The standing rule that
+matters here: **we install the entire runtime import surface regardless
+of what the AST uses.** Unused imports are harmless; AST-gated imports
+are a silent-breakage vector, so we don't do them.
+
+The shared tail, `LowerExportAndFinalise`: build the OverloadTable,
+install the import/export surface (self-skipping names already defined
+in the adopted runtime), lower and export `$eval`, attach the serialized
+`cel.abi` section, then **validate first, optimize only if asked,
+serialize.** Validating before optimizing matters — optimizing an
+unvalidated module mutates unproven IR.
+
+A kStatic Program has zero `cel`-module imports, keeps its `cel_host.*`
+imports, exports `eval`, and is >10× the size of its dynamic twin —
+all pinned by `compile_test.cc`.
+
+## 9. Public surface and options
+
+A `Compiler` is built through `Compiler::Builder` (which consumes itself
+on `Build()`): declare variables, add function libraries, add `.celfn`
+source. Validation is deferred to `Build()` so you get every problem at
+once. One `Compiler` mints many `Program`s; a `Program` is pure bytes.
+
+The options are few, and the honest version of what each one *actually*
+does — which sometimes differs from what the header historically
+claimed — is worth stating plainly:
+
+| Knob | What it really does |
+|---|---|
+| `mem_size_bytes` (default 128 KiB) | Dynamic mode: the initial page count of the imported memory. **Static mode: no effect** (the adopted runtime owns its memory). The old "raise for a bigger arena" advice is wrong — the arena is dlmalloc-sized at runtime. |
+| `container` | Forwarded to cel-cpp's name-resolution container. Checker-only; no codegen effect. |
+| `optimize_level` (default 0) | Gates Binaryen optimization. Level 0 is a byte-identical no-op. Negative levels silently behave as 0; only `> 3` is rejected. Binaryen's optimizer is process-global state, so serialize concurrent Compiles when this is `> 0`. |
+| `link_mode` (default static) | Picks the bootstrap (§8). |
+
+Internal-only knobs (export names, validate/serialize toggles) stay on
+the internal `CompileOptions`; the public struct carries only what tunes
+an expression's lowering.
+
+## 10. Rejected alternatives
+
+Recorded so they aren't re-proposed without new evidence:
+
+- **Sethi–Ullman / Strahler slot pre-assignment** — the LIFO free list
+  (§6.3) gets the same peak-≈-depth result more simply.
+- **A `MessagePattern` table for proto literals** — shipped shape is
+  type-id interning + empty-then-populate calls.
+- **Always-host dispatch / always-materialise** — both lost to the
+  three-path origin split (§7.3).
+- **Explicit branching for `&&` / `||`** — eager slot-out + kernel 3VL
+  absorption is spec-equivalent and simpler (§7.1).
+- **Resolve-time cross-numeric overload pick** — non-viable; cel-cpp's
+  reference map carries no candidate list to pick from, so the
+  cross-numeric id must be synthesized at codegen from operand reprs.
+- **Interned uint32 overload ids** — replaced by borrowed `string_view`s
+  (a future `TypedAst` serialization would need to re-own them).
+- **Inlining the runtime conditionally / "don't inline the runtime"** —
+  static-by-default won on measurement; the old reasoning still governs
+  the dynamic mode.
+- **Rodata caps / dedup / runtime-initialized literals** — deliberate
+  non-features; the budget lives at the §6.4 gates.
+- **AST-gated ("lazy") imports** — the full runtime surface installs
+  regardless of AST shape (§8).
+
+## 11. Known gaps and future work
+
+The honest state. A few are *pinned, open bugs*; the rest are planned
+work or unverified questions.
+
+**Pinned bugs (open):**
+- An ERROR accumulator trips `exists`'s early-exit peephole because it
+  reads the bool payload without a kind check, so
+  `[0,2].exists(x, 2/x == 1)` returns the division error instead of
+  `true` (`KnownBugs.ExistsAbsorbsErrorAccumulator`). Fix: a kind check
+  ahead of the payload probe.
+- A `transformMapEntry` whose entry isn't a map *literal* hits
+  `ABSL_CHECK(false)` and aborts the compiler
+  (`KnownBugs.TransformMapEntryComputedEntryCrash`) — should be a
+  status error.
+
+**Planned:**
+- Tie the hand-copied CelValue wire constants in codegen to
+  `runtime/cel_data.h` (today a layout change would compile green and
+  fail only at e2e).
+- Grow origin inference (`kCall → kHost`, comprehension-fold → arena) —
+  measure before building.
+- A relocatable / growable static region, lifting the rodata-bound
+  ceilings (the `in`-list cliff at ~327 ints); the boundary tests flip
+  back to value checks when it lands.
+- The `@native` library-module fork — its producer
+  (`CompileLibraryBodies` / `rodata_base_override`) is declared but
+  unbuilt; it gets a producer or gets deleted
+  ([`05-custom-functions.md`](05-custom-functions.md)).
+
+**Unverified questions** (the `V…` tracking items — repr edge cases,
+option-contract pins, the dyn-cond ternary behavior, short-circuit
+`orValue`, single-walk Pass-D) are catalogued in
+[`design/notes/`](notes/) rather than carried inline here, so they don't
+clutter the design.
+
+<!-- diagram-wanted: the pass-contract chain — one box per pass with
+     consumes/produces edges and the three gate diamonds -->
+<!-- diagram-wanted: the kSelect / aggregate dispatch decision tree —
+     operand repr → origin → forced-dynamic overrides → call target -->
+
+---
+
+## Appendix A — pass contracts
+
+The precise consume/produce/reorder contract for each pass, for when
+you're changing the pipeline and need the invariants exact. The prose in
+§3–§8 is the explanation; this is the lookup table.
+
+| Pass | Consumes | Produces | Invariant established | Breaks if reordered |
+|---|---|---|---|---|
+| Parse + check | source, `CheckOptions` | checked `cel::Ast` (`type_map`, `reference_map`) | every node typed; calls carry overload ids | everything downstream reads `type_map` |
+| AST rewrites (×2) | checked AST | enum/type-literal idents → `kConstant` | no kIdent for a resolved constant survives | rewrite 2 keys off "Reference has no value" — must follow rewrite 1 |
+| RejectDyn | rewritten AST | pass/fail | survivors are in the static subset (5 carve-outs) | must precede annotation so no dyn repr survives |
+| Annotations | AST + pool | `repr`, `field_number` → `TypedAst` | every node has a repr | ResolvePass CHECKs `repr != kUnknown` on idents |
+| ResolvePass | `TypedAst` | `ResolveOutput` | locals/scopes/attributes/types/origins/overloads populated | LayoutPass derefs `local_index`; lowering derefs `overload_id` |
+| LayoutPass | `TypedAst` + `ResolveOutput` | `StatusOr<StaticLayout>` | every value has a memory home; region fits the window | lowering CHECKs `storage.kind` |
+| `ValidateExprStaticRegion` | `StaticLayout` | pass/fail | region end ≤ 8192, both modes | static install CHECK assumes it ran |
+| Module bootstrap | link mode | `WasmModule` (imports installed / runtime adopted) | every call target resolves | lowering needs imports installed first |
+| `LowerExportAndFinalise` | all of the above | bytes + `cel.abi` | one shared tail; validate→optimize→serialize | optimizing an unvalidated module mutates unproven IR |
 
 ## History
 
-This doc supersedes (each gets an archive banner pointing here), all
-under `doc/implementation-plan/rewrite/`: `design.md` (compiler
-sections; architecture content went to `00-architecture.md`);
-`memory-layout-design.md` (jointly with `03-abi-and-memory.md`; its
-A11/A12 bounded-layout rows described a gate that did not exist when
-written and now ships in a different shape, §5.4);
-`map-list-dispatch.md` (§6.3; its §2.1 inference table is wider than
-shipped, §4); `m5-kcall-comprehensions.md` and follow-on
-(§6.1/§6.6; its `&&`/`||` mechanism claim is corrected in §9);
-`cross-numeric-ordering-plan.md` (§6.5 carries the probe findings
-and the Option-B verdict); `slice2-control-flow-plan.md` (§6.4; the
-shipped ternary probe is `kind == CEL_BOOL`, not the planned
-`kind >= 15`); `dyn-passthrough-plan.md` (§2.3/§4/§6.1; its
-admission summary omits the `has_type()` arm).
-
-The WAT corpus under `rewrite/wat/` and the per-arm walkthroughs in
-`wat-traces.md` remain the maintained lowering reference; this doc
-cites, never copies, them.
+This doc supersedes the compiler sections of the milestone-era plans
+under `doc/implementation-plan/rewrite/` — `design.md`,
+`memory-layout-design.md` (jointly with `03-abi-and-memory.md`),
+`map-list-dispatch.md`, `m5-kcall-comprehensions.md` and follow-on,
+`cross-numeric-ordering-plan.md`, `slice2-control-flow-plan.md`,
+`dyn-passthrough-plan.md` — each of which carries an archive banner
+pointing here. Where the as-shipped shape diverged from those plans
+(the eager `&&`/`||` lowering, the `kind == CEL_BOOL` ternary probe, the
+narrower origin-inference table), this doc is the corrected record. The
+WAT corpus under `rewrite/wat/` and the walkthroughs in `wat-traces.md`
+remain the maintained lowering reference; this doc cites, never copies,
+them.
