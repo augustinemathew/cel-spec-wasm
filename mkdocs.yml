@@ -106,6 +106,7 @@ nav:
       - Benchmarking: design/07-benchmarking.md
   - Reference:
       - Compiler overview: compiler-overview.md
+      - Profiling: profiling.md
       - CEL language definition: langdef.md
       - Contributing: contributing.md
   - Conformance: https://github.com/augustinemathew/cel-spec-wasm/blob/master/conformance/README.md
