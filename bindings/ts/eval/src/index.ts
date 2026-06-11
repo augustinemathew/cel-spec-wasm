@@ -6,3 +6,7 @@
 // `./types`; every other package re-exports them from here.  The
 // `Engine` / `Instance` runtime assembly lands in WI-1.5.
 export * from './types.js';
+
+// Decode a Program's embedded `cel.abi` descriptor (the compiler binding
+// and any Program consumer need this to read a Program's variable table).
+export { decodeAbi, CelAbiError } from './abi.js';
