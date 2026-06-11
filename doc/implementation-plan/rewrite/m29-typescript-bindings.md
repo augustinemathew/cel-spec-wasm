@@ -512,6 +512,21 @@ so they run **fully in parallel**.
   fn round-trips; a JS-object-bound message-typed var reads its fields; a
   proto literal constructs.
 - *Spec:* §A.4.4, §A.4.6, §A.5.
+- *Shipped:* `engine.ts` / `instance.ts` / `marshal.ts` / `activation.ts`
+  / internal `resolving-codec.ts` + `src/index.ts`, with colocated tests.
+  All 27 committed `eval/fixtures/` Programs evaluate correctly through
+  `Engine.create → plan → eval` (`instance.test.ts`, fixture-driven off
+  `manifest.json`).  The eval sequence mirrors C++ `Instance::Eval`
+  (`eval/instance.cc`): reset externrefs → marshal each variable into its
+  `slot_offset` (string/bytes payloads into a `malloc`'d activation buffer
+  ABOVE the bump arena, since `$eval`'s prelude `arena_reset`s) → seed the
+  arena once per Instance with `arena_init(CELWASM_ARENA_CAPACITY_BYTES)`
+  → call `eval` → decode the result slot resolving externref kinds.  The
+  host-fn `cel_fn.*` trampoline and the message-var marshal/coercion path
+  are unit-pinned (`buildCelFnImports` round-trip; `marshal.test.ts`
+  message coercion); the e2e paths driving them from inside a compiled
+  Program are a follow-up gated on a compiled `@host` / message-typed
+  fixture (no such fixture is reachable in the TS test toolchain yet).
 
 ### Phase 2 — The C ABI + compiler binding
 
