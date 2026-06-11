@@ -38,6 +38,16 @@ def _wasm_transition_impl(_settings, _attr):
         "//command_line_option:platforms": str(
             Label("//third_party/wasi_sdk:wasm32_wasi"),
         ),
+        # Reset --cxxopt so a wasm_cc_binary (the C runtime kernel, the
+        # Component-Model components) builds with the toolchain's own flags
+        # regardless of any --cxxopt the parent config injected.  This is
+        # load-bearing: `compiler.wasm` is built under a transition that
+        # adds `-frtti -fexceptions` for cel-cpp + Binaryen, and the
+        # compiler EMBEDS the stripped runtime bytes into every Program it
+        # emits — without this reset those exception flags leak into the
+        # embedded runtime (adding `env.__cxa_*` imports) and corrupt every
+        # compiled Program.
+        "//command_line_option:cxxopt": [],
         # The transition is one-way; cc_binary's host-config dependencies
         # (compilers etc.) come from toolchain resolution, not from the
         # target config, so we don't need to thread the host platform.
@@ -46,7 +56,10 @@ def _wasm_transition_impl(_settings, _attr):
 _wasm_transition = transition(
     implementation = _wasm_transition_impl,
     inputs = [],
-    outputs = ["//command_line_option:platforms"],
+    outputs = [
+        "//command_line_option:platforms",
+        "//command_line_option:cxxopt",
+    ],
 )
 
 def _wasm_p2_transition_impl(_settings, _attr):

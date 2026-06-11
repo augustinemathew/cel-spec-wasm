@@ -37,6 +37,35 @@
 > `CompileBackend`. (c) **shrink it** — 35 MB is heavy for a browser
 > download; `-O`/strip/LTO + the demo lazy-loading it.
 >
+> **UPDATE 2 — it RUNS (for valid input), with one EH wall.** A simple
+> C export layer (`compiler_wasm_exports.cc`, the `cew_*` functions over
+> the C ABI) makes `compiler.wasm` a reactor callable from JS: marshal the
+> source string through linear memory, call `cew_compile`, read the
+> Program bytes back. Verified end-to-end under `node:wasi`:
+> `compiler.wasm` compiles `1 + 2` and `x + y` (with `x:int y:int` var
+> decls) to Programs that are **byte-identical to the native compiler's
+> output**, and the pure-TS eval binding evaluates the `1 + 2` Program to
+> `3`. The CEL compiler runs correctly in WebAssembly.
+>
+> Two fixes were load-bearing: export `__wasm_call_ctors` so JS runs the
+> C++ static constructors (no reactor crt under `-nostartfiles`), and
+> **reset `--cxxopt` in the `_wasm_transition`** — otherwise the
+> compiler's `-frtti -fexceptions` leaked into the embedded stripped
+> runtime baked into every Program (adding `env.__cxa_*` imports and
+> making the output differ from native).
+>
+> **The remaining wall is C++ exceptions for ERROR reporting.** An invalid
+> expression (`1 +`) makes cel-cpp/ANTLR `throw`, but **stock wasi-sdk's
+> libc++abi is built `-fno-exceptions`** — `__cxa_throw` /
+> `__cxa_allocate_exception` are defined in NO wasi-sdk lib (verified with
+> `llvm-nm`), so they link as `env` imports with no runtime. Valid input
+> compiles perfectly; invalid input unwinds to a JS stub instead of
+> returning cel-cpp's diagnostic. Closing this needs an
+> exception-enabled libc++abi for wasm (build it ourselves, or a wasi-sdk
+> variant with wasm-EH) — the one genuinely heavy remaining piece. Until
+> then the wasm backend is "valid-input only"; the subprocess/N-API
+> backend remains the path for full diagnostics.
+>
 > The emscripten investigation below is preserved as history; the
 > wasi-sdk path supersedes it.
 

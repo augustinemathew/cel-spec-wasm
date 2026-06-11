@@ -40,14 +40,30 @@ cc_test(
 
 # compiler.wasm — the CEL compiler cross-compiled to wasm32-wasi so a
 # browser (or any WASI host) can compile CEL → Program with no native
-# toolchain.  `compiler_main.cc` is a WASI CLI over the C ABI (source +
-# var decls in via argv, Program bytes out via stdout), and
+# toolchain.  `compiler_wasm_exports.cc` adds a small JS-friendly `cew_*`
+# export layer over the C ABI (the module is a reactor; JS marshals
+# strings through linear memory and calls the exports), and
 # `wasm_cpp_cc_binary` builds it under the wasm toolchain with C++
 # exceptions/RTTI enabled for the cel-cpp + Binaryen deps.  `manual` so
 # `//...` (host config) never tries to build the wasm binary directly.
 cc_binary(
     name = "compiler_wasm.bin",
-    srcs = ["compiler_main.cc"],
+    srcs = ["compiler_wasm_exports.cc"],
+    linkopts = [
+        "-Wl,--export=cew_alloc",
+        "-Wl,--export=cew_free",
+        "-Wl,--export=cew_compile",
+        "-Wl,--export=cew_program",
+        "-Wl,--export=cew_program_len",
+        "-Wl,--export=cew_error",
+        "-Wl,--export=cew_reset",
+        # The toolchain links with -nostartfiles (no reactor crt), so the
+        # C++ static constructors (protobuf descriptor registration,
+        # cel-cpp global registries) are not auto-run by an `_initialize`.
+        # Export wasm-ld's ctor runner so the JS host calls it once after
+        # instantiation, before any cew_* call.
+        "-Wl,--export=__wasm_call_ctors",
+    ],
     tags = ["manual"],
     visibility = ["//:internal"],
     deps = [":cel_capi"],
