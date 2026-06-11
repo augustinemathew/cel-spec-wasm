@@ -34,7 +34,7 @@ struct GenCtx {
 
   // Variables bound in lexical scope at the current recursion
   // point.  The activation's free variables sit here from the
-  // start (see `NewGenCtxForSliceB`); comprehension productions
+  // start (see `NewGenCtx`); comprehension productions
   // push their iter_var only while their body subtree is being
   // generated, then the caller pops.
   std::vector<std::pair<std::string, CelType>> in_scope;
@@ -52,12 +52,12 @@ struct GenCtx {
 // time, so this is an internal invariant violation, not a
 // runtime error).
 std::string GenerateExpr(const Grammar& grammar, const CelType& target,
-                          GenCtx& ctx);
+                         GenCtx& ctx);
 
-// Initialise a `GenCtx` with the Slice B activation's bindings
+// Initialise a `GenCtx` with the fuzz activation's bindings
 // pre-populated in `in_scope`.  Convenience for callers that
-// want the standard Slice B vocab without rebuilding it by hand.
-GenCtx NewGenCtxForSliceB(int depth, std::mt19937_64& rng);
+// want the standard activation vocab without rebuilding it by hand.
+GenCtx NewGenCtx(int depth, std::mt19937_64& rng);
 
 }  // namespace celwasm::fuzz
 

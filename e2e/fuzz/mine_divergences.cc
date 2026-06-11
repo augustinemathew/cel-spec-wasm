@@ -24,8 +24,8 @@
 using ::celwasm::CelType;
 using ::celwasm::fuzz::Compare;
 using ::celwasm::fuzz::CompareResult;
+using ::celwasm::fuzz::GenAndEvalFull;
 using ::celwasm::fuzz::GenAndEvalResult;
-using ::celwasm::fuzz::GenAndEvalSliceC;
 using ::celwasm::fuzz::GenAndEvalStatus;
 
 namespace {
@@ -104,7 +104,7 @@ int RunMine(absl::string_view target_str, const CelType& target,
   for (uint64_t seed = 1; seed <= max_seeds; ++seed) {
     GenAndEvalResult r;
     std::string err;
-    GenAndEvalStatus st = GenAndEvalSliceC(target, seed, depth, r, &err);
+    GenAndEvalStatus st = GenAndEvalFull(target, seed, depth, r, &err);
     switch (st) {
       case GenAndEvalStatus::kOk:
         if (CompareAndReport(target_str, target, seed, r)) {

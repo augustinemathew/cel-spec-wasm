@@ -15,7 +15,7 @@
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_slice_b.h"
+#include "e2e/fuzz/grammar_scalars.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 
@@ -24,21 +24,21 @@ namespace {
 
 using ::absl_testing::IsOk;
 
-CheckOptions BuildSliceBCheckOpts() {
+CheckOptions BuildSchemaCheckOpts() {
   CheckOptions opts;
-  for (const ActivationBinding& v : SliceBActivation()) {
+  for (const ActivationBinding& v : ActivationSchema()) {
     opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
   }
   return opts;
 }
 
 TEST(GenerateExprTest, DepthZeroAlwaysProducesAValidLeafSource) {
-  Grammar g = BuildSliceBGrammar();
-  const CheckOptions opts = BuildSliceBCheckOpts();
+  Grammar g = BuildScalarGrammar();
+  const CheckOptions opts = BuildSchemaCheckOpts();
 
   for (uint64_t seed = 0; seed < 64; ++seed) {
     std::mt19937_64 rng(seed);
-    GenCtx ctx = NewGenCtxForSliceB(/*depth=*/0, rng);
+    GenCtx ctx = NewGenCtx(/*depth=*/0, rng);
     const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
 
     auto ta = ParseAndCheck(source, opts);
@@ -54,10 +54,15 @@ TEST(GenerateExprTest, DepthZeroAlwaysProducesAValidLeafSource) {
 }
 
 TEST(GenerateExprTest, DeterministicForFixedSeed) {
-  Grammar g = BuildSliceBGrammar();
-  std::mt19937_64 rng_a(42), rng_b(42);
-  GenCtx ctx_a = NewGenCtxForSliceB(4, rng_a);
-  GenCtx ctx_b = NewGenCtxForSliceB(4, rng_b);
+  Grammar g = BuildScalarGrammar();
+  // Constant seeds are the POINT here — the test asserts the
+  // generator is a pure function of (seed, depth).
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_a(42);
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_b(42);
+  GenCtx ctx_a = NewGenCtx(4, rng_a);
+  GenCtx ctx_b = NewGenCtx(4, rng_b);
   EXPECT_EQ(GenerateExpr(g, CelType::Bool(), ctx_a),
             GenerateExpr(g, CelType::Bool(), ctx_b));
 }
@@ -66,35 +71,35 @@ TEST(GenerateExprTest, DifferentSeedsProduceDifferentSources) {
   // Stochastic — extremely unlikely for two different 64-bit
   // seeds at depth=6 to produce identical sources, but the
   // assertion guards against accidental seed-ignoring.
-  Grammar g = BuildSliceBGrammar();
-  std::mt19937_64 rng_a(1), rng_b(2);
-  GenCtx ctx_a = NewGenCtxForSliceB(6, rng_a);
-  GenCtx ctx_b = NewGenCtxForSliceB(6, rng_b);
+  Grammar g = BuildScalarGrammar();
+  // Distinct constant seeds, deliberately — see comment above.
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_a(1);
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_b(2);
+  GenCtx ctx_a = NewGenCtx(6, rng_a);
+  GenCtx ctx_b = NewGenCtx(6, rng_b);
   EXPECT_NE(GenerateExpr(g, CelType::Bool(), ctx_a),
             GenerateExpr(g, CelType::Bool(), ctx_b));
 }
 
 TEST(GenerateExprTest, EveryScalarTargetTypeCanBeGenerated) {
-  Grammar g = BuildSliceBGrammar();
-  const CheckOptions opts = BuildSliceBCheckOpts();
+  Grammar g = BuildScalarGrammar();
+  const CheckOptions opts = BuildSchemaCheckOpts();
 
   struct Case {
     CelType target;
-    Repr expected;
+    Repr expected = Repr::kUnknown;
   };
   const Case cases[] = {
-      {CelType::Bool(),    Repr::kBool},
-      {CelType::Int(),     Repr::kInt},
-      {CelType::Uint(),    Repr::kUint},
-      {CelType::Double(),  Repr::kDouble},
-      {CelType::String(),  Repr::kString},
-      {CelType::Bytes(),   Repr::kBytes},
+      {CelType::Bool(), Repr::kBool},     {CelType::Int(), Repr::kInt},
+      {CelType::Uint(), Repr::kUint},     {CelType::Double(), Repr::kDouble},
+      {CelType::String(), Repr::kString}, {CelType::Bytes(), Repr::kBytes},
   };
 
   for (const Case& c : cases) {
-    std::mt19937_64 rng(0xC0FFEEull ^
-                        static_cast<uint64_t>(c.target.kind()));
-    GenCtx ctx = NewGenCtxForSliceB(3, rng);
+    std::mt19937_64 rng(0xC0FFEEull ^ static_cast<uint64_t>(c.target.kind()));
+    GenCtx ctx = NewGenCtx(3, rng);
     const std::string source = GenerateExpr(g, c.target, ctx);
     auto ta = ParseAndCheck(source, opts);
     ASSERT_THAT(ta, IsOk())
@@ -112,10 +117,10 @@ TEST(GenerateExprTest, DepthBudgetActuallyBoundsRecursion) {
   // wrapping above a leaf — so its source can't be insanely long.
   // This catches the regression where the walker forgets to
   // decrement the budget.
-  Grammar g = BuildSliceBGrammar();
+  Grammar g = BuildScalarGrammar();
   for (uint64_t seed = 0; seed < 16; ++seed) {
     std::mt19937_64 rng(seed);
-    GenCtx ctx = NewGenCtxForSliceB(/*depth=*/1, rng);
+    GenCtx ctx = NewGenCtx(/*depth=*/1, rng);
     const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
     EXPECT_LT(source.size(), 200u)
         << "depth-1 source was " << source.size()

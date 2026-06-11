@@ -1,7 +1,7 @@
-#ifndef CELWASM_E2E_FUZZ_GRAMMAR_SLICE_B_H_
-#define CELWASM_E2E_FUZZ_GRAMMAR_SLICE_B_H_
+#ifndef CELWASM_E2E_FUZZ_GRAMMAR_SCALARS_H_
+#define CELWASM_E2E_FUZZ_GRAMMAR_SCALARS_H_
 
-// Slice B catalog — scalar-only typed-attribute grammar for the
+// Scalar catalog — the typed-attribute grammar core for the
 // CEL source generator.  Covers bool / int / uint / double /
 // string / bytes with the following AST kinds:
 //
@@ -11,7 +11,7 @@
 //     logical, concat, size, ternary, safe type conversions
 //
 // kListExpr / kMapExpr / kStructExpr / kComprehensionExpr arrive
-// in Slice C.
+// in the aggregate catalog.
 //
 // Per m27 §"Guarded productions": all rules registered here are
 // **total over their typed input domain** given the constants the
@@ -29,7 +29,7 @@
 
 namespace celwasm::fuzz {
 
-// The fixed activation the Slice B grammar references via its
+// The fixed activation the scalar grammar references via its
 // `*_ident` leaf productions.  L2/L3 use the same list to build
 // the `CheckOptions::variable_specs` so the cel-cpp checker sees
 // the same bindings the generator picks names from.
@@ -45,24 +45,24 @@ struct ActivationBinding {
   CelType type;
 };
 
-// Returns the canonical Slice B activation.  Re-evaluated on each
+// Returns the canonical fuzz activation.  Re-evaluated on each
 // call; cheap.
-std::vector<ActivationBinding> SliceBActivation();
+std::vector<ActivationBinding> ActivationSchema();
 
-// Builds and returns the Slice B grammar.  Crashes the test
+// Builds and returns the scalar grammar.  Crashes the test
 // binary via ABSL_CHECK if `Grammar::Validate()` (L1) fails —
 // the grammar is the spec, an invalid grammar is a programmer
 // error in the catalog file itself.
-Grammar BuildSliceBGrammar();
+Grammar BuildScalarGrammar();
 
-// Registers the Slice B production catalog onto `b` WITHOUT
-// finalising / validating.  Used by `grammar_slice_c.cc` to
-// layer aggregate + comprehension rules on top of Slice B's
+// Registers the scalar production catalog onto `b` WITHOUT
+// finalising / validating.  Used by `grammar_aggregates.cc` to
+// layer aggregate + comprehension rules on top of the scalar
 // scalar core in a single coherent grammar.  Callers are
 // expected to validate (via `Grammar::Validate`) once they're
 // done adding productions.
-void RegisterSliceBProductions(GrammarBuilder& b);
+void RegisterScalarProductions(GrammarBuilder& b);
 
 }  // namespace celwasm::fuzz
 
-#endif  // CELWASM_E2E_FUZZ_GRAMMAR_SLICE_B_H_
+#endif  // CELWASM_E2E_FUZZ_GRAMMAR_SCALARS_H_

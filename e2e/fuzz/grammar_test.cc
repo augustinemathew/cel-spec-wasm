@@ -1,7 +1,7 @@
 // L1 unit tests for `Grammar::Validate()`.  These exercise the
 // static structural checks in isolation, without involving the
 // real cel-cpp parser+checker — L2 will add that in
-// `grammar_test.cc` once `grammar_slice_b.cc` lands.  L3
+// `grammar_test.cc` once `grammar_scalars.cc` lands.  L3
 // (composition spot-checks against the cel-cpp oracle) lands
 // alongside L2.
 
@@ -21,8 +21,8 @@
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
-#include "e2e/fuzz/grammar_slice_b.h"
-#include "e2e/fuzz/grammar_slice_c.h"
+#include "e2e/fuzz/grammar_aggregates.h"
+#include "e2e/fuzz/grammar_scalars.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 
@@ -210,20 +210,21 @@ TEST(GrammarValidateTest, NegativeWeightRejected) {
                                      ::testing::HasSubstr("negative weight")));
 }
 
-// ── Slice B catalog: L1 self-consistency ─────────────────────────
+// ── Scalar catalog: L1 self-consistency ─────────────────────────
 
-TEST(SliceBGrammarTest, BuildsAndPassesL1Validation) {
-  // `BuildSliceBGrammar()` ABSL_CHECKs internally if L1 fails — so
+TEST(ScalarGrammarTest, BuildsAndPassesL1Validation) {
+  // `BuildScalarGrammar()` ABSL_CHECKs internally if L1 fails — so
   // reaching this point is itself the assertion.  We also check
   // a couple of structural properties to detect catalog-skew.
-  Grammar g = BuildSliceBGrammar();
+  Grammar g = BuildScalarGrammar();
   EXPECT_THAT(g.Validate(), IsOk());
   // Every supported scalar target must have at least one
   // production registered.
   for (const CelType& t :
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
         CelType::String(), CelType::Bytes()}) {
-    EXPECT_TRUE(g.HasType(t)) << "Slice B is missing target " << TypeKey(t);
+    EXPECT_TRUE(g.HasType(t))
+        << "scalar catalog is missing target " << TypeKey(t);
     EXPECT_FALSE(g.Rules(t).empty()) << TypeKey(t);
   }
   // Catalog size sanity check — catches accidental wholesale
@@ -232,9 +233,9 @@ TEST(SliceBGrammarTest, BuildsAndPassesL1Validation) {
   EXPECT_GE(g.TotalProductions(), 50u);
 }
 
-TEST(SliceBGrammarTest, EveryActivationBindingHasIdentLeaf) {
-  Grammar g = BuildSliceBGrammar();
-  for (const ActivationBinding& v : SliceBActivation()) {
+TEST(ScalarGrammarTest, EveryActivationBindingHasIdentLeaf) {
+  Grammar g = BuildScalarGrammar();
+  for (const ActivationBinding& v : ActivationSchema()) {
     const auto& rules = g.Rules(v.type);
     bool found = false;
     for (const Production& p : rules) {
@@ -323,7 +324,7 @@ Synthesised Synthesise(const Production& p) {
 std::vector<std::string> BuildVariableSpecs(
     const std::vector<std::pair<std::string, CelType>>& slot_vars) {
   std::vector<std::string> specs;
-  for (const ActivationBinding& v : SliceBActivation()) {
+  for (const ActivationBinding& v : ActivationSchema()) {
     specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
   }
   for (const auto& [name, type] : slot_vars) {
@@ -334,8 +335,8 @@ std::vector<std::string> BuildVariableSpecs(
 
 }  // namespace l2
 
-TEST(SliceBGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
-  Grammar g = BuildSliceBGrammar();
+TEST(ScalarGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
+  Grammar g = BuildScalarGrammar();
   std::size_t productions_checked = 0;
   for (const CelType& target : g.Types()) {
     const Repr expected = l2::ExpectedRoot(target);
@@ -377,7 +378,7 @@ TEST(SliceBGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
 //
 // The walker below is a deliberately-minimal implementation of
 // the type-directed recursion described in m27 §"The data model".
-// The real generator (step 4 of Slice B's internal sequence)
+// The real generator (the seeded grammar walker)
 // will live in `generator.{h,cc}` with a richer API
 // (fuzztest Domain, weighting hooks, shrinker support, etc.); we
 // inline a tiny version here just so L3 can assert composition
@@ -391,9 +392,9 @@ namespace l3 {
 // `GenCtx` the future generator will use.
 struct WalkCtx {
   int depth_budget;
-  // in_scope: name → type.  Slice B's leaves draw idents only
+  // in_scope: name → type.  the scalar leaves draw idents only
   // from the fixed activation, so the only entries that ever land
-  // here are the comprehension-bound iter_vars (which Slice B
+  // here are the comprehension-bound iter_vars (which the scalar catalog
   // doesn't have).  Kept for shape-parity with `GenCtx`.
   std::vector<std::pair<std::string, CelType>> in_scope;
   std::mt19937_64* rng;
@@ -462,14 +463,14 @@ std::string Walk(const Grammar& g, const CelType& target, WalkCtx& ctx) {
 
 }  // namespace l3
 
-TEST(SliceBGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
-  Grammar g = BuildSliceBGrammar();
+TEST(ScalarGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
+  Grammar g = BuildScalarGrammar();
 
-  // The activation idents are the only idents Slice B can emit;
+  // The activation idents are the only idents the scalar catalog can emit;
   // declare them once.  No synthesised slot vars needed because
   // L3 generates self-contained source (no `%i` left over).
   CheckOptions opts;
-  for (const ActivationBinding& v : SliceBActivation()) {
+  for (const ActivationBinding& v : ActivationSchema()) {
     opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
   }
 
@@ -489,7 +490,7 @@ TEST(SliceBGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
                               << ": grammar-composed source `" << source
                               << "` did not ParseAndCheck";
 
-      // Root must be Bool, per Slice B's target type for L3.
+      // Root must be Bool, per the L3 target type.
       const int64_t root_id = ta->ast().root_expr().id();
       const NodeAnnotation* root_ann = ta->annotations().Find(root_id);
       ASSERT_NE(root_ann, nullptr)
@@ -506,17 +507,17 @@ TEST(SliceBGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
   EXPECT_EQ(total_sampled, kSeedsPerDepth * 3);
 }
 
-// ── Slice C catalog: L1 / catalog-shape / L2 / L3 ────────────────
+// ── Aggregate catalog: L1 / catalog-shape / L2 / L3 ────────────────
 //
-// Slice C extends the grammar with aggregates (list / map
+// The aggregate catalog extends the grammar with aggregates (list / map
 // literals) and comprehension macros.  Reuses the L2 / L3
 // helpers above by passing the slice-C grammar instead of B.
 // Per m27 §"Grammar validation", the three validation layers
 // must be green BEFORE any oracle iteration runs against the
 // expanded grammar; that's what these tests guard.
 
-TEST(SliceCGrammarTest, BuildsAndPassesL1Validation) {
-  Grammar g = BuildSliceCGrammar();
+TEST(AggregateGrammarTest, BuildsAndPassesL1Validation) {
+  Grammar g = BuildFullGrammar();
   EXPECT_THAT(g.Validate(), IsOk());
   // C1 must register list<T> for every scalar T and a sampled
   // K×V map vocab.
@@ -524,21 +525,21 @@ TEST(SliceCGrammarTest, BuildsAndPassesL1Validation) {
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
         CelType::String(), CelType::Bytes()}) {
     EXPECT_TRUE(g.HasType(CelType::List(elt)))
-        << "Slice C is missing list<" << TypeKey(elt) << ">";
+        << "aggregate catalog is missing list<" << TypeKey(elt) << ">";
     EXPECT_FALSE(g.Rules(CelType::List(elt)).empty());
   }
-  // Slice C grows the catalog substantially — roughly the Slice
+  // Aggregates grow the catalog substantially — roughly the scalar
   // B count plus aggregates + comprehensions.  Lower-bound the
   // total to catch accidental wholesale deletions.
   EXPECT_GT(g.TotalProductions(), 130u);
 }
 
-TEST(SliceCGrammarTest, EveryListAndMapHasALeaf) {
+TEST(AggregateGrammarTest, EveryListAndMapHasALeaf) {
   // L1 already checks this generically; this test re-states the
   // invariant for the new aggregate targets so a future catalog
   // edit that drops the literal-only leaf gets a focused
   // failure message.
-  Grammar g = BuildSliceCGrammar();
+  Grammar g = BuildFullGrammar();
   for (const CelType& elt :
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
         CelType::String(), CelType::Bytes()}) {
@@ -554,8 +555,8 @@ TEST(SliceCGrammarTest, EveryListAndMapHasALeaf) {
   }
 }
 
-TEST(SliceCGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
-  Grammar g = BuildSliceCGrammar();
+TEST(AggregateGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
+  Grammar g = BuildFullGrammar();
   std::size_t productions_checked = 0;
   for (const CelType& target : g.Types()) {
     // `ExpectedRoot` covers scalar AND aggregate targets (the
@@ -570,16 +571,17 @@ TEST(SliceCGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
 
       auto ta = ParseAndCheck(synth.source, opts);
       ASSERT_THAT(ta, IsOk())
-          << "Slice C production `" << p.name << "` (target " << TypeKey(target)
-          << "): source `" << synth.source << "` failed ParseAndCheck";
+          << "aggregate production `" << p.name << "` (target "
+          << TypeKey(target) << "): source `" << synth.source
+          << "` failed ParseAndCheck";
 
       if (expected_scalar != Repr::kUnknown) {
         const int64_t root_id = ta->ast().root_expr().id();
         const NodeAnnotation* root_ann = ta->annotations().Find(root_id);
         ASSERT_NE(root_ann, nullptr);
         EXPECT_EQ(root_ann->repr, expected_scalar)
-            << "Slice C production `" << p.name << "` (source `" << synth.source
-            << "`): declared target " << TypeKey(target)
+            << "aggregate production `" << p.name << "` (source `"
+            << synth.source << "`): declared target " << TypeKey(target)
             << " (expects scalar Repr=" << static_cast<int>(expected_scalar)
             << "), but cel-cpp stamped Repr="
             << static_cast<int>(root_ann->repr);
@@ -590,10 +592,10 @@ TEST(SliceCGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
   EXPECT_GT(productions_checked, 130u);
 }
 
-TEST(SliceCGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
-  Grammar g = BuildSliceCGrammar();
+TEST(AggregateGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
+  Grammar g = BuildFullGrammar();
   CheckOptions opts;
-  for (const ActivationBinding& v : SliceCActivation()) {
+  for (const ActivationBinding& v : ActivationSchema()) {
     opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
   }
 
@@ -609,14 +611,14 @@ TEST(SliceCGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
 
       auto ta = ParseAndCheck(source, opts);
       ASSERT_THAT(ta, IsOk())
-          << "Slice C L3 depth=" << depth << " seed=" << seed
+          << "aggregate L3 depth=" << depth << " seed=" << seed
           << ": composed source `" << source << "` failed ParseAndCheck";
 
       const int64_t root_id = ta->ast().root_expr().id();
       const NodeAnnotation* root_ann = ta->annotations().Find(root_id);
       ASSERT_NE(root_ann, nullptr);
       EXPECT_EQ(root_ann->repr, Repr::kBool)
-          << "Slice C L3 depth=" << depth << " seed=" << seed
+          << "aggregate L3 depth=" << depth << " seed=" << seed
           << ": expected Bool, got Repr=" << static_cast<int>(root_ann->repr)
           << " on source `" << source << "`";
       ++total_sampled;

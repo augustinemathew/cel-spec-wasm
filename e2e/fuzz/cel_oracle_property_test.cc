@@ -60,7 +60,7 @@ namespace {
 bool GenAndEval(const CelType& target, uint64_t seed, int depth,
                 absl::string_view kind_label, GenAndEvalResult& out) {
   std::string err;
-  switch (GenAndEvalSliceC(target, seed, depth, out, &err)) {
+  switch (GenAndEvalFull(target, seed, depth, out, &err)) {
     case GenAndEvalStatus::kOk:
       return true;
     case GenAndEvalStatus::kSourceTooLarge:

@@ -11,7 +11,7 @@ cc_binary(
     deps = [
         ":generator",
         ":grammar",
-        ":grammar_slice_c",
+        ":grammar_aggregates",
         "//shared:type",
         "@com_google_absl//absl/strings:string_view",
     ],
@@ -54,11 +54,11 @@ cc_library(
 )
 
 # Slice B catalog — scalar-only typed-attribute grammar.  See
-# `grammar_slice_b.h` for the activation + production list.
+# `grammar_scalars.h` for the activation + production list.
 cc_library(
-    name = "grammar_slice_b",
-    srcs = ["grammar_slice_b.cc"],
-    hdrs = ["grammar_slice_b.h"],
+    name = "grammar_scalars",
+    srcs = ["grammar_scalars.cc"],
+    hdrs = ["grammar_scalars.h"],
     deps = [
         ":grammar",
         "//shared:type",
@@ -69,14 +69,14 @@ cc_library(
 # Slice C catalog — Slice B + list / map literals, size, _in_,
 # comprehension macros over scalar lists and maps.
 # kStructExpr / kSelectExpr / has() / Customer activation are
-# deferred to Slice C2.  See `grammar_slice_c.h`.
+# deferred to Slice C2.  See `grammar_aggregates.h`.
 cc_library(
-    name = "grammar_slice_c",
-    srcs = ["grammar_slice_c.cc"],
-    hdrs = ["grammar_slice_c.h"],
+    name = "grammar_aggregates",
+    srcs = ["grammar_aggregates.cc"],
+    hdrs = ["grammar_aggregates.h"],
     deps = [
         ":grammar",
-        ":grammar_slice_b",
+        ":grammar_scalars",
         "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
@@ -91,7 +91,7 @@ cc_library(
     hdrs = ["generator.h"],
     deps = [
         ":grammar",
-        ":grammar_slice_b",
+        ":grammar_scalars",
         "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
@@ -105,7 +105,7 @@ cc_test(
     deps = [
         ":generator",
         ":grammar",
-        ":grammar_slice_b",
+        ":grammar_scalars",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:annotations",
         "//compiler/ir:typed_ast",
@@ -120,7 +120,7 @@ cc_test(
 # Slice B oracle property — value-side differential test against
 # cel-cpp via the testdata oracle.  See file header for the
 # fuzz/unit-test mode interplay.
-# Shared harness: build the Slice C grammar, generate a source of a
+# Shared harness: build the full grammar, generate a source of a
 # given type, run it through both our pipeline and cel-cpp, return
 # the result.  Consumed by `cel_oracle_property_test` (fuzz-driven)
 # and `mine_divergences` (loop-driven diagnostic).
@@ -132,7 +132,7 @@ cc_library(
     deps = [
         ":generator",
         ":grammar",
-        ":grammar_slice_c",
+        ":grammar_aggregates",
         "//compiler:compiler",
         "//eval:activation",
         "//eval:engine",
@@ -233,8 +233,8 @@ cc_test(
     srcs = ["grammar_test.cc"],
     deps = [
         ":grammar",
-        ":grammar_slice_b",
-        ":grammar_slice_c",
+        ":grammar_scalars",
+        ":grammar_aggregates",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
         "//shared:type",

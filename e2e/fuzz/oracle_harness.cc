@@ -15,7 +15,8 @@
 #include "compiler/compiler.h"
 #include "e2e/fuzz/generator.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_slice_c.h"
+#include "e2e/fuzz/grammar_aggregates.h"
+#include "e2e/fuzz/grammar_scalars.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
@@ -87,12 +88,12 @@ Engine& GlobalEngine() {
   return *engine;
 }
 
-// Compiler declaring every Slice B activation variable.  Shared
+// Compiler declaring every fuzz activation variable.  Shared
 // across iterations.
-const Compiler& SliceBCompiler() {
+const Compiler& SchemaCompiler() {
   static const Compiler* compiler = [] {
     Compiler::Builder b;
-    for (const BoundActivation& bv : SliceBBoundActivation()) {
+    for (const BoundActivation& bv : BoundActivationEntries()) {
       b.DeclareVariable(bv.name, bv.type);
     }
     auto c = std::move(b).Build();
@@ -104,7 +105,7 @@ const Compiler& SliceBCompiler() {
 
 Activation MakeBoundActivation() {
   Activation a;
-  for (const BoundActivation& bv : SliceBBoundActivation()) {
+  for (const BoundActivation& bv : BoundActivationEntries()) {
     a.Bind(bv.name, bv.ours);
   }
   return a;
@@ -112,40 +113,77 @@ Activation MakeBoundActivation() {
 
 }  // namespace
 
-const std::vector<BoundActivation>& SliceBBoundActivation() {
-  static const auto* kBound = new std::vector<BoundActivation>{
-      {"i_a", CelType::Int(), Value::Int(7), MakeOracleInt(7)},
-      {"i_b", CelType::Int(), Value::Int(11), MakeOracleInt(11)},
-      {"u_a", CelType::Uint(), Value::Uint(5), MakeOracleUint(5)},
-      {"d_a", CelType::Double(), Value::Double(3.14), MakeOracleDouble(3.14)},
-      {"b_a", CelType::Bool(), Value::Bool(true), MakeOracleBool(true)},
-      {"s_a", CelType::String(), Value::String("hello"),
-       MakeOracleString("hello")},
-      {"y_a", CelType::Bytes(), Value::Bytes("hi"), MakeOracleBytes("hi")},
-      // Bound aggregates (m27 vocabulary table) — these reach the
-      // host-origin list/map paths that literal aggregates never do.
-      {"xs", CelType::List(CelType::Int()),
-       Value::List({Value::Int(1), Value::Int(2), Value::Int(3)}),
-       MakeOracleIntList({1, 2, 3})},
-      {"ms", CelType::Map(CelType::String(), CelType::Int()),
-       Value::Map({{Value::String("a"), Value::Int(2)},
-                   {Value::String("b"), Value::Int(3)}}),
-       MakeOracleStringIntMap({{"a", 2}, {"b", 3}})},
-  };
+namespace {
+
+// The concrete value bound to one ActivationSchema() entry, in
+// both our and cel-cpp representations.  The grammar's schema is
+// the single source of truth for WHICH variables exist; this is
+// the only place that says what they're bound to.  An entry added
+// to the schema without a value here CHECK-fails at first use —
+// the two can never drift silently (they did once: the property
+// test broke the day `xs` landed in a second hand-synced copy).
+BoundActivation MakeEntry(const ActivationBinding& v) {
+  if (v.name == "i_a") return {v.name, v.type, Value::Int(7), MakeOracleInt(7)};
+  if (v.name == "i_b") {
+    return {v.name, v.type, Value::Int(11), MakeOracleInt(11)};
+  }
+  if (v.name == "u_a") {
+    return {v.name, v.type, Value::Uint(5), MakeOracleUint(5)};
+  }
+  if (v.name == "d_a") {
+    return {v.name, v.type, Value::Double(3.14), MakeOracleDouble(3.14)};
+  }
+  if (v.name == "b_a") {
+    return {v.name, v.type, Value::Bool(true), MakeOracleBool(true)};
+  }
+  if (v.name == "s_a") {
+    return {v.name, v.type, Value::String("hello"), MakeOracleString("hello")};
+  }
+  if (v.name == "y_a") {
+    return {v.name, v.type, Value::Bytes("hi"), MakeOracleBytes("hi")};
+  }
+  // Bound aggregates — these reach the host-origin list/map paths
+  // that literal aggregates never do.
+  if (v.name == "xs") {
+    return {v.name, v.type,
+            Value::List({Value::Int(1), Value::Int(2), Value::Int(3)}),
+            MakeOracleIntList({1, 2, 3})};
+  }
+  if (v.name == "ms") {
+    return {v.name, v.type,
+            Value::Map({{Value::String("a"), Value::Int(2)},
+                        {Value::String("b"), Value::Int(3)}}),
+            MakeOracleStringIntMap({{"a", 2}, {"b", 3}})};
+  }
+  ABSL_CHECK(false) << "activation schema entry `" << v.name
+                    << "` has no bound value — extend MakeEntry in "
+                       "oracle_harness.cc alongside ActivationSchema()";
+}
+
+}  // namespace
+
+const std::vector<BoundActivation>& BoundActivationEntries() {
+  static const auto* kBound = [] {
+    auto* out = new std::vector<BoundActivation>();
+    for (const ActivationBinding& v : ActivationSchema()) {
+      out->push_back(MakeEntry(v));
+    }
+    return out;
+  }();
   return *kBound;
 }
 
 std::vector<testdata::OracleVar> MakeOracleVars() {
   std::vector<testdata::OracleVar> out;
-  out.reserve(SliceBBoundActivation().size());
-  for (const BoundActivation& bv : SliceBBoundActivation()) {
+  out.reserve(BoundActivationEntries().size());
+  for (const BoundActivation& bv : BoundActivationEntries()) {
     out.push_back({bv.name, bv.oracle});
   }
   return out;
 }
 
 absl::StatusOr<Value> OurEval(absl::string_view source) {
-  auto program = SliceBCompiler().Compile(source);
+  auto program = SchemaCompiler().Compile(source);
   if (!program.ok()) return program.status();
   auto instance = GlobalEngine().Plan(*program);
   if (!instance.ok()) return instance.status();
@@ -153,13 +191,12 @@ absl::StatusOr<Value> OurEval(absl::string_view source) {
   return instance->Eval(a);
 }
 
-GenAndEvalStatus GenAndEvalSliceC(const CelType& target, uint64_t seed,
-                                  int depth, GenAndEvalResult& out,
-                                  std::string* error_out) {
-  static const Grammar& grammar = *new Grammar(BuildSliceCGrammar());
+GenAndEvalStatus GenAndEvalFull(const CelType& target, uint64_t seed, int depth,
+                                GenAndEvalResult& out, std::string* error_out) {
+  static const Grammar& grammar = *new Grammar(BuildFullGrammar());
 
   std::mt19937_64 rng(seed);
-  GenCtx ctx = NewGenCtxForSliceB(depth, rng);
+  GenCtx ctx = NewGenCtx(depth, rng);
   out.source = GenerateExpr(grammar, target, ctx);
 
   if (out.source.size() > kMaxSourceBytes) {

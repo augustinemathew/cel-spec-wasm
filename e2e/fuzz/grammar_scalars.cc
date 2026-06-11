@@ -1,4 +1,4 @@
-#include "e2e/fuzz/grammar_slice_b.h"
+#include "e2e/fuzz/grammar_scalars.h"
 
 #include <string>
 #include <utility>
@@ -26,7 +26,7 @@ void RegisterIdentLeaves(GrammarBuilder& b,
 
 // ── Activation ───────────────────────────────────────────────────
 
-std::vector<ActivationBinding> SliceBActivation() {
+std::vector<ActivationBinding> ActivationSchema() {
   // Two int vars so binary arithmetic on idents has a non-trivial
   // shape; one of each other scalar.  No collision-prone single-
   // letter names — every name carries its type tag, which makes
@@ -54,7 +54,7 @@ std::vector<ActivationBinding> SliceBActivation() {
 
 // ── Catalog ──────────────────────────────────────────────────────
 // One registration helper per production family, mirroring the
-// section structure of the m27 design doc; `RegisterSliceBProductions`
+// section structure of the m27 design doc; `RegisterScalarProductions`
 // is the ordered composition.
 
 namespace {
@@ -176,7 +176,7 @@ void RegisterBoolProducers(GrammarBuilder& b) {
   // String / bytes — equality only.  Ordering on string / bytes is
   // CEL-spec'd but its semantics interact with locale handling we
   // haven't yet decided to admit through the static subset (see
-  // m12 string-ext rejection rows); deferred to Slice C.
+  // m12 string-ext rejection rows); planned under m30.D.
   for (const CelType& lex : {CelType::String(), CelType::Bytes()}) {
     const std::string tag = TypeKey(lex);
     b.Binary(CelType::Bool(), tag + "_eq", "(%0 == %1)", lex, lex);
@@ -225,32 +225,32 @@ void RegisterMixedTotalOps(GrammarBuilder& b) {
 
   // int(uint) / uint(int) / int(double) / uint(double) / int(string)
   // / uint(string) are partial — they can range-fail.  Deliberately
-  // omitted from Slice B; revisit in Slice C with literal-bounded
+  // omitted here; planned under m30.B with literal-bounded
   // sources.
 }
 
 }  // namespace
 
-void RegisterSliceBProductions(GrammarBuilder& b) {
+void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterNumericLeaves(b);
   RegisterLexicalLeaves(b);
-  RegisterIdentLeaves(b, SliceBActivation());
+  RegisterIdentLeaves(b, ActivationSchema());
   RegisterArithmetic(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
 }
 
-Grammar BuildSliceBGrammar() {
+Grammar BuildScalarGrammar() {
   GrammarBuilder b;
-  RegisterSliceBProductions(b);
+  RegisterScalarProductions(b);
   Grammar g = std::move(b).Build();
   // L1 — Grammar::Validate() must accept the catalog the test
   // binary just constructed.  If this fires, the catalog has a
   // structural bug (missing leaf, mismatched placeholder, etc.)
   // and no PBT iterations should run against it.
   ABSL_CHECK_OK(g.Validate())
-      << "Slice B grammar failed L1 validation; the catalog in "
-         "grammar_slice_b.cc is malformed";
+      << "scalar grammar failed L1 validation; the catalog in "
+         "grammar_scalars.cc is malformed";
   return g;
 }
 

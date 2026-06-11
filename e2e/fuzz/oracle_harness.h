@@ -35,15 +35,15 @@ struct BoundActivation {
   cel::expr::Value oracle;
 };
 
-// Concrete values bound to the Slice B activation, in our and
+// Concrete values bound to the fuzz activation, in our and
 // cel-cpp representations.  Built once.
-const std::vector<BoundActivation>& SliceBBoundActivation();
+const std::vector<BoundActivation>& BoundActivationEntries();
 
-// cel-cpp oracle-variable list mirroring `SliceBBoundActivation`.
+// cel-cpp oracle-variable list mirroring `BoundActivationEntries`.
 std::vector<testdata::OracleVar> MakeOracleVars();
 
 // Run `source` through our Compile → Plan → Eval pipeline with the
-// Slice B activation bound.
+// fuzz activation bound.
 absl::StatusOr<Value> OurEval(absl::string_view source);
 
 // One round-trip result.  `source` is the grammar-emitted CEL
@@ -59,7 +59,7 @@ struct GenAndEvalResult {
   absl::Status our_status;
 };
 
-// Possible outcomes of `GenAndEvalSliceC`.
+// Possible outcomes of `GenAndEvalFull`.
 enum class GenAndEvalStatus : std::uint8_t {
   kOk,                   // Both sides accepted and produced a non-error value.
   kSourceTooLarge,       // Source exceeded `kMaxSourceBytes`.
@@ -86,9 +86,9 @@ enum class GenAndEvalStatus : std::uint8_t {
 // statuses, `out.source` is still populated so the caller can
 // log it.  `error_out`, when non-null, receives a human-readable
 // description on the rejecting/erroring statuses.
-GenAndEvalStatus GenAndEvalSliceC(const CelType& target, uint64_t seed,
-                                  int depth, GenAndEvalResult& out,
-                                  std::string* error_out = nullptr);
+GenAndEvalStatus GenAndEvalFull(const CelType& target, uint64_t seed, int depth,
+                                GenAndEvalResult& out,
+                                std::string* error_out = nullptr);
 
 }  // namespace celwasm::fuzz
 

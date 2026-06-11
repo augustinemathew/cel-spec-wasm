@@ -10,7 +10,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_slice_b.h"
+#include "e2e/fuzz/grammar_scalars.h"
 #include "shared/type.h"
 
 namespace celwasm::fuzz {
@@ -23,7 +23,7 @@ namespace {
 // L1's leaf-coverage check should have prevented for the
 // require_leaf branch; we still ABSL_CHECK below).
 const Production* PickProduction(const std::vector<Production>& rules,
-                                  bool require_leaf, std::mt19937_64& rng) {
+                                 bool require_leaf, std::mt19937_64& rng) {
   int total_weight = 0;
   for (const Production& p : rules) {
     if (require_leaf && !p.is_leaf) continue;
@@ -45,7 +45,7 @@ const Production* PickProduction(const std::vector<Production>& rules,
 }  // namespace
 
 std::string GenerateExpr(const Grammar& grammar, const CelType& target,
-                          GenCtx& ctx) {
+                         GenCtx& ctx) {
   const auto& rules = grammar.Rules(target);
   ABSL_CHECK(!rules.empty())
       << "GenerateExpr: no productions registered for target type `"
@@ -60,9 +60,8 @@ std::string GenerateExpr(const Grammar& grammar, const CelType& target,
     p = PickProduction(rules, /*require_leaf=*/true, *ctx.rng);
   }
   ABSL_CHECK(p != nullptr)
-      << "GenerateExpr: no eligible production for target `"
-      << TypeKey(target) << "` (depth=" << ctx.depth_budget
-      << "); L1 should have caught this";
+      << "GenerateExpr: no eligible production for target `" << TypeKey(target)
+      << "` (depth=" << ctx.depth_budget << "); L1 should have caught this";
 
   if (p->arg_types.empty()) {
     return p->format;
@@ -83,12 +82,12 @@ std::string GenerateExpr(const Grammar& grammar, const CelType& target,
   return out;
 }
 
-GenCtx NewGenCtxForSliceB(int depth, std::mt19937_64& rng) {
+GenCtx NewGenCtx(int depth, std::mt19937_64& rng) {
   GenCtx ctx;
   ctx.depth_budget = depth;
   ctx.rng = &rng;
-  for (const ActivationBinding& v : SliceBActivation()) {
-    ctx.in_scope.push_back({v.name, v.type});
+  for (const ActivationBinding& v : ActivationSchema()) {
+    ctx.in_scope.emplace_back(v.name, v.type);
   }
   return ctx;
 }
