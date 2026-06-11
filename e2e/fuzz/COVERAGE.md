@@ -30,7 +30,7 @@ note) · ⬜ none generated yet.
 | Category | Overloads | Status |
 | --- | ---: | --- |
 | Arithmetic (numeric) | 17 | 🟡 numeric core; temporal/list `+` open |
-| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq; ordering & cross-type & temporal open |
+| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq + temporal; string/bytes ordering & cross-type open |
 | Logical (`&&` `\|\|` `!`) | 3 | ✅ |
 | `size` | 4 | ✅ |
 | `in` | 2 | ✅ |
@@ -41,8 +41,8 @@ note) · ⬜ none generated yet.
 | Type conversions | ~30 | 🟡 only `double(int\|uint)` |
 | **math_ext** | 28 | ✅ |
 | **net_ext** | 20 | ⬜ |
-| **timestamp accessors** | 23 | ⬜ |
-| **duration accessors** | 7 | ⬜ |
+| **timestamp accessors** | 23 | 🟡 no-tz forms done; `_with_tz` open |
+| **duration accessors** | 7 | ✅ |
 | **encoders (base64)** | 2 | ⬜ |
 | **optionals** | ~14 | ⬜ |
 | `type()` | 1 | ⬜ |
@@ -80,7 +80,8 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
       `greater_int64_uint64` `less_equals_uint64_double` … (the
       heterogeneous-comparison matrix — high bug-yield, needs the
       generator to mix numeric types in one comparison)
-- [ ] `{less,greater,…}_duration` `{…}_timestamp` (temporal ordering)
+- [x] `{less,less_equals,greater,greater_equals,equals,not_equals}_duration`
+      and `_timestamp` (temporal eq + ordering — `RegisterTemporal`)
 
 ## Logical — ✅ (RegisterBoolProducers)
 
@@ -140,15 +141,20 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [ ] `net_ip_*` (family, isCanonical, isLoopback, isGlobalUnicast, …)
 - [ ] `net_cidr_*` (ip, masked, prefixLength, containsIP, containsCIDR, …)
 
-## timestamp accessors — ⬜ (needs timestamp leaves + tz strings)
+## timestamp accessors — 🟡 (`grammar_scalars.cc`: RegisterTemporal; standard lib, no oracle ext)
 
-- [ ] `timestamp_to_{year,month,day_of_month,day_of_month_1_based,
-      day_of_week,day_of_year,hours,minutes,seconds,milliseconds}`
-      and every `_with_tz` / `_tz` variant (23 total)
+- [x] no-tz forms: `timestamp_to_{year,month,day_of_month,
+      day_of_month_1_based,day_of_week,day_of_year,hours,minutes,
+      seconds,milliseconds}` (via getFullYear/getMonth/getDate/…)
+- [x] `timestamp_to_int64` `timestamp_to_string` (int()/string())
+- [ ] every `_with_tz` / `_tz` variant (needs a tz-string leaf set)
+- Note: max-range timestamp leaf withheld until
+  `MaxRangeTimestampConstruction` (known_bugs) is fixed.
 
-## duration accessors — ⬜ (needs duration leaves)
+## duration accessors — ✅ (RegisterTemporal)
 
-- [ ] `duration_to_{hours,minutes,seconds,milliseconds,int64,string}`
+- [x] `duration_to_{hours,minutes,seconds,milliseconds}`
+- [x] `duration_to_int64` `duration_to_string` (int()/string())
 
 ## encoders (base64) — ⬜
 

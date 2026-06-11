@@ -291,6 +291,10 @@ Repr ExpectedRoot(const CelType& t) {
       return Repr::kList;
     case CelType::Kind::kMap:
       return Repr::kMap;
+    case CelType::Kind::kTimestamp:
+      return Repr::kTimestamp;
+    case CelType::Kind::kDuration:
+      return Repr::kDuration;
     default:
       // No grammar registers these kinds yet; if a future catalog
       // adds one, expand this switch alongside it.

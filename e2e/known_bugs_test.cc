@@ -1093,5 +1093,28 @@ TEST(KnownBugs, PbtSplitComputedReceiverSlotAlias) {
   EXPECT_EQ(*el->AsString(), "hellohello");
 }
 
+// PBT int (M30 temporal grammar, 2026-06-11).  Our compiler accepts
+// `int(duration(...))` and returns the duration's whole-second count,
+// but cel-cpp REJECTS it at type-check ("No matching overloads
+// found"): CEL's `int()` converts bool / double / int / string /
+// uint / timestamp, NOT duration (cel-cpp
+// runtime/standard/type_conversion_functions.cc::RegisterIntConversionFunctions).
+// We over-accept because `overload_table.cc` carries a
+// `duration_to_int64` seed and our checker admits the overload.
+// Harmless to valid programs (a superset), but non-conformant —
+// found by e2e/fuzz mining the `int` target.  Fix: drop the
+// duration->int overload from the checker + overload_table; then
+// `int(duration(...))` rejects at compile and this assertion holds.
+TEST(KnownBugs, PbtIntOfDurationOverPermissive) {
+  GTEST_SKIP() << "KNOWN BUG (verified: compiles + returns 3661, want a "
+                  "compile rejection): our checker admits int(duration), "
+                  "which cel-cpp rejects as no-matching-overload.  Remove "
+                  "the duration_to_int64 overload to fix.";
+  auto v = TryEval(R"(int(duration("3661s")))");
+  EXPECT_FALSE(v.ok())
+      << "int(duration) should be rejected (no such CEL overload), got "
+      << (v.ok() ? "a value" : v.status().ToString());
+}
+
 }  // namespace
 }  // namespace celwasm

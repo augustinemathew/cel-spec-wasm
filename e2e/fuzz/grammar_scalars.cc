@@ -267,6 +267,56 @@ void RegisterMathExt(GrammarBuilder& b) {
   b.Unary(CelType::Bool(), "math_is_nan", "math.isNaN(%0)", d);
 }
 
+// Timestamp / duration — leaves, accessors, comparisons, and the
+// int/string conversions.  All standard library (no oracle
+// extension needed).  Accessors return Int; comparisons Bool;
+// `string(...)` String; `int(...)` Int.  The `_with_tz` accessor
+// variants (timezone-string second arg) are deferred — they need a
+// tz-string leaf set.  The max-range timestamp
+// (`9999-12-31T23:59:59.999999999Z`) is left out of the leaves
+// until `MaxRangeTimestampConstruction` (known_bugs) is fixed.
+void RegisterTemporal(GrammarBuilder& b) {
+  const CelType ts = CelType::Timestamp();
+  const CelType dur = CelType::Duration();
+  const CelType i = CelType::Int();
+  // Leaves — a spread of valid instants / durations.
+  b.Leaf(ts, "ts_epoch", R"(timestamp("1970-01-01T00:00:00Z"))");
+  b.Leaf(ts, "ts_mid", R"(timestamp("2024-03-15T13:45:30Z"))");
+  b.Leaf(ts, "ts_leap", R"(timestamp("2000-02-29T23:59:59Z"))");
+  b.Leaf(dur, "dur_zero", R"(duration("0s"))");
+  b.Leaf(dur, "dur_hour", R"(duration("3661s"))");
+  b.Leaf(dur, "dur_neg", R"(duration("-90s"))");
+  // Timestamp accessors → Int (no-tz forms).
+  for (const char* m : {"getFullYear", "getMonth", "getDayOfMonth", "getDate",
+                        "getDayOfWeek", "getDayOfYear", "getHours",
+                        "getMinutes", "getSeconds", "getMilliseconds"}) {
+    b.Unary(i, std::string("ts_") + m, std::string("(%0).") + m + "()", ts);
+  }
+  // Duration accessors → Int.
+  for (const char* m :
+       {"getHours", "getMinutes", "getSeconds", "getMilliseconds"}) {
+    b.Unary(i, std::string("dur_") + m, std::string("(%0).") + m + "()", dur);
+  }
+  // Comparisons (eq/ne/lt/le/gt/ge) → Bool, same-type.
+  for (const CelType& t : {ts, dur}) {
+    const std::string tag = TypeKey(t);
+    b.Binary(CelType::Bool(), tag + "_eq", "(%0 == %1)", t, t);
+    b.Binary(CelType::Bool(), tag + "_ne", "(%0 != %1)", t, t);
+    b.Binary(CelType::Bool(), tag + "_lt", "(%0 < %1)", t, t);
+    b.Binary(CelType::Bool(), tag + "_le", "(%0 <= %1)", t, t);
+    b.Binary(CelType::Bool(), tag + "_gt", "(%0 > %1)", t, t);
+    b.Binary(CelType::Bool(), tag + "_ge", "(%0 >= %1)", t, t);
+  }
+  // Conversions.  `int(timestamp)` is standard (unix seconds);
+  // `int(duration)` is NOT a cel-cpp overload (the fuzzer found we
+  // wrongly accept it — pinned as PbtIntOfDurationOverPermissive in
+  // known_bugs), so it is deliberately absent here to keep the
+  // grammar emitting only conformant CEL.
+  b.Unary(i, "int_from_timestamp", "int(%0)", ts);
+  b.Unary(CelType::String(), "string_from_timestamp", "string(%0)", ts);
+  b.Unary(CelType::String(), "string_from_duration", "string(%0)", dur);
+}
+
 // Comparison + logical (both yield Bool) — every CEL-spec overload.
 void RegisterBoolProducers(GrammarBuilder& b) {
   for (const CelType& numeric :
@@ -345,6 +395,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterFallibleArithmetic(b);
   RegisterStringFunctions(b);
   RegisterMathExt(b);
+  RegisterTemporal(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
 }

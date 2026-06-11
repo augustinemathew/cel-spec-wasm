@@ -189,6 +189,26 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — timestamp/duration + a conformance finding
+
+- `RegisterTemporal`: timestamp/duration leaves, the no-tz accessor
+  family (getFullYear/getMonth/…/getMilliseconds → Int), duration
+  accessors, eq+ordering comparisons, `int(timestamp)` /
+  `string(timestamp|duration)`. Standard library — no oracle
+  extension needed.
+- **Conformance bug found** (the fuzzer's job): mining `int` flagged
+  8 `ERROR-DIVERGE` on `int(duration(...))` — our compiler accepts
+  it and returns the whole-second count, but cel-cpp REJECTS it at
+  type-check (CEL's `int()` takes int/uint/double/string/timestamp,
+  NOT duration; cel-cpp
+  `type_conversion_functions.cc::RegisterIntConversionFunctions`).
+  We over-accept because `overload_table.cc` carries a
+  `duration_to_int64` seed. Pinned as
+  `KnownBugs.PbtIntOfDurationOverPermissive` (GTEST_SKIP — the fix is
+  dropping the overload from the checker, a compiler change); removed
+  `int(duration)` from the grammar to keep it emitting conformant
+  CEL. After removal, int/bool/string mine clean at d4 (0 div).
+
 ### 2026-06-11 — math_ext (28 overloads, COVERAGE.md block ✅)
 
 - Added the whole `math.*` family (`RegisterMathExt`): abs / sign /
