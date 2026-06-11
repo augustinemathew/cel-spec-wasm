@@ -3,7 +3,8 @@
 // committed `compiler.wasm` — then evaluate the resulting Program through
 // the exact client-side run path (`runProgram` → `@cel-wasm/eval`
 // Engine/Instance) the browser uses.  No Monaco, no DOM, no server: this
-// pins the static compile→run wiring the demo depends on.
+// pins the compile→run wiring the demo depends on, in both STATIC and
+// DYNAMIC link modes (the demo compiles dynamically).
 //
 // The compile half loads `public/compiler.wasm` (the committed asset the
 // SPA lazy-fetches at runtime).  It is always present in the repo, so
@@ -16,7 +17,12 @@ import {
   WasmCompileBackend,
   CelCompileError,
 } from '@cel-wasm/compiler/wasm-backend';
-import { decodeAbi, type Activation, type Program } from '@cel-wasm/eval';
+import {
+  Engine,
+  decodeAbi,
+  type Activation,
+  type Program,
+} from '@cel-wasm/eval';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { runProgram } from './internal/run.js';
@@ -24,6 +30,9 @@ import { parseVariablesForm } from './internal/variables.js';
 
 const COMPILER_WASM = fileURLToPath(
   new URL('../public/compiler.wasm', import.meta.url),
+);
+const RUNTIME_WASM = fileURLToPath(
+  new URL('../public/cel_runtime.wasm', import.meta.url),
 );
 
 let backend: WasmCompileBackend;
@@ -39,6 +48,12 @@ async function compileToProgram(
 ): Promise<Program> {
   const wasm = await backend.compile({ source, vars });
   return { wasm, abi: decodeAbi(wasm) };
+}
+
+/** Whether a compiled Program imports the `cel.*` runtime namespace. */
+function importsCelRuntime(wasm: Uint8Array): boolean {
+  const module = new WebAssembly.Module(wasm);
+  return WebAssembly.Module.imports(module).some((i) => i.module === 'cel');
 }
 
 describe('compile (compiler.wasm) → client-side run path', () => {
@@ -94,5 +109,77 @@ describe('compile (compiler.wasm) → client-side run path', () => {
     );
     // The backend must remain usable after an exception-escape compile.
     expect(await runProgram(await compileToProgram('1 + 1'), {})).toBe(2n);
+  });
+});
+
+// The `linkMode` compile option (records-encoded into `cew_compile_opts`)
+// chooses between a self-contained STATIC Program and a thin DYNAMIC expr
+// module that imports the runtime from `cel.*`. The two artifacts differ
+// by ~200x in size; both evaluate identically through the same `plan` →
+// `eval` path (the Engine instantiates `cel_runtime.wasm` for the dynamic
+// one, loadable from the shipped runtime in Node).
+describe('static vs dynamic link mode (cew_compile_opts)', () => {
+  it('static mode bakes the runtime in — no cel.* imports, large', async () => {
+    const wasm = await backend.compile({
+      source: '1 + 2',
+      vars: [],
+      linkMode: 'static',
+    });
+    expect(importsCelRuntime(wasm)).toBe(false);
+    expect(wasm.length).toBeGreaterThan(100_000);
+  });
+
+  it('dynamic mode is a thin expr module importing cel.*, tiny', async () => {
+    const wasm = await backend.compile({
+      source: '1 + 2',
+      vars: [],
+      linkMode: 'dynamic',
+    });
+    expect(importsCelRuntime(wasm)).toBe(true);
+    expect(wasm.length).toBeLessThan(50_000);
+  });
+
+  it('a dynamic Program evaluates to the same value as a static one', async () => {
+    const vars = [
+      { name: 'x', type: 'int' },
+      { name: 'y', type: 'int' },
+    ];
+    const activation: Activation = { x: 10n, y: 32n };
+    const staticWasm = await backend.compile({
+      source: 'x + y',
+      vars,
+      linkMode: 'static',
+    });
+    const dynamicWasm = await backend.compile({
+      source: 'x + y',
+      vars,
+      linkMode: 'dynamic',
+    });
+    const staticResult = await runProgram(
+      { wasm: staticWasm, abi: decodeAbi(staticWasm) },
+      activation,
+    );
+    const dynamicResult = await runProgram(
+      { wasm: dynamicWasm, abi: decodeAbi(dynamicWasm) },
+      activation,
+    );
+    expect(staticResult).toBe(42n);
+    expect(dynamicResult).toBe(staticResult);
+  });
+
+  // The browser supplies the runtime explicitly via EngineOptions.runtime
+  // (no node:fs); `web/public/cel_runtime.wasm` is the asset the SPA
+  // fetches. This pins that exact override path the demo's run.ts uses.
+  it('links a dynamic Program against an explicit runtime override (browser path)', async () => {
+    const runtimeBytes = await readFile(RUNTIME_WASM);
+    const engine = await Engine.create({ runtime: runtimeBytes });
+    const wasm = await backend.compile({
+      source: '[1, 2, 3].map(x, x * 2)',
+      vars: [],
+      linkMode: 'dynamic',
+    });
+    expect(importsCelRuntime(wasm)).toBe(true);
+    const instance = await engine.plan({ wasm, abi: decodeAbi(wasm) });
+    expect(instance.eval({})).toEqual([2n, 4n, 6n]);
   });
 });

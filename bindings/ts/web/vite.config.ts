@@ -13,8 +13,23 @@ import { defineConfig } from 'vite';
 // site moves.
 const PAGES_BASE = process.env.VITE_BASE ?? '/cel-spec-wasm/playground/';
 
+// Both `compiler.wasm` and `cel_runtime.wasm` are wasi-threads reactors
+// whose linear memory is declared `shared`, so the browser only
+// instantiates them in a cross-origin-isolated context (a
+// SharedArrayBuffer requires COOP + COEP).  Send the isolation headers
+// from the dev/preview servers so the client-side compile + dynamic-link
+// run work locally.  (GitHub Pages can't set response headers; the
+// published site needs a coi-serviceworker shim for the same effect —
+// tracked separately.)
+const CROSS_ORIGIN_ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+};
+
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? PAGES_BASE : '/',
+  server: { headers: CROSS_ORIGIN_ISOLATION_HEADERS },
+  preview: { headers: CROSS_ORIGIN_ISOLATION_HEADERS },
   resolve: {
     alias: [
       {

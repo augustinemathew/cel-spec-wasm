@@ -8,7 +8,15 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/coverage/**', '**/node_modules/**'],
+    // `scripts/` holds standalone build/codegen scripts (shell + a Node
+    // `.mjs`) that aren't part of any package's TS project graph, so the
+    // typed linter can't resolve them — exclude the dir from linting.
+    ignores: [
+      '**/dist/**',
+      '**/coverage/**',
+      '**/node_modules/**',
+      'scripts/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

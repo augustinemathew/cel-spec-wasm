@@ -91,16 +91,19 @@ describe('CompileClient', () => {
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 
-  it('passes source and vars through to the backend', async () => {
+  it('passes source and vars through to the backend in dynamic link mode', async () => {
     stubFetch(true, WASM_MAGIC);
     compileMock.mockResolvedValue(WASM_MAGIC);
     const client = new CompileClient();
 
     await client.compile('age > 18', [{ name: 'age', type: 'int' }]);
 
+    // The demo compiles dynamically so a Program is a thin ~6 KB expr
+    // module linked against the shared runtime pulled into the page.
     expect(compileMock).toHaveBeenCalledWith({
       source: 'age > 18',
       vars: [{ name: 'age', type: 'int' }],
+      linkMode: 'dynamic',
     });
   });
 

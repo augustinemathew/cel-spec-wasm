@@ -74,6 +74,11 @@ export class CompileClient {
     const wasm = await backend.compile({
       source,
       vars: vars.map((v) => ({ name: v.name, type: v.type })),
+      // DYNAMIC link mode: emit a ~6 KB expr module that imports the
+      // runtime from `cel.*` rather than a self-contained ~1.3 MB static
+      // Program.  The run path (`run.ts`) links it against the shared
+      // `cel_runtime.wasm` pulled into the page.
+      linkMode: 'dynamic',
     });
     // The backend returns only the portable wasm bytes; the `cel.abi`
     // descriptor is decoded from them here, client-side — the same decode
