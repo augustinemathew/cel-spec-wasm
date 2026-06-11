@@ -1062,6 +1062,72 @@ TEST(ExprLowerComprehensionTest, ExistsEmitsGenericCopy) {
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_iter_init"));
 }
 
+// Recursively searches the IR for a Block whose name starts with
+// `prefix`.  Same descent set as BodyContainsCallTo.
+bool BodyContainsBlockNamePrefix(BinaryenExpressionRef expr,
+                                 const char* prefix) {
+  if (expr == nullptr) return false;
+  const BinaryenExpressionId id = BinaryenExpressionGetId(expr);
+  if (id == BinaryenBlockId()) {
+    const char* name = BinaryenBlockGetName(expr);
+    if (name != nullptr && std::strncmp(name, prefix, strlen(prefix)) == 0) {
+      return true;
+    }
+    const BinaryenIndex n = BinaryenBlockGetNumChildren(expr);
+    for (BinaryenIndex i = 0; i < n; ++i) {
+      if (BodyContainsBlockNamePrefix(BinaryenBlockGetChildAt(expr, i),
+                                      prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (id == BinaryenIfId()) {
+    return BodyContainsBlockNamePrefix(BinaryenIfGetCondition(expr), prefix) ||
+           BodyContainsBlockNamePrefix(BinaryenIfGetIfTrue(expr), prefix) ||
+           BodyContainsBlockNamePrefix(BinaryenIfGetIfFalse(expr), prefix);
+  }
+  if (id == BinaryenDropId()) {
+    return BodyContainsBlockNamePrefix(BinaryenDropGetValue(expr), prefix);
+  }
+  if (id == BinaryenLoopId()) {
+    return BodyContainsBlockNamePrefix(BinaryenLoopGetBody(expr), prefix);
+  }
+  if (id == BinaryenLocalSetId()) {
+    return BodyContainsBlockNamePrefix(BinaryenLocalSetGetValue(expr), prefix);
+  }
+  return false;
+}
+
+// Range-absorption guard (EmitRangeAbsorptionGuard): every
+// comprehension wraps prologue + loop in a named
+// `comp_absorb_<expr_id>` block the guard branches past when the
+// iter_range CelValue is CEL_UNKNOWN / CEL_ERROR — list AND map
+// sources.  Shape locked by
+// `rewrite/wat/70_comprehension_unknown_range.wat`; behavior pinned
+// e2e in m2_partial_eval_test.cc's range-absorption matrices.
+TEST(ExprLowerComprehensionTest, ListSourceEmitsRangeAbsorptionBlock) {
+  Pipeline p = RunPipeline("[1, 2, 3].exists(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsBlockNamePrefix(body, "comp_absorb_"));
+}
+
+TEST(ExprLowerComprehensionTest, MapSourceEmitsRangeAbsorptionBlock) {
+  Pipeline p = RunPipeline(R"({"a": 1}.exists(k, k == "a"))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsBlockNamePrefix(body, "comp_absorb_"));
+}
+
 // ============================================================
 // M5.F — general kCallExpr arm (OverloadTable wiring).
 // ============================================================

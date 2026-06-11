@@ -51,6 +51,22 @@ static ArenaMapHeader* arena_map_header(const CelValue* m) {
                            m->payload.arena_map.header_ptr);
 }
 
+// Overflow-guarded byte size for `count` entries of `stride` bytes.
+// On wasm32 `size_t` is 32 bits, so the unguarded
+// `(uint32_t)((size_t)stride * count)` form WRAPS for adversarial
+// counts and under-allocates — later entry writes then scribble past
+// the run.  Returns 0 (never a valid size for count > 0) when the
+// product exceeds what `arena_alloc` can represent; callers poison
+// CEL_ERR_OVERFLOW on 0, exactly as they do for an arena_alloc OOM.
+static uint32_t entries_bytes_checked(uint32_t stride, uint32_t count) {
+  const uint64_t bytes = (uint64_t)stride * (uint64_t)count;
+  // arena_alloc rejects requests above UINT32_MAX-7 (8-byte align
+  // headroom); mirror that ceiling so the reject happens here with
+  // the multiply, not as a confusing downstream alloc failure.
+  if (bytes > (uint64_t)(UINT32_MAX - 7u)) return 0;
+  return (uint32_t)bytes;
+}
+
 static CelValue* arena_map_entry_key(ArenaMapHeader* hdr, uint32_t i) {
   return (CelValue*)(cel_memory_base_() + hdr->entries_offset +
                      ((size_t)kCelMapEntryStride * i));
@@ -71,8 +87,9 @@ void cel_map_create(uint32_t out_slot, uint32_t initial_capacity) {
   }
   uint32_t entries_off = 0;
   if (initial_capacity > 0) {
-    entries_off =
-        arena_alloc((uint32_t)((size_t)kCelMapEntryStride * initial_capacity));
+    const uint32_t bytes =
+        entries_bytes_checked((uint32_t)kCelMapEntryStride, initial_capacity);
+    entries_off = bytes == 0 ? 0 : arena_alloc(bytes);
     if (entries_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;
@@ -97,6 +114,21 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   }
   CelValue* key = cel_value_at(key_slot);
   CelValue* val = cel_value_at(value_slot);
+  // 3VL: an errored / unknown key or value poisons the whole literal
+  // (map construction is strict, matching list literals via
+  // `cel_list_append_at` and cel-cpp's create-map step) — checked
+  // BEFORE the key-kind gate so `{1/0: 'a'}` surfaces divide_by_zero,
+  // not type_mismatch.  Without this, `{'a': 1/0}` constructed a map
+  // CONTAINING an error value and comprehensions/size over it
+  // silently produced normal-looking results.
+  if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
+    *m = *key;
+    return;
+  }
+  if (val->kind == CEL_ERROR || val->kind == CEL_UNKNOWN) {
+    *m = *val;
+    return;
+  }
   if (!is_valid_map_key_kind(key->kind)) {
     poison(m, CEL_ERR_TYPE_MISMATCH);
     return;
@@ -298,15 +330,78 @@ static ArenaListHeader* arena_list_header(const CelValue* l) {
                             l->payload.arena_list.header_ptr);
 }
 
+// ---- poisoned comprehension sources ---------------------------------
+//
+// The comprehension prologue walks its list/map source through raw
+// header loads (no kind check — see `EmitListPrologue` /
+// `cel_map_iter_init`).  Two source shapes can't take that walk:
+//
+//   - a poisoned source (the iter_range evaluated to CEL_ERROR /
+//     CEL_UNKNOWN, e.g. `[1/0].map(x, x)`), and
+//   - an OOM while materialising the walkable view (snapshot slot /
+//     iter state allocation failed).
+//
+// Both used to degrade to an EMPTY walk — a silent wrong answer
+// (`[1/0].exists(x, x == 2)` returned `false` instead of the divide-
+// by-zero error).  Instead we vend a synthetic ONE-element view whose
+// element (or key+value pair) carries the poison CelValue: the loop
+// body's 3VL absorption then propagates it into the accu, so the
+// comprehension result IS the error/unknown — matching cel-cpp, where
+// an errored iter_range errors the comprehension.
+//
+// Backing bytes come from a fresh arena allocation when available;
+// when the arena itself is exhausted, from the per-Instance emergency
+// block `arena_oom_block()` reserved at arena_init (see cel_arena.h).
+// The emergency block is shared by every OOM vend in an eval — fine,
+// because its contents are rewritten at each vend and only ever read
+// as ERROR/UNKNOWN elements.  Byte layout of the 128-byte block:
+//
+//   +0   ArenaListHeader (16)   } list view
+//   +16  element CelValue (24)  }
+//   +40  view CelValue (24)     }
+//   +64  MapIterState (16)      } map iter view
+//   +80  key CelValue (24)      } (HOST-shaped snapshot entry:
+//   +104 value CelValue (24)    }  key at +0, value at +24)
+enum {
+  kOomBlockListHeaderOff = 0,
+  kOomBlockListElemOff = 16,
+  kOomBlockListViewOff = 40,
+  kOomBlockMapIterStateOff = 64,
+  kOomBlockMapEntryOff = 80,
+};
+
+// Vend a CEL_LIST_ARENA view of one element `*poison`.  Returns the
+// byte offset of the view CelValue.  Traps only when the emergency
+// block was never reserved (arena_init-time malloc failure) — there
+// is no honest verdict to give in that state.
+static uint32_t vend_poison_list_view(const CelValue* poison) {
+  uint32_t hdr_off = arena_alloc(64u);
+  if (hdr_off == 0) {
+    if (arena_oom_block() == 0) __builtin_trap();
+    hdr_off = arena_oom_block() + (uint32_t)kOomBlockListHeaderOff;
+  }
+  const uint32_t elem_off = hdr_off + (uint32_t)kOomBlockListElemOff;
+  const uint32_t view_off = hdr_off + (uint32_t)kOomBlockListViewOff;
+  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
+  hdr->count = 1;
+  hdr->capacity = 1;
+  hdr->elements_offset = elem_off;
+  hdr->_pad = 0;
+  *cv_at(elem_off) = *poison;
+  CelValue* view = cv_at(view_off);
+  view->kind = CEL_LIST_ARENA;
+  view->payload.arena_list.header_ptr = hdr_off;
+  return view_off;
+}
+
 // Resolve a list iter_range source to a slot offset whose CelValue
 // is arena-shaped (CEL_LIST_ARENA).  Arena sources pass through;
 // host sources are snapshotted via `cel_host.cel_list_iter_open`
 // into a fresh arena allocation and a fresh slot returned.  Lets
 // codegen emit the same inline arena prologue regardless of origin.
 //
-// Returns 0 only on arena_alloc failure for the snapshot slot; the
-// codegen path treats 0 as "fall back to source_slot" (which will
-// produce an empty walk for host sources at worst).
+// Never returns a non-walkable slot: poisoned sources and OOM both
+// vend a one-poison-element view (see the block comment above).
 // cel:codegen-export
 uint32_t cel_list_arena_view(uint32_t list_slot) {
   CEL_LOG("enter");
@@ -316,15 +411,24 @@ uint32_t cel_list_arena_view(uint32_t list_slot) {
   }
   if (l->kind == CEL_LIST_HOST) {
     uint32_t synth_slot = arena_alloc((uint32_t)sizeof(CelValue));
-    if (synth_slot == 0) return list_slot;  // OOM — empty walk follows.
+    if (synth_slot == 0) {
+      CelValue oom;
+      poison(&oom, CEL_ERR_OVERFLOW);
+      return vend_poison_list_view(&oom);
+    }
     cel_host_cel_list_iter_open(synth_slot, list_slot);
     return synth_slot;
   }
-  // Poisoned / wrong-kind — return original; codegen's arena walk
-  // will read garbage but the comprehension's accu propagation
-  // catches downstream errors.  Equivalent to the pre-iter-dispatch
-  // M5 behaviour for malformed sources.
-  return list_slot;
+  if (l->kind == CEL_ERROR || l->kind == CEL_UNKNOWN) {
+    // Poisoned source — propagate it verbatim through the walk.
+    return vend_poison_list_view(l);
+  }
+  // Wrong kind: the checker guarantees a list-typed iter_range, so
+  // this is codegen/runtime drift.  Vend a TYPE_MISMATCH element so
+  // the drift surfaces as an eval error instead of a garbage walk.
+  CelValue mismatch;
+  poison(&mismatch, CEL_ERR_TYPE_MISMATCH);
+  return vend_poison_list_view(&mismatch);
 }
 
 static CelValue* arena_list_element(ArenaListHeader* hdr, uint32_t i) {
@@ -342,8 +446,9 @@ void cel_list_create(uint32_t out_slot, uint32_t capacity) {
   }
   uint32_t elements_off = 0;
   if (capacity > 0) {
-    elements_off =
-        arena_alloc((uint32_t)((size_t)kCelListEntryStride * capacity));
+    const uint32_t bytes =
+        entries_bytes_checked((uint32_t)kCelListEntryStride, capacity);
+    elements_off = bytes == 0 ? 0 : arena_alloc(bytes);
     if (elements_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return;
@@ -565,9 +670,14 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 // already absorbed 3VL on the operands; this matcher does not
 // surface ERROR / UNKNOWN.
 //
-// Nested aggregates (CEL_LIST_*, CEL_MAP_*, CEL_MESSAGE) still
-// return 0 here — the arena fast path is correct only for scalar
-// element types; codegen gates routing accordingly.
+// SCALARS ONLY: nested aggregates (CEL_LIST_*, CEL_MAP_*),
+// CEL_MESSAGE, CEL_TYPE, and CEL_OPTIONAL return 0 here.  Aggregate
+// walks must route such pairs through `deep_values_equal` below,
+// which recurses into the polymorphic equality kernel (and from
+// there into the cel_host trampolines for message / host-origin
+// pairs).  Comparing them here would silently report `false` for
+// equal values — the wrong-answer class cleanup-backlog #40's
+// latent-gap note documented.
 static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
     return numeric_compare_kernel(a, b) == kCmpEqual;
@@ -614,6 +724,72 @@ int cel_value_eq(const CelValue* a, const CelValue* b) {
   return cel_value_eq_polymorphic(a, b);
 }
 
+// Polymorphic equality kernel — defined with the equality dispatcher
+// section below; forward-declared here so the aggregate fast paths
+// can recurse through it for non-scalar element pairs.
+static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
+                            uint32_t b_slot);
+
+// 1 if `kind` is fully comparable by `cel_value_eq` (the scalar
+// matcher).  The complement — CEL_MESSAGE, CEL_LIST_*, CEL_MAP_*,
+// CEL_TYPE, CEL_OPTIONAL, plus ERROR/UNKNOWN defensively — must go
+// through the equality kernel.
+static int is_scalar_eq_kind(uint32_t kind) {
+  return kind == CEL_NULL || kind == CEL_BOOL || kind == CEL_INT ||
+         kind == CEL_UINT || kind == CEL_DOUBLE || kind == CEL_STRING ||
+         kind == CEL_BYTES || kind == CEL_DURATION || kind == CEL_TIMESTAMP ||
+         kind == CEL_IP || kind == CEL_CIDR;
+}
+
+// Deep structural equality of the CelValues at byte offsets `a_off`
+// and `b_off`.  Scalar pairs short-circuit through `cel_value_eq`;
+// anything else recurses through the polymorphic equality kernel,
+// which dispatches nested lists/maps back into the aggregate walks
+// and routes CEL_MESSAGE / host-origin pairs through the cel_host
+// trampolines — so `[Msg{x:1}] == [Msg{x:1}]` compares with the same
+// MessageDifferencer semantics as a direct `msg1 == msg2`.
+//
+// The kernel's verdict lands in a lazily-allocated arena scratch cell
+// (`*scratch`, 0 until first needed); a fresh cell — never the
+// caller's out_slot — because workspace slot reuse can alias out_slot
+// with an operand slot that later iterations still read.  A non-bool
+// verdict (e.g. a not-comparable message pair, which the trampoline
+// reports as a TYPE_MISMATCH error) compares UNEQUAL, matching the
+// host-side walk's contract (eval/internal/cel_host.cc
+// `ListEqElementEquals`).
+//
+// Returns 1 (equal), 0 (unequal-or-uncomparable), -1 (scratch
+// allocation failed — caller must poison CEL_ERR_OVERFLOW, never
+// degrade to a false verdict).
+static int deep_values_equal(uint32_t* scratch, uint32_t a_off,
+                             uint32_t b_off) {
+  const CelValue* a = cv_at(a_off);
+  const CelValue* b = cv_at(b_off);
+  if (is_scalar_eq_kind(a->kind) && is_scalar_eq_kind(b->kind)) {
+    return cel_value_eq(a, b);
+  }
+  if (*scratch == 0) {
+    *scratch = arena_alloc((uint32_t)sizeof(CelValue));
+    if (*scratch == 0) return -1;
+  }
+  equality_kernel(*scratch, a_off, b_off);
+  const CelValue* verdict = cv_at(*scratch);
+  return verdict->kind == CEL_BOOL && verdict->payload.b != 0;
+}
+
+// Byte offset of element `i` in an arena list's elements run.
+static uint32_t arena_list_element_off(const ArenaListHeader* hdr, uint32_t i) {
+  return hdr->elements_offset + (uint32_t)((size_t)kCelListEntryStride * i);
+}
+
+// Byte offsets of entry `i`'s key / value in an arena map's run.
+static uint32_t arena_map_entry_key_off(const ArenaMapHeader* hdr, uint32_t i) {
+  return hdr->entries_offset + (uint32_t)((size_t)kCelMapEntryStride * i);
+}
+static uint32_t arena_map_entry_val_off(const ArenaMapHeader* hdr, uint32_t i) {
+  return arena_map_entry_key_off(hdr, i) + (uint32_t)sizeof(CelValue);
+}
+
 void cel_list_size_arena(uint32_t out_slot, uint32_t list_slot) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
@@ -639,8 +815,15 @@ void cel_list_in_arena(uint32_t out_slot, uint32_t value_slot,
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
+  uint32_t scratch = 0;
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (cel_value_eq(arena_list_element(hdr, i), v)) {
+    const int eq =
+        deep_values_equal(&scratch, arena_list_element_off(hdr, i), value_slot);
+    if (eq < 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+    if (eq) {
       write_bool(out, 1);
       return;
     }
@@ -664,8 +847,15 @@ void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     write_bool(out, 0);
     return;
   }
+  uint32_t scratch = 0;
   for (uint32_t i = 0; i < ha->count; ++i) {
-    if (!cel_value_eq(arena_list_element(ha, i), arena_list_element(hb, i))) {
+    const int eq = deep_values_equal(&scratch, arena_list_element_off(ha, i),
+                                     arena_list_element_off(hb, i));
+    if (eq < 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+    if (!eq) {
       write_bool(out, 0);
       return;
     }
@@ -685,7 +875,9 @@ static uint32_t alloc_concat_list(CelValue* out, uint32_t total) {
   }
   uint32_t elements_off = 0;
   if (total > 0) {
-    elements_off = arena_alloc((uint32_t)((size_t)kCelListEntryStride * total));
+    const uint32_t bytes =
+        entries_bytes_checked((uint32_t)kCelListEntryStride, total);
+    elements_off = bytes == 0 ? 0 : arena_alloc(bytes);
     if (elements_off == 0) {
       poison(out, CEL_ERR_OVERFLOW);
       return 0;
@@ -721,6 +913,13 @@ void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot,
   }
   ArenaListHeader* ha = arena_list_header(a);
   ArenaListHeader* hb = arena_list_header(b);
+  // The u32 element-count add can wrap for adversarial counts; the
+  // wrapped total would under-allocate and `copy_elements` would
+  // scribble past the run.  Reject → poison, never wrap.
+  if (hb->count > UINT32_MAX - ha->count) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
   uint32_t hdr_off = alloc_concat_list(out, ha->count + hb->count);
   if (hdr_off == 0) return;  // OOM, out already poisoned.
   ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + hdr_off);
@@ -764,15 +963,19 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
 }
 
 // Returns 1 iff entry `i` of `ha` is structurally equal to some
-// entry of `hb`.  Caller has confirmed both maps have the same
-// entry count, so a missing match means the maps differ.
+// entry of `hb`, 0 if not, -1 on scratch-allocation failure inside
+// the deep value compare.  Caller has confirmed both maps have the
+// same entry count, so a missing match means the maps differ.  Keys
+// are scalar by construction (`is_valid_map_key_kind`); VALUES can be
+// messages or nested aggregates, so they go through the deep
+// comparator.
 static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
-                                   ArenaMapHeader* hb) {
+                                   ArenaMapHeader* hb, uint32_t* scratch) {
   const CelValue* ka = arena_map_entry_key(ha, i);
-  const CelValue* va = arena_map_entry_val(ha, i);
   for (uint32_t j = 0; j < hb->count; ++j) {
     if (map_keys_equal(ka, arena_map_entry_key(hb, j))) {
-      return cel_value_eq(va, arena_map_entry_val(hb, j));
+      return deep_values_equal(scratch, arena_map_entry_val_off(ha, i),
+                               arena_map_entry_val_off(hb, j));
     }
   }
   return 0;
@@ -797,8 +1000,14 @@ void cel_map_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   // Map equality is set-equality on entries (langdef §"Equality":
   // map order is irrelevant).  For each entry in a, find a matching
   // key in b and compare values.
+  uint32_t scratch = 0;
   for (uint32_t i = 0; i < ha->count; ++i) {
-    if (!arena_map_entry_matches(ha, i, hb)) {
+    const int eq = arena_map_entry_matches(ha, i, hb, &scratch);
+    if (eq < 0) {
+      poison(out, CEL_ERR_OVERFLOW);
+      return;
+    }
+    if (!eq) {
       write_bool(out, 0);
       return;
     }
@@ -1171,37 +1380,84 @@ uint32_t cel_map_count(uint32_t map_slot) {
   return 0;
 }
 
+// Map-source sibling of `vend_poison_list_view` (see the poisoned-
+// comprehension-sources block comment above that function): vend a
+// HOST-shaped one-entry iter whose key AND value both carry `*poison`
+// so the loop body's 3VL absorption propagates it into the accu.
+// Returns the MapIterState offset.  Fresh arena bytes when available;
+// the emergency block's map half when exhausted; traps only when the
+// block was never reserved.
+static uint32_t vend_poison_map_iter(const CelValue* poison) {
+  uint32_t state_off = arena_alloc(64u);
+  if (state_off == 0) {
+    if (arena_oom_block() == 0) __builtin_trap();
+    state_off = arena_oom_block() + (uint32_t)kOomBlockMapIterStateOff;
+  }
+  const uint32_t entry_off = state_off + (uint32_t)sizeof(MapIterState);
+  MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
+  state->kind = MAP_ITER_KIND_HOST;
+  state->cursor = 0;
+  state->payload = entry_off;
+  state->count = 1;
+  *cv_at(entry_off) = *poison;                               // key
+  *cv_at(entry_off + (uint32_t)sizeof(CelValue)) = *poison;  // value
+  return state_off;
+}
+
+// Arena-map arm of `cel_map_iter_init`.
+static uint32_t map_iter_init_arena(const CelValue* m) {
+  ArenaMapHeader* hdr = arena_map_header(m);
+  // Empty map: skip the state alloc entirely — `iter_next(0)` returns
+  // 0 immediately, so the comprehension loop exits without entering
+  // the body.  Saves 16 arena bytes per empty-iter.
+  if (hdr->count == 0) return 0;
+  uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
+  if (state_off == 0) {
+    // OOM: surface as an error iteration, never as an empty walk.
+    CelValue oom;
+    poison(&oom, CEL_ERR_OVERFLOW);
+    return vend_poison_map_iter(&oom);
+  }
+  MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
+  state->kind = MAP_ITER_KIND_ARENA;
+  state->cursor = 0;
+  state->payload = m->payload.arena_map.header_ptr;
+  state->count = 0;  // unused
+  return state_off;
+}
+
+// Host-map arm of `cel_map_iter_init` — snapshots via the trampoline.
+static uint32_t map_iter_init_host(uint32_t map_slot) {
+  uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
+  if (state_off == 0) {
+    CelValue oom;
+    poison(&oom, CEL_ERR_OVERFLOW);
+    return vend_poison_map_iter(&oom);
+  }
+  // Trampoline writes every field of the state struct + the
+  // snapshot payload into the arena.  On empty / failure it
+  // leaves count==0.
+  cel_host_cel_map_iter_open(state_off, map_slot);
+  MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
+  if (state->count == 0) return 0;
+  return state_off;
+}
+
 uint32_t cel_map_iter_init(uint32_t map_slot) {
   CEL_LOG("enter");
   CelValue* m = cel_value_at(map_slot);
-  if (m->kind == CEL_MAP_ARENA) {
-    ArenaMapHeader* hdr = arena_map_header(m);
-    // Empty map: skip the state alloc entirely — `iter_next(0)` returns
-    // 0 immediately, so the comprehension loop exits without entering
-    // the body.  Saves 16 arena bytes per empty-iter.
-    if (hdr->count == 0) return 0;
-    uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
-    if (state_off == 0) return 0;  // OOM: behave as empty.
-    MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
-    state->kind = MAP_ITER_KIND_ARENA;
-    state->cursor = 0;
-    state->payload = m->payload.arena_map.header_ptr;
-    state->count = 0;  // unused
-    return state_off;
+  if (m->kind == CEL_MAP_ARENA) return map_iter_init_arena(m);
+  if (m->kind == CEL_MAP_HOST) return map_iter_init_host(map_slot);
+  if (m->kind == CEL_ERROR || m->kind == CEL_UNKNOWN) {
+    // Poisoned source (e.g. `{'a': 1/0}` — construction errors poison
+    // the map value): propagate it through one error iteration
+    // instead of the silent empty walk this used to take.
+    return vend_poison_map_iter(m);
   }
-  if (m->kind == CEL_MAP_HOST) {
-    uint32_t state_off = arena_alloc((uint32_t)sizeof(MapIterState));
-    if (state_off == 0) return 0;
-    // Trampoline writes every field of the state struct + the
-    // snapshot payload into the arena.  On empty / failure it
-    // leaves count==0.
-    cel_host_cel_map_iter_open(state_off, map_slot);
-    MapIterState* state = (MapIterState*)(cel_memory_base_() + state_off);
-    if (state->count == 0) return 0;
-    return state_off;
-  }
-  // Poisoned / unknown / error: defensive 0.
-  return 0;
+  // Wrong kind: checker guarantees a map-typed iter_range — drift.
+  CelValue mismatch;
+  poison(&mismatch, CEL_ERR_TYPE_MISMATCH);
+  return vend_poison_map_iter(&mismatch);
 }
 
 uint32_t cel_map_iter_next(uint32_t iter_handle) {
@@ -1332,11 +1588,9 @@ static void type_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
                                      base + b->payload.s.ptr, la));
 }
 
-// Forward declaration: the CEL_OPTIONAL arm calls back into the
-// dispatcher to recurse on inner CelValues.
-static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
-                            uint32_t b_slot);
-
+// The CEL_OPTIONAL arm recurses on inner CelValues through
+// `equality_kernel` (forward-declared with the deep-equality helpers
+// above).
 // optional<T> == optional<U> per cel-cpp
 // `OptionalValueInterface::Equal` + langdef §"Equality" optional
 // addendum.  Both None → true; present mismatch → false; both

@@ -15,12 +15,12 @@
 #include <cstring>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 extern "C" {
 // Strong override of the host-side weak stub in cel_runtime.c.  Lets
@@ -630,17 +630,30 @@ TEST_F(MapIterTest, MixedKeyKindsCopiedFaithfully) {
   EXPECT_TRUE(seen_string);
 }
 
-// Poisoned map: init returns the 0 sentinel (same as empty).  The
-// codegen exits the comprehension without reading the map; the
-// poison surfaces upstream via the comprehension's `result` (the
-// map slot itself is returned by `accu_init` / `result =
-// @result`, not via the iterator).
-TEST_F(MapIterTest, PoisonedMapInitReturnsZeroHandle) {
+// Poisoned map: init vends a one-entry poison iteration whose key
+// and value both carry the source error verbatim, so the loop body's
+// 3VL absorption propagates it into the comprehension result.  (The
+// previous contract — returning the 0 sentinel, same as empty — was
+// a silent wrong answer: `{'a': 1/0}.exists(k, ...)` evaluated
+// `false` instead of the divide-by-zero error.)
+TEST_F(MapIterTest, PoisonedMapInitVendsOneErrorIteration) {
   uint32_t m = NewSlot();
   cel_value_at(m)->kind = CEL_ERROR;
-  cel_value_at(m)->payload.err = CEL_ERR_TYPE_MISMATCH;
+  cel_value_at(m)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
   uint32_t h = cel_map_iter_init(m);
-  EXPECT_EQ(h, 0u);
+  ASSERT_NE(h, 0u);
+  ASSERT_EQ(cel_map_iter_next(h), 1u);
+  uint32_t kslot = NewSlot();
+  uint32_t vslot = NewSlot();
+  cel_map_iter_key_at(kslot, h);
+  cel_map_iter_value_at(vslot, h);
+  EXPECT_EQ(cel_value_at(kslot)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(kslot)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+  EXPECT_EQ(cel_value_at(vslot)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(vslot)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+  // Exactly one iteration — the poison iter must terminate.
   EXPECT_EQ(cel_map_iter_next(h), 0u);
 }
 

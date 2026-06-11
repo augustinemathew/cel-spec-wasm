@@ -127,3 +127,39 @@ cc_test(
         "@com_google_protobuf//:protobuf",
     ],
 )
+
+# Oracle pins for the unknown-result provenance contract (ABI doc
+# §8.2 / V2): cel-cpp returns a MERGED attribute set when several
+# unknown attributes feed one result.  Oracle-only TU — deliberately
+# does NOT link our pipeline (see the symbol-clash note above).
+cc_test(
+    name = "cel_cpp_oracle_unknown_payload_test",
+    size = "medium",
+    srcs = ["cel_cpp_oracle_unknown_payload_test.cc"],
+    deps = [
+        ":cel_cpp_oracle",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Oracle pins for comprehension-over-UNKNOWN/ERROR-range semantics
+# (cleanup-backlog #14): every standard macro over an unknown range is
+# UNKNOWN, over an error range is the ERROR — never the empty-range
+# identity.  Oracle-only TU — deliberately does NOT link our pipeline
+# (see the symbol-clash note above).
+cc_test(
+    name = "cel_cpp_oracle_comprehension_test",
+    size = "medium",
+    srcs = ["cel_cpp_oracle_comprehension_test.cc"],
+    deps = [
+        ":cel_cpp_oracle",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+

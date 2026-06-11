@@ -437,6 +437,23 @@ class ArenaAllocator {
                                        uint32_t* absl_nonnull out_offset) = 0;
 };
 
+// Mint an UnknownSet descriptor (the wire contract of
+// doc/design/03-abi-and-memory.md §8.2): allocates the 2-word
+// `{ids_off, len}` descriptor plus the id array in the guest arena —
+// ids stored sorted ascending, deduplicated — and writes
+// `(CEL_UNKNOWN, payload.unk = descriptor offset)` into `*out`.
+// Empty `ids` writes the legal empty UnknownSet (`payload.unk == 0`)
+// without allocating.  ResourceExhausted on arena OOM.
+//
+// Every host-side unknown writer routes through this helper so the
+// wire always carries the descriptor shape the runtime kernel
+// (`cel_unknown_merge`) and the `%v` formatter dereference — a raw
+// attribute id in `payload.unk` would be misread as a descriptor
+// offset.
+ABSL_MUST_USE_RESULT absl::Status EncodeUnknownSet(
+    absl::Span<const uint32_t> ids, ArenaAllocator& alloc,
+    CelValue* absl_nonnull out);
+
 // field_ref_id → (field_number, field_name).  `field_number == 0`
 // means "resolve by name only".
 struct FieldRefEntry {
@@ -549,8 +566,14 @@ ABSL_MUST_USE_RESULT absl::Status CelListAtImpl(uint32_t out_slot,
 //
 // On empty source, OOM, or non-CEL_LIST_HOST input: writes an
 // empty arena list (header_ptr=0) so the comprehension loop body
-// never runs.  Mirrors `CelMapIterOpenImpl` for maps; see m5b
-// §CCF-8 for the design.
+// never runs.  Exception: a CEL_UNKNOWN / CEL_ERROR input returns
+// a non-OK Status — the comprehension prologue's range-absorption
+// guard propagates poisoned ranges before the iterate path runs
+// (expr_lower_comprehension.cc EmitRangeAbsorptionGuard), so
+// reaching this impl with one is a codegen regression; the loud
+// failure replaces the silent empty-range-identity wrong answer.
+// Mirrors `CelMapIterOpenImpl` for maps; see m5b §CCF-8 for the
+// design.
 ABSL_MUST_USE_RESULT absl::Status CelListIterOpenImpl(
     uint32_t out_slot, uint32_t list_slot, const TrampolineContext& ctx);
 

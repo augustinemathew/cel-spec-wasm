@@ -719,6 +719,22 @@ TEST_F(StringOpsTest, BytesConcatMixedKindRejected) {
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
+// Adversarial span lengths: `a.len + b.len` wraps u32; the wrapped
+// total would under-allocate and the memcpys would scribble past the
+// run.  The guard must poison CEL_ERR_OVERFLOW before any allocation
+// or copy.  Spans are hand-built (no real bytes needed — the guard
+// fires before the lengths are dereferenced).
+TEST_F(StringOpsTest, StringConcatLengthAddOverflowPoisons) {
+  uint32_t a = cel_make_string("a", 1);
+  uint32_t b = cel_make_string("b", 1);
+  cel_value_at(a)->payload.s.len = 0x80000000u;
+  cel_value_at(b)->payload.s.len = 0x80000001u;
+  uint32_t out = MakeOut();
+  cel_string_concat_at_vv(out, a, b);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
 TEST_F(StringOpsTest, ContainsAbsorbsError) {
   uint32_t err_off = arena_alloc(sizeof(CelValue));
   CelValue* err = cel_value_at(err_off);

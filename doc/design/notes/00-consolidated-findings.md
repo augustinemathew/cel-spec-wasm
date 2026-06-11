@@ -55,19 +55,29 @@ implementation's behavior.
    implementation, no BUILD target, and no caller. Two competing
    designs exist on different branches; the new custom-fn doc must
    *decide* the fork, not just record it.
-3. **The error/unknown wire contract had live forks — two of three
-   resolved 2026-06-10 (V3 ✅, V4 ✅; see those rows).** Errors travel
-   as a bare code (messages dropped at `cel_host.cc`, backlog #31 —
-   still the contract), and the divergent readers were fixed to that
-   wire: `%v` no longer implements the never-shipped descriptor
-   shape, and the two host decoders agree (incl. wire 18 →
-   kInvalidArgument). 3VL absorption now carries ONE oracle-confirmed
-   precedence rule (error dominates unknown) across all three
-   implementations. **Still open (V2):** `payload.unk` has two
-   conflicting contracts (runtime: descriptor offset; host: attribute
-   id) and `cel_unknown_merge` dereferences host-minted ids as
-   offsets — reachable via `&&` under PartialEval, a possible OOB
-   read; the ABI doc must still crown that telling.
+3. **The error/unknown wire contract had live forks — all three
+   resolved AND fixed 2026-06-10 (V2 ✅, V3 ✅, V4 ✅; see those
+   rows).** Errors travel as a bare code (messages dropped at
+   `cel_host.cc`, backlog #31 — still the contract), and the
+   divergent readers were fixed to that wire: `%v` no longer
+   implements the never-shipped descriptor shape, and the two host
+   decoders agree (incl. wire 18 → kInvalidArgument). Strict-op 3VL
+   absorption carries ONE oracle-confirmed precedence rule (error
+   dominates unknown) across all three implementations; the LOGIC
+   ops carry the opposite, oracle-confirmed UNKNOWN-over-ERROR rule
+   (settled + kernel aligned 2026-06-10; ABI doc §8.3 scope note).
+   **V2 verdict crowned AND fix shipped 2026-06-10:**
+   `payload.unk`'s two contracts (runtime: descriptor offset; host:
+   attribute id) were probed both ways — the merge was reachable via
+   `&&`/`||` under PartialEval and produced a silently-garbage
+   attribute id (no trap), and cel-cpp's reference result carries the
+   MERGED attribute set, which a raw id cannot. The descriptor-offset
+   contract won and the 5-point fix landed as one unit: host writers
+   mint descriptors (`EncodeUnknownSet`), both host decoders
+   dereference, `Value::Unknown` grew the set surface
+   (`UnknownAttributes()`), `absorb_3vl_binary` merges both-unknown,
+   false comments deleted (see the V2 row + ABI doc §8.2 for the
+   as-shipped shape).
 4. **The benchmarking publication pipeline is partly fictional.**
    `report.sh` covers 4 of 232 corpus cells and stamps a hardcoded
    "parity verified (eyeballed)" line; the published m28 full-corpus
@@ -251,7 +261,7 @@ specific doc section from being written honestly.
 | # | Question | Settles | How |
 |---|----------|---------|-----|
 | V1 ⚑ | Are the working-tree static-region gates the real, committed story (and is `rodata_base_override` now live as the kStatic relocation seam)? | R1, R29, R3-partial; memory-model sections of the compiler + ABI docs; re-anchors all citations into compile.cc/engine.cc/known_bugs_test.cc | Commit the tree (user-authorized), then `bazel test //compiler/internal:compile_test //e2e:known_bugs_test_dynamic //e2e:known_bugs_test_static --test_filter='*LongArith*:*Rejected*'`; confirm `LongArith_166Terms_RejectedAtCompile` + `LiteralIntListInScanRejectedAtCompileAt10K` green; `grep -rn rodata_base_override compiler/` for the gate's consumer claim |
-| V2 ⚑ | Can `cel_unknown_merge` receive two host-minted unknowns (attribute ids dereferenced as descriptor offsets — OOB)? | R43; the ABI doc's unknown wire contract must crown one `payload.unk` shape | e2e PartialEval case `a.x && b.y` with both attributes FULL-matched (ids ≥ 1); inspect result for garbage/trap; if unreachable, document why codegen routes around the merge |
+| V2 ✅ RESOLVED + FIXED 2026-06-10 | Can `cel_unknown_merge` receive two host-minted unknowns (attribute ids dereferenced as descriptor offsets — OOB)? | R43; ABI doc §8.2 crowns the **descriptor-offset** contract, now shipped end-to-end | Probe ran both halves. (a) Reachability: YES — a transient e2e probe (`PartialEval` of `a && b`, both bare vars FULL-matched, ids 1/2; real ids are `[1,N]` per `cel_abi.proto:99-101`, so the merge's empty-side shortcut never fires) returned `kUnknown` with `AttributeId{360296}` — a fresh arena-descriptor offset decoded as an attribute id; silent garbage, no trap (`_||_` identical; a `0xFFFFFFFF` function-origin unknown would read OOB). Strict ops bypassed the merge: `absorb_3vl_binary` left-biased, so `a + b` both-unknown dropped `b`'s identity. (b) Reference: cel-cpp returns the MERGED set — `logic_step.cc:233` / `function_step.cc:219` → `AttributeUtility::MergeUnknowns` (`attribute_utility.cc:107-130`), `AttributeSet::Merge` (`base/attribute_set.h:84-87`) — pinned by the `OracleResult.unknown_attributes` surface + `testdata/cel_cpp_oracle_unknown_payload_test.cc` (and/or/add × dotted/bare, dedup, single-attr baseline). Verdict: descriptor offset wins (only set-capable shape). **The 5-point fix SHIPPED as one unit** (same day): host writers mint descriptors via `EncodeUnknownSet` (`cel_host.cc` RunFieldPrelude, `host_call_context.cc` ReturnUnknown/ReturnValue — guest arena) and `EncodeUnknownVariable` (`instance.cc` marshal — activation buffer, since $eval's prelude `arena_reset` would wipe an arena-minted descriptor before the kernel reads it); both host decoders dereference `{ids_off, len}` (`DecodeUnknownSetAt` / `DecodeUnknownSet`); `Value::Unknown` carries the sorted-deduped set (`UnknownAttributes()`; single-id accessor errs on merged sets); `absorb_3vl_binary` merges both-unknown via `cel_unknown_merge`; false comments at `cel_3vl.{c,h}` + `attribute.h` corrected. Pinned by `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest` (both link modes) + unit pins at every layer. Conformance held 1973/0 both modes. Adjacent finding ALSO settled the same day: cel-cpp gives UNKNOWN > error for `&&`/`||` (`logic_step.cc`); oracle-pinned and `cel_and`/`cel_or` aligned — ABI doc §8.3 scope note |
 | V3 ✅ RESOLVED 2026-06-10 | What is the spec-correct precedence for (unknown, error) operand pairs? | R45; ABI doc §8.3 now states ONE rule | Probe ran as written: `PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}` in `testdata/cel_cpp_oracle_test.cc` — cel-cpp returns the ERROR in **both** orders (its `NoOverloadResult`, cel-cpp `eval/eval/function_step.cc:202-223`, scans args for ErrorValue before merging unknowns). The losing `AbsorbBinary` (`eval/internal/cel_host_error.cc`) was aligned to error-dominant; kernel + `engine.cc` were already correct. Both orderings pinned at kernel (`cel_arith_test.cc`) and host (`cel_host_error_test.cc`) layers. Conformance held at 1966 |
 | V4 ✅ RESOLVED 2026-06-10 | Error wire contract end-to-end: does `%v` on a production error render garbage, and does wire code 18 decode as kHostAdapterError? | R41/R42/R44; ABI doc §8.1 | Both confirmed and fixed: the bare-code wire is the crowned contract. `%v` (`eval/host/cel_log.cc::FormatError`) rewritten to read `payload.err` as the bare code (`error(code=N)`), dead descriptor shape + its fixture-pinning test removed; `DecodeCelError` (`eval/instance.cc`) gained the missing `kInvalidArgument` arm — wire 18 now decodes as kInvalidArgument/"invalid_argument" (example 08 + smoke assertion updated). The exhaustive round-trip test (`instance_test.cc::ErrorCodeRoundTripTest`, all 14 named codes + out-of-enum byte) also exposed and closed an encode-side gap: `WireErrorCode` collapsed kDuplicateKey/kUnknownType/kCustomFnFailed/kTimeout to TYPE_MISMATCH; now maps all named codes (CEL_ERR_UNKNOWN_TYPE/CUSTOM_FN_FAILED/TIMEOUT appended to `cel_data.h`) and passes unnamed numerics through. Message loss on the wire remains contract (backlog #31 open) |
 | V5 ⚑ | What does a `@native` (kCelDefined) library do end-to-end today? | R2/R3; the custom-fn doc's architectural fork decision (reject-at-Compile vs build the library-module producer vs port master-local's inlining) | cc_test: `SetModuleName("foo").AddCelDefined("is_num", bool, {string}, "s == '1'")` → Compile `is_num('1')` → Plan; assert the failure shape (expected: unresolved import at instantiate) |

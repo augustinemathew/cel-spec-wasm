@@ -102,11 +102,11 @@ void cel_unknown_merge(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   }
   uint32_t set_a = a->payload.unk;
   uint32_t set_b = b->payload.unk;
-  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN — the
-  // host `get_field` trampoline mints UNKNOWNs that way for FULL
-  // attribute-pattern matches before per-id provenance is wired.
-  // Treat an empty side as "no new ids to contribute"; both empty
-  // → empty UNKNOWN.
+  // An empty UnknownSet (payload.unk == 0) is a legal UNKNOWN with no
+  // recorded provenance.  Every production writer (host trampolines,
+  // activation marshal, host-fn returns) mints a non-empty descriptor,
+  // so an empty side reaches here only from hand-built fixtures; treat
+  // it as "no new ids to contribute" — both empty → empty UNKNOWN.
   if (set_a == 0 && set_b == 0) {
     write_unknown_at(out_slot, 0);
     return;
@@ -139,14 +139,47 @@ static int is_3vl_kind(uint32_t k) {
   return k == CEL_BOOL || k == CEL_UNKNOWN || k == CEL_ERROR;
 }
 
-// 3VL truth table for `&&` (langdef §"Logical operators").
+// Shared non-bool tail for `cel_and` / `cel_or`.  Preconditions:
+// both operands are valid 3VL kinds, neither hit the absorbing
+// bool, and the surviving-bool cases (`true && X = X`,
+// `false || X = X`) were already handled — each side is ERROR or
+// UNKNOWN.  Applies the LOGIC-op precedence: UNKNOWN > ERROR (both
+// UNKNOWN merges the attribute-id sets), the opposite of the
+// strict-op rule (`absorb_3vl_binary`) — once the unknown resolves,
+// the bool it stands for may short-circuit the error away, so the
+// unknown is the more informative outcome.  Matches cel-cpp's
+// `LogicalOpStep::Calculate` (eval/eval/logic_step.cc —
+// MergeUnknowns runs BEFORE the ErrorValue scan); oracle-pinned by
+// UnknownPayloadOracle.{And,Or}{UnknownLeftErrorRight,
+// ErrorLeftUnknownRight}IsUnknown in
+// testdata/cel_cpp_oracle_unknown_payload_test.cc.
+static void logic_unknown_error_tail(uint32_t out_slot, uint32_t a_slot,
+                                     uint32_t b_slot) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* a = cel_value_at(a_slot);
+  const CelValue* b = cel_value_at(b_slot);
+  if (a->kind == CEL_UNKNOWN && b->kind == CEL_UNKNOWN) {
+    cel_unknown_merge(out_slot, a_slot, b_slot);
+    return;
+  }
+  if (a->kind == CEL_UNKNOWN) {
+    *out = *a;
+    return;
+  }  // UNKNOWN > ERROR
+  if (b->kind == CEL_UNKNOWN) {
+    *out = *b;
+    return;
+  }
+  *out = *a;  // both ERROR → left (cel-cpp checks args[0] first)
+}
+
+// 3VL truth table for `&&` (langdef §"Logical Operators").
 // Non-strict semantics: `false && X = false` for any X, including
 // ERROR / UNKNOWN / non-3VL; symmetric on the right.  Once both
 // operands are known to be 3VL (and neither is OK(false)),
-// `true && X = X`, ERROR > UNKNOWN dominates, and both UNKNOWN
-// merges the attribute-id sets via `cel_unknown_merge`.  A non-3VL
-// operand survives only via the OK(false) absorber; otherwise the
-// result is a type error.
+// `true && X = X`, then the UNKNOWN-over-ERROR logic-op tail above.
+// A non-3VL operand survives only via the OK(false) absorber;
+// otherwise the result is a type error.
 void cel_and(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
@@ -174,18 +207,11 @@ void cel_and(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     *out = *a;
     return;
   }  // b == true → result = a
-  if (a->kind == CEL_ERROR) {
-    *out = *a;
-    return;
-  }  // ERROR > UNKNOWN
-  if (b->kind == CEL_ERROR) {
-    *out = *b;
-    return;
-  }
-  cel_unknown_merge(out_slot, a_slot, b_slot);
+  logic_unknown_error_tail(out_slot, a_slot, b_slot);
 }
 
 // Symmetric to `cel_and`: `true || X = true`; `false || X = X`.
+// Same UNKNOWN-over-ERROR logic-op tail as `cel_and`.
 void cel_or(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CEL_LOG("enter");
   CelValue* out = cel_value_at(out_slot);
@@ -211,15 +237,7 @@ void cel_or(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     *out = *a;
     return;
   }
-  if (a->kind == CEL_ERROR) {
-    *out = *a;
-    return;
-  }
-  if (b->kind == CEL_ERROR) {
-    *out = *b;
-    return;
-  }
-  cel_unknown_merge(out_slot, a_slot, b_slot);
+  logic_unknown_error_tail(out_slot, a_slot, b_slot);
 }
 
 void cel_not(uint32_t out_slot, uint32_t a_slot) {

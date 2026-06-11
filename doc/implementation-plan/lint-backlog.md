@@ -109,9 +109,31 @@ better done in their own milestones:
   it) — the inner 8-arm dispatch hits the gate; splitting further
   would lose locality.
 
+- `eval/internal/cel_host.cc` — `CelListIterOpenImpl`,
+  `CelMapIterOpenImpl`, `CelListAtImpl`, `UnpackOneAnyLayer`,
+  `BackingValueEqualsQuery` also flag function-size (plus
+  `misc-use-internal-linkage` on `BackingValueEqualsQuery`,
+  `modernize-use-auto` ×2 and `readability-math-missing-parentheses`
+  ×2 in the iter-open bodies, `performance-no-automatic-move` in
+  `CelSetFieldImpl`'s neighborhood) — confirmed pre-existing at the
+  cleanup-backlog #14 lint pass (2026-06-10): the HEAD-version lint
+  reports the identical finding set.  The iter-open pair is a
+  snapshot ladder per backing kind; same split shape as the
+  cpp_type ladders above.
+
 - `eval/instance.cc` — `DecodeCelValueAt` flagged for
   size; the per-CelKind decoder ladder is the natural place to
-  split (one helper per kind family).
+  split (one helper per kind family).  Also two
+  `clang-analyzer-core.CallAndMessage` FPs in the arena
+  list/map decoders (`ArenaListHeader header;` filled by
+  `ReadMemBytes` — the analyzer doesn't model the out-param
+  write); same class as the cel_host.cc NullArg FPs below.
+
+- `tools/cel/value_format.cc` — `ToCelLiteral`,
+  `MessageToCelLiteral`, `FormatMessage` flag function-size
+  (surfaced 2026-06-10 by the V2 unknown-payload edits; the
+  exceedances predate them — each is a per-kind / per-cpp_type
+  ladder, same split shape as the cel_host.cc ladders above).
 
 - ~~`eval/engine.cc` — `InstantiateRuntime` flagged for
   size~~ — addressed M12.F (2026-05-20).  Split into

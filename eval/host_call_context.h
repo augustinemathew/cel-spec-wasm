@@ -198,14 +198,17 @@ class HostCallContext {
   ABSL_MUST_USE_RESULT absl::Status ReturnList(absl::Span<const Value> elems);
   ABSL_MUST_USE_RESULT absl::Status ReturnMap(
       absl::Span<const std::pair<Value, Value>> entries);
-  // Explicit unknown / error RETURN (3VL).  ReturnUnknown stamps
-  // {CEL_UNKNOWN, payload.unk = kFunctionUnknownSentinel}, marking the
-  // unknown as function-returned (distinct from a propagated input
-  // unknown, which carries a real attribute id).
+  // Explicit unknown / error RETURN (3VL).  ReturnUnknown writes a
+  // CEL_UNKNOWN whose payload is a 1-element UnknownSet descriptor
+  // carrying kFunctionUnknownSentinel (the §8.2 wire shape,
+  // doc/design/03-abi-and-memory.md), marking the unknown as
+  // function-returned (distinct from a propagated input unknown,
+  // which carries real attribute ids).
   ABSL_MUST_USE_RESULT absl::Status ReturnUnknown();
   ABSL_MUST_USE_RESULT absl::Status ReturnError(ErrorPayload payload);
-  // Any kind, including Unknown (the attribute id is preserved verbatim,
-  // so a function-origin sentinel round-trips unchanged).
+  // Any kind, including Unknown (the full attribute-id set is
+  // preserved verbatim, so a function-origin sentinel — and a merged
+  // multi-attribute set — round-trips unchanged).
   ABSL_MUST_USE_RESULT absl::Status ReturnValue(const Value& v);
 
  private:

@@ -31,7 +31,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 115> kRuntimeExports = {
+constexpr std::array<absl::string_view, 116> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -139,6 +139,10 @@ constexpr std::array<absl::string_view, 115> kRuntimeExports = {
     "cel_map_iter_next",
     "cel_map_iter_key_at",
     "cel_map_iter_value_at",
+    // list iter-range resolution (arena passthrough / host
+    // snapshot; used by WAT `70_comprehension_unknown_range.wat`
+    // and the list-source comprehension prologue).
+    "cel_list_arena_view",
     // polymorphic equality.
     "cel_equals_at_vv",
     "cel_not_equals_at_vv",

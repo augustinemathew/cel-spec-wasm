@@ -49,6 +49,23 @@ void arena_reset(void);
 uint32_t arena_cursor(void);
 uint32_t arena_capacity(void);
 
+// Size of the per-Instance emergency block reserved by `arena_init`
+// OUTSIDE the resettable arena (a separate malloc on the wasm build;
+// a fixed low-memory carve on the native build).  Because the block
+// is reserved before any per-Eval allocation runs, it is available
+// even when `arena_alloc` itself returns the OOM sentinel — kernels
+// that must surface an allocation failure as a poisoned VALUE (rather
+// than silently degrading to an empty walk) build their poison
+// structures here.  See `cel_runtime.c`'s `vend_poison_list_view` /
+// `vend_poison_map_iter` for the two consumers and the byte layout.
+#define CELWASM_ARENA_OOM_BLOCK_BYTES 128u
+
+// Linear-memory offset of the emergency block, or 0 when the
+// reservation itself failed at `arena_init` (init-time malloc
+// failure / native memory too small) — consumers trap on 0 rather
+// than degrade silently.
+uint32_t arena_oom_block(void);
+
 // Offset → CelValue* helper.  Returns NULL when `off == 0` so callers
 // can treat a zero offset uniformly as "absent".
 CelValue* cel_value_at(uint32_t off);

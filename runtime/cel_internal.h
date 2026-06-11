@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "runtime/cel_3vl.h"
 #include "runtime/cel_data.h"
 
 #ifdef __cplusplus
@@ -76,14 +77,22 @@ static inline void poison(CelValue* v, uint32_t err_code) {
   v->payload.err = err_code;
 }
 
-// 3VL absorption.  Returns 1 (and overwrites *out) if either operand
-// is ERROR / UNKNOWN.  ERROR dominates UNKNOWN across operands, with
-// left-bias within each class; the full UNKNOWN+UNKNOWN merge lives
-// in `cel_unknown_merge`.  Matches cel-cpp's `NoOverloadResult`
+// 3VL absorption for STRICT ops.  Returns 1 (and overwrites *out) if
+// either operand is ERROR / UNKNOWN.  ERROR dominates UNKNOWN across
+// operands, with left-bias within each class; both-UNKNOWN merges
+// the attribute-id sets via `cel_unknown_merge` so neither operand's
+// provenance is dropped.  Matches cel-cpp's `NoOverloadResult`
 // (eval/eval/function_step.cc), which propagates the first ErrorValue
-// argument before merging unknowns; oracle-pinned by
-// PartialEvalOracle.{UnknownPlusErrorIsError,ErrorPlusUnknownIsError}
-// in testdata/cel_cpp_oracle_test.cc.
+// argument and otherwise MERGES the unknown arguments; oracle-pinned
+// by PartialEvalOracle.{UnknownPlusErrorIsError,
+// ErrorPlusUnknownIsError} (testdata/cel_cpp_oracle_test.cc) and
+// UnknownPayloadOracle.{Add,BareVarsAdd}BothUnknownMergesBothAttributes
+// (testdata/cel_cpp_oracle_unknown_payload_test.cc).  (Logic ops use
+// the opposite UNKNOWN-over-ERROR rule — see cel_3vl.h.)
+//
+// Callers must return immediately on 1: the merge path calls
+// `arena_alloc`, which on wasm32 may `memory.grow` and relocate the
+// linear-memory base, invalidating every CelValue* the caller holds.
 static inline int absorb_3vl_binary(CelValue* out, const CelValue* a,
                                     const CelValue* b) {
   if (a->kind == CEL_ERROR) {
@@ -95,6 +104,15 @@ static inline int absorb_3vl_binary(CelValue* out, const CelValue* a,
     return 1;
   }
   if (a->kind == CEL_UNKNOWN) {
+    if (b->kind == CEL_UNKNOWN) {
+      // Recover the slot offsets from the pointers — every CelValue a
+      // kernel touches lives in the shared linear memory.
+      uint8_t* base = cel_memory_base_();
+      cel_unknown_merge((uint32_t)((const uint8_t*)out - base),
+                        (uint32_t)((const uint8_t*)a - base),
+                        (uint32_t)((const uint8_t*)b - base));
+      return 1;
+    }
     *out = *a;
     return 1;
   }

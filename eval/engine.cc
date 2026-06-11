@@ -597,9 +597,12 @@ wasm_trap_t* TrapFromStatus(absl::string_view msg) {
 
 // 3VL operand absorption.  Scans the arg slots; if any is CEL_ERROR
 // (error wins over unknown) or CEL_UNKNOWN, writes that value verbatim
-// (attribute id preserved) to `out_slot` and returns true — the
-// callback must NOT run, matching CEL dispatch semantics where a
-// function is not invoked on error / unknown operands.
+// (its UnknownSet descriptor — the full attribute-id set — preserved)
+// to `out_slot` and returns true — the callback must NOT run, matching
+// CEL dispatch semantics where a function is not invoked on error /
+// unknown operands.  Known residual vs cel-cpp: with SEVERAL unknown
+// args, the first arg's set propagates un-merged (cel-cpp's
+// function_step merges unknown args); each arg's own set is intact.
 bool AbsorbUnknownOrErrorArg(celwasm::MemoryView& mem,
                              absl::Span<const uint32_t> arg_slots,
                              uint32_t out_slot) {

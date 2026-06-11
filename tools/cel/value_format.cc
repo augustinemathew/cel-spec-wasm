@@ -219,6 +219,19 @@ absl::StatusOr<std::string> MessageToCelLiteral(
   return out;
 }
 
+// kUnknown arm of ToCelLiteral: an unknown may carry several merged
+// attribute ids; print all, comma-separated, in the set's sorted
+// order.  `<unknown:0>` for an empty / unreadable set.
+std::string FormatUnknown(const Value& v) {
+  auto attrs = v.UnknownAttributes();
+  if (!attrs.ok() || attrs->empty()) return "<unknown:0>";
+  std::string ids;
+  for (const ::celwasm::AttributeId& a : *attrs) {
+    absl::StrAppend(&ids, ids.empty() ? "" : ",", a.id);
+  }
+  return absl::StrCat("<unknown:", ids, ">");
+}
+
 absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
   switch (v.kind()) {
     case Value::Kind::kNull:
@@ -266,10 +279,8 @@ absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
       }
       return MessageToCelLiteral(*m);
     }
-    case Value::Kind::kUnknown: {
-      auto attr = v.UnknownAttribute();
-      return absl::StrCat("<unknown:", attr.ok() ? attr->id : 0u, ">");
-    }
+    case Value::Kind::kUnknown:
+      return FormatUnknown(v);
     case Value::Kind::kError: {
       auto e = v.ErrorInfo();
       if (!e.ok()) return absl::StrCat("error: <opaque>");

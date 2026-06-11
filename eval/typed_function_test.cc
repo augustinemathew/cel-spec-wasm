@@ -395,7 +395,10 @@ TEST_F(TypedFunctionTest, ValueParamValueReturnEmitsUnknown) {
   auto ctx = Ctx({kArg0});
   ASSERT_TRUE(tf.callback(ctx).ok());
   EXPECT_EQ(Out().kind, CEL_UNKNOWN);
-  EXPECT_EQ(Out().payload.unk, kFunctionUnknownSentinel);
+  // §8.2 descriptor wire: payload.unk is an UnknownSet-descriptor
+  // offset; the sentinel travels inside the id array.
+  EXPECT_THAT(test::ReadUnknownIds(mem_, Out()),
+              ::testing::ElementsAre(kFunctionUnknownSentinel));
 }
 
 TEST_F(TypedFunctionTest, WrongKindArgSurfacesError) {

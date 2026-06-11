@@ -10,12 +10,15 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "eval/error.h"
 #include "eval/internal/cel_host_error.h"  // M11 Slice E
 #include "eval/value.h"
@@ -1065,6 +1068,20 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
     return absl::OkStatus();
   };
 
+  if (list_cv.kind == CEL_UNKNOWN || list_cv.kind == CEL_ERROR) {
+    // The comprehension prologue's range-absorption guard propagates
+    // a poisoned iter_range BEFORE cel_list_arena_view can route it
+    // here (expr_lower_comprehension.cc EmitRangeAbsorptionGuard).
+    // Reaching this arm means the guard regressed; failing the eval
+    // loudly beats silently iterating an empty view — that is the
+    // empty-range-identity soundness bug (exists→false, all→true,
+    // map/filter→[]) this tripwire pins shut.
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelListIterOpenImpl: iter_range CelValue is ",
+                     list_cv.kind == CEL_UNKNOWN ? "CEL_UNKNOWN" : "CEL_ERROR",
+                     " — codegen's comprehension range-absorption guard must "
+                     "propagate it before the iterate path runs"));
+  }
   if (list_cv.kind != CEL_LIST_HOST) {
     // Codegen contract: cel_list_arena_view only routes us for
     // CEL_LIST_HOST sources.  Defence in depth.
@@ -1195,6 +1212,17 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
     ctx.mem.WriteU32(state_offset + kPayloadOff, 0u);
     ctx.mem.WriteU32(state_offset + kCountOff, 0u);
   };
+  if (map_cv.kind == CEL_UNKNOWN || map_cv.kind == CEL_ERROR) {
+    // Same tripwire as CelListIterOpenImpl: the comprehension
+    // prologue's range-absorption guard propagates poisoned ranges
+    // before any iterate path runs; an empty iter here would be the
+    // silent empty-range-identity wrong answer.
+    return absl::FailedPreconditionError(
+        absl::StrCat("CelMapIterOpenImpl: iter_range CelValue is ",
+                     map_cv.kind == CEL_UNKNOWN ? "CEL_UNKNOWN" : "CEL_ERROR",
+                     " — codegen's comprehension range-absorption guard must "
+                     "propagate it before the iterate path runs"));
+  }
   if (map_cv.kind != CEL_MAP_HOST) {
     // Codegen contract: cel_map_iter_init only calls us for
     // CEL_MAP_HOST sources.  Defence in depth — leave empty.
@@ -1632,9 +1660,12 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
   }
 
   if (MatchesAnyUnknownPattern(ctx.bindings, attribute_id, field->field_name)) {
+    // Mint a 1-element UnknownSet descriptor carrying the matched
+    // attribute id (never the raw id — `payload.unk` is a descriptor
+    // offset; see EncodeUnknownSet).
     CelValue unk{};
-    unk.kind = CEL_UNKNOWN;
-    unk.payload.unk = attribute_id;
+    const uint32_t ids[] = {attribute_id};
+    if (auto s = EncodeUnknownSet(ids, ctx.alloc, &unk); !s.ok()) return s;
     ctx.mem.WriteCelValue(out_slot, unk);
     return FieldDispatchPrelude{/*sentinel_handled=*/true};
   }
@@ -1649,6 +1680,36 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
 }
 
 }  // namespace
+
+absl::Status EncodeUnknownSet(absl::Span<const uint32_t> ids,
+                              ArenaAllocator& alloc,
+                              CelValue* absl_nonnull out) {
+  out->kind = CEL_UNKNOWN;
+  if (ids.empty()) {
+    out->payload.unk = 0;  // legal empty UnknownSet, no allocation
+    return absl::OkStatus();
+  }
+  // Canonical id-array form: sorted ascending, deduplicated —
+  // the same invariant `cel_unknown_merge`'s merge walk relies on.
+  std::vector<uint32_t> sorted(ids.begin(), ids.end());
+  std::sort(sorted.begin(), sorted.end());
+  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+  // One allocation: descriptor words at [0, 8), ids at [8, ...).
+  const size_t bytes = (2 + sorted.size()) * sizeof(uint32_t);
+  uint32_t off = 0;
+  uint8_t* p = alloc.Alloc(bytes, &off);
+  if (p == nullptr) {
+    return absl::ResourceExhaustedError(
+        "arena OOM minting an UnknownSet descriptor");
+  }
+  const uint32_t desc[2] = {off + (2 * static_cast<uint32_t>(sizeof(uint32_t))),
+                            static_cast<uint32_t>(sorted.size())};
+  std::memcpy(p, desc, sizeof(desc));
+  std::memcpy(p + sizeof(desc), sorted.data(),
+              sorted.size() * sizeof(uint32_t));
+  out->payload.unk = off;
+  return absl::OkStatus();
+}
 
 absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
                              uint32_t field_ref_id, uint32_t attribute_id,

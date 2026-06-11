@@ -27,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "eval/attribute.h"
 #include "eval/error.h"
 
@@ -101,7 +102,17 @@ class Value {
   // standalone or `type(x)`.  No name validation — arbitrary bytes
   // are accepted (consistent with `Value::Message`).
   static Value Type(std::string name);
+  // Unknown carries the SET of attribute identities the result
+  // depends on (the §8.2 descriptor contract,
+  // doc/design/03-abi-and-memory.md): 3VL absorption merges unknown
+  // operands, so a result that depends on several unknown attributes
+  // carries all of them (mirrors cel-cpp's
+  // `AttributeUtility::MergeUnknowns`).  The single-attribute factory
+  // builds a one-element set.  The vector overload sorts and
+  // deduplicates; an empty vector is legal (an unknown with no
+  // recorded provenance).
   static Value Unknown(AttributeId attr);
+  static Value Unknown(std::vector<AttributeId> attrs);
   static Value Error(ErrorPayload payload);
 
   // ——— Aggregate / message builders ———
@@ -180,6 +191,14 @@ class Value {
   // Returns the type-name string for a kType Value.
   // InvalidArgument on any other kind.
   absl::StatusOr<absl::string_view> AsType() const;
+  // The full attribute-id set of a kUnknown Value, sorted ascending.
+  // InvalidArgument on any other kind.
+  absl::StatusOr<absl::Span<const AttributeId>> UnknownAttributes() const;
+  // Single-attribute accessor, kept for the common one-element case
+  // (a single unknown input propagated unmerged): returns the id when
+  // the set has exactly one element; FailedPrecondition (naming
+  // `UnknownAttributes()`) when the set carries several — silently
+  // returning one of them would hide merged provenance.
   absl::StatusOr<AttributeId> UnknownAttribute() const;
   absl::StatusOr<const ErrorPayload*> ErrorInfo() const;
 
@@ -228,7 +247,7 @@ class Value {
                    std::string,                    // String/Bytes
                    absl::Duration,                 // Duration
                    absl::Time,                     // Timestamp
-                   AttributeId,                    // Unknown
+                   std::vector<AttributeId>,       // Unknown (sorted set)
                    std::shared_ptr<ErrorPayload>,  // Error
                    std::shared_ptr<celwasm::HostMessageBacking>,  // Message
                    std::shared_ptr<celwasm::HostMapBacking>,      // Map

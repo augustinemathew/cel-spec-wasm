@@ -260,7 +260,8 @@ all in `eval/`:
   duration. Return setters route through `EncodeValueToSlot` — the
   same encoder the built-in `cel_host` trampolines use, so user-fn
   wire output is byte-identical to built-in output. `ReturnUnknown`
-  stamps `kFunctionUnknownSentinel = 0xFFFFFFFF` to distinguish
+  mints a 1-element UnknownSet descriptor carrying
+  `kFunctionUnknownSentinel = 0xFFFFFFFF` (03 §8.2) to distinguish
   function-origin unknowns from propagated ones (`eval/attribute.h`).
 - **L2 — `BindTypedFunction`** (`eval/typed_function.h`): a
   trait-based adapter from a typed lambda or function pointer to
@@ -329,9 +330,11 @@ cannot ship.
    `CEL_ERR_TYPE_MISMATCH`; resolve `field_ref_id` against
    `bindings.field_refs` (id 0 = sentinel); if `attribute_id != 0`
    and any registered `AttributePattern` kFull-matches the effective
-   attribute (operand path ⊕ leaf field name), write
-   `CEL_UNKNOWN{payload.unk = attribute_id}` and return; dereference
-   `payload.msg_slot` via the externref table.
+   attribute (operand path ⊕ leaf field name), mint a 1-element
+   UnknownSet descriptor carrying `attribute_id` in the guest arena
+   (`EncodeUnknownSet`) and write
+   `CEL_UNKNOWN{payload.unk = descriptor offset}` (03 §8.2), then
+   return; dereference `payload.msg_slot` via the externref table.
 4. Layer 1 reads the field: the `FieldDescriptor*` is resolved **per
    call** by number-then-name (`ResolveFieldDescriptor`) — there is
    no Plan-time descriptor cache, and the expected-type hint
@@ -363,7 +366,14 @@ as a trap; `in`/`eq` element equality is scalar-only on host arms;
 (materialise-into-arena is the documented follow-up); comprehension
 snapshots (`cel_list_iter_open` / `cel_map_iter_open`) materialise
 host aggregates into fresh arena runs, degrading to *empty
-iteration* (never a trap) on non-host input or arena OOM. Proto
+iteration* (never a trap) on non-host input or arena OOM — except a
+CEL_UNKNOWN / CEL_ERROR input, which fails the eval loudly
+(FailedPrecondition): the comprehension prologue's range-absorption
+guard (`expr_lower_comprehension.cc::EmitRangeAbsorptionGuard`)
+propagates poisoned ranges before the iterate path runs, so a
+poisoned value reaching the snapshot is a codegen regression, and
+an empty iteration there would be the silent empty-range-identity
+wrong answer (cleanup-backlog #14). Proto
 construction (`cel_make_message`/`cel_set_field`) carries a poison
 contract: out-of-range writes stamp `CEL_ERR_OVERFLOW` into the
 *message slot* and return OK; set-field on a poisoned slot is a
@@ -411,8 +421,11 @@ and an A15 reserved-region `ABSL_CHECK` guards the placement.
 **`PartialEval(activation, unknowns)`** is the same marshal with
 `host_env.bindings.unknown_patterns` populated for the duration of
 the call. A variable whose bare attribute is kFull-matched gets
-`CEL_UNKNOWN` stamped with its interned attribute id **regardless of
-whether it is bound** — the pattern wins over a present binding.
+`CEL_UNKNOWN` carrying a 1-element UnknownSet descriptor with its
+interned attribute id (minted in the activation buffer — the bump
+arena would be wiped by $eval's `arena_reset` prelude; 03 §8.2)
+**regardless of whether it is bound** — the pattern wins over a
+present binding.
 Patterns are cleared on every exit path (and `Eval(activation)`
 clears them again defensively) so a follow-up Eval can never observe
 stale partial-eval state. Field-level (kPartial) absorption is not
@@ -487,9 +500,9 @@ Verified behavior:
   that arm; the full code matrix is pinned by
   `instance_test.cc::ErrorCodeRoundTripTest`.
 
-Fork status (details in `03-abi-and-memory.md` §8): V3 and V4 are
-resolved; V2 remains a contract decision that doc must crown, with
-the evaluator then fixed to match:
+Fork status (details in `03-abi-and-memory.md` §8): V3, V4, and V2
+are resolved — V2's verdict is crowned with the evaluator fix still
+pending:
 
 > **RESOLVED (V3, 2026-06-10):** 3VL absorption precedence for an
 > (unknown, error) operand pair is **error dominates unknown,
@@ -502,15 +515,20 @@ the evaluator then fixed to match:
 > aligned; the kernel and `AbsorbUnknownOrErrorArg` already
 > implemented the rule. See 03-abi-and-memory.md §8.3.
 
-> **Open question (V2):** `payload.unk` has two live, conflicting
-> contracts — the runtime treats non-zero values as offsets to a
-> 2-word UnknownSet descriptor (`cel_unknown_merge` dereferences
-> them); the host writes attribute ids (and `ReturnUnknown` the
-> `0xFFFFFFFF` sentinel) directly. `a.x && b.y` under PartialEval
-> with both attributes FULL-matched plausibly feeds attribute ids
-> into the merge as descriptor offsets — garbage or OOB reads.
-> Settle with the e2e probe (`unknown_a && unknown_b`); if
-> unreachable, document why codegen routes around the merge.
+> **RESOLVED + FIXED (V2, 2026-06-10):** the **descriptor-offset**
+> contract wins for `payload.unk`, and the evaluator-side fix
+> SHIPPED as one unit: host writers mint descriptors
+> (`EncodeUnknownSet` in cel_host.cc / host_call_context.cc — guest
+> arena; `EncodeUnknownVariable` in instance.cc — activation buffer,
+> because $eval's prelude `arena_reset` would wipe an arena-minted
+> descriptor written before the call); both decoders dereference
+> `{ids_off, len}` and surface every id; `Value::Unknown` carries
+> the merged attribute-id set (`UnknownAttributes()`). cel-cpp's
+> reference result carries the MERGED set (oracle-pinned,
+> `testdata/cel_cpp_oracle_unknown_payload_test.cc`), which the old
+> raw-id wire could not represent. As-shipped telling:
+> `03-abi-and-memory.md` §8.2; e2e pins:
+> `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`.
 
 > **RESOLVED (V4, 2026-06-10):** the bare-code wire was crowned and
 > the readers fixed: `cel_log`'s `%v` formatter reads `payload.err`

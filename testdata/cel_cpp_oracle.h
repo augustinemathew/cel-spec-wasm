@@ -23,6 +23,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -57,6 +58,14 @@ struct OracleResult {
   // on an attribute marked unknown).  Mutually exclusive with is_error;
   // when set, `value` is unset.
   bool is_unknown = false;
+  // When `is_unknown`, the dotted string form of EVERY attribute in the
+  // UnknownValue's attribute set (cel-cpp `Attribute::AsString`, e.g.
+  // "a.x"), in the set's own sorted order.  cel-cpp merges unknown
+  // operands into one set (`AttributeUtility::MergeUnknowns`), so a
+  // result that depends on several unknown attributes carries ALL of
+  // their identities here — the empirical reference for what an
+  // unknown result's provenance must preserve.
+  std::vector<std::string> unknown_attributes;
   cel::expr::Value value;
   std::string error_message;
 };

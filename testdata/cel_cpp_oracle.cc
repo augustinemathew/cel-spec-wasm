@@ -203,6 +203,16 @@ absl::StatusOr<OracleResult> ClassifyValue(const cel::Value& result,
   OracleResult out;
   if (result.IsUnknown()) {
     out.is_unknown = true;
+    // Export every attribute identity the unknown carries (cel-cpp
+    // merges unknown operands into ONE set; see
+    // `AttributeUtility::MergeUnknowns`).  AsString fails only on
+    // non-ident-rooted attributes, which partial-eval cannot produce —
+    // treat that as a harness failure.
+    for (const cel::Attribute& attr : result.GetUnknown().attribute_set()) {
+      auto s = attr.AsString();
+      if (!s.ok()) return s.status();
+      out.unknown_attributes.push_back(*std::move(s));
+    }
     return out;
   }
   if (result.Is<cel::ErrorValue>()) {

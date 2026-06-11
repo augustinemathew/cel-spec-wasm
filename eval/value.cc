@@ -1,5 +1,6 @@
 #include "eval/value.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -12,6 +13,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "eval/attribute.h"
 #include "eval/error.h"
 #include "google/protobuf/message.h"  // needed for ~unique_ptr<Message>
@@ -85,9 +87,19 @@ Value Value::Type(std::string name) {
   return Value(TypeTag{}, std::move(name));
 }
 Value Value::Unknown(AttributeId attr) {
+  return Unknown(std::vector<AttributeId>{attr});
+}
+Value Value::Unknown(std::vector<AttributeId> attrs) {
+  // Canonical form: sorted ascending by id, deduplicated — mirrors
+  // the wire descriptor (sorted, deduped u32 id array) and cel-cpp's
+  // `AttributeSet` (a sorted-set union under merge).
+  std::sort(attrs.begin(), attrs.end(), [](AttributeId a, AttributeId b) {
+    return a.id < b.id;
+  });
+  attrs.erase(std::unique(attrs.begin(), attrs.end()), attrs.end());
   Value r;
   r.kind_ = Kind::kUnknown;
-  r.payload_ = attr;
+  r.payload_ = std::move(attrs);
   return r;
 }
 Value Value::Error(ErrorPayload payload) {
@@ -166,9 +178,19 @@ absl::StatusOr<absl::string_view> Value::AsType() const {
   if (kind_ != Kind::kType) return KindMismatch("type", kind_);
   return absl::string_view(std::get<std::string>(payload_));
 }
+absl::StatusOr<absl::Span<const AttributeId>> Value::UnknownAttributes() const {
+  if (kind_ != Kind::kUnknown) return KindMismatch("unknown", kind_);
+  return absl::MakeConstSpan(std::get<std::vector<AttributeId>>(payload_));
+}
 absl::StatusOr<AttributeId> Value::UnknownAttribute() const {
   if (kind_ != Kind::kUnknown) return KindMismatch("unknown", kind_);
-  return std::get<AttributeId>(payload_);
+  const auto& attrs = std::get<std::vector<AttributeId>>(payload_);
+  if (attrs.size() != 1) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Value::UnknownAttribute: the unknown carries ", attrs.size(),
+        " attribute ids; use UnknownAttributes() for the full set"));
+  }
+  return attrs.front();
 }
 absl::StatusOr<const ErrorPayload*> Value::ErrorInfo() const {
   if (kind_ != Kind::kError) return KindMismatch("error", kind_);
@@ -233,8 +255,10 @@ bool Value::StructurallyEquals(const Value& other) const {
       return std::get<absl::Time>(payload_) ==
              std::get<absl::Time>(other.payload_);
     case Kind::kUnknown:
-      return std::get<AttributeId>(payload_) ==
-             std::get<AttributeId>(other.payload_);
+      // Both sides are in canonical (sorted, deduped) form by
+      // construction, so element-wise vector equality is set equality.
+      return std::get<std::vector<AttributeId>>(payload_) ==
+             std::get<std::vector<AttributeId>>(other.payload_);
     case Kind::kError: {
       const auto& a = *std::get<std::shared_ptr<ErrorPayload>>(payload_);
       const auto& b = *std::get<std::shared_ptr<ErrorPayload>>(other.payload_);

@@ -3032,6 +3032,144 @@ now passes.
         (un-skipped known-bug case),OfNonZeroValueOnZeroMessageIsNone,
         OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`.
 
+## Comprehension range absorption (cleanup-backlog #14, 2026-06-10)
+
+A comprehension whose `iter_range` is UNKNOWN / ERROR now propagates
+that value instead of returning the empty-range identity
+(exists→false, all→true, exists_one→false, map/filter→[]) — the
+prologue emits a 3VL guard on the range value before any iterate-path
+setup (`expr_lower_comprehension.cc::EmitRangeAbsorptionGuard`;
+cel-cpp parity: `comprehension_step.cc:165-169` / `:350-354`,
+`result = std::move(range)`).  Conformance held 1973/0 per mode (no
+corpus rows exercise unknown ranges).
+
+  - [x] oracle pins added BEFORE the fix — new oracle-only TU
+        `testdata/cel_cpp_oracle_comprehension_test.cc`:
+        `ComprehensionUnknownRangeOracle` (exists / all / exists_one
+        / map / filter + map-range exists / transform-map →
+        UNKNOWN), `ComprehensionErrorRangeOracle` (same 7 shapes →
+        ERROR), `ErrorRangeDominatesUnknownBody`, concrete-range +
+        unknown-/error-BODY controls.
+  - [x] WAT-first: `rewrite/wat/70_comprehension_unknown_range.wat`
+        (`wat-traces.md` §70) run end-to-end through `wat_runner`
+        against the real kernel, no stubs
+        (`WatRunnerComprehensionTest.UnknownRangeAbsorbsIntoResult`);
+        wat_runner export list grew `cel_list_arena_view`.
+  - [x] codegen: prologue + loop wrapped in a named
+        `comp_absorb_<expr_id>` block; guard copies the poison into
+        the accu slot and brs past the loop; accu local set hoisted
+        before the guard so `@result` resolves on both paths.
+  - [x] trampoline tripwire: `CelListIterOpenImpl` /
+        `CelMapIterOpenImpl` return FailedPrecondition on
+        CEL_UNKNOWN / CEL_ERROR inputs (guard-regression canary) —
+        new `eval/internal/cel_iter_open_impl_test.cc` (snapshot
+        happy paths, empty source, poison → loud failure, other
+        non-host kinds → defensive empty, missing ref_slot).
+  - [x] e2e, both link modes (`e2e/m2_partial_eval_test.cc`): the 2
+        pinned GTEST_SKIPs deleted
+        (`ComprehensionOverUnknownListIsUnknown`,
+        `ShadowedRangeVarUnknownIsUnknown`); new
+        `ComprehensionUnknownRangeE2E` (7 macro shapes × unknown
+        range), `ComprehensionErrorRangeE2E` (7 × error range),
+        `ErrorRangeDominatesUnknownBody`, `ConcreteRangeControls`
+        (per-macro happy path), and the accumulator-3VL negative
+        controls (`ConcreteRange{UnknownBodyIsUnknown,
+        ErrorBodyIsError}`).
+
+## Kernel deep equality + OOM poison + overflow guards (cleanup-backlog #40/#46, 2026-06-10)
+
+Three kernel-correctness fixes in `runtime/cel_runtime.c` /
+`runtime/cel_arena.c`: (1) arena+arena aggregate equality routes
+non-scalar element pairs (CEL_MESSAGE, nested lists/maps, CEL_TYPE,
+CEL_OPTIONAL) through the polymorphic equality kernel instead of the
+scalar-only matcher (`[Msg{x:1}] == [Msg{x:1}]` was silently false);
+(2) OOM / poisoned-source comprehension prologues vend a poison
+view/iteration instead of degrading to an empty walk, backed by a
+per-Instance emergency block (`arena_oom_block`); (3) wasm32
+multiply/add overflow guards at every alloc-size math site (reject →
+CEL_ERR_OVERFLOW, never wrap).  Conformance held 1973/0 per mode.
+
+  - [x] kernel deep-eq matrix — `runtime/cel_deep_eq_test.cc`:
+        message lists {equal, unequal-value, length-mismatch,
+        empty×nonempty}, message-valued maps {equal, unequal,
+        order-independent}, nested aggregates (list-in-list,
+        map-in-list, list-in-map, two levels), scalar fast-path
+        controls (no host trip), equivalence with direct
+        `msg == msg`, trampoline wire contract (element cell
+        offsets), `in` with message / list needles, nested
+        host-origin elements route to host trampolines,
+        cross-kind false, not-comparable pair unequal-not-error,
+        CEL_TYPE elements.
+  - [x] OOM/poison vends — `runtime/cel_oom_poison_test.cc`:
+        emergency-block reservation survives reset + exhaustion;
+        `cel_list_arena_view` {arena pass-through, host-snapshot
+        OOM → OVERFLOW view, error/unknown source → verbatim
+        poison view, wrong kind → TYPE_MISMATCH view, poison view
+        at true OOM}; `cel_map_iter_init` {state OOM → OVERFLOW
+        iteration, error source → verbatim, wrong kind →
+        TYPE_MISMATCH, empty-map 0-handle control};
+        `cel_map_insert` strict-construction 3VL (value error,
+        key error before kind gate); deep-eq scratch OOM →
+        OVERFLOW, never false.
+  - [x] overflow guards — `runtime/cel_oom_poison_test.cc`
+        (list/map create adversarial capacities, byte-ceiling
+        boundary, concat count-add wrap, concat stride-multiply),
+        `runtime/cel_arena_test.cc` (unalignable
+        `(UINT32_MAX-7, UINT32_MAX]` tail rejected; OOM block
+        outside arena accounting, never overlapped),
+        `runtime/cel_string_ops_test.cc` (string concat length-add
+        wrap poisons OVERFLOW).
+  - [x] flipped pin — `runtime/cel_map_test.cc`
+        `PoisonedMapInitReturnsZeroHandle` →
+        `PoisonedMapInitVendsOneErrorIteration`.
+  - [x] e2e, both link modes —
+        `e2e/arena_message_aggregate_eq_test.cc`:
+        `ArenaMessageAggregateEqE2ETest` (message lists/maps,
+        nested aggregates, `in`, equivalence with direct message
+        eq, scalar controls) +
+        `PoisonedComprehensionSourceE2ETest` (`[1/0].map/exists`,
+        error-element filter, `{'a': 1/0}` map literal /
+        size / exists, error-keyed literal, healthy controls).
+
+## Unknown-payload descriptor contract + logic-op 3VL precedence (V2 fix, 2026-06-10)
+
+The `payload.unk` wire is the UnknownSet descriptor everywhere
+(`doc/design/03-abi-and-memory.md` §8.2 — host writers mint
+descriptors, decoders dereference, `Value::Unknown` carries the
+attribute-id set, `absorb_3vl_binary` merges both-unknown), and the
+logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
+(§8.3 scope note).  Conformance held 1973/0 per mode.
+
+  - [x] oracle pins — `testdata/cel_cpp_oracle_unknown_payload_test.cc`:
+        merged-set provenance (and/or/add × dotted/bare, dedup,
+        single-attr baseline) + logic-op precedence (`unknown && error`
+        → unknown in both orders, both ops; absorbing-bool controls
+        `false && error` → false, `true || error` → true,
+        `unknown && false` → false, `unknown || true` → true).
+  - [x] kernel — `runtime/cel_3vl_test.cc`: 4×4 cel_and/cel_or
+        matrices flipped to UNKNOWN > ERROR (E_U/U_E rows) +
+        unknown-vs-error id-set preservation both orders;
+        `runtime/cel_arith_test.cc::BothUnknownMergesAttributeIdSets`
+        (strict-op both-unknown merge through `cel_int_add_at_vv`).
+  - [x] Value set surface — `eval/value_test.cc`: multi-id set
+        (sorted), dedup, `UnknownAttribute()` FailedPrecondition on
+        merged sets, wrong-kind accessors, empty set, set equality.
+  - [x] host writers/decoders — `eval/host_call_context_test.cc`
+        (ReturnUnknown mints sentinel descriptor; ReturnValue
+        preserves 1-element + merged sets; arg decoder surfaces
+        every descriptor id; empty-set payload; OOB descriptor →
+        InvalidArgument); `eval/internal/cel_host_test.cc`
+        (trampoline mints 1-element descriptor on pattern match);
+        `eval/typed_function_test.cc` (sentinel travels in
+        descriptor).
+  - [x] e2e, both link modes —
+        `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`
+        (`a && b` / `a || b` / `a + b` both-unknown decode BOTH
+        identities; dotted `a.age && b.age`; same-attr dedup;
+        single-unknown regression);
+        `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
+        (unknown-over-error, both orders, both ops).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

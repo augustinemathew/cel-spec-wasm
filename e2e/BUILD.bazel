@@ -218,6 +218,9 @@ link_mode_e2e_cc_test(
 cc_test(
     name = "slot_aliasing_test",
     srcs = ["slot_aliasing_test.cc"],
+    # "large" (900s): ~125s locally, exceeds the 300s default under
+    # parallel load on CI runners (observed in the Linux container).
+    size = "large",
     deps = [
         "//compiler:compiler",
         "//compiler:program",
@@ -420,6 +423,10 @@ link_mode_e2e_cc_test(
 link_mode_e2e_cc_test(
     name = "m7b_test",
     srcs = ["m7b_test.cc"],
+    # "large" (900s): passes solo in ~85s but the static emission
+    # exceeds the 300s default under parallel load on CI runners
+    # (observed on both GitHub macos-14 and the Linux container).
+    size = "large",
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
@@ -832,5 +839,30 @@ link_mode_e2e_cc_test(
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
         "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# Kernel-correctness pins: arena+arena aggregate equality with
+# message / nested-aggregate elements (cleanup-backlog #40 latent
+# gap), and comprehension-over-poisoned-source error propagation
+# (the cel_list_arena_view / cel_map_iter_init empty-walk degrade).
+# Kernel matrices live in runtime/cel_deep_eq_test.cc and
+# runtime/cel_oom_poison_test.cc; this target pins the user-visible
+# expressions through the full pipeline in both link modes.
+link_mode_e2e_cc_test(
+    name = "arena_message_aggregate_eq_test",
+    srcs = ["arena_message_aggregate_eq_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )

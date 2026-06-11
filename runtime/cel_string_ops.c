@@ -80,6 +80,13 @@ static int span_op_prelude(CelValue* out, const CelValue* a, const CelValue* b,
 
 static void concat_into_out(CelValue* out, const CelSpan* a, const CelSpan* b,
                             uint32_t kind) {
+  // The u32 length add can wrap for adversarial spans; a wrapped
+  // total under-allocates and the memcpys below scribble past the
+  // run.  Reject → poison, never wrap.
+  if (b->len > UINT32_MAX - a->len) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
   uint32_t total = a->len + b->len;
   uint32_t off = 0;
   if (total > 0) {

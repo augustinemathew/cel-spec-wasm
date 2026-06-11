@@ -65,8 +65,9 @@ TEST_P(ArithHappyTest, ProducesExpectedResult) {
   ASSERT_EQ(At(out)->kind, c.result_kind) << c.name;
   if (c.read_int) EXPECT_EQ(c.read_int(At(out)), c.expected_int) << c.name;
   if (c.read_uint) EXPECT_EQ(c.read_uint(At(out)), c.expected_uint) << c.name;
-  if (c.read_double)
+  if (c.read_double) {
     EXPECT_DOUBLE_EQ(c.read_double(At(out)), c.expected_double) << c.name;
+  }
 }
 
 namespace {
@@ -438,6 +439,41 @@ TEST_F(ArithTest, ErrorLeftUnknownRightPropagatesError) {
   cel_int_add_at_vv(out, err_off, unk_off);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
+}
+
+TEST_F(ArithTest, BothUnknownMergesAttributeIdSets) {
+  // Strict ops MERGE both-unknown operands (cel-cpp
+  // function_step.cc merges unknown args after the error scan;
+  // oracle-pinned by UnknownPayloadOracle.
+  // {Add,BareVarsAdd}BothUnknownMergesBothAttributes in
+  // testdata/cel_cpp_oracle_unknown_payload_test.cc) — neither
+  // operand's provenance may be dropped.  Each operand carries a
+  // 1-element UnknownSet descriptor `{ids_off, len}` (the §8.2 wire
+  // shape); the result's descriptor must union them.
+  auto make_unknown = [&](uint32_t id) {
+    uint32_t ids_off = arena_alloc(sizeof(uint32_t));
+    *reinterpret_cast<uint32_t*>(cel_mem_base() + ids_off) = id;
+    uint32_t desc_off = arena_alloc(2 * sizeof(uint32_t));
+    auto* desc = reinterpret_cast<uint32_t*>(cel_mem_base() + desc_off);
+    desc[0] = ids_off;
+    desc[1] = 1;
+    uint32_t cv_off = arena_alloc(sizeof(CelValue));
+    CelValue* v = cel_value_at(cv_off);
+    v->kind = CEL_UNKNOWN;
+    v->payload.unk = desc_off;
+    return cv_off;
+  };
+  uint32_t a = make_unknown(2);
+  uint32_t b = make_unknown(1);
+  uint32_t out = MakeOut();
+  cel_int_add_at_vv(out, a, b);
+  ASSERT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  auto* desc =
+      reinterpret_cast<const uint32_t*>(cel_mem_base() + At(out)->payload.unk);
+  ASSERT_EQ(desc[1], 2u) << "merged set must carry BOTH attribute ids";
+  auto* ids = reinterpret_cast<const uint32_t*>(cel_mem_base() + desc[0]);
+  EXPECT_EQ(ids[0], 1u);  // sorted union
+  EXPECT_EQ(ids[1], 2u);
 }
 
 TEST_F(ArithTest, UnaryAbsorbsError) {

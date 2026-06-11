@@ -74,9 +74,12 @@ class Instance {
 
   // Partial evaluation.  Same activation-marshalling as Eval, plus
   // an unknown-pattern set the host consults at field read time: a
-  // select whose attribute_id matches any pattern short-circuits to
-  // `Value::Unknown(attribute_id)` instead of descending the proto.
-  // See `rewrite/m2-ident-select-unknowns.md`.
+  // select whose attribute matches any pattern short-circuits to an
+  // unknown carrying that attribute's identity instead of descending
+  // the proto.  A result that depends on SEVERAL unknown attributes
+  // decodes as ONE unknown Value carrying the merged identity set —
+  // read it via `Value::UnknownAttributes()`
+  // (doc/design/03-abi-and-memory.md §8.2).
   ABSL_MUST_USE_RESULT absl::StatusOr<Value> PartialEval(
       const Activation& activation,
       absl::Span<const celwasm::AttributePattern> unknowns);

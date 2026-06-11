@@ -26,8 +26,7 @@
 #include "eval/internal/cel_host.h"
 #include "runtime/cel_data.h"
 
-namespace celwasm {
-namespace test {
+namespace celwasm::test {
 
 // 64 KiB byte-buffer; CelValue read/write copies the 24-byte struct
 // at the requested offset; ReadSpan returns a view into the buffer.
@@ -149,7 +148,28 @@ class FakeArenaAllocator final : public ArenaAllocator {
   size_t cursor_ = 0;
 };
 
-}  // namespace test
-}  // namespace celwasm
+// Dereference a CEL_UNKNOWN CelValue's UnknownSet descriptor
+// (`payload.unk` → `{ids_off, len}` → u32 id array; the §8.2 wire
+// shape of doc/design/03-abi-and-memory.md) against `mem`.  Returns
+// the id array in stored (sorted) order; empty for `payload.unk == 0`
+// or any out-of-bounds shape.  Test-side mirror of the production
+// decoders in instance.cc / host_call_context.cc.
+inline std::vector<uint32_t> ReadUnknownIds(const MemoryView& mem,
+                                            const CelValue& cv) {
+  if (cv.kind != CEL_UNKNOWN || cv.payload.unk == 0) return {};
+  uint32_t desc[2];
+  const absl::string_view d = mem.ReadSpan(cv.payload.unk, sizeof(desc));
+  if (d.size() != sizeof(desc)) return {};
+  std::memcpy(desc, d.data(), sizeof(desc));
+  const uint32_t len = desc[1];
+  const absl::string_view raw =
+      mem.ReadSpan(desc[0], len * static_cast<uint32_t>(sizeof(uint32_t)));
+  if (raw.size() != size_t{len} * sizeof(uint32_t)) return {};
+  std::vector<uint32_t> ids(len);
+  if (len > 0) std::memcpy(ids.data(), raw.data(), raw.size());
+  return ids;
+}
+
+}  // namespace celwasm::test
 
 #endif  // CELWASM_EVAL_INTERNAL_CEL_HOST_TEST_FAKES_H_

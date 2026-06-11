@@ -262,12 +262,15 @@ carries the alignment table.
 > values, so a mid-enum insertion would silently renumber every
 > emitted repr. Explicit initializers + a pin test are pending.
 
-> **Open question (V2–V4):** the error and unknown *payload* contracts
-> have live forks (bare-code errors dropping messages; two conflicting
-> `payload.unk` shapes; three 3VL absorption implementations with two
-> precedence rules). `03-abi-and-memory.md` crowns one telling for
-> each once the oracle probes land; until then this doc deliberately
-> says nothing byte-level about them.
+> **Resolved (V2–V4, 2026-06-10):** the error and unknown *payload*
+> contracts each have ONE crowned telling in `03-abi-and-memory.md`
+> §8: bare-code errors (V4, fixed), per-op-class 3VL precedence
+> (V3, fixed — error dominates for strict ops, unknown dominates
+> for `&&`/`||`; §8.3 scope note), and the UnknownSet
+> **descriptor-offset** shape for `payload.unk` (V2 — fixed: host
+> writers mint descriptors, decoders dereference, `Value::Unknown`
+> carries the merged attribute-id set). This doc still says
+> nothing byte-level about them; §8 there is the telling.
 
 ## 5. Threading model, end to end
 

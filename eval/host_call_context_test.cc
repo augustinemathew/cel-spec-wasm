@@ -55,8 +55,8 @@ constexpr uint32_t kOutSlot = 0;
 constexpr uint32_t kArg0 = 24;
 constexpr uint32_t kArg1 = 48;
 constexpr uint32_t kArg2 = 72;
-constexpr uint32_t kStrArea = 0x1000;     // staged arg string bytes
-constexpr uint32_t kArenaBase = 0x8000;   // ReturnString/Bytes allocations
+constexpr uint32_t kStrArea = 0x1000;    // staged arg string bytes
+constexpr uint32_t kArenaBase = 0x8000;  // ReturnString/Bytes allocations
 constexpr size_t kArenaCap = 0x8000;
 
 class HostCallContextTest : public testing::Test {
@@ -362,10 +362,8 @@ TEST_F(HostCallContextTest, ArgIsNullDistinguishesNullFromPresent) {
 TEST_F(HostCallContextTest, OutOfRangeArgIndexErrors) {
   mem_.Place(kArg0, MakeInt(1));
   auto ctx = Ctx({kArg0});
-  EXPECT_THAT(ctx.ArgInt(1).status(),
-              StatusIs(absl::StatusCode::kOutOfRange));
-  EXPECT_THAT(ctx.ArgInt(-1).status(),
-              StatusIs(absl::StatusCode::kOutOfRange));
+  EXPECT_THAT(ctx.ArgInt(1).status(), StatusIs(absl::StatusCode::kOutOfRange));
+  EXPECT_THAT(ctx.ArgInt(-1).status(), StatusIs(absl::StatusCode::kOutOfRange));
   EXPECT_THAT(ctx.ArgString(99).status(),
               StatusIs(absl::StatusCode::kOutOfRange));
 }
@@ -431,8 +429,8 @@ TEST_F(HostCallContextTest, ArgListHostMessageElements) {
   auto elem_or = lv_or->At(0);
   ASSERT_TRUE(elem_or.ok());
   ASSERT_TRUE(elem_or->MessageBacking().ok());
-  const auto* c = dynamic_cast<const Customer*>(
-      (*elem_or->MessageBacking())->message());
+  const auto* c =
+      dynamic_cast<const Customer*>((*elem_or->MessageBacking())->message());
   ASSERT_NE(c, nullptr);
   EXPECT_EQ(c->name(), "a");
 }
@@ -474,8 +472,7 @@ TEST_F(HostCallContextTest, ArgListHostDanglingSlotErrors) {
 
 TEST_F(HostCallContextTest, ArgMapHostStringKeys) {
   std::vector<std::pair<Value, Value>> entries = {
-      {Value::String("a"), Value::Int(1)},
-      {Value::String("b"), Value::Int(2)}};
+      {Value::String("a"), Value::Int(1)}, {Value::String("b"), Value::Int(2)}};
   const uint32_t slot =
       refs_.InternMap(std::make_shared<HostMap>(std::move(entries)));
   mem_.Place(kArg0, MakeHostMap(slot));
@@ -686,8 +683,9 @@ TEST_F(HostCallContextTest, ReturnStringAllocatesInArena) {
   // Newly allocated — the span must land in the arena region, not at a
   // staged input offset.
   EXPECT_GE(Out().payload.s.ptr, kArenaBase);
-  EXPECT_EQ(std::string(mem_.ReadSpan(Out().payload.s.ptr, Out().payload.s.len)),
-            "NEW");
+  EXPECT_EQ(
+      std::string(mem_.ReadSpan(Out().payload.s.ptr, Out().payload.s.len)),
+      "NEW");
 }
 
 TEST_F(HostCallContextTest, ReturnBytesAllocatesInArena) {
@@ -697,8 +695,8 @@ TEST_F(HostCallContextTest, ReturnBytesAllocatesInArena) {
   auto ctx = Ctx({});
   ASSERT_TRUE(ctx.ReturnBytes(b).ok());
   EXPECT_EQ(Out().kind, CEL_BYTES);
-  EXPECT_EQ(std::string(mem_.ReadSpan(Out().payload.s.ptr, Out().payload.s.len)),
-            b);
+  EXPECT_EQ(
+      std::string(mem_.ReadSpan(Out().payload.s.ptr, Out().payload.s.len)), b);
 }
 
 // ════════════════════════ aggregate returns ════════════════════════
@@ -741,11 +739,16 @@ TEST_F(HostCallContextTest, ReturnMapInternsHostMap) {
 
 // ════════════════════════ 3VL returns ══════════════════════════════
 
-TEST_F(HostCallContextTest, ReturnUnknownStampsFunctionOriginSentinel) {
+TEST_F(HostCallContextTest, ReturnUnknownMintsSentinelDescriptor) {
+  // Function-origin unknown: a 1-element UnknownSet descriptor whose
+  // id array carries the reserved sentinel (the descriptor wire of
+  // doc/design/03-abi-and-memory.md §8.2 — a raw sentinel in
+  // payload.unk would be dereferenced as a descriptor offset).
   auto ctx = Ctx({});
   ASSERT_TRUE(ctx.ReturnUnknown().ok());
   EXPECT_EQ(Out().kind, CEL_UNKNOWN);
-  EXPECT_EQ(Out().payload.unk, kFunctionUnknownSentinel);
+  EXPECT_THAT(test::ReadUnknownIds(mem_, Out()),
+              ::testing::ElementsAre(kFunctionUnknownSentinel));
 }
 
 TEST_F(HostCallContextTest, ReturnErrorEncodesCode) {
@@ -771,8 +774,69 @@ TEST_F(HostCallContextTest, ReturnValuePreservesPropagatedUnknownAttribute) {
   auto ctx = Ctx({});
   ASSERT_TRUE(ctx.ReturnValue(Value::Unknown(AttributeId{4})).ok());
   EXPECT_EQ(Out().kind, CEL_UNKNOWN);
-  EXPECT_EQ(Out().payload.unk, 4u);
-  EXPECT_NE(Out().payload.unk, kFunctionUnknownSentinel);
+  EXPECT_THAT(test::ReadUnknownIds(mem_, Out()), ::testing::ElementsAre(4u));
+}
+
+TEST_F(HostCallContextTest, ReturnValuePreservesMergedUnknownSet) {
+  // A merged unknown (several attribute identities) round-trips the
+  // whole set; the descriptor's id array is sorted ascending.
+  auto ctx = Ctx({});
+  ASSERT_TRUE(ctx.ReturnValue(Value::Unknown(std::vector<AttributeId>{
+                                  AttributeId{9}, AttributeId{2}}))
+                  .ok());
+  EXPECT_EQ(Out().kind, CEL_UNKNOWN);
+  EXPECT_THAT(test::ReadUnknownIds(mem_, Out()),
+              ::testing::ElementsAre(2u, 9u));
+}
+
+TEST_F(HostCallContextTest, UnknownArgDecodesEveryDescriptorId) {
+  // The host-call arg decoder dereferences the descriptor and
+  // surfaces EVERY merged id — the host-fn side of the §8.2 contract.
+  constexpr uint32_t kDescOff = 1024;
+  constexpr uint32_t kIdsOff = kDescOff + 8;
+  const uint32_t desc[2] = {kIdsOff, 2};
+  std::memcpy(mem_.data() + kDescOff, desc, sizeof(desc));
+  const uint32_t ids[2] = {3, 8};
+  std::memcpy(mem_.data() + kIdsOff, ids, sizeof(ids));
+  CelValue cv{};
+  cv.kind = CEL_UNKNOWN;
+  cv.payload.unk = kDescOff;
+  mem_.Place(kArg0, cv);
+
+  auto ctx = Ctx({kArg0});
+  auto v = ctx.ArgValue(0);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_TRUE(v->IsUnknown());
+  ASSERT_TRUE(v->UnknownAttributes().ok());
+  EXPECT_THAT(*v->UnknownAttributes(),
+              ::testing::ElementsAre(AttributeId{3}, AttributeId{8}));
+}
+
+TEST_F(HostCallContextTest, UnknownArgWithZeroPayloadDecodesEmptySet) {
+  // payload.unk == 0 is the legal empty UnknownSet — decodes to an
+  // unknown with no recorded provenance, not an error.
+  CelValue cv{};
+  cv.kind = CEL_UNKNOWN;
+  cv.payload.unk = 0;
+  mem_.Place(kArg0, cv);
+  auto ctx = Ctx({kArg0});
+  auto v = ctx.ArgValue(0);
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_TRUE(v->IsUnknown());
+  ASSERT_TRUE(v->UnknownAttributes().ok());
+  EXPECT_TRUE(v->UnknownAttributes()->empty());
+}
+
+TEST_F(HostCallContextTest, UnknownArgWithOutOfBoundsDescriptorErrors) {
+  // A descriptor offset past the memory end must surface a clean
+  // error, never an OOB host read.
+  CelValue cv{};
+  cv.kind = CEL_UNKNOWN;
+  cv.payload.unk = mem_.Size() - 4;  // 8-byte descriptor won't fit
+  mem_.Place(kArg0, cv);
+  auto ctx = Ctx({kArg0});
+  EXPECT_THAT(ctx.ArgValue(0).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 }  // namespace

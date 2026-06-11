@@ -21,6 +21,91 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#47** — bracket-shape parser stack overflow: `ParseAndCheck`
+      on deeply bracket-nested input (`[[[…]]]`, near the 2048
+      `kMaxExpressionNestingDepth` limit) can SIGSEGV a default
+      8 MiB thread inside cel-cpp's ANTLR parser BEFORE the
+      expression-depth gate (or the parser's own
+      `max_recursion_depth` rejection) gets to return a graceful
+      `ResourceExhausted`.  Verified on Linux (container,
+      2026-06-10): deterministic crash at `ulimit -s 8192`, passes
+      at 65536; the per-level stack cost of the bracket grammar
+      shape is several times that of a left-associative `+`-chain
+      (chains at depth 4653 parse fine on the same stack).  The
+      "flake" in `//compiler/frontend:parse_and_check_test` under
+      parallel load was this — fixed at TEST level only
+      (`RunWithLargeStack`, 64 MiB pthread, in
+      `parse_and_check_test.cc`).  Production residual: an embedder
+      feeding untrusted source from a default-stack thread can be
+      crashed by a ~2k-bracket input — same crash class #16/#45
+      closed for other shapes.
+      Fix shape: measure the worst-shape per-level parser stack
+      cost, then either (a) lower the parser `max_recursion_depth`
+      (and the gate) so the worst shape rejects gracefully within
+      8 MiB, or (b) run ParseAndCheck's parse stage on an
+      explicit-stack thread sized to the limit.  As part of the
+      fix, check cel-cpp parity (same ANTLR core — upstream likely
+      shares the crash; if so, note it and consider an upstream
+      report rather than only narrowing our limits).
+      Surfaced: 2026-06-10 Linux container triage (cleanup-backlog
+      #1 closeout).
+      Files: `compiler/frontend/parse_and_check.cc` (gate + parser
+      options), `compiler/frontend/parse_and_check_test.cc`.
+      Why P1-ish/P2: crash on hostile input from default-stack
+      threads, but requires ~2k-deep brackets (parser limit already
+      normalizes the >2080 case); macOS default main-thread stack
+      (8 MiB) is the same order — re-verify locally during the fix.
+
+- [x] **#46** — FIXED 2026-06-10.  Kernel silent-degrade-on-OOM /
+      poisoned-source family in `runtime/cel_runtime.c` +
+      `runtime/cel_arena.c` (audit triggered by the
+      `cel_list_arena_view` OOM→empty-walk path).  All fixed in
+      one batch — every path now poisons (or vends a poison view),
+      never degrades to a normal-looking value:
+      1. `cel_list_arena_view`: host-snapshot-slot OOM returned the
+         source slot → empty walk.  Now vends a one-element
+         CEL_LIST_ARENA poison view (CEL_ERR_OVERFLOW element).
+      2. `cel_list_arena_view`: CEL_ERROR / CEL_UNKNOWN source
+         returned the source slot → garbage/empty walk
+         (`[1/0].exists(x, x == 2)` evaluated `false`).  Now vends
+         a view whose element carries the source poison verbatim;
+         wrong-kind drift vends CEL_ERR_TYPE_MISMATCH.
+      3. `cel_map_iter_init`: state-alloc OOM and poisoned/
+         wrong-kind sources returned the 0 ("empty") handle.  Now
+         vends a one-entry HOST-shaped poison iteration (key and
+         value both poison).  The old behavior pin
+         `MapIterTest.PoisonedMapInitReturnsZeroHandle`
+         (runtime/cel_map_test.cc) was flipped to
+         `PoisonedMapInitVendsOneErrorIteration`.
+      4. `cel_map_insert` (literal construction) silently built
+         maps CONTAINING error values (`{'a': 1/0}` was a normal
+         1-entry map; `size()` / comprehensions over it produced
+         wrong answers).  Now propagates key/value
+         ERROR / UNKNOWN into the map slot (strict construction,
+         matching `cel_map_insert_at` and list literals; 3VL check
+         precedes the key-kind gate so `{1/0: 'a'}` surfaces
+         divide_by_zero, not type_mismatch).
+      Mechanism: a 128-byte per-Instance emergency block reserved
+      at `arena_init` OUTSIDE the resettable arena
+      (`arena_oom_block()` in cel_arena.{h,c}) keeps the poison
+      expressible at true OOM.  Also in the same batch (overflow
+      guards — reject → poison, never wrap): `arena_alloc` rejects
+      the unalignable `(UINT32_MAX-7, UINT32_MAX]` tail;
+      `cel_list_create` / `cel_map_create` / concat stride
+      multiplies go through `entries_bytes_checked` (u64 math);
+      concat count add + string/bytes concat length add guarded.
+      NOT fixed (host-side, eval/** out of kernel scope):
+      `cel_host.cel_list_iter_open` / `cel_map_iter_open`
+      trampolines still write an EMPTY snapshot on host-side
+      alloc failure (count==0 is ambiguous between "empty" and
+      "failed") — surfacing that distinctly needs a trampoline
+      contract change.
+      Tests: `runtime/cel_oom_poison_test.cc` (new),
+      `runtime/cel_arena_test.cc` (wrap guard + block reservation),
+      `runtime/cel_string_ops_test.cc` (concat length-add),
+      `e2e/arena_message_aggregate_eq_test.cc`
+      (PoisonedComprehensionSourceE2ETest, both link modes).
+
 - [x] **#45** — Deep left-associative expression chains
       (`a+b+c+...`, N terms) SIGSEGV when N is large, because codegen
       emits the chain as an **N-deep nested wasm expression tree** —
@@ -325,6 +410,27 @@ struck through or removed.
       today.  The host trampoline already compares such pairs
       correctly if routing ever changes (pinned by
       `CelListEqImplTest.ArenaArenaMessageListsCompare`).
+      RESOLVED 2026-06-10 (kernel-side, `runtime/cel_runtime.c`):
+      the arena+arena walks (`cel_list_eq_arena`,
+      `cel_map_eq_arena` values, `cel_list_in_arena`) now route
+      every non-scalar element pair through the polymorphic
+      equality kernel via `deep_values_equal` — CEL_MESSAGE pairs
+      reach `cel_host.cel_message_eq` (the same MessageDifferencer
+      path as direct `msg == msg`), nested lists/maps recurse
+      through `cel_list_eq` / `cel_map_eq` (host-origin elements
+      included), CEL_TYPE / CEL_OPTIONAL go through their kernel
+      arms.  Probe-verified wrong answers fixed: `[Msg{x:1}] ==
+      [Msg{x:1}]`, `[[1]] == [[1]]`, `[{1:2}] == [{1:2}]`,
+      `{1:[1]} == {1:[1]}`, `[1] in [[1]]`, `[int] == [int]` (all
+      evaluated `false`).  Scratch-cell OOM inside the deep walk
+      poisons CEL_ERR_OVERFLOW, never a false verdict.  Kernel
+      matrix: `runtime/cel_deep_eq_test.cc`; e2e pins (both link
+      modes): `e2e/arena_message_aggregate_eq_test.cc`.  The
+      trampoline-side pin
+      `CelListEqImplTest.ArenaArenaMessageListsCompare` already
+      asserted the CORRECT verdicts (it drives CelListEqImpl
+      directly, which handled arena+arena all along) and stands
+      unchanged.
       Why P2 (remaining): the function-form registration is a
       checker/celfn surface, not an eval gap.
 
@@ -646,14 +752,60 @@ struck through or removed.
       depth 7-8 (post-#32 fix unblocked deep aggregate
       composition).
 
-- [ ] **#1** — `third_party/wasi_sdk/BUILD.bazel` flat-aliases
-      `//third_party/wasi_sdk:clang` → `@wasi_sdk_darwin_arm64//:clang`;
-      Linux + macOS-x86_64 will fail at the bazel-analyzing stage.
-      Surfaced: 2026-05-18 MVP review (P2 in §"Tech-debt
-      inventory").
-      Files: `third_party/wasi_sdk/BUILD.bazel`, `MODULE.bazel`.
-      Why P2: works for the dev box today; CI matrix expansion is
-      a Phase B / M1.1 follow-up, not a merge blocker.
+- [x] **#1** — Linux build/test parity with macOS.  FIXED
+      2026-06-10 (verified in the celwasmc-linux container,
+      bazel 7.3.2, linux-arm64).  The entry's original claim was
+      STALE: it said `third_party/wasi_sdk/BUILD.bazel`
+      flat-aliases `:clang` → `@wasi_sdk_darwin_arm64//:clang` and
+      Linux would fail at the bazel-analysis stage — analysis
+      actually PASSES on Linux (274 targets, 2026-06-10 container
+      run); toolchain resolution is host-agnostic
+      (`wasm_clang.sh` globs `external/*wasi_sdk_*/bin`).
+      The REAL Linux gap was a linker-flag leak: `.bazelrc`
+      `build:linux --linkopt=-fuse-ld=lld` (needed for host
+      links — gold crashes) is appended by bazel AFTER toolchain
+      flags to EVERY link, including the wasm32-wasip2 component
+      link, where it overrides clang's default `wasm-component-ld`
+      driver and silently emits a CORE module
+      (`00 61 73 6d 01 00 00 00`) where a Component-Model
+      component (`0d 00 01 00`) is expected;
+      `Engine::AddComponent` then rejects it.  Linux-only
+      failures: demo_component_e2e_test_{dynamic,static} +
+      examples_smoke_test (09_component_functions).  Subtlety that
+      defeated the first fix attempt: bazel passes link args via a
+      params file (`@bazel-out/.../*.params`), so an argv-only
+      `-fuse-ld=*` strip in `wasm_clang.sh` never saw the flag.
+      Fix: the wrapper now also filters `@<params-file>` contents
+      (filtered temp copy, arg substituted).  With the flag
+      stripped, the unmasked `wasm-component-ld` link succeeds
+      as-is (`-flto` included); component header verified
+      `0d 00 01 00`; cel_runtime.wasm (wasm32-wasi-threads, wants
+      wasm-ld) still builds.
+      Second Linux-only failure, separate root cause:
+      `//compiler/frontend:parse_and_check_test` flaked under
+      parallel load — `DepthGateRejectsNestedListOneOverLimit`
+      SIGSEGVs because the 2048-bracket `[[[...1...]]]` parse
+      overflows the 8 MiB default native stack inside cel-cpp's
+      ANTLR parser before the depth gate can reject (deterministic
+      at `ulimit -s 8192` running the binary directly; passes at
+      65536).  Fixed test-side: the deep depth-gate cases run on a
+      64 MiB-stack thread (`RunWithLargeStack` in
+      `parse_and_check_test.cc`); 10/10 green under stress after.
+      Residual, NOT fixed here: an embedder feeding
+      bracket-nesting near the limit to `ParseAndCheck` on a
+      default 8 MiB Linux thread can still crash before the
+      graceful ResourceExhausted — the gate's stack-margin
+      assumption doesn't hold for the bracket shape.
+      Post-fix container sweep: 130/133 (was 127/133); the 3
+      remaining are 300 s TIMEOUTs on `//e2e:{m5_test_static,
+      m7b_test_static,slot_aliasing_test}` under the fully
+      parallel sweep — each passes solo in 81–103 s, so a
+      test-timeout classification artifact under container load,
+      not a Linux toolchain gap.
+      Surfaced: 2026-05-18 MVP review; re-diagnosed + fixed
+      2026-06-10.
+      Files: `third_party/wasi_sdk/wasm_clang.sh`,
+      `compiler/frontend/parse_and_check_test.cc`.
 
 - [ ] **#2** — `kRuntimeExports[]` in `eval/engine.cc`
       is the third source of truth for the runtime's exported
@@ -907,7 +1059,7 @@ struck through or removed.
       1966→1970 per mode (the 4 `set_null/map_*_null_pruned` rows in
       proto2/proto3), FAIL 7→3.
 
-- [ ] **#14** — a comprehension whose `iter_range` is UNKNOWN (or
+- [x] **#14** — a comprehension whose `iter_range` is UNKNOWN (or
       ERROR) returns the empty-range IDENTITY instead of propagating —
       `exists`→false, `all`→true, `exists_one`→false, `map`/`filter`→[]
       — a SILENTLY WRONG answer (soundness gap, not a crash).
@@ -948,6 +1100,37 @@ struck through or removed.
       Why P1 (not P2): silent wrong answer under PartialEval — exactly
       the class of bug the codebase's no-silent-miscompile rule exists
       to prevent; should be cleared before the next milestone closes.
+      **Resolved 2026-06-10** — exactly the planned fix shape, codegen
+      side: `expr_lower_comprehension.cc::EmitRangeAbsorptionGuard`
+      emits, at the head of EVERY comprehension prologue (list AND map
+      sources, before `cel_list_arena_view` / `cel_map_iter_init` /
+      accu pre-sizing), `kind ∈ {CEL_UNKNOWN, CEL_ERROR}` → copy the
+      range CelValue into the accu slot + br past the prologue+loop
+      region (now wrapped in a named `comp_absorb_<expr_id>` block).
+      The result expression still runs: `@result`-shaped results read
+      the poison from the accu; `exists_one`'s `@result == 1` absorbs
+      it via `_==_` — observably `result = std::move(range)` for every
+      macro.  Kernel-side tripwire: `CelListIterOpenImpl` /
+      `CelMapIterOpenImpl` (eval/internal/cel_host.cc) now return
+      FailedPrecondition on a poisoned input instead of `write_empty()`
+      — a guard regression fails the eval loudly instead of silently
+      returning the identity.  WAT trace
+      `wat/70_comprehension_unknown_range.wat` (+ wat-traces.md §70,
+      runs through wat_runner against the real kernel).  Oracle pins:
+      new `testdata/cel_cpp_oracle_comprehension_test.cc` (5 list
+      macros + 2 map-range shapes × {unknown→UNKNOWN, error→ERROR},
+      error-range-dominates-unknown-body, concrete-range +
+      3VL-body controls — all match cel-cpp
+      `comprehension_step.cc:165-169` / `:350-354`).  Tests: the 2
+      pinned `GTEST_SKIP`s in `e2e/m2_partial_eval_test.cc` deleted
+      (`ComprehensionOverUnknownListIsUnknown`,
+      `ShadowedRangeVarUnknownIsUnknown`); new
+      `ComprehensionUnknownRangeE2E` / `ComprehensionErrorRangeE2E`
+      matrices + controls (both link modes); new
+      `eval/internal/cel_iter_open_impl_test.cc` for the trampoline
+      tripwire.
+      Conformance held 1973/0 per mode (no corpus rows exercise
+      unknown ranges — unknowns.textproto is an empty fixture).
 
 - [ ] **#15** — Parser hard-caps CEL source at 100 000 codepoints
       (`expression_size_codepoint_limit`,

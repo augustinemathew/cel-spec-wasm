@@ -785,7 +785,10 @@ TEST(Layer2UnknownPatternTest, MatchingPatternAbsorbs) {
 
   const CelValue out = f.Get(/*attribute_id=*/1);
   EXPECT_EQ(out.kind, CEL_UNKNOWN);
-  EXPECT_EQ(out.payload.unk, 1u);
+  // §8.2 descriptor wire: payload.unk points at a 1-element
+  // UnknownSet descriptor carrying the matched attribute id — never
+  // the raw id itself.
+  EXPECT_THAT(test::ReadUnknownIds(f.mem, out), ::testing::ElementsAre(1u));
 }
 
 TEST(Layer2UnknownPatternTest, NonMatchingPatternFallsThrough) {

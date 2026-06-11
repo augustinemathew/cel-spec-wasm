@@ -1,19 +1,21 @@
 # 03 — ABI & memory: the wire contracts
 
 Status: current — authored 2026-06-10 from the design-rebuild notes
-plus the post-merge code (chained arena, static-region gates). The §8
-error contract (V4) and 3VL precedence (V3) were settled 2026-06-10
-(probe evidence inline in §8.1/§8.3); the §8.2 unknown contract (V2)
-remains an open fork. Supersedes: wire sections of
+plus the post-merge code (chained arena, static-region gates). All
+three §8 forks were settled AND fixed 2026-06-10: the error contract
+(V4), 3VL precedence (V3), and the §8.2 unknown contract (V2 — the
+descriptor-offset wire shipped end-to-end, host writers/readers
+aligned). The same day the logic-op UNKNOWN-over-ERROR precedence
+(the §8.2 adjacent finding) was oracle-settled and the kernel
+aligned — see §8.3's scope note. Probe evidence inline in each
+subsection. Supersedes: wire sections of
 doc/implementation-plan/rewrite/cel-host-surface.md;
 memory-layout-design.md; abi-refactor.md.
 
 One telling for every byte-level fact the compiler, the runtime
 kernel, and the evaluator must agree on. `00-architecture.md` names
 the contracts; docs 01/02/04 describe the machinery on each side and
-defer every byte here. Where the codebase still carries two live
-tellings of one fact (§8.2), this doc records both, per layer, and
-does not pick a winner.
+defer every byte here.
 
 ## 1. CelValue & kinds
 
@@ -49,7 +51,7 @@ Values are **wire-stable, append-only, never renumbered**
 | 12 | `CEL_DURATION` | `dur` = `CelDurTs{seconds:i64, nanos:i32}` |
 | 13 | `CEL_TIMESTAMP` | `ts` = `CelDurTs` |
 | 14 | `CEL_OPTIONAL` | `opt` (u32) |
-| 15 | `CEL_UNKNOWN` | `unk` (u32 — **forked contract, §8.2**) |
+| 15 | `CEL_UNKNOWN` | `unk` (u32 — UnknownSet descriptor offset, §8.2) |
 | 16 | `CEL_ERROR` | `err` (u32, a `CEL_ERR_*` code, §8.1) |
 | 17 | `CEL_LIST_HOST` | `ref_slot` (u32, externref table) |
 | 18 | `CEL_IP` | `net_ref` (u32 arena offset → `NetIp`) |
@@ -478,17 +480,21 @@ extend the cross-check to the env namespace.
 
 ## 8. Errors & unknowns on the wire — THE FORK SECTION
 
-> **Status update (2026-06-10):** two of the three forks are
-> RESOLVED. §8.1 (errors) — the bare-code wire was crowned and the
+> **Status update (2026-06-10):** all three forks are RESOLVED and
+> FIXED. §8.1 (errors) — the bare-code wire was crowned and the
 > divergent readers fixed (V4). §8.3 (3VL precedence) — the
-> error-dominates rule was oracle-confirmed and the losing host
-> implementation aligned (V3). §8.2 (unknown `payload.unk` contract,
-> V2) **remains forked and change-frozen**. Resolution details are
-> inline in each subsection.
+> error-dominates rule was oracle-confirmed for STRICT ops and the
+> losing host implementation aligned (V3); the LOGIC ops carry the
+> opposite, oracle-confirmed UNKNOWN-over-ERROR rule (scope note in
+> §8.3). §8.2 (unknown `payload.unk` contract, V2) — the
+> **descriptor-offset contract is crowned AND shipped end-to-end**:
+> every host writer mints descriptors, both host decoders
+> dereference them, `Value::Unknown` carries the full attribute-id
+> set, and `absorb_3vl_binary` merges both-unknown operands.
+> Resolution details are inline in each subsection.
 
 This section documents the per-layer behavior (docs 02 §8 and 04 §3
-defer here). Any prose that states "`payload.unk` is X" without
-naming the §8.2 fork is wrong.
+defer here).
 
 ### 8.1 Errors: the bare-code wire, per layer
 
@@ -517,38 +523,89 @@ kernel (`poison`) and host writer (`WriteWireError`) emits it.
 > message loss remains the documented contract (cleanup-backlog #31
 > stays open for that decision).
 
-### 8.2 Unknowns: two live `payload.unk` contracts
+### 8.2 Unknowns: the descriptor-offset contract — SHIPPED
 
-`CEL_UNKNOWN`'s u32 payload has two conflicting interpretations,
-both shipped:
+**The one contract, every layer:** `CEL_UNKNOWN`'s `payload.unk` is
+a u32 byte offset to a 2-word `{ids_off, len}` **UnknownSet
+descriptor**; `ids_off` points at a contiguous u32 array of
+attribute ids in sorted, deduplicated order. `payload.unk == 0` is
+the legal empty set (no recorded provenance) — production writers
+never mint it. Real attribute ids are intern ids in `[1, N]` (row 0
+of `cel.abi.attributes[]` is the no-attribute sentinel,
+`abi/cel_abi.proto:99-101`); the function-origin sentinel
+`kFunctionUnknownSentinel = 0xFFFFFFFF` travels inside a descriptor
+like any other id.
 
-| contract | writers | readers | citation |
-|---|---|---|---|
-| **descriptor offset** (runtime telling) | `cel_unknown_merge` mints fresh descriptors | `cel_unknown_merge` dereferences any non-zero `payload.unk` as an offset to a 2-word `{ids_off, len}` UnknownSet descriptor (ids: sorted, deduplicated u32 array in the arena); 0 = legal empty set. `cel_log`'s `%v` unknown formatter follows this telling | `runtime/cel_3vl.h` preamble; `cel_3vl.c::merge_unknown_descriptors` |
-| **attribute id** (host telling) | the `cel_get_field` trampoline on a FULL pattern match writes `payload.unk = attribute_id` (1-based intern id); the activation marshal stamps the same; `ReturnUnknown` writes `kFunctionUnknownSentinel = 0xFFFFFFFF` for function-origin unknowns | `Instance::Eval`'s decoder reads `payload.unk` back as an `AttributeId` | `eval/internal/cel_host.cc::RunFieldPrelude`; `eval/instance.cc`; `eval/attribute.h:252` |
+| layer | behavior | citation |
+|---|---|---|
+| kernel merge | `cel_unknown_merge` dereferences both descriptors and mints a fresh sorted-deduped union in the bump arena; OOM → `CEL_ERR_OVERFLOW` | `runtime/cel_3vl.c::merge_unknown_descriptors` |
+| strict-op absorption | `absorb_3vl_binary` routes both-UNKNOWN operands through `cel_unknown_merge` (after the error scan) — neither side's provenance drops | `runtime/cel_internal.h`; `cel_arith_test.cc::BothUnknownMergesAttributeIdSets` |
+| host writers | all mint descriptors via `EncodeUnknownSet` (`eval/internal/cel_host.{h,cc}`): the `cel_get_field` trampoline on a FULL pattern match (`RunFieldPrelude`) and `HostCallContext::{ReturnUnknown,ReturnValue}` allocate in the **guest bump arena** (in-eval; survives until the next $eval's `arena_reset`); the activation marshal (`EncodeUnknownVariable`, `eval/instance.cc`) allocates in the **activation buffer** — the marshal runs BEFORE $eval, whose prelude resets the arena, so an arena-minted descriptor would be zero-filled (the same lifetime argument as string payload bytes) | `eval/internal/cel_host.cc`; `eval/host_call_context.cc`; `eval/instance.cc` |
+| host readers | both decoders (`Instance::Eval`/`PartialEval` result decode and the host-call arg decode) dereference `{ids_off, len}` and surface EVERY id | `eval/instance.cc::DecodeUnknownSetAt`; `eval/host_call_context.cc::DecodeUnknownSet` |
+| user surface | `Value::Unknown` holds the attribute-id SET (sorted, deduped): `Unknown(vector<AttributeId>)` + `UnknownAttributes()` span accessor; the single-id `UnknownAttribute()` works for one-element sets and returns FailedPrecondition on merged sets (silently picking a winner would hide provenance) | `eval/value.{h,cc}` |
+| in-guest formatting | `cel_log`'s `%v` unknown formatter dereferences the descriptor (unchanged — it was already on the winning shape) | `eval/host/cel_log.cc::FormatUnknown` |
 
-The runtime comment inside `cel_unknown_merge` claims the host mints
-unknowns with `payload.unk == 0` — **false**: the host writes
-non-zero attribute ids for every real pattern match. Reachability:
-`_&&_` / `_||_` lower as eager calls to `cel_and` / `cel_or`, which
-merge two UNKNOWN operands via `cel_unknown_merge` — `a.x && b.y`
-under PartialEval plausibly feeds attribute ids (or the `0xFFFFFFFF`
-sentinel) into the merge as descriptor offsets: garbage or OOB
-reads.
+> **RESOLVED + FIXED (V2, 2026-06-10).** History: the host side
+> shipped a conflicting "raw attribute id in `payload.unk`"
+> interpretation. The probe demonstrated it live — `PartialEval` of
+> `a && b` with both bare variables FULL-matched returned `kUnknown`
+> with `AttributeId{360296}`, an arena descriptor offset misdecoded
+> as an attribute id (silent garbage, no trap), and strict ops
+> left-biased (`a + b` both-unknown dropped `b`'s identity). The
+> reference demands a merged SET: cel-cpp routes both-unknown
+> operands through `AttributeUtility::MergeUnknowns` (cel-cpp
+> `eval/eval/logic_step.cc`, `attribute_utility.cc:107-130`; strict
+> fns merge after the error scan, `function_step.cc:219`;
+> `AttributeSet::Merge` is a sorted-set union), oracle-pinned by
+> `testdata/cel_cpp_oracle_unknown_payload_test.cc` (and/or/add ×
+> dotted/bare → both identities; same attribute both sides
+> deduplicates). The descriptor contract won — it is the only shape
+> that can carry the merged set — and the 5-point fix shipped as one
+> unit: host writers mint descriptors (`EncodeUnknownSet`), both
+> decoders dereference, `Value::Unknown` grew the set surface,
+> `absorb_3vl_binary` merges, and the false comments
+> (`cel_3vl.c`/`cel_3vl.h` "host mints `payload.unk == 0`",
+> `attribute.h` "0-based ids") were corrected. E2E pins:
+> `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest` (a&&b /
+> a||b / a+b both-unknown decode BOTH identities; dedup;
+> single-unknown regression; dotted `a.age && b.age`), both link
+> modes.
+>
+> Known residual (recorded, out of V2 scope): a custom host fn
+> called with SEVERAL unknown args propagates the FIRST arg's set
+> un-merged (`eval/engine.cc::AbsorbUnknownOrErrorArg`) where
+> cel-cpp's function_step would union them; each arg's own set
+> survives intact. Provenance granularity at a `.field` select is
+> the OPERAND's interned attribute (bare root), so `c.age && c.name`
+> both-unknown dedupes to one id where cel-cpp reports two dotted
+> paths.
 
-> **Open question (V2):** is that merge actually reachable with two
-> host-minted unknowns, and what does it produce? Probe: e2e
-> PartialEval `a.x && b.y`, both attributes FULL-matched (ids ≥ 1);
-> inspect for garbage/trap. If codegen routes host unknowns around
-> the merge, the fork downgrades to latent. Either way the crowned
-> contract must pick ONE shape — descriptor (provenance-capable;
-> host writers change) or attribute id (shipped host behavior; the
-> merge and `%v` change).
+### 8.3 3VL precedence: TWO rules — per op class
 
-### 8.3 3VL precedence: ONE rule — error dominates unknown
+**Scope note (settled 2026-06-10):** the precedence between UNKNOWN
+and ERROR operands is **per-op-class**, not global:
+
+  - **STRICT ops** (arithmetic, comparisons, every dispatched
+    function): **ERROR dominates UNKNOWN** across operands,
+    left-bias within each class; both-UNKNOWN merges.
+  - **LOGIC ops** (`_&&_`, `_||_`): the absorbing bool dominates
+    everything (`false && X = false`, `true || X = true`), then
+    **UNKNOWN dominates ERROR** — cel-cpp's
+    `LogicalOpStep::Calculate` (cel-cpp `eval/eval/logic_step.cc`)
+    merges unknowns BEFORE scanning for errors, because the
+    resolved unknown may later short-circuit the error away.
+    Oracle-pinned both orders for both ops
+    (`UnknownPayloadOracle.{And,Or}{UnknownLeftErrorRight,
+    ErrorLeftUnknownRight}IsUnknown`,
+    `testdata/cel_cpp_oracle_unknown_payload_test.cc`), plus the
+    absorbing-bool controls (`false && (1/0==1)` → false,
+    `true || (1/0==1)` → true, `unknown && false` → false).
+    Kernel aligned in `runtime/cel_3vl.c::{cel_and,cel_or}`
+    (truth-table pinned in `cel_3vl_test.cc`; e2e in
+    `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`).
 
 For a strict operation over an (unknown, error) operand pair, all
-three absorption implementations now carry the same precedence rule:
+three absorption implementations carry the same precedence rule:
 **ERROR dominates UNKNOWN across operands**, left-bias within each
 class. The rule is cel-cpp's: `NoOverloadResult`
 (cel-cpp `eval/eval/function_step.cc:202-223`) scans the args for an
@@ -559,9 +616,10 @@ contract.
 
 | layer | rule | citation |
 |---|---|---|
-| runtime kernel `absorb_3vl_binary` | error dominates (both ERROR checks precede both UNKNOWN checks), left-bias within each class | `runtime/cel_internal.h`; pinned both orders in `cel_arith_test.cc::{UnknownLeftErrorRightPropagatesError, ErrorLeftUnknownRightPropagatesError}` |
-| cel_host trampolines `AbsorbBinary` | error dominates — aligned to the kernel (it was first-operand-wins: UNKNOWN(a) beat ERROR(b)) | `eval/internal/cel_host_error.cc`; pinned both orders in `cel_host_error_test.cc::AbsorbBinaryTest` |
-| host-call trampoline `AbsorbUnknownOrErrorArg` | error dominates (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
+| runtime kernel `absorb_3vl_binary` (strict ops) | error dominates (both ERROR checks precede both UNKNOWN checks), left-bias within each class; both-UNKNOWN merges via `cel_unknown_merge` (§8.2) | `runtime/cel_internal.h`; pinned both orders in `cel_arith_test.cc::{UnknownLeftErrorRightPropagatesError, ErrorLeftUnknownRightPropagatesError}` |
+| cel_host trampolines `AbsorbBinary` (strict ops) | error dominates — aligned to the kernel (it was first-operand-wins: UNKNOWN(a) beat ERROR(b)) | `eval/internal/cel_host_error.cc`; pinned both orders in `cel_host_error_test.cc::AbsorbBinaryTest` |
+| host-call trampoline `AbsorbUnknownOrErrorArg` (strict: custom fns) | error dominates (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
+| runtime kernel `cel_and` / `cel_or` (logic ops) | absorbing bool > UNKNOWN (merged) > ERROR, left-bias within each class | `runtime/cel_3vl.c`; `cel_3vl_test.cc` 4×4 matrices |
 
 > **RESOLVED (V3, 2026-06-10):** the probe ran exactly as specified —
 > `testdata/cel_cpp_oracle_test.cc` gained
@@ -571,7 +629,10 @@ contract.
 > orders. The losing host-side `AbsorbBinary` was aligned;
 > `cel_host_error.h`'s self-contradicting comment was rewritten. The
 > kernel and `eval/engine.cc` were already correct and are unchanged.
-> Conformance held at 1966 in both modes.
+> Conformance held at 1966 in both modes. (The logic-op
+> UNKNOWN-over-ERROR scope note above was settled later the same
+> day, when the §8.2 probe surfaced the divergence; conformance held
+> at 1973/0 both modes through that fix.)
 
 ## 9. The component boundary (WIT vocabulary)
 
@@ -636,12 +697,14 @@ DYNAMIC; unknown `LinkMode` values parse and survive
 re-serialization (`cel_abi_emit_test.cc`); the empty-surface
 carve-out keeps versionless synthetic fixtures loading.
 
-**The §8.2 unknown fork is change-frozen** until V2 crowns a
-telling: do not "fix" one layer's `payload.unk` behavior to match
-another's without the probe verdict — that is how a second
-generation of the fork ships. (§8.1 and §8.3 were resolved
-2026-06-10 with the V3/V4 evidence recorded inline; the error wire
-and 3VL precedence are now settled contract.)
+**The §8.2 unknown wire is settled contract** (descriptor offset,
+shipped 2026-06-10 as one coordinated unit — host writers mint
+descriptors via `EncodeUnknownSet`, both readers dereference,
+`Value::Unknown` carries the set, `absorb_3vl_binary` merges).
+Any new unknown producer/consumer MUST speak the descriptor shape;
+a raw id in `payload.unk` re-opens the fork. (§8.1 and §8.3 were
+resolved 2026-06-10 with the V3/V4 evidence recorded inline; the
+error wire and both 3VL precedence rules are settled contract.)
 
 ## History
 

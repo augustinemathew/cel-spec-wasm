@@ -19,10 +19,10 @@
 #include <cstdint>
 #include <cstring>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -213,6 +213,54 @@ TEST_F(ArenaTest, OverflowingAllocRequestRejected) {
   // Cursor must not have advanced — a failing alloc must leave the
   // arena state untouched (A10).
   EXPECT_EQ(arena_cursor(), 8u);
+}
+
+// align_up_8 wraps to 0 for n in (UINT32_MAX-7, UINT32_MAX]; an
+// unguarded arena_alloc would then treat the near-4GiB request as an
+// 8-byte slot and hand out under-sized memory.  The guard rejects the
+// whole unalignable tail.
+TEST_F(ArenaTest, UnalignableTailAllocRequestRejected) {
+  arena_reset();
+  uint32_t cursor_before = arena_cursor();
+  for (uint32_t n = UINT32_MAX - 6u; n != 0u; ++n) {  // 7 values, wraps to 0
+    EXPECT_EQ(arena_alloc(n), 0u) << "n=" << n;
+  }
+  EXPECT_EQ(arena_alloc(UINT32_MAX), 0u);
+  EXPECT_EQ(arena_cursor(), cursor_before);
+}
+
+// ── Emergency OOM block (cel_arena.h) ──────────────────────────────
+
+TEST_F(ArenaTest, OomBlockReservedOutsideArenaAccounting) {
+  // The block exists, survives reset, and does not consume arena
+  // capacity (capacity still matches the design default — checked by
+  // CapacityMatchesDesignDefault — and a full drain still reaches the
+  // documented capacity, checked by AllocReturnsZeroWhenOutOfSpace).
+  ASSERT_NE(arena_oom_block(), 0u);
+  uint32_t blk = arena_oom_block();
+  arena_reset();
+  EXPECT_EQ(arena_oom_block(), blk);
+  // The block's bytes are addressable through cel_mem_base() like any
+  // arena offset.
+  uint8_t* p = cel_mem_base() + blk;
+  p[0] = 0x5A;
+  p[CELWASM_ARENA_OOM_BLOCK_BYTES - 1u] = 0xA5;
+  EXPECT_EQ((cel_mem_base() + blk)[0], 0x5A);
+}
+
+// No arena allocation may ever land inside the emergency block.
+TEST_F(ArenaTest, AllocationsNeverOverlapOomBlock) {
+  const uint32_t blk = arena_oom_block();
+  ASSERT_NE(blk, 0u);
+  arena_reset();
+  for (int i = 0; i < 64; ++i) {
+    uint32_t off = arena_alloc(64);
+    if (off == 0) break;
+    const bool overlaps =
+        off < blk + CELWASM_ARENA_OOM_BLOCK_BYTES && blk < off + 64u;
+    EXPECT_FALSE(overlaps) << "alloc at " << off << " overlaps block at "
+                           << blk;
+  }
 }
 
 // ── Capacity boundary (DESIGN §5 A10 — OOM returns 0, not partial) ─

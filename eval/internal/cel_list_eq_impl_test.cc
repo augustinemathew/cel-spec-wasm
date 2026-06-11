@@ -282,10 +282,12 @@ TEST(CelListEqImplTest, HostHostMessageListsCompare) {
 }
 
 TEST(CelListEqImplTest, ArenaArenaMessageListsCompare) {
-  // The runtime dispatcher short-circuits arena+arena in its own
-  // (scalar-only) fast path, but the normalized walk admits the
-  // pair too — the trampoline must not regress if dispatch routing
-  // changes.
+  // The runtime dispatcher's arena+arena fast path routes message
+  // element pairs to `cel_host.cel_message_eq` directly (see
+  // runtime/cel_runtime.c `deep_values_equal`), so production
+  // arena+arena lists normally don't reach this trampoline — but
+  // the normalized walk admits the pair too, and must produce the
+  // same verdicts if dispatch routing ever changes.
   Fixture f;
   HostMsg3 twin_i64;
   twin_i64.set_i64(1);

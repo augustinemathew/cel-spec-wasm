@@ -14,6 +14,13 @@
 //
 //   1. Prologue (runs once)
 //      - Eval iter_range → workspace slot, drop value.
+//      - Range 3VL absorption guard: if the range CelValue's kind
+//        is CEL_UNKNOWN / CEL_ERROR, copy it into accu_slot and
+//        branch past the prologue+loop region — the comprehension
+//        result IS the poison, no iteration (mirrors cel-cpp
+//        comprehension_step.cc's `result = std::move(range)`).
+//        Prologue + loop live in a named `comp_absorb_<expr_id>`
+//        block for this branch; the result expression still runs.
 //      - Either pre-size the accu (collection-accu shapes) via
 //        cel_list_create / cel_map_create with capacity =
 //        iter_range.count × per-iter-entry-count, OR copy the
@@ -214,12 +221,23 @@ struct CompContext {
   bool map_source = false;
   // Per-comp unique labels (suffixed by expr_id).  Nested same-name
   // comprehensions would otherwise trip Binaryen's visitLoop
-  // "iter != breakTypes.end()" check.
+  // "iter != breakTypes.end()" check.  `absorb_label` names the
+  // block wrapping prologue + loop; the range-absorption guard
+  // branches to it when iter_range is CEL_UNKNOWN / CEL_ERROR.
   std::string exit_label;
   std::string continue_label;
+  std::string absorb_label;
 
   uint32_t accu_slot() const {
     return accu_v->slot_offset;
+  }
+  // Storage of the iter_range's CelValue, reconstructed from the
+  // resolved source fields (only the two kinds
+  // ResolveCompSourceAddress accepts).  Lets the absorption guard
+  // route loads/copies through the storage-dispatching helpers.
+  Storage range_storage() const {
+    return source_via_local ? Storage{StorageKind::kLocal, source_local}
+                            : Storage{StorageKind::kWorkspaceSlot, source_slot};
   }
   bool two_iter() const {
     return iter_v2 != nullptr;
@@ -330,6 +348,7 @@ absl::StatusOr<CompContext> ResolveCompContext(
   CompContext c{};
   c.exit_label = absl::StrCat("comp_exit_", expr.id());
   c.continue_label = absl::StrCat("comp_continue_", expr.id());
+  c.absorb_label = absl::StrCat("comp_absorb_", expr.id());
   BindCompVariables(ctx, expr, comp, ann, &c);
 
   const auto* range_ann = ctx.layout.annotations.Find(comp.iter_range().id());
@@ -566,6 +585,48 @@ void EmitPresizeAccu(EmitCtx& ctx, const CompContext& c, bool is_map,
   instrs->push_back(BinaryenCall(mod, helper, args, 2, BinaryenTypeNone()));
 }
 
+// Range 3VL absorption guard.  A comprehension whose iter_range
+// evaluated to CEL_UNKNOWN or CEL_ERROR yields that value — no accu
+// init, no loop, no result recomputation from an identity (cel-cpp
+// routes kError / kUnknown ranges to `result = std::move(range)`;
+// third_party/cel-cpp/eval/eval/comprehension_step.cc:165-169 and
+// :350-354).  Emitted BEFORE any range-shape-specific prologue work
+// (cel_list_arena_view / cel_map_iter_init / accu pre-sizing), all
+// of which assume an iterable range and would otherwise turn the
+// poison into a zero-count walk — the empty-range-identity soundness
+// gap: exists→false, all→true, exists_one→false, map/filter→[].
+//
+// The poison is copied into the accu slot (kind + payload, so the
+// unknown's attribute id / the error's code survive) and the guard
+// branches past the prologue+loop region (`absorb_label`).  The
+// result expression still runs and reads it from there:
+// `@result`-shaped results (exists / all / map / filter /
+// transform*) directly, `exists_one`'s `@result == 1` via `_==_`'s
+// own 3VL absorption.  ERROR takes the same branch as UNKNOWN —
+// with a single operand each propagates itself, consistent with the
+// strict-call ERROR-dominates-UNKNOWN precedence
+// (doc/design/03-abi-and-memory.md §8.1).  Shape locked by
+// doc/implementation-plan/rewrite/wat/70_comprehension_unknown_range.wat.
+void EmitRangeAbsorptionGuard(EmitCtx& ctx, const CompContext& c,
+                              std::vector<BinaryenExpressionRef>* instrs) {
+  auto* mod = ctx.mod.raw();
+  const Storage range = c.range_storage();
+  // CelValue kind word at offset 0; CEL_UNKNOWN = 15, CEL_ERROR = 16
+  // (wire values pinned append-only by runtime/cel_data.h).
+  BinaryenExpressionRef poisoned =
+      BinaryenBinary(mod, BinaryenOrInt32(),
+                     LoadSlotI32Eq(ctx, range, /*offset=*/0, /*expected=*/15),
+                     LoadSlotI32Eq(ctx, range, /*offset=*/0, /*expected=*/16));
+  BinaryenExpressionRef absorb_body[2] = {
+      EmitCelCopySlot(ctx, Storage{StorageKind::kWorkspaceSlot, c.accu_slot()},
+                      range),
+      BinaryenBreak(mod, c.absorb_label.c_str(), nullptr, nullptr)};
+  instrs->push_back(BinaryenIf(
+      mod, poisoned,
+      BinaryenBlock(mod, /*name=*/nullptr, absorb_body, 2, BinaryenTypeNone()),
+      nullptr));
+}
+
 void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
                       const CompContext& c, BinaryenExpressionRef range_value,
                       BinaryenExpressionRef init_value,
@@ -573,6 +634,11 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
   auto* mod = ctx.mod.raw();
   instrs->push_back(BinaryenDrop(mod, range_value));
   instrs->push_back(BinaryenDrop(mod, init_value));
+  // The accu local binds BEFORE the absorption guard: `@result`
+  // reads in the result expression must resolve on both paths.
+  instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
+                                     I32Const(ctx.mod, c.accu_slot())));
+  EmitRangeAbsorptionGuard(ctx, c, instrs);
   const auto* init_ann = ctx.layout.annotations.Find(comp.accu_init().id());
   ABSL_CHECK(init_ann != nullptr);
   // For LIST sources, resolve the iter_range to an arena-shaped slot
@@ -607,8 +673,6 @@ void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
         ctx, Storage{StorageKind::kWorkspaceSlot, c.accu_slot()},
         init_ann->storage));
   }
-  instrs->push_back(BinaryenLocalSet(mod, c.accu_v->local_index,
-                                     I32Const(ctx.mod, c.accu_slot())));
   if (c.map_source) {
     EmitMapPrologue(ctx, c, instrs);
   } else {
@@ -1028,16 +1092,21 @@ absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
   if (!range_or.ok()) return range_or.status();
   auto init_or = Emit(ctx, comp.accu_init());
   if (!init_or.ok()) return init_or.status();
-  std::vector<BinaryenExpressionRef> instrs;
-  EmitCompPrologue(ctx, comp, c, *range_or, *init_or, &instrs);
+  // Prologue + loop form the guarded region the range-absorption
+  // guard branches past (see EmitRangeAbsorptionGuard); the result
+  // expression runs on both paths, after the named block.
+  std::vector<BinaryenExpressionRef> guarded;
+  EmitCompPrologue(ctx, comp, c, *range_or, *init_or, &guarded);
   auto loop_or = BuildCompLoop(ctx, expr, comp, c);
   if (!loop_or.ok()) return loop_or.status();
-  instrs.push_back(*loop_or);
+  guarded.push_back(*loop_or);
+  BinaryenExpressionRef guarded_block = BinaryenBlock(
+      ctx.mod.raw(), c.absorb_label.c_str(), guarded.data(),
+      static_cast<BinaryenIndex>(guarded.size()), BinaryenTypeNone());
   auto result_or = Emit(ctx, comp.result());
   if (!result_or.ok()) return result_or.status();
-  instrs.push_back(*result_or);
-  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs.data(),
-                       static_cast<BinaryenIndex>(instrs.size()),
+  BinaryenExpressionRef instrs[2] = {guarded_block, *result_or};
+  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, instrs, 2,
                        BinaryenTypeInt32());
 }
 

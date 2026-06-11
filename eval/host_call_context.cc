@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -111,10 +112,10 @@ absl::StatusOr<Header> ReadArenaHeader(const MemoryView& mem,
                                        uint32_t header_ptr) {
   absl::string_view bytes = mem.ReadSpan(header_ptr, sizeof(Header));
   if (bytes.size() != sizeof(Header)) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "arena header at offset ", header_ptr, " is truncated"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("arena header at offset ", header_ptr, " is truncated"));
   }
-  Header h;
+  Header h{};
   bytes.copy(reinterpret_cast<char*>(&h), sizeof(Header));
   return h;
 }
@@ -144,11 +145,12 @@ absl::StatusOr<std::vector<std::pair<Value, Value>>> DecodeArenaMapEntries(
   if (!hdr_or.ok()) return hdr_or.status();
   entries.reserve(hdr_or->count);
   for (uint32_t i = 0; i < hdr_or->count; ++i) {
-    const uint32_t entry_off = hdr_or->entries_offset + (i * kCelMapEntryStride);
+    const uint32_t entry_off =
+        hdr_or->entries_offset + (i * kCelMapEntryStride);
     auto k_or = DecodeCelValue(mem.ReadCelValue(entry_off), mem, refs);
     if (!k_or.ok()) return k_or.status();
-    auto v_or = DecodeCelValue(
-        mem.ReadCelValue(entry_off + sizeof(CelValue)), mem, refs);
+    auto v_or = DecodeCelValue(mem.ReadCelValue(entry_off + sizeof(CelValue)),
+                               mem, refs);
     if (!v_or.ok()) return v_or.status();
     entries.emplace_back(*std::move(k_or), *std::move(v_or));
   }
@@ -164,7 +166,9 @@ absl::StatusOr<Value> DecodeHostList(const ExternrefTable& refs,
   }
   std::vector<Value> elements;
   elements.reserve(backing->Size());
-  backing->ForEach([&elements](const Value& v) { elements.push_back(v); });
+  backing->ForEach([&elements](const Value& v) {
+    elements.push_back(v);
+  });
   return Value::List(std::move(elements));
 }
 
@@ -200,6 +204,46 @@ absl::StatusOr<Value> DecodeHostMessage(const ExternrefTable& refs,
   return Value::Message(*msg);
 }
 
+// Decode a CEL_UNKNOWN payload: `payload.unk` is 0 (the legal empty
+// UnknownSet) or a byte offset to a 2-word `{ids_off, len}` descriptor
+// whose id array carries every attribute identity the unknown merged
+// (doc/design/03-abi-and-memory.md §8.2).  Surfaces EVERY id — a
+// merged unknown must not collapse to one winner.
+absl::StatusOr<Value> DecodeUnknownSet(uint32_t desc_off,
+                                       const MemoryView& mem) {
+  if (desc_off == 0) return Value::Unknown(std::vector<AttributeId>{});
+  uint32_t desc[2];
+  const absl::string_view desc_bytes = mem.ReadSpan(desc_off, sizeof(desc));
+  if (desc_bytes.size() != sizeof(desc)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "CEL_UNKNOWN descriptor at offset ", desc_off, " is out of bounds"));
+  }
+  std::memcpy(desc, desc_bytes.data(), sizeof(desc));
+  const uint32_t ids_off = desc[0];
+  const uint32_t len = desc[1];
+  const uint64_t ids_bytes = uint64_t{len} * sizeof(uint32_t);
+  if (ids_bytes > std::numeric_limits<uint32_t>::max()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CEL_UNKNOWN descriptor at offset ", desc_off,
+                     " claims an impossible id count ", len));
+  }
+  const absl::string_view raw =
+      mem.ReadSpan(ids_off, static_cast<uint32_t>(ids_bytes));
+  if (raw.size() != ids_bytes) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CEL_UNKNOWN id array at offset ", ids_off, " (len ", len,
+                     ") is out of bounds"));
+  }
+  std::vector<AttributeId> attrs;
+  attrs.reserve(len);
+  for (uint32_t i = 0; i < len; ++i) {
+    uint32_t id = 0;
+    std::memcpy(&id, raw.data() + (uint64_t{i} * sizeof(uint32_t)), sizeof(id));
+    attrs.push_back(AttributeId{id});
+  }
+  return Value::Unknown(std::move(attrs));
+}
+
 absl::StatusOr<Value> DecodeCelValue(const CelValue& cv, const MemoryView& mem,
                                      const ExternrefTable& refs) {
   switch (cv.kind) {
@@ -222,12 +266,13 @@ absl::StatusOr<Value> DecodeCelValue(const CelValue& cv, const MemoryView& mem,
     case CEL_DURATION:
       return Value::Duration(DecodeDuration(cv.payload.dur));
     case CEL_TIMESTAMP:
-      return Value::Timestamp(absl::UnixEpoch() + DecodeDuration(cv.payload.ts));
+      return Value::Timestamp(absl::UnixEpoch() +
+                              DecodeDuration(cv.payload.ts));
     case CEL_TYPE:
       return Value::Type(
           std::string(mem.ReadSpan(cv.payload.s.ptr, cv.payload.s.len)));
     case CEL_UNKNOWN:
-      return Value::Unknown(AttributeId{cv.payload.unk});
+      return DecodeUnknownSet(cv.payload.unk, mem);
     case CEL_ERROR:
       return DecodeWireError(cv);
     case CEL_LIST_ARENA:
@@ -263,8 +308,8 @@ absl::StatusOr<Value> HostListView::At(size_t index) const {
     return backing_->At(index, CelType{});
   }
   if (index >= count_) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "list index ", index, " out of range [0, ", count_, ")"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("list index ", index, " out of range [0, ", count_, ")"));
   }
   const uint32_t off =
       elements_offset_ + (static_cast<uint32_t>(index) * kCelListEntryStride);
@@ -295,8 +340,8 @@ absl::StatusOr<std::vector<std::pair<Value, Value>>> ReadArenaMapEntries(
     const uint32_t entry_off = entries_offset + (i * kCelMapEntryStride);
     auto k_or = DecodeCelValue(mem.ReadCelValue(entry_off), mem, refs);
     if (!k_or.ok()) return k_or.status();
-    auto v_or = DecodeCelValue(
-        mem.ReadCelValue(entry_off + sizeof(CelValue)), mem, refs);
+    auto v_or = DecodeCelValue(mem.ReadCelValue(entry_off + sizeof(CelValue)),
+                               mem, refs);
     if (!v_or.ok()) return v_or.status();
     entries.emplace_back(*std::move(k_or), *std::move(v_or));
   }
@@ -332,8 +377,8 @@ absl::Status OutOfRange(int i, int n) {
       absl::StrCat("arg index ", i, " out of range [0, ", n, ")"));
 }
 absl::Status WrongKind(int i, absl::string_view want, uint32_t got) {
-  return absl::InvalidArgumentError(absl::StrCat(
-      "arg ", i, ": expected ", want, ", got ", WireKindName(got)));
+  return absl::InvalidArgumentError(absl::StrCat("arg ", i, ": expected ", want,
+                                                 ", got ", WireKindName(got)));
 }
 }  // namespace
 
@@ -485,8 +530,8 @@ absl::Status HostCallContext::ReturnDouble(double v) {
   return EncodeValueToSlot(Value::Double(v), out_slot_, mem_, refs_, arena_);
 }
 absl::Status HostCallContext::ReturnString(absl::string_view v) {
-  return EncodeValueToSlot(Value::String(std::string(v)), out_slot_, mem_, refs_,
-                           arena_);
+  return EncodeValueToSlot(Value::String(std::string(v)), out_slot_, mem_,
+                           refs_, arena_);
 }
 absl::Status HostCallContext::ReturnBytes(absl::string_view v) {
   return EncodeValueToSlot(Value::Bytes(std::string(v)), out_slot_, mem_, refs_,
@@ -517,12 +562,14 @@ absl::Status HostCallContext::ReturnMap(
 }
 
 absl::Status HostCallContext::ReturnUnknown() {
-  // Function-origin unknown: stamp the reserved sentinel directly,
-  // bypassing the shared encoder (whose backing-side contract forbids
-  // encoding kUnknown).
+  // Function-origin unknown: a 1-element UnknownSet descriptor
+  // carrying the reserved sentinel id (the descriptor wire shape is
+  // mandatory — a raw sentinel in `payload.unk` would be dereferenced
+  // as a descriptor offset by `cel_unknown_merge`).  Bypasses the
+  // shared encoder, whose backing-side contract forbids kUnknown.
   CelValue cv{};
-  cv.kind = CEL_UNKNOWN;
-  cv.payload.unk = kFunctionUnknownSentinel;
+  const uint32_t ids[] = {kFunctionUnknownSentinel};
+  if (auto s = EncodeUnknownSet(ids, arena_, &cv); !s.ok()) return s;
   mem_.WriteCelValue(out_slot_, cv);
   return absl::OkStatus();
 }
@@ -534,14 +581,19 @@ absl::Status HostCallContext::ReturnError(ErrorPayload payload) {
 
 absl::Status HostCallContext::ReturnValue(const Value& v) {
   if (v.IsUnknown()) {
-    // Preserve the attribute id verbatim (a function-origin sentinel
-    // round-trips unchanged; a propagated input unknown keeps its real
-    // id).  Written directly for the same reason as ReturnUnknown.
-    auto attr_or = v.UnknownAttribute();
-    if (!attr_or.ok()) return attr_or.status();
+    // Preserve the full attribute-id set (a function-origin sentinel
+    // round-trips unchanged; a propagated input unknown keeps its
+    // real ids).  Written directly for the same reason as
+    // ReturnUnknown.
+    auto attrs_or = v.UnknownAttributes();
+    if (!attrs_or.ok()) return attrs_or.status();
+    std::vector<uint32_t> ids;
+    ids.reserve(attrs_or->size());
+    for (const AttributeId& a : *attrs_or) {
+      ids.push_back(a.id);
+    }
     CelValue cv{};
-    cv.kind = CEL_UNKNOWN;
-    cv.payload.unk = attr_or->id;
+    if (auto s = EncodeUnknownSet(ids, arena_, &cv); !s.ok()) return s;
     mem_.WriteCelValue(out_slot_, cv);
     return absl::OkStatus();
   }

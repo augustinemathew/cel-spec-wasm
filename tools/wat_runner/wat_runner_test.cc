@@ -1155,6 +1155,29 @@ TEST(WatRunnerM14Test, OptionalOfNonZeroOnNonZeroMessageProducesSome) {
       << "ofNonZeroValue(<non-zero message>) is Some ⇒ hasValue() true";
 }
 
+// 70_comprehension_unknown_range.wat — the comprehension prologue's
+// range-absorption guard (cleanup-backlog #14).  The data segment
+// seeds xs's slot with {CEL_UNKNOWN, payload.unk=7}; the guard must
+// copy the poison into the accu and skip the loop, so the result is
+// the unknown itself — never the `exists` identity {CEL_BOOL, false}.
+// Pure runtime path (cel_copy_slot / cel_list_arena_view bind from
+// cel_runtime.wasm); no host stubs.
+TEST(WatRunnerComprehensionTest, UnknownRangeAbsorbsIntoResult) {
+  auto wat = LoadWat("70_comprehension_unknown_range.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 88u);  // accu slot
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, static_cast<uint32_t>(CEL_UNKNOWN))
+      << "exists over an unknown range must be the unknown, not the "
+         "empty-range identity false";
+  EXPECT_EQ(cv.payload.unk, 7u)
+      << "the unknown's payload (attribute id) must survive the copy";
+}
+
 TEST(WatRunnerM14Test, ListAppendIfPresentMixedSomeNoneProducesCountOne) {
   auto wat = LoadWat("m14_list_append_if_present.wat");
   ASSERT_THAT(wat, IsOk());

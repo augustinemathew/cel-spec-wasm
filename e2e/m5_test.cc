@@ -29,18 +29,18 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
-#include "compiler/compiler.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/e2e_fixture.pb.h"
 #include "google/protobuf/message.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {
@@ -57,8 +57,8 @@ using ::celwasm::testdata::Customer;
     }();
 
 // One Engine for the whole binary — wasmtime config (tail-calls,
-// runtime module load) is shared across all Plans.
-using ::celwasm::e2e::GlobalEngine;
+// runtime module load) is shared across all Plans (see
+// e2e/link_mode_e2e_helpers.h::GlobalEngine, used via CompilePlan).
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -810,43 +810,49 @@ TEST_F(ControlFlowUnknownE2ETest, TernaryUnknownCondPropagatesUnknown) {
   EXPECT_TRUE(v->IsUnknown());
 }
 
-// Note: a both-UNKNOWN merge e2e case is intentionally absent here.
-// The merge correctness invariant (sorted, dedup) is fully covered
-// at the runtime unit level in `cel_3vl_test.cc::UnknownMerge*`.
-// An end-to-end version would require both operands to land at
-// `cel_unknown_merge` with the same `payload.unk` wire shape, which
-// the v2 codepath doesn't currently produce uniformly.
+// Note: the both-UNKNOWN merge e2e cases (decoded result carries
+// BOTH attribute identities) live in
+// `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`; the
+// merge's sorted/dedup invariant is unit-pinned in
+// `cel_3vl_test.cc::UnknownMerge*`.
 
 // ──────────────────────────────────────────────────────────────
-//  ControlFlowUnknownErrorPrecedenceE2ETest — ERROR > UNKNOWN
-//  dominance per langdef §"Errors and unknowns".  Both operand
-//  orderings, both `_&&_` / `_||_`.
+//  ControlFlowUnknownErrorPrecedenceE2ETest — UNKNOWN > ERROR for
+//  the LOGIC ops, both operand orderings, both `_&&_` / `_||_`.
+//  cel-cpp's `LogicalOpStep::Calculate` (eval/eval/logic_step.cc)
+//  merges unknowns BEFORE scanning for errors — the resolved
+//  unknown may short-circuit the error away — and the oracle pins
+//  it empirically (UnknownPayloadOracle.{And,Or}{UnknownLeft
+//  ErrorRight,ErrorLeftUnknownRight}IsUnknown,
+//  testdata/cel_cpp_oracle_unknown_payload_test.cc).  This is the
+//  OPPOSITE of the strict-op rule (error dominates), which langdef
+//  leaves unspecified and cel-cpp settles.
 // ──────────────────────────────────────────────────────────────
 
 class ControlFlowUnknownErrorPrecedenceE2ETest : public ::testing::Test {};
 
-TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, ErrorOverUnknownInAnd) {
+TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, UnknownOverErrorInAndErrLeft) {
   auto v = EvalUnknown("(1/0 == 1) && (c.age == 0)", "c.age");
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_TRUE(v->IsError());
+  EXPECT_TRUE(v->IsUnknown());
 }
 
 TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, UnknownOverErrorInAnd) {
   auto v = EvalUnknown("(c.age == 0) && (1/0 == 1)", "c.age");
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_TRUE(v->IsError());
+  EXPECT_TRUE(v->IsUnknown());
 }
 
-TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, ErrorOverUnknownInOr) {
+TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, UnknownOverErrorInOrErrLeft) {
   auto v = EvalUnknown("(1/0 == 1) || (c.age == 0)", "c.age");
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_TRUE(v->IsError());
+  EXPECT_TRUE(v->IsUnknown());
 }
 
 TEST_F(ControlFlowUnknownErrorPrecedenceE2ETest, UnknownOverErrorInOr) {
   auto v = EvalUnknown("(c.age == 0) || (1/0 == 1)", "c.age");
   ASSERT_TRUE(v.ok()) << v.status();
-  EXPECT_TRUE(v->IsError());
+  EXPECT_TRUE(v->IsUnknown());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1506,7 +1512,8 @@ class MessageEqualityE2ETest : public ::testing::Test {
 TEST_F(MessageEqualityE2ETest, EmptyMessagesAreEqual) {
   auto compiler = CompilerWithTwoCustomers();
   ASSERT_THAT(compiler, IsOk());
-  Customer a, b;
+  Customer a;
+  Customer b;
   Activation act;
   act.Bind("c1", Value::Message(a));
   act.Bind("c2", Value::Message(b));

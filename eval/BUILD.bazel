@@ -70,6 +70,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -626,6 +627,24 @@ cc_test(
         "//runtime:cel_runtime",
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Layer 2 trampoline bodies for cel_host.cel_list_iter_open /
+# cel_host.cel_map_iter_open — the comprehension iter snapshots,
+# incl. the loud-failure tripwire for CEL_UNKNOWN / CEL_ERROR ranges
+# (the codegen range-absorption guard must propagate those first).
+cc_test(
+    name = "cel_iter_open_impl_test",
+    srcs = ["internal/cel_iter_open_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":value",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

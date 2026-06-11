@@ -47,6 +47,11 @@ typedef struct {
 
 static CelArena g_arena = {0, 0, 0, 0, 0};
 
+// Emergency poison block (see cel_arena.h).  Reserved once per
+// Instance at arena_init, OUTSIDE the resettable chunk chain, so it
+// survives arena_reset and stays addressable when arena_alloc OOMs.
+static uint32_t g_oom_block = 0;
+
 // Minimum follow-on chunk size — keeps malloc count bounded for
 // tiny embedders without over-allocating large chunks up front.
 #define CEL_ARENA_MIN_GROW_BYTES 4096u
@@ -108,21 +113,31 @@ void arena_init(uint32_t cap_bytes) {
   g_arena.head = c;
   g_arena.tail = c;
   g_arena.total_cap = cap_bytes;
+  // Emergency poison block: a separate dlmalloc allocation whose
+  // absolute offset works exactly like an arena_alloc return value.
+  // Reserved here — before any per-Eval allocation can exhaust
+  // memory — so OOM paths can still vend a poisoned value.
+  void* oom = malloc((size_t)CELWASM_ARENA_OOM_BLOCK_BYTES);
+  g_oom_block = oom != NULL ? (uint32_t)(uintptr_t)oom : 0u;
+  if (oom != NULL) memset(oom, 0, (size_t)CELWASM_ARENA_OOM_BLOCK_BYTES);
 #else
   // native build: there is no shared linear memory.  Tests address
   // CelValues via `cel_mem_base() + offset`, so the arena MUST be
-  // backed by the same buffer cel_mem_base() returns.  Use the
-  // [16, cap_bytes+16) slice of g_memory[] (offset 16 leaves the
-  // null sentinel + the legacy cursor slot bytes 8/12 untouched, in
-  // case anything still pokes there during the migration).  The
-  // native build does NOT chain — there's no real linear memory to
-  // grow into, and tests use bounded fixtures.
-  if (16u + cap_bytes > cel_memory_size_()) {
+  // backed by the same buffer cel_mem_base() returns.  Bytes [0, 16)
+  // stay reserved (null sentinel + the legacy cursor slot bytes
+  // 8/12); the emergency poison block takes the next
+  // CELWASM_ARENA_OOM_BLOCK_BYTES; the arena proper starts after it.
+  // The native build does NOT chain — there's no real linear memory
+  // to grow into, and tests use bounded fixtures.
+  const uint32_t kNativeBlockOff = 16u;
+  const uint32_t kNativeArenaOff = 16u + CELWASM_ARENA_OOM_BLOCK_BYTES;
+  if (kNativeArenaOff + cap_bytes > cel_memory_size_()) {
     return;  // can't fit; leave g_arena zero so alloc returns 0
   }
   CelArenaChunk* c = (CelArenaChunk*)malloc(sizeof(CelArenaChunk));
   if (c == NULL) return;
-  c->base = cel_memory_base_() + 16u;
+  g_oom_block = kNativeBlockOff;
+  c->base = cel_memory_base_() + kNativeArenaOff;
   c->capacity = cap_bytes;
   c->cursor = 0;
   c->next = NULL;
@@ -150,6 +165,10 @@ static uint32_t pick_grow_size(uint32_t prev_capacity,
 
 uint32_t arena_alloc(uint32_t n) {
   CEL_LOG("enter");
+  // align_up_8 wraps to 0 for n in (UINT32_MAX-7, UINT32_MAX], which
+  // would silently turn a near-4GiB request into an 8-byte slot.
+  // Reject the unalignable tail outright — it can never be satisfied.
+  if (n > UINT32_MAX - 7u) return 0;
   uint32_t need = align_up_8(n);
   if (need == 0) need = 8u;  // A9: alloc(0) returns a valid 8-byte slot
   // A16 ('init exactly once per Instance') corollary: arena_alloc
@@ -192,11 +211,15 @@ uint32_t arena_alloc(uint32_t n) {
   // linear memory), so the return value must be the absolute offset.
   return (uint32_t)(uintptr_t)p;
 #else
-  // Native build: base = `g_memory + 16` (see arena_init).
-  // cel_mem_base() returns `&g_memory[0]`, so the return value must be
-  // `16 + local_off` to satisfy the contract.
-  return 16u + local_off;
+  // Native build: base = `g_memory + 16 + OOM block` (see arena_init).
+  // cel_mem_base() returns `&g_memory[0]`, so the return value must
+  // mirror that base offset to satisfy the contract.
+  return 16u + CELWASM_ARENA_OOM_BLOCK_BYTES + local_off;
 #endif
+}
+
+uint32_t arena_oom_block(void) {
+  return g_oom_block;
 }
 
 void arena_reset(void) {

@@ -3,13 +3,13 @@
 #include <cstdint>
 #include <vector>
 
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 
 // M5.G — 3VL / control-flow helper coverage.  The 4×4 truth tables
 // for cel_and / cel_or factor naturally into a parameterised matrix:
@@ -23,7 +23,7 @@
 namespace celwasm {
 namespace {
 
-enum class OpKind {
+enum class OpKind : std::uint8_t {
   kBoolFalse,
   kBoolTrue,
   kError,
@@ -66,12 +66,13 @@ class ThreeVLTest : public ::testing::Test {
   }
 
   uint32_t MakeUnknownWithIds(const std::vector<uint32_t>& ids) {
-    uint32_t bytes = static_cast<uint32_t>(ids.size() * sizeof(uint32_t));
+    auto bytes = static_cast<uint32_t>(ids.size() * sizeof(uint32_t));
     if (bytes == 0) bytes = static_cast<uint32_t>(sizeof(uint32_t));
     uint32_t ids_off = arena_alloc(bytes);
     auto* dst = reinterpret_cast<uint32_t*>(cel_mem_base() + ids_off);
-    for (size_t i = 0; i < ids.size(); ++i)
+    for (size_t i = 0; i < ids.size(); ++i) {
       dst[i] = ids[i];
+    }
 
     uint32_t desc_off =
         arena_alloc(static_cast<uint32_t>(2 * sizeof(uint32_t)));
@@ -109,27 +110,32 @@ class ThreeVLTest : public ::testing::Test {
     uint32_t ids_off = desc[0];
     uint32_t len = desc[1];
     auto* ids = reinterpret_cast<const uint32_t*>(cel_mem_base() + ids_off);
-    return std::vector<uint32_t>(ids, ids + len);
+    return {ids, ids + len};
   }
 };
 
 // ── 4×4 truth-table matrices for cel_and / cel_or ─────────────────
 //
-// Per langdef §"Logical operators", the truth table is:
+// Per langdef §"Logical Operators" (absorbing bool dominates any X)
+// plus cel-cpp's logic-op precedence (UNKNOWN > ERROR — cel-cpp
+// eval/eval/logic_step.cc merges unknowns BEFORE scanning for
+// errors; oracle-pinned by UnknownPayloadOracle.{And,Or}{UnknownLeft
+// ErrorRight,ErrorLeftUnknownRight}IsUnknown in
+// testdata/cel_cpp_oracle_unknown_payload_test.cc), the truth table:
 //
-//   cel_and    | F(false) | T(true) | ERROR  | UNKNOWN
-//   -----------+----------+---------+--------+--------
-//   F(false)   |  F       |  F      |  F     |  F
-//   T(true)    |  F       |  T      |  ERROR |  UNKNOWN
-//   ERROR      |  F       |  ERROR  |  ERROR |  ERROR
-//   UNKNOWN    |  F       |  UNKNOWN|  ERROR |  UNKNOWN
+//   cel_and    | F(false) | T(true) | ERROR   | UNKNOWN
+//   -----------+----------+---------+---------+--------
+//   F(false)   |  F       |  F      |  F      |  F
+//   T(true)    |  F       |  T      |  ERROR  |  UNKNOWN
+//   ERROR      |  F       |  ERROR  |  ERROR  |  UNKNOWN
+//   UNKNOWN    |  F       |  UNKNOWN|  UNKNOWN|  UNKNOWN
 //
-//   cel_or     | F        | T       | ERROR  | UNKNOWN
-//   -----------+----------+---------+--------+--------
-//   F          |  F       |  T      |  ERROR |  UNKNOWN
-//   T          |  T       |  T      |  T     |  T
-//   ERROR      |  ERROR   |  T      |  ERROR |  ERROR
-//   UNKNOWN    |  UNKNOWN |  T      |  ERROR |  UNKNOWN
+//   cel_or     | F        | T       | ERROR   | UNKNOWN
+//   -----------+----------+---------+---------+--------
+//   F          |  F       |  T      |  ERROR  |  UNKNOWN
+//   T          |  T       |  T      |  T      |  T
+//   ERROR      |  ERROR   |  T      |  ERROR  |  UNKNOWN
+//   UNKNOWN    |  UNKNOWN |  T      |  UNKNOWN|  UNKNOWN
 
 struct LogicCase {
   const char* name;
@@ -173,11 +179,11 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"E_F", OpKind::kError, OpKind::kBoolFalse, CEL_BOOL, false},
         LogicCase{"E_T", OpKind::kError, OpKind::kBoolTrue, CEL_ERROR, false},
         LogicCase{"E_E", OpKind::kError, OpKind::kError, CEL_ERROR, false},
-        LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_ERROR, false},
+        LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_UNKNOWN, false},
         LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_BOOL, false},
         LogicCase{"U_T", OpKind::kUnknown, OpKind::kBoolTrue, CEL_UNKNOWN,
                   false},
-        LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_ERROR, false},
+        LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_UNKNOWN, false},
         LogicCase{"U_U", OpKind::kUnknown, OpKind::kUnknown, CEL_UNKNOWN,
                   false}));
 
@@ -213,11 +219,11 @@ INSTANTIATE_TEST_SUITE_P(
         LogicCase{"E_F", OpKind::kError, OpKind::kBoolFalse, CEL_ERROR, false},
         LogicCase{"E_T", OpKind::kError, OpKind::kBoolTrue, CEL_BOOL, true},
         LogicCase{"E_E", OpKind::kError, OpKind::kError, CEL_ERROR, false},
-        LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_ERROR, false},
+        LogicCase{"E_U", OpKind::kError, OpKind::kUnknown, CEL_UNKNOWN, false},
         LogicCase{"U_F", OpKind::kUnknown, OpKind::kBoolFalse, CEL_UNKNOWN,
                   false},
         LogicCase{"U_T", OpKind::kUnknown, OpKind::kBoolTrue, CEL_BOOL, true},
-        LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_ERROR, false},
+        LogicCase{"U_E", OpKind::kUnknown, OpKind::kError, CEL_UNKNOWN, false},
         LogicCase{"U_U", OpKind::kUnknown, OpKind::kUnknown, CEL_UNKNOWN,
                   false}));
 
@@ -288,6 +294,45 @@ TEST_F(ThreeVLTest, OrBothUnknownMergesIds) {
   uint32_t out = MakeOut();
   cel_or(out, a, b);
   EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(5u, 10u, 20u, 30u));
+}
+
+// ── UNKNOWN-vs-ERROR: the unknown wins and keeps its id set ───────
+//
+// Logic-op precedence (cel-cpp eval/eval/logic_step.cc; oracle pins
+// UnknownPayloadOracle.{And,Or}{UnknownLeftErrorRight,
+// ErrorLeftUnknownRight}IsUnknown): the surviving UNKNOWN must carry
+// its descriptor verbatim, in both operand orders.
+
+TEST_F(ThreeVLTest, AndUnknownLeftErrorRightKeepsUnknownIds) {
+  uint32_t a = MakeUnknownWithIds({3, 7});
+  uint32_t b = MakeError();
+  uint32_t out = MakeOut();
+  cel_and(out, a, b);
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(3u, 7u));
+}
+
+TEST_F(ThreeVLTest, AndErrorLeftUnknownRightKeepsUnknownIds) {
+  uint32_t a = MakeError();
+  uint32_t b = MakeUnknownWithIds({3, 7});
+  uint32_t out = MakeOut();
+  cel_and(out, a, b);
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(3u, 7u));
+}
+
+TEST_F(ThreeVLTest, OrUnknownLeftErrorRightKeepsUnknownIds) {
+  uint32_t a = MakeUnknownWithIds({9});
+  uint32_t b = MakeError();
+  uint32_t out = MakeOut();
+  cel_or(out, a, b);
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(9u));
+}
+
+TEST_F(ThreeVLTest, OrErrorLeftUnknownRightKeepsUnknownIds) {
+  uint32_t a = MakeError();
+  uint32_t b = MakeUnknownWithIds({9});
+  uint32_t out = MakeOut();
+  cel_or(out, a, b);
+  EXPECT_THAT(ReadUnknownIds(out), ::testing::ElementsAre(9u));
 }
 
 // ── cel_not ─────────────────────────────────────────────────────

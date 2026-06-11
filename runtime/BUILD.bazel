@@ -262,6 +262,24 @@ cc_test(
 )
 
 cc_test(
+    name = "cel_deep_eq_test",
+    srcs = ["cel_deep_eq_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_oom_poison_test",
+    srcs = ["cel_oom_poison_test.cc"],
+    deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "cel_arith_test",
     srcs = ["cel_arith_test.cc"],
     deps = [

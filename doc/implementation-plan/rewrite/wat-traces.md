@@ -2624,6 +2624,75 @@ Memory layout:
 Expected results: stub writes BOOL true (zero message) → None →
 `hasValue()` false; stub writes BOOL false → Some → true.
 
+## 70. `xs.exists(e, e > 0)` with an UNKNOWN range — comprehension range absorption (cleanup-backlog #14)
+
+File: `wat/70_comprehension_unknown_range.wat`.  Status: assembles
+under `wasm-as`; runs end-to-end through `tools/wat_runner` against
+the real `cel_runtime.wasm`, no host stubs
+(`wat_runner_test.cc::WatRunnerComprehensionTest.UnknownRangeAbsorbsIntoResult`).
+
+Locks the 3VL absorption guard every comprehension prologue emits
+on the iter_range value, BEFORE any range-shape-specific setup
+(`cel_list_arena_view` / `cel_map_iter_init` / accu pre-sizing):
+
+```
+(if (i32.or (i32.eq (i32.load <range_addr>) (i32.const 15))   ;; CEL_UNKNOWN
+            (i32.eq (i32.load <range_addr>) (i32.const 16)))  ;; CEL_ERROR
+  (then (call $cel_copy_slot <accu_slot> <range_addr>)
+        (br $comp_absorb_<expr_id>)))
+```
+
+Semantics (cel-cpp parity — `ComprehensionDirectStep::Evaluate1/2`,
+`third_party/cel-cpp/eval/eval/comprehension_step.cc:165-169` and
+`:350-354`, empirically pinned per macro by
+`testdata/cel_cpp_oracle_comprehension_test.cc`): a comprehension
+whose range is ERROR or UNKNOWN yields that value — `result =
+std::move(range)`, no accu init, no loop body.  Without the guard
+the host iter-open path turned the poison into a zero-count view
+and the macro identity leaked out (exists→false, all→true,
+exists_one→false, map/filter→[]) — a silently wrong answer under
+partial evaluation.
+
+Invariants the shape locks:
+
+  1. **Guard precedes all iterate-path work.**  `cel_list_arena_view`
+     and the pre-size count loads assume an iterable range; the
+     guard fires before either can read a poisoned payload.
+  2. **Absorption flows through the accu slot** (a full
+     `cel_copy_slot`, so the unknown's attribute id / error code
+     survive).  The result expression still runs on both paths:
+     `@result`-shaped results read the poison directly;
+     `exists_one`'s `@result == 1` absorbs it via `_==_`.
+  3. **Prologue + loop live in the named `$comp_absorb_<expr_id>`
+     block**; the guard's br lands immediately before the result
+     expression.  The accu wasm local is set before the guard so
+     `@result` resolves on both paths.
+  4. **Trampoline tripwire.**  `CelListIterOpenImpl` /
+     `CelMapIterOpenImpl` (eval/internal/cel_host.cc) now return
+     FailedPrecondition on a CEL_UNKNOWN / CEL_ERROR input instead
+     of writing an empty view — if the guard ever regresses, the
+     eval fails loudly instead of producing the identity.
+
+Memory layout:
+
+```
+[ 0, 16)   reserved
+[16, 40)   workspace: xs slot — data-seeded {CEL_UNKNOWN, unk=7}
+           (emulates the partial-eval marshal blanking the slot;
+           under the §8.2 descriptor contract payload.unk is an
+           UnknownSet-descriptor OFFSET — 7 here is a synthetic
+           opaque payload the guard copies verbatim and nothing in
+           this trace dereferences)
+[40, 64)   rodata: rhs of `e > 0` = {CEL_INT, i=0}
+[64, 88)   rodata: accu_init = {CEL_BOOL, b=false}
+[88,112)   workspace: accu_slot (@result — the returned slot)
+[112,136)  workspace: step_out scratch
+```
+
+Expected result: eval returns 88; the CelValue there is
+{CEL_UNKNOWN, payload.unk=7} — payload byte-identical to the seeded
+range value.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool
@@ -2633,8 +2702,10 @@ Expected results: stub writes BOOL true (zero message) → None →
     output slots.
   - `c.name` under `PartialEval` with unknowns — M2.E; runtime
     trampoline matches `attribute_id` against the pattern set and
-    writes `{CEL_UNKNOWN, attribute_id}` to out_slot instead of
-    descending the proto.
+    writes `{CEL_UNKNOWN, payload.unk = <offset of a 1-element
+    UnknownSet descriptor carrying attribute_id>}` to out_slot
+    instead of descending the proto (the §8.2 descriptor wire,
+    doc/design/03-abi-and-memory.md).
   - `x + y` — M5 kCall arithmetic; same shape as example 3 with
     the `unreachable` replaced by `cel_int_add_at_vv`.
   - `[1, 2, 3].map(x, x * 2)` — M5; extends example 5 with a new

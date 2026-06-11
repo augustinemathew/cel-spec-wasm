@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -67,10 +68,13 @@ TEST(ValueTest, EmptyStringRoundTrips) {
 }
 
 TEST(ValueTest, BytesRoundTrips) {
-  auto v = Value::Bytes("\x00\x01\x02");
+  // Explicit-length construction: a bare "\x00..." literal would
+  // truncate at the embedded NUL.
+  const std::string payload("\x00\x01\x02", 3);
+  auto v = Value::Bytes(payload);
   EXPECT_EQ(v.kind(), Value::Kind::kBytes);
   // Bytes stored as std::string; AsBytes tags-guarded.
-  EXPECT_THAT(v.AsBytes(), IsOkAndHolds("\x00\x01\x02"));
+  EXPECT_THAT(v.AsBytes(), IsOkAndHolds(payload));
 }
 
 TEST(ValueTest, StringAndBytesDoNotCrossAccessors) {
@@ -103,6 +107,65 @@ TEST(ValueTest, UnknownCarriesAttributeId) {
   EXPECT_TRUE(v.IsUnknown());
   EXPECT_FALSE(v.IsError());
   EXPECT_THAT(v.UnknownAttribute(), IsOkAndHolds(AttributeId{7}));
+  // The single-id factory builds a 1-element set.
+  ASSERT_TRUE(v.UnknownAttributes().ok());
+  EXPECT_THAT(*v.UnknownAttributes(), ::testing::ElementsAre(AttributeId{7}));
+}
+
+TEST(ValueTest, UnknownSetCarriesAllAttributeIds) {
+  auto v =
+      Value::Unknown(std::vector<AttributeId>{AttributeId{9}, AttributeId{2}});
+  EXPECT_TRUE(v.IsUnknown());
+  ASSERT_TRUE(v.UnknownAttributes().ok());
+  // Canonical form: sorted ascending.
+  EXPECT_THAT(*v.UnknownAttributes(),
+              ::testing::ElementsAre(AttributeId{2}, AttributeId{9}));
+}
+
+TEST(ValueTest, UnknownSetDeduplicates) {
+  auto v = Value::Unknown(
+      std::vector<AttributeId>{AttributeId{4}, AttributeId{4}, AttributeId{1}});
+  ASSERT_TRUE(v.UnknownAttributes().ok());
+  EXPECT_THAT(*v.UnknownAttributes(),
+              ::testing::ElementsAre(AttributeId{1}, AttributeId{4}));
+}
+
+TEST(ValueTest, UnknownAttributeOnMultiIdSetIsFailedPrecondition) {
+  auto v =
+      Value::Unknown(std::vector<AttributeId>{AttributeId{1}, AttributeId{2}});
+  // The single-id accessor refuses to pick a winner from a merged
+  // set — that would silently drop provenance.
+  EXPECT_THAT(v.UnknownAttribute(),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       HasSubstr("UnknownAttributes()")));
+}
+
+TEST(ValueTest, UnknownAccessorsOnWrongKindAreInvalidArgument) {
+  EXPECT_THAT(Value::Int(1).UnknownAttributes(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(Value::Int(1).UnknownAttribute(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ValueTest, UnknownEmptySetIsLegal) {
+  auto v = Value::Unknown(std::vector<AttributeId>{});
+  EXPECT_TRUE(v.IsUnknown());
+  ASSERT_TRUE(v.UnknownAttributes().ok());
+  EXPECT_TRUE(v.UnknownAttributes()->empty());
+  EXPECT_THAT(v.UnknownAttribute(),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+}
+
+TEST(ValueTest, UnknownStructuralEqualityIsSetEquality) {
+  auto ab =
+      Value::Unknown(std::vector<AttributeId>{AttributeId{1}, AttributeId{2}});
+  auto ba =
+      Value::Unknown(std::vector<AttributeId>{AttributeId{2}, AttributeId{1}});
+  EXPECT_TRUE(ab.StructurallyEquals(ba));  // order-insensitive
+  auto ac =
+      Value::Unknown(std::vector<AttributeId>{AttributeId{1}, AttributeId{3}});
+  EXPECT_FALSE(ab.StructurallyEquals(ac));
+  EXPECT_FALSE(ab.StructurallyEquals(Value::Unknown(AttributeId{1})));
 }
 
 TEST(ValueTest, ErrorCarriesPayload) {

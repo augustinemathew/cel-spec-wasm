@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -272,6 +273,47 @@ Value DecodeCelError(const CelValue& cv) {
   return Value::Error(std::move(p));
 }
 
+// Decode a CEL_UNKNOWN payload: `payload.unk` is 0 (the legal empty
+// UnknownSet) or a byte offset to a 2-word `{ids_off, len}` descriptor
+// whose id array carries every attribute identity the unknown merged
+// (doc/design/03-abi-and-memory.md §8.2).  The descriptor lives in the
+// guest bump arena (in-eval writers) or the activation buffer (the
+// marshal); both survive until this post-Eval decode — the arena is
+// rewound only by the NEXT $eval's prelude.
+absl::StatusOr<Value> DecodeUnknownSetAt(wasmtime_context_t* ctx,
+                                         wasmtime_sharedmemory_t* mem,
+                                         uint32_t desc_off) {
+  if (desc_off == 0) {
+    return Value::Unknown(std::vector<celwasm::AttributeId>{});
+  }
+  uint32_t desc[2] = {0, 0};
+  if (auto s = ReadMemBytes(ctx, mem, desc_off, sizeof(desc), desc); !s.ok()) {
+    return s;
+  }
+  const uint32_t ids_off = desc[0];
+  const uint32_t len = desc[1];
+  std::vector<uint32_t> ids(len);
+  if (len > 0) {
+    const uint64_t ids_bytes = uint64_t{len} * sizeof(uint32_t);
+    if (ids_bytes > std::numeric_limits<uint32_t>::max()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("CEL_UNKNOWN descriptor at offset ", desc_off,
+                       " claims an impossible id count ", len));
+    }
+    if (auto s = ReadMemBytes(ctx, mem, ids_off,
+                              static_cast<uint32_t>(ids_bytes), ids.data());
+        !s.ok()) {
+      return s;
+    }
+  }
+  std::vector<celwasm::AttributeId> attrs;
+  attrs.reserve(len);
+  for (uint32_t id : ids) {
+    attrs.push_back(celwasm::AttributeId{id});
+  }
+  return Value::Unknown(std::move(attrs));
+}
+
 // Decode a 24-byte CelValue at `offset` in linear memory into a
 // `celwasm::Value`.  Covers scalars, null, arena maps/lists, and
 // host-backed list / map arms (via the per-Instance ExternrefTable
@@ -319,11 +361,12 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
     case CEL_MESSAGE:
       return DecodeHostMessageAt(refs, cv.payload.msg_slot);
     case CEL_UNKNOWN:
-      // PartialEval surfaces CEL_UNKNOWN with the attribute_id
-      // stamped in payload.unk.  Reconstruct an AttributeId
-      // carrying that wire id; embedders compare it against the
-      // slot they queried via PartialEval.
-      return Value::Unknown(celwasm::AttributeId{cv.payload.unk});
+      // PartialEval surfaces CEL_UNKNOWN with `payload.unk` carrying
+      // an UnknownSet-descriptor offset (doc/design/03-abi-and-memory.md
+      // §8.2).  Dereference it and surface EVERY merged attribute id;
+      // embedders compare them against the attributes they marked
+      // unknown via PartialEval.
+      return DecodeUnknownSetAt(ctx, mem, cv.payload.unk);
     case CEL_ERROR:
       return DecodeCelError(cv);
     case CEL_TYPE: {
@@ -1042,6 +1085,61 @@ std::optional<uint32_t> BareVariableUnknownId(
   return 0u;
 }
 
+// Bytes the activation buffer reserves per fully-unknown variable:
+// the 2-word `{ids_off, len}` UnknownSet descriptor plus one u32
+// attribute id, padded to the 8-byte cursor discipline the string
+// encoder uses.
+constexpr uint32_t kUnknownDescriptorBytes = 16;
+
+// Count the declared variables a FULL unknown pattern blanks — the
+// activation-buffer pre-pass budgets `kUnknownDescriptorBytes` for
+// each (mirrors TotalHostStringBytes for string payloads).
+uint32_t CountUnknownVariables(const celwasm::abi::CelAbi& abi,
+                               const celwasm::CelHostBindings& bindings) {
+  if (bindings.unknown_patterns.empty()) return 0;
+  uint32_t n = 0;
+  for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
+    if (BareVariableUnknownId(bindings, dv.name()).has_value()) ++n;
+  }
+  return n;
+}
+
+// Write a fully-unknown variable's CelValue: CEL_UNKNOWN whose
+// `payload.unk` is a 1-element UnknownSet descriptor carrying
+// `attr_id` (doc/design/03-abi-and-memory.md §8.2 — never the raw
+// id; the kernel merge dereferences `payload.unk` as a descriptor
+// offset).
+//
+// Lifetime: the descriptor is minted in the ACTIVATION BUFFER, not
+// the guest bump arena.  The marshal runs BEFORE $eval, whose first
+// instruction is `arena_reset` — an arena-minted descriptor would be
+// rewound and zero-filled by the first in-eval `arena_alloc`.  The
+// activation buffer is malloc'd from the dlmalloc heap (wasm
+// reentry) and stable for the whole Eval, so the descriptor survives
+// kernel merges and the post-Eval result decode (the same lifetime
+// argument as the string payload bytes sharing this buffer).
+absl::Status EncodeUnknownVariable(absl::string_view name, uint32_t attr_id,
+                                   CelValue* dst, HostStringArena arena) {
+  if (static_cast<uint64_t>(*arena.cursor) + kUnknownDescriptorBytes >
+      arena.capacity) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        "Activation[", name, "]: host string arena OOM (need ",
+        kUnknownDescriptorBytes, " bytes for the UnknownSet descriptor; ",
+        "cursor=", *arena.cursor, ", capacity=", arena.capacity, ")"));
+  }
+  const uint32_t offset = arena.floor + *arena.cursor;
+  uint8_t* base = wasmtime_sharedmemory_data(arena.mem);
+  // Layout: descriptor {ids_off, len} at [offset, offset+8), the
+  // single id at [offset+8, offset+12).
+  const uint32_t words[3] = {
+      offset + static_cast<uint32_t>(2 * sizeof(uint32_t)), 1, attr_id};
+  std::memcpy(base + offset, words, sizeof(words));
+  *arena.cursor += kUnknownDescriptorBytes;
+  dst->kind = CEL_UNKNOWN;
+  dst->payload.unk = offset;
+  return absl::OkStatus();
+}
+
 // Marshal one declared variable into its workspace slot: CEL_UNKNOWN
 // when a pattern fully matches the bare variable (PartialEval; binding
 // ignored, may be absent), else the encoded bound value.  Bounds-checks
@@ -1065,8 +1163,10 @@ absl::Status MarshalOneVariable(wasmtime_context_t* absl_nonnull ctx,
           BareVariableUnknownId(impl->host_env.bindings, dv.name());
       unk_id.has_value()) {
     CelValue unk{};
-    unk.kind = CEL_UNKNOWN;
-    unk.payload.unk = *unk_id;
+    if (auto s = EncodeUnknownVariable(dv.name(), *unk_id, &unk, ec.arena);
+        !s.ok()) {
+      return s;
+    }
     WriteCelValueAt(ctx, mem, dv.slot_offset(), unk);
     return absl::OkStatus();
   }
@@ -1093,11 +1193,14 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   const celwasm::abi::CelAbi& abi = impl->abi;
 
   // Pre-pass: ensure the activation buffer has room for every
-  // kString / kBytes payload before any encoder runs.  A malloc'd
+  // kString / kBytes payload AND every fully-unknown variable's
+  // UnknownSet descriptor before any encoder runs.  A malloc'd
   // buffer's pointer doesn't move under us across reentry calls (no
   // memory.grow side-effect on the same Eval), so the encoders that
   // follow can read `wasmtime_memory_data` once and use it stably.
-  const uint32_t need = TotalHostStringBytes(abi, activation);
+  const uint32_t need = TotalHostStringBytes(abi, activation) +
+                        (kUnknownDescriptorBytes *
+                         CountUnknownVariables(abi, impl->host_env.bindings));
   if (need > 0) {
     const absl::string_view first_name = abi.variables_size() > 0
                                              ? abi.variables(0).name()

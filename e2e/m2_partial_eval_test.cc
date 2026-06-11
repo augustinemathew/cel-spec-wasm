@@ -55,13 +55,13 @@
 #include "absl/types/span.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/attribute.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "google/protobuf/message.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -83,8 +83,6 @@ using ::celwasm::testdata::Customer;
 // ──────────────────────────────────────────────────────────────
 //  Harness — mirrors e2e/m2_test.cc.
 // ──────────────────────────────────────────────────────────────
-
-using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -246,9 +244,9 @@ TEST_F(ListPrimitivePartialEvalTest, IterVarShadowingDeclaredVarBindsElement) {
       << static_cast<int>(v->kind());
   EXPECT_TRUE(*v->AsBool()) << "30 > 10 → exists is true";
   // Under PartialEval with pattern `x`, the RANGE `x` slot is blanked
-  // (the outer var), so the range is unknown — which routes through the
-  // comprehension-over-unknown-range gap (cleanup-backlog #14); the
-  // inner predicate `x` stays immune either way.
+  // (the outer var), so the range is unknown — the prologue's range
+  // absorption propagates it (ShadowedRangeVarUnknownIsUnknown below);
+  // the inner predicate `x` stays immune either way.
 }
 
 TEST_F(ListPrimitivePartialEvalTest, NonMatchingPatternStaysConcrete) {
@@ -260,23 +258,16 @@ TEST_F(ListPrimitivePartialEvalTest, NonMatchingPatternStaysConcrete) {
   EXPECT_EQ(*v.AsInt(), 10);
 }
 
-// SOUNDNESS GAP — a comprehension whose iter_range is UNKNOWN returns
-// the empty-range identity (`exists`→false, `all`→true, `map`/`filter`
-// →[]) instead of unknown.  `cel_host.cel_list_iter_open` maps any
-// non-CEL_LIST_HOST range (including CEL_UNKNOWN/CEL_ERROR) to a
-// zero-count arena view (CelListIterOpenImpl write_empty), and the
-// comprehension prologue has no 3VL-absorption branch for the range.
-// This pre-dates whole-variable unknowns (it was already reachable via
-// `c.tags.exists(...)` with pattern `c.tags`); bare-variable unknowns
-// just widen the door.  Fix is a WAT-first codegen arm: at the
-// comprehension prologue, if iter_range's CelValue is CEL_UNKNOWN /
-// CEL_ERROR, write it to the result slot and skip the loop
-// (cleanup-backlog #14).
+// A comprehension whose iter_range is UNKNOWN propagates the unknown —
+// NOT the empty-range identity (`exists`→false, `all`→true,
+// `exists_one`→false, `map`/`filter`→[]).  The comprehension prologue
+// 3VL-absorbs the range value before any iteration setup runs
+// (expr_lower_comprehension.cc EmitRangeAbsorptionGuard).  cel-cpp
+// oracle: comprehension_step.cc:165-169 routes a kUnknown range to
+// `result = std::move(range)`; pinned empirically by
+// testdata/cel_cpp_oracle_comprehension_test.cc (closed
+// cleanup-backlog #14).
 TEST_F(ListPrimitivePartialEvalTest, ComprehensionOverUnknownListIsUnknown) {
-  GTEST_SKIP() << "cleanup-backlog #14: comprehension over an UNKNOWN range "
-                  "returns the empty-range identity (false), not unknown — "
-                  "cel_list_iter_open treats the unknown range as empty and "
-                  "the comprehension prologue has no range-absorption branch.";
   auto instance = CompilePlan(compiler_, "xs.exists(e, e > 0)");
   auto a = BoundList();
   AttributePattern patterns[] = {MakePattern("xs")};
@@ -291,7 +282,7 @@ TEST_F(ListPrimitivePartialEvalTest, ComprehensionOverUnknownListIsUnknown) {
 // any comprehension-scope ident (scope_id != 0), so a pattern can never
 // match it.  Here a pattern named `x` is supplied while the iteration
 // variable is also `x`; the literal range `[1,2,3]` is concrete (so
-// this dodges the #14 unknown-range gap), and the predicate's `x` is
+// the range-absorption guard stays cold), and the predicate's `x` is
 // the loop variable, immune to the pattern.  Result: a concrete
 // `false` (no element > 10), proving the pattern bound to nothing.
 TEST_F(ListPrimitivePartialEvalTest, ComprehensionIterVarIsImmuneToPattern) {
@@ -326,7 +317,7 @@ TEST_F(ListPrimitivePartialEvalTest, ComprehensionIterVarIsImmuneToPattern) {
 // the iter var.  So a pattern on the loop-var NAME matching nothing is
 // the same answer cel-cpp gives.  (cel-cpp DOES support per-iteration
 // unknown via range index/key qualifiers; we don't — that's the §8
-// per-element limitation / #14, a capability gap, not a wrong no-op.)
+// per-element limitation, a capability gap, not a wrong no-op.)
 TEST_F(ListPrimitivePartialEvalTest, PatternTargetingLoopVarIsNoOp) {
   auto instance = CompilePlan(compiler_, "xs.exists(e, e > 10)");
   auto a = BoundList();  // xs = [10, 20, 30]; range is concrete.
@@ -341,13 +332,9 @@ TEST_F(ListPrimitivePartialEvalTest, PatternTargetingLoopVarIsNoOp) {
 // Shadowing UNDER a matching pattern: `x.exists(x, x > 10)` with
 // pattern `x`, where `x` is a declared `list<int>`.  The pattern hits
 // the FREE variable `x` (the range), blanking its slot → the range is
-// unknown → this routes through the comprehension-over-unknown-range
-// gap (#14).  The inner loop `x` is immune regardless; the pattern
-// never targets it.  Once #14 lands this is unknown, not false.
+// unknown → the prologue's range-absorption guard propagates it.  The
+// inner loop `x` is immune regardless; the pattern never targets it.
 TEST_F(ListPrimitivePartialEvalTest, ShadowedRangeVarUnknownIsUnknown) {
-  GTEST_SKIP() << "cleanup-backlog #14: pattern `x` blanks the RANGE `x` "
-                  "(the free var) → comprehension over an unknown range "
-                  "returns the empty-range identity (false) not unknown.";
   auto compiler = CompilerWithVar("x", CelType::List(CelType::Int()));
   ABSL_CHECK_OK(compiler);
   auto instance = CompilePlan(*compiler, "x.exists(x, x > 10)");
@@ -358,6 +345,175 @@ TEST_F(ListPrimitivePartialEvalTest, ShadowedRangeVarUnknownIsUnknown) {
   EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
       << "the range `x` is unknown → exists must be unknown; kind="
       << static_cast<int>(v.kind());
+}
+
+// ──────────────────────────────────────────────────────────────
+//  2b. Comprehension range absorption — the full macro matrix.
+//
+//  A comprehension whose iter_range is UNKNOWN or ERROR yields that
+//  value; no loop body runs, no empty-range identity leaks out.
+//  cel-cpp reference: comprehension_step.cc:165-169 / :350-354
+//  (`result = std::move(range)` for kError fallthrough kUnknown),
+//  pinned empirically per macro in
+//  testdata/cel_cpp_oracle_comprehension_test.cc.  Each macro is
+//  exercised over (a) an UNKNOWN range (whole-variable pattern),
+//  (b) an ERROR range (an erroring index produces a list/map-typed
+//  error), and (c) a concrete range as control.  List and map
+//  source reprs both take the guard.
+// ──────────────────────────────────────────────────────────────
+
+class ComprehensionRangeAbsorptionTest : public ::testing::Test {
+ protected:
+  // `xs` feeds list-source macros; `m` feeds map-source macros
+  // (left unbound in the unknown cases — an unknown variable need
+  // not be bound); `x` feeds the unknown-BODY negative control.
+  Compiler compiler_{*BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()))
+        .DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()))
+        .DeclareVariable("x", CelType::Int());
+  })};
+
+  Activation BoundXs() {
+    Activation a;
+    a.Bind("xs", Value::List({Value::Int(10), Value::Int(20), Value::Int(30)}));
+    return a;
+  }
+};
+
+struct RangeAbsorptionCase {
+  std::string name;
+  std::string source;   // references `xs` (list) or `m` (map)
+  std::string pattern;  // the variable the UNKNOWN case blanks
+};
+
+class ComprehensionUnknownRangeE2E
+    : public ComprehensionRangeAbsorptionTest,
+      public ::testing::WithParamInterface<RangeAbsorptionCase> {};
+
+TEST_P(ComprehensionUnknownRangeE2E, PropagatesUnknown) {
+  auto instance = CompilePlan(compiler_, GetParam().source);
+  Activation a;  // range var deliberately unbound — pattern wins anyway
+  AttributePattern patterns[] = {MakePattern(GetParam().pattern)};
+  auto v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
+      << GetParam().source << " over an unknown range must be unknown, "
+      << "not the macro identity; kind=" << static_cast<int>(v.kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllMacros, ComprehensionUnknownRangeE2E,
+    ::testing::Values(
+        RangeAbsorptionCase{"Exists", "xs.exists(e, e > 0)", "xs"},
+        RangeAbsorptionCase{"All", "xs.all(e, e > 0)", "xs"},
+        RangeAbsorptionCase{"ExistsOne", "xs.exists_one(e, e > 0)", "xs"},
+        RangeAbsorptionCase{"Map", "xs.map(e, e + 1)", "xs"},
+        RangeAbsorptionCase{"Filter", "xs.filter(e, e > 0)", "xs"},
+        RangeAbsorptionCase{"MapRangeExists", "m.exists(k, k == 'a')", "m"},
+        RangeAbsorptionCase{"MapRangeTransformMap", "m.map(k, k)", "m"}),
+    [](const ::testing::TestParamInfo<RangeAbsorptionCase>& info) {
+      return info.param.name;
+    });
+
+// ERROR range: `[[1]][1]` is a list-typed index-out-of-bounds error;
+// `{'a': 1}['c']`-style missing-key lookups give the map-typed
+// counterpart.  The comprehension result is the ERROR, not the
+// identity (and per the strict-call precedence in
+// doc/design/03-abi-and-memory.md §8.1, an error range dominates an
+// unknown body — the body never runs).
+class ComprehensionErrorRangeE2E
+    : public ComprehensionRangeAbsorptionTest,
+      public ::testing::WithParamInterface<RangeAbsorptionCase> {};
+
+TEST_P(ComprehensionErrorRangeE2E, PropagatesError) {
+  auto instance = CompilePlan(compiler_, GetParam().source);
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << GetParam().source << " over an error range must propagate the "
+      << "error, not the macro identity; kind=" << static_cast<int>(v->kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllMacros, ComprehensionErrorRangeE2E,
+    ::testing::Values(
+        RangeAbsorptionCase{"Exists", "[[1]][1].exists(e, e > 0)", ""},
+        RangeAbsorptionCase{"All", "[[1]][1].all(e, e > 0)", ""},
+        RangeAbsorptionCase{"ExistsOne", "[[1]][1].exists_one(e, e > 0)", ""},
+        RangeAbsorptionCase{"Map", "[[1]][1].map(e, e + 1)", ""},
+        RangeAbsorptionCase{"Filter", "[[1]][1].filter(e, e > 0)", ""},
+        RangeAbsorptionCase{"MapRangeExists",
+                            "{'a': {'b': 1}}['c'].exists(k, k == 'b')", ""},
+        RangeAbsorptionCase{"MapRangeTransformMap",
+                            "{'a': {'b': 1}}['c'].map(k, k)", ""}),
+    [](const ::testing::TestParamInfo<RangeAbsorptionCase>& info) {
+      return info.param.name;
+    });
+
+// ERROR dominates the unknown BODY when the range itself errors: the
+// guard fires on the range before the body (and its unknown) can run.
+// Oracle pin: ComprehensionErrorRangeOracle.ErrorRangeDominatesUnknownBody.
+TEST_F(ComprehensionRangeAbsorptionTest, ErrorRangeDominatesUnknownBody) {
+  auto instance = CompilePlan(compiler_, "[[1]][1].exists(e, e > x)");
+  Activation a;
+  AttributePattern patterns[] = {MakePattern("x")};
+  auto v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kError)
+      << "the range error propagates; the unknown body never runs; kind="
+      << static_cast<int>(v.kind());
+}
+
+// Controls: a concrete range still iterates — the guard must be a
+// no-op on the happy path for every macro shape.
+TEST_F(ComprehensionRangeAbsorptionTest, ConcreteRangeControls) {
+  struct Control {
+    std::string source;
+    bool expected;
+  };
+  const Control controls[] = {
+      {"xs.exists(e, e > 10)", true},
+      {"xs.all(e, e > 0)", true},
+      {"xs.exists_one(e, e == 20)", true},
+      {"xs.map(e, e + 1) == [11, 21, 31]", true},
+      {"xs.filter(e, e > 15) == [20, 30]", true},
+      {"{'a': 1}.exists(k, k == 'a')", true},
+      {"{'a': 1}.map(k, k) == ['a']", true},
+  };
+  for (const auto& c : controls) {
+    auto instance = CompilePlan(compiler_, c.source);
+    auto a = BoundXs();
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << c.source << ": " << v.status();
+    ASSERT_EQ(v->kind(), Value::Kind::kBool)
+        << c.source << "; kind=" << static_cast<int>(v->kind());
+    EXPECT_EQ(*v->AsBool(), c.expected) << c.source;
+  }
+}
+
+// Negative control — accumulator 3VL is a DIFFERENT mechanism than
+// range absorption and must keep its behavior: a concrete range whose
+// BODY references an unknown is unknown (merged into the accu per
+// iteration), and a body that errors yields the error.  Oracle pins:
+// ComprehensionRangeControlOracle.{ConcreteRangeUnknownBodyIsUnknown,
+// ConcreteRangeErrorBodyIsError}.
+TEST_F(ComprehensionRangeAbsorptionTest, ConcreteRangeUnknownBodyIsUnknown) {
+  auto instance = CompilePlan(compiler_, "[1, 2, 3].exists(e, e > x)");
+  Activation a;
+  AttributePattern patterns[] = {MakePattern("x")};
+  auto v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
+      << "unknown BODY over a concrete range stays unknown; kind="
+      << static_cast<int>(v.kind());
+}
+
+TEST_F(ComprehensionRangeAbsorptionTest, ConcreteRangeErrorBodyIsError) {
+  auto instance = CompilePlan(compiler_, "[1, 2, 3].map(e, e / 0)");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(v->kind(), Value::Kind::kError)
+      << "error BODY over a concrete range stays an error; kind="
+      << static_cast<int>(v->kind());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -834,6 +990,166 @@ INSTANTIATE_TEST_SUITE_P(
         MalformedPattern{"[3]", "bracket at root"},
         MalformedPattern{"m[\"k", "unclosed string key"},
         MalformedPattern{"request.messages[3].text", "bracket mid path"}));
+
+// ──────────────────────────────────────────────────────────────
+//  10. Merged unknown provenance — the §8.2 descriptor contract
+//      (doc/design/03-abi-and-memory.md).
+//
+//  When SEVERAL unknown attributes feed one result, the decoded
+//  Value must carry ALL of their identities: cel-cpp merges unknown
+//  operands into one set (`AttributeUtility::MergeUnknowns`;
+//  oracle-pinned in testdata/cel_cpp_oracle_unknown_payload_test.cc
+//  — and/or/add × dotted/bare, dedup).  On the wire, `payload.unk`
+//  is an offset to a `{ids_off, len}` UnknownSet descriptor; the
+//  marshal/trampolines mint 1-element descriptors, `cel_and` /
+//  `cel_or` / `absorb_3vl_binary` merge them, and the result decoder
+//  dereferences the merged set.  These cases pin the path
+//  end-to-end (both link modes via the suite macro).
+//
+//  Attribute ids are program-internal intern ids, so each test first
+//  LEARNS a variable's id from a single-unknown PartialEval (itself
+//  the single-unknown regression pin: exactly one identity decodes),
+//  then asserts the both-unknown run carries exactly the union.
+// ──────────────────────────────────────────────────────────────
+
+std::vector<uint32_t> UnknownIds(const Value& v) {
+  auto attrs = v.UnknownAttributes();
+  ABSL_CHECK_OK(attrs.status());
+  std::vector<uint32_t> ids;
+  for (const AttributeId& a : *attrs) {
+    ids.push_back(a.id);
+  }
+  return ids;
+}
+
+// PartialEval with the given single unknown pattern; expect an
+// unknown carrying exactly ONE identity and return its id.
+uint32_t LearnAttributeId(Instance& instance, const Activation& act,
+                          absl::string_view pattern) {
+  AttributePattern patterns[] = {MakePattern(pattern)};
+  Value v = PartialEvalOk(instance, act, patterns);
+  ABSL_CHECK(v.kind() == Value::Kind::kUnknown) << pattern;
+  std::vector<uint32_t> ids = UnknownIds(v);
+  ABSL_CHECK_EQ(ids.size(), 1u)
+      << pattern << " single-unknown run must carry exactly one identity";
+  return ids[0];
+}
+
+class MergedUnknownProvenanceTest : public ::testing::Test {
+ protected:
+  Compiler bool_compiler_{*BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Bool());
+    b.DeclareVariable("b", CelType::Bool());
+  })};
+  Compiler int_compiler_{*BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Int());
+    b.DeclareVariable("b", CelType::Int());
+  })};
+};
+
+TEST_F(MergedUnknownProvenanceTest, AndBothUnknownCarriesBothIdentities) {
+  auto instance = CompilePlan(bool_compiler_, "a && b");
+  Activation act;
+  act.Bind("a", Value::Bool(true));
+  act.Bind("b", Value::Bool(true));
+  const uint32_t id_a = LearnAttributeId(instance, act, "a");
+  const uint32_t id_b = LearnAttributeId(instance, act, "b");
+  ASSERT_NE(id_a, id_b);
+
+  AttributePattern both[] = {MakePattern("a"), MakePattern("b")};
+  Value v = PartialEvalOk(instance, act, both);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  EXPECT_THAT(UnknownIds(v), ::testing::UnorderedElementsAre(id_a, id_b))
+      << "oracle pin BareVarsAndBothUnknownMergesBothAttributes: the "
+         "merged set, not one winner";
+}
+
+TEST_F(MergedUnknownProvenanceTest, OrBothUnknownCarriesBothIdentities) {
+  auto instance = CompilePlan(bool_compiler_, "a || b");
+  Activation act;
+  act.Bind("a", Value::Bool(false));
+  act.Bind("b", Value::Bool(false));
+  const uint32_t id_a = LearnAttributeId(instance, act, "a");
+  const uint32_t id_b = LearnAttributeId(instance, act, "b");
+
+  AttributePattern both[] = {MakePattern("a"), MakePattern("b")};
+  Value v = PartialEvalOk(instance, act, both);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  EXPECT_THAT(UnknownIds(v), ::testing::UnorderedElementsAre(id_a, id_b));
+}
+
+TEST_F(MergedUnknownProvenanceTest, AddBothUnknownCarriesBothIdentities) {
+  // Strict-op merge (`absorb_3vl_binary` → `cel_unknown_merge`):
+  // oracle pin BareVarsAddBothUnknownMergesBothAttributes.
+  auto instance = CompilePlan(int_compiler_, "a + b");
+  Activation act;
+  act.Bind("a", Value::Int(1));
+  act.Bind("b", Value::Int(2));
+  const uint32_t id_a = LearnAttributeId(instance, act, "a");
+  const uint32_t id_b = LearnAttributeId(instance, act, "b");
+
+  AttributePattern both[] = {MakePattern("a"), MakePattern("b")};
+  Value v = PartialEvalOk(instance, act, both);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  EXPECT_THAT(UnknownIds(v), ::testing::UnorderedElementsAre(id_a, id_b));
+}
+
+TEST_F(MergedUnknownProvenanceTest, SameAttributeBothSidesDeduplicates) {
+  // Oracle pin SameAttributeBothSidesDeduplicates: merging the SAME
+  // attribute from both operands yields a one-element set.
+  auto instance = CompilePlan(int_compiler_, "a + a");
+  Activation act;
+  act.Bind("a", Value::Int(1));
+  act.Bind("b", Value::Int(2));  // declared, must be bound
+  AttributePattern patterns[] = {MakePattern("a")};
+  Value v = PartialEvalOk(instance, act, patterns);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  EXPECT_EQ(UnknownIds(v).size(), 1u);
+}
+
+TEST_F(MergedUnknownProvenanceTest,
+       FieldSelectsOnDistinctRootsCarryBothIdentities) {
+  // The dotted variant (the V2 probe recipe `a.x && b.y`): the
+  // unknowns are minted at the SELECT step by the cel_get_field
+  // trampoline (oracle pin AndBothUnknownMergesBothAttributes).  The
+  // minted id is the select OPERAND's interned attribute, so two
+  // distinct roots carry two distinct identities.
+  Compiler compiler{*BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("a", CelType::Message("celwasm.testdata.Customer"));
+    b.DeclareVariable("b", CelType::Message("celwasm.testdata.Customer"));
+  })};
+  auto instance = CompilePlan(compiler, "a.age > 1 && b.age > 1");
+  Customer msg_a;
+  msg_a.set_age(30);
+  Customer msg_b;
+  msg_b.set_age(40);
+  Activation act;
+  act.Bind("a", Value::Message(msg_a));
+  act.Bind("b", Value::Message(msg_b));
+  const uint32_t id_a = LearnAttributeId(instance, act, "a.age");
+  const uint32_t id_b = LearnAttributeId(instance, act, "b.age");
+  ASSERT_NE(id_a, id_b);
+
+  AttributePattern both[] = {MakePattern("a.age"), MakePattern("b.age")};
+  Value v = PartialEvalOk(instance, act, both);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  EXPECT_THAT(UnknownIds(v), ::testing::UnorderedElementsAre(id_a, id_b));
+}
+
+TEST_F(MergedUnknownProvenanceTest, SingleUnknownThroughArithKeepsIdentity) {
+  // Single-unknown regression: one unknown operand propagates its
+  // one-element set unchanged through a strict op, and the decoded
+  // Value's single-id accessor still works.
+  auto instance = CompilePlan(int_compiler_, "a + b");
+  Activation act;
+  act.Bind("a", Value::Int(1));
+  act.Bind("b", Value::Int(2));
+  AttributePattern patterns[] = {MakePattern("a")};
+  Value v = PartialEvalOk(instance, act, patterns);
+  ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
+  ASSERT_TRUE(v.UnknownAttribute().ok()) << "one-element set";
+  EXPECT_THAT(UnknownIds(v), ::testing::SizeIs(1));
+}
 
 }  // namespace
 }  // namespace celwasm

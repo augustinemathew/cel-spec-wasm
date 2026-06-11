@@ -1,12 +1,16 @@
 // 3VL / control-flow helpers.
 //
 // CEL's logical operators (`_&&_`, `_||_`, `!_`) follow non-strict
-// 3VL semantics per langdef §"Logical operators":
+// 3VL semantics per langdef §"Logical Operators":
 //   - `false && X = false` for any X (including ERROR / UNKNOWN).
 //   - `true  || X = true`  symmetrically.
-//   - Otherwise: ERROR > UNKNOWN > OK(bool) dominance — ERROR on
-//     either side propagates first; both UNKNOWN merges the
-//     attribute-id sets; bool-bool is the obvious truth table.
+//   - Otherwise: UNKNOWN > ERROR > OK(bool) dominance — UNKNOWN on
+//     either side propagates first (both UNKNOWN merges the
+//     attribute-id sets); bool-bool is the obvious truth table.
+//     UNKNOWN-over-ERROR is the logic-op rule (cel-cpp
+//     eval/eval/logic_step.cc; the resolved unknown may
+//     short-circuit the error away) — the OPPOSITE of the strict-op
+//     rule in `absorb_3vl_binary`, where ERROR dominates.
 //
 // All four operator helpers use the uniform slot-out ABI
 // (`(out_slot, a_slot[, b_slot]) -> void`).  `cel_unknown_merge` is
@@ -21,13 +25,16 @@
 // inline at every ternary site, but a runtime-side helper keeps
 // expr_lower lean and the WAT shape regular.
 //
-// UnknownSet wire shape (mirrors v1, locked at the spike): the
-// CelValue's `payload.unk` is a u32 byte-offset to a 2-word
-// descriptor `{ ids_off:u32, len:u32 }`; `ids_off` then points at a
-// contiguous u32 array of attribute ids in sorted, deduplicated
-// order.  `payload.unk == 0` is a legal "empty" UnknownSet — the
-// cel_host trampoline mints UNKNOWNs that way for FULL pattern
-// matches before per-id provenance is wired through.
+// UnknownSet wire shape (the crowned contract,
+// doc/design/03-abi-and-memory.md §8.2): the CelValue's
+// `payload.unk` is a u32 byte-offset to a 2-word descriptor
+// `{ ids_off:u32, len:u32 }`; `ids_off` then points at a contiguous
+// u32 array of attribute ids in sorted, deduplicated order.  Every
+// producer — this kernel's merge AND the host-side writers (the
+// cel_get_field trampoline, the activation marshal, host-fn
+// returns) — mints that shape.  `payload.unk == 0` is a legal
+// "empty" UnknownSet (no recorded provenance); production writers
+// never mint it.
 
 #ifndef CELWASM_RUNTIME_CEL_3VL_H_
 #define CELWASM_RUNTIME_CEL_3VL_H_
