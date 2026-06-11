@@ -133,6 +133,14 @@ shape, string-ext/math-ext functions.  Deliverable includes a
 catalog, % admitted) in the README so "full dialect" is a measured
 claim, not a vibe — the same discipline as the conformance badge.
 
+> **Inventory shipped 2026-06-11** as `e2e/fuzz/COVERAGE.md` — all
+> 241 overloads from `compiler/codegen/overload_table.cc`, grouped
+> by family, each ✅/🟡/⬜.  It is the master queue for the rest of
+> M30: math_ext (28), net_ext (20), timestamp accessors (23),
+> duration (7), encoders (2), optionals (~14), most conversions,
+> string-rest, cross-type + ordering comparisons.  Check rows off
+> as productions land + mine clean.
+
 ### M30.E — Scale and shape (depth, width, randomization)
 
 - Width: arity-20/50 list literals, long `+`/`&&` chains via a

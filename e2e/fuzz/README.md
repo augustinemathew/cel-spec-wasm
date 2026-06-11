@@ -13,6 +13,13 @@ This README is the living operational doc: how the rig works, how to
 run it, how to extend it, and the dated notes log at the bottom.
 Update it in the same commit as any grammar or harness change.
 
+**Function coverage is tracked in [`COVERAGE.md`](COVERAGE.md)** — a
+checklist of all 241 overloads from
+`compiler/codegen/overload_table.cc` and whether the grammar
+generates each. Check a row off when you add its production AND mine
+its target clean. The ⬜ rows (math_ext, net_ext, timestamp/duration
+accessors, encoders, optionals, most conversions) are the queue.
+
 ## How it works
 
 ```
@@ -181,6 +188,22 @@ productions existed.
    + a message-typed binding (needs OracleVar proto marshalling).
 
 ## Notes log (newest first; add an entry per session)
+
+### 2026-06-11 — function inventory + fallible string forms
+
+- **Coverage checklist created** ([`COVERAGE.md`](COVERAGE.md)): all
+  241 overloads from `compiler/codegen/overload_table.cc`, grouped by
+  family, each marked ✅/🟡/⬜. Made the gap concrete — math_ext (28),
+  net_ext (20), timestamp accessors (23), duration (7), encoders (2),
+  optionals (~14), most conversions, and half the string functions
+  are NOT yet fuzzed. This is now the master queue.
+- Added the deferred string forms (`replace`, `substring(start)`,
+  `substring(start, end)`, `lastIndexOf`). Mining string/bool at d4 =
+  0 divergences, `both_errored` from substring out-of-range (both
+  engines agree on the range error). Audited the sibling kernels
+  (`replace`, `indexOf`, `substring`) for the M30.D split-aliasing
+  class — all safe (they finish reading the source before writing
+  `out`; only `split`'s AllocList-then-reread had the bug).
 
 ### 2026-06-11 — M30.D string functions + FIRST REAL BUG FOUND
 
